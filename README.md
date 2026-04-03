@@ -6,6 +6,8 @@ X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every 
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+![ccxray dashboard](docs/dashboard.png)
+
 ## Why
 
 Claude Code is a black box. You can't see:
@@ -15,20 +17,6 @@ Claude Code is a black box. You can't see:
 - What context is eating your 200K token window
 
 ccxray makes it a glass box.
-
-## Features
-
-**Dashboard** — Miller-column UI showing projects → sessions → turns → timeline → detail, all in one screen
-
-**Timeline** — Every turn broken down into human messages, thinking blocks (with duration + preview), tool calls with inline previews, and assistant responses
-
-**Token Accounting** — Per-turn breakdown: input/output/cache-read/cache-create tokens, cost in USD, context window usage bar
-
-**Request Interception** — Pause any request before it hits Anthropic. Inspect, modify, or reject. Useful for debugging prompt injection or testing edits
-
-**System Prompt Tracking** — Automatic version detection and diff viewer. See exactly what changed between Claude Code updates
-
-**Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
 
 ## Quick Start
 
@@ -47,6 +35,31 @@ ccxray --port 8080 claude        # Custom port
 ccxray claude --no-browser       # Skip auto-open browser
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # Manual setup (existing sessions)
 ```
+
+## Features
+
+### Timeline
+
+Watch your agent think in real-time. Every turn broken down into thinking blocks (with duration), tool calls with inline previews, and assistant responses.
+
+![Timeline view](docs/timeline.png)
+
+### Usage & Cost
+
+Track your real spending. Session heatmap, burn rate, ROI calculator — know exactly where your tokens go.
+
+![Usage analytics](docs/usage.png)
+
+### System Prompt Tracking
+
+Automatic version detection with diff viewer. See exactly what changed between Claude Code updates — never miss a prompt change again.
+
+![System prompt tracking](docs/system-prompt.png)
+
+### More
+
+- **Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
+- **Token Accounting** — Per-turn breakdown: input/output/cache-read/cache-create tokens, cost in USD, context window usage bar
 
 ## How It Works
 

@@ -6,6 +6,8 @@ AI 代理工作階段的透視鏡。零設定的 HTTP 代理，記錄 Claude Cod
 
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
+![ccxray 儀表板](docs/dashboard.png)
+
 ## 為什麼需要
 
 Claude Code 是個黑盒子。你看不到：
@@ -15,20 +17,6 @@ Claude Code 是個黑盒子。你看不到：
 - 什麼東西吃掉了你的 200K token 上下文窗口
 
 ccxray 讓它變成透明的。
-
-## 功能
-
-**儀表板** — Miller column 介面，一個畫面呈現 專案 → 工作階段 → 回合 → 時間軸 → 細節
-
-**時間軸** — 每個回合拆解為：使用者訊息、思考區塊（含時長與預覽）、tool call 內聯預覽、助手回應
-
-**Token 記帳** — 每回合明細：input/output/cache-read/cache-create tokens、美元成本、上下文窗口使用率
-
-**請求攔截** — 在請求送出到 Anthropic 之前暫停，可檢視、修改或拒絕。適合除錯 prompt injection 或測試修改
-
-**System Prompt 追蹤** — 自動偵測版本變更，內建 diff 檢視器。精確掌握 Claude Code 更新時改了什麼
-
-**工作階段偵測** — 自動依 Claude Code session 分組，含專案/工作目錄擷取
 
 ## 快速開始
 
@@ -47,6 +35,31 @@ ccxray --port 8080 claude        # 自訂連接埠
 ccxray claude --no-browser       # 不自動開啟瀏覽器
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # 手動設定（現有工作階段）
 ```
+
+## 功能
+
+### 時間軸
+
+即時觀看代理的思考過程。每個回合拆解為思考區塊（含時長）、tool call 內聯預覽、助手回應。
+
+![時間軸檢視](docs/timeline.png)
+
+### 用量與成本
+
+追蹤你的實際花費。工作階段熱力圖、消耗速率、ROI 計算 — 精確掌握 token 流向。
+
+![用量分析](docs/usage.png)
+
+### System Prompt 追蹤
+
+自動偵測版本變更，內建 diff 檢視器。精確掌握 Claude Code 更新時改了什麼 — 不再遺漏任何 prompt 變動。
+
+![System Prompt 追蹤](docs/system-prompt.png)
+
+### 其他功能
+
+- **工作階段偵測** — 自動依 Claude Code session 分組，含專案/工作目錄擷取
+- **Token 記帳** — 每回合明細：input/output/cache-read/cache-create tokens、美元成本、上下文窗口使用率
 
 ## 運作原理
 
