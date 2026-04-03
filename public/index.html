@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccxray</title>
+<link rel="stylesheet" href="/style.css">
+<script>
+// Apply theme before first paint to prevent flash
+(function() {
+  var t = localStorage.getItem('theme');
+  if (!t) t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+})();
+</script>
+<!--__PROXY_CONFIG__-->
+</head>
+<body>
+
+
+<div id="app">
+  <div id="topbar">
+    <div id="topbar-row1">
+      <h1><span class="dot"></span>ccxray</h1>
+      <nav id="topbar-tabs">
+        <button class="topbar-tab active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+        <button class="topbar-tab" data-tab="usage" onclick="switchTab('usage')">Usage</button>
+        <button class="topbar-tab" data-tab="sysprompt" onclick="switchTab('sysprompt')">System Prompt<span id="sysprompt-badge" style="display:none;width:8px;height:8px;background:var(--red);border-radius:50%;margin-left:4px"></span></button>
+      </nav>
+      <span id="topbar-held"></span>
+      <div id="status-cluster">
+        <span id="topbar-status"></span>
+      </div>
+      <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀️</button>
+    </div>
+    <div id="topbar-row2">
+      <div id="row2-dashboard">
+        <span id="breadcrumb">root</span>
+        <button id="copy-link-btn" onclick="copyCurrentUrl(this)" title="Copy link to clipboard">🔗</button>
+        <div id="quota-ticker">
+          <div id="qt-bar-wrap" style="display:none">
+            <div class="qt-bar-track"><div id="qt-bar-fill"></div></div>
+            <span id="qt-bar-pct" title="Percentage of 5-hour token quota used">0%</span>
+            <span id="qt-bar-time" title="Time remaining in current 5-hour window"></span>
+          </div>
+          <span id="qt-roi" style="display:none" onclick="switchTab('usage')" title="Return on investment: monthly cost / $200 plan price">ROI -</span>
+          <span id="qt-chip" style="display:none"></span>
+        </div>
+      </div>
+      <div id="row2-usage" style="display:none">
+        <span id="row2-usage-summary"></span>
+      </div>
+      <div id="row2-sysprompt" style="display:none">
+        <span id="row2-sp-version"></span>
+      </div>
+    </div>
+  </div>
+  <div id="version-banner" style="display:none"></div>
+  <div id="cost-page" class="fullscreen-page">
+    <div class="fp-header">
+      <button class="fp-back" onclick="hideCostPage()">←</button>
+      <span class="fp-title">Usage Analytics</span>
+      <button class="fp-close" onclick="hideCostPage()">&times;</button>
+    </div>
+    <div class="fp-content">
+      <div class="cost-layout">
+        <div class="cost-left">
+          <div id="cp-zone1" class="cost-card">
+            <div class="cost-card-label">Current 5-Hour Window</div>
+            <div id="cp-z1-content">Loading…</div>
+          </div>
+          <div id="cp-zone2" class="cost-card">
+            <div id="cp-z2-label" class="cost-card-label" style="display:flex;align-items:center;justify-content:space-between">ROI &amp; Plan Fit</div>
+            <div id="cp-z2-content">Loading…</div>
+          </div>
+        </div>
+        <div class="cost-right">
+          <div id="cp-zone3" class="cost-card">
+            <div id="cp-z3-content"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="columns">
+    <div id="col-projects" class="col"><div class="col-title">Projects</div></div>
+    <div id="col-sessions" class="col"><div class="col-title" style="display:flex;align-items:center;gap:6px">Sessions <select id="sess-filter-select" onchange="setSessionFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer"><option value="active">Active</option><option value="active+idle" selected>Active+Idle</option><option value="all">All</option></select></div></div>
+    <div id="col-turns" class="col"><div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div></div>
+    <div id="col-sections" class="col"><div class="col-empty">←</div></div>
+    <div id="col-detail" class="col"><div class="col-empty">←</div></div>
+  </div>
+  <div id="diff-overlay" class="fullscreen-page">
+    <div class="fp-header">
+      <button class="fp-back" onclick="spHandleBack()">←</button>
+      <span class="fp-title">System Prompt</span>
+      <span id="sp-mode-badge" style="font-size:10px;padding:2px 6px;border-radius:3px;font-weight:600;letter-spacing:0.5px"></span>
+      <span id="diff-summary" style="font-size:11px;color:var(--dim)"></span>
+      <button class="fp-close" onclick="closeDiffPanel()">&times;</button>
+    </div>
+    <div class="sp-changelog-body">
+      <div id="sp-version-list" class="sp-version-list"></div>
+      <div id="diff-text-panel" class="sp-content-area"></div>
+    </div>
+    <div id="sp-status-bar" class="sp-status-bar">↑↓ navigate &nbsp; Space: toggle content/diff &nbsp; j/k: next/prev hunk</div>
+  </div>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/app.js"></script>
+<script src="/cost-budget-ui.js"></script>
+<script src="/quota-ticker.js"></script>
+<script src="/miller-columns.js"></script>
+<script src="/keyboard-nav.js"></script>
+<script src="/messages.js"></script>
+<script src="/entry-rendering.js"></script>
+<script src="/intercept-ui.js"></script>
+<script src="/system-prompt-ui.js"></script>
+</html>

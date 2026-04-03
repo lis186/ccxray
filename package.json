@@ -1,0 +1,42 @@
+{
+  "name": "ccxray",
+  "version": "1.0.0",
+  "description": "X-ray vision for AI agent sessions — a transparent HTTP proxy and dashboard for Claude Code",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch-path=server --watch-path=public server/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "proxy",
+    "dashboard",
+    "anthropic",
+    "ai-agent",
+    "debugging",
+    "observability"
+  ],
+  "author": "Justin Lee",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lis186/ccxray.git"
+  },
+  "homepage": "https://github.com/lis186/ccxray",
+  "bugs": {
+    "url": "https://github.com/lis186/ccxray/issues"
+  },
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/tokenizer": "^0.0.4",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "puppeteer": "^24.39.1"
+  }
+}
