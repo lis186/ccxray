@@ -18,6 +18,7 @@ const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
 
 // ── CLI: parse flags and detect "claude" subcommand ──
 const portIdx = process.argv.indexOf('--port');
+let explicitPort = false;
 if (portIdx !== -1) {
   const portVal = process.argv[portIdx + 1];
   const parsed = parseInt(portVal, 10);
@@ -26,20 +27,24 @@ if (portIdx !== -1) {
     process.exit(1);
   }
   config.PORT = parsed;
+  explicitPort = true;
   process.argv.splice(portIdx, 2);
 }
+const hubMode = process.argv.includes('--hub-mode');
+if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
 const claudeMode = process.argv[2] === 'claude';
 const claudeArgs = claudeMode ? process.argv.slice(3) : [];
 
-// In claude mode, mute startup logs so they don't pollute Claude Code's interactive UI.
+// In claude/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
-if (claudeMode) console.log = () => {};
+if (claudeMode || hubMode) console.log = () => {};
 
 // Route handlers
 const { handleSSERoute } = require('./routes/sse');
 const { handleApiRoutes } = require('./routes/api');
 const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes } = require('./routes/costs');
+const hub = require('./hub');
 
 // ── Web UI: Static files from public/ ────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -81,6 +86,10 @@ function serveStatic(url, clientRes) {
 
 // ── Server ──────────────────────────────────────────────────────────
 const server = http.createServer((clientReq, clientRes) => {
+
+  // ── Hub API (health, register, unregister, status) ──
+  // Placed before auth: these are local IPC endpoints, not user-facing
+  if (hub.handleHubRoutes(clientReq, clientRes)) return;
 
   // ── Auth check (enabled via AUTH_TOKEN env var) ──
   if (!authMiddleware(clientReq, clientRes)) return;
@@ -288,17 +297,132 @@ function spawnClaude(port, args) {
   process.on('SIGTERM', () => child.kill('SIGTERM'));
 }
 
-// ── Startup ──
-config.storage.init().then(() => fetchPricing()).then(async () => {
+// ── "status" subcommand ──
+if (process.argv[2] === 'status') {
+  const lock = hub.readHubLock();
+  if (!lock) {
+    console.log('No hub running.');
+    process.exit(0);
+  }
+  if (!hub.isPidAlive(lock.pid)) {
+    console.log('Hub lockfile exists but process is dead. Cleaning up.');
+    hub.deleteHubLock();
+    process.exit(1);
+  }
+  hub.checkHubHealth(lock.port).then(ok => {
+    if (!ok) {
+      console.log(`Hub pid ${lock.pid} alive but not responding on port ${lock.port}.`);
+      console.log(`Check ${hub.HUB_LOG_PATH}`);
+      process.exit(1);
+    }
+    const http = require('http');
+    http.get(`http://localhost:${lock.port}/_api/hub/status`, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        try {
+          const s = JSON.parse(data);
+          console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
+          if (s.clients.length === 0) {
+            console.log('No connected clients.');
+          } else {
+            console.log(`Connected clients (${s.clients.length}):`);
+            s.clients.forEach((c, i) => {
+              console.log(`  [${i + 1}] pid ${c.pid} — ${c.cwd} (since ${c.connectedAt})`);
+            });
+          }
+        } catch { console.log(data); }
+        process.exit(0);
+      });
+    }).on('error', err => {
+      console.error(`Failed to query hub: ${err.message}`);
+      process.exit(1);
+    });
+  });
+  return; // prevent falling through to startup
+}
+
+// ── Client mode: connect to existing hub ──
+async function startClientMode(lock) {
+  const compat = hub.checkVersionCompat(lock.version);
+  if (compat.fatal) {
+    console.error(`\x1b[31m${compat.message}\x1b[0m`);
+    process.exit(1);
+  }
+  if (compat.warning) {
+    _origLog(`\x1b[33m${compat.warning}\x1b[0m`);
+  }
+
+  _origLog(`\x1b[90mccxray → http://localhost:${lock.port} (hub)\x1b[0m`);
+
+  try {
+    const registered = await hub.registerClient(lock.port, process.pid, process.cwd());
+    if (!registered) {
+      console.error('\x1b[31mHub rejected client registration.\x1b[0m');
+      process.exit(1);
+    }
+  } catch (err) {
+    console.error(`\x1b[31mFailed to register with hub: ${err.message}\x1b[0m`);
+    process.exit(1);
+  }
+
+  // Monitor hub health and auto-recover
+  hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
+    // Re-register with new hub
+    hub.registerClient(newLock.port, process.pid, process.cwd()).catch(() => {});
+  });
+
+  // Spawn claude pointing to hub
+  const { spawn } = require('child_process');
+  const child = spawn('claude', claudeArgs, {
+    stdio: 'inherit',
+    env: { ...process.env, ANTHROPIC_BASE_URL: `http://localhost:${lock.port}` },
+  });
+  child.on('error', (err) => {
+    if (err.code === 'ENOENT') {
+      console.error('\x1b[31mError: "claude" command not found. Install Claude Code first:\x1b[0m');
+      console.error('\x1b[31m  npm install -g @anthropic-ai/claude-code\x1b[0m');
+    } else {
+      console.error(`\x1b[31mFailed to start claude: ${err.message}\x1b[0m`);
+    }
+    hub.unregisterClient(lock.port, process.pid).finally(() => process.exit(1));
+  });
+  child.on('exit', (code, signal) => {
+    hub.unregisterClient(lock.port, process.pid).finally(() => {
+      process.exit(code ?? (signal === 'SIGINT' ? 130 : 1));
+    });
+  });
+  process.on('SIGINT', () => {});
+  process.on('SIGTERM', () => child.kill('SIGTERM'));
+}
+
+// ── Hub/Server startup ──
+async function startServer() {
+  await config.storage.init();
+  await fetchPricing();
   await restoreFromLogs();
   warmUpCosts();
 
-  const maxAttempts = claudeMode ? 10 : 0;
+  // Hub mode: no port retry — EADDRINUSE means another hub won the race.
+  // Claude mode (with --port, standalone): retry up to 10 ports.
+  const maxAttempts = (claudeMode && !hubMode) ? 10 : 0;
   const actualPort = await tryListen(server, config.PORT, maxAttempts);
   rebuildIndexHTML(actualPort);
 
-  // Banner (use _origLog so it prints even in claude mode)
-  if (claudeMode) {
+  // Hub mode only: write lockfile as readiness signal, start client lifecycle
+  // Do NOT write lockfile in claudeMode with --port (that's independent mode)
+  if (hubMode) {
+    hub.writeHubLock(actualPort, process.pid);
+    hub.startDeadClientCheck();
+    const cleanup = () => { hub.deleteHubLock(); process.exit(0); };
+    process.on('SIGTERM', cleanup);
+    process.on('SIGINT', cleanup);
+  }
+
+  // Banner
+  if (hubMode) {
+    // Hub runs silently (logs go to hub.log)
+  } else if (claudeMode) {
     _origLog(`\x1b[90mccxray → http://localhost:${actualPort}\x1b[0m`);
   } else {
     console.log();
@@ -311,8 +435,9 @@ config.storage.init().then(() => fetchPricing()).then(async () => {
     console.log('\x1b[0m');
   }
 
-  // Auto-open dashboard in browser (opt-out: --no-browser, BROWSER=none, CI, SSH)
-  const noOpen = process.argv.includes('--no-browser')
+  // Auto-open dashboard in browser (not in hub mode)
+  const noOpen = hubMode
+    || process.argv.includes('--no-browser')
     || process.env.BROWSER === 'none'
     || process.env.CI
     || process.env.SSH_TTY;
@@ -323,11 +448,39 @@ config.storage.init().then(() => fetchPricing()).then(async () => {
   }
 
   if (claudeMode) spawnClaude(actualPort, claudeArgs);
-}).catch(err => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`\x1b[31mError: port ${config.PORT} is already in use\x1b[0m`);
-  } else {
-    console.error(`\x1b[31mStartup failed: ${err.message}\x1b[0m`);
+}
+
+// ── Main entry ──
+(async () => {
+  // Hub mode or explicit port or standalone: start server directly
+  if (hubMode || explicitPort || !claudeMode) {
+    try {
+      await startServer();
+    } catch (err) {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`\x1b[31mError: port ${config.PORT} is already in use\x1b[0m`);
+      } else {
+        console.error(`\x1b[31mStartup failed: ${err.message}\x1b[0m`);
+      }
+      process.exit(1);
+    }
+    return;
   }
-  process.exit(1);
-});
+
+  // Claude mode without explicit port: try hub discovery
+  const existingHub = await hub.discoverHub();
+  if (existingHub) {
+    await startClientMode(existingHub);
+    return;
+  }
+
+  // No hub found: fork a hub, then connect as client
+  hub.forkHub(config.PORT);
+  try {
+    const lock = await hub.waitForHubReady();
+    await startClientMode(lock);
+  } catch (err) {
+    console.error(`\x1b[31m${err.message}\x1b[0m`);
+    process.exit(1);
+  }
+})();
