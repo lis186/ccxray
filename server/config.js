@@ -2,12 +2,14 @@
 
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { createStorage } = require('./storage');
 
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
 const ANTHROPIC_HOST = 'api.anthropic.com';
-const LOGS_DIR = path.join(__dirname, '..', 'logs');
+const LOGS_DIR = path.join(os.homedir(), '.ccxray', 'logs');
+const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
 
 // Storage adapter (local by default, S3 via STORAGE_BACKEND=s3)
@@ -59,9 +61,22 @@ function getMaxContext(model, system) {
   return DEFAULT_CONTEXT;
 }
 
-// Legacy: ensure local logs dir exists (for backward compat)
+// Ensure logs dir exists; migrate from legacy location if needed
 if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
+  // One-time migration from old package-relative logs/
+  const legacyIndex = path.join(LEGACY_LOGS_DIR, 'index.ndjson');
+  if (fs.existsSync(legacyIndex)) {
+    try {
+      const files = fs.readdirSync(LEGACY_LOGS_DIR);
+      for (const f of files) {
+        fs.renameSync(path.join(LEGACY_LOGS_DIR, f), path.join(LOGS_DIR, f));
+      }
+      console.log(`Migrated logs from ${LEGACY_LOGS_DIR} → ${LOGS_DIR}`);
+    } catch (e) {
+      console.error(`Log migration failed: ${e.message}`);
+    }
+  }
 }
 
 module.exports = {
