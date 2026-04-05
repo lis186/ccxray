@@ -31,10 +31,27 @@ That's it. Proxy starts, Claude Code launches through it, and the dashboard open
 ```bash
 ccxray                           # Proxy + dashboard only
 ccxray claude --continue         # All claude args pass through
-ccxray --port 8080 claude        # Custom port
+ccxray --port 8080 claude        # Custom port (independent, no hub sharing)
 ccxray claude --no-browser       # Skip auto-open browser
+ccxray status                    # Show hub info and connected clients
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # Manual setup (existing sessions)
 ```
+
+### Multi-project
+
+Running `ccxray claude` in multiple terminals automatically shares a single proxy and dashboard — no configuration needed.
+
+```bash
+# Terminal 1
+cd ~/project-a && ccxray claude     # Starts hub + claude
+
+# Terminal 2
+cd ~/project-b && ccxray claude     # Connects to existing hub
+
+# Both projects visible in one dashboard at http://localhost:5577
+```
+
+Use `--port` to opt out and run an independent server instead.
 
 ## Features
 
@@ -67,7 +84,7 @@ Automatic version detection with diff viewer. See exactly what changed between C
 Claude Code  ──►  ccxray (:5577)  ──►  api.anthropic.com
                       │
                       ▼
-                  logs/ (JSON)
+              ~/.ccxray/logs/ (JSON)
                       │
                       ▼
                   Dashboard (same port)
@@ -81,7 +98,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic unchanged,
 
 | Flag | Description |
 |---|---|
-| `--port <number>` | Port for proxy + dashboard (default: 5577) |
+| `--port <number>` | Port for proxy + dashboard (default: 5577). Opts out of hub sharing. |
 | `--no-browser` | Don't auto-open the dashboard in your browser |
 
 ### Environment variables
@@ -90,10 +107,10 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic unchanged,
 |---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard (overridden by `--port`) |
 | `BROWSER` | — | Set to `none` to disable auto-open |
-| `LOGS_DIR` | `./logs` | Log directory |
 | `AUTH_TOKEN` | _(none)_ | API key for access control (disabled when unset) |
+| `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 
-Logs are stored in `./logs/` as `{timestamp}_req.json` and `{timestamp}_res.json`.
+Logs are stored in `~/.ccxray/logs/` as `{timestamp}_req.json` and `{timestamp}_res.json`.
 
 ## Docker
 

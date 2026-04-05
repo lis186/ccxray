@@ -1,6 +1,6 @@
 {
   "name": "ccxray",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "X-ray vision for AI agent sessions — a transparent HTTP proxy and dashboard for Claude Code",
   "main": "server/index.js",
   "bin": {
@@ -37,10 +37,10 @@
   },
   "dependencies": {
     "@anthropic-ai/tokenizer": "^0.0.4",
-    "@fission-ai/openspec": "^1.2.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@fission-ai/openspec": "^1.2.0",
     "puppeteer": "^24.39.1"
   }
 }

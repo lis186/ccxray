@@ -1,7 +1,9 @@
 docs/
 test/
 CLAUDE.md
+.claude/
 .github/
+openspec/
 .dockerignore
 Dockerfile
 .DS_Store
