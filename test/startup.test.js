@@ -1019,24 +1019,34 @@ describe('Concurrent proxy requests', () => {
   let requestLog = [];
 
   before(async () => {
-    // Mock upstream: echo the user message back with a small delay
+    // Mock upstream: echo user message back. SSE mode when stream:true.
     mockUpstream = http.createServer((req, res) => {
       let body = '';
       req.on('data', c => { body += c; });
       req.on('end', () => {
         const parsed = JSON.parse(body);
         const userMsg = parsed.messages?.[0]?.content || 'unknown';
-        // Small random delay to simulate real latency variance
         const delay = Math.floor(Math.random() * 50) + 10;
         setTimeout(() => {
           requestLog.push(userMsg);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            id: `msg_${userMsg}`, type: 'message', role: 'assistant',
-            content: [{ type: 'text', text: `echo:${userMsg}` }],
-            model: 'claude-sonnet-4-20250514',
-            usage: { input_tokens: 10, output_tokens: 5 },
-          }));
+          if (parsed.stream) {
+            res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+            res.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: `msg_${userMsg}`, type: 'message', role: 'assistant', content: [], model: 'claude-sonnet-4-20250514', usage: { input_tokens: 10, output_tokens: 0 } } })}\n\n`);
+            res.write(`event: content_block_start\ndata: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+            res.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: `echo:${userMsg}` } })}\n\n`);
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+            res.write(`event: message_delta\ndata: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 5 } })}\n\n`);
+            res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+            res.end();
+          } else {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              id: `msg_${userMsg}`, type: 'message', role: 'assistant',
+              content: [{ type: 'text', text: `echo:${userMsg}` }],
+              model: 'claude-sonnet-4-20250514',
+              usage: { input_tokens: 10, output_tokens: 5 },
+            }));
+          }
         }, delay);
       });
     });
@@ -1078,6 +1088,24 @@ describe('Concurrent proxy requests', () => {
     }
   });
 
+  it('3 concurrent SSE streaming requests each get correct events', async () => {
+    const ids = ['stream-a', 'stream-b', 'stream-c'];
+
+    const responses = await Promise.all(ids.map(id =>
+      sendProxyRequest(proxyPort, JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 100,
+        stream: true,
+        messages: [{ role: 'user', content: id }],
+      }))
+    ));
+
+    for (let i = 0; i < ids.length; i++) {
+      assert.equal(responses[i].status, 200, `SSE request ${ids[i]} should succeed`);
+      assert.ok(responses[i].body.includes(`echo:${ids[i]}`), `SSE response for ${ids[i]} should contain its echo`);
+    }
+  });
+
   it('all concurrent requests are logged separately', async () => {
     await new Promise(r => setTimeout(r, 500));
     const logsDir = path.join(TEST_HOME, 'logs');
@@ -1087,10 +1115,10 @@ describe('Concurrent proxy requests', () => {
     assert.ok(reqFiles.length >= 5, `Expected >= 5 req logs, got ${reqFiles.length}`);
   });
 
-  it('upstream received all 5 requests', () => {
-    assert.equal(requestLog.length, 5, 'Mock upstream should have received 5 requests');
+  it('upstream received all 8 requests (5 non-streaming + 3 streaming)', () => {
+    assert.equal(requestLog.length, 8, 'Mock upstream should have received 8 requests');
     const sorted = [...requestLog].sort();
-    assert.deepEqual(sorted, ['alpha', 'beta', 'delta', 'epsilon', 'gamma']);
+    assert.deepEqual(sorted, ['alpha', 'beta', 'delta', 'epsilon', 'gamma', 'stream-a', 'stream-b', 'stream-c']);
   });
 });
 
