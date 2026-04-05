@@ -7,7 +7,9 @@ const { createStorage } = require('./storage');
 
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
-const ANTHROPIC_HOST = 'api.anthropic.com';
+const ANTHROPIC_HOST = process.env.ANTHROPIC_TEST_HOST || 'api.anthropic.com';
+const ANTHROPIC_PORT = parseInt(process.env.ANTHROPIC_TEST_PORT || '443', 10);
+const ANTHROPIC_PROTOCOL = process.env.ANTHROPIC_TEST_PROTOCOL || 'https';
 const LOGS_DIR = path.join(os.homedir(), '.ccxray', 'logs');
 const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
@@ -82,6 +84,8 @@ if (!fs.existsSync(LOGS_DIR)) {
 module.exports = {
   PORT,
   ANTHROPIC_HOST,
+  ANTHROPIC_PORT,
+  ANTHROPIC_PROTOCOL,
   LOGS_DIR,
   RESTORE_DAYS,
   storage,

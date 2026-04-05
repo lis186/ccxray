@@ -318,6 +318,111 @@ describe('E2: claude not found', () => {
   });
 });
 
+// ── P0: Proxy end-to-end (request → forward → response → log) ──────
+
+describe('P0: proxy end-to-end forwarding', () => {
+  let mockUpstream;
+  let mockPort;
+  let proxyChild;
+  let proxyPort;
+  let receivedReq = null;
+
+  before(async () => {
+    // 1. Start mock "Anthropic API" server
+    mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        receivedReq = { method: req.method, url: req.url, headers: req.headers, body };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'msg_test123',
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello from mock' }],
+          model: 'claude-sonnet-4-20250514',
+          usage: { input_tokens: 10, output_tokens: 5 },
+        }));
+      });
+    });
+    await new Promise(r => mockUpstream.listen(0, r));
+    mockPort = mockUpstream.address().port;
+
+    // 2. Start proxy pointing to mock upstream
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        ANTHROPIC_TEST_HOST: 'localhost',
+        ANTHROPIC_TEST_PORT: String(mockPort),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxyChild);
+    await new Promise(r => mockUpstream.close(r));
+  });
+
+  it('forwards request to upstream and returns response', async () => {
+    const requestBody = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'test' }],
+    });
+
+    const response = await new Promise((resolve, reject) => {
+      const req = http.request(`http://localhost:${proxyPort}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(requestBody),
+          'x-api-key': 'test-key',
+          'anthropic-version': '2023-06-01',
+        },
+      }, res => {
+        let data = '';
+        res.on('data', c => { data += c; });
+        res.on('end', () => {
+          try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+          catch { resolve({ status: res.statusCode, body: data }); }
+        });
+      });
+      req.on('error', reject);
+      req.end(requestBody);
+    });
+
+    // Verify proxy forwarded to mock upstream
+    assert.ok(receivedReq, 'mock upstream should have received the request');
+    assert.equal(receivedReq.method, 'POST');
+    assert.equal(receivedReq.url, '/v1/messages');
+
+    // Verify proxy returned upstream response to client
+    assert.equal(response.status, 200);
+    assert.equal(response.body.id, 'msg_test123');
+    assert.equal(response.body.content[0].text, 'Hello from mock');
+  });
+
+  it('writes req/res log files', async () => {
+    // Give a moment for async writes
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
+    const reqFiles = files.filter(f => f.endsWith('_req.json'));
+    const resFiles = files.filter(f => f.endsWith('_res.json'));
+
+    assert.ok(reqFiles.length > 0, `Expected req log files, found: ${files.join(', ')}`);
+    assert.ok(resFiles.length > 0, `Expected res log files, found: ${files.join(', ')}`);
+
+    // Verify req log content
+    const reqContent = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+    assert.equal(reqContent.model, 'claude-sonnet-4-20250514');
+    assert.ok(reqContent.messages);
+  });
+});
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function httpGet(port, urlPath) {

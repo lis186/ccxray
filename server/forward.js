@@ -1,6 +1,7 @@
 'use strict';
 
 const https = require('https');
+const http = require('http');
 const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
@@ -36,8 +37,9 @@ function forwardRequest(ctx) {
   const statsStripped = stripInjectedStats(parsedBody);
   const bodyToSend = (ctx.bodyModified || statsStripped) ? Buffer.from(JSON.stringify(parsedBody)) : rawBody;
 
-  const proxyReq = https.request({
-    hostname: config.ANTHROPIC_HOST, port: 443,
+  const transport = config.ANTHROPIC_PROTOCOL === 'http' ? http : https;
+  const proxyReq = transport.request({
+    hostname: config.ANTHROPIC_HOST, port: config.ANTHROPIC_PORT,
     path: clientReq.url, method: clientReq.method,
     headers: { ...fwdHeaders, 'content-length': bodyToSend.length },
   }, (proxyRes) => {
