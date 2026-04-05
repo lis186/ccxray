@@ -677,6 +677,178 @@ describe('Intercept lifecycle', () => {
   });
 });
 
+// ── Proxy error paths ───────────────────────────────────────────────
+
+describe('Proxy error paths', () => {
+  let proxyChild;
+  let proxyPort;
+  // No mock upstream — proxy points to a port with nothing listening
+  const DEAD_PORT = 1; // privileged, guaranteed no listener
+
+  before(async () => {
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        ANTHROPIC_TEST_HOST: '127.0.0.1',
+        ANTHROPIC_TEST_PORT: String(DEAD_PORT),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxyChild);
+  });
+
+  it('E1: upstream connection refused → 502 proxy_error', async () => {
+    const response = await sendProxyRequest(proxyPort, JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'test error' }],
+    }));
+
+    assert.equal(response.status, 502);
+    const body = JSON.parse(response.body);
+    assert.equal(body.error, 'proxy_error');
+    assert.ok(body.message, 'Should have error message');
+  });
+
+  it('E1: proxy survives after upstream error (not crashed)', async () => {
+    // Health check still works after error
+    const health = await httpGet(proxyPort, '/_api/health');
+    assert.deepEqual(health, { ok: true });
+  });
+});
+
+describe('Proxy upstream error responses', () => {
+  let mockUpstream;
+  let mockPort;
+  let proxyChild;
+  let proxyPort;
+  let nextResponse = null;
+
+  before(async () => {
+    mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        if (nextResponse) {
+          const { status, headers, body: resBody, sse, destroyAfter } = nextResponse;
+          res.writeHead(status, headers || { 'Content-Type': 'application/json' });
+          if (sse) {
+            // Send partial SSE then destroy connection
+            for (const chunk of sse) {
+              res.write(chunk);
+            }
+            if (destroyAfter) {
+              setTimeout(() => res.end(), 50);
+            } else {
+              res.end();
+            }
+          } else {
+            res.end(typeof resBody === 'string' ? resBody : JSON.stringify(resBody));
+          }
+        } else {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ id: 'msg_ok', type: 'message', content: [], usage: { input_tokens: 1, output_tokens: 1 } }));
+        }
+      });
+    });
+    await new Promise(r => mockUpstream.listen(0, r));
+    mockPort = mockUpstream.address().port;
+
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        ANTHROPIC_TEST_HOST: 'localhost',
+        ANTHROPIC_TEST_PORT: String(mockPort),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    nextResponse = null;
+    await killAndWait(proxyChild);
+    await new Promise(r => mockUpstream.close(r));
+  });
+
+  it('E2: upstream 500 → passthrough to client', async () => {
+    nextResponse = {
+      status: 500,
+      body: { type: 'error', error: { type: 'api_error', message: 'Internal server error' } },
+    };
+
+    const response = await sendProxyRequest(proxyPort, JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'test 500' }],
+    }));
+
+    assert.equal(response.status, 500);
+    const body = JSON.parse(response.body);
+    assert.equal(body.type, 'error');
+    nextResponse = null;
+  });
+
+  it('E2: upstream 429 rate limit → passthrough to client', async () => {
+    nextResponse = {
+      status: 429,
+      headers: {
+        'Content-Type': 'application/json',
+        'retry-after': '30',
+      },
+      body: { type: 'error', error: { type: 'rate_limit_error', message: 'Rate limited' } },
+    };
+
+    const response = await sendProxyRequest(proxyPort, JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      messages: [{ role: 'user', content: 'test 429' }],
+    }));
+
+    assert.equal(response.status, 429);
+    const body = JSON.parse(response.body);
+    assert.equal(body.error.type, 'rate_limit_error');
+    nextResponse = null;
+  });
+
+  it('E3: SSE stream aborted mid-response → client gets partial data', async () => {
+    nextResponse = {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' },
+      sse: [
+        'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_partial","type":"message","role":"assistant","content":[],"model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial "}}\n\n',
+      ],
+      destroyAfter: true, // destroy connection after sending partial events
+    };
+
+    const response = await sendProxyRequest(proxyPort, JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 100,
+      stream: true,
+      messages: [{ role: 'user', content: 'test abort' }],
+    }));
+
+    // Client should receive partial SSE data (whatever was forwarded before disconnect)
+    assert.ok(response.body.includes('message_start'), 'Should have received message_start');
+    assert.ok(response.body.includes('partial '), 'Should have received partial text');
+    // No message_stop — stream was cut
+    nextResponse = null;
+  });
+
+  it('E3: proxy survives SSE abort (not crashed)', async () => {
+    nextResponse = null;
+    await new Promise(r => setTimeout(r, 200));
+    const health = await httpGet(proxyPort, '/_api/health');
+    assert.deepEqual(health, { ok: true });
+  });
+});
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function waitForSSEEvent(port, eventType, timeoutMs = 5000) {
