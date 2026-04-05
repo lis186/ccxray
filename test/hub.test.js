@@ -271,6 +271,84 @@ describe('hub discovery', () => {
   });
 });
 
+// ── Integration: orphan hub probe ───────────────────────────────────
+
+describe('orphan hub probe', () => {
+  let srv;
+  let srvPort;
+
+  before(async () => {
+    srv = http.createServer((req, res) => {
+      hub.handleHubRoutes(req, res);
+    });
+    await new Promise(r => srv.listen(0, r));
+    srvPort = srv.address().port;
+    hub.setHubPort(srvPort);
+  });
+
+  after(async () => {
+    hub.deleteHubLock();
+    await new Promise(r => srv.close(r));
+  });
+
+  it('discovers orphan hub when lockfile is missing', async () => {
+    hub.deleteHubLock();
+    const result = await hub.discoverHub(srvPort);
+    assert.ok(result, 'should find orphan hub');
+    assert.equal(result.port, srvPort);
+    assert.equal(result.pid, process.pid);
+    // lockfile should be reconstructed
+    const lock = hub.readHubLock();
+    assert.ok(lock, 'lockfile should be reconstructed');
+    assert.equal(lock.port, srvPort);
+  });
+
+  it('returns null when probed port has no server', async () => {
+    hub.deleteHubLock();
+    const result = await hub.discoverHub(19997);
+    assert.equal(result, null);
+    assert.equal(hub.readHubLock(), null);
+  });
+
+  it('returns null when probed port has non-ccxray service', async () => {
+    const fakeSrv = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ hello: 'world' }));
+    });
+    await new Promise(r => fakeSrv.listen(0, r));
+    const fakePort = fakeSrv.address().port;
+
+    hub.deleteHubLock();
+    const result = await hub.discoverHub(fakePort);
+    assert.equal(result, null);
+
+    await new Promise(r => fakeSrv.close(r));
+  });
+
+  it('rejects lookalike service with hub-shaped payload but no app marker', async () => {
+    const fakeSrv = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const fakePort = fakeSrv.address().port;
+      res.end(JSON.stringify({ pid: process.pid, version: '1.0.0', port: fakePort }));
+    });
+    await new Promise(r => fakeSrv.listen(0, r));
+    const fakePort = fakeSrv.address().port;
+
+    hub.deleteHubLock();
+    const result = await hub.discoverHub(fakePort);
+    assert.equal(result, null, 'should reject service without app:ccxray marker');
+    assert.equal(hub.readHubLock(), null);
+
+    await new Promise(r => fakeSrv.close(r));
+  });
+
+  it('returns null when no defaultPort provided', async () => {
+    hub.deleteHubLock();
+    const result = await hub.discoverHub();
+    assert.equal(result, null);
+  });
+});
+
 // ── Integration: checkHubHealth ─────────────────────────────────────
 
 describe('checkHubHealth', () => {

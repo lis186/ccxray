@@ -412,6 +412,7 @@ async function startServer() {
   // Hub mode only: write lockfile as readiness signal, start client lifecycle
   // Do NOT write lockfile in claudeMode with --port (that's independent mode)
   if (hubMode) {
+    hub.setHubPort(actualPort);
     hub.writeHubLock(actualPort, process.pid);
     hub.startDeadClientCheck();
     const cleanup = () => { hub.deleteHubLock(); process.exit(0); };
@@ -468,7 +469,7 @@ async function startServer() {
   }
 
   // Claude mode without explicit port: try hub discovery
-  const existingHub = await hub.discoverHub();
+  const existingHub = await hub.discoverHub(config.PORT);
   if (existingHub) {
     await startClientMode(existingHub);
     return;

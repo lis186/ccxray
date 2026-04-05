@@ -30,9 +30,9 @@ function readHubLock() {
   }
 }
 
-function writeHubLock(port, pid) {
+function writeHubLock(port, pid, versionOverride) {
   ensureHubDir();
-  const version = require('../package.json').version;
+  const version = versionOverride || require('../package.json').version;
   const data = { port, pid, version, startedAt: new Date().toISOString() };
   fs.writeFileSync(HUB_LOCK_PATH, JSON.stringify(data));
   return data;
@@ -72,24 +72,53 @@ function checkHubHealth(port, timeoutMs = 2000) {
   });
 }
 
+// ── Orphan hub probe (port-level fallback when lockfile missing) ────
+
+function probeHubStatus(port, timeoutMs = 2000) {
+  return new Promise(resolve => {
+    const req = http.get(`http://localhost:${port}/_api/hub/status`, { timeout: timeoutMs }, res => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.app === 'ccxray' && parsed.pid && parsed.version && parsed.port) resolve(parsed);
+          else resolve(null);
+        } catch { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+  });
+}
+
 // ── Hub discovery (dual verification: pid + health) ─────────────────
 
-async function discoverHub() {
+async function discoverHub(defaultPort) {
   const lock = readHubLock();
-  if (!lock) return null;
-
-  if (!isPidAlive(lock.pid)) {
-    deleteHubLock();
-    return null;
+  if (lock) {
+    if (!isPidAlive(lock.pid)) {
+      deleteHubLock();
+      return null;
+    }
+    const healthy = await checkHubHealth(lock.port);
+    if (!healthy) {
+      deleteHubLock();
+      return null;
+    }
+    return lock;
   }
 
-  const healthy = await checkHubHealth(lock.port);
-  if (!healthy) {
-    deleteHubLock();
-    return null;
-  }
+  // Lockfile missing — probe default port for orphan hub
+  if (!defaultPort) return null;
+  const status = await probeHubStatus(defaultPort);
+  if (!status) return null;
+  if (status.port !== defaultPort) return null; // reject port mismatch (non-ccxray service)
+  if (!isPidAlive(status.pid)) return null;
 
-  return lock;
+  // Reconstruct lockfile from live hub (use hub's version, not client's)
+  const recovered = writeHubLock(status.port, status.pid, status.version);
+  return recovered;
 }
 
 // ── Version compatibility (semver major check) ──────────────────────
@@ -218,6 +247,7 @@ function truncateHubLog() {
 const clients = new Map(); // pid → { cwd, connectedAt }
 let idleTimer = null;
 let deadCheckInterval = null;
+let hubListenPort = null; // set once at startup, survives lockfile deletion
 
 function addClient(pid, cwd) {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
@@ -255,10 +285,12 @@ function startDeadClientCheck() {
   deadCheckInterval.unref();
 }
 
+function setHubPort(port) { hubListenPort = port; }
+
 function getHubStatus() {
-  const lock = readHubLock();
   return {
-    port: lock?.port,
+    app: 'ccxray',
+    port: hubListenPort || readHubLock()?.port,
     pid: process.pid,
     version: require('../package.json').version,
     uptime: Math.floor(process.uptime()),
@@ -356,6 +388,7 @@ module.exports = {
   deleteHubLock,
   isPidAlive,
   checkHubHealth,
+  probeHubStatus,
   discoverHub,
   checkVersionCompat,
   forkHub,
@@ -368,6 +401,7 @@ module.exports = {
   startIdleTimer,
   shutdownHub,
   startDeadClientCheck,
+  setHubPort,
   getHubStatus,
   handleHubRoutes,
   startHubMonitor,
