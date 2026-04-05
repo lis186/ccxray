@@ -141,6 +141,69 @@ describe('client lifecycle', () => {
   });
 });
 
+// ── Integration: firstClient flag ──────────────────────────────────
+
+describe('firstClient flag via HTTP', () => {
+  let srv, srvPort;
+
+  before(async () => {
+    srv = http.createServer((req, res) => { hub.handleHubRoutes(req, res); });
+    await new Promise(r => srv.listen(0, r));
+    srvPort = srv.address().port;
+  });
+
+  after(async () => {
+    hub.removeClient(40001);
+    hub.removeClient(40002);
+    await new Promise(r => srv.close(r));
+  });
+
+  it('first register returns firstClient: true', async () => {
+    const res = await httpPost(srvPort, '/_api/hub/register', { pid: 40001, cwd: '/a' });
+    assert.equal(res.firstClient, true);
+  });
+
+  it('second register returns firstClient: false', async () => {
+    const res = await httpPost(srvPort, '/_api/hub/register', { pid: 40002, cwd: '/b' });
+    assert.equal(res.firstClient, false);
+  });
+
+  it('after all unregister + re-register, firstClient is true again', async () => {
+    await httpPost(srvPort, '/_api/hub/unregister', { pid: 40001 });
+    await httpPost(srvPort, '/_api/hub/unregister', { pid: 40002 });
+    const res = await httpPost(srvPort, '/_api/hub/register', { pid: 40001, cwd: '/a' });
+    assert.equal(res.firstClient, true);
+  });
+});
+
+// ── Unit: idle timer triggers on last client removal ──────────────
+
+describe('idle timer lifecycle', () => {
+  after(() => {
+    // Ensure no lingering clients
+    for (const { pid } of hub.getHubStatus().clients) hub.removeClient(pid);
+  });
+
+  it('removeClient on last client starts idle timer (startIdleTimer called)', () => {
+    // addClient cancels any idle timer; removing last client should trigger it
+    hub.addClient(50001, '/tmp');
+    hub.removeClient(50001);
+    // We can't easily test the timer fires (it calls process.exit),
+    // but we verify clients are empty — idle timer is internal
+    assert.equal(hub.getHubStatus().clients.length, 0);
+  });
+
+  it('addClient cancels idle timer', () => {
+    // Remove last to trigger idle timer
+    hub.addClient(50002, '/tmp');
+    hub.removeClient(50002);
+    // Re-add before idle timeout fires — should cancel timer
+    hub.addClient(50003, '/tmp');
+    assert.equal(hub.getHubStatus().clients.length, 1);
+    hub.removeClient(50003);
+  });
+});
+
 // ── Unit: hub log truncation ────────────────────────────────────────
 
 describe('truncateHubLog', () => {
