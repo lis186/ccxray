@@ -942,6 +942,91 @@ describe('Store state consistency after errors', () => {
   });
 });
 
+// ── Concurrent requests ─────────────────────────────────────────────
+
+describe('Concurrent proxy requests', () => {
+  let mockUpstream;
+  let mockPort;
+  let proxyChild;
+  let proxyPort;
+  let requestLog = [];
+
+  before(async () => {
+    // Mock upstream: echo the user message back with a small delay
+    mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        const parsed = JSON.parse(body);
+        const userMsg = parsed.messages?.[0]?.content || 'unknown';
+        // Small random delay to simulate real latency variance
+        const delay = Math.floor(Math.random() * 50) + 10;
+        setTimeout(() => {
+          requestLog.push(userMsg);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: `msg_${userMsg}`, type: 'message', role: 'assistant',
+            content: [{ type: 'text', text: `echo:${userMsg}` }],
+            model: 'claude-sonnet-4-20250514',
+            usage: { input_tokens: 10, output_tokens: 5 },
+          }));
+        }, delay);
+      });
+    });
+    await new Promise(r => mockUpstream.listen(0, r));
+    mockPort = mockUpstream.address().port;
+
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        ANTHROPIC_TEST_HOST: 'localhost',
+        ANTHROPIC_TEST_PORT: String(mockPort),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxyChild);
+    await new Promise(r => mockUpstream.close(r));
+  });
+
+  it('5 concurrent requests each get correct response', async () => {
+    const ids = ['alpha', 'beta', 'gamma', 'delta', 'epsilon'];
+
+    const responses = await Promise.all(ids.map(id =>
+      sendProxyRequest(proxyPort, JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 100,
+        messages: [{ role: 'user', content: id }],
+      }))
+    ));
+
+    // Each response should echo back its own request ID
+    for (let i = 0; i < ids.length; i++) {
+      assert.equal(responses[i].status, 200, `Request ${ids[i]} should succeed`);
+      const body = JSON.parse(responses[i].body);
+      assert.equal(body.content[0].text, `echo:${ids[i]}`, `Response for ${ids[i]} should match`);
+    }
+  });
+
+  it('all concurrent requests are logged separately', async () => {
+    await new Promise(r => setTimeout(r, 500));
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
+    const reqFiles = files.filter(f => f.endsWith('_req.json'));
+    // Should have at least 5 req files from concurrent test
+    assert.ok(reqFiles.length >= 5, `Expected >= 5 req logs, got ${reqFiles.length}`);
+  });
+
+  it('upstream received all 5 requests', () => {
+    assert.equal(requestLog.length, 5, 'Mock upstream should have received 5 requests');
+    const sorted = [...requestLog].sort();
+    assert.deepEqual(sorted, ['alpha', 'beta', 'delta', 'epsilon', 'gamma']);
+  });
+});
+
 function collectSSESnapshot(port, timeoutMs = 2000) {
   return new Promise(resolve => {
     const events = [];
