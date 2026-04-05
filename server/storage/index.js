@@ -26,7 +26,8 @@ function createStorage() {
     case 'local':
     default: {
       const path = require('path');
-      const logsDir = process.env.LOGS_DIR || path.join(__dirname, '..', '..', 'logs');
+      const os = require('os');
+      const logsDir = process.env.LOGS_DIR || path.join(process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'logs');
       return createLocalStorage(logsDir);
     }
   }
