@@ -17,6 +17,55 @@ function showToast(message, duration) {
   setTimeout(function() { if (el.parentNode) { el.classList.add('fade-out'); setTimeout(function() { el.remove(); }, 300); } }, duration);
 }
 
+// ── Skill invocation counting (covers all 3 paths) ──
+const SKILL_BUILTINS = new Set(['clear','resume','compact','help','status','fast','init','doctor','login','logout','config','memory','permissions']);
+const CMD_MSG_RE = /<command-message>([^<]+)<\/command-message>/g;
+function countSkillInvocations(messages, loadedSkills) {
+  // Build known-skill set: loadedSkills ∪ Skill tool_use history
+  var known = new Set(loadedSkills || []);
+  for (var mi = 0; mi < (messages || []).length; mi++) {
+    var blks = messages[mi].content;
+    if (!Array.isArray(blks)) blks = [{ type: 'text', text: String(blks || '') }];
+    for (var bi = 0; bi < blks.length; bi++) {
+      if (blks[bi].type === 'tool_use' && blks[bi].name === 'Skill' && blks[bi].input?.skill)
+        known.add(blks[bi].input.skill);
+    }
+  }
+  var hasAuthoritative = (loadedSkills || []).length > 0;
+  var isSkill = hasAuthoritative
+    ? function(n) { return known.has(n); }
+    : function(n) { return !SKILL_BUILTINS.has(n); };
+
+  // State machine: pending CMD counts + total invocations
+  var pending = {}, total = {};
+  for (var mi2 = 0; mi2 < (messages || []).length; mi2++) {
+    var blks2 = messages[mi2].content;
+    if (!Array.isArray(blks2)) blks2 = [{ type: 'text', text: String(blks2 || '') }];
+    for (var bi2 = 0; bi2 < blks2.length; bi2++) {
+      var b = blks2[bi2];
+      // Path A/B: user-initiated <command-message>
+      if (b.type === 'text' && b.text) {
+        CMD_MSG_RE.lastIndex = 0;
+        var m;
+        while ((m = CMD_MSG_RE.exec(b.text)) !== null) {
+          if (isSkill(m[1])) pending[m[1]] = (pending[m[1]] || 0) + 1;
+        }
+      }
+      // Path A/C: Skill tool_use
+      if (b.type === 'tool_use' && b.name === 'Skill' && b.input?.skill) {
+        var s = b.input.skill;
+        if (pending[s] > 0) pending[s]--;  // Path A: consume pending
+        total[s] = (total[s] || 0) + 1;
+      }
+    }
+  }
+  // Path B: remaining pending CMDs (user /cmd without Skill tool_use)
+  for (var sk in pending) {
+    if (pending[sk] > 0) total[sk] = (total[sk] || 0) + pending[sk];
+  }
+  return total;
+}
+
 // ── System prompt block viewer ──
 const SP_BLOCK_OWNERS = {
   billingHeader: 'anthropic', coreIdentity: 'anthropic', coreInstructions: 'anthropic',
@@ -1020,18 +1069,8 @@ function renderSectionsCol(idx) {
   const coreCalls = Object.entries(tc).filter(([n]) => !n.startsWith('mcp__')).reduce((s, [, c]) => s + c, 0);
   const mcpCalls  = Object.entries(tc).filter(([n]) =>  n.startsWith('mcp__')).reduce((s, [, c]) => s + c, 0);
 
-  // Extract skill usage from messages (Skill tool input.skill parameter)
-  const skillCalls = {};
-  if (req.messages) {
-    for (const msg of req.messages) {
-      if (!Array.isArray(msg.content)) continue;
-      for (const b of msg.content) {
-        if (b.type === 'tool_use' && b.name === 'Skill' && b.input?.skill) {
-          skillCalls[b.input.skill] = (skillCalls[b.input.skill] || 0) + 1;
-        }
-      }
-    }
-  }
+  // Extract skill usage from messages (all 3 paths: user /cmd, model Skill tool, hybrid)
+  const skillCalls = e.reqLoaded ? countSkillInvocations(req.messages, tok.contextBreakdown?.loadedSkills) : {};
   const skillCount = Object.keys(skillCalls).length;
   const skillTotal = Object.values(skillCalls).reduce((s, n) => s + n, 0);
   // Extract cc_version for system badge
@@ -1401,16 +1440,8 @@ function renderDetailCol() {
     }
     case 'skills': {
       if (!e.reqLoaded) { inner = loading; break; }
-      // Invoked skills (from tool_use in messages)
-      const sc = {};
-      for (const msg of (req.messages || [])) {
-        if (!Array.isArray(msg.content)) continue;
-        for (const b of msg.content) {
-          if (b.type === 'tool_use' && b.name === 'Skill' && b.input?.skill) {
-            sc[b.input.skill] = (sc[b.input.skill] || 0) + 1;
-          }
-        }
-      }
+      // Invoked skills (all 3 paths: user /cmd, model Skill tool, hybrid)
+      const sc = countSkillInvocations(req.messages, tok.contextBreakdown?.loadedSkills);
       const sortedInvoked = Object.entries(sc).sort((a, b) => b[1] - a[1]);
       // Loaded skills (from system-reminder in messages)
       const detailLoadedSkills = tok.contextBreakdown?.loadedSkills || [];
