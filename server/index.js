@@ -248,29 +248,6 @@ const server = http.createServer((clientReq, clientRes) => {
   });
 });
 
-// ── Port scanner ──
-function tryListen(srv, port, maxAttempts) {
-  return new Promise((resolve, reject) => {
-    let attempt = 0;
-    function onError(err) {
-      if (err.code === 'EADDRINUSE' && attempt < maxAttempts) {
-        attempt++;
-        srv.listen(port + attempt);
-      } else {
-        srv.removeListener('error', onError);
-        srv.removeListener('listening', onListening);
-        reject(err);
-      }
-    }
-    function onListening() {
-      srv.removeListener('error', onError);
-      resolve(srv.address().port);
-    }
-    srv.on('error', onError);
-    srv.once('listening', onListening);
-    srv.listen(port);
-  });
-}
 
 // ── Spawn Claude Code with proxy env ──
 function spawnClaude(port, args) {
@@ -428,7 +405,7 @@ async function startServer() {
     const HUB_BIND_DELAY_MS = 1000;
     for (let i = 0; i <= HUB_BIND_RETRIES; i++) {
       try {
-        actualPort = await tryListen(server, config.PORT, 0);
+        actualPort = await hub.tryListen(server, config.PORT, 0);
         break;
       } catch (err) {
         if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) {
@@ -443,7 +420,7 @@ async function startServer() {
       }
     }
   } else {
-    actualPort = await tryListen(server, config.PORT, maxAttempts);
+    actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
   }
   rebuildIndexHTML(actualPort);
 

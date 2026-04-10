@@ -438,6 +438,31 @@ function startHubMonitor(hubPid, hubPort, onRecovery) {
   return interval;
 }
 
+// ── Port scanner (used by hub and Claude-mode startup) ──────────────
+
+function tryListen(srv, port, maxAttempts) {
+  return new Promise((resolve, reject) => {
+    let attempt = 0;
+    function onError(err) {
+      if (err.code === 'EADDRINUSE' && attempt < maxAttempts) {
+        attempt++;
+        srv.listen(port + attempt);
+      } else {
+        srv.removeListener('error', onError);
+        srv.removeListener('listening', onListening);
+        reject(err);
+      }
+    }
+    function onListening() {
+      srv.removeListener('error', onError);
+      resolve(srv.address().port);
+    }
+    srv.on('error', onError);
+    srv.once('listening', onListening);
+    srv.listen(port);
+  });
+}
+
 module.exports = {
   HUB_DIR,
   HUB_LOCK_PATH,
@@ -467,4 +492,5 @@ module.exports = {
   getHubStatus,
   handleHubRoutes,
   startHubMonitor,
+  tryListen,
 };

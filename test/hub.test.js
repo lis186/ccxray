@@ -691,6 +691,48 @@ describe('hub status shape', () => {
   });
 });
 
+// ── Unit: tryListen port scanner ────────────────────────────────────
+
+describe('tryListen', () => {
+  const net = require('net');
+
+  it('binds on first try when port is free', async () => {
+    const srv = http.createServer();
+    const port = await hub.tryListen(srv, 0, 0); // port 0 = OS assigns
+    assert.ok(port > 0);
+    await new Promise(r => srv.close(r));
+  });
+
+  it('finds next free port when target is occupied (maxAttempts=2)', async () => {
+    // Occupy a port
+    const blocker = net.createServer();
+    await new Promise(r => blocker.listen(0, r));
+    const occupiedPort = blocker.address().port;
+
+    const srv = http.createServer();
+    const bound = await hub.tryListen(srv, occupiedPort, 2);
+    assert.ok(bound > occupiedPort, `expected port > ${occupiedPort}, got ${bound}`);
+    assert.ok(bound <= occupiedPort + 2);
+
+    await new Promise(r => srv.close(r));
+    await new Promise(r => blocker.close(r));
+  });
+
+  it('throws EADDRINUSE when maxAttempts=0 and port is occupied', async () => {
+    const blocker = net.createServer();
+    await new Promise(r => blocker.listen(0, r));
+    const occupiedPort = blocker.address().port;
+
+    const srv = http.createServer();
+    await assert.rejects(
+      () => hub.tryListen(srv, occupiedPort, 0),
+      err => err.code === 'EADDRINUSE'
+    );
+
+    await new Promise(r => blocker.close(r));
+  });
+});
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function httpGet(port, path) {
