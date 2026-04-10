@@ -257,6 +257,7 @@ function tryListen(srv, port, maxAttempts) {
         attempt++;
         srv.listen(port + attempt);
       } else {
+        srv.removeListener('error', onError);
         srv.removeListener('listening', onListening);
         reject(err);
       }
@@ -416,10 +417,31 @@ async function startServer() {
   await restoreFromLogs();
   warmUpCosts();
 
-  // Hub mode: no port retry — EADDRINUSE means another hub won the race.
-  // Claude mode (with --port, standalone): retry up to 10 ports.
+  // Claude mode (with --port, standalone): scan up to 10 ports.
+  // Hub mode: fixed port, but retry if old hub is still releasing it (race with idle shutdown).
+  // EADDRINUSE in hub mode usually means the previous hub process hasn't fully exited yet —
+  // port release takes a few ms after process.exit(). Retry up to 5s before giving up.
   const maxAttempts = (claudeMode && !hubMode) ? 10 : 0;
-  const actualPort = await tryListen(server, config.PORT, maxAttempts);
+  let actualPort;
+  if (hubMode) {
+    const HUB_BIND_RETRIES = 5;
+    const HUB_BIND_DELAY_MS = 1000;
+    let lastBindErr;
+    for (let i = 0; i <= HUB_BIND_RETRIES; i++) {
+      try {
+        actualPort = await tryListen(server, config.PORT, 0);
+        lastBindErr = null;
+        break;
+      } catch (err) {
+        lastBindErr = err;
+        if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) throw err;
+        await new Promise(r => setTimeout(r, HUB_BIND_DELAY_MS));
+      }
+    }
+    if (lastBindErr) throw lastBindErr;
+  } else {
+    actualPort = await tryListen(server, config.PORT, maxAttempts);
+  }
   rebuildIndexHTML(actualPort);
 
   // Hub mode only: write lockfile as readiness signal, start client lifecycle
