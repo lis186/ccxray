@@ -434,7 +434,13 @@ async function startServer() {
         break;
       } catch (err) {
         lastBindErr = err;
-        if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) throw err;
+        if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) {
+          if (err.code === 'EADDRINUSE') {
+            // Annotate with actionable guidance for the hub.log reader
+            err.message = `${err.message}\nPort ${config.PORT} is still occupied after ${HUB_BIND_RETRIES}s. If a previous ccxray process is stuck, run: kill $(lsof -t -i:${config.PORT})`;
+          }
+          throw err;
+        }
         await new Promise(r => setTimeout(r, HUB_BIND_DELAY_MS));
       }
     }

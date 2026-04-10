@@ -106,13 +106,10 @@ async function discoverHub(defaultPort) {
     const healthy = await checkHubHealth(lock.port);
     if (!healthy) {
       deleteHubLock();
-      // Kill the zombie hub so its port is freed for the new hub we're about to fork.
-      // (pid alive + health fail = hub is stuck/crashed but still holding the port)
-      // Guard: never signal ourselves — hub and client are always separate processes.
-      if (lock.pid !== process.pid) {
-        try { process.kill(lock.pid, 'SIGTERM'); } catch {}
-        await new Promise(r => setTimeout(r, 1500));
-      }
+      // Do NOT kill lock.pid here: hub.json may be stale from a crash, and the pid
+      // may have been reused by an unrelated process. Sending SIGTERM to an arbitrary
+      // pid is unsafe. The hub startup retry loop (5 × 1s) handles the shutdown-race
+      // case where the port hasn't been released yet.
       return null;
     }
     return lock;
