@@ -433,8 +433,9 @@ async function startServer() {
       } catch (err) {
         if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) {
           if (err.code === 'EADDRINUSE') {
-            // Annotate with actionable guidance for the hub.log reader
-            err.message = `${err.message}\nPort ${config.PORT} is still occupied after ${HUB_BIND_RETRIES}s. If a previous ccxray process is stuck, run: kill $(lsof -t -i:${config.PORT})`;
+            // Log the recovery hint to hub.log (console.error → stderr → hub.log).
+            // Prefixed with "Error:" so the client's /error|EADDRINUSE/i filter picks it up.
+            console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s — if a previous ccxray is stuck, run: kill $(lsof -t -i:${config.PORT})`);
           }
           throw err;
         }
