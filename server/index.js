@@ -426,14 +426,11 @@ async function startServer() {
   if (hubMode) {
     const HUB_BIND_RETRIES = 5;
     const HUB_BIND_DELAY_MS = 1000;
-    let lastBindErr;
     for (let i = 0; i <= HUB_BIND_RETRIES; i++) {
       try {
         actualPort = await tryListen(server, config.PORT, 0);
-        lastBindErr = null;
         break;
       } catch (err) {
-        lastBindErr = err;
         if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) {
           if (err.code === 'EADDRINUSE') {
             // Annotate with actionable guidance for the hub.log reader
@@ -444,7 +441,6 @@ async function startServer() {
         await new Promise(r => setTimeout(r, HUB_BIND_DELAY_MS));
       }
     }
-    if (lastBindErr) throw lastBindErr;
   } else {
     actualPort = await tryListen(server, config.PORT, maxAttempts);
   }
