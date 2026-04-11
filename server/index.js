@@ -16,6 +16,11 @@ const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broad
 const { authMiddleware } = require('./auth');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
 
+// OSC 8 hyperlink: makes URLs clickable in supported terminals (iTerm2, VS Code, etc.)
+function link(url, text) {
+  return `\x1b]8;;${url}\x1b\\${text ?? url}\x1b]8;;\x1b\\`;
+}
+
 // ── CLI: parse flags and detect "claude" subcommand ──
 const portIdx = process.argv.indexOf('--port');
 let explicitPort = false;
@@ -322,7 +327,7 @@ if (process.argv[2] === 'status') {
       res.on('end', () => {
         try {
           const s = JSON.parse(data);
-          console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
+          console.log(`Hub: ${link(`http://localhost:${s.port}`, `http://localhost:${s.port}`)} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
           if (s.clients.length === 0) {
             console.log('No connected clients.');
           } else {
@@ -353,7 +358,7 @@ async function startClientMode(lock) {
     _origLog(`\x1b[33m${compat.warning}\x1b[0m`);
   }
 
-  _origLog(`\x1b[90mccxray → http://localhost:${lock.port} (hub)\x1b[0m`);
+  _origLog(`\x1b[90mccxray → ${link(`http://localhost:${lock.port}`)} (hub)\x1b[0m`);
 
   try {
     const reg = await hub.registerClient(lock.port, process.pid, process.cwd());
@@ -437,11 +442,11 @@ async function startServer() {
   if (hubMode) {
     // Hub runs silently (logs go to hub.log)
   } else if (claudeMode) {
-    _origLog(`\x1b[90mccxray → http://localhost:${actualPort}\x1b[0m`);
+    _origLog(`\x1b[90mccxray → ${link(`http://localhost:${actualPort}`)}\x1b[0m`);
   } else {
     console.log();
-    console.log(`\x1b[35m🔌 Claude API Proxy listening on http://localhost:${actualPort}\x1b[0m`);
-    console.log(`\x1b[90m   Dashboard → http://localhost:${actualPort}/`);
+    console.log(`\x1b[35m🔌 Claude API Proxy listening on ${link(`http://localhost:${actualPort}`)}\x1b[0m`);
+    console.log(`\x1b[90m   Dashboard → ${link(`http://localhost:${actualPort}/`)}`);
     console.log(`   Forwarding to ${config.ANTHROPIC_HOST}`);
     console.log(`   Logs → ${config.LOGS_DIR}`);
     console.log();
