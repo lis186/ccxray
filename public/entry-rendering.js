@@ -287,6 +287,7 @@ function addEntry(e) {
     : '';
   const dupes = e.duplicateToolCalls;
   const dupeBadge = dupes ? '<span class="dupe-badge" title="Duplicate tool calls: ' + escapeHtml(Object.entries(dupes).map(([n, c]) => n + '×' + c).join(', ')) + '">⚠ dupes</span>' : '';
+  const credBadge = e.hasCredential ? '<span class="cred-badge" title="Credential pattern detected in this turn">⚠ cred</span>' : '';
   const indent = isSubagent ? '<span class="sub-indent">╎</span>' : '';
   const titleHtml = e.title ? '<div class="turn-title">' + escapeHtml(e.title) + '</div>' : '';
   const compactBadge = isCompacted ? '<span class="compact-badge">compact</span>' : '';
@@ -319,7 +320,7 @@ function addEntry(e) {
       (e.thinkingDuration ? '<span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>' : '') +
       (turnCost != null ? '<span class="turn-cost">$' + turnCost.toFixed(4) + '</span>' : '') +
       (tok.total > 0 ? '<span class="turn-overhead" title="Structural overhead (system + tools)">' + (((tok.system || 0) + (tok.tools || 0)) / tok.total * 100).toFixed(0) + '%♻</span>' : '') +
-      dupeBadge +
+      dupeBadge + credBadge +
     '</div>' +
     toolLine +
     ctxBar;

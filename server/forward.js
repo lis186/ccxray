@@ -267,6 +267,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       sysHash: ctx.sysHash || null,
       toolsHash: ctx.toolsHash || null,
     };
+    entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     // Track in-flight writes so lazy-load can await them
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
@@ -284,6 +285,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       elapsed, status: proxyRes.statusCode,
       receivedAt: startTime,
       sysHash: ctx.sysHash || null, toolsHash: ctx.toolsHash || null,
+      hasCredential: entry.hasCredential,
     });
     config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
 
@@ -365,6 +367,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       sysHash: ctx.sysHash || null,
       toolsHash: ctx.toolsHash || null,
     };
+    entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
     store.trimEntries();
@@ -380,6 +383,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       elapsed, status: proxyRes.statusCode,
       receivedAt: startTime,
       sysHash: ctx.sysHash || null, toolsHash: ctx.toolsHash || null,
+      hasCredential: entry.hasCredential,
     });
     config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
 

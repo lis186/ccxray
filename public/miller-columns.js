@@ -1613,7 +1613,7 @@ function renderToolOutput(c) {
             + 'onclick="showImageOverlay(this.src)" title="Click to enlarge">'
             + '</div>';
         } else if (block.type === 'text' && block.text) {
-          html += '<div class="content-block"><div class="type">TEXT</div><pre>' + escapeHtml(block.text) + '</pre></div>';
+          html += '<div class="content-block"><div class="type">TEXT</div><pre>' + highlightCredentials(block.text) + '</pre></div>';
         }
       }
       return html;
@@ -1631,26 +1631,27 @@ function renderToolOutput(c) {
   if (c.isError) {
     html += renderErrorOutput(resultStr);
   } else if (lines.length > COLLAPSE_THRESHOLD) {
-    html += renderCollapsedContent(lines);
+    html += renderCollapsedContent(lines, highlightCredentials);
   } else {
-    html += '<pre>' + escapeHtml(resultStr) + '</pre>';
+    html += '<pre>' + highlightCredentials(resultStr) + '</pre>';
   }
 
   html += '</div>';
   return html;
 }
 
-function renderCollapsedContent(lines) {
+function renderCollapsedContent(lines, textFn) {
+  const fn = textFn || escapeHtml;
   const head = lines.slice(0, HEAD_LINES).join('\n');
   const tail = lines.slice(-TAIL_LINES).join('\n');
   const hiddenCount = lines.length - HEAD_LINES - TAIL_LINES;
   const id = 'collapse-' + Math.random().toString(36).slice(2, 8);
 
-  return '<pre>' + escapeHtml(head) + '</pre>'
+  return '<pre>' + fn(head) + '</pre>'
     + '<div class="detail-collapse-bar" onclick="document.getElementById(\'' + id + '\').style.display=\'block\';this.style.display=\'none\'">⋯ '
     + hiddenCount + ' lines hidden — click to expand</div>'
-    + '<div id="' + id + '" style="display:none"><pre>' + escapeHtml(lines.slice(HEAD_LINES, -TAIL_LINES).join('\n')) + '</pre></div>'
-    + '<pre>' + escapeHtml(tail) + '</pre>';
+    + '<div id="' + id + '" style="display:none"><pre>' + fn(lines.slice(HEAD_LINES, -TAIL_LINES).join('\n')) + '</pre></div>'
+    + '<pre>' + fn(tail) + '</pre>';
 }
 
 function renderEditDiff(oldStr, newStr) {

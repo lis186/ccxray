@@ -338,6 +338,51 @@ function extractResponseTitle(res) {
   return (firstSentence || text).slice(0, 80) || null;
 }
 
+// ── Credential scanning ──────────────────────────────────────────────
+const CREDENTIAL_PATTERNS = [
+  /sk-ant-[a-zA-Z0-9_-]{20,}/,
+  /sk-[a-zA-Z0-9]{20,}/,
+  /ghp_[a-zA-Z0-9]{36}/,
+  /AKIA[0-9A-Z]{16}/,
+  /-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----/,
+];
+
+function scanCredentials(text) {
+  if (!text) return false;
+  return CREDENTIAL_PATTERNS.some(p => p.test(text));
+}
+
+function entryHasCredential(entry) {
+  // Scan current response (assistant text deltas)
+  if (Array.isArray(entry.res)) {
+    for (const ev of entry.res) {
+      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+        if (scanCredentials(ev.delta.text)) return true;
+      }
+    }
+  }
+  // Scan messages history: assistant text blocks + tool_result content
+  const messages = entry.req?.messages;
+  if (!Array.isArray(messages)) return false;
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (msg.role === 'assistant' && block.type === 'text') {
+        if (scanCredentials(block.text)) return true;
+      } else if (block.type === 'tool_result') {
+        const c = block.content;
+        if (typeof c === 'string' && scanCredentials(c)) return true;
+        if (Array.isArray(c)) {
+          for (const b of c) {
+            if (b.type === 'text' && scanCredentials(b.text)) return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // ── Tool usage extraction ────────────────────────────────────────────
 function extractToolCalls(messages) {
   const counts = {};
@@ -390,4 +435,6 @@ module.exports = {
   extractResponseTitle,
   extractToolCalls,
   extractDuplicateToolCalls,
+  scanCredentials,
+  entryHasCredential,
 };

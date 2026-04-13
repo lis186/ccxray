@@ -1,5 +1,59 @@
 // ── Messages column helpers ──
 const INJECTED_TAG_RE = /^<(system-reminder|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
+
+// ── Credential highlight ──────────────────────────────────────────────
+const CRED_PATTERNS = [
+  /sk-ant-[a-zA-Z0-9_-]{20,}/g,
+  /sk-[a-zA-Z0-9]{20,}/g,
+  /ghp_[a-zA-Z0-9]{36}/g,
+  /AKIA[0-9A-Z]{16}/g,
+  /-----BEGIN (?:RSA|EC|OPENSSH) PRIVATE KEY-----/g,
+];
+
+function highlightCredentials(text) {
+  if (!text) return '';
+  // Collect all match ranges
+  const ranges = [];
+  for (const pat of CRED_PATTERNS) {
+    pat.lastIndex = 0;
+    let m;
+    while ((m = pat.exec(text)) !== null) {
+      ranges.push({ start: m.index, end: m.index + m[0].length });
+    }
+  }
+  if (!ranges.length) return escapeHtml(text);
+
+  // Sort and merge overlapping ranges
+  ranges.sort((a, b) => a.start - b.start);
+  const merged = [ranges[0]];
+  for (let i = 1; i < ranges.length; i++) {
+    const last = merged[merged.length - 1];
+    if (ranges[i].start <= last.end) last.end = Math.max(last.end, ranges[i].end);
+    else merged.push(ranges[i]);
+  }
+
+  // Build highlighted HTML
+  let html = '';
+  let pos = 0;
+  for (const { start, end } of merged) {
+    html += escapeHtml(text.slice(pos, start));
+    html += '<span class="cred-highlight">' + escapeHtml(text.slice(start, end)) + '</span>';
+    pos = end;
+  }
+  html += escapeHtml(text.slice(pos));
+  return html;
+}
+function hasCredential(text) {
+  if (!text) return false;
+  return CRED_PATTERNS.some(p => { p.lastIndex = 0; return p.test(text); });
+}
+function callHasCredential(c) {
+  const r = c.result;
+  if (!r) return false;
+  if (typeof r === 'string') return hasCredential(r);
+  if (Array.isArray(r)) return r.some(b => b.type === 'text' && hasCredential(b.text));
+  return false;
+}
 function classifyUserMessage(msg) {
   if (msg.role !== 'user') return null;
   const blocks = Array.isArray(msg.content)
@@ -371,6 +425,9 @@ function renderStepListHtml(steps, activeStepKey) {
         } else {
           html += '<span style="color:' + (c.isError ? 'var(--red)' : 'var(--dim)') + ';flex-shrink:0">' + (c.isError ? '✗' : '✓') + '</span>';
         }
+        if (!c.pending && callHasCredential(c)) {
+          html += '<span class="cred-badge">⚠ cred</span>';
+        }
         html += '</div>';
         if (c.isError && c.errorSummary) {
           html += '<div style="padding:1px 8px 2px 52px;font-size:10px;color:var(--red)">' + escapeHtml(c.errorSummary.slice(0, 60)) + '</div>';
@@ -383,6 +440,7 @@ function renderStepListHtml(steps, activeStepKey) {
       html += '<div class="tl-step-summary' + aSel + '" data-step="' + si + '" onclick="selectStep(' + si + ')">';
       html += '<div style="color:var(--text);padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;background:rgba(63,185,80,0.08);border-radius:4px;border-left:2px solid var(--green);margin:4px 0">';
       html += '<span style="font-size:13px">🤖</span> ' + escapeHtml((step.text || '').slice(0, 200));
+      if (hasCredential(step.text)) html += ' <span class="cred-badge">⚠ cred</span>';
       html += '</div>';
       html += '</div>';
     }
@@ -412,7 +470,7 @@ function renderStepDetailHtml(req, tok) {
     const msg = req?.messages?.[msgIdx];
     return msg ? '<div class="detail-content">' + renderSingleMessage(msg, tok?.perMessage?.[msgIdx], msgIdx) + '</div>' : '<div class="col-empty">No message</div>';
   } else if (step.type === 'assistant-text') {
-    return '<div class="detail-content"><pre>' + escapeHtml(step.text || '') + '</pre></div>';
+    return '<div class="detail-content"><pre>' + highlightCredentials(step.text || '') + '</pre></div>';
   } else if (step.type === 'tool-group') {
     if (subIdx === 999) {
       const durLabel = step.thinkingDuration ? ' · ' + step.thinkingDuration.toFixed(1) + 's' : '';

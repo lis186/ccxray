@@ -183,6 +183,8 @@
   .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .compact-badge { font-size: 9px; color: var(--red); border: 1px solid var(--red); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.85; flex-shrink: 0; }
   .inferred-badge { font-size: 9px; color: var(--yellow); border: 1px dashed var(--yellow); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.85; flex-shrink: 0; }
+  .cred-badge { font-size: 9px; color: var(--orange); border: 1px solid var(--orange); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.9; flex-shrink: 0; }
+  .cred-highlight { background: rgba(240, 136, 62, 0.25); color: var(--orange); border-radius: 2px; padding: 0 1px; }
   .turn-sub { opacity: 0.7; border-left-color: transparent !important; }
   .turn-sub:hover { opacity: 1; }
   .turn-sub.selected { opacity: 1; border-left-color: var(--orange) !important; }

@@ -20,6 +20,7 @@ function summarizeEntry(entry) {
     stopReason: entry.stopReason || '',
     thinkingDuration: entry.thinkingDuration || null,
     duplicateToolCalls: entry.duplicateToolCalls || null,
+    hasCredential: entry.hasCredential || undefined,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
       contextBreakdown: tok.contextBreakdown,
