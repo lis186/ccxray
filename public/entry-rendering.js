@@ -256,13 +256,12 @@ function addEntry(e) {
   for (let i = allEntries.length - 1; i >= 0; i--) {
     if (allEntries[i].sessionId === sid && allEntries[i].receivedAt) { prevInSession = allEntries[i]; break; }
   }
-  let gapHtml = '';
+  let gapMs = null, gapColor = '', gapTitle = '';
   if (prevInSession && e.receivedAt) {
     const prevEnd = prevInSession.receivedAt + parseFloat(prevInSession.elapsed || 0) * 1000;
-    const gapMs = Math.max(0, e.receivedAt - prevEnd);
-    const gapColor = gapMs < 5 * 60000 ? 'var(--green)' : gapMs < 60 * 60000 ? 'var(--yellow)' : 'var(--red)';
-    const gapTitle = gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)';
-    gapHtml = '<div class="turn-gap" style="color:' + gapColor + '" title="' + gapTitle + '">⏸ ' + formatGap(gapMs) + '</div>';
+    gapMs = Math.max(0, e.receivedAt - prevEnd);
+    gapColor = gapMs < 5 * 60000 ? 'var(--green)' : gapMs < 60 * 60000 ? 'var(--yellow)' : 'var(--red)';
+    gapTitle = gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)';
   }
 
   // Compression detection: compare message count AND context tokens vs previous main turn.
@@ -291,7 +290,9 @@ function addEntry(e) {
     thinkingDuration: e.thinkingDuration || null,
     duplicateToolCalls: e.duplicateToolCalls || null,
     hasCredential: e.hasCredential || false,
+    toolFail: e.toolFail || false,
     toolSources: e.toolSources || null,
+    title: e.title || null,
   });
 
   const el = document.createElement('div');
@@ -302,20 +303,42 @@ function addEntry(e) {
   el.onclick = () => { setFocus('turns'); selectTurn(idx); };
   el.onmouseenter = () => { clearTimeout(_hoverTimer); _hoverTimer = setTimeout(() => prefetchEntry(idx), 150); };
   el.onmouseleave = () => clearTimeout(_hoverTimer);
-  const tcNames = Object.keys(e.toolCalls || {});
-  const toolLine = tcNames.length
-    ? '<div class="turn-line3">' + tcNames.slice(0, 5).map(n => {
-        const cls = n === 'Agent' ? 'tool-chip chip-agent' : 'tool-chip';
-        return '<span class="' + cls + '">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '</span>';
-      }).join('') + (tcNames.length > 5 ? '<span class="tool-chip">+' + (tcNames.length - 5) + '</span>' : '') + '</div>'
-    : '';
-  const dupes = e.duplicateToolCalls;
-  const dupeBadge = dupes ? '<span class="dupe-badge" title="Duplicate tool calls: ' + escapeHtml(Object.entries(dupes).map(([n, c]) => n + '×' + c).join(', ')) + '">⚠ dupes</span>' : '';
-  const credBadge = e.hasCredential ? '<span class="cred-badge" title="Credential pattern detected in this turn">⚠ cred</span>' : '';
+  // ── Five-layer turn card: identity / title / ctx / risk / secondary ──
+  const toolFail = e.toolFail || false;
+  const hasCred = e.hasCredential || false;
+  const dupes = e.duplicateToolCalls || null;
+  const maxTokensStop = stopReason === 'max_tokens';
+  const hasRisk = toolFail || hasCred || dupes || maxTokensStop;
+
+  // Layer 1: identity
   const indent = isSubagent ? '<span class="sub-indent">╎</span>' : '';
-  const titleHtml = e.title ? '<div class="turn-title">' + escapeHtml(e.title) + '</div>' : '';
-  const compactBadge = isCompacted ? '<span class="compact-badge">compact</span>' : '';
-  const inferredBadge = (e.sessionInferred) ? '<span class="inferred-badge" title="Session attributed by inference (no explicit session ID)">inferred</span>' : '';
+  const numMark = isSubagent ? '' : '#';
+  const dotClass = statusClass === 'status-ok' ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
+  const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
+  const identityTooltip = [
+    isCompacted ? 'Context compacted' : null,
+    e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
+  ].filter(Boolean).join(' · ');
+  const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
+  const metaLabels = [
+    isCompacted ? 'compact' : null,
+    e.sessionInferred ? 'inferred' : null,
+  ].filter(Boolean);
+  const identityMeta = metaLabels.length ? '<span class="turn-meta">· ' + metaLabels.join(' · ') + '</span>' : '';
+  const identityLine =
+    '<div class="turn-identity"' + identityAttr + '>' +
+      indent +
+      '<span class="turn-num">' + numMark + displayNum + '</span>' +
+      '<span class="turn-model">' + escapeHtml(shortModel) + '</span>' +
+      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
+      waitMark +
+      identityMeta +
+    '</div>';
+
+  // Layer 2: title (skip if null/empty)
+  const titleLine = e.title ? '<div class="turn-title">' + escapeHtml(e.title) + '</div>' : '';
+
+  // Layer 3: context bar
   const ctxMax = e.maxContext || DEFAULT_MAX_CTX;
   const ctxPct = Math.min(100, ctxUsed / ctxMax * 100);
   const seg = (tokens, color) => tokens > 0
@@ -324,31 +347,49 @@ function addEntry(e) {
   const pctColor = ctxPct > 90 ? 'var(--red)' : ctxPct > 70 ? 'var(--yellow)' : 'var(--dim)';
   const pctLabel = ctxUsed > 0 ? '<div class="turn-ctx-pct" style="color:' + pctColor + '">' + ctxPct.toFixed(0) + '%</div>' : '';
   const ctxBar = ctxUsed > 0
-    ? '<div class="turn-ctx-bar"><div class="turn-ctx-bar-bg">' +
+    ? '<div class="turn-ctx turn-ctx-bar"><div class="turn-ctx-bar-bg">' +
         seg(ctxCacheRead,   'var(--color-cache-read)') +
         seg(ctxCacheCreate, 'var(--color-cache-write)') +
         seg(ctxInput,       'var(--color-input)') +
       '</div>' + pctLabel + '</div>'
     : '';
-  el.innerHTML =
-    gapHtml +
-    '<div class="turn-line1">' + indent +
-      '<span class="turn-num">' + (isSubagent ? '' : '#') + displayNum + '</span>' +
-      '<span class="turn-model">' + escapeHtml(shortModel) + '</span>' +
-      compactBadge + inferredBadge +
-    '</div>' +
-    titleHtml +
-    '<div class="turn-line2">' +
-      '<span class="' + statusClass + '">' + e.status + '</span>' +
-      '<span>' + (e.elapsed || '?') + 's</span>' +
-      (stopReason ? '<span>' + escapeHtml(stopReason) + '</span>' : '') +
-      (e.thinkingDuration ? '<span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>' : '') +
-      (turnCost != null ? '<span class="turn-cost">$' + turnCost.toFixed(4) + '</span>' : '') +
-      (tok.total > 0 ? '<span class="turn-overhead" title="Structural overhead (system + tools)">' + (((tok.system || 0) + (tok.tools || 0)) / tok.total * 100).toFixed(0) + '%♻</span>' : '') +
-      dupeBadge + credBadge +
-    '</div>' +
-    toolLine +
-    ctxBar;
+
+  // Layer 4: risk badges
+  const riskBadges = [];
+  if (hasCred) riskBadges.push('<span class="cred-badge" title="Credential pattern detected in this turn">⚠ cred</span>');
+  if (toolFail) riskBadges.push('<span class="tool-fail-badge" title="A tool call returned an error (is_error=true)">⚠ tool-fail</span>');
+  if (dupes) riskBadges.push('<span class="dupe-badge" title="Duplicate tool calls: ' + escapeHtml(Object.entries(dupes).map(([n, c]) => n + '×' + c).join(', ')) + '">⚠ dupes</span>');
+  if (maxTokensStop) riskBadges.push('<span class="max-tokens-badge" title="Output truncated — hit max_tokens">⚠ max_tokens</span>');
+  const riskLine = hasRisk ? '<div class="turn-risk">' + riskBadges.join('') + '</div>' : '';
+
+  // Layer 5: secondary — gap→elapsed · tools · cost · thinking
+  const secondaryParts = [];
+  const elapsedStr = (e.elapsed || '?') + 's';
+  if (gapMs != null) {
+    secondaryParts.push('<span class="turn-gap" style="color:' + gapColor + '" title="' + escapeHtml(gapTitle) + '">⏸' + formatGap(gapMs) + '→' + elapsedStr + '</span>');
+  } else {
+    secondaryParts.push('<span class="turn-elapsed">' + elapsedStr + '</span>');
+  }
+  if (e.thinkingDuration) {
+    secondaryParts.push('<span class="turn-thinking" style="color:var(--purple)">🧠' + e.thinkingDuration.toFixed(1) + 's</span>');
+  }
+  const tcNames = Object.keys(e.toolCalls || {});
+  if (tcNames.length) {
+    const chips = tcNames.slice(0, 5).map(n => {
+      const cls = n === 'Agent' ? 'tool-chip chip-agent' : 'tool-chip';
+      return '<span class="' + cls + '">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '</span>';
+    }).join('');
+    const overflow = tcNames.length > 5 ? '<span class="tool-chip">+' + (tcNames.length - 5) + '</span>' : '';
+    secondaryParts.push('<span class="turn-tools">' + chips + overflow + '</span>');
+  }
+  if (turnCost != null) {
+    secondaryParts.push('<span class="turn-cost">$' + turnCost.toFixed(4) + '</span>');
+  }
+  const secondaryLine = secondaryParts.length
+    ? '<div class="turn-secondary">' + secondaryParts.join('<span class="turn-sep">·</span>') + '</div>'
+    : '';
+
+  el.innerHTML = identityLine + titleLine + ctxBar + riskLine + secondaryLine;
 
   // Hide turn if no session selected, or if it belongs to a different session
   if (!selectedSessionId || selectedSessionId !== sid) el.style.display = 'none';

@@ -171,20 +171,36 @@
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid var(--border); }
   .turn-item:hover { background: var(--surface-hover); }
   .turn-item.selected { border-left-color: var(--accent); background: var(--surface-hover); }
-  .turn-item .turn-line1 { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  /* Layer 1: identity */
+  .turn-item .turn-identity { display: flex; gap: 6px; align-items: center; font-size: 12px; }
   .turn-item .turn-num { color: var(--dim); }
-  .turn-item .turn-model { color: var(--purple); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .turn-item .turn-line2 { display: flex; gap: 6px; font-size: 11px; color: var(--dim); margin-top: 3px; flex-wrap: wrap; }
+  .turn-item .turn-model { color: var(--purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turn-item .status-dot { font-size: 10px; line-height: 1; }
+  .turn-item .status-dot-ok { color: var(--green); }
+  .turn-item .status-dot-err { color: var(--red); }
+  .turn-item .turn-wait { color: var(--dim); font-size: 11px; margin-left: 2px; }
+  .turn-item .turn-meta { color: var(--dim); font-size: 9px; opacity: 0.7; margin-left: auto; flex-shrink: 0; }
+  /* Layer 2: title */
+  .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Layer 3: ctx bar (see .turn-ctx-bar below) */
+  .turn-item .turn-ctx { margin-top: 4px; }
+  /* Layer 4: risk badges */
+  .turn-item .turn-risk { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+  /* Layer 5: secondary */
+  .turn-item .turn-secondary { display: flex; flex-wrap: wrap; gap: 5px; font-size: 11px; color: var(--dim); margin-top: 3px; align-items: center; }
+  .turn-item .turn-sep { color: var(--border); }
+  .turn-item .turn-cost { color: var(--yellow); }
+  .turn-item .turn-elapsed, .turn-item .turn-thinking { white-space: nowrap; }
+  .turn-item .turn-tools { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+  /* Legacy — still used by detail views */
   .turn-item .status-ok { color: var(--green); }
   .turn-item .status-err { color: var(--red); }
-  .turn-item .turn-cost { color: var(--yellow); }
-  .turn-item .turn-line3 { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 2px; }
   .tool-chip { font-size: 9px; color: var(--dim); background: var(--bg2, var(--surface-hover)); border-radius: 3px; padding: 0 3px; }
-  .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .turn-item .turn-gap { font-size: 10px; margin-bottom: 3px; }
-  .compact-badge { font-size: 9px; color: var(--red); border: 1px solid var(--red); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.85; flex-shrink: 0; }
-  .inferred-badge { font-size: 9px; color: var(--yellow); border: 1px dashed var(--yellow); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.85; flex-shrink: 0; }
-  .cred-badge { font-size: 9px; color: var(--orange); border: 1px solid var(--orange); border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.9; flex-shrink: 0; }
+  .turn-item .turn-gap { font-size: 10px; white-space: nowrap; }
+  .cred-badge { font-size: 9px; color: var(--orange); border: 1px solid var(--orange); border-radius: 2px; padding: 0 3px; opacity: 0.9; flex-shrink: 0; }
+  .dupe-badge { font-size: 9px; color: var(--yellow); border: 1px solid var(--yellow); border-radius: 2px; padding: 0 3px; opacity: 0.9; flex-shrink: 0; }
+  .tool-fail-badge { font-size: 9px; color: var(--red); border: 1px solid var(--red); border-radius: 2px; padding: 0 3px; opacity: 0.9; flex-shrink: 0; }
+  .max-tokens-badge { font-size: 9px; color: var(--red); border: 1px solid var(--red); border-radius: 2px; padding: 0 3px; opacity: 0.9; flex-shrink: 0; }
   .cred-highlight { background: rgba(240, 136, 62, 0.25); color: var(--orange); border-radius: 2px; padding: 0 1px; }
   .source-badge { font-size: 9px; border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.75; flex-shrink: 0; }
   .source-local { color: #666; border: 1px solid #666; }
