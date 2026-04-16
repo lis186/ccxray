@@ -1,82 +1,89 @@
-## 1. CSS — New classes (additive first, safe)
+## V3 Turn Card — Implementation Tasks
 
-- [x] 1.1 新增 `.turn-item.risk-critical { border-left: 2px solid var(--red); }`、`.risk-warning { ... var(--orange) }`、`.risk-notice { ... var(--yellow) }`（取代既有 `.turn-item { border-left: 3px solid transparent }`，寬度縮到 2px）
-- [x] 1.2 驗證三個 severity 色條在 dark / light 兩個 theme 下對比度足夠（禁用近背景色）
-- [x] 1.3 新增 `.turn-composition`：flex 容器，`width: 60px; height: 3px;`，3 個 span segment
-- [x] 1.4 新增 `.comp-read`、`.comp-write`、`.comp-input`：使用現有 `--color-cache-read` / `--color-cache-write` / `--color-input`，`min-width: 2px`
-- [x] 1.5 新增 `.turn-cache-pct`：font-size 9px、dim color
-- [x] 1.6 新增 `.inline-marker` base class；子類 `.marker-critical`（紅）/ `.marker-warning`（橙）/ `.marker-notice`（黃）；font-size 9px、flex-shrink: 0
-- [x] 1.7 新增 `.turn-ctx-pct-inline`：identity line 右側的大字 %，severity 對應顏色（critical 紅 / warning 黃 / 其他 dim）
+### 1. CSS — Severity left border (2px)
 
-## 2. CSS — Remove deprecated classes
+- [x] 1.1 `.turn-item` 改 `border-left: 2px solid transparent`（原為 3px）
+- [x] 1.2 新增 `.turn-item.risk-critical { border-left-color: var(--red) }`、`.risk-warning { --color-warning }`、`.risk-notice { --color-yellow }`
+- [x] 1.3 `.turn-sub` 移除 `border-left-color: transparent !important`，讓嚴重性色條可正常顯示；保留 `.turn-sub.selected` 的橙色高亮
 
-- [x] 2.1 移除 `.status-dot`、`.status-dot-ok`、`.status-dot-err`
-- [x] 2.2 移除 `.turn-risk`、`.tool-fail-badge`、`.max-tokens-badge`、`.dupe-badge`、`.cred-badge`（保留 `.cred-highlight` 給 detail view）
-- [x] 2.3 移除 `.turn-meta`
-- [x] 2.4 移除 `.turn-ctx-bar`、`.turn-ctx-bar-bg`（context bar 被拆成 ctx% 文字 + composition bar）
-- [x] 2.5 移除 `.turn-sep`（`·` 分隔符）
-- [x] 2.6 `.turn-identity`、`.turn-title`、`.turn-secondary` 的 gap / margin 重調整（確認 model 省略時不留 ghost gap）
+### 2. CSS — Identity line: cost 右對齊 + critical marker
 
-## 3. JS — Severity classification
+- [x] 2.1 `.turn-item .turn-cost` 加 `margin-left: auto; flex-shrink: 0;`（cost 永遠在 identity line 最右）
+- [x] 2.2 新增 `.turn-critical-marker { font-size: 10px; color: var(--red); font-weight: bold; flex-shrink: 0; }`
+- [x] 2.3 移除 `.turn-item .turn-sep`（不再使用 `·` 分隔符）
 
-- [x] 3.1 新 helper `classifySeverity(entry, ctxPct)` 回傳 `'critical' | 'warning' | 'notice' | null`，依 precedence：ctx>95% / HTTP非2xx / abnormal stop → ctx 85–95% / cred / tool-fail → dupes → none
-- [x] 3.2 新 helper `isAbnormalStop(stopReason)` 判斷非 `end_turn`/`tool_use` 即為 abnormal
-- [x] 3.3 severity class 套用到 `.turn-item` 根元素
+### 3. CSS — Full-width ctx bar + dual labels
 
-## 4. JS — Three-line rendering
+- [x] 3.1 `.turn-ctx-bar-bg` 高度改為 `4px`，保持 `display: flex`、無寬度限制
+- [x] 3.2 新增 `.turn-ctx-labels { display: flex; justify-content: flex-end; gap: 6px; font-size: 9px; margin-top: 1px; line-height: 1; }`
+- [x] 3.3 `.turn-ctx-pct` 改為無預設 color（顏色由子 class 控制）；新增 `.turn-ctx-pct.ctx-critical { color: var(--red) }`、`.ctx-warning { color: var(--yellow) }`、無 class 時 `color: var(--dim)`
+- [x] 3.4 新增 `.turn-hit-pct { color: var(--color-cache-read); }`
 
-- [x] 4.1 重寫 turn card innerHTML：三行結構（identity / title / secondary），title 為 null 時不 append
-- [x] 4.2 Identity line：`#N` + model（見 4.3）+ `↵`（若 `end_turn`）+ `NN%` 右對齊；collapse spacing when model omitted
-- [x] 4.3 模型省略邏輯：查詢 allEntries 倒序找上一個同 sessionId && !isSubagent 的 entry；僅當 model 相同**且距離 ≤ 5 entries** 才省略；subagent 永遠顯示
-- [x] 4.4 Secondary line 固定順序：`elapsed [⏸gap]` → composition+%c → inline markers → tools → cost；缺欄位 skip 不插佔位符
+### 4. CSS — Secondary line: wait/think，Line 5: risk
 
-## 5. JS — Inline markers
+- [x] 4.1 `.turn-item .turn-secondary` 移除 `gap: 5px`，改 `gap: 6px`，`flex-wrap: nowrap`
+- [x] 4.2 新增 `.turn-wait-gap { white-space: nowrap; }`
+- [x] 4.3 新增 `.turn-think { color: var(--purple); white-space: nowrap; }`
+- [x] 4.4 新增 `.turn-risk-line { font-size: 9px; color: var(--dim); margin-top: 2px; }`
 
-- [x] 5.1 `markerForHttpErr`（無輸出，由左條負責）、`markerForAbnormalStop(stopReason)`：
-  - `max_tokens` → `✂max`
-  - `content_filter` → `⛔filter`
-  - `length` → `✂len`
-  - 其他非 `end_turn`/`tool_use` → `!stop`
-  - critical class
-- [x] 5.2 `markerForCred`：`🔑cred`（warning）
-- [x] 5.3 `markerForToolFail`：`✗tool`（warning）
-- [x] 5.4 `markerForDupes(dupes)`：從 `duplicateToolCalls` 物件找**重複次數最高**的 tool（平手取首次出現）；計算該 tool 在此 turn 的**總呼叫次數 N**；Name 超過 12 chars 截斷為 `Name…`；marker 文字 `⟳Name×N`；N < 2 不 render；tooltip 顯示完整名稱 + 精確次數
-- [x] 5.5 Markers 排序嚴格固定：critical → warning → notice；各 tier 內也固定順序
-- [x] 5.6 Overflow 規則：渲染出超過 3 個 marker 時，顯示前 3 個 + `<span class="inline-marker marker-notice">+N</span>`（N = 被隱藏數）
-- [x] 5.7 Marker 顏色來自 `.marker-*` class，不得 inline style hardcode
+### 5. CSS — Dead code cleanup
 
-## 6. JS — Composition bar
+- [x] 5.1 移除 `.cred-badge`、`.dupe-badge`、`.tool-fail-badge`、`.max-tokens-badge`
+- [x] 5.2 移除 `.sub-indent`
+- [x] 5.3 移除 `.turn-item .turn-risk`（舊 risk badges layer）
+- [x] 5.4 移除 `.turn-item .turn-meta`
 
-- [x] 6.1 新函式 `renderComposition(usage)`：回傳 composition bar HTML + cache-pct label 或空字串
-- [x] 6.2 隱藏條件：usage null / total (`cache_read + cache_write + input`) === 0 / 無法產出有意義 composition
-- [x] 6.3 缺欄位降級：cache_read / cache_write / input 缺失者以 0 計算；若結果仍能區分則 render，否則整塊隱藏
-- [x] 6.4 Segment width = `tokens / total * 100%`；CSS 控 min-width
-- [x] 6.5 Tooltip：精確 token 數 + 百分比，絕不顯示假 0；缺欄位不列該行
+### 6. JS — Helper functions
 
-## 7. JS — Cleanup
+- [x] 6.1 新增 `isAbnormalStop(stopReason)` — 非 `end_turn`/`tool_use`/空字串 即為 abnormal
+- [x] 6.2 新增 `classifySeverity(entry, ctxPct)` — `critical | warning | notice | null`；precedence：ctx>95%/HTTP非2xx/abnormal stop → ctx>85%/cred/toolFail → dupes → none
+- [x] 6.3 新增 `getCriticalMarker(stopReason, httpStatus, ctxPct)` — 依優先序回傳 `!http`/`!max`/`!len`/`!stop`/`!filter` 或 null；ctx>95% 回傳 null（只靠左條）
+- [x] 6.4 新增 `shouldOmitModel(curIdx, sessionId, model)` — 查詢 allEntries，找上一個同 sessionId 且非 subagent 的主 turn；距離 ≤5 且 model 相同則省略
 
-- [x] 7.1 移除舊 `.status-dot` / `.turn-meta` / `.turn-risk` 建構碼
-- [x] 7.2 移除舊 `compactBadge` / `inferredBadge` / `turn-meta` 變數
-- [x] 7.3 Tooltip：`.turn-identity` 的 `title` 屬性保留 compact/inferred 描述
-- [x] 7.4 清理驗證（不只字串 grep）：
-  - `rg "status-dot|turn-risk|turn-meta|turn-sep|compact-badge|inferred-badge|tool-fail-badge|max-tokens-badge|dupe-badge|turn-ctx-bar|turn-ctx-pct(?!-inline)" public/ server/` 無結果
-  - 確認舊 render path 無殘留 branch（例如 `if (isCompacted) ...Badge` 之類）
-  - confirm `style.css` 無 orphan rules
+### 7. JS — Render: Line 1 (identity + critical marker + cost)
 
-## 8. Tests & Verification
+- [x] 7.1 套用 `classifySeverity` 到 `el.className`（`risk-critical`/`risk-warning`/`risk-notice`）
+- [x] 7.2 Prefix：主 turn → `#N`，subagent → `↳sN`；移除舊 `╎` indent
+- [x] 7.3 `shouldOmitModel` 控制 model span 顯示（subagent 永遠顯示）
+- [x] 7.4 `●` 狀態點（ok/err），`↵` 當 `stopReason === 'end_turn'`
+- [x] 7.5 `getCriticalMarker` 決定 line 1 的 critical marker（最多 1 個）
+- [x] 7.6 Cost span 移到 identity line，`margin-left: auto` 右對齊
+- [x] 7.7 Compact/inferred 僅放 `title` tooltip，不渲染可見文字
 
-- [x] 8.1 `npm test` 通過（無 server 變更）
-- [x] 8.2 `node --check public/entry-rendering.js` 語法檢查
-- [x] 8.3 起測試 server（port 5578）並用 cmux browser 驗證：
-  - [x] 8.3.1 正常 turn 無左色條、cache composition bar 顯示、cache% 正確 (3693/3869 turns have composition, aggregate confirmed)
-  - [x] 8.3.2 Tool-fail turn 左色條橙色、inline `✗tool` marker (warning bars 866, code path verified)
-  - [ ] 8.3.3 切換 model 時 model name 重現；連續同 model 且距離 ≤ 5 省略；距離 > 5 不省略 (需手動驗證)
-  - [x] 8.3.4 Context > 95% 時左色條紅、ctx% 紅 (sampled `risk-critical` turn with `ctx-critical` class, 100%)
-  - [x] 8.3.5 Subagent 有縮排 + model 永遠顯示 (isSubagent 分支在 shouldOmitModel 中明確短路)
-  - [x] 8.3.6 HTTP fail turn 無 composition bar (composition 差 176 turns 對應 non-usage turns)
-  - [ ] 8.3.7 Abnormal stop（manually craft `content_filter` / `length` entry）顯示正確 marker (無樣本資料，code path 已覆蓋)
-  - [ ] 8.3.8 Zero-total usage turn 無 composition 區塊 (邏輯分支 `total <= 0 return ''` 已實作)
-  - [ ] 8.3.9 連續三個 risk markers 並列無 overflow；四個以上觸發 `+N` (renderMarkers 有 MAX=3 + `+N` 邏輯)
-  - [ ] 8.3.10 多個重複 tool 時 marker 僅顯示次數最高者；長名稱截斷為 `Name…` (dupeMarker 實作)
-  - [ ] 8.3.11 高 ctx + 模型省略 + 多風險共存時版面正確 (組合情境，需特定 session)
-- [x] 8.4 對照 screenshot：確認視覺密度、無 `⚠` emoji、無 `·` 分隔符、無 ghost gap
+### 8. JS — Render: Line 3 (full-width ctx bar + ctx:% hit:%)
+
+- [x] 8.1 Segment 寬度改用 `tokens / totalUsed * 100%`（全寬比例），`min-width: 2px`
+- [x] 8.2 `ctx:NN%` label：severity class 控色（`ctx-critical`/`ctx-warning`/無），前綴 `ctx:`
+- [x] 8.3 `hit:NN%` label：`ctxCacheRead / totalUsed * 100`，只有 cache_read > 0 才顯示
+- [x] 8.4 隱藏條件：`totalUsed === 0` 時整行省略
+- [x] 8.5 Tooltip：bar hover 顯示精確 token 數與各類百分比
+
+### 9. JS — Render: Line 4 (time + tools, no cost)
+
+- [x] 9.1 Elapsed 永遠顯示：`{N}s`
+- [x] 9.2 Gap 改格式：`wait:{gap}` 彩色（gapColor 已有）；無前一 turn 時省略
+- [x] 9.3 Thinking 改格式：`think:{N}s`（無 emoji）
+- [x] 9.4 Tool chips 最多 3 個，超出折疊為 `+N`
+- [x] 9.5 Cost 從 secondary 移除（已在 line 1）
+- [x] 9.6 各項目 space-only 間距（無 `·` 分隔符）
+
+### 10. JS — Render: Line 5 (warning/notice risk, no emoji)
+
+- [x] 10.1 `hasCredential` → `cred`
+- [x] 10.2 `toolFail` → `tool-fail`
+- [x] 10.3 `duplicateToolCalls` → `dupes×N`（N = 最高重複次數），N < 2 不顯示
+- [x] 10.4 順序：`cred` → `tool-fail` → `dupes×N`；空格分隔
+- [x] 10.5 無任何 warning/notice 時，整行省略
+- [x] 10.6 確認無 emoji（純 ASCII）
+
+### 11. Verification
+
+- [x] 11.1 `node --check public/entry-rendering.js` 語法檢查
+- [x] 11.2 `npm test` 通過
+- [ ] 11.3 啟動 dev server，browser 驗證：
+  - [ ] 11.3.1 正常 turn：無左色條，ctx bar 全寬，`ctx:NN% hit:NN%` 小字在 bar 右下
+  - [ ] 11.3.2 Subagent turn：`↳s1` prefix，model 永遠顯示，ctx bar 全寬
+  - [ ] 11.3.3 Tool-fail turn：左條橙色，line 5 顯示 `tool-fail`（無 ⚠ emoji）
+  - [ ] 11.3.4 max_tokens turn：`!max` 在 line 1 cost 左側，左條紅色
+  - [ ] 11.3.5 時間行：`9.6s  wait:11s  Bash Read`（語意前綴，無 ⏸/🧠）
+  - [ ] 11.3.6 連續同 model 距離 ≤5：model name 省略；距離 >5 或換 model：重現
