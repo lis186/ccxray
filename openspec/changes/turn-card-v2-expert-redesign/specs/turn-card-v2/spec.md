@@ -79,9 +79,9 @@ Critical markers SHALL use plain ASCII text only. No emoji. Priority order (high
 | ctx > 95% | *(left bar + ctx label only, no inline marker)* | 1 |
 | HTTP non-2xx | `!http` | 2 |
 | `stopReason === 'max_tokens'` | `!max` | 3 |
-| `stopReason === 'content_filter'` | `!filter` | 4 |
-| `stopReason === 'length'` | `!len` | 5 |
-| any other non-`end_turn`/`tool_use` | `!stop` | 6 |
+| `stopReason === 'length'` | `!len` | 4 |
+| any other non-`end_turn`/`tool_use` | `!stop` | 5 |
+| `stopReason === 'content_filter'` | `!filter` | 6 |
 
 #### Scenario: max_tokens stop
 
@@ -104,12 +104,12 @@ Critical markers SHALL use plain ASCII text only. No emoji. Priority order (high
 
 ### Requirement: Line 3 — full-width ctx bar with dual labels
 
-Line 3 is a full-width 3px-high color bar representing token composition, followed by two labels.
+Line 3 is a full-width color bar representing token composition. The dual labels (`ctx:NN%` and `hit:NN%`) are rendered in small text at the bottom-right corner beneath the bar, right-aligned. The bar itself stretches the full card width.
 
 #### Scenario: Normal cached turn
 
 - **WHEN** usage has cache_read 18000, cache_write 2000, input 1000
-- **THEN** line 3 shows: full-width bar with proportional segments + `ctx:42%` + `hit:86%`
+- **THEN** line 3 shows: full-width bar with proportional segments; below-right: `ctx:42%  hit:86%`
 
 #### Scenario: ctx% label color
 

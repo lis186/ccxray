@@ -31,7 +31,8 @@
 ```
 │ #65  sonnet-4-6  ●  !max            $0.03 │  Line 1: 識別 + critical risk + 成本
 │ Refactor auth middleware for GitHub login  │  Line 2: title（null 時省略）
-│ ████████████████▓▒░░░░  ctx:42%  hit:86%  │  Line 3: ctx bar（全寬）+ 雙標籤
+│ ██████████████████████████████████████████│  Line 3: ctx bar 全寬
+│                          ctx:42%  hit:86% │         標籤小字右下角
 │ 9.6s  wait:11s  think:4.4s  Bash Read     │  Line 4: 時間 + tools
 │ cred  tool-fail  dupes×3                  │  Line 5: warning/notice risk（有才顯示）
 ```
@@ -41,7 +42,8 @@
 ```
 │ #65  sonnet-4-6  ●                  $0.03 │
 │ Refactor auth middleware for GitHub login  │
-│ ████████████████▓▒░░░░  ctx:42%  hit:86%  │
+│ ██████████████████████████████████████████│
+│                          ctx:42%  hit:86% │
 │ 9.6s  wait:11s  Bash Read                 │
 │ cred  tool-fail                           │
 ```
@@ -51,7 +53,8 @@
 ```
 │ #65  sonnet-4-6  ●                  $0.03 │
 │ Refactor auth middleware for GitHub login  │
-│ ████████████████▓▒░░░░  ctx:42%  hit:86%  │
+│ ██████████████████████████████████████████│
+│                          ctx:42%  hit:86% │
 │ 9.6s  Bash Read                           │
 ```
 
@@ -62,7 +65,8 @@ title 為 null 時 line 2 省略（card 最少兩行）。
 ```
 │ ↳s1  sonnet-4-6  ●                  $0.01 │  ↳ 代表從屬關係
 │   Agent invocation                         │
-│   ████████░░░░░░░  ctx:12%  hit:94%        │  bar 與 ↳ 對齊縮排
+│   ████████████████████████████████████████│  bar 與 ↳ 對齊縮排
+│                         ctx:12%  hit:94%   │  標籤小字右下角
 │   5.2s  Bash Read                          │
 ```
 
@@ -98,9 +102,9 @@ Critical 訊號升到 line 1，緊跟在 `●` 後面、成本左邊。Warning /
 | Signal | Marker |
 |--------|--------|
 | `stopReason === 'max_tokens'` | `!max` |
-| `stopReason === 'content_filter'` | `!filter` |
 | `stopReason === 'length'` | `!len` |
 | 其他非 `end_turn`/`tool_use` | `!stop` |
+| `stopReason === 'content_filter'` | `!filter` |
 | HTTP 非 2xx | `!http` |
 
 - 最多顯示一個 critical marker（最高優先序）；若有多個 critical 以優先序取第一個，其餘摺疊進 line 5
@@ -124,13 +128,15 @@ Critical 訊號升到 line 1，緊跟在 `●` 後面、成本左邊。Warning /
 
 ### 4. 全寬 ctx bar（Line 3）
 
-Line 3 是一條佔滿 card 寬度的 3px 高彩色橫條 + 右側雙標籤：
+Line 3 是一條佔滿 card 寬度的彩色橫條，標籤以小字沉在 bar 右下角：
 
 ```
-████████████████████▓▒░░░░  ctx:42%  hit:86%
+██████████████████████████████████████████████
+                                ctx:42% hit:86%
 ```
 
-- 三色 segment：cache-read（青）/ cache-write（橙）/ input（紫）
+- Bar 全寬延伸，三色 segment：cache-read（青）/ cache-write（橙）/ input（紫）
+- 標籤位於 bar 正下方右對齊，字級比 bar 更小（輔助確認用）
 - `ctx:NN%` = 當前 context window 使用率（`ctxUsed / maxContext`），顏色隨 severity tier 變色
 - `hit:NN%` = cache hit rate（`cache_read / total_tokens`），固定青色（與 bar 同色系）
 - Tooltip on bar：精確 token 數 + 各類百分比
