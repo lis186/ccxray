@@ -57,8 +57,14 @@ let indexHTML = rawIndexHTML || '<html><body>Error loading dashboard</body></htm
 
 function rebuildIndexHTML(port) {
   if (!rawIndexHTML) return;
-  const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: port })}</script>`;
-  indexHTML = rawIndexHTML.replace('<!--__PROXY_CONFIG__-->', script);
+  // Embed config as JSON inside <script type="application/json"> — no executable JS.
+  // Escape `</` so an adversarial value can't close the script tag early.
+  const json = JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: port })
+    .replace(/<\/(?=script)/gi, '<\\/');
+  indexHTML = rawIndexHTML.replace(
+    /<script id="__proxy_config__" type="application\/json">[\s\S]*?<\/script>/,
+    `<script id="__proxy_config__" type="application/json">${json}</script>`,
+  );
 }
 
 function serveStatic(url, clientRes) {
@@ -84,8 +90,40 @@ function serveStatic(url, clientRes) {
   }
 }
 
+// ── Security headers ────────────────────────────────────────────────
+// CSP keeps 'unsafe-inline' in script-src because the dashboard has ~30 inline
+// on*= handlers. Tracked for future refactor behind CCXRAY_CSP=strict.
+const CSP_STRICT = process.env.CCXRAY_CSP === 'strict';
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    CSP_STRICT ? "script-src 'self'" : "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; '),
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+};
+function wrapResWithSecurityHeaders(res) {
+  const origWriteHead = res.writeHead.bind(res);
+  res.writeHead = function (code, headersOrReason, maybeHeaders) {
+    // Skip SSE — browsers buffer event streams oddly under CSP; also SSE writes its own head
+    for (const [k, v] of Object.entries(SECURITY_HEADERS)) {
+      if (!res.hasHeader || !res.hasHeader(k)) {
+        try { res.setHeader(k, v); } catch {}
+      }
+    }
+    return origWriteHead(code, headersOrReason, maybeHeaders);
+  };
+}
+
 // ── Server ──────────────────────────────────────────────────────────
 const server = http.createServer((clientReq, clientRes) => {
+  wrapResWithSecurityHeaders(clientRes);
 
   // ── Hub API (health, register, unregister, status) ──
   // Placed before auth: these are local IPC endpoints, not user-facing
