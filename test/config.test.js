@@ -63,27 +63,37 @@ describe('parseBaseUrl()', () => {
 
   it('parses valid HTTPS URL with explicit port', () => {
     const result = parseBaseUrl('https://proxy.corp.example.com:8443');
-    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.corp.example.com', port: 8443 });
+    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.corp.example.com', port: 8443, basePath: '' });
   });
 
   it('infers port 443 for HTTPS URL without explicit port', () => {
     const result = parseBaseUrl('https://proxy.corp.example.com');
-    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.corp.example.com', port: 443 });
+    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.corp.example.com', port: 443, basePath: '' });
   });
 
   it('parses valid HTTP URL and infers port 80', () => {
     const result = parseBaseUrl('http://internal-gateway.corp:9090');
-    assert.deepEqual(result, { protocol: 'http', hostname: 'internal-gateway.corp', port: 9090 });
+    assert.deepEqual(result, { protocol: 'http', hostname: 'internal-gateway.corp', port: 9090, basePath: '' });
   });
 
   it('infers port 80 for HTTP URL without explicit port', () => {
     const result = parseBaseUrl('http://internal-gateway.corp');
-    assert.deepEqual(result, { protocol: 'http', hostname: 'internal-gateway.corp', port: 80 });
+    assert.deepEqual(result, { protocol: 'http', hostname: 'internal-gateway.corp', port: 80, basePath: '' });
   });
 
   it('handles trailing slash correctly (common user mistake)', () => {
     const result = parseBaseUrl('https://proxy.example.com/');
-    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.example.com', port: 443 });
+    assert.deepEqual(result, { protocol: 'https', hostname: 'proxy.example.com', port: 443, basePath: '' });
+  });
+
+  it('captures path from URL with base path', () => {
+    const result = parseBaseUrl('https://adb-1033261988689278.18.azuredatabricks.net/serving-endpoints/anthropic');
+    assert.deepEqual(result, { protocol: 'https', hostname: 'adb-1033261988689278.18.azuredatabricks.net', port: 443, basePath: '/serving-endpoints/anthropic' });
+  });
+
+  it('strips trailing slash from base path', () => {
+    const result = parseBaseUrl('https://gateway.example.com/api/v1/');
+    assert.deepEqual(result, { protocol: 'https', hostname: 'gateway.example.com', port: 443, basePath: '/api/v1' });
   });
 
   it('returns null for malformed URL', () => {
@@ -112,6 +122,7 @@ describe('upstream priority chain', () => {
       port: c.ANTHROPIC_PORT,
       protocol: c.ANTHROPIC_PROTOCOL,
       source: c.ANTHROPIC_BASE_URL_SOURCE,
+      basePath: c.ANTHROPIC_BASE_PATH,
     }));
   `;
 
@@ -159,6 +170,25 @@ describe('upstream priority chain', () => {
     const result = JSON.parse(stdout);
     assert.equal(result.host, 'api.anthropic.com');
     assert.equal(result.source, 'default');
+  });
+
+  it('exposes base path from ANTHROPIC_BASE_URL with path component', async () => {
+    const { stdout } = await runSnippet(snippet, {
+      ANTHROPIC_BASE_URL: 'https://adb-xxx.azuredatabricks.net/serving-endpoints/anthropic',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.host, 'adb-xxx.azuredatabricks.net');
+    assert.equal(result.basePath, '/serving-endpoints/anthropic');
+  });
+
+  it('exposes empty base path when ANTHROPIC_BASE_URL has no path', async () => {
+    const { stdout } = await runSnippet(snippet, {
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.basePath, '');
   });
 });
 
