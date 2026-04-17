@@ -115,8 +115,24 @@ const server = http.createServer((clientReq, clientRes) => {
   const startTime = Date.now();
 
   const reqChunks = [];
-  clientReq.on('data', chunk => reqChunks.push(chunk));
+  let reqSize = 0;
+  let reqAborted = false;
+  clientReq.on('data', chunk => {
+    if (reqAborted) return;
+    reqSize += chunk.length;
+    if (reqSize > config.MAX_BODY_BYTES) {
+      reqAborted = true;
+      if (!clientRes.headersSent) {
+        clientRes.writeHead(413, { 'Content-Type': 'application/json' });
+      }
+      clientRes.end(JSON.stringify({ error: 'payload_too_large', limit_bytes: config.MAX_BODY_BYTES }));
+      clientReq.destroy();
+      return;
+    }
+    reqChunks.push(chunk);
+  });
   clientReq.on('end', () => {
+    if (reqAborted) return;
     const rawBody = Buffer.concat(reqChunks);
     let parsedBody = null;
     try { parsedBody = JSON.parse(rawBody.toString()); } catch {}
@@ -212,7 +228,7 @@ const server = http.createServer((clientReq, clientRes) => {
     // Terminal summary
     if (isNewSession) store.printSessionBanner(reqSessionId);
     helpers.printSeparator();
-    console.log(`\x1b[36m📤 REQUEST  [${ts}]  ${clientReq.method} ${clientReq.url}\x1b[0m`);
+    console.log(`\x1b[36m📤 REQUEST  [${ts}]  ${helpers.sanitizeForLog(clientReq.method)} ${helpers.sanitizeForLog(clientReq.url)}\x1b[0m`);
     if (parsedBody) console.log(helpers.summarizeRequest(parsedBody));
 
     // Build context for forwarding
@@ -248,6 +264,9 @@ const server = http.createServer((clientReq, clientRes) => {
   });
 });
 
+server.headersTimeout = config.HEADERS_TIMEOUT_MS;
+server.requestTimeout = config.REQUEST_TIMEOUT_MS;
+server.keepAliveTimeout = config.KEEPALIVE_TIMEOUT_MS;
 
 // ── Spawn Claude Code with proxy env ──
 function spawnClaude(port, args) {
@@ -410,7 +429,7 @@ async function startServer() {
     const HUB_BIND_DELAY_MS = 1000;
     for (let i = 0; i <= HUB_BIND_RETRIES; i++) {
       try {
-        actualPort = await hub.tryListen(server, config.PORT, 0);
+        actualPort = await hub.tryListen(server, config.PORT, 0, config.HOST);
         break;
       } catch (err) {
         if (err.code !== 'EADDRINUSE' || i === HUB_BIND_RETRIES) {
@@ -425,7 +444,7 @@ async function startServer() {
       }
     }
   } else {
-    actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
+    actualPort = await hub.tryListen(server, config.PORT, maxAttempts, config.HOST);
   }
   rebuildIndexHTML(actualPort);
 
@@ -446,8 +465,9 @@ async function startServer() {
   } else if (claudeMode) {
     _origLog(`\x1b[90mccxray → http://localhost:${actualPort}\x1b[0m`);
   } else {
+    const bindNote = config.HOST === '127.0.0.1' ? '' : ` (bound to ${config.HOST})`;
     console.log();
-    console.log(`\x1b[35m🔌 Claude API Proxy listening on http://localhost:${actualPort}\x1b[0m`);
+    console.log(`\x1b[35m🔌 Claude API Proxy listening on http://localhost:${actualPort}${bindNote}\x1b[0m`);
     console.log(`\x1b[90m   Dashboard → http://localhost:${actualPort}/`);
     const upstreamUrl = `${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT}`;
     const upstreamNote = config.ANTHROPIC_BASE_URL_SOURCE === 'ANTHROPIC_BASE_URL' ? ' (from ANTHROPIC_BASE_URL)' : '';
