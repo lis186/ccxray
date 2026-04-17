@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ccxray — Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/style.css">
+<style>
+  body { display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; font-family: system-ui, sans-serif; background: #0c0c0e; color: #ddd; }
+  .box { width: 320px; padding: 28px; border: 1px solid #333; border-radius: 8px; background: #16161a; }
+  h1 { margin: 0 0 16px; font-size: 18px; font-weight: 600; }
+  label { display: block; font-size: 12px; color: #999; margin-bottom: 6px; }
+  input { width: 100%; padding: 8px 10px; background: #0c0c0e; border: 1px solid #333; color: #ddd; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
+  button { margin-top: 12px; width: 100%; padding: 9px; background: #5865f2; border: none; border-radius: 4px; color: #fff; font-size: 14px; cursor: pointer; }
+  button:hover { background: #4752c4; }
+  .err { margin-top: 10px; color: #e06c75; font-size: 12px; min-height: 16px; }
+</style>
+</head>
+<body>
+<form class="box" id="login-form">
+  <h1>ccxray</h1>
+  <label for="token">Access token</label>
+  <input id="token" type="password" autocomplete="current-password" required>
+  <button type="submit">Sign in</button>
+  <div class="err" id="err"></div>
+</form>
+<script src="/login.js"></script>
+</body>
+</html>

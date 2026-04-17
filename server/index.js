@@ -13,7 +13,7 @@ const { restoreFromLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
 const { forwardRequest } = require('./forward');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { authMiddleware } = require('./auth');
+const { authMiddleware, handleLogin, handleLogout } = require('./auth');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
 
 // ── CLI: parse flags and detect "claude" subcommand ──
@@ -90,6 +90,10 @@ const server = http.createServer((clientReq, clientRes) => {
   // ── Hub API (health, register, unregister, status) ──
   // Placed before auth: these are local IPC endpoints, not user-facing
   if (hub.handleHubRoutes(clientReq, clientRes)) return;
+
+  // ── Login / logout (before auth middleware) ──
+  if (handleLogin(clientReq, clientRes)) return;
+  if (handleLogout(clientReq, clientRes)) return;
 
   // ── Auth check (enabled via AUTH_TOKEN env var) ──
   if (!authMiddleware(clientReq, clientRes)) return;
