@@ -39,6 +39,7 @@ function switchTab(tab, forceDiff) {
 
   // Sync URL
   syncViewParam();
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
 function syncViewParam() {

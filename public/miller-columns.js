@@ -233,7 +233,7 @@ function applySessionFilter() {
     if (!placeholder) {
       placeholder = document.createElement('div');
       placeholder.className = 'sessions-empty col-empty';
-      placeholder.textContent = '此專案尚無記錄';
+      placeholder.textContent = 'No sessions yet';
       colSessions.appendChild(placeholder);
     }
     placeholder.style.display = '';
@@ -304,6 +304,7 @@ function enterFocusedMode() {
   isFocusedMode = true;
   document.getElementById('columns').classList.add('focused');
   renderDetailCol();
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
 function exitFocusedMode() {
@@ -312,6 +313,7 @@ function exitFocusedMode() {
   document.getElementById('columns').classList.remove('focused');
   setFocus('sections');
   renderDetailCol();
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 const colProjects = document.getElementById('col-projects');
 const colSessions = document.getElementById('col-sessions');
@@ -448,7 +450,7 @@ function renderProjectsCol() {
     '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
     '<option value="active"' + (projectFilterMode === 'active' ? ' selected' : '') + '>Active</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
-    '</select><span class="col-hint' + (focusedCol === 'projects' ? ' col-hint-active' : '') + '" id="hint-projects">↑↓ select · →</span></div>';
+    '</select></div>';
 
   const sorted = [...projectsMap.values()].sort((a, b) => {
     // Sort by: pinned first, then status (streaming > idle > off), then last activity
@@ -578,16 +580,7 @@ function setFocus(col) {
   colSessions.classList.toggle('col-focused', col === 'sessions');
   colTurns.classList.toggle('col-focused', col === 'turns');
   colSections.classList.toggle('col-focused', col === 'sections');
-  updateColHints(col);
-}
-
-function updateColHints(col) {
-  const hintIds = ['hint-projects', 'hint-sessions', 'hint-turns', 'hint-sections'];
-  const cols = ['projects', 'sessions', 'turns', 'sections'];
-  hintIds.forEach((id, i) => {
-    const el = document.getElementById(id);
-    if (el) el.classList.toggle('col-hint-active', cols[i] === col);
-  });
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
 function getVisibleTurnIndices() {
@@ -1101,6 +1094,7 @@ function selectSection(name) {
   });
   renderDetailCol();
   renderBreadcrumb();
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
 function renderSectionsCol(idx) {

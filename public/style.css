@@ -56,8 +56,6 @@
   #status-cluster { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--dim); flex-shrink: 0; }
   #topbar-row1 #theme-toggle { background: none; border: 1px solid var(--border); color: var(--dim); padding: 3px 8px; font-size: 11px; border-radius: 3px; cursor: pointer; flex-shrink: 0; }
   #topbar-row1 #theme-toggle:hover { background: var(--surface-hover); }
-  #topbar-row1 #hotkeys-btn { background: none; border: 1px solid var(--border); color: var(--dim); padding: 3px 8px; font-size: 11px; border-radius: 3px; cursor: pointer; flex-shrink: 0; letter-spacing: 0.02em; }
-  #topbar-row1 #hotkeys-btn:hover { background: var(--surface-hover); color: var(--text); }
   #topbar-row2 { display: flex; align-items: center; padding: 3px 16px 5px; font-size: 12px; border-top: 1px solid var(--border); min-height: 26px; }
   #row2-dashboard, #row2-usage, #row2-sysprompt { display: flex; align-items: center; gap: 8px; width: 100%; }
   #breadcrumb { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 120px; flex: 1; }
@@ -76,7 +74,7 @@
   #qt-chip { font-size: 10px; color: var(--dim); }
   #row2-usage span, #row2-sysprompt span { font-size: 11px; color: var(--dim); }
 
-  #columns { display: flex; flex: 1; overflow: hidden; }
+  #columns { display: flex; flex: 1; min-height: 0; overflow: hidden; }
   .col { overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); flex-shrink: 0; min-width: 0; border-top: 2px solid transparent; transition: border-top-color 0.15s; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .col::-webkit-scrollbar { width: 4px; }
   .col::-webkit-scrollbar-track { background: transparent; }
@@ -141,8 +139,17 @@
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
   .col-title { padding: 10px 12px; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
-  .col-hint { margin-left: auto; font-size: 9px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--dim); opacity: 0.6; transition: opacity 0.15s, color 0.15s; user-select: none; }
-  .col-hint.col-hint-active { opacity: 1; color: var(--text); }
+  #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; }
+  #cmd-bar.hidden { display: none; }
+  #cmd-bar.overlay-active { opacity: 0; pointer-events: none; }
+  #cmd-bar-row1 { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
+  #cmd-bar-row2 { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
+  #cmd-bar-row2.visible { max-height: 24px; }
+  .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  .cmd-key.disabled { opacity: 0.3; }
+  .cmd-sep { color: var(--border); margin: 0 1px; }
+  .cmd-toggle { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 10px; min-width: 44px; height: 100%; padding: 0 4px; font-family: inherit; line-height: 1; }
+  .cmd-toggle:hover { color: var(--text); }
   kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px; font-size: 10px; font-family: monospace; background: var(--bg); color: var(--text); }
 
   /* ── Status dots ── */

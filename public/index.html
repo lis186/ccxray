@@ -32,7 +32,6 @@
       <div id="status-cluster">
         <span id="topbar-status"></span>
       </div>
-      <button id="hotkeys-btn" onclick="toggleKbdOverlay()" title="Keyboard shortcuts (?)">hotkeys</button>
       <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀️</button>
     </div>
     <div id="topbar-row2">
@@ -86,12 +85,16 @@
   </div>
   <div id="columns">
     <div id="col-projects" class="col"><div class="col-title">Projects</div></div>
-    <div id="col-sessions" class="col"><div class="col-title" style="display:flex;align-items:center;gap:6px">Sessions <select id="sess-filter-select" onchange="setSessionFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer"><option value="active">Active</option><option value="active+idle" selected>Active+Idle</option><option value="all">All</option></select><span class="col-hint" id="hint-sessions">↑↓ · ← · →</span></div></div>
-    <div id="col-turns" class="col"><div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span><span class="col-hint" id="hint-turns">↑↓ · ← · →</span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div></div>
+    <div id="col-sessions" class="col"><div class="col-title" style="display:flex;align-items:center;gap:6px">Sessions <select id="sess-filter-select" onchange="setSessionFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer"><option value="active">Active</option><option value="active+idle" selected>Active+Idle</option><option value="all">All</option></select></div></div>
+    <div id="col-turns" class="col"><div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div></div>
     <div id="col-sections" class="col"><div class="col-empty">←</div></div>
     <div id="col-detail" class="col"><div class="col-empty">←</div></div>
   </div>
-  <div id="kbd-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);align-items:center;justify-content:center" onclick="toggleKbdOverlay()">
+  <div id="cmd-bar" class="hidden">
+    <div id="cmd-bar-row1"></div>
+    <div id="cmd-bar-row2"></div>
+  </div>
+  <div id="kbd-overlay" data-hides-cmdbar style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);align-items:center;justify-content:center" onclick="toggleKbdOverlay()">
     <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px 28px;min-width:340px;max-width:480px" onclick="event.stopPropagation()">
       <div style="font-size:11px;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:14px">Keyboard Shortcuts</div>
       <div style="font-size:10px;font-weight:600;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:6px">Navigation</div>
@@ -119,7 +122,7 @@
     </div>
   </div>
 
-  <div id="diff-overlay" class="fullscreen-page">
+  <div id="diff-overlay" data-hides-cmdbar class="fullscreen-page">
     <div class="fp-header">
       <button class="fp-back" onclick="spHandleBack()">←</button>
       <span class="fp-title">System Prompt</span>
