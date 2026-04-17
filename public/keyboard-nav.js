@@ -1,7 +1,22 @@
+// ── Keyboard shortcuts overlay ──
+function toggleKbdOverlay() {
+  const el = document.getElementById('kbd-overlay');
+  if (!el) return;
+  el.style.display = el.style.display === 'none' ? 'flex' : 'none';
+}
+
 // ── Keyboard navigation ──
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   const key = e.key;
+
+  // kbd overlay: ? to open, Escape to close (highest priority after input guard)
+  const kbdOverlay = document.getElementById('kbd-overlay');
+  if (kbdOverlay && kbdOverlay.style.display !== 'none') {
+    if (key === 'Escape' || key === '?') { toggleKbdOverlay(); e.preventDefault(); return; }
+    return; // swallow all keys while overlay is open
+  }
+  if (key === '?') { toggleKbdOverlay(); e.preventDefault(); return; }
 
   // Tab switching: 1=Dashboard, 2=Usage, 3=System Prompt
   const tabMap = { '1': 'dashboard', '2': 'usage', '3': 'sysprompt' };
@@ -69,6 +84,12 @@ document.addEventListener('keydown', (e) => {
   if (key === 'Enter' && focusedCol === 'sections' && selectedSection) { enterFocusedMode(); e.preventDefault(); return; }
   // T11: open filter in non-focused timeline view
   if (key === '/' && selectedSection === 'timeline') { openTlFilter(); e.preventDefault(); return; }
+  // Escape in main mode → move left one column
+  if (key === 'Escape') {
+    const leftOf = { sessions: 'projects', turns: 'sessions', sections: 'turns' };
+    if (leftOf[focusedCol]) { setFocus(leftOf[focusedCol]); e.preventDefault(); }
+    return;
+  }
   if (!['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(key)) return;
   e.preventDefault();
 

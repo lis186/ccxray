@@ -205,24 +205,41 @@ function setSessionFilter(mode) {
 }
 
 function applySessionFilter() {
+  let anyVisible = false;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
     // Pinned sessions are always visible
-    if (pinnedSessions.has(sid)) { el.style.display = ''; return; }
+    if (pinnedSessions.has(sid)) { el.style.display = ''; anyVisible = true; return; }
     // Project filter still applies
     if (selectedProjectName) {
       const sess = sessionsMap.get(sid);
       const projName = getProjectName(sess ? sess.cwd : null);
       if (projName !== selectedProjectName) { el.style.display = 'none'; return; }
     }
-    if (sessionFilterMode === 'all') { el.style.display = ''; return; }
+    if (sessionFilterMode === 'all') { el.style.display = ''; anyVisible = true; return; }
     const status = getStatusClass(sid);
     if (sessionFilterMode === 'active') {
       el.style.display = status === 'sdot-stream' ? '' : 'none';
+      if (status === 'sdot-stream') anyVisible = true;
     } else { // active+idle
       el.style.display = status !== 'sdot-off' ? '' : 'none';
+      if (status !== 'sdot-off') anyVisible = true;
     }
   });
+
+  // Placeholder when a project is selected but no sessions are visible
+  let placeholder = colSessions.querySelector('.sessions-empty');
+  if (!anyVisible && selectedProjectName) {
+    if (!placeholder) {
+      placeholder = document.createElement('div');
+      placeholder.className = 'sessions-empty col-empty';
+      placeholder.textContent = '此專案尚無記錄';
+      colSessions.appendChild(placeholder);
+    }
+    placeholder.style.display = '';
+  } else if (placeholder) {
+    placeholder.style.display = 'none';
+  }
 }
 
 function getStatusClass(sid) {
@@ -431,7 +448,7 @@ function renderProjectsCol() {
     '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
     '<option value="active"' + (projectFilterMode === 'active' ? ' selected' : '') + '>Active</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
-    '</select></div>';
+    '</select><span class="col-hint' + (focusedCol === 'projects' ? ' col-hint-active' : '') + '" id="hint-projects">↑↓ select · →</span></div>';
 
   const sorted = [...projectsMap.values()].sort((a, b) => {
     // Sort by: pinned first, then status (streaming > idle > off), then last activity
@@ -464,6 +481,67 @@ function renderProjectsCol() {
       '</div>';
   }
   colProjects.innerHTML = html;
+}
+
+// Returns the first project in sorted order (pinned → streaming → active → lastId)
+function getFirstProject() {
+  return [...projectsMap.values()].sort((a, b) => {
+    const pa = pinnedProjects.has(a.name) ? 0 : 1;
+    const pb = pinnedProjects.has(b.name) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    const sa = getStatusPriority(getProjectStatusClass(a));
+    const sb = getStatusPriority(getProjectStatusClass(b));
+    if (sa !== sb) return sa - sb;
+    return (b.lastId || '').localeCompare(a.lastId || '');
+  })[0] || null;
+}
+
+// Returns sessions for a project that are visible under the current session filter
+function getVisibleSessions(projectName) {
+  const proj = projectsMap.get(projectName);
+  if (!proj) return [];
+  return [...proj.sessionIds]
+    .map(sid => ({ sid, ...sessionsMap.get(sid) }))
+    .filter(sess => {
+      if (pinnedSessions.has(sess.sid)) return true;
+      if (sessionFilterMode === 'all') return true;
+      const status = getStatusClass(sess.sid);
+      if (sessionFilterMode === 'active') return status === 'sdot-stream';
+      return status !== 'sdot-off'; // active+idle
+    });
+}
+
+// Auto-select logic on initial load: cascade based on session count / streaming state
+function initAutoSelect() {
+  const firstProj = getFirstProject();
+  if (!firstProj) return;
+  selectProject(firstProj.name);
+
+  const sessions = getVisibleSessions(firstProj.name);
+
+  // Priority 1: streaming session
+  const streaming = sessions.find(s => getStatusClass(s.sid) === 'sdot-stream');
+  if (streaming) {
+    selectSessionAndLatestTurn(streaming.sid);
+    setFocus('turns');
+    return;
+  }
+
+  // Priority 2: exactly one visible session
+  if (sessions.length === 1) {
+    selectSessionAndLatestTurn(sessions[0].sid);
+    setFocus('turns');
+    return;
+  }
+
+  // Priority 3: multiple sessions → stop at sessions column
+  if (sessions.length > 1) {
+    setFocus('sessions');
+    return;
+  }
+
+  // Priority 4: no sessions → stay at projects
+  // (selectProject already set focus to 'projects')
 }
 
 function selectProject(name) {
@@ -500,6 +578,16 @@ function setFocus(col) {
   colSessions.classList.toggle('col-focused', col === 'sessions');
   colTurns.classList.toggle('col-focused', col === 'turns');
   colSections.classList.toggle('col-focused', col === 'sections');
+  updateColHints(col);
+}
+
+function updateColHints(col) {
+  const hintIds = ['hint-projects', 'hint-sessions', 'hint-turns', 'hint-sections'];
+  const cols = ['projects', 'sessions', 'turns', 'sections'];
+  hintIds.forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('col-hint-active', cols[i] === col);
+  });
 }
 
 function getVisibleTurnIndices() {

@@ -32,6 +32,7 @@
       <div id="status-cluster">
         <span id="topbar-status"></span>
       </div>
+      <button id="hotkeys-btn" onclick="toggleKbdOverlay()" title="Keyboard shortcuts (?)">hotkeys</button>
       <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode">☀️</button>
     </div>
     <div id="topbar-row2">
@@ -85,11 +86,39 @@
   </div>
   <div id="columns">
     <div id="col-projects" class="col"><div class="col-title">Projects</div></div>
-    <div id="col-sessions" class="col"><div class="col-title" style="display:flex;align-items:center;gap:6px">Sessions <select id="sess-filter-select" onchange="setSessionFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer"><option value="active">Active</option><option value="active+idle" selected>Active+Idle</option><option value="all">All</option></select></div></div>
-    <div id="col-turns" class="col"><div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div></div>
+    <div id="col-sessions" class="col"><div class="col-title" style="display:flex;align-items:center;gap:6px">Sessions <select id="sess-filter-select" onchange="setSessionFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer"><option value="active">Active</option><option value="active+idle" selected>Active+Idle</option><option value="all">All</option></select><span class="col-hint" id="hint-sessions">↑↓ · ← · →</span></div></div>
+    <div id="col-turns" class="col"><div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span><span class="col-hint" id="hint-turns">↑↓ · ← · →</span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div></div>
     <div id="col-sections" class="col"><div class="col-empty">←</div></div>
     <div id="col-detail" class="col"><div class="col-empty">←</div></div>
   </div>
+  <div id="kbd-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);align-items:center;justify-content:center" onclick="toggleKbdOverlay()">
+    <div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px 28px;min-width:340px;max-width:480px" onclick="event.stopPropagation()">
+      <div style="font-size:11px;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase;margin-bottom:14px">Keyboard Shortcuts</div>
+      <div style="font-size:10px;font-weight:600;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:6px">Navigation</div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px">
+        <tr><td style="color:var(--dim);padding:2px 0;width:110px"><kbd>↑ ↓</kbd></td><td style="color:var(--text)">select item</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>← →</kbd></td><td style="color:var(--text)">move between columns</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>Esc</kbd></td><td style="color:var(--text)">go left one column</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td style="color:var(--text)">switch tab — Dashboard / Usage / System Prompt</td></tr>
+      </table>
+      <div style="font-size:10px;font-weight:600;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:6px">Focused Mode</div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:12px;font-size:12px">
+        <tr><td style="color:var(--dim);padding:2px 0;width:110px"><kbd>Enter</kbd></td><td style="color:var(--text)">enter focused mode</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>Esc</kbd></td><td style="color:var(--text)">exit focused mode</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>↑ ↓</kbd></td><td style="color:var(--text)">switch section</td></tr>
+      </table>
+      <div style="font-size:10px;font-weight:600;color:var(--accent);letter-spacing:0.05em;text-transform:uppercase;margin-bottom:6px">Timeline</div>
+      <table style="width:100%;border-collapse:collapse;margin-bottom:4px;font-size:12px">
+        <tr><td style="color:var(--dim);padding:2px 0;width:110px"><kbd>/</kbd></td><td style="color:var(--text)">filter steps</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>e</kbd> <kbd>E</kbd></td><td style="color:var(--text)">jump to next / prev error step</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>t</kbd></td><td style="color:var(--text)">jump to thinking step</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>h</kbd></td><td style="color:var(--text)">jump to human message</td></tr>
+        <tr><td style="color:var(--dim);padding:2px 0"><kbd>]</kbd></td><td style="color:var(--text)">jump to text step</td></tr>
+      </table>
+      <div style="margin-top:12px;font-size:10px;color:var(--dim);text-align:right">press <kbd>?</kbd> or <kbd>Esc</kbd> to close</div>
+    </div>
+  </div>
+
   <div id="diff-overlay" class="fullscreen-page">
     <div class="fp-header">
       <button class="fp-back" onclick="spHandleBack()">←</button>

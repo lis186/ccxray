@@ -624,20 +624,10 @@ fetch('/_api/entries').then(r => r.json()).then(data => {
   if (_hasDeepLink) {
     applyDeepLink();
   } else if (sessionsMap.size) {
-    // Auto-select the first project (top of sorted list)
-    const firstProj = [...projectsMap.values()].sort((a, b) => {
-      const pa = pinnedProjects.has(a.name) ? 0 : 1;
-      const pb = pinnedProjects.has(b.name) ? 0 : 1;
-      if (pa !== pb) return pa - pb;
-      const sa = getStatusPriority(getProjectStatusClass(a));
-      const sb = getStatusPriority(getProjectStatusClass(b));
-      if (sa !== sb) return sa - sb;
-      return (b.lastId || '').localeCompare(a.lastId || '');
-    })[0];
-    selectProject(firstProj ? firstProj.name : null);
+    initAutoSelect();
   }
   applySessionFilter();
-  setFocus(_hasDeepLink ? focusedCol : 'projects');
+  setFocus(focusedCol);
   // Restore tab from URL param after deep-link resolution
   if (typeof restoreTabFromUrl === 'function') restoreTabFromUrl();
 });
