@@ -53,6 +53,13 @@ function resolveProxyAgent(protocol, env) {
   return createTunnelAgent(proxyUrl);
 }
 
+// ── Model name prefix rewriting ──────────────────────────────────────
+function applyModelPrefix(parsedBody, prefix) {
+  if (!prefix || !parsedBody?.model || parsedBody.model.startsWith(prefix)) return false;
+  parsedBody.model = prefix + parsedBody.model;
+  return true;
+}
+
 // ── Strip injected proxy stats from conversation history ─────────────
 const STATS_PATTERN = /\n\n---\n📊 Context: .+$/s;
 
@@ -80,7 +87,8 @@ function forwardRequest(ctx) {
 
   // Remove previously injected stats so they don't accumulate in conversation
   const statsStripped = stripInjectedStats(parsedBody);
-  const bodyToSend = (ctx.bodyModified || statsStripped) ? Buffer.from(JSON.stringify(parsedBody)) : rawBody;
+  const modelPrefixed = applyModelPrefix(parsedBody, config.REWRITE_MODEL_PREFIX);
+  const bodyToSend = (ctx.bodyModified || statsStripped || modelPrefixed) ? Buffer.from(JSON.stringify(parsedBody)) : rawBody;
 
   const transport = config.ANTHROPIC_PROTOCOL === 'http' ? http : https;
   const tunnelAgent = resolveProxyAgent(config.ANTHROPIC_PROTOCOL, process.env);
@@ -467,4 +475,4 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
   });
 }
 
-module.exports = { forwardRequest, resolveProxyAgent };
+module.exports = { forwardRequest, resolveProxyAgent, applyModelPrefix };

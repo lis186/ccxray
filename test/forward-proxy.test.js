@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveProxyAgent } = require('../server/forward');
+const { resolveProxyAgent, applyModelPrefix } = require('../server/forward');
 
 describe('resolveProxyAgent', () => {
   it('returns null when no proxy env vars are set', () => {
@@ -31,5 +31,28 @@ describe('resolveProxyAgent', () => {
       https_proxy: 'http://lower.proxy:3128',
     });
     assert.equal(agent._proxyUrl, 'http://upper.proxy:3128');
+  });
+});
+
+describe('applyModelPrefix', () => {
+  it('returns false when prefix is empty', () => {
+    const body = { model: 'claude-sonnet-4-6' };
+    assert.equal(applyModelPrefix(body, ''), false);
+    assert.equal(body.model, 'claude-sonnet-4-6');
+  });
+
+  it('returns false when model already starts with prefix', () => {
+    const body = { model: 'databricks-claude-sonnet-4-6' };
+    assert.equal(applyModelPrefix(body, 'databricks-'), false);
+  });
+
+  it('prepends prefix and returns true', () => {
+    const body = { model: 'claude-sonnet-4-6' };
+    assert.equal(applyModelPrefix(body, 'databricks-'), true);
+    assert.equal(body.model, 'databricks-claude-sonnet-4-6');
+  });
+
+  it('returns false when parsedBody has no model', () => {
+    assert.equal(applyModelPrefix({}, 'databricks-'), false);
   });
 });
