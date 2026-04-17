@@ -235,14 +235,15 @@ document.addEventListener('keydown', (e) => {
   if (focusedCol === 'projects') {
     if (key === 'ArrowRight') { setFocus('sessions'); return; }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
-      // Build list from visible DOM items to respect active filter and sort order
-      const projItems = [null, ...[...colProjects.querySelectorAll('.project-item')].map(el => {
+      const projItems = [...colProjects.querySelectorAll('.project-item')].map(el => {
         const m = el.getAttribute('onclick')?.match(/selectProject\((.+)\)/);
         if (m) try { return JSON.parse(m[1].replace(/&quot;/g, '"')); } catch(e) {}
         return null;
-      }).filter(n => n !== null)];
+      }).filter(n => n !== null);
+      if (!projItems.length) return;
       const cur = projItems.indexOf(selectedProjectName);
-      const next = Math.max(0, Math.min(projItems.length - 1, cur + (key === 'ArrowDown' ? 1 : -1)));
+      const effectiveCur = cur === -1 ? (key === 'ArrowDown' ? -1 : 0) : cur;
+      const next = Math.max(0, Math.min(projItems.length - 1, effectiveCur + (key === 'ArrowDown' ? 1 : -1)));
       if (next === cur) return;
       selectProject(projItems[next]);
     }
