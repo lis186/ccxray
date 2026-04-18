@@ -5,10 +5,11 @@ let spSelectedAgent = ''; // currently selected agent key
 let spVersions = [];      // filtered versions for selected agent
 let spSelectedIdx = 0;    // index into spVersions
 let spMode = 'content';   // 'content' or 'diff'
+let spFocusedCol = 'agents'; // 'agents' | 'versions'
 let hideMinorEdit = false;
 let currentHunkIdx = 0;
 
-const AGENT_ORDER = ['claude-code', 'general-purpose', 'explore', 'web-search', 'title-generator', 'name-generator'];
+const AGENT_ORDER = ['orchestrator', 'general-purpose', 'plan', 'explore', 'web-search', 'codex-rescue', 'claude-code-guide', 'summarizer', 'title-generator', 'name-generator', 'translator', 'sdk-agent'];
 
 function spRelativeTime(dateStr) {
   if (!dateStr) return '';
@@ -56,6 +57,7 @@ function renderAgentList() {
     html += '</div>';
   }
   container.innerHTML = html;
+  container.classList.toggle('focused', spFocusedCol === 'agents');
 }
 
 function selectAgent(agentKey) {
@@ -117,6 +119,7 @@ async function openSystemPromptPanel(forceDiff) {
 
   spSelectedIdx = 0;
   spMode = hasBadge ? 'diff' : 'content';
+  spFocusedCol = 'agents';
   renderAgentList();
   renderVersionList();
   if (spVersions.length) loadSelectedVersion();
@@ -175,6 +178,7 @@ function renderVersionList() {
     html += '</div>';
   }
   container.innerHTML = html;
+  container.classList.toggle('focused', spFocusedCol === 'versions');
   // Scroll active item into view
   const activeEl = container.querySelector('.sp-version-item.active');
   if (activeEl) activeEl.scrollIntoView({ block: 'nearest' });
@@ -304,13 +308,14 @@ function updateModeIndicator() {
 function updateStatusBar() {
   const bar = document.getElementById('sp-status-bar');
   if (!bar) return;
-  if (spMode === 'content') {
-    bar.textContent = '←→ agent   ↑↓ version   Space: switch to DIFF';
+  const modeToggle = spMode === 'content' ? 'Space: DIFF' : 'Space: CONTENT';
+  const hunks = document.querySelectorAll('.diff-hunk');
+  const total = hunks.length;
+  const hunkInfo = spMode === 'diff' && total > 0 ? `  j/k: hunk ${currentHunkIdx + 1}/${total}` : '';
+  if (spFocusedCol === 'agents') {
+    bar.textContent = `↑↓ agent   →: versions   ${modeToggle}`;
   } else {
-    const hunks = document.querySelectorAll('.diff-hunk');
-    const total = hunks.length;
-    const hunkInfo = total > 0 ? `  j/k: hunk ${currentHunkIdx + 1}/${total}` : '';
-    bar.textContent = `←→ agent   ↑↓ version   Space: switch to CONTENT${hunkInfo}`;
+    bar.textContent = `←: agents   ↑↓ version   ${modeToggle}${hunkInfo}`;
   }
 }
 
@@ -395,18 +400,36 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'ArrowLeft') {
     e.preventDefault();
-    const idx = spAgents.findIndex(a => a.key === spSelectedAgent);
-    if (idx > 0) selectAgent(spAgents[idx - 1].key);
+    if (spFocusedCol === 'versions') {
+      spFocusedCol = 'agents';
+      renderAgentList();
+      renderVersionList();
+      updateStatusBar();
+    }
   } else if (e.key === 'ArrowRight') {
     e.preventDefault();
-    const idx = spAgents.findIndex(a => a.key === spSelectedAgent);
-    if (idx < spAgents.length - 1) selectAgent(spAgents[idx + 1].key);
+    if (spFocusedCol === 'agents') {
+      spFocusedCol = 'versions';
+      renderAgentList();
+      renderVersionList();
+      updateStatusBar();
+    }
   } else if (e.key === 'ArrowDown') {
     e.preventDefault();
-    if (spSelectedIdx < spVersions.length - 1) selectVersion(spSelectedIdx + 1);
+    if (spFocusedCol === 'agents') {
+      const idx = spAgents.findIndex(a => a.key === spSelectedAgent);
+      if (idx < spAgents.length - 1) selectAgent(spAgents[idx + 1].key);
+    } else {
+      if (spSelectedIdx < spVersions.length - 1) selectVersion(spSelectedIdx + 1);
+    }
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
-    if (spSelectedIdx > 0) selectVersion(spSelectedIdx - 1);
+    if (spFocusedCol === 'agents') {
+      const idx = spAgents.findIndex(a => a.key === spSelectedAgent);
+      if (idx > 0) selectAgent(spAgents[idx - 1].key);
+    } else {
+      if (spSelectedIdx > 0) selectVersion(spSelectedIdx - 1);
+    }
   } else if (e.key === ' ') {
     e.preventDefault();
     toggleMode();

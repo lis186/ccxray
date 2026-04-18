@@ -454,7 +454,7 @@ function addEntry(e) {
 }
 
 // Initialize badge on load
-setTimeout(() => updateSysPromptBadge('claude-code'), 500);
+setTimeout(() => updateSysPromptBadge('orchestrator'), 500);
 startQuotaTicker();
 // Tab restoration happens after deep-link resolution (see _loading=false path)
 

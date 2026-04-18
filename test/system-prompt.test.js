@@ -7,6 +7,7 @@ const {
   splitB2IntoBlocks,
   computeBlockDiff,
   computeUnifiedDiff,
+  _resetUnknownAgentSeen,
 } = require('../server/system-prompt');
 
 describe('system-prompt', () => {
@@ -16,22 +17,40 @@ describe('system-prompt', () => {
       assert.deepEqual(extractAgentType([]), { key: 'unknown', label: 'Unknown' });
     });
 
-    it('detects Claude Code from b2', () => {
+    it('detects orchestrator from b2', () => {
       const sys = [
         { text: 'billing' },
         { text: 'identity' },
         { text: 'You are an interactive agent that helps users' },
       ];
-      assert.equal(extractAgentType(sys).key, 'claude-code');
+      assert.equal(extractAgentType(sys).key, 'orchestrator');
     });
 
-    it('detects Claude Code from b1 fallback', () => {
-      const sys = [
+    it('uses b1 identity only when b2 is empty', () => {
+      // B1 is branding shared by every sub-agent — only trust it as identity
+      // when B2 has no content (short-form prompt variant).
+      const shortForm = [
+        { text: 'billing' },
+        { text: 'You are Claude Code, ...' },
+        { text: '' },
+      ];
+      assert.equal(extractAgentType(shortForm).key, 'orchestrator');
+
+      const sdkShortForm = [
+        { text: 'billing' },
+        { text: "You are a Claude agent, built on Anthropic's Claude Agent SDK." },
+        { text: '' },
+      ];
+      assert.equal(extractAgentType(sdkShortForm).key, 'sdk-agent');
+
+      // When B2 has content, the sub-agent must NOT fall back to claude-code
+      // just because B1 says "You are Claude Code…" — that branding is shared.
+      const subAgent = [
         { text: 'billing' },
         { text: 'You are Claude Code, ...' },
         { text: 'Some other text' },
       ];
-      assert.equal(extractAgentType(sys).key, 'claude-code');
+      assert.notEqual(extractAgentType(subAgent).key, 'orchestrator');
     });
 
     it('detects general-purpose subagent', () => {
@@ -80,6 +99,35 @@ describe('system-prompt', () => {
       const result = extractAgentType(sys);
       assert.equal(result.key, 'code-reviewer');
       assert.equal(result.label, 'Code Reviewer');
+    });
+
+    it('warns once per unique unknown agent (dedup)', () => {
+      _resetUnknownAgentSeen();
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (msg) => warnings.push(msg);
+      try {
+        const sysA = [{ text: 'billing' }, { text: 'identity' },
+          { text: 'You are a database migration expert that handles schema changes' }];
+        const sysB = [{ text: 'billing' }, { text: 'identity' },
+          { text: 'You are a security auditor that reviews code for vulnerabilities' }];
+
+        extractAgentType(sysA);
+        extractAgentType(sysA);              // same B2 — dedup
+        extractAgentType(sysB);              // different B2 — new warn
+        extractAgentType(sysB);              // dedup
+
+        // Known agents should never warn
+        extractAgentType([{ text: 'b' }, { text: 'i' },
+          { text: 'You are an interactive agent' }]);
+
+        assert.equal(warnings.length, 2, `expected 2 warnings, got ${warnings.length}`);
+        assert.match(warnings[0], /database-migration-expert/);
+        assert.match(warnings[1], /security-auditor/);
+      } finally {
+        console.warn = originalWarn;
+        _resetUnknownAgentSeen();
+      }
     });
   });
 

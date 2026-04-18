@@ -320,7 +320,7 @@ evtSource.onmessage = (ev) => {
       return;
     }
     if (data._type === 'version_detected') {
-      updateSysPromptBadge(data.agentKey || 'claude-code');
+      updateSysPromptBadge(data.agentKey || 'orchestrator');
       const banner = document.getElementById('version-banner');
       if (banner) {
         banner.style.display = 'flex';

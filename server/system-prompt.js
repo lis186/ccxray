@@ -1,6 +1,18 @@
 'use strict';
 
+const crypto = require('crypto');
 const { safeCountTokens } = require('./helpers');
+
+// Dedup key: md5(b2) prefix. Logged B2 prompts rarely change; Set growth is bounded in practice.
+const UNKNOWN_AGENT_SEEN = new Set();
+
+function logUnknownAgent(b2, key) {
+  const hash = crypto.createHash('md5').update(b2 || '').digest('hex').slice(0, 12);
+  if (UNKNOWN_AGENT_SEEN.has(hash)) return;
+  UNKNOWN_AGENT_SEEN.add(hash);
+  const preview = (b2 || '').slice(0, 120).replace(/\s+/g, ' ').trim();
+  console.warn(`\x1b[33m[classify] new agent bucket key="${key}" — register in KNOWN_AGENTS? B2=${JSON.stringify(preview)}\x1b[0m`);
+}
 
 // ── System prompt diff helpers ───────────────────────────────────────
 
@@ -12,12 +24,17 @@ const BLOCK_OWNERS_SERVER = {
 
 // Known agent types by b2 prefix. Order matters — first match wins.
 const KNOWN_AGENTS = [
-  { prefix: 'You are an interactive agent',                key: 'claude-code',       label: 'Claude Code' },
+  { prefix: 'You are an interactive agent',                key: 'orchestrator',      label: 'Orchestrator' },
   { prefix: 'You are an agent for Claude Code',            key: 'general-purpose',   label: 'General Purpose' },
   { prefix: 'You are a file search specialist',            key: 'explore',           label: 'Explore' },
   { prefix: 'You are an assistant for performing a web',   key: 'web-search',        label: 'Web Search' },
   { prefix: 'Generate a concise',                          key: 'title-generator',   label: 'Title Generator' },
   { prefix: 'Generate a short kebab-case name',            key: 'name-generator',    label: 'Name Generator' },
+  { prefix: 'You are a software architect and planning',   key: 'plan',              label: 'Plan' },
+  { prefix: 'You are a thin forwarding wrapper around the Codex', key: 'codex-rescue', label: 'Codex Rescue' },
+  { prefix: 'You are the Claude guide agent',              key: 'claude-code-guide', label: 'Claude Code Guide' },
+  { prefix: 'You are a helpful AI assistant tasked with summarizing', key: 'summarizer', label: 'Summarizer' },
+  { prefix: 'You are a translator',                        key: 'translator',        label: 'Translator' },
 ];
 
 function extractAgentType(sys) {
@@ -30,16 +47,24 @@ function extractAgentType(sys) {
     if (b2.startsWith(a.prefix)) return { key: a.key, label: a.label };
   }
 
-  // Fallback: older versions put the identity in b1
-  if (b1.startsWith('You are Claude Code')) return { key: 'claude-code', label: 'Claude Code' };
+  // Short-form prompt (no B2): trust B1 identity only when B2 is absent.
+  // Current Claude Code keeps B1 = "You are Claude Code…" branding for every
+  // sub-agent, so B1 is NOT a reliable signal when B2 has content.
+  if (!b2) {
+    if (b1.startsWith('You are Claude Code')) return { key: 'orchestrator', label: 'Orchestrator' };
+    if (b1.startsWith('You are a Claude agent, built on Anthropic')) return { key: 'sdk-agent', label: 'SDK Agent' };
+  }
 
   // Regex fallback for unknown future agent types
   const m = b2.match(/^You are (?:a |an |the )?(.+?)(?:\s+for\s|\s+that\s|\s+specializ|\s*[,.]|\n)/i);
   if (m) {
     const role = m[1].trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '').slice(0, 30);
     const label = m[1].trim().replace(/\b\w/g, c => c.toUpperCase());
-    return { key: role || 'agent', label: label || 'Agent' };
+    const key = role || 'agent';
+    logUnknownAgent(b2, key);
+    return { key, label: label || 'Agent' };
   }
+  logUnknownAgent(b2, 'agent');
   return { key: 'agent', label: 'Agent' };
 }
 
@@ -160,4 +185,5 @@ module.exports = {
   splitB2IntoBlocks,
   computeBlockDiff,
   computeUnifiedDiff,
+  _resetUnknownAgentSeen: () => UNKNOWN_AGENT_SEEN.clear(),
 };

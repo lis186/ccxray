@@ -31,7 +31,7 @@ function handleApiRoutes(clientReq, clientRes) {
   if (diffMatch) {
     const params = new URLSearchParams(diffMatch[1]);
     const verA = params.get('a'), verB = params.get('b');
-    const agentKey = params.get('agent') || 'claude-code';
+    const agentKey = params.get('agent') || 'orchestrator';
     // Look up by coreHash (new key format) with fallback to legacy version key
     const lookup = (v) => store.versionIndex.get(`${agentKey}::${v}`) || [...store.versionIndex.values()].find(e => e.agentKey === agentKey && e.version === v);
     const entA = lookup(verA), entB = lookup(verB);
