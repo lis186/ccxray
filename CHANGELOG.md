@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Breaking
+
+- **Removed `≈N turns left` prediction from session cards.** Empirical backtest against 15 real sessions showed the predictor's median absolute percentage error was 43% (mean 87%), with worst-case 10× overestimate. Root cause was structural: a 5-turn arithmetic mean of `tokens.messages` delta is fundamentally unstable against conversations with phase shifts (heavy file reads → mid-session tool use → light end-of-session wrap-up). No repair path was found — Theil-Sen/robust variants tested worse (MAPE 135%). The UX lie (showing 367 turns remaining when ctx was already at 83%) was the original bug trigger. Replaced with factual signals instead of predictions; see upcoming cache TTL countdown + auto-compact reference line features. See `openspec/changes/remove-prediction-add-countdowns/`.
+
+### Added
+
+- **Rate-limit header persistence** (`server/ratelimit-log.js`): `anthropic-ratelimit-*` response headers are now appended to `~/.ccxray/ratelimit-samples.jsonl` (deduped) for future calibration of plan-specific quotas. Analyse with `node scripts/analyze-ratelimit-samples.mjs`.
+
 ## 1.6.0
 
 ### Added

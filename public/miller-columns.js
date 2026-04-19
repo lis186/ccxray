@@ -441,8 +441,7 @@ function renderSessionItem(sess, sid) {
     '</div>' +
     '<div class="si-row2">' + escapeHtml(shortModel) + ' · ' + sess.count + 't · <span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     toolRow +
-    '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>' +
-    renderPredictionRow(sid);
+    '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>';
 }
 
 function renderProjectsCol() {
@@ -651,41 +650,6 @@ function renderBarChart(el, turns) {
   el.innerHTML = svg;
 }
 
-function predictRemainingTurns(sid) {
-  const turns = allEntries.filter(e =>
-    e.sessionId === sid && !e.isSubagent &&
-    e.usage && (e.usage.input_tokens || 0) > 0 &&
-    e.tokens && e.tokens.messages > 0
-  );
-  if (turns.length < 3) return null;
-
-  // Find last compaction and only use turns after it
-  let startIdx = 0;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i].isCompacted) { startIdx = i; break; }
-  }
-  const recent = turns.slice(startIdx);
-  if (recent.length < 2) return null;
-
-  // Take last 5 turns, compute message token increments
-  const window = recent.slice(-5);
-  const deltas = [];
-  for (let i = 1; i < window.length; i++) {
-    deltas.push((window[i].tokens.messages || 0) - (window[i - 1].tokens.messages || 0));
-  }
-  if (!deltas.length) return null;
-  const avgDelta = deltas.reduce((s, d) => s + d, 0) / deltas.length;
-  if (avgDelta <= 0) return null;
-
-  const last = recent[recent.length - 1];
-  const maxCtx = last.maxContext || DEFAULT_MAX_CTX;
-  const currentTotal = (last.tokens.system || 0) + (last.tokens.tools || 0) + (last.tokens.messages || 0);
-  const remaining = maxCtx - currentTotal;
-  if (remaining <= 0) return 0;
-
-  return Math.round(remaining / avgDelta);
-}
-
 function computeSessionScorecard(sid) {
   const turns = allEntries.filter(e =>
     e.sessionId === sid && !e.isSubagent && e.usage && (e.usage.input_tokens || 0) > 0
@@ -721,13 +685,6 @@ function computeSessionScorecard(sid) {
   const toolUtilization = availableTools > 0 ? (usedTools.size / availableTools * 100) : 0;
 
   return { cacheHitRate, contextEfficiency, compressionCount, toolUtilization, turnCount: turns.length };
-}
-
-function renderPredictionRow(sid) {
-  const remaining = predictRemainingTurns(sid);
-  if (remaining === null) return '';
-  const color = remaining <= 3 ? 'var(--red)' : remaining <= 8 ? 'var(--yellow)' : 'var(--dim)';
-  return '<div style="font-size:10px;color:' + color + ';margin-top:2px">≈' + remaining + ' turns left</div>';
 }
 
 // ── Scorecard hover card ──
