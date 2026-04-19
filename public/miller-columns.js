@@ -418,10 +418,17 @@ function renderSessionItem(sess, sid) {
     ? '<div class="si-tools">' + (topTools || totalCalls + ' calls') + '</div>'
     : '';
   const ctxPct = sess.latestMainCtxPct || 0;
+  const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   const ctxAlertHtml = ctxPct >= 90
     ? '<span class="ctx-alert ctx-alert-red">' + Math.round(ctxPct) + '%</span>'
     : ctxPct >= 80
     ? '<span class="ctx-alert ctx-alert-yellow">' + Math.round(ctxPct) + '%</span>'
+    : '';
+  // Thin ctx bar with auto-compact reference line; shown only once session has real context.
+  const ctxBarHtml = ctxPct > 0
+    ? '<div class="si-ctx-bar' + (ctxPct > compactPct ? ' over-compact' : '') + '"' +
+      ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%;--compact:' + compactPct + '%"' +
+      ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'
     : '';
   const isOnline = getStatusClass(sid) !== 'sdot-off';
   const isArmed = interceptSessionIds.has(sid);
@@ -441,7 +448,8 @@ function renderSessionItem(sess, sid) {
     '</div>' +
     '<div class="si-row2">' + escapeHtml(shortModel) + ' · ' + sess.count + 't · <span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     toolRow +
-    '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>';
+    '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>' +
+    ctxBarHtml;
 }
 
 function renderProjectsCol() {
