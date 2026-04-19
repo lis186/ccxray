@@ -51,6 +51,33 @@ describe('helpers', () => {
       assert.equal(usage.input_tokens, 0);
       assert.equal(usage.output_tokens, 0);
     });
+
+    it('preserves nested cache_creation ephemeral TTL split', () => {
+      const events = [
+        { type: 'message_start', message: { usage: {
+          input_tokens: 1,
+          cache_creation_input_tokens: 1632,
+          cache_read_input_tokens: 332655,
+          cache_creation: {
+            ephemeral_5m_input_tokens: 0,
+            ephemeral_1h_input_tokens: 1632,
+          },
+        }}},
+      ];
+      const usage = extractUsage(events);
+      assert.equal(usage.cache_creation.ephemeral_1h_input_tokens, 1632);
+      assert.equal(usage.cache_creation.ephemeral_5m_input_tokens, 0);
+    });
+
+    it('omits cache_creation when not present in response', () => {
+      const events = [
+        { type: 'message_start', message: { usage: {
+          input_tokens: 100, cache_creation_input_tokens: 0,
+        }}},
+      ];
+      const usage = extractUsage(events);
+      assert.equal(usage.cache_creation, undefined);
+    });
   });
 
   describe('totalContextTokens', () => {

@@ -72,6 +72,7 @@
   #qt-roi { font-size: 10px; color: var(--green); cursor: pointer; padding: 2px 6px; border: 1px solid var(--green); border-radius: 10px; }
   #qt-roi:hover { background: rgba(63,185,80,0.1); }
   #qt-chip { font-size: 10px; color: var(--dim); }
+  #qt-plan { font-size: 10px; color: var(--dim); cursor: help; }
   #row2-usage span, #row2-sysprompt span { font-size: 11px; color: var(--dim); }
 
   #columns { display: flex; flex: 1; min-height: 0; overflow: hidden; }
