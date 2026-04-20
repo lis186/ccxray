@@ -371,9 +371,9 @@ function addEntry(e) {
   const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
   const identityLine =
     '<div class="turn-identity"' + identityAttr + '>' +
+      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
       '<span class="turn-num">' + prefix + '</span>' +
       modelHtml +
-      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
       waitMark +
       critMarkerHtml +
       costHtml +

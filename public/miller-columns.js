@@ -513,7 +513,7 @@ function renderProjectsCol() {
     const rangeStr = firstDate === lastDate ? firstDate : firstDate + '—' + lastDate;
     const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
     html += '<div class="project-item' + (isSel ? ' selected' : '') + '" onclick="selectProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')">' +
-      '<div class="pi-name"><span class="sdot ' + statusClass + '"></span>' + escapeHtml(truncateMiddle(proj.name, 20)) + pinBtn + '</div>' +
+      '<div class="pi-name"><span class="sdot ' + statusClass + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
       '<div class="pi-meta">' + proj.sessionIds.size + ' sessions</div>' +
       '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(3) + '</div>' +
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
