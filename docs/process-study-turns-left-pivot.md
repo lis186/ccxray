@@ -672,6 +672,55 @@ graph TB
 
 ---
 
+## 附錄 E：跨層系列化設計的反面教材
+
+Phase 1–5 完成後、提 Phase 6 時觸發的第二次 pre-mortem 揭露一個反直覺結論：
+
+> **「系列感」≠「完全一致」**。同樣的物理常數可以跨層復用，但**相同的顏色不代表相同的語意**。
+
+### 三層的 use case 不同
+
+| Level | 目標 | Color 語意 |
+|---|---|---|
+| L1 session card | 跨 session 瀏覽找 focus | 「session 快爆了嗎？」決策信號 |
+| L2 turn card | session 內掃 turn 找異常 | 「這個 turn 異常嗎？」異常偵測 |
+| L3 turn detail | 單一 turn 深度分析 | 「當下該不該 compact？」決策信號 |
+
+### 若強行 unify L2 color 會發生什麼
+
+```
+假設統一為 ≥83.5% red：
+  session 到 85% 之後，L2 每個 turn card 都紅 → 眼球疲勞 → 紅色訊號失效
+  → 實際危險的 turn（96% spike）反而被淹沒
+```
+
+### 什麼該共用、什麼該區隔
+
+```
+共用（物理常數 / 視覺 vocabulary）:
+  • 83.5% tick 位置      → CSS var 單一來源
+  • tick 形狀、tooltip 用語
+  • 基本 color palette（var(--red) 等 token）
+
+區隔（依 use case）:
+  • Threshold 數值（L1/L3: 83.5/75；L2: 95/85）
+  • 是否套 recent-gate（L1 有，其他不需要）
+  • 顯示格式（L1: alert badge, L2: text, L3: big bar）
+```
+
+### 學到的 meta-rule
+
+> **先問「這層要解什麼問題」，再決定要不要跨層共用**。
+
+跨層共用的成本是**未來維護者看到「統一」就想「化簡」**。若沒有在 design.md 明確寫出「為何 L2 不能統一」，下一位 PR 作者會以為這是歷史包袱去「優化」，重蹈覆轍。
+
+對應 design.md Decision **D11**：
+- 在 code 裡留註解 `// per-turn anomaly detection; see D11 — do not unify`
+- 在 tests 裡加 case 防止回歸
+- 在 risks 寫 **R9**「未來 color unification 的誘惑」
+
+---
+
 ## 相關文件
 
 - [OpenSpec change: `remove-prediction-add-countdowns`](../openspec/changes/remove-prediction-add-countdowns/proposal.md) — 本次決策對應的實作計畫

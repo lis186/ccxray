@@ -123,23 +123,72 @@
 - [ ] 5.5.2.7 `CCXRAY_CACHE_NOTIFY=on|off` env 覆寫
 - [ ] 5.5.2.8 Permission denied → 靜默 fallback 到 Layer 1
 
-## Phase 6 — Silent Regression Detection（bonus, P2）
+## Phase 6 — Cross-Level Visual Harmonization
 
-- [ ] 6.1 `public/entry-rendering.js` 新增可疑事件偵測：
+Extends the 83.5% auto-compact landmark added at L1 (Phase 4) to L2 turn
+cards and L3 turn detail, so the context hierarchy reads as one series.
+Also applies a recent-gate on L1 colors to prevent sea-of-red on historical
+sessions. See design D10–D12.
+
+### 6.1 CSS variable for shared threshold
+
+- [x] 6.1.1 `public/settings.js` 設 `:root --compact-threshold` from settings.autoCompactPct
+- [x] 6.1.2 Fallback：`:root { --compact-threshold: 83.5%; }` 於 style.css 預設
+- [x] 6.1.3 Phase 4 的 `.si-ctx-bar::after` 改用 `var(--compact-threshold)`
+
+### 6.2 L2 turn card: tick on turn-ctx-bar
+
+- [x] 6.2.1 `.turn-ctx-bar` 設 position: relative
+- [x] 6.2.2 `.turn-ctx-bar::after` 位於 `var(--compact-threshold)`
+- [x] 6.2.3 Tick `top:-1px bottom:-1px width:1px` on parent（超出 3px bar，overflow visible）
+- [x] 6.2.4 `title="auto-compact at ~83.5%"` 加在 `.turn-ctx-bar`
+- [x] 6.2.5 註解 `entry-rendering.js` 的 thresholds：`// per-turn anomaly detection; see D11 — do not unify with L1/L3`
+
+### 6.3 L3 turn detail: tick on minimap
+
+- [x] 6.3.1 `.minimap::after` 純 CSS 實作，無需改 `renderMinimapHtml` JavaScript
+- [x] 6.3.2 Tick 位於 `top: var(--compact-threshold)` (minimap fills top-down：blocks→empty)
+- [x] 6.3.3 Minimap element 加 `title="auto-compact at ~X%"`
+
+### 6.4 L1 recent-gate
+
+- [x] 6.4.1 `recent = sess.lastReceivedAt && (Date.now() - sess.lastReceivedAt) < 60*60*1000`
+- [x] 6.4.2 `ctxAlertHtml` `!recent` → `.ctx-alert-historical` class (dim grey)
+- [x] 6.4.3 `.si-ctx-bar.historical` variant (dim ::before + dimmed ::after)
+- [x] 6.4.4 Cache countdown 由 Phase 5 的 `info.active` 檢查自動處理
+
+### 6.5 L1/L3 color threshold 調整（L2 不動）
+
+- [x] 6.5.1 `ctxAlertHtml` 改為 ≥83.5% red / ≥75% yellow，與 recent gate 結合
+- [x] 6.5.2 Alert 只在 ≥75% 顯示（historical 同理）— 保留「noteworthy only」semantic
+- [x] 6.5.3 **未動** `entry-rendering.js` 的 `>95`/`>85`；加 D11 reference 註解
+
+### 6.6 驗收
+
+- [ ] 6.6.1 Live session at 85% ctx → L1 alert red、L1 bar over-compact、L2 tick 可見、L3 tick 可見
+- [ ] 6.6.2 Historical session at 90% ctx → L1 dim (not red)、cache countdown 不顯示
+- [ ] 6.6.3 Turn with ctx 55% → L2 `ctx:55%` dim 色、bar 有 tick 但未跨過
+- [ ] 6.6.4 Turn with ctx 92% → L2 `ctx-warning` yellow（不動）
+- [ ] 6.6.5 Agent-browser 自動化：grep `--compact-threshold` in `getComputedStyle(:root)` = `'83.5%'`
+- [ ] 6.6.6 假設 Anthropic 改 0.835 → 0.80：改 `server/routes/api.js` 常數 + 重啟 server → 三層 tick 全部同時移動到 80%
+
+## Phase 7 — Silent Regression Detection（bonus, P2）
+
+- [ ] 7.1 `public/entry-rendering.js` 新增可疑事件偵測：
   - 條件：相鄰 turn `interval > 300s` + `cache_read < 1000` + `cache_creation > 10000`
   - 排除：req body 包含 `/compact` `/clear` `/model` 等 slash command 特徵
-- [ ] 6.2 同 session 累計計數器（`session.silentRegressionHits++`）
-- [ ] 6.3 達 3 次 → topbar banner：`⚠ Cache TTL looks shorter than expected — possible silent regression`
-- [ ] 6.4 Banner 可 dismiss；dismiss 狀態存 localStorage + 24h cooldown
-- [ ] 6.5 手動 QA 難（需真實 regression）；改寫 unit test：模擬三個可疑 entry sequence → 期待 banner 出現
+- [ ] 7.2 同 session 累計計數器（`session.silentRegressionHits++`）
+- [ ] 7.3 達 3 次 → topbar banner：`⚠ Cache TTL looks shorter than expected — possible silent regression`
+- [ ] 7.4 Banner 可 dismiss；dismiss 狀態存 localStorage + 24h cooldown
+- [ ] 7.5 手動 QA 難（需真實 regression）；改寫 unit test：模擬三個可疑 entry sequence → 期待 banner 出現
 
-## Phase 7 — Final Polish
+## Phase 8 — Final Polish
 
-- [ ] 7.1 `CHANGELOG.md` v1.7.0 完整 release note（移除 + 新增 + breaking note）
-- [ ] 7.2 README 截圖更新
-- [ ] 7.3 Cross-browser 測試：Safari / Chrome / Firefox / VS Code webview 各跑一次，確認 SVG ⚠ icon 正確、countdown 對齊不壞
-- [ ] 7.4 版本 bump：`package.json` 到 1.7.0
-- [ ] 7.5 發 release PR，關聯 `fix-turns-left-prediction` change（superseded）
+- [ ] 8.1 `CHANGELOG.md` v1.7.0 完整 release note（移除 + 新增 + breaking note）
+- [ ] 8.2 README 截圖更新
+- [ ] 8.3 Cross-browser 測試：Safari / Chrome / Firefox / VS Code webview 各跑一次，確認 SVG ⚠ icon 正確、countdown 對齊不壞
+- [ ] 8.4 版本 bump：`package.json` 到 1.7.0
+- [ ] 8.5 發 release PR，關聯 `fix-turns-left-prediction` change（superseded）
 
 ## Validation Checklist
 

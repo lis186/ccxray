@@ -1,4 +1,7 @@
 :root {
+    /* Auto-compact threshold (cross-level landmark). Overridden at runtime
+       by public/settings.js from /_api/settings.autoCompactPct. */
+    --compact-threshold: 83.5%;
     --bg: #0d1117; --surface: #161b22; --surface-hover: #1c2129; --surface-active: #1a2535; --border: #30363d;
     --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
     --green: #3fb950; --yellow: #d29922; --red: #f85149;
@@ -112,6 +115,19 @@
   .tl-with-minimap { display: flex; flex: 1; overflow: hidden; }
   .tl-scroll-area { flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; scroll-padding-block: 40px; }
   .minimap { width: 36px; flex-shrink: 0; position: relative; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; cursor: pointer; }
+  /* Auto-compact landmark: horizontal tick at 83.5% down from top (the minimap
+     fills top-down — blocks at top, empty below). Shared via --compact-threshold
+     so all three levels of the ctx hierarchy move together. See design D10. */
+  .minimap::after {
+    content: '';
+    position: absolute;
+    top: var(--compact-threshold);
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--text);
+    opacity: 0.45;
+    pointer-events: none;
+  }
   .minimap-cache-bar { display: flex; height: 4px; width: 100%; flex-shrink: 0; }
   .minimap-cache-bar > div { min-width: 1px; }
   .minimap-blocks { width: 100%; opacity: 0.5; transition: opacity 0.25s ease; overflow: hidden; }
@@ -174,6 +190,7 @@
   .ctx-alert { font-size: 10px; font-weight: bold; }
   .ctx-alert-yellow { color: var(--yellow); }
   .ctx-alert-red { color: var(--red); }
+  .ctx-alert-historical { color: var(--dim); font-weight: normal; opacity: 0.7; }
   .si-ctx-bar {
     position: relative;
     height: 2px;
@@ -195,7 +212,7 @@
   .si-ctx-bar::after {
     content: '';
     position: absolute;
-    left: var(--compact, 83.5%);
+    left: var(--compact-threshold);
     top: -1px; bottom: -1px;
     width: 1px;
     background: var(--dim);
@@ -203,6 +220,8 @@
   }
   .si-ctx-bar.over-compact::before { background: var(--red); }
   .si-ctx-bar.over-compact::after { background: var(--red); opacity: 1; }
+  .si-ctx-bar.historical::before { background: var(--dim); opacity: 0.5; }
+  .si-ctx-bar.historical::after { opacity: 0.4; }
   .si-cache { font-size: 10px; margin-top: 3px; font-variant-numeric: tabular-nums; }
   .si-cache.cache-far { color: var(--dim); }
   .si-cache.cache-near { color: var(--yellow); }
@@ -265,8 +284,21 @@
   #scroll-toggle .scroll-on.active { color: var(--green); background: rgba(63,185,80,0.15); }
   #scroll-toggle .scroll-off.active { color: var(--red); background: rgba(248,81,73,0.15); }
   #session-tool-bar { padding: 4px 10px; font-size: 10px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; overflow: hidden; white-space: nowrap; }
-  .turn-ctx-bar { margin-top: 3px; }
-  .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: hidden; display: flex; }
+  .turn-ctx-bar { margin-top: 3px; position: relative; }
+  .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: visible; display: flex; position: relative; }
+  /* Cross-level auto-compact landmark (see design D10). Tick height exceeds bar
+     so it stays visible above the 3px color segments. L2 keeps its own per-turn
+     color thresholds (D11) — this is just the shared visual landmark. */
+  .turn-ctx-bar::after {
+    content: '';
+    position: absolute;
+    left: var(--compact-threshold);
+    top: -1px; bottom: -1px;
+    width: 1px;
+    background: var(--dim);
+    opacity: 0.7;
+    pointer-events: none;
+  }
   .turn-ctx-labels { display: flex; font-size: 9px; margin-top: 1px; line-height: 1; }
   .turn-ctx-pct { color: var(--dim); margin-left: auto; }
   .turn-ctx-pct.ctx-critical { color: var(--red); }

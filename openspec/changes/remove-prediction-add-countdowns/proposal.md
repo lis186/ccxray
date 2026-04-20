@@ -79,6 +79,8 @@
   - `CCXRAY_CACHE_NOTIFY=on|off` env 覆寫
   - Permission denied → 靜默 fallback 到 Layer 1
 
+- **`cross-level-context-vocabulary`** — 三層 context 視覺化（session card / turn card / turn detail）共用 `~83.5%` auto-compact landmark via CSS custom property；L1/L3 共用 color threshold（決策信號），L2 保留獨立 threshold（per-turn 異常偵測）；L1 加 recent-gate 避免歷史 session 全紅
+
 - **`cache-ttl-silent-regression-detection`**（bonus，P2） — 被動偵測 Anthropic 實際 TTL 行為與設定不符
   - 觀察連續兩 turn 間隔 > 5m 且 `cache_read ≈ 0` + `cache_creation 大增`
   - 排除 `/compact` `/clear` 等使用者行為
@@ -110,6 +112,9 @@
 | `public/quota-ticker.js` | ROI 計算改讀 settings.monthlyUSD |
 | `public/cost-budget-ui.js` | Zone 1 fallback 改讀 settings |
 | `public/cache-notify.js` | 🆕 Layer 2 active notification |
+| `public/entry-rendering.js` | L2 turn-ctx-bar 加 83.5% tick + 註解保留 85/95 threshold 的設計理由 |
+| `public/messages.js` | L3 minimap 加 83.5% tick element |
+| `public/settings.js` | 載入後設定 `--compact-threshold` CSS 變數於 `:root` |
 | `CHANGELOG.md` | 記錄移除 + 新增 |
 
 ### Backwards compatibility

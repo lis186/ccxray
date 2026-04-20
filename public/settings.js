@@ -24,6 +24,14 @@ async function loadSettings() {
     }
     const s = await r.json();
     Object.assign(window.ccxraySettings, s, { loaded: true });
+    // Propagate auto-compact threshold to CSS so every ctx bar / minimap /
+    // turn card tick reads `var(--compact-threshold)` — single source of truth.
+    if (Number.isFinite(s.autoCompactPct)) {
+      document.documentElement.style.setProperty(
+        '--compact-threshold',
+        (s.autoCompactPct * 100).toFixed(2) + '%'
+      );
+    }
     renderTopbarPlan();
     document.dispatchEvent(new CustomEvent('ccxray:settings-loaded', { detail: s }));
   } catch (err) {

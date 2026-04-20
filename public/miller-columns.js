@@ -419,15 +419,27 @@ function renderSessionItem(sess, sid) {
     : '';
   const ctxPct = sess.latestMainCtxPct || 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
-  const ctxAlertHtml = ctxPct >= 90
-    ? '<span class="ctx-alert ctx-alert-red">' + Math.round(ctxPct) + '%</span>'
-    : ctxPct >= 80
-    ? '<span class="ctx-alert ctx-alert-yellow">' + Math.round(ctxPct) + '%</span>'
-    : '';
+  // Recent-gate: historical sessions (no turn within last hour) should not
+  // light up red/yellow — prevents sea-of-red when scanning the session list.
+  // See design D12.
+  const RECENT_MS = 60 * 60 * 1000;
+  const recent = sess.lastReceivedAt && (Date.now() - sess.lastReceivedAt) < RECENT_MS;
+  // L1/L3 share threshold: ≥83.5% red, ≥75% yellow (D11). L2 is distinct.
+  // Badge only appears when ctx is noteworthy (≥75%). Recent sessions glow
+  // red/yellow; historical ones dim grey (D12 recent-gate).
+  let ctxAlertHtml = '';
+  if (ctxPct >= 75) {
+    const alertClass = recent
+      ? (ctxPct >= compactPct ? 'ctx-alert-red' : 'ctx-alert-yellow')
+      : 'ctx-alert-historical';
+    ctxAlertHtml = '<span class="ctx-alert ' + alertClass + '">' + Math.round(ctxPct) + '%</span>';
+  }
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.
+  // Over-compact red only on recent sessions — historical bars stay dim.
   const ctxBarHtml = ctxPct > 0
-    ? '<div class="si-ctx-bar' + (ctxPct > compactPct ? ' over-compact' : '') + '"' +
-      ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%;--compact:' + compactPct + '%"' +
+    ? '<div class="si-ctx-bar' + (recent && ctxPct > compactPct ? ' over-compact' : '') +
+      (!recent ? ' historical' : '') + '"' +
+      ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%"' +
       ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'
     : '';
   // Cache TTL countdown row; only rendered if we have both a response time and
@@ -1431,7 +1443,7 @@ function renderDetailCol() {
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
-          + '<div class="minimap">' + previewMinimapHtml + '</div>'
+          + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + previewMinimapHtml + '</div>'
           + '<div class="tl-scroll-area">' + previewStepsHtml + '</div>'
           + '</div>';
         break;
@@ -1468,7 +1480,7 @@ function renderDetailCol() {
       const focusedHtml = headerHtml + summaryHtml
         + '<div class="tl-split">'
         + '<div class="tl-with-minimap" style="width:280px;min-width:200px;max-width:400px;flex-shrink:0;border-right:1px solid var(--border)">'
-        + '<div class="minimap">' + minimapHtml + '</div>'
+        + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + minimapHtml + '</div>'
         + '<div class="tl-scroll-area">' + stepsHtml + '</div>'
         + '</div>'
         + '<div class="tl-split-detail">' + detailHtml + '</div>'

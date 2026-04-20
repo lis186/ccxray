@@ -388,13 +388,17 @@ function addEntry(e) {
     ? '<div style="width:' + (tokens / ctxMax * 100).toFixed(2) + '%;background:' + color + ';min-width:1px"></div>'
     : '';
   const totalUsed = ctxCacheRead + ctxCacheCreate + ctxInput;
+  // Per-turn anomaly-detection thresholds — see Decision D11. Do NOT unify
+  // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
+  // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
+  // red in late-session turns (pre-mortem F1).
   const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
   const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
   const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
   const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
   const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">hit:' + hitPct + '%</span>' : '';
   const ctxBarHtml = ctxUsed > 0
-    ? '<div class="turn-ctx turn-ctx-bar">' +
+    ? '<div class="turn-ctx turn-ctx-bar" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' +
         '<div class="turn-ctx-bar-bg">' +
           seg(ctxCacheRead,   'var(--color-cache-read)') +
           seg(ctxCacheCreate, 'var(--color-cache-write)') +

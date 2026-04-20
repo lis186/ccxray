@@ -164,6 +164,79 @@ if (interval > cacheTtlMs && newTurnArrives) {
 
 `AUTO_COMPACT_PCT` 設為 named const（未來 Anthropic 調門檻時單點改）。
 
+### D10. Shared auto-compact landmark via CSS custom property
+
+The `~83.5%` auto-compact threshold is a physical constant of Claude Code,
+not a per-level decision. It should appear as the same tick position on
+every level of the context visual hierarchy (L1 session card, L2 turn card,
+L3 turn detail).
+
+**Single source of truth** — `/_api/settings` returns `autoCompactPct`. On
+load, `public/settings.js` sets a CSS custom property on `:root`:
+
+```js
+document.documentElement.style.setProperty(
+  '--compact-threshold',
+  (settings.autoCompactPct * 100) + '%'
+);
+```
+
+All tick positions across L1/L2/L3 read `left: var(--compact-threshold)`.
+If Anthropic adjusts the threshold later, the server constant changes once
+and the CSS variable cascades.
+
+**Prevents**: Pre-mortem F7 (scattered `83.5%` literals drift out of sync).
+
+### D11. Level-specific color thresholds (don't over-unify)
+
+L1 session card and L3 turn detail measure **current session cumulative
+ctx%** — answering "am I near compact?" Same metric, same color rules:
+
+- `≥ 83.5%` → red (over auto-compact threshold)
+- `≥ 75%`   → yellow (near compact)
+- `< 75%`   → dim (healthy)
+
+L2 turn card ALSO shows cumulative ctx% at that turn, but the **use case is
+different**: scanning turns within a session to find anomalies. If L2 used
+the same threshold, every turn after the session crosses 83.5% would light
+up red, producing a wall of warning colors and defeating the purpose of
+per-turn scanning.
+
+L2 keeps its existing thresholds:
+
+- `> 95%` → `ctx-critical` red (this turn is in danger)
+- `> 85%` → `ctx-warning`  yellow (this turn is getting high)
+
+**Prevents**: Pre-mortem F1 (red fatigue on L2 in late-session turns).
+
+**Reference interpretation**:
+- L1/L3 color: "decision signal" (should you act?)
+- L2 color: "anomaly detector" (is this turn unusual?)
+
+### D12. Recent-gate for L1 historical sessions
+
+L1's red/yellow coloring applies only to **recent** sessions. A session
+whose `lastReceivedAt` is more than 1 hour ago shows dim-grey regardless
+of its ctx% at termination. The ctx bar itself still renders (informational),
+but the alert badge does not light up, and the cache countdown row is omitted.
+
+```
+recent = (now - sess.lastReceivedAt) < 60 * 60_000
+if recent:
+  red    if ctxPct ≥ 83.5%
+  yellow if ctxPct ≥ 75%
+  dim    otherwise
+else:
+  dim always  (session is historical, no action required)
+```
+
+**Prevents**: Pre-mortem F2 (sea-of-red across the historical session list
+when scanning past work, undermining the signal value of red).
+
+**1h threshold reasoning**: aligns with the longest plan cache TTL (Max 1h).
+Once even Max cache has expired, the session can't be "continued" without
+a cold-start rebuild, so coloring its ctx as urgent is misleading.
+
 ### D7. Auto-detect plan via `ephemeral_5m/1h_input_tokens`
 
 **觀察**：Anthropic response usage 含 `cache_creation.ephemeral_5m_input_tokens` 與 `ephemeral_1h_input_tokens`，分別記錄寫入 5m / 1h cache 的 tokens。Claude Code 依據訂閱方案選擇 TTL。
@@ -348,6 +421,30 @@ AND NOT /compact /clear /model  (排除使用者行為)
 **對策**：
 - Detector 與 Issue 6 silent regression 協作：若 Issue 6 偵測到可疑 regression pattern → 標 detector confidence 為 low → 顯示 `Plan: ? (detecting anomaly)` 並 fallback 到 env 或 default
 - 使用者可強制 `CCXRAY_PLAN=max` 覆寫
+
+### R8. L2 tick visibility on 3px bar
+
+**風險**：L2 `turn-ctx-bar-bg` is 3px tall. A 1px vertical tick at 83.5%
+may be visually indistinguishable from the cache-read/write/input color
+segments it overlays.
+
+**對策**：
+- Tick height 5–6px, `overflow: visible` on the bar's parent
+- Tick color contrasts with segments (use dim foreground + thin dark stroke)
+- Add `title="auto-compact at ~83.5%"` so hover confirms semantic
+
+### R9. Color unification tempting but harmful at L2
+
+**風險**：Future PRs may see L2 using `>95` / `>85` while L1/L3 use `83.5%/75`
+and try to "simplify" by unifying. This defeats the per-turn anomaly
+detection purpose of L2 color.
+
+**對策**：
+- Decision D11 explicitly documents why L2 is different
+- Comment inline at `entry-rendering.js:391`:
+  `// per-turn anomaly thresholds; see Decision D11 — do not unify with L1/L3`
+- `turn-ctx-bar-bg` and `si-ctx-bar` use different CSS class prefixes;
+  resist refactoring into a shared class.
 
 ### R5. setInterval 可能 leak 在 session DOM 被 virtualize 的未來
 

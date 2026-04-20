@@ -204,6 +204,116 @@ Cache 即將到期時提供 notification，依方案決定預設啟用狀態與 
 - **And** passive indicator（tab title flash + border animation）仍運作
 - **And** console 記錄一次 warning（不重複）
 
+### Requirement: Shared auto-compact landmark across visual hierarchy
+
+The auto-compact threshold (currently ~83.5% per Claude Code) must be
+visually represented as the same tick position on every level of the
+context visual hierarchy (L1 session card, L2 turn card, L3 turn detail
+/ minimap). A single CSS custom property `--compact-threshold` sourced
+from `/_api/settings.autoCompactPct` propagates the value to all ticks;
+changing the server-side constant updates every tick simultaneously.
+
+#### Scenario: L1 session card shows tick at 83.5%
+
+- **Given** `settings.autoCompactPct = 0.835`
+- **When** a session card is rendered
+- **Then** `.si-ctx-bar::after` left position = `var(--compact-threshold)` = `83.5%`
+- **And** tooltip reads "auto-compact at ~83.5%"
+
+#### Scenario: L2 turn card shows tick at 83.5%
+
+- **Given** a turn card with context bar rendered
+- **When** the page loads
+- **Then** `.turn-ctx-bar-bg::after` left position = `var(--compact-threshold)` = `83.5%`
+- **And** tick height ≥ 5px so it is visible against the 3px colored segments
+- **And** tooltip reads "auto-compact at ~83.5%"
+
+#### Scenario: L3 minimap shows tick at 83.5%
+
+- **Given** a turn detail view is open with minimap rendered
+- **When** minimap layout completes
+- **Then** a visible tick element is positioned at 83.5% up the minimap's
+  fill region (from bottom, since minimap fills upward)
+- **And** tooltip reads "auto-compact at ~83.5%"
+
+#### Scenario: Threshold change cascades via CSS variable
+
+- **Given** `settings.autoCompactPct` is changed server-side from 0.835 to 0.80
+- **When** dashboard reloads
+- **Then** all three level ticks visually move to 80% simultaneously
+- **And** no JavaScript fallbacks with hardcoded 83.5% remain
+
+### Requirement: Level-specific color semantics
+
+L1 session card and L3 turn detail share the same color threshold
+(`≥83.5%` red, `≥75%` yellow, else dim) because both measure "session
+is near auto-compact — should I act?". L2 turn card uses distinct
+thresholds (`>95%` red, `>85%` yellow) because its use case is
+per-turn anomaly detection, not decision-making.
+
+#### Scenario: L1 at 84% on active session
+
+- **Given** session `lastReceivedAt` within last hour (recent)
+- **And** `latestMainCtxPct = 84`
+- **When** session card renders
+- **Then** ctx alert badge is red
+- **And** ctx bar `.si-ctx-bar` has `.over-compact` class (red fill + red tick)
+
+#### Scenario: L2 at 84% ctx shows no warning
+
+- **Given** a turn card with `ctx:84%`
+- **When** rendered
+- **Then** `.turn-ctx-pct` has no warning class (dim default)
+- **And** the cyan hit-rate label is unchanged
+- **Rationale**: per-turn anomaly detection — 84% is normal late-session,
+  not a per-turn anomaly
+
+#### Scenario: L2 at 96% ctx shows critical
+
+- **Given** a turn card with `ctx:96%`
+- **When** rendered
+- **Then** `.turn-ctx-pct` has `.ctx-critical` class (red)
+
+#### Scenario: L3 at 84% on current turn shows red
+
+- **Given** L3 detail for a turn with `usage.sum / maxContext = 84%`
+- **When** rendered
+- **Then** the big usage bar fill color is red
+- **And** consistent with L1's red alert
+
+### Requirement: Recent-gate prevents sea-of-red on historical sessions
+
+L1's red/yellow colors only apply to recent sessions
+(`lastReceivedAt` within the last hour). Older sessions render with a
+dim-grey palette regardless of their terminal ctx%. The ctx bar remains
+visible (informational), but alert badges and urgency colors are
+suppressed to prevent the historical session list from becoming a wall
+of red.
+
+#### Scenario: Historical session at 95% renders dim
+
+- **Given** session `lastReceivedAt` is 3 days ago
+- **And** `latestMainCtxPct = 95`
+- **When** card renders
+- **Then** ctx alert badge does not use `.ctx-alert-red` class
+- **And** alert renders with `.ctx-alert-historical` class (dim grey)
+- **And** ctx bar still draws but without `.over-compact` red styling
+- **And** cache countdown row is omitted (already handled by Phase 5 info.active)
+
+#### Scenario: Boundary — exactly 1 hour ago
+
+- **Given** session `lastReceivedAt` is 59 minutes 55 seconds ago
+- **And** `latestMainCtxPct = 90`
+- **When** rendered
+- **Then** session is treated as recent, colors apply normally
+
+#### Scenario: Session becomes historical while viewing
+
+- **Given** session rendered as recent at minute 0
+- **When** 61 minutes elapse with no new turns
+- **Then** on next re-render (triggered by any session update event),
+  session is reclassified as historical and colors dim
+
 ## REMOVED Requirements
 
 ### Requirement: `≈N turns left` 顯示於 session card
