@@ -2,7 +2,27 @@
 
 ## 1.6.0
 
+### Breaking
+
+- **Removed `≈N turns left` prediction from session cards.** Empirical backtest against 15 real sessions showed the predictor's median absolute percentage error was 43% (mean 87%), with worst-case 10× overestimate. Root cause was structural: a 5-turn arithmetic mean of `tokens.messages` delta is fundamentally unstable against conversations with phase shifts (heavy file reads → mid-session tool use → light end-of-session wrap-up). No repair path was found — Theil-Sen/robust variants tested worse (MAPE 135%). The UX lie (showing 367 turns remaining when ctx was already at 83%) was the original bug trigger. Replaced with factual signals — see the context-visualization features below. Full decision trail: [`openspec/changes/remove-prediction-add-countdowns/`](openspec/changes/remove-prediction-add-countdowns/) and [`docs/process-study-turns-left-pivot.md`](docs/process-study-turns-left-pivot.md).
+
 ### Added
+
+**Context-visualization series — one visual language across three levels**
+
+- **Auto-compact reference line at ~83.5%**: every session card, turn card, and turn-detail usage bar now shows the Claude Code auto-compact threshold as a vertical tick on the context bar, so you can see at a glance how much runway you have before auto-compaction triggers. Tick position driven by a single `--compact-threshold` CSS variable fed from `/_api/settings` — Anthropic moving the threshold is a one-line edit.
+
+- **Cache TTL countdown on session cards**: active session cards show `cache Nm ⏱` with layered throttling — ≥5m updates per 10s (cache-far), 1–5m per second (cache-near), <1m pulses red (cache-close), then switches to static `cache expired`. Historical sessions omit the row entirely to keep the list scannable.
+
+- **Tab-title flash + browser notification on cache expiry**: when any active session has <60s of cache left, the browser tab title alternates between `ccxray` and `⚠ ccxray` (zero permission, works in background tabs). Opt-in browser Notification fires at a plan-aware lead time — 5 minutes for Max, 60 seconds for Pro/API key. Permission prompt deferred until the user clicks the 🔔 toggle (never on page load).
+
+- **Auto-detected subscription plan**: ccxray reads Anthropic response usage (`cache_creation.ephemeral_5m/1h_input_tokens`) to infer Pro vs Max with no configuration needed. Env var `CCXRAY_PLAN=pro|max5x|max20x|api-key` overrides auto-detection. Topbar shows current plan + cache TTL: `Plan: Max 5x · TTL 1h (auto)`. Verified on 464 real response logs: 100% clean signal.
+
+- **Plan-aware quota panel**: the cost-budget panel (ROI badge, token-limit fallback, "plan fit" dropdown) now reads from the detected plan instead of the hardcoded Max 20x values. Max 5x subscribers previously saw ROI exactly half of true value — now correct.
+
+- **Rate-limit header persistence** (`server/ratelimit-log.js`): `anthropic-ratelimit-*` response headers are appended to `~/.ccxray/ratelimit-samples.jsonl` (deduped per model) for future calibration of plan-specific token quotas. Analyse with `node scripts/analyze-ratelimit-samples.mjs`.
+
+**Other improvements**
 
 - **Turn Card 5-layer redesign**: Each timeline entry now shows a five-line card with cost on line 1, cache warmth + inter-turn gap timing, tool-fail risk signal, `hit:0%` red warning, and tools surfaced above the title. Scan a whole session's health without expanding detail.
 - **Agent classification overhaul**: Plan, codex-rescue, claude-code-guide, summarizer, translator, and sdk-agent are now recognised as distinct agents. Classification precision 97.3% → 100.0% against 12,730 real captured prompts; items that can't be identified with confidence are honestly marked `unknown` instead of being bucketed into `claude-code`.
@@ -13,9 +33,17 @@
 
 - **Main agent renamed `claude-code` → `orchestrator`**: The interactive agent that dispatches to sub-agents is now labelled **Orchestrator** — separating the agent role from the CLI product name. UI defaults, API defaults (`/_api/sysprompt/diff`), and test assertions updated. `versionIndex` is in-memory only so no migration is needed; new keys take effect on hub restart.
 
+- **Unified dot/star polarity across Projects / Sessions / Turns cards**: status dot always sits on the leftmost position, pin star on the far-right. Eye can scan a single vertical column of dots across all three Miller columns to judge activity, instead of refocusing between columns.
+
+- **L1/L3 context-% thresholds unified** (red ≥83.5%, yellow ≥75%) so the session list and turn-detail big bar read the same. L2 turn card keeps its own per-turn thresholds (`>95 critical, >85 warning`) — per-turn scale reads as anomaly detection, not decision signal (design D11 explains why unifying would produce a wall of red in late-session turns).
+
+- **Historical sessions dim**: L1 session cards older than 1 hour since last turn no longer light up red/yellow regardless of ctx%. Badge renders as dim grey at the same ≥75% threshold so you still see where the session landed without the urgency coloring drowning the live list.
+
 ### Fixed
 
 - **Sub-agents no longer mis-labelled as Claude Code**: Previously, Plan / Codex Rescue / Summarizer / Claude Code Guide sessions were silently grouped with the main "Claude Code" agent because detection relied on a branding line that every sub-agent shares. They now classify into their own buckets with separate version histories and diffs. Claude Agent SDK callers also surface as a distinct `sdk-agent` class.
+
+- **Copy-launch button icon was misleading**: the session card's "copy launch command" button was rendered as ⊗ (U+2297 CIRCLED TIMES), which universally reads as delete / close. The button only copied a shell command to clipboard; clicking it never removed anything. Replaced with ⧉ (U+29C9 TWO JOINED SQUARES, the standard copy glyph), and the tooltip now reads "Copy command to resume this session" so the clipboard content's purpose is explicit. Also fixed a long-standing inconsistency where the post-click state used a different icon than the initial render.
 
 ## 1.5.0
 

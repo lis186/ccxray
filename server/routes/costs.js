@@ -1,7 +1,7 @@
 'use strict';
 
 const store = require('../store');
-const { getCostsCacheOrNull, calculateBurnRate, TOKEN_LIMIT } = require('../cost-budget');
+const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
 const { pricingTable } = require('../pricing');
 
 // Helper: return loading response if cache not ready (triggers background computation)
@@ -51,7 +51,7 @@ function handleCostRoutes(clientReq, clientRes) {
         ? rawRateLimitState : null;
       const liveLimit = rateLimitState && rateLimitState.tokensLimit;
       const liveRemaining = rateLimitState && rateLimitState.tokensRemaining;
-      const tokenLimit = liveLimit || TOKEN_LIMIT;
+      const tokenLimit = liveLimit || getEffectiveTokenLimit();
       const tokensUsed = liveLimit ? (liveLimit - liveRemaining) : activeBlock.totalTokens;
       const percentUsed = Math.round((tokensUsed / tokenLimit) * 1000) / 10;
       const resetTime = rateLimitState && rateLimitState.inputReset || activeBlock.endTime;

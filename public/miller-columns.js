@@ -418,11 +418,47 @@ function renderSessionItem(sess, sid) {
     ? '<div class="si-tools">' + (topTools || totalCalls + ' calls') + '</div>'
     : '';
   const ctxPct = sess.latestMainCtxPct || 0;
-  const ctxAlertHtml = ctxPct >= 90
-    ? '<span class="ctx-alert ctx-alert-red">' + Math.round(ctxPct) + '%</span>'
-    : ctxPct >= 80
-    ? '<span class="ctx-alert ctx-alert-yellow">' + Math.round(ctxPct) + '%</span>'
+  const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
+  // Recent-gate: historical sessions (no turn within last hour) should not
+  // light up red/yellow — prevents sea-of-red when scanning the session list.
+  // See design D12.
+  const RECENT_MS = 60 * 60 * 1000;
+  const recent = sess.lastReceivedAt && (Date.now() - sess.lastReceivedAt) < RECENT_MS;
+  // L1/L3 share threshold: ≥83.5% red, ≥75% yellow (D11). L2 is distinct.
+  // Badge only appears when ctx is noteworthy (≥75%). Recent sessions glow
+  // red/yellow; historical ones dim grey (D12 recent-gate).
+  let ctxAlertHtml = '';
+  if (ctxPct >= 75) {
+    const alertClass = recent
+      ? (ctxPct >= compactPct ? 'ctx-alert-red' : 'ctx-alert-yellow')
+      : 'ctx-alert-historical';
+    ctxAlertHtml = '<span class="ctx-alert ' + alertClass + '">' + Math.round(ctxPct) + '%</span>';
+  }
+  // Thin ctx bar with auto-compact reference line; shown only once session has real context.
+  // Over-compact red only on recent sessions — historical bars stay dim.
+  const ctxBarHtml = ctxPct > 0
+    ? '<div class="si-ctx-bar' + (recent && ctxPct > compactPct ? ' over-compact' : '') +
+      (!recent ? ' historical' : '') + '"' +
+      ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%"' +
+      ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'
     : '';
+  // Cache TTL countdown row; only rendered if we have both a response time and
+  // a ttl-capable plan loaded (otherwise skip — api-key users with ttl=300_000
+  // still get a valid countdown, but undefined settings → skip).
+  const cacheTtlMs = window.ccxraySettings?.cacheTtlMs;
+  const cacheFmt = window.ccxrayFormatCacheCountdown;
+  // Only render for sessions whose cache is still alive — historical sessions
+  // omit the row entirely to avoid noisy "cache expired" lines on every old card.
+  let cacheRowHtml = '';
+  if (sess.lastReceivedAt && cacheTtlMs && cacheFmt) {
+    const info = cacheFmt(sess.lastReceivedAt, cacheTtlMs);
+    if (info.active) {
+      cacheRowHtml = '<div class="' + info.cls + '" data-active="1"' +
+        ' data-last-at="' + sess.lastReceivedAt + '" data-cache-ttl-ms="' + cacheTtlMs +
+        '" title="Cache TTL: ' + (cacheTtlMs / 60000) + 'm (' + (window.ccxraySettings.label || 'plan') + ')">' +
+        info.text + '</div>';
+    }
+  }
   const isOnline = getStatusClass(sid) !== 'sdot-off';
   const isArmed = interceptSessionIds.has(sid);
   const isHeld = currentPending && currentPending.sessionId === sid;
@@ -436,13 +472,14 @@ function renderSessionItem(sess, sid) {
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid">' + escapeHtml(shortSid) + '</span>' +
     pinBtn +
-    '<button class="launch-btn" onclick="event.stopPropagation();copyLaunchCmd(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy launch cmd">&#8855;</button>' +
+    '<button class="launch-btn" onclick="event.stopPropagation();copyLaunchCmd(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy command to resume this session">&#10697;</button>' +
     heldHtml +
     '</div>' +
     '<div class="si-row2">' + escapeHtml(shortModel) + ' · ' + sess.count + 't · <span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     toolRow +
     '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>' +
-    renderPredictionRow(sid);
+    ctxBarHtml +
+    cacheRowHtml;
 }
 
 function renderProjectsCol() {
@@ -476,7 +513,7 @@ function renderProjectsCol() {
     const rangeStr = firstDate === lastDate ? firstDate : firstDate + '—' + lastDate;
     const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
     html += '<div class="project-item' + (isSel ? ' selected' : '') + '" onclick="selectProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')">' +
-      '<div class="pi-name"><span class="sdot ' + statusClass + '"></span>' + escapeHtml(truncateMiddle(proj.name, 20)) + pinBtn + '</div>' +
+      '<div class="pi-name"><span class="sdot ' + statusClass + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
       '<div class="pi-meta">' + proj.sessionIds.size + ' sessions</div>' +
       '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(3) + '</div>' +
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
@@ -651,41 +688,6 @@ function renderBarChart(el, turns) {
   el.innerHTML = svg;
 }
 
-function predictRemainingTurns(sid) {
-  const turns = allEntries.filter(e =>
-    e.sessionId === sid && !e.isSubagent &&
-    e.usage && (e.usage.input_tokens || 0) > 0 &&
-    e.tokens && e.tokens.messages > 0
-  );
-  if (turns.length < 3) return null;
-
-  // Find last compaction and only use turns after it
-  let startIdx = 0;
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (turns[i].isCompacted) { startIdx = i; break; }
-  }
-  const recent = turns.slice(startIdx);
-  if (recent.length < 2) return null;
-
-  // Take last 5 turns, compute message token increments
-  const window = recent.slice(-5);
-  const deltas = [];
-  for (let i = 1; i < window.length; i++) {
-    deltas.push((window[i].tokens.messages || 0) - (window[i - 1].tokens.messages || 0));
-  }
-  if (!deltas.length) return null;
-  const avgDelta = deltas.reduce((s, d) => s + d, 0) / deltas.length;
-  if (avgDelta <= 0) return null;
-
-  const last = recent[recent.length - 1];
-  const maxCtx = last.maxContext || DEFAULT_MAX_CTX;
-  const currentTotal = (last.tokens.system || 0) + (last.tokens.tools || 0) + (last.tokens.messages || 0);
-  const remaining = maxCtx - currentTotal;
-  if (remaining <= 0) return 0;
-
-  return Math.round(remaining / avgDelta);
-}
-
 function computeSessionScorecard(sid) {
   const turns = allEntries.filter(e =>
     e.sessionId === sid && !e.isSubagent && e.usage && (e.usage.input_tokens || 0) > 0
@@ -721,13 +723,6 @@ function computeSessionScorecard(sid) {
   const toolUtilization = availableTools > 0 ? (usedTools.size / availableTools * 100) : 0;
 
   return { cacheHitRate, contextEfficiency, compressionCount, toolUtilization, turnCount: turns.length };
-}
-
-function renderPredictionRow(sid) {
-  const remaining = predictRemainingTurns(sid);
-  if (remaining === null) return '';
-  const color = remaining <= 3 ? 'var(--red)' : remaining <= 8 ? 'var(--yellow)' : 'var(--dim)';
-  return '<div style="font-size:10px;color:' + color + ';margin-top:2px">≈' + remaining + ' turns left</div>';
 }
 
 // ── Scorecard hover card ──
@@ -1448,7 +1443,7 @@ function renderDetailCol() {
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
-          + '<div class="minimap">' + previewMinimapHtml + '</div>'
+          + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + previewMinimapHtml + '</div>'
           + '<div class="tl-scroll-area">' + previewStepsHtml + '</div>'
           + '</div>';
         break;
@@ -1485,7 +1480,7 @@ function renderDetailCol() {
       const focusedHtml = headerHtml + summaryHtml
         + '<div class="tl-split">'
         + '<div class="tl-with-minimap" style="width:280px;min-width:200px;max-width:400px;flex-shrink:0;border-right:1px solid var(--border)">'
-        + '<div class="minimap">' + minimapHtml + '</div>'
+        + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + minimapHtml + '</div>'
         + '<div class="tl-scroll-area">' + stepsHtml + '</div>'
         + '</div>'
         + '<div class="tl-split-detail">' + detailHtml + '</div>'

@@ -1,4 +1,7 @@
 :root {
+    /* Auto-compact threshold (cross-level landmark). Overridden at runtime
+       by public/settings.js from /_api/settings.autoCompactPct. */
+    --compact-threshold: 83.5%;
     --bg: #0d1117; --surface: #161b22; --surface-hover: #1c2129; --surface-active: #1a2535; --border: #30363d;
     --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
     --green: #3fb950; --yellow: #d29922; --red: #f85149;
@@ -72,6 +75,11 @@
   #qt-roi { font-size: 10px; color: var(--green); cursor: pointer; padding: 2px 6px; border: 1px solid var(--green); border-radius: 10px; }
   #qt-roi:hover { background: rgba(63,185,80,0.1); }
   #qt-chip { font-size: 10px; color: var(--dim); }
+  #qt-plan { font-size: 10px; color: var(--dim); cursor: help; }
+  .qt-notify { font-size: 12px; background: none; border: none; cursor: pointer; padding: 0 4px; line-height: 1; filter: grayscale(1); opacity: 0.6; transition: opacity 0.15s, filter 0.15s; }
+  .qt-notify:hover { opacity: 1; }
+  .qt-notify.enabled { filter: none; opacity: 1; }
+  .qt-notify.denied { opacity: 0.4; cursor: not-allowed; }
   #row2-usage span, #row2-sysprompt span { font-size: 11px; color: var(--dim); }
 
   #columns { display: flex; flex: 1; min-height: 0; overflow: hidden; }
@@ -111,6 +119,19 @@
   .tl-with-minimap { display: flex; flex: 1; overflow: hidden; }
   .tl-scroll-area { flex: 1; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; scroll-padding-block: 40px; }
   .minimap { width: 36px; flex-shrink: 0; position: relative; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; cursor: pointer; }
+  /* Auto-compact landmark: horizontal tick at 83.5% down from top (the minimap
+     fills top-down — blocks at top, empty below). Shared via --compact-threshold
+     so all three levels of the ctx hierarchy move together. See design D10. */
+  .minimap::after {
+    content: '';
+    position: absolute;
+    top: var(--compact-threshold);
+    left: 0; right: 0;
+    height: 1px;
+    background: var(--text);
+    opacity: 0.45;
+    pointer-events: none;
+  }
   .minimap-cache-bar { display: flex; height: 4px; width: 100%; flex-shrink: 0; }
   .minimap-cache-bar > div { min-width: 1px; }
   .minimap-blocks { width: 100%; opacity: 0.5; transition: opacity 0.25s ease; overflow: hidden; }
@@ -129,7 +150,8 @@
   .project-item { padding: 7px 10px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid var(--border); }
   .project-item:hover { background: var(--surface-hover); }
   .project-item.selected { border-left-color: var(--accent); background: var(--surface-active); }
-  .project-item .pi-name { font-size: 12px; color: var(--text); font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-item .pi-name { font-size: 12px; color: var(--text); font-weight: bold; display: flex; align-items: center; gap: 6px; }
+  .project-item .pi-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-item .pi-name.all { color: var(--dim); font-weight: normal; }
   .project-item .pi-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .project-item .pi-cost { color: var(--yellow); }
@@ -173,6 +195,44 @@
   .ctx-alert { font-size: 10px; font-weight: bold; }
   .ctx-alert-yellow { color: var(--yellow); }
   .ctx-alert-red { color: var(--red); }
+  .ctx-alert-historical { color: var(--dim); font-weight: normal; opacity: 0.7; }
+  .si-ctx-bar {
+    position: relative;
+    height: 2px;
+    background: var(--border);
+    border-radius: 1px;
+    margin-top: 3px;
+    overflow: visible;
+    cursor: help;
+  }
+  .si-ctx-bar::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: var(--pct, 0%);
+    background: var(--accent);
+    border-radius: 1px;
+    transition: width 0.3s, background 0.3s;
+  }
+  .si-ctx-bar::after {
+    content: '';
+    position: absolute;
+    left: var(--compact-threshold);
+    top: -1px; bottom: -1px;
+    width: 1px;
+    background: var(--dim);
+    opacity: 0.7;
+  }
+  .si-ctx-bar.over-compact::before { background: var(--red); }
+  .si-ctx-bar.over-compact::after { background: var(--red); opacity: 1; }
+  .si-ctx-bar.historical::before { background: var(--dim); opacity: 0.5; }
+  .si-ctx-bar.historical::after { opacity: 0.4; }
+  .si-cache { font-size: 10px; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .si-cache.cache-far { color: var(--dim); }
+  .si-cache.cache-near { color: var(--yellow); }
+  .si-cache.cache-close { color: var(--red); animation: cachePulse 1s ease-in-out infinite; }
+  .si-cache.cache-expired { color: var(--dim); opacity: 0.55; font-style: italic; }
+  @keyframes cachePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   .launch-btn { background: none; border: 1px solid var(--border); color: var(--green); width: 18px; height: 18px; border-radius: 50%; cursor: pointer; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0; }
   .launch-btn:hover { background: var(--green); color: #000; border-color: var(--green); }
   .pin-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 2px; opacity: 0.3; transition: opacity 0.15s, color 0.15s; margin-left: auto; flex-shrink: 0; }
@@ -230,7 +290,35 @@
   #scroll-toggle .scroll-off.active { color: var(--red); background: rgba(248,81,73,0.15); }
   #session-tool-bar { padding: 4px 10px; font-size: 10px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; overflow: hidden; white-space: nowrap; }
   .turn-ctx-bar { margin-top: 3px; }
-  .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: hidden; display: flex; }
+  .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: visible; display: flex; position: relative; }
+  /* Cross-level auto-compact landmark (see design D10). Tick sits on the 3px
+     bar itself — not on the wrapper — so it doesn't extend across the
+     hit:/ctx: label row below. L2 keeps its own per-turn color thresholds
+     (D11). Tick height 5px (1 above + 3 bar + 1 below). */
+  .turn-ctx-bar-bg::after {
+    content: '';
+    position: absolute;
+    left: var(--compact-threshold);
+    top: -1px; bottom: -1px;
+    width: 1px;
+    background: var(--dim);
+    opacity: 0.7;
+    pointer-events: none;
+  }
+  /* L3 big context-breakdown bar (turn detail header + sticky) — shares the
+     same landmark tick as L1/L2. Bar uses overflow:visible so tick extends
+     slightly above/below for visibility. */
+  .ctx-big-bar { position: relative; }
+  .ctx-big-bar::after {
+    content: '';
+    position: absolute;
+    left: var(--compact-threshold);
+    top: -2px; bottom: -2px;
+    width: 1px;
+    background: var(--text);
+    opacity: 0.45;
+    pointer-events: none;
+  }
   .turn-ctx-labels { display: flex; font-size: 9px; margin-top: 1px; line-height: 1; }
   .turn-ctx-pct { color: var(--dim); margin-left: auto; }
   .turn-ctx-pct.ctx-critical { color: var(--red); }

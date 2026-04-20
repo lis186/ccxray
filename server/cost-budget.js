@@ -5,8 +5,32 @@ const { fork } = require('child_process');
 
 // ── Cost Budget: JSONL reader via child process ─────────────────────
 const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
+
+// Legacy fallbacks (Max 20x values). Prefer getEffectivePlanConfig() which
+// consults the detected plan; field accessors below wrap it for callers.
 const TOKEN_LIMIT = 220_000;
 const SUBSCRIPTION_USD = 200;
+
+function getEffectivePlanConfig() {
+  try {
+    const store = require('./store');
+    const { getEffectivePlan } = require('./plan-detector');
+    const { getPlanConfig } = require('./plans');
+    const recentUsages = store.entries.filter(e => e && e.usage).slice(-200).map(e => e.usage);
+    const { plan } = getEffectivePlan({ recentUsages });
+    return getPlanConfig(plan);
+  } catch {
+    return null;
+  }
+}
+
+function getEffectiveTokenLimit() {
+  return getEffectivePlanConfig()?.tokens5h || TOKEN_LIMIT;
+}
+
+function getEffectiveMonthlyUSD() {
+  return getEffectivePlanConfig()?.monthlyUSD || SUBSCRIPTION_USD;
+}
 
 // 5-minute server-side cache
 let costsCache = null;
@@ -221,6 +245,8 @@ function warmUp() {
 module.exports = {
   TOKEN_LIMIT,
   SUBSCRIPTION_USD,
+  getEffectiveTokenLimit,
+  getEffectiveMonthlyUSD,
   getOrComputeCosts,
   getCostsCacheOrNull,
   calculateBurnRate,

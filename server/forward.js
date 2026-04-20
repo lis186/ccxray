@@ -7,6 +7,7 @@ const store = require('./store');
 const { calculateCost } = require('./pricing');
 const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
+const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 
 // ── Strip injected proxy stats from conversation history ─────────────
 const STATS_PATTERN = /\n\n---\n📊 Context: .+$/s;
@@ -45,17 +46,16 @@ function forwardRequest(ctx) {
   }, (proxyRes) => {
     const isSSE = (proxyRes.headers['content-type'] || '').includes('text/event-stream');
 
-    // Capture rate limit headers
-    const rl = proxyRes.headers;
-    if (rl['anthropic-ratelimit-tokens-limit']) {
-      store.setRateLimitState({
-        tokensLimit:      parseInt(rl['anthropic-ratelimit-tokens-limit']) || null,
-        tokensRemaining:  parseInt(rl['anthropic-ratelimit-tokens-remaining']) || null,
-        tokensReset:      rl['anthropic-ratelimit-tokens-reset'] || null,
-        inputLimit:       parseInt(rl['anthropic-ratelimit-input-tokens-limit']) || null,
-        inputRemaining:   parseInt(rl['anthropic-ratelimit-input-tokens-remaining']) || null,
-        inputReset:       rl['anthropic-ratelimit-input-tokens-reset'] || null,
-        updatedAt:        Date.now(),
+    // Capture rate limit headers once, share with state + sample log.
+    const parsedRL = collectRatelimitHeaders(proxyRes.headers);
+    if (parsedRL && parsedRL.tokensLimit != null) {
+      store.setRateLimitState({ ...parsedRL, updatedAt: Date.now() });
+    }
+    if (parsedRL) {
+      appendSample({
+        parsed: parsedRL,
+        model: parsedBody?.model || null,
+        planHint: process.env.CCXRAY_PLAN || null,
       });
     }
     clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);

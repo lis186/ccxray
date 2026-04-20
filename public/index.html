@@ -44,8 +44,10 @@
             <span id="qt-bar-pct" title="Percentage of 5-hour token quota used">0%</span>
             <span id="qt-bar-time" title="Time remaining in current 5-hour window"></span>
           </div>
-          <span id="qt-roi" style="display:none" onclick="switchTab('usage')" title="Return on investment: monthly cost / $200 plan price">ROI -</span>
+          <span id="qt-roi" style="display:none" onclick="switchTab('usage')" title="Return on investment: monthly cost / plan price">ROI -</span>
           <span id="qt-chip" style="display:none"></span>
+          <span id="qt-plan" class="qt-plan" style="display:none"></span>
+          <button id="qt-notify" class="qt-notify" style="display:none" onclick="toggleCacheNotify()"></button>
         </div>
       </div>
       <div id="row2-usage" style="display:none">
@@ -142,6 +144,9 @@
 <div id="toast-container"></div>
 
 <script src="/app.js"></script>
+<script src="/settings.js"></script>
+<script src="/countdown-ticker.js"></script>
+<script src="/cache-notify.js"></script>
 <script src="/cost-budget-ui.js"></script>
 <script src="/quota-ticker.js"></script>
 <script src="/miller-columns.js"></script>

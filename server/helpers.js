@@ -243,12 +243,21 @@ function extractUsage(resData) {
   const msgStart = resData.find(e => e.type === 'message_start');
   const msgDelta = resData.find(e => e.type === 'message_delta');
   const u = msgStart?.message?.usage || {};
-  return {
+  const result = {
     input_tokens: u.input_tokens || 0,
     output_tokens: msgDelta?.usage?.output_tokens || u.output_tokens || 0,
     cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
     cache_read_input_tokens: u.cache_read_input_tokens || 0,
   };
+  // Preserve nested cache_creation ephemeral TTL split — plan-detector uses
+  // ephemeral_5m_input_tokens vs ephemeral_1h_input_tokens to infer Pro vs Max.
+  if (u.cache_creation && typeof u.cache_creation === 'object') {
+    result.cache_creation = {
+      ephemeral_5m_input_tokens: u.cache_creation.ephemeral_5m_input_tokens || 0,
+      ephemeral_1h_input_tokens: u.cache_creation.ephemeral_1h_input_tokens || 0,
+    };
+  }
+  return result;
 }
 
 function summarizeRequest(body) {

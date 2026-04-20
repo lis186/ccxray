@@ -113,7 +113,7 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   const usedPct = Math.min(100, total / windowSize * 100);
   const barColor = usedPct > 90 ? 'var(--red)' : usedPct > 70 ? 'var(--yellow)' : null;
 
-  let bar = '<div style="display:flex;height:8px;border-radius:2px;overflow:hidden;margin:4px 0 2px;background:var(--border)">';
+  let bar = '<div class="ctx-big-bar" style="display:flex;height:8px;border-radius:2px;overflow:visible;margin:4px 0 2px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
@@ -143,7 +143,7 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   const barColor = usedPct > 90 ? 'var(--red)' : usedPct > 70 ? 'var(--yellow)' : null;
 
   // Each segment is a fraction of windowSize; bar total = usedPct% of full width
-  let bar = '<div style="display:flex;height:12px;border-radius:3px;overflow:hidden;margin-bottom:6px;background:var(--border)">';
+  let bar = '<div class="ctx-big-bar" style="display:flex;height:12px;border-radius:3px;overflow:visible;margin-bottom:6px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
@@ -243,6 +243,7 @@ function addEntry(e) {
   // Update cwd if not yet known or was only a quota-check
   if (entryCwd && (!sess.cwd || sess.cwd === '(quota-check)')) sess.cwd = entryCwd;
   sess.lastId = entryId;
+  if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
   const isSubagent = e.isSubagent || false;
   sess.count++; // total (shown in session item as "Nt")
   if (isSubagent) sess.subCount++;
@@ -370,9 +371,9 @@ function addEntry(e) {
   const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
   const identityLine =
     '<div class="turn-identity"' + identityAttr + '>' +
+      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
       '<span class="turn-num">' + prefix + '</span>' +
       modelHtml +
-      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
       waitMark +
       critMarkerHtml +
       costHtml +
@@ -387,13 +388,17 @@ function addEntry(e) {
     ? '<div style="width:' + (tokens / ctxMax * 100).toFixed(2) + '%;background:' + color + ';min-width:1px"></div>'
     : '';
   const totalUsed = ctxCacheRead + ctxCacheCreate + ctxInput;
+  // Per-turn anomaly-detection thresholds — see Decision D11. Do NOT unify
+  // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
+  // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
+  // red in late-session turns (pre-mortem F1).
   const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
   const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
   const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
   const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
   const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">hit:' + hitPct + '%</span>' : '';
   const ctxBarHtml = ctxUsed > 0
-    ? '<div class="turn-ctx turn-ctx-bar">' +
+    ? '<div class="turn-ctx turn-ctx-bar" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' +
         '<div class="turn-ctx-bar-bg">' +
           seg(ctxCacheRead,   'var(--color-cache-read)') +
           seg(ctxCacheCreate, 'var(--color-cache-write)') +

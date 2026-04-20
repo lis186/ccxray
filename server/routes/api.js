@@ -6,11 +6,40 @@ const { summarizeEntry } = require('../sse-broadcast');
 const { loadEntryReqRes } = require('../restore');
 const { tokenizeRequest } = require('../helpers');
 const { computeBlockDiff } = require('../system-prompt');
+const { getPlanConfig } = require('../plans');
+const { getEffectivePlan } = require('../plan-detector');
+
+const AUTO_COMPACT_PCT = 0.835;
+
+function computeSettings() {
+  const recentUsages = store.entries
+    .filter(e => e && e.usage)
+    .slice(-200)
+    .map(e => e.usage);
+  const { plan, source, confidence } = getEffectivePlan({ recentUsages });
+  const cfg = getPlanConfig(plan);
+  return {
+    plan,
+    label: cfg.label,
+    source,
+    confidence,
+    cacheTtlMs: cfg.cacheTtlMs,
+    tokens5h: cfg.tokens5h,
+    monthlyUSD: cfg.monthlyUSD,
+    autoCompactPct: AUTO_COMPACT_PCT,
+  };
+}
 
 function handleApiRoutes(clientReq, clientRes) {
   if (clientReq.url === '/_api/entries') {
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify(store.entries.map(summarizeEntry)));
+    return true;
+  }
+
+  if (clientReq.url === '/_api/settings') {
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify(computeSettings()));
     return true;
   }
 
@@ -116,4 +145,4 @@ function handleApiRoutes(clientReq, clientRes) {
   return false;
 }
 
-module.exports = { handleApiRoutes };
+module.exports = { handleApiRoutes, computeSettings };

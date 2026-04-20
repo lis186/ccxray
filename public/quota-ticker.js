@@ -31,23 +31,33 @@ async function updateQuotaTicker() {
       barWrap.style.display = 'none';
     }
 
-    // ROI badge
+    // ROI badge — divisor from plan config (was hardcoded 200 = Max 20x)
     const roiEl = document.getElementById('qt-roi');
     const currentCost = monthly.currentMonth?.costUSD || 0;
-    const roi = (currentCost / 200).toFixed(1);
-    roiEl.textContent = 'ROI ' + roi + 'x';
-    roiEl.style.display = 'inline';
+    const settings = window.ccxraySettings || {};
+    const monthlyUSD = settings.monthlyUSD || 0;
+    if (monthlyUSD > 0) {
+      const roi = (currentCost / monthlyUSD).toFixed(1);
+      roiEl.textContent = 'ROI ' + roi + 'x';
+      roiEl.title = `Return on investment: $${currentCost.toFixed(2)} / $${monthlyUSD} plan price (${settings.label || 'plan'})`;
+      roiEl.style.display = 'inline';
+    } else {
+      // api-key users: no subscription divisor → hide badge
+      roiEl.style.display = 'none';
+    }
 
     // Recommendation chip
     const chipEl = document.getElementById('qt-chip');
     if (block.active && block.burnRate) {
       const br = block.burnRate.tokensPerMinute || 0;
-      const capacity = 220000 / 300; // tokens per min at full speed
+      // Capacity from plan's 5h tokens budget; fall back to legacy constant when settings absent
+      const tokens5h = settings.tokens5h || 220000;
+      const capacity = tokens5h / 300; // tokens per min at full speed
       const ratio = br / capacity;
       if (ratio < 0.3) {
         chipEl.textContent = '💡 Can parallelize';
         chipEl.style.display = 'inline';
-      } else if (block.projection && block.projection.totalTokens > 220000 * 0.9) {
+      } else if (block.projection && block.projection.totalTokens > tokens5h * 0.9) {
         chipEl.textContent = '⚠️ Slow down';
         chipEl.style.display = 'inline';
       } else {

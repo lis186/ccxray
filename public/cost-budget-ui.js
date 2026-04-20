@@ -106,7 +106,7 @@ function renderZone1(block) {
     <div style="font-size:12px;font-weight:600;color:${statusColor};margin-bottom:10px">${statusDot} ${statusMsg}</div>
     <div style="margin-bottom:8px">
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:2px">
-        <span>TOKENS</span><span style="color:${tokenColor}">${pct.toFixed(1)}% · ${(block.totalTokens/1000).toFixed(0)}k / ${((block.tokenLimit||220000)/1000).toFixed(0)}k${pct>100?' ⚠️':''}</span>
+        <span>TOKENS</span><span style="color:${tokenColor}">${pct.toFixed(1)}% · ${(block.totalTokens/1000).toFixed(0)}k / ${((block.tokenLimit || window.ccxraySettings?.tokens5h || 220000)/1000).toFixed(0)}k${pct>100?' ⚠️':''}</span>
       </div>
       <div style="height:7px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px">
         <div style="height:100%;width:${Math.min(pct,100)}%;background:${tokenColor};border-radius:3px;transition:width 0.5s"></div>
@@ -134,7 +134,12 @@ const PLAN_OPTIONS = [
 ];
 
 function getSelectedPlanPrice() {
-  return parseInt(localStorage.getItem('planPrice')) || 200;
+  // Priority: explicit user override > auto-detected plan > legacy default
+  const override = parseInt(localStorage.getItem('planPrice'));
+  if (Number.isFinite(override) && override > 0) return override;
+  const auto = window.ccxraySettings?.monthlyUSD;
+  if (Number.isFinite(auto) && auto > 0) return auto;
+  return 200;
 }
 
 function renderZone2(monthlyData, dailyData) {
