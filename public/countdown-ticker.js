@@ -18,16 +18,13 @@ function _formatCountdown(lastAt, ttlMs) {
     return { text: 'cache expired', cls: 'si-cache cache-expired', active: false };
   }
   const s = Math.ceil(remaining / 1000);
-  if (s > 300) {
-    const m = Math.ceil(s / 60);
-    return { text: `cache ${m}m ⏱`, cls: 'si-cache cache-far', active: true };
+  const pct = remaining / ttlMs;
+  const colorCls = pct > 0.6 ? 'cache-far' : pct > 0.3 ? 'cache-near' : 'cache-close';
+  if (s < 60) {
+    return { text: `cache ${s}s left`, cls: 'si-cache ' + colorCls, active: true };
   }
-  if (s >= 60) {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return { text: `cache ${m}:${String(sec).padStart(2, '0')} ⏱`, cls: 'si-cache cache-near', active: true };
-  }
-  return { text: `cache 0:${String(s).padStart(2, '0')} ⏱`, cls: 'si-cache cache-close', active: true };
+  const m = Math.ceil(s / 60);
+  return { text: `cache ${m}m left`, cls: 'si-cache ' + colorCls, active: true };
 }
 
 function _updateAllCountdowns() {

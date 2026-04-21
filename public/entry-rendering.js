@@ -227,7 +227,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0 });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null });
     const sessEl = document.createElement('div');
     sessEl.className = 'session-item';
     sessEl.dataset.sessionId = sid;
@@ -250,6 +250,7 @@ function addEntry(e) {
   else sess.mainCount++;
   const displayNum = isSubagent ? ('s' + sess.subCount) : String(sess.mainCount);
   if (turnCost != null) sess.totalCost += turnCost;
+  if (!isSubagent && e.title) { const t = cleanTitle(e.title); if (t) sess.lastAssistantText = t; }
   if (!sess.toolCalls) sess.toolCalls = {};
   Object.entries(e.toolCalls || {}).forEach(([name, cnt]) => {
     sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
@@ -267,11 +268,12 @@ function addEntry(e) {
   // Project tracking
   const projName = getProjectName(sess.cwd);
   if (!projectsMap.has(projName)) {
-    projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: entryId, lastId: entryId });
+    projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: entryId, lastId: entryId, lastSeenAt: Date.now() });
   }
   const proj = projectsMap.get(projName);
   proj.sessionIds.add(sid);
   proj.lastId = entryId;
+  proj.lastSeenAt = Date.now();
   if (turnCost != null) proj.totalCost += turnCost;
   renderProjectsCol();
 
@@ -363,7 +365,7 @@ function addEntry(e) {
   const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
-  const costHtml = turnCost != null ? '<span class="turn-cost">$' + turnCost.toFixed(4) + '</span>' : '';
+  const costHtml = turnCost != null ? '<span class="turn-cost">$' + turnCost.toFixed(2) + '</span>' : '';
   const identityTooltip = [
     isCompacted ? 'Context compacted' : null,
     e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
@@ -396,7 +398,7 @@ function addEntry(e) {
   const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
   const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
   const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
-  const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">hit:' + hitPct + '%</span>' : '';
+  const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">cache:' + hitPct + '%</span>' : '';
   const ctxBarHtml = ctxUsed > 0
     ? '<div class="turn-ctx turn-ctx-bar" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' +
         '<div class="turn-ctx-bar-bg">' +
@@ -411,14 +413,17 @@ function addEntry(e) {
   // Line 4: [time-info] [tools]
   // time-info: elapsed [wait:gap] [think:N] — flex:1, can clip; tools: flex-shrink:0, always visible
   const elapsedMs = parseFloat(e.elapsed || 0) * 1000;
-  const thinkSuffix = (e.thinkingDuration && e.thinkingDuration >= 0.05)
-    ? '<span class="turn-think"> (think:' + e.thinkingDuration.toFixed(1) + 's)</span>'
+  const thinkPart = (e.thinkingDuration && e.thinkingDuration >= 0.05)
+    ? 'think:' + e.thinkingDuration.toFixed(1) + 's'
     : '';
-  let timeHtml = '';
-  if (gapMs != null && gapMs >= 500) {
-    timeHtml += '<span class="turn-wait-gap" style="color:' + gapColor + '" title="' + escapeHtml(gapTitle) + '">wait:' + formatGap(gapMs) + '</span>';
-  }
-  timeHtml += '<span class="turn-elapsed">dur:' + formatGap(elapsedMs) + thinkSuffix + '</span>';
+  const waitPart = (gapMs != null && gapMs >= 500) ? 'wait:' + formatGap(gapMs) : '';
+  const secondaryParts = [waitPart, thinkPart].filter(Boolean).join(' · ');
+  const secondaryHtml = secondaryParts
+    ? ' <span class="turn-elapsed-secondary" title="' + escapeHtml(gapTitle) + '">(' + secondaryParts + ')</span>'
+    : '';
+  const timeHtml = elapsedMs > 0
+    ? '<span class="turn-elapsed">dur:' + formatGap(elapsedMs) + '</span>' + secondaryHtml
+    : '';
   let chipsHtml = '';
   for (const n of Object.keys(e.toolCalls || {})) {
     chipsHtml += '<span class="tool-chip">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '</span>';

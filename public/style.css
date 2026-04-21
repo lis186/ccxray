@@ -194,13 +194,20 @@
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
     overflow: hidden; word-break: break-word; line-height: 1.25;
   }
-  .session-item .si-row2 { font-size: 11px; color: var(--text); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-  .session-item .si-row3 { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); }
+  .session-item .si-row2 { font-size: 11px; color: var(--dim); margin-bottom: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+  .session-item .si-cost-row { font-size: 12px; font-weight: bold; margin-bottom: 2px; }
+  .session-item .si-time-row { font-size: 11px; color: var(--dim); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
+  .si-meta-row { display: flex; align-items: center; justify-content: space-between; margin-top: 3px; gap: 6px; }
+  .si-meta-row .si-cache { margin-top: 0; }
+  .si-time { font-size: 10px; color: var(--fg); white-space: nowrap; }
   .session-item .si-cost { color: var(--yellow); }
   .ctx-alert { font-size: 10px; font-weight: bold; }
   .ctx-alert-yellow { color: var(--yellow); }
   .ctx-alert-red { color: var(--red); }
   .ctx-alert-historical { color: var(--dim); font-weight: normal; opacity: 0.7; }
+  .ctx-alert-dim { color: var(--dim); font-weight: normal; }
+  .si-ctx-wrap { display: flex; align-items: center; gap: 5px; margin-top: 3px; margin-bottom: 2px; }
+  .si-ctx-wrap .si-ctx-bar { flex: 1; margin-top: 0; }
   .si-ctx-bar {
     position: relative;
     height: 2px;
@@ -233,7 +240,7 @@
   .si-ctx-bar.historical::before { background: var(--dim); opacity: 0.5; }
   .si-ctx-bar.historical::after { opacity: 0.4; }
   .si-cache { font-size: 10px; margin-top: 3px; font-variant-numeric: tabular-nums; }
-  .si-cache.cache-far { color: var(--dim); }
+  .si-cache.cache-far { color: var(--green); }
   .si-cache.cache-near { color: var(--yellow); }
   .si-cache.cache-close { color: var(--red); animation: cachePulse 1s ease-in-out infinite; }
   .si-cache.cache-expired { color: var(--dim); opacity: 0.55; font-style: italic; }
@@ -254,7 +261,7 @@
   /* Line 1: identity */
   .turn-item .turn-identity { display: flex; gap: 6px; align-items: center; font-size: 12px; flex-wrap: nowrap; }
   .turn-item .turn-num { color: var(--dim); flex-shrink: 0; }
-  .turn-item .turn-model { color: var(--purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .turn-model { color: var(--purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .turn-item .status-dot { font-size: 10px; line-height: 1; flex-shrink: 0; }
   .turn-item .status-dot-ok { color: var(--green); }
   .turn-item .status-dot-err { color: var(--red); }
@@ -288,13 +295,15 @@
   .turn-sub.selected { opacity: 1; border-left-color: var(--orange) !important; }
 
   .si-tools { font-size: 10px; color: var(--dim); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .si-preview { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .turn-elapsed-secondary { color: var(--dim); font-size: 10px; }
   .col-sticky-header { position: sticky; top: 0; z-index: 2; background: var(--surface); }
   #scroll-toggle { user-select: none; }
   #scroll-toggle .scroll-on, #scroll-toggle .scroll-off { padding: 1px 4px; border-radius: 3px; color: var(--dim); }
   #scroll-toggle .scroll-on.active { color: var(--green); background: rgba(63,185,80,0.15); }
   #scroll-toggle .scroll-off.active { color: var(--red); background: rgba(248,81,73,0.15); }
   #session-tool-bar { padding: 4px 10px; font-size: 10px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; overflow: hidden; white-space: nowrap; }
-  .turn-ctx-bar { margin-top: 3px; }
+  .turn-ctx-bar { margin-top: 5px; margin-bottom: 4px; }
   .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: visible; display: flex; position: relative; }
   /* Cross-level auto-compact landmark (see design D10). Tick sits on the 3px
      bar itself — not on the wrapper — so it doesn't extend across the

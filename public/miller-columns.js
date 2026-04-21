@@ -368,13 +368,14 @@ function formatEntryDateShort(id) {
   return months[month] + ' ' + day;
 }
 
-function copyLaunchCmd(sid, btn) {
-  const port = window.__PROXY_CONFIG__?.PORT || location.port || 5577;
-  const cmd = 'ANTHROPIC_BASE_URL=http://localhost:' + port + ' claude --continue ' + sid;
-  navigator.clipboard.writeText(cmd).then(() => {
-    btn.textContent = '✓';
+
+function copySessionContinue(sid, btn) {
+  const shortSid = sid === 'direct-api' ? sid : sid.slice(0, 8);
+  navigator.clipboard.writeText('claude --continue ' + shortSid).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ copied!';
     btn.style.color = 'var(--green)';
-    setTimeout(() => { btn.textContent = '⧉'; btn.style.color = ''; }, 1500);
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 1500);
   });
 }
 
@@ -408,16 +409,12 @@ function renderSessionItem(sess, sid) {
   const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
   const tooltip = sid === 'direct-api' ? 'direct API' : sid;
   const shortModel = (sess.model || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');
-  const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(3) : '—';
+  const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
-  const totalCalls = Object.values(sess.toolCalls || {}).reduce((s, n) => s + n, 0);
-  const topTools = Object.entries(sess.toolCalls || {})
-    .sort((a, b) => b[1] - a[1]).slice(0, 3)
-    .map(([n, c]) => escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '·' + c)
-    .join('  ');
-  const toolRow = totalCalls > 0
-    ? '<div class="si-tools">' + (topTools || totalCalls + ' calls') + '</div>'
-    : '';
+  const previewText = sess.lastAssistantText
+    ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
+    : null;
+  const previewRow = previewText ? '<div class="si-preview">' + escapeHtml(previewText) + '</div>' : '';
   const ctxPct = sess.latestMainCtxPct || 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
@@ -426,22 +423,26 @@ function renderSessionItem(sess, sid) {
   const RECENT_MS = 60 * 60 * 1000;
   const recent = sess.lastReceivedAt && (Date.now() - sess.lastReceivedAt) < RECENT_MS;
   // L1/L3 share threshold: ≥83.5% red, ≥75% yellow (D11). L2 is distinct.
-  // Badge only appears when ctx is noteworthy (≥75%). Recent sessions glow
-  // red/yellow; historical ones dim grey (D12 recent-gate).
-  let ctxAlertHtml = '';
-  if (ctxPct >= 75) {
-    const alertClass = recent
-      ? (ctxPct >= compactPct ? 'ctx-alert-red' : 'ctx-alert-yellow')
-      : 'ctx-alert-historical';
-    ctxAlertHtml = '<span class="ctx-alert ' + alertClass + '">' + Math.round(ctxPct) + '%</span>';
+  // Percentage always visible to the right; colour: dim (<75%), yellow (75%-compact), red (≥compact).
+  // Historical sessions stay dim regardless.
+  let ctxPctClass = 'ctx-alert-historical';
+  if (recent) {
+    ctxPctClass = ctxPct >= compactPct ? 'ctx-alert-red'
+                : ctxPct >= 75         ? 'ctx-alert-yellow'
+                                       : 'ctx-alert-dim';
   }
+  const ctxAlertHtml = ctxPct > 0
+    ? '<span class="ctx-alert ' + ctxPctClass + '">' + Math.round(ctxPct) + '%</span>'
+    : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.
-  // Over-compact red only on recent sessions — historical bars stay dim.
-  const ctxBarHtml = ctxPct > 0
+  const ctxBarInner = ctxPct > 0
     ? '<div class="si-ctx-bar' + (recent && ctxPct > compactPct ? ' over-compact' : '') +
       (!recent ? ' historical' : '') + '"' +
       ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%"' +
       ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'
+    : '';
+  const ctxBarHtml = ctxBarInner
+    ? '<div class="si-ctx-wrap">' + ctxBarInner + ctxAlertHtml + '</div>'
     : '';
   // Cache TTL countdown row; only rendered if we have both a response time and
   // a ttl-capable plan loaded (otherwise skip — api-key users with ttl=300_000
@@ -472,20 +473,24 @@ function renderSessionItem(sess, sid) {
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
+  const copyBtn = '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy: claude --continue ' + escapeHtml(shortSid) + '">&#10697;</button>';
   return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
-    '<button class="launch-btn" onclick="event.stopPropagation();copyLaunchCmd(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy command to resume this session">&#10697;</button>' +
+    copyBtn +
     heldHtml +
     '<div style="flex:1 1 auto"></div>' +
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2">' + escapeHtml(shortModel) + ' · ' + sess.count + 't · <span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
-    toolRow +
-    '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModel) + '</span> · ' + sess.count + 't</div>' +
+    '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
-    cacheRowHtml;
+    previewRow +
+    '<div class="si-meta-row">' +
+      '<span class="si-time" title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' +
+      cacheRowHtml +
+    '</div>';
 }
 
 function renderProjectsCol() {
@@ -518,10 +523,13 @@ function renderProjectsCol() {
     const lastDate = proj.lastId ? formatEntryDateShort(proj.lastId) : '';
     const rangeStr = firstDate === lastDate ? firstDate : firstDate + '—' + lastDate;
     const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+    const dotTitle = statusClass === 'sdot-stream' ? 'streaming'
+      : statusClass === 'sdot-idle' ? 'idle · ' + Math.max(1, Math.round((Date.now() - (proj.lastSeenAt || Date.now())) / 60000)) + 'm ago'
+      : 'offline';
     html += '<div class="project-item' + (isSel ? ' selected' : '') + '" onclick="selectProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')">' +
-      '<div class="pi-name"><span class="sdot ' + statusClass + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
+      '<div class="pi-name"><span class="sdot ' + statusClass + '" title="' + escapeHtml(dotTitle) + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
       '<div class="pi-meta">' + proj.sessionIds.size + ' sessions</div>' +
-      '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(3) + '</div>' +
+      '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(2) + '</div>' +
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
   }
@@ -1129,7 +1137,7 @@ function renderSectionsCol(idx) {
   html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
   if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';
-  if (turnCost != null) html += ' · <span style="color:var(--yellow)">$' + turnCost.toFixed(4) + '</span>';
+  if (turnCost != null) html += ' · <span style="color:var(--yellow)">$' + turnCost.toFixed(2) + '</span>';
   html += '</div>';
   const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheCreate = usage.cache_creation_input_tokens || 0;
@@ -1371,7 +1379,7 @@ function renderCostEfficiencyPanel(currentEntry) {
     const normalCost = totalCacheRead / 1_000_000 * rates.input_cost_per_mtok;
     const cacheCost = totalCacheRead / 1_000_000 * rates.cache_read_cost_per_mtok;
     const saved = normalCost - cacheCost;
-    el.innerHTML = 'Cache savings this session: <strong style="color:var(--green)">$' + saved.toFixed(3) + '</strong>';
+    el.innerHTML = 'Cache savings this session: <strong style="color:var(--green)">$' + saved.toFixed(2) + '</strong>';
   }).catch(() => {
     const el = document.getElementById(savingsId);
     if (el) el.textContent = '';
