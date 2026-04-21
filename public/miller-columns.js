@@ -406,6 +406,7 @@ function clearAll() { // kept for console use if needed
 
 function renderSessionItem(sess, sid) {
   const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
+  const tooltip = sid === 'direct-api' ? 'direct API' : sid;
   const shortModel = (sess.model || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');
   const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(3) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
@@ -468,13 +469,18 @@ function renderSessionItem(sess, sid) {
   const heldHtml = isHeld ? '<span class="held-badge" onclick="event.stopPropagation();showInterceptOverlay()">HELD</span>' : '';
   const isPinned = pinnedSessions.has(sid);
   const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinSession(&quot;' + escapeHtml(sid) + '&quot;)" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+  const titleRow = sess.title
+    ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
+    : '';
   return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
-    '<span class="sid">' + escapeHtml(shortSid) + '</span>' +
-    pinBtn +
+    '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
     '<button class="launch-btn" onclick="event.stopPropagation();copyLaunchCmd(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy command to resume this session">&#10697;</button>' +
     heldHtml +
+    '<div style="flex:1 1 auto"></div>' +
+    pinBtn +
     '</div>' +
+  titleRow +
     '<div class="si-row2">' + escapeHtml(shortModel) + ' · ' + sess.count + 't · <span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     toolRow +
     '<div class="si-row3"><span title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' + ctxAlertHtml + '</div>' +

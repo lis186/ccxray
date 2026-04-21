@@ -187,8 +187,13 @@
   .session-item { padding: 8px 10px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid var(--border); }
   .session-item:hover { background: var(--surface-hover); }
   .session-item.selected { border-left-color: var(--purple); background: var(--surface-active); }
-  .session-item .si-row1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
-  .session-item .sid { color: var(--purple); font-size: 12px; font-weight: bold; }
+  .session-item .si-row1 { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+  .session-item .sid { color: var(--purple); font-size: 12px; font-weight: bold; white-space: nowrap; flex-shrink: 0; }
+  .session-item .si-title {
+    font-size: 11px; color: var(--text); margin-bottom: 2px;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3;
+    overflow: hidden; word-break: break-word; line-height: 1.25;
+  }
   .session-item .si-row2 { font-size: 11px; color: var(--text); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
   .session-item .si-row3 { display: flex; justify-content: space-between; font-size: 11px; color: var(--dim); }
   .session-item .si-cost { color: var(--yellow); }
