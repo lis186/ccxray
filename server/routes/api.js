@@ -43,9 +43,10 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/settings') {
+  if (clientReq.method === 'GET' && clientReq.url === '/_api/settings') {
+    const s = readSettings();
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify(computeSettings()));
+    clientRes.end(JSON.stringify({ ...computeSettings(), statusLine: s.statusLine }));
     return true;
   }
 
