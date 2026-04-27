@@ -25,7 +25,6 @@ function summarizeEntry(entry) {
     hasCredential: entry.hasCredential || undefined,
     toolSources: entry.toolSources || undefined,
     coreHash: entry.coreHash || null,
-    thinkingBudget: entry.thinkingBudget ?? null,
     thinkingStripped: entry.thinkingStripped || false,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
