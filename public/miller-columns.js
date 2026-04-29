@@ -180,7 +180,12 @@ function expireSessionPins() {
 }
 
 // ── Project visibility filter ──
-let projectFilterMode = sessionStorage.getItem('xray-project-filter') || 'active';
+// Migrate legacy 'active'/'active+idle' values to 'streaming'/'recent'
+(function() {
+  const v = sessionStorage.getItem('xray-project-filter');
+  if (v === 'active' || v === 'active+idle') sessionStorage.setItem('xray-project-filter', 'recent');
+})();
+let projectFilterMode = sessionStorage.getItem('xray-project-filter') || 'recent';
 
 function setProjectFilter(mode) {
   projectFilterMode = mode;
@@ -193,7 +198,13 @@ function isSystemProject(name) {
 }
 
 // ── Session visibility filter ──
-let sessionFilterMode = sessionStorage.getItem('xray-session-filter') || 'active+idle';
+// Migrate legacy 'active'/'active+idle' values to 'streaming'/'recent'
+(function() {
+  const v = sessionStorage.getItem('xray-session-filter');
+  if (v === 'active') sessionStorage.setItem('xray-session-filter', 'streaming');
+  else if (v === 'active+idle') sessionStorage.setItem('xray-session-filter', 'recent');
+})();
+let sessionFilterMode = sessionStorage.getItem('xray-session-filter') || 'recent';
 
 function setSessionFilter(mode) {
   sessionFilterMode = mode;
@@ -201,31 +212,34 @@ function setSessionFilter(mode) {
   applySessionFilter();
   // Update dropdown display
   const label = document.getElementById('sess-filter-label');
-  if (label) label.textContent = mode === 'active' ? 'Active' : mode === 'active+idle' ? 'Active+Idle' : 'All';
+  if (label) label.textContent = mode === 'streaming' ? 'Streaming' : mode === 'recent' ? 'Recent' : 'All';
 }
 
 function applySessionFilter() {
   let anyVisible = false;
+  let visibleCount = 0;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
     // Pinned sessions are always visible
-    if (pinnedSessions.has(sid)) { el.style.display = ''; anyVisible = true; return; }
+    if (pinnedSessions.has(sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     // Project filter still applies
     if (selectedProjectName) {
       const sess = sessionsMap.get(sid);
       const projName = getProjectName(sess ? sess.cwd : null);
       if (projName !== selectedProjectName) { el.style.display = 'none'; return; }
     }
-    if (sessionFilterMode === 'all') { el.style.display = ''; anyVisible = true; return; }
+    if (sessionFilterMode === 'all') { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     const status = getStatusClass(sid);
-    if (sessionFilterMode === 'active') {
+    if (sessionFilterMode === 'streaming') {
       el.style.display = status === 'sdot-stream' ? '' : 'none';
-      if (status === 'sdot-stream') anyVisible = true;
-    } else { // active+idle
+      if (status === 'sdot-stream') { anyVisible = true; visibleCount++; }
+    } else { // recent
       el.style.display = status !== 'sdot-off' ? '' : 'none';
-      if (status !== 'sdot-off') anyVisible = true;
+      if (status !== 'sdot-off') { anyVisible = true; visibleCount++; }
     }
   });
+  const countEl = document.getElementById('sess-filter-count');
+  if (countEl) countEl.textContent = sessionFilterMode === 'all' ? '' : ' (' + visibleCount + ')';
 
   // Placeholder when a project is selected but no sessions are visible
   let placeholder = colSessions.querySelector('.sessions-empty');
@@ -519,9 +533,10 @@ function renderSessionItem(sess, sid) {
 function renderProjectsCol() {
   let html = '<div class="col-title" style="display:flex;align-items:center;gap:6px">Projects' +
     '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
-    '<option value="active"' + (projectFilterMode === 'active' ? ' selected' : '') + '>Active</option>' +
+    '<option value="streaming"' + (projectFilterMode === 'streaming' ? ' selected' : '') + ' title="Only projects with in-flight API calls">Streaming</option>' +
+    '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 5 minutes">Recent</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
-    '</select></div>';
+    '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
   const sorted = [...projectsMap.values()].sort((a, b) => {
     // Sort by: pinned first, then status (streaming > idle > off), then last activity
@@ -533,14 +548,18 @@ function renderProjectsCol() {
     if (sa !== sb) return sa - sb;
     return (b.lastId || '').localeCompare(a.lastId || '');
   });
+  let visibleProjCount = 0;
   for (const proj of sorted) {
     const isPinned = pinnedProjects.has(proj.name);
     const statusClass = getProjectStatusClass(proj);
-    // Filter: in 'active' mode, hide system + inactive (unless pinned or selected)
-    if (projectFilterMode === 'active') {
+    // Filter by activity (unless pinned or selected)
+    if (projectFilterMode !== 'all') {
       const isSel = selectedProjectName === proj.name;
-      if (!isPinned && !isSel && (isSystemProject(proj.name) || statusClass === 'sdot-off')) continue;
+      if (!isPinned && !isSel && isSystemProject(proj.name)) continue;
+      if (projectFilterMode === 'streaming' && !isPinned && !isSel && statusClass !== 'sdot-stream') continue;
+      if (projectFilterMode === 'recent' && !isPinned && !isSel && statusClass === 'sdot-off') continue;
     }
+    visibleProjCount++;
     const isSel = selectedProjectName === proj.name;
     const firstDate = proj.firstId ? formatEntryDateShort(proj.firstId) : '';
     const lastDate = proj.lastId ? formatEntryDateShort(proj.lastId) : '';
@@ -557,6 +576,8 @@ function renderProjectsCol() {
       '</div>';
   }
   colProjects.innerHTML = html;
+  const projCountEl = document.getElementById('proj-filter-count');
+  if (projCountEl) projCountEl.textContent = projectFilterMode === 'all' ? '' : ' (' + visibleProjCount + ')';
 }
 
 // Returns the first project in sorted order (pinned → streaming → active → lastId)
@@ -582,8 +603,8 @@ function getVisibleSessions(projectName) {
       if (pinnedSessions.has(sess.sid)) return true;
       if (sessionFilterMode === 'all') return true;
       const status = getStatusClass(sess.sid);
-      if (sessionFilterMode === 'active') return status === 'sdot-stream';
-      return status !== 'sdot-off'; // active+idle
+      if (sessionFilterMode === 'streaming') return status === 'sdot-stream';
+      return status !== 'sdot-off'; // recent
     });
 }
 
