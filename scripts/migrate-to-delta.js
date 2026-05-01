@@ -160,6 +160,7 @@ async function main() {
   let totalConverted = 0, totalEligible = 0, totalBytesSaved = 0;
   let maxChainDepth = 0;
   let chainsResumed = 0;
+  const anchorReasons = { firstInSession: 0, snapshotCap: 0, noSharedPrefix: 0 };
   const gapSessions = [];
 
   for (const [sessionId, ids] of sessions) {
@@ -212,6 +213,8 @@ async function main() {
       const forceAnchor = (prevState === null || deltaCount >= SNAPSHOT_N);
 
       if (forceAnchor) {
+        if (prevState === null) anchorReasons.firstInSession++;
+        else anchorReasons.snapshotCap++;
         prevState = { id, lastMsg: currMessages[currMessages.length - 1], msgCount: currMessages.length };
         deltaCount = 0;
         sessionAnchors++;
@@ -221,6 +224,7 @@ async function main() {
       const sharedCount = canDelta(prevState.lastMsg, prevState.msgCount, currMessages);
 
       if (sharedCount < 2) {
+        anchorReasons.noSharedPrefix++;
         prevState = { id, lastMsg: currMessages[currMessages.length - 1], msgCount: currMessages.length };
         deltaCount = 0;
         sessionAnchors++;
@@ -312,6 +316,11 @@ async function main() {
   console.log(`  Skipped (inferred): ${skippedInferred.toLocaleString()}`);
   console.log(`  Existing deltas:    ${chainsResumed.toLocaleString()} (skipped but used to continue chains)`);
   console.log(`  Files converted:    ${totalConverted.toLocaleString()} / ${totalEligible.toLocaleString()} eligible`);
+  const anchorTotal = anchorReasons.firstInSession + anchorReasons.snapshotCap + anchorReasons.noSharedPrefix;
+  console.log(`  Anchors:            ${anchorTotal.toLocaleString()} (= ${(totalEligible - totalConverted).toLocaleString()} expected)`);
+  console.log(`    first-in-session:   ${anchorReasons.firstInSession.toLocaleString()}`);
+  console.log(`    snapshot-cap:       ${anchorReasons.snapshotCap.toLocaleString()}`);
+  console.log(`    no-shared-prefix:   ${anchorReasons.noSharedPrefix.toLocaleString()}`);
   console.log(`  Max chain depth:    ${maxChainDepth}`);
   console.log(`  Space saved:        ${savedStr}${WRITE ? '' : ' (dry run estimate)'}`);
 
