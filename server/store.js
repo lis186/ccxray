@@ -205,7 +205,9 @@ function printSessionBanner(sessionId) {
   const line = '★'.repeat(pad) + label + '★'.repeat(w - pad - label.length);
   console.log();
   console.log('\x1b[1;35m' + line + '\x1b[0m');
-  console.log(`\x1b[35m   claude --continue ${sessionId}\x1b[0m`);
+  if (sessionId !== 'direct-api') {
+    console.log(`\x1b[35m   claude --resume ${sessionId}\x1b[0m`);
+  }
   console.log();
 }
 
