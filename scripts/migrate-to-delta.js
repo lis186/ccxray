@@ -108,15 +108,22 @@ async function main() {
   // Group by sessionId, filter, sort, de-dup
   // sessionInferred !== true: explicit undefined (legacy entries) are treated as explicit —
   // those entries have real UUID session_ids from extractSessionId(), not inferred by timing.
+  // isSubagent: sub-agent calls share the parent's sessionId via inflight inference but are
+  // separate one-shot conversations (msgCount=1, unrelated content). The live server keeps
+  // them out of chains by using extractSessionId() (explicit only) — peekSid is null for
+  // sub-agents so they fall through to FULL write. We mirror that here.
   const sessions = new Map();
+  let skippedSubagent = 0;
+  let skippedInferred = 0;
   for (const line of indexText.split('\n')) {
     const t = line.trim();
     if (!t) continue;
     let meta;
     try { meta = JSON.parse(t); } catch { continue; }
-    const { id, sessionId, sessionInferred } = meta;
+    const { id, sessionId, sessionInferred, isSubagent } = meta;
     if (!id || !sessionId) continue;
-    if (sessionInferred === true) continue;
+    if (sessionInferred === true) { skippedInferred++; continue; }
+    if (isSubagent === true) { skippedSubagent++; continue; }
     if (!sessions.has(sessionId)) sessions.set(sessionId, []);
     sessions.get(sessionId).push(id);
   }
@@ -264,6 +271,8 @@ async function main() {
 
   console.log('\nResults:');
   console.log(`  Sessions processed: ${sessions.size.toLocaleString()}`);
+  console.log(`  Skipped (subagent): ${skippedSubagent.toLocaleString()}`);
+  console.log(`  Skipped (inferred): ${skippedInferred.toLocaleString()}`);
   console.log(`  Files converted:    ${totalConverted.toLocaleString()} / ${totalEligible.toLocaleString()} eligible`);
   console.log(`  Max chain depth:    ${maxChainDepth}`);
   console.log(`  Space saved:        ${savedStr}${WRITE ? '' : ' (dry run estimate)'}`);
