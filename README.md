@@ -56,7 +56,7 @@ If the hub process crashes, connected clients automatically recover within secon
 
 ```bash
 $ ccxray status
-Hub: http://localhost:5577 (pid 12345, uptime 3600s, v1.6.0)
+Hub: http://localhost:5577 (pid 12345, uptime 3600s)
 Connected clients (2):
   [1] pid 23456 — ~/dev/project-a
   [2] pid 34567 — ~/dev/project-b
@@ -80,7 +80,7 @@ Track your real spending. Session heatmap, burn rate, ROI calculator — know ex
 
 ### System Prompt Tracking
 
-Automatic version detection with diff viewer. Browse prompts across 12 recognized agent types — Orchestrator, General Purpose, Plan, Explore, Web Search, Codex Rescue, Claude Code Guide, Summarizer, Title Generator, Name Generator, Translator, SDK Agent — and see exactly what changed between updates. Precision-verified against 12,730 captured prompts: 100% of classifications are correct, uncertain prompts are honestly marked `unknown`.
+Automatic version detection with diff viewer. Browse prompts across 11 recognized agent types — Orchestrator, General Purpose, Plan, Explore, Web Search, Codex Rescue, Claude Code Guide, Summarizer, Title Generator, Name Generator, Translator — and see exactly what changed between updates. Precision-verified against 12,730 captured prompts: 100% of classifications are correct, uncertain prompts are honestly marked `unknown`.
 
 ![System prompt tracking](docs/system-prompt.png)
 
@@ -99,6 +99,16 @@ Session cards show Claude Code's generated titles (e.g. `Fix login button on mob
 ### Plan Detection
 
 ccxray auto-detects your subscription plan (Pro vs Max 5x vs Max 20x) by reading Anthropic's `cache_creation` usage fields — no configuration needed. Topbar shows `Plan: Max 5x · TTL 1h (auto)`. ROI calculations and quota panel use the detected plan. Override with `CCXRAY_PLAN` if auto-detection gets it wrong.
+
+### Intercept & Edit Requests
+
+Pause requests before they reach Anthropic. Toggle intercept on a session and the next request from Claude Code is held in the dashboard — edit the system prompt, messages, tools, or sampling parameters, then approve (forwards your edited copy) or reject (returns an error to Claude Code). Useful for prompt engineering, sandboxing risky tool calls, and running experiments without forking the agent.
+
+### Context HUD
+
+Optional context-stats footer appended to Claude's responses inside Claude Code itself: `📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`. Enabled by default; toggle from the dashboard topbar.
+
+**Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Turn the HUD off when running sub-agent-heavy sessions. State persists in `~/.ccxray/settings.json`.
 
 ### More
 
@@ -137,6 +147,8 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 | `AUTH_TOKEN` | _(none)_ | API key for access control (disabled when unset) |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
+| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Files referenced by restored entries are protected. Set to `0` to disable. |
+| `RESTORE_DAYS` | `0` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
@@ -144,6 +156,18 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 | `ANTHROPIC_BASE_URL` | — | Custom upstream Anthropic endpoint (e.g. a corporate gateway). Supports base paths — `https://host/serving-endpoints/anthropic` works as-is. `ANTHROPIC_TEST_*` take precedence when set. |
 
 Logs are stored in `~/.ccxray/logs/` as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
+
+### S3 / R2 storage backend
+
+Set `STORAGE_BACKEND=s3` to write logs to S3-compatible storage (AWS S3, Cloudflare R2, MinIO) instead of local disk. Requires `@aws-sdk/client-s3` to be installed.
+
+| Variable | Default | Description |
+|---|---|---|
+| `STORAGE_BACKEND` | `local` | `local` or `s3` |
+| `S3_BUCKET` | _(required)_ | Bucket name |
+| `S3_REGION` | `auto` | Region (use `auto` for R2) |
+| `S3_ENDPOINT` | _(unset)_ | Custom endpoint URL (R2 / MinIO) |
+| `S3_PREFIX` | `logs/` | Key prefix inside the bucket |
 
 ## Docker
 

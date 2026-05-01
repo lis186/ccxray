@@ -56,7 +56,7 @@ cd ~/project-b && ccxray claude     # 連線至現有 hub
 
 ```bash
 $ ccxray status
-Hub: http://localhost:5577 (pid 12345, uptime 3600s, v1.6.0)
+Hub: http://localhost:5577 (pid 12345, uptime 3600s)
 Connected clients (2):
   [1] pid 23456 — ~/dev/project-a
   [2] pid 34567 — ~/dev/project-b
@@ -80,7 +80,7 @@ Connected clients (2):
 
 ### System Prompt 追蹤
 
-自動偵測版本變更，內建 diff 檢視器。瀏覽 12 種已辨識的 agent 類型 — Orchestrator、General Purpose、Plan、Explore、Web Search、Codex Rescue、Claude Code Guide、Summarizer、Title Generator、Name Generator、Translator、SDK Agent — 精確掌握每次更新的差異。對 12,730 份真實捕捉的 prompts 做回溯驗證：被分類的項目 100% 正確，不確定的則誠實標為 `unknown`。
+自動偵測版本變更，內建 diff 檢視器。瀏覽 11 種已辨識的 agent 類型 — Orchestrator、General Purpose、Plan、Explore、Web Search、Codex Rescue、Claude Code Guide、Summarizer、Title Generator、Name Generator、Translator — 精確掌握每次更新的差異。對 12,730 份真實捕捉的 prompts 做回溯驗證：被分類的項目 100% 正確，不確定的則誠實標為 `unknown`。
 
 ![System Prompt 追蹤](docs/system-prompt.png)
 
@@ -99,6 +99,16 @@ Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login butto
 ### 計畫自動偵測
 
 ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測你的訂閱計畫（Pro、Max 5x、Max 20x），無需任何設定。頂部列顯示 `Plan: Max 5x · TTL 1h (auto)`。ROI 計算和配額面板均使用偵測到的計畫。若偵測結果有誤，可用 `CCXRAY_PLAN` 覆蓋。
+
+### 請求攔截與編輯
+
+在請求送出至 Anthropic 之前先暫停。在 session 上開啟攔截後，下一個來自 Claude Code 的請求會被儀表板留住 — 你可以即時編輯 system prompt、訊息、tools 或 sampling 參數，再選擇放行（轉發你編輯後的版本）或拒絕（回傳錯誤給 Claude Code）。適合 prompt engineering、把高風險 tool call 隔離在沙箱裡、或在不分叉 agent 的情況下做實驗。
+
+### Context HUD
+
+可選的上下文統計區塊，會被附加到 Claude Code 中 Claude 的回覆尾端：`📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。預設啟用；可從儀表板頂部列切換。
+
+**為什麼需要這個開關？** 當主 agent 透過 Agent / Task tool 呼叫 sub-agent 時，附加的區塊可能會把 sub-agent 的回傳內容截斷在父 agent 看到的範圍之外，造成多 agent 工作流程靜默地遺失資料。跑 sub-agent 較重的 session 時請關掉 HUD。狀態保存在 `~/.ccxray/settings.json`。
 
 ### 其他功能
 
@@ -137,6 +147,8 @@ ccxray 是透明的 HTTP 代理。它將請求轉發到 Anthropic，將請求與
 | `AUTH_TOKEN` | _（無）_ | 存取控制用 API 金鑰（未設定時停用） |
 | `CCXRAY_HOME` | `~/.ccxray` | 基底目錄，存放 hub lockfile、logs、hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | 記憶體中最多保留的條目數（最舊的會被淘汰；磁碟日誌不受影響） |
+| `LOG_RETENTION_DAYS` | `14` | 啟動時自動清除超過 N 天的日誌檔案。仍被還原條目參照的檔案會受保護。設為 `0` 可停用。 |
+| `RESTORE_DAYS` | `0` | 限制啟動時讀回的日誌天數（`0` = 全部，仍受 `CCXRAY_MAX_ENTRIES` 上限影響）。日誌目錄非常大時很有用。 |
 | `CCXRAY_PLAN` | _（自動）_ | 覆蓋計畫偵測：`pro`、`max5x`、`max20x`、`api-key` |
 | `CCXRAY_DISABLE_TITLES` | _（未設定）_ | 設為 `1` 可停用 session 標題擷取（退回顯示短雜湊） |
 | `CCXRAY_MODEL_PREFIX` | _（未設定）_ | 轉發前在 model 名稱前加上前綴（例如 `databricks-`）。適用於上游需要廠商前綴 model 名稱、但 Claude Code 只接受標準名稱的情況。 |
@@ -144,6 +156,18 @@ ccxray 是透明的 HTTP 代理。它將請求轉發到 Anthropic，將請求與
 | `ANTHROPIC_BASE_URL` | — | 自訂上游 Anthropic 端點（例如企業閘道）。支援 base path — `https://host/serving-endpoints/anthropic` 直接可用。設定了 `ANTHROPIC_TEST_*` 時以其為準。 |
 
 日誌儲存在 `~/.ccxray/logs/`，格式為 `{timestamp}_req.json` 和 `{timestamp}_res.json`。從 v1.0 升級？`./logs/` 中的日誌會在首次啟動時自動遷移。
+
+### S3 / R2 儲存後端
+
+設定 `STORAGE_BACKEND=s3` 即可把日誌寫到 S3 相容儲存（AWS S3、Cloudflare R2、MinIO）而不是本機磁碟。需要安裝 `@aws-sdk/client-s3`。
+
+| 變數 | 預設值 | 說明 |
+|---|---|---|
+| `STORAGE_BACKEND` | `local` | `local` 或 `s3` |
+| `S3_BUCKET` | _（必填）_ | Bucket 名稱 |
+| `S3_REGION` | `auto` | 區域（R2 請用 `auto`） |
+| `S3_ENDPOINT` | _（未設定）_ | 自訂 endpoint URL（R2 / MinIO） |
+| `S3_PREFIX` | `logs/` | Bucket 內的 key 前綴 |
 
 ## Docker
 
