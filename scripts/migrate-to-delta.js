@@ -36,28 +36,8 @@ if (snIdx !== -1) {
   SNAPSHOT_N = envN > 0 ? envN : 20; // default 20 keeps max chain depth ≤ 20
 }
 
-// ── Copied verbatim from server/index.js — must stay in sync ─────────
-// Claude Code shifts cache_control markers to the most-recent messages each turn,
-// so identical content blocks differ only in cache_control. Strip it before comparing.
-function msgNorm(msg) {
-  if (!msg || !Array.isArray(msg.content)) return msg;
-  return { ...msg, content: msg.content.map(b => {
-    if (!b || typeof b !== 'object' || !('cache_control' in b)) return b;
-    const { cache_control, ...rest } = b;
-    return rest;
-  }) };
-}
-
-// Adapted from findSharedPrefix: takes only the last prev message + count
-// instead of the full array, to keep per-session memory minimal.
-function canDelta(prevLastMsg, prevCount, currMessages) {
-  if (prevCount >= currMessages.length) return 0;
-  const lastIdx = prevCount - 1;
-  try {
-    if (JSON.stringify(msgNorm(prevLastMsg)) !== JSON.stringify(msgNorm(currMessages[lastIdx]))) return 0;
-  } catch { return 0; }
-  return prevCount; // sharedCount
-}
+// Reuse the live-server helpers so the two paths cannot drift.
+const { findSharedPrefixFromLast: canDelta } = require('../server/delta-helpers');
 
 // ── Safe JSON parse — handles legacy double-JSON-concatenated files ───
 function safeParseFirst(text) {

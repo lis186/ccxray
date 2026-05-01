@@ -16,6 +16,7 @@ const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { authMiddleware } = require('./auth');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
+const { findSharedPrefix } = require('./delta-helpers');
 
 // ── CLI: parse flags and detect "claude" subcommand ──
 const portIdx = process.argv.indexOf('--port');
@@ -44,30 +45,6 @@ if (claudeMode || hubMode) console.log = () => {};
 // sessionLastReq tracks the most recent req per session for delta writes.
 // Only populated for sessions with explicit session_id (main orchestrator turns).
 const sessionLastReq = new Map(); // sessionId → { id, messages, deltaCount }
-
-// Claude Code shifts cache_control markers to the most-recent messages each turn,
-// so identical content blocks differ only in cache_control. Strip it before comparing.
-function msgNorm(msg) {
-  if (!msg || !Array.isArray(msg.content)) return msg;
-  return { ...msg, content: msg.content.map(b => {
-    if (!b || typeof b !== 'object' || !('cache_control' in b)) return b;
-    const { cache_control, ...rest } = b;
-    return rest;
-  }) };
-}
-
-// Returns the number of leading messages shared between prevMsgs and currMsgs.
-// Assumes conversation history is strictly append-only; verifies only the last
-// prev message at its matching position (O(1) hash of that message string).
-function findSharedPrefix(prevMsgs, currMsgs) {
-  if (!Array.isArray(prevMsgs) || prevMsgs.length === 0) return 0;
-  if (prevMsgs.length >= currMsgs.length) return 0; // compaction or different session
-  const lastIdx = prevMsgs.length - 1;
-  try {
-    if (JSON.stringify(msgNorm(prevMsgs[lastIdx])) !== JSON.stringify(msgNorm(currMsgs[lastIdx]))) return 0;
-  } catch { return 0; }
-  return prevMsgs.length;
-}
 
 // Route handlers
 const { handleSSERoute } = require('./routes/sse');
