@@ -41,7 +41,7 @@ const FAILURE_BACKOFF_MS = 60_000;
 
 function streamUsageEntries() {
   return new Promise((resolve, reject) => {
-    const worker = fork(path.join(__dirname, 'cost-worker.js'), [], { silent: true });
+    const worker = fork(path.join(__dirname, 'cost-worker.js'), [], { silent: true, windowsHide: true });
     const chunks = [];
     let stderrBuf = '';
     const timeout = setTimeout(() => {
