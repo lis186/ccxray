@@ -242,26 +242,7 @@ async function main() {
         toolsHash:  parsed.toolsHash,
       };
 
-      // Verify: reconstruct spot-check before writing
       const deltaJson = JSON.stringify(delta);
-      let verifyOk = false;
-      try {
-        const checkIdx = sharedCount - 1;
-        // Last shared message normalized should match (same as canDelta already verified)
-        // Also verify first new message is correct
-        verifyOk = true;
-        if (newMessages.length > 0 && newMessages[0] !== currMessages[sharedCount]) {
-          verifyOk = JSON.stringify(newMessages[0]) === JSON.stringify(currMessages[sharedCount]);
-        }
-      } catch { verifyOk = false; }
-
-      if (!verifyOk) {
-        prevState = { id, lastMsg: currMessages[currMessages.length - 1], msgCount: currMessages.length };
-        deltaCount = 0;
-        sessionAnchors++;
-        continue;
-      }
-
       const saved = size - Buffer.byteLength(deltaJson, 'utf8');
 
       if (WRITE) {
