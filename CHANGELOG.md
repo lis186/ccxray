@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.8.0
+
+### Added
+
+**Delta log storage**
+
+- **`_req.json` files now store only what's new in each turn**, plus a `prevId` / `msgOffset` pointer back to the previous turn in the same session. Long sessions used to re-record the entire conversation history every turn; that's gone. Per-turn compression measured at 95–99% on dogfood data.
+- **Read side reconstructs transparently**: `loadEntryReqRes` follows the `prevId` chain on demand, with per-entry promise dedup and graceful degrade when a referenced entry has been pruned. Dashboard rendering and existing API consumers see the full `messages` array exactly as before.
+- **Safety rails**: delta only fires for sessions with an explicit `session_id` (main-orchestrator turns); subagents and inferred sessions always write FULL. Compaction (messages shrinking) resets the chain. Storage adapters that don't support delta (e.g. S3 — multi-writer races on prevId chains) opt out via `supportsDelta: false`.
+- **`CCXRAY_DELTA_SNAPSHOT_N`** env var: force a FULL snapshot every N delta writes. Defaults to `0` (only the session-start anchor). Recommended `5` for S3-backed setups.
+
+**One-shot migration script**
+
+- `node scripts/migrate-to-delta.js [--write] [--snapshot-n N]` rewrites existing FULL `_req.json` files in place to delta format. Dry-run by default; atomic temp-file + rename per file (crash-safe). On the dogfood instance: ~5.3 GB of disk recovered (9,828 conversions, 95–99% per-turn compression, verified by full reconstruction round-trip).
+
+### Changed
+
+- **`README` refreshed** (en / zh-TW / ja in lockstep): added Features sections for Intercept & Edit Requests and Context HUD, a dedicated S3 / R2 storage backend subsection, and the previously-undocumented `LOG_RETENTION_DAYS` and `RESTORE_DAYS` env vars. Agent type count corrected (12 → 11) and the version-stamped `ccxray status` example replaced with a generic one.
+
+### Internal
+
+- **`server/delta-helpers.js`**: shared module exposing `msgNorm`, `findSharedPrefix`, and `findSharedPrefixFromLast`. Replaces an inline copy that previously lived in both `server/index.js` and `scripts/migrate-to-delta.js` (the migration script's comment explicitly flagged it as drift-prone).
+- **+44 tests** covering write decision helpers, restore chain reconstruction (single hop, multi-hop, pruned-prev fallback, concurrent loads, empty-delta full-match), and the migration script (canDelta, safeParseFirst legacy double-JSON, probeChainDepth, plus end-to-end subprocess tests for sub-agent filtering, chain resume across existing deltas, and anchor-by-reason accounting).
+
 ## 1.7.0
 
 ### Added
