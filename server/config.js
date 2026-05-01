@@ -58,6 +58,8 @@ const LOGS_DIR = path.join(os.homedir(), '.ccxray', 'logs');
 const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
+// 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
+const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';
 
 // Storage adapter (local by default, S3 via STORAGE_BACKEND=s3)
@@ -137,6 +139,7 @@ module.exports = {
   LOGS_DIR,
   RESTORE_DAYS,
   LOG_RETENTION_DAYS,
+  DELTA_SNAPSHOT_N,
   REWRITE_MODEL_PREFIX,
   storage,
   MODEL_CONTEXT_FALLBACK,

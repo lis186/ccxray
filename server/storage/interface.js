@@ -25,6 +25,11 @@
  * @property {(filename: string) => Promise<void>} deleteFile
  *   Delete a log artifact by full filename (e.g. '2025-03-17T12-00-00-000_req.json').
  *   Must silently succeed if the file does not exist.
+ *
+ * @property {boolean} supportsDelta
+ *   When true, the proxy may write _req.json in delta format (prevId + partial messages)
+ *   instead of storing the full messages array every turn. Set false for high-latency or
+ *   multi-writer backends (S3) where chain traversal on read would be too costly.
  */
 
 module.exports = {};

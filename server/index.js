@@ -40,6 +40,35 @@ const claudeArgs = claudeMode ? process.argv.slice(3) : [];
 const _origLog = console.log;
 if (claudeMode || hubMode) console.log = () => {};
 
+// ── Delta log storage ────────────────────────────────────────────────
+// sessionLastReq tracks the most recent req per session for delta writes.
+// Only populated for sessions with explicit session_id (main orchestrator turns).
+const sessionLastReq = new Map(); // sessionId → { id, messages, deltaCount }
+
+// Claude Code shifts cache_control markers to the most-recent messages each turn,
+// so identical content blocks differ only in cache_control. Strip it before comparing.
+function msgNorm(msg) {
+  if (!msg || !Array.isArray(msg.content)) return msg;
+  return { ...msg, content: msg.content.map(b => {
+    if (!b || typeof b !== 'object' || !('cache_control' in b)) return b;
+    const { cache_control, ...rest } = b;
+    return rest;
+  }) };
+}
+
+// Returns the number of leading messages shared between prevMsgs and currMsgs.
+// Assumes conversation history is strictly append-only; verifies only the last
+// prev message at its matching position (O(1) hash of that message string).
+function findSharedPrefix(prevMsgs, currMsgs) {
+  if (!Array.isArray(prevMsgs) || prevMsgs.length === 0) return 0;
+  if (prevMsgs.length >= currMsgs.length) return 0; // compaction or different session
+  const lastIdx = prevMsgs.length - 1;
+  try {
+    if (JSON.stringify(msgNorm(prevMsgs[lastIdx])) !== JSON.stringify(msgNorm(currMsgs[lastIdx]))) return 0;
+  } catch { return 0; }
+  return prevMsgs.length;
+}
+
 // Route handlers
 const { handleSSERoute } = require('./routes/sse');
 const { handleApiRoutes } = require('./routes/api');
@@ -152,13 +181,35 @@ const server = http.createServer((clientReq, clientRes) => {
       if (toolsHash) config.storage.writeSharedIfAbsent(`tools_${toolsHash}.json`, JSON.stringify(parsedBody.tools))
         .catch(e => console.error('Write tools failed:', e.message));
 
-      const stripped = {
-        model: parsedBody.model,
-        max_tokens: parsedBody.max_tokens,
-        messages: parsedBody.messages,
-        sysHash,
-        toolsHash,
-      };
+      const currMessages = Array.isArray(parsedBody.messages) ? parsedBody.messages : [];
+      const peekSid = store.extractSessionId(parsedBody);
+      let stripped;
+
+      if (peekSid && config.storage.supportsDelta) {
+        const prev = sessionLastReq.get(peekSid);
+        const sharedCount = prev ? findSharedPrefix(prev.messages, currMessages) : 0;
+        const forceFull = !prev ||
+          (config.DELTA_SNAPSHOT_N > 0 && (prev.deltaCount || 0) >= config.DELTA_SNAPSHOT_N);
+
+        if (!forceFull && sharedCount >= 2) {
+          stripped = {
+            model: parsedBody.model,
+            max_tokens: parsedBody.max_tokens,
+            prevId: prev.id,
+            msgOffset: sharedCount,
+            messages: currMessages.slice(sharedCount),
+            sysHash,
+            toolsHash,
+          };
+          sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: (prev.deltaCount || 0) + 1 });
+        } else {
+          stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash };
+          sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: 0 });
+        }
+      } else {
+        stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash };
+      }
+
       reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))
         .catch(e => console.error('Write req.json failed:', e.message));
     }

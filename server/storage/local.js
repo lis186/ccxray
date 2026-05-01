@@ -14,6 +14,8 @@ function createLocalStorage(logsDir) {
   const indexPath = path.join(logsDir, 'index.ndjson');
 
   return {
+    supportsDelta: true,
+
     async init() {
       await fsp.mkdir(logsDir, { recursive: true });
       await fsp.mkdir(sharedDir, { recursive: true });

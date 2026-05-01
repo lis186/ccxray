@@ -34,6 +34,8 @@ function createS3Storage(opts) {
   }
 
   return {
+    supportsDelta: false,
+
     async init() {
       // Verify bucket access
       const { HeadBucketCommand } = require('@aws-sdk/client-s3');
