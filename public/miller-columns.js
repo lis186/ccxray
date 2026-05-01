@@ -509,7 +509,9 @@ function renderSessionItem(sess, sid) {
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
-  const copyBtn = '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy: claude --resume ' + escapeHtml(shortSid) + '">&#10697;</button>';
+  const copyBtn = sid === 'direct-api'
+    ? ''
+    : '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy: claude --resume ' + escapeHtml(shortSid) + '">&#10697;</button>';
   return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
