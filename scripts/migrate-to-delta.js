@@ -59,12 +59,13 @@ function safeParseFirst(text) {
 // Probe chain depth by walking prevId until an anchor (FULL) is reached.
 // Capped at SNAPSHOT_N to bound I/O — if we hit the cap, treating it as
 // SNAPSHOT_N is correct anyway (caller will force the next FULL to anchor).
-async function probeChainDepth(deltaParsed) {
+// logsDir/cap default to the module-level CLI values; tests can override.
+async function probeChainDepth(deltaParsed, logsDir = LOGS_DIR, cap = SNAPSHOT_N) {
   let depth = 1; // the delta we just saw counts as 1
   let cursor = deltaParsed.prevId;
-  while (cursor && depth < SNAPSHOT_N) {
+  while (cursor && depth < cap) {
     try {
-      const txt = await fsp.readFile(path.join(LOGS_DIR, cursor + '_req.json'), 'utf8');
+      const txt = await fsp.readFile(path.join(logsDir, cursor + '_req.json'), 'utf8');
       const p = safeParseFirst(txt);
       if (!p) break;
       if (p.prevId == null) break; // hit anchor
@@ -291,4 +292,8 @@ async function main() {
   }
 }
 
-main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+if (require.main === module) {
+  main().catch(e => { console.error('Fatal:', e.message); process.exit(1); });
+} else {
+  module.exports = { canDelta, safeParseFirst, probeChainDepth };
+}
