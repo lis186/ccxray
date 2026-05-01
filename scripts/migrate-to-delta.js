@@ -76,6 +76,25 @@ function safeParseFirst(text) {
   return null;
 }
 
+// Probe chain depth by walking prevId until an anchor (FULL) is reached.
+// Capped at SNAPSHOT_N to bound I/O — if we hit the cap, treating it as
+// SNAPSHOT_N is correct anyway (caller will force the next FULL to anchor).
+async function probeChainDepth(deltaParsed) {
+  let depth = 1; // the delta we just saw counts as 1
+  let cursor = deltaParsed.prevId;
+  while (cursor && depth < SNAPSHOT_N) {
+    try {
+      const txt = await fsp.readFile(path.join(LOGS_DIR, cursor + '_req.json'), 'utf8');
+      const p = safeParseFirst(txt);
+      if (!p) break;
+      if (p.prevId == null) break; // hit anchor
+      depth++;
+      cursor = p.prevId;
+    } catch { break; }
+  }
+  return depth;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────
 async function main() {
   console.log('ccxray delta migration');
@@ -140,6 +159,7 @@ async function main() {
 
   let totalConverted = 0, totalEligible = 0, totalBytesSaved = 0;
   let maxChainDepth = 0;
+  let chainsResumed = 0;
   const gapSessions = [];
 
   for (const [sessionId, ids] of sessions) {
@@ -161,11 +181,28 @@ async function main() {
       const isDelta = (parsed.prevId != null && parsed.msgOffset != null);
 
       if (isDelta) {
-        // Already converted by the live server — can't reconstruct fullMessages
-        // with last-msg-only prevState, so reset chain here. Subsequent FULL
-        // entries will start a new anchor.
-        prevState = null;
-        deltaCount = 0;
+        // Already converted by the live server. Don't rewrite this file, but
+        // continue the chain so subsequent FULLs can delta from it. The
+        // delta's last message is, by definition, the last message of the
+        // reconstructed full conversation (deltas are append-only).
+        const dMsgs = Array.isArray(parsed.messages) ? parsed.messages : [];
+        const dMsgOffset = (typeof parsed.msgOffset === 'number') ? parsed.msgOffset : 0;
+        if (dMsgs.length > 0) {
+          chainsResumed++;
+          prevState = {
+            id,
+            lastMsg: dMsgs[dMsgs.length - 1],
+            msgCount: dMsgOffset + dMsgs.length,
+          };
+          // Walk prevId backwards to the nearest anchor to learn how deep
+          // this chain already is — keeps SNAPSHOT_N as a true global cap.
+          deltaCount = await probeChainDepth(parsed);
+          if (deltaCount > maxChainDepth) maxChainDepth = deltaCount;
+        } else {
+          // Empty delta (defensive): break chain, next FULL becomes anchor.
+          prevState = null;
+          deltaCount = 0;
+        }
         continue;
       }
 
@@ -273,6 +310,7 @@ async function main() {
   console.log(`  Sessions processed: ${sessions.size.toLocaleString()}`);
   console.log(`  Skipped (subagent): ${skippedSubagent.toLocaleString()}`);
   console.log(`  Skipped (inferred): ${skippedInferred.toLocaleString()}`);
+  console.log(`  Existing deltas:    ${chainsResumed.toLocaleString()} (skipped but used to continue chains)`);
   console.log(`  Files converted:    ${totalConverted.toLocaleString()} / ${totalEligible.toLocaleString()} eligible`);
   console.log(`  Max chain depth:    ${maxChainDepth}`);
   console.log(`  Space saved:        ${savedStr}${WRITE ? '' : ' (dry run estimate)'}`);
