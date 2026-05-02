@@ -20,6 +20,21 @@ const AGENT_PROVIDERS = Object.freeze({
       };
     },
   }),
+
+  codex: Object.freeze({
+    id: 'codex',
+    label: 'Codex CLI',
+    displayName: 'ccxray',
+    upstream: 'openai',
+    installHint: '  npm install -g @openai/codex',
+    createLaunch({ port, args, env }) {
+      return {
+        bin: 'codex',
+        args: ['-c', `openai_base_url="http://localhost:${port}/v1"`, ...args],
+        env: { ...env },
+      };
+    },
+  }),
 });
 
 function listAgentProviderIds() {
