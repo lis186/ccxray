@@ -23,7 +23,7 @@ after(() => {
 
 function runSnippet(snippet, env = {}) {
   return new Promise((resolve) => {
-    // Start from process.env, sanitise ambient ANTHROPIC_* vars that would
+    // Start from process.env, sanitise ambient provider vars that would
     // leak from a developer's shell and corrupt test results, then apply
     // the caller's explicit overrides on top.
     const sanitised = { ...process.env };
@@ -31,6 +31,10 @@ function runSnippet(snippet, env = {}) {
     delete sanitised.ANTHROPIC_TEST_HOST;
     delete sanitised.ANTHROPIC_TEST_PORT;
     delete sanitised.ANTHROPIC_TEST_PROTOCOL;
+    delete sanitised.OPENAI_BASE_URL;
+    delete sanitised.OPENAI_TEST_HOST;
+    delete sanitised.OPENAI_TEST_PORT;
+    delete sanitised.OPENAI_TEST_PROTOCOL;
     Object.assign(sanitised, env);
 
     const child = spawn(process.execPath, ['-e', snippet], {
@@ -56,6 +60,10 @@ describe('parseBaseUrl()', () => {
     delete process.env.ANTHROPIC_TEST_HOST;
     delete process.env.ANTHROPIC_TEST_PORT;
     delete process.env.ANTHROPIC_TEST_PROTOCOL;
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_TEST_HOST;
+    delete process.env.OPENAI_TEST_PORT;
+    delete process.env.OPENAI_TEST_PROTOCOL;
     // Re-require after clearing env (module may already be cached; that's fine
     // since parseBaseUrl is a pure function not affected by env at call time).
     ({ parseBaseUrl } = require('../server/config'));
@@ -192,6 +200,149 @@ describe('upstream priority chain', () => {
   });
 });
 
+describe('provider-aware OpenAI upstream configuration', () => {
+  const snippet = `
+    const c = require(${JSON.stringify(CONFIG_SCRIPT)});
+    process.stdout.write(JSON.stringify({
+      anthropic: {
+        host: c.ANTHROPIC_HOST,
+        port: c.ANTHROPIC_PORT,
+        protocol: c.ANTHROPIC_PROTOCOL,
+        source: c.ANTHROPIC_BASE_URL_SOURCE,
+        basePath: c.ANTHROPIC_BASE_PATH,
+      },
+      openai: {
+        host: c.OPENAI_HOST,
+        port: c.OPENAI_PORT,
+        protocol: c.OPENAI_PROTOCOL,
+        source: c.OPENAI_BASE_URL_SOURCE,
+        basePath: c.OPENAI_BASE_PATH,
+      },
+      providers: {
+        messages: c.getProviderForRequest('/v1/messages'),
+        responses: c.getProviderForRequest('/v1/responses'),
+        models: c.getProviderForRequest('/v1/models?client_version=0.125.0'),
+      },
+      chatgpt: {
+        source: c.UPSTREAMS.openaiChatGPT.source,
+        host: c.UPSTREAMS.openaiChatGPT.host,
+        port: c.UPSTREAMS.openaiChatGPT.port,
+        protocol: c.UPSTREAMS.openaiChatGPT.protocol,
+        basePath: c.UPSTREAMS.openaiChatGPT.basePath,
+        stripPathPrefix: c.UPSTREAMS.openaiChatGPT.stripPathPrefix,
+      },
+      paths: {
+        responses: c.joinUpstreamPath(c.getUpstream('openai'), '/v1/responses'),
+        completions: c.joinUpstreamPath(c.getUpstream('openai'), '/chat/completions'),
+        chatgptResponses: c.joinUpstreamPath(c.getUpstreamForRequestAndHeaders('/v1/responses', {'chatgpt-account-id': 'acct'}), '/v1/responses'),
+      },
+    }));
+  `;
+
+  it('defaults OpenAI to api.openai.com with /v1 base path without changing Anthropic defaults', async () => {
+    const { stdout } = await runSnippet(snippet, { CCXRAY_HOME: TEST_HOME });
+    const result = JSON.parse(stdout);
+    assert.deepEqual(result.anthropic, {
+      host: 'api.anthropic.com',
+      port: 443,
+      protocol: 'https',
+      source: 'default',
+      basePath: '',
+    });
+    assert.deepEqual(result.openai, {
+      host: 'api.openai.com',
+      port: 443,
+      protocol: 'https',
+      source: 'default',
+      basePath: '/v1',
+    });
+    assert.equal(result.providers.messages, 'anthropic');
+    assert.equal(result.providers.responses, 'openai');
+    assert.equal(result.providers.models, 'openai');
+    assert.deepEqual(result.chatgpt, {
+      host: 'chatgpt.com',
+      port: 443,
+      protocol: 'https',
+      source: 'chatgpt-default',
+      basePath: '/backend-api/codex',
+      stripPathPrefix: '/v1',
+    });
+    assert.equal(result.paths.chatgptResponses, '/backend-api/codex/responses');
+  });
+
+  it('OPENAI_BASE_URL overrides only the OpenAI upstream and preserves /v1 request paths', async () => {
+    const { stdout } = await runSnippet(snippet, {
+      OPENAI_BASE_URL: 'http://localhost:9000/v1',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.anthropic.host, 'api.anthropic.com');
+    assert.equal(result.openai.host, 'localhost');
+    assert.equal(result.openai.port, 9000);
+    assert.equal(result.openai.protocol, 'http');
+    assert.equal(result.openai.source, 'OPENAI_BASE_URL');
+    assert.equal(result.openai.basePath, '/v1');
+    assert.equal(result.paths.responses, '/v1/responses');
+    assert.equal(result.paths.completions, '/v1/chat/completions');
+  });
+
+  it('CHATGPT_BASE_URL routes ChatGPT-auth Codex traffic without the /v1 prefix', async () => {
+    const { stdout } = await runSnippet(snippet, {
+      CHATGPT_BASE_URL: 'http://localhost:8123/backend-api/codex',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.chatgpt.host, 'localhost');
+    assert.equal(result.chatgpt.port, 8123);
+    assert.equal(result.chatgpt.protocol, 'http');
+    assert.equal(result.chatgpt.source, 'CHATGPT_BASE_URL');
+    assert.equal(result.chatgpt.basePath, '/backend-api/codex');
+    assert.equal(result.paths.chatgptResponses, '/backend-api/codex/responses');
+  });
+
+  it('OPENAI_TEST_* overrides OPENAI_BASE_URL', async () => {
+    const { stdout } = await runSnippet(snippet, {
+      OPENAI_TEST_HOST: 'openai-test.example.com',
+      OPENAI_TEST_PORT: '9100',
+      OPENAI_TEST_PROTOCOL: 'http',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.openai.host, 'openai-test.example.com');
+    assert.equal(result.openai.port, 9100);
+    assert.equal(result.openai.protocol, 'http');
+    assert.equal(result.openai.basePath, '');
+    assert.equal(result.openai.source, 'test-override');
+  });
+
+  it('emits warning when partial OPENAI_TEST_* override is set', async () => {
+    const snippet = `require(${JSON.stringify(CONFIG_SCRIPT)});`;
+    const { stderr } = await runSnippet(snippet, {
+      OPENAI_TEST_PORT: '9000',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    assert.ok(
+      stderr.includes('partial OPENAI_TEST_* override') || stderr.includes('OPENAI_TEST_HOST') || stderr.includes('OPENAI_TEST_PROTOCOL'),
+      `Expected partial OpenAI override warning in stderr, got: ${stderr}`
+    );
+  });
+
+  it('falls back to OpenAI defaults when OPENAI_BASE_URL is malformed', async () => {
+    const { stdout, stderr } = await runSnippet(snippet, {
+      OPENAI_BASE_URL: 'not-a-url',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    const result = JSON.parse(stdout);
+    assert.equal(result.openai.host, 'api.openai.com');
+    assert.equal(result.openai.source, 'default');
+    assert.ok(
+      stderr.includes('OPENAI_BASE_URL') && stderr.includes('not a valid URL'),
+      `Expected malformed OPENAI_BASE_URL warning in stderr, got: ${stderr}`
+    );
+  });
+});
+
 // ── 4.3: Partial ANTHROPIC_TEST_* override warning ─────────────────
 
 describe('partial ANTHROPIC_TEST_* override', () => {
@@ -266,5 +417,26 @@ describe('self-loop detection', () => {
       !stderr.includes('points back at the proxy itself'),
       `Unexpected loop warning in stderr: ${stderr}`
     );
+  });
+
+  it('emits warning when OPENAI_BASE_URL points at the proxy itself', async () => {
+    const snippet = `require(${JSON.stringify(CONFIG_SCRIPT)});`;
+    const { stderr } = await runSnippet(snippet, {
+      PROXY_PORT: '5577',
+      OPENAI_BASE_URL: 'http://localhost:5577/v1',
+      CCXRAY_HOME: TEST_HOME,
+    });
+    assert.ok(
+      stderr.includes('openai upstream') && (stderr.includes('points back at the proxy itself') || stderr.includes('loop')),
+      `Expected OpenAI loop warning in stderr, got: ${stderr}`
+    );
+  });
+});
+
+describe('model context fallback', () => {
+  it('uses fallback context for Codex OpenAI models when dynamic pricing data is unavailable', () => {
+    const { getMaxContext } = require('../server/config');
+    assert.equal(getMaxContext('gpt-5.1-codex', null), 400_000);
+    assert.equal(getMaxContext('gpt-5.2-codex-20260401', null), 400_000);
   });
 });

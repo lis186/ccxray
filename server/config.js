@@ -21,39 +21,151 @@ function parseBaseUrl(rawUrl) {
     const basePath = u.pathname !== '/' ? u.pathname.replace(/\/$/, '') : '';
     return { protocol, hostname, port, basePath };
   } catch {
-    console.warn(`[ccxray] Warning: ANTHROPIC_BASE_URL is not a valid URL ("${rawUrl}"); falling back to api.anthropic.com`);
     return null;
   }
 }
 
-// Priority: ANTHROPIC_TEST_* (test/CI overrides) > ANTHROPIC_BASE_URL > built-in defaults
-function resolveUpstream(env, proxyPort) {
-  if (env.ANTHROPIC_TEST_HOST || env.ANTHROPIC_TEST_PORT || env.ANTHROPIC_TEST_PROTOCOL) {
-    const host = env.ANTHROPIC_TEST_HOST || 'api.anthropic.com';
-    const port = parseInt(env.ANTHROPIC_TEST_PORT || '443', 10);
-    const protocol = env.ANTHROPIC_TEST_PROTOCOL || 'https';
-    const missing = ['ANTHROPIC_TEST_HOST', 'ANTHROPIC_TEST_PORT', 'ANTHROPIC_TEST_PROTOCOL']
-      .filter(k => !env[k]);
-    if (missing.length > 0 && missing.length < 3) {
-      console.warn(`[ccxray] Warning: partial ANTHROPIC_TEST_* override — ${missing.join(', ')} not set; resolved upstream: ${protocol}://${host}:${port}`);
-    }
-    return { host, port, protocol, basePath: '', source: 'test-override' };
-  }
-
-  const parsed = parseBaseUrl(env.ANTHROPIC_BASE_URL);
-  if (parsed) {
-    const { hostname: host, port, protocol, basePath } = parsed;
-    if (new Set(['localhost', '127.0.0.1', '::1']).has(host) && port === proxyPort) {
-      console.warn(`[ccxray] Warning: upstream ${protocol}://${host}:${port} points back at the proxy itself — requests will loop`);
-    }
-    return { host, port, protocol, basePath, source: 'ANTHROPIC_BASE_URL' };
-  }
-
-  return { host: 'api.anthropic.com', port: 443, protocol: 'https', basePath: '', source: 'default' };
+function isLoopbackHost(host) {
+  return new Set(['localhost', '127.0.0.1', '::1']).has(host);
 }
 
+function warnInvalidBaseUrl(envName, rawUrl, fallbackHost) {
+  console.warn(`[ccxray] Warning: ${envName} is not a valid URL ("${rawUrl}"); falling back to ${fallbackHost}`);
+}
+
+function warnSelfLoop(provider, protocol, host, port) {
+  console.warn(`[ccxray] Warning: ${provider} upstream ${protocol}://${host}:${port} points back at the proxy itself — requests will loop`);
+}
+
+function resolveChatGPTUpstream(env, proxyPort) {
+  const raw = env.CHATGPT_BASE_URL || env.CODEX_CHATGPT_BASE_URL;
+  const parsed = parseBaseUrl(raw);
+  if (parsed) {
+    const { hostname: host, port, protocol, basePath } = parsed;
+    if (isLoopbackHost(host) && port === proxyPort) {
+      warnSelfLoop('chatgpt', protocol, host, port);
+    }
+    return {
+      provider: 'openai',
+      host,
+      port,
+      protocol,
+      basePath,
+      stripPathPrefix: '/v1',
+      source: env.CHATGPT_BASE_URL ? 'CHATGPT_BASE_URL' : 'CODEX_CHATGPT_BASE_URL',
+    };
+  }
+  if (raw) warnInvalidBaseUrl(env.CHATGPT_BASE_URL ? 'CHATGPT_BASE_URL' : 'CODEX_CHATGPT_BASE_URL', raw, 'chatgpt.com');
+
+  return {
+    provider: 'openai',
+    host: 'chatgpt.com',
+    port: 443,
+    protocol: 'https',
+    basePath: '/backend-api/codex',
+    stripPathPrefix: '/v1',
+    source: 'chatgpt-default',
+  };
+}
+
+// Priority: PROVIDER_TEST_* (test/CI overrides) > PROVIDER_BASE_URL > built-in defaults
+function resolveProviderUpstream(provider, env, proxyPort, opts) {
+  const upper = provider.toUpperCase();
+  const testHostKey = `${upper}_TEST_HOST`;
+  const testPortKey = `${upper}_TEST_PORT`;
+  const testProtocolKey = `${upper}_TEST_PROTOCOL`;
+  const baseUrlKey = `${upper}_BASE_URL`;
+
+  if (env[testHostKey] || env[testPortKey] || env[testProtocolKey]) {
+    const host = env[testHostKey] || opts.defaultHost;
+    const port = parseInt(env[testPortKey] || String(opts.defaultPort), 10);
+    const protocol = env[testProtocolKey] || opts.defaultProtocol;
+    const missing = [testHostKey, testPortKey, testProtocolKey]
+      .filter(k => !env[k]);
+    if (missing.length > 0 && missing.length < 3) {
+      console.warn(`[ccxray] Warning: partial ${upper}_TEST_* override — ${missing.join(', ')} not set; resolved upstream: ${protocol}://${host}:${port}`);
+    }
+    return { provider, host, port, protocol, basePath: '', source: 'test-override' };
+  }
+
+  const parsed = parseBaseUrl(env[baseUrlKey]);
+  if (parsed) {
+    const { hostname: host, port, protocol, basePath } = parsed;
+    if (isLoopbackHost(host) && port === proxyPort) {
+      warnSelfLoop(provider, protocol, host, port);
+    }
+    return { provider, host, port, protocol, basePath, source: baseUrlKey };
+  }
+
+  if (env[baseUrlKey]) warnInvalidBaseUrl(baseUrlKey, env[baseUrlKey], opts.defaultHost);
+
+  return {
+    provider,
+    host: opts.defaultHost,
+    port: opts.defaultPort,
+    protocol: opts.defaultProtocol,
+    basePath: opts.defaultBasePath || '',
+    source: 'default',
+  };
+}
+
+const UPSTREAMS = {
+  anthropic: resolveProviderUpstream('anthropic', process.env, PORT, {
+    defaultHost: 'api.anthropic.com',
+    defaultPort: 443,
+    defaultProtocol: 'https',
+    defaultBasePath: '',
+  }),
+  openai: resolveProviderUpstream('openai', process.env, PORT, {
+    defaultHost: 'api.openai.com',
+    defaultPort: 443,
+    defaultProtocol: 'https',
+    defaultBasePath: '/v1',
+  }),
+  openaiChatGPT: resolveChatGPTUpstream(process.env, PORT),
+};
+
 const { host: ANTHROPIC_HOST, port: ANTHROPIC_PORT, protocol: ANTHROPIC_PROTOCOL, basePath: ANTHROPIC_BASE_PATH, source: ANTHROPIC_BASE_URL_SOURCE } =
-  resolveUpstream(process.env, PORT);
+  UPSTREAMS.anthropic;
+const { host: OPENAI_HOST, port: OPENAI_PORT, protocol: OPENAI_PROTOCOL, basePath: OPENAI_BASE_PATH, source: OPENAI_BASE_URL_SOURCE } =
+  UPSTREAMS.openai;
+
+function getUpstream(provider) {
+  return UPSTREAMS[provider] || UPSTREAMS.anthropic;
+}
+
+function getProviderForRequest(urlPath) {
+  const pathname = (urlPath || '').split('?')[0];
+  if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
+  if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
+  return 'anthropic';
+}
+
+function getUpstreamForRequest(urlPath) {
+  return getUpstream(getProviderForRequest(urlPath));
+}
+
+function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
+  const upstream = getUpstreamForRequest(urlPath);
+  if (upstream.provider === 'openai' && headers['chatgpt-account-id']) {
+    return UPSTREAMS.openaiChatGPT;
+  }
+  return upstream;
+}
+
+function joinUpstreamPath(upstream, requestUrl) {
+  const basePath = upstream?.basePath || '';
+  let urlPath = requestUrl || '/';
+  const stripPrefix = upstream?.stripPathPrefix;
+  if (stripPrefix && (urlPath === stripPrefix || urlPath.startsWith(`${stripPrefix}/`) || urlPath.startsWith(`${stripPrefix}?`))) {
+    urlPath = urlPath.slice(stripPrefix.length) || '/';
+  }
+  if (!basePath) return urlPath;
+  if (urlPath === basePath || urlPath.startsWith(`${basePath}/`) || urlPath.startsWith(`${basePath}?`)) {
+    return urlPath;
+  }
+  return basePath + (urlPath.startsWith('/') ? urlPath : `/${urlPath}`);
+}
 const LOGS_DIR = path.join(os.homedir(), '.ccxray', 'logs');
 const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
@@ -76,6 +188,21 @@ const MODEL_CONTEXT_FALLBACK = {
   'claude-3-opus':     200_000,
   'claude-3-sonnet':   200_000,
   'claude-3-haiku':    200_000,
+  'gpt-5.2-codex':       400_000,
+  'gpt-5.1-codex-max':   400_000,
+  'gpt-5.1-codex-mini':  400_000,
+  'gpt-5.1-codex':       400_000,
+  'gpt-5-codex':         400_000,
+  'gpt-5.2-chat-latest': 400_000,
+  'gpt-5.1-chat-latest': 400_000,
+  'gpt-5-chat-latest':   400_000,
+  'gpt-5.2':             400_000,
+  'gpt-5.1':             400_000,
+  'gpt-5-mini':          400_000,
+  'gpt-5-nano':          400_000,
+  'gpt-5':               400_000,
+  'gpt-4.1':             1_000_000,
+  'gpt-4o':              128_000,
 };
 const DEFAULT_CONTEXT = 200_000;
 
@@ -136,6 +263,12 @@ module.exports = {
   ANTHROPIC_PROTOCOL,
   ANTHROPIC_BASE_PATH,
   ANTHROPIC_BASE_URL_SOURCE,
+  OPENAI_HOST,
+  OPENAI_PORT,
+  OPENAI_PROTOCOL,
+  OPENAI_BASE_PATH,
+  OPENAI_BASE_URL_SOURCE,
+  UPSTREAMS,
   LOGS_DIR,
   RESTORE_DAYS,
   LOG_RETENTION_DAYS,
@@ -146,4 +279,10 @@ module.exports = {
   DEFAULT_CONTEXT,
   getMaxContext,
   parseBaseUrl,
+  resolveProviderUpstream,
+  getProviderForRequest,
+  getUpstream,
+  getUpstreamForRequest,
+  getUpstreamForRequestAndHeaders,
+  joinUpstreamPath,
 };
