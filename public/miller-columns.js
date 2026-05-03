@@ -446,8 +446,8 @@ function clearAll() { // kept for console use if needed
 }
 
 function renderSessionItem(sess, sid) {
-  const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
-  const tooltip = sid === 'direct-api' ? 'direct API' : sid;
+  const shortSid = formatSessionIdLabel(sid);
+  const tooltip = formatSessionTooltip(null, sid);
   const shortModel = (sess.model || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');
   const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
@@ -1032,7 +1032,7 @@ function syncUrlFromState() {
   if (typeof activeTab !== 'undefined' && activeTab !== 'dashboard') params.set('view', activeTab);
   const projName = selectedProjectName || (selectedSessionId && sessionsMap.get(selectedSessionId) && getProjectName(sessionsMap.get(selectedSessionId).cwd));
   if (projName) params.set('p', projName);
-  if (selectedSessionId) params.set('s', selectedSessionId.slice(0, 8));
+  if (selectedSessionId) params.set('s', formatSessionUrlToken(selectedSessionId));
   if (selectedTurnIdx >= 0) {
     const e = allEntries[selectedTurnIdx];
     const turnEl = e ? colTurns.querySelector('.turn-item[data-entry-idx="' + selectedTurnIdx + '"]') : null;
