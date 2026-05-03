@@ -646,6 +646,90 @@ describe('SSE streaming proxy', () => {
   });
 });
 
+// ── OpenAI Responses raw capture ────────────────────────────────────
+
+describe('OpenAI Responses raw capture', () => {
+  let mockUpstream;
+  let mockPort;
+  let proxyChild;
+  let proxyPort;
+  let receivedReq = null;
+
+  before(async () => {
+    mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        receivedReq = { method: req.method, url: req.url, headers: req.headers, body };
+        res.writeHead(200, { 'Content-Type': 'application/json', 'x-openai-mock': 'responses' });
+        res.end(JSON.stringify({
+          id: 'resp_raw_v0',
+          object: 'response',
+          model: 'gpt-5.1-codex',
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'codex ok' }] }],
+        }));
+      });
+    });
+    await new Promise(r => mockUpstream.listen(0, r));
+    mockPort = mockUpstream.address().port;
+
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        OPENAI_TEST_HOST: 'localhost',
+        OPENAI_TEST_PORT: String(mockPort),
+        OPENAI_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxyChild);
+    await new Promise(r => mockUpstream.close(r));
+  });
+
+  it('forwards /v1/responses to OpenAI upstream and logs full raw req/res JSON', async () => {
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.1-codex',
+      instructions: 'You are Codex in raw capture mode.',
+      input: 'inspect the repository',
+      tools: [{ type: 'function', name: 'shell' }],
+    });
+
+    const response = await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?trace=1');
+
+    assert.equal(response.status, 200);
+    assert.ok(receivedReq, 'mock OpenAI upstream should receive the request');
+    assert.equal(receivedReq.method, 'POST');
+    assert.equal(receivedReq.url, '/v1/responses?trace=1');
+    assert.equal(JSON.parse(receivedReq.body).instructions, 'You are Codex in raw capture mode.');
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const indexPath = path.join(logsDir, 'index.ndjson');
+    const indexEntries = fs.readFileSync(indexPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    const entry = indexEntries.find(e => e.provider === 'openai' && e.agent === 'codex' && e.model === 'gpt-5.1-codex');
+    assert.ok(entry, 'expected OpenAI index entry');
+    assert.equal(entry.sessionId, 'codex-raw');
+    assert.equal(entry.cost, null);
+
+    const reqLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_req.json`), 'utf8'));
+    assert.equal(reqLog.instructions, 'You are Codex in raw capture mode.');
+    assert.equal(reqLog.input, 'inspect the repository');
+    assert.equal(reqLog.prevId, undefined);
+
+    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    assert.equal(resLog.id, 'resp_raw_v0');
+    assert.equal(resLog.output[0].content[0].text, 'codex ok');
+  });
+});
+
 // ── Intercept lifecycle E2E ──────────────────────────────────────────
 
 describe('Intercept lifecycle', () => {
@@ -1330,6 +1414,21 @@ function sendProxyRequest(port, body) {
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+function sendOpenAIResponsesRequest(port, body, urlPath = '/v1/responses') {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`http://localhost:${port}${urlPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Authorization: 'Bearer test-key' },
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
     });
     req.on('error', reject);
     req.end(body);

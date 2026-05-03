@@ -7,6 +7,8 @@ function summarizeEntry(entry) {
   const tok = entry.tokens;
   return {
     id: entry.id, ts: entry.ts, sessionId: entry.sessionId,
+    provider: entry.provider || 'anthropic',
+    agent: entry.agent || (entry.provider === 'openai' ? 'codex' : 'claude'),
     method: entry.method, url: entry.url,
     elapsed: entry.elapsed, status: entry.status, isSSE: entry.isSSE,
     receivedAt: entry.receivedAt || null,

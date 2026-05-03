@@ -107,6 +107,40 @@ function serveStatic(url, clientRes) {
   }
 }
 
+const HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+function buildForwardHeaders(clientHeaders, upstream) {
+  const fwdHeaders = { ...clientHeaders };
+  const connectionTokens = String(clientHeaders.connection || '')
+    .split(',')
+    .map(token => token.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const header of HOP_BY_HOP_HEADERS) delete fwdHeaders[header];
+  for (const header of connectionTokens) delete fwdHeaders[header];
+  delete fwdHeaders.host;
+  delete fwdHeaders['accept-encoding'];
+  fwdHeaders.host = upstream.host;
+  return fwdHeaders;
+}
+
+function getCodexRawSessionId() {
+  return 'codex-raw';
+}
+
+function getCodexCwdFallback() {
+  return hub.lookupClientCwd() || (agentCommand === 'codex' ? process.cwd() : null);
+}
+
 // ── Server ──────────────────────────────────────────────────────────
 const server = http.createServer((clientReq, clientRes) => {
 
@@ -147,14 +181,14 @@ const server = http.createServer((clientReq, clientRes) => {
     // Quota-check probes: forward to Anthropic (rate limit headers still captured)
     // but skip all logging, session tracking, and entry creation
     if (parsedBody && store.isQuotaCheck(parsedBody)) {
-      const fwdHeaders = { ...clientReq.headers };
-      delete fwdHeaders['host'];
-      delete fwdHeaders['connection'];
-      delete fwdHeaders['accept-encoding'];
-      fwdHeaders['host'] = config.ANTHROPIC_HOST;
-      forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true });
+      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
+      const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
+      forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
       return;
     }
+
+    const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
+    const provider = upstream.provider || 'anthropic';
 
     let reqWritePromise = null;
     let sysHash = null;
@@ -167,16 +201,20 @@ const server = http.createServer((clientReq, clientRes) => {
         ? crypto.createHash('sha256').update(JSON.stringify(parsedBody.tools)).digest('hex').slice(0, 12)
         : null;
 
-      if (sysHash) config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify(parsedBody.system))
-        .catch(e => console.error('Write sys failed:', e.message));
-      if (toolsHash) config.storage.writeSharedIfAbsent(`tools_${toolsHash}.json`, JSON.stringify(parsedBody.tools))
-        .catch(e => console.error('Write tools failed:', e.message));
+      if (provider === 'anthropic') {
+        if (sysHash) config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify(parsedBody.system))
+          .catch(e => console.error('Write sys failed:', e.message));
+        if (toolsHash) config.storage.writeSharedIfAbsent(`tools_${toolsHash}.json`, JSON.stringify(parsedBody.tools))
+          .catch(e => console.error('Write tools failed:', e.message));
+      }
 
       const currMessages = Array.isArray(parsedBody.messages) ? parsedBody.messages : [];
       const peekSid = store.extractSessionId(parsedBody);
       let stripped;
 
-      if (peekSid && config.storage.supportsDelta) {
+      if (provider === 'openai') {
+        stripped = parsedBody;
+      } else if (peekSid && config.storage.supportsDelta) {
         const prev = sessionLastReq.get(peekSid);
         const sharedCount = prev ? findSharedPrefix(prev.messages, currMessages) : 0;
         const forceFull = !prev ||
@@ -206,14 +244,17 @@ const server = http.createServer((clientReq, clientRes) => {
     }
 
     const { sessionId: reqSessionId, isNewSession, inferred: sessionInferred } = parsedBody
-      ? store.detectSession(parsedBody)
-      : { sessionId: store.getCurrentSessionId(), isNewSession: false };
+      ? (provider === 'openai'
+        ? { sessionId: getCodexRawSessionId(), isNewSession: false, inferred: true }
+        : store.detectSession(parsedBody))
+      : { sessionId: provider === 'openai' ? getCodexRawSessionId() : store.getCurrentSessionId(), isNewSession: false };
 
     // Extract and store cwd
     if (parsedBody && reqSessionId) {
-      const cwd = store.extractCwd(parsedBody);
+      const cwd = provider === 'openai' ? getCodexCwdFallback() : store.extractCwd(parsedBody);
       if (cwd) {
         if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
+        store.sessionMeta[reqSessionId].provider = provider;
         store.sessionMeta[reqSessionId].cwd = cwd;
       }
     }
@@ -253,6 +294,7 @@ const server = http.createServer((clientReq, clientRes) => {
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = (store.activeRequests[reqSessionId] || 0) + 1;
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
+      store.sessionMeta[reqSessionId].provider = provider;
       store.sessionMeta[reqSessionId].lastSeenAt = Date.now();
       broadcastSessionStatus(reqSessionId);
     }
@@ -263,13 +305,9 @@ const server = http.createServer((clientReq, clientRes) => {
     if (isNewSession) store.printSessionBanner(reqSessionId);
 
     // Build context for forwarding
-    const fwdHeaders = { ...clientReq.headers };
-    delete fwdHeaders['host'];
-    delete fwdHeaders['connection'];
-    delete fwdHeaders['accept-encoding'];
-    fwdHeaders['host'] = config.ANTHROPIC_HOST;
+    const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
 
-    const ctx = { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId, reqWritePromise, sysHash, toolsHash, coreHash, sessionInferred };
+    const ctx = { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId, reqWritePromise, sysHash, toolsHash, coreHash, sessionInferred, upstream };
 
     // ── Intercept check ──
     const lastStop = store.sessionMeta[reqSessionId]?.lastStopReason;
@@ -502,6 +540,9 @@ async function startServer() {
     const upstreamUrl = `${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT}`;
     const upstreamNote = config.ANTHROPIC_BASE_URL_SOURCE === 'ANTHROPIC_BASE_URL' ? ' (from ANTHROPIC_BASE_URL)' : '';
     console.log(`   Upstream → ${upstreamUrl}${upstreamNote}`);
+    const openaiUrl = `${config.OPENAI_PROTOCOL}://${config.OPENAI_HOST}:${config.OPENAI_PORT}${config.OPENAI_BASE_PATH}`;
+    const openaiNote = config.OPENAI_BASE_URL_SOURCE === 'OPENAI_BASE_URL' ? ' (from OPENAI_BASE_URL)' : '';
+    console.log(`   OpenAI Upstream → ${openaiUrl}${openaiNote}`);
     console.log(`   Logs → ${config.LOGS_DIR}`);
     console.log();
     console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude\x1b[0m`);
@@ -540,7 +581,7 @@ async function startServer() {
     return;
   }
 
-  // Claude mode without explicit port: try hub discovery
+  // Agent mode without explicit port: try hub discovery
   const existingHub = await hub.discoverHub(config.PORT);
   if (existingHub) {
     await startClientMode(existingHub);

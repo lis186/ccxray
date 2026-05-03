@@ -15,34 +15,38 @@ function loadEntryReqRes(entry) {
     if (entry._writePromise) await entry._writePromise.catch(() => {});
     try {
       const stripped = JSON.parse(await config.storage.read(entry.id, '_req.json'));
-      const sys = stripped.sysHash
-        ? await config.storage.readShared(`sys_${stripped.sysHash}.json`).then(JSON.parse).catch(() => null)
-        : null;
-      const tools = stripped.toolsHash
-        ? await config.storage.readShared(`tools_${stripped.toolsHash}.json`).then(JSON.parse).catch(() => null)
-        : null;
+      if (entry.provider === 'openai' || stripped.provider === 'openai') {
+        entry.req = stripped;
+      } else {
+        const sys = stripped.sysHash
+          ? await config.storage.readShared(`sys_${stripped.sysHash}.json`).then(JSON.parse).catch(() => null)
+          : null;
+        const tools = stripped.toolsHash
+          ? await config.storage.readShared(`tools_${stripped.toolsHash}.json`).then(JSON.parse).catch(() => null)
+          : null;
 
-      // Delta format: reconstruct full messages by following prevId chain.
-      // Each hop loads the previous entry (itself potentially a delta) via the
-      // same lazy-load mechanism, so the chain is resolved depth-first with
-      // per-entry promise deduplication. Missing prev entries (pruned) degrade
-      // gracefully — the delta portion is returned as-is.
-      let messages = stripped.messages || [];
-      if (stripped.prevId != null && stripped.msgOffset != null) {
-        const prevEntry = store.entries.find(e => e.id === stripped.prevId);
-        if (prevEntry) {
-          await loadEntryReqRes(prevEntry);
-          if (Array.isArray(prevEntry.req?.messages)) {
-            messages = [...prevEntry.req.messages.slice(0, stripped.msgOffset), ...messages];
+        // Delta format: reconstruct full messages by following prevId chain.
+        // Each hop loads the previous entry (itself potentially a delta) via the
+        // same lazy-load mechanism, so the chain is resolved depth-first with
+        // per-entry promise deduplication. Missing prev entries (pruned) degrade
+        // gracefully — the delta portion is returned as-is.
+        let messages = stripped.messages || [];
+        if (stripped.prevId != null && stripped.msgOffset != null) {
+          const prevEntry = store.entries.find(e => e.id === stripped.prevId);
+          if (prevEntry) {
+            await loadEntryReqRes(prevEntry);
+            if (Array.isArray(prevEntry.req?.messages)) {
+              messages = [...prevEntry.req.messages.slice(0, stripped.msgOffset), ...messages];
+            }
           }
         }
-      }
 
-      entry.req = { ...stripped, system: sys, tools, messages };
-      delete entry.req.sysHash;
-      delete entry.req.toolsHash;
-      delete entry.req.prevId;
-      delete entry.req.msgOffset;
+        entry.req = { ...stripped, system: sys, tools, messages };
+        delete entry.req.sysHash;
+        delete entry.req.toolsHash;
+        delete entry.req.prevId;
+        delete entry.req.msgOffset;
+      }
     } catch { entry.req = null; }
     try {
       const raw = await config.storage.read(entry.id, '_res.json');

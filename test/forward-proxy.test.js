@@ -2,7 +2,7 @@
 
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveProxyAgent, applyModelPrefix, stripInjectedStats, setStatusLineEnabled, getStatusLineEnabled } = require('../server/forward');
+const { resolveProxyAgent, applyModelPrefix, stripInjectedStats, setStatusLineEnabled, getStatusLineEnabled, parseSSEFrame } = require('../server/forward');
 
 describe('resolveProxyAgent', () => {
   it('returns null when no proxy env vars are set', () => {
@@ -124,5 +124,28 @@ describe('statusLineEnabled flag', () => {
     setStatusLineEnabled(false);
     setStatusLineEnabled(true);
     assert.equal(getStatusLineEnabled(), true);
+  });
+});
+
+describe('parseSSEFrame', () => {
+  it('captures OpenAI Responses SSE event names and data as raw events', () => {
+    const frame = parseSSEFrame(
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"hello"}',
+      123
+    );
+
+    assert.equal(frame.event, 'response.output_text.delta');
+    assert.equal(frame.type, 'response.output_text.delta');
+    assert.equal(frame.data.delta, 'hello');
+    assert.equal(frame._ts, 123);
+  });
+
+  it('preserves malformed SSE data for raw inspection', () => {
+    const frame = parseSSEFrame('event: response.output_text.delta\ndata: {"delta":', 123);
+
+    assert.equal(frame.event, 'response.output_text.delta');
+    assert.equal(frame.type, 'response.output_text.delta');
+    assert.equal(frame.parseError, true);
+    assert.equal(frame.dataRaw, '{"delta":');
   });
 });
