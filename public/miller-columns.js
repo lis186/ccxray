@@ -209,7 +209,7 @@ function renderStarBadge(level, id) {
     glyph = '★'; cls = 'pinned';
     tip = 'Starred — click to unstar';
   } else if (derived > 0) {
-    glyph = '☆<sup style="font-size:8px;margin-left:1px">' + derived + '</sup>';
+    glyph = '☆<sup>' + derived + '</sup>';
     cls = 'derived';
     tip = 'Retained because ' + derived + ' starred descendants — click to star this directly.';
   } else {

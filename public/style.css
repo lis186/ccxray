@@ -249,9 +249,14 @@
   @keyframes cachePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   .launch-btn { background: none; border: 1px solid var(--border); color: var(--green); width: 18px; height: 18px; border-radius: 50%; cursor: pointer; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0; }
   .launch-btn:hover { background: var(--green); color: #000; border-color: var(--green); }
-  .pin-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 2px; opacity: 0.3; transition: opacity 0.15s, color 0.15s; margin-left: auto; flex-shrink: 0; }
+  .pin-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; opacity: 0.6; transition: opacity 0.15s, color 0.15s; margin-left: auto; flex-shrink: 0; user-select: none; }
   .pin-btn:hover { opacity: 1; color: var(--yellow); }
   .pin-btn.pinned { opacity: 1; color: var(--yellow); }
+  .pin-btn.derived { opacity: 0.85; color: var(--dim); }
+  .pin-btn.derived:hover { opacity: 1; color: var(--yellow); }
+  .pin-btn.disabled { opacity: 0.25; cursor: not-allowed; }
+  .pin-btn.disabled:hover { opacity: 0.25; color: var(--dim); }
+  .pin-btn sup { font-size: 8px; margin-left: 1px; vertical-align: super; }
 
   /* ── Turn items ── */
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
