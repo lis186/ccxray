@@ -278,7 +278,9 @@ function _navigateToDescendant(kind, id) {
         const proj = getProjectName(sess ? sess.cwd : null);
         if (proj && selectedProjectName !== proj) selectProject(proj);
         selectSessionAndLatestTurn(entry.sessionId);
-        selectTurn(i);
+        // Smooth-scroll over 300ms so the user can track the spatial jump
+        // (popover navigation can leap across many turns).
+        selectTurn(i, { smooth: true });
         setFocus('turns');
         return;
       }
@@ -1471,7 +1473,22 @@ function prefetchEntry(idx) {
     }).catch(() => { allEntries[idx]._prefetching = false; });
 }
 
-function selectTurn(idx) {
+// Animate `el.scrollTop` by `deltaY` over `durationMs` using easeInOutQuad.
+// Plain `scrollBy({behavior:'smooth'})` uses the browser's default duration
+// (~500-700ms in Chrome/Safari) which feels sluggish; this gives us 300ms.
+function _smoothScrollBy(el, deltaY, durationMs) {
+  const startTop = el.scrollTop;
+  const startTime = performance.now();
+  function step(now) {
+    const t = Math.min(1, (now - startTime) / durationMs);
+    const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    el.scrollTop = startTop + deltaY * eased;
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function selectTurn(idx, opts) {
   if (idx < 0 || idx >= allEntries.length) return;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   // Exit focused mode when switching turns — user is browsing, not drilling into timeline
@@ -1496,10 +1513,15 @@ function selectTurn(idx) {
     const elRect = selEl.getBoundingClientRect();
     const elTopInCol = elRect.top - colRect.top;
     const elBottomInCol = elRect.bottom - colRect.top;
+    let delta = 0;
     if (elTopInCol < headerH + 4) {
-      colTurns.scrollBy({ top: elTopInCol - headerH - 8, behavior: 'auto' });
+      delta = elTopInCol - headerH - 8;
     } else if (elBottomInCol > colRect.height - 4) {
-      colTurns.scrollBy({ top: elBottomInCol - colRect.height + 8, behavior: 'auto' });
+      delta = elBottomInCol - colRect.height + 8;
+    }
+    if (delta !== 0) {
+      if (opts && opts.smooth) _smoothScrollBy(colTurns, delta, 300);
+      else colTurns.scrollBy({ top: delta, behavior: 'auto' });
     }
   }
   // Auto-highlight the session this turn belongs to (read-only indicator, not a gate)
