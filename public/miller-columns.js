@@ -1485,7 +1485,23 @@ function selectTurn(idx) {
     el.classList.toggle('selected', parseInt(el.dataset.entryIdx) === idx);
   });
   const selEl = colTurns.querySelector('.turn-item[data-entry-idx="' + idx + '"]');
-  if (selEl) selEl.scrollIntoView({ block: 'nearest' });
+  if (selEl) {
+    // scrollIntoView({block:'nearest'}) aligns to the column's scroll
+    // container top, but col-sticky-header overlays that area — the turn
+    // ends up tucked behind the header. Compute the header's height and
+    // nudge the column scroll so the selected card sits clear of it.
+    const stickyHeader = colTurns.querySelector('.col-sticky-header');
+    const headerH = stickyHeader ? stickyHeader.getBoundingClientRect().height : 0;
+    const colRect = colTurns.getBoundingClientRect();
+    const elRect = selEl.getBoundingClientRect();
+    const elTopInCol = elRect.top - colRect.top;
+    const elBottomInCol = elRect.bottom - colRect.top;
+    if (elTopInCol < headerH + 4) {
+      colTurns.scrollBy({ top: elTopInCol - headerH - 8, behavior: 'auto' });
+    } else if (elBottomInCol > colRect.height - 4) {
+      colTurns.scrollBy({ top: elBottomInCol - colRect.height + 8, behavior: 'auto' });
+    }
+  }
   // Auto-highlight the session this turn belongs to (read-only indicator, not a gate)
   const sid = allEntries[idx]?.sessionId;
   colSessions.querySelectorAll('.session-item').forEach(el => {
