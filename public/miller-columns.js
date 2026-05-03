@@ -209,14 +209,18 @@ function renderStarBadge(level, id) {
     glyph = '★'; cls = 'pinned';
     tip = 'Starred — click to unstar';
   } else if (derived > 0) {
-    glyph = '☆<sup>' + derived + '</sup>';
+    // Chip-style count: framing the digit with a small filled rounded background
+    // signals "this is a count of items" (Gmail-unread / GitHub-PR convention),
+    // so users don't read the superscript as "version 3" or "3 hours ago".
+    // Yellow text ties it back to the star vocabulary.
+    glyph = '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
     cls = 'derived';
-    tip = 'Retained because ' + derived + ' starred descendants — click to star this directly.';
+    tip = 'Retained because ' + derived + ' starred descendants below — click to star this directly';
   } else {
     glyph = '☆'; cls = '';
     tip = 'Star this ' + level + ' (keeps log forever)';
   }
-  return '<button class="pin-btn ' + cls + '" onclick="event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')" title="' + escapeHtml(tip) + '">' + glyph + '</button>';
+  return '<button class="pin-btn ' + cls + '" onclick="event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
 }
 
 // Repaint affected columns after a star toggle. Called after API success.

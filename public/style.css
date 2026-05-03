@@ -256,7 +256,10 @@
   .pin-btn.derived:hover { opacity: 1; color: var(--yellow); }
   .pin-btn.disabled { opacity: 0.25; cursor: not-allowed; }
   .pin-btn.disabled:hover { opacity: 0.25; color: var(--dim); }
-  .pin-btn sup { font-size: 8px; margin-left: 1px; vertical-align: super; }
+  /* Chip-style count for derived state (☆ followed by a small framed number).
+     The chip pattern signals "count of items" so users don't misread the
+     digit as a version or duration. Yellow text ties back to star vocab. */
+  .pin-btn-count { display: inline-block; margin-left: 3px; padding: 0 5px; border-radius: 7px; background: var(--surface); color: var(--yellow); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
 
   /* ── Turn items ── */
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
