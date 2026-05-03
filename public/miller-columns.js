@@ -310,25 +310,33 @@ function _listStarredDescendants(level, id) {
 }
 
 function openDerivedPopover(level, id, anchorEl) {
-  // Re-click on same anchor toggles closed.
-  if (_starPopoverState && _starPopoverState.anchor === anchorEl) {
+  // Re-click on same level+id toggles closed (anchor el may have been replaced
+  // by rerenderColumnsAfterStar — compare logical identity, not DOM ref).
+  if (_starPopoverState && _starPopoverState.level === level && _starPopoverState.id === id) {
     _closeStarPopover();
     return;
   }
   _closeStarPopover();
 
+  // Snapshot of items currently starred under this parent. Rows for items the
+  // user later toggles off stay in the popover with a hollow ☆ — letting them
+  // undo a release without reopening. Reopening the popover resnaps to the
+  // current xrayStars state.
   const items = _listStarredDescendants(level, id);
   if (items.length === 0) return;
 
   const pop = document.createElement('div');
   pop.className = 'star-popover';
-  let html = '<div class="star-popover-title">' + items.length + ' starred descendant' + (items.length === 1 ? '' : 's') + ' below — click row to jump, × to release</div>';
+  let html = '<div class="star-popover-title">Stars in this ' + level + ' · ★ toggles, row jumps' +
+    '<button class="star-popover-close" title="Close" aria-label="Close popover">×</button>' +
+    '</div>';
   html += '<div class="star-popover-body">';
   for (const it of items) {
+    const targetSet = it.kind === 'session' ? xrayStars.sessions : xrayStars.turns;
+    const starred = targetSet.has(it.id);
     html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="Jump to this ' + it.kind + '">' +
-      '<span class="star-popover-glyph">★</span>' +
+      '<button class="star-popover-glyph-btn' + (starred ? ' starred' : '') + '" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Toggle star">' + (starred ? '★' : '☆') + '</button>' +
       '<span class="star-popover-label">' + escapeHtml(it.label) + '</span>' +
-      '<button class="star-popover-unstar" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Unstar this ' + it.kind + '">×</button>' +
       '</div>';
   }
   html += '</div>';
@@ -355,26 +363,40 @@ function openDerivedPopover(level, id, anchorEl) {
     pop.style.left = '8px';
   }
 
-  pop.querySelectorAll('.star-popover-unstar').forEach(btn => {
+  // ★ glyph button toggles the row's star state in place — popover stays open,
+  // only this button's glyph flips. Re-clicking ☆ restars without reopening.
+  pop.querySelectorAll('.star-popover-glyph-btn').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      await toggleStar(btn.dataset.kind, btn.dataset.id, false);
-      // toggleStar closes via rerenderColumnsAfterStar → _closeStarPopover; reopen
-      // if any descendants remain so the user can keep cleaning up.
-      const remaining = _listStarredDescendants(level, id);
-      if (remaining.length > 0) {
-        const newAnchor = document.querySelector('.pin-btn.derived[onclick*="' + escapeHtml(id).replace(/"/g, '\\&quot;') + '"]');
-        if (newAnchor) openDerivedPopover(level, id, newAnchor);
-      }
+      const kind = btn.dataset.kind;
+      const childId = btn.dataset.id;
+      const targetSet = kind === 'session' ? xrayStars.sessions : xrayStars.turns;
+      const wasStarred = targetSet.has(childId);
+      await toggleStar(kind, childId, !wasStarred);
+      // Reflect new state on this specific button — row stays in popover so
+      // user can re-toggle.
+      const nowStarred = targetSet.has(childId);
+      btn.textContent = nowStarred ? '★' : '☆';
+      btn.classList.toggle('starred', nowStarred);
     });
   });
+  // Row body click navigates; explicitly skip when the click landed on the
+  // glyph button (it has its own handler).
   pop.querySelectorAll('.star-popover-item').forEach(row => {
     row.addEventListener('click', (e) => {
-      // The × button has its own stopPropagation; only the row body fires this.
+      if (e.target.closest('.star-popover-glyph-btn')) return;
       e.stopPropagation();
       _navigateToDescendant(row.dataset.navKind, row.dataset.navId);
     });
   });
+  // Explicit close button — popover no longer auto-dismisses on last unstar.
+  const closeBtn = pop.querySelector('.star-popover-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _closeStarPopover();
+    });
+  }
   pop.querySelector('.star-popover-anchor').addEventListener('click', async (e) => {
     e.stopPropagation();
     _closeStarPopover();
@@ -391,9 +413,10 @@ function openDerivedPopover(level, id, anchorEl) {
 window.openDerivedPopover = openDerivedPopover;
 
 // Repaint affected columns after a star toggle. Called after API success.
+// Note: popover (if open) stays open. Its anchor element may be replaced by
+// the column re-render; openDerivedPopover compares level+id (not DOM ref) on
+// re-click so the toggle-close path still works.
 function rerenderColumnsAfterStar() {
-  // Anchor element may be replaced by re-render; close to avoid orphaned popover.
-  _closeStarPopover();
   renderProjectsCol();
   // Sessions column: re-render every visible session card so derived counts update.
   for (const [sid, sess] of sessionsMap) {
