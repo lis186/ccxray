@@ -110,6 +110,14 @@ Optional context-stats footer appended to Claude's responses inside Claude Code 
 
 **Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Turn the HUD off when running sub-agent-heavy sessions. State persists in `~/.ccxray/settings.json`.
 
+### Star to keep forever
+
+Click the star on a turn, session, or project card to mark it for permanent retention. Starred items survive `LOG_RETENTION_DAYS` auto-prune; state lives in `~/.ccxray/settings.json`, server-side and persistent across browsers. A starred turn protects every turn in its session; a starred session protects every turn under it; a starred project protects everything beneath. Catch-all buckets (`direct-api`, `(unknown)`, `(quota-check)`) refuse stars at the bucket level — star individual turns inside instead.
+
+When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
+
+<!-- TODO: add docs/stars.png screenshot showing tri-state badges + descendant popover -->
+
 ### More
 
 - **Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
@@ -147,7 +155,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 | `AUTH_TOKEN` | _(none)_ | API key for access control (disabled when unset) |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
-| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Files referenced by restored entries are protected. Set to `0` to disable. |
+| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
 | `RESTORE_DAYS` | `0` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
