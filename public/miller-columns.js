@@ -250,6 +250,34 @@ function _starPopoverEscKey(e) {
   if (e.key === 'Escape') _closeStarPopover();
 }
 
+// Jump the dashboard focus to a starred descendant (used by popover row click).
+// kind: 'session' | 'turn'. Closes the popover after a successful jump so the
+// user lands on the new selection without the popover floating over it.
+function _navigateToDescendant(kind, id) {
+  if (kind === 'session') {
+    if (sessionsMap.has(id)) {
+      _closeStarPopover();
+      selectSessionAndLatestTurn(id);
+      setFocus('turns');
+    }
+    return;
+  }
+  if (kind === 'turn') {
+    if (!Array.isArray(allEntries)) return;
+    for (let i = 0; i < allEntries.length; i++) {
+      if (allEntries[i] && allEntries[i].id === id) {
+        _closeStarPopover();
+        selectSessionAndLatestTurn(allEntries[i].sessionId);
+        selectTurn(i);
+        setFocus('turns');
+        return;
+      }
+    }
+    // Entry not in current restored set — silent no-op (server still protects
+    // the file; user can release via × instead).
+  }
+}
+
 function _listStarredDescendants(level, id) {
   const items = [];
   if (level === 'session') {
@@ -294,10 +322,10 @@ function openDerivedPopover(level, id, anchorEl) {
 
   const pop = document.createElement('div');
   pop.className = 'star-popover';
-  let html = '<div class="star-popover-title">' + items.length + ' starred descendant' + (items.length === 1 ? '' : 's') + ' below — click × to release</div>';
+  let html = '<div class="star-popover-title">' + items.length + ' starred descendant' + (items.length === 1 ? '' : 's') + ' below — click row to jump, × to release</div>';
   html += '<div class="star-popover-body">';
   for (const it of items) {
-    html += '<div class="star-popover-item">' +
+    html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="Jump to this ' + it.kind + '">' +
       '<span class="star-popover-glyph">★</span>' +
       '<span class="star-popover-label">' + escapeHtml(it.label) + '</span>' +
       '<button class="star-popover-unstar" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Unstar this ' + it.kind + '">×</button>' +
@@ -338,6 +366,13 @@ function openDerivedPopover(level, id, anchorEl) {
         const newAnchor = document.querySelector('.pin-btn.derived[onclick*="' + escapeHtml(id).replace(/"/g, '\\&quot;') + '"]');
         if (newAnchor) openDerivedPopover(level, id, newAnchor);
       }
+    });
+  });
+  pop.querySelectorAll('.star-popover-item').forEach(row => {
+    row.addEventListener('click', (e) => {
+      // The × button has its own stopPropagation; only the row body fires this.
+      e.stopPropagation();
+      _navigateToDescendant(row.dataset.navKind, row.dataset.navId);
     });
   });
   pop.querySelector('.star-popover-anchor').addEventListener('click', async (e) => {
