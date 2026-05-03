@@ -213,6 +213,16 @@ describe('E3: --port validation', () => {
   });
 });
 
+describe('provider launcher selection', () => {
+  it('rejects unsupported provider commands instead of silently starting standalone mode', async () => {
+    const { stderr, code } = await spawnAndCollect(['unknown-ai'], 3000);
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('unsupported provider "unknown-ai"'), stderr);
+    assert.ok(stderr.includes('claude'), stderr);
+  });
+});
+
 // ── R4: EADDRINUSE handling ────────────────────────────────────────
 
 describe('R4: port conflict', () => {
@@ -297,6 +307,94 @@ describe('R2: hub crash recovery', () => {
 });
 
 // ── E2: claude not found (ENOENT) ──────────────────────────────────
+
+describe('claude launcher mode', () => {
+  function createFakeClaudeCapture() {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fake-claude-'));
+    const capturePath = path.join(fakeBin, 'capture.json');
+    const claudePath = path.join(fakeBin, 'claude');
+    fs.writeFileSync(claudePath, [
+      '#!/bin/sh',
+      'node -e \'const fs=require("fs"); fs.writeFileSync(process.env.CCXRAY_TEST_CLAUDE_CAPTURE, JSON.stringify({ argv: process.argv.slice(1), anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null }));\' -- "$@"',
+    ].join('\n'));
+    fs.chmodSync(claudePath, 0o755);
+    return { fakeBin, capturePath };
+  }
+
+  it('spawns claude through the provider registry and forwards user args', async () => {
+    const port = await findFreePort();
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'claude', '--continue'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, ['--continue']);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('consumes --no-browser as a ccxray flag before launching claude', async () => {
+    const port = await findFreePort();
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'claude', '--no-browser'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, []);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses hub discovery and registration for claude mode without explicit port', async () => {
+    const port = await findFreePort();
+    const hubChild = spawnServer(['--port', String(port), '--hub-mode']);
+    await waitForPort(port);
+
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    const nodeBin = path.dirname(process.execPath);
+    try {
+      const { code, stderr } = await spawnAndCollect(
+        ['claude', '--continue'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, ['--continue']);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+      await killAndWait(hubChild);
+      try { fs.unlinkSync(path.join(TEST_HOME, 'hub.json')); } catch {}
+    }
+  });
+});
 
 describe('E2: claude not found', () => {
   it('reports error when claude binary is missing', async () => {

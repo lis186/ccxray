@@ -17,8 +17,9 @@ const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broad
 const { authMiddleware } = require('./auth');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
+const providers = require('./providers');
 
-// ── CLI: parse flags and detect "claude" subcommand ──
+// ── CLI: parse flags and detect provider launchers ──
 const portIdx = process.argv.indexOf('--port');
 let explicitPort = false;
 if (portIdx !== -1) {
@@ -34,12 +35,25 @@ if (portIdx !== -1) {
 }
 const hubMode = process.argv.includes('--hub-mode');
 if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
-const claudeMode = process.argv[2] === 'claude';
-const claudeArgs = claudeMode ? process.argv.slice(3) : [];
+const noBrowser = process.argv.includes('--no-browser');
+if (noBrowser) process.argv.splice(process.argv.indexOf('--no-browser'), 1);
+const cliCommand = process.argv[2];
+const unknownCommand = cliCommand
+  && cliCommand !== 'status'
+  && !cliCommand.startsWith('-')
+  && !providers.isAgentProvider(cliCommand);
+if (unknownCommand) {
+  console.error(`\x1b[31mError: unsupported provider "${cliCommand}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
+  process.exit(1);
+}
+const agentCommand = providers.isAgentProvider(cliCommand) ? cliCommand : null;
+const agentMode = Boolean(agentCommand);
+const agentArgs = agentMode ? process.argv.slice(3) : [];
+const DISPLAY_NAME = providers.getDisplayName(agentCommand, process.env);
 
-// In claude/hub mode, mute startup logs so they don't pollute output.
+// In agent/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
-if (claudeMode || hubMode) console.log = () => {};
+if (agentMode || hubMode) console.log = () => {};
 
 // ── Delta log storage ────────────────────────────────────────────────
 // sessionLastReq tracks the most recent req per session for delta writes.
@@ -71,7 +85,7 @@ function rebuildIndexHTML(port) { serverPort = port; }
 function serveStatic(url, clientRes) {
   const pathname = url.split('?')[0];
   if (pathname === '/' || pathname === '/index.html') {
-    const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled() })}</script>`;
+    const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled(), APP_NAME: DISPLAY_NAME })}</script>`;
     const html = rawIndexHTML ? rawIndexHTML.replace('<!--__PROXY_CONFIG__-->', script) : '<html><body>Error loading dashboard</body></html>';
     clientRes.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     clientRes.end(html);
@@ -282,30 +296,48 @@ const server = http.createServer((clientReq, clientRes) => {
 });
 
 
-// ── Spawn Claude Code with proxy env ──
-function spawnClaude(port, args) {
+// ── Spawn agent CLI with proxy routing ──
+function spawnAgent(command, port, args, onExit) {
   const { spawn } = require('child_process');
-  const child = spawn('claude', args, {
+  const launch = providers.getAgentLaunch(command, port, args);
+  let finished = false;
+  const finish = (code) => {
+    if (finished) return;
+    finished = true;
+    onExit(code);
+  };
+  if (!launch) {
+    console.error(`\x1b[31mError: unsupported provider "${command}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
+    finish(1);
+    return;
+  }
+  const child = spawn(launch.bin, launch.args, {
     stdio: 'inherit',
-    env: { ...process.env, ANTHROPIC_BASE_URL: `http://localhost:${port}` },
+    env: launch.env,
   });
   child.on('error', (err) => {
     if (err.code === 'ENOENT') {
-      console.error('\x1b[31mError: "claude" command not found. Install Claude Code first:\x1b[0m');
-      console.error('\x1b[31m  npm install -g @anthropic-ai/claude-code\x1b[0m');
+      console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
+      console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
     } else {
-      console.error(`\x1b[31mFailed to start claude: ${err.message}\x1b[0m`);
+      console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
     }
-    process.exit(1);
+    finish(1);
   });
   child.on('exit', (code, signal) => {
-    server.close();
-    process.exit(code ?? (signal === 'SIGINT' ? 130 : 1));
+    finish(code ?? (signal === 'SIGINT' ? 130 : 1));
   });
-  // SIGINT is already sent to claude by the terminal (same process group).
-  // Just prevent Node's default exit so we wait for claude's exit event.
+  // SIGINT is already sent to the child by the terminal (same process group).
+  // Just prevent Node's default exit so we wait for the child exit event.
   process.on('SIGINT', () => {});
   process.on('SIGTERM', () => child.kill('SIGTERM'));
+}
+
+function spawnStandaloneAgent(port, command, args) {
+  spawnAgent(command, port, args, (code) => {
+    server.close();
+    process.exit(code);
+  });
 }
 
 // ── "status" subcommand ──
@@ -368,7 +400,7 @@ async function startClientMode(lock) {
     const upstreamSuffix = config.ANTHROPIC_BASE_URL_SOURCE === 'ANTHROPIC_BASE_URL'
       ? `  →  ${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT} (from ANTHROPIC_BASE_URL)`
       : '';
-    _origLog(`\x1b[90mccxray → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
+    _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
   }
 
   try {
@@ -380,7 +412,7 @@ async function startClientMode(lock) {
 
     // Auto-open browser for the first client connecting to this hub
     if (reg.firstClient) {
-      const noOpen = process.argv.includes('--no-browser')
+      const noOpen = noBrowser
         || process.env.BROWSER === 'none'
         || process.env.CI
         || process.env.SSH_TTY;
@@ -401,28 +433,12 @@ async function startClientMode(lock) {
     hub.registerClient(newLock.port, process.pid, process.cwd()).catch(() => {});
   });
 
-  // Spawn claude pointing to hub
-  const { spawn } = require('child_process');
-  const child = spawn('claude', claudeArgs, {
-    stdio: 'inherit',
-    env: { ...process.env, ANTHROPIC_BASE_URL: `http://localhost:${lock.port}` },
-  });
-  child.on('error', (err) => {
-    if (err.code === 'ENOENT') {
-      console.error('\x1b[31mError: "claude" command not found. Install Claude Code first:\x1b[0m');
-      console.error('\x1b[31m  npm install -g @anthropic-ai/claude-code\x1b[0m');
-    } else {
-      console.error(`\x1b[31mFailed to start claude: ${err.message}\x1b[0m`);
-    }
-    hub.unregisterClient(lock.port, process.pid).finally(() => process.exit(1));
-  });
-  child.on('exit', (code, signal) => {
+  // Spawn agent pointing to hub
+  spawnAgent(agentCommand, lock.port, agentArgs, (code) => {
     hub.unregisterClient(lock.port, process.pid).finally(() => {
-      process.exit(code ?? (signal === 'SIGINT' ? 130 : 1));
+      process.exit(code);
     });
   });
-  process.on('SIGINT', () => {});
-  process.on('SIGTERM', () => child.kill('SIGTERM'));
 }
 
 // ── Hub/Server startup ──
@@ -433,11 +449,11 @@ async function startServer() {
   await pruneLogs();
   warmUpCosts();
 
-  // Claude mode (with --port, standalone): scan up to 10 ports.
+  // Agent mode (with --port, standalone): scan up to 10 ports.
   // Hub mode: fixed port, but retry if old hub is still releasing it (race with idle shutdown).
   // EADDRINUSE in hub mode usually means the previous hub process hasn't fully exited yet —
   // port release takes a few ms after process.exit(). Retry up to 5s before giving up.
-  const maxAttempts = (claudeMode && !hubMode) ? 10 : 0;
+  const maxAttempts = (agentMode && !hubMode) ? 10 : 0;
   let actualPort;
   if (hubMode) {
     const HUB_BIND_RETRIES = 5;
@@ -464,7 +480,7 @@ async function startServer() {
   rebuildIndexHTML(actualPort);
 
   // Hub mode only: write lockfile as readiness signal, start client lifecycle
-  // Do NOT write lockfile in claudeMode with --port (that's independent mode)
+  // Do NOT write lockfile in agent mode with --port (that's independent mode)
   if (hubMode) {
     hub.setHubPort(actualPort);
     hub.writeHubLock(actualPort, process.pid);
@@ -477,11 +493,11 @@ async function startServer() {
   // Banner
   if (hubMode) {
     // Hub runs silently (logs go to hub.log)
-  } else if (claudeMode) {
-    _origLog(`\x1b[90mccxray → http://localhost:${actualPort}\x1b[0m`);
+  } else if (agentMode) {
+    _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${actualPort}\x1b[0m`);
   } else {
     console.log();
-    console.log(`\x1b[35m🔌 Claude API Proxy listening on http://localhost:${actualPort}\x1b[0m`);
+    console.log(`\x1b[35m🔌 ${DISPLAY_NAME} proxy listening on http://localhost:${actualPort}\x1b[0m`);
     console.log(`\x1b[90m   Dashboard → http://localhost:${actualPort}/`);
     const upstreamUrl = `${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT}`;
     const upstreamNote = config.ANTHROPIC_BASE_URL_SOURCE === 'ANTHROPIC_BASE_URL' ? ' (from ANTHROPIC_BASE_URL)' : '';
@@ -494,7 +510,7 @@ async function startServer() {
 
   // Auto-open dashboard in browser (not in hub mode)
   const noOpen = hubMode
-    || process.argv.includes('--no-browser')
+    || noBrowser
     || process.env.BROWSER === 'none'
     || process.env.CI
     || process.env.SSH_TTY;
@@ -504,13 +520,13 @@ async function startServer() {
     exec(`${cmd} http://localhost:${actualPort}`);
   }
 
-  if (claudeMode) spawnClaude(actualPort, claudeArgs);
+  if (agentMode) spawnStandaloneAgent(actualPort, agentCommand, agentArgs);
 }
 
 // ── Main entry ──
 (async () => {
   // Hub mode or explicit port or standalone: start server directly
-  if (hubMode || explicitPort || !claudeMode) {
+  if (hubMode || explicitPort || !agentMode) {
     try {
       await startServer();
     } catch (err) {
