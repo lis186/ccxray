@@ -403,9 +403,13 @@ function addEntry(e) {
   const cleanedTitle = cleanTitle(e.title);
   const titleLine = cleanedTitle ? '<div class="turn-title">' + escapeHtml(cleanedTitle) + '</div>' : '';
 
-  // Line 2.5: cost (own line; right-aligned dim 11px). Omitted when null.
-  const costLine = turnCost != null
-    ? '<div class="turn-cost-line">$' + turnCost.toFixed(2) + '</div>'
+  // Line 2.5: cost (own line; right-aligned dim 11px). Omitted when null OR
+  // when the rounded display would read $0.00 (cache-hit turns are the
+  // ~80% case and a column of "$0.00" lines is just noise — session cards
+  // still aggregate the cost, so the information is not lost).
+  const costFmt = turnCost != null ? turnCost.toFixed(2) : null;
+  const costLine = (costFmt != null && costFmt !== '0.00')
+    ? '<div class="turn-cost-line">$' + costFmt + '</div>'
     : '';
 
   // Line 3: ctx bar (original segment proportions) + ctx:/hit: labels
