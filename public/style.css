@@ -271,9 +271,12 @@
   .star-popover-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; }
   .star-popover-item:hover { background: var(--surface-hover, var(--bg)); }
   .star-popover-item:hover .star-popover-label { color: var(--accent, var(--yellow)); }
-  .star-popover-glyph-btn { background: none; border: none; color: var(--dim); cursor: pointer; flex-shrink: 0; font-size: 13px; line-height: 1; padding: 0 2px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; user-select: none; }
+  .star-popover-glyph-btn { background: none; border: none; color: var(--dim); cursor: pointer; flex-shrink: 0; font-size: 15px; line-height: 1; padding: 1px 4px; border-radius: 3px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; user-select: none; transition: transform 0.1s, background 0.1s; }
   .star-popover-glyph-btn.starred { color: var(--yellow); }
-  .star-popover-glyph-btn:hover { color: var(--yellow); transform: scale(1.15); }
+  /* Hover gives feedback via scale + background only — color is reserved for
+     state (.starred = yellow, default = dim) so the ★/☆ flip is unambiguous
+     even when the cursor is still hovering after a click. */
+  .star-popover-glyph-btn:hover { transform: scale(1.2); background: var(--surface-hover, var(--bg)); }
   .star-popover-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
   .star-popover-footer { padding: 6px 10px 8px; border-top: 1px solid var(--border); }
   .star-popover-anchor { background: none; border: 1px solid var(--border); color: var(--text); cursor: pointer; padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 11px; width: 100%; }
