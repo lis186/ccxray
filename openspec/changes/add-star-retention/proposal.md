@@ -19,8 +19,9 @@ This change introduces server-side **stars** at three levels of granularity (pro
 
 ### New Capabilities
 
-- `star-retention`: server-side storage, REST API, derived retention rule for prune and restore, and sentinel-bucket exclusion.
-- `star-ui`: dashboard tri-state star control on project / session columns, turn-card star toggle, sentinel disabled state, one-time migration from `localStorage`.
+- `star-retention`: server-side storage, REST API (with sentinel rejection), derived retention rule for prune and restore, and sentinel-bucket exclusion at retention computation.
+- `star-ui`: dashboard tri-state star control on project / session columns, turn-card star toggle, sentinel disabled state, optimistic UI with revert-on-failure, one-time migration from `localStorage`.
+- `star-popover`: click on a parent's derived `☆ [N]` badge opens a floating list of starred descendants; each row's ★ toggles in place, the row body navigates to the descendant (re-selecting its project on the way), explicit `[×]` button dismisses, viewport edges clamp the popover.
 
 ### Modified Capabilities
 

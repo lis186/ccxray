@@ -84,25 +84,32 @@ Model name SHALL **always** render on line 1 for both main and subagent turns. T
 
 ## ADDED Requirements
 
-### Requirement: Cost renders on its own line between title and ctx-bar
+### Requirement: Cost renders on its own line between title and ctx-bar (cache hits omitted)
 
-When `cost` is non-null, the turn card SHALL render the cost on a dedicated line positioned between the title line and the ctx-bar line. The line SHALL contain only the cost figure formatted as `$N.NN` (two decimal places, dollar sign prefix). The visual style SHALL be: dim color (`var(--dim)`), font-size 11px, right-aligned within the card's content padding.
+When `cost` is non-null AND `cost.toFixed(2) !== '0.00'`, the turn card SHALL render the cost on a dedicated line positioned between the title line and the ctx-bar line. The line SHALL contain only the cost figure formatted as `$N.NN` (two decimal places, dollar sign prefix). The visual style SHALL be: dim color (`var(--dim)`), font-size 11px, right-aligned within the card's content padding.
+
+When the cost rounds to `$0.00` (cache-hit turns are the dominant case), the line SHALL be omitted entirely. A column of `$0.00` rows is visual noise — session cards still aggregate the per-session cost, so the information is preserved at the right level. Only turns with a real, non-trivial cost get a dedicated line.
 
 #### Scenario: Cost present, title present
 
-- **WHEN** a turn has both a title and a non-null cost
+- **WHEN** a turn has both a title and a non-null cost ≥ `$0.005`
 - **THEN** the layout shows identity, title, cost line, ctx-bar in that order
 - **AND** the cost line content is right-aligned `$N.NN`
 
 #### Scenario: Cost present, title absent
 
-- **WHEN** a turn has no title but a non-null cost
+- **WHEN** a turn has no title but a non-null cost ≥ `$0.005`
 - **THEN** the cost line renders directly between identity and ctx-bar
 
-#### Scenario: Cost absent
+#### Scenario: Cost null
 
 - **WHEN** `cost` is null
 - **THEN** the cost line is omitted from the DOM entirely (no empty container)
+
+#### Scenario: Cost rounds to $0.00 (cache hit)
+
+- **WHEN** `cost` is `0`, `0.001`, or any value whose `toFixed(2)` is `'0.00'`
+- **THEN** the cost line is omitted from the DOM entirely
 
 #### Scenario: Two-decimal formatting
 
@@ -111,21 +118,27 @@ When `cost` is non-null, the turn card SHALL render the cost on a dedicated line
 
 ---
 
-### Requirement: Star toggle on line 1 reflects and mutates `starredTurns`
+### Requirement: Star toggle on line 1 reflects and mutates `starredTurns` (optimistic)
 
-The star toggle on line 1 SHALL render as filled `★` when the turn's id is in `starredTurns`, otherwise as hollow `☆`. Clicking SHALL invoke `event.stopPropagation()` and issue `POST /_api/stars` with `{kind:'turn', id:<entry.id>, starred:<new state>}`. Visual state SHALL update on the API response, not optimistically before it.
+The star toggle on line 1 SHALL render as filled `★` when the turn's id is in `starredTurns`, otherwise as hollow `☆`. Clicking SHALL invoke `event.stopPropagation()`, flip the `xrayStars.turns` cache and the icon **synchronously**, then issue `POST /_api/stars` with `{kind:'turn', id:<entry.id>, starred:<new state>}`. The visual update MUST NOT wait on the network round-trip. On HTTP failure the optimistic flip SHALL be reverted and a toast surfaced (see `star-ui` capability).
 
 #### Scenario: Toggle off
 
 - **WHEN** the user clicks a filled `★` on a turn card
-- **THEN** a POST is issued with `starred:false`
-- **AND** on success, the icon transitions to hollow `☆`
+- **THEN** the icon flips to hollow `☆` synchronously inside the click handler
+- **AND** a POST is issued with `starred:false`
 
 #### Scenario: Toggle on
 
 - **WHEN** the user clicks a hollow `☆` on a turn card
-- **THEN** a POST is issued with `starred:true`
-- **AND** on success, the icon transitions to filled `★`
+- **THEN** the icon flips to filled `★` synchronously inside the click handler
+- **AND** a POST is issued with `starred:true`
+
+#### Scenario: POST failure reverts the icon
+
+- **WHEN** the optimistic flip happened and the POST returns non-2xx
+- **THEN** the icon reverts to its prior state
+- **AND** a toast appears with text including "Star failed"
 
 #### Scenario: Click does not propagate
 

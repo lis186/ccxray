@@ -42,6 +42,23 @@ The system SHALL expose `GET /_api/stars` returning `{projects: string[], sessio
 - **WHEN** a POST arrives with `starred` missing or non-boolean
 - **THEN** the response is HTTP 400 and no settings change is written
 
+#### Scenario: POST rejects sentinel session
+
+- **WHEN** a POST arrives with `kind:'session'` and `id` ∈ `SENTINEL_SESSIONS` (e.g. `'direct-api'`)
+- **THEN** the response is HTTP 400 with an explanatory message ("cannot star sentinel session …")
+- **AND** no settings change is written
+
+#### Scenario: POST rejects sentinel project
+
+- **WHEN** a POST arrives with `kind:'project'` and `id` ∈ `SENTINEL_PROJECTS` (e.g. `'(unknown)'`, `'(quota-check)'`)
+- **THEN** the response is HTTP 400 with an explanatory message ("cannot star sentinel project …")
+- **AND** no settings change is written
+
+#### Scenario: POST allows turn star inside sentinel session
+
+- **WHEN** a POST arrives with `kind:'turn'` and the turn happens to live in a sentinel session
+- **THEN** the request succeeds (turn-level stars on individual sentinel-session entries are intentional — only session/project-level stars on sentinels are rejected)
+
 ---
 
 ### Requirement: Retention is derived from stars at prune time
@@ -75,20 +92,34 @@ The system SHALL expose `GET /_api/stars` returning `{projects: string[], sessio
 
 ---
 
-### Requirement: Sentinel sessions and projects are excluded from upward derivation
+### Requirement: Sentinel sessions and projects are excluded from retention
 
-The system SHALL define `SENTINEL_SESSIONS = {'direct-api'}` and `SENTINEL_PROJECTS = {'(unknown)', '(quota-check)'}`. When deriving "retained sessions" from starred turns, entries whose `sessionId` is sentinel SHALL NOT contribute. When deriving "retained projects" from starred sessions or turns, entries whose `projectName(cwd)` is sentinel SHALL NOT contribute.
+The system SHALL define `SENTINEL_SESSIONS = {'direct-api'}` and `SENTINEL_PROJECTS = {'(unknown)', '(quota-check)'}`. Two layers MUST enforce sentinel exclusion as defense in depth:
 
-#### Scenario: direct-api session is not retained as a unit
+1. **Upward derivation**: when deriving "retained sessions" from starred turns, entries whose `sessionId` is sentinel SHALL NOT contribute; when deriving "retained projects" from starred sessions or turns, entries whose `projectName(cwd)` is sentinel SHALL NOT contribute.
+2. **Source filtering**: `computeRetentionSets()` SHALL filter sentinel ids out of the seed values it copies from `stars.sessions` / `stars.projects`. Even if a sentinel id reaches `settings.json` through a manual edit, an older client, or any other path that bypasses the API guard, retention SHALL NOT honor it as protecting a whole bucket.
+
+#### Scenario: direct-api session is not retained as a unit (upward derivation)
 
 - **WHEN** turn `T1` with `sessionId === 'direct-api'` is in `starredTurns`
 - **THEN** `direct-api` is not added to the retained-session set
 - **AND** other turns with `sessionId === 'direct-api'` are not protected by this star alone
 
-#### Scenario: (unknown) project is not retained as a unit
+#### Scenario: (unknown) project is not retained as a unit (upward derivation)
 
 - **WHEN** turn `T1` with `projectName(T1.cwd) === '(unknown)'` is in `starredTurns`
 - **THEN** `(unknown)` is not added to the retained-project set
+
+#### Scenario: Sentinel id in starredSessions is filtered at the source
+
+- **WHEN** `starredSessions` somehow contains `'direct-api'` (e.g. legacy data, manual edit)
+- **THEN** `'direct-api'` is NOT placed in `retainedSessions` by `computeRetentionSets()`
+- **AND** `direct-api` turns are not protected as a bucket
+
+#### Scenario: Sentinel id in starredProjects is filtered at the source
+
+- **WHEN** `starredProjects` somehow contains `'(unknown)'` or `'(quota-check)'`
+- **THEN** those ids are NOT placed in `retainedProjects` by `computeRetentionSets()`
 
 ---
 
