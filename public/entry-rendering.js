@@ -368,6 +368,10 @@ function addEntry(e) {
     const starEl = event && event.target && event.target.closest && event.target.closest('.turn-star');
     if (starEl && el.contains(starEl)) {
       event.stopPropagation();
+      if (starEl.classList.contains('derived') && !starEl.classList.contains('starred') && typeof openDerivedPopover === 'function') {
+        openDerivedPopover('turn', starEl.dataset.id, starEl);
+        return;
+      }
       if (typeof window.toggleStar === 'function') {
         window.toggleStar('turn', starEl.dataset.id, !starEl.classList.contains('starred'));
       }
@@ -387,7 +391,15 @@ function addEntry(e) {
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
   const isTurnStarred = !!(window.xrayStars && window.xrayStars.turns && window.xrayStars.turns.has(entryId));
-  const starHtml = '<span class="turn-star' + (isTurnStarred ? ' starred' : '') + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + (isTurnStarred ? 'Starred — click to unstar' : 'Star this turn (keeps log forever)') + '">' + (isTurnStarred ? '★' : '☆') + '</span>';
+  const derivedStepStars = (!isTurnStarred && typeof countDescendantStars === 'function') ? countDescendantStars('turn', entryId) : 0;
+  const starClass = isTurnStarred ? ' starred' : (derivedStepStars > 0 ? ' derived' : '');
+  const starTitle = isTurnStarred
+    ? 'Starred — click to unstar'
+    : (derivedStepStars > 0 ? 'Retained because ' + derivedStepStars + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+  const starGlyph = isTurnStarred
+    ? '★'
+    : (derivedStepStars > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>' : '☆');
+  const starHtml = '<span class="turn-star' + starClass + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + escapeHtml(starTitle) + '">' + starGlyph + '</span>';
   const identityTooltip = [
     isCompacted ? 'Context compacted' : null,
     e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,

@@ -670,9 +670,13 @@ function getProjectName(cwd) {
 //
 // Inputs:
 //   indexEntries: Array<{ id, sessionId, cwd }>  (pre-parsed; minimum fields)
-//   stars: { projects: string[], sessions: string[], turns: string[] }
+//   stars: { projects: string[], sessions: string[], turns: string[], steps: string[] }
 function computeRetentionSets(indexEntries, stars) {
   const starredTurnIds = new Set(stars?.turns || []);
+  for (const stepId of stars?.steps || []) {
+    const turnId = typeof stepId === 'string' ? stepId.split('::')[0] : '';
+    if (turnId) starredTurnIds.add(turnId);
+  }
   // Defensive: even if a sentinel id slipped into starredSessions/Projects (via
   // pre-API-guard data, manual settings.json edit, or older client), it must
   // never lift the bucket as a unit. Filter at the source.

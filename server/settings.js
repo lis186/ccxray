@@ -12,6 +12,7 @@ const DEFAULTS = {
   starredProjects: [],
   starredSessions: [],
   starredTurns: [],
+  starredSteps: [],
 };
 
 // Coerce a settings field to a string array, dropping non-strings. Returns a
@@ -26,8 +27,18 @@ function coerceStringArray(value) {
 // reads never go back to disk.
 let _cache = null;
 
+function cloneSettings(s) {
+  return {
+    ...s,
+    starredProjects: [...(s.starredProjects || [])],
+    starredSessions: [...(s.starredSessions || [])],
+    starredTurns: [...(s.starredTurns || [])],
+    starredSteps: [...(s.starredSteps || [])],
+  };
+}
+
 function readSettings() {
-  if (_cache) return { ..._cache, starredProjects: [..._cache.starredProjects], starredSessions: [..._cache.starredSessions], starredTurns: [..._cache.starredTurns] };
+  if (_cache) return cloneSettings(_cache);
   let firstLoad = false;
   try {
     const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
@@ -38,20 +49,21 @@ function readSettings() {
         starredProjects: coerceStringArray(parsed.starredProjects),
         starredSessions: coerceStringArray(parsed.starredSessions),
         starredTurns: coerceStringArray(parsed.starredTurns),
+        starredSteps: coerceStringArray(parsed.starredSteps),
       };
     } else {
       console.error(`[ccxray] settings.json at ${SETTINGS_PATH} did not parse to an object — using defaults.`);
-      _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [] };
+      _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [], starredSteps: [] };
     }
     firstLoad = true;
   } catch {
-    _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [] };
+    _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [], starredSteps: [] };
     firstLoad = true;
   }
   if (firstLoad) {
     console.log(`\x1b[90m   Context HUD: ${_cache.statusLine ? 'enabled' : 'disabled'} (settings.json)\x1b[0m`);
   }
-  return { ..._cache, starredProjects: [..._cache.starredProjects], starredSessions: [..._cache.starredSessions], starredTurns: [..._cache.starredTurns] };
+  return cloneSettings(_cache);
 }
 
 function writeSettings(data) {

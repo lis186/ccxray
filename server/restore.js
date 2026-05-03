@@ -18,8 +18,9 @@ function readStarsSafe() {
       projects: Array.isArray(s.starredProjects) ? s.starredProjects : [],
       sessions: Array.isArray(s.starredSessions) ? s.starredSessions : [],
       turns: Array.isArray(s.starredTurns) ? s.starredTurns : [],
+      steps: Array.isArray(s.starredSteps) ? s.starredSteps : [],
     };
-  } catch { return { projects: [], sessions: [], turns: [] }; }
+  } catch { return { projects: [], sessions: [], turns: [], steps: [] }; }
 }
 
 // ── Lazy-load req/res from disk on demand ────────────────────────────
@@ -101,7 +102,7 @@ async function restoreFromLogs() {
   // entries older than RESTORE_DAYS that are protected by stars are still
   // restored. Single allocation; reused below in the main loop.
   const stars = readStarsSafe();
-  const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length;
+  const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
   let retentionSets = null;
   if (hasAnyStar && cutoffStr) {
     const lightweight = [];
@@ -235,7 +236,7 @@ async function pruneLogs() {
 
   try {
     const stars = readStarsSafe();
-    if (stars.projects.length || stars.sessions.length || stars.turns.length) {
+    if (stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length) {
       const idx = await config.storage.readIndex();
       if (idx) {
         const indexEntries = [];

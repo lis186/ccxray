@@ -157,6 +157,7 @@ function handleApiRoutes(clientReq, clientRes) {
       projects: s.starredProjects || [],
       sessions: s.starredSessions || [],
       turns: s.starredTurns || [],
+      steps: s.starredSteps || [],
     }));
     return true;
   }
@@ -174,10 +175,10 @@ function handleApiRoutes(clientReq, clientRes) {
       const kind = payload && payload.kind;
       const id = payload && payload.id;
       const starred = payload && payload.starred;
-      const KIND_TO_KEY = { project: 'starredProjects', session: 'starredSessions', turn: 'starredTurns' };
+      const KIND_TO_KEY = { project: 'starredProjects', session: 'starredSessions', turn: 'starredTurns', step: 'starredSteps' };
       if (!Object.prototype.hasOwnProperty.call(KIND_TO_KEY, kind) || typeof id !== 'string' || !id || typeof starred !== 'boolean') {
         clientRes.writeHead(400, { 'Content-Type': 'application/json' });
-        clientRes.end(JSON.stringify({ error: 'expected { kind: project|session|turn, id: string, starred: boolean }' }));
+        clientRes.end(JSON.stringify({ error: 'expected { kind: project|session|turn|step, id: string, starred: boolean }' }));
         return;
       }
       // Sentinel guard: catch-all session/project ids must not become starred at
@@ -200,6 +201,7 @@ function handleApiRoutes(clientReq, clientRes) {
         projects: updated.starredProjects || [],
         sessions: updated.starredSessions || [],
         turns: updated.starredTurns || [],
+        steps: updated.starredSteps || [],
       }));
     });
     return true;

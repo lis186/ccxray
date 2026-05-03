@@ -106,9 +106,15 @@
 
   /* Timeline accordion in detail */
   .tl-step { border-bottom: none; }
-  .tl-step-summary { cursor: pointer; padding: 4px 8px; transition: background 0.1s; }
+  .tl-step-summary { display: grid; grid-template-columns: 40px minmax(0, 1fr) 22px; align-items: start; column-gap: 6px; cursor: pointer; padding: 4px 6px; transition: background 0.1s; }
   .tl-step-summary:hover { background: var(--surface-hover); }
   .tl-step-summary.active { background: var(--surface-active); box-shadow: inset 3px 0 0 0 var(--accent); }
+  .tl-step-main { min-width: 0; }
+  .tl-step-summary .msg-list-row { padding-right: 0; }
+  .tl-step-num { min-width: 34px; color: var(--dim); font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 10px; line-height: 1.2; opacity: 0.75; pointer-events: none; padding-top: 1px; }
+  .tl-step-star { justify-self: end; background: none; border: none; color: var(--dim); cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 1px 3px; opacity: 0.65; user-select: none; }
+  .tl-step-star:hover { opacity: 1; color: var(--yellow); }
+  .tl-step-star.starred { opacity: 1; color: var(--yellow); }
   .tool-call-error { background: rgba(248,81,73,0.12); border-left: 2px solid var(--red); }
   .tl-step-detail { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg); }
 
@@ -268,7 +274,7 @@
      theme, providing a "floating panel" feel; combined with a stronger
      shadow and a slightly brighter border, the panel reads as elevated in
      both themes without needing per-theme overrides. */
-  .star-popover { background: var(--surface-hover); border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04); min-width: 240px; max-width: 320px; max-height: 320px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; color: var(--text); }
+  .star-popover { background: var(--surface-hover); border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04); min-width: 340px; width: min(640px, calc(100vw - 16px)); max-height: 320px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; color: var(--text); }
   .star-popover-title { position: relative; padding: 8px 32px 6px 10px; color: var(--text); font-size: 11px; border-bottom: 1px solid var(--border); background: var(--surface-active); }
   .star-popover-close { position: absolute; top: 4px; right: 6px; background: none; border: none; color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 3px; font-family: inherit; }
   .star-popover-close:hover { color: var(--text); background: var(--surface-hover, var(--bg)); }
@@ -307,6 +313,8 @@
   .turn-item .turn-star { margin-left: auto; flex-shrink: 0; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 0 2px; user-select: none; opacity: 0.6; }
   .turn-item .turn-star:hover { opacity: 1; }
   .turn-item .turn-star.starred { color: var(--yellow); opacity: 1; }
+  .turn-item .turn-star.derived { color: var(--dim); opacity: 0.85; }
+  .turn-item .turn-star.derived:hover { color: var(--yellow); opacity: 1; }
   .turn-item .turn-star.disabled { opacity: 0.25; cursor: not-allowed; }
   .turn-item .turn-cost-line { font-size: 11px; color: var(--dim); text-align: right; margin-top: 2px; }
   /* Line 2: title */

@@ -57,6 +57,13 @@ describe('star-retention', () => {
       assert.ok(sets.retainedProjects.has('foo'));
     });
 
+    it('starring a step protects its parent turn', () => {
+      const sets = computeRetentionSets(idx, { projects: [], sessions: [], turns: [], steps: ['t1::3:0'] });
+      assert.ok(sets.starredTurnIds.has('t1'));
+      assert.ok(sets.retainedSessions.has('s1'));
+      assert.ok(sets.retainedProjects.has('foo'));
+    });
+
     it('starring a turn in sentinel session does NOT lift the bucket', () => {
       const sets = computeRetentionSets(idx, { projects: [], sessions: [], turns: ['d1'] });
       assert.equal(sets.retainedSessions.has('direct-api'), false);

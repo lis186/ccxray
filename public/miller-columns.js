@@ -140,7 +140,7 @@ function renderSystemBlockViewer(system) {
 // xrayStars holds the canonical client-side mirror of GET /_api/stars.
 // Sets are used for O(1) membership in render hot paths. Exposed on window
 // so entry-rendering can read it when drawing turn cards.
-const xrayStars = { projects: new Set(), sessions: new Set(), turns: new Set() };
+const xrayStars = { projects: new Set(), sessions: new Set(), turns: new Set(), steps: new Set() };
 window.xrayStars = xrayStars;
 
 const SENTINEL_SESSIONS = new Set(['direct-api']);
@@ -150,7 +150,16 @@ function isStarredAt(level, id) {
   if (level === 'project') return xrayStars.projects.has(id);
   if (level === 'session') return xrayStars.sessions.has(id);
   if (level === 'turn') return xrayStars.turns.has(id);
+  if (level === 'step') return xrayStars.steps.has(id);
   return false;
+}
+
+function _projectNameForEntry(entry) {
+  if (!entry) return '';
+  const direct = getProjectName(entry.cwd);
+  if (direct && direct !== '(unknown)') return direct;
+  const sess = sessionsMap.get(entry.sessionId);
+  return sess ? getProjectName(sess.cwd) : direct;
 }
 
 // Count direct stars at descendant levels for the tri-state badge.
@@ -158,12 +167,22 @@ function isStarredAt(level, id) {
 // session ← (turns whose sessionId === sid)
 // Sentinel buckets contribute 0 (we never derive upward into them).
 function countDescendantStars(level, id) {
-  if (level === 'turn') return 0;
+  if (level === 'turn') {
+    let count = 0;
+    for (const stepId of xrayStars.steps) {
+      if (_turnIdFromStepStarId(stepId) === id) count++;
+    }
+    return count;
+  }
   let count = 0;
   if (level === 'session') {
     if (SENTINEL_SESSIONS.has(id)) return 0;
     for (const turnId of xrayStars.turns) {
       const e = entryById.get(turnId);
+      if (e && e.sessionId === id) count++;
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
       if (e && e.sessionId === id) count++;
     }
     return count;
@@ -177,9 +196,12 @@ function countDescendantStars(level, id) {
   for (const turnId of xrayStars.turns) {
     const e = entryById.get(turnId);
     if (!e) continue;
-    const sess = sessionsMap.get(e.sessionId);
-    if (!sess) continue;
-    if (getProjectName(sess.cwd) === id) count++;
+    if (_projectNameForEntry(e) === id) count++;
+  }
+  for (const stepId of xrayStars.steps) {
+    const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+    if (!e) continue;
+    if (_projectNameForEntry(e) === id) count++;
   }
   return count;
 }
@@ -274,8 +296,7 @@ function _navigateToDescendant(kind, id) {
       const entry = allEntries[i];
       if (entry && entry.id === id) {
         _closeStarPopover();
-        const sess = sessionsMap.get(entry.sessionId);
-        const proj = getProjectName(sess ? sess.cwd : null);
+        const proj = _projectNameForEntry(entry);
         if (proj && selectedProjectName !== proj) selectProject(proj);
         selectSessionAndLatestTurn(entry.sessionId);
         // Smooth-scroll over 300ms so the user can track the spatial jump
@@ -288,6 +309,87 @@ function _navigateToDescendant(kind, id) {
     // Entry not in current restored set — silent no-op (server still protects
     // the file; user can release via × instead).
   }
+  if (kind === 'step') {
+    const turnId = _turnIdFromStepStarId(id);
+    const stepIdx = _stepIndexFromStepStarId(id);
+    const stepSub = _stepSubFromStepStarId(id);
+    if (!turnId || stepIdx < 0 || !Array.isArray(allEntries)) return;
+    for (let i = 0; i < allEntries.length; i++) {
+      const entry = allEntries[i];
+      if (entry && entry.id === turnId) {
+        _closeStarPopover();
+        const proj = _projectNameForEntry(entry);
+        if (proj && selectedProjectName !== proj) selectProject(proj);
+        selectSessionAndLatestTurn(entry.sessionId);
+        selectTurn(i, { smooth: true });
+        setFocus('turns');
+        _selectTimelineStepWhenReady(i, stepIdx, stepSub);
+        return;
+      }
+    }
+  }
+}
+
+function _selectedMessageIdxForStepStar(stepIdx, sub) {
+  if (sub === 'thinking') return stepIdx * 1000 + 999;
+  if (typeof sub === 'number') return stepIdx * 1000 + sub;
+  return stepIdx * 1000;
+}
+
+function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
+  const entry = allEntries[turnIdx];
+  if (!entry) return;
+  const apply = () => {
+    const current = allEntries[turnIdx];
+    if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') return;
+    selectedSection = 'timeline';
+    if (!isFocusedMode && typeof enterFocusedMode === 'function') {
+      selectedMessageIdx = _selectedMessageIdxForStepStar(stepIdx, sub);
+      enterFocusedMode();
+    } else {
+      renderDetailCol();
+    }
+    requestAnimationFrame(() => {
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : []);
+      selectStep(stepIdx, sub);
+      if (typeof scrollTimelineStepIntoViewWhenReady === 'function') scrollTimelineStepIntoViewWhenReady(stepIdx, sub);
+      else if (typeof scrollTimelineStepIntoView === 'function') scrollTimelineStepIntoView(stepIdx, sub);
+    });
+  };
+  if (entry.reqLoaded) {
+    apply();
+    return;
+  }
+  fetch('/_api/entry/' + encodeURIComponent(entry.id))
+    .then(r => r.json())
+    .then(data => {
+      if (!data) return;
+      entry.req = data.req;
+      entry.res = data.res;
+      entry.reqLoaded = true;
+      entry._prefetching = false;
+      if (data.receivedAt) entry.receivedAt = data.receivedAt;
+      apply();
+    })
+    .catch(() => { entry._prefetching = false; });
+}
+
+function _turnIdFromStepStarId(stepId) {
+  return typeof stepId === 'string' ? stepId.split('::')[0] : '';
+}
+
+function _stepIndexFromStepStarId(stepId) {
+  const raw = typeof stepId === 'string' ? (stepId.split('::')[1] || '') : '';
+  const idx = Number(raw.split(':')[0]);
+  return Number.isInteger(idx) ? idx : -1;
+}
+
+function _stepSubFromStepStarId(stepId) {
+  const raw = typeof stepId === 'string' ? (stepId.split('::')[1] || '') : '';
+  const part = raw.split(':')[1];
+  if (part === 'thinking') return 'thinking';
+  const n = Number(part);
+  return Number.isInteger(n) ? n : null;
 }
 
 function _findEntryForStarLabel(entryId) {
@@ -324,6 +426,15 @@ function _formatStarredTurnLabel(entryId) {
   return 'session ' + sidLabel + ' turn #' + turnNum;
 }
 
+function _formatStarredStepLabel(stepId) {
+  const turnId = _turnIdFromStepStarId(stepId);
+  const stepIdx = _stepIndexFromStepStarId(stepId);
+  const sub = _stepSubFromStepStarId(stepId);
+  const subLabel = sub === 'thinking' ? ' thinking' : (typeof sub === 'number' ? ' call #' + (sub + 1) : '');
+  const turnLabel = _formatStarredTurnLabel(turnId);
+  return turnLabel + ' step #' + (stepIdx >= 0 ? stepIdx + 1 : '?') + subLabel;
+}
+
 function _formatStarredSessionLabel(sid) {
   const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
   return 'session ' + shortSid;
@@ -337,11 +448,24 @@ function _formatStarredSessionTime(sid) {
 
 function _listStarredDescendants(level, id) {
   const items = [];
-  if (level === 'session') {
+  if (level === 'turn') {
+    for (const stepId of xrayStars.steps) {
+      if (_turnIdFromStepStarId(stepId) === id) {
+        const e = _findEntryForStarLabel(id);
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e || id) });
+      }
+    }
+  } else if (level === 'session') {
     for (const turnId of xrayStars.turns) {
       const e = _findEntryForStarLabel(turnId);
       if (e && e.sessionId === id) {
         items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
+      }
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+      if (e && e.sessionId === id) {
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e) });
       }
     }
   } else if (level === 'project') {
@@ -354,10 +478,15 @@ function _listStarredDescendants(level, id) {
     for (const turnId of xrayStars.turns) {
       const e = _findEntryForStarLabel(turnId);
       if (!e) continue;
-      const sess = sessionsMap.get(e.sessionId);
-      if (!sess) continue;
-      if (getProjectName(sess.cwd) === id) {
+      if (_projectNameForEntry(e) === id) {
         items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
+      }
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+      if (!e) continue;
+      if (_projectNameForEntry(e) === id) {
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e) });
       }
     }
   }
@@ -387,7 +516,9 @@ function openDerivedPopover(level, id, anchorEl) {
     '</div>';
   html += '<div class="star-popover-body">';
   for (const it of items) {
-    const targetSet = it.kind === 'session' ? xrayStars.sessions : xrayStars.turns;
+    const targetSet = it.kind === 'session' ? xrayStars.sessions
+                    : it.kind === 'turn' ? xrayStars.turns
+                    : xrayStars.steps;
     const starred = targetSet.has(it.id);
     const fullLabel = it.label + (it.time ? ' ' + it.time : '');
     html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="' + escapeHtml(fullLabel) + '">' +
@@ -431,12 +562,16 @@ function openDerivedPopover(level, id, anchorEl) {
       e.stopPropagation();
       const kind = btn.dataset.kind;
       const childId = btn.dataset.id;
-      const targetSet = kind === 'session' ? xrayStars.sessions : xrayStars.turns;
+      const targetSet = kind === 'session' ? xrayStars.sessions
+                      : kind === 'turn' ? xrayStars.turns
+                      : xrayStars.steps;
       const willBeStarred = !targetSet.has(childId);
       btn.textContent = willBeStarred ? '★' : '☆';
       btn.classList.toggle('starred', willBeStarred);
       toggleStar(kind, childId, willBeStarred).then(() => {
-        const nowStarred = (kind === 'session' ? xrayStars.sessions : xrayStars.turns).has(childId);
+        const nowStarred = (kind === 'session' ? xrayStars.sessions
+                          : kind === 'turn' ? xrayStars.turns
+                          : xrayStars.steps).has(childId);
         btn.textContent = nowStarred ? '★' : '☆';
         btn.classList.toggle('starred', nowStarred);
       });
@@ -491,9 +626,20 @@ function rerenderColumnsAfterStar() {
   document.querySelectorAll('.turn-item .turn-star').forEach(btn => {
     const id = btn.dataset.id;
     const starred = id && xrayStars.turns.has(id);
+    const derived = !starred && id ? countDescendantStars('turn', id) : 0;
+    btn.classList.toggle('starred', !!starred);
+    btn.classList.toggle('derived', derived > 0);
+    btn.innerHTML = starred ? '★' : (derived > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>' : '☆');
+    btn.title = starred
+      ? 'Starred — click to unstar'
+      : (derived > 0 ? 'Retained because ' + derived + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+  });
+  document.querySelectorAll('.tl-step-star').forEach(btn => {
+    const id = btn.dataset.id;
+    const starred = id && xrayStars.steps.has(id);
     btn.classList.toggle('starred', !!starred);
     btn.textContent = starred ? '★' : '☆';
-    btn.title = starred ? 'Starred — click to unstar' : 'Star this turn (keeps log forever)';
+    btn.title = starred ? 'Starred — click to unstar' : 'Star this step';
   });
 }
 
@@ -503,7 +649,8 @@ async function toggleStar(level, id, starred) {
   // another client (or the migration shim) mutated state concurrently.
   const targetSet = level === 'project' ? xrayStars.projects
                   : level === 'session' ? xrayStars.sessions
-                  : xrayStars.turns;
+                  : level === 'turn' ? xrayStars.turns
+                  : xrayStars.steps;
   const prevHad = targetSet.has(id);
   if (starred) targetSet.add(id); else targetSet.delete(id);
   rerenderColumnsAfterStar();
@@ -520,6 +667,7 @@ async function toggleStar(level, id, starred) {
     xrayStars.projects = new Set(data.projects || []);
     xrayStars.sessions = new Set(data.sessions || []);
     xrayStars.turns = new Set(data.turns || []);
+    xrayStars.steps = new Set(data.steps || []);
     rerenderColumnsAfterStar();
   } catch (err) {
     console.warn('[ccxray] star toggle failed, reverting:', err.message);
@@ -539,6 +687,7 @@ async function loadStars() {
     xrayStars.projects = new Set(data.projects || []);
     xrayStars.sessions = new Set(data.sessions || []);
     xrayStars.turns = new Set(data.turns || []);
+    xrayStars.steps = new Set(data.steps || []);
     await migrateLegacyPinsIfNeeded();
   } catch (err) {
     console.warn('[ccxray] loadStars failed:', err.message);
@@ -553,7 +702,7 @@ async function migrateLegacyPinsIfNeeded() {
   const legacySessRaw = localStorage.getItem('xray-pinned-sessions');
   if (!legacyProjRaw && !legacySessRaw) return;
 
-  const serverEmpty = xrayStars.projects.size === 0 && xrayStars.sessions.size === 0 && xrayStars.turns.size === 0;
+  const serverEmpty = xrayStars.projects.size === 0 && xrayStars.sessions.size === 0 && xrayStars.turns.size === 0 && xrayStars.steps.size === 0;
   if (serverEmpty) {
     let projects = [], sessions = [];
     try { projects = JSON.parse(legacyProjRaw || '[]') || []; } catch {}
@@ -632,14 +781,15 @@ function applySessionFilter() {
   let visibleCount = 0;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
-    // Starred or star-protected sessions are always visible
-    if (isStarredOrDerived('session', sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
-    // Project filter still applies
     if (selectedProjectName) {
       const sess = sessionsMap.get(sid);
       const projName = getProjectName(sess ? sess.cwd : null);
       if (projName !== selectedProjectName) { el.style.display = 'none'; return; }
     }
+    // Starred or star-protected sessions bypass activity filters, but not the
+    // selected project boundary. Otherwise a starred ccxray session can appear
+    // under another project and look like its stars failed to inherit upward.
+    if (isStarredOrDerived('session', sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     if (sessionFilterMode === 'all') { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     const status = getStatusClass(sid);
     if (sessionFilterMode === 'streaming') {
