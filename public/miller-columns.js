@@ -290,31 +290,74 @@ function _navigateToDescendant(kind, id) {
   }
 }
 
+function _findEntryForStarLabel(entryId) {
+  if (Array.isArray(allEntries)) {
+    const full = allEntries.find(e => e && e.id === entryId);
+    if (full) return full;
+  }
+  return entryById.get(entryId) || null;
+}
+
+function _formatStarRelativeTime(entryOrId) {
+  if (entryOrId && typeof entryOrId === 'object') {
+    const receivedAt = Number(entryOrId.receivedAt);
+    if (Number.isFinite(receivedAt) && receivedAt > 0) return formatRelativeTimeFromMs(receivedAt);
+    return formatRelativeTime(entryOrId.id);
+  }
+  return formatRelativeTime(entryOrId);
+}
+
+function formatRelativeTimeFromMs(ts) {
+  const diff = Date.now() - ts;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
+  return Math.floor(diff / 604800000) + 'w ago';
+}
+
+function _formatStarredTurnLabel(entryId) {
+  const e = _findEntryForStarLabel(entryId);
+  const sid = (e && e.sessionId) || '';
+  const sidLabel = sid ? sid.slice(0, 8) : 'unknown';
+  const turnNum = e && e.displayNum ? e.displayNum : '?';
+  return 'session ' + sidLabel + ' turn #' + turnNum;
+}
+
+function _formatStarredSessionLabel(sid) {
+  const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
+  return 'session ' + shortSid;
+}
+
+function _formatStarredSessionTime(sid) {
+  const sess = sessionsMap.get(sid);
+  const refId = sess && (sess.lastId || sess.firstId);
+  return refId ? formatRelativeTime(refId) : '';
+}
+
 function _listStarredDescendants(level, id) {
   const items = [];
   if (level === 'session') {
     for (const turnId of xrayStars.turns) {
-      const e = entryById.get(turnId);
+      const e = _findEntryForStarLabel(turnId);
       if (e && e.sessionId === id) {
-        const t = turnId.length >= 19 ? turnId.slice(11, 19).replace(/-/g, ':') : turnId;
-        items.push({ kind: 'turn', id: turnId, label: 'turn ' + t });
+        items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
       }
     }
   } else if (level === 'project') {
     for (const sid of xrayStars.sessions) {
       const sess = sessionsMap.get(sid);
       if (sess && getProjectName(sess.cwd) === id) {
-        items.push({ kind: 'session', id: sid, label: 'session ' + sid.slice(0, 8) });
+        items.push({ kind: 'session', id: sid, label: _formatStarredSessionLabel(sid), time: _formatStarredSessionTime(sid) });
       }
     }
     for (const turnId of xrayStars.turns) {
-      const e = entryById.get(turnId);
+      const e = _findEntryForStarLabel(turnId);
       if (!e) continue;
       const sess = sessionsMap.get(e.sessionId);
       if (!sess) continue;
       if (getProjectName(sess.cwd) === id) {
-        const t = turnId.length >= 19 ? turnId.slice(11, 19).replace(/-/g, ':') : turnId;
-        items.push({ kind: 'turn', id: turnId, label: 'turn ' + t + ' · ' + (e.sessionId || '').slice(0, 8) });
+        items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
       }
     }
   }
@@ -346,9 +389,11 @@ function openDerivedPopover(level, id, anchorEl) {
   for (const it of items) {
     const targetSet = it.kind === 'session' ? xrayStars.sessions : xrayStars.turns;
     const starred = targetSet.has(it.id);
-    html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="Jump to this ' + it.kind + '">' +
+    const fullLabel = it.label + (it.time ? ' ' + it.time : '');
+    html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="' + escapeHtml(fullLabel) + '">' +
       '<button class="star-popover-glyph-btn' + (starred ? ' starred' : '') + '" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Toggle star">' + (starred ? '★' : '☆') + '</button>' +
       '<span class="star-popover-label">' + escapeHtml(it.label) + '</span>' +
+      (it.time ? '<span class="star-popover-time">' + escapeHtml(it.time) + '</span>' : '') +
       '</div>';
   }
   html += '</div>';

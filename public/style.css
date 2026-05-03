@@ -283,6 +283,7 @@
      even when the cursor is still hovering after a click. */
   .star-popover-glyph-btn:hover { transform: scale(1.2); background: var(--surface-hover, var(--bg)); }
   .star-popover-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
+  .star-popover-time { margin-left: auto; flex: 0 0 auto; color: var(--dim); text-align: right; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
   .star-popover-footer { padding: 6px 10px 8px; border-top: 1px solid var(--border); }
   .star-popover-anchor { background: none; border: 1px solid var(--border); color: var(--text); cursor: pointer; padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 11px; width: 100%; }
   .star-popover-anchor:hover { background: var(--surface-hover, var(--bg)); border-color: var(--yellow); color: var(--yellow); }
