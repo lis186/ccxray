@@ -215,16 +215,144 @@ function renderStarBadge(level, id) {
     // Yellow text ties it back to the star vocabulary.
     glyph = '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
     cls = 'derived';
-    tip = 'Retained because ' + derived + ' starred descendants below — click to star this directly';
+    tip = 'Retained because ' + derived + ' starred descendants below — click to view';
   } else {
     glyph = '☆'; cls = '';
     tip = 'Star this ' + level + ' (keeps log forever)';
   }
-  return '<button class="pin-btn ' + cls + '" onclick="event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
+  // Derived state opens a popover (so the user can see *which* descendants are
+  // keeping this level retained). Direct/empty states are simple toggles.
+  const onclickJs = (cls === 'derived')
+    ? 'event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this)'
+    : 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')';
+  return '<button class="pin-btn ' + cls + '" onclick="' + onclickJs + '" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
 }
+
+// ── Derived-badge popover (lists which descendants are keeping a parent retained) ──
+// Single instance shared across all badges. State + handlers module-scoped so
+// outside-click and Esc dismiss work without re-registering on every open.
+let _starPopoverState = null; // { el, anchor, level, id }
+
+function _closeStarPopover() {
+  if (!_starPopoverState) return;
+  _starPopoverState.el.remove();
+  document.removeEventListener('click', _starPopoverDocClick);
+  document.removeEventListener('keydown', _starPopoverEscKey);
+  _starPopoverState = null;
+}
+function _starPopoverDocClick(e) {
+  if (!_starPopoverState) return;
+  if (_starPopoverState.el.contains(e.target)) return;
+  if (_starPopoverState.anchor && _starPopoverState.anchor.contains(e.target)) return;
+  _closeStarPopover();
+}
+function _starPopoverEscKey(e) {
+  if (e.key === 'Escape') _closeStarPopover();
+}
+
+function _listStarredDescendants(level, id) {
+  const items = [];
+  if (level === 'session') {
+    for (const turnId of xrayStars.turns) {
+      const e = entryById.get(turnId);
+      if (e && e.sessionId === id) {
+        const t = turnId.length >= 19 ? turnId.slice(11, 19).replace(/-/g, ':') : turnId;
+        items.push({ kind: 'turn', id: turnId, label: 'turn ' + t });
+      }
+    }
+  } else if (level === 'project') {
+    for (const sid of xrayStars.sessions) {
+      const sess = sessionsMap.get(sid);
+      if (sess && getProjectName(sess.cwd) === id) {
+        items.push({ kind: 'session', id: sid, label: 'session ' + sid.slice(0, 8) });
+      }
+    }
+    for (const turnId of xrayStars.turns) {
+      const e = entryById.get(turnId);
+      if (!e) continue;
+      const sess = sessionsMap.get(e.sessionId);
+      if (!sess) continue;
+      if (getProjectName(sess.cwd) === id) {
+        const t = turnId.length >= 19 ? turnId.slice(11, 19).replace(/-/g, ':') : turnId;
+        items.push({ kind: 'turn', id: turnId, label: 'turn ' + t + ' · ' + (e.sessionId || '').slice(0, 8) });
+      }
+    }
+  }
+  return items;
+}
+
+function openDerivedPopover(level, id, anchorEl) {
+  // Re-click on same anchor toggles closed.
+  if (_starPopoverState && _starPopoverState.anchor === anchorEl) {
+    _closeStarPopover();
+    return;
+  }
+  _closeStarPopover();
+
+  const items = _listStarredDescendants(level, id);
+  if (items.length === 0) return;
+
+  const pop = document.createElement('div');
+  pop.className = 'star-popover';
+  let html = '<div class="star-popover-title">' + items.length + ' starred descendant' + (items.length === 1 ? '' : 's') + ' below — click × to release</div>';
+  html += '<div class="star-popover-body">';
+  for (const it of items) {
+    html += '<div class="star-popover-item">' +
+      '<span class="star-popover-glyph">★</span>' +
+      '<span class="star-popover-label">' + escapeHtml(it.label) + '</span>' +
+      '<button class="star-popover-unstar" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Unstar this ' + it.kind + '">×</button>' +
+      '</div>';
+  }
+  html += '</div>';
+  html += '<div class="star-popover-footer"><button class="star-popover-anchor">★ Star this ' + level + ' directly</button></div>';
+  pop.innerHTML = html;
+
+  const r = anchorEl.getBoundingClientRect();
+  pop.style.position = 'fixed';
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  pop.style.zIndex = '1000';
+  document.body.appendChild(pop);
+
+  // Flip up if popover would overflow viewport bottom.
+  const popRect = pop.getBoundingClientRect();
+  if (popRect.bottom > window.innerHeight - 8) {
+    pop.style.top = '';
+    pop.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+  }
+
+  pop.querySelectorAll('.star-popover-unstar').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      await toggleStar(btn.dataset.kind, btn.dataset.id, false);
+      // toggleStar closes via rerenderColumnsAfterStar → _closeStarPopover; reopen
+      // if any descendants remain so the user can keep cleaning up.
+      const remaining = _listStarredDescendants(level, id);
+      if (remaining.length > 0) {
+        const newAnchor = document.querySelector('.pin-btn.derived[onclick*="' + escapeHtml(id).replace(/"/g, '\\&quot;') + '"]');
+        if (newAnchor) openDerivedPopover(level, id, newAnchor);
+      }
+    });
+  });
+  pop.querySelector('.star-popover-anchor').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    _closeStarPopover();
+    await toggleStar(level, id, true);
+  });
+
+  _starPopoverState = { el: pop, anchor: anchorEl, level, id };
+  // Defer outside-click registration so the click that opened us doesn't close us.
+  setTimeout(() => {
+    document.addEventListener('click', _starPopoverDocClick);
+    document.addEventListener('keydown', _starPopoverEscKey);
+  }, 0);
+}
+window.openDerivedPopover = openDerivedPopover;
 
 // Repaint affected columns after a star toggle. Called after API success.
 function rerenderColumnsAfterStar() {
+  // Anchor element may be replaced by re-render; close to avoid orphaned popover.
+  _closeStarPopover();
   renderProjectsCol();
   // Sessions column: re-render every visible session card so derived counts update.
   for (const [sid, sess] of sessionsMap) {

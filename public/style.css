@@ -260,6 +260,21 @@
      The chip pattern signals "count of items" so users don't misread the
      digit as a version or duration. Yellow text ties back to star vocab. */
   .pin-btn-count { display: inline-block; margin-left: 3px; padding: 0 5px; border-radius: 7px; background: var(--surface); color: var(--yellow); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  /* Star popover: lists which descendants are keeping a parent retained.
+     Anchored under the derived ☆N badge; dismissed by Esc / outside click /
+     re-clicking the badge. */
+  .star-popover { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.45); min-width: 240px; max-width: 320px; max-height: 320px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; color: var(--text); }
+  .star-popover-title { padding: 8px 10px 6px; color: var(--dim); font-size: 11px; border-bottom: 1px solid var(--border); }
+  .star-popover-body { padding: 4px 0; }
+  .star-popover-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; }
+  .star-popover-item:hover { background: var(--surface-hover, var(--bg)); }
+  .star-popover-glyph { color: var(--yellow); flex-shrink: 0; font-size: 13px; line-height: 1; }
+  .star-popover-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
+  .star-popover-unstar { background: none; border: 1px solid var(--border); color: var(--dim); cursor: pointer; padding: 0 6px; line-height: 1.4; border-radius: 3px; flex-shrink: 0; font-family: inherit; font-size: 12px; }
+  .star-popover-unstar:hover { color: var(--red, #e06c75); border-color: var(--red, #e06c75); }
+  .star-popover-footer { padding: 6px 10px 8px; border-top: 1px solid var(--border); }
+  .star-popover-anchor { background: none; border: 1px solid var(--border); color: var(--text); cursor: pointer; padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 11px; width: 100%; }
+  .star-popover-anchor:hover { background: var(--surface-hover, var(--bg)); border-color: var(--yellow); color: var(--yellow); }
 
   /* ── Turn items ── */
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
