@@ -5,6 +5,7 @@ const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
+const { normalizeOpenAIResponseSummary } = require('./forward');
 
 // ── Lazy-load req/res from disk on demand ────────────────────────────
 
@@ -50,7 +51,15 @@ function loadEntryReqRes(entry) {
     } catch { entry.req = null; }
     try {
       const raw = await config.storage.read(entry.id, '_res.json');
-      try { entry.res = JSON.parse(raw); } catch { entry.res = raw; }
+      let resData;
+      try { resData = JSON.parse(raw); } catch { resData = raw; }
+      if (entry.provider === 'openai') {
+        const normalized = normalizeOpenAIResponseSummary(entry, resData);
+        Object.assign(entry, normalized.summary);
+        entry.res = normalized.resData;
+      } else {
+        entry.res = resData;
+      }
     } catch { entry.res = null; }
     entry._loaded = true;
     entry._loadingPromise = null;
@@ -90,6 +99,15 @@ async function restoreFromLogs() {
     try { meta = JSON.parse(line); } catch { continue; }
 
     if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) continue;
+
+    if (meta.provider === 'openai' && (!meta.model || !meta.stopReason || !meta.usage || !meta.isSSE)) {
+      try {
+        const raw = await config.storage.read(meta.id, '_res.json');
+        let resData;
+        try { resData = JSON.parse(raw); } catch { resData = raw; }
+        meta = normalizeOpenAIResponseSummary(meta, resData).summary;
+      } catch {}
+    }
 
     store.entries.push({ ...meta, req: null, res: null, _loaded: false });
 

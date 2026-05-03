@@ -150,14 +150,89 @@ function parseSSEFrame(rawFrame, receivedAt) {
   return frame;
 }
 
+function parseSSEText(raw, receivedAt) {
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  if (!/^\s*(event|data):/m.test(text)) return null;
+  const events = [];
+  for (const part of text.split('\n\n')) {
+    if (!part.trim()) continue;
+    events.push(parseSSEFrame(part, receivedAt));
+  }
+  return events.length ? events : null;
+}
+
+function isOpenAIResponseObject(data) {
+  return !!data && typeof data === 'object' && !Array.isArray(data)
+    && (data.object === 'response' || data.id || data.model || data.status || data.usage || data.output);
+}
+
+function extractOpenAIResponse(data) {
+  if (!data || typeof data !== 'object') return null;
+  if (isOpenAIResponseObject(data.response)) return data.response;
+  return isOpenAIResponseObject(data) ? data : null;
+}
+
+function getOpenAIResponseFromEvents(events) {
+  if (!Array.isArray(events)) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const response = extractOpenAIResponse(events[i]?.data);
+    if (response) return response;
+  }
+  return null;
+}
+
+function getOpenAIOutputSummary(response) {
+  const output = Array.isArray(response?.output) ? response.output : [];
+  for (let i = output.length - 1; i >= 0; i--) {
+    const content = output[i]?.content;
+    if (!Array.isArray(content)) continue;
+    const text = content.map(part => part?.text || '').filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+    if (text) return text.slice(0, 80);
+  }
+  return null;
+}
+
+function normalizeOpenAIResponseSummary(meta, resData) {
+  const events = Array.isArray(resData)
+    ? resData
+    : (typeof resData === 'string' ? parseSSEText(resData) : null);
+  const response = events ? getOpenAIResponseFromEvents(events) : extractOpenAIResponse(resData);
+  if (!response) return { summary: meta, resData };
+
+  const responseMetadata = {
+    ...(meta.responseMetadata || {}),
+    provider: 'openai',
+    id: response.id || meta.responseMetadata?.id || null,
+    object: response.object || meta.responseMetadata?.object || null,
+    model: response.model || meta.responseMetadata?.model || null,
+    status: meta.status ?? meta.responseMetadata?.status ?? null,
+    responseStatus: response.status || meta.responseMetadata?.responseStatus || null,
+  };
+
+  return {
+    summary: {
+      ...meta,
+      isSSE: events ? true : meta.isSSE,
+      model: meta.model || response.model || null,
+      usage: meta.usage || response.usage || null,
+      stopReason: meta.stopReason || response.status || '',
+      title: meta.title || getOpenAIOutputSummary(response),
+      responseMetadata,
+    },
+    resData: events || resData,
+  };
+}
+
 function buildResponseMetadata(provider, resData, proxyRes) {
   if (provider === 'openai') {
+    const response = extractOpenAIResponse(resData);
     return {
       provider: 'openai',
-      id: resData && typeof resData === 'object' ? resData.id || null : null,
-      object: resData && typeof resData === 'object' ? resData.object || null : null,
-      model: resData && typeof resData === 'object' ? resData.model || null : null,
+      id: response ? response.id || null : null,
+      object: response ? response.object || null : null,
+      model: response ? response.model || null : null,
       status: proxyRes.statusCode,
+      responseStatus: response ? response.status || null : null,
     };
   }
   return { provider: 'anthropic', status: proxyRes.statusCode };
@@ -614,10 +689,12 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    const response = getOpenAIResponseFromEvents(events);
     const resWritePromise = config.storage.write(id, '_res.json', JSON.stringify(events))
       .catch(e => console.error('Write res.json failed:', e.message));
-    const responseMetadata = buildResponseMetadata('openai', null, proxyRes);
+    const responseMetadata = buildResponseMetadata('openai', response, proxyRes);
     responseMetadata.streaming = true;
+    const usage = response?.usage || null;
 
     const entry = {
       id, ts: ctx.ts, sessionId: reqSessionId, method: ctx.clientReq.method, url: ctx.clientReq.url,
@@ -626,21 +703,21 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       tokens: null,
-      usage: null, cost: null,
+      usage, cost: null,
       responseMetadata,
       maxContext: null,
       cwd: store.sessionMeta[reqSessionId]?.cwd || null,
       receivedAt: startTime,
       thinkingDuration: null,
       duplicateToolCalls: null,
-      model: parsedBody?.model || null,
+      model: response?.model || parsedBody?.model || null,
       msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
       toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
       toolCalls: {},
       isSubagent: false,
       sessionInferred: true,
-      title: getOpenAIInputSummary(parsedBody?.input),
-      stopReason: '',
+      title: getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response),
+      stopReason: response?.status || '',
       toolFail: false,
       sysHash: null,
       toolsHash: null,
@@ -660,9 +737,9 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       model: entry.model, msgCount: entry.msgCount, toolCount: entry.toolCount,
       toolCalls: entry.toolCalls, isSubagent: entry.isSubagent, sessionInferred: entry.sessionInferred,
       cwd: entry.cwd, isSSE: true,
-      usage: null, cost: null, maxContext: null,
+      usage, cost: null, maxContext: null,
       responseMetadata,
-      stopReason: '', title: entry.title, thinkingDuration: null,
+      stopReason: entry.stopReason, title: entry.title, thinkingDuration: null,
       toolFail: false,
       elapsed, status: proxyRes.statusCode,
       receivedAt: startTime,
@@ -721,15 +798,25 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     const raw = Buffer.concat(resChunks).toString();
     let resData;
     try { resData = JSON.parse(raw); } catch { resData = raw; }
-    const resWritePromise = config.storage.write(id, '_res.json', typeof resData === 'string' ? resData : JSON.stringify(resData)).catch(e => console.error('Write res.json failed:', e.message));
 
     const provider = ctx.upstream?.provider || 'anthropic';
     const sessionId = reqSessionId;
+    let openAIEvents = null;
+    let openAIResponse = null;
+    if (provider === 'openai' && typeof resData === 'string') {
+      openAIEvents = parseSSEText(resData, Date.now());
+      if (openAIEvents) {
+        openAIResponse = getOpenAIResponseFromEvents(openAIEvents);
+        resData = openAIEvents;
+      }
+    }
+    const resWritePromise = config.storage.write(id, '_res.json', typeof resData === 'string' ? resData : JSON.stringify(resData))
+      .catch(e => console.error('Write res.json failed:', e.message));
     const maxContext = provider === 'anthropic' ? config.getMaxContext(parsedBody?.model, parsedBody?.system) : null;
     const isSubagent = provider === 'anthropic' && !store.extractCwd(parsedBody);
     const titleGenTitle = provider === 'anthropic' ? resolveTitleGenTitle(parsedBody, resData, startTime) : null;
     const title = provider === 'openai'
-      ? getOpenAIInputSummary(parsedBody?.input)
+      ? (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(openAIResponse || resData))
       : (titleGenTitle
         || (isSubagent
           ? helpers.extractFirstUserText(parsedBody)
@@ -738,28 +825,32 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
              || helpers.extractToolResultSummary(parsedBody)))
         || null);
     const toolFail = provider === 'anthropic' ? helpers.hasToolFail(parsedBody) : false;
-    const stopReason = provider === 'openai' ? (resData?.status || '') : (resData?.stop_reason || '');
+    const stopReason = provider === 'openai' ? ((openAIResponse || resData)?.status || '') : (resData?.stop_reason || '');
+    const usage = provider === 'openai' ? ((openAIResponse || resData)?.usage || null) : null;
     const currMsgCount = provider === 'openai'
       ? (Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0)
       : (parsedBody?.messages?.length || 0);
     const thinkingStripped = provider === 'anthropic'
       ? computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody)
       : undefined;
-    const responseMetadata = buildResponseMetadata(provider, resData, proxyRes);
+    const responseMetadata = buildResponseMetadata(provider, openAIResponse || resData, proxyRes);
+    if (openAIEvents) responseMetadata.streaming = true;
     const entry = {
       id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: ctx.clientReq.url,
       provider,
       agent: provider === 'openai' ? 'codex' : 'claude',
       req: parsedBody, res: resData,
-      elapsed, status: proxyRes.statusCode, isSSE: false,
+      elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
       tokens: provider === 'anthropic' ? helpers.tokenizeRequest(parsedBody) : null,
-      usage: null, cost: null,
+      usage, cost: null,
       responseMetadata,
       maxContext,
       cwd: store.sessionMeta[sessionId]?.cwd || null,
       receivedAt: startTime,
       duplicateToolCalls: provider === 'anthropic' ? helpers.extractDuplicateToolCalls(parsedBody?.messages) : null,
-      model: (provider === 'openai' && resData && typeof resData === 'object' ? resData.model : null) || parsedBody?.model || null,
+      model: (provider === 'openai' && openAIResponse ? openAIResponse.model : null)
+        || (provider === 'openai' && resData && typeof resData === 'object' && !Array.isArray(resData) ? resData.model : null)
+        || parsedBody?.model || null,
       msgCount: currMsgCount,
       toolCount: parsedBody?.tools?.length || 0,
       toolCalls: provider === 'anthropic' ? helpers.extractToolCalls(parsedBody?.messages) : {},
@@ -786,8 +877,8 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       agent: entry.agent,
       model: entry.model, msgCount: entry.msgCount, toolCount: entry.toolCount,
       toolCalls: entry.toolCalls, isSubagent: entry.isSubagent, sessionInferred: entry.sessionInferred,
-      cwd: entry.cwd, isSSE: false,
-      usage: null, cost: null, maxContext,
+      cwd: entry.cwd, isSSE: entry.isSSE,
+      usage, cost: null, maxContext,
       responseMetadata,
       stopReason, title, thinkingDuration: null,
       toolFail,
@@ -822,4 +913,14 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
   });
 }
 
-module.exports = { forwardRequest, resolveProxyAgent, applyModelPrefix, stripInjectedStats, setStatusLineEnabled, getStatusLineEnabled, parseSSEFrame };
+module.exports = {
+  forwardRequest,
+  resolveProxyAgent,
+  applyModelPrefix,
+  stripInjectedStats,
+  setStatusLineEnabled,
+  getStatusLineEnabled,
+  parseSSEFrame,
+  parseSSEText,
+  normalizeOpenAIResponseSummary,
+};

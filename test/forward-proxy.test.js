@@ -2,7 +2,16 @@
 
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { resolveProxyAgent, applyModelPrefix, stripInjectedStats, setStatusLineEnabled, getStatusLineEnabled, parseSSEFrame } = require('../server/forward');
+const {
+  resolveProxyAgent,
+  applyModelPrefix,
+  stripInjectedStats,
+  setStatusLineEnabled,
+  getStatusLineEnabled,
+  parseSSEFrame,
+  parseSSEText,
+  normalizeOpenAIResponseSummary,
+} = require('../server/forward');
 
 describe('resolveProxyAgent', () => {
   it('returns null when no proxy env vars are set', () => {
@@ -147,5 +156,50 @@ describe('parseSSEFrame', () => {
     assert.equal(frame.type, 'response.output_text.delta');
     assert.equal(frame.parseError, true);
     assert.equal(frame.dataRaw, '{"delta":');
+  });
+});
+
+describe('OpenAI Responses summary normalization', () => {
+  it('parses SSE-shaped text and derives completed status metadata', () => {
+    const raw = [
+      'event: response.created',
+      'data: ' + JSON.stringify({
+        type: 'response.created',
+        response: { id: 'resp_1', object: 'response', model: 'gpt-5.5', status: 'in_progress' },
+      }),
+      '',
+      'event: response.completed',
+      'data: ' + JSON.stringify({
+        type: 'response.completed',
+        response: {
+          id: 'resp_1',
+          object: 'response',
+          model: 'gpt-5.5',
+          status: 'completed',
+          usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'done' }] }],
+        },
+      }),
+      '',
+    ].join('\n');
+
+    const events = parseSSEText(raw, 123);
+    assert.equal(events.length, 2);
+    assert.equal(events[1].type, 'response.completed');
+
+    const normalized = normalizeOpenAIResponseSummary({
+      provider: 'openai',
+      status: 200,
+      responseMetadata: { provider: 'openai', status: 200 },
+    }, raw);
+
+    assert.equal(normalized.summary.isSSE, true);
+    assert.equal(normalized.summary.model, 'gpt-5.5');
+    assert.equal(normalized.summary.stopReason, 'completed');
+    assert.equal(normalized.summary.usage.input_tokens, 10);
+    assert.equal(normalized.summary.title, 'done');
+    assert.equal(normalized.summary.responseMetadata.id, 'resp_1');
+    assert.equal(normalized.summary.responseMetadata.responseStatus, 'completed');
+    assert.equal(Array.isArray(normalized.resData), true);
   });
 });

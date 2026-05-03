@@ -5,6 +5,10 @@ const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, 
 const projectsMap = new Map(); // projectName → { name, totalCost, sessionIds, firstId, lastId }
 const sessionStatusMap = new Map(); // sid → { active: bool, lastSeenAt: number|null }
 
+function isHttpStatusOk(status) {
+  return status === 101 || (status >= 200 && status < 300);
+}
+
 // ── Toast notifications ──
 function showToast(message, duration) {
   duration = duration || 5000;
@@ -1165,7 +1169,7 @@ function renderSectionsCol(idx) {
   const usage = e.usage || {};
   const inTok = usage.input_tokens || '?';
   const outTok = usage.output_tokens || '?';
-  const statusClass = e.status >= 200 && e.status < 300 ? 'status-ok' : 'status-err';
+  const statusClass = isHttpStatusOk(e.status) ? 'status-ok' : 'status-err';
   const resEvents = Array.isArray(e.res) ? e.res : [];
   const stopReason = e.stopReason || (Array.isArray(resEvents) ? (resEvents.find(ev => ev.type === 'message_delta')?.delta?.stop_reason || '') : '');
   const turnCost = e.cost;

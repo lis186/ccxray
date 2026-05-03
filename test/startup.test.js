@@ -661,6 +661,31 @@ describe('OpenAI Responses raw capture', () => {
       req.on('data', c => { body += c; });
       req.on('end', () => {
         receivedReq = { method: req.method, url: req.url, headers: req.headers, body };
+        if (req.url.includes('stream=1')) {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'x-openai-mock': 'responses-stream' });
+          res.end([
+            'event: response.created',
+            'data: ' + JSON.stringify({
+              type: 'response.created',
+              response: { id: 'resp_stream_v0', object: 'response', model: 'gpt-5.5', status: 'in_progress' },
+            }),
+            '',
+            'event: response.completed',
+            'data: ' + JSON.stringify({
+              type: 'response.completed',
+              response: {
+                id: 'resp_stream_v0',
+                object: 'response',
+                model: 'gpt-5.5',
+                status: 'completed',
+                usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+                output: [{ type: 'message', content: [{ type: 'output_text', text: 'stream ok' }] }],
+              },
+            }),
+            '',
+          ].join('\n'));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json', 'x-openai-mock': 'responses' });
         res.end(JSON.stringify({
           id: 'resp_raw_v0',
@@ -727,6 +752,38 @@ describe('OpenAI Responses raw capture', () => {
     const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
     assert.equal(resLog.id, 'resp_raw_v0');
     assert.equal(resLog.output[0].content[0].text, 'codex ok');
+  });
+
+  it('normalizes OpenAI SSE-shaped responses even without event-stream headers', async () => {
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'stream the result',
+      stream: true,
+    });
+
+    const response = await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?stream=1');
+
+    assert.equal(response.status, 200);
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const indexEntries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    const entry = indexEntries.find(e => e.responseMetadata?.id === 'resp_stream_v0');
+    assert.ok(entry, 'expected OpenAI stream index entry');
+    assert.equal(entry.isSSE, true);
+    assert.equal(entry.model, 'gpt-5.5');
+    assert.equal(entry.stopReason, 'completed');
+    assert.equal(entry.usage.input_tokens, 10);
+    assert.equal(entry.responseMetadata.responseStatus, 'completed');
+
+    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    const finalEvent = resLog[resLog.length - 1];
+    assert.equal(finalEvent.type, 'response.completed');
+    assert.equal(finalEvent.data.response.output[0].content[0].text, 'stream ok');
   });
 });
 

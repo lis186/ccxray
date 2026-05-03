@@ -182,12 +182,12 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
 }
 
 function isAbnormalStop(stopReason) {
-  return !!stopReason && stopReason !== 'end_turn' && stopReason !== 'tool_use';
+  return !!stopReason && !['end_turn', 'tool_use', 'completed'].includes(stopReason);
 }
 
 function classifySeverity(entry, ctxPct, dupesMax) {
   if (ctxPct > 95) return 'critical';
-  if (entry.status != null && (entry.status < 200 || entry.status >= 300)) return 'critical';
+  if (entry.status != null && !isHttpStatusOk(entry.status)) return 'critical';
   if (isAbnormalStop(entry.stopReason)) return 'critical';
   if (ctxPct > 85) return 'warning';
   if (entry.hasCredential) return 'warning';
@@ -198,10 +198,11 @@ function classifySeverity(entry, ctxPct, dupesMax) {
 
 function getCriticalMarker(stopReason, httpStatus, ctxPct) {
   // ctx > 95%: no inline marker (left bar only)
-  if (httpStatus != null && (httpStatus < 200 || httpStatus >= 300)) return '!http';
+  if (httpStatus != null && !isHttpStatusOk(httpStatus)) return '!http';
   if (stopReason === 'max_tokens') return '!max';
   if (stopReason === 'length') return '!len';
   if (stopReason && stopReason !== 'end_turn' && stopReason !== 'tool_use'
+      && stopReason !== 'completed'
       && stopReason !== 'max_tokens' && stopReason !== 'length'
       && stopReason !== 'content_filter') return '!stop';
   if (stopReason === 'content_filter') return '!filter';
@@ -279,7 +280,7 @@ function addEntry(e) {
   if (turnCost != null) proj.totalCost += turnCost;
   renderProjectsCol();
 
-  const statusClass = e.status >= 200 && e.status < 300 ? 'status-ok' : 'status-err';
+  const statusClass = isHttpStatusOk(e.status) ? 'status-ok' : 'status-err';
   const shortModel = model.replace('claude-', '').replace(/-[0-9]{8}$/, '');
 
   const ctxCacheCreate = usage ? (usage.cache_creation_input_tokens || 0) : 0;
@@ -365,7 +366,7 @@ function addEntry(e) {
   // Line 1: identity + critical marker + cost
   const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
   const modelHtml = '<span class="turn-model">' + escapeHtml(shortModel) + '</span>';
-  const dotClass = e.status >= 200 && e.status < 300 ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
+  const dotClass = isHttpStatusOk(e.status) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
   const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
