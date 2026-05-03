@@ -80,6 +80,14 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 - Crash recovery: clients monitor hub pid every 5s, auto-fork new hub using port as mutex
 - Version check: semver major mismatch → reject, minor → warn, patch → silent
 
+### Agent Launching
+
+- Launchers are registered in `server/providers.js`. Add future providers there with one entry for command name, display name, upstream family, launch args/env, and install hint; avoid adding new `if provider` branches in `server/index.js`.
+- Claude mode sets `ANTHROPIC_BASE_URL=http://localhost:<port>` in the spawned Claude process.
+- Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' ...args` and logs raw OpenAI Responses request/response JSON.
+- Extra user args pass through unchanged after ccxray's injected launcher config.
+- `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
+
 ### Data Flow
 
 ```

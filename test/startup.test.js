@@ -213,6 +213,16 @@ describe('E3: --port validation', () => {
   });
 });
 
+describe('provider launcher selection', () => {
+  it('rejects unsupported provider commands instead of silently starting standalone mode', async () => {
+    const { stderr, code } = await spawnAndCollect(['unknown-ai'], 3000);
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('unsupported provider "unknown-ai"'), stderr);
+    assert.ok(stderr.includes('claude'), stderr);
+  });
+});
+
 // ── R4: EADDRINUSE handling ────────────────────────────────────────
 
 describe('R4: port conflict', () => {
@@ -297,6 +307,172 @@ describe('R2: hub crash recovery', () => {
 });
 
 // ── E2: claude not found (ENOENT) ──────────────────────────────────
+
+describe('claude launcher mode', () => {
+  function createFakeClaudeCapture() {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fake-claude-'));
+    const capturePath = path.join(fakeBin, 'capture.json');
+    const claudePath = path.join(fakeBin, 'claude');
+    fs.writeFileSync(claudePath, [
+      '#!/bin/sh',
+      'node -e \'const fs=require("fs"); fs.writeFileSync(process.env.CCXRAY_TEST_CLAUDE_CAPTURE, JSON.stringify({ argv: process.argv.slice(1), anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL || null }));\' -- "$@"',
+    ].join('\n'));
+    fs.chmodSync(claudePath, 0o755);
+    return { fakeBin, capturePath };
+  }
+
+  it('spawns claude through the provider registry and forwards user args', async () => {
+    const port = await findFreePort();
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'claude', '--continue'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, ['--continue']);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('consumes --no-browser as a ccxray flag before launching claude', async () => {
+    const port = await findFreePort();
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'claude', '--no-browser'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, []);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it('uses hub discovery and registration for claude mode without explicit port', async () => {
+    const port = await findFreePort();
+    const hubChild = spawnServer(['--port', String(port), '--hub-mode']);
+    await waitForPort(port);
+
+    const { fakeBin, capturePath } = createFakeClaudeCapture();
+    const nodeBin = path.dirname(process.execPath);
+    try {
+      const { code, stderr } = await spawnAndCollect(
+        ['claude', '--continue'],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, ['--continue']);
+      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+      await killAndWait(hubChild);
+      try { fs.unlinkSync(path.join(TEST_HOME, 'hub.json')); } catch {}
+    }
+  });
+});
+
+describe('codex desktop app launcher mode', () => {
+  function createFakeCodexCapture() {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fake-codex-'));
+    const capturePath = path.join(fakeBin, 'capture.json');
+    const codexPath = path.join(fakeBin, 'codex');
+    fs.writeFileSync(codexPath, [
+      '#!/usr/bin/env node',
+      "'use strict';",
+      "const fs = require('fs');",
+      "const http = require('http');",
+      "const argv = process.argv.slice(2);",
+      "const configIdx = argv.indexOf('-c');",
+      "const configArg = configIdx === -1 ? null : argv[configIdx + 1];",
+      "const match = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
+      "const openaiBaseUrl = match ? match[1] : null;",
+      "function writeCapture(extra = {}) {",
+      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArg, openaiBaseUrl, cwd: process.cwd(), ...extra }));",
+      "}",
+      "function probeHealth(baseUrl) {",
+      "  return new Promise(resolve => {",
+      "    if (!baseUrl) return resolve(false);",
+      "    const req = http.get(new URL('/_api/health', baseUrl), { timeout: 1000 }, res => {",
+      "      let data = '';",
+      "      res.on('data', c => { data += c; });",
+      "      res.on('end', () => {",
+      "        try { resolve(JSON.parse(data).ok === true); } catch { resolve(false); }",
+      "      });",
+      "    });",
+      "    req.on('error', () => resolve(false));",
+      "    req.on('timeout', () => { req.destroy(); resolve(false); });",
+      "  });",
+      "}",
+      "(async () => {",
+      "  const healthOk = await probeHealth(openaiBaseUrl);",
+      "  writeCapture({ healthOk });",
+      "  process.exit(healthOk ? 0 : 2);",
+      "})().catch(err => {",
+      "  writeCapture({ error: err.message });",
+      "  process.exit(1);",
+      "});",
+    ].join('\n'));
+    fs.chmodSync(codexPath, 0o755);
+    return { fakeBin, capturePath };
+  }
+
+  it('launches codex app on macOS with the OpenAI proxy override', { skip: process.platform !== 'darwin' ? 'codex app is a macOS desktop launch path' : false }, async () => {
+    const port = await findFreePort();
+    const workspacePath = path.join(TEST_HOME, 'codex-desktop-workspace');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const { fakeBin, capturePath } = createFakeCodexCapture();
+
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'codex', 'app', workspacePath],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CODEX_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, [
+        '-c',
+        `openai_base_url="http://localhost:${port}/v1"`,
+        'app',
+        workspacePath,
+      ]);
+      assert.equal(capture.openaiBaseUrl, `http://localhost:${port}/v1`);
+      assert.equal(capture.healthOk, true);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('E2: claude not found', () => {
   it('reports error when claude binary is missing', async () => {
@@ -545,6 +721,147 @@ describe('SSE streaming proxy', () => {
     assert.ok(types.includes('message_start'), 'Should log message_start');
     assert.ok(types.includes('content_block_delta'), 'Should log content_block_delta');
     assert.ok(types.includes('message_stop'), 'Should log message_stop');
+  });
+});
+
+// ── OpenAI Responses raw capture ────────────────────────────────────
+
+describe('OpenAI Responses raw capture', () => {
+  let mockUpstream;
+  let mockPort;
+  let proxyChild;
+  let proxyPort;
+  let receivedReq = null;
+
+  before(async () => {
+    mockUpstream = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        receivedReq = { method: req.method, url: req.url, headers: req.headers, body };
+        if (req.url.includes('stream=1')) {
+          res.writeHead(200, { 'Content-Type': 'application/json', 'x-openai-mock': 'responses-stream' });
+          res.end([
+            'event: response.created',
+            'data: ' + JSON.stringify({
+              type: 'response.created',
+              response: { id: 'resp_stream_v0', object: 'response', model: 'gpt-5.5', status: 'in_progress' },
+            }),
+            '',
+            'event: response.completed',
+            'data: ' + JSON.stringify({
+              type: 'response.completed',
+              response: {
+                id: 'resp_stream_v0',
+                object: 'response',
+                model: 'gpt-5.5',
+                status: 'completed',
+                usage: { input_tokens: 10, output_tokens: 3, total_tokens: 13 },
+                output: [{ type: 'message', content: [{ type: 'output_text', text: 'stream ok' }] }],
+              },
+            }),
+            '',
+          ].join('\n'));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'x-openai-mock': 'responses' });
+        res.end(JSON.stringify({
+          id: 'resp_raw_v0',
+          object: 'response',
+          model: 'gpt-5.1-codex',
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'codex ok' }] }],
+        }));
+      });
+    });
+    await new Promise(r => mockUpstream.listen(0, r));
+    mockPort = mockUpstream.address().port;
+
+    proxyPort = await findFreePort();
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        OPENAI_TEST_HOST: 'localhost',
+        OPENAI_TEST_PORT: String(mockPort),
+        OPENAI_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxyChild);
+    await new Promise(r => mockUpstream.close(r));
+  });
+
+  it('forwards /v1/responses to OpenAI upstream and logs full raw req/res JSON', async () => {
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.1-codex',
+      instructions: 'You are Codex in raw capture mode.',
+      input: 'inspect the repository',
+      tools: [{ type: 'function', name: 'shell' }],
+    });
+
+    const response = await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?trace=1');
+
+    assert.equal(response.status, 200);
+    assert.ok(receivedReq, 'mock OpenAI upstream should receive the request');
+    assert.equal(receivedReq.method, 'POST');
+    assert.equal(receivedReq.url, '/v1/responses?trace=1');
+    assert.equal(JSON.parse(receivedReq.body).instructions, 'You are Codex in raw capture mode.');
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const indexPath = path.join(logsDir, 'index.ndjson');
+    const indexEntries = fs.readFileSync(indexPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    const entry = indexEntries.find(e => e.provider === 'openai' && e.agent === 'codex' && e.model === 'gpt-5.1-codex');
+    assert.ok(entry, 'expected OpenAI index entry');
+    assert.equal(entry.sessionId, 'codex-raw');
+    assert.equal(entry.cost, null);
+
+    const reqLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_req.json`), 'utf8'));
+    assert.equal(reqLog.instructions, 'You are Codex in raw capture mode.');
+    assert.equal(reqLog.input, 'inspect the repository');
+    assert.equal(reqLog.prevId, undefined);
+
+    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    assert.equal(resLog.id, 'resp_raw_v0');
+    assert.equal(resLog.output[0].content[0].text, 'codex ok');
+  });
+
+  it('normalizes OpenAI SSE-shaped responses even without event-stream headers', async () => {
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      input: 'stream the result',
+      stream: true,
+    });
+
+    const response = await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?stream=1');
+
+    assert.equal(response.status, 200);
+
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const indexEntries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8')
+      .trim()
+      .split('\n')
+      .map(line => JSON.parse(line));
+    const entry = indexEntries.find(e => e.responseMetadata?.id === 'resp_stream_v0');
+    assert.ok(entry, 'expected OpenAI stream index entry');
+    assert.equal(entry.isSSE, true);
+    assert.equal(entry.model, 'gpt-5.5');
+    assert.equal(entry.stopReason, 'completed');
+    assert.equal(entry.usage.input_tokens, 10);
+    assert.equal(entry.responseMetadata.responseStatus, 'completed');
+
+    const resLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_res.json`), 'utf8'));
+    const finalEvent = resLog[resLog.length - 1];
+    assert.equal(finalEvent.type, 'response.completed');
+    assert.equal(finalEvent.data.response.output[0].content[0].text, 'stream ok');
   });
 });
 
@@ -1232,6 +1549,21 @@ function sendProxyRequest(port, body) {
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+function sendOpenAIResponsesRequest(port, body, urlPath = '/v1/responses') {
+  return new Promise((resolve, reject) => {
+    const req = http.request(`http://localhost:${port}${urlPath}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), Authorization: 'Bearer test-key' },
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: data, headers: res.headers }));
     });
     req.on('error', reject);
     req.end(body);

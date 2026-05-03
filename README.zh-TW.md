@@ -23,15 +23,20 @@ ccxray 讓它變成透明的。
 
 ```bash
 npx ccxray claude
+# 或
+npx ccxray codex
 ```
 
-就這樣。代理啟動、Claude Code 透過代理連線、儀表板自動在瀏覽器中開啟。在多個終端機執行時會自動共用同一個 dashboard。
+就這樣。代理啟動、選定的 CLI 透過代理連線、儀表板自動在瀏覽器中開啟。在多個終端機執行時會自動共用同一個 dashboard。
+
+launcher 參數由 provider registry 管理。目前支援 `claude` 與 `codex`；未知的 provider command 會直接失敗，避免靜默啟動未設定的 proxy。
 
 ### 其他執行方式
 
 ```bash
 ccxray                           # 只啟動代理 + 儀表板
 ccxray claude --continue         # 所有 claude 參數直接穿透
+ccxray codex exec "hello"        # 所有 codex 參數直接穿透
 ccxray --port 8080 claude        # 自訂 port（獨立模式，不共用 hub）
 ccxray claude --no-browser       # 不自動開啟瀏覽器
 ccxray status                    # 顯示 hub 資訊及已連線的 client

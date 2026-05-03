@@ -154,6 +154,30 @@ function parseSkillsFromMessages(messages) {
 
 function analyzeContext(body) {
   if (!body) return null;
+  if (body.provider === 'openai' || body.instructions != null || body.input != null) {
+    const instructionsTokens = safeCountTokens(
+      body.instructions == null
+        ? ''
+        : (typeof body.instructions === 'string' ? body.instructions : JSON.stringify(body.instructions))
+    );
+    const inputTokens = safeCountTokens(
+      body.input == null
+        ? ''
+        : (typeof body.input === 'string' ? body.input : JSON.stringify(body.input))
+    );
+    const toolsCat = categorizeTools(body.tools);
+    const toolTokens = {};
+    for (const [cat, arr] of Object.entries(toolsCat.byCategory)) {
+      toolTokens[cat] = arr.length > 0 ? safeCountTokens(JSON.stringify(arr)) : 0;
+    }
+    return {
+      systemBreakdown: { coreInstructions: instructionsTokens },
+      claudeMd: {},
+      messageTokens: inputTokens,
+      loadedSkills: [],
+      toolsBreakdown: { mcpPlugins: toolsCat.mcpPlugins, counts: toolsCat.counts, toolTokens },
+    };
+  }
   const systemBreakdown = parseSystemBlocks(body.system);
   const claudeMd = parseClaudeMdFromMessages(body.messages);
   const loadedSkills = parseSkillsFromMessages(body.messages);
@@ -189,7 +213,10 @@ function analyzeContext(body) {
 function tokenizeRequest(body) {
   if (!body) return null;
   const breakdown = {};
-  if (body.system) {
+  if (body.instructions != null) {
+    const text = typeof body.instructions === 'string' ? body.instructions : JSON.stringify(body.instructions);
+    breakdown.system = safeCountTokens(text);
+  } else if (body.system) {
     const text = typeof body.system === 'string' ? body.system : JSON.stringify(body.system);
     breakdown.system = safeCountTokens(text);
   }
@@ -233,6 +260,9 @@ function tokenizeRequest(body) {
       return { role: m.role, tokens, blocks };
     });
     breakdown.messages = total;
+  } else if (body.input != null) {
+    const text = typeof body.input === 'string' ? body.input : JSON.stringify(body.input);
+    breakdown.messages = safeCountTokens(text);
   }
   breakdown.total = (breakdown.system || 0) + (breakdown.tools || 0) + (breakdown.messages || 0);
   breakdown.contextBreakdown = analyzeContext(body);

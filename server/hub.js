@@ -197,7 +197,7 @@ function releaseForkLock() {
 
 // ── Fork detached hub process ───────────────────────────────────────
 
-function forkHub(port) {
+function forkHub(port, opts = {}) {
   const { spawn } = require('child_process');
   ensureHubDir();
   truncateHubLog();
@@ -205,12 +205,14 @@ function forkHub(port) {
   const fd = fs.openSync(HUB_LOG_PATH, 'a');
   const hubScript = path.resolve(__dirname, 'index.js');
   const args = ['--port', String(port), '--hub-mode'];
+  const env = { ...process.env };
+  if (opts.displayName && !env.CCXRAY_DISPLAY_NAME) env.CCXRAY_DISPLAY_NAME = opts.displayName;
 
   const child = spawn(process.execPath, [hubScript, ...args], {
     detached: true,
     stdio: ['ignore', fd, fd],
     windowsHide: true,
-    env: { ...process.env },
+    env,
   });
   child.unref();
   fs.closeSync(fd);

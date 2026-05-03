@@ -9,7 +9,7 @@ const os = require('os');
 const config = require('../server/config');
 const store = require('../server/store');
 const { createLocalStorage } = require('../server/storage/local');
-const { loadEntryReqRes } = require('../server/restore');
+const { loadEntryReqRes, restoreFromLogs } = require('../server/restore');
 
 // loadEntryReqRes uses config.storage and store.entries as singletons.
 // Swap config.storage to a tmp dir for the duration of these tests, and
@@ -33,6 +33,7 @@ describe('loadEntryReqRes — delta chain reconstruction', () => {
 
   beforeEach(() => {
     store.entries.length = 0;
+    for (const sid of Object.keys(store.sessionMeta)) delete store.sessionMeta[sid];
   });
 
   // Helper: write an entry's _req.json and register it in store.entries
@@ -152,5 +153,62 @@ describe('loadEntryReqRes — delta chain reconstruction', () => {
     await loadEntryReqRes(entry);
     // Reconstruction: prev[0..2] + [] = full prev messages
     assert.deepEqual(entry.req.messages, msgs);
+  });
+
+  it('normalizes OpenAI SSE-shaped summaries when restoring from index', async () => {
+    const id = '2026-05-03T23-38-05-284';
+    const rawSSE = [
+      'event: response.created',
+      'data: ' + JSON.stringify({
+        type: 'response.created',
+        response: { id: 'resp_restore', object: 'response', model: 'gpt-5.5', status: 'in_progress' },
+      }),
+      '',
+      'event: response.completed',
+      'data: ' + JSON.stringify({
+        type: 'response.completed',
+        response: {
+          id: 'resp_restore',
+          object: 'response',
+          model: 'gpt-5.5',
+          status: 'completed',
+          usage: { input_tokens: 29, output_tokens: 5, total_tokens: 34 },
+          output: [{ type: 'message', content: [{ type: 'output_text', text: 'restored ok' }] }],
+        },
+      }),
+      '',
+    ].join('\n');
+    await config.storage.write(id, '_res.json', rawSSE);
+    await config.storage.appendIndex(JSON.stringify({
+      id,
+      ts: '23:38:05',
+      sessionId: 'codex-raw',
+      provider: 'openai',
+      agent: 'codex',
+      method: 'POST',
+      url: '/v1/responses',
+      status: 200,
+      isSSE: false,
+      model: null,
+      usage: null,
+      responseMetadata: { provider: 'openai', status: 200 },
+      stopReason: '',
+      receivedAt: 1777822685284,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+
+    assert.ok(entry, 'expected restored OpenAI entry');
+    assert.equal(entry.isSSE, true);
+    assert.equal(entry.model, 'gpt-5.5');
+    assert.equal(entry.stopReason, 'completed');
+    assert.equal(entry.usage.input_tokens, 29);
+    assert.equal(entry.responseMetadata.id, 'resp_restore');
+    assert.equal(entry.responseMetadata.responseStatus, 'completed');
+
+    await loadEntryReqRes(entry);
+    assert.equal(Array.isArray(entry.res), true);
+    assert.equal(entry.res[entry.res.length - 1].type, 'response.completed');
   });
 });

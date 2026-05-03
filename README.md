@@ -23,15 +23,20 @@ ccxray makes it a glass box.
 
 ```bash
 npx ccxray claude
+# or
+npx ccxray codex
 ```
 
-That's it. Proxy starts, Claude Code launches through it, and the dashboard opens automatically in your browser. Run it in multiple terminals — they automatically share one dashboard.
+That's it. Proxy starts, the selected CLI launches through it, and the dashboard opens automatically in your browser. Run it in multiple terminals — they automatically share one dashboard.
+
+The launcher argument is provider-backed. Today `claude` and `codex` are supported; unknown provider commands fail fast instead of silently starting an unconfigured proxy.
 
 ### Other ways to run
 
 ```bash
 ccxray                           # Proxy + dashboard only
 ccxray claude --continue         # All claude args pass through
+ccxray codex exec "hello"        # All codex args pass through
 ccxray --port 8080 claude        # Custom port (independent, no hub sharing)
 ccxray claude --no-browser       # Skip auto-open browser
 ccxray status                    # Show hub info and connected clients
