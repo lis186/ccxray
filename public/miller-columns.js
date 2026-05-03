@@ -253,21 +253,31 @@ function _starPopoverEscKey(e) {
 // Jump the dashboard focus to a starred descendant (used by popover row click).
 // kind: 'session' | 'turn'. Closes the popover after a successful jump so the
 // user lands on the new selection without the popover floating over it.
+//
+// Also re-selects the descendant's project — without this, popovers opened
+// from a project card NOT currently focused would land the user on a session
+// that the project filter hides, leaving them looking at an empty turns col.
 function _navigateToDescendant(kind, id) {
   if (kind === 'session') {
-    if (sessionsMap.has(id)) {
-      _closeStarPopover();
-      selectSessionAndLatestTurn(id);
-      setFocus('turns');
-    }
+    const sess = sessionsMap.get(id);
+    if (!sess) return;
+    _closeStarPopover();
+    const proj = getProjectName(sess.cwd);
+    if (proj && selectedProjectName !== proj) selectProject(proj);
+    selectSessionAndLatestTurn(id);
+    setFocus('turns');
     return;
   }
   if (kind === 'turn') {
     if (!Array.isArray(allEntries)) return;
     for (let i = 0; i < allEntries.length; i++) {
-      if (allEntries[i] && allEntries[i].id === id) {
+      const entry = allEntries[i];
+      if (entry && entry.id === id) {
         _closeStarPopover();
-        selectSessionAndLatestTurn(allEntries[i].sessionId);
+        const sess = sessionsMap.get(entry.sessionId);
+        const proj = getProjectName(sess ? sess.cwd : null);
+        if (proj && selectedProjectName !== proj) selectProject(proj);
+        selectSessionAndLatestTurn(entry.sessionId);
         selectTurn(i);
         setFocus('turns');
         return;
