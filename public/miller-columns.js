@@ -365,19 +365,24 @@ function openDerivedPopover(level, id, anchorEl) {
 
   // ★ glyph button toggles the row's star state in place — popover stays open,
   // only this button's glyph flips. Re-clicking ☆ restars without reopening.
+  // Optimistic: flip the glyph synchronously before awaiting the server, so
+  // the click feels instant even on slow networks. After the POST resolves we
+  // re-sync the glyph to whatever xrayStars actually contains (handles the
+  // rare revert-on-failure path).
   pop.querySelectorAll('.star-popover-glyph-btn').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const kind = btn.dataset.kind;
       const childId = btn.dataset.id;
       const targetSet = kind === 'session' ? xrayStars.sessions : xrayStars.turns;
-      const wasStarred = targetSet.has(childId);
-      await toggleStar(kind, childId, !wasStarred);
-      // Reflect new state on this specific button — row stays in popover so
-      // user can re-toggle.
-      const nowStarred = targetSet.has(childId);
-      btn.textContent = nowStarred ? '★' : '☆';
-      btn.classList.toggle('starred', nowStarred);
+      const willBeStarred = !targetSet.has(childId);
+      btn.textContent = willBeStarred ? '★' : '☆';
+      btn.classList.toggle('starred', willBeStarred);
+      toggleStar(kind, childId, willBeStarred).then(() => {
+        const nowStarred = (kind === 'session' ? xrayStars.sessions : xrayStars.turns).has(childId);
+        btn.textContent = nowStarred ? '★' : '☆';
+        btn.classList.toggle('starred', nowStarred);
+      });
     });
   });
   // Row body click navigates; explicitly skip when the click landed on the
