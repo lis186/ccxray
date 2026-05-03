@@ -136,48 +136,183 @@ function renderSystemBlockViewer(system) {
   return html;
 }
 
-// ── Pin storage ──
-const pinnedProjects = new Set(JSON.parse(localStorage.getItem('xray-pinned-projects') || '[]'));
-const pinnedSessions = new Map(); // sid → { sid, pinnedAt }
-(JSON.parse(localStorage.getItem('xray-pinned-sessions') || '[]')).forEach(p => pinnedSessions.set(p.sid, p));
+// ── Star storage (server-backed; replaces legacy localStorage pins) ──
+// xrayStars holds the canonical client-side mirror of GET /_api/stars.
+// Sets are used for O(1) membership in render hot paths. Exposed on window
+// so entry-rendering can read it when drawing turn cards.
+const xrayStars = { projects: new Set(), sessions: new Set(), turns: new Set() };
+window.xrayStars = xrayStars;
 
-function savePinnedProjects() { localStorage.setItem('xray-pinned-projects', JSON.stringify([...pinnedProjects])); }
-function savePinnedSessions() { localStorage.setItem('xray-pinned-sessions', JSON.stringify([...pinnedSessions.values()])); }
-function togglePinProject(name) {
-  if (pinnedProjects.has(name)) pinnedProjects.delete(name);
-  else pinnedProjects.add(name);
-  savePinnedProjects();
-  renderProjectsCol();
-}
-function togglePinSession(sid) {
-  if (pinnedSessions.has(sid)) pinnedSessions.delete(sid);
-  else pinnedSessions.set(sid, { sid, pinnedAt: Date.now() });
-  savePinnedSessions();
-  const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-  const sess = sessionsMap.get(sid);
-  if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
-  applySessionFilter();
+const SENTINEL_SESSIONS = new Set(['direct-api']);
+const SENTINEL_PROJECT_NAMES = new Set(['(unknown)', '(quota-check)']);
+
+function isStarredAt(level, id) {
+  if (level === 'project') return xrayStars.projects.has(id);
+  if (level === 'session') return xrayStars.sessions.has(id);
+  if (level === 'turn') return xrayStars.turns.has(id);
+  return false;
 }
 
-function expireSessionPins() {
-  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  let changed = false;
-  for (const [sid, pin] of pinnedSessions) {
-    const sess = sessionsMap.get(sid);
-    // If session exists, check last activity; if not, use pinnedAt as fallback
-    let lastActive = pin.pinnedAt;
-    if (sess && sess.lastId && sess.lastId.length >= 19) {
-      const ts = new Date(sess.lastId.slice(0, 10) + 'T' + sess.lastId.slice(11, 19).replace(/-/g, ':')).getTime();
-      if (ts) lastActive = ts;
+// Count direct stars at descendant levels for the tri-state badge.
+// project ← (sessions whose project resolves here) + (turns whose project resolves here)
+// session ← (turns whose sessionId === sid)
+// Sentinel buckets contribute 0 (we never derive upward into them).
+function countDescendantStars(level, id) {
+  if (level === 'turn') return 0;
+  let count = 0;
+  if (level === 'session') {
+    if (SENTINEL_SESSIONS.has(id)) return 0;
+    for (const turnId of xrayStars.turns) {
+      const e = entryById.get(turnId);
+      if (e && e.sessionId === id) count++;
     }
-    if (now - lastActive > SEVEN_DAYS) {
-      pinnedSessions.delete(sid);
-      changed = true;
+    return count;
+  }
+  // level === 'project'
+  if (SENTINEL_PROJECT_NAMES.has(id)) return 0;
+  for (const sid of xrayStars.sessions) {
+    const sess = sessionsMap.get(sid);
+    if (sess && getProjectName(sess.cwd) === id) count++;
+  }
+  for (const turnId of xrayStars.turns) {
+    const e = entryById.get(turnId);
+    if (!e) continue;
+    const sess = sessionsMap.get(e.sessionId);
+    if (!sess) continue;
+    if (getProjectName(sess.cwd) === id) count++;
+  }
+  return count;
+}
+
+function isStarredOrDerived(level, id) {
+  return isStarredAt(level, id) || countDescendantStars(level, id) > 0;
+}
+
+// Render a tri-state star badge for project/session columns.
+//   filled ★            → directly starred
+//   hollow ☆ + ³        → derived (descendants starred)
+//   hollow ☆ (dim)      → unprotected
+function renderStarBadge(level, id) {
+  const isSentinel = (level === 'session' && SENTINEL_SESSIONS.has(id))
+    || (level === 'project' && SENTINEL_PROJECT_NAMES.has(id));
+  if (isSentinel) {
+    const tip = level === 'session'
+      ? 'Catch-all session — star individual turns instead.'
+      : 'Catch-all project — star sessions or turns instead.';
+    return '<button class="pin-btn disabled" title="' + escapeHtml(tip) + '" disabled>☆</button>';
+  }
+  const direct = isStarredAt(level, id);
+  const derived = direct ? 0 : countDescendantStars(level, id);
+  const idAttr = JSON.stringify(id).replace(/"/g, '&quot;');
+  let glyph, cls, tip;
+  if (direct) {
+    glyph = '★'; cls = 'pinned';
+    tip = 'Starred — click to unstar';
+  } else if (derived > 0) {
+    glyph = '☆<sup style="font-size:8px;margin-left:1px">' + derived + '</sup>';
+    cls = 'derived';
+    tip = 'Retained because ' + derived + ' starred descendants — click to star this directly.';
+  } else {
+    glyph = '☆'; cls = '';
+    tip = 'Star this ' + level + ' (keeps log forever)';
+  }
+  return '<button class="pin-btn ' + cls + '" onclick="event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')" title="' + escapeHtml(tip) + '">' + glyph + '</button>';
+}
+
+// Repaint affected columns after a star toggle. Called after API success.
+function rerenderColumnsAfterStar() {
+  renderProjectsCol();
+  // Sessions column: re-render every visible session card so derived counts update.
+  for (const [sid, sess] of sessionsMap) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+  }
+  applySessionFilter();
+  // Turn cards: only the directly affected turn changes glyph; cheap to redraw all
+  // visible turn star buttons in current selection.
+  document.querySelectorAll('.turn-item .turn-star').forEach(btn => {
+    const id = btn.dataset.id;
+    const starred = id && xrayStars.turns.has(id);
+    btn.classList.toggle('starred', !!starred);
+    btn.textContent = starred ? '★' : '☆';
+    btn.title = starred ? 'Starred — click to unstar' : 'Star this turn (keeps log forever)';
+  });
+}
+
+async function toggleStar(level, id, starred) {
+  try {
+    const res = await fetch('/_api/stars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: level, id, starred: !!starred }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    xrayStars.projects = new Set(data.projects || []);
+    xrayStars.sessions = new Set(data.sessions || []);
+    xrayStars.turns = new Set(data.turns || []);
+  } catch (err) {
+    console.warn('[ccxray] star toggle failed:', err.message);
+    return;
+  }
+  rerenderColumnsAfterStar();
+}
+window.toggleStar = toggleStar;
+
+async function loadStars() {
+  try {
+    const res = await fetch('/_api/stars');
+    if (!res.ok) return;
+    const data = await res.json();
+    xrayStars.projects = new Set(data.projects || []);
+    xrayStars.sessions = new Set(data.sessions || []);
+    xrayStars.turns = new Set(data.turns || []);
+    await migrateLegacyPinsIfNeeded();
+  } catch (err) {
+    console.warn('[ccxray] loadStars failed:', err.message);
+  }
+}
+window.loadStars = loadStars;
+
+// One-time migration: legacy localStorage pins → server stars.
+// If server stars are non-empty we treat localStorage as stale and just clear.
+async function migrateLegacyPinsIfNeeded() {
+  const legacyProjRaw = localStorage.getItem('xray-pinned-projects');
+  const legacySessRaw = localStorage.getItem('xray-pinned-sessions');
+  if (!legacyProjRaw && !legacySessRaw) return;
+
+  const serverEmpty = xrayStars.projects.size === 0 && xrayStars.sessions.size === 0 && xrayStars.turns.size === 0;
+  if (serverEmpty) {
+    let projects = [], sessions = [];
+    try { projects = JSON.parse(legacyProjRaw || '[]') || []; } catch {}
+    try { sessions = (JSON.parse(legacySessRaw || '[]') || []).map(p => p && p.sid).filter(Boolean); } catch {}
+    const posts = [];
+    for (const name of projects) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'project', id: name, starred: true }) }));
+    for (const sid of sessions) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'session', id: sid, starred: true }) }));
+    if (posts.length) {
+      try {
+        const results = await Promise.all(posts);
+        const last = results[results.length - 1];
+        if (last && last.ok) {
+          const data = await last.json();
+          xrayStars.projects = new Set(data.projects || []);
+          xrayStars.sessions = new Set(data.sessions || []);
+          xrayStars.turns = new Set(data.turns || []);
+        }
+        console.log('[ccxray] migrated', projects.length, 'pinned projects and', sessions.length, 'pinned sessions to server stars');
+      } catch (err) {
+        console.warn('[ccxray] legacy pin migration partial failure:', err.message);
+      }
     }
   }
-  if (changed) savePinnedSessions();
+  localStorage.removeItem('xray-pinned-projects');
+  localStorage.removeItem('xray-pinned-sessions');
 }
+
+// Lookup table for entries by id (entry-rendering.js populates this through
+// addEntry / restoreEntry — we read it here to derive star descendants).
+const entryById = new Map();
+window.entryById = entryById;
 
 // ── Project visibility filter ──
 // Migrate legacy 'active'/'active+idle' values to 'streaming'/'recent'
@@ -220,8 +355,8 @@ function applySessionFilter() {
   let visibleCount = 0;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
-    // Pinned sessions are always visible
-    if (pinnedSessions.has(sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
+    // Starred or star-protected sessions are always visible
+    if (isStarredOrDerived('session', sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     // Project filter still applies
     if (selectedProjectName) {
       const sess = sessionsMap.get(sid);
@@ -504,8 +639,7 @@ function renderSessionItem(sess, sid) {
   const sdotTitle = !isOnline ? '' : isArmed ? 'Intercept armed · click to disable' : 'Click to arm intercept';
   const sdotOnclick = isOnline ? 'event.stopPropagation();toggleIntercept(&quot;' + escapeHtml(sid) + '&quot;)' : '';
   const heldHtml = isHeld ? '<span class="held-badge" onclick="event.stopPropagation();showInterceptOverlay()">HELD</span>' : '';
-  const isPinned = pinnedSessions.has(sid);
-  const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinSession(&quot;' + escapeHtml(sid) + '&quot;)" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+  const pinBtn = renderStarBadge('session', sid);
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
@@ -540,9 +674,9 @@ function renderProjectsCol() {
     '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
   const sorted = [...projectsMap.values()].sort((a, b) => {
-    // Sort by: pinned first, then status (streaming > idle > off), then last activity
-    const pa = pinnedProjects.has(a.name) ? 0 : 1;
-    const pb = pinnedProjects.has(b.name) ? 0 : 1;
+    // Sort by: starred (or star-protected) first, then status, then last activity.
+    const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
+    const pb = isStarredOrDerived('project', b.name) ? 0 : 1;
     if (pa !== pb) return pa - pb;
     const sa = getStatusPriority(getProjectStatusClass(a));
     const sb = getStatusPriority(getProjectStatusClass(b));
@@ -551,21 +685,21 @@ function renderProjectsCol() {
   });
   let visibleProjCount = 0;
   for (const proj of sorted) {
-    const isPinned = pinnedProjects.has(proj.name);
+    const isStarred = isStarredOrDerived('project', proj.name);
     const statusClass = getProjectStatusClass(proj);
-    // Filter by activity (unless pinned or selected)
+    // Filter by activity (unless star-protected or selected)
     if (projectFilterMode !== 'all') {
       const isSel = selectedProjectName === proj.name;
-      if (!isPinned && !isSel && isSystemProject(proj.name)) continue;
-      if (projectFilterMode === 'streaming' && !isPinned && !isSel && statusClass !== 'sdot-stream') continue;
-      if (projectFilterMode === 'recent' && !isPinned && !isSel && statusClass === 'sdot-off') continue;
+      if (!isStarred && !isSel && isSystemProject(proj.name)) continue;
+      if (projectFilterMode === 'streaming' && !isStarred && !isSel && statusClass !== 'sdot-stream') continue;
+      if (projectFilterMode === 'recent' && !isStarred && !isSel && statusClass === 'sdot-off') continue;
     }
     visibleProjCount++;
     const isSel = selectedProjectName === proj.name;
     const firstDate = proj.firstId ? formatEntryDateShort(proj.firstId) : '';
     const lastDate = proj.lastId ? formatEntryDateShort(proj.lastId) : '';
     const rangeStr = firstDate === lastDate ? firstDate : firstDate + '—' + lastDate;
-    const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+    const pinBtn = renderStarBadge('project', proj.name);
     const dotTitle = statusClass === 'sdot-stream' ? 'streaming'
       : statusClass === 'sdot-idle' ? 'idle · ' + Math.max(1, Math.round((Date.now() - (proj.lastSeenAt || Date.now())) / 60000)) + 'm ago'
       : 'offline';
@@ -581,11 +715,11 @@ function renderProjectsCol() {
   if (projCountEl) projCountEl.textContent = projectFilterMode === 'all' ? '' : ' (' + visibleProjCount + ')';
 }
 
-// Returns the first project in sorted order (pinned → streaming → active → lastId)
+// Returns the first project in sorted order (starred → streaming → active → lastId)
 function getFirstProject() {
   return [...projectsMap.values()].sort((a, b) => {
-    const pa = pinnedProjects.has(a.name) ? 0 : 1;
-    const pb = pinnedProjects.has(b.name) ? 0 : 1;
+    const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
+    const pb = isStarredOrDerived('project', b.name) ? 0 : 1;
     if (pa !== pb) return pa - pb;
     const sa = getStatusPriority(getProjectStatusClass(a));
     const sb = getStatusPriority(getProjectStatusClass(b));
@@ -601,7 +735,7 @@ function getVisibleSessions(projectName) {
   return [...proj.sessionIds]
     .map(sid => ({ sid, ...sessionsMap.get(sid) }))
     .filter(sess => {
-      if (pinnedSessions.has(sess.sid)) return true;
+      if (isStarredOrDerived('session', sess.sid)) return true;
       if (sessionFilterMode === 'all') return true;
       const status = getStatusClass(sess.sid);
       if (sessionFilterMode === 'streaming') return status === 'sdot-stream';

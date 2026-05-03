@@ -5,6 +5,22 @@ const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
+const { readSettings } = require('./settings');
+const { computeRetentionSets, isProtectedByStar } = require('./helpers');
+
+// Pull stars from settings and shape for computeRetentionSets. Returns the
+// canonical empty shape on any failure — the prune/restore paths must never
+// throw because of star bookkeeping.
+function readStarsSafe() {
+  try {
+    const s = readSettings();
+    return {
+      projects: Array.isArray(s.starredProjects) ? s.starredProjects : [],
+      sessions: Array.isArray(s.starredSessions) ? s.starredSessions : [],
+      turns: Array.isArray(s.starredTurns) ? s.starredTurns : [],
+    };
+  } catch { return { projects: [], sessions: [], turns: [] }; }
+}
 
 // ── Lazy-load req/res from disk on demand ────────────────────────────
 
@@ -81,11 +97,30 @@ async function restoreFromLogs() {
   const lines = indexContent.split('\n').filter(Boolean);
   let restored = 0;
 
+  // Pre-pass: parse minimal fields once and build star-protection sets so
+  // entries older than RESTORE_DAYS that are protected by stars are still
+  // restored. Single allocation; reused below in the main loop.
+  const stars = readStarsSafe();
+  const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length;
+  let retentionSets = null;
+  if (hasAnyStar && cutoffStr) {
+    const lightweight = [];
+    for (const line of lines) {
+      try {
+        const m = JSON.parse(line);
+        if (m && m.id) lightweight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+      } catch {}
+    }
+    retentionSets = computeRetentionSets(lightweight, stars);
+  }
+
   for (const line of lines) {
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
 
-    if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) continue;
+    if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) {
+      if (!retentionSets || !isProtectedByStar(meta, retentionSets)) continue;
+    }
 
     store.entries.push({ ...meta, req: null, res: null, _loaded: false });
 
@@ -192,7 +227,34 @@ async function pruneLogs() {
   cutoff.setDate(cutoff.getDate() - config.LOG_RETENTION_DAYS);
   const cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
 
+  // Baseline: in-memory entries are always protected (existing behavior).
+  // After star-aware restoreFromLogs, this already includes most starred
+  // entries; the index sweep below is belt-and-suspenders for ids that fell
+  // outside the restore window or got trimmed by MAX_ENTRIES.
   const protectedIds = new Set(store.entries.map(e => e.id));
+
+  try {
+    const stars = readStarsSafe();
+    if (stars.projects.length || stars.sessions.length || stars.turns.length) {
+      const idx = await config.storage.readIndex();
+      if (idx) {
+        const indexEntries = [];
+        for (const line of idx.split('\n')) {
+          if (!line) continue;
+          try {
+            const m = JSON.parse(line);
+            if (m && m.id) indexEntries.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+          } catch {}
+        }
+        const sets = computeRetentionSets(indexEntries, stars);
+        for (const e of indexEntries) {
+          if (isProtectedByStar(e, sets)) protectedIds.add(e.id);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[ccxray] star-protection pre-pass failed:', err.message);
+  }
 
   let files;
   try { files = await config.storage.list(); } catch { return; }

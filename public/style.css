@@ -269,7 +269,11 @@
   .turn-item .status-dot-err { color: var(--red); }
   .turn-item .turn-wait { color: var(--dim); font-size: 11px; flex-shrink: 0; }
   .turn-item .turn-critical-marker { font-size: 10px; color: var(--red); font-weight: bold; flex-shrink: 0; }
-  .turn-item .turn-cost { color: var(--yellow); margin-left: auto; flex-shrink: 0; }
+  .turn-item .turn-star { margin-left: auto; flex-shrink: 0; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; user-select: none; opacity: 0.6; }
+  .turn-item .turn-star:hover { opacity: 1; }
+  .turn-item .turn-star.starred { color: var(--yellow); opacity: 1; }
+  .turn-item .turn-star.disabled { opacity: 0.25; cursor: not-allowed; }
+  .turn-item .turn-cost-line { font-size: 11px; color: var(--dim); text-align: right; margin-top: 2px; }
   /* Line 2: title */
   .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   /* Line 3: ctx bar */

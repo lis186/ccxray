@@ -149,6 +149,52 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
+  if (clientReq.method === 'GET' && clientReq.url === '/_api/stars') {
+    const s = readSettings();
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({
+      projects: s.starredProjects || [],
+      sessions: s.starredSessions || [],
+      turns: s.starredTurns || [],
+    }));
+    return true;
+  }
+
+  if (clientReq.method === 'POST' && clientReq.url === '/_api/stars') {
+    let body = '';
+    clientReq.on('data', c => { body += c; });
+    clientReq.on('end', () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const kind = payload && payload.kind;
+      const id = payload && payload.id;
+      const starred = payload && payload.starred;
+      const KIND_TO_KEY = { project: 'starredProjects', session: 'starredSessions', turn: 'starredTurns' };
+      if (!Object.prototype.hasOwnProperty.call(KIND_TO_KEY, kind) || typeof id !== 'string' || !id || typeof starred !== 'boolean') {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'expected { kind: project|session|turn, id: string, starred: boolean }' }));
+        return;
+      }
+      const current = readSettings();
+      const key = KIND_TO_KEY[kind];
+      const set = new Set(current[key] || []);
+      if (starred) set.add(id); else set.delete(id);
+      const updated = { ...current, [key]: [...set] };
+      writeSettings(updated);
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({
+        projects: updated.starredProjects || [],
+        sessions: updated.starredSessions || [],
+        turns: updated.starredTurns || [],
+      }));
+    });
+    return true;
+  }
+
   if (clientReq.method === 'POST' && clientReq.url === '/_api/settings')
   {
     let body = '';

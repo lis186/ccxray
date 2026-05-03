@@ -225,6 +225,8 @@ function addEntry(e) {
   // Session tracking — properly deduplicated by ID
   const entryId = e.id || '';
   const entryCwd = e.cwd || null;
+  // Index by id so star-derivation logic can resolve turn → session/cwd.
+  if (entryId && window.entryById) window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd });
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
     sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null });
@@ -358,18 +360,30 @@ function addEntry(e) {
   el.dataset.entryIdx = idx;
   el.dataset.sessionId = sid;
   el.dataset.sessNum = displayNum;
-  el.onclick = () => { setFocus('turns'); selectTurn(idx); };
+  el.onclick = (event) => {
+    const starEl = event && event.target && event.target.closest && event.target.closest('.turn-star');
+    if (starEl && el.contains(starEl)) {
+      event.stopPropagation();
+      if (typeof window.toggleStar === 'function') {
+        window.toggleStar('turn', starEl.dataset.id, !starEl.classList.contains('starred'));
+      }
+      return;
+    }
+    setFocus('turns');
+    selectTurn(idx);
+  };
   el.onmouseenter = () => { clearTimeout(_hoverTimer); _hoverTimer = setTimeout(() => prefetchEntry(idx), 150); };
   el.onmouseleave = () => clearTimeout(_hoverTimer);
 
-  // Line 1: identity + critical marker + cost
+  // Line 1: identity + critical marker + star toggle
   const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
   const modelHtml = '<span class="turn-model">' + escapeHtml(shortModel) + '</span>';
   const dotClass = e.status >= 200 && e.status < 300 ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
   const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
-  const costHtml = turnCost != null ? '<span class="turn-cost">$' + turnCost.toFixed(2) + '</span>' : '';
+  const isTurnStarred = !!(window.xrayStars && window.xrayStars.turns && window.xrayStars.turns.has(entryId));
+  const starHtml = '<span class="turn-star' + (isTurnStarred ? ' starred' : '') + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + (isTurnStarred ? 'Starred — click to unstar' : 'Star this turn (keeps log forever)') + '">' + (isTurnStarred ? '★' : '☆') + '</span>';
   const identityTooltip = [
     isCompacted ? 'Context compacted' : null,
     e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
@@ -382,12 +396,17 @@ function addEntry(e) {
       modelHtml +
       waitMark +
       critMarkerHtml +
-      costHtml +
+      starHtml +
     '</div>';
 
   // Line 2: title (omit if null or noise)
   const cleanedTitle = cleanTitle(e.title);
   const titleLine = cleanedTitle ? '<div class="turn-title">' + escapeHtml(cleanedTitle) + '</div>' : '';
+
+  // Line 2.5: cost (own line; right-aligned dim 11px). Omitted when null.
+  const costLine = turnCost != null
+    ? '<div class="turn-cost-line">$' + turnCost.toFixed(2) + '</div>'
+    : '';
 
   // Line 3: ctx bar (original segment proportions) + ctx:/hit: labels
   const seg = (tokens, color) => tokens > 0
@@ -454,7 +473,7 @@ function addEntry(e) {
   }
   const riskLine = riskMarkers.length ? '<div class="turn-risk-line">' + riskMarkers.join(' ') + '</div>' : '';
 
-  el.innerHTML = identityLine + titleLine + ctxBarHtml + secondaryLine + riskLine;
+  el.innerHTML = identityLine + titleLine + costLine + ctxBarHtml + secondaryLine + riskLine;
 
   // Hide turn if no session selected, or if it belongs to a different session
   if (!selectedSessionId || selectedSessionId !== sid) el.style.display = 'none';
@@ -649,9 +668,12 @@ function _showDeepLinkFailures(failures) {
   }, 500);
 }
 
-// Load existing entries (suppress auto-scroll during batch load)
+// Load existing entries (suppress auto-scroll during batch load).
+// Stars load in parallel with entries; rerender after both resolve so the
+// initial column paint already shows the correct star/derived badges.
 var _loading = true;
-fetch('/_api/entries').then(r => r.json()).then(data => {
+const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
+Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(([data]) => {
   const { entries = [], sessionTitles = {} } = data;
   entries.forEach(addEntry);
   for (const [sid, title] of Object.entries(sessionTitles)) {
@@ -662,7 +684,6 @@ fetch('/_api/entries').then(r => r.json()).then(data => {
     if (el) el.innerHTML = renderSessionItem(sess, sid);
   }
   _loading = false;
-  expireSessionPins();
 
   if (_hasDeepLink) {
     applyDeepLink();
