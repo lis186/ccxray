@@ -48,6 +48,21 @@ describe('agent provider registry', () => {
     assert.match(launch.installHint, /openai\/codex/);
   });
 
+  it('builds the Codex desktop app launch through the registry', () => {
+    const launch = providers.getAgentLaunch('codex', 5577, ['app', '/repo'], {
+      PATH: '/usr/bin',
+    });
+
+    assert.equal(launch.bin, 'codex');
+    assert.deepEqual(launch.args, [
+      '-c',
+      'openai_base_url="http://localhost:5577/v1"',
+      'app',
+      '/repo',
+    ]);
+    assert.equal(launch.env.PATH, '/usr/bin');
+  });
+
   it('centralizes display names and unsupported-provider handling', () => {
     assert.equal(providers.getDisplayName('claude', {}), 'ccxray');
     assert.equal(providers.getDisplayName('codex', {}), 'ccxray');

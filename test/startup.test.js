@@ -396,6 +396,84 @@ describe('claude launcher mode', () => {
   });
 });
 
+describe('codex desktop app launcher mode', () => {
+  function createFakeCodexCapture() {
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fake-codex-'));
+    const capturePath = path.join(fakeBin, 'capture.json');
+    const codexPath = path.join(fakeBin, 'codex');
+    fs.writeFileSync(codexPath, [
+      '#!/usr/bin/env node',
+      "'use strict';",
+      "const fs = require('fs');",
+      "const http = require('http');",
+      "const argv = process.argv.slice(2);",
+      "const configIdx = argv.indexOf('-c');",
+      "const configArg = configIdx === -1 ? null : argv[configIdx + 1];",
+      "const match = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
+      "const openaiBaseUrl = match ? match[1] : null;",
+      "function writeCapture(extra = {}) {",
+      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArg, openaiBaseUrl, cwd: process.cwd(), ...extra }));",
+      "}",
+      "function probeHealth(baseUrl) {",
+      "  return new Promise(resolve => {",
+      "    if (!baseUrl) return resolve(false);",
+      "    const req = http.get(new URL('/_api/health', baseUrl), { timeout: 1000 }, res => {",
+      "      let data = '';",
+      "      res.on('data', c => { data += c; });",
+      "      res.on('end', () => {",
+      "        try { resolve(JSON.parse(data).ok === true); } catch { resolve(false); }",
+      "      });",
+      "    });",
+      "    req.on('error', () => resolve(false));",
+      "    req.on('timeout', () => { req.destroy(); resolve(false); });",
+      "  });",
+      "}",
+      "(async () => {",
+      "  const healthOk = await probeHealth(openaiBaseUrl);",
+      "  writeCapture({ healthOk });",
+      "  process.exit(healthOk ? 0 : 2);",
+      "})().catch(err => {",
+      "  writeCapture({ error: err.message });",
+      "  process.exit(1);",
+      "});",
+    ].join('\n'));
+    fs.chmodSync(codexPath, 0o755);
+    return { fakeBin, capturePath };
+  }
+
+  it('launches codex app on macOS with the OpenAI proxy override', { skip: process.platform !== 'darwin' ? 'codex app is a macOS desktop launch path' : false }, async () => {
+    const port = await findFreePort();
+    const workspacePath = path.join(TEST_HOME, 'codex-desktop-workspace');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const { fakeBin, capturePath } = createFakeCodexCapture();
+
+    try {
+      const nodeBin = path.dirname(process.execPath);
+      const { code, stderr } = await spawnAndCollect(
+        ['--port', String(port), 'codex', 'app', workspacePath],
+        8000,
+        {
+          PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
+          CCXRAY_TEST_CODEX_CAPTURE: capturePath,
+        }
+      );
+
+      assert.equal(code, 0, stderr);
+      const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+      assert.deepEqual(capture.argv, [
+        '-c',
+        `openai_base_url="http://localhost:${port}/v1"`,
+        'app',
+        workspacePath,
+      ]);
+      assert.equal(capture.openaiBaseUrl, `http://localhost:${port}/v1`);
+      assert.equal(capture.healthOk, true);
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('E2: claude not found', () => {
   it('reports error when claude binary is missing', async () => {
     const port = await findFreePort();
