@@ -286,6 +286,11 @@ async function migrateLegacyPinsIfNeeded() {
     let projects = [], sessions = [];
     try { projects = JSON.parse(legacyProjRaw || '[]') || []; } catch {}
     try { sessions = (JSON.parse(legacySessRaw || '[]') || []).map(p => p && p.sid).filter(Boolean); } catch {}
+    // Skip sentinel ids — the API rejects them and we don't want a partial
+    // migration. Real legacy data may contain them (e.g., user pinned the
+    // direct-api session in the old localStorage scheme).
+    projects = projects.filter(name => !SENTINEL_PROJECT_NAMES.has(name));
+    sessions = sessions.filter(sid => !SENTINEL_SESSIONS.has(sid));
     const posts = [];
     for (const name of projects) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'project', id: name, starred: true }) }));
     for (const sid of sessions) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'session', id: sid, starred: true }) }));

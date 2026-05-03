@@ -10,6 +10,7 @@ const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
 const forward = require('../forward');
 const { readSettings, writeSettings } = require('../settings');
+const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -177,6 +178,15 @@ function handleApiRoutes(clientReq, clientRes) {
       if (!Object.prototype.hasOwnProperty.call(KIND_TO_KEY, kind) || typeof id !== 'string' || !id || typeof starred !== 'boolean') {
         clientRes.writeHead(400, { 'Content-Type': 'application/json' });
         clientRes.end(JSON.stringify({ error: 'expected { kind: project|session|turn, id: string, starred: boolean }' }));
+        return;
+      }
+      // Sentinel guard: catch-all session/project ids must not become starred at
+      // their own level. Star individual turns inside instead. (Frontend disables
+      // the button; this is the API-level backstop for direct callers and migration.)
+      if ((kind === 'session' && SENTINEL_SESSIONS.has(id)) ||
+          (kind === 'project' && SENTINEL_PROJECTS.has(id))) {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'cannot star sentinel ' + kind + ' "' + id + '" — star individual turns inside instead' }));
         return;
       }
       const current = readSettings();

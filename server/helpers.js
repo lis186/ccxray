@@ -673,8 +673,11 @@ function getProjectName(cwd) {
 //   stars: { projects: string[], sessions: string[], turns: string[] }
 function computeRetentionSets(indexEntries, stars) {
   const starredTurnIds = new Set(stars?.turns || []);
-  const retainedSessions = new Set(stars?.sessions || []);
-  const retainedProjects = new Set(stars?.projects || []);
+  // Defensive: even if a sentinel id slipped into starredSessions/Projects (via
+  // pre-API-guard data, manual settings.json edit, or older client), it must
+  // never lift the bucket as a unit. Filter at the source.
+  const retainedSessions = new Set((stars?.sessions || []).filter(s => !SENTINEL_SESSIONS.has(s)));
+  const retainedProjects = new Set((stars?.projects || []).filter(p => !SENTINEL_PROJECTS.has(p)));
 
   // Phase 1: turns lift their session into retained (unless sentinel).
   for (const entry of indexEntries) {

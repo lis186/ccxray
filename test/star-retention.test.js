@@ -76,11 +76,20 @@ describe('star-retention', () => {
       assert.ok(sets.retainedProjects.has('bar'));
     });
 
-    it('starredProjects pass through; sentinel project still rejected from derivation', () => {
-      const sets = computeRetentionSets(idx, { projects: ['(quota-check)', 'foo'], sessions: [], turns: [] });
-      // Pre-seeded values are preserved verbatim — we only filter sentinel during derivation.
+    it('sentinel session in starredSessions is rejected at the source', () => {
+      // Defensive: even if 'direct-api' somehow ends up in starredSessions
+      // (manual settings edit, pre-API-guard data, etc.), it must NOT enter
+      // retainedSessions — otherwise every direct-api turn gets pinned.
+      const sets = computeRetentionSets(idx, { projects: [], sessions: ['direct-api', 's2'], turns: [] });
+      assert.equal(sets.retainedSessions.has('direct-api'), false);
+      assert.ok(sets.retainedSessions.has('s2'));
+    });
+
+    it('sentinel project in starredProjects is rejected at the source', () => {
+      const sets = computeRetentionSets(idx, { projects: ['(unknown)', '(quota-check)', 'foo'], sessions: [], turns: [] });
+      assert.equal(sets.retainedProjects.has('(unknown)'), false);
+      assert.equal(sets.retainedProjects.has('(quota-check)'), false);
       assert.ok(sets.retainedProjects.has('foo'));
-      assert.ok(sets.retainedProjects.has('(quota-check)'));
     });
 
     it('handles empty stars without throwing', () => {
