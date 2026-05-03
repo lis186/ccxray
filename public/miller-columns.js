@@ -314,11 +314,17 @@ function openDerivedPopover(level, id, anchorEl) {
   pop.style.zIndex = '1000';
   document.body.appendChild(pop);
 
-  // Flip up if popover would overflow viewport bottom.
+  // Flip / clamp if popover overflows viewport edges.
   const popRect = pop.getBoundingClientRect();
   if (popRect.bottom > window.innerHeight - 8) {
     pop.style.top = '';
     pop.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+  }
+  if (popRect.left < 8) {
+    // Project-column badges sit far left; right-anchoring would clip the
+    // popover's left edge off-screen. Re-anchor to viewport left margin.
+    pop.style.right = '';
+    pop.style.left = '8px';
   }
 
   pop.querySelectorAll('.star-popover-unstar').forEach(btn => {
