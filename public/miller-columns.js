@@ -372,6 +372,16 @@ function rerenderColumnsAfterStar() {
 }
 
 async function toggleStar(level, id, starred) {
+  // Optimistic: flip the local cache and repaint immediately so the UI
+  // doesn't lag behind the click. Server response reconciles in case
+  // another client (or the migration shim) mutated state concurrently.
+  const targetSet = level === 'project' ? xrayStars.projects
+                  : level === 'session' ? xrayStars.sessions
+                  : xrayStars.turns;
+  const prevHad = targetSet.has(id);
+  if (starred) targetSet.add(id); else targetSet.delete(id);
+  rerenderColumnsAfterStar();
+
   try {
     const res = await fetch('/_api/stars', {
       method: 'POST',
@@ -380,14 +390,18 @@ async function toggleStar(level, id, starred) {
     });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    // Reconcile with server truth (handles edge cases like migration races).
     xrayStars.projects = new Set(data.projects || []);
     xrayStars.sessions = new Set(data.sessions || []);
     xrayStars.turns = new Set(data.turns || []);
+    rerenderColumnsAfterStar();
   } catch (err) {
-    console.warn('[ccxray] star toggle failed:', err.message);
-    return;
+    console.warn('[ccxray] star toggle failed, reverting:', err.message);
+    // Revert optimistic flip back to its prior state.
+    if (prevHad) targetSet.add(id); else targetSet.delete(id);
+    rerenderColumnsAfterStar();
+    if (typeof showToast === 'function') showToast('Star failed: ' + err.message);
   }
-  rerenderColumnsAfterStar();
 }
 window.toggleStar = toggleStar;
 
