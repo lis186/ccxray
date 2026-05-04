@@ -757,6 +757,36 @@ describe('Proxy error paths', () => {
   });
 });
 
+describe('Proxy loop startup guard', () => {
+  it('exits before serving when upstream points to itself', async () => {
+    const proxyPort = await findFreePort();
+    const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort)], 10000, {
+      ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}`,
+    });
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('ANTHROPIC_BASE_URL points back to ccxray'), `Expected loop error, got: ${stderr}`);
+    assert.ok(stderr.includes('--allow-upstream-loop'), `Expected override hint, got: ${stderr}`);
+  });
+
+  it('allows startup when explicit loop override is present', async () => {
+    const proxyPort = await findFreePort();
+    const proxyChild = spawnServer(['--port', String(proxyPort), '--allow-upstream-loop'], {
+      env: {
+        ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}`,
+      },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
+});
+
 describe('Proxy upstream error responses', () => {
   let mockUpstream;
   let mockPort;

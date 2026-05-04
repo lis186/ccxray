@@ -34,6 +34,8 @@ if (portIdx !== -1) {
 }
 const hubMode = process.argv.includes('--hub-mode');
 if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
+const allowUpstreamLoop = process.argv.includes('--allow-upstream-loop') || process.env.CCXRAY_ALLOW_UPSTREAM_LOOP === '1';
+if (process.argv.includes('--allow-upstream-loop')) process.argv.splice(process.argv.indexOf('--allow-upstream-loop'), 1);
 const claudeMode = process.argv[2] === 'claude';
 const claudeArgs = claudeMode ? process.argv.slice(3) : [];
 
@@ -67,6 +69,11 @@ try { rawIndexHTML = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8'
 let serverPort = 0;
 
 function rebuildIndexHTML(port) { serverPort = port; }
+
+function isUpstreamLoopForPort(port) {
+  const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+  return localHosts.has(config.ANTHROPIC_HOST) && config.ANTHROPIC_PORT === port;
+}
 
 function serveStatic(url, clientRes) {
   const pathname = url.split('?')[0];
@@ -427,6 +434,14 @@ async function startClientMode(lock) {
 
 // ── Hub/Server startup ──
 async function startServer() {
+  if (isUpstreamLoopForPort(config.PORT) && !allowUpstreamLoop) {
+    const url = `${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT}`;
+    throw new Error(
+      `ANTHROPIC_BASE_URL points back to ccxray (${url}); unset it before starting ccxray.\n` +
+      'Pass --allow-upstream-loop or set CCXRAY_ALLOW_UPSTREAM_LOOP=1 to allow this.'
+    );
+  }
+
   await config.storage.init();
   await fetchPricing();
   await restoreFromLogs();
