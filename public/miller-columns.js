@@ -143,6 +143,7 @@ function renderSystemBlockViewer(system) {
 const xrayStars = { projects: new Set(), sessions: new Set(), turns: new Set(), steps: new Set() };
 window.xrayStars = xrayStars;
 
+// Must stay in sync with SENTINEL_SESSIONS / SENTINEL_PROJECTS in server/helpers.js.
 const SENTINEL_SESSIONS = new Set(['direct-api']);
 const SENTINEL_PROJECT_NAMES = new Set(['(unknown)', '(quota-check)']);
 

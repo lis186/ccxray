@@ -5,7 +5,7 @@ const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
 const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
-const { readSettings } = require('./settings');
+const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 
 // Pull stars from settings and shape for computeRetentionSets. Returns the
@@ -13,13 +13,7 @@ const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 // throw because of star bookkeeping.
 function readStarsSafe() {
   try {
-    const s = readSettings();
-    return {
-      projects: Array.isArray(s.starredProjects) ? s.starredProjects : [],
-      sessions: Array.isArray(s.starredSessions) ? s.starredSessions : [],
-      turns: Array.isArray(s.starredTurns) ? s.starredTurns : [],
-      steps: Array.isArray(s.starredSteps) ? s.starredSteps : [],
-    };
+    return serializeStars(readSettings());
   } catch { return { projects: [], sessions: [], turns: [], steps: [] }; }
 }
 

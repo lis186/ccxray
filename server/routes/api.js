@@ -9,7 +9,7 @@ const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
 const forward = require('../forward');
-const { readSettings, writeSettings } = require('../settings');
+const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 
 const AUTO_COMPACT_PCT = 0.835;
@@ -153,12 +153,7 @@ function handleApiRoutes(clientReq, clientRes) {
   if (clientReq.method === 'GET' && clientReq.url === '/_api/stars') {
     const s = readSettings();
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({
-      projects: s.starredProjects || [],
-      sessions: s.starredSessions || [],
-      turns: s.starredTurns || [],
-      steps: s.starredSteps || [],
-    }));
+    clientRes.end(JSON.stringify(serializeStars(s)));
     return true;
   }
 
@@ -197,12 +192,7 @@ function handleApiRoutes(clientReq, clientRes) {
       const updated = { ...current, [key]: [...set] };
       writeSettings(updated);
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-      clientRes.end(JSON.stringify({
-        projects: updated.starredProjects || [],
-        sessions: updated.starredSessions || [],
-        turns: updated.starredTurns || [],
-        steps: updated.starredSteps || [],
-      }));
+      clientRes.end(JSON.stringify(serializeStars(updated)));
     });
     return true;
   }

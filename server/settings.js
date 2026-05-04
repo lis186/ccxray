@@ -37,6 +37,15 @@ function cloneSettings(s) {
   };
 }
 
+function serializeStars(s) {
+  return {
+    projects: s.starredProjects || [],
+    sessions: s.starredSessions || [],
+    turns: s.starredTurns || [],
+    steps: s.starredSteps || [],
+  };
+}
+
 function readSettings() {
   if (_cache) return cloneSettings(_cache);
   let firstLoad = false;
@@ -53,11 +62,11 @@ function readSettings() {
       };
     } else {
       console.error(`[ccxray] settings.json at ${SETTINGS_PATH} did not parse to an object — using defaults.`);
-      _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [], starredSteps: [] };
+      _cache = { ...DEFAULTS };
     }
     firstLoad = true;
   } catch {
-    _cache = { ...DEFAULTS, starredProjects: [], starredSessions: [], starredTurns: [], starredSteps: [] };
+    _cache = { ...DEFAULTS };
     firstLoad = true;
   }
   if (firstLoad) {
@@ -77,4 +86,4 @@ function writeSettings(data) {
 // Test helper — reset cache so unit tests get a clean slate
 function _resetSettingsCache() { _cache = null; }
 
-module.exports = { readSettings, writeSettings, _resetSettingsCache };
+module.exports = { readSettings, writeSettings, serializeStars, _resetSettingsCache };

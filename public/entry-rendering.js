@@ -225,9 +225,6 @@ function addEntry(e) {
   // Session tracking — properly deduplicated by ID
   const entryId = e.id || '';
   const entryCwd = e.cwd || null;
-  // Index by id so star-derivation logic can resolve turn → session/cwd.
-  // displayNum is added below after the session counters are updated.
-  if (entryId && window.entryById) window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null });
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
     sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null });
