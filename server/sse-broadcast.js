@@ -29,7 +29,7 @@ function summarizeEntry(entry) {
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
       contextBreakdown: tok.contextBreakdown,
-      perMessage: tok.perMessage || null,
+      perMessage: tok.perMessage ? tok.perMessage.map(m => ({ tokens: m.tokens })) : null,
     } : null,
   };
 }

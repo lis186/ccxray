@@ -260,13 +260,13 @@ function addEntry(e) {
   Object.entries(e.toolCalls || {}).forEach(([name, cnt]) => {
     sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
   });
-  const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-  if (sessEl) {
-    sessEl.innerHTML = renderSessionItem(sess, sid);
-    // Move to top if not already first — this session just got the newest activity
-    const firstSession = colSessions.querySelector('.session-item');
-    if (firstSession && firstSession !== sessEl) {
-      colSessions.insertBefore(sessEl, firstSession);
+  // During batch load, suppress per-entry DOM rerenders (post-batch does one final pass).
+  if (!_loading) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    if (sessEl) {
+      sessEl.innerHTML = renderSessionItem(sess, sid);
+      const firstSession = colSessions.querySelector('.session-item');
+      if (firstSession && firstSession !== sessEl) colSessions.insertBefore(sessEl, firstSession);
     }
   }
 
@@ -280,7 +280,7 @@ function addEntry(e) {
   proj.lastId = entryId;
   proj.lastSeenAt = Date.now();
   if (turnCost != null) proj.totalCost += turnCost;
-  renderProjectsCol();
+  if (!_loading) renderProjectsCol();
 
   const statusClass = e.status >= 200 && e.status < 300 ? 'status-ok' : 'status-err';
   const shortModel = model.replace('claude-', '').replace(/-[0-9]{8}$/, '');
@@ -647,19 +647,59 @@ var _loading = true;
 window._entriesLoading = true;
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
-Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(([data]) => {
+
+function _setLoadingStatus(text) {
+  const el = document.getElementById('entries-loading-status');
+  if (el) el.textContent = text;
+}
+
+Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(async ([data]) => {
   const { entries = [], sessionTitles = {} } = data;
-  window._entriesLoading = false;
-  entries.forEach(addEntry);
+
+  if (entries.length) {
+    // Show count immediately — yield one frame so the browser repaints before the sync loop.
+    const targetHint = _pendingDeepLink.e
+      ? (() => { const m = _pendingDeepLink.e.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})/); return m ? ' · ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m[2]-1] + ' ' + +m[3] + ' ' + m[4] + ':' + m[5] : ''; })()
+      : '';
+    _setLoadingStatus('Restoring ' + entries.length + ' entries' + targetHint + '…');
+    await new Promise(r => requestAnimationFrame(r));
+
+    // Process in chunks so the browser can repaint progress between frames.
+    const CHUNK = 60;
+    for (let i = 0; i < entries.length; i += CHUNK) {
+      entries.slice(i, i + CHUNK).forEach(addEntry);
+      if (i + CHUNK < entries.length) {
+        _setLoadingStatus('Restoring… ' + (i + CHUNK) + ' / ' + entries.length);
+        await new Promise(r => requestAnimationFrame(r));
+      }
+    }
+  }
+
+  // Merge session titles into sessionsMap before the final render pass.
   for (const [sid, title] of Object.entries(sessionTitles)) {
     const sess = sessionsMap.get(sid);
-    if (!sess) continue;
-    sess.title = title;
-    const el = document.getElementById('sess-' + sid.slice(0, 8));
-    if (el) el.innerHTML = renderSessionItem(sess, sid);
+    if (sess) sess.title = title;
   }
-  _loading = false;
 
+  // Post-batch: one final render pass — sort sessions by most-recently-active then
+  // rerender each item with accumulated data. colSessions + renderSessionItem are
+  // globals from miller-columns.js (loaded before this file).
+  window._entriesLoading = false;
+  const colSessEl = document.getElementById('col-sessions');
+  if (colSessEl) {
+    const sortedSids = [...sessionsMap.entries()]
+      .sort(([, a], [, b]) => (b.lastReceivedAt || 0) - (a.lastReceivedAt || 0))
+      .map(([sid]) => sid);
+    for (const sid of sortedSids) {
+      const el = document.getElementById('sess-' + sid.slice(0, 8));
+      if (!el) continue;
+      el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid);
+      colSessEl.appendChild(el); // appendChild in desc order → most-recent rises to top
+    }
+  }
+  if (typeof renderProjectsCol === 'function') renderProjectsCol();
+
+  _loading = false;
   if (_hasDeepLink) {
     applyDeepLink();
   } else if (sessionsMap.size) {
@@ -667,7 +707,6 @@ Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(([da
   }
   applySessionFilter();
   setFocus(focusedCol);
-  // Restore tab from URL param after deep-link resolution
   if (typeof restoreTabFromUrl === 'function') restoreTabFromUrl();
 });
 
