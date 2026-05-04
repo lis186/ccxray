@@ -592,7 +592,8 @@ function findTimelineStepElement(listEl, stepIdx, sub) {
   return listEl.querySelector(base + ':not([data-sub]):not([data-call])') || listEl.querySelector(base);
 }
 
-function scrollTimelineStepIntoView(stepIdx, sub) {
+function scrollTimelineStepIntoView(stepIdx, sub, opts) {
+  opts = opts || {};
   const listEl = colDetail.querySelector('.tl-scroll-area');
   if (!listEl) return false;
   const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
@@ -600,22 +601,32 @@ function scrollTimelineStepIntoView(stepIdx, sub) {
   const listRect = listEl.getBoundingClientRect();
   const stepRect = stepEl.getBoundingClientRect();
   const targetTop = listEl.scrollTop + (stepRect.top - listRect.top) - (listRect.height / 2) + (stepRect.height / 2);
-  listEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+  listEl.scrollTo({ top: Math.max(0, targetTop), behavior: opts.smooth === false ? 'auto' : 'smooth' });
   return true;
 }
 
-function scrollTimelineStepIntoViewWhenReady(stepIdx, sub, attempts) {
+function scrollTimelineStepIntoViewWhenReady(stepIdx, sub, attempts, opts) {
   const triesLeft = attempts == null ? 40 : attempts;
+  opts = opts || {};
   return new Promise(resolve => {
     requestAnimationFrame(() => {
       const listEl = colDetail.querySelector('.tl-scroll-area');
       const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
       if (listEl && stepEl) {
-        resolve(scrollTimelineStepIntoView(stepIdx, sub));
+        const ok = scrollTimelineStepIntoView(stepIdx, sub, opts);
+        if (!ok || opts.settle === false) {
+          resolve(ok);
+          return;
+        }
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve(scrollTimelineStepIntoView(stepIdx, sub, { smooth: false, settle: false }));
+          });
+        });
         return;
       }
       if (triesLeft > 0) {
-        scrollTimelineStepIntoViewWhenReady(stepIdx, sub, triesLeft - 1).then(resolve);
+        scrollTimelineStepIntoViewWhenReady(stepIdx, sub, triesLeft - 1, opts).then(resolve);
       } else {
         resolve(false);
       }

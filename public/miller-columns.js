@@ -467,13 +467,14 @@ function _waitForEntryLoaded(idx, attempts) {
   });
 }
 
-function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts) {
-  const triesLeft = attempts == null ? 80 : attempts;
+function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts, opts) {
+  const triesLeft = attempts == null ? 120 : attempts;
+  opts = opts || {};
   return new Promise(resolve => {
     requestAnimationFrame(() => {
       const current = allEntries[idx];
       if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') {
-        if (triesLeft > 0) _applyStepTargetWhenReady(idx, stepIdx, sub, triesLeft - 1).then(resolve);
+        if (triesLeft > 0) _applyStepTargetWhenReady(idx, stepIdx, sub, triesLeft - 1, opts).then(resolve);
         else resolve({ ok: false, reason: 'render-timeout' });
         return;
       }
@@ -488,7 +489,7 @@ function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts) {
       }
       selectStep(stepIdx, sub);
       const scroller = typeof scrollTimelineStepIntoViewWhenReady === 'function'
-        ? scrollTimelineStepIntoViewWhenReady(stepIdx, sub)
+        ? scrollTimelineStepIntoViewWhenReady(stepIdx, sub, 120, { smooth: opts.smooth !== false })
         : Promise.resolve(false);
       Promise.resolve(scroller).then(ok => resolve(ok ? { ok: true } : { ok: false, reason: 'render-timeout' }));
     });
@@ -577,7 +578,7 @@ function _navigateTargetInner(target, opts) {
       } else {
         renderDetailCol();
       }
-      return _applyStepTargetWhenReady(idx, target.stepIdx, target.sub).then(result => {
+      return _applyStepTargetWhenReady(idx, target.stepIdx, target.sub, null, opts).then(result => {
         if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] step result ' + JSON.stringify(result));
         return result;
       });
@@ -715,8 +716,14 @@ function _navigateToDescendant(kind, id) {
   const target = targetFromStar(kind, id);
   if (!target) return;
   _closeStarPopover();
-  navigateTarget(target, { focus: true, scroll: true, smooth: true }).then(result => {
-    if (!result || result.ok) return;
+  navigateTarget(target, { focus: true, scroll: true, smooth: false }).then(result => {
+    if (!result || result.ok) {
+      if (target.kind === 'step' && typeof scrollTimelineStepIntoViewWhenReady === 'function') {
+        setTimeout(() => scrollTimelineStepIntoViewWhenReady(target.stepIdx, target.sub, 120, { smooth: false, settle: false }), 250);
+        setTimeout(() => scrollTimelineStepIntoViewWhenReady(target.stepIdx, target.sub, 120, { smooth: false, settle: false }), 750);
+      }
+      return;
+    }
     showToast('Star jump failed: ' + result.reason);
   });
 }
