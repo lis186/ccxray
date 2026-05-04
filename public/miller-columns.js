@@ -1610,6 +1610,7 @@ function selectProject(name) {
   // Never deselect: clicking the already-selected project is a no-op
   if (name !== null && name === selectedProjectName) return;
   selectedProjectName = name;
+  if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   renderProjectsCol();
   applySessionFilter();
 
@@ -2018,6 +2019,7 @@ function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
   selectedSessionId = id;
+  if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   selectedTurnIdx = -1;
   selectedSection = null;
   clearSelectedStepSelection();

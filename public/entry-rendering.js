@@ -238,9 +238,17 @@ function addEntry(e) {
     const firstSession = colSessions.querySelector('.session-item');
     if (firstSession) colSessions.insertBefore(sessEl, firstSession);
     else colSessions.appendChild(sessEl);
-    // Apply project/session filters immediately so new cards don't flash visible
-    // during deep-link restoration and then disappear on the final pass.
-    if (!_loading || window._entriesLoadingProjectName || window._entriesLoadingSessionPrefix) applySessionFilter();
+    // Apply visibility to this element immediately to prevent flash-in during batch load.
+    // During non-deeplink loading: O(1) inline check instead of O(N) applySessionFilter call.
+    // sessionStatusMap is populated by SSE session_status events which arrive before the
+    // batch payload resolves, so getStatusClass is already accurate for most sessions.
+    if (!_loading || window._entriesLoadingProjectName || window._entriesLoadingSessionPrefix) {
+      applySessionFilter();
+    } else if (sessionFilterMode !== 'all') {
+      const status = getStatusClass(sid);
+      const hidden = sessionFilterMode === 'streaming' ? status !== 'sdot-stream' : status === 'sdot-off';
+      if (hidden) sessEl.style.display = 'none';
+    }
   }
   const sess = sessionsMap.get(sid);
   // Update cwd if not yet known or was only a quota-check
