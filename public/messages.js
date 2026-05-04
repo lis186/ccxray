@@ -432,7 +432,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
       // Thinking line — T8: history=indicator only, current=Ns+preview
       if (step.thinking != null) {
         const tSel = (activeStepKey === si + ':thinking') ? ' active' : '';
-        html += '<div class="tl-step-summary' + tSel + '" data-step="' + si + '" data-sub="thinking" onclick="selectStep(' + si + ',&quot;thinking&quot;)" style="color:var(--dim);padding:2px 8px;font-size:11px">';
+        html += '<div class="tl-step-summary' + tSel + '" data-step="' + si + '" data-sub="thinking" onclick="selectStep(' + si + ',&quot;thinking&quot;)" style="color:var(--dim);padding-top:2px;padding-bottom:2px;font-size:11px">';
         html += renderTimelineStepNumHtml(++rowNum);
         html += '<div class="tl-step-main">';
         if (step.source === 'history') {
