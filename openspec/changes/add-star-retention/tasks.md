@@ -77,7 +77,7 @@
 - [x] 10.4 `_applyStepTargetWhenReady(idx, stepIdx, sub, attempts, opts)` polls rAF frames (max 120) until timeline has rendered the target step row, then calls `selectStep` and scrolls
 - [x] 10.5 `_runTargetNavigation` wraps navigation with a depth counter so intermediate column renders do not trigger `syncUrlFromState` race-updates to the address bar
 - [x] 10.6 `syncUrlFromState` guards on `_loading` and `_targetNavigationUrlSyncDepth > 0`; writes current selection to URL via `replaceState`; clears step params when section switches away from timeline
-- [x] 10.7 Keyboard shortcuts e/E/t/h/] jump to next error / prev-error / thinking / human-text / text steps; URL syncs on each jump
+- [x] 10.7 Keyboard shortcuts e/E/s/S/a/A/m/M jump to next/prev error / skill / subagent / mcp steps in timeline; navigation is position-aware (finds nearest candidate forward/backward from current step, not index 0); URL syncs on each jump
 - [x] 10.8 `window._entriesLoading` flag set before initial `fetch('/_api/entries')` and cleared after; `renderProjectsCol()` shows a Loading… / Resolving link… placeholder while the flag is set and no projects exist
 - [x] 10.9 Chunked `addEntry` processes entries in batches of 60 with `requestAnimationFrame` yields; shows "Restoring N entries · …" then "Restoring… K / N" progress text; single sort + `renderProjectsCol()` after all chunks complete
 - [x] 10.10 Server starts HTTP listener before log restore: `listen()` resolves, then `runPostListenStartupTasks()` runs async; `store.restoreState` tracks phases (`restoring` / `ready` / `error`) and is exposed via `GET /_api/entries`
