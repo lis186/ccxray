@@ -325,6 +325,7 @@ function targetFromDeepLinkParams(params) {
     const sid = _resolveSessionId(params.get('s'));
     if (sid) return { target: { kind: 'session', sessionId: sid }, failures };
     failures.push('Session "' + params.get('s') + '" not found');
+    return { target: null, failures };
   }
   if (targetKind === 'project' && params.get('p')) {
     return { target: { kind: 'project', project: params.get('p') }, failures };
@@ -495,7 +496,7 @@ function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts) {
 function _stepTargetExists(step, sub) {
   if (!step) return false;
   if (sub == null) return true;
-  if (sub === 'thinking') return step.type === 'tool-group' && !!step.thinking;
+  if (sub === 'thinking') return step.type === 'tool-group' && step.thinking !== null;
   if (typeof sub === 'number') return step.type === 'tool-group' && Array.isArray(step.calls) && !!step.calls[sub];
   return false;
 }
