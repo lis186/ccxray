@@ -6,14 +6,16 @@ This change introduces server-side **stars** at three levels of granularity (pro
 
 ## What Changes
 
-- New `~/.ccxray/settings.json` fields: `starredProjects: string[]`, `starredSessions: string[]`, `starredTurns: string[]`.
-- New REST endpoints: `GET /_api/stars`, `POST /_api/stars` (single-level toggle, no cascade write).
+- New `~/.ccxray/settings.json` fields: `starredProjects: string[]`, `starredSessions: string[]`, `starredTurns: string[]`, `starredSteps: string[]`.
+- New REST endpoints: `GET /_api/stars`, `POST /_api/stars` (single-level toggle, no cascade write; accepts `kind ∈ {project,session,turn,step}`).
 - `pruneLogs()` (`server/restore.js`) protects any entry whose project / session / turn — or any descendant — is starred. Sentinel session/project (`direct-api`, `(unknown)`, `(quota-check)`) are excluded from upward derivation so a single starred turn inside a sentinel does not pin the whole bucket.
 - `restoreFromLogs()` lifts the `RESTORE_DAYS` cutoff for star-protected entries, so old starred items remain visible after restart.
 - Turn card replaces the top-right `$cost` with a star toggle; cost moves to a new line between title and context bar (dim, 11px, right-aligned).
 - Project / session columns gain a tri-state star indicator: filled `★` (directly starred), hollow `☆³` with descendant count (derived retention), or no badge (unprotected).
-- Sentinel session/project disable the star button at their own level (turn-level star inside still works); tooltip explains why.
+- Timeline step rows each have a `★`/`☆` toggle; step IDs encode `<entryId>::<stepIdx>[:<sub>]` and protect the parent turn and its session.
+- Sentinel session/project disable the star button at their own level (turn/step-level star inside still works); tooltip explains why.
 - **BREAKING (frontend-only)**: existing `localStorage` `xray-pinned-projects` / `xray-pinned-sessions` are migrated once on first dashboard load (POSTed to server, then cleared). The browser-side `expireSessionPins()` 7-day expiry is removed — stars do not expire.
+- Dashboard URL stays in sync with the current selection via a canonical **TargetRef** URL scheme (`?target=step&e=<id>&step=<idx>[:sub]` etc.); deep links navigate through all Miller columns on load. Server now starts HTTP listener before log restore so the UI is immediately accessible.
 
 ## Capabilities
 
@@ -22,6 +24,8 @@ This change introduces server-side **stars** at three levels of granularity (pro
 - `star-retention`: server-side storage, REST API (with sentinel rejection), derived retention rule for prune and restore, and sentinel-bucket exclusion at retention computation.
 - `star-ui`: dashboard tri-state star control on project / session columns, turn-card star toggle, sentinel disabled state, optimistic UI with revert-on-failure, one-time migration from `localStorage`.
 - `star-popover`: click on a parent's derived `☆ [N]` badge opens a floating list of starred descendants; each row's ★ toggles in place, the row body navigates to the descendant (re-selecting its project on the way), explicit `[×]` button dismisses, viewport edges clamp the popover.
+- `step-star`: `★`/`☆` toggle on each timeline step row; step IDs encode entry + step index + optional sub-key; starring a step protects its parent turn and session identically to a direct turn star.
+- `deeplink-navigation`: canonical TargetRef URL scheme (project / session / turn / step) with bidirectional encode/decode; `navigateTarget` routes through all Miller columns; URL stays in sync with selection; chunked batch-load with progress UI; server starts listener before restore for instant first paint.
 
 ### Modified Capabilities
 
@@ -29,11 +33,14 @@ This change introduces server-side **stars** at three levels of granularity (pro
 
 ## Impact
 
-- `server/settings.js` — DEFAULTS gain three array fields.
-- `server/routes/api.js` — new `/_api/stars` GET/POST routes.
+- `server/settings.js` — DEFAULTS gain four array fields (`starredSteps` added).
+- `server/routes/api.js` — new `/_api/stars` GET/POST routes; `GET /_api/entries` exposes `restoreState`.
 - `server/restore.js` — `pruneLogs()` protection set computed from settings + index scan; `restoreFromLogs()` cutoff exception.
 - `server/helpers.js` — new shared `getProjectName(cwd)` and `isProtectedByStar(meta, stars)` helpers; new `SENTINEL_SESSIONS` / `SENTINEL_PROJECTS` constants.
-- `public/entry-rendering.js` — turn card identity-line cost → star, new cost line, click handler with `stopPropagation`.
-- `public/miller-columns.js` — pin → star throughout, tri-state indicator, sentinel disabled state, migration shim, `expireSessionPins()` removed.
+- `server/index.js` — `runPostListenStartupTasks()` runs restore/prune/pricing async post-listen; `Cache-Control: no-store` on all static assets.
+- `server/store.js` — `restoreState` object with `setRestoreState(patch)`.
+- `public/entry-rendering.js` — turn card identity-line cost → star, new cost line, click handler with `stopPropagation`; chunked `addEntry` with rAF yields and `_loading` guard.
+- `public/miller-columns.js` — pin → star throughout, tri-state indicator, sentinel disabled state, migration shim, `expireSessionPins()` removed; full TargetRef codec + `navigateTarget` + `syncUrlFromState`.
+- `public/messages.js` — step-star toggle on each timeline step row.
 - `public/style.css` — `.turn-cost-line`, `.turn-star`, `.cascade-badge` styles.
 - No new dependencies. No data migration on disk; settings file gains fields with safe defaults.

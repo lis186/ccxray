@@ -144,3 +144,39 @@ Migration runs at most once per browser. If the server settings already contain 
 - **[Trade-off] No history of star/unstar events.** The arrays only encode current state. We cannot answer "when did I star this?" without git-blame on the file. Accepted — a single user, single machine, append-only audit is overkill.
 - **[Trade-off] Sentinel exclusion is hard-coded.** If future code adds a new sentinel session id (e.g. `'pre-init'`), the exclusion set must be updated explicitly. → Centralized in `server/helpers.js` so there is one place to change.
 - **[Risk] Migration race on multiple open dashboards.** Two tabs both load with empty server stars and both POST migrations. → POSTs are idempotent set-add, duplicates collapse on the server. No corruption.
+
+---
+
+## Deeplink Navigation
+
+### Decision 7: TargetRef as the single navigation shape
+
+All navigation entry points (deep links, star-popover row clicks, keyboard shortcuts, `syncUrlFromState`) share one shape: a TargetRef discriminated by `kind ∈ {project, session, turn, step}`. A single `navigateTarget(target, opts)` function handles all four.
+
+**Alternatives considered:**
+
+- **Per-feature navigation helpers** (e.g. `navigateToTurn`, `navigateToStep`): duplicate the Miller-column routing logic (selectProject → selectSession → selectTurn) three times. Any new column added requires updating every helper. TargetRef centralizes the routing once.
+- **Carrying full URL state in the function** (e.g. `navigateToUrl(url)`): mixes network/parsing concerns into the navigator. Codec and navigation are separate responsibilities.
+
+### Decision 8: URL sync uses a depth counter, not a post-navigation callback
+
+`_runTargetNavigation` increments `_targetNavigationUrlSyncDepth` before calling the navigation function and decrements after. `syncUrlFromState` is a no-op when the counter is `> 0`. One `syncUrlFromState` fires after the full navigation Promise resolves.
+
+**Why not a post-navigation callback**: each column selection (`selectProject`, `selectSession`, `selectTurn`) already calls `syncUrlFromState` as part of normal interactive use. Blocking that path only during programmatic navigation (via a counter) means the interactive path is unchanged, and the fix requires no modifications to the selection functions themselves.
+
+### Decision 9: Chunked addEntry with rAF yields; single post-batch render
+
+During batch restore from `/_api/entries`, entries are processed in chunks of 60. Between chunks, `requestAnimationFrame` yields so the browser can paint progress and respond to input. `renderProjectsCol()` and session re-renders are suppressed during chunking (`_loading` guard) and called once after all chunks complete.
+
+**Why 60**: empirically, 60 entries × ~5–10ms parse time ≈ 300–600ms per chunk before yield. Smaller chunks (e.g. 10) yield too frequently, extending total time. Larger chunks (e.g. 200) cause visible jank on 800-entry sessions.
+
+### Decision 10: Serve static assets before log restore
+
+Log restore is the startup bottleneck (sequential disk I/O, JSON parse, index scan). Previously, `server.listen()` waited for restore to complete — so the user saw a blank page for up to 10 seconds on first load of a large log directory.
+
+Separating `listen()` from `runPostListenStartupTasks()` means:
+- HTTP becomes available in < 100ms
+- The client shows a Loading… / Restoring… K/N progress UI while entries arrive
+- The UX matches "data streams in" rather than "wait, then everything appears"
+
+`Cache-Control: no-store` prevents stale cached HTML/JS from blocking the fix after a version upgrade.
