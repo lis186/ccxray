@@ -208,7 +208,8 @@ document.addEventListener('keydown', (e) => {
       if (next === cur) return;
       // Update section without exiting focused mode
       selectedSection = sectionNames[next];
-      selectedMessageIdx = -1;
+      if (typeof clearSelectedStepSelection === 'function') clearSelectedStepSelection();
+      else selectedMessageIdx = -1;
       colSections.querySelectorAll('.section-item').forEach(el => {
         el.classList.toggle('selected', el.dataset.section === selectedSection);
       });

@@ -162,6 +162,435 @@ function _projectNameForEntry(entry) {
   return sess ? getProjectName(sess.cwd) : direct;
 }
 
+// ── TargetRef codec + navigator ─────────────────────────────────────────────
+// A TargetRef is the canonical navigation shape used by stars, deep links, and
+// breadcrumb URL sync. Legacy `msg` URLs are decoded into step targets here.
+var _targetNavigationUrlSyncDepth = 0;
+
+function _findEntryIndexById(entryId) {
+  if (!entryId || !Array.isArray(allEntries)) return -1;
+  for (let i = 0; i < allEntries.length; i++) {
+    if (allEntries[i] && allEntries[i].id === entryId) return i;
+  }
+  return -1;
+}
+
+function _findEntryById(entryId) {
+  const idx = _findEntryIndexById(entryId);
+  if (idx >= 0) return allEntries[idx];
+  return entryById.get(entryId) || null;
+}
+
+function _resolveSessionId(shortOrFullSid) {
+  if (!shortOrFullSid) return null;
+  if (sessionsMap.has(shortOrFullSid)) return shortOrFullSid;
+  for (const [sid] of sessionsMap) {
+    if (sid.startsWith(shortOrFullSid)) return sid;
+  }
+  return null;
+}
+
+function _decodeStepPath(raw) {
+  if (raw == null || raw === '') return null;
+  const parts = String(raw).split(':');
+  if (parts.length > 2) return null;
+  const stepIdx = Number(parts[0]);
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
+  if (parts.length < 2 || parts[1] === '') return { stepIdx, sub: null };
+  if (parts[1] === 'thinking') return { stepIdx, sub: 'thinking' };
+  const sub = Number(parts[1]);
+  return Number.isInteger(sub) && sub >= 0 ? { stepIdx, sub } : null;
+}
+
+function _encodeStepPath(stepIdx, sub) {
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return '';
+  if (sub == null) return String(stepIdx);
+  return String(stepIdx) + ':' + sub;
+}
+
+function _decodeLegacyMsgSelection(msg) {
+  const encoded = Number(msg);
+  if (!Number.isInteger(encoded) || encoded < 0) return null;
+  const stepIdx = Math.floor(encoded / 1000);
+  const subIdx = encoded % 1000;
+  if (subIdx === 999) return { stepIdx, sub: 'thinking' };
+  // Legacy msg cannot distinguish a base step from call #0; base is the safest
+  // fallback and renderStepDetailHtml still opens call #0 for tool groups.
+  if (subIdx === 0) return { stepIdx, sub: null };
+  return { stepIdx, sub: subIdx };
+}
+
+function _selectedMessageIdxForStep(stepIdx, sub) {
+  if (sub === 'thinking') return stepIdx * 1000 + 999;
+  if (typeof sub === 'number') return stepIdx * 1000 + sub;
+  return stepIdx * 1000;
+}
+
+function _stepSelectionFromSelectedMessageIdx() {
+  const decoded = _decodeLegacyMsgSelection(selectedMessageIdx);
+  if (!decoded) return null;
+  if (selectedStepSubExplicit) return { stepIdx: decoded.stepIdx, sub: selectedStepSub };
+  return decoded;
+}
+
+function getSelectedStepSelection() {
+  return _stepSelectionFromSelectedMessageIdx();
+}
+
+function setSelectedStepSelection(stepIdx, sub) {
+  selectedMessageIdx = _selectedMessageIdxForStep(stepIdx, sub);
+  selectedStepSub = sub == null ? null : sub;
+  selectedStepSubExplicit = true;
+}
+
+function setSelectedLegacyMessageSelection(idx) {
+  selectedMessageIdx = idx;
+  const decoded = _decodeLegacyMsgSelection(idx);
+  selectedStepSub = decoded ? decoded.sub : null;
+  selectedStepSubExplicit = !!decoded;
+}
+
+function clearSelectedStepSelection() {
+  selectedMessageIdx = -1;
+  selectedStepSub = null;
+  selectedStepSubExplicit = false;
+}
+
+function targetFromStar(kind, id) {
+  if (kind === 'project') return { kind: 'project', project: id };
+  if (kind === 'session') return { kind: 'session', sessionId: id };
+  if (kind === 'turn') return { kind: 'turn', entryId: id };
+  if (kind === 'step') {
+    const parsed = _decodeStepStarId(id);
+    if (!parsed) return null;
+    return { kind: 'step', entryId: parsed.entryId, stepIdx: parsed.stepIdx, sub: parsed.sub };
+  }
+  return null;
+}
+
+function _decodeStepStarId(stepId) {
+  if (typeof stepId !== 'string') return null;
+  const parts = stepId.split('::');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const parsed = _decodeStepPath(parts[1]);
+  if (!parsed) return null;
+  return { entryId: parts[0], stepIdx: parsed.stepIdx, sub: parsed.sub };
+}
+
+function targetFromCurrentSelection() {
+  if (selectedTurnIdx >= 0) {
+    const entry = allEntries[selectedTurnIdx];
+    if (entry && entry.id) {
+      if (selectedSection === 'timeline' && selectedMessageIdx >= 0) {
+        const step = _stepSelectionFromSelectedMessageIdx();
+        if (step) return { kind: 'step', entryId: entry.id, stepIdx: step.stepIdx, sub: step.sub, section: 'timeline' };
+      }
+      return { kind: 'turn', entryId: entry.id, section: selectedSection || null };
+    }
+  }
+  if (selectedSessionId) return { kind: 'session', sessionId: selectedSessionId };
+  if (selectedProjectName) return { kind: 'project', project: selectedProjectName };
+  return null;
+}
+
+function _entryIdFromLegacyTurn(fullSid, turnDisplayNum) {
+  if (!fullSid || !turnDisplayNum) return null;
+  for (let i = 0; i < allEntries.length; i++) {
+    const entry = allEntries[i];
+    if (entry && entry.sessionId === fullSid && entry.displayNum === turnDisplayNum) return entry.id;
+  }
+  return null;
+}
+
+function targetFromDeepLinkParams(params) {
+  const failures = [];
+  const targetKind = params.get('target');
+  const entryId = params.get('e');
+  const stepRaw = params.get('step');
+
+  if (targetKind === 'step' && !entryId) {
+    failures.push('Entry id is required for step links');
+    return { target: null, failures };
+  }
+  if ((targetKind === 'step' || (entryId && stepRaw != null)) && entryId) {
+    const parsed = _decodeStepPath(stepRaw);
+    if (parsed) return { target: { kind: 'step', entryId, stepIdx: parsed.stepIdx, sub: parsed.sub, section: 'timeline' }, failures };
+    failures.push('Step "' + stepRaw + '" is invalid');
+    if (targetKind === 'step') return { target: null, failures };
+  }
+  if ((targetKind === 'turn' || (!targetKind && entryId)) && entryId) {
+    return { target: { kind: 'turn', entryId, section: params.get('sec') || null }, failures };
+  }
+  if (targetKind === 'session') {
+    const sid = _resolveSessionId(params.get('s'));
+    if (sid) return { target: { kind: 'session', sessionId: sid }, failures };
+    failures.push('Session "' + params.get('s') + '" not found');
+  }
+  if (targetKind === 'project' && params.get('p')) {
+    return { target: { kind: 'project', project: params.get('p') }, failures };
+  }
+
+  const shortSid = params.get('s');
+  const fullSid = _resolveSessionId(shortSid);
+  if (shortSid && !fullSid) failures.push('Session "' + shortSid + '" not found');
+
+  const project = params.get('p');
+  const section = params.get('sec') || null;
+  const msgRaw = params.get('msg');
+  const turnDisplayNum = params.get('t');
+  if (fullSid) {
+    const entryIdFromTurn = turnDisplayNum ? _entryIdFromLegacyTurn(fullSid, turnDisplayNum) : null;
+    if (turnDisplayNum && !entryIdFromTurn) failures.push('Turn #' + turnDisplayNum + ' not found in this session');
+    const targetEntryId = entryIdFromTurn || (sessionsMap.get(fullSid) && sessionsMap.get(fullSid).lastId);
+    if (targetEntryId && msgRaw != null) {
+      const parsedMsg = _decodeLegacyMsgSelection(msgRaw);
+      if (parsedMsg) return { target: { kind: 'step', entryId: targetEntryId, stepIdx: parsedMsg.stepIdx, sub: parsedMsg.sub, section: 'timeline' }, failures };
+      failures.push('Message selector "' + msgRaw + '" is invalid');
+    }
+    if (targetEntryId && (turnDisplayNum || section)) {
+      return { target: { kind: 'turn', entryId: targetEntryId, section }, failures };
+    }
+    return { target: { kind: 'session', sessionId: fullSid }, failures };
+  }
+
+  if (project) return { target: { kind: 'project', project }, failures };
+  return { target: null, failures };
+}
+
+function writeTargetToUrlParams(target, params) {
+  if (!target) return;
+  if (target.kind === 'project') {
+    params.set('target', 'project');
+    params.set('p', target.project);
+    return;
+  }
+  if (target.kind === 'session') {
+    params.set('target', 'session');
+    params.set('s', target.sessionId.slice(0, 8));
+    return;
+  }
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const entry = _findEntryById(target.entryId);
+    params.set('target', target.kind);
+    params.set('e', target.entryId);
+    if (entry) {
+      const proj = _projectNameForEntry(entry);
+      if (proj) params.set('p', proj);
+      if (entry.sessionId) params.set('s', entry.sessionId.slice(0, 8));
+      if (entry.displayNum) params.set('t', entry.displayNum);
+    }
+    if (target.kind === 'turn' && target.section) params.set('sec', target.section);
+    if (target.kind === 'step') {
+      params.set('sec', 'timeline');
+      params.set('step', _encodeStepPath(target.stepIdx, target.sub));
+    }
+  }
+}
+
+function formatTargetLabel(target, opts) {
+  opts = opts || {};
+  if (!target || !target.kind) return '';
+  if (target.kind === 'project') return opts.compact ? target.project : 'project ' + target.project;
+  if (target.kind === 'session') {
+    const sid = target.sessionId === 'direct-api' ? 'direct API' : String(target.sessionId || '').slice(0, 8);
+    return 'session ' + (sid || 'unknown');
+  }
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const entry = _findEntryById(target.entryId);
+    const sid = entry && entry.sessionId ? entry.sessionId.slice(0, 8) : 'unknown';
+    const turnNum = entry && entry.displayNum ? entry.displayNum : '?';
+    let label = 'session ' + sid + ' turn #' + turnNum;
+    if (target.kind === 'step') {
+      const subLabel = target.sub === 'thinking'
+        ? ' thinking'
+        : (typeof target.sub === 'number' ? ' call #' + (target.sub + 1) : '');
+      label += ' step #' + (Number.isInteger(target.stepIdx) ? target.stepIdx + 1 : '?') + subLabel;
+    }
+    return label;
+  }
+  return '';
+}
+
+function _ensureEntryLoadedByIndex(idx) {
+  const entry = allEntries[idx];
+  if (!entry) return Promise.resolve({ ok: false, reason: 'missing-entry' });
+  if (entry.reqLoaded) return Promise.resolve({ ok: true });
+  if (entry._prefetchPromise) {
+    return entry._prefetchPromise.then(() => {
+      const current = allEntries[idx];
+      return current && current.reqLoaded ? { ok: true } : { ok: false, reason: 'load-failed' };
+    }).catch(() => ({ ok: false, reason: 'load-failed' }));
+  }
+  if (entry._prefetching) return _waitForEntryLoaded(idx, 300);
+  entry._prefetching = true;
+  entry._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(entry.id))
+    .then(r => r.json())
+    .then(data => {
+      if (!data) return { ok: false, reason: 'load-failed' };
+      entry.req = data.req;
+      entry.res = data.res;
+      entry.reqLoaded = true;
+      entry._prefetching = false;
+      if (data.receivedAt) entry.receivedAt = data.receivedAt;
+      return { ok: true };
+    })
+    .catch(() => {
+      entry._prefetching = false;
+      return { ok: false, reason: 'load-failed' };
+    })
+    .then(result => {
+      entry._prefetching = false;
+      entry._prefetchPromise = null;
+      return result;
+    });
+  return entry._prefetchPromise;
+}
+
+function _waitForEntryLoaded(idx, attempts) {
+  const triesLeft = attempts == null ? 80 : attempts;
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const entry = allEntries[idx];
+      if (!entry) {
+        resolve({ ok: false, reason: 'missing-entry' });
+      } else if (entry.reqLoaded) {
+        resolve({ ok: true });
+      } else if (triesLeft > 0) {
+        _waitForEntryLoaded(idx, triesLeft - 1).then(resolve);
+      } else {
+        resolve({ ok: false, reason: 'load-timeout' });
+      }
+    });
+  });
+}
+
+function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts) {
+  const triesLeft = attempts == null ? 80 : attempts;
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const current = allEntries[idx];
+      if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') {
+        if (triesLeft > 0) _applyStepTargetWhenReady(idx, stepIdx, sub, triesLeft - 1).then(resolve);
+        else resolve({ ok: false, reason: 'render-timeout' });
+        return;
+      }
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : []);
+      if (!currentSteps[stepIdx]) {
+        resolve({ ok: false, reason: 'missing-step' });
+        return;
+      }
+      if (!_stepTargetExists(currentSteps[stepIdx], sub)) {
+        resolve({ ok: false, reason: 'missing-step-part' });
+        return;
+      }
+      selectStep(stepIdx, sub);
+      const scroller = typeof scrollTimelineStepIntoViewWhenReady === 'function'
+        ? scrollTimelineStepIntoViewWhenReady(stepIdx, sub)
+        : Promise.resolve(false);
+      Promise.resolve(scroller).then(ok => resolve(ok ? { ok: true } : { ok: false, reason: 'render-timeout' }));
+    });
+  });
+}
+
+function _stepTargetExists(step, sub) {
+  if (!step) return false;
+  if (sub == null) return true;
+  if (sub === 'thinking') return step.type === 'tool-group' && !!step.thinking;
+  if (typeof sub === 'number') return step.type === 'tool-group' && Array.isArray(step.calls) && !!step.calls[sub];
+  return false;
+}
+
+function _runTargetNavigation(fn, opts) {
+  opts = opts || {};
+  _targetNavigationUrlSyncDepth++;
+  let result;
+  try {
+    result = fn();
+  } catch (err) {
+    _targetNavigationUrlSyncDepth--;
+    throw err;
+  }
+  return Promise.resolve(result).then(navResult => {
+    _targetNavigationUrlSyncDepth--;
+    if ((!navResult || navResult.ok) && opts.replaceUrl !== false) syncUrlFromState();
+    return navResult;
+  }, err => {
+    _targetNavigationUrlSyncDepth--;
+    throw err;
+  });
+}
+
+function navigateTarget(target, opts) {
+  opts = opts || {};
+  if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] navigate ' + JSON.stringify(target));
+  if (!target || !target.kind) return Promise.resolve({ ok: false, reason: 'invalid-target' });
+
+  return _runTargetNavigation(() => _navigateTargetInner(target, opts), opts);
+}
+
+function _navigateTargetInner(target, opts) {
+  if (target.kind === 'project') {
+    if (!projectsMap.has(target.project)) return Promise.resolve({ ok: false, reason: 'missing-project' });
+    selectProject(target.project);
+    setFocus('projects');
+    return Promise.resolve({ ok: true });
+  }
+
+  if (target.kind === 'session') {
+    const sid = _resolveSessionId(target.sessionId);
+    const sess = sid ? sessionsMap.get(sid) : null;
+    if (!sess) return Promise.resolve({ ok: false, reason: 'missing-session' });
+    if (getStatusClass(sid) === 'sdot-off' && sessionFilterMode !== 'all') setSessionFilter('all');
+    const proj = getProjectName(sess.cwd);
+    if (proj && selectedProjectName !== proj) selectProject(proj);
+    selectSessionAndLatestTurn(sid);
+    setFocus(opts.focus || target.section ? 'turns' : 'sessions');
+    return Promise.resolve({ ok: true });
+  }
+
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const idx = _findEntryIndexById(target.entryId);
+    if (idx < 0) return Promise.resolve({ ok: false, reason: 'missing-entry' });
+    const entry = allEntries[idx];
+    if (getStatusClass(entry.sessionId) === 'sdot-off' && sessionFilterMode !== 'all') setSessionFilter('all');
+    const proj = _projectNameForEntry(entry);
+    if (proj && selectedProjectName !== proj) selectProject(proj);
+    if (selectedSessionId !== entry.sessionId) selectSession(entry.sessionId);
+    selectTurn(idx, { smooth: opts.smooth !== false });
+    setFocus('turns');
+
+    if (target.kind === 'turn') {
+      if (target.section) selectSection(target.section);
+      return Promise.resolve({ ok: true });
+    }
+
+    return _ensureEntryLoadedByIndex(idx).then(loadResult => {
+      if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] load ' + JSON.stringify(loadResult));
+      if (!loadResult.ok) return loadResult;
+      selectedSection = 'timeline';
+      setSelectedStepSelection(target.stepIdx, target.sub);
+      if (!isFocusedMode && opts.focus !== false && typeof enterFocusedMode === 'function') {
+        enterFocusedMode();
+      } else {
+        renderDetailCol();
+      }
+      return _applyStepTargetWhenReady(idx, target.stepIdx, target.sub).then(result => {
+        if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] step result ' + JSON.stringify(result));
+        return result;
+      });
+    });
+  }
+
+  return Promise.resolve({ ok: false, reason: 'invalid-target' });
+}
+
+window.targetFromStar = targetFromStar;
+window.targetFromDeepLinkParams = targetFromDeepLinkParams;
+window.targetFromCurrentSelection = targetFromCurrentSelection;
+window.writeTargetToUrlParams = writeTargetToUrlParams;
+window.formatTargetLabel = formatTargetLabel;
+window.navigateTarget = navigateTarget;
+
 // Count direct stars at descendant levels for the tri-state badge.
 // project ← (sessions whose project resolves here) + (turns whose project resolves here)
 // session ← (turns whose sessionId === sid)
@@ -280,60 +709,17 @@ function _starPopoverEscKey(e) {
 // from a project card NOT currently focused would land the user on a session
 // that the project filter hides, leaving them looking at an empty turns col.
 function _navigateToDescendant(kind, id) {
-  if (kind === 'session') {
-    const sess = sessionsMap.get(id);
-    if (!sess) return;
-    _closeStarPopover();
-    const proj = getProjectName(sess.cwd);
-    if (proj && selectedProjectName !== proj) selectProject(proj);
-    selectSessionAndLatestTurn(id);
-    setFocus('turns');
-    return;
-  }
-  if (kind === 'turn') {
-    if (!Array.isArray(allEntries)) return;
-    for (let i = 0; i < allEntries.length; i++) {
-      const entry = allEntries[i];
-      if (entry && entry.id === id) {
-        _closeStarPopover();
-        const proj = _projectNameForEntry(entry);
-        if (proj && selectedProjectName !== proj) selectProject(proj);
-        selectSessionAndLatestTurn(entry.sessionId);
-        // Smooth-scroll over 300ms so the user can track the spatial jump
-        // (popover navigation can leap across many turns).
-        selectTurn(i, { smooth: true });
-        setFocus('turns');
-        return;
-      }
-    }
-    // Entry not in current restored set — silent no-op (server still protects
-    // the file; user can release via × instead).
-  }
-  if (kind === 'step') {
-    const turnId = _turnIdFromStepStarId(id);
-    const stepIdx = _stepIndexFromStepStarId(id);
-    const stepSub = _stepSubFromStepStarId(id);
-    if (!turnId || stepIdx < 0 || !Array.isArray(allEntries)) return;
-    for (let i = 0; i < allEntries.length; i++) {
-      const entry = allEntries[i];
-      if (entry && entry.id === turnId) {
-        _closeStarPopover();
-        const proj = _projectNameForEntry(entry);
-        if (proj && selectedProjectName !== proj) selectProject(proj);
-        selectSessionAndLatestTurn(entry.sessionId);
-        selectTurn(i, { smooth: true });
-        setFocus('turns');
-        _selectTimelineStepWhenReady(i, stepIdx, stepSub);
-        return;
-      }
-    }
-  }
+  const target = targetFromStar(kind, id);
+  if (!target) return;
+  _closeStarPopover();
+  navigateTarget(target, { focus: true, scroll: true, smooth: true }).then(result => {
+    if (!result || result.ok) return;
+    showToast('Star jump failed: ' + result.reason);
+  });
 }
 
 function _selectedMessageIdxForStepStar(stepIdx, sub) {
-  if (sub === 'thinking') return stepIdx * 1000 + 999;
-  if (typeof sub === 'number') return stepIdx * 1000 + sub;
-  return stepIdx * 1000;
+  return _selectedMessageIdxForStep(stepIdx, sub);
 }
 
 function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
@@ -344,7 +730,7 @@ function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
     if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') return;
     selectedSection = 'timeline';
     if (!isFocusedMode && typeof enterFocusedMode === 'function') {
-      selectedMessageIdx = _selectedMessageIdxForStepStar(stepIdx, sub);
+      setSelectedStepSelection(stepIdx, sub);
       enterFocusedMode();
     } else {
       renderDetailCol();
@@ -419,20 +805,14 @@ function formatRelativeTimeFromMs(ts) {
 }
 
 function _formatStarredTurnLabel(entryId) {
-  const e = _findEntryForStarLabel(entryId);
-  const sid = (e && e.sessionId) || '';
-  const sidLabel = sid ? sid.slice(0, 8) : 'unknown';
-  const turnNum = e && e.displayNum ? e.displayNum : '?';
-  return 'session ' + sidLabel + ' turn #' + turnNum;
+  return formatTargetLabel({ kind: 'turn', entryId });
 }
 
 function _formatStarredStepLabel(stepId) {
-  const turnId = _turnIdFromStepStarId(stepId);
-  const stepIdx = _stepIndexFromStepStarId(stepId);
-  const sub = _stepSubFromStepStarId(stepId);
-  const subLabel = sub === 'thinking' ? ' thinking' : (typeof sub === 'number' ? ' call #' + (sub + 1) : '');
-  const turnLabel = _formatStarredTurnLabel(turnId);
-  return turnLabel + ' step #' + (stepIdx >= 0 ? stepIdx + 1 : '?') + subLabel;
+  const parsed = _decodeStepStarId(stepId);
+  return parsed
+    ? formatTargetLabel({ kind: 'step', entryId: parsed.entryId, stepIdx: parsed.stepIdx, sub: parsed.sub })
+    : 'step ?';
 }
 
 function _formatStarredSessionLabel(sid) {
@@ -895,6 +1275,8 @@ let selectedSessionId = null;
 let selectedTurnIdx = -1;
 let selectedSection = null;
 let selectedMessageIdx = -1;
+let selectedStepSub = null;
+let selectedStepSubExplicit = false;
 let focusedCol = 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
 let isFocusedMode = false;
 
@@ -999,7 +1381,7 @@ function clearAll() { // kept for console use if needed
   selectedSessionId = null;
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   renderBreadcrumb();
 }
 
@@ -1214,7 +1596,7 @@ function selectProject(name) {
   selectedSessionId = null;
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
@@ -1558,7 +1940,7 @@ function renderBreadcrumb() {
     segments.push({ label: sec, action: () => { selectSection(sec); } });
   }
   if (selectedSection === 'timeline' && selectedMessageIdx >= 0)
-    segments.push({ label: 'step[' + selectedMessageIdx + ']', action: null });
+    segments.push({ label: formatCurrentStepBreadcrumb(), action: null });
 
   const bc = document.getElementById('breadcrumb');
   bc.innerHTML = '';
@@ -1584,6 +1966,7 @@ function renderBreadcrumb() {
 
 function syncUrlFromState() {
   if (_loading) return; // Don't update URL during initial load
+  if (_targetNavigationUrlSyncDepth > 0) return; // Target navigation syncs once after the full route resolves.
   const params = new URLSearchParams();
   // Preserve view param from tab system
   if (typeof activeTab !== 'undefined' && activeTab !== 'dashboard') params.set('view', activeTab);
@@ -1597,10 +1980,17 @@ function syncUrlFromState() {
     params.set('t', num);
   }
   if (selectedSection) params.set('sec', selectedSection);
-  if (selectedMessageIdx >= 0) params.set('msg', String(selectedMessageIdx));
+  writeTargetToUrlParams(targetFromCurrentSelection(), params);
   const qs = params.toString();
   const newUrl = qs ? '?' + qs : location.pathname;
   history.replaceState(null, '', newUrl);
+}
+
+function formatCurrentStepBreadcrumb() {
+  const step = _stepSelectionFromSelectedMessageIdx();
+  if (!step) return 'step';
+  const subLabel = step.sub === 'thinking' ? ' thinking' : (typeof step.sub === 'number' ? ' call #' + (step.sub + 1) : '');
+  return 'step #' + (step.stepIdx + 1) + subLabel;
 }
 
 function selectSession(id) {
@@ -1609,7 +1999,7 @@ function selectSession(id) {
   selectedSessionId = id;
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
 
   // Highlight selected session
   colSessions.querySelectorAll('.session-item').forEach(el => {
@@ -1647,15 +2037,17 @@ function scheduleRender(afterRender) {
 
 function prefetchEntry(idx) {
   const e = allEntries[idx];
-  if (!e || e.reqLoaded || e._prefetching) return;
+  if (!e || e.reqLoaded || e._prefetching || e._prefetchPromise) return;
   e._prefetching = true;
-  fetch('/_api/entry/' + encodeURIComponent(e.id))
+  e._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(e.id))
     .then(r => r.json())
     .then(data => {
       if (!data) return;
       allEntries[idx].req = data.req;
       allEntries[idx].res = data.res;
       allEntries[idx].reqLoaded = true;
+      allEntries[idx]._prefetching = false;
+      allEntries[idx]._prefetchPromise = null;
       if (data.receivedAt) allEntries[idx].receivedAt = data.receivedAt;
       if (selectedTurnIdx === idx) {
         scheduleRender(() => {
@@ -1665,7 +2057,10 @@ function prefetchEntry(idx) {
           }
         });
       }
-    }).catch(() => { allEntries[idx]._prefetching = false; });
+    }).catch(() => {
+      allEntries[idx]._prefetching = false;
+      allEntries[idx]._prefetchPromise = null;
+    });
 }
 
 // Animate `el.scrollTop` by `deltaY` over `durationMs` using easeInOutQuad.
@@ -1692,7 +2087,7 @@ function selectTurn(idx, opts) {
     document.getElementById('columns').classList.remove('focused');
   }
   selectedTurnIdx = idx;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colTurns.querySelectorAll('.turn-item').forEach(el => {
     el.classList.toggle('selected', parseInt(el.dataset.entryIdx) === idx);
   });
@@ -1745,7 +2140,7 @@ function selectTurn(idx, opts) {
 function selectSection(name) {
   setFocus('sections');
   selectedSection = name;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colSections.querySelectorAll('.section-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.section === name);
   });

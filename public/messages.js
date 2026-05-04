@@ -503,17 +503,20 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
 // Get the active step key string for highlighting
 function getActiveStepKey() {
   if (selectedMessageIdx < 0) return null;
-  const stepIdx = Math.floor(selectedMessageIdx / 1000);
-  const subIdx = selectedMessageIdx % 1000;
-  if (subIdx === 999) return stepIdx + ':thinking';
-  return stepIdx + ':' + (subIdx || '');
+  const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
+  const stepIdx = selection ? selection.stepIdx : Math.floor(selectedMessageIdx / 1000);
+  const sub = selection ? selection.sub : null;
+  if (sub === 'thinking') return stepIdx + ':thinking';
+  return stepIdx + ':' + (typeof sub === 'number' ? sub : '');
 }
 
 // Render step detail content as HTML
 function renderStepDetailHtml(req, tok) {
   if (selectedMessageIdx < 0) return '';
-  const stepIdx = Math.floor(selectedMessageIdx / 1000);
-  const subIdx = selectedMessageIdx % 1000;
+  const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
+  const stepIdx = selection ? selection.stepIdx : Math.floor(selectedMessageIdx / 1000);
+  const sub = selection ? selection.sub : null;
+  const subIdx = sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : selectedMessageIdx % 1000);
   const step = currentSteps[stepIdx];
   if (!step) return '<div class="col-empty">No step data</div>';
 
@@ -541,17 +544,15 @@ function selectStep(stepIdx, sub) {
   if (!currentSteps[stepIdx]) return; // guard: invalid step index
   // If not in focused mode, enter it first (click on step = drill into timeline)
   if (!isFocusedMode && typeof enterFocusedMode === 'function') {
-    selectedMessageIdx = stepIdx * 1000 + (sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : 0));
+    if (typeof setSelectedStepSelection === 'function') setSelectedStepSelection(stepIdx, sub);
+    else selectedMessageIdx = stepIdx * 1000 + (sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : 0));
     enterFocusedMode();
     return;
   }
-  if (sub === 'thinking') {
-    selectedMessageIdx = stepIdx * 1000 + 999;
-  } else if (typeof sub === 'number') {
-    selectedMessageIdx = stepIdx * 1000 + sub;
-  } else {
-    selectedMessageIdx = stepIdx * 1000;
-  }
+  if (typeof setSelectedStepSelection === 'function') setSelectedStepSelection(stepIdx, sub);
+  else if (sub === 'thinking') selectedMessageIdx = stepIdx * 1000 + 999;
+  else if (typeof sub === 'number') selectedMessageIdx = stepIdx * 1000 + sub;
+  else selectedMessageIdx = stepIdx * 1000;
 
   // Split pane: update list highlights + detail pane
   const listEl = colDetail.querySelector('.tl-scroll-area');
@@ -593,30 +594,38 @@ function findTimelineStepElement(listEl, stepIdx, sub) {
 
 function scrollTimelineStepIntoView(stepIdx, sub) {
   const listEl = colDetail.querySelector('.tl-scroll-area');
-  if (!listEl) return;
+  if (!listEl) return false;
   const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
-  if (!stepEl) return;
+  if (!stepEl) return false;
   const listRect = listEl.getBoundingClientRect();
   const stepRect = stepEl.getBoundingClientRect();
   const targetTop = listEl.scrollTop + (stepRect.top - listRect.top) - (listRect.height / 2) + (stepRect.height / 2);
   listEl.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+  return true;
 }
 
 function scrollTimelineStepIntoViewWhenReady(stepIdx, sub, attempts) {
   const triesLeft = attempts == null ? 40 : attempts;
-  requestAnimationFrame(() => {
-    const listEl = colDetail.querySelector('.tl-scroll-area');
-    const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
-    if (listEl && stepEl) {
-      scrollTimelineStepIntoView(stepIdx, sub);
-      return;
-    }
-    if (triesLeft > 0) scrollTimelineStepIntoViewWhenReady(stepIdx, sub, triesLeft - 1);
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const listEl = colDetail.querySelector('.tl-scroll-area');
+      const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
+      if (listEl && stepEl) {
+        resolve(scrollTimelineStepIntoView(stepIdx, sub));
+        return;
+      }
+      if (triesLeft > 0) {
+        scrollTimelineStepIntoViewWhenReady(stepIdx, sub, triesLeft - 1).then(resolve);
+      } else {
+        resolve(false);
+      }
+    });
   });
 }
 
 function selectMessage(idx) {
-  selectedMessageIdx = idx;
+  if (typeof setSelectedLegacyMessageSelection === 'function') setSelectedLegacyMessageSelection(idx);
+  else selectedMessageIdx = idx;
   renderDetailCol();
   renderBreadcrumb();
 }

@@ -575,103 +575,40 @@ const _pendingDeepLink = {
   t: _deepLinkParams.get('t'),
   sec: _deepLinkParams.get('sec'),
   msg: _deepLinkParams.get('msg') != null ? parseInt(_deepLinkParams.get('msg')) : null,
+  target: _deepLinkParams.get('target'),
+  e: _deepLinkParams.get('e'),
+  step: _deepLinkParams.get('step'),
 };
-const _hasDeepLink = _pendingDeepLink.p || _pendingDeepLink.s;
+const _hasDeepLink = _pendingDeepLink.p || _pendingDeepLink.s || _pendingDeepLink.target || _pendingDeepLink.e;
 
 // Deferred deep link state for sec/msg (applied after lazy-load)
 var _deferredDeepLink = null;
 
 function applyDeepLink() {
-  const dl = _pendingDeepLink;
-  const failures = [];
-
-  // Check if any entries were restored
-  if (allEntries.length === 0 && (dl.s || dl.p)) {
-    failures.push('No log data available');
-    _showDeepLinkFailures(failures);
+  if (allEntries.length === 0 && (_pendingDeepLink.s || _pendingDeepLink.p || _pendingDeepLink.e)) {
+    _showDeepLinkFailures(['No log data available']);
     return;
   }
-
-  // Layer 1: Resolve session
-  let fullSid = null;
-  if (dl.s) {
-    for (const [sid] of sessionsMap) {
-      if (sid.startsWith(dl.s)) { fullSid = sid; break; }
+  if (typeof targetFromDeepLinkParams !== 'function' || typeof navigateTarget !== 'function') {
+    _showDeepLinkFailures(['Navigation target helpers are unavailable']);
+    return;
+  }
+  const parsed = targetFromDeepLinkParams(_deepLinkParams);
+  if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] parsed ' + JSON.stringify(parsed));
+  const failures = parsed.failures || [];
+  if (!parsed.target) {
+    if (failures.length) _showDeepLinkFailures(failures);
+    return;
+  }
+  navigateTarget(parsed.target, { focus: true, scroll: true, smooth: false }).then(result => {
+    if (!result || result.ok) {
+      syncUrlFromState();
+      if (failures.length) _showDeepLinkFailures(failures);
+      return;
     }
-    if (!fullSid) {
-      failures.push('Session "' + dl.s + '" not found');
-    }
-  }
-
-  // Force filter to 'all' if needed
-  if (fullSid) {
-    const status = getStatusClass(fullSid);
-    if (status === 'sdot-off' && sessionFilterMode !== 'all') {
-      setSessionFilter('all');
-    }
-  }
-
-  // Layer 2: Resolve project (from param or from session)
-  let projName = dl.p;
-  if (!projName && fullSid) {
-    const sess = sessionsMap.get(fullSid);
-    if (sess) projName = getProjectName(sess.cwd);
-  }
-  if (projName && !projectsMap.has(projName)) {
-    failures.push('Project "' + projName + '" not found');
-    projName = null;
-  }
-
-  if (projName) selectProject(projName);
-
-  // Layer 3: Resolve turn (only if session resolved)
-  let turnResolved = false;
-  if (fullSid) {
-    selectSessionAndLatestTurn(fullSid);
-
-    if (dl.t) {
-      for (let i = 0; i < allEntries.length; i++) {
-        if (allEntries[i].sessionId === fullSid && allEntries[i].displayNum === dl.t) {
-          selectTurn(i);
-          turnResolved = true;
-          break;
-        }
-      }
-      if (!turnResolved) {
-        failures.push('Turn #' + dl.t + ' not found in this session');
-      }
-    } else {
-      turnResolved = true; // no specific turn requested
-    }
-  }
-
-  // Layer 4+5: Defer section/message until lazy-load completes
-  if (fullSid && (dl.sec || dl.msg != null)) {
-    _deferredDeepLink = { sec: dl.sec, msg: dl.msg };
-    // If turn data is already loaded, apply immediately
-    if (selectedTurnIdx >= 0 && allEntries[selectedTurnIdx]?.reqLoaded) {
-      _applyDeferredDeepLink();
-    } else {
-      // Set timeout for deferred resolution
-      setTimeout(function() {
-        if (_deferredDeepLink) {
-          showToast('Deep link: section/message data did not load in time');
-          _deferredDeepLink = null;
-        }
-      }, 5000);
-    }
-  }
-
-  // Set focus to deepest resolved layer
-  if (fullSid && turnResolved) setFocus('turns');
-  else if (fullSid) setFocus('sessions');
-  else if (projName) setFocus('projects');
-
-  // URL cleanup: sync URL to reflect only resolved state
-  syncUrlFromState();
-
-  // Show coalesced failures after 500ms delay
-  if (failures.length) _showDeepLinkFailures(failures);
+    failures.push(_formatDeepLinkFailure(result.reason));
+    _showDeepLinkFailures(failures, { immediate: true });
+  });
 }
 
 function _applyDeferredDeepLink() {
@@ -682,10 +619,28 @@ function _applyDeferredDeepLink() {
   if (deferred.msg != null && typeof selectMessage === 'function') selectMessage(deferred.msg);
 }
 
-function _showDeepLinkFailures(failures) {
-  setTimeout(function() {
+function _showDeepLinkFailures(failures, opts) {
+  opts = opts || {};
+  const notify = function() {
     showToast('Deep link: ' + failures.join('; '));
-  }, 500);
+  };
+  if (opts.immediate) notify();
+  else setTimeout(notify, 500);
+}
+
+function _formatDeepLinkFailure(reason) {
+  const labels = {
+    'invalid-target': 'link target is invalid',
+    'missing-project': 'project was not found',
+    'missing-session': 'session was not found',
+    'missing-entry': 'turn entry was not found',
+    'missing-step': 'turn loaded, but that step no longer exists',
+    'missing-step-part': 'turn loaded, but that step item no longer exists',
+    'load-failed': 'turn data could not be loaded',
+    'load-timeout': 'turn data is still loading',
+    'render-timeout': 'timeline rendered too slowly; try reloading',
+  };
+  return labels[reason] || reason || 'unknown failure';
 }
 
 // Load existing entries (suppress auto-scroll during batch load).
