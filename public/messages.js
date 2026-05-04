@@ -55,9 +55,9 @@ function callHasCredential(c) {
   return false;
 }
 function sourceLabel(source) {
-  if (!source || source === 'local') return '<span class="source-badge source-local">[local]</span>';
-  if (source === 'local:sensitive') return '<span class="source-badge source-local-sensitive">[local:sensitive]</span>';
-  if (source === 'network') return '<span class="source-badge source-network">[network]</span>';
+  if (!source || source === 'local') return '<span class="source-badge source-local">local</span>';
+  if (source === 'local:sensitive') return '<span class="source-badge source-local-sensitive">local:sensitive</span>';
+  if (source === 'network') return '<span class="source-badge source-network">network</span>';
   return '';
 }
 
