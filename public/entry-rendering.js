@@ -644,9 +644,12 @@ function _formatDeepLinkFailure(reason) {
 // Stars load in parallel with entries; rerender after both resolve so the
 // initial column paint already shows the correct star/derived badges.
 var _loading = true;
+window._entriesLoading = true;
+if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
 Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(([data]) => {
   const { entries = [], sessionTitles = {} } = data;
+  window._entriesLoading = false;
   entries.forEach(addEntry);
   for (const [sid, title] of Object.entries(sessionTitles)) {
     const sess = sessionsMap.get(sid);
@@ -673,6 +676,7 @@ if (_hasDeepLink) {
   setTimeout(() => {
     if (_loading) {
       _loading = false;
+      window._entriesLoading = false;
       applyDeepLink();
       applySessionFilter();
     }

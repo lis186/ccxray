@@ -1521,6 +1521,9 @@ function renderProjectsCol() {
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
   }
+  if (sorted.length === 0 && window._entriesLoading) {
+    html += '<div class="col-empty" style="padding-top:16px;opacity:0.5">Loading…</div>';
+  }
   colProjects.innerHTML = html;
   const projCountEl = document.getElementById('proj-filter-count');
   if (projCountEl) projCountEl.textContent = projectFilterMode === 'all' ? '' : ' (' + visibleProjCount + ')';
