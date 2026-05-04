@@ -88,6 +88,8 @@ Automatic version detection with diff viewer. Browse prompts across 11 recognize
 
 Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → turns → sections → timeline → individual diff hunks without touching the mouse.
 
+Inside the timeline, step-type jump shortcuts let you scan sessions instantly: `e`/`E` jumps to the next/previous error, `s`/`S` to Skill calls, `a`/`A` to subagent (Agent/Task) calls, `m`/`M` to MCP tool calls. Each jump is position-aware — it finds the nearest match forward or backward from wherever you are, and updates the address bar URL.
+
 ![Keyboard navigation](docs/keyboard.png)
 
 ### Session Titles & Cache Alerts
@@ -114,12 +116,15 @@ Optional context-stats footer appended to Claude's responses inside Claude Code 
 
 Click the star on a turn, session, or project card to mark it for permanent retention. Starred items survive `LOG_RETENTION_DAYS` auto-prune; state lives in `~/.ccxray/settings.json`, server-side and persistent across browsers. A starred turn protects every turn in its session; a starred session protects every turn under it; a starred project protects everything beneath. Catch-all buckets (`direct-api`, `(unknown)`, `(quota-check)`) refuse stars at the bucket level — star individual turns inside instead.
 
+Individual timeline steps can also be starred (`★`/`☆` toggle on each step row). A starred step protects its parent turn and session identically to a direct turn star.
+
 When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
 
 <!-- TODO: add docs/stars.png screenshot showing tri-state badges + descendant popover -->
 
 ### More
 
+- **Deep Link Navigation** — Every selection (project / session / turn / step) is reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view.
 - **Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
 - **Token Accounting** — Per-turn breakdown: input/output/cache-read/cache-create tokens, cost in USD, context window usage bar
 
