@@ -1176,6 +1176,7 @@ function applySessionFilter() {
       el.style.display = 'none';
       return;
     }
+    if (selectedSessionId && sid === selectedSessionId) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     // Starred or star-protected sessions bypass activity filters, but not the
     // selected project boundary. Otherwise a starred ccxray session can appear
     // under another project and look like its stars failed to inherit upward.

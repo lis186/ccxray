@@ -684,17 +684,29 @@ window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
 _markLoad('entries-start');
-const _entriesReady = fetch('/_api/entries')
-  .then(r => {
-    _markLoad('entries-response');
-    _measureLoad('entries-fetch', 'entries-start', 'entries-response');
-    return r.json();
-  })
-  .then(data => {
-    _markLoad('entries-json');
-    _measureLoad('entries-json-parse', 'entries-response', 'entries-json');
-    return data;
-  });
+const _entriesReady = _fetchEntriesWhenReady();
+
+async function _fetchEntriesWhenReady() {
+  let firstResponse = true;
+  for (;;) {
+    const r = await fetch('/_api/entries', { cache: 'no-store' });
+    if (firstResponse) {
+      _markLoad('entries-response');
+      _measureLoad('entries-fetch', 'entries-start', 'entries-response');
+    }
+    const data = await r.json();
+    const restore = data.restore || {};
+    if (!restore.restoring) {
+      _markLoad('entries-json');
+      _measureLoad('entries-json-parse', 'entries-response', 'entries-json');
+      return data;
+    }
+    const count = restore.entryCount ? ' · ' + restore.entryCount + ' entries' : '';
+    _setLoadingStatus('Restoring logs' + count + '…');
+    firstResponse = false;
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
 
 function _setLoadingStatus(text) {
   window._entriesLoadingText = text;

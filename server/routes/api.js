@@ -39,8 +39,9 @@ function handleApiRoutes(clientReq, clientRes) {
     const sessionTitles = Object.fromEntries(
       Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
     );
-    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ entries, sessionTitles }));
+    const restore = { ...store.restoreState, entryCount: store.entries.length };
+    clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    clientRes.end(JSON.stringify({ entries, sessionTitles, restore }));
     return true;
   }
 
