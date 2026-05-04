@@ -456,7 +456,8 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
         // T6: error highlighting — CSS class + data-has-error for filter/jump
         const errCls = c.isError ? ' tool-call-error' : '';
         const errAttr = c.isError ? ' data-has-error="1"' : '';
-        html += '<div class="tl-step-summary' + cSel + errCls + '" data-step="' + si + '" data-call="' + ci + '"' + errAttr + ' onclick="selectStep(' + si + ',' + ci + ')">';
+        const toolAttr = ' data-tool="' + escapeHtml(c.name) + '"';
+        html += '<div class="tl-step-summary' + cSel + errCls + '" data-step="' + si + '" data-call="' + ci + '"' + errAttr + toolAttr + ' onclick="selectStep(' + si + ',' + ci + ')">';
         html += renderTimelineStepNumHtml(++rowNum);
         html += '<div class="tl-step-main">';
         html += '<div class="msg-list-row" style="gap:4px">';
