@@ -118,7 +118,7 @@ function handleApiRoutes(clientReq, clientRes) {
     if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
       await loadEntryReqRes(entry);
-      const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null };
+      const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };
       if (entry.elapsed === '?') { entry.req = null; entry.res = null; entry._loaded = false; }
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify(snapshot));

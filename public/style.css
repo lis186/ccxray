@@ -168,6 +168,9 @@
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
+  .loading-state { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .loading-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ccxray-spin 0.8s linear infinite; }
+  @keyframes ccxray-spin { to { transform: rotate(360deg); } }
   .col-title { padding: 10px 12px; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
   #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; }
   #cmd-bar.hidden { display: none; }

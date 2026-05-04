@@ -238,8 +238,9 @@ function addEntry(e) {
     const firstSession = colSessions.querySelector('.session-item');
     if (firstSession) colSessions.insertBefore(sessEl, firstSession);
     else colSessions.appendChild(sessEl);
-    // Apply project filter immediately so new card doesn't flash visible then disappear
-    if (!_loading) applySessionFilter();
+    // Apply project/session filters immediately so new cards don't flash visible
+    // during deep-link restoration and then disappear on the final pass.
+    if (!_loading || window._entriesLoadingProjectName || window._entriesLoadingSessionPrefix) applySessionFilter();
   }
   const sess = sessionsMap.get(sid);
   // Update cwd if not yet known or was only a quota-check
@@ -577,34 +578,66 @@ const _pendingDeepLink = {
   step: _deepLinkParams.get('step'),
 };
 const _hasDeepLink = _pendingDeepLink.p || _pendingDeepLink.s || _pendingDeepLink.target || _pendingDeepLink.e;
+let _deepLinkLoadingActive = !!_hasDeepLink;
+let _deepLinkApplied = false;
+const _debugLoadTimings = location.search.includes('debugLoad=1');
+
+function _markLoad(name) {
+  if (!_debugLoadTimings || !performance?.mark) return;
+  performance.mark('ccxray:' + name);
+}
+
+function _measureLoad(name, start, end) {
+  if (!_debugLoadTimings || !performance?.measure) return;
+  try { performance.measure('ccxray:' + name, 'ccxray:' + start, 'ccxray:' + end); } catch {}
+}
+
+function _flushLoadTimings(label) {
+  if (!_debugLoadTimings || !performance?.getEntriesByType) return;
+  const rows = performance.getEntriesByType('measure')
+    .filter(e => e.name.startsWith('ccxray:'))
+    .map(e => ({ phase: e.name.replace('ccxray:', ''), ms: Math.round(e.duration) }));
+  if (rows.length) {
+    console.table(rows);
+    console.log('[ccxray-load' + (label ? ':' + label : '') + '] ' + JSON.stringify(rows));
+  }
+}
 
 // Deferred deep link state for sec/msg (applied after lazy-load)
 var _deferredDeepLink = null;
 
 function applyDeepLink() {
+  _setDeepLinkProgress('Opening target…');
   if (allEntries.length === 0 && (_pendingDeepLink.s || _pendingDeepLink.p || _pendingDeepLink.e)) {
+    _clearDeepLinkProgress();
     _showDeepLinkFailures(['No log data available']);
-    return;
+    return Promise.resolve({ ok: false, reason: 'missing-entry' });
   }
   if (typeof targetFromDeepLinkParams !== 'function' || typeof navigateTarget !== 'function') {
+    _clearDeepLinkProgress();
     _showDeepLinkFailures(['Navigation target helpers are unavailable']);
-    return;
+    return Promise.resolve({ ok: false, reason: 'invalid-target' });
   }
   const parsed = targetFromDeepLinkParams(_deepLinkParams);
   if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] parsed ' + JSON.stringify(parsed));
   const failures = parsed.failures || [];
   if (!parsed.target) {
+    _clearDeepLinkProgress();
     if (failures.length) _showDeepLinkFailures(failures);
-    return;
+    return Promise.resolve({ ok: false, reason: 'invalid-target' });
   }
-  navigateTarget(parsed.target, { focus: true, scroll: true, smooth: false }).then(result => {
+  return navigateTarget(parsed.target, { focus: true, scroll: true, smooth: false }).then(result => {
     if (!result || result.ok) {
+      _deepLinkApplied = true;
+      _clearDeepLinkProgress();
       syncUrlFromState();
       if (failures.length) _showDeepLinkFailures(failures);
-      return;
+      return result || { ok: true };
     }
+    _clearDeepLinkProgress();
     failures.push(_formatDeepLinkFailure(result.reason));
     _showDeepLinkFailures(failures, { immediate: true });
+    return result;
   });
 }
 
@@ -645,15 +678,84 @@ function _formatDeepLinkFailure(reason) {
 // initial column paint already shows the correct star/derived badges.
 var _loading = true;
 window._entriesLoading = true;
+window._entriesLoadingProjectName = _pendingDeepLink.p || null;
+window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
+window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
+_markLoad('entries-start');
+const _entriesReady = fetch('/_api/entries')
+  .then(r => {
+    _markLoad('entries-response');
+    _measureLoad('entries-fetch', 'entries-start', 'entries-response');
+    return r.json();
+  })
+  .then(data => {
+    _markLoad('entries-json');
+    _measureLoad('entries-json-parse', 'entries-response', 'entries-json');
+    return data;
+  });
 
 function _setLoadingStatus(text) {
+  window._entriesLoadingText = text;
   const el = document.getElementById('entries-loading-status');
   if (el) el.textContent = text;
+  if (_deepLinkLoadingActive) _renderDeepLinkLoading(text);
 }
 
-Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(async ([data]) => {
+function _setDeepLinkProgress(text) {
+  if (!_hasDeepLink || !_deepLinkLoadingActive) return;
+  _setLoadingStatus(text);
+}
+
+function _renderDeepLinkLoading(text) {
+  const safeText = typeof escapeHtml === 'function' ? escapeHtml(text) : String(text || '');
+  const breadcrumb = document.getElementById('breadcrumb');
+  if (breadcrumb && _loading) breadcrumb.textContent = 'Loading link · ' + text;
+  if (selectedTurnIdx >= 0) return;
+  const html = '<div class="col-empty loading-state"><div class="loading-spinner"></div><div>' + safeText + '</div></div>';
+  if (colSections && !selectedSection) colSections.innerHTML = html;
+  if (colDetail && !selectedSection) colDetail.innerHTML = html;
+}
+
+function _clearDeepLinkProgress() {
+  _deepLinkLoadingActive = false;
+  if (!window._entriesLoading) window._entriesLoadingText = '';
+}
+
+function _getDeepLinkPriorityPlan(entries) {
+  if (!_hasDeepLink || !_pendingDeepLink.e || !Array.isArray(entries)) return null;
+  const targetIdx = entries.findIndex(e => e && e.id === _pendingDeepLink.e);
+  if (targetIdx < 0) return null;
+  const sid = entries[targetIdx] && entries[targetIdx].sessionId;
+  if (!sid) return null;
+  const priorityIdxs = new Set();
+  for (let i = 0; i <= targetIdx; i++) {
+    if (entries[i] && entries[i].sessionId === sid) priorityIdxs.add(i);
+  }
+  if (!priorityIdxs.size) return null;
+  return {
+    priorityEntries: entries.filter((_, i) => priorityIdxs.has(i)),
+    backgroundEntries: entries.filter((_, i) => !priorityIdxs.has(i)),
+  };
+}
+
+async function _restoreEntryBatch(entries, opts) {
+  opts = opts || {};
+  const chunk = opts.chunk || 60;
+  const total = opts.total || entries.length;
+  const base = opts.base || 0;
+  const label = opts.label || 'Restoring';
+  for (let i = 0; i < entries.length; i += chunk) {
+    entries.slice(i, i + chunk).forEach(addEntry);
+    if (i + chunk < entries.length) {
+      _setLoadingStatus(label + '… ' + (base + i + chunk) + ' / ' + total);
+      await new Promise(r => requestAnimationFrame(r));
+    }
+  }
+}
+
+Promise.all([_entriesReady, _starsReady]).then(async ([data]) => {
   const { entries = [], sessionTitles = {} } = data;
 
   if (entries.length) {
@@ -664,14 +766,34 @@ Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(asyn
     _setLoadingStatus('Restoring ' + entries.length + ' entries' + targetHint + '…');
     await new Promise(r => requestAnimationFrame(r));
 
-    // Process in chunks so the browser can repaint progress between frames.
-    const CHUNK = 60;
-    for (let i = 0; i < entries.length; i += CHUNK) {
-      entries.slice(i, i + CHUNK).forEach(addEntry);
-      if (i + CHUNK < entries.length) {
-        _setLoadingStatus('Restoring… ' + (i + CHUNK) + ' / ' + entries.length);
-        await new Promise(r => requestAnimationFrame(r));
+    const priorityPlan = _getDeepLinkPriorityPlan(entries);
+    if (priorityPlan) {
+      _setLoadingStatus('Restoring target session…');
+      await _restoreEntryBatch(priorityPlan.priorityEntries, {
+        label: 'Restoring target session',
+        total: priorityPlan.priorityEntries.length,
+      });
+      for (const [sid, title] of Object.entries(sessionTitles)) {
+        const sess = sessionsMap.get(sid);
+        if (sess) sess.title = title;
       }
+      if (typeof renderProjectsCol === 'function') renderProjectsCol();
+      await applyDeepLink();
+      _markLoad('target-open');
+      _measureLoad('target-first-open', 'entries-json', 'target-open');
+      _flushLoadTimings('target-open');
+      if (priorityPlan.backgroundEntries.length) {
+        _setLoadingStatus('Restoring background entries… ' + priorityPlan.priorityEntries.length + ' / ' + entries.length);
+        await new Promise(r => requestAnimationFrame(r));
+        await _restoreEntryBatch(priorityPlan.backgroundEntries, {
+          label: 'Restoring background entries',
+          total: entries.length,
+          base: priorityPlan.priorityEntries.length,
+        });
+      }
+    } else {
+      // Process in chunks so the browser can repaint progress between frames.
+      await _restoreEntryBatch(entries, { label: 'Restoring', total: entries.length });
     }
   }
 
@@ -685,6 +807,9 @@ Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(asyn
   // rerender each item with accumulated data. colSessions + renderSessionItem are
   // globals from miller-columns.js (loaded before this file).
   window._entriesLoading = false;
+  window._entriesLoadingProjectName = null;
+  window._entriesLoadingSessionPrefix = null;
+  window._entriesLoadingText = '';
   const colSessEl = document.getElementById('col-sessions');
   if (colSessEl) {
     const sortedSids = [...sessionsMap.entries()]
@@ -698,25 +823,27 @@ Promise.all([fetch('/_api/entries').then(r => r.json()), _starsReady]).then(asyn
     }
   }
   if (typeof renderProjectsCol === 'function') renderProjectsCol();
+  _markLoad('entries-restored');
+  _measureLoad('entries-hydrate', 'entries-json', 'entries-restored');
 
   _loading = false;
   if (_hasDeepLink) {
-    applyDeepLink();
+    if (!_deepLinkApplied) await applyDeepLink();
   } else if (sessionsMap.size) {
     initAutoSelect();
   }
   applySessionFilter();
   setFocus(focusedCol);
   if (typeof restoreTabFromUrl === 'function') restoreTabFromUrl();
+  _flushLoadTimings();
 });
 
-// Safety timeout: apply deep link after 5 seconds even if entries are still loading
+// Safety notice: keep showing progress if restoring takes longer than expected.
 if (_hasDeepLink) {
   setTimeout(() => {
     if (_loading) {
-      _loading = false;
-      window._entriesLoading = false;
-      applyDeepLink();
+      _setDeepLinkProgress('Still restoring entries…');
+      if (typeof renderProjectsCol === 'function') renderProjectsCol();
       applySessionFilter();
     }
   }, 5000);

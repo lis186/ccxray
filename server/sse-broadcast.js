@@ -23,7 +23,6 @@ function summarizeEntry(entry) {
     duplicateToolCalls: entry.duplicateToolCalls || null,
     toolFail: entry.toolFail || false,
     hasCredential: entry.hasCredential || undefined,
-    toolSources: entry.toolSources || undefined,
     coreHash: entry.coreHash || null,
     thinkingStripped: entry.thinkingStripped || false,
     tokens: tok ? {

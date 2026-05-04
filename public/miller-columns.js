@@ -432,6 +432,7 @@ function _ensureEntryLoadedByIndex(idx) {
       entry.req = data.req;
       entry.res = data.res;
       entry.reqLoaded = true;
+      entry.toolSources = data.toolSources || null;
       entry._prefetching = false;
       if (data.receivedAt) entry.receivedAt = data.receivedAt;
       return { ok: true };
@@ -1161,12 +1162,19 @@ function setSessionFilter(mode) {
 function applySessionFilter() {
   let anyVisible = false;
   let visibleCount = 0;
+  const projectBoundary = selectedProjectName || (window._entriesLoading && window._entriesLoadingProjectName) || null;
+  const sessionPrefixBoundary = !projectBoundary && window._entriesLoading && window._entriesLoadingSessionPrefix
+    ? window._entriesLoadingSessionPrefix
+    : null;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
-    if (selectedProjectName) {
+    if (projectBoundary) {
       const sess = sessionsMap.get(sid);
       const projName = getProjectName(sess ? sess.cwd : null);
-      if (projName !== selectedProjectName) { el.style.display = 'none'; return; }
+      if (projName !== projectBoundary) { el.style.display = 'none'; return; }
+    } else if (sessionPrefixBoundary && !sid.startsWith(sessionPrefixBoundary)) {
+      el.style.display = 'none';
+      return;
     }
     // Starred or star-protected sessions bypass activity filters, but not the
     // selected project boundary. Otherwise a starred ccxray session can appear
@@ -1187,13 +1195,13 @@ function applySessionFilter() {
 
   // Placeholder when a project is selected but no sessions are visible
   let placeholder = colSessions.querySelector('.sessions-empty');
-  if (!anyVisible && selectedProjectName) {
+  if (!anyVisible && projectBoundary) {
     if (!placeholder) {
       placeholder = document.createElement('div');
       placeholder.className = 'sessions-empty col-empty';
-      placeholder.textContent = 'No sessions yet';
       colSessions.appendChild(placeholder);
     }
+    placeholder.textContent = window._entriesLoading ? (window._entriesLoadingText || 'Loading…') : 'No sessions yet';
     placeholder.style.display = '';
   } else if (placeholder) {
     placeholder.style.display = 'none';
@@ -1521,8 +1529,8 @@ function renderProjectsCol() {
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
   }
-  if (sorted.length === 0 && window._entriesLoading) {
-    html += '<div id="entries-loading-status" class="col-empty" style="padding-top:16px;opacity:0.5">Loading…</div>';
+  if (visibleProjCount === 0 && window._entriesLoading) {
+    html += '<div id="entries-loading-status" class="col-empty loading-state" style="padding-top:16px;opacity:0.75"><div class="loading-spinner"></div><div>' + escapeHtml(window._entriesLoadingText || 'Loading…') + '</div></div>';
   }
   colProjects.innerHTML = html;
   const projCountEl = document.getElementById('proj-filter-count');
@@ -2051,6 +2059,7 @@ function prefetchEntry(idx) {
       allEntries[idx].req = data.req;
       allEntries[idx].res = data.res;
       allEntries[idx].reqLoaded = true;
+      allEntries[idx].toolSources = data.toolSources || null;
       allEntries[idx]._prefetching = false;
       allEntries[idx]._prefetchPromise = null;
       if (data.receivedAt) allEntries[idx].receivedAt = data.receivedAt;
