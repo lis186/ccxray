@@ -172,15 +172,16 @@
   .loading-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ccxray-spin 0.8s linear infinite; }
   @keyframes ccxray-spin { to { transform: rotate(360deg); } }
   .col-title { padding: 10px 12px; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
-  #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; }
+  #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; overflow: hidden; }
   #cmd-bar.hidden { display: none; }
   #cmd-bar.overlay-active { opacity: 0; pointer-events: none; }
-  #cmd-bar-row1 { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
-  #cmd-bar-row2 { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
-  #cmd-bar-row2.visible { max-height: 24px; }
-  .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  #cmd-bar-row1 { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); overflow-x: auto; overflow-y: hidden; white-space: nowrap; flex-wrap: nowrap; scrollbar-width: thin; }
+  #cmd-bar-row1::-webkit-scrollbar { height: 3px; }
+  #cmd-bar-row1::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  #cmd-bar-row2 { display: none; }
+  .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; flex: 0 0 auto; }
   .cmd-key.disabled { opacity: 0.3; }
-  .cmd-sep { color: var(--border); margin: 0 1px; }
+  .cmd-sep { color: var(--border); margin: 0 1px; flex: 0 0 auto; }
   .cmd-key-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 11px; font-family: inherit; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; padding: 2px 5px; margin: -2px -5px; border-radius: 4px; }
   .cmd-key-btn:hover { background: var(--surface-hover); color: var(--text); }
   .cmd-key-btn:active { opacity: 0.6; }

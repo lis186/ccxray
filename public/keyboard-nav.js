@@ -42,6 +42,237 @@ function _fStarLabel() {
   return t && t.starred ? '☆ unstar' : '★ star';
 }
 
+function _starNavItems(id) {
+  return [
+    { key: 'n', label: 'next star', id: id || 'star-nav', clickKey: 'n' },
+    { key: 'N', label: 'prev star', id: id || 'star-nav', clickKey: 'N' },
+  ];
+}
+
+function _hasStarNavTargets() {
+  return _getStarNavTargets().length > 0;
+}
+
+function _targetKey(target) {
+  if (!target || !target.kind) return '';
+  if (target.kind === 'project') return 'project:' + target.project;
+  if (target.kind === 'session') return 'session:' + target.sessionId;
+  if (target.kind === 'turn') return 'turn:' + target.entryId;
+  if (target.kind === 'step') {
+    const suffix = target.sub == null ? '' : ':' + target.sub;
+    return 'step:' + target.entryId + '::' + target.stepIdx + suffix;
+  }
+  return '';
+}
+
+function _projectIndex(name) {
+  if (!name) return 999999;
+  const names = [...projectsMap.keys()];
+  const idx = names.indexOf(name);
+  return idx >= 0 ? idx : names.length + String(name).localeCompare('');
+}
+
+function _sessionIndex(sid) {
+  if (!sid) return 999999;
+  const ids = [...sessionsMap.keys()];
+  const idx = ids.indexOf(sid);
+  return idx >= 0 ? idx : ids.length + String(sid).localeCompare('');
+}
+
+function _entryProjectName(entry) {
+  if (!entry) return '';
+  if (typeof _projectNameForEntry === 'function') return _projectNameForEntry(entry);
+  return typeof getProjectName === 'function' ? getProjectName(entry.cwd) : '';
+}
+
+function _starSortKey(target) {
+  if (!target || !target.kind) return [999999, 999999, 999999, 999999, 999999, 999999];
+  if (target.kind === 'project') {
+    return [_projectIndex(target.project), -1, -1, -1, -1, 0];
+  }
+  if (target.kind === 'session') {
+    const sess = sessionsMap.get(target.sessionId);
+    const project = sess && typeof getProjectName === 'function' ? getProjectName(sess.cwd) : '';
+    return [_projectIndex(project), _sessionIndex(target.sessionId), -1, -1, -1, 1];
+  }
+  const idx = typeof _findEntryIndexById === 'function' ? _findEntryIndexById(target.entryId) : -1;
+  const entry = idx >= 0 ? allEntries[idx] : null;
+  const base = [_projectIndex(_entryProjectName(entry)), _sessionIndex(entry && entry.sessionId), idx < 0 ? 999999 : idx];
+  if (target.kind === 'turn') return base.concat([-1, -1, 2]);
+  const subRank = target.sub === 'thinking' ? -0.5 : (typeof target.sub === 'number' ? target.sub : -1);
+  return base.concat([target.stepIdx, subRank, 3]);
+}
+
+function _compareStarTargets(a, b) {
+  const ak = _starSortKey(a);
+  const bk = _starSortKey(b);
+  for (let i = 0; i < Math.max(ak.length, bk.length); i++) {
+    if ((ak[i] || 0) < (bk[i] || 0)) return -1;
+    if ((ak[i] || 0) > (bk[i] || 0)) return 1;
+  }
+  return _targetKey(a).localeCompare(_targetKey(b));
+}
+
+function _canNavigateStarTarget(target) {
+  if (!target) return false;
+  if (target.kind === 'project') return projectsMap.has(target.project);
+  if (target.kind === 'session') return typeof _resolveSessionId === 'function' && !!_resolveSessionId(target.sessionId);
+  if (target.kind === 'turn' || target.kind === 'step') return typeof _findEntryIndexById === 'function' && _findEntryIndexById(target.entryId) >= 0;
+  return false;
+}
+
+function _getStarNavTargets() {
+  if (!window.xrayStars || typeof targetFromStar !== 'function') return [];
+  const targets = [];
+  for (const id of window.xrayStars.projects || []) targets.push(targetFromStar('project', id));
+  for (const id of window.xrayStars.sessions || []) targets.push(targetFromStar('session', id));
+  for (const id of window.xrayStars.turns || []) targets.push(targetFromStar('turn', id));
+  for (const id of window.xrayStars.steps || []) targets.push(targetFromStar('step', id));
+
+  const seen = new Set();
+  return targets
+    .filter(_canNavigateStarTarget)
+    .sort(_compareStarTargets)
+    .filter(target => {
+      const key = _targetKey(target);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function _stepSubRank(sub) {
+  if (sub === 'thinking') return -0.5;
+  if (typeof sub === 'number') return sub;
+  return -1;
+}
+
+function _compareStepTargets(a, b) {
+  if (a.stepIdx !== b.stepIdx) return a.stepIdx - b.stepIdx;
+  const subDiff = _stepSubRank(a.sub) - _stepSubRank(b.sub);
+  if (subDiff !== 0) return subDiff;
+  return _targetKey(a).localeCompare(_targetKey(b));
+}
+
+function _getTimelineStarNavTargets() {
+  if (!window.xrayStars || typeof targetFromStar !== 'function' || selectedTurnIdx < 0) return [];
+  const entry = allEntries[selectedTurnIdx];
+  if (!entry || !entry.id) return [];
+
+  return [...(window.xrayStars.steps || [])]
+    .map(id => targetFromStar('step', id))
+    .filter(target => target && target.entryId === entry.id && _canNavigateStarTarget(target))
+    .sort(_compareStepTargets);
+}
+
+function _hasTimelineStarNavTargets() {
+  return _getTimelineStarNavTargets().length > 0;
+}
+
+function jumpToTimelineStar(dir) {
+  const targets = _getTimelineStarNavTargets();
+  if (!targets.length) {
+    if (typeof showToast === 'function') showToast('No starred steps in this timeline', 2000);
+    return false;
+  }
+
+  const current = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null;
+  let idx = current && current.kind === 'step'
+    ? targets.findIndex(t => _targetKey(t) === _targetKey(current))
+    : -1;
+
+  if (idx >= 0) {
+    idx = dir === 'prev'
+      ? (idx > 0 ? idx - 1 : targets.length - 1)
+      : (idx < targets.length - 1 ? idx + 1 : 0);
+  } else if (current && current.kind === 'step') {
+    idx = dir === 'prev' ? targets.length - 1 : 0;
+    for (let i = 0; i < targets.length; i++) {
+      const cmp = _compareStepTargets(targets[i], current);
+      if (dir === 'next' && cmp > 0) { idx = i; break; }
+      if (dir === 'prev' && cmp < 0) idx = i;
+    }
+  } else {
+    idx = dir === 'prev' ? targets.length - 1 : 0;
+  }
+
+  const target = targets[idx];
+  if (!target || typeof navigateTarget !== 'function') return false;
+  navigateTarget(target, { focus: true, scroll: true, smooth: false }).then(result => {
+    if (result && result.ok === false && typeof showToast === 'function') {
+      showToast('Star jump failed: ' + result.reason, 2500);
+    }
+  });
+  return true;
+}
+
+function jumpToStar(dir) {
+  const targets = _getStarNavTargets();
+  if (!targets.length) {
+    if (typeof showToast === 'function') showToast('No starred items', 2000);
+    return false;
+  }
+
+  const current = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null;
+  const currentKey = _targetKey(current);
+  let idx = targets.findIndex(t => _targetKey(t) === currentKey);
+  if (idx >= 0) {
+    idx = dir === 'prev'
+      ? (idx > 0 ? idx - 1 : targets.length - 1)
+      : (idx < targets.length - 1 ? idx + 1 : 0);
+  } else if (current) {
+    const curSort = _starSortKey(current);
+    idx = dir === 'prev' ? targets.length - 1 : 0;
+    for (let i = 0; i < targets.length; i++) {
+      const cmp = _compareSortKeys(_starSortKey(targets[i]), curSort);
+      if (dir === 'next' && cmp > 0) { idx = i; break; }
+      if (dir === 'prev' && cmp < 0) idx = i;
+    }
+  } else {
+    idx = dir === 'prev' ? targets.length - 1 : 0;
+  }
+
+  const target = targets[idx];
+  if (!target || typeof navigateTarget !== 'function') return false;
+  navigateTarget(target, { focus: true, scroll: true, smooth: false }).then(result => {
+    if (result && result.ok === false && typeof showToast === 'function') {
+      showToast('Star jump failed: ' + result.reason, 2500);
+    }
+  });
+  return true;
+}
+
+function _compareSortKeys(a, b) {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if ((a[i] || 0) < (b[i] || 0)) return -1;
+    if ((a[i] || 0) > (b[i] || 0)) return 1;
+  }
+  return 0;
+}
+
+function _timelineCallMatchesType(call, type) {
+  if (!call) return false;
+  if (type === 'error') return !!call.isError;
+  if (type === 'skill') return call.name === 'Skill';
+  if (type === 'subagent') return call.name === 'Agent' || call.name === 'Task';
+  if (type === 'mcp') return String(call.name || '').startsWith('mcp__');
+  return false;
+}
+
+function _hasTimelineStepType(type) {
+  if (!isFocusedMode || selectedSection !== 'timeline' || !Array.isArray(currentSteps)) return false;
+  return currentSteps.some(step => step && step.type === 'tool-group' && step.calls.some(call => _timelineCallMatchesType(call, type)));
+}
+
+function _timelineStepElementMatchesType(el, type) {
+  if (!el) return false;
+  if (type === 'error') return el.dataset.hasError === '1';
+  if (type === 'skill') return el.dataset.tool === 'Skill';
+  if (type === 'subagent') return el.dataset.tool === 'Agent' || el.dataset.tool === 'Task';
+  if (type === 'mcp') return (el.dataset.tool || '').startsWith('mcp__');
+  return false;
+}
+
 function isEnabled(keyId) {
   switch (keyId) {
     case '→-projects':     return projectsMap.size > 0;
@@ -50,6 +281,12 @@ function isEnabled(keyId) {
     case '→-sections':     return selectedSection != null;
     case 'enter-sections': return selectedSection != null;
     case 'f-star':         return getStarTargetFromSelection() !== null;
+    case 'star-nav':       return _hasStarNavTargets();
+    case 'timeline-star-nav': return _hasTimelineStarNavTargets();
+    case 'timeline-jump-error': return _hasTimelineStepType('error');
+    case 'timeline-jump-skill': return _hasTimelineStepType('skill');
+    case 'timeline-jump-subagent': return _hasTimelineStepType('subagent');
+    case 'timeline-jump-mcp': return _hasTimelineStepType('mcp');
     default:               return true;
   }
 }
@@ -65,16 +302,18 @@ function getCmdBarState() {
           { key: '↑↓', label: 'steps' },
           { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
           { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
-          { key: 'e', label: 'next error',    clickKey: 'e' },
-          { key: 'E', label: 'prev error',    clickKey: 'E' },
-          { key: 's', label: 'next skill',    clickKey: 's' },
-          { key: 'S', label: 'prev skill',    clickKey: 'S' },
-          { key: 'a', label: 'next subagent', clickKey: 'a' },
-          { key: 'A', label: 'prev subagent', clickKey: 'A' },
-          { key: 'm', label: 'next mcp',      clickKey: 'm' },
-          { key: 'M', label: 'prev mcp',      clickKey: 'M' },
+          ..._starNavItems('timeline-star-nav'),
         ],
-        row2: null,
+        row2: [
+          { key: 'e', label: 'next error',    id: 'timeline-jump-error', clickKey: 'e' },
+          { key: 'E', label: 'prev error',    id: 'timeline-jump-error', clickKey: 'E' },
+          { key: 's', label: 'next skill',    id: 'timeline-jump-skill', clickKey: 's' },
+          { key: 'S', label: 'prev skill',    id: 'timeline-jump-skill', clickKey: 'S' },
+          { key: 'a', label: 'next subagent', id: 'timeline-jump-subagent', clickKey: 'a' },
+          { key: 'A', label: 'prev subagent', id: 'timeline-jump-subagent', clickKey: 'A' },
+          { key: 'm', label: 'next mcp',      id: 'timeline-jump-mcp', clickKey: 'm' },
+          { key: 'M', label: 'prev mcp',      id: 'timeline-jump-mcp', clickKey: 'M' },
+        ],
         row2Visible: false,
       };
     }
@@ -83,6 +322,7 @@ function getCmdBarState() {
         { key: '↑↓', label: 'switch section' },
         { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        ..._starNavItems(),
       ],
       row2: null,
       row2Visible: false,
@@ -101,6 +341,7 @@ function getCmdBarState() {
         { key: '↑↓', label: 'select', id: '↑↓-projects' },
         { key: '→', label: 'open', id: '→-projects', clickKey: 'ArrowRight' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        ..._starNavItems(),
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -113,6 +354,7 @@ function getCmdBarState() {
         { key: '←', label: 'back',  clickKey: 'ArrowLeft' },
         { key: '→', label: 'open',  id: '→-sessions', clickKey: 'ArrowRight' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        ..._starNavItems(),
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -126,6 +368,7 @@ function getCmdBarState() {
         { key: '→', label: 'sections', id: '→-turns', clickKey: 'ArrowRight' },
         { key: 'Enter', label: 'focus', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        ..._starNavItems(),
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -138,6 +381,7 @@ function getCmdBarState() {
         { key: '←', label: 'back',         clickKey: 'ArrowLeft' },
         { key: 'Enter', label: 'focus detail', id: 'enter-sections', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        ..._starNavItems(),
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -174,9 +418,10 @@ function renderCmdBar() {
     }).join('<span class="cmd-sep">·</span>');
   }
 
-  row1.innerHTML = buildRow(state.row1);
-  row2.innerHTML = buildRow(state.row2);
-  row2.classList.toggle('visible', !!state.row2Visible);
+  const items = (state.row1 || []).concat(state.row2 || []);
+  row1.innerHTML = buildRow(items);
+  row2.innerHTML = '';
+  row2.classList.remove('visible');
 }
 
 // ── Keyboard shortcuts overlay ──
@@ -204,6 +449,15 @@ document.addEventListener('keydown', (e) => {
   const tabMap = { '1': 'dashboard', '2': 'usage', '3': 'sysprompt' };
   if (tabMap[key]) { switchTab(tabMap[key]); e.preventDefault(); return; }
 
+  if (key === 'n' || key === 'N') {
+    const dir = key === 'N' ? 'prev' : 'next';
+    const jumped = isFocusedMode && selectedSection === 'timeline'
+      ? jumpToTimelineStar(dir)
+      : jumpToStar(dir);
+    if (jumped) e.preventDefault();
+    return;
+  }
+
   if (key === 'f') {
     const target = getStarTargetFromSelection();
     if (target) {
@@ -229,13 +483,26 @@ document.addEventListener('keydown', (e) => {
     }
     if ((key === 'ArrowUp' || key === 'ArrowDown') && selectedSection === 'timeline') {
       e.preventDefault();
+      // Navigate between top-level steps (not sub-items within a step)
       const all = [...colDetail.querySelectorAll('.tl-step-summary')];
       if (!all.length) return;
+      // Build ordered list of unique step indices, preserving DOM order
+      const seen = new Set();
+      const steps = [];
+      for (const el of all) {
+        const s = el.dataset.step;
+        if (!seen.has(s)) { seen.add(s); steps.push(s); }
+      }
+      // Find current step
       const curEl = colDetail.querySelector('.tl-step-summary.active');
-      const curPos = curEl ? all.indexOf(curEl) : -1;
-      const nextPos = Math.max(0, Math.min(all.length - 1, curPos + (key === 'ArrowDown' ? 1 : -1)));
-      all[nextPos].click();
-      all[nextPos].scrollIntoView({ block: 'nearest' });
+      const curStep = curEl ? curEl.dataset.step : null;
+      const curPos = curStep != null ? steps.indexOf(curStep) : -1;
+      const nextPos = Math.max(0, Math.min(steps.length - 1, curPos + (key === 'ArrowDown' ? 1 : -1)));
+      const nextStep = steps[nextPos];
+      // Click the first element of the target step
+      const target = colDetail.querySelector('.tl-step-summary[data-step="' + nextStep + '"]');
+      target?.click();
+      target?.scrollIntoView({ block: 'nearest' });
       return;
     }
     // Navigate between sections while staying in focused mode
@@ -333,13 +600,7 @@ function jumpToStepType(type, dir) {
   if (!allStepEls.length) return;
   const curEl = colDetail.querySelector('.tl-step-summary.active');
 
-  const candidates = allStepEls.filter(function(el) {
-    if (type === 'error') return el.dataset.hasError === '1';
-    if (type === 'skill') return el.dataset.tool === 'Skill';
-    if (type === 'subagent') return el.dataset.tool === 'Agent' || el.dataset.tool === 'Task';
-    if (type === 'mcp') return (el.dataset.tool || '').startsWith('mcp__');
-    return false;
-  });
+  const candidates = allStepEls.filter(el => _timelineStepElementMatchesType(el, type));
 
   if (!candidates.length) return;
   const ci = candidates.indexOf(curEl);

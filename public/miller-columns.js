@@ -2578,6 +2578,7 @@ function renderDetailCol() {
           const mm = colDetail.querySelector('.minimap');
           const sa = colDetail.querySelector('.tl-scroll-area');
           if (mm && sa) { layoutMinimapBlocks(mm); initMinimapInteractions(mm, sa); }
+          if (typeof renderCmdBar === 'function') renderCmdBar();
         });
         if (currentSteps.length && selectedMessageIdx < 0) {
           selectStep(currentSteps.length - 1);
