@@ -238,26 +238,13 @@ document.addEventListener('keydown', (e) => {
     }
     if ((key === 'ArrowUp' || key === 'ArrowDown') && selectedSection === 'timeline') {
       e.preventDefault();
-      // Navigate between top-level steps (not sub-items within a step)
       const all = [...colDetail.querySelectorAll('.tl-step-summary')];
       if (!all.length) return;
-      // Build ordered list of unique step indices, preserving DOM order
-      const seen = new Set();
-      const steps = [];
-      for (const el of all) {
-        const s = el.dataset.step;
-        if (!seen.has(s)) { seen.add(s); steps.push(s); }
-      }
-      // Find current step
       const curEl = colDetail.querySelector('.tl-step-summary.active');
-      const curStep = curEl ? curEl.dataset.step : null;
-      const curPos = curStep != null ? steps.indexOf(curStep) : -1;
-      const nextPos = Math.max(0, Math.min(steps.length - 1, curPos + (key === 'ArrowDown' ? 1 : -1)));
-      const nextStep = steps[nextPos];
-      // Click the first element of the target step
-      const target = colDetail.querySelector('.tl-step-summary[data-step="' + nextStep + '"]');
-      target?.click();
-      target?.scrollIntoView({ block: 'nearest' });
+      const curPos = curEl ? all.indexOf(curEl) : -1;
+      const nextPos = Math.max(0, Math.min(all.length - 1, curPos + (key === 'ArrowDown' ? 1 : -1)));
+      all[nextPos].click();
+      all[nextPos].scrollIntoView({ block: 'nearest' });
       return;
     }
     // Navigate between sections while staying in focused mode
