@@ -90,6 +90,8 @@ Connected clients (2):
 
 在 timeline 內，步驟類型跳轉快捷鍵讓你快速掃描 session：`e`/`E` 跳到下/上一個錯誤，`s`/`S` 跳到 Skill 呼叫，`a`/`A` 跳到 subagent（Agent/Task）呼叫，`m`/`M` 跳到 MCP 工具呼叫。每次跳轉都有位置感知——從目前位置往前或往後找最近的符合步驟，並同步更新網址列。
 
+`n`/`N` 可在整個儀表板中跳到下/上一個加星項目——跨越 projects、sessions、turns 及 timeline 的個別步驟。快捷鍵列只在目前畫面有可到達的加星項目時才顯示此按鍵。
+
 ![鍵盤導航](docs/keyboard.png)
 
 ### Session 標題與 Cache 提醒

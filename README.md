@@ -90,6 +90,8 @@ Drive the whole dashboard with your keyboard. Every screen shows a context-sensi
 
 Inside the timeline, step-type jump shortcuts let you scan sessions instantly: `e`/`E` jumps to the next/previous error, `s`/`S` to Skill calls, `a`/`A` to subagent (Agent/Task) calls, `m`/`M` to MCP tool calls. Each jump is position-aware — it finds the nearest match forward or backward from wherever you are, and updates the address bar URL.
 
+`n`/`N` jumps to the next/previous starred item anywhere in the dashboard — across projects, sessions, turns, and individual timeline steps. The command bar shows the shortcut only when starred items are reachable from the current view.
+
 ![Keyboard navigation](docs/keyboard.png)
 
 ### Session Titles & Cache Alerts

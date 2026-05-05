@@ -82,3 +82,7 @@
 - [x] 10.9 Chunked `addEntry` processes entries in batches of 60 with `requestAnimationFrame` yields; shows "Restoring N entries · …" then "Restoring… K / N" progress text; single sort + `renderProjectsCol()` after all chunks complete
 - [x] 10.10 Server starts HTTP listener before log restore: `listen()` resolves, then `runPostListenStartupTasks()` runs async; `store.restoreState` tracks phases (`restoring` / `ready` / `error`) and is exposed via `GET /_api/entries`
 - [x] 10.11 `Cache-Control: no-store` added to all static asset responses (HTML, CSS, JS) so browsers never serve a stale dashboard build
+- [x] 10.12 `n`/`N` keyboard shortcuts navigate to the next/previous starred item across the whole dashboard (projects, sessions, turns, steps); within the timeline, `n`/`N` scope to starred steps in the current turn; command bar hint is gated by `_hasStarNavTargets()` / `_hasTimelineStarNavTargets()`
+- [x] 10.13 `↑`/`↓` in timeline now navigates all `.tl-step-summary` elements including thinking rows that share a step index with a tool-call row (previously `querySelector` by `data-step` collapsed duplicates, making thinking rows below a 🧠 step unreachable)
+- [x] 10.14 `→` from the Projects column auto-selects the first session of the focused project when no session was previously selected
+- [x] 10.15 Timeline hotkey bar collapses to a single always-visible row; shortcuts that are inactive in the current context are visually disabled (dimmed, non-clickable) rather than hidden

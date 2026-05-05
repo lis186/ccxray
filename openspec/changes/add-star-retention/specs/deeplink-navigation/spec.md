@@ -174,6 +174,32 @@ Tool call step rows carry a `data-tool="<toolName>"` attribute written at render
 
 After each jump, `syncUrlFromState()` is called so the URL reflects the new step selection.
 
+---
+
+### Requirement: `n`/`N` navigate between starred items across the whole dashboard
+
+`n` jumps to the next starred item; `N` jumps to the previous. Navigation is **global** — it crosses project, session, turn, and timeline-step boundaries — and is **sorted** by the canonical display order (project name → session recency → turn index → step index).
+
+Context rules:
+- When the timeline section is focused and the current turn has starred steps, `n`/`N` navigate among starred steps within that timeline only (`_getTimelineStarNavTargets`).
+- Otherwise, `n`/`N` navigate among all reachable starred targets across all columns (`_getStarNavTargets`). A target is reachable if its parent entry is in `allEntries` and (for sessions) its session ID is present in `sessionsMap`.
+- The command bar shows the `n`/`N` hint only when `_hasStarNavTargets()` or `_hasTimelineStarNavTargets()` returns true.
+
+Each navigation calls `navigateTarget(target)`, which routes through all Miller columns and syncs the URL.
+
+A toast `'No starred steps in this timeline'` is shown when the user presses `n`/`N` in timeline context with no starred steps in the current turn.
+
+#### Scenario: n/N hidden when no stars exist
+
+- **WHEN** `window.xrayStars` has no starred projects, sessions, turns, or steps
+- **THEN** `_hasStarNavTargets()` returns false and the command bar does not show the `n`/`N` hint
+
+#### Scenario: n jumps to next starred turn across sessions
+
+- **GIVEN** starred turns exist in sessions A and B, and session A's turn is currently selected
+- **WHEN** the user presses `n`
+- **THEN** `navigateTarget` is called with the next starred target in sorted order (session B's turn if it sorts later)
+
 #### Scenario: URL updates after keyboard jump
 
 - **WHEN** the user presses `e` and a next error step exists
