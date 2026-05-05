@@ -657,12 +657,19 @@ function renderStarBadge(level, id) {
     return '<button class="pin-btn disabled" title="' + escapeHtml(tip) + '" disabled>☆</button>';
   }
   const direct = isStarredAt(level, id);
-  const derived = direct ? 0 : countDescendantStars(level, id);
+  const derived = countDescendantStars(level, id);
   const idAttr = JSON.stringify(id).replace(/"/g, '&quot;');
-  let glyph, cls, tip;
-  if (direct) {
+  let glyph, cls, tip, onclickJs;
+  if (direct && derived > 0) {
+    // ★[N]: directly starred with starred descendants — glyph toggles star, chip opens popover
+    glyph = '★<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
+    cls = 'pinned';
+    tip = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
+  } else if (direct) {
     glyph = '★'; cls = 'pinned';
     tip = 'Starred — click to unstar';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
   } else if (derived > 0) {
     // Chip-style count: framing the digit with a small filled rounded background
     // signals "this is a count of items" (Gmail-unread / GitHub-PR convention),
@@ -671,15 +678,12 @@ function renderStarBadge(level, id) {
     glyph = '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
     cls = 'derived';
     tip = 'Retained because ' + derived + ' starred descendants below — click to view';
+    onclickJs = 'event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this)';
   } else {
     glyph = '☆'; cls = '';
     tip = 'Star this ' + level + ' (keeps log forever)';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
   }
-  // Derived state opens a popover (so the user can see *which* descendants are
-  // keeping this level retained). Direct/empty states are simple toggles.
-  const onclickJs = (cls === 'derived')
-    ? 'event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this)'
-    : 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',' + (!direct) + ')';
   return '<button class="pin-btn ' + cls + '" onclick="' + onclickJs + '" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
 }
 
@@ -694,6 +698,7 @@ function _closeStarPopover() {
   document.removeEventListener('click', _starPopoverDocClick);
   document.removeEventListener('keydown', _starPopoverEscKey);
   _starPopoverState = null;
+  window._openPopover = null;
 }
 function _starPopoverDocClick(e) {
   if (!_starPopoverState) return;
@@ -884,6 +889,8 @@ function _listStarredDescendants(level, id) {
 }
 
 function openDerivedPopover(level, id, anchorEl) {
+  window._onPopoverOpen?.();
+  window._popoverFocusedIdx = -1;
   // Re-click on same level+id toggles closed (anchor el may have been replaced
   // by rerenderColumnsAfterStar — compare logical identity, not DOM ref).
   if (_starPopoverState && _starPopoverState.level === level && _starPopoverState.id === id) {
@@ -899,9 +906,13 @@ function openDerivedPopover(level, id, anchorEl) {
   const items = _listStarredDescendants(level, id);
   if (items.length === 0) return;
 
+  const directStar = isStarredAt(level, id);
   const pop = document.createElement('div');
   pop.className = 'star-popover';
-  let html = '<div class="star-popover-title">Stars in this ' + level + ' · ★ toggles, row jumps' +
+  const titleText = directStar
+    ? items.length + ' starred items inside'
+    : 'Stars in this ' + level + ' · ★ toggles, row jumps';
+  let html = '<div class="star-popover-title">' + titleText +
     '<button class="star-popover-close" title="Close" aria-label="Close popover">×</button>' +
     '</div>';
   html += '<div class="star-popover-body">';
@@ -918,7 +929,6 @@ function openDerivedPopover(level, id, anchorEl) {
       '</div>';
   }
   html += '</div>';
-  html += '<div class="star-popover-footer"><button class="star-popover-anchor">★ Star this ' + level + ' directly</button></div>';
   pop.innerHTML = html;
 
   const r = anchorEl.getBoundingClientRect();
@@ -984,13 +994,8 @@ function openDerivedPopover(level, id, anchorEl) {
       _closeStarPopover();
     });
   }
-  pop.querySelector('.star-popover-anchor').addEventListener('click', async (e) => {
-    e.stopPropagation();
-    _closeStarPopover();
-    await toggleStar(level, id, true);
-  });
-
   _starPopoverState = { el: pop, anchor: anchorEl, level, id };
+  window._openPopover = { level, id };
   // Defer outside-click registration so the click that opened us doesn't close us.
   setTimeout(() => {
     document.addEventListener('click', _starPopoverDocClick);
@@ -998,6 +1003,9 @@ function openDerivedPopover(level, id, anchorEl) {
   }, 0);
 }
 window.openDerivedPopover = openDerivedPopover;
+window.countDescendantStars = countDescendantStars;
+window.navigateDescendant = _navigateToDescendant;
+window.closeStarPopover = _closeStarPopover;
 
 // Repaint affected columns after a star toggle. Called after API success.
 // Note: popover (if open) stays open. Its anchor element may be replaced by
@@ -1016,13 +1024,18 @@ function rerenderColumnsAfterStar() {
   document.querySelectorAll('.turn-item .turn-star').forEach(btn => {
     const id = btn.dataset.id;
     const starred = id && xrayStars.turns.has(id);
-    const derived = !starred && id ? countDescendantStars('turn', id) : 0;
+    const derived = id ? countDescendantStars('turn', id) : 0;
     btn.classList.toggle('starred', !!starred);
-    btn.classList.toggle('derived', derived > 0);
-    btn.innerHTML = starred ? '★' : (derived > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>' : '☆');
-    btn.title = starred
-      ? 'Starred — click to unstar'
-      : (derived > 0 ? 'Retained because ' + derived + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+    btn.classList.toggle('derived', !starred && derived > 0);
+    if (starred && derived > 0) {
+      btn.innerHTML = '★<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
+      btn.title = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
+    } else {
+      btn.innerHTML = starred ? '★' : (derived > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>' : '☆');
+      btn.title = starred
+        ? 'Starred — click to unstar'
+        : (derived > 0 ? 'Retained because ' + derived + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+    }
   });
   document.querySelectorAll('.tl-step-star').forEach(btn => {
     const id = btn.dataset.id;

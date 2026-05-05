@@ -374,7 +374,8 @@ function addEntry(e) {
     const starEl = event && event.target && event.target.closest && event.target.closest('.turn-star');
     if (starEl && el.contains(starEl)) {
       event.stopPropagation();
-      if (starEl.classList.contains('derived') && !starEl.classList.contains('starred') && typeof openDerivedPopover === 'function') {
+      const isChipClick = event.target.classList.contains('pin-btn-count');
+      if (isChipClick && typeof openDerivedPopover === 'function') {
         openDerivedPopover('turn', starEl.dataset.id, starEl);
         return;
       }
@@ -397,14 +398,18 @@ function addEntry(e) {
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
   const isTurnStarred = !!(window.xrayStars && window.xrayStars.turns && window.xrayStars.turns.has(entryId));
-  const derivedStepStars = (!isTurnStarred && typeof countDescendantStars === 'function') ? countDescendantStars('turn', entryId) : 0;
+  const derivedStepStars = (typeof countDescendantStars === 'function') ? countDescendantStars('turn', entryId) : 0;
   const starClass = isTurnStarred ? ' starred' : (derivedStepStars > 0 ? ' derived' : '');
-  const starTitle = isTurnStarred
-    ? 'Starred — click to unstar'
-    : (derivedStepStars > 0 ? 'Retained because ' + derivedStepStars + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
-  const starGlyph = isTurnStarred
-    ? '★'
-    : (derivedStepStars > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>' : '☆');
+  const starTitle = isTurnStarred && derivedStepStars > 0
+    ? 'Starred — click ★ to unstar, click [' + derivedStepStars + '] to view starred items inside'
+    : isTurnStarred
+      ? 'Starred — click to unstar'
+      : (derivedStepStars > 0 ? 'Retained because ' + derivedStepStars + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+  const starGlyph = isTurnStarred && derivedStepStars > 0
+    ? '★<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>'
+    : isTurnStarred
+      ? '★'
+      : (derivedStepStars > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>' : '☆');
   const starHtml = '<span class="turn-star' + starClass + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + escapeHtml(starTitle) + '">' + starGlyph + '</span>';
   const identityTooltip = [
     isCompacted ? 'Context compacted' : null,

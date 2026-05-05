@@ -1,3 +1,31 @@
+// ── Popover keyboard state ────────────────────────────────────────────────────
+
+let _popoverOpenerTarget = null;
+window._onPopoverOpen = () => { _popoverOpenerTarget = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null; };
+
+function renderPopoverFocus(idx) {
+  const rows = [...document.querySelectorAll('.star-popover-item')];
+  rows.forEach(r => r.classList.remove('pop-row-focused'));
+  const el = rows[idx];
+  if (el) { el.classList.add('pop-row-focused'); el.scrollIntoView({ block: 'nearest' }); }
+}
+
+function restoreColFocus() {
+  if (!_popoverOpenerTarget) return;
+  if (typeof window.navigateTarget === 'function') window.navigateTarget(_popoverOpenerTarget, { focus: true });
+}
+
+function _hasBadgeDescendants() {
+  const t = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null;
+  if (!t) return false;
+  let level, id;
+  if (t.kind === 'project') { level = 'project'; id = t.project; }
+  else if (t.kind === 'session') { level = 'session'; id = t.sessionId; }
+  else if (t.kind === 'turn') { level = 'turn'; id = t.entryId; }
+  else return false;
+  return (window.countDescendantStars?.(level, id) ?? 0) > 0;
+}
+
 // ── Command Bar ──────────────────────────────────────────────────────────────
 
 function getStarTargetFromSelection() {
@@ -275,14 +303,16 @@ function _timelineStepElementMatchesType(el, type) {
 
 function isEnabled(keyId) {
   switch (keyId) {
-    case '→-projects':     return projectsMap.size > 0;
-    case '→-sessions':     return selectedSessionId != null || colSessions.querySelectorAll('.session-item').length > 0;
-    case '→-turns':        return selectedTurnIdx >= 0;
-    case '→-sections':     return selectedSection != null;
+    case '→-projects':     return !window._openPopover && projectsMap.size > 0;
+    case '→-sessions':     return !window._openPopover && (selectedSessionId != null || colSessions.querySelectorAll('.session-item').length > 0);
+    case '→-turns':        return !window._openPopover && selectedTurnIdx >= 0;
+    case '→-sections':     return !window._openPopover && selectedSection != null;
     case 'enter-sections': return selectedSection != null;
     case 'f-star':         return getStarTargetFromSelection() !== null;
-    case 'star-nav':       return _hasStarNavTargets();
-    case 'timeline-star-nav': return _hasTimelineStarNavTargets();
+    case 'p-popover':      return _hasBadgeDescendants() && !window._openPopover;
+    case 'tab-switch':     return !window._openPopover;
+    case 'star-nav':       return !window._openPopover && _hasStarNavTargets();
+    case 'timeline-star-nav': return !window._openPopover && _hasTimelineStarNavTargets();
     case 'timeline-jump-error': return _hasTimelineStepType('error');
     case 'timeline-jump-skill': return _hasTimelineStepType('skill');
     case 'timeline-jump-subagent': return _hasTimelineStepType('subagent');
@@ -322,7 +352,6 @@ function getCmdBarState() {
         { key: '↑↓', label: 'switch section' },
         { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
-        ..._starNavItems(),
       ],
       row2: null,
       row2Visible: false,
@@ -330,10 +359,12 @@ function getCmdBarState() {
   }
 
   const tabKeys = [
-    { key: '1', label: 'Dashboard',  clickKey: '1' },
-    { key: '2', label: 'Usage',      clickKey: '2' },
-    { key: '3', label: 'Sys Prompt', clickKey: '3' },
+    { key: '1', label: 'Dashboard',  id: 'tab-switch', clickKey: '1' },
+    { key: '2', label: 'Usage',      id: 'tab-switch', clickKey: '2' },
+    { key: '3', label: 'Sys Prompt', id: 'tab-switch', clickKey: '3' },
   ];
+
+  const pPopoverItem = { key: 'p', label: 'popover', id: 'p-popover', clickKey: 'p' };
 
   if (focusedCol === 'projects') {
     return {
@@ -341,6 +372,7 @@ function getCmdBarState() {
         { key: '↑↓', label: 'select', id: '↑↓-projects' },
         { key: '→', label: 'open', id: '→-projects', clickKey: 'ArrowRight' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        pPopoverItem,
         ..._starNavItems(),
         ...tabKeys,
       ],
@@ -354,6 +386,7 @@ function getCmdBarState() {
         { key: '←', label: 'back',  clickKey: 'ArrowLeft' },
         { key: '→', label: 'open',  id: '→-sessions', clickKey: 'ArrowRight' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        pPopoverItem,
         ..._starNavItems(),
         ...tabKeys,
       ],
@@ -368,6 +401,7 @@ function getCmdBarState() {
         { key: '→', label: 'sections', id: '→-turns', clickKey: 'ArrowRight' },
         { key: 'Enter', label: 'focus', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
+        pPopoverItem,
         ..._starNavItems(),
         ...tabKeys,
       ],
@@ -381,7 +415,7 @@ function getCmdBarState() {
         { key: '←', label: 'back',         clickKey: 'ArrowLeft' },
         { key: 'Enter', label: 'focus detail', id: 'enter-sections', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
-        ..._starNavItems(),
+        pPopoverItem,
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -445,6 +479,38 @@ document.addEventListener('keydown', (e) => {
   }
   if (key === '?') { toggleKbdOverlay(); e.preventDefault(); return; }
 
+  // Popover intercept — must run before column-nav and focused-mode handlers
+  if (window._openPopover) {
+    if (key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowRight' || key === 'Enter' || key === 'Escape' || key === 'f') {
+      e.preventDefault();
+      e.stopPropagation();
+      const rows = [...document.querySelectorAll('.star-popover-item')];
+      const lastIdx = rows.length - 1;
+      if (key === 'ArrowUp') {
+        window._popoverFocusedIdx = window._popoverFocusedIdx === -1 ? lastIdx : Math.max(0, window._popoverFocusedIdx - 1);
+        renderPopoverFocus(window._popoverFocusedIdx);
+      } else if (key === 'ArrowDown') {
+        window._popoverFocusedIdx = window._popoverFocusedIdx === -1 ? 0 : Math.min(lastIdx, window._popoverFocusedIdx + 1);
+        renderPopoverFocus(window._popoverFocusedIdx);
+      } else if (key === 'Enter' || key === 'ArrowRight') {
+        if (window._popoverFocusedIdx >= 0) {
+          const row = document.querySelector('.pop-row-focused');
+          if (row) { window.navigateDescendant(row.dataset.navKind, row.dataset.navId); window.closeStarPopover(); }
+        }
+      } else if (key === 'f') {
+        if (window._popoverFocusedIdx >= 0) {
+          const row = document.querySelector('.pop-row-focused');
+          row?.querySelector('.star-popover-glyph-btn')?.click();
+        }
+      } else { // Escape
+        e.stopImmediatePropagation();
+        window.closeStarPopover();
+        restoreColFocus();
+      }
+      return;
+    }
+  }
+
   // Tab switching: 1=Dashboard, 2=Usage, 3=System Prompt
   const tabMap = { '1': 'dashboard', '2': 'usage', '3': 'sysprompt' };
   if (tabMap[key]) { switchTab(tabMap[key]); e.preventDefault(); return; }
@@ -471,6 +537,28 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  if (key === 'p') {
+    if (_hasBadgeDescendants() && !window._openPopover) {
+      e.preventDefault();
+      const t = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null;
+      if (!t) return;
+      let level, id;
+      if (t.kind === 'project') { level = 'project'; id = t.project; }
+      else if (t.kind === 'session') { level = 'session'; id = t.sessionId; }
+      else if (t.kind === 'turn') { level = 'turn'; id = t.entryId; }
+      if (!level) return;
+      const itemSel = t.kind === 'turn' ? '.turn-item.selected' : t.kind === 'session' ? '.session-item.selected' : '.project-item.selected';
+      const focusedItem = document.querySelector(itemSel);
+      const badgeEl = focusedItem && (focusedItem.querySelector('.pin-btn') || focusedItem.querySelector('.turn-star'));
+      if (!badgeEl) return;
+      window.openDerivedPopover(level, id, badgeEl);
+      window._popoverFocusedIdx = 0;
+      renderPopoverFocus(0);
+      renderCmdBar();
+    }
+    return;
+  }
+
   // Focused mode intercept — takes priority over column navigation
   if (isFocusedMode) {
     if (key === 'Escape' || key === 'ArrowLeft') {
@@ -483,24 +571,12 @@ document.addEventListener('keydown', (e) => {
     }
     if ((key === 'ArrowUp' || key === 'ArrowDown') && selectedSection === 'timeline') {
       e.preventDefault();
-      // Navigate between top-level steps (not sub-items within a step)
       const all = [...colDetail.querySelectorAll('.tl-step-summary')];
       if (!all.length) return;
-      // Build ordered list of unique step indices, preserving DOM order
-      const seen = new Set();
-      const steps = [];
-      for (const el of all) {
-        const s = el.dataset.step;
-        if (!seen.has(s)) { seen.add(s); steps.push(s); }
-      }
-      // Find current step
       const curEl = colDetail.querySelector('.tl-step-summary.active');
-      const curStep = curEl ? curEl.dataset.step : null;
-      const curPos = curStep != null ? steps.indexOf(curStep) : -1;
-      const nextPos = Math.max(0, Math.min(steps.length - 1, curPos + (key === 'ArrowDown' ? 1 : -1)));
-      const nextStep = steps[nextPos];
-      // Click the first element of the target step
-      const target = colDetail.querySelector('.tl-step-summary[data-step="' + nextStep + '"]');
+      const curIdx = curEl ? all.indexOf(curEl) : -1;
+      const nextIdx = Math.max(0, Math.min(all.length - 1, curIdx + (key === 'ArrowDown' ? 1 : -1)));
+      const target = all[nextIdx];
       target?.click();
       target?.scrollIntoView({ block: 'nearest' });
       return;
