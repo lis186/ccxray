@@ -106,9 +106,15 @@
 
   /* Timeline accordion in detail */
   .tl-step { border-bottom: none; }
-  .tl-step-summary { cursor: pointer; padding: 4px 8px; transition: background 0.1s; }
+  .tl-step-summary { display: grid; grid-template-columns: 28px minmax(0, 1fr) 24px; align-items: start; column-gap: 4px; cursor: pointer; padding: 4px 8px 4px 4px; transition: background 0.1s; }
   .tl-step-summary:hover { background: var(--surface-hover); }
   .tl-step-summary.active { background: var(--surface-active); box-shadow: inset 3px 0 0 0 var(--accent); }
+  .tl-step-main { min-width: 0; }
+  .tl-step-summary .msg-list-row { padding-right: 0; }
+  .tl-step-num { color: var(--dim); font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 10px; line-height: 1.2; opacity: 0.75; pointer-events: none; padding-top: 1px; text-align: left; }
+  .tl-step-star { justify-self: stretch; width: 24px; background: none; border: none; color: var(--dim); cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 1px 0; opacity: 0.65; user-select: none; text-align: right; }
+  .tl-step-star:hover { opacity: 1; color: var(--yellow); }
+  .tl-step-star.starred { opacity: 1; color: var(--yellow); }
   .tool-call-error { background: rgba(248,81,73,0.12); border-left: 2px solid var(--red); }
   .tl-step-detail { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg); }
 
@@ -162,18 +168,23 @@
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
+  .loading-state { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .loading-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ccxray-spin 0.8s linear infinite; }
+  @keyframes ccxray-spin { to { transform: rotate(360deg); } }
   .col-title { padding: 10px 12px; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
-  #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; }
+  #cmd-bar { flex-shrink: 0; border-top: 1px solid var(--border); background: var(--surface); user-select: none; transition: opacity 0.15s; overflow: hidden; }
   #cmd-bar.hidden { display: none; }
   #cmd-bar.overlay-active { opacity: 0; pointer-events: none; }
-  #cmd-bar-row1 { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
-  #cmd-bar-row2 { max-height: 0; overflow: hidden; transition: max-height 0.2s ease; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); }
-  #cmd-bar-row2.visible { max-height: 24px; }
-  .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+  #cmd-bar-row1 { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); overflow-x: auto; overflow-y: hidden; white-space: nowrap; flex-wrap: nowrap; scrollbar-width: thin; }
+  #cmd-bar-row1::-webkit-scrollbar { height: 3px; }
+  #cmd-bar-row1::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  #cmd-bar-row2 { display: none; }
+  .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; flex: 0 0 auto; }
   .cmd-key.disabled { opacity: 0.3; }
-  .cmd-sep { color: var(--border); margin: 0 1px; }
-  .cmd-toggle { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 10px; min-width: 44px; height: 100%; padding: 0 4px; font-family: inherit; line-height: 1; }
-  .cmd-toggle:hover { color: var(--text); }
+  .cmd-sep { color: var(--border); margin: 0 1px; flex: 0 0 auto; }
+  .cmd-key-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 11px; font-family: inherit; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; padding: 2px 5px; margin: -2px -5px; border-radius: 4px; }
+  .cmd-key-btn:hover { background: var(--surface-hover); color: var(--text); }
+  .cmd-key-btn:active { opacity: 0.6; }
   kbd { display: inline-block; padding: 1px 5px; border: 1px solid var(--border); border-radius: 3px; font-size: 10px; font-family: monospace; background: var(--bg); color: var(--text); }
 
   /* ── Status dots ── */
@@ -249,9 +260,44 @@
   @keyframes cachePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   .launch-btn { background: none; border: 1px solid var(--border); color: var(--green); width: 18px; height: 18px; border-radius: 50%; cursor: pointer; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0; }
   .launch-btn:hover { background: var(--green); color: #000; border-color: var(--green); }
-  .pin-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11px; padding: 0 2px; opacity: 0.3; transition: opacity 0.15s, color 0.15s; margin-left: auto; flex-shrink: 0; }
+  .pin-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 0 2px; opacity: 0.6; transition: opacity 0.15s, color 0.15s; margin-left: auto; flex-shrink: 0; user-select: none; }
   .pin-btn:hover { opacity: 1; color: var(--yellow); }
   .pin-btn.pinned { opacity: 1; color: var(--yellow); }
+  .pin-btn.derived { opacity: 0.85; color: var(--dim); }
+  .pin-btn.derived:hover { opacity: 1; color: var(--yellow); }
+  .pin-btn.disabled { opacity: 0.25; cursor: not-allowed; }
+  .pin-btn.disabled:hover { opacity: 0.25; color: var(--dim); }
+  /* Chip-style count for derived state (☆ followed by a small framed number).
+     The chip pattern signals "count of items" so users don't misread the
+     digit as a version or duration. Yellow text ties back to star vocab. */
+  .pin-btn-count { display: inline-block; margin-left: 3px; padding: 0 5px; border-radius: 7px; background: var(--surface); color: var(--yellow); font-size: 10px; font-weight: 600; line-height: 1.5; vertical-align: middle; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  /* Star popover: lists which descendants are keeping a parent retained.
+     Anchored under the derived ☆N badge; dismissed by Esc / outside click /
+     re-clicking the badge. */
+  /* Popover sits above the dashboard so it must stand off the page surface
+     visually. --surface-hover is one tier lighter than --surface in dark
+     theme, providing a "floating panel" feel; combined with a stronger
+     shadow and a slightly brighter border, the panel reads as elevated in
+     both themes without needing per-theme overrides. */
+  .star-popover { background: var(--surface-hover); border: 1px solid var(--accent); border-radius: 6px; box-shadow: 0 12px 32px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04); min-width: 300px; width: min(426px, calc(100vw - 16px)); max-height: 320px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; color: var(--text); }
+  .star-popover-title { position: relative; padding: 8px 32px 6px 10px; color: var(--text); font-size: 11px; border-bottom: 1px solid var(--border); background: var(--surface-active); }
+  .star-popover-close { position: absolute; top: 4px; right: 6px; background: none; border: none; color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 2px 6px; border-radius: 3px; font-family: inherit; }
+  .star-popover-close:hover { color: var(--text); background: var(--surface-hover, var(--bg)); }
+  .star-popover-body { padding: 4px 0; }
+  .star-popover-item { display: flex; align-items: center; gap: 6px; padding: 4px 10px; cursor: pointer; }
+  .star-popover-item:hover { background: var(--surface-hover, var(--bg)); }
+  .star-popover-item:hover .star-popover-label { color: var(--accent, var(--yellow)); }
+  .star-popover-item.pop-row-focused { background: var(--surface-active); box-shadow: inset 2px 0 0 0 var(--accent, var(--yellow)); }
+  .star-popover-item.pop-row-focused .star-popover-label { color: var(--accent, var(--yellow)); }
+  .star-popover-glyph-btn { background: none; border: none; color: var(--dim); cursor: pointer; flex-shrink: 0; font-size: 15px; line-height: 1; padding: 1px 4px; border-radius: 3px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; user-select: none; transition: transform 0.1s, background 0.1s; }
+  .star-popover-glyph-btn.starred { color: var(--yellow); }
+  /* Hover gives feedback via scale + background only — color is reserved for
+     state (.starred = yellow, default = dim) so the ★/☆ flip is unambiguous
+     even when the cursor is still hovering after a click. */
+  .star-popover-glyph-btn:hover { transform: scale(1.2); background: var(--surface-hover, var(--bg)); }
+  .star-popover-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
+  .star-popover-time { margin-left: auto; flex: 0 0 auto; color: var(--dim); text-align: right; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
+
 
   /* ── Turn items ── */
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
@@ -269,7 +315,13 @@
   .turn-item .status-dot-err { color: var(--red); }
   .turn-item .turn-wait { color: var(--dim); font-size: 11px; flex-shrink: 0; }
   .turn-item .turn-critical-marker { font-size: 10px; color: var(--red); font-weight: bold; flex-shrink: 0; }
-  .turn-item .turn-cost { color: var(--yellow); margin-left: auto; flex-shrink: 0; }
+  .turn-item .turn-star { margin-left: auto; flex-shrink: 0; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 0 2px; user-select: none; opacity: 0.6; }
+  .turn-item .turn-star:hover { opacity: 1; }
+  .turn-item .turn-star.starred { color: var(--yellow); opacity: 1; }
+  .turn-item .turn-star.derived { color: var(--dim); opacity: 0.85; }
+  .turn-item .turn-star.derived:hover { color: var(--yellow); opacity: 1; }
+  .turn-item .turn-star.disabled { opacity: 0.25; cursor: not-allowed; }
+  .turn-item .turn-cost-line { font-size: 11px; color: var(--dim); text-align: right; margin-top: 2px; }
   /* Line 2: title */
   .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   /* Line 3: ctx bar */

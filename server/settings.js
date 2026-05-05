@@ -7,18 +7,63 @@ const os = require('os');
 const SETTINGS_DIR = process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json');
 
-const DEFAULTS = { statusLine: true };
+const DEFAULTS = {
+  statusLine: true,
+  starredProjects: [],
+  starredSessions: [],
+  starredTurns: [],
+  starredSteps: [],
+};
+
+// Coerce a settings field to a string array, dropping non-strings. Returns a
+// fresh array so callers can mutate without poisoning the defaults.
+function coerceStringArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(v => typeof v === 'string');
+}
 
 // In-memory cache — populated on first readSettings() call (server startup).
 // writeSettings() updates the cache before the async disk write so subsequent
 // reads never go back to disk.
 let _cache = null;
 
+function cloneSettings(s) {
+  return {
+    ...s,
+    starredProjects: [...(s.starredProjects || [])],
+    starredSessions: [...(s.starredSessions || [])],
+    starredTurns: [...(s.starredTurns || [])],
+    starredSteps: [...(s.starredSteps || [])],
+  };
+}
+
+function serializeStars(s) {
+  return {
+    projects: s.starredProjects || [],
+    sessions: s.starredSessions || [],
+    turns: s.starredTurns || [],
+    steps: s.starredSteps || [],
+  };
+}
+
 function readSettings() {
-  if (_cache) return { ..._cache };
+  if (_cache) return cloneSettings(_cache);
   let firstLoad = false;
   try {
-    _cache = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) };
+    const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      _cache = {
+        ...DEFAULTS,
+        ...parsed,
+        starredProjects: coerceStringArray(parsed.starredProjects),
+        starredSessions: coerceStringArray(parsed.starredSessions),
+        starredTurns: coerceStringArray(parsed.starredTurns),
+        starredSteps: coerceStringArray(parsed.starredSteps),
+      };
+    } else {
+      console.error(`[ccxray] settings.json at ${SETTINGS_PATH} did not parse to an object — using defaults.`);
+      _cache = { ...DEFAULTS };
+    }
     firstLoad = true;
   } catch {
     _cache = { ...DEFAULTS };
@@ -27,7 +72,7 @@ function readSettings() {
   if (firstLoad) {
     console.log(`\x1b[90m   Context HUD: ${_cache.statusLine ? 'enabled' : 'disabled'} (settings.json)\x1b[0m`);
   }
-  return { ..._cache };
+  return cloneSettings(_cache);
 }
 
 function writeSettings(data) {
@@ -41,4 +86,4 @@ function writeSettings(data) {
 // Test helper — reset cache so unit tests get a clean slate
 function _resetSettingsCache() { _cache = null; }
 
-module.exports = { readSettings, writeSettings, _resetSettingsCache };
+module.exports = { readSettings, writeSettings, serializeStars, _resetSettingsCache };

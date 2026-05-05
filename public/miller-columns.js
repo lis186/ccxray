@@ -136,48 +136,1013 @@ function renderSystemBlockViewer(system) {
   return html;
 }
 
-// ── Pin storage ──
-const pinnedProjects = new Set(JSON.parse(localStorage.getItem('xray-pinned-projects') || '[]'));
-const pinnedSessions = new Map(); // sid → { sid, pinnedAt }
-(JSON.parse(localStorage.getItem('xray-pinned-sessions') || '[]')).forEach(p => pinnedSessions.set(p.sid, p));
+// ── Star storage (server-backed; replaces legacy localStorage pins) ──
+// xrayStars holds the canonical client-side mirror of GET /_api/stars.
+// Sets are used for O(1) membership in render hot paths. Exposed on window
+// so entry-rendering can read it when drawing turn cards.
+const xrayStars = { projects: new Set(), sessions: new Set(), turns: new Set(), steps: new Set() };
+window.xrayStars = xrayStars;
 
-function savePinnedProjects() { localStorage.setItem('xray-pinned-projects', JSON.stringify([...pinnedProjects])); }
-function savePinnedSessions() { localStorage.setItem('xray-pinned-sessions', JSON.stringify([...pinnedSessions.values()])); }
-function togglePinProject(name) {
-  if (pinnedProjects.has(name)) pinnedProjects.delete(name);
-  else pinnedProjects.add(name);
-  savePinnedProjects();
-  renderProjectsCol();
-}
-function togglePinSession(sid) {
-  if (pinnedSessions.has(sid)) pinnedSessions.delete(sid);
-  else pinnedSessions.set(sid, { sid, pinnedAt: Date.now() });
-  savePinnedSessions();
-  const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-  const sess = sessionsMap.get(sid);
-  if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
-  applySessionFilter();
+// Must stay in sync with SENTINEL_SESSIONS / SENTINEL_PROJECTS in server/helpers.js.
+const SENTINEL_SESSIONS = new Set(['direct-api']);
+const SENTINEL_PROJECT_NAMES = new Set(['(unknown)', '(quota-check)']);
+
+function isStarredAt(level, id) {
+  if (level === 'project') return xrayStars.projects.has(id);
+  if (level === 'session') return xrayStars.sessions.has(id);
+  if (level === 'turn') return xrayStars.turns.has(id);
+  if (level === 'step') return xrayStars.steps.has(id);
+  return false;
 }
 
-function expireSessionPins() {
-  const SEVEN_DAYS = 7 * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  let changed = false;
-  for (const [sid, pin] of pinnedSessions) {
-    const sess = sessionsMap.get(sid);
-    // If session exists, check last activity; if not, use pinnedAt as fallback
-    let lastActive = pin.pinnedAt;
-    if (sess && sess.lastId && sess.lastId.length >= 19) {
-      const ts = new Date(sess.lastId.slice(0, 10) + 'T' + sess.lastId.slice(11, 19).replace(/-/g, ':')).getTime();
-      if (ts) lastActive = ts;
-    }
-    if (now - lastActive > SEVEN_DAYS) {
-      pinnedSessions.delete(sid);
-      changed = true;
+function _projectNameForEntry(entry) {
+  if (!entry) return '';
+  const direct = getProjectName(entry.cwd);
+  if (direct && direct !== '(unknown)') return direct;
+  const sess = sessionsMap.get(entry.sessionId);
+  return sess ? getProjectName(sess.cwd) : direct;
+}
+
+// ── TargetRef codec + navigator ─────────────────────────────────────────────
+// A TargetRef is the canonical navigation shape used by stars, deep links, and
+// breadcrumb URL sync. Legacy `msg` URLs are decoded into step targets here.
+var _targetNavigationUrlSyncDepth = 0;
+
+function _findEntryIndexById(entryId) {
+  if (!entryId || !Array.isArray(allEntries)) return -1;
+  for (let i = 0; i < allEntries.length; i++) {
+    if (allEntries[i] && allEntries[i].id === entryId) return i;
+  }
+  return -1;
+}
+
+function _findEntryById(entryId) {
+  const idx = _findEntryIndexById(entryId);
+  if (idx >= 0) return allEntries[idx];
+  return entryById.get(entryId) || null;
+}
+
+function _resolveSessionId(shortOrFullSid) {
+  if (!shortOrFullSid) return null;
+  if (sessionsMap.has(shortOrFullSid)) return shortOrFullSid;
+  for (const [sid] of sessionsMap) {
+    if (sid.startsWith(shortOrFullSid)) return sid;
+  }
+  return null;
+}
+
+function _decodeStepPath(raw) {
+  if (raw == null || raw === '') return null;
+  const parts = String(raw).split(':');
+  if (parts.length > 2) return null;
+  const stepIdx = Number(parts[0]);
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return null;
+  if (parts.length < 2 || parts[1] === '') return { stepIdx, sub: null };
+  if (parts[1] === 'thinking') return { stepIdx, sub: 'thinking' };
+  const sub = Number(parts[1]);
+  return Number.isInteger(sub) && sub >= 0 ? { stepIdx, sub } : null;
+}
+
+function _encodeStepPath(stepIdx, sub) {
+  if (!Number.isInteger(stepIdx) || stepIdx < 0) return '';
+  if (sub == null) return String(stepIdx);
+  return String(stepIdx) + ':' + sub;
+}
+
+function _decodeLegacyMsgSelection(msg) {
+  const encoded = Number(msg);
+  if (!Number.isInteger(encoded) || encoded < 0) return null;
+  const stepIdx = Math.floor(encoded / 1000);
+  const subIdx = encoded % 1000;
+  if (subIdx === 999) return { stepIdx, sub: 'thinking' };
+  // Legacy msg cannot distinguish a base step from call #0; base is the safest
+  // fallback and renderStepDetailHtml still opens call #0 for tool groups.
+  if (subIdx === 0) return { stepIdx, sub: null };
+  return { stepIdx, sub: subIdx };
+}
+
+function _selectedMessageIdxForStep(stepIdx, sub) {
+  if (sub === 'thinking') return stepIdx * 1000 + 999;
+  if (typeof sub === 'number') return stepIdx * 1000 + sub;
+  return stepIdx * 1000;
+}
+
+function _stepSelectionFromSelectedMessageIdx() {
+  const decoded = _decodeLegacyMsgSelection(selectedMessageIdx);
+  if (!decoded) return null;
+  if (selectedStepSubExplicit) return { stepIdx: decoded.stepIdx, sub: selectedStepSub };
+  return decoded;
+}
+
+function getSelectedStepSelection() {
+  return _stepSelectionFromSelectedMessageIdx();
+}
+
+function setSelectedStepSelection(stepIdx, sub) {
+  selectedMessageIdx = _selectedMessageIdxForStep(stepIdx, sub);
+  selectedStepSub = sub == null ? null : sub;
+  selectedStepSubExplicit = true;
+}
+
+function setSelectedLegacyMessageSelection(idx) {
+  selectedMessageIdx = idx;
+  const decoded = _decodeLegacyMsgSelection(idx);
+  selectedStepSub = decoded ? decoded.sub : null;
+  selectedStepSubExplicit = !!decoded;
+}
+
+function clearSelectedStepSelection() {
+  selectedMessageIdx = -1;
+  selectedStepSub = null;
+  selectedStepSubExplicit = false;
+}
+
+function targetFromStar(kind, id) {
+  if (kind === 'project') return { kind: 'project', project: id };
+  if (kind === 'session') return { kind: 'session', sessionId: id };
+  if (kind === 'turn') return { kind: 'turn', entryId: id };
+  if (kind === 'step') {
+    const parsed = _decodeStepStarId(id);
+    if (!parsed) return null;
+    return { kind: 'step', entryId: parsed.entryId, stepIdx: parsed.stepIdx, sub: parsed.sub };
+  }
+  return null;
+}
+
+function _decodeStepStarId(stepId) {
+  if (typeof stepId !== 'string') return null;
+  const parts = stepId.split('::');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const parsed = _decodeStepPath(parts[1]);
+  if (!parsed) return null;
+  return { entryId: parts[0], stepIdx: parsed.stepIdx, sub: parsed.sub };
+}
+
+function targetFromCurrentSelection() {
+  if (selectedTurnIdx >= 0) {
+    const entry = allEntries[selectedTurnIdx];
+    if (entry && entry.id) {
+      if (selectedSection === 'timeline' && selectedMessageIdx >= 0) {
+        const step = _stepSelectionFromSelectedMessageIdx();
+        if (step) return { kind: 'step', entryId: entry.id, stepIdx: step.stepIdx, sub: step.sub, section: 'timeline' };
+      }
+      return { kind: 'turn', entryId: entry.id, section: selectedSection || null };
     }
   }
-  if (changed) savePinnedSessions();
+  if (selectedSessionId) return { kind: 'session', sessionId: selectedSessionId };
+  if (selectedProjectName) return { kind: 'project', project: selectedProjectName };
+  return null;
 }
+
+function _entryIdFromLegacyTurn(fullSid, turnDisplayNum) {
+  if (!fullSid || !turnDisplayNum) return null;
+  for (let i = 0; i < allEntries.length; i++) {
+    const entry = allEntries[i];
+    if (entry && entry.sessionId === fullSid && entry.displayNum === turnDisplayNum) return entry.id;
+  }
+  return null;
+}
+
+function targetFromDeepLinkParams(params) {
+  const failures = [];
+  const targetKind = params.get('target');
+  const entryId = params.get('e');
+  const stepRaw = params.get('step');
+
+  if (targetKind === 'step' && !entryId) {
+    failures.push('Entry id is required for step links');
+    return { target: null, failures };
+  }
+  if ((targetKind === 'step' || (entryId && stepRaw != null)) && entryId) {
+    const parsed = _decodeStepPath(stepRaw);
+    if (parsed) return { target: { kind: 'step', entryId, stepIdx: parsed.stepIdx, sub: parsed.sub, section: 'timeline' }, failures };
+    failures.push('Step "' + stepRaw + '" is invalid');
+    if (targetKind === 'step') return { target: null, failures };
+  }
+  if ((targetKind === 'turn' || (!targetKind && entryId)) && entryId) {
+    return { target: { kind: 'turn', entryId, section: params.get('sec') || null }, failures };
+  }
+  if (targetKind === 'session') {
+    const sid = _resolveSessionId(params.get('s'));
+    if (sid) return { target: { kind: 'session', sessionId: sid }, failures };
+    failures.push('Session "' + params.get('s') + '" not found');
+    return { target: null, failures };
+  }
+  if (targetKind === 'project' && params.get('p')) {
+    return { target: { kind: 'project', project: params.get('p') }, failures };
+  }
+
+  const shortSid = params.get('s');
+  const fullSid = _resolveSessionId(shortSid);
+  if (shortSid && !fullSid) failures.push('Session "' + shortSid + '" not found');
+
+  const project = params.get('p');
+  const section = params.get('sec') || null;
+  const msgRaw = params.get('msg');
+  const turnDisplayNum = params.get('t');
+  if (fullSid) {
+    const entryIdFromTurn = turnDisplayNum ? _entryIdFromLegacyTurn(fullSid, turnDisplayNum) : null;
+    if (turnDisplayNum && !entryIdFromTurn) failures.push('Turn #' + turnDisplayNum + ' not found in this session');
+    const targetEntryId = entryIdFromTurn || (sessionsMap.get(fullSid) && sessionsMap.get(fullSid).lastId);
+    if (targetEntryId && msgRaw != null) {
+      const parsedMsg = _decodeLegacyMsgSelection(msgRaw);
+      if (parsedMsg) return { target: { kind: 'step', entryId: targetEntryId, stepIdx: parsedMsg.stepIdx, sub: parsedMsg.sub, section: 'timeline' }, failures };
+      failures.push('Message selector "' + msgRaw + '" is invalid');
+    }
+    if (targetEntryId && (turnDisplayNum || section)) {
+      return { target: { kind: 'turn', entryId: targetEntryId, section }, failures };
+    }
+    return { target: { kind: 'session', sessionId: fullSid }, failures };
+  }
+
+  if (project) return { target: { kind: 'project', project }, failures };
+  return { target: null, failures };
+}
+
+function writeTargetToUrlParams(target, params) {
+  if (!target) return;
+  if (target.kind === 'project') {
+    params.set('target', 'project');
+    params.set('p', target.project);
+    return;
+  }
+  if (target.kind === 'session') {
+    params.set('target', 'session');
+    params.set('s', target.sessionId.slice(0, 8));
+    return;
+  }
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const entry = _findEntryById(target.entryId);
+    params.set('target', target.kind);
+    params.set('e', target.entryId);
+    if (entry) {
+      const proj = _projectNameForEntry(entry);
+      if (proj) params.set('p', proj);
+      if (entry.sessionId) params.set('s', entry.sessionId.slice(0, 8));
+      if (entry.displayNum) params.set('t', entry.displayNum);
+    }
+    if (target.kind === 'turn' && target.section) params.set('sec', target.section);
+    if (target.kind === 'step') {
+      params.set('sec', 'timeline');
+      params.set('step', _encodeStepPath(target.stepIdx, target.sub));
+    }
+  }
+}
+
+function formatTargetLabel(target, opts) {
+  opts = opts || {};
+  if (!target || !target.kind) return '';
+  if (target.kind === 'project') return opts.compact ? target.project : 'project ' + target.project;
+  if (target.kind === 'session') {
+    const sid = target.sessionId === 'direct-api' ? 'direct API' : String(target.sessionId || '').slice(0, 8);
+    return 'session ' + (sid || 'unknown');
+  }
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const entry = _findEntryById(target.entryId);
+    const sid = entry && entry.sessionId ? entry.sessionId.slice(0, 8) : 'unknown';
+    const turnNum = entry && entry.displayNum ? entry.displayNum : '?';
+    let label = 'session ' + sid + ' turn #' + turnNum;
+    if (target.kind === 'step') {
+      const subLabel = target.sub === 'thinking'
+        ? ' thinking'
+        : (typeof target.sub === 'number' ? ' call #' + (target.sub + 1) : '');
+      label += ' step #' + (Number.isInteger(target.stepIdx) ? target.stepIdx + 1 : '?') + subLabel;
+    }
+    return label;
+  }
+  return '';
+}
+
+function _ensureEntryLoadedByIndex(idx) {
+  const entry = allEntries[idx];
+  if (!entry) return Promise.resolve({ ok: false, reason: 'missing-entry' });
+  if (entry.reqLoaded) return Promise.resolve({ ok: true });
+  if (entry._prefetchPromise) {
+    return entry._prefetchPromise.then(() => {
+      const current = allEntries[idx];
+      return current && current.reqLoaded ? { ok: true } : { ok: false, reason: 'load-failed' };
+    }).catch(() => ({ ok: false, reason: 'load-failed' }));
+  }
+  if (entry._prefetching) return _waitForEntryLoaded(idx, 300);
+  entry._prefetching = true;
+  entry._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(entry.id))
+    .then(r => r.json())
+    .then(data => {
+      if (!data) return { ok: false, reason: 'load-failed' };
+      entry.req = data.req;
+      entry.res = data.res;
+      entry.reqLoaded = true;
+      entry.toolSources = data.toolSources || null;
+      entry._prefetching = false;
+      if (data.receivedAt) entry.receivedAt = data.receivedAt;
+      return { ok: true };
+    })
+    .catch(() => {
+      entry._prefetching = false;
+      return { ok: false, reason: 'load-failed' };
+    })
+    .then(result => {
+      entry._prefetching = false;
+      entry._prefetchPromise = null;
+      return result;
+    });
+  return entry._prefetchPromise;
+}
+
+function _waitForEntryLoaded(idx, attempts) {
+  const triesLeft = attempts == null ? 80 : attempts;
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const entry = allEntries[idx];
+      if (!entry) {
+        resolve({ ok: false, reason: 'missing-entry' });
+      } else if (entry.reqLoaded) {
+        resolve({ ok: true });
+      } else if (triesLeft > 0) {
+        _waitForEntryLoaded(idx, triesLeft - 1).then(resolve);
+      } else {
+        resolve({ ok: false, reason: 'load-timeout' });
+      }
+    });
+  });
+}
+
+function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts, opts) {
+  const triesLeft = attempts == null ? 120 : attempts;
+  opts = opts || {};
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const current = allEntries[idx];
+      if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') {
+        if (triesLeft > 0) _applyStepTargetWhenReady(idx, stepIdx, sub, triesLeft - 1, opts).then(resolve);
+        else resolve({ ok: false, reason: 'render-timeout' });
+        return;
+      }
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : []);
+      if (!currentSteps[stepIdx]) {
+        resolve({ ok: false, reason: 'missing-step' });
+        return;
+      }
+      if (!_stepTargetExists(currentSteps[stepIdx], sub)) {
+        resolve({ ok: false, reason: 'missing-step-part' });
+        return;
+      }
+      selectStep(stepIdx, sub);
+      const scroller = typeof scrollTimelineStepIntoViewWhenReady === 'function'
+        ? scrollTimelineStepIntoViewWhenReady(stepIdx, sub, 120, { smooth: opts.smooth !== false })
+        : Promise.resolve(false);
+      Promise.resolve(scroller).then(ok => resolve(ok ? { ok: true } : { ok: false, reason: 'render-timeout' }));
+    });
+  });
+}
+
+function _stepTargetExists(step, sub) {
+  if (!step) return false;
+  if (sub == null) return true;
+  if (sub === 'thinking') return step.type === 'tool-group' && step.thinking !== null;
+  if (typeof sub === 'number') return step.type === 'tool-group' && Array.isArray(step.calls) && !!step.calls[sub];
+  return false;
+}
+
+function _runTargetNavigation(fn, opts) {
+  opts = opts || {};
+  _targetNavigationUrlSyncDepth++;
+  let result;
+  try {
+    result = fn();
+  } catch (err) {
+    _targetNavigationUrlSyncDepth--;
+    throw err;
+  }
+  return Promise.resolve(result).then(navResult => {
+    _targetNavigationUrlSyncDepth--;
+    if ((!navResult || navResult.ok) && opts.replaceUrl !== false) syncUrlFromState();
+    return navResult;
+  }, err => {
+    _targetNavigationUrlSyncDepth--;
+    throw err;
+  });
+}
+
+function navigateTarget(target, opts) {
+  opts = opts || {};
+  if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] navigate ' + JSON.stringify(target));
+  if (!target || !target.kind) return Promise.resolve({ ok: false, reason: 'invalid-target' });
+
+  return _runTargetNavigation(() => _navigateTargetInner(target, opts), opts);
+}
+
+function _navigateTargetInner(target, opts) {
+  if (target.kind === 'project') {
+    if (!projectsMap.has(target.project)) return Promise.resolve({ ok: false, reason: 'missing-project' });
+    selectProject(target.project);
+    setFocus('projects');
+    return Promise.resolve({ ok: true });
+  }
+
+  if (target.kind === 'session') {
+    const sid = _resolveSessionId(target.sessionId);
+    const sess = sid ? sessionsMap.get(sid) : null;
+    if (!sess) return Promise.resolve({ ok: false, reason: 'missing-session' });
+    if (getStatusClass(sid) === 'sdot-off' && sessionFilterMode !== 'all') setSessionFilter('all');
+    const proj = getProjectName(sess.cwd);
+    if (proj && selectedProjectName !== proj) selectProject(proj);
+    selectSessionAndLatestTurn(sid);
+    setFocus(opts.focus || target.section ? 'turns' : 'sessions');
+    return Promise.resolve({ ok: true });
+  }
+
+  if (target.kind === 'turn' || target.kind === 'step') {
+    const idx = _findEntryIndexById(target.entryId);
+    if (idx < 0) return Promise.resolve({ ok: false, reason: 'missing-entry' });
+    const entry = allEntries[idx];
+    if (getStatusClass(entry.sessionId) === 'sdot-off' && sessionFilterMode !== 'all') setSessionFilter('all');
+    const proj = _projectNameForEntry(entry);
+    if (proj && selectedProjectName !== proj) selectProject(proj);
+    if (selectedSessionId !== entry.sessionId) selectSession(entry.sessionId);
+    selectTurn(idx, { smooth: opts.smooth !== false });
+    setFocus('turns');
+
+    if (target.kind === 'turn') {
+      if (target.section) selectSection(target.section);
+      return Promise.resolve({ ok: true });
+    }
+
+    return _ensureEntryLoadedByIndex(idx).then(loadResult => {
+      if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] load ' + JSON.stringify(loadResult));
+      if (!loadResult.ok) return loadResult;
+      selectedSection = 'timeline';
+      setSelectedStepSelection(target.stepIdx, target.sub);
+      if (!isFocusedMode && opts.focus !== false && typeof enterFocusedMode === 'function') {
+        enterFocusedMode();
+      } else {
+        renderDetailCol();
+      }
+      return _applyStepTargetWhenReady(idx, target.stepIdx, target.sub, null, opts).then(result => {
+        if (window.__ccxrayDebugTargets || location.search.includes('debugTargets=1')) console.log('[target] step result ' + JSON.stringify(result));
+        return result;
+      });
+    });
+  }
+
+  return Promise.resolve({ ok: false, reason: 'invalid-target' });
+}
+
+window.targetFromStar = targetFromStar;
+window.targetFromDeepLinkParams = targetFromDeepLinkParams;
+window.targetFromCurrentSelection = targetFromCurrentSelection;
+window.writeTargetToUrlParams = writeTargetToUrlParams;
+window.formatTargetLabel = formatTargetLabel;
+window.navigateTarget = navigateTarget;
+
+// Count direct stars at descendant levels for the tri-state badge.
+// project ← (sessions whose project resolves here) + (turns whose project resolves here)
+// session ← (turns whose sessionId === sid)
+// Sentinel buckets contribute 0 (we never derive upward into them).
+function countDescendantStars(level, id) {
+  if (level === 'turn') {
+    let count = 0;
+    for (const stepId of xrayStars.steps) {
+      if (_turnIdFromStepStarId(stepId) === id) count++;
+    }
+    return count;
+  }
+  let count = 0;
+  if (level === 'session') {
+    if (SENTINEL_SESSIONS.has(id)) return 0;
+    for (const turnId of xrayStars.turns) {
+      const e = entryById.get(turnId);
+      if (e && e.sessionId === id) count++;
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+      if (e && e.sessionId === id) count++;
+    }
+    return count;
+  }
+  // level === 'project'
+  if (SENTINEL_PROJECT_NAMES.has(id)) return 0;
+  for (const sid of xrayStars.sessions) {
+    const sess = sessionsMap.get(sid);
+    if (sess && getProjectName(sess.cwd) === id) count++;
+  }
+  for (const turnId of xrayStars.turns) {
+    const e = entryById.get(turnId);
+    if (!e) continue;
+    if (_projectNameForEntry(e) === id) count++;
+  }
+  for (const stepId of xrayStars.steps) {
+    const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+    if (!e) continue;
+    if (_projectNameForEntry(e) === id) count++;
+  }
+  return count;
+}
+
+function isStarredOrDerived(level, id) {
+  return isStarredAt(level, id) || countDescendantStars(level, id) > 0;
+}
+
+// Render a tri-state star badge for project/session columns.
+//   filled ★            → directly starred
+//   hollow ☆ + ³        → derived (descendants starred)
+//   hollow ☆ (dim)      → unprotected
+function renderStarBadge(level, id) {
+  const isSentinel = (level === 'session' && SENTINEL_SESSIONS.has(id))
+    || (level === 'project' && SENTINEL_PROJECT_NAMES.has(id));
+  if (isSentinel) {
+    const tip = level === 'session'
+      ? 'Catch-all session — star individual turns instead.'
+      : 'Catch-all project — star sessions or turns instead.';
+    return '<button class="pin-btn disabled" title="' + escapeHtml(tip) + '" disabled>☆</button>';
+  }
+  const direct = isStarredAt(level, id);
+  const derived = countDescendantStars(level, id);
+  const idAttr = JSON.stringify(id).replace(/"/g, '&quot;');
+  let glyph, cls, tip, onclickJs;
+  if (direct && derived > 0) {
+    // ★[N]: directly starred with starred descendants — glyph toggles star, chip opens popover
+    glyph = '★<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
+    cls = 'pinned';
+    tip = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
+  } else if (direct) {
+    glyph = '★'; cls = 'pinned';
+    tip = 'Starred — click to unstar';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
+  } else if (derived > 0) {
+    // Chip-style count: framing the digit with a small filled rounded background
+    // signals "this is a count of items" (Gmail-unread / GitHub-PR convention),
+    // so users don't read the superscript as "version 3" or "3 hours ago".
+    // Yellow text ties it back to the star vocabulary.
+    glyph = '☆<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
+    cls = 'derived';
+    tip = 'Star this ' + level + ', click [' + derived + '] to view starred items inside';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
+  } else {
+    glyph = '☆'; cls = '';
+    tip = 'Star this ' + level + ' (keeps log forever)';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
+  }
+  return '<button class="pin-btn ' + cls + '" onclick="' + onclickJs + '" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
+}
+
+// ── Derived-badge popover (lists which descendants are keeping a parent retained) ──
+// Single instance shared across all badges. State + handlers module-scoped so
+// outside-click and Esc dismiss work without re-registering on every open.
+let _starPopoverState = null; // { el, anchor, level, id }
+
+function _closeStarPopover() {
+  if (!_starPopoverState) return;
+  _starPopoverState.el.remove();
+  document.removeEventListener('click', _starPopoverDocClick);
+  document.removeEventListener('keydown', _starPopoverEscKey);
+  _starPopoverState = null;
+  window._openPopover = null;
+}
+function _starPopoverDocClick(e) {
+  if (!_starPopoverState) return;
+  if (_starPopoverState.el.contains(e.target)) return;
+  if (_starPopoverState.anchor && _starPopoverState.anchor.contains(e.target)) return;
+  _closeStarPopover();
+}
+function _starPopoverEscKey(e) {
+  if (e.key === 'Escape') _closeStarPopover();
+}
+
+// Jump the dashboard focus to a starred descendant (used by popover row click).
+// kind: 'session' | 'turn'. Closes the popover after a successful jump so the
+// user lands on the new selection without the popover floating over it.
+//
+// Also re-selects the descendant's project — without this, popovers opened
+// from a project card NOT currently focused would land the user on a session
+// that the project filter hides, leaving them looking at an empty turns col.
+function _navigateToDescendant(kind, id) {
+  const target = targetFromStar(kind, id);
+  if (!target) return;
+  _closeStarPopover();
+  navigateTarget(target, { focus: true, scroll: true, smooth: false }).then(result => {
+    if (!result || result.ok) {
+      if (target.kind === 'step' && typeof scrollTimelineStepIntoViewWhenReady === 'function') {
+        setTimeout(() => scrollTimelineStepIntoViewWhenReady(target.stepIdx, target.sub, 120, { smooth: false, settle: false }), 250);
+        setTimeout(() => scrollTimelineStepIntoViewWhenReady(target.stepIdx, target.sub, 120, { smooth: false, settle: false }), 750);
+      }
+      return;
+    }
+    showToast('Star jump failed: ' + result.reason);
+  });
+}
+
+function _selectedMessageIdxForStepStar(stepIdx, sub) {
+  return _selectedMessageIdxForStep(stepIdx, sub);
+}
+
+function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
+  const entry = allEntries[turnIdx];
+  if (!entry) return;
+  const apply = () => {
+    const current = allEntries[turnIdx];
+    if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') return;
+    selectedSection = 'timeline';
+    if (!isFocusedMode && typeof enterFocusedMode === 'function') {
+      setSelectedStepSelection(stepIdx, sub);
+      enterFocusedMode();
+    } else {
+      renderDetailCol();
+    }
+    requestAnimationFrame(() => {
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : []);
+      selectStep(stepIdx, sub);
+      if (typeof scrollTimelineStepIntoViewWhenReady === 'function') scrollTimelineStepIntoViewWhenReady(stepIdx, sub);
+      else if (typeof scrollTimelineStepIntoView === 'function') scrollTimelineStepIntoView(stepIdx, sub);
+    });
+  };
+  if (entry.reqLoaded) {
+    apply();
+    return;
+  }
+  fetch('/_api/entry/' + encodeURIComponent(entry.id))
+    .then(r => r.json())
+    .then(data => {
+      if (!data) return;
+      entry.req = data.req;
+      entry.res = data.res;
+      entry.reqLoaded = true;
+      entry._prefetching = false;
+      if (data.receivedAt) entry.receivedAt = data.receivedAt;
+      apply();
+    })
+    .catch(() => { entry._prefetching = false; });
+}
+
+function _turnIdFromStepStarId(stepId) {
+  return typeof stepId === 'string' ? stepId.split('::')[0] : '';
+}
+
+function _stepIndexFromStepStarId(stepId) {
+  const raw = typeof stepId === 'string' ? (stepId.split('::')[1] || '') : '';
+  const idx = Number(raw.split(':')[0]);
+  return Number.isInteger(idx) ? idx : -1;
+}
+
+function _stepSubFromStepStarId(stepId) {
+  const raw = typeof stepId === 'string' ? (stepId.split('::')[1] || '') : '';
+  const part = raw.split(':')[1];
+  if (part === 'thinking') return 'thinking';
+  const n = Number(part);
+  return Number.isInteger(n) ? n : null;
+}
+
+function _findEntryForStarLabel(entryId) {
+  if (Array.isArray(allEntries)) {
+    const full = allEntries.find(e => e && e.id === entryId);
+    if (full) return full;
+  }
+  return entryById.get(entryId) || null;
+}
+
+function _formatStarRelativeTime(entryOrId) {
+  if (entryOrId && typeof entryOrId === 'object') {
+    const receivedAt = Number(entryOrId.receivedAt);
+    if (Number.isFinite(receivedAt) && receivedAt > 0) return formatRelativeTimeFromMs(receivedAt);
+    return formatRelativeTime(entryOrId.id);
+  }
+  return formatRelativeTime(entryOrId);
+}
+
+function formatRelativeTimeFromMs(ts) {
+  const diff = Date.now() - ts;
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
+  return Math.floor(diff / 604800000) + 'w ago';
+}
+
+function _formatStarredTurnLabel(entryId) {
+  return formatTargetLabel({ kind: 'turn', entryId });
+}
+
+function _formatStarredStepLabel(stepId) {
+  const parsed = _decodeStepStarId(stepId);
+  return parsed
+    ? formatTargetLabel({ kind: 'step', entryId: parsed.entryId, stepIdx: parsed.stepIdx, sub: parsed.sub })
+    : 'step ?';
+}
+
+function _formatStarredSessionLabel(sid) {
+  const shortSid = sid === 'direct-api' ? 'direct API' : sid.slice(0, 8);
+  return 'session ' + shortSid;
+}
+
+function _formatStarredSessionTime(sid) {
+  const sess = sessionsMap.get(sid);
+  const refId = sess && (sess.lastId || sess.firstId);
+  return refId ? formatRelativeTime(refId) : '';
+}
+
+function _listStarredDescendants(level, id) {
+  const items = [];
+  if (level === 'turn') {
+    for (const stepId of xrayStars.steps) {
+      if (_turnIdFromStepStarId(stepId) === id) {
+        const e = _findEntryForStarLabel(id);
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e || id) });
+      }
+    }
+  } else if (level === 'session') {
+    for (const turnId of xrayStars.turns) {
+      const e = _findEntryForStarLabel(turnId);
+      if (e && e.sessionId === id) {
+        items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
+      }
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+      if (e && e.sessionId === id) {
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e) });
+      }
+    }
+  } else if (level === 'project') {
+    for (const sid of xrayStars.sessions) {
+      const sess = sessionsMap.get(sid);
+      if (sess && getProjectName(sess.cwd) === id) {
+        items.push({ kind: 'session', id: sid, label: _formatStarredSessionLabel(sid), time: _formatStarredSessionTime(sid) });
+      }
+    }
+    for (const turnId of xrayStars.turns) {
+      const e = _findEntryForStarLabel(turnId);
+      if (!e) continue;
+      if (_projectNameForEntry(e) === id) {
+        items.push({ kind: 'turn', id: turnId, label: _formatStarredTurnLabel(turnId), time: _formatStarRelativeTime(e) });
+      }
+    }
+    for (const stepId of xrayStars.steps) {
+      const e = _findEntryForStarLabel(_turnIdFromStepStarId(stepId));
+      if (!e) continue;
+      if (_projectNameForEntry(e) === id) {
+        items.push({ kind: 'step', id: stepId, label: _formatStarredStepLabel(stepId), time: _formatStarRelativeTime(e) });
+      }
+    }
+  }
+  return items;
+}
+
+function openDerivedPopover(level, id, anchorEl) {
+  window._onPopoverOpen?.();
+  window._popoverFocusedIdx = -1;
+  // Re-click on same level+id toggles closed (anchor el may have been replaced
+  // by rerenderColumnsAfterStar — compare logical identity, not DOM ref).
+  if (_starPopoverState && _starPopoverState.level === level && _starPopoverState.id === id) {
+    _closeStarPopover();
+    return;
+  }
+  _closeStarPopover();
+
+  // Snapshot of items currently starred under this parent. Rows for items the
+  // user later toggles off stay in the popover with a hollow ☆ — letting them
+  // undo a release without reopening. Reopening the popover resnaps to the
+  // current xrayStars state.
+  const items = _listStarredDescendants(level, id);
+  if (items.length === 0) return;
+
+  const directStar = isStarredAt(level, id);
+  const pop = document.createElement('div');
+  pop.className = 'star-popover';
+  const titleText = directStar
+    ? items.length + ' starred items inside'
+    : 'Stars in this ' + level + ' · ★ toggles, row jumps';
+  let html = '<div class="star-popover-title">' + titleText +
+    '<button class="star-popover-close" title="Close" aria-label="Close popover">×</button>' +
+    '</div>';
+  html += '<div class="star-popover-body">';
+  for (const it of items) {
+    const targetSet = it.kind === 'session' ? xrayStars.sessions
+                    : it.kind === 'turn' ? xrayStars.turns
+                    : xrayStars.steps;
+    const starred = targetSet.has(it.id);
+    const fullLabel = it.label + (it.time ? ' ' + it.time : '');
+    html += '<div class="star-popover-item" data-nav-kind="' + it.kind + '" data-nav-id="' + escapeHtml(it.id) + '" title="' + escapeHtml(fullLabel) + '">' +
+      '<button class="star-popover-glyph-btn' + (starred ? ' starred' : '') + '" data-kind="' + it.kind + '" data-id="' + escapeHtml(it.id) + '" title="Toggle star">' + (starred ? '★' : '☆') + '</button>' +
+      '<span class="star-popover-label">' + escapeHtml(it.label) + '</span>' +
+      (it.time ? '<span class="star-popover-time">' + escapeHtml(it.time) + '</span>' : '') +
+      '</div>';
+  }
+  html += '</div>';
+  pop.innerHTML = html;
+
+  const r = anchorEl.getBoundingClientRect();
+  pop.style.position = 'fixed';
+  pop.style.top = (r.bottom + 4) + 'px';
+  pop.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+  pop.style.zIndex = '1000';
+  document.body.appendChild(pop);
+
+  // Flip / clamp if popover overflows viewport edges.
+  const popRect = pop.getBoundingClientRect();
+  if (popRect.bottom > window.innerHeight - 8) {
+    pop.style.top = '';
+    pop.style.bottom = (window.innerHeight - r.top + 4) + 'px';
+  }
+  if (popRect.left < 8) {
+    // Project-column badges sit far left; right-anchoring would clip the
+    // popover's left edge off-screen. Re-anchor to viewport left margin.
+    pop.style.right = '';
+    pop.style.left = '8px';
+  }
+
+  // ★ glyph button toggles the row's star state in place — popover stays open,
+  // only this button's glyph flips. Re-clicking ☆ restars without reopening.
+  // Optimistic: flip the glyph synchronously before awaiting the server, so
+  // the click feels instant even on slow networks. After the POST resolves we
+  // re-sync the glyph to whatever xrayStars actually contains (handles the
+  // rare revert-on-failure path).
+  pop.querySelectorAll('.star-popover-glyph-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const kind = btn.dataset.kind;
+      const childId = btn.dataset.id;
+      const targetSet = kind === 'session' ? xrayStars.sessions
+                      : kind === 'turn' ? xrayStars.turns
+                      : xrayStars.steps;
+      const willBeStarred = !targetSet.has(childId);
+      btn.textContent = willBeStarred ? '★' : '☆';
+      btn.classList.toggle('starred', willBeStarred);
+      toggleStar(kind, childId, willBeStarred).then(() => {
+        const nowStarred = (kind === 'session' ? xrayStars.sessions
+                          : kind === 'turn' ? xrayStars.turns
+                          : xrayStars.steps).has(childId);
+        btn.textContent = nowStarred ? '★' : '☆';
+        btn.classList.toggle('starred', nowStarred);
+      });
+    });
+  });
+  // Row body click navigates; explicitly skip when the click landed on the
+  // glyph button (it has its own handler).
+  pop.querySelectorAll('.star-popover-item').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.star-popover-glyph-btn')) return;
+      e.stopPropagation();
+      _navigateToDescendant(row.dataset.navKind, row.dataset.navId);
+    });
+  });
+  // Explicit close button — popover no longer auto-dismisses on last unstar.
+  const closeBtn = pop.querySelector('.star-popover-close');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      _closeStarPopover();
+    });
+  }
+  _starPopoverState = { el: pop, anchor: anchorEl, level, id };
+  window._openPopover = { level, id };
+  // Defer outside-click registration so the click that opened us doesn't close us.
+  setTimeout(() => {
+    document.addEventListener('click', _starPopoverDocClick);
+    document.addEventListener('keydown', _starPopoverEscKey);
+  }, 0);
+}
+window.openDerivedPopover = openDerivedPopover;
+window.countDescendantStars = countDescendantStars;
+window.navigateDescendant = _navigateToDescendant;
+window.closeStarPopover = _closeStarPopover;
+
+// Repaint affected columns after a star toggle. Called after API success.
+// Note: popover (if open) stays open. Its anchor element may be replaced by
+// the column re-render; openDerivedPopover compares level+id (not DOM ref) on
+// re-click so the toggle-close path still works.
+function rerenderColumnsAfterStar() {
+  renderProjectsCol();
+  // Sessions column: re-render every visible session card so derived counts update.
+  for (const [sid, sess] of sessionsMap) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+  }
+  applySessionFilter();
+  // Turn cards: only the directly affected turn changes glyph; cheap to redraw all
+  // visible turn star buttons in current selection.
+  document.querySelectorAll('.turn-item .turn-star').forEach(btn => {
+    const id = btn.dataset.id;
+    const starred = id && xrayStars.turns.has(id);
+    const derived = id ? countDescendantStars('turn', id) : 0;
+    btn.classList.toggle('starred', !!starred);
+    btn.classList.toggle('derived', !starred && derived > 0);
+    if (starred && derived > 0) {
+      btn.innerHTML = '★<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
+      btn.title = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
+    } else {
+      btn.innerHTML = starred ? '★' : (derived > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>' : '☆');
+      btn.title = starred
+        ? 'Starred — click to unstar'
+        : (derived > 0 ? 'Retained because ' + derived + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
+    }
+  });
+  document.querySelectorAll('.tl-step-star').forEach(btn => {
+    const id = btn.dataset.id;
+    const starred = id && xrayStars.steps.has(id);
+    btn.classList.toggle('starred', !!starred);
+    btn.textContent = starred ? '★' : '☆';
+    btn.title = starred ? 'Starred — click to unstar' : 'Star this step';
+  });
+  if (typeof renderCmdBar === 'function') renderCmdBar();
+}
+
+async function toggleStar(level, id, starred) {
+  // Optimistic: flip the local cache and repaint immediately so the UI
+  // doesn't lag behind the click. Server response reconciles in case
+  // another client (or the migration shim) mutated state concurrently.
+  const targetSet = level === 'project' ? xrayStars.projects
+                  : level === 'session' ? xrayStars.sessions
+                  : level === 'turn' ? xrayStars.turns
+                  : xrayStars.steps;
+  const prevHad = targetSet.has(id);
+  if (starred) targetSet.add(id); else targetSet.delete(id);
+  rerenderColumnsAfterStar();
+
+  try {
+    const res = await fetch('/_api/stars', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: level, id, starred: !!starred }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    // Reconcile with server truth (handles edge cases like migration races).
+    xrayStars.projects = new Set(data.projects || []);
+    xrayStars.sessions = new Set(data.sessions || []);
+    xrayStars.turns = new Set(data.turns || []);
+    xrayStars.steps = new Set(data.steps || []);
+    rerenderColumnsAfterStar();
+  } catch (err) {
+    console.warn('[ccxray] star toggle failed, reverting:', err.message);
+    // Revert optimistic flip back to its prior state.
+    if (prevHad) targetSet.add(id); else targetSet.delete(id);
+    rerenderColumnsAfterStar();
+    if (typeof showToast === 'function') showToast('Star failed: ' + err.message);
+  }
+}
+window.toggleStar = toggleStar;
+
+async function loadStars() {
+  try {
+    const res = await fetch('/_api/stars');
+    if (!res.ok) return;
+    const data = await res.json();
+    xrayStars.projects = new Set(data.projects || []);
+    xrayStars.sessions = new Set(data.sessions || []);
+    xrayStars.turns = new Set(data.turns || []);
+    xrayStars.steps = new Set(data.steps || []);
+    await migrateLegacyPinsIfNeeded();
+  } catch (err) {
+    console.warn('[ccxray] loadStars failed:', err.message);
+  }
+}
+window.loadStars = loadStars;
+
+// One-time migration: legacy localStorage pins → server stars.
+// If server stars are non-empty we treat localStorage as stale and just clear.
+async function migrateLegacyPinsIfNeeded() {
+  const legacyProjRaw = localStorage.getItem('xray-pinned-projects');
+  const legacySessRaw = localStorage.getItem('xray-pinned-sessions');
+  if (!legacyProjRaw && !legacySessRaw) return;
+
+  const serverEmpty = xrayStars.projects.size === 0 && xrayStars.sessions.size === 0 && xrayStars.turns.size === 0 && xrayStars.steps.size === 0;
+  if (serverEmpty) {
+    let projects = [], sessions = [];
+    try { projects = JSON.parse(legacyProjRaw || '[]') || []; } catch {}
+    try { sessions = (JSON.parse(legacySessRaw || '[]') || []).map(p => p && p.sid).filter(Boolean); } catch {}
+    // Skip sentinel ids — the API rejects them and we don't want a partial
+    // migration. Real legacy data may contain them (e.g., user pinned the
+    // direct-api session in the old localStorage scheme).
+    projects = projects.filter(name => !SENTINEL_PROJECT_NAMES.has(name));
+    sessions = sessions.filter(sid => !SENTINEL_SESSIONS.has(sid));
+    const posts = [];
+    for (const name of projects) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'project', id: name, starred: true }) }));
+    for (const sid of sessions) posts.push(fetch('/_api/stars', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'session', id: sid, starred: true }) }));
+    if (posts.length) {
+      try {
+        const results = await Promise.all(posts);
+        const last = results[results.length - 1];
+        if (last && last.ok) {
+          const data = await last.json();
+          xrayStars.projects = new Set(data.projects || []);
+          xrayStars.sessions = new Set(data.sessions || []);
+          xrayStars.turns = new Set(data.turns || []);
+        }
+        console.log('[ccxray] migrated', projects.length, 'pinned projects and', sessions.length, 'pinned sessions to server stars');
+      } catch (err) {
+        console.warn('[ccxray] legacy pin migration partial failure:', err.message);
+      }
+    }
+  }
+  localStorage.removeItem('xray-pinned-projects');
+  localStorage.removeItem('xray-pinned-sessions');
+}
+
+// Lookup table for entries by id (entry-rendering.js populates this through
+// addEntry / restoreEntry — we read it here to derive star descendants).
+const entryById = new Map();
+window.entryById = entryById;
 
 // ── Project visibility filter ──
 // Migrate legacy 'active'/'active+idle' values to 'streaming'/'recent'
@@ -218,16 +1183,25 @@ function setSessionFilter(mode) {
 function applySessionFilter() {
   let anyVisible = false;
   let visibleCount = 0;
+  const projectBoundary = selectedProjectName || (window._entriesLoading && window._entriesLoadingProjectName) || null;
+  const sessionPrefixBoundary = !projectBoundary && window._entriesLoading && window._entriesLoadingSessionPrefix
+    ? window._entriesLoadingSessionPrefix
+    : null;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
-    // Pinned sessions are always visible
-    if (pinnedSessions.has(sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
-    // Project filter still applies
-    if (selectedProjectName) {
+    if (projectBoundary) {
       const sess = sessionsMap.get(sid);
       const projName = getProjectName(sess ? sess.cwd : null);
-      if (projName !== selectedProjectName) { el.style.display = 'none'; return; }
+      if (projName !== projectBoundary) { el.style.display = 'none'; return; }
+    } else if (sessionPrefixBoundary && !sid.startsWith(sessionPrefixBoundary)) {
+      el.style.display = 'none';
+      return;
     }
+    if (selectedSessionId && sid === selectedSessionId) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
+    // Starred or star-protected sessions bypass activity filters, but not the
+    // selected project boundary. Otherwise a starred ccxray session can appear
+    // under another project and look like its stars failed to inherit upward.
+    if (isStarredOrDerived('session', sid)) { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     if (sessionFilterMode === 'all') { el.style.display = ''; anyVisible = true; visibleCount++; return; }
     const status = getStatusClass(sid);
     if (sessionFilterMode === 'streaming') {
@@ -243,13 +1217,13 @@ function applySessionFilter() {
 
   // Placeholder when a project is selected but no sessions are visible
   let placeholder = colSessions.querySelector('.sessions-empty');
-  if (!anyVisible && selectedProjectName) {
+  if (!anyVisible && projectBoundary) {
     if (!placeholder) {
       placeholder = document.createElement('div');
       placeholder.className = 'sessions-empty col-empty';
-      placeholder.textContent = 'No sessions yet';
       colSessions.appendChild(placeholder);
     }
+    placeholder.textContent = window._entriesLoading ? (window._entriesLoadingText || 'Loading…') : 'No sessions yet';
     placeholder.style.display = '';
   } else if (placeholder) {
     placeholder.style.display = 'none';
@@ -333,6 +1307,8 @@ let selectedSessionId = null;
 let selectedTurnIdx = -1;
 let selectedSection = null;
 let selectedMessageIdx = -1;
+let selectedStepSub = null;
+let selectedStepSubExplicit = false;
 let focusedCol = 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
 let isFocusedMode = false;
 
@@ -437,7 +1413,7 @@ function clearAll() { // kept for console use if needed
   selectedSessionId = null;
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   renderBreadcrumb();
 }
 
@@ -504,8 +1480,7 @@ function renderSessionItem(sess, sid) {
   const sdotTitle = !isOnline ? '' : isArmed ? 'Intercept armed · click to disable' : 'Click to arm intercept';
   const sdotOnclick = isOnline ? 'event.stopPropagation();toggleIntercept(&quot;' + escapeHtml(sid) + '&quot;)' : '';
   const heldHtml = isHeld ? '<span class="held-badge" onclick="event.stopPropagation();showInterceptOverlay()">HELD</span>' : '';
-  const isPinned = pinnedSessions.has(sid);
-  const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinSession(&quot;' + escapeHtml(sid) + '&quot;)" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+  const pinBtn = renderStarBadge('session', sid);
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
@@ -540,9 +1515,9 @@ function renderProjectsCol() {
     '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
   const sorted = [...projectsMap.values()].sort((a, b) => {
-    // Sort by: pinned first, then status (streaming > idle > off), then last activity
-    const pa = pinnedProjects.has(a.name) ? 0 : 1;
-    const pb = pinnedProjects.has(b.name) ? 0 : 1;
+    // Sort by: starred (or star-protected) first, then status, then last activity.
+    const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
+    const pb = isStarredOrDerived('project', b.name) ? 0 : 1;
     if (pa !== pb) return pa - pb;
     const sa = getStatusPriority(getProjectStatusClass(a));
     const sb = getStatusPriority(getProjectStatusClass(b));
@@ -551,21 +1526,21 @@ function renderProjectsCol() {
   });
   let visibleProjCount = 0;
   for (const proj of sorted) {
-    const isPinned = pinnedProjects.has(proj.name);
+    const isStarred = isStarredOrDerived('project', proj.name);
     const statusClass = getProjectStatusClass(proj);
-    // Filter by activity (unless pinned or selected)
+    // Filter by activity (unless star-protected or selected)
     if (projectFilterMode !== 'all') {
       const isSel = selectedProjectName === proj.name;
-      if (!isPinned && !isSel && isSystemProject(proj.name)) continue;
-      if (projectFilterMode === 'streaming' && !isPinned && !isSel && statusClass !== 'sdot-stream') continue;
-      if (projectFilterMode === 'recent' && !isPinned && !isSel && statusClass === 'sdot-off') continue;
+      if (!isStarred && !isSel && isSystemProject(proj.name)) continue;
+      if (projectFilterMode === 'streaming' && !isStarred && !isSel && statusClass !== 'sdot-stream') continue;
+      if (projectFilterMode === 'recent' && !isStarred && !isSel && statusClass === 'sdot-off') continue;
     }
     visibleProjCount++;
     const isSel = selectedProjectName === proj.name;
     const firstDate = proj.firstId ? formatEntryDateShort(proj.firstId) : '';
     const lastDate = proj.lastId ? formatEntryDateShort(proj.lastId) : '';
     const rangeStr = firstDate === lastDate ? firstDate : firstDate + '—' + lastDate;
-    const pinBtn = '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" onclick="event.stopPropagation();togglePinProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')" title="' + (isPinned ? 'Unpin' : 'Pin') + '">★</button>';
+    const pinBtn = renderStarBadge('project', proj.name);
     const dotTitle = statusClass === 'sdot-stream' ? 'streaming'
       : statusClass === 'sdot-idle' ? 'idle · ' + Math.max(1, Math.round((Date.now() - (proj.lastSeenAt || Date.now())) / 60000)) + 'm ago'
       : 'offline';
@@ -576,16 +1551,19 @@ function renderProjectsCol() {
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
   }
+  if (visibleProjCount === 0 && window._entriesLoading) {
+    html += '<div id="entries-loading-status" class="col-empty loading-state" style="padding-top:16px;opacity:0.75"><div class="loading-spinner"></div><div>' + escapeHtml(window._entriesLoadingText || 'Loading…') + '</div></div>';
+  }
   colProjects.innerHTML = html;
   const projCountEl = document.getElementById('proj-filter-count');
   if (projCountEl) projCountEl.textContent = projectFilterMode === 'all' ? '' : ' (' + visibleProjCount + ')';
 }
 
-// Returns the first project in sorted order (pinned → streaming → active → lastId)
+// Returns the first project in sorted order (starred → streaming → active → lastId)
 function getFirstProject() {
   return [...projectsMap.values()].sort((a, b) => {
-    const pa = pinnedProjects.has(a.name) ? 0 : 1;
-    const pb = pinnedProjects.has(b.name) ? 0 : 1;
+    const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
+    const pb = isStarredOrDerived('project', b.name) ? 0 : 1;
     if (pa !== pb) return pa - pb;
     const sa = getStatusPriority(getProjectStatusClass(a));
     const sb = getStatusPriority(getProjectStatusClass(b));
@@ -601,7 +1579,7 @@ function getVisibleSessions(projectName) {
   return [...proj.sessionIds]
     .map(sid => ({ sid, ...sessionsMap.get(sid) }))
     .filter(sess => {
-      if (pinnedSessions.has(sess.sid)) return true;
+      if (isStarredOrDerived('session', sess.sid)) return true;
       if (sessionFilterMode === 'all') return true;
       const status = getStatusClass(sess.sid);
       if (sessionFilterMode === 'streaming') return status === 'sdot-stream';
@@ -646,6 +1624,7 @@ function selectProject(name) {
   // Never deselect: clicking the already-selected project is a no-op
   if (name !== null && name === selectedProjectName) return;
   selectedProjectName = name;
+  if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   renderProjectsCol();
   applySessionFilter();
 
@@ -653,7 +1632,7 @@ function selectProject(name) {
   selectedSessionId = null;
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
@@ -997,7 +1976,7 @@ function renderBreadcrumb() {
     segments.push({ label: sec, action: () => { selectSection(sec); } });
   }
   if (selectedSection === 'timeline' && selectedMessageIdx >= 0)
-    segments.push({ label: 'step[' + selectedMessageIdx + ']', action: null });
+    segments.push({ label: formatCurrentStepBreadcrumb(), action: null });
 
   const bc = document.getElementById('breadcrumb');
   bc.innerHTML = '';
@@ -1023,6 +2002,7 @@ function renderBreadcrumb() {
 
 function syncUrlFromState() {
   if (_loading) return; // Don't update URL during initial load
+  if (_targetNavigationUrlSyncDepth > 0) return; // Target navigation syncs once after the full route resolves.
   const params = new URLSearchParams();
   // Preserve view param from tab system
   if (typeof activeTab !== 'undefined' && activeTab !== 'dashboard') params.set('view', activeTab);
@@ -1036,19 +2016,27 @@ function syncUrlFromState() {
     params.set('t', num);
   }
   if (selectedSection) params.set('sec', selectedSection);
-  if (selectedMessageIdx >= 0) params.set('msg', String(selectedMessageIdx));
+  writeTargetToUrlParams(targetFromCurrentSelection(), params);
   const qs = params.toString();
   const newUrl = qs ? '?' + qs : location.pathname;
   history.replaceState(null, '', newUrl);
+}
+
+function formatCurrentStepBreadcrumb() {
+  const step = _stepSelectionFromSelectedMessageIdx();
+  if (!step) return 'step';
+  const subLabel = step.sub === 'thinking' ? ' thinking' : (typeof step.sub === 'number' ? ' call #' + (step.sub + 1) : '');
+  return 'step #' + (step.stepIdx + 1) + subLabel;
 }
 
 function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
   selectedSessionId = id;
+  if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   selectedTurnIdx = -1;
   selectedSection = null;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
 
   // Highlight selected session
   colSessions.querySelectorAll('.session-item').forEach(el => {
@@ -1086,15 +2074,18 @@ function scheduleRender(afterRender) {
 
 function prefetchEntry(idx) {
   const e = allEntries[idx];
-  if (!e || e.reqLoaded || e._prefetching) return;
+  if (!e || e.reqLoaded || e._prefetching || e._prefetchPromise) return;
   e._prefetching = true;
-  fetch('/_api/entry/' + encodeURIComponent(e.id))
+  e._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(e.id))
     .then(r => r.json())
     .then(data => {
       if (!data) return;
       allEntries[idx].req = data.req;
       allEntries[idx].res = data.res;
       allEntries[idx].reqLoaded = true;
+      allEntries[idx].toolSources = data.toolSources || null;
+      allEntries[idx]._prefetching = false;
+      allEntries[idx]._prefetchPromise = null;
       if (data.receivedAt) allEntries[idx].receivedAt = data.receivedAt;
       if (selectedTurnIdx === idx) {
         scheduleRender(() => {
@@ -1104,10 +2095,28 @@ function prefetchEntry(idx) {
           }
         });
       }
-    }).catch(() => { allEntries[idx]._prefetching = false; });
+    }).catch(() => {
+      allEntries[idx]._prefetching = false;
+      allEntries[idx]._prefetchPromise = null;
+    });
 }
 
-function selectTurn(idx) {
+// Animate `el.scrollTop` by `deltaY` over `durationMs` using easeInOutQuad.
+// Plain `scrollBy({behavior:'smooth'})` uses the browser's default duration
+// (~500-700ms in Chrome/Safari) which feels sluggish; this gives us 300ms.
+function _smoothScrollBy(el, deltaY, durationMs) {
+  const startTop = el.scrollTop;
+  const startTime = performance.now();
+  function step(now) {
+    const t = Math.min(1, (now - startTime) / durationMs);
+    const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+    el.scrollTop = startTop + deltaY * eased;
+    if (t < 1) requestAnimationFrame(step);
+  }
+  requestAnimationFrame(step);
+}
+
+function selectTurn(idx, opts) {
   if (idx < 0 || idx >= allEntries.length) return;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   // Exit focused mode when switching turns — user is browsing, not drilling into timeline
@@ -1116,12 +2125,33 @@ function selectTurn(idx) {
     document.getElementById('columns').classList.remove('focused');
   }
   selectedTurnIdx = idx;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colTurns.querySelectorAll('.turn-item').forEach(el => {
     el.classList.toggle('selected', parseInt(el.dataset.entryIdx) === idx);
   });
   const selEl = colTurns.querySelector('.turn-item[data-entry-idx="' + idx + '"]');
-  if (selEl) selEl.scrollIntoView({ block: 'nearest' });
+  if (selEl) {
+    // scrollIntoView({block:'nearest'}) aligns to the column's scroll
+    // container top, but col-sticky-header overlays that area — the turn
+    // ends up tucked behind the header. Compute the header's height and
+    // nudge the column scroll so the selected card sits clear of it.
+    const stickyHeader = colTurns.querySelector('.col-sticky-header');
+    const headerH = stickyHeader ? stickyHeader.getBoundingClientRect().height : 0;
+    const colRect = colTurns.getBoundingClientRect();
+    const elRect = selEl.getBoundingClientRect();
+    const elTopInCol = elRect.top - colRect.top;
+    const elBottomInCol = elRect.bottom - colRect.top;
+    let delta = 0;
+    if (elTopInCol < headerH + 4) {
+      delta = elTopInCol - headerH - 8;
+    } else if (elBottomInCol > colRect.height - 4) {
+      delta = elBottomInCol - colRect.height + 8;
+    }
+    if (delta !== 0) {
+      if (opts && opts.smooth) _smoothScrollBy(colTurns, delta, 300);
+      else colTurns.scrollBy({ top: delta, behavior: 'auto' });
+    }
+  }
   // Auto-highlight the session this turn belongs to (read-only indicator, not a gate)
   const sid = allEntries[idx]?.sessionId;
   colSessions.querySelectorAll('.session-item').forEach(el => {
@@ -1148,7 +2178,7 @@ function selectTurn(idx) {
 function selectSection(name) {
   setFocus('sections');
   selectedSection = name;
-  selectedMessageIdx = -1;
+  clearSelectedStepSelection();
   colSections.querySelectorAll('.section-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.section === name);
   });
@@ -1561,6 +2591,7 @@ function renderDetailCol() {
           const mm = colDetail.querySelector('.minimap');
           const sa = colDetail.querySelector('.tl-scroll-area');
           if (mm && sa) { layoutMinimapBlocks(mm); initMinimapInteractions(mm, sa); }
+          if (typeof renderCmdBar === 'function') renderCmdBar();
         });
         if (currentSteps.length && selectedMessageIdx < 0) {
           selectStep(currentSteps.length - 1);

@@ -80,13 +80,17 @@ Track your real spending. Session heatmap, burn rate, ROI calculator — know ex
 
 ### System Prompt Tracking
 
-Automatic version detection with diff viewer. Browse prompts across 11 recognized agent types — Orchestrator, General Purpose, Plan, Explore, Web Search, Codex Rescue, Claude Code Guide, Summarizer, Title Generator, Name Generator, Translator — and see exactly what changed between updates. Precision-verified against 12,730 captured prompts: 100% of classifications are correct, uncertain prompts are honestly marked `unknown`.
+Automatic version detection with diff viewer. Browse prompts across multiple recognized agent types and see exactly what changed between updates. Uncertain prompts are honestly marked `unknown`.
 
 ![System prompt tracking](docs/system-prompt.png)
 
 ### Keyboard-first Navigation
 
 Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → turns → sections → timeline → individual diff hunks without touching the mouse.
+
+Inside the timeline, step-type jump shortcuts let you scan sessions instantly: `e`/`E` jumps to the next/previous error, `s`/`S` to Skill calls, `a`/`A` to subagent (Agent/Task) calls, `m`/`M` to MCP tool calls. Each jump is position-aware — it finds the nearest match forward or backward from wherever you are, and updates the address bar URL.
+
+`n`/`N` jumps to the next/previous starred item anywhere in the dashboard — across projects, sessions, turns, and individual timeline steps. The command bar shows the shortcut only when starred items are reachable from the current view.
 
 ![Keyboard navigation](docs/keyboard.png)
 
@@ -110,8 +114,19 @@ Optional context-stats footer appended to Claude's responses inside Claude Code 
 
 **Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Turn the HUD off when running sub-agent-heavy sessions. State persists in `~/.ccxray/settings.json`.
 
+### Star to Keep Forever
+
+Click the star on a turn, session, or project card to mark it for permanent retention. Starred items survive `LOG_RETENTION_DAYS` auto-prune; state lives in `~/.ccxray/settings.json`, server-side and persistent across browsers. A starred turn protects every turn in its session; a starred session protects every turn under it; a starred project protects everything beneath. Catch-all buckets (`direct-api`, `(unknown)`, `(quota-check)`) refuse stars at the bucket level — star individual turns inside instead.
+
+Individual timeline steps can also be starred (`★`/`☆` toggle on each step row). A starred step protects its parent turn and session identically to a direct turn star.
+
+When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
+
+![Star retention and descendant popover](docs/stars.png)
+
 ### More
 
+- **Deep Link Navigation** — Every selection (project / session / turn / step) is reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view.
 - **Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
 - **Token Accounting** — Per-turn breakdown: input/output/cache-read/cache-create tokens, cost in USD, context window usage bar
 
@@ -147,7 +162,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 | `AUTH_TOKEN` | _(none)_ | API key for access control (disabled when unset) |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
-| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Files referenced by restored entries are protected. Set to `0` to disable. |
+| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
 | `RESTORE_DAYS` | `0` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |

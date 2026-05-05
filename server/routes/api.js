@@ -9,7 +9,8 @@ const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
 const forward = require('../forward');
-const { readSettings, writeSettings } = require('../settings');
+const { readSettings, writeSettings, serializeStars } = require('../settings');
+const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -38,8 +39,9 @@ function handleApiRoutes(clientReq, clientRes) {
     const sessionTitles = Object.fromEntries(
       Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
     );
-    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ entries, sessionTitles }));
+    const restore = { ...store.restoreState, entryCount: store.entries.length };
+    clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    clientRes.end(JSON.stringify({ entries, sessionTitles, restore }));
     return true;
   }
 
@@ -117,7 +119,7 @@ function handleApiRoutes(clientReq, clientRes) {
     if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
       await loadEntryReqRes(entry);
-      const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null };
+      const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };
       if (entry.elapsed === '?') { entry.req = null; entry.res = null; entry._loaded = false; }
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify(snapshot));
@@ -145,6 +147,53 @@ function handleApiRoutes(clientReq, clientRes) {
     })().catch(e => {
       if (!clientRes.headersSent) clientRes.writeHead(500);
       clientRes.end(JSON.stringify({ error: e.message }));
+    });
+    return true;
+  }
+
+  if (clientReq.method === 'GET' && clientReq.url === '/_api/stars') {
+    const s = readSettings();
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify(serializeStars(s)));
+    return true;
+  }
+
+  if (clientReq.method === 'POST' && clientReq.url === '/_api/stars') {
+    let body = '';
+    clientReq.on('data', c => { body += c; });
+    clientReq.on('end', () => {
+      let payload;
+      try { payload = JSON.parse(body); } catch {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
+      const kind = payload && payload.kind;
+      const id = payload && payload.id;
+      const starred = payload && payload.starred;
+      const KIND_TO_KEY = { project: 'starredProjects', session: 'starredSessions', turn: 'starredTurns', step: 'starredSteps' };
+      if (!Object.prototype.hasOwnProperty.call(KIND_TO_KEY, kind) || typeof id !== 'string' || !id || typeof starred !== 'boolean') {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'expected { kind: project|session|turn|step, id: string, starred: boolean }' }));
+        return;
+      }
+      // Sentinel guard: catch-all session/project ids must not become starred at
+      // their own level. Star individual turns inside instead. (Frontend disables
+      // the button; this is the API-level backstop for direct callers and migration.)
+      if ((kind === 'session' && SENTINEL_SESSIONS.has(id)) ||
+          (kind === 'project' && SENTINEL_PROJECTS.has(id))) {
+        clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ error: 'cannot star sentinel ' + kind + ' "' + id + '" — star individual turns inside instead' }));
+        return;
+      }
+      const current = readSettings();
+      const key = KIND_TO_KEY[kind];
+      const set = new Set(current[key] || []);
+      if (starred) set.add(id); else set.delete(id);
+      const updated = { ...current, [key]: [...set] };
+      writeSettings(updated);
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify(serializeStars(updated)));
     });
     return true;
   }

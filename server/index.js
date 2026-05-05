@@ -73,7 +73,7 @@ function serveStatic(url, clientRes) {
   if (pathname === '/' || pathname === '/index.html') {
     const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled() })}</script>`;
     const html = rawIndexHTML ? rawIndexHTML.replace('<!--__PROXY_CONFIG__-->', script) : '<html><body>Error loading dashboard</body></html>';
-    clientRes.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    clientRes.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     clientRes.end(html);
     return true;
   }
@@ -85,7 +85,7 @@ function serveStatic(url, clientRes) {
   if (!filePath.startsWith(PUBLIC_DIR)) return false;
   try {
     const content = fs.readFileSync(filePath);
-    clientRes.writeHead(200, { 'Content-Type': mime + '; charset=utf-8' });
+    clientRes.writeHead(200, { 'Content-Type': mime + '; charset=utf-8', 'Cache-Control': 'no-store' });
     clientRes.end(content);
     return true;
   } catch {
@@ -426,12 +426,51 @@ async function startClientMode(lock) {
 }
 
 // ── Hub/Server startup ──
+async function runPostListenStartupTasks() {
+  store.setRestoreState({
+    phase: 'restoring',
+    restoring: true,
+    complete: false,
+    error: null,
+    startedAt: Date.now(),
+    finishedAt: null,
+  });
+
+  const pricingReady = fetchPricing().catch(err => {
+    console.error('[ccxray] Pricing warm-up failed:', err.message);
+  });
+
+  let restoreOk = false;
+  try {
+    await restoreFromLogs();
+    restoreOk = true;
+    store.setRestoreState({
+      phase: 'ready',
+      restoring: false,
+      complete: true,
+      error: null,
+      finishedAt: Date.now(),
+    });
+  } catch (err) {
+    store.setRestoreState({
+      phase: 'error',
+      restoring: false,
+      complete: true,
+      error: err.message,
+      finishedAt: Date.now(),
+    });
+    console.error('[ccxray] Restore failed:', err.message);
+  }
+
+  await pricingReady;
+  if (restoreOk) {
+    await pruneLogs();
+    warmUpCosts();
+  }
+}
+
 async function startServer() {
   await config.storage.init();
-  await fetchPricing();
-  await restoreFromLogs();
-  await pruneLogs();
-  warmUpCosts();
 
   // Claude mode (with --port, standalone): scan up to 10 ports.
   // Hub mode: fixed port, but retry if old hub is still releasing it (race with idle shutdown).
@@ -462,6 +501,8 @@ async function startServer() {
     actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
   }
   rebuildIndexHTML(actualPort);
+
+  runPostListenStartupTasks();
 
   // Hub mode only: write lockfile as readiness signal, start client lifecycle
   // Do NOT write lockfile in claudeMode with --port (that's independent mode)

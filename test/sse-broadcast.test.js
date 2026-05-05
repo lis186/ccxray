@@ -38,6 +38,7 @@ describe('sse-broadcast', () => {
       assert.equal(summary.isSubagent, false);
       assert.equal(summary.title, 'Test response');
       assert.equal(summary.stopReason, 'end_turn');
+      assert.equal(summary.toolSources, undefined);
     });
 
     it('does not fall back to entry.req or entry.res for any field', () => {

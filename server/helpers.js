@@ -647,6 +647,75 @@ function extractDuplicateToolCalls(messages) {
   return Object.keys(dupes).length > 0 ? dupes : null;
 }
 
+// ── Star-based retention helpers ────────────────────────────────────
+// Sentinels: pseudo session/project ids that act as catch-all buckets.
+// Upward star derivation skips these so a single starred turn inside a
+// sentinel does not pin the entire bucket.
+const SENTINEL_SESSIONS = new Set(['direct-api']);
+const SENTINEL_PROJECTS = new Set(['(unknown)', '(quota-check)']);
+
+// Mirrors the frontend's getProjectName in public/miller-columns.js.
+// null/empty → '(unknown)'; leading '(' is a passthrough sentinel label.
+function getProjectName(cwd) {
+  if (!cwd || typeof cwd !== 'string') return '(unknown)';
+  if (cwd.startsWith('(')) return cwd;
+  const parts = cwd.split('/').filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '(unknown)';
+}
+
+// Walk parsed index entries once to derive the retention sets used by both
+// pruneLogs and restoreFromLogs. Returns plain Sets so callers can do O(1)
+// membership checks without re-walking. Sentinel buckets contribute leaves
+// (their own starredTurns) but never pull their parent into the retained set.
+//
+// Inputs:
+//   indexEntries: Array<{ id, sessionId, cwd }>  (pre-parsed; minimum fields)
+//   stars: { projects: string[], sessions: string[], turns: string[], steps: string[] }
+function computeRetentionSets(indexEntries, stars) {
+  const starredTurnIds = new Set(stars?.turns || []);
+  for (const stepId of stars?.steps || []) {
+    const turnId = typeof stepId === 'string' ? stepId.split('::')[0] : '';
+    if (turnId) starredTurnIds.add(turnId);
+  }
+  // Defensive: even if a sentinel id slipped into starredSessions/Projects (via
+  // pre-API-guard data, manual settings.json edit, or older client), it must
+  // never lift the bucket as a unit. Filter at the source.
+  const retainedSessions = new Set((stars?.sessions || []).filter(s => !SENTINEL_SESSIONS.has(s)));
+  const retainedProjects = new Set((stars?.projects || []).filter(p => !SENTINEL_PROJECTS.has(p)));
+
+  // Phase 1: turns lift their session into retained (unless sentinel).
+  for (const entry of indexEntries) {
+    if (!entry || !starredTurnIds.has(entry.id)) continue;
+    const sid = entry.sessionId;
+    if (sid && !SENTINEL_SESSIONS.has(sid)) retainedSessions.add(sid);
+  }
+
+  // Phase 2: any retained session OR starred turn lifts its project into
+  // retained (unless sentinel project name).
+  for (const entry of indexEntries) {
+    if (!entry) continue;
+    const sid = entry.sessionId;
+    const isStarredTurn = starredTurnIds.has(entry.id);
+    const isInRetainedSession = sid && retainedSessions.has(sid);
+    if (!isStarredTurn && !isInRetainedSession) continue;
+    const proj = getProjectName(entry.cwd);
+    if (proj && !SENTINEL_PROJECTS.has(proj)) retainedProjects.add(proj);
+  }
+
+  return { starredTurnIds, retainedSessions, retainedProjects };
+}
+
+// Pure boolean check: is this entry protected by the given retention sets?
+// `meta` is one parsed index line; the sets come from computeRetentionSets.
+function isProtectedByStar(meta, sets) {
+  if (!meta || !sets) return false;
+  if (sets.starredTurnIds && sets.starredTurnIds.has(meta.id)) return true;
+  if (meta.sessionId && sets.retainedSessions && sets.retainedSessions.has(meta.sessionId)) return true;
+  const proj = getProjectName(meta.cwd);
+  if (proj && sets.retainedProjects && sets.retainedProjects.has(proj)) return true;
+  return false;
+}
+
 module.exports = {
   timestamp,
   taipeiTime,
@@ -678,4 +747,9 @@ module.exports = {
   entryHasCredential,
   classifyToolSource,
   buildToolSources,
+  SENTINEL_SESSIONS,
+  SENTINEL_PROJECTS,
+  getProjectName,
+  computeRetentionSets,
+  isProtectedByStar,
 };

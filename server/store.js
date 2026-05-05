@@ -4,6 +4,15 @@
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
 const entries = [];
 const sseClients = [];
+const restoreState = {
+  phase: 'idle',
+  restoring: false,
+  complete: false,
+  error: null,
+  startedAt: null,
+  finishedAt: null,
+  entryCount: 0,
+};
 
 function trimEntries() {
   if (entries.length > MAX_ENTRIES) {
@@ -216,12 +225,18 @@ function setRateLimitState(state) { rateLimitState = state; }
 function getInterceptTimeout() { return interceptTimeout; }
 function setInterceptTimeout(val) { interceptTimeout = val; }
 function getCurrentSessionId() { return currentSessionId; }
+function setRestoreState(patch) {
+  Object.assign(restoreState, patch);
+  restoreState.entryCount = entries.length;
+}
 
 module.exports = {
   MAX_ENTRIES,
   entries,
   trimEntries,
   sseClients,
+  restoreState,
+  setRestoreState,
   getRateLimitState,
   setRateLimitState,
   sessionMeta,

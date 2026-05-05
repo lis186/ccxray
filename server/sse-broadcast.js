@@ -23,13 +23,12 @@ function summarizeEntry(entry) {
     duplicateToolCalls: entry.duplicateToolCalls || null,
     toolFail: entry.toolFail || false,
     hasCredential: entry.hasCredential || undefined,
-    toolSources: entry.toolSources || undefined,
     coreHash: entry.coreHash || null,
     thinkingStripped: entry.thinkingStripped || false,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
       contextBreakdown: tok.contextBreakdown,
-      perMessage: tok.perMessage || null,
+      perMessage: tok.perMessage ? tok.perMessage.map(m => ({ tokens: m.tokens })) : null,
     } : null,
   };
 }

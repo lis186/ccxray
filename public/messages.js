@@ -55,9 +55,9 @@ function callHasCredential(c) {
   return false;
 }
 function sourceLabel(source) {
-  if (!source || source === 'local') return '<span class="source-badge source-local">[local]</span>';
-  if (source === 'local:sensitive') return '<span class="source-badge source-local-sensitive">[local:sensitive]</span>';
-  if (source === 'network') return '<span class="source-badge source-network">[network]</span>';
+  if (!source || source === 'local') return '<span class="source-badge source-local">local</span>';
+  if (source === 'local:sensitive') return '<span class="source-badge source-local-sensitive">local:sensitive</span>';
+  if (source === 'network') return '<span class="source-badge source-network">network</span>';
   return '';
 }
 
@@ -374,9 +374,35 @@ function prepareTimelineSteps(messages, resEvents) {
 }
 
 // Generate the step list HTML (used in both accordion and split-pane modes)
+function getTimelineStepStarId(stepIdx, sub) {
+  const entry = selectedTurnIdx >= 0 ? allEntries[selectedTurnIdx] : null;
+  if (!entry || !entry.id) return '';
+  const suffix = sub == null ? '' : ':' + sub;
+  return entry.id + '::' + stepIdx + suffix;
+}
+
+function renderTimelineStepStarHtml(stepIdx, sub) {
+  const id = getTimelineStepStarId(stepIdx, sub);
+  if (!id) return '';
+  const starred = !!(window.xrayStars && window.xrayStars.steps && window.xrayStars.steps.has(id));
+  const title = starred ? 'Starred — click to unstar' : 'Star this step';
+  return '<button class="tl-step-star' + (starred ? ' starred' : '') + '" data-kind="step" data-id="' + escapeHtml(id) + '" onclick="toggleTimelineStepStar(event,this)" title="' + title + '" aria-label="' + title + '">' + (starred ? '★' : '☆') + '</button>';
+}
+
+function renderTimelineStepNumHtml(rowNum) {
+  return '<span class="tl-step-num">#' + rowNum + '</span>';
+}
+
+function toggleTimelineStepStar(event, btn) {
+  if (event) event.stopPropagation();
+  if (!btn || typeof window.toggleStar !== 'function') return;
+  window.toggleStar('step', btn.dataset.id, !btn.classList.contains('starred'));
+}
+
 function renderStepListHtml(steps, activeStepKey, toolSources) {
   let html = '';
   let lastSource = null;
+  let rowNum = 0;
 
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si];
@@ -391,10 +417,14 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
       html += '<div class="step-separator" style="height:2px;background:var(--accent);margin:8px 0 2px"></div>';
       const sel = (activeStepKey === si + ':') ? ' active' : '';
       html += '<div class="tl-step-summary' + sel + '" data-step="' + si + '" onclick="selectStep(' + si + ')">';
+      html += renderTimelineStepNumHtml(++rowNum);
+      html += '<div class="tl-step-main">';
       html += '<div style="color:var(--accent);padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;background:rgba(88,166,255,0.08);border-radius:4px;border-left:2px solid var(--accent);margin:4px 0">';
       html += '<span style="font-size:13px">👤</span> ' + escapeHtml((step.humanText || '').slice(0, 300));
       html += '</div>';
       if (step.hasSys) html += '<div style="padding:0 8px 0 24px;font-size:10px;color:var(--dim)">📋 system-reminder</div>';
+      html += '</div>';
+      html += renderTimelineStepStarHtml(si);
       html += '</div>';
       html += '<div style="height:2px;background:var(--accent);margin:2px 0 4px"></div>';
 
@@ -402,7 +432,9 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
       // Thinking line — T8: history=indicator only, current=Ns+preview
       if (step.thinking != null) {
         const tSel = (activeStepKey === si + ':thinking') ? ' active' : '';
-        html += '<div class="tl-step-summary' + tSel + '" data-step="' + si + '" data-sub="thinking" onclick="selectStep(' + si + ',&quot;thinking&quot;)" style="color:var(--dim);padding:2px 8px;font-size:11px">';
+        html += '<div class="tl-step-summary' + tSel + '" data-step="' + si + '" data-sub="thinking" onclick="selectStep(' + si + ',&quot;thinking&quot;)" style="color:var(--dim);padding-top:2px;padding-bottom:2px;font-size:11px">';
+        html += renderTimelineStepNumHtml(++rowNum);
+        html += '<div class="tl-step-main">';
         if (step.source === 'history') {
           html += '🧠'; // indicator only — prior turn content not shown
         } else {
@@ -410,6 +442,8 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
           const thinkPreview = (step.thinking || '').slice(0, 80).replace(/\n/g, ' ').trim();
           html += '🧠' + durLabel + (thinkPreview ? ' <span style="opacity:0.7">' + escapeHtml(thinkPreview) + '…</span>' : '');
         }
+        html += '</div>';
+        html += renderTimelineStepStarHtml(si, 'thinking');
         html += '</div>';
       }
       // Tool calls
@@ -422,7 +456,10 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
         // T6: error highlighting — CSS class + data-has-error for filter/jump
         const errCls = c.isError ? ' tool-call-error' : '';
         const errAttr = c.isError ? ' data-has-error="1"' : '';
-        html += '<div class="tl-step-summary' + cSel + errCls + '" data-step="' + si + '" data-call="' + ci + '"' + errAttr + ' onclick="selectStep(' + si + ',' + ci + ')">';
+        const toolAttr = ' data-tool="' + escapeHtml(c.name) + '"';
+        html += '<div class="tl-step-summary' + cSel + errCls + '" data-step="' + si + '" data-call="' + ci + '"' + errAttr + toolAttr + ' onclick="selectStep(' + si + ',' + ci + ')">';
+        html += renderTimelineStepNumHtml(++rowNum);
+        html += '<div class="tl-step-main">';
         html += '<div class="msg-list-row" style="gap:4px">';
         html += '<span style="color:var(--dim);width:8px;text-align:center;flex-shrink:0">' + bracket + '</span>';
         html += '<span style="color:var(--green);min-width:40px;flex-shrink:0;font-weight:600">' + escapeHtml(c.name) + '</span>';
@@ -443,15 +480,21 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
           html += '<div style="padding:1px 8px 2px 52px;font-size:10px;color:var(--red)">' + escapeHtml(c.errorSummary.slice(0, 60)) + '</div>';
         }
         html += '</div>';
+        html += renderTimelineStepStarHtml(si, ci);
+        html += '</div>';
       }
 
     } else if (step.type === 'assistant-text') {
       const aSel = (activeStepKey === si + ':') ? ' active' : '';
       html += '<div class="tl-step-summary' + aSel + '" data-step="' + si + '" onclick="selectStep(' + si + ')">';
+      html += renderTimelineStepNumHtml(++rowNum);
+      html += '<div class="tl-step-main">';
       html += '<div style="color:var(--text);padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;background:rgba(63,185,80,0.08);border-radius:4px;border-left:2px solid var(--green);margin:4px 0">';
       html += '<span style="font-size:13px">🤖</span> ' + escapeHtml((step.text || '').slice(0, 200));
       if (hasCredential(step.text)) html += ' <span class="cred-badge">⚠ cred</span>';
       html += '</div>';
+      html += '</div>';
+      html += renderTimelineStepStarHtml(si);
       html += '</div>';
     }
   }
@@ -461,17 +504,20 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
 // Get the active step key string for highlighting
 function getActiveStepKey() {
   if (selectedMessageIdx < 0) return null;
-  const stepIdx = Math.floor(selectedMessageIdx / 1000);
-  const subIdx = selectedMessageIdx % 1000;
-  if (subIdx === 999) return stepIdx + ':thinking';
-  return stepIdx + ':' + (subIdx || '');
+  const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
+  const stepIdx = selection ? selection.stepIdx : Math.floor(selectedMessageIdx / 1000);
+  const sub = selection ? selection.sub : null;
+  if (sub === 'thinking') return stepIdx + ':thinking';
+  return stepIdx + ':' + (typeof sub === 'number' ? sub : '');
 }
 
 // Render step detail content as HTML
 function renderStepDetailHtml(req, tok) {
   if (selectedMessageIdx < 0) return '';
-  const stepIdx = Math.floor(selectedMessageIdx / 1000);
-  const subIdx = selectedMessageIdx % 1000;
+  const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
+  const stepIdx = selection ? selection.stepIdx : Math.floor(selectedMessageIdx / 1000);
+  const sub = selection ? selection.sub : null;
+  const subIdx = sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : selectedMessageIdx % 1000);
   const step = currentSteps[stepIdx];
   if (!step) return '<div class="col-empty">No step data</div>';
 
@@ -499,17 +545,15 @@ function selectStep(stepIdx, sub) {
   if (!currentSteps[stepIdx]) return; // guard: invalid step index
   // If not in focused mode, enter it first (click on step = drill into timeline)
   if (!isFocusedMode && typeof enterFocusedMode === 'function') {
-    selectedMessageIdx = stepIdx * 1000 + (sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : 0));
+    if (typeof setSelectedStepSelection === 'function') setSelectedStepSelection(stepIdx, sub);
+    else selectedMessageIdx = stepIdx * 1000 + (sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : 0));
     enterFocusedMode();
     return;
   }
-  if (sub === 'thinking') {
-    selectedMessageIdx = stepIdx * 1000 + 999;
-  } else if (typeof sub === 'number') {
-    selectedMessageIdx = stepIdx * 1000 + sub;
-  } else {
-    selectedMessageIdx = stepIdx * 1000;
-  }
+  if (typeof setSelectedStepSelection === 'function') setSelectedStepSelection(stepIdx, sub);
+  else if (sub === 'thinking') selectedMessageIdx = stepIdx * 1000 + 999;
+  else if (typeof sub === 'number') selectedMessageIdx = stepIdx * 1000 + sub;
+  else selectedMessageIdx = stepIdx * 1000;
 
   // Split pane: update list highlights + detail pane
   const listEl = colDetail.querySelector('.tl-scroll-area');
@@ -541,8 +585,59 @@ function selectStep(stepIdx, sub) {
   renderBreadcrumb();
 }
 
+function findTimelineStepElement(listEl, stepIdx, sub) {
+  if (!listEl) return null;
+  const base = '.tl-step-summary[data-step="' + stepIdx + '"]';
+  if (sub === 'thinking') return listEl.querySelector(base + '[data-sub="thinking"]');
+  if (typeof sub === 'number') return listEl.querySelector(base + '[data-call="' + sub + '"]');
+  return listEl.querySelector(base + ':not([data-sub]):not([data-call])') || listEl.querySelector(base);
+}
+
+function scrollTimelineStepIntoView(stepIdx, sub, opts) {
+  opts = opts || {};
+  const listEl = colDetail.querySelector('.tl-scroll-area');
+  if (!listEl) return false;
+  const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
+  if (!stepEl) return false;
+  const listRect = listEl.getBoundingClientRect();
+  const stepRect = stepEl.getBoundingClientRect();
+  const targetTop = listEl.scrollTop + (stepRect.top - listRect.top) - (listRect.height / 2) + (stepRect.height / 2);
+  listEl.scrollTo({ top: Math.max(0, targetTop), behavior: opts.smooth === false ? 'auto' : 'smooth' });
+  return true;
+}
+
+function scrollTimelineStepIntoViewWhenReady(stepIdx, sub, attempts, opts) {
+  const triesLeft = attempts == null ? 40 : attempts;
+  opts = opts || {};
+  return new Promise(resolve => {
+    requestAnimationFrame(() => {
+      const listEl = colDetail.querySelector('.tl-scroll-area');
+      const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
+      if (listEl && stepEl) {
+        const ok = scrollTimelineStepIntoView(stepIdx, sub, opts);
+        if (!ok || opts.settle === false) {
+          resolve(ok);
+          return;
+        }
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve(scrollTimelineStepIntoView(stepIdx, sub, { smooth: false, settle: false }));
+          });
+        });
+        return;
+      }
+      if (triesLeft > 0) {
+        scrollTimelineStepIntoViewWhenReady(stepIdx, sub, triesLeft - 1, opts).then(resolve);
+      } else {
+        resolve(false);
+      }
+    });
+  });
+}
+
 function selectMessage(idx) {
-  selectedMessageIdx = idx;
+  if (typeof setSelectedLegacyMessageSelection === 'function') setSelectedLegacyMessageSelection(idx);
+  else selectedMessageIdx = idx;
   renderDetailCol();
   renderBreadcrumb();
 }
