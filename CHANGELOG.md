@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.9.0
+
+### Added
+
+**Star to Keep Forever**
+
+- **Server-backed star retention** at three levels of granularity: project, session, and turn. Starred items survive `LOG_RETENTION_DAYS` auto-prune; state lives in `~/.ccxray/settings.json`, persistent across browsers. A starred turn protects its session; a starred session protects all turns under it; a starred project protects everything beneath.
+- **Individual timeline steps can be starred** (`★`/`☆` toggle on each step row). A starred step protects its parent turn and session identically to a direct turn star.
+- **Tri-state badge** on parent cards: `★` (directly starred), `☆` (not starred), `☆ [N]` (unstarred but N descendants are keeping it retained). Click the `☆ [N]` chip to open a popover listing exactly which descendants are starred — each row navigates directly to that turn/session and has its own star toggle. Popover closes on Escape or an explicit ✕ button; clicking outside does not dismiss it.
+- **`f` key** stars/unstars the currently selected item from anywhere in the keyboard navigation flow. The hotbar label flips between `★ star` and `☆ unstar` to reflect current state. Sentinel buckets (`direct-api`, `(unknown)`, `(quota-check)`) silently reject stars.
+- **`p` key** opens the descendant-star popover for the selected card (keyboard navigation within the popover: `↑`/`↓` to move, `f` to toggle star, `Enter` to navigate).
+
+**Deep Link Navigation**
+
+- Every selection — project, session, turn, section, timeline step — is now reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view, restoring column focus, scroll position, and step selection.
+- `n`/`N` jumps to the next/previous starred item anywhere in the dashboard, across projects, sessions, turns, and individual timeline steps. The hotbar shows the shortcut only when starred items are reachable from the current view.
+
+**Keyboard Navigation Expansion**
+
+- `s`/`S` — jump to next/previous Skill call in the timeline
+- `a`/`A` — jump to next/previous subagent (Agent/Task) call
+- `m`/`M` — jump to next/previous MCP tool call
+- `→` from the Projects column now auto-selects the first session, eliminating an extra keypress to enter a project
+- All jump shortcuts are position-aware: they find the nearest match forward or backward from the current step and update the address bar URL
+
+### Fixed
+
+- Clicking `☆ [N]` derived badge directly stars the parent item (instead of only opening the popover)
+- Session flash eliminated during initial batch log load; stale "N new" pill no longer lingers after restore
+- `Loading…` shown in Projects column during initial entry fetch instead of blank state
+- Timeline hotbar collapsed to one always-visible row; inactive shortcuts are dimmed rather than hidden
+- `↑`/`↓` now navigates all timeline sub-rows including thinking blocks
+- Cost line hidden on cache-hit turns (was showing `$0.00` noise)
+- Popover clamped to viewport when the badge is near the left edge of the screen
+- Star glyph flips synchronously on click, no longer waits for the POST round-trip
+- Optimistic UI update on star toggle with automatic revert on network failure
+- Popover navigation re-selects the descendant's parent project correctly
+
+### Performance
+
+- Deep link initial load: eliminated 20 MB payload and N×DOM rewrites during batch log restore
+
 ## 1.8.0
 
 ### Added
