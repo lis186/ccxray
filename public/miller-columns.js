@@ -675,10 +675,10 @@ function renderStarBadge(level, id) {
     // signals "this is a count of items" (Gmail-unread / GitHub-PR convention),
     // so users don't read the superscript as "version 3" or "3 hours ago".
     // Yellow text ties it back to the star vocabulary.
-    glyph = '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
+    glyph = '☆<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
     cls = 'derived';
-    tip = 'Retained because ' + derived + ' starred descendants below — click to view';
-    onclickJs = 'event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this)';
+    tip = 'Star this ' + level + ', click [' + derived + '] to view starred items inside';
+    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
   } else {
     glyph = '☆'; cls = '';
     tip = 'Star this ' + level + ' (keeps log forever)';
