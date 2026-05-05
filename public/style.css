@@ -181,8 +181,6 @@
   .cmd-key { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
   .cmd-key.disabled { opacity: 0.3; }
   .cmd-sep { color: var(--border); margin: 0 1px; }
-  .cmd-toggle { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 10px; min-width: 44px; height: 100%; padding: 0 4px; font-family: inherit; line-height: 1; }
-  .cmd-toggle:hover { color: var(--text); }
   .cmd-key-btn { background: none; border: none; color: inherit; cursor: pointer; font-size: 11px; font-family: inherit; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; padding: 2px 5px; margin: -2px -5px; border-radius: 4px; }
   .cmd-key-btn:hover { background: var(--surface-hover); color: var(--text); }
   .cmd-key-btn:active { opacity: 0.6; }

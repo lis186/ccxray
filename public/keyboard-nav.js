@@ -1,5 +1,4 @@
 // ── Command Bar ──────────────────────────────────────────────────────────────
-let _timelineExpanded = localStorage.getItem('kbar-timeline-expanded') !== 'false';
 
 function getStarTargetFromSelection() {
   if (!window.xrayStars) return null;
@@ -61,15 +60,11 @@ function getCmdBarState() {
 
   if (isFocusedMode) {
     if (selectedSection === 'timeline') {
-      const smallScreen = window.innerHeight <= 900;
       return {
         row1: [
           { key: '↑↓', label: 'steps' },
           { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
           { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
-          { type: 'toggle' },
-        ],
-        row2: [
           { key: 'e', label: 'next error',    clickKey: 'e' },
           { key: 'E', label: 'prev error',    clickKey: 'E' },
           { key: 's', label: 'next skill',    clickKey: 's' },
@@ -79,7 +74,8 @@ function getCmdBarState() {
           { key: 'm', label: 'next mcp',      clickKey: 'm' },
           { key: 'M', label: 'prev mcp',      clickKey: 'M' },
         ],
-        row2Visible: !smallScreen && _timelineExpanded,
+        row2: null,
+        row2Visible: false,
       };
     }
     return {
@@ -168,11 +164,6 @@ function renderCmdBar() {
   function buildRow(items) {
     if (!items) return '';
     return items.map(item => {
-      if (item.type === 'toggle') {
-        const label = _timelineExpanded ? 'less ∧' : 'more ∨';
-        const ariaLabel = _timelineExpanded ? 'collapse timeline shortcuts' : 'expand timeline shortcuts';
-        return `<button class="cmd-toggle" tabindex="-1" aria-label="${ariaLabel}" aria-expanded="${_timelineExpanded}" onclick="(function(){_timelineExpanded=!_timelineExpanded;localStorage.setItem('kbar-timeline-expanded',_timelineExpanded);renderCmdBar();})()">${label}</button>`;
-      }
       const enabled = item.id ? isEnabled(item.id) : true;
       const cls = enabled ? 'cmd-key' : 'cmd-key disabled';
       if (item.clickKey && enabled) {
