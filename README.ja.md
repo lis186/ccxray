@@ -80,7 +80,7 @@ Connected clients (2):
 
 ### システムプロンプト追跡
 
-バージョンの自動検出とdiffビューア。認識された 11 種類のエージェント — Orchestrator、General Purpose、Plan、Explore、Web Search、Codex Rescue、Claude Code Guide、Summarizer、Title Generator、Name Generator、Translator — のプロンプトを閲覧し、更新ごとの変更点を正確に把握できます。実際に捕捉した 12,730 件のプロンプトで精度検証済み: 分類されたものは 100% 正確、判定できないものは `unknown` として正直に表示します。
+バージョンの自動検出とdiffビューア。複数の認識されたエージェントタイプのプロンプトを閲覧し、更新ごとの変更点を正確に把握できます。不確定なものは `unknown` として正直に表示します。
 
 ![システムプロンプト追跡](docs/system-prompt.png)
 
@@ -122,7 +122,7 @@ turn、session、または project カードにある star をクリックする
 
 親要素が star の付いた子孫要素から保護を継承している場合、badge は `★` ではなく `☆ [N]` になります。chip をクリックすると、どの要素によって retention されているかを正確にリスト表示する popover が開きます。各行の star は独立したトグルになっており、行の本体をクリックすると、その turn / session へ直接移動します。
 
-<!-- TODO: docs/stars.png スクリーンショット(tri-state badge と子孫 popover)を追加 -->
+![スター保持と子孫ポップオーバー](docs/stars.png)
 
 ### その他
 

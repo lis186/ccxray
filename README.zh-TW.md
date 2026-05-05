@@ -80,7 +80,7 @@ Connected clients (2):
 
 ### System Prompt 追蹤
 
-自動偵測版本變更，內建 diff 檢視器。瀏覽 11 種已辨識的 agent 類型 — Orchestrator、General Purpose、Plan、Explore、Web Search、Codex Rescue、Claude Code Guide、Summarizer、Title Generator、Name Generator、Translator — 精確掌握每次更新的差異。對 12,730 份真實捕捉的 prompts 做回溯驗證：被分類的項目 100% 正確，不確定的則誠實標為 `unknown`。
+自動偵測版本變更，內建 diff 檢視器。瀏覽多種已辨識的 agent 類型，精確掌握每次更新的差異。不確定的項目會誠實標為 `unknown`。
 
 ![System Prompt 追蹤](docs/system-prompt.png)
 
@@ -122,7 +122,7 @@ Timeline 的個別步驟也可以加星（每個步驟 row 上有 `★`/`☆` to
 
 當父層因為下方有 starred 子項目而被間接保留,badge 會顯示 `☆ [N]` 而非 `★`。點 chip 數字會展開 popover,列出究竟是哪些子項目在保它。每筆的星號是獨立 toggle;點 row 主體則直接跳到該 turn / session。
 
-<!-- TODO: 補 docs/stars.png 截圖,展示 tri-state badge + 子項目 popover -->
+![星號保留與子項目 popover](docs/stars.png)
 
 ### 其他功能
 

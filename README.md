@@ -80,7 +80,7 @@ Track your real spending. Session heatmap, burn rate, ROI calculator — know ex
 
 ### System Prompt Tracking
 
-Automatic version detection with diff viewer. Browse prompts across 11 recognized agent types — Orchestrator, General Purpose, Plan, Explore, Web Search, Codex Rescue, Claude Code Guide, Summarizer, Title Generator, Name Generator, Translator — and see exactly what changed between updates. Precision-verified against 12,730 captured prompts: 100% of classifications are correct, uncertain prompts are honestly marked `unknown`.
+Automatic version detection with diff viewer. Browse prompts across multiple recognized agent types and see exactly what changed between updates. Uncertain prompts are honestly marked `unknown`.
 
 ![System prompt tracking](docs/system-prompt.png)
 
@@ -114,7 +114,7 @@ Optional context-stats footer appended to Claude's responses inside Claude Code 
 
 **Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Turn the HUD off when running sub-agent-heavy sessions. State persists in `~/.ccxray/settings.json`.
 
-### Star to keep forever
+### Star to Keep Forever
 
 Click the star on a turn, session, or project card to mark it for permanent retention. Starred items survive `LOG_RETENTION_DAYS` auto-prune; state lives in `~/.ccxray/settings.json`, server-side and persistent across browsers. A starred turn protects every turn in its session; a starred session protects every turn under it; a starred project protects everything beneath. Catch-all buckets (`direct-api`, `(unknown)`, `(quota-check)`) refuse stars at the bucket level — star individual turns inside instead.
 
@@ -122,7 +122,7 @@ Individual timeline steps can also be starred (`★`/`☆` toggle on each step r
 
 When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
 
-<!-- TODO: add docs/stars.png screenshot showing tri-state badges + descendant popover -->
+![Star retention and descendant popover](docs/stars.png)
 
 ### More
 
