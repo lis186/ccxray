@@ -1031,6 +1031,7 @@ function rerenderColumnsAfterStar() {
     btn.textContent = starred ? '★' : '☆';
     btn.title = starred ? 'Starred — click to unstar' : 'Star this step';
   });
+  if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
 async function toggleStar(level, id, starred) {

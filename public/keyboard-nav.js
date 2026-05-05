@@ -1,6 +1,48 @@
 // ── Command Bar ──────────────────────────────────────────────────────────────
 let _timelineExpanded = localStorage.getItem('kbar-timeline-expanded') !== 'false';
 
+function getStarTargetFromSelection() {
+  if (!window.xrayStars) return null;
+
+  // In focused mode: use targetFromCurrentSelection() for step/turn context
+  if (isFocusedMode) {
+    const t = typeof targetFromCurrentSelection === 'function' ? targetFromCurrentSelection() : null;
+    if (!t) return null;
+    if (t.kind === 'step') {
+      const suffix = t.sub == null ? '' : ':' + t.sub;
+      const id = t.entryId + '::' + t.stepIdx + suffix;
+      return { level: 'step', id, starred: window.xrayStars.steps.has(id) };
+    }
+    if (t.kind === 'turn')
+      return { level: 'turn', id: t.entryId, starred: window.xrayStars.turns.has(t.entryId) };
+    return null;
+  }
+
+  // In main mode: use focusedCol so horizontal navigation picks the right level
+  if (focusedCol === 'projects') {
+    if (!selectedProjectName) return null;
+    if (selectedProjectName === '(unknown)' || selectedProjectName === '(quota-check)') return null;
+    return { level: 'project', id: selectedProjectName, starred: window.xrayStars.projects.has(selectedProjectName) };
+  }
+  if (focusedCol === 'sessions') {
+    if (!selectedSessionId) return null;
+    if (selectedSessionId === 'direct-api') return null;
+    return { level: 'session', id: selectedSessionId, starred: window.xrayStars.sessions.has(selectedSessionId) };
+  }
+  if (focusedCol === 'turns' || focusedCol === 'sections') {
+    if (selectedTurnIdx < 0) return null;
+    const entry = allEntries[selectedTurnIdx];
+    if (!entry || !entry.id) return null;
+    return { level: 'turn', id: entry.id, starred: window.xrayStars.turns.has(entry.id) };
+  }
+  return null;
+}
+
+function _fStarLabel() {
+  const t = getStarTargetFromSelection();
+  return t && t.starred ? '☆ unstar' : '★ star';
+}
+
 function isEnabled(keyId) {
   switch (keyId) {
     case '→-projects':     return projectsMap.size > 0;
@@ -8,6 +50,7 @@ function isEnabled(keyId) {
     case '→-turns':        return selectedTurnIdx >= 0;
     case '→-sections':     return selectedSection != null;
     case 'enter-sections': return selectedSection != null;
+    case 'f-star':         return getStarTargetFromSelection() !== null;
     default:               return true;
   }
 }
@@ -22,18 +65,19 @@ function getCmdBarState() {
       return {
         row1: [
           { key: '↑↓', label: 'steps' },
-          { key: 'Esc/←', label: 'exit' },
+          { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
+          { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
           { type: 'toggle' },
         ],
         row2: [
-          { key: 'e', label: 'next error' },
-          { key: 'E', label: 'prev error' },
-          { key: 's', label: 'next skill' },
-          { key: 'S', label: 'prev skill' },
-          { key: 'a', label: 'next subagent' },
-          { key: 'A', label: 'prev subagent' },
-          { key: 'm', label: 'next mcp' },
-          { key: 'M', label: 'prev mcp' },
+          { key: 'e', label: 'next error',    clickKey: 'e' },
+          { key: 'E', label: 'prev error',    clickKey: 'E' },
+          { key: 's', label: 'next skill',    clickKey: 's' },
+          { key: 'S', label: 'prev skill',    clickKey: 'S' },
+          { key: 'a', label: 'next subagent', clickKey: 'a' },
+          { key: 'A', label: 'prev subagent', clickKey: 'A' },
+          { key: 'm', label: 'next mcp',      clickKey: 'm' },
+          { key: 'M', label: 'prev mcp',      clickKey: 'M' },
         ],
         row2Visible: !smallScreen && _timelineExpanded,
       };
@@ -41,7 +85,8 @@ function getCmdBarState() {
     return {
       row1: [
         { key: '↑↓', label: 'switch section' },
-        { key: 'Esc/←', label: 'exit' },
+        { key: 'Esc/←', label: 'exit', clickKey: 'Escape' },
+        { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
       ],
       row2: null,
       row2Visible: false,
@@ -49,16 +94,17 @@ function getCmdBarState() {
   }
 
   const tabKeys = [
-    { key: '1', label: 'Dashboard' },
-    { key: '2', label: 'Usage' },
-    { key: '3', label: 'Sys Prompt' },
+    { key: '1', label: 'Dashboard',  clickKey: '1' },
+    { key: '2', label: 'Usage',      clickKey: '2' },
+    { key: '3', label: 'Sys Prompt', clickKey: '3' },
   ];
 
   if (focusedCol === 'projects') {
     return {
       row1: [
         { key: '↑↓', label: 'select', id: '↑↓-projects' },
-        { key: '→', label: 'open', id: '→-projects' },
+        { key: '→', label: 'open', id: '→-projects', clickKey: 'ArrowRight' },
+        { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -68,8 +114,9 @@ function getCmdBarState() {
     return {
       row1: [
         { key: '↑↓', label: 'select' },
-        { key: '←', label: 'back' },
-        { key: '→', label: 'open', id: '→-sessions' },
+        { key: '←', label: 'back',  clickKey: 'ArrowLeft' },
+        { key: '→', label: 'open',  id: '→-sessions', clickKey: 'ArrowRight' },
+        { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -79,9 +126,10 @@ function getCmdBarState() {
     return {
       row1: [
         { key: '↑↓', label: 'select' },
-        { key: '←', label: 'back' },
-        { key: '→', label: 'sections', id: '→-turns' },
-        { key: 'Enter', label: 'focus' },
+        { key: '←', label: 'back',     clickKey: 'ArrowLeft' },
+        { key: '→', label: 'sections', id: '→-turns', clickKey: 'ArrowRight' },
+        { key: 'Enter', label: 'focus', clickKey: 'Enter' },
+        { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -91,8 +139,9 @@ function getCmdBarState() {
     return {
       row1: [
         { key: '↑↓', label: 'select' },
-        { key: '←', label: 'back' },
-        { key: 'Enter', label: 'focus detail', id: 'enter-sections' },
+        { key: '←', label: 'back',         clickKey: 'ArrowLeft' },
+        { key: 'Enter', label: 'focus detail', id: 'enter-sections', clickKey: 'Enter' },
+        { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -126,6 +175,10 @@ function renderCmdBar() {
       }
       const enabled = item.id ? isEnabled(item.id) : true;
       const cls = enabled ? 'cmd-key' : 'cmd-key disabled';
+      if (item.clickKey && enabled) {
+        const k = item.clickKey.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `<button class="${cls} cmd-key-btn" tabindex="-1" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'${k}',bubbles:true}))"><kbd>${item.key}</kbd> ${item.label}</button>`;
+      }
       return `<span class="${cls}"><kbd>${item.key}</kbd> ${item.label}</span>`;
     }).join('<span class="cmd-sep">·</span>');
   }
@@ -159,6 +212,19 @@ document.addEventListener('keydown', (e) => {
   // Tab switching: 1=Dashboard, 2=Usage, 3=System Prompt
   const tabMap = { '1': 'dashboard', '2': 'usage', '3': 'sysprompt' };
   if (tabMap[key]) { switchTab(tabMap[key]); e.preventDefault(); return; }
+
+  if (key === 'f') {
+    const target = getStarTargetFromSelection();
+    if (target) {
+      e.preventDefault();
+      const willStar = !target.starred;
+      window.toggleStar(target.level, target.id, willStar);
+      const label = { turn: 'Turn', session: 'Session', project: 'Project', step: 'Step' }[target.level] || '';
+      if (typeof showToast === 'function')
+        showToast((willStar ? '★' : '☆') + ' ' + label + ' ' + (willStar ? 'starred' : 'unstarred'), 2000);
+    }
+    return;
+  }
 
   // Focused mode intercept — takes priority over column navigation
   if (isFocusedMode) {
@@ -211,6 +277,7 @@ document.addEventListener('keydown', (e) => {
       });
       renderDetailCol();
       renderBreadcrumb();
+      renderCmdBar();
       return;
     }
     return; // swallow other keys in focused mode
@@ -228,7 +295,14 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
 
   if (focusedCol === 'projects') {
-    if (key === 'ArrowRight') { setFocus('sessions'); return; }
+    if (key === 'ArrowRight') {
+      setFocus('sessions');
+      if (!selectedSessionId) {
+        const firstSess = [...colSessions.querySelectorAll('.session-item')].find(el => el.style.display !== 'none');
+        if (firstSess && firstSess.dataset.sessionId) selectSession(firstSess.dataset.sessionId);
+      }
+      return;
+    }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
       const projItems = [...colProjects.querySelectorAll('.project-item')].map(el => {
         const m = el.getAttribute('onclick')?.match(/selectProject\((.+)\)/);
