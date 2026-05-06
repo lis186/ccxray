@@ -8,7 +8,7 @@ const FIVE_HOURS_MS = 5 * 60 * 60 * 1000;
 
 // Legacy fallbacks (Max 20x values). Prefer getEffectivePlanConfig() which
 // consults the detected plan; field accessors below wrap it for callers.
-const TOKEN_LIMIT = 220_000;
+const TOKEN_LIMIT = 880_000;
 const SUBSCRIPTION_USD = 200;
 
 function getEffectivePlanConfig() {
