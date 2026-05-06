@@ -35,6 +35,8 @@ if (portIdx !== -1) {
 }
 const hubMode = process.argv.includes('--hub-mode');
 if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
+const allowUpstreamLoop = process.argv.includes('--allow-upstream-loop') || process.env.CCXRAY_ALLOW_UPSTREAM_LOOP === '1';
+if (process.argv.includes('--allow-upstream-loop')) process.argv.splice(process.argv.indexOf('--allow-upstream-loop'), 1);
 const noBrowser = process.argv.includes('--no-browser');
 if (noBrowser) process.argv.splice(process.argv.indexOf('--no-browser'), 1);
 const cliCommand = process.argv[2];
@@ -524,6 +526,20 @@ async function runPostListenStartupTasks() {
 }
 
 async function startServer() {
+  if (!allowUpstreamLoop) {
+    const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
+    const upstreamFamily = providers.getAgentProvider(agentCommand)?.upstream ?? 'anthropic';
+    const upstream = config.UPSTREAMS[upstreamFamily];
+    if (upstream && localHosts.has(upstream.host) && upstream.port === config.PORT) {
+      const url = `${upstream.protocol}://${upstream.host}:${upstream.port}`;
+      const envVar = upstreamFamily === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL';
+      throw new Error(
+        `${envVar} points back to ccxray (${url}); unset it before starting ccxray.\n` +
+        'Pass --allow-upstream-loop or set CCXRAY_ALLOW_UPSTREAM_LOOP=1 to allow this.'
+      );
+    }
+  }
+
   await config.storage.init();
 
   // Agent mode (with --port, standalone): scan up to 10 ports.

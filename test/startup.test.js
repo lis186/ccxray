@@ -1629,3 +1629,72 @@ function spawnAndCollect(args, timeoutMs = 10000, envOverrides = {}) {
     }, timeoutMs);
   });
 }
+
+describe('Proxy loop startup guard', () => {
+  it('exits when ANTHROPIC_BASE_URL points back to itself (claude mode)', async () => {
+    const proxyPort = await findFreePort();
+    const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort)], 10000, {
+      ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}`,
+    });
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('ANTHROPIC_BASE_URL points back to ccxray'), `Expected loop error, got: ${stderr}`);
+    assert.ok(stderr.includes('--allow-upstream-loop'), `Expected override hint, got: ${stderr}`);
+  });
+
+  it('exits when OPENAI_BASE_URL points back to itself (codex mode)', async () => {
+    const proxyPort = await findFreePort();
+    const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort), 'codex'], 10000, {
+      OPENAI_BASE_URL: `http://localhost:${proxyPort}/v1`,
+    });
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('OPENAI_BASE_URL points back to ccxray'), `Expected loop error, got: ${stderr}`);
+    assert.ok(stderr.includes('--allow-upstream-loop'), `Expected override hint, got: ${stderr}`);
+  });
+
+  it('does NOT exit when ANTHROPIC_BASE_URL loops but running codex (different upstream)', async () => {
+    const proxyPort = await findFreePort();
+    const proxyChild = spawnServer(['--port', String(proxyPort), 'codex'], {
+      env: { ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}` },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
+
+  it('allows startup with --allow-upstream-loop override', async () => {
+    const proxyPort = await findFreePort();
+    const proxyChild = spawnServer(['--port', String(proxyPort), '--allow-upstream-loop'], {
+      env: { ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}` },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
+
+  it('allows startup with CCXRAY_ALLOW_UPSTREAM_LOOP=1 override', async () => {
+    const proxyPort = await findFreePort();
+    const proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: { ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}`, CCXRAY_ALLOW_UPSTREAM_LOOP: '1' },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
+});
