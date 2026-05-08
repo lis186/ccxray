@@ -2504,10 +2504,9 @@ function renderDetailCol() {
   const loading = '<div class="col-empty">⏳ Loading…</div>';
   let inner = '';
 
-  // Detail header — timeline always uses focused-style header
   const sectionLabel = selectedSection.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   let headerHtml;
-  if (selectedSection === 'timeline' || isFocusedMode) {
+  if (isFocusedMode) {
     headerHtml = '<div class="fp-header">'
       + '<button class="fp-back" onclick="exitFocusedMode()">←</button>'
       + '<span class="fp-title">' + escapeHtml(sectionLabel) + '</span>'
