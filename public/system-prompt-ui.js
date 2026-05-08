@@ -305,18 +305,49 @@ function updateModeIndicator() {
   badge.style.color = '#000';
 }
 
+function spGoToVersions() {
+  if (spFocusedCol !== 'agents') return;
+  spFocusedCol = 'versions';
+  renderAgentList();
+  renderVersionList();
+  updateStatusBar();
+}
+
+function spGoToAgents() {
+  if (spFocusedCol !== 'versions') return;
+  spFocusedCol = 'agents';
+  renderAgentList();
+  renderVersionList();
+  updateStatusBar();
+}
+
 function updateStatusBar() {
   const bar = document.getElementById('sp-status-bar');
   if (!bar) return;
-  const modeToggle = spMode === 'content' ? 'Space: DIFF' : 'Space: CONTENT';
   const hunks = document.querySelectorAll('.diff-hunk');
   const total = hunks.length;
-  const hunkInfo = spMode === 'diff' && total > 0 ? `  j/k: hunk ${currentHunkIdx + 1}/${total}` : '';
+  const modeLabel = spMode === 'content' ? 'DIFF' : 'CONTENT';
+  const sep = '<span class="cmd-sep">·</span>';
+  let items;
   if (spFocusedCol === 'agents') {
-    bar.textContent = `↑↓ agent   →: versions   ${modeToggle}`;
+    items = [
+      '<span class="cmd-key"><kbd>↑↓</kbd> agent</span>',
+      '<button class="cmd-key-btn" onclick="spGoToVersions()"><kbd>→</kbd> versions</button>',
+      '<button class="cmd-key-btn" onclick="toggleMode()"><kbd>Space</kbd> ' + modeLabel + '</button>',
+    ];
   } else {
-    bar.textContent = `←: agents   ↑↓ version   ${modeToggle}${hunkInfo}`;
+    items = [
+      '<button class="cmd-key-btn" onclick="spGoToAgents()"><kbd>←</kbd> agents</button>',
+      '<span class="cmd-key"><kbd>↑↓</kbd> version</span>',
+      '<button class="cmd-key-btn" onclick="toggleMode()"><kbd>Space</kbd> ' + modeLabel + '</button>',
+    ];
+    if (spMode === 'diff' && total > 0) {
+      items.push('<button class="cmd-key-btn" onclick="nextHunk()"><kbd>j</kbd> next hunk</button>');
+      items.push('<button class="cmd-key-btn" onclick="prevHunk()"><kbd>k</kbd> prev hunk</button>');
+      items.push('<span class="cmd-key" style="color:var(--accent)">' + (currentHunkIdx + 1) + '/' + total + '</span>');
+    }
   }
+  bar.innerHTML = items.join(sep);
 }
 
 // ── Mode toggle ─────────────────────────────────────────────────────────
