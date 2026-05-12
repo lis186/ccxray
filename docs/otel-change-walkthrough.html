@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>OpenSpec change: add-otel-metrics-phase1 — Mental Model</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a1f26;
+    --panel-2: #232932;
+    --border: #2a313c;
+    --text: #d8dee9;
+    --muted: #8b95a5;
+    --accent: #88c0d0;
+    --accent-2: #a3be8c;
+    --accent-3: #b48ead;
+    --warn: #ebcb8b;
+    --danger: #bf616a;
+    --code-bg: #11161c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 {
+    font-size: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 20px;
+    margin-top: 56px;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+  }
+  h3 {
+    font-size: 16px;
+    color: var(--accent-2);
+    margin-top: 28px;
+  }
+  h4 { font-size: 14px; color: var(--text); margin: 12px 0 6px; }
+  p, li { color: var(--text); }
+  .lede {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 24px;
+  }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--warn);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 18px 0;
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+  blockquote {
+    border-left: 3px solid var(--accent-2);
+    background: rgba(163, 190, 140, 0.06);
+    padding: 8px 14px;
+    margin: 12px 0;
+    font-size: 13px;
+    color: var(--text);
+  }
+  blockquote p { margin: 4px 0; }
+  .source {
+    display: block;
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .source a { color: var(--accent); text-decoration: none; }
+  .source a:hover { text-decoration: underline; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 12px 0;
+  }
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 22px;
+    margin: 18px 0 32px;
+    font-size: 14px;
+  }
+  .toc a { color: var(--accent); text-decoration: none; display: block; padding: 2px 0; }
+  .toc a:hover { text-decoration: underline; }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+
+  /* ───── Animated data flow ───── */
+  .flow {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 28px 16px;
+    margin: 18px 0;
+    overflow: hidden;
+  }
+  .flow-track {
+    position: relative;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    min-height: 80px;
+  }
+  .flow-stage {
+    flex: 1;
+    text-align: center;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 8px;
+    font-size: 12px;
+    position: relative;
+    z-index: 2;
+  }
+  .flow-stage .label { color: var(--accent); font-weight: 600; display: block; margin-bottom: 4px; }
+  .flow-stage .detail { color: var(--muted); font-size: 11px; }
+  .flow-arrow { color: var(--muted); font-size: 18px; z-index: 2; }
+  .flow-packet {
+    position: absolute;
+    top: 50%;
+    left: 0;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    background: var(--accent-2);
+    border-radius: 50%;
+    box-shadow: 0 0 14px var(--accent-2);
+    z-index: 1;
+    animation: flowMove 6s linear infinite;
+  }
+  @keyframes flowMove {
+    0%   { left: 2%;  opacity: 0; }
+    5%   { opacity: 1; }
+    95%  { opacity: 1; }
+    100% { left: 98%; opacity: 0; }
+  }
+  .flow-caption { text-align: center; color: var(--muted); font-size: 12px; margin-top: 14px; font-style: italic; }
+
+  /* ───── State machine ───── */
+  .states {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
+    gap: 10px;
+    margin: 18px 0;
+  }
+  .state {
+    background: var(--panel);
+    border: 2px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    text-align: center;
+    font-size: 13px;
+    transition: all 0.3s;
+  }
+  .state.disabled { border-color: var(--muted); }
+  .state.active   { border-color: var(--accent-2); animation: pulseActive 2s ease-in-out infinite; }
+  .state.degraded { border-color: var(--warn); }
+  .state.open     { border-color: var(--danger); }
+  .state .name { font-weight: 700; display: block; margin-bottom: 4px; }
+  .state .desc { color: var(--muted); font-size: 11px; }
+  @keyframes pulseActive {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(163, 190, 140, 0.4); }
+    50%      { box-shadow: 0 0 0 8px rgba(163, 190, 140, 0); }
+  }
+  .transitions {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    margin: 10px 0;
+    color: var(--text);
+  }
+  .transitions .arrow { color: var(--accent); }
+  .transitions .trigger { color: var(--warn); }
+
+  /* ───── Cardinality bucket ───── */
+  .bucket-demo {
+    display: flex;
+    gap: 22px;
+    align-items: flex-end;
+    justify-content: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 22px;
+    margin: 14px 0;
+  }
+  .bucket {
+    width: 130px;
+    text-align: center;
+  }
+  .bucket-label { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+  .bucket-name { font-size: 12px; color: var(--accent); font-family: monospace; margin-bottom: 8px; }
+  .bucket-fill {
+    width: 100%;
+    height: 130px;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+  .bucket-fill .level {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: linear-gradient(180deg, var(--accent-2), rgba(163, 190, 140, 0.5));
+    transition: height 0.5s;
+  }
+  .bucket-fill.overflow .level { background: linear-gradient(180deg, var(--danger), rgba(191, 97, 106, 0.5)); }
+  .bucket-fill .marker {
+    position: absolute;
+    left: 0;
+    right: 0;
+    border-top: 1px dashed var(--warn);
+    color: var(--warn);
+    font-size: 10px;
+    padding: 1px 4px;
+    text-align: right;
+  }
+  .bucket-meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .bucket-meta .overflow-tag { color: var(--danger); font-weight: 600; }
+
+  /* ───── Tier flow ───── */
+  .tier-tree { font-family: "SF Mono", Menlo, monospace; font-size: 13px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 18px; margin: 14px 0; }
+  .tier-tree .branch { padding-left: 22px; border-left: 1px dashed var(--border); margin-left: 12px; }
+  .tier-tree .leaf { color: var(--muted); }
+  .tier-tree .tier-0 { color: var(--muted); }
+  .tier-tree .tier-1 { color: var(--accent); }
+  .tier-tree .tier-2 { color: var(--accent-3); }
+
+  ul { padding-left: 22px; }
+  li { margin: 3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OpenSpec change: <code style="font-size:20px">add-otel-metrics-phase1</code></h1>
+<div class="lede">這份文件 100% 來自規格本身,每個段落都標註來源。用視覺化(流程圖、狀態機、動畫)幫你建立正確的 mental model,而不是描述。</div>
+
+<div class="toc">
+  <strong>導覽</strong>
+  <a href="#scope">1. 這個 change 是什麼,不是什麼</a>
+  <a href="#capabilities">2. 六個 capabilities 的全景</a>
+  <a href="#flow">3. 一次請求的旅程(資料流動畫)</a>
+  <a href="#tiers">4. 三層 opt-in 決策樹</a>
+  <a href="#client-vs-hub">5. Client 端 emit,不是 hub</a>
+  <a href="#namespace">6. Namespace 與 CLI 共存</a>
+  <a href="#cardinality">7. Cardinality budget(動畫)</a>
+  <a href="#state-machine">8. 失敗狀態機(動畫)</a>
+  <a href="#config">9. Config 載入與 secret 拒絕</a>
+  <a href="#parser">10. Parser pipeline 與 sentinels</a>
+  <a href="#cli">11. CLI 命令面</a>
+  <a href="#sources">12. 引用來源索引</a>
+</div>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="scope">1. 這個 change 是什麼,不是什麼</h2>
+
+<h3>是什麼(Goals)</h3>
+<ul>
+  <li>提供 ccxray 自己 emit 的 OTel metrics,涵蓋 cost、usage(tool/MCP/skill)、quality、patterns、governance</li>
+  <li><strong>預設關閉</strong>。除非使用者明確 opt in per-project,否則零 telemetry</li>
+  <li>三層 opt-in(disabled / project-anonymous / personal-named),project 設上限,personal 只能 equal-or-downgrade</li>
+  <li>跟 Claude Code CLI 內建 OTel 共存,有 reconciliation metric 來反查雙方計費 bug</li>
+  <li>OTel 失敗絕不影響 proxy:config 錯誤 fail at startup、init 錯誤 degraded silently、runtime 錯誤由 bounded queue + circuit breaker 吸收</li>
+  <li>Parser drift 必須可見:未識別事件 emit sentinel counter,不能 silently 變 0</li>
+  <li>內省命令:<code>ccxray status --otel</code>、<code>ccxray otel preview</code>、<code>ccxray parser report</code></li>
+</ul>
+<blockquote>
+  <p>Source 列表逐條對應 design.md 的 Goals 段落。</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › Goals / Non-Goals</span>
+</blockquote>
+
+<h3>不是什麼(Non-Goals)</h3>
+<ul>
+  <li><strong>Traces / spans</strong>。Phase 1 只 emit metrics。Span、<code>entry_id</code> deep-link、<code>/entry/:id</code> 路由都是 Phase 2</li>
+  <li><strong>完整 payload 外送</strong>。Request/response body 永不離開機器</li>
+  <li><strong>Synthetic tool span 時間</strong>。從 HTTP cadence 推估 tool 執行時間會誤導</li>
+  <li><strong>中央 ccxray hub 做跨機器聚合</strong>。每個工程師的 ccxray 都本地獨立</li>
+  <li><strong>Auto-instrumentation</strong>。不會引入 <code>@opentelemetry/auto-instrumentations-node</code></li>
+</ul>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › Non-Goals</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="capabilities">2. 六個 capabilities 的全景</h2>
+
+<p>規格定義了 6 個新 capabilities(proposal.md › New Capabilities)。它們的關係:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    CFG[otel-config<br/>讀取/驗證 .ccxray.json<br/>+ .ccxray.user.json]
+    TIERS[otel-tiers<br/>三層 opt-in 解析]
+    HEALTH[otel-health<br/>狀態機 + queue + breaker]
+    EXPORT[otel-export<br/>SDK init + metrics emit]
+    PARSER[parser-schemas<br/>schema 化 + sentinels]
+    INTRO[otel-introspection<br/>status / preview / report]
+
+    CFG --> TIERS
+    TIERS --> EXPORT
+    HEALTH --> EXPORT
+    PARSER --> EXPORT
+    CFG --> INTRO
+    HEALTH --> INTRO
+    EXPORT --> INTRO
+    PARSER --> INTRO
+
+    style CFG fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style TIERS fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style HEALTH fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style EXPORT fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style PARSER fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style INTRO fill:#b48ead,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<table>
+  <tr><th>Capability</th><th>規格檔</th><th>核心職責(直接引用)</th></tr>
+  <tr>
+    <td><code>otel-config</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a></td>
+    <td>「<code>.ccxray.json</code> and <code>.ccxray.user.json</code> schema, <code>${ENV_VAR}</code> interpolation, literal-secret rejection, <code>.gitignore</code> auto-amend, project-upper-bound + personal-lower-bound merging rules.」</td>
+  </tr>
+  <tr>
+    <td><code>otel-export</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a></td>
+    <td>「OTel SDK initialization (client-side, not hub), metric definitions under <code>ccxray.*</code> namespace, <code>ccxray.source</code> resource attribute, cardinality budget enforcement with <code>_overflow_</code> fallback, CLI coexistence detection and complement-mode signaling, reconciliation diff metric.」</td>
+  </tr>
+  <tr>
+    <td><code>otel-tiers</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a></td>
+    <td>「three-tier opt-in (disabled / project-anonymous / personal-named), tier resolution with project as upper bound and personal as lower bound, <code>enduser.id</code> attribute only in tier 2, opt-in acknowledgment timestamp persisted in personal config.」</td>
+  </tr>
+  <tr>
+    <td><code>otel-health</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a></td>
+    <td>「failure state machine (<code>disabled / active / degraded / circuit_open</code>), bounded export queue with drop-oldest semantics, circuit breaker with exponential backoff, local failure log at <code>~/.ccxray/otel.log</code> with rotation, never-block guarantee for the proxy path.」</td>
+  </tr>
+  <tr>
+    <td><code>parser-schemas</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a></td>
+    <td>「extract skill / MCP / tool / agent-type detection into versioned JSON schemas, snapshot fixtures per provider (Anthropic + Codex), sentinel metrics for unknown events, reconciliation invariants run per entry, try/catch isolation so parser failure does not affect ccxray core.」</td>
+  </tr>
+  <tr>
+    <td><code>otel-introspection</code></td>
+    <td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-introspection/spec.md">specs/otel-introspection/spec.md</a></td>
+    <td>「<code>ccxray status --otel</code> view (tier, endpoint, health, cardinality, dropped counts), <code>ccxray otel preview</code> dry-run, <code>ccxray parser report</code> for drift inspection, startup banner declaring active tier and CLI coexistence mode.」</td>
+  </tr>
+</table>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/proposal.md">proposal.md</a> › Capabilities › New Capabilities</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="flow">3. 一次請求的旅程(資料流動畫)</h2>
+
+<p>當一個 HTTP 請求被 ccxray 攔截、回應、進入本地 log 時,同時會走 OTel 路徑。下面綠球代表「一筆 metric 事件」從產生到送達 OTLP collector 的旅程:</p>
+
+<div class="flow">
+  <div class="flow-track">
+    <div class="flow-stage"><span class="label">forward.js</span><span class="detail">request 完成<br>取得 usage</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-stage"><span class="label">parsers/*</span><span class="detail">解析 tool /<br>skill / MCP</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-stage"><span class="label">otel.js</span><span class="detail">budget 檢查<br>+ counter.add()</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-stage"><span class="label">otel-health</span><span class="detail">queue +<br>state machine</span></div>
+    <span class="flow-arrow">→</span>
+    <div class="flow-stage"><span class="label">OTLP HTTP</span><span class="detail">送往<br>collector</span></div>
+  </div>
+  <div class="flow-packet"></div>
+  <div class="flow-caption">綠球 = 一筆 metric 事件;從左到右流經 5 個階段。注意這條路徑跟 proxy forward 平行,任一階段失敗都不會影響 proxy。</div>
+</div>
+
+<h3>規格定義的關鍵保證</h3>
+
+<blockquote>
+  <p>「OTel export operations SHALL NOT block the HTTP proxy path. All emit operations SHALL enqueue without awaiting export completion.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">otel-health/spec.md</a> › Requirement: Never-block guarantee for the proxy</span>
+</blockquote>
+
+<blockquote>
+  <p>「Parser code SHALL be wrapped in try/catch boundaries. On exception... Parser failure SHALL NOT propagate to the proxy path or terminate ccxray.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: Parser error isolation</span>
+</blockquote>
+
+<h3>對應 tasks.md 的實作位置</h3>
+<ul>
+  <li><code>forward.js</code> 改動:<a href="../openspec/changes/add-otel-metrics-phase1/tasks.md">tasks.md</a> §6.1</li>
+  <li><code>store.js</code> 改動:tasks.md §6.2</li>
+  <li>「No emit path can throw into the proxy」:tasks.md §6.3</li>
+</ul>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="tiers">4. 三層 opt-in 決策樹</h2>
+
+<p>規格規定 tier 的解析規則是 <code>min(project_tier, personal_tier)</code>。下面這棵樹列出所有有意義的組合:</p>
+
+<div class="tier-tree">
+ccxray 啟動
+├─ 找不到任何 config?
+│  └─ <span class="tier-0">▶ tier 0 (disabled) — 不載入 OTel SDK,不開網路連線</span>
+│
+├─ 只有 <code>.ccxray.json</code>(專案開啟 tier 1)
+│  └─ <span class="tier-1">▶ tier 1 (project anonymous) — 只帶 project.name / team,沒有 enduser.id</span>
+│
+├─ <code>.ccxray.json</code> tier 1 + <code>.ccxray.user.json</code> tier 0
+│  └─ <span class="tier-0">▶ tier 0 — 個人 unilateral opt-out</span>
+│
+├─ <code>.ccxray.json</code> tier 1 + <code>.ccxray.user.json</code> tier 2
+│  └─ ⚠ project 沒有 authorize tier 2
+│     <div class="branch leaf">→ clamp 為 tier 1,印 warning(spec 明定)</div>
+│
+└─ <code>.ccxray.json</code> tier 2 + <code>.ccxray.user.json</code> tier 2
+   └─ <span class="tier-2">▶ tier 2 (personal named) — 帶 enduser.id,記錄 opt_in_acknowledged_at</span>
+</div>
+
+<blockquote>
+  <p>「The effective tier SHALL be <code>min(project_tier, personal_tier)</code>. If either side is absent, the present side SHALL be used. The minimum SHALL clamp downward; personal config SHALL NOT exceed project config.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">otel-tiers/spec.md</a> › Requirement: Tier resolution rule</span>
+</blockquote>
+
+<blockquote>
+  <p>「Any engineer SHALL be able to opt out of OTel emission for their own machine by setting <code>tier: 0</code> in <code>.ccxray.user.json</code>, regardless of the project config.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">otel-tiers/spec.md</a> › Requirement: Engineer unilateral opt-out</span>
+</blockquote>
+
+<h3>Tier 2 的額外條件</h3>
+<ul>
+  <li>必須在 <code>.ccxray.user.json</code> 提供 <code>identity</code> 字串(可化名,不必真名)— spec D1</li>
+  <li>檔案<strong>必須 gitignored</strong>。若 ccxray 偵測到此檔被 git tracked,refuse to apply personal identity(spec otel-tiers › Personal config gitignore enforcement)</li>
+  <li>首次啟用時自動寫入 <code>opt_in_acknowledged_at</code> ISO 8601 timestamp(spec otel-tiers › Opt-in acknowledgment timestamp)</li>
+</ul>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="client-vs-hub">5. Client 端 emit,不是 hub</h2>
+
+<p>ccxray 的 hub mode 讓多個專案共用一個 proxy 進程。但這個 change 明確規定 OTel emit <strong>不在 hub</strong>,而是在 client 端,讓不同專案可以各自設不同的 tier / endpoint:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    subgraph ClientA [Client A: projectA<br/>.ccxray.json tier=1]
+        SDKA[OTel SDK A] --> CollA[collector-A]
+    end
+    subgraph ClientB [Client B: projectB<br/>.ccxray.json tier=0]
+        NoneB((no SDK))
+    end
+    subgraph ClientC [Client C: projectC<br/>.ccxray.user.json tier=2]
+        SDKC[OTel SDK C<br/>含 enduser.id] --> CollC[collector-C]
+    end
+
+    ClientA -.HTTP only.-> Hub[ccxray hub<br/>不 emit business metrics]
+    ClientB -.HTTP only.-> Hub
+    ClientC -.HTTP only.-> Hub
+    Hub --> API[Anthropic / OpenAI]
+
+    style Hub fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style SDKA fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style SDKC fill:#b48ead,stroke:#5e81ac,color:#0f1419
+    style NoneB fill:#2a313c,stroke:#5e81ac,color:#d8dee9
+</pre>
+</div>
+
+<blockquote>
+  <p>「OTel SDK initialization and metric emission happen in the client process (the one that ran <code>ccxray claude</code>). The hub remains a pure HTTP proxy plus SSE broadcaster. The hub MAY emit its own operational metrics under <code>ccxray.hub.*</code> namespace using a separate config (<code>~/.ccxray/hub-config.json</code>), but it does NOT emit business metrics on behalf of clients.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › D2. Client-side emit, not hub-side</span>
+</blockquote>
+
+<blockquote>
+  <p>「Hub does not emit business metrics: WHEN the ccxray hub forwards an HTTP request between a client and an upstream provider, THEN the hub SHALL NOT emit any business metric on behalf of the client, regardless of the client's tier setting.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">otel-export/spec.md</a> › Requirement: Client-side OTel SDK initialization › Scenario: Hub does not emit business metrics</span>
+</blockquote>
+
+<p class="lede">注意:<code>ccxray.hub.*</code> 運維 metric 在 Phase 1 是<strong>延後</strong>的 — design.md Open Questions 與 tasks.md §8.3 明說「defer 到 follow-up」。</p>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="namespace">6. Namespace 與 CLI 共存</h2>
+
+<p>ccxray 跟 Claude Code CLI 內建 OTel 並存時,兩者用不同 namespace,且 ccxray 多 emit 一個 reconciliation diff metric:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    CLI[Claude Code CLI<br/>內建 OTel] --> NSA[claude_code.*<br/>token / interaction / tool spans]
+    CCX[ccxray] --> NSB["ccxray.*<br/>+ resource: ccxray.source='ccxray-proxy'<br/>+ attr: ccxray.cli_otel_active=true (when both active)"]
+
+    NSA -.同樣是 tokens.-> COMP[reconciliation 比對]
+    NSB -.同樣是 tokens.-> COMP
+    COMP --> DIFF[ccxray.reconciliation.token_diff_pct<br/>差距 = 其中一邊有 bug]
+
+    style NSA fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style NSB fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style DIFF fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<blockquote>
+  <p>「Every metric SHALL be named under the <code>ccxray.&lt;system&gt;.&lt;aspect&gt;</code> pattern. No metric SHALL be named identically to a Claude Code CLI metric or any other upstream OTel convention that would overlap.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">otel-export/spec.md</a> › Requirement: <code>ccxray.*</code> namespace for all emitted metrics</span>
+</blockquote>
+
+<blockquote>
+  <p>「ccxray SHALL detect the presence of <code>CLAUDE_CODE_ENABLE_TELEMETRY=1</code> in the environment and, when detected, SHALL emit all metrics with an additional attribute <code>ccxray.cli_otel_active=true</code>. ccxray SHALL print a startup notice... ccxray SHALL NOT disable any of its own metrics based on CLI coexistence.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">otel-export/spec.md</a> › Requirement: CLI OTel coexistence and complement mode</span>
+</blockquote>
+
+<blockquote>
+  <p>「ccxray SHALL emit <code>ccxray.reconciliation.token_diff_pct{model}</code> as a gauge that compares ccxray's HTTP-observed token counts against the corresponding values reported by the CLI when both are active.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">otel-export/spec.md</a> › Requirement: Reconciliation diff metric</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="cardinality">7. Cardinality budget(動畫)</h2>
+
+<p>每個 metric 對每個 attribute 都有一個「容量上限」。當 unique values 數量達到上限,後續 unique values 變成字面字串 <code>_overflow_</code>,並 emit sentinel counter:</p>
+
+<div class="bucket-demo">
+  <div class="bucket">
+    <div class="bucket-label">attribute key</div>
+    <div class="bucket-name">tool</div>
+    <div class="bucket-fill" id="bucket-tool"><div class="level" style="height: 46%;"></div><div class="marker" style="bottom: 100%;">budget=50</div></div>
+    <div class="bucket-meta">23 / 50 unique<br/><span style="color: var(--accent-2);">healthy</span></div>
+  </div>
+  <div class="bucket">
+    <div class="bucket-label">attribute key</div>
+    <div class="bucket-name">model</div>
+    <div class="bucket-fill" id="bucket-model"><div class="level" style="height: 40%;"></div><div class="marker" style="bottom: 100%;">budget=10</div></div>
+    <div class="bucket-meta">4 / 10 unique<br/><span style="color: var(--accent-2);">healthy</span></div>
+  </div>
+  <div class="bucket">
+    <div class="bucket-label">attribute key</div>
+    <div class="bucket-name">mcp_server</div>
+    <div class="bucket-fill overflow" id="bucket-mcp"><div class="level" style="height: 100%;"></div><div class="marker" style="bottom: 100%;">budget=30</div></div>
+    <div class="bucket-meta"><span class="overflow-tag">30 / 30 — OVERFLOW</span><br/>新值記為 <code>_overflow_</code><br/>sentinel ++</div>
+  </div>
+</div>
+
+<blockquote>
+  <p>「Every metric declares an allow-list of attribute keys and a per-key cardinality budget (e.g. <code>tool=50</code>, <code>model=10</code>, <code>mcp_server=30</code>). Attribute values are tracked in a <code>Set</code> per (metric, attribute); when the Set reaches budget size, subsequent unique values are recorded as the literal string <code>_overflow_</code> and a sentinel counter <code>ccxray.metrics.overflow_total{metric,attribute}</code> increments.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › D4. Cardinality budget with overflow fallback</span>
+</blockquote>
+
+<blockquote>
+  <p>「Attribute keys not in the allow-list are dropped at the View API layer (OTel SDK native enforcement). High-cardinality candidates that look attractive (<code>bash.command_pattern</code>, <code>file_path</code>) are explicitly NOT emitted as metric labels.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › D4</span>
+</blockquote>
+
+<h3>三個對應的 scenarios(全部來自 spec)</h3>
+
+<table>
+  <tr><th>情境</th><th>規格行為</th></tr>
+  <tr>
+    <td>Tool name 是第 3 個於 50 budget</td>
+    <td>正常 emit <code>tool="Read"</code>,sentinel <strong>不</strong>增加</td>
+  </tr>
+  <tr>
+    <td>第 51 個 unique tool name 出現</td>
+    <td>Emit <code>tool="_overflow_"</code>,<code>ccxray.metrics.overflow_total{metric="...",attribute="tool"}</code> ++1</td>
+  </tr>
+  <tr>
+    <td>嘗試傳入不在 allow-list 的 attribute(如 <code>bash_command</code>)</td>
+    <td>該 attribute 在 emission 前就被 View API 丟掉</td>
+  </tr>
+</table>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">otel-export/spec.md</a> › Requirement: Cardinality budget enforcement › Scenarios</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="state-machine">8. 失敗狀態機(動畫)</h2>
+
+<p>OTel 健康狀態固定 4 個 state。下方綠色 <strong>active</strong> 有 pulse 動畫示範「目前活躍」的視覺:</p>
+
+<div class="states">
+  <div class="state disabled">
+    <span class="name">disabled</span>
+    <span class="desc">tier 0 或<br>OTel 套件缺失</span>
+  </div>
+  <div class="state active">
+    <span class="name">active</span>
+    <span class="desc">SDK 初始化成功<br>exports 正常</span>
+  </div>
+  <div class="state degraded">
+    <span class="name">degraded</span>
+    <span class="desc">SDK init 失敗<br>ccxray 仍正常運作</span>
+  </div>
+  <div class="state open">
+    <span class="name">circuit_open</span>
+    <span class="desc">runtime 失敗<br>暫停 export,週期 half-open 試</span>
+  </div>
+</div>
+
+<h3>規格定義的 transitions</h3>
+
+<div class="transitions">
+startup <span class="trigger">[tier 0 / no OTel pkg]</span>      <span class="arrow">→</span> disabled
+startup <span class="trigger">[tier ≥ 1, SDK init OK]</span>     <span class="arrow">→</span> active
+active  <span class="trigger">[SDK init throws]</span>           <span class="arrow">→</span> degraded
+active  <span class="trigger">[5 consecutive export failures]</span>  <span class="arrow">→</span> circuit_open (cooldown=60s)
+circuit_open <span class="trigger">[cooldown elapsed]</span>     <span class="arrow">→</span> half_open (trial export)
+half_open <span class="trigger">[success]</span>                 <span class="arrow">→</span> active (cooldown reset to 60s)
+half_open <span class="trigger">[failure]</span>                 <span class="arrow">→</span> circuit_open (cooldown × 2, max 600s)
+</div>
+
+<blockquote>
+  <p>「ccxray SHALL maintain an OTel health state machine with exactly four states: <code>disabled</code>, <code>active</code>, <code>degraded</code>, and <code>circuit_open</code>. Transitions SHALL be driven exclusively by the conditions described in the subsequent requirements; no other code path SHALL mutate state.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">otel-health/spec.md</a> › Requirement: Four-state OTel health machine</span>
+</blockquote>
+
+<blockquote>
+  <p>「After 5 consecutive export failures, the state SHALL transition to <code>circuit_open</code> and exports SHALL be paused. After an initial cooldown of 60 seconds, the state SHALL transition to <code>half_open</code> and a single export SHALL be attempted. Success SHALL return the state to <code>active</code>. Failure SHALL keep the state at <code>circuit_open</code> and the cooldown SHALL double up to a maximum of 600 seconds.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">otel-health/spec.md</a> › Requirement: Circuit breaker with exponential backoff</span>
+</blockquote>
+
+<h3>Queue 行為(同樣由 spec 規定)</h3>
+
+<blockquote>
+  <p>「The OTel export queue SHALL be bounded by a configurable size (default 2048 entries). When the queue is full and a new export is attempted, the oldest queued entry SHALL be dropped to make room. Each drop SHALL increment <code>ccxray.otel.exports_dropped_total{signal}</code>.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">otel-health/spec.md</a> › Requirement: Bounded export queue with drop-oldest semantics</span>
+</blockquote>
+
+<h3>三種失敗等級的分流</h3>
+
+<table>
+  <tr><th>失敗等級</th><th>例子</th><th>規格定義的處理</th></tr>
+  <tr>
+    <td>Config error</td>
+    <td>JSON 語法、unresolved <code>${VAR}</code></td>
+    <td>啟動<strong>失敗</strong>,非零 exit,錯誤指出檔案 + 行號</td>
+  </tr>
+  <tr>
+    <td>Init error</td>
+    <td>endpoint URL 格式錯</td>
+    <td>進入 <strong>degraded</strong>,ccxray 仍啟動,proxy 正常,status 顯示</td>
+  </tr>
+  <tr>
+    <td>Runtime error</td>
+    <td>collector unreachable</td>
+    <td>由 circuit breaker 吸收(進 <strong>circuit_open</strong>)</td>
+  </tr>
+</table>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">otel-health/spec.md</a> › Requirement: Config errors fail fast, init/runtime errors degrade</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="config">9. Config 載入與 secret 拒絕</h2>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    A[ccxray 啟動]
+    B{找到 .ccxray.json?<br/>從 cwd 走到 git root}
+    C[讀 .ccxray.json]
+    D{找到 .ccxray.user.json?<br/>cwd 或 $HOME}
+    E[讀 .ccxray.user.json]
+    F[JSON 語法 OK?]
+    G[Schema OK?]
+    H["${VAR} 全部 resolve?"]
+    I[沒有 literal secret pattern?]
+    J["tier_effective = min(project, personal)"]
+    K[初始化 SDK]
+    FAIL[exit 非零<br/>fail fast]
+    NONE[tier 0<br/>不啟動 SDK]
+
+    A --> B
+    B -- 沒有 --> NONE
+    B -- 有 --> C
+    C --> F
+    F -- 否 --> FAIL
+    F -- 是 --> G
+    G -- 否 --> FAIL
+    G -- 是 --> H
+    H -- 否 --> FAIL
+    H -- 是 --> I
+    I -- 像 secret --> FAIL
+    I -- OK --> D
+    D -- 沒有 --> J
+    D -- 有 --> E
+    E --> F
+    J --> K
+
+    style FAIL fill:#bf616a,stroke:#5e81ac,color:#0f1419
+    style NONE fill:#8b95a5,stroke:#5e81ac,color:#0f1419
+    style K fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<blockquote>
+  <p>「Both files support <code>${ENV_VAR}</code> interpolation in string values. The schema validator rejects any string that looks like a literal secret (<code>Bearer [A-Za-z0-9]{20,}</code>, <code>sk_live_*</code>, <code>ghp_*</code>, JWT structure) when not wrapped in <code>${...}</code>. First-time generation auto-amends <code>.gitignore</code> to include <code>.ccxray.user.json</code>.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> › D6. Config: <code>.ccxray.json</code> + <code>.ccxray.user.json</code></span>
+</blockquote>
+
+<h3>具體 scenario(直接列舉 spec 描述的)</h3>
+<ul>
+  <li><strong>合法插值</strong>:Config 含 <code>"Authorization": "Bearer ${OTLP_TOKEN}"</code>,env <code>OTLP_TOKEN=abc123</code> 已設 → 載入 header 值為 <code>"Bearer abc123"</code>,且 literal 字串 <strong>不</strong>出現在任何 debug log 行</li>
+  <li><strong>Env 缺失</strong>:Config 含 <code>"Bearer ${MISSING_VAR}"</code>,<code>MISSING_VAR</code> 未設 → ccxray 非零 exit,錯誤訊息含檔案路徑、行號、變數名 <code>MISSING_VAR</code></li>
+  <li><strong>Literal token 被拒</strong>:Config 含字面 <code>"Bearer abc123longtokenvalue..."</code> → 啟動失敗,提示使用者改用 <code>${ENV_VAR}</code></li>
+  <li><strong>純 URL 通過</strong>:Pure URLs 和 hostnames 允許不寫 <code>${...}</code></li>
+</ul>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">otel-config/spec.md</a> › Requirement: Environment variable interpolation, Requirement: Literal-secret rejection</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="parser">10. Parser pipeline 與 sentinels</h2>
+
+<p>規格要求 tool / MCP / skill / agent-type 偵測<strong>不能</strong>再用 inline 字串散落在 <code>system-prompt.js</code> / <code>store.js</code> / <code>helpers.js</code>,而要改成版本化的 JSON schema:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    REQ[一筆 entry 進來] --> DISP[server/parsers/index.js<br/>dispatch]
+
+    DISP --> S1[anthropic-tools.schema.json]
+    DISP --> S2[anthropic-skills.schema.json]
+    DISP --> S3[anthropic-agent-types.schema.json]
+    DISP --> S4[mcp-tools.schema.json]
+    DISP --> S5[codex-tools.schema.json]
+
+    S1 --> OK[ccxray.tool.invocations_total<br/>ccxray.skill.activations_total<br/>...]
+    S1 --> UNK["ccxray.parser.unknown_tool_total{provider}"]
+
+    S2 --> OK
+    S2 --> UNK2["ccxray.parser.unknown_skill_marker_total"]
+
+    S4 --> OK
+    S4 --> UNK3["ccxray.parser.unknown_mcp_format_total"]
+
+    OK --> INV[invariants check]
+    INV --> MISMATCH[ccxray.parser.reconciliation_mismatch_total<br/>當 tool_use blocks 數 ≠ extracted 數]
+
+    style DISP fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style OK fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style UNK fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+    style UNK2 fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+    style UNK3 fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+    style MISMATCH fill:#bf616a,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<blockquote>
+  <p>「Detection logic for tool / MCP / skill / agent-type SHALL be expressed as JSON schemas under <code>server/parsers/</code>. There SHALL be at minimum one schema per (concern, provider) pair: <code>parsers/anthropic-tools.schema.json</code>, <code>parsers/anthropic-skills.schema.json</code>, <code>parsers/anthropic-agent-types.schema.json</code>, <code>parsers/mcp-tools.schema.json</code> (provider-agnostic MCP naming convention), <code>parsers/codex-tools.schema.json</code>. Each schema SHALL include a <code>version</code> field (semver) and a <code>last_verified_against</code> field (ISO 8601 date).」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: Versioned parser schemas per concern and provider</span>
+</blockquote>
+
+<h3>Sentinel 是什麼意思?</h3>
+
+<p>「Unknown」<strong>不是 0</strong>,而是「我看到了一個 token 但 schema 不認得」。這是早期偵測 drift 的訊號:</p>
+
+<blockquote>
+  <p>「When the parser encounters a token, marker, or block that does not match any registered pattern in the relevant schema, it SHALL increment one of: <code>ccxray.parser.unknown_tool_total{provider}</code>, <code>ccxray.parser.unknown_skill_marker_total{provider}</code>, <code>ccxray.parser.unknown_mcp_format_total</code>, <code>ccxray.parser.fallback_used_total{parser,reason}</code>. The unknown event SHALL also be recorded with a short sample to <code>~/.ccxray/parser-drift.log</code> for later inspection via <code>ccxray parser report</code>.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: Sentinel counters for unknown tokens</span>
+</blockquote>
+
+<h3>Reconciliation invariants</h3>
+
+<blockquote>
+  <p>「For every processed entry the parser SHALL verify the following invariants: Number of <code>tool_use</code> blocks in the response equals the number of tool entries extracted by the parser. Sum of input/output token counts attributed by the parser equals the corresponding values in the upstream usage block.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: Reconciliation invariants</span>
+</blockquote>
+
+<h3>Snapshot fixtures(per spec 規定的最小集合)</h3>
+<p>Spec 明定每個 provider 都要至少有這些 fixtures:</p>
+<ul>
+  <li>Basic tool invocation</li>
+  <li>Tool invocation with a skill marker active</li>
+  <li>Subagent invocation (Anthropic Task tool)</li>
+  <li>MCP server tool invocation</li>
+  <li>An intentional unknown tool name</li>
+</ul>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: Snapshot fixtures per provider</span>
+</blockquote>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="cli">11. CLI 命令面</h2>
+
+<p>Spec 明定 3 個新命令 + 1 個 startup banner:</p>
+
+<div class="card">
+<h4><code>ccxray status --otel</code></h4>
+<p>顯示:</p>
+<ul>
+  <li>Effective tier(0/1/2)+ 哪些 config 檔案貢獻了</li>
+  <li>Endpoint URL(<code>${VAR}</code> 部分 masked)</li>
+  <li>OTel state(<code>disabled / active / degraded / circuit_open</code>)+ 最近 3 個 state transitions 含 timestamp</li>
+  <li>Circuit breaker 剩餘 cooldown(若 applicable)</li>
+  <li>每個 metric 的 cardinality usage,格式 <code>current / budget</code>(例:<code>tool: 23/50</code>)</li>
+  <li>Exports succeeded / failed / dropped(過去 1 小時 + 24 小時)</li>
+  <li>Tier 2 時的 <code>opt_in_acknowledged_at</code></li>
+  <li>CLI coexistence 指示器:<code>CLAUDE_CODE_ENABLE_TELEMETRY</code> 是否偵測到</li>
+</ul>
+<blockquote>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-introspection/spec.md">otel-introspection/spec.md</a> › Requirement: <code>ccxray status --otel</code> shows effective configuration and health</span>
+</blockquote>
+</div>
+
+<div class="card">
+<h4><code>ccxray otel preview</code></h4>
+<blockquote>
+  <p>「The <code>ccxray otel preview</code> command SHALL print the exact JSON body that would be sent to the OTel collector on the next export, including all attribute values and resource attributes, WITHOUT sending any network request. Secrets resolved from <code>${ENV_VAR}</code> SHALL be masked in the output.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-introspection/spec.md">otel-introspection/spec.md</a> › Requirement: <code>ccxray otel preview</code> dry-run</span>
+</blockquote>
+</div>
+
+<div class="card">
+<h4><code>ccxray parser report</code></h4>
+<blockquote>
+  <p>「The <code>ccxray parser report</code> command SHALL print the top unknown tokens by frequency from the last 7 days of <code>~/.ccxray/parser-drift.log</code>, grouped by category (tool / skill / MCP / fallback). The output SHALL include sample tokens and a GitHub issue body template the user can copy to file a drift report.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">parser-schemas/spec.md</a> › Requirement: <code>ccxray parser report</code> command</span>
+</blockquote>
+</div>
+
+<div class="card">
+<h4>Startup banner</h4>
+<blockquote>
+  <p>「When ccxray starts at tier ≥ 1, it SHALL print a one-line banner to stderr summarizing: tier value, endpoint (without secret), and complement-mode status (if CLI OTel is active). The banner SHALL NOT print when tier is 0.」</p>
+  <span class="source">📄 <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-introspection/spec.md">otel-introspection/spec.md</a> › Requirement: Startup banner declares active tier and mode</span>
+</blockquote>
+<p>Scenario:</p>
+<ul>
+  <li>Tier 1 standalone → stderr 含一行符合 <code>ccxray OTel tier: 1 (anonymous) → &lt;endpoint&gt;</code></li>
+  <li>Tier 1 with CLI active → 該行含 <code>tier: 1</code> 和 <code>complement-mode: true</code></li>
+  <li>Tier 0 → 無 OTel banner 任何字</li>
+</ul>
+</div>
+
+<!-- ════════════════════════════════════════ -->
+<h2 id="sources">12. 引用來源索引</h2>
+
+<p>所有規格檔案(可在 VS Code 點開):</p>
+<table>
+  <tr><th>檔案</th><th>內容</th></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/proposal.md">proposal.md</a></td><td>Why / What Changes / Capabilities / Impact</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a></td><td>Context / Goals / 8 個決策 D1–D8 / Risks / Migration / Open Questions</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a></td><td>6 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a></td><td>8 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a></td><td>6 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a></td><td>7 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a></td><td>6 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-introspection/spec.md">specs/otel-introspection/spec.md</a></td><td>4 個 Requirements 含 scenarios</td></tr>
+  <tr><td><a href="../openspec/changes/add-otel-metrics-phase1/tasks.md">tasks.md</a></td><td>11 個任務群,60+ checkbox</td></tr>
+</table>
+
+<p class="lede" style="margin-top: 32px;">這份視覺化是 mental model 工具,<strong>不是規格</strong>。任何 ambiguity 以 OpenSpec change 檔案為準。</p>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#1a1f26',
+      primaryColor: '#88c0d0',
+      primaryTextColor: '#d8dee9',
+      primaryBorderColor: '#5e81ac',
+      lineColor: '#8b95a5',
+      secondaryColor: '#a3be8c',
+      tertiaryColor: '#232932',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    },
+    flowchart: { htmlLabels: true, curve: 'basis' },
+  });
+</script>
+
+</body>
+</html>
