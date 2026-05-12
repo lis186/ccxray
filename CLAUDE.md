@@ -86,7 +86,7 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 
 - Launchers are registered in `server/providers.js`. Add future providers there with one entry for command name, display name, upstream family, launch args/env, and install hint; avoid adding new `if provider` branches in `server/index.js`.
 - Claude mode sets `ANTHROPIC_BASE_URL=http://localhost:<port>` in the spawned Claude process.
-- Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' ...args` and logs raw OpenAI Responses request/response JSON.
+- Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' -c 'chatgpt_base_url="http://localhost:<port>/v1"' ...args`, covering both API-key and ChatGPT-auth Codex transports.
 - Extra user args pass through unchanged after ccxray's injected launcher config.
 - `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
 

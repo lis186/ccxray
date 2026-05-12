@@ -407,12 +407,15 @@ describe('codex desktop app launcher mode', () => {
       "const fs = require('fs');",
       "const http = require('http');",
       "const argv = process.argv.slice(2);",
-      "const configIdx = argv.indexOf('-c');",
-      "const configArg = configIdx === -1 ? null : argv[configIdx + 1];",
-      "const match = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
-      "const openaiBaseUrl = match ? match[1] : null;",
+      "const configArgs = argv.flatMap((arg, idx) => arg === '-c' ? [argv[idx + 1]] : []).filter(Boolean);",
+      "const configArg = configArgs.find(arg => arg.includes('openai_base_url')) || null;",
+      "const chatgptConfigArg = configArgs.find(arg => arg.includes('chatgpt_base_url')) || null;",
+      "const openaiMatch = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
+      "const chatgptMatch = chatgptConfigArg && chatgptConfigArg.match(/chatgpt_base_url=\"([^\"]+)\"/);",
+      "const openaiBaseUrl = openaiMatch ? openaiMatch[1] : null;",
+      "const chatgptBaseUrl = chatgptMatch ? chatgptMatch[1] : null;",
       "function writeCapture(extra = {}) {",
-      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArg, openaiBaseUrl, cwd: process.cwd(), ...extra }));",
+      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArgs, configArg, chatgptConfigArg, openaiBaseUrl, chatgptBaseUrl, cwd: process.cwd(), ...extra }));",
       "}",
       "function probeHealth(baseUrl) {",
       "  return new Promise(resolve => {",
@@ -463,10 +466,13 @@ describe('codex desktop app launcher mode', () => {
       assert.deepEqual(capture.argv, [
         '-c',
         `openai_base_url="http://localhost:${port}/v1"`,
+        '-c',
+        `chatgpt_base_url="http://localhost:${port}/v1"`,
         'app',
         workspacePath,
       ]);
       assert.equal(capture.openaiBaseUrl, `http://localhost:${port}/v1`);
+      assert.equal(capture.chatgptBaseUrl, `http://localhost:${port}/v1`);
       assert.equal(capture.healthOk, true);
     } finally {
       fs.rmSync(fakeBin, { recursive: true, force: true });
