@@ -1,0 +1,1124 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>OTel 整合探索 — ccxray</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a1f26;
+    --panel-2: #232932;
+    --border: #2a313c;
+    --text: #d8dee9;
+    --muted: #8b95a5;
+    --accent: #88c0d0;
+    --accent-2: #a3be8c;
+    --warn: #ebcb8b;
+    --danger: #bf616a;
+    --code-bg: #11161c;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 {
+    font-size: 28px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 12px;
+    margin-bottom: 8px;
+  }
+  h2 {
+    font-size: 20px;
+    margin-top: 48px;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+  }
+  h3 {
+    font-size: 16px;
+    color: var(--accent-2);
+    margin-top: 28px;
+  }
+  p, li { color: var(--text); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .lede {
+    color: var(--muted);
+    font-size: 14px;
+    margin-bottom: 32px;
+  }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--warn);
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 18px 0;
+    display: flex;
+    justify-content: center;
+  }
+  .diagram .mermaid { background: transparent; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 14px 0;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0;
+  }
+  .grid-3 .card { margin: 0; }
+  .grid-3 h4 { margin: 0 0 6px; color: var(--accent); font-size: 14px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 13px;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--panel-2);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  td.good { color: var(--accent-2); }
+  td.warn { color: var(--warn); }
+  td.bad  { color: var(--danger); }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  .pill.A { color: var(--accent-2); border-color: var(--accent-2); }
+  .pill.B { color: var(--warn); border-color: var(--warn); }
+  .pill.C { color: var(--danger); border-color: var(--danger); }
+  .pill.D { color: #b48ead; border-color: #b48ead; }
+  .pill.recommended {
+    background: rgba(163, 190, 140, 0.15);
+    color: var(--accent-2);
+    border-color: var(--accent-2);
+    font-weight: 700;
+    padding: 2px 10px;
+  }
+  ul { padding-left: 22px; }
+  li { margin: 4px 0; }
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 22px;
+    margin: 18px 0 32px;
+    font-size: 14px;
+  }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .key {
+    border-left: 3px solid var(--accent-2);
+    background: rgba(163, 190, 140, 0.08);
+    padding: 10px 16px;
+    margin: 14px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .warn-box {
+    border-left: 3px solid var(--warn);
+    background: rgba(235, 203, 139, 0.08);
+    padding: 10px 16px;
+    margin: 14px 0;
+    border-radius: 0 4px 4px 0;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OTel 整合探索</h1>
+<div class="lede">理解 OpenTelemetry 是什麼,以及 ccxray 要如何接上 OTel 生態的三種方案比較</div>
+
+<div class="toc">
+  <strong>目錄</strong><br>
+  <a href="#what">1. OTel 是什麼?</a><br>
+  <a href="#signals">2. 三種訊號:Traces / Metrics / Logs</a><br>
+  <a href="#claude-now">3. Claude Code 內建的 OTel 已經做了什麼?</a><br>
+  <a href="#ccxray-pos">4. ccxray 站在 HTTP 層,看得到/看不到什麼?</a><br>
+  <a href="#plans">5. 四個整合方案(A / B / C / <span style="color: var(--accent-2);">D ★</span>)</a><br>
+  <a href="#compare">6. 四案比較表</a><br>
+  <a href="#mgmt">7. 管理者視角:MCP / tool / skill 使用統計</a><br>
+  <a href="#reco">8. 建議路線</a><br>
+  <a href="#premortem">9. 事前驗屍與解方(10 題,9 解,全 ≥ 9 分)</a>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="what">1. OTel 是什麼?</h2>
+
+<p>OpenTelemetry(以下簡稱 <strong>OTel</strong>)<strong>不是一個產品</strong>,而是一套<strong>觀測資料的標準</strong>。它定義了:</p>
+<ul>
+  <li>資料的<strong>結構</strong>(span 長什麼樣、metric 長什麼樣)</li>
+  <li>資料的<strong>傳輸協議</strong>(叫 OTLP,通常透過 HTTP/gRPC)</li>
+  <li>各種語言的 <strong>SDK</strong>(Node、Python、Go...)讓你產生這些資料</li>
+</ul>
+<p>它解決的問題是:<em>「以前每個觀測後端(Datadog、New Relic、Honeycomb)都有自己的 SDK,換後端就要改程式碼。現在大家都講 OTel,你只要 emit 一次,送去哪都可以。」</em></p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A[你的應用程式<br/>例如 ccxray] -->|OTel SDK<br/>產生標準資料| B[OTel Collector<br/>選配,中繼站]
+    B -->|OTLP 協議| C[Honeycomb]
+    B -->|OTLP 協議| D[Datadog]
+    B -->|OTLP 協議| E[Grafana / Jaeger]
+    B -->|OTLP 協議| F[Langfuse]
+    A -.直接送.-> C
+
+    style A fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style B fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<div class="key">
+<strong>記住一件事:</strong>你的程式 → OTel SDK → 後端。中間是「資料格式長一樣」。
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="signals">2. 三種訊號</h2>
+
+<p>OTel 把觀測資料分成三類,各自獨立,各自可開關:</p>
+
+<div class="grid-3">
+  <div class="card">
+    <h4>Traces 追蹤</h4>
+    <p class="muted">一次「操作」的時間軸</p>
+    <p>由多個 <code>span</code> 組成樹狀結構。每個 span 有開始/結束時間、parent。</p>
+    <p><em>ccxray 例子:</em> 一次 Claude turn = 一個 trace,內含 1 個 HTTP request span + N 個 tool span</p>
+  </div>
+  <div class="card">
+    <h4>Metrics 指標</h4>
+    <p class="muted">數字、計數、分布</p>
+    <p>Counter(累加)、Gauge(瞬時值)、Histogram(分布)。便宜、聚合好。</p>
+    <p><em>ccxray 例子:</em> input_tokens 累計、cost 累計、cache hit rate</p>
+  </div>
+  <div class="card">
+    <h4>Logs 事件</h4>
+    <p class="muted">結構化 log 紀錄</p>
+    <p>類似傳統 log,但是結構化(JSON),可以關聯到 trace 和 span。</p>
+    <p><em>ccxray 例子:</em> 完整 request body、tool 執行結果</p>
+  </div>
+</div>
+
+<h3>三者怎麼串在一起?</h3>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph Trace [Trace: 一次 Claude turn]
+        S1["Span: HTTP POST /v1/messages<br/>200ms"]
+        S2["Span: tool_use Read<br/>50ms"]
+        S3["Span: tool_use Bash<br/>1200ms"]
+        S1 --> S2
+        S1 --> S3
+    end
+
+    subgraph Metrics [Metrics 同時被記錄]
+        M1["counter tokens.input += 2500"]
+        M2["counter cost.usd += 0.0125"]
+    end
+
+    subgraph Logs [Logs 關聯到 span]
+        L1["event user_prompt<br/>linked to S1"]
+        L2["event tool_result<br/>linked to S3"]
+    end
+
+    style S1 fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style S2 fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style S3 fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="claude-now">3. Claude Code 內建的 OTel 已經做了什麼?</h2>
+
+<p>當你設定 <code>CLAUDE_CODE_ENABLE_TELEMETRY=1</code>,Claude Code CLI 會<strong>自己</strong>送 OTel 出去,完全不用 ccxray:</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    A[Claude Code CLI<br/>內建 OTel] -->|OTLP| B[你的 Collector]
+    B --> C[Honeycomb / Datadog]
+
+    A2[Claude Code CLI<br/>無 OTel 設定] -->|純 HTTP| X[Anthropic API]
+
+    style A fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style A2 fill:#8b95a5,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<p>CLI 自己會 emit 的 span:</p>
+<ul>
+  <li><code>claude_code.interaction</code> — 一個 agent loop turn</li>
+  <li><code>claude_code.llm_request</code> — 每次呼叫 Anthropic API</li>
+  <li><code>claude_code.tool</code> — 每次工具呼叫(含 permission 等待和執行)</li>
+  <li><code>claude_code.hook</code> — 每次 hook 執行(beta)</li>
+</ul>
+
+<div class="warn-box">
+<strong>注意:</strong>這只在 <strong>Anthropic 官方 Claude Code</strong>。<strong>Codex、Gemini 等其他 provider 完全沒有</strong> OTel。
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="ccxray-pos">4. ccxray 站在 HTTP 層,看得到/看不到什麼?</h2>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    CLI[Claude Code / Codex] -->|HTTP request| CCX[ccxray proxy]
+    CCX -->|forward| API[Anthropic / OpenAI API]
+    API -->|response| CCX
+    CCX -->|response| CLI
+
+    CCX -.寫入.-> LOG[(~/.ccxray/logs)]
+    CCX -.SSE.-> UI[Dashboard]
+
+    style CCX fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<table>
+  <tr><th>ccxray 看得到 ✅</th><th>ccxray 看不到 ❌</th></tr>
+  <tr>
+    <td>
+      <ul>
+        <li>每次 HTTP request / response 的完整 payload</li>
+        <li>model、input/output/cache tokens</li>
+        <li>cost(用 LiteLLM pricing 算)</li>
+        <li>latency(從 request 進來到 response 結束)</li>
+        <li>從 response 解析 tool_use block → 知道 LLM <em>要求</em> 執行什麼工具</li>
+        <li>下一個 request 帶 tool_result 回來 → 知道工具<em>結果</em></li>
+        <li><strong>跨 provider</strong>:Codex / Gemini 也都看得到</li>
+      </ul>
+    </td>
+    <td>
+      <ul>
+        <li>工具<strong>實際執行</strong>的時間(只能推斷)</li>
+        <li>Permission prompt 等待時間</li>
+        <li>Hook 執行</li>
+        <li>本地檔案 I/O 細節</li>
+        <li>使用者的 prompt 輸入動作</li>
+      </ul>
+    </td>
+  </tr>
+</table>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="plans">5. 四個整合方案</h2>
+
+<h3><span class="pill A">方案 A</span> Metrics Only — 輕量起手式</h3>
+
+<p>只 emit 數字型指標:token、cost、request count、cache hit rate。<strong>不碰 trace</strong>。</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    REQ[每次 HTTP 完成] --> M["counter tokens.input ++<br/>counter tokens.output ++<br/>counter cost.usd ++<br/>histogram latency ms"]
+    M -->|OTLP| COL[Collector]
+    COL --> GRA[Grafana / Datadog<br/>畫圖表]
+
+    style M fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<div class="card">
+  <strong>動到哪些檔案</strong>
+  <ul>
+    <li>新增 <code>server/otel.js</code> — 只在 env var 存在時啟動 <code>@opentelemetry/sdk-node</code></li>
+    <li>修改 <code>server/forward.js</code> — request 結束時 <code>counter.add(tokens)</code></li>
+  </ul>
+  <strong>優點</strong>
+  <ul>
+    <li>實作最簡單(估 1-2 天)</li>
+    <li>跟 CLI 內建的 OTel <strong>不重複</strong>(CLI 也有 metrics,但 ccxray 多了 Codex 的)</li>
+    <li>對使用者最有用:可以在 Grafana 上畫每日 token / cost 趨勢</li>
+  </ul>
+  <strong>缺點</strong>
+  <ul>
+    <li>看不到「為什麼貴」(沒有 trace,不知道是哪個 turn 燒最多)</li>
+  </ul>
+</div>
+
+<!-- ─────── -->
+
+<h3><span class="pill B">方案 B</span> Metrics + Synthetic Traces — 中度整合</h3>
+
+<p>加上 trace,但 trace 是「合成」的(因為看不到真實 tool 執行時間,只能從 HTTP 推斷)。</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph Trace [合成的 Trace]
+        I["claude_code.interaction<br/>由 session_id 群組"]
+        L["claude_code.llm_request<br/>真實 HTTP 時間"]
+        T1["ccxray.tool.synthetic<br/>從 tool_use 推斷"]
+        T2["ccxray.tool.synthetic<br/>從 tool_use 推斷"]
+        I --> L
+        L --> T1
+        L --> T2
+    end
+
+    style I fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style L fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style T1 fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+    style T2 fill:#ebcb8b,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<div class="card">
+  <strong>動到哪些檔案</strong>
+  <ul>
+    <li>方案 A 的全部</li>
+    <li>修改 <code>server/store.js</code> — session/turn 推斷時開 <code>interaction</code> span</li>
+    <li>修改 <code>server/forward.js</code> — 讀 incoming <code>traceparent</code> header 當父 context</li>
+    <li>解析 response 的 tool_use block,合成 tool span</li>
+  </ul>
+  <strong>優點</strong>
+  <ul>
+    <li>可以看到「一個 turn 內各 tool 的耗時分布」(雖然是估的)</li>
+    <li>如果使用者開了 CLI OTel,ccxray 的 span 可以自動掛在他們的 trace 底下</li>
+    <li>對 Codex 來說這是<strong>唯一</strong>的 trace 來源</li>
+  </ul>
+  <strong>缺點</strong>
+  <ul>
+    <li>同時開 CLI OTel + ccxray 會出現<strong>重複 span</strong>(同一個 llm_request 兩邊都送)</li>
+    <li>Tool 時間是「下一個 request 來的時候 - 上一個 response 結束」,不是真實執行時間</li>
+    <li>實作複雜度估 3-5 天</li>
+  </ul>
+</div>
+
+<!-- ─────── -->
+
+<h3><span class="pill C">方案 C</span> 完整(Metrics + Traces + Log Events)— 重度整合</h3>
+
+<p>把 ccxray 看到的<strong>完整 payload</strong> 也 emit 成 log event,讓使用者可以在 OTel 後端做全文搜尋。</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    REQ[HTTP request] --> M[Metrics]
+    REQ --> T[Traces]
+    REQ --> L["Log Events<br/>完整 request / response JSON"]
+
+    M --> COL[Collector]
+    T --> COL
+    L --> COL
+
+    COL --> BE[Honeycomb / Langfuse<br/>可全文搜尋 payload]
+
+    style L fill:#bf616a,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<div class="card">
+  <strong>動到哪些檔案</strong>
+  <ul>
+    <li>方案 B 的全部</li>
+    <li>新增 log event emit:每次 request/response 結束,送一個完整 body 的 log event</li>
+    <li>需要處理大 payload 的 chunking、PII 遮蔽選項</li>
+  </ul>
+  <strong>優點</strong>
+  <ul>
+    <li>使用者可以在 Langfuse / Honeycomb 看完整對話歷史和工具結果</li>
+    <li>比 CLI 內建的 <code>OTEL_LOG_RAW_API_BODIES</code> 還完整(CLI 那個是 60KB truncated)</li>
+    <li>可以做進階分析:prompt 模式、tool 失敗率、超長 conversation</li>
+  </ul>
+  <strong>缺點</strong>
+  <ul>
+    <li>資料量爆增,後端費用顯著上升</li>
+    <li>隱私 / 合規問題(完整對話內容被外送)</li>
+    <li>跟 ccxray 自己的 local log 功能<strong>有點重疊</strong>(使用者已經可以在 dashboard 看)</li>
+    <li>實作複雜度估 1-2 週</li>
+  </ul>
+</div>
+
+<!-- ─────── -->
+
+<h3><span class="pill D">方案 D</span> <span class="pill recommended">★ 推薦</span> 雲端追蹤 + 本地反查(Hybrid)</h3>
+
+<p>把 ccxray 看到的 <strong>metadata</strong>(model、token、cost、tool 名稱、timing)送雲端,完整 payload <strong>留在本地</strong>。span 上掛一個 <code>ccxray.entry_id</code> attribute,在 Grafana 發現問題後可以回 ccxray dashboard 反查完整對話。</p>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart LR
+    REQ[HTTP request 進來] --> CCX[ccxray proxy]
+    CCX -->|完整 payload<br/>~50KB/turn| LOG[(~/.ccxray/logs<br/>本地)]
+    CCX -->|metadata + entry_id<br/>~1KB/turn| OTLP[OTLP Collector]
+    OTLP --> GRA[Grafana / Honeycomb<br/>聚合查詢]
+
+    GRA -.點 entry_id<br/>跳回本地.-> UI[ccxray Dashboard<br/>看完整 payload]
+    LOG --> UI
+
+    style CCX fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+    style LOG fill:#a3be8c,stroke:#5e81ac,color:#0f1419
+    style UI fill:#b48ead,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<h4>反查的工作流</h4>
+
+<div class="diagram">
+<pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as 工程師
+    participant G as Grafana
+    participant D as ccxray Dashboard
+    participant F as 本地 log 檔
+
+    Note over G: 看到異常 spike<br/>cost 突然爆增
+    U->>G: 點開最貴的那個 span
+    G-->>U: trace 顯示 ccxray.entry_id=<br/>"2026-05-12T09-31-04-227"
+    U->>D: 開啟 http://localhost:5577/entry/2026-...
+    D->>F: 讀取本地 _req.json / _res.json
+    F-->>D: 完整 payload
+    D-->>U: 顯示完整對話、tool 呼叫、cache 結構
+    Note over U: 找到原因:<br/>某個 tool result<br/>把 200KB 文字塞進 context
+</pre>
+</div>
+
+<div class="card">
+  <strong>實際 emit 的 span 長這樣(metadata-only)</strong>
+<pre><code>{
+  "name": "ccxray.llm_request",
+  "attributes": {
+    "ccxray.entry_id":        "2026-05-12T09-31-04-227",
+    "ccxray.dashboard_url":   "http://localhost:5577/entry/2026-05-12T09-31-04-227",
+    "ccxray.provider":        "anthropic",
+    "model":                  "claude-opus-4-7",
+    "tokens.input":            45230,
+    "tokens.output":            1820,
+    "tokens.cache_read":       38500,
+    "tokens.cache_creation":    6730,
+    "cost.usd":              0.0825,
+    "latency_ms":              4210,
+    "tools.count":                 3,
+    "tools.names":  ["Read","Bash","Edit"]
+  }
+}</code></pre>
+  <strong>注意:沒有任何 prompt 文字、tool input、tool output。</strong>
+</div>
+
+<div class="card">
+  <strong>動到哪些檔案</strong>
+  <ul>
+    <li>方案 A 的全部(metrics)</li>
+    <li>新增 <code>server/otel.js</code> 多一段「開 span 並掛 entry_id」</li>
+    <li>修改 <code>server/forward.js</code> — 在 entry 寫入後 emit span,attribute 直接從現有 store 的 metadata 取</li>
+    <li>修改 <code>server/routes/api.js</code> — 加一個 <code>/entry/:id</code> 路由,直接 deep-link 到該筆</li>
+    <li><strong>不需要</strong>處理大 payload chunking、PII 遮蔽、log event(因為沒送)</li>
+  </ul>
+
+  <strong>優點</strong>
+  <ul>
+    <li class="good">✅ <strong>隱私零風險</strong>:沒有任何對話內容外送</li>
+    <li class="good">✅ <strong>資料量極小</strong>:每個 turn ~1KB,Grafana free tier 都吃得下</li>
+    <li class="good">✅ <strong>反查路徑清楚</strong>:Grafana 看到怪 → 點連結 → ccxray dashboard 看細節</li>
+    <li class="good">✅ <strong>跟 dashboard 不重疊,而是強化</strong>:Grafana 負責「橫向聚合」,dashboard 負責「縱向細節」</li>
+    <li class="good">✅ <strong>實作比 B 還簡單</strong>:不用合成 tool span 的時間(那個本來就不準),只送一個 llm_request span 加 entry_id 即可。估 2–3 天</li>
+  </ul>
+
+  <strong>缺點 / 限制</strong>
+  <ul>
+    <li class="warn">⚠️ 反查只能在「同一台機器」上做(本地 log 的本質)。如果使用者是遠端 / 多人共用,需要先決定 log 放哪</li>
+    <li class="warn">⚠️ 本地 log 被 rotate / 清掉後,trace 上的 entry_id 會變死連結。可在 dashboard 顯示「此 entry 已 expire」提示</li>
+    <li class="warn">⚠️ 如果使用者只開 Grafana 不開 ccxray dashboard,點連結會打不開(可考慮 fallback:span 上加一個 <code>ccxray.summary</code> attribute 提供 50 字摘要)</li>
+  </ul>
+</div>
+
+<div class="key">
+<strong>為什麼這個比 B 和 C 都好?</strong>
+<ul>
+  <li>比 <span class="pill B">B</span> 好:不用煩惱 synthetic tool span 的時間不準、不用煩惱跟 CLI 重複(metadata-level 重複沒關係),又多了反查能力</li>
+  <li>比 <span class="pill C">C</span> 好:價值幾乎一樣(都能看完整 payload),但隱私 / 成本 / 實作複雜度全面贏</li>
+  <li>本質上是「用 trace_id / entry_id 當索引,把儲存外包給本地」的設計</li>
+</ul>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="compare">6. 四案比較表</h2>
+
+<table>
+  <tr>
+    <th>面向</th>
+    <th><span class="pill A">方案 A</span><br>Metrics Only</th>
+    <th><span class="pill B">方案 B</span><br>+ Synthetic Traces</th>
+    <th><span class="pill C">方案 C</span><br>完整 payload</th>
+    <th><span class="pill D">方案 D</span> <span class="pill recommended">★</span><br>Hybrid 反查</th>
+  </tr>
+  <tr>
+    <td>實作工時</td>
+    <td class="good">1–2 天</td>
+    <td class="warn">3–5 天</td>
+    <td class="bad">1–2 週</td>
+    <td class="good">2–3 天</td>
+  </tr>
+  <tr>
+    <td>使用者價值</td>
+    <td class="good">中:cost / token 趨勢</td>
+    <td class="good">高:turn timing 分析</td>
+    <td class="warn">看情境:power user</td>
+    <td class="good">最高:聚合 + 細節都有</td>
+  </tr>
+  <tr>
+    <td>跟 CLI 內建 OTel 衝突</td>
+    <td class="good">不衝突</td>
+    <td class="warn">span 重複</td>
+    <td class="bad">重複更嚴重</td>
+    <td class="good">不衝突<br>(用 ccxray.* namespace)</td>
+  </tr>
+  <tr>
+    <td>Codex / Gemini 支援</td>
+    <td class="good">是</td>
+    <td class="good">是(唯一)</td>
+    <td class="good">是(唯一)</td>
+    <td class="good">是(唯一)</td>
+  </tr>
+  <tr>
+    <td>資料量 / 後端費用</td>
+    <td class="good">很低</td>
+    <td class="warn">中</td>
+    <td class="bad">高,需取樣</td>
+    <td class="good">低(~1KB/turn)</td>
+  </tr>
+  <tr>
+    <td>隱私風險</td>
+    <td class="good">無</td>
+    <td class="good">低</td>
+    <td class="bad">高</td>
+    <td class="good">無(payload 不出機器)</td>
+  </tr>
+  <tr>
+    <td>取代 dashboard 的程度</td>
+    <td class="good">完全不衝突</td>
+    <td class="warn">部分重疊</td>
+    <td class="bad">高度重疊</td>
+    <td class="good">互補強化</td>
+  </tr>
+  <tr>
+    <td>需要使用者持續開 ccxray dashboard</td>
+    <td class="good">不需要</td>
+    <td class="good">不需要</td>
+    <td class="good">不需要</td>
+    <td class="warn">反查時需要本地 log 還在</td>
+  </tr>
+</table>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="mgmt">7. 管理者視角:還能看到什麼?</h2>
+
+<p>除了 cost / token,管理者(team lead、平台 owner)通常也想知道:</p>
+<ul>
+  <li><strong>誰在用什麼 MCP server?</strong>各用幾次?哪個 MCP 失敗率最高?</li>
+  <li><strong>哪些 tool 被叫最多?</strong>Bash、Read、Edit、WebSearch... 各佔多少?</li>
+  <li><strong>Skill 採用率?</strong>哪些 skill 被觸發?哪些建了沒人用?</li>
+  <li><strong>每個團隊 / 專案的差異?</strong>同樣是用 Claude Code,A 團隊跟 B 團隊行為差在哪?</li>
+</ul>
+
+<p>這些<strong>全部都是 metrics 加上 attribute(label)</strong>,屬於方案 A 和方案 D 的能力範圍,不需要 trace 或完整 payload。</p>
+
+<h3>能 emit 的 counter 範例</h3>
+
+<div class="card">
+<pre><code># 每個 MCP server 被叫的次數
+ccxray.mcp.invocations_total {server="filesystem", tool="read_file"} = 1248
+ccxray.mcp.invocations_total {server="github",     tool="create_pr"} =   42
+ccxray.mcp.invocations_total {server="slack",      tool="post_message"} = 89
+
+# MCP 失敗次數
+ccxray.mcp.errors_total {server="github", error_type="timeout"} = 7
+
+# 內建 tool 使用次數
+ccxray.tool.invocations_total {tool="Bash",   provider="anthropic"} = 5230
+ccxray.tool.invocations_total {tool="Read",   provider="anthropic"} = 8120
+ccxray.tool.invocations_total {tool="Edit",   provider="anthropic"} = 1840
+ccxray.tool.invocations_total {tool="WebSearch", provider="anthropic"} = 92
+
+# Skill 觸發次數(從 system prompt 解析)
+ccxray.skill.activations_total {skill="release",   provider="anthropic"} = 12
+ccxray.skill.activations_total {skill="git-commit", provider="anthropic"} = 87
+
+# 每個 provider 的 session 數
+ccxray.sessions_total {provider="anthropic"} = 234
+ccxray.sessions_total {provider="codex"}     =  41
+
+# 維度可組合:依 model 拆 token 消耗
+ccxray.tokens.input_total {model="claude-opus-4-7", provider="anthropic"} = 12_500_000
+ccxray.tokens.input_total {model="claude-sonnet-4-6", provider="anthropic"} = 38_200_000</code></pre>
+</div>
+
+<h3>ccxray 已經有的資料來源</h3>
+
+<table>
+  <tr><th>想 emit 的 metric</th><th>ccxray 現有來源</th><th>難度</th></tr>
+  <tr>
+    <td><code>ccxray.tool.invocations_total</code></td>
+    <td>response 內的 <code>tool_use</code> block(已經在解析)</td>
+    <td class="good">低</td>
+  </tr>
+  <tr>
+    <td><code>ccxray.mcp.invocations_total</code></td>
+    <td>tool name 以 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 為前綴(已有命名規則)</td>
+    <td class="good">低</td>
+  </tr>
+  <tr>
+    <td><code>ccxray.skill.activations_total</code></td>
+    <td>system prompt 內的 skill 觸發 marker(<code>system-prompt.js</code> 已在解析)</td>
+    <td class="warn">中(需要確認 marker)</td>
+  </tr>
+  <tr>
+    <td><code>ccxray.sessions_total</code></td>
+    <td><code>store.js</code> 的 session 推斷</td>
+    <td class="good">低</td>
+  </tr>
+  <tr>
+    <td><code>ccxray.tokens.* / cost.*</code></td>
+    <td><code>pricing.js</code> + response usage 欄位</td>
+    <td class="good">低</td>
+  </tr>
+  <tr>
+    <td>依「使用者 / 團隊」拆分</td>
+    <td>需新增 <code>OTEL_RESOURCE_ATTRIBUTES=enduser.id=...</code> 設定指引</td>
+    <td class="warn">中(靠使用者設定環境變數)</td>
+  </tr>
+</table>
+
+<h3>更多管理者會在意的指標(全部都在方案 A 能力範圍)</h3>
+
+<p>以下指標 ccxray 都能從 HTTP 看到的資料推導出來,不需要 trace 或完整 payload:</p>
+
+<div class="grid-3">
+
+  <div class="card">
+    <h4>📈 生產力 / 採用</h4>
+    <ul>
+      <li><code>ccxray.users.active_daily</code><br><span class="muted">DAU / WAU,看推廣成效</span></li>
+      <li><code>ccxray.sessions.duration_seconds</code><br><span class="muted">histogram,session 平均時長</span></li>
+      <li><code>ccxray.turns_per_session</code><br><span class="muted">每 session 對話幾輪</span></li>
+      <li><code>ccxray.first_token_latency_ms</code><br><span class="muted">UX 體感速度</span></li>
+      <li><code>ccxray.agent_type.invocations</code><br><span class="muted">general / explore / plan / 自訂 subagent 各用幾次</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>💰 成本效率</h4>
+    <ul>
+      <li><code>ccxray.cache.hit_ratio</code><br><span class="muted">cache_read / total_input,< 70% 表示 prompt 設計有問題</span></li>
+      <li><code>ccxray.cost_per_session_usd</code><br><span class="muted">histogram,找出燒錢 outlier</span></li>
+      <li><code>ccxray.tokens.output_per_input_ratio</code><br><span class="muted">產出 / 輸入比,過低代表 context 浪費</span></li>
+      <li><code>ccxray.quota.burn_rate_pct</code><br><span class="muted">5h / 週 quota 燒到幾 %</span></li>
+      <li><code>ccxray.retries_total</code><br><span class="muted">retry 次數,間接成本</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>🚨 品質 / 可靠度</h4>
+    <ul>
+      <li><code>ccxray.errors_total{type}</code><br><span class="muted">rate_limit / overloaded / timeout / 500</span></li>
+      <li><code>ccxray.stop_reason{reason}</code><br><span class="muted">end_turn / tool_use / max_tokens / stop_sequence</span></li>
+      <li><code>ccxray.max_tokens_hit_rate</code><br><span class="muted">被截斷率,高代表 UX 差</span></li>
+      <li><code>ccxray.latency_ms{model,p95}</code><br><span class="muted">各 model SLA</span></li>
+      <li><code>ccxray.aborted_total</code><br><span class="muted">使用者 ctrl-c / Esc 比例</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>🧠 使用模式</h4>
+    <ul>
+      <li><code>ccxray.context.utilization_pct</code><br><span class="muted">histogram,context window 平均吃多滿</span></li>
+      <li><code>ccxray.auto_compact.triggered_total</code><br><span class="muted">壓縮觸發次數,代表「需要更大 context」</span></li>
+      <li><code>ccxray.subagent.invocations</code><br><span class="muted">主 agent vs Task 子 agent 比例</span></li>
+      <li><code>ccxray.tools_per_turn</code><br><span class="muted">每輪平均叫幾個 tool</span></li>
+      <li><code>ccxray.thinking.token_ratio</code><br><span class="muted">extended thinking 佔輸出比例</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>🛠️ Tool / MCP 細節</h4>
+    <ul>
+      <li><code>ccxray.tool.latency_ms{tool}</code><br><span class="muted">推估 tool 執行時間(下一個 request 進來 − 上一個 response 結束)</span></li>
+      <li><code>ccxray.tool.result_size_bytes{tool}</code><br><span class="muted">tool 回傳大小,過大會吃 context</span></li>
+      <li><code>ccxray.tool.failures_total{tool,reason}</code><br><span class="muted">從 tool_result 的 is_error 解析</span></li>
+      <li><code>ccxray.mcp.unique_servers</code><br><span class="muted">使用者連了幾個 MCP server</span></li>
+      <li><code>ccxray.bash.command_pattern{cmd}</code><br><span class="muted">最常 bash 跑什麼(取第一個 token,有 cardinality 風險,需設白名單)</span></li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>🔒 治理 / 安全</h4>
+    <ul>
+      <li><code>ccxray.permission_mode.usage{mode}</code><br><span class="muted">default / acceptEdits / bypassPermissions(yolo) 比例</span></li>
+      <li><code>ccxray.dangerous_tool.invocations</code><br><span class="muted">rm -rf / force-push / drop table 偵測</span></li>
+      <li><code>ccxray.file_writes_total</code><br><span class="muted">Edit + Write 加總</span></li>
+      <li><code>ccxray.provider.distribution</code><br><span class="muted">Anthropic vs Codex vs Gemini 比例</span></li>
+      <li><code>ccxray.system_prompt.version_changes</code><br><span class="muted">agent system prompt 改了幾次(知道誰在自訂)</span></li>
+    </ul>
+  </div>
+
+</div>
+
+<div class="warn-box">
+<strong>Cardinality 警告:</strong>帶 <code>{user}</code>、<code>{cmd}</code>、<code>{file_path}</code> 等高基數 attribute 的 metric 會把後端 explode。設計時:
+<ul>
+  <li>低基數 labels(tool name, model, provider, error type)— 直接用</li>
+  <li>中基數(user, team)— 用 <code>OTEL_RESOURCE_ATTRIBUTES</code>,且設使用者上限</li>
+  <li>高基數(file path, full command, prompt text)— <strong>不要當 metric label</strong>,只能放 trace attribute 或 log event</li>
+</ul>
+</div>
+
+<h3>管理者可以做的 Grafana / Datadog 報表</h3>
+
+<div class="diagram">
+<pre class="mermaid">
+flowchart TB
+    subgraph Reports [典型管理報表]
+        R1["📊 每週各團隊 token 消耗 / 成本<br/>(by enduser.id)"]
+        R2["🔧 Top 10 最常用 tool<br/>(by tool name)"]
+        R3["🔌 各 MCP server 使用熱度<br/>(by server name)"]
+        R4["⚙️ Skill 採用率排行<br/>(用了 vs 沒用)"]
+        R5["💸 哪個 model 燒最多錢<br/>(by model + provider)"]
+        R6["🚨 MCP 失敗率告警<br/>(error rate > X%)"]
+    end
+
+    M["ccxray 送出的 metrics<br/>含 attributes:<br/>tool / mcp / skill / model / user"] --> Reports
+
+    style M fill:#88c0d0,stroke:#5e81ac,color:#0f1419
+</pre>
+</div>
+
+<div class="key">
+<strong>關鍵洞察:</strong>「用了什麼 / 用幾次」這類問題 <strong>只需要 metrics(方案 A 的核心),不需要 trace 或 payload</strong>。Cardinality 控制好(tool 名稱、MCP server 名稱是有限集合),即使免費 tier 的 Grafana / Prometheus 都吃得下。
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="reco">8. 建議路線</h2>
+
+<div class="key">
+<strong>建議分兩階段:第一階段做方案 A(含管理面 metrics),第二階段升級到方案 D。</strong>
+</div>
+
+<h3>第一階段:方案 A — 多面向 Metrics(1–2 週)</h3>
+<ul>
+  <li>cost / token counter</li>
+  <li>tool / MCP / skill 使用次數 counter(管理者視角)</li>
+  <li>session / provider 維度</li>
+  <li>支援 <code>OTEL_RESOURCE_ATTRIBUTES</code> 讓使用者標記 team / project / user</li>
+  <li>價值:Grafana 一接,管理報表立刻有</li>
+</ul>
+
+<h3>第二階段:升級到方案 D — 加 trace + 反查(再 2–3 天)</h3>
+<ul>
+  <li>每個 llm_request 開一個 metadata-only span</li>
+  <li>span 帶 <code>ccxray.entry_id</code> + <code>dashboard_url</code></li>
+  <li>新增 <code>/entry/:id</code> deep-link 路由</li>
+  <li>價值:Grafana 看到異常 → 一鍵跳回本地看完整 payload</li>
+</ul>
+
+<h3>不建議做的</h3>
+<ul>
+  <li class="muted"><strong>方案 B 的 synthetic tool span 時間</strong>:時間不準,容易誤導,且跟 CLI 內建 OTel 直接打架</li>
+  <li class="muted"><strong>方案 C 的完整 payload 外送</strong>:隱私風險高,跟 ccxray 自身定位重疊。若使用者真要這個,應該獨立做「ccxray log 上傳到 S3 / 自建後端」的功能,而不是塞進 OTel pipeline</li>
+</ul>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="premortem">9. 事前驗屍與解方</h2>
+
+<p>建構前先想像「半年後失敗了會是因為什麼?」每題用 10 分制加權評估,只接受 ≥ 9 分方案。共 10 題(1 題跳過為可接受風險,2 題後續掃描補充),9 題解方全數通過。</p>
+
+<style>
+  .premortem-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  .pm-card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .pm-card h4 { margin: 0 0 8px; font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 8px; }
+  .pm-card .sev { font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+  .pm-card .sev.high { background: rgba(191, 97, 106, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+  .pm-card .sev.mid  { background: rgba(235, 203, 139, 0.18); color: var(--warn); border: 1px solid var(--warn); }
+  .pm-card .sev.low  { background: rgba(163, 190, 140, 0.18); color: var(--accent-2); border: 1px solid var(--accent-2); }
+  .pm-card .sev.skip { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); }
+  .pm-card .score { margin-left: auto; font-family: "SF Mono", Menlo, monospace; font-size: 12px; color: var(--accent-2); font-weight: 600; }
+  .pm-card .score.skip { color: var(--muted); font-weight: 400; }
+  .pm-card .problem { font-size: 12.5px; color: var(--muted); font-style: italic; margin: 0 0 8px; }
+  .pm-card .sol { font-size: 13px; margin: 6px 0 4px; color: var(--accent); font-weight: 600; }
+  .pm-card .ver { font-size: 13px; margin: 8px 0 4px; color: var(--accent-2); font-weight: 600; }
+  .pm-card ul { padding-left: 18px; margin: 4px 0; font-size: 12.5px; }
+  .pm-card li { margin: 2px 0; }
+</style>
+
+<div class="premortem-grid">
+
+  <div class="pm-card">
+    <h4>#1 Cardinality 爆炸 <span class="sev high">高傷害</span><span class="score">9.4 / 10</span></h4>
+    <p class="problem">使用者把 enduser.id 設成 email、bash command 當 label,Grafana 帳號被限流</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>Attribute key allow-list(View API)</li>
+      <li>Per-(metric, attribute) cardinality budget,超過改 <code>_overflow_</code></li>
+      <li><code>ccxray.metrics.overflow_total</code> sentinel + <code>ccxray status --metrics</code> 顯示用量</li>
+      <li>新 metric 必須註冊 schema,缺漏 CI fail</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:餵 51 unique values,assert 第 51 為 overflow</li>
+      <li>上線:overflow counter > 0 → 自動冒泡警示</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#2 沒人用,功能死掉 <span class="sev high">高傷害</span><span class="score">9.0 / 10</span></h4>
+    <p class="problem">半年後 < 5% 使用者啟用 OTel,維護成本變沉沒成本</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li><code>ccxray --otel-demo</code> 本地一鍵起 Grafana,30 秒看到資料</li>
+      <li>README 90 秒接 Grafana 截圖教學</li>
+      <li>本地 heartbeat 統計使用率(不外送)</li>
+      <li>三個月 sunset clock:< 10 個 GitHub 提及則停損</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:3 個新使用者走流程,中位數 < 5 分鐘看到資料</li>
+      <li>上線:三個月 KPI 閘門明確</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#3 多機反查全壞 <span class="sev high">高傷害</span><span class="score">9.4 / 10</span></h4>
+    <p class="problem">Manager 在 Grafana 看到 trace,點 localhost 連結打不開(那是工程師的機器)</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>Span 帶 entry_id + host + 50字 summary + local_url + 可選 public_url</li>
+      <li>Dashboard <code>/entry/:id</code> 找不到時優雅降級,顯示「在 host=X」提示</li>
+      <li>文件明說:個人 / 小團隊 / 大團隊各自的反查路徑</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:CI 雙 ccxray instance 模擬跨機反查</li>
+      <li>上線:<code>deeplink_resolved_total{outcome}</code> 追蹤 wrong_host 比例</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#4 CLI OTel 衝突 → 雙重計費 <span class="sev mid">中傷害</span><span class="score">9.5 / 10</span></h4>
+    <p class="problem">使用者同時開 CLI 和 ccxray OTel,token 算兩倍,budget 警報全錯</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>強制 <code>ccxray.*</code> namespace,不模仿 <code>claude_code.*</code> 欄位</li>
+      <li>偵測 <code>CLAUDE_CODE_ENABLE_TELEMETRY</code> 進入 complement mode,印警告</li>
+      <li>每筆 emit 帶 <code>ccxray.source=ccxray-proxy</code> resource attribute</li>
+      <li><code>ccxray.reconciliation.token_diff_pct</code>:跟 CLI 對帳的差異</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:雙開模式 fixture 測試,assert source attribute 分得開</li>
+      <li>上線:reconciliation diff > 5% 警報</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#5 管理者誤用 metric 監控個人 <span class="sev high">高傷害</span><span class="score">9.7 / 10</span></h4>
+    <p class="problem">Team lead 拿使用次數開檢討會,工程師集體棄用 ccxray</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>三層 tier:<strong>預設 OFF</strong> / 專案匿名 / 個人具名</li>
+      <li>專案是上限,個人是下限,個人可隨時降級退出</li>
+      <li>個人具名走 <code>.ccxray.user.json</code>(gitignore),不入 repo</li>
+      <li>啟動 banner + <code>ccxray status --otel</code> + <code>ccxray otel preview</code> dry-run</li>
+      <li>文件明寫:不要用這些 metric 評估個人績效</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:tier 升降 4 種組合矩陣全測</li>
+      <li>上線:<code>tier_distribution</code> 追蹤採用率,tier 2 < 5% 強化文件</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#6 Parser drift(skill / MCP / tool)<span class="sev mid">中傷害</span><span class="score">9.4 / 10</span></h4>
+    <p class="problem">Claude Code 改 prompt 格式,skill detector 全 0,半年沒人發現</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>Schema 化 parser(<code>parsers/*.schema.json</code> 帶版本)</li>
+      <li>Snapshot fixtures:每 provider 一組固定 request/response</li>
+      <li>Sentinel metrics:<code>ccxray.parser.unknown_*_total</code> — 未識別不是 0,是「看到了但分類不了」</li>
+      <li>對帳 invariants:tool_use block count 必對得起 extracted count</li>
+      <li>Parser 包 try/catch,壞掉不影響 ccxray 核心</li>
+      <li><code>ccxray parser report</code> 命令一鍵看 unknown top 10</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:餵未知 tool → assert sentinel ++,assert 不 throw</li>
+      <li>上線:reconciliation_mismatch > 0 = bug,unknown_* 持續 7 天自動建議檢查</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#7 Bundle size 膨脹 <span class="sev skip">可接受</span><span class="score skip">— 跳過</span></h4>
+    <p class="problem">@opentelemetry/sdk-node + auto-instrumentations 把 ccxray 從 3MB 變 18MB</p>
+    <div class="sol">處置</div>
+    <ul>
+      <li>使用者評估為可接受風險,跳過正式評估</li>
+      <li>實作時自我約束:只 import 必要模組(api、sdk-metrics、exporter-otlp-http),不引 auto-instrumentations</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#8 Hub mode env 傳遞 <span class="sev low">低傷害</span><span class="score">9.5 / 10</span></h4>
+    <p class="problem">使用者改 env 重新跑,但 hub 還在背景跑舊設定,以為改好實際沒送對地方</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>業務 OTel 走 <strong>client 端</strong>,不走 hub(hub 只負責 proxy + SSE broadcast)</li>
+      <li>每個 client 自己讀 <code>.ccxray.json</code> + 個人 config + env</li>
+      <li>不同 tier / endpoint 在同一個 hub 下自然共存</li>
+      <li>Hub 自己另開 <code>ccxray.hub.*</code> 運維 metric(uptime / requests / clients)</li>
+      <li><code>ccxray status</code> 顯示每個 client 的 tier 和 env 一致性</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:兩個 client 不同 config,同 hub,assert 各送各的</li>
+      <li>上線:<code>env_inconsistency_total</code> 追蹤「改了沒重啟」累積</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#11 Collector down 時記憶體 / 行為 <span class="sev mid">中傷害</span><span class="score">9.4 / 10</span></h4>
+    <p class="problem">Collector 掛掉,OTel SDK 無限重試,buffer 堆爆把 ccxray OOM</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>Bounded queue(2048),滿了 drop oldest</li>
+      <li>Circuit breaker:連續 5 次失敗 → open 60s → half-open 試探 → 失敗則 backoff(60→120→240→600s)</li>
+      <li>State + dropped 計數寫本地 log,不送網路(因為網路本來就斷)</li>
+      <li>設計選擇:丟資料 > 拖垮 ccxray,文件明說</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:mock collector 回 500,assert memory 不增長、drop counter ++</li>
+      <li>上線:<code>circuit_breaker_open_seconds</code> 累積長 = 持續問題</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#12 Config secret 風險 <span class="sev mid">中傷害</span><span class="score">9.5 / 10</span></h4>
+    <p class="problem">使用者把 Authorization token 寫進 .ccxray.json,commit 進 git</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li><code>${ENV_VAR}</code> 插值,token 只能在 env</li>
+      <li>Schema 拒絕看起來像 secret 的字面值(Bearer、JWT、ghp_ 等 pattern)</li>
+      <li>第一次生成 <code>.ccxray.json</code> 時自動加 <code>.gitignore</code> 提醒</li>
+      <li><code>ccxray status</code> 掃 git tracked config 是否含明文 secret</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:餵 Bearer 字面值 → schema 拒絕並給修正建議</li>
+      <li>實作:餵 <code>${TOKEN}</code> 但 env 未設 → 啟動失敗</li>
+    </ul>
+  </div>
+
+  <div class="pm-card">
+    <h4>#13 OTel 失敗 fallback 策略 <span class="sev mid">中傷害</span><span class="score">9.7 / 10</span></h4>
+    <p class="problem">OTel config 寫錯或 collector 掛,ccxray 整個跑不起來</p>
+    <div class="sol">解方</div>
+    <ul>
+      <li>三層失敗:config error(啟動失敗)/ init error(降級,ccxray 仍跑)/ runtime error(由 #11 處理)</li>
+      <li>狀態機:<code>disabled / active / degraded / circuit_open</code></li>
+      <li><code>~/.ccxray/otel.log</code> 紀錄最近 100 條失敗,自動 rotate</li>
+      <li>核心原則:OTel 是增強,不是必需。網路問題不擋,config 錯擋</li>
+    </ul>
+    <div class="ver">驗證</div>
+    <ul>
+      <li>實作:餵壞 endpoint URL → assert ccxray 仍啟動、proxy 仍轉發、status 標 degraded</li>
+      <li>上線:<code>otel.state{state}</code> 看 degraded 比例</li>
+    </ul>
+  </div>
+
+</div>
+
+<h3>共用基礎設施</h3>
+
+<p>#11–#13 共用同一組失敗處理框架,可降低總工時:</p>
+
+<div class="card">
+<pre><code>server/otel-health.js        # 失敗處理框架(共用)
+  ├─ State machine (active / degraded / circuit_open / disabled)
+  ├─ Bounded queue + drop counter
+  ├─ Circuit breaker
+  ├─ Local log writer (~/.ccxray/otel.log)
+  └─ Status reporter (餵給 ccxray status 命令)
+
+server/config-loader.js      # 配置載入(共用)
+  ├─ JSON Schema 驗證
+  ├─ ${ENV_VAR} 插值
+  ├─ Secret pattern 偵測
+  └─ .gitignore 檢查</code></pre>
+</div>
+
+<h3>結論</h3>
+
+<div class="key">
+<strong>事前驗屍 9 解全部 ≥ 9 分,可進入實作階段。</strong>每題的「上線後監測 metric」本身也是 ccxray 的 OTel emit 內容 — 設計上自我驗證:這套系統<strong>能持續偵測自己有沒有壞掉</strong>。
+</div>
+
+<p class="muted" style="margin-top: 48px; border-top: 1px solid var(--border); padding-top: 16px;">
+本文件位於 <code>docs/otel-integration.html</code>。內容為決策前的探索筆記,實作時請以最終 PR 為準。
+</p>
+
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#1a1f26',
+      primaryColor: '#88c0d0',
+      primaryTextColor: '#d8dee9',
+      primaryBorderColor: '#5e81ac',
+      lineColor: '#8b95a5',
+      secondaryColor: '#a3be8c',
+      tertiaryColor: '#232932',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    },
+    flowchart: { htmlLabels: true, curve: 'basis' },
+  });
+</script>
+
+</body>
+</html>
