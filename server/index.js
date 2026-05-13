@@ -775,7 +775,6 @@ async function startServer() {
     if (acquired) hub.releaseForkLock();
     console.error(`\x1b[31m${err.message}\x1b[0m`);
     // Show last hub log lines so user doesn't have to open the file
-    const fs = require('fs');
     try {
       const log = fs.readFileSync(hub.HUB_LOG_PATH, 'utf8');
       const lines = log.trim().split('\n');
