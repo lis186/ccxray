@@ -80,8 +80,15 @@ function createTunnelAgent(proxyUrl) {
       }
       const tlsOpts = { socket, servername: options.servername || options.host };
       if (options.rejectUnauthorized !== undefined) tlsOpts.rejectUnauthorized = options.rejectUnauthorized;
-      const tlsSocket = tls.connect(tlsOpts, () => callback(null, tlsSocket));
-      tlsSocket.on('error', callback);
+      let connected = false;
+      const tlsSocket = tls.connect(tlsOpts, () => {
+        connected = true;
+        callback(null, tlsSocket);
+      });
+      tlsSocket.on('error', (err) => {
+        if (!connected) return callback(err);
+        console.error(`\x1b[31m❌ TUNNEL SOCKET ERROR: ${err.code || err.message}\x1b[0m`);
+      });
     });
 
     connectReq.on('error', callback);
@@ -375,6 +382,15 @@ function forwardRequest(ctx) {
       clientRes.writeHead(502, { 'Content-Type': 'application/json' });
     }
     clientRes.end(JSON.stringify({ error: 'proxy_error', message: err.message }));
+  });
+
+  // Late socket errors (EPIPE / ECONNRESET after the response has been received)
+  // are emitted on the underlying TLS/TCP socket and may not re-emit on the
+  // ClientRequest. Without a listener they crash the entire proxy process.
+  proxyReq.on('socket', (socket) => {
+    socket.on('error', (err) => {
+      console.error(`\x1b[31m❌ UPSTREAM SOCKET ERROR: ${err.code || err.message}\x1b[0m`);
+    });
   });
 
   proxyReq.end(bodyToSend);
