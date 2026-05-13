@@ -70,19 +70,26 @@ ccxray SHALL detect the presence of `CLAUDE_CODE_ENABLE_TELEMETRY=1` in the envi
 - **WHEN** ccxray starts without `CLAUDE_CODE_ENABLE_TELEMETRY`
 - **THEN** ccxray SHALL print a notice indicating standalone mode and the attribute `ccxray.cli_otel_active` SHALL NOT be set
 
-### Requirement: Reconciliation diff metric
+### Requirement: Internal invariant metrics; cross-source reconciliation is a downstream concern
 
-ccxray SHALL emit `ccxray.reconciliation.token_diff_pct{model}` as a gauge that compares ccxray's HTTP-observed token counts against the corresponding values reported by the CLI when both are active. The metric SHALL be emitted only when both ccxray and CLI OTel signals are available.
+ccxray SHALL emit invariant metrics that describe ccxray-internal consistency only. ccxray SHALL NOT emit a cross-source diff metric (e.g. ccxray vs CLI token counts) as part of Phase 1. Cross-source reconciliation SHALL be performed by downstream consumers (recording rules, Grafana panels, sidecar processes) using `request_id` or `session_id` joins on per-request metrics emitted independently by ccxray and the CLI.
 
-#### Scenario: Both active with matching counts
+Rationale: A pre-aggregated diff gauge cannot answer "which request diverged" and produces persistent non-zero values for legitimate reasons (SSE chunking boundaries, retries, prompt-caching edge cases), creating alert fatigue. ccxray's correct role is to emit faithful per-request signals; cross-source diff is an analytical task that belongs in the user's observability tier, where it can be expressed as a derived series.
 
-- **WHEN** ccxray and CLI emit the same token count for the same request
-- **THEN** `ccxray.reconciliation.token_diff_pct` SHALL be 0 for the affected model
+#### Scenario: Parser sum invariant
 
-#### Scenario: Mismatch detected
+- **WHEN** ccxray's parser extracts a sum of per-tool token attributions that differs from the upstream `usage` block totals for the same response
+- **THEN** `ccxray.invariants.parser_mismatch_total{type="token_sum"}` SHALL increment
 
-- **WHEN** ccxray observes input_tokens=1000 and CLI reports input_tokens=1050 for the same request
-- **THEN** the metric SHALL emit approximately 5.0 (percent difference)
+#### Scenario: SSE stream completeness invariant
+
+- **WHEN** ccxray observes the upstream SSE stream terminating without a `[DONE]` (Anthropic) or `response.completed` (OpenAI Responses) terminal event
+- **THEN** `ccxray.invariants.sse_truncated_total{provider}` SHALL increment
+
+#### Scenario: No cross-source diff gauge is emitted
+
+- **WHEN** OTel is enabled at any tier
+- **THEN** no metric whose name matches `ccxray.reconciliation.*` SHALL be registered with the SDK in Phase 1
 
 ### Requirement: Required metric families
 
