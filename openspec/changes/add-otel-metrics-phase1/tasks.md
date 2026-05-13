@@ -36,8 +36,8 @@
 - [ ] 4.4 Detect `CLAUDE_CODE_ENABLE_TELEMETRY=1` and apply `ccxray.cli_otel_active=true` attribute in complement mode
 - [ ] 4.5 Register all metric families per `otel-export/spec.md`: cost, usage, quality, patterns, governance
 - [ ] 4.6 Register sentinel metrics: overflow, parser unknowns, parser mismatches, otel state, reconciliation diff, tier distribution
-- [ ] 4.7 Implement reconciliation diff gauge `ccxray.reconciliation.token_diff_pct{model}` computed against detected CLI telemetry
-- [ ] 4.8 Implement export-time masking of any value resolved from `${ENV_VAR}` for log lines and trace dumps
+- [ ] 4.7 Implement export-time masking of any value resolved from `${ENV_VAR}` for log lines and trace dumps
+- [ ] 4.8 Implement internal invariant metrics (`ccxray.invariants.parser_mismatch_total{type}`, `ccxray.invariants.sse_truncated_total`) — cross-source diff against CLI is NOT in Phase 1; documented as downstream pattern instead
 - [ ] 4.9 Unit tests for namespace lint (no metric name starts with `claude_code.`), source attribute presence, budget enforcement, complement mode attribute, lazy SDK init at tier 0
 
 ## 5. Parser schema-ization (`server/parsers/`)
@@ -84,6 +84,7 @@
 - [ ] 9.3 Reference `docs/otel-integration.html` (existing) as the design record from README
 - [ ] 9.4 Update README with a single section: "Optional: send metrics to your observability backend" linking to quickstart and ethics docs
 - [ ] 9.5 Update `CLAUDE.md` Architecture section to note the new modules and their roles
+- [ ] 9.6 Add `docs/otel-recon.md` (bilingual): why cross-source reconciliation is a downstream concern, recording-rule / Grafana-panel / sidecar recipes for diffing ccxray vs CLI counts on `request_id`
 
 ## 10. Verification gates
 
