@@ -18,40 +18,20 @@ const { authMiddleware } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
+const { parseArgs } = require('./cli');
 
-// ── CLI: parse flags and detect provider launchers ──
-const portIdx = process.argv.indexOf('--port');
-let explicitPort = false;
-if (portIdx !== -1) {
-  const portVal = process.argv[portIdx + 1];
-  const parsed = parseInt(portVal, 10);
-  if (!portVal || isNaN(parsed) || parsed < 1 || parsed > 65535) {
-    console.error('\x1b[31mError: --port requires a valid port number (1-65535)\x1b[0m');
-    process.exit(1);
-  }
-  config.PORT = parsed;
-  explicitPort = true;
-  process.argv.splice(portIdx, 2);
-}
-const hubMode = process.argv.includes('--hub-mode');
-if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
-const allowUpstreamLoop = process.argv.includes('--allow-upstream-loop') || process.env.CCXRAY_ALLOW_UPSTREAM_LOOP === '1';
-if (process.argv.includes('--allow-upstream-loop')) process.argv.splice(process.argv.indexOf('--allow-upstream-loop'), 1);
-const noBrowser = process.argv.includes('--no-browser');
-if (noBrowser) process.argv.splice(process.argv.indexOf('--no-browser'), 1);
-const cliCommand = process.argv[2];
-const unknownCommand = cliCommand
-  && cliCommand !== 'status'
-  && !cliCommand.startsWith('-')
-  && !providers.isAgentProvider(cliCommand);
-if (unknownCommand) {
-  console.error(`\x1b[31mError: unsupported provider "${cliCommand}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
-  process.exit(1);
-}
-const agentCommand = providers.isAgentProvider(cliCommand) ? cliCommand : null;
-const agentMode = Boolean(agentCommand);
-const agentArgs = agentMode ? process.argv.slice(3) : [];
-const DISPLAY_NAME = providers.getDisplayName(agentCommand, process.env);
+const {
+  port: cliPort,
+  explicitPort,
+  hubMode,
+  allowUpstreamLoop,
+  noBrowser,
+  agentCommand,
+  agentMode,
+  agentArgs,
+  displayName: DISPLAY_NAME,
+} = parseArgs();
+if (cliPort != null) config.PORT = cliPort;
 
 // In agent/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
