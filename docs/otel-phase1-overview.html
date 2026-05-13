@@ -1,0 +1,1138 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<title>OTel Phase 1 Change — Visual Overview</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #1a1f26;
+    --panel-2: #232932;
+    --border: #2a313c;
+    --text: #d8dee9;
+    --muted: #8b95a5;
+    --accent: #88c0d0;
+    --accent-2: #a3be8c;
+    --warn: #ebcb8b;
+    --danger: #bf616a;
+    --code-bg: #11161c;
+    --purple: #b48ead;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; padding: 40px 28px 80px; }
+  h1 { font-size: 28px; border-bottom: 1px solid var(--border); padding-bottom: 12px; margin-bottom: 8px; }
+  h2 {
+    font-size: 20px;
+    margin-top: 56px;
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+  }
+  h3 { font-size: 16px; color: var(--accent-2); margin-top: 28px; }
+  p, li { color: var(--text); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .lede { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
+  code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    color: var(--warn);
+  }
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin: 18px 0;
+    overflow-x: auto;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin: 14px 0;
+  }
+  .toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 22px;
+    margin: 18px 0 32px;
+    font-size: 14px;
+  }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+  .src {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 8px;
+  }
+  .src a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+  }
+  .src a:hover { text-decoration: underline; }
+  .src .src-row { display: block; margin: 2px 0; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }
+  th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); color: var(--accent); font-weight: 600; }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    margin-right: 6px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .pill.tier0 { color: var(--muted); border-color: var(--muted); }
+  .pill.tier1 { color: var(--accent); border-color: var(--accent); }
+  .pill.tier2 { color: var(--purple); border-color: var(--purple); }
+
+  /* SVG flow animations */
+  .flow-svg { display: block; width: 100%; height: auto; }
+  .flow-svg text { font-family: -apple-system, "SF Pro Text", sans-serif; font-size: 12px; }
+  .node-box { fill: var(--panel-2); stroke: var(--border); stroke-width: 1.5; rx: 6; ry: 6; }
+  .node-box.accent { stroke: var(--accent); }
+  .node-box.accent2 { stroke: var(--accent-2); }
+  .node-box.purple { stroke: var(--purple); }
+  .node-box.warn { stroke: var(--warn); }
+  .node-box.danger { stroke: var(--danger); }
+  .node-label { fill: var(--text); }
+  .node-sub { fill: var(--muted); font-size: 10.5px; }
+  .edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .edge.accent { stroke: var(--accent); }
+  .edge.accent2 { stroke: var(--accent-2); }
+  .edge.dashed { stroke-dasharray: 4 4; }
+
+  .dot-req { fill: var(--accent); }
+  .dot-res { fill: var(--accent-2); }
+  .dot-otel { fill: var(--purple); }
+  .dot-fail { fill: var(--danger); }
+
+  @keyframes pulse-anim {
+    0%, 100% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.18); opacity: 0.7; }
+  }
+  .pulse { animation: pulse-anim 1.6s ease-in-out infinite; transform-origin: center; transform-box: fill-box; }
+
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+
+  .key {
+    border-left: 3px solid var(--accent-2);
+    background: rgba(163, 190, 140, 0.08);
+    padding: 10px 16px;
+    margin: 14px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .warn-box {
+    border-left: 3px solid var(--warn);
+    background: rgba(235, 203, 139, 0.08);
+    padding: 10px 16px;
+    margin: 14px 0;
+    border-radius: 0 4px 4px 0;
+  }
+  .scope-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 16px 0; }
+  .scope-grid .card { margin: 0; }
+  .scope-grid h4 { margin: 0 0 8px; font-size: 14px; }
+  .scope-in h4 { color: var(--accent-2); }
+  .scope-out h4 { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OTel Phase 1 — 視覺總覽</h1>
+<div class="lede">
+  本頁逐節呈現 <code>add-otel-metrics-phase1</code> 這個 OpenSpec change 的全貌。每個圖示下方標註 <span class="muted">「Source:」</span> 是該宣稱的依據出處,點擊可開啟對應 spec 檔案。內容嚴格依據 proposal / design / specs / tasks,無推測成分。
+</div>
+
+<div class="toc">
+  <strong>目錄</strong><br>
+  <a href="#bigpicture">1. 大圖:資料流向(動畫)</a><br>
+  <a href="#tiers">2. 三層 Tier Opt-in 模型</a><br>
+  <a href="#config">3. 配置檔案與 env 插值</a><br>
+  <a href="#health">4. OTel 健康狀態機</a><br>
+  <a href="#parser">5. Parser pipeline 與 sentinel</a><br>
+  <a href="#cli">6. 跟 CLI 內建 OTel 共存</a><br>
+  <a href="#cardinality">7. Cardinality budget</a><br>
+  <a href="#modules">8. 新檔案與模組關係</a><br>
+  <a href="#scope">9. Phase 1 範圍 vs Phase 2</a><br>
+  <a href="#metrics">10. 完整 metric 清單</a>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="bigpicture">1. 大圖:資料流向</h2>
+
+<p>ccxray 是 client / hub 雙進程架構。<strong>OTel 的初始化和 emit 都在 client 端</strong>,hub 純粹是 HTTP proxy + SSE broadcaster,不負責業務 metric。每個 client 自己讀自己的 <code>.ccxray.json</code> + <code>.ccxray.user.json</code>,所以同一個 hub 下不同 project 可以有不同 tier 和 endpoint。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 360" class="flow-svg" aria-label="ccxray data flow with OTel">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b95a5"></path>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#88c0d0"></path>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#b48ead"></path>
+    </marker>
+
+    <!-- Animation paths -->
+    <path id="path-req" d="M 80,180 L 240,180" />
+    <path id="path-fwd" d="M 360,180 L 520,180" />
+    <path id="path-res" d="M 520,200 L 360,200" />
+    <path id="path-back" d="M 240,200 L 80,200" />
+    <path id="path-otel" d="M 300,210 L 300,290 L 720,290" />
+  </defs>
+
+  <!-- Claude Code -->
+  <rect class="node-box accent" x="20" y="150" width="120" height="60"></rect>
+  <text class="node-label" x="80" y="178" text-anchor="middle">Claude Code</text>
+  <text class="node-sub" x="80" y="195" text-anchor="middle">(or Codex)</text>
+
+  <!-- ccxray client -->
+  <rect class="node-box accent" x="240" y="120" width="120" height="120"></rect>
+  <text class="node-label" x="300" y="148" text-anchor="middle" font-weight="600">ccxray client</text>
+  <text class="node-sub" x="300" y="166" text-anchor="middle">forward.js</text>
+  <text class="node-sub" x="300" y="182" text-anchor="middle">store.js</text>
+  <text class="node-sub" x="300" y="198" text-anchor="middle" fill="#b48ead">otel.js</text>
+  <text class="node-sub" x="300" y="214" text-anchor="middle" fill="#b48ead">otel-health.js</text>
+  <text class="node-sub" x="300" y="230" text-anchor="middle" fill="#b48ead">config-loader.js</text>
+
+  <!-- hub (annotation) -->
+  <rect class="node-box" x="240" y="60" width="120" height="40" stroke-dasharray="4 3"></rect>
+  <text class="node-sub" x="300" y="78" text-anchor="middle">ccxray hub</text>
+  <text class="node-sub" x="300" y="92" text-anchor="middle" font-size="9.5px">(no business metrics; proxy + SSE only)</text>
+
+  <!-- Anthropic -->
+  <rect class="node-box" x="520" y="150" width="120" height="60"></rect>
+  <text class="node-label" x="580" y="178" text-anchor="middle">Anthropic API</text>
+  <text class="node-sub" x="580" y="195" text-anchor="middle">/v1/messages</text>
+
+  <!-- OTLP Collector -->
+  <rect class="node-box purple" x="720" y="270" width="160" height="40"></rect>
+  <text class="node-label" x="800" y="295" text-anchor="middle">OTLP Collector</text>
+
+  <!-- Grafana / etc -->
+  <rect class="node-box purple" x="720" y="320" width="160" height="30" stroke-dasharray="4 3"></rect>
+  <text class="node-sub" x="800" y="340" text-anchor="middle">Grafana / Datadog / Honeycomb</text>
+
+  <!-- Local logs -->
+  <rect class="node-box accent2" x="200" y="280" width="160" height="40"></rect>
+  <text class="node-label" x="280" y="305" text-anchor="middle">~/.ccxray/logs</text>
+
+  <!-- Static edges -->
+  <path class="edge accent" d="M 140,180 L 240,180" marker-end="url(#arrow-accent)" />
+  <path class="edge accent" d="M 360,180 L 520,180" marker-end="url(#arrow-accent)" />
+  <path class="edge accent2" d="M 520,200 L 360,200" marker-end="url(#arrow)" />
+  <path class="edge accent2" d="M 240,200 L 140,200" marker-end="url(#arrow)" />
+  <path class="edge" d="M 280,240 L 280,280" marker-end="url(#arrow)" />
+  <path class="edge purple dashed" d="M 320,240 L 320,290 L 720,290" marker-end="url(#arrow-purple)" />
+
+  <text class="node-sub" x="190" y="172">request</text>
+  <text class="node-sub" x="430" y="172">forward</text>
+  <text class="node-sub" x="430" y="221">response</text>
+  <text class="node-sub" x="190" y="221">SSE</text>
+  <text class="node-sub" x="500" y="282">metrics (OTLP)</text>
+  <text class="node-sub" x="220" y="266">local log</text>
+
+  <!-- Animated dots -->
+  <circle r="5" class="dot-req">
+    <animateMotion dur="3s" repeatCount="indefinite">
+      <mpath href="#path-req" />
+    </animateMotion>
+  </circle>
+  <circle r="5" class="dot-req">
+    <animateMotion dur="3s" begin="0.3s" repeatCount="indefinite">
+      <mpath href="#path-fwd" />
+    </animateMotion>
+  </circle>
+  <circle r="5" class="dot-res">
+    <animateMotion dur="3s" begin="1.5s" repeatCount="indefinite">
+      <mpath href="#path-res" />
+    </animateMotion>
+  </circle>
+  <circle r="5" class="dot-res">
+    <animateMotion dur="3s" begin="1.8s" repeatCount="indefinite">
+      <mpath href="#path-back" />
+    </animateMotion>
+  </circle>
+  <circle r="5" class="dot-otel">
+    <animateMotion dur="4s" begin="2.1s" repeatCount="indefinite">
+      <mpath href="#path-otel" />
+    </animateMotion>
+  </circle>
+
+</svg>
+
+<div class="legend">
+  <span><span class="legend-dot" style="background:#88c0d0"></span>request</span>
+  <span><span class="legend-dot" style="background:#a3be8c"></span>response (SSE)</span>
+  <span><span class="legend-dot" style="background:#b48ead"></span>OTel metric export</span>
+</div>
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Client-side OTel SDK initialization
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> § D2. Client-side emit, not hub-side
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/proposal.md">proposal.md</a> § Impact (server/hub.js note)
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="tiers">2. 三層 Tier Opt-in 模型</h2>
+
+<p>tier 是「會送出多少資訊」的開關。<strong>預設 tier 0(完全不送)</strong>。專案 config 是上限,個人 config 是下限,工程師永遠可以單方面降級退出。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 320" class="flow-svg" aria-label="three tiers">
+
+  <!-- Tier stack -->
+  <rect class="node-box" x="20" y="60" width="220" height="50" stroke="#8b95a5"></rect>
+  <text class="node-label" x="130" y="82" text-anchor="middle" font-weight="600">Tier 0 — disabled</text>
+  <text class="node-sub" x="130" y="100" text-anchor="middle">no SDK init, no network egress</text>
+
+  <rect class="node-box accent" x="20" y="130" width="220" height="50"></rect>
+  <text class="node-label" x="130" y="152" text-anchor="middle" font-weight="600">Tier 1 — project anonymous</text>
+  <text class="node-sub" x="130" y="170" text-anchor="middle">project.name + optional team</text>
+
+  <rect class="node-box purple" x="20" y="200" width="220" height="50"></rect>
+  <text class="node-label" x="130" y="222" text-anchor="middle" font-weight="600">Tier 2 — personal named</text>
+  <text class="node-sub" x="130" y="240" text-anchor="middle">+ enduser.id (engineer-chosen)</text>
+
+  <!-- Resolution box -->
+  <rect class="node-box accent2" x="320" y="90" width="280" height="170"></rect>
+  <text class="node-label" x="460" y="118" text-anchor="middle" font-weight="600">effective_tier =</text>
+  <text class="node-label" x="460" y="140" text-anchor="middle" font-weight="600" font-size="14px" fill="#a3be8c">min(project_tier, personal_tier)</text>
+
+  <text class="node-sub" x="340" y="170">project = upper bound</text>
+  <text class="node-sub" x="340" y="190">personal = lower bound (can only equal-or-downgrade)</text>
+  <text class="node-sub" x="340" y="215" fill="#ebcb8b">project=1, personal=2 → clamps to 1 + warning</text>
+  <text class="node-sub" x="340" y="235" fill="#a3be8c">project=2, personal=0 → effective 0 (unilateral opt-out)</text>
+
+  <!-- Side: examples -->
+  <rect class="node-box" x="640" y="60" width="240" height="240"></rect>
+  <text class="node-label" x="760" y="82" text-anchor="middle" font-weight="600">Resolution Matrix</text>
+
+  <line x1="660" y1="100" x2="860" y2="100" stroke="#2a313c" />
+  <text class="node-sub" x="660" y="120">project</text>
+  <text class="node-sub" x="730" y="120">personal</text>
+  <text class="node-sub" x="810" y="120">effective</text>
+
+  <text class="node-sub" x="660" y="142">—</text>
+  <text class="node-sub" x="730" y="142">—</text>
+  <text class="node-sub" x="810" y="142" fill="#8b95a5">0</text>
+
+  <text class="node-sub" x="660" y="160">1</text>
+  <text class="node-sub" x="730" y="160">—</text>
+  <text class="node-sub" x="810" y="160" fill="#88c0d0">1</text>
+
+  <text class="node-sub" x="660" y="178">1</text>
+  <text class="node-sub" x="730" y="178">0</text>
+  <text class="node-sub" x="810" y="178" fill="#8b95a5">0 (opt-out)</text>
+
+  <text class="node-sub" x="660" y="196">1</text>
+  <text class="node-sub" x="730" y="196">2</text>
+  <text class="node-sub" x="810" y="196" fill="#ebcb8b">1 (clamped)</text>
+
+  <text class="node-sub" x="660" y="214">2</text>
+  <text class="node-sub" x="730" y="214">2</text>
+  <text class="node-sub" x="810" y="214" fill="#b48ead">2 (with enduser.id)</text>
+
+  <text class="node-sub" x="660" y="232">2</text>
+  <text class="node-sub" x="730" y="232">0</text>
+  <text class="node-sub" x="810" y="232" fill="#8b95a5">0 (opt-out)</text>
+
+  <text class="node-sub" x="660" y="265" font-size="10px" font-style="italic">「—」 表示該層 config 不存在</text>
+  <text class="node-sub" x="660" y="280" font-size="10px" font-style="italic">missing = treat as that side absent</text>
+
+  <!-- arrows -->
+  <path class="edge dashed" d="M 240,155 L 320,155" marker-end="url(#arrow)" />
+
+</svg>
+</div>
+
+<div class="key">
+<strong>關鍵限制(spec § Personal config gitignore enforcement):</strong>如果 <code>.ccxray.user.json</code> 被 git tracked,ccxray <strong>拒絕載入個人 identity</strong>,並建議 <code>git rm --cached</code>。
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a> § Three discrete tier values
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a> § Tier resolution rule
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a> § Engineer unilateral opt-out
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a> § Personal config gitignore enforcement
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="config">3. 配置檔案與 env 插值</h2>
+
+<p>兩個檔案:<code>.ccxray.json</code>(專案層,checked into git)+ <code>.ccxray.user.json</code>(個人層,gitignored)。所有 string value 支援 <code>${VAR}</code> 從 process.env 替換。Schema 拒絕看起來像 secret 的字面值。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 320" class="flow-svg" aria-label="config files and interpolation">
+  <defs>
+    <path id="interp-flow" d="M 470,100 L 600,100 L 600,165 L 720,165" />
+  </defs>
+
+  <!-- .ccxray.json -->
+  <rect class="node-box accent" x="20" y="40" width="260" height="170"></rect>
+  <text class="node-label" x="150" y="62" text-anchor="middle" font-weight="600">.ccxray.json</text>
+  <text class="node-sub" x="150" y="78" text-anchor="middle">(repo, in git)</text>
+  <text class="node-sub" x="40" y="105" font-family="monospace" font-size="11px">{</text>
+  <text class="node-sub" x="55" y="120" font-family="monospace" font-size="11px">"otel": {</text>
+  <text class="node-sub" x="70" y="135" font-family="monospace" font-size="11px">"tier": 1,</text>
+  <text class="node-sub" x="70" y="150" font-family="monospace" font-size="11px">"endpoint": "https://...",</text>
+  <text class="node-sub" x="70" y="165" font-family="monospace" font-size="11px">"headers": {</text>
+  <text class="node-sub" x="85" y="180" font-family="monospace" font-size="11px" fill="#ebcb8b">"Authorization": "Bearer ${TOKEN}"</text>
+  <text class="node-sub" x="70" y="195" font-family="monospace" font-size="11px">}</text>
+  <text class="node-sub" x="55" y="210" font-family="monospace" font-size="11px">}</text>
+
+  <!-- .ccxray.user.json -->
+  <rect class="node-box purple" x="20" y="230" width="260" height="80"></rect>
+  <text class="node-label" x="150" y="252" text-anchor="middle" font-weight="600">.ccxray.user.json</text>
+  <text class="node-sub" x="150" y="268" text-anchor="middle">(personal, gitignored)</text>
+  <text class="node-sub" x="40" y="290" font-family="monospace" font-size="11px">{ "otel": { "tier": 2, "identity": "alice",</text>
+  <text class="node-sub" x="40" y="304" font-family="monospace" font-size="11px">           "opt_in_acknowledged_at": "..." } }</text>
+
+  <!-- Loader -->
+  <rect class="node-box accent2" x="330" y="100" width="160" height="100"></rect>
+  <text class="node-label" x="410" y="125" text-anchor="middle" font-weight="600">config-loader.js</text>
+  <text class="node-sub" x="410" y="145" text-anchor="middle">1. Parse JSON</text>
+  <text class="node-sub" x="410" y="160" text-anchor="middle">2. Schema validate</text>
+  <text class="node-sub" x="410" y="175" text-anchor="middle">3. Interpolate ${VAR}</text>
+  <text class="node-sub" x="410" y="190" text-anchor="middle">4. Detect literal secrets</text>
+
+  <!-- env -->
+  <rect class="node-box warn" x="540" y="60" width="140" height="80" stroke-dasharray="4 3"></rect>
+  <text class="node-label" x="610" y="85" text-anchor="middle" font-weight="600">process.env</text>
+  <text class="node-sub" x="610" y="105" text-anchor="middle" font-family="monospace" font-size="11px">TOKEN=abc...</text>
+  <text class="node-sub" x="610" y="123" text-anchor="middle">(secret stays in env)</text>
+
+  <!-- Output -->
+  <rect class="node-box accent" x="720" y="130" width="160" height="80"></rect>
+  <text class="node-label" x="800" y="155" text-anchor="middle" font-weight="600">Loaded config</text>
+  <text class="node-sub" x="800" y="175" text-anchor="middle">effective_tier = 2</text>
+  <text class="node-sub" x="800" y="190" text-anchor="middle">Authorization: Bearer abc***</text>
+
+  <!-- Failure path -->
+  <rect class="node-box danger" x="720" y="240" width="160" height="60"></rect>
+  <text class="node-label" x="800" y="265" text-anchor="middle" font-weight="600" fill="#bf616a">Startup FAIL</text>
+  <text class="node-sub" x="800" y="282" text-anchor="middle">if literal Bearer, missing ${VAR},</text>
+  <text class="node-sub" x="800" y="295" text-anchor="middle">or schema error</text>
+
+  <!-- arrows -->
+  <path class="edge accent" d="M 280,125 L 330,125" marker-end="url(#arrow-accent)" />
+  <path class="edge purple" d="M 280,270 L 320,270 L 320,180 L 330,180" marker-end="url(#arrow-purple)" />
+  <path class="edge warn dashed" d="M 540,120 L 500,130" marker-end="url(#arrow)" />
+  <path class="edge accent" d="M 490,150 L 720,150" marker-end="url(#arrow-accent)" />
+  <path class="edge danger dashed" d="M 410,200 L 410,270 L 720,270" marker-end="url(#arrow)" />
+
+  <!-- Animated dot showing interpolation -->
+  <circle r="4" fill="#ebcb8b">
+    <animateMotion dur="2.4s" repeatCount="indefinite">
+      <mpath href="#interp-flow" />
+    </animateMotion>
+  </circle>
+
+</svg>
+</div>
+
+<table>
+  <tr><th>輸入</th><th>結果</th></tr>
+  <tr>
+    <td><code>"Authorization": "Bearer ${TOKEN}"</code> + <code>TOKEN=abc123</code></td>
+    <td style="color: var(--accent-2)">✓ 載入,實際值 <code>Bearer abc123</code></td>
+  </tr>
+  <tr>
+    <td><code>"Authorization": "Bearer ${MISSING}"</code> + 未設 env</td>
+    <td style="color: var(--danger)">✗ Startup 失敗,訊息含 file path / line / 變數名 <code>MISSING</code></td>
+  </tr>
+  <tr>
+    <td><code>"Authorization": "Bearer abc123longtokenvalue..."</code></td>
+    <td style="color: var(--danger)">✗ Schema 拒絕,建議改用 <code>${ENV_VAR}</code></td>
+  </tr>
+  <tr>
+    <td>JSON syntax error</td>
+    <td style="color: var(--danger)">✗ Startup 失敗,訊息含 line / column</td>
+  </tr>
+</table>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a> § Project and personal config files
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a> § Environment variable interpolation
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a> § Literal-secret rejection
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-config/spec.md">specs/otel-config/spec.md</a> § Config error fails fast at startup
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="health">4. OTel 健康狀態機</h2>
+
+<p>四個狀態,只能透過記錄在 spec 的條件轉換。<strong>核心承諾:OTel 失敗永遠不會擋 ccxray proxy</strong>。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 940 420" class="flow-svg" aria-label="OTel health state machine">
+  <defs>
+    <marker id="sm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b95a5"></path>
+    </marker>
+    <marker id="sm-arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#a3be8c"></path>
+    </marker>
+    <marker id="sm-arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#bf616a"></path>
+    </marker>
+  </defs>
+
+  <!-- start point -->
+  <circle cx="470" cy="28" r="7" fill="#d8dee9"></circle>
+  <text class="node-sub" x="488" y="32" font-size="11px">[start]</text>
+
+  <!-- top row: disabled, active, degraded -->
+  <rect class="node-box" x="40" y="80" width="200" height="60" rx="30" ry="30"></rect>
+  <text class="node-label" x="140" y="106" text-anchor="middle" font-weight="700">disabled</text>
+  <text class="node-sub" x="140" y="124" text-anchor="middle">no SDK, no egress</text>
+
+  <rect class="node-box accent" x="370" y="80" width="200" height="60" rx="30" ry="30"></rect>
+  <text class="node-label" x="470" y="106" text-anchor="middle" font-weight="700">active</text>
+  <text class="node-sub" x="470" y="124" text-anchor="middle">SDK init OK, exporting</text>
+
+  <rect class="node-box warn" x="700" y="80" width="200" height="60" rx="30" ry="30"></rect>
+  <text class="node-label" x="800" y="106" text-anchor="middle" font-weight="700">degraded</text>
+  <text class="node-sub" x="800" y="124" text-anchor="middle">init failed; proxy still OK</text>
+
+  <!-- bottom row: circuit_open, half_open -->
+  <rect class="node-box danger" x="290" y="250" width="200" height="60" rx="30" ry="30"></rect>
+  <text class="node-label" x="390" y="276" text-anchor="middle" font-weight="700">circuit_open</text>
+  <text class="node-sub" x="390" y="294" text-anchor="middle">exports paused, cooldown</text>
+
+  <rect class="node-box" x="570" y="250" width="200" height="60" rx="30" ry="30" stroke-dasharray="4 3"></rect>
+  <text class="node-label" x="670" y="276" text-anchor="middle" font-weight="700">half_open</text>
+  <text class="node-sub" x="670" y="294" text-anchor="middle">single trial export</text>
+
+  <!-- start → disabled -->
+  <path class="edge" d="M 462,34 C 380,55 240,72 232,80" marker-end="url(#sm-arrow)" />
+  <text class="node-sub" x="290" y="58" font-size="11px">tier=0 or no OTel pkg</text>
+
+  <!-- start → active -->
+  <path class="edge" stroke="#a3be8c" d="M 470,36 L 470,80" marker-end="url(#sm-arrow-green)" />
+  <text class="node-sub" x="478" y="60" fill="#a3be8c" font-size="11px">tier≥1, init OK</text>
+
+  <!-- start → degraded -->
+  <path class="edge" d="M 478,34 C 560,55 700,72 708,80" marker-end="url(#sm-arrow)" />
+  <text class="node-sub" x="600" y="58" font-size="11px">tier≥1, init fails</text>
+
+  <!-- active → circuit_open -->
+  <path class="edge" stroke="#bf616a" d="M 440,140 L 405,250" marker-end="url(#sm-arrow-red)" />
+  <text class="node-sub" x="290" y="200" fill="#bf616a" font-size="11px">5 consecutive failures</text>
+
+  <!-- half_open → active (trial OK) -->
+  <path class="edge" stroke="#a3be8c" d="M 620,250 C 560,200 520,160 500,142" marker-end="url(#sm-arrow-green)" />
+  <text class="node-sub" x="540" y="200" fill="#a3be8c" font-size="11px">trial OK</text>
+
+  <!-- circuit_open → half_open -->
+  <path class="edge" d="M 490,275 L 570,275" marker-end="url(#sm-arrow)" />
+  <text class="node-sub" x="498" y="268" font-size="11px">cooldown elapsed</text>
+
+  <!-- half_open → circuit_open (fail) -->
+  <path class="edge" stroke="#bf616a" d="M 570,290 C 540,310 510,310 490,300" marker-end="url(#sm-arrow-red)" />
+  <text class="node-sub" x="500" y="328" fill="#bf616a" font-size="11px">trial fails → backoff</text>
+
+  <!-- note: queue overflow while active -->
+  <rect x="610" y="160" width="280" height="60" rx="6" fill="rgba(136,192,208,0.06)" stroke="#88c0d0" stroke-dasharray="3 3"></rect>
+  <text class="node-sub" x="624" y="180" font-size="11px" font-weight="600" fill="#88c0d0">while active, queue full:</text>
+  <text class="node-sub" x="624" y="197" font-size="11px">drop oldest + exports_dropped_total++</text>
+  <text class="node-sub" x="624" y="212" font-size="11px" font-style="italic">(no state change)</text>
+
+  <!-- note: cooldown formula -->
+  <rect x="50" y="340" width="320" height="60" rx="6" fill="rgba(191,97,106,0.06)" stroke="#bf616a" stroke-dasharray="3 3"></rect>
+  <text class="node-sub" x="64" y="360" font-size="11px" font-weight="600" fill="#bf616a">cooldown formula:</text>
+  <text class="node-sub" x="64" y="377" font-size="11px" font-family="monospace">next = min(previous * 2, 600s)</text>
+  <text class="node-sub" x="64" y="392" font-size="11px" font-style="italic">starting from 60s after first trip</text>
+
+  <!-- note: degraded -->
+  <rect x="540" y="340" width="360" height="60" rx="6" fill="rgba(235,203,139,0.06)" stroke="#ebcb8b" stroke-dasharray="3 3"></rect>
+  <text class="node-sub" x="554" y="360" font-size="11px" font-weight="600" fill="#ebcb8b">when degraded:</text>
+  <text class="node-sub" x="554" y="377" font-size="11px">ccxray proxy keeps working; no further OTel attempts;</text>
+  <text class="node-sub" x="554" y="392" font-size="11px">visible in ccxray status --otel until process restart.</text>
+
+</svg>
+</div>
+
+<h3>失敗分層</h3>
+
+<table>
+  <tr><th>失敗類型</th><th>例子</th><th>處理</th></tr>
+  <tr>
+    <td>Config error</td>
+    <td>JSON syntax 錯、schema 違規、<code>${VAR}</code> 未解</td>
+    <td style="color: var(--danger)">啟動<strong>失敗</strong>(exit code != 0)</td>
+  </tr>
+  <tr>
+    <td>Init error</td>
+    <td>Endpoint URL 格式不合法</td>
+    <td style="color: var(--warn)">轉 <strong>degraded</strong>,ccxray 正常,status 顯示錯誤</td>
+  </tr>
+  <tr>
+    <td>Runtime error</td>
+    <td>Collector unreachable、auth fail、timeout</td>
+    <td style="color: var(--accent)">由 <strong>circuit breaker</strong> 處理,exponential backoff</td>
+  </tr>
+</table>
+
+<h3>持久化與容量限制</h3>
+
+<ul>
+  <li><code>~/.ccxray/otel.log</code> append,1 MB rotation,5 file retention(預設)</li>
+  <li>Export queue 預設 2048,滿 → drop oldest + <code>ccxray.otel.exports_dropped_total{signal}</code> ++</li>
+  <li>SDK shutdown 硬上限 2 秒,逾時強制 exit</li>
+</ul>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Four-state OTel health machine
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Bounded export queue with drop-oldest semantics
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Circuit breaker with exponential backoff
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Failure log on local disk
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Never-block guarantee for the proxy
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Config errors fail fast, init/runtime errors degrade
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="parser">5. Parser pipeline 與 sentinel</h2>
+
+<p>解析 tool / MCP / skill / agent-type 從散落的 inline 字串改成 <strong>versioned JSON schemas</strong>。每筆 entry 都跑 reconciliation invariants;未識別的事件不會變 0,而是 increment sentinel counter,並寫進 <code>~/.ccxray/parser-drift.log</code>。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 400" class="flow-svg" aria-label="parser pipeline">
+  <defs>
+    <path id="parse-known" d="M 320,100 L 460,100 L 460,170 L 600,170" />
+    <path id="parse-unknown" d="M 320,140 L 460,140 L 460,260 L 600,260" />
+    <path id="parse-mismatch" d="M 460,170 L 460,330 L 600,330" />
+  </defs>
+
+  <!-- Input -->
+  <rect class="node-box accent" x="20" y="80" width="200" height="80"></rect>
+  <text class="node-label" x="120" y="105" text-anchor="middle" font-weight="600">Response from upstream</text>
+  <text class="node-sub" x="120" y="125" text-anchor="middle">tool_use blocks,</text>
+  <text class="node-sub" x="120" y="142" text-anchor="middle">usage tokens, etc.</text>
+
+  <!-- Parser dispatch -->
+  <rect class="node-box accent2" x="260" y="60" width="180" height="120"></rect>
+  <text class="node-label" x="350" y="85" text-anchor="middle" font-weight="600">Parser dispatch</text>
+  <text class="node-sub" x="350" y="105" text-anchor="middle">server/parsers/index.js</text>
+  <text class="node-sub" x="350" y="125" text-anchor="middle" font-size="11px">anthropic-tools.schema.json</text>
+  <text class="node-sub" x="350" y="140" text-anchor="middle" font-size="11px">anthropic-skills.schema.json</text>
+  <text class="node-sub" x="350" y="155" text-anchor="middle" font-size="11px">mcp-tools.schema.json</text>
+  <text class="node-sub" x="350" y="170" text-anchor="middle" font-size="11px">codex-tools.schema.json</text>
+
+  <!-- Known path -->
+  <rect class="node-box accent" x="600" y="140" width="260" height="60"></rect>
+  <text class="node-label" x="730" y="165" text-anchor="middle" font-weight="600">Recognized → metrics</text>
+  <text class="node-sub" x="730" y="184" text-anchor="middle">ccxray.tool.invocations_total{tool}, etc.</text>
+
+  <!-- Unknown path -->
+  <rect class="node-box warn" x="600" y="230" width="260" height="60"></rect>
+  <text class="node-label" x="730" y="252" text-anchor="middle" font-weight="600">Unknown → sentinel</text>
+  <text class="node-sub" x="730" y="270" text-anchor="middle">ccxray.parser.unknown_*_total ++</text>
+  <text class="node-sub" x="730" y="285" text-anchor="middle">+ append to parser-drift.log</text>
+
+  <!-- Reconciliation mismatch -->
+  <rect class="node-box danger" x="600" y="305" width="260" height="60"></rect>
+  <text class="node-label" x="730" y="328" text-anchor="middle" font-weight="600">Invariant fail → mismatch</text>
+  <text class="node-sub" x="730" y="345" text-anchor="middle">tool_use count ≠ extracted count?</text>
+  <text class="node-sub" x="730" y="360" text-anchor="middle">ccxray.parser.reconciliation_mismatch_total ++</text>
+
+  <!-- arrows -->
+  <path class="edge accent" d="M 220,120 L 260,120" marker-end="url(#arrow-accent)" />
+  <path class="edge accent" d="M 440,110 L 600,170" marker-end="url(#arrow-accent)" />
+  <path class="edge warn" d="M 440,140 L 600,260" marker-end="url(#arrow)" />
+  <!-- reconciliation runs AFTER extraction; arrow from Recognized box to Invariant fail -->
+  <path class="edge dashed" d="M 730,200 L 730,305" marker-end="url(#arrow)" />
+  <text class="node-sub" x="744" y="252" font-size="10px" font-style="italic"><tspan x="744" dy="0">post-extract</tspan><tspan x="744" dy="12">check</tspan></text>
+
+  <!-- Animated dots -->
+  <circle r="5" class="dot-res">
+    <animateMotion dur="2.4s" repeatCount="indefinite">
+      <mpath href="#parse-known" />
+    </animateMotion>
+  </circle>
+  <circle r="5" fill="#ebcb8b">
+    <animateMotion dur="3s" begin="0.8s" repeatCount="indefinite">
+      <mpath href="#parse-unknown" />
+    </animateMotion>
+  </circle>
+</svg>
+</div>
+
+<h3>每個 schema 帶的元資料</h3>
+
+<div class="card">
+<pre><code>{
+  "version": "1.0.0",
+  "last_verified_against": "2026-05-10",
+  "patterns": [ ... ],
+  "examples": [ ... ]
+}</code></pre>
+</div>
+
+<h3>Error isolation</h3>
+
+<p>所有 parser 包在 try/catch。若拋例外 → <code>ccxray.parser.error_total{parser,error_type}</code> ++,該 entry 仍寫進本地 log,該 entry 對應 metric/span 帶 <code>ccxray.parser.degraded=true</code>。<strong>Parser 失敗不會影響 proxy 路徑</strong>。</p>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a> § Versioned parser schemas per concern and provider
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a> § Sentinel counters for unknown tokens
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a> § Reconciliation invariants
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a> § Parser error isolation
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="cli">6. 跟 CLI 內建 OTel 共存</h2>
+
+<p>Claude Code CLI 也內建 OTel。ccxray 偵測到 <code>CLAUDE_CODE_ENABLE_TELEMETRY=1</code> 時進入 complement mode,所有 emit 加 <code>ccxray.cli_otel_active=true</code> attribute。<strong>ccxray 永遠不關自己的 emit</strong>(因為 CLI 沒 Codex 支援、ccxray 看的是 HTTP truth、且兩邊 diff 本身是價值訊號)。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 280" class="flow-svg" aria-label="CLI coexistence">
+
+  <!-- Standalone mode -->
+  <rect class="node-box accent" x="20" y="40" width="400" height="200"></rect>
+  <text class="node-label" x="220" y="65" text-anchor="middle" font-weight="600">Standalone mode</text>
+  <text class="node-sub" x="220" y="82" text-anchor="middle">CLAUDE_CODE_ENABLE_TELEMETRY 未設</text>
+
+  <rect class="node-box" x="40" y="105" width="160" height="50"></rect>
+  <text class="node-sub" x="120" y="128" text-anchor="middle">Claude Code CLI</text>
+  <text class="node-sub" x="120" y="144" text-anchor="middle" fill="#bf616a">(no OTel)</text>
+
+  <rect class="node-box accent" x="240" y="105" width="160" height="50"></rect>
+  <text class="node-sub" x="320" y="128" text-anchor="middle">ccxray emits</text>
+  <text class="node-sub" x="320" y="144" text-anchor="middle" font-family="monospace" font-size="11px">ccxray.*</text>
+
+  <text class="node-sub" x="220" y="190" text-anchor="middle">→ Single source of truth</text>
+  <text class="node-sub" x="220" y="208" text-anchor="middle">→ Banner: "ccxray OTel tier: 1 (anonymous)"</text>
+
+  <!-- Complement mode -->
+  <rect class="node-box purple" x="460" y="40" width="420" height="200"></rect>
+  <text class="node-label" x="670" y="65" text-anchor="middle" font-weight="600">Complement mode</text>
+  <text class="node-sub" x="670" y="82" text-anchor="middle">CLAUDE_CODE_ENABLE_TELEMETRY=1</text>
+
+  <rect class="node-box" x="480" y="105" width="160" height="50"></rect>
+  <text class="node-sub" x="560" y="125" text-anchor="middle">CLI emits</text>
+  <text class="node-sub" x="560" y="142" text-anchor="middle" font-family="monospace" font-size="11px">claude_code.*</text>
+
+  <rect class="node-box accent" x="680" y="105" width="180" height="50"></rect>
+  <text class="node-sub" x="770" y="125" text-anchor="middle">ccxray emits</text>
+  <text class="node-sub" x="770" y="142" text-anchor="middle" font-family="monospace" font-size="11px">ccxray.* + cli_otel_active=true</text>
+
+  <text class="node-sub" x="670" y="180" text-anchor="middle">→ Reconciliation: ccxray.reconciliation.token_diff_pct{model}</text>
+  <text class="node-sub" x="670" y="198" text-anchor="middle">→ Both flow to user's collector, distinguishable via</text>
+  <text class="node-sub" x="670" y="215" text-anchor="middle">  resource attribute ccxray.source="ccxray-proxy"</text>
+
+</svg>
+</div>
+
+<div class="key">
+<strong>為什麼不關 ccxray emit:</strong>(1) CLI 內建 OTel 只有 Anthropic,Codex / Gemini 沒有;(2) ccxray 看到 HTTP truth,跟 CLI 不同視角;(3) 兩邊 diff 是高價值警報(代表某一邊 pricing 算錯)。
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § CLI OTel coexistence and complement mode
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Source resource attribute on every emit
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Reconciliation diff metric
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § `ccxray.*` namespace for all emitted metrics
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="cardinality">7. Cardinality budget</h2>
+
+<p>每個 metric 宣告「允許哪些 attribute key」+「每個 key 最多幾個 unique value」。Key 不在 allow-list → 直接 drop(OTel View API)。Value 超 budget → 改記成 <code>_overflow_</code>,sentinel counter ++。</p>
+
+<div class="diagram">
+<svg viewBox="0 0 900 260" class="flow-svg" aria-label="cardinality budget">
+
+  <!-- Budget bar -->
+  <rect class="node-box accent" x="20" y="80" width="500" height="60"></rect>
+  <text class="node-label" x="270" y="105" text-anchor="middle" font-weight="600">ccxray.tool.invocations_total — tool budget: 50</text>
+
+  <!-- Filled portion -->
+  <rect x="30" y="115" width="220" height="18" fill="#a3be8c" rx="2" />
+  <rect x="250" y="115" width="260" height="18" fill="#232932" stroke="#2a313c" rx="2" />
+  <text class="node-sub" x="140" y="129" text-anchor="middle" font-size="11px" fill="#0f1419">23 used</text>
+  <text class="node-sub" x="380" y="129" text-anchor="middle" font-size="11px">27 remaining</text>
+
+  <!-- Incoming -->
+  <rect class="node-box" x="20" y="180" width="180" height="50"></rect>
+  <text class="node-sub" x="110" y="200" text-anchor="middle">incoming attribute</text>
+  <text class="node-sub" x="110" y="218" text-anchor="middle" font-family="monospace">tool="Bash"</text>
+
+  <text class="node-sub" x="240" y="208" font-size="20">→</text>
+
+  <rect class="node-box accent2" x="280" y="180" width="240" height="50"></rect>
+  <text class="node-sub" x="400" y="200" text-anchor="middle" fill="#a3be8c" font-weight="600">accepted as-is</text>
+  <text class="node-sub" x="400" y="218" text-anchor="middle">overflow_total: 0</text>
+
+  <!-- Overflow case -->
+  <rect class="node-box" x="560" y="80" width="320" height="60"></rect>
+  <text class="node-sub" x="720" y="100" text-anchor="middle">When 51st unique value arrives</text>
+  <text class="node-sub" x="720" y="120" text-anchor="middle" font-family="monospace" font-size="11px">tool="FancyNewToolThatNobodyKnows"</text>
+
+  <text class="node-sub" x="720" y="158" text-anchor="middle">↓</text>
+
+  <rect class="node-box warn" x="560" y="170" width="320" height="60"></rect>
+  <text class="node-sub" x="720" y="190" text-anchor="middle" fill="#ebcb8b" font-weight="600">recorded as tool="_overflow_"</text>
+  <text class="node-sub" x="720" y="208" text-anchor="middle">+ ccxray.metrics.overflow_total{</text>
+  <text class="node-sub" x="720" y="222" text-anchor="middle">  metric=..., attribute="tool" } ++</text>
+
+</svg>
+</div>
+
+<h3>不可當 metric label 的高基數欄位(per design.md § D4)</h3>
+
+<div class="warn-box">
+spec 沒有明確列出黑名單,但 design.md § D4 指出 <code>bash.command_pattern</code> 和 <code>file_path</code> <strong>明確 NOT 當 metric label</strong> 使用,避免基數爆炸。
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Cardinality budget enforcement
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> § D4. Cardinality budget with overflow fallback
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="modules">8. 新檔案與模組關係</h2>
+
+<div class="diagram">
+<svg viewBox="0 0 940 500" class="flow-svg" aria-label="modules added and modified">
+  <defs>
+    <marker id="mod-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#88c0d0"></path>
+    </marker>
+    <marker id="mod-arrow-mute" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#8b95a5"></path>
+    </marker>
+  </defs>
+
+  <!-- ── group: New modules ── -->
+  <rect x="20" y="40" width="300" height="440" rx="8"
+        fill="rgba(163,190,140,0.05)" stroke="#a3be8c" stroke-width="1.5"></rect>
+  <text x="170" y="64" text-anchor="middle" font-weight="700" fill="#a3be8c" font-size="13px">新增模組</text>
+
+  <rect class="node-box accent2" x="40" y="82" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="102" text-anchor="middle" font-weight="600" font-size="12.5px">server/config-loader.js</text>
+  <text class="node-sub" x="170" y="118" text-anchor="middle" font-size="10.5px">schema · ${VAR} · secrets · gitignore</text>
+
+  <rect class="node-box accent2" x="40" y="142" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="162" text-anchor="middle" font-weight="600" font-size="12.5px">server/otel-health.js</text>
+  <text class="node-sub" x="170" y="178" text-anchor="middle" font-size="10.5px">state machine · queue · breaker · log</text>
+
+  <rect class="node-box accent2" x="40" y="202" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="222" text-anchor="middle" font-weight="600" font-size="12.5px">server/otel.js</text>
+  <text class="node-sub" x="170" y="238" text-anchor="middle" font-size="10.5px">SDK init · registry · cardinality · source</text>
+
+  <rect class="node-box accent2" x="40" y="262" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="282" text-anchor="middle" font-weight="600" font-size="12.5px">server/parsers/</text>
+  <text class="node-sub" x="170" y="298" text-anchor="middle" font-size="10.5px">*.schema.json + index.js</text>
+
+  <rect class="node-box accent2" x="40" y="322" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="342" text-anchor="middle" font-weight="600" font-size="12.5px">test/fixtures/parser/</text>
+  <text class="node-sub" x="170" y="358" text-anchor="middle" font-size="10.5px">snapshot fixtures</text>
+
+  <rect class="node-box accent2" x="40" y="382" width="260" height="50"></rect>
+  <text class="node-label" x="170" y="402" text-anchor="middle" font-weight="600" font-size="12.5px">package.json</text>
+  <text class="node-sub" x="170" y="418" text-anchor="middle" font-size="10.5px">minimal OTel deps · lazy require</text>
+
+  <!-- ── group: Modified existing ── -->
+  <rect x="360" y="40" width="300" height="440" rx="8"
+        fill="rgba(136,192,208,0.05)" stroke="#88c0d0" stroke-width="1.5"></rect>
+  <text x="510" y="64" text-anchor="middle" font-weight="700" fill="#88c0d0" font-size="13px">被修改的既有檔案</text>
+
+  <rect class="node-box accent" x="380" y="82" width="260" height="50"></rect>
+  <text class="node-label" x="510" y="102" text-anchor="middle" font-weight="600" font-size="12.5px">server/forward.js</text>
+  <text class="node-sub" x="510" y="118" text-anchor="middle" font-size="10.5px">emit metrics on request complete</text>
+
+  <rect class="node-box accent" x="380" y="142" width="260" height="50"></rect>
+  <text class="node-label" x="510" y="162" text-anchor="middle" font-weight="600" font-size="12.5px">server/store.js</text>
+  <text class="node-sub" x="510" y="178" text-anchor="middle" font-size="10.5px">thin shim over parsers</text>
+
+  <rect class="node-box accent" x="380" y="202" width="260" height="50"></rect>
+  <text class="node-label" x="510" y="222" text-anchor="middle" font-weight="600" font-size="12.5px">server/system-prompt.js</text>
+  <text class="node-sub" x="510" y="238" text-anchor="middle" font-size="10.5px">skill marker via schema</text>
+
+  <rect class="node-box accent" x="380" y="262" width="260" height="50"></rect>
+  <text class="node-label" x="510" y="282" text-anchor="middle" font-weight="600" font-size="12.5px">server/hub.js</text>
+  <text class="node-sub" x="510" y="298" text-anchor="middle" font-size="10.5px">no business metrics (doc comment)</text>
+
+  <rect class="node-box accent" x="380" y="322" width="260" height="50"></rect>
+  <text class="node-label" x="510" y="342" text-anchor="middle" font-weight="600" font-size="12.5px">bin/ccxray.js</text>
+  <text class="node-sub" x="510" y="358" text-anchor="middle" font-size="10.5px">status --otel · otel preview · parser report</text>
+
+  <!-- ── group: Phase 2 (out of scope) ── -->
+  <rect x="700" y="40" width="220" height="210" rx="8"
+        fill="rgba(139,149,165,0.05)" stroke="#8b95a5" stroke-width="1.5" stroke-dasharray="6 4"></rect>
+  <text x="810" y="64" text-anchor="middle" font-weight="700" fill="#8b95a5" font-size="13px">Phase 2 follow-up</text>
+  <text x="810" y="80" text-anchor="middle" font-size="10.5px" fill="#8b95a5">(NOT in this change)</text>
+
+  <rect class="node-box" x="720" y="98" width="180" height="60" stroke="#8b95a5"></rect>
+  <text class="node-label" x="810" y="120" text-anchor="middle" font-weight="600" font-size="12.5px" fill="#8b95a5">span emit (traces)</text>
+  <text class="node-sub" x="810" y="138" text-anchor="middle" font-size="10.5px">ccxray.entry_id,</text>
+  <text class="node-sub" x="810" y="151" text-anchor="middle" font-size="10.5px">dashboard_url</text>
+
+  <rect class="node-box" x="720" y="170" width="180" height="60" stroke="#8b95a5"></rect>
+  <text class="node-label" x="810" y="192" text-anchor="middle" font-weight="600" font-size="12.5px" fill="#8b95a5">/entry/:id route</text>
+  <text class="node-sub" x="810" y="210" text-anchor="middle" font-size="10.5px">deep-link drill-back UI</text>
+
+  <!-- ── arrows: new → existing ── -->
+  <!-- otel.js (y=227) → forward.js (y=107) -->
+  <path class="edge accent" d="M 300,220 C 340,220 340,107 380,107" marker-end="url(#mod-arrow)" />
+  <!-- otel.js (y=227) → store.js (y=167) -->
+  <path class="edge accent" d="M 300,227 C 340,227 340,167 380,167" marker-end="url(#mod-arrow)" />
+  <!-- otel.js → ccxray.js (y=347) -->
+  <path class="edge accent dashed" d="M 300,234 C 340,234 340,347 380,347" marker-end="url(#mod-arrow)" />
+  <!-- config-loader (y=107) → ccxray.js (y=347) -->
+  <path class="edge accent dashed" d="M 300,107 C 340,107 340,347 380,347" marker-end="url(#mod-arrow)" />
+  <!-- otel-health (y=167) → ccxray.js (y=347) -->
+  <path class="edge accent dashed" d="M 300,167 C 340,167 340,347 380,347" marker-end="url(#mod-arrow)" />
+  <!-- parsers (y=287) → store.js (y=167) -->
+  <path class="edge accent" d="M 300,280 C 340,280 340,167 380,167" marker-end="url(#mod-arrow)" />
+  <!-- parsers → system-prompt.js (y=227) -->
+  <path class="edge accent" d="M 300,287 C 340,287 340,227 380,227" marker-end="url(#mod-arrow)" />
+  <!-- package.json → otel.js (within same column, drawn as a thin loop) -->
+  <path class="edge" d="M 170,382 C 110,360 110,260 130,228" marker-end="url(#mod-arrow-mute)" stroke-dasharray="3 3" />
+  <text class="node-sub" x="65" y="305" font-size="10px" fill="#8b95a5">deps</text>
+
+  <!-- annotation: parsers also feed fixtures (same column) -->
+  <text class="node-sub" x="170" y="374" font-size="10px" fill="#a3be8c" text-anchor="middle">↑ snapshot tests run against parsers/</text>
+
+</svg>
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/proposal.md">proposal.md</a> § Impact
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/tasks.md">tasks.md</a> § Tasks 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="scope">9. Phase 1 範圍 vs Phase 2</h2>
+
+<div class="scope-grid">
+
+  <div class="card scope-in">
+    <h4>✓ Phase 1 — 本 change 範圍</h4>
+    <ul>
+      <li>Metrics emit(<code>ccxray.*</code> namespace)</li>
+      <li>三層 tier opt-in(預設 OFF)</li>
+      <li><code>.ccxray.json</code> / <code>.ccxray.user.json</code> + <code>${VAR}</code> 插值</li>
+      <li>OTel health(state machine、queue、breaker)</li>
+      <li>Parser schemas + sentinels + reconciliation</li>
+      <li>CLI 共存偵測 + reconciliation diff metric</li>
+      <li><code>ccxray status --otel</code> / <code>otel preview</code> / <code>parser report</code></li>
+      <li>啟動 banner、secrets masking</li>
+    </ul>
+  </div>
+
+  <div class="card scope-out">
+    <h4>✗ Phase 2 follow-up</h4>
+    <ul>
+      <li>Span emit(traces)</li>
+      <li><code>ccxray.entry_id</code> / <code>dashboard_url</code> attributes</li>
+      <li><code>/entry/:id</code> deep-link route</li>
+      <li><code>ccxray.hub.*</code> 運維 metrics(open question)</li>
+      <li><code>--otel-demo</code> Docker Compose helper(open question)</li>
+    </ul>
+  </div>
+
+</div>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/proposal.md">proposal.md</a> § What Changes (last bullet: Out of scope)
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> § Non-Goals
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/design.md">design.md</a> § Open Questions
+  </span>
+</div>
+
+<!-- ───────────────────────────────────────────── -->
+<h2 id="metrics">10. 完整 metric 清單</h2>
+
+<p>所有 metric 都在 <code>ccxray.*</code> namespace,每筆 emit 帶 resource attribute <code>ccxray.source="ccxray-proxy"</code>。Complement mode 時額外帶 <code>ccxray.cli_otel_active=true</code>。</p>
+
+<table>
+  <tr><th>家族</th><th>Metric</th><th>Attributes</th></tr>
+  <tr>
+    <td rowspan="6" style="color: var(--accent)">Cost</td>
+    <td><code>ccxray.tokens.input_total</code></td><td>model, provider <sup>*</sup></td>
+  </tr>
+  <tr><td><code>ccxray.tokens.output_total</code></td><td>model, provider <sup>*</sup></td></tr>
+  <tr><td><code>ccxray.tokens.cache_read_total</code></td><td>model, provider <sup>*</sup></td></tr>
+  <tr><td><code>ccxray.tokens.cache_creation_total</code></td><td>model, provider <sup>*</sup></td></tr>
+  <tr><td><code>ccxray.cost.usd_total</code></td><td>model, provider <sup>*</sup></td></tr>
+  <tr><td><code>ccxray.cache.hit_ratio</code>(gauge)</td><td>model, provider <sup>*</sup></td></tr>
+
+  <tr>
+    <td rowspan="5" style="color: var(--accent-2)">Usage</td>
+    <td><code>ccxray.tool.invocations_total</code></td><td>tool, provider</td>
+  </tr>
+  <tr><td><code>ccxray.mcp.invocations_total</code></td><td>server, tool</td></tr>
+  <tr><td><code>ccxray.skill.activations_total</code></td><td>skill, provider</td></tr>
+  <tr><td><code>ccxray.sessions_total</code></td><td>provider</td></tr>
+  <tr><td><code>ccxray.agent_type.invocations_total</code></td><td>type</td></tr>
+
+  <tr>
+    <td rowspan="4" style="color: var(--warn)">Quality</td>
+    <td><code>ccxray.errors_total</code></td><td>type, provider</td>
+  </tr>
+  <tr><td><code>ccxray.stop_reason_total</code></td><td>reason</td></tr>
+  <tr><td><code>ccxray.latency_ms</code>(histogram)</td><td>model, provider</td></tr>
+  <tr><td><code>ccxray.max_tokens_hit_total</code></td><td>model</td></tr>
+
+  <tr>
+    <td rowspan="4" style="color: var(--purple)">Patterns</td>
+    <td><code>ccxray.context.utilization_pct</code>(histogram)</td><td></td>
+  </tr>
+  <tr><td><code>ccxray.auto_compact.triggered_total</code></td><td></td></tr>
+  <tr><td><code>ccxray.subagent.invocations_total</code></td><td></td></tr>
+  <tr><td><code>ccxray.tools_per_turn</code>(histogram)</td><td></td></tr>
+
+  <tr>
+    <td rowspan="4" style="color: var(--muted)">Governance</td>
+    <td><code>ccxray.permission_mode.usage_total</code></td><td>mode</td>
+  </tr>
+  <tr><td><code>ccxray.dangerous_tool.invocations_total</code></td><td>pattern</td></tr>
+  <tr><td><code>ccxray.file_writes_total</code></td><td></td></tr>
+  <tr><td><code>ccxray.provider.distribution_total</code></td><td>provider</td></tr>
+
+  <tr>
+    <td rowspan="9" style="color: var(--danger)">Sentinels</td>
+    <td><code>ccxray.metrics.overflow_total</code></td><td>metric, attribute</td>
+  </tr>
+  <tr><td><code>ccxray.parser.unknown_tool_total</code></td><td>provider</td></tr>
+  <tr><td><code>ccxray.parser.unknown_skill_marker_total</code></td><td>provider</td></tr>
+  <tr><td><code>ccxray.parser.unknown_mcp_format_total</code></td><td></td></tr>
+  <tr><td><code>ccxray.parser.fallback_used_total</code></td><td>parser, reason</td></tr>
+  <tr><td><code>ccxray.parser.reconciliation_mismatch_total</code></td><td>type</td></tr>
+  <tr><td><code>ccxray.parser.error_total</code></td><td>parser, error_type</td></tr>
+  <tr><td><code>ccxray.otel.exports_dropped_total</code></td><td>signal</td></tr>
+  <tr><td><code>ccxray.otel.state</code>(gauge)</td><td>state</td></tr>
+
+  <tr>
+    <td style="color: var(--accent)">CLI 對帳</td>
+    <td><code>ccxray.reconciliation.token_diff_pct</code>(gauge)</td><td>model</td>
+  </tr>
+
+  <tr>
+    <td style="color: var(--accent)">Tier 觀測</td>
+    <td><code>ccxray.otel.tier_distribution</code></td><td>tier</td>
+  </tr>
+</table>
+
+<p class="muted" style="font-size: 12px;">
+<sup>*</sup> Cost 系列的 attribute 並未在 <code>specs/otel-export/spec.md</code> § Required metric families 內逐一列出(spec 只在 Usage / Quality 部分內嵌標明)。本表依照實作時的常見維度(<code>model</code>、<code>provider</code>)預先填入,實際 attribute 註冊清單以 <code>server/otel.js</code> 的 metric registry 為準(Tasks § 4.5)。
+</p>
+
+<div class="src">
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Required metric families
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Cardinality budget enforcement
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-export/spec.md">specs/otel-export/spec.md</a> § Reconciliation diff metric
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/parser-schemas/spec.md">specs/parser-schemas/spec.md</a> § Sentinel counters / Reconciliation invariants / Parser error isolation
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-health/spec.md">specs/otel-health/spec.md</a> § Bounded export queue / Health state observable
+  </span>
+  <span class="src-row">Source:
+    <a href="../openspec/changes/add-otel-metrics-phase1/specs/otel-tiers/spec.md">specs/otel-tiers/spec.md</a> § Tier distribution sentinel
+  </span>
+</div>
+
+<p class="muted" style="margin-top: 56px; border-top: 1px solid var(--border); padding-top: 16px;">
+本檔案位於 <code>docs/otel-phase1-overview.html</code>,內容嚴格依據 <code>openspec/changes/add-otel-metrics-phase1/</code> 的 proposal / design / specs / tasks 文件。所有宣稱皆有出處連結;若你發現任何視覺與 spec 不一致,請以 spec 為準並回報。
+</p>
+
+</div>
+
+</body>
+</html>
