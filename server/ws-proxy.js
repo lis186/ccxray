@@ -43,7 +43,12 @@ const DEFAULT_IDLE_TIMEOUT_MS = parseInt(process.env.CCXRAY_WS_IDLE_TIMEOUT_MS |
 const IDLE_TIMEOUT_MS = Number.isFinite(DEFAULT_IDLE_TIMEOUT_MS) && DEFAULT_IDLE_TIMEOUT_MS > 0
   ? DEFAULT_IDLE_TIMEOUT_MS
   : 60000;
+const DEFAULT_MAX_QUEUE_BYTES = parseInt(process.env.CCXRAY_WS_MAX_QUEUE_BYTES || String(4 * 1024 * 1024), 10);
+const MAX_QUEUE_BYTES = Number.isFinite(DEFAULT_MAX_QUEUE_BYTES) && DEFAULT_MAX_QUEUE_BYTES > 0
+  ? DEFAULT_MAX_QUEUE_BYTES
+  : 4 * 1024 * 1024;
 const OPENAI_WS_PATHS = new Set(['/v1/responses', '/v1/realtime']);
+const WS_CLOSE_REASON_MAX_BYTES = 120; // WS spec caps reason at 123 bytes; leave headroom.
 
 function isUpgradeRequest(req) {
   return String(req.headers.upgrade || '').toLowerCase() === 'websocket';
@@ -119,17 +124,35 @@ function getWorkspaceCwd(turnMetadata) {
   return nested?.cwd || null;
 }
 
-function sendOrBuffer(target, queue, data, isBinary) {
+function safeSend(target, data, isBinary) {
   if (target.readyState === WebSocket.OPEN) {
     target.send(data, { binary: isBinary }, () => {});
-  } else if (target.readyState === WebSocket.CONNECTING) {
-    queue.push({ data, isBinary });
   }
 }
 
-function flushQueue(target, queue) {
-  while (queue.length && target.readyState === WebSocket.OPEN) {
-    const item = queue.shift();
+// Buffer one frame for a CONNECTING upstream. Returns true on overflow so the
+// caller can shut the pair down instead of growing memory unboundedly.
+function bufferOrSend(target, state, data, isBinary) {
+  if (target.readyState === WebSocket.OPEN) {
+    target.send(data, { binary: isBinary }, () => {});
+    return { overflow: false };
+  }
+  if (target.readyState !== WebSocket.CONNECTING) {
+    return { overflow: false };
+  }
+  const size = frameSize(data);
+  if (state.bufferedBytes + size > state.maxBytes) {
+    return { overflow: true, size };
+  }
+  state.queue.push({ data, isBinary });
+  state.bufferedBytes += size;
+  return { overflow: false };
+}
+
+function flushQueue(target, state) {
+  while (state.queue.length && target.readyState === WebSocket.OPEN) {
+    const item = state.queue.shift();
+    state.bufferedBytes = Math.max(0, state.bufferedBytes - frameSize(item.data));
     target.send(item.data, { binary: item.isBinary }, () => {});
   }
 }
@@ -140,6 +163,22 @@ function frameSize(data) {
   if (data instanceof ArrayBuffer) return data.byteLength;
   if (ArrayBuffer.isView(data)) return data.byteLength;
   return 0;
+}
+
+// WS close reason field is capped at 123 bytes by RFC 6455; the ws library
+// throws RangeError when it overflows. Clamp by codepoint to stay UTF-8 safe.
+function clampWsReason(reason) {
+  const str = typeof reason === 'string' ? reason : String(reason || '');
+  if (Buffer.byteLength(str) <= WS_CLOSE_REASON_MAX_BYTES) return str;
+  let bytes = 0;
+  let out = '';
+  for (const ch of str) {
+    const len = Buffer.byteLength(ch);
+    if (bytes + len > WS_CLOSE_REASON_MAX_BYTES) break;
+    bytes += len;
+    out += ch;
+  }
+  return out;
 }
 
 async function recordWebSocketEntry(ctx, result) {
@@ -308,8 +347,9 @@ function handleWebSocketUpgrade(req, socket, head) {
       frameCounts: { clientToUpstream: 0, upstreamToClient: 0 },
       byteCounts: { clientToUpstream: 0, upstreamToClient: 0 },
     };
-    const clientQueue = [];
-    const upstreamQueue = [];
+    // Only client→upstream needs queueing; clientWs is already OPEN inside this
+    // callback so upstream→client can always send directly via safeSend().
+    const upstreamBuffer = { queue: [], bufferedBytes: 0, maxBytes: MAX_QUEUE_BYTES };
     let finalized = false;
     let idleTimer = null;
 
@@ -334,7 +374,7 @@ function handleWebSocketUpgrade(req, socket, head) {
 
     function closeBoth(code, reason) {
       const closeCode = code || 1000;
-      const closeReason = reason || '';
+      const closeReason = clampWsReason(reason);
       if (clientWs.readyState === WebSocket.OPEN || clientWs.readyState === WebSocket.CONNECTING) {
         clientWs.close(closeCode, closeReason);
       }
@@ -343,17 +383,25 @@ function handleWebSocketUpgrade(req, socket, head) {
       }
     }
 
+    // Arm the idle timer before the upstream handshake completes so a stalled
+    // upstream (accepts TCP, never sends 101) is bounded by IDLE_TIMEOUT_MS.
+    refreshIdleTimer();
+
     clientWs.on('message', (data, isBinary) => {
       refreshIdleTimer();
       ctx.frameCounts.clientToUpstream += 1;
       ctx.byteCounts.clientToUpstream += frameSize(data);
-      sendOrBuffer(upstreamWs, upstreamQueue, data, isBinary);
+      const result = bufferOrSend(upstreamWs, upstreamBuffer, data, isBinary);
+      if (result.overflow) {
+        closeBoth(1009, 'client buffer exceeded');
+        finalize({ status: 507, error: { message: `Client send buffer exceeded ${MAX_QUEUE_BYTES} bytes while upstream was connecting` } });
+      }
     });
     upstreamWs.on('message', (data, isBinary) => {
       refreshIdleTimer();
       ctx.frameCounts.upstreamToClient += 1;
       ctx.byteCounts.upstreamToClient += frameSize(data);
-      sendOrBuffer(clientWs, clientQueue, data, isBinary);
+      safeSend(clientWs, data, isBinary);
     });
     clientWs.on('ping', data => {
       refreshIdleTimer();
@@ -373,21 +421,30 @@ function handleWebSocketUpgrade(req, socket, head) {
     });
     upstreamWs.on('open', () => {
       refreshIdleTimer();
-      flushQueue(upstreamWs, upstreamQueue);
-      flushQueue(clientWs, clientQueue);
+      flushQueue(upstreamWs, upstreamBuffer);
     });
-    upstreamWs.on('unexpected-response', (_request, response) => {
+    upstreamWs.on('unexpected-response', (request, response) => {
+      // ws gives us ownership when a listener is present: drain and destroy
+      // both ends so the underlying HTTP socket doesn't leak.
       const statusCode = response.statusCode || 502;
+      try { response.resume(); } catch {}
+      try { request.destroy(); } catch {}
       closeBoth(1011, `upstream ${statusCode}`);
       finalize({ status: statusCode, error: { message: `Upstream WebSocket rejected handshake: ${statusCode}` } });
     });
     clientWs.on('close', (code, reason) => {
-      if (upstreamWs.readyState === WebSocket.OPEN || upstreamWs.readyState === WebSocket.CONNECTING) upstreamWs.close(code, reason);
-      finalize({ status: 101, close: { side: 'client', code, reason: reason.toString() } });
+      const reasonStr = reason.toString();
+      if (upstreamWs.readyState === WebSocket.OPEN || upstreamWs.readyState === WebSocket.CONNECTING) {
+        upstreamWs.close(code, clampWsReason(reasonStr));
+      }
+      finalize({ status: 101, close: { side: 'client', code, reason: reasonStr } });
     });
     upstreamWs.on('close', (code, reason) => {
-      if (clientWs.readyState === WebSocket.OPEN || clientWs.readyState === WebSocket.CONNECTING) clientWs.close(code, reason);
-      finalize({ status: 101, close: { side: 'upstream', code, reason: reason.toString() } });
+      const reasonStr = reason.toString();
+      if (clientWs.readyState === WebSocket.OPEN || clientWs.readyState === WebSocket.CONNECTING) {
+        clientWs.close(code, clampWsReason(reasonStr));
+      }
+      finalize({ status: 101, close: { side: 'upstream', code, reason: reasonStr } });
     });
     clientWs.on('error', err => {
       closeBoth(1011, 'client error');

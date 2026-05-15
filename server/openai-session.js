@@ -50,6 +50,11 @@ function isOpenAISubagent(headers, parsedBody) {
   return Boolean(parsedBody?.metadata?.is_subagent || parsedBody?.metadata?.isSubagent);
 }
 
+// Used by both HTTP (parsedBody present) and WebSocket upgrade (no body) paths.
+// When parsedBody is null but headers carry session_id, we synthesize a minimal
+// body so store.detectSession honors header-derived sessions consistently —
+// otherwise WS upgrades and body-less HTTP retries would collapse into the
+// `codex-raw` bucket.
 function detectOpenAISession(headers, parsedBody) {
   const sessionId = getCodexSessionId(headers, parsedBody);
   if (!sessionId) {

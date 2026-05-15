@@ -284,4 +284,144 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.status, 504);
     assert.match(entry.responseMetadata.error.message, /idle timeout/);
   });
+
+  it('fires idle timeout when upstream stalls before completing handshake', async () => {
+    // Accept TCP but never reply: simulates a slowloris-style upstream. Track
+    // the raw sockets so afterEach's upstreamServer.close() doesn't block on
+    // upgraded connections that we own directly.
+    const stalledSockets = [];
+    upstreamServer.on('upgrade', (_req, socket) => {
+      stalledSockets.push(socket);
+    });
+    try {
+      await startProxy({ CCXRAY_WS_IDLE_TIMEOUT_MS: '150' });
+
+      const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea947';
+      const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+        headers: {
+          'openai-beta': 'responses_websockets=2026-02-06',
+          session_id: sessionId,
+        },
+      });
+      await new Promise((resolve, reject) => {
+        ws.on('open', resolve);
+        ws.on('error', reject);
+      });
+      const close = await new Promise(resolve => {
+        ws.on('close', (code, reason) => resolve({ code, reason: reason.toString() }));
+      });
+
+      assert.equal(close.code, 1011);
+      assert.equal(close.reason, 'idle timeout');
+
+      const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
+      assert.equal(entry.status, 504);
+      assert.match(entry.responseMetadata.error.message, /idle timeout/);
+    } finally {
+      for (const socket of stalledSockets) {
+        try { socket.destroy(); } catch {}
+      }
+    }
+  });
+
+  it('rejects WebSocket upgrade with 401 when AUTH_TOKEN is set and credentials are missing', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', () => {
+      throw new Error('upstream should not be reached when auth fails');
+    });
+    await startProxy({ AUTH_TOKEN: 'sekret' });
+
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: {
+        'openai-beta': 'responses_websockets=2026-02-06',
+        session_id: 'auth-fail-001',
+      },
+    });
+    const result = await new Promise(resolve => {
+      ws.on('unexpected-response', (_req, res) => {
+        res.resume();
+        resolve({ statusCode: res.statusCode });
+      });
+      ws.on('error', err => resolve({ error: err.message }));
+    });
+    assert.equal(result.statusCode, 401);
+  });
+
+  it('accepts WebSocket upgrade when AUTH_TOKEN is set and bearer matches', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', (ws) => {
+      ws.on('message', data => ws.send(`echo:${data.toString()}`));
+    });
+    await startProxy({ AUTH_TOKEN: 'sekret' });
+
+    const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea948';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: {
+        authorization: 'Bearer sekret',
+        'openai-beta': 'responses_websockets=2026-02-06',
+        session_id: sessionId,
+      },
+    });
+    const messages = [];
+    ws.on('message', d => messages.push(d.toString()));
+    await new Promise((resolve, reject) => {
+      ws.on('open', resolve);
+      ws.on('error', reject);
+    });
+    ws.send('ping');
+    await new Promise(r => setTimeout(r, 200));
+    ws.close(1000, 'done');
+    await new Promise(r => ws.on('close', r));
+    assert.ok(messages.includes('echo:ping'));
+  });
+
+  it('returns 404 for upgrades on non-OpenAI WebSocket paths', async () => {
+    await startProxy();
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/messages`);
+    const result = await new Promise(resolve => {
+      ws.on('unexpected-response', (_req, res) => {
+        res.resume();
+        resolve({ statusCode: res.statusCode });
+      });
+      ws.on('error', err => resolve({ error: err.message }));
+    });
+    assert.equal(result.statusCode, 404);
+  });
+
+  it('forwards Sec-WebSocket-Protocol selection through to the upstream', async () => {
+    let upstreamProtocolHeader = null;
+    upstreamWss = new WebSocket.Server({
+      server: upstreamServer,
+      path: '/v1/responses',
+      handleProtocols(protocols) {
+        return protocols.values().next().value || false;
+      },
+    });
+    const upstreamConnected = new Promise(resolve => {
+      upstreamWss.on('connection', (_ws, req) => {
+        upstreamProtocolHeader = req.headers['sec-websocket-protocol'];
+        resolve();
+      });
+    });
+    await startProxy();
+
+    const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea949';
+    const ws = new WebSocket(
+      `ws://localhost:${proxyPort}/v1/responses`,
+      ['codex-v1', 'codex-v2'],
+      { headers: { session_id: sessionId } },
+    );
+    await new Promise((resolve, reject) => {
+      ws.on('open', resolve);
+      ws.on('error', reject);
+    });
+    // Proxy → upstream handshake races the proxy → client one; wait for it.
+    await upstreamConnected;
+
+    assert.equal(ws.protocol, 'codex-v1');
+    // ws joins protocols with ", " when constructing the upstream request header.
+    assert.match(upstreamProtocolHeader || '', /codex-v1.*codex-v2/);
+    ws.close(1000, 'done');
+    await new Promise(r => ws.on('close', r));
+  });
 });
