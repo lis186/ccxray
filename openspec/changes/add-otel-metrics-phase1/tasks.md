@@ -1,8 +1,8 @@
 ## 1. Dependencies and package wiring
 
-- [ ] 1.1 Add `@opentelemetry/api`, `@opentelemetry/sdk-metrics`, `@opentelemetry/exporter-metrics-otlp-http`, `@opentelemetry/resources` as `dependencies` in `package.json` (no auto-instrumentations)
-- [ ] 1.2 Implement lazy require in a helper so ccxray still runs at tier 0 when OTel packages are absent
-- [ ] 1.3 Update `package-lock.json` and confirm bundle size delta is within an acceptable bound
+- [x] 1.1 Add `@opentelemetry/api`, `@opentelemetry/sdk-metrics`, `@opentelemetry/exporter-metrics-otlp-http`, `@opentelemetry/resources` as `dependencies` in `package.json` (no auto-instrumentations)
+- [x] 1.2 Implement lazy require in a helper so ccxray still runs at tier 0 when OTel packages are absent
+- [x] 1.3 Update `package-lock.json` and confirm bundle size delta is within an acceptable bound
 
 ## 2. Config loader (`server/config-loader.js`)
 
@@ -20,17 +20,17 @@
 
 ## 3. OTel health module (`server/otel-health.js`)
 
-- [ ] 3.1 Implement state machine with four states: `disabled / active / degraded / circuit_open` and transitions only via documented APIs
+- [x] 3.1 Implement state machine with four states: `disabled / active / degraded / circuit_open` and transitions only via documented APIs
 - [ ] 3.2 Implement bounded export queue with drop-oldest semantics and `ccxray.otel.exports_dropped_total{signal}` increment per drop
 - [ ] 3.3 Implement circuit breaker: 5 consecutive failures trips, 60s initial cooldown, half-open trial, exponential backoff to 600s max
 - [ ] 3.4 Implement `~/.ccxray/otel.log` append writer with size-based rotation (default 1 MB, 5 file retention)
-- [ ] 3.5 Implement SDK shutdown with 2-second hard cap to never block process exit
+- [x] 3.5 Implement SDK shutdown with 2-second hard cap to never block process exit
 - [ ] 3.6 Surface state and metrics via a status reporter API consumed by the CLI status command
 - [ ] 3.7 Unit tests with mock collector (200 / 500 / timeout) covering queue overflow, circuit transitions, half-open recovery, and exponential backoff
 
 ## 4. OTel SDK initialization (`server/otel.js`)
 
-- [ ] 4.1 Implement SDK init for metrics only, with `ccxray.source="ccxray-proxy"` resource attribute
+- [x] 4.1 Implement SDK init for metrics only, with `ccxray.source="ccxray-proxy"` resource attribute
 - [ ] 4.2 Define metric registry with allow-list of attribute keys and cardinality budgets per metric (View API)
 - [ ] 4.3 Implement cardinality budget tracker with `_overflow_` fallback and `ccxray.metrics.overflow_total{metric,attribute}` sentinel
 - [ ] 4.4 Detect `CLAUDE_CODE_ENABLE_TELEMETRY=1` and apply `ccxray.cli_otel_active=true` attribute in complement mode
@@ -58,7 +58,7 @@
 
 ## 6. Wire metrics into forward / store paths
 
-- [ ] 6.1 In `server/forward.js`, emit cost / token / latency / error / stop_reason metrics after each completed forward, using the otel-health queue
+- [ ] 6.1 In `server/forward.js`, emit cost / token / latency / error / stop_reason metrics after each completed forward, using the otel-health queue _(partial: `emit('entry_completed', { entry })` wired in all 3 forward paths with full entry payload; routing through the otel-health queue is pending §3.2)_
 - [ ] 6.2 In `server/store.js`, emit usage / pattern / governance metrics as session/tool/skill/MCP detection runs through the new parsers
 - [ ] 6.3 Ensure no emit path can throw into the proxy code path; all emits are best-effort
 - [ ] 6.4 Add a unit test that verifies forward.js continues to function with OTel disabled, init-failed (degraded), and circuit_open states
