@@ -10,6 +10,7 @@ const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
 const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
+const emit = require('./emit');
 
 // For title-generator subagent responses, extract the clean title from the
 // JSON payload and (when attribution succeeds) stamp it onto the parent
@@ -615,6 +616,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     store.trimEntries();
     store.propagateLoadedSkills(entry, sessionId);
     broadcast(entry);
+    emit.emit('entry_completed', { entry });
 
     // Persist to index (fire-and-forget after broadcast)
     const indexLine = JSON.stringify({
@@ -746,6 +748,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     store.entries.push(entry);
     store.trimEntries();
     broadcast(entry);
+    emit.emit('entry_completed', { entry });
 
     const indexLine = JSON.stringify({
       id, ts: ctx.ts, sessionId: reqSessionId,
@@ -891,6 +894,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     store.trimEntries();
     store.propagateLoadedSkills(entry, sessionId);
     broadcast(entry);
+    emit.emit('entry_completed', { entry });
 
     const indexLine = JSON.stringify({
       id, ts: ctx.ts, sessionId,

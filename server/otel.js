@@ -2,16 +2,31 @@
 
 // OTel SDK init + emit.js subscribers.
 //
-// Phase 2b scope: wire the subscriber frame. tier 0 = full no-op (no
-// require of @opentelemetry/*, no subscribers, no SDK). tier ≥ 1
-// resolves the lazy packages; if any are missing, transitions to
-// degraded and keeps the proxy running. If packages are present,
-// registers no-op subscribers and transitions to active. Metric
-// registry, View API setup, and the actual MeterProvider land in
-// Phase 2c+ — keeping this file small until the cardinality budget
-// design is wired in.
+// Vertical-slice scope (Phase 1, first cut): tier 0 = full no-op. tier ≥ 1 +
+// packages present + endpoint configured → real MeterProvider with OTLP HTTP
+// exporter and the first metric family (token usage). tier ≥ 1 with packages
+// present but no endpoint → active state with no exporter (useful for staging
+// the wiring before pointing at a collector).
 //
-// Never throws into the caller. init() returns the resulting health state.
+// Metrics registered in this slice (aligned with otel-export/spec.md):
+//   ccxray.tokens.input_total          (counter, unit=tokens)
+//   ccxray.tokens.output_total         (counter, unit=tokens)
+//   ccxray.tokens.cache_read_total     (counter, unit=tokens)
+//   ccxray.tokens.cache_creation_total (counter, unit=tokens)
+// Each is recorded with { provider, model } attributes. Cardinality budgets,
+// View API allow-lists, sentinel metrics, and the full cost/usage/quality
+// families land in later slices (§4.2–§4.9 of the OpenSpec change).
+//
+// Resource attribute `ccxray.source=ccxray-proxy` is always set so downstream
+// consumers can distinguish ccxray-emitted metrics from `claude_code.*` CLI
+// metrics that the user may also be exporting.
+//
+// shutdown() returns synchronously to disabled state (so existing callers
+// don't need to await) and fires the SDK provider.shutdown() in the
+// background with a 2-second hard cap — never blocks process exit.
+//
+// init() never throws into the caller; any failure transitions to degraded
+// with a reason and the proxy continues running.
 
 const emit = require('./emit');
 const defaultOtelLazy = require('./otel-lazy');
@@ -19,6 +34,7 @@ const health = require('./otel-health');
 
 let initialized = false;
 let unsubscribers = [];
+let sdkContext = null; // { provider, reader, instruments } | null
 
 function init(config, deps = {}) {
   if (initialized) return health.getState();
@@ -29,7 +45,6 @@ function init(config, deps = {}) {
     : 0;
 
   if (tier <= 0) {
-    // tier 0 pays nothing: do not load OTel, do not subscribe.
     return health.getState();
   }
 
@@ -39,33 +54,146 @@ function init(config, deps = {}) {
     return health.getState();
   }
 
-  // Phase 2b: register stub subscribers so the bus wiring is exercised
-  // without committing to a metric registry shape. Each handler stays a
-  // no-op until Phase 2c attaches actual instruments.
-  unsubscribers.push(emit.on('entry_completed', () => { /* tier ≥ 1 stub */ }));
+  try {
+    if (config.otel.endpoint) {
+      sdkContext = initSdk(config, otelLazy);
+    }
+    registerHandlers();
+    health.transition('active');
+  } catch (err) {
+    sdkContext = null;
+    health.transition('degraded', { reason: `SDK init failed: ${err && err.message || err}` });
+  }
+  return health.getState();
+}
+
+function initSdk(config, otelLazy) {
+  const sdk = otelLazy.tryRequire('@opentelemetry/sdk-metrics');
+  const exp = otelLazy.tryRequire('@opentelemetry/exporter-metrics-otlp-http');
+  const res = otelLazy.tryRequire('@opentelemetry/resources');
+  if (!sdk || !exp || !res) {
+    throw new Error('required OTel package failed to resolve');
+  }
+
+  const exporter = new exp.OTLPMetricExporter({
+    url: config.otel.endpoint,
+    headers: config.otel.headers || {},
+  });
+
+  // Default 60s export interval, overridable for tests via env var.
+  const intervalMs = Number(process.env.CCXRAY_OTEL_EXPORT_INTERVAL_MS) || 60000;
+  const reader = new sdk.PeriodicExportingMetricReader({
+    exporter,
+    exportIntervalMillis: intervalMs,
+  });
+
+  const resource = res.resourceFromAttributes({
+    'ccxray.source': 'ccxray-proxy',
+    ...(config.otel.resource_attributes || {}),
+  });
+
+  const provider = new sdk.MeterProvider({ resource, readers: [reader] });
+
+  const meter = provider.getMeter('ccxray', '1');
+  const instruments = {
+    inputTokens: meter.createCounter('ccxray.tokens.input_total', {
+      description: 'Input tokens per completed entry',
+      unit: 'tokens',
+    }),
+    outputTokens: meter.createCounter('ccxray.tokens.output_total', {
+      description: 'Output tokens per completed entry',
+      unit: 'tokens',
+    }),
+    cacheReadTokens: meter.createCounter('ccxray.tokens.cache_read_total', {
+      description: 'Cache-read input tokens per completed entry',
+      unit: 'tokens',
+    }),
+    cacheCreationTokens: meter.createCounter('ccxray.tokens.cache_creation_total', {
+      description: 'Cache-creation input tokens per completed entry',
+      unit: 'tokens',
+    }),
+  };
+
+  return { provider, reader, instruments };
+}
+
+function registerHandlers() {
+  unsubscribers.push(emit.on('entry_completed', onEntryCompleted));
+  // Other event types land as later slices wire them up.
   unsubscribers.push(emit.on('session_started', () => { /* tier ≥ 1 stub */ }));
   unsubscribers.push(emit.on('parser_unknown', () => { /* tier ≥ 1 stub */ }));
   unsubscribers.push(emit.on('parser_mismatch', () => { /* tier ≥ 1 stub */ }));
   unsubscribers.push(emit.on('parser_error', () => { /* tier ≥ 1 stub */ }));
-
-  health.transition('active');
-  return health.getState();
 }
 
-function shutdown() {
+function onEntryCompleted(payload) {
+  if (!sdkContext) return;
+  const entry = payload && payload.entry;
+  const usage = entry && entry.usage;
+  if (!usage) return;
+
+  const attrs = {
+    provider: entry.provider || 'unknown',
+    model: entry.model || 'unknown',
+  };
+
+  const input = Number(usage.input_tokens) || 0;
+  const output = Number(usage.output_tokens) || 0;
+  const cacheRead = Number(usage.cache_read_input_tokens) || 0;
+  const cacheCreate = Number(usage.cache_creation_input_tokens) || 0;
+
+  sdkContext.instruments.inputTokens.add(input, attrs);
+  sdkContext.instruments.outputTokens.add(output, attrs);
+  sdkContext.instruments.cacheReadTokens.add(cacheRead, attrs);
+  sdkContext.instruments.cacheCreationTokens.add(cacheCreate, attrs);
+}
+
+// Returns a Promise but is safe to ignore. The synchronous portion (before the
+// first await below) is enough to make `health.getState() === 'disabled'` and
+// `initialized === false` visible to immediate follow-up calls — existing
+// `otel.shutdown()` callers that do not await still see the new state.
+async function shutdown() {
   for (const off of unsubscribers) {
     try { off(); } catch { /* ignore */ }
   }
   unsubscribers = [];
+
+  const ctx = sdkContext;
+  sdkContext = null;
+
   if (health.getState() !== 'disabled') {
     health.transition('disabled');
   }
   initialized = false;
+
+  if (ctx && ctx.provider && typeof ctx.provider.shutdown === 'function') {
+    try {
+      await Promise.race([
+        ctx.provider.shutdown(),
+        new Promise(resolve => setTimeout(resolve, 2000)),
+      ]);
+    } catch { /* never block process exit on shutdown errors */ }
+  }
+}
+
+// Force-flush exists so tests (and a future `ccxray status --otel` command)
+// can drain the reader on demand. Returns a Promise that resolves even on
+// failure — never throws to the caller.
+async function flush() {
+  if (!sdkContext || !sdkContext.provider) return;
+  try {
+    await sdkContext.provider.forceFlush();
+  } catch { /* ignore */ }
 }
 
 function _resetForTests() {
-  shutdown();
+  // Sync drop of everything for tests that do not await shutdown.
+  for (const off of unsubscribers) { try { off(); } catch {} }
+  unsubscribers = [];
+  sdkContext = null;
+  if (health.getState() !== 'disabled') health.transition('disabled');
+  initialized = false;
   health._resetForTests();
 }
 
-module.exports = { init, shutdown, _resetForTests };
+module.exports = { init, shutdown, flush, _resetForTests };
