@@ -137,6 +137,7 @@ function getUpstream(provider) {
 function getProviderForRequest(urlPath) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
+  if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
   return 'anthropic';
 }

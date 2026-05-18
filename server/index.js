@@ -18,6 +18,13 @@ const { authMiddleware } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
+const { handleWebSocketUpgrade } = require('./ws-proxy');
+const {
+  getCodexRawSessionId,
+  isOpenAISubagent,
+  detectOpenAISession,
+  withCodexMetadata,
+} = require('./openai-session');
 
 // ── CLI: parse flags and detect provider launchers ──
 const portIdx = process.argv.indexOf('--port');
@@ -135,72 +142,12 @@ function buildForwardHeaders(clientHeaders, upstream) {
   return fwdHeaders;
 }
 
-function getCodexRawSessionId() {
-  return 'codex-raw';
-}
-
-function firstHeader(headers, name) {
-  const value = headers?.[name.toLowerCase()];
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function getCodexSessionId(headers, parsedBody) {
-  const direct = firstHeader(headers, 'session_id') || firstHeader(headers, 'x-openai-session-id');
-  if (direct) return String(direct);
-  return parsedBody?.metadata?.session_id || null;
-}
-
-function isOpenAISubagent(headers, parsedBody) {
-  const raw = firstHeader(headers, 'x-openai-subagent');
-  if (raw != null) {
-    const text = String(raw).toLowerCase();
-    return text !== '0' && text !== 'false' && text !== 'no';
-  }
-  return Boolean(parsedBody?.metadata?.is_subagent || parsedBody?.metadata?.isSubagent);
-}
-
-function getOpenAIAgentTypeFromHeaders(headers) {
-  const subagent = firstHeader(headers, 'x-openai-subagent');
-  const direct = firstHeader(headers, 'x-openai-agent-type') || firstHeader(headers, 'x-codex-agent-type');
-  const value = direct || subagent;
-  if (!value) return null;
-  const normalized = String(value).toLowerCase();
-  if (normalized === 'explorer' || normalized === 'worker' || normalized === 'default') return normalized;
-  return null;
-}
-
-function detectOpenAISession(headers, parsedBody) {
-  if (!parsedBody) return { sessionId: getCodexRawSessionId(), isNewSession: false, inferred: true };
-  if (!getCodexSessionId(headers, parsedBody)) {
-    return { sessionId: getCodexRawSessionId(), isNewSession: false, inferred: true };
-  }
-  const detected = store.detectSession(parsedBody);
-  return {
-    sessionId: detected.sessionId || getCodexRawSessionId(),
-    isNewSession: detected.isNewSession || false,
-    inferred: detected.inferred || false,
-  };
-}
-
 function getCodexCwdFallback() {
   return hub.lookupClientCwd() || (agentCommand === 'codex' ? process.cwd() : null);
 }
 
 function getOpenAICwd(parsedBody) {
   return parsedBody?.metadata?.cwd || getCodexCwdFallback();
-}
-
-function withCodexMetadata(parsedBody, headers) {
-  if (!parsedBody || typeof parsedBody !== 'object') return parsedBody;
-  const sessionId = getCodexSessionId(headers, parsedBody);
-  const agentType = getOpenAIAgentTypeFromHeaders(headers);
-  if (!sessionId && !agentType) return parsedBody;
-  const metadata = parsedBody.metadata && typeof parsedBody.metadata === 'object'
-    ? { ...parsedBody.metadata }
-    : {};
-  if (sessionId && !metadata.session_id) metadata.session_id = sessionId;
-  if (agentType && !metadata.agent_type) metadata.agent_type = agentType;
-  return { ...parsedBody, metadata };
 }
 
 function registerPromptVersion({ provider, parsedBody, sharedFile, promptText, firstSeen, notify = true }) {
@@ -317,6 +264,12 @@ const server = http.createServer((clientReq, clientRes) => {
             sharedFile: `openai_instructions_${sysHash}.json`,
             promptText: parsedBody.instructions,
           }) : null;
+          if (promptInfo) {
+            config.storage.writeSharedIfAbsent(`openai_prompt_meta_${sysHash}.json`, JSON.stringify({
+              agentKey: promptInfo.agentKey,
+              agentLabel: promptInfo.agentLabel,
+            })).catch(e => console.error('Write OpenAI prompt metadata failed:', e.message));
+          }
           coreHash = promptInfo?.coreHash || null;
         }
         if (toolsHash) config.storage.writeSharedIfAbsent(`openai_tools_${toolsHash}.json`, JSON.stringify(parsedBody.tools))
@@ -450,6 +403,10 @@ const server = http.createServer((clientReq, clientRes) => {
 
     forwardRequest(ctx);
   });
+});
+
+server.on('upgrade', (req, socket, head) => {
+  handleWebSocketUpgrade(req, socket, head);
 });
 
 

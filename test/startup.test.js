@@ -918,6 +918,37 @@ describe('OpenAI Responses raw capture', () => {
     assert.ok(explorer.coreHash);
     assert.ok(explorer.b2Len > 0);
   });
+
+  it('restores Codex prompt agent type from metadata sidecar instead of instruction text', async () => {
+    const sessionId = 'codex-system-prompt-restore-001';
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      instructions: 'Inspect the codebase and report findings.',
+      input: 'inspect prompt restore',
+    });
+
+    await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?trace=sysprompt-restore', {
+      session_id: sessionId,
+      'x-openai-subagent': 'worker',
+    });
+    await new Promise(r => setTimeout(r, 500));
+
+    await killAndWait(proxyChild);
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        OPENAI_TEST_HOST: 'localhost',
+        OPENAI_TEST_PORT: String(mockPort),
+        OPENAI_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+    await new Promise(r => setTimeout(r, 500));
+
+    const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
+    const worker = data.versions.find(v => v.agentKey === 'worker' && v.b2Len === 'Inspect the codebase and report findings.'.length);
+    assert.ok(worker, 'expected restored Codex worker prompt version');
+    assert.equal(worker.agentLabel, 'Codex Worker');
+  });
 });
 
 // ── Intercept lifecycle E2E ──────────────────────────────────────────

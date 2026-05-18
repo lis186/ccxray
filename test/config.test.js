@@ -221,6 +221,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
       providers: {
         messages: c.getProviderForRequest('/v1/messages'),
         responses: c.getProviderForRequest('/v1/responses'),
+        realtime: c.getProviderForRequest('/v1/realtime?model=gpt-realtime'),
         models: c.getProviderForRequest('/v1/models?client_version=0.125.0'),
       },
       chatgpt: {
@@ -258,6 +259,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
     });
     assert.equal(result.providers.messages, 'anthropic');
     assert.equal(result.providers.responses, 'openai');
+    assert.equal(result.providers.realtime, 'openai');
     assert.equal(result.providers.models, 'openai');
     assert.deepEqual(result.chatgpt, {
       host: 'chatgpt.com',
