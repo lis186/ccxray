@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.9.3
+
+### Fixed
+
+- **Proxy stability**: handle late upstream socket errors (`EPIPE` / `ECONNRESET`) so the proxy survives when Anthropic closes the TCP connection mid-write. Previously, an unhandled `'error'` event on the underlying `TLSSocket` (emitted after the response was already received and the `ClientRequest`'s listeners had detached) crashed the entire proxy process. Both the default upstream path and the `HTTPS_PROXY` tunnel path are covered.
+
 ## 1.9.2
 
 ### Added
