@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.9.3
+
+### Fixed
+
+- **Proxy stability**: handle late upstream socket errors (`EPIPE` / `ECONNRESET`) so the proxy survives when Anthropic closes the TCP connection mid-write. Previously, an unhandled `'error'` event on the underlying `TLSSocket` (emitted after the response was already received and the `ClientRequest`'s listeners had detached) crashed the entire proxy process. Both the default upstream path and the `HTTPS_PROXY` tunnel path are covered.
+
+## 1.9.2
+
+### Added
+
+- **Interactive status bar** in the System Prompt panel — navigation shortcuts (`←`, `→`, `Space`, `j`, `k`) are now clickable buttons, making the panel usable without a keyboard.
+
+### Fixed
+
+- Expand button (`⊞`) added to the Timeline section header, consistent with other collapsible sections.
+
+## 1.9.1
+
+_No changelog entry (patch release)._
+
 ## 1.9.0
 
 ### Added

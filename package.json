@@ -1,6 +1,6 @@
 {
   "name": "ccxray",
-  "version": "1.9.2",
+  "version": "1.9.3",
   "description": "X-ray vision for AI agent sessions — a transparent HTTP proxy and dashboard for Claude Code",
   "main": "server/index.js",
   "bin": {
