@@ -1800,4 +1800,39 @@ describe('Proxy loop startup guard', () => {
       await killAndWait(proxyChild);
     }
   });
+
+  it('exits when CHATGPT_BASE_URL points back to itself (codex ChatGPT-auth)', async () => {
+    const proxyPort = await findFreePort();
+    const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort), 'codex'], 10000, {
+      CHATGPT_BASE_URL: `http://localhost:${proxyPort}/v1`,
+    });
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('CHATGPT_BASE_URL points back to ccxray'), `Expected loop error, got: ${stderr}`);
+    assert.ok(stderr.includes('--allow-upstream-loop'), `Expected override hint, got: ${stderr}`);
+  });
+
+  it('does NOT exit when CHATGPT_BASE_URL is left at the built-in default (chatgpt.com)', async () => {
+    // Sanity check: built-in default must never self-loop.
+    const proxyPort = await findFreePort();
+
+    const stubBinDir = path.join(TEST_HOME, 'stub-bin-chatgpt-default');
+    fs.mkdirSync(stubBinDir, { recursive: true });
+    const stubCodex = path.join(stubBinDir, 'codex');
+    fs.writeFileSync(stubCodex, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+
+    const proxyChild = spawnServer(['--port', String(proxyPort), 'codex'], {
+      env: {
+        PATH: `${stubBinDir}${path.delimiter}${process.env.PATH}`,
+      },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
 });

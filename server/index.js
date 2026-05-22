@@ -603,14 +603,25 @@ async function startServer() {
   if (!allowUpstreamLoop) {
     const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
     const upstreamFamily = providers.getAgentProvider(agentCommand)?.upstream ?? 'anthropic';
-    const upstream = config.UPSTREAMS[upstreamFamily];
-    if (upstream && localHosts.has(upstream.host) && upstream.port === config.PORT) {
-      const url = `${upstream.protocol}://${upstream.host}:${upstream.port}`;
-      const envVar = upstreamFamily === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL';
-      throw new Error(
-        `${envVar} points back to ccxray (${url}); unset it before starting ccxray.\n` +
-        'Pass --allow-upstream-loop or set CCXRAY_ALLOW_UPSTREAM_LOOP=1 to allow this.'
-      );
+    // Check all upstreams that could loop back: the agent's primary upstream
+    // plus any user-configured ChatGPT upstream (since PR #6 promoted
+    // chatgpt_base_url to first-class, a misconfigured CHATGPT_BASE_URL would
+    // otherwise silently loop with only a startup warn).
+    const candidates = [
+      { key: upstreamFamily, upstream: config.UPSTREAMS[upstreamFamily], envVar: upstreamFamily === 'openai' ? 'OPENAI_BASE_URL' : 'ANTHROPIC_BASE_URL' },
+    ];
+    const chatgpt = config.UPSTREAMS.openaiChatGPT;
+    if (chatgpt && chatgpt.source !== 'chatgpt-default') {
+      candidates.push({ key: 'openaiChatGPT', upstream: chatgpt, envVar: chatgpt.source || 'CHATGPT_BASE_URL' });
+    }
+    for (const { upstream, envVar } of candidates) {
+      if (upstream && localHosts.has(upstream.host) && upstream.port === config.PORT) {
+        const url = `${upstream.protocol}://${upstream.host}:${upstream.port}`;
+        throw new Error(
+          `${envVar} points back to ccxray (${url}); unset it before starting ccxray.\n` +
+          'Pass --allow-upstream-loop or set CCXRAY_ALLOW_UPSTREAM_LOOP=1 to allow this.'
+        );
+      }
     }
   }
 
