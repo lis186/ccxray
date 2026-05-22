@@ -89,6 +89,7 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 - Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' -c 'chatgpt_base_url="http://localhost:<port>/v1"' ...args`, covering both API-key and ChatGPT-auth Codex transports.
 - Extra user args pass through unchanged after ccxray's injected launcher config.
 - `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
+- Codex's main session traffic upgrades to a WebSocket on `POST /v1/responses` (with `openai-beta: responses_websockets=*`), not `/v1/realtime`. `/v1/realtime` exists for the older Realtime API but is not what current codex uses for normal `/goal` / chat turns. When ChatGPT auth is active, codex also sends `chatgpt-account-id`, which `getUpstreamForRequestAndHeaders` (see `server/config.js`) uses to route to `CHATGPT_BASE_URL` instead of `OPENAI_BASE_URL`.
 
 ### Data Flow
 
