@@ -2,31 +2,25 @@
 
 // OTel SDK init + emit.js subscribers.
 //
-// Vertical-slice scope (Phase 1, first cut): tier 0 = full no-op. tier ≥ 1 +
+// Vertical-slice scope (Phase 1): tier 0 = full no-op. tier ≥ 1 +
 // packages present + endpoint configured → real MeterProvider with OTLP HTTP
 // exporter and the first metric family (token usage). tier ≥ 1 with packages
-// present but no endpoint → active state with no exporter (useful for staging
-// the wiring before pointing at a collector).
+// present but no endpoint → active state with no exporter.
 //
-// Metrics registered in this slice (aligned with otel-export/spec.md):
+// Metrics registered (aligned with otel-export/spec.md):
 //   ccxray.tokens.input_total          (counter, unit=tokens)
 //   ccxray.tokens.output_total         (counter, unit=tokens)
 //   ccxray.tokens.cache_read_total     (counter, unit=tokens)
 //   ccxray.tokens.cache_creation_total (counter, unit=tokens)
-// Each is recorded with { provider, model } attributes. Cardinality budgets,
-// View API allow-lists, sentinel metrics, and the full cost/usage/quality
-// families land in later slices (§4.2–§4.9 of the OpenSpec change).
+//   ccxray.otel.exports_dropped_total  (counter, {signal})
 //
-// Resource attribute `ccxray.source=ccxray-proxy` is always set so downstream
-// consumers can distinguish ccxray-emitted metrics from `claude_code.*` CLI
-// metrics that the user may also be exporting.
+// Circuit breaker: entry_completed payloads are enqueued when state is
+// circuit_open and replayed via otel-health.onCircuitClose when active.
+// When state is active or half_open, instruments.add() is called directly.
 //
-// shutdown() returns synchronously to disabled state (so existing callers
-// don't need to await) and fires the SDK provider.shutdown() in the
-// background with a 2-second hard cap — never blocks process exit.
-//
-// init() never throws into the caller; any failure transitions to degraded
-// with a reason and the proxy continues running.
+// Resource attribute `ccxray.source=ccxray-proxy` is always set.
+// shutdown() caps provider.shutdown() at 2s and never blocks process exit.
+// init() never throws; failures → degraded state.
 
 const emit = require('./emit');
 const defaultOtelLazy = require('./otel-lazy');
@@ -58,6 +52,7 @@ function init(config, deps = {}) {
     if (config.otel.endpoint) {
       sdkContext = initSdk(config, otelLazy);
     }
+    health.onCircuitClose(replayQueue);
     registerHandlers();
     health.transition('active');
   } catch (err) {
@@ -65,6 +60,25 @@ function init(config, deps = {}) {
     health.transition('degraded', { reason: `SDK init failed: ${err && err.message || err}` });
   }
   return health.getState();
+}
+
+// Wraps OTLPMetricExporter to feed success/failure results to the circuit breaker.
+class HealthAwareExporter {
+  constructor(inner) { this._inner = inner; }
+
+  export(metrics, resultCallback) {
+    this._inner.export(metrics, result => {
+      if (result.code === 0) {
+        health.recordSuccess();
+      } else {
+        health.recordFailure(result.error && result.error.message);
+      }
+      resultCallback(result);
+    });
+  }
+
+  forceFlush() { return this._inner.forceFlush(); }
+  shutdown()   { return this._inner.shutdown(); }
 }
 
 function initSdk(config, otelLazy) {
@@ -75,10 +89,13 @@ function initSdk(config, otelLazy) {
     throw new Error('required OTel package failed to resolve');
   }
 
-  const exporter = new exp.OTLPMetricExporter({
+  const rawExporter = new exp.OTLPMetricExporter({
     url: config.otel.endpoint,
     headers: config.otel.headers || {},
   });
+
+  // Wrap with health awareness so export success/failure feeds the circuit breaker.
+  const exporter = new HealthAwareExporter(rawExporter);
 
   // Default 60s export interval, overridable for tests via env var.
   const intervalMs = Number(process.env.CCXRAY_OTEL_EXPORT_INTERVAL_MS) || 60000;
@@ -112,7 +129,12 @@ function initSdk(config, otelLazy) {
       description: 'Cache-creation input tokens per completed entry',
       unit: 'tokens',
     }),
+    exportsDropped: meter.createCounter('ccxray.otel.exports_dropped_total', {
+      description: 'Metric payloads dropped because the export queue was full',
+    }),
   };
+
+  health.setDropsCounter(instruments.exportsDropped);
 
   return { provider, reader, instruments };
 }
@@ -127,7 +149,17 @@ function registerHandlers() {
 }
 
 function onEntryCompleted(payload) {
+  const state = health.getState();
+  if (state === 'circuit_open') {
+    health.enqueue('metrics', payload);
+    return;
+  }
+  if (state !== 'active' && state !== 'half_open') return;
   if (!sdkContext) return;
+  recordMetrics(payload);
+}
+
+function recordMetrics(payload) {
   const entry = payload && payload.entry;
   const usage = entry && entry.usage;
   if (!usage) return;
@@ -137,15 +169,18 @@ function onEntryCompleted(payload) {
     model: entry.model || 'unknown',
   };
 
-  const input = Number(usage.input_tokens) || 0;
-  const output = Number(usage.output_tokens) || 0;
-  const cacheRead = Number(usage.cache_read_input_tokens) || 0;
-  const cacheCreate = Number(usage.cache_creation_input_tokens) || 0;
+  sdkContext.instruments.inputTokens.add(Number(usage.input_tokens) || 0, attrs);
+  sdkContext.instruments.outputTokens.add(Number(usage.output_tokens) || 0, attrs);
+  sdkContext.instruments.cacheReadTokens.add(Number(usage.cache_read_input_tokens) || 0, attrs);
+  sdkContext.instruments.cacheCreationTokens.add(Number(usage.cache_creation_input_tokens) || 0, attrs);
+}
 
-  sdkContext.instruments.inputTokens.add(input, attrs);
-  sdkContext.instruments.outputTokens.add(output, attrs);
-  sdkContext.instruments.cacheReadTokens.add(cacheRead, attrs);
-  sdkContext.instruments.cacheCreationTokens.add(cacheCreate, attrs);
+// Drain buffered payloads when circuit closes and replay them into the SDK.
+function replayQueue(items) {
+  if (!sdkContext || !items || !items.length) return;
+  for (const { signal, payload } of items) {
+    if (signal === 'metrics') recordMetrics(payload);
+  }
 }
 
 // Returns a Promise but is safe to ignore. The synchronous portion (before the

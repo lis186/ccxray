@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
-### Requirement: Four-state OTel health machine
+### Requirement: Five-state OTel health machine
 
-ccxray SHALL maintain an OTel health state machine with exactly four states: `disabled`, `active`, `degraded`, and `circuit_open`. Transitions SHALL be driven exclusively by the conditions described in the subsequent requirements; no other code path SHALL mutate state.
+ccxray SHALL maintain an OTel health state machine with exactly five states: `disabled`, `active`, `degraded`, `circuit_open`, and `half_open`. Transitions SHALL be driven exclusively by the conditions described in the subsequent requirements; no other code path SHALL mutate state.
 
 #### Scenario: Disabled at startup
 
