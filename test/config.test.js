@@ -446,6 +446,35 @@ describe('self-loop detection', () => {
   });
 });
 
+// Codex 0.133+ hits /v1/plugins, /v1/ps/plugins, /v1/connectors, /v1/api/codex/apps,
+// /v1/api/codex/usage on startup. We still proxy them (so codex doesn't break),
+// but they shouldn't be tagged 'anthropic' (classification bug) and shouldn't
+// create dashboard entries (noise bug). The telemetry endpoint stays visible.
+describe('codex platform noise routing and predicate', () => {
+  const { isCodexPlatformNoisePath, getProviderForRequest } = require('../server/config');
+
+  it('classifies /v1/ps/plugins/* as openai (was falling through to anthropic)', () => {
+    assert.equal(getProviderForRequest('/v1/ps/plugins/installed?scope=GLOBAL'), 'openai');
+    assert.equal(getProviderForRequest('/v1/ps/plugins/installed?scope=WORKSPACE&includeDownloadUrls=true'), 'openai');
+    assert.equal(getProviderForRequest('/v1/ps/plugins'), 'openai');
+  });
+
+  it('marks codex startup polls as noise', () => {
+    assert.equal(isCodexPlatformNoisePath('/v1/plugins/featured?platform=codex'), true);
+    assert.equal(isCodexPlatformNoisePath('/v1/plugins/list'), true);
+    assert.equal(isCodexPlatformNoisePath('/v1/ps/plugins/installed?scope=GLOBAL'), true);
+    assert.equal(isCodexPlatformNoisePath('/v1/api/codex/apps'), true);
+    assert.equal(isCodexPlatformNoisePath('/v1/api/codex/usage'), true);
+    assert.equal(isCodexPlatformNoisePath('/v1/connectors/directory/list?external_logos=true'), true);
+  });
+
+  it('keeps the conversation and telemetry paths visible', () => {
+    assert.equal(isCodexPlatformNoisePath('/v1/responses'), false);
+    assert.equal(isCodexPlatformNoisePath('/v1/codex/analytics-events/events'), false);
+    assert.equal(isCodexPlatformNoisePath('/v1/messages'), false);
+  });
+});
+
 describe('model context fallback', () => {
   it('uses fallback context for Codex OpenAI models when dynamic pricing data is unavailable', () => {
     const { getMaxContext } = require('../server/config');

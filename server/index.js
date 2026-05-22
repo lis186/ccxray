@@ -227,6 +227,17 @@ const server = http.createServer((clientReq, clientRes) => {
       return;
     }
 
+    // Codex platform RPC: forward but don't create dashboard entries. These
+    // are codex's internal startup polls (plugin lists, connectors, apps,
+    // usage) — not conversation data. Without this guard, codex 0.133+
+    // pollutes the timeline with ~30 entries before the first user prompt.
+    if (config.isCodexPlatformNoisePath(clientReq.url)) {
+      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
+      const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
+      forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
+      return;
+    }
+
     const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
     const provider = upstream.provider || 'anthropic';
     if (provider === 'openai' && parsedBody) {
