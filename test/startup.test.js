@@ -407,12 +407,15 @@ describe('codex desktop app launcher mode', () => {
       "const fs = require('fs');",
       "const http = require('http');",
       "const argv = process.argv.slice(2);",
-      "const configIdx = argv.indexOf('-c');",
-      "const configArg = configIdx === -1 ? null : argv[configIdx + 1];",
-      "const match = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
-      "const openaiBaseUrl = match ? match[1] : null;",
+      "const configArgs = argv.flatMap((arg, idx) => arg === '-c' ? [argv[idx + 1]] : []).filter(Boolean);",
+      "const configArg = configArgs.find(arg => arg.includes('openai_base_url')) || null;",
+      "const chatgptConfigArg = configArgs.find(arg => arg.includes('chatgpt_base_url')) || null;",
+      "const openaiMatch = configArg && configArg.match(/openai_base_url=\"([^\"]+)\"/);",
+      "const chatgptMatch = chatgptConfigArg && chatgptConfigArg.match(/chatgpt_base_url=\"([^\"]+)\"/);",
+      "const openaiBaseUrl = openaiMatch ? openaiMatch[1] : null;",
+      "const chatgptBaseUrl = chatgptMatch ? chatgptMatch[1] : null;",
       "function writeCapture(extra = {}) {",
-      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArg, openaiBaseUrl, cwd: process.cwd(), ...extra }));",
+      "  fs.writeFileSync(process.env.CCXRAY_TEST_CODEX_CAPTURE, JSON.stringify({ argv, configArgs, configArg, chatgptConfigArg, openaiBaseUrl, chatgptBaseUrl, cwd: process.cwd(), ...extra }));",
       "}",
       "function probeHealth(baseUrl) {",
       "  return new Promise(resolve => {",
@@ -463,10 +466,13 @@ describe('codex desktop app launcher mode', () => {
       assert.deepEqual(capture.argv, [
         '-c',
         `openai_base_url="http://localhost:${port}/v1"`,
+        '-c',
+        `chatgpt_base_url="http://localhost:${port}/v1"`,
         'app',
         workspacePath,
       ]);
       assert.equal(capture.openaiBaseUrl, `http://localhost:${port}/v1`);
+      assert.equal(capture.chatgptBaseUrl, `http://localhost:${port}/v1`);
       assert.equal(capture.healthOk, true);
     } finally {
       fs.rmSync(fakeBin, { recursive: true, force: true });
@@ -917,6 +923,37 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(explorer.agentLabel, 'Codex Explorer');
     assert.ok(explorer.coreHash);
     assert.ok(explorer.b2Len > 0);
+  });
+
+  it('restores Codex prompt agent type from metadata sidecar instead of instruction text', async () => {
+    const sessionId = 'codex-system-prompt-restore-001';
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      instructions: 'Inspect the codebase and report findings.',
+      input: 'inspect prompt restore',
+    });
+
+    await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?trace=sysprompt-restore', {
+      session_id: sessionId,
+      'x-openai-subagent': 'worker',
+    });
+    await new Promise(r => setTimeout(r, 500));
+
+    await killAndWait(proxyChild);
+    proxyChild = spawnServer(['--port', String(proxyPort)], {
+      env: {
+        OPENAI_TEST_HOST: 'localhost',
+        OPENAI_TEST_PORT: String(mockPort),
+        OPENAI_TEST_PROTOCOL: 'http',
+      },
+    });
+    await waitForPort(proxyPort);
+    await new Promise(r => setTimeout(r, 500));
+
+    const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
+    const worker = data.versions.find(v => v.agentKey === 'worker' && v.b2Len === 'Inspect the codebase and report findings.'.length);
+    assert.ok(worker, 'expected restored Codex worker prompt version');
+    assert.equal(worker.agentLabel, 'Codex Worker');
   });
 });
 
@@ -1753,6 +1790,41 @@ describe('Proxy loop startup guard', () => {
     const proxyPort = await findFreePort();
     const proxyChild = spawnServer(['--port', String(proxyPort)], {
       env: { ANTHROPIC_BASE_URL: `http://localhost:${proxyPort}`, CCXRAY_ALLOW_UPSTREAM_LOOP: '1' },
+    });
+
+    try {
+      await waitForPort(proxyPort);
+      const health = await httpGet(proxyPort, '/_api/health');
+      assert.deepEqual(health, { ok: true });
+    } finally {
+      await killAndWait(proxyChild);
+    }
+  });
+
+  it('exits when CHATGPT_BASE_URL points back to itself (codex ChatGPT-auth)', async () => {
+    const proxyPort = await findFreePort();
+    const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort), 'codex'], 10000, {
+      CHATGPT_BASE_URL: `http://localhost:${proxyPort}/v1`,
+    });
+
+    assert.equal(code, 1);
+    assert.ok(stderr.includes('CHATGPT_BASE_URL points back to ccxray'), `Expected loop error, got: ${stderr}`);
+    assert.ok(stderr.includes('--allow-upstream-loop'), `Expected override hint, got: ${stderr}`);
+  });
+
+  it('does NOT exit when CHATGPT_BASE_URL is left at the built-in default (chatgpt.com)', async () => {
+    // Sanity check: built-in default must never self-loop.
+    const proxyPort = await findFreePort();
+
+    const stubBinDir = path.join(TEST_HOME, 'stub-bin-chatgpt-default');
+    fs.mkdirSync(stubBinDir, { recursive: true });
+    const stubCodex = path.join(stubBinDir, 'codex');
+    fs.writeFileSync(stubCodex, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+
+    const proxyChild = spawnServer(['--port', String(proxyPort), 'codex'], {
+      env: {
+        PATH: `${stubBinDir}${path.delimiter}${process.env.PATH}`,
+      },
     });
 
     try {

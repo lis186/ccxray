@@ -40,6 +40,8 @@ describe('agent provider registry', () => {
     assert.deepEqual(launch.args, [
       '-c',
       'openai_base_url="http://localhost:5577/v1"',
+      '-c',
+      'chatgpt_base_url="http://localhost:5577/v1"',
       'exec',
       'hello',
     ]);
@@ -57,6 +59,8 @@ describe('agent provider registry', () => {
     assert.deepEqual(launch.args, [
       '-c',
       'openai_base_url="http://localhost:5577/v1"',
+      '-c',
+      'chatgpt_base_url="http://localhost:5577/v1"',
       'app',
       '/repo',
     ]);

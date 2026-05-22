@@ -28,9 +28,16 @@ const AGENT_PROVIDERS = Object.freeze({
     upstream: 'openai',
     installHint: '  npm install -g @openai/codex',
     createLaunch({ port, args, env }) {
+      const proxyBaseUrl = `http://localhost:${port}/v1`;
       return {
         bin: 'codex',
-        args: ['-c', `openai_base_url="http://localhost:${port}/v1"`, ...args],
+        args: [
+          '-c',
+          `openai_base_url="${proxyBaseUrl}"`,
+          '-c',
+          `chatgpt_base_url="${proxyBaseUrl}"`,
+          ...args,
+        ],
         env: { ...env },
       };
     },

@@ -10,6 +10,7 @@ const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
 const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
+const { stripAuthParams } = require('./url-sanitize');
 
 // For title-generator subagent responses, extract the clean title from the
 // JSON payload and (when attribution succeeds) stamp it onto the parent
@@ -332,7 +333,7 @@ function forwardRequest(ctx) {
       reqId: id,
     });
     helpers.printSeparator();
-    console.log(`\x1b[36m📤 [${ts}]  ${ctx.attribPrefix}  ${clientReq.method} ${clientReq.url}\x1b[0m`);
+    console.log(`\x1b[36m📤 [${ts}]  ${ctx.attribPrefix}  ${clientReq.method} ${stripAuthParams(clientReq.url)}\x1b[0m`);
     console.log(helpers.summarizeRequest(parsedBody));
   }
 
@@ -345,7 +346,7 @@ function forwardRequest(ctx) {
   const tunnelAgent = getTunnelAgent(upstream);
   const proxyReq = transport.request({
     hostname: upstream.host, port: upstream.port,
-    path: config.joinUpstreamPath(upstream, clientReq.url), method: clientReq.method,
+    path: config.joinUpstreamPath(upstream, stripAuthParams(clientReq.url)), method: clientReq.method,
     headers: { ...fwdHeaders, 'content-length': bodyToSend.length },
     ...(tunnelAgent ? { agent: tunnelAgent } : {}),
   }, (proxyRes) => {
@@ -581,7 +582,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const currMsgCount = parsedBody?.messages?.length || 0;
     const thinkingStripped = computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody);
     const entry = {
-      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: ctx.clientReq.url,
+      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       provider: 'anthropic',
       agent: 'claude',
       req: parsedBody, res: events,
@@ -714,7 +715,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     const usage = response?.usage || null;
 
     const entry = {
-      id, ts: ctx.ts, sessionId: reqSessionId, method: ctx.clientReq.method, url: ctx.clientReq.url,
+      id, ts: ctx.ts, sessionId: reqSessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       provider: 'openai',
       agent: 'codex',
       req: parsedBody, res: events,
@@ -856,7 +857,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     const responseMetadata = buildResponseMetadata(provider, openAIResponse || resData, proxyRes);
     if (openAIEvents) responseMetadata.streaming = true;
     const entry = {
-      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: ctx.clientReq.url,
+      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       provider,
       agent: provider === 'openai' ? 'codex' : 'claude',
       req: parsedBody, res: resData,

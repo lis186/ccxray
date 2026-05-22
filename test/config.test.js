@@ -221,7 +221,12 @@ describe('provider-aware OpenAI upstream configuration', () => {
       providers: {
         messages: c.getProviderForRequest('/v1/messages'),
         responses: c.getProviderForRequest('/v1/responses'),
+        realtime: c.getProviderForRequest('/v1/realtime?model=gpt-realtime'),
         models: c.getProviderForRequest('/v1/models?client_version=0.125.0'),
+        chatgptCodexApps: c.getProviderForRequest('/v1/api/codex/apps'),
+        chatgptAnalytics: c.getProviderForRequest('/v1/codex/analytics-events/events'),
+        chatgptPlugins: c.getProviderForRequest('/v1/plugins/featured?platform=codex'),
+        chatgptConnectors: c.getProviderForRequest('/v1/connectors/directory/list?external_logos=true'),
       },
       chatgpt: {
         source: c.UPSTREAMS.openaiChatGPT.source,
@@ -235,6 +240,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
         responses: c.joinUpstreamPath(c.getUpstream('openai'), '/v1/responses'),
         completions: c.joinUpstreamPath(c.getUpstream('openai'), '/chat/completions'),
         chatgptResponses: c.joinUpstreamPath(c.getUpstreamForRequestAndHeaders('/v1/responses', {'chatgpt-account-id': 'acct'}), '/v1/responses'),
+        chatgptApps: c.joinUpstreamPath(c.getUpstreamForRequestAndHeaders('/v1/api/codex/apps'), '/v1/api/codex/apps'),
       },
     }));
   `;
@@ -258,7 +264,12 @@ describe('provider-aware OpenAI upstream configuration', () => {
     });
     assert.equal(result.providers.messages, 'anthropic');
     assert.equal(result.providers.responses, 'openai');
+    assert.equal(result.providers.realtime, 'openai');
     assert.equal(result.providers.models, 'openai');
+    assert.equal(result.providers.chatgptCodexApps, 'openai');
+    assert.equal(result.providers.chatgptAnalytics, 'openai');
+    assert.equal(result.providers.chatgptPlugins, 'openai');
+    assert.equal(result.providers.chatgptConnectors, 'openai');
     assert.deepEqual(result.chatgpt, {
       host: 'chatgpt.com',
       port: 443,
@@ -268,6 +279,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
       stripPathPrefix: '/v1',
     });
     assert.equal(result.paths.chatgptResponses, '/backend-api/codex/responses');
+    assert.equal(result.paths.chatgptApps, '/backend-api/codex/api/codex/apps');
   });
 
   it('OPENAI_BASE_URL overrides only the OpenAI upstream and preserves /v1 request paths', async () => {
@@ -298,6 +310,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
     assert.equal(result.chatgpt.source, 'CHATGPT_BASE_URL');
     assert.equal(result.chatgpt.basePath, '/backend-api/codex');
     assert.equal(result.paths.chatgptResponses, '/backend-api/codex/responses');
+    assert.equal(result.paths.chatgptApps, '/backend-api/codex/api/codex/apps');
   });
 
   it('OPENAI_TEST_* overrides OPENAI_BASE_URL', async () => {

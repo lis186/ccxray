@@ -137,7 +137,9 @@ function getUpstream(provider) {
 function getProviderForRequest(urlPath) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
+  if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
+  if (isChatGPTCodexPath(pathname)) return 'openai';
   return 'anthropic';
 }
 
@@ -145,7 +147,22 @@ function getUpstreamForRequest(urlPath) {
   return getUpstream(getProviderForRequest(urlPath));
 }
 
+function isChatGPTCodexPath(pathname) {
+  return pathname === '/v1/api/codex'
+    || pathname.startsWith('/v1/api/codex/')
+    || pathname === '/v1/codex'
+    || pathname.startsWith('/v1/codex/')
+    || pathname === '/v1/plugins'
+    || pathname.startsWith('/v1/plugins/')
+    || pathname === '/v1/connectors'
+    || pathname.startsWith('/v1/connectors/');
+}
+
 function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
+  const pathname = (urlPath || '').split('?')[0];
+  if (isChatGPTCodexPath(pathname)) {
+    return UPSTREAMS.openaiChatGPT;
+  }
   const upstream = getUpstreamForRequest(urlPath);
   if (upstream.provider === 'openai' && headers['chatgpt-account-id']) {
     return UPSTREAMS.openaiChatGPT;

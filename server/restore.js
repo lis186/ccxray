@@ -217,10 +217,19 @@ async function buildVersionIndex() {
       const b0 = isOpenAI ? '' : (sys[0]?.text || '');
       const b2 = isOpenAI ? (typeof sys === 'string' ? sys : JSON.stringify(sys, null, 2)) : (sys[2]?.text || '');
       const m = b0.match(/cc_version=(\S+?)[; ]/);
-      const { key: agentKey, label: agentLabel } = isOpenAI
-        ? extractPromptAgentType('openai', { instructions: b2 })
-        : extractAgentType(sys);
       const sysHash = filename.replace(/^sys_/, '').replace(/^openai_instructions_/, '').replace(/\.json$/, '');
+      let agentInfo = null;
+      if (isOpenAI) {
+        const meta = await config.storage.readShared(`openai_prompt_meta_${sysHash}.json`)
+          .then(JSON.parse)
+          .catch(() => null);
+        if (meta?.agentKey) {
+          agentInfo = { key: meta.agentKey, label: meta.agentLabel || meta.agentKey };
+        }
+      }
+      const { key: agentKey, label: agentLabel } = agentInfo || (isOpenAI
+        ? extractPromptAgentType('openai', { instructions: b2 })
+        : extractAgentType(sys));
       if (sysHash && agentKey) sysHashToAgentKey.set(sysHash, agentKey);
       if (b2.length >= (isOpenAI ? 1 : 500)) {
         const coreText = isOpenAI ? b2 : (splitB2IntoBlocks(b2).coreInstructions || '');
