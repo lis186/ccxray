@@ -92,6 +92,8 @@ function isAuthorized(req) {
   }
 }
 
+const CCXRAY_INTERNAL_HEADERS = new Set(['x-ccxray-auth', 'x-ccxray-bootstrap']);
+
 function buildWebSocketHeaders(clientHeaders, upstream) {
   const headers = {};
   const connectionTokens = String(clientHeaders.connection || '')
@@ -103,6 +105,7 @@ function buildWebSocketHeaders(clientHeaders, upstream) {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lower)) continue;
     if (WS_HANDSHAKE_HEADERS.has(lower)) continue;
+    if (CCXRAY_INTERNAL_HEADERS.has(lower)) continue;
     if (connectionTokens.includes(lower)) continue;
     if (lower === 'host') continue;
     headers[name] = value;
@@ -327,6 +330,11 @@ function handleWebSocketUpgrade(req, socket, head) {
     return true;
   }
 
+  const authClass = classifyUpstreamAuth(req.headers);
+  if (authClass === 'warn') {
+    console.warn('[ccxray] WebSocket upgrade without X-Ccxray-Auth header (warn-only, Phase 2.1 will enforce)');
+  }
+
   const id = helpers.timestamp();
   const ts = helpers.taipeiTime();
   const startTime = Date.now();
@@ -498,10 +506,26 @@ async function drainWebSocketProxy() {
   await Promise.allSettled([...pendingEntries]);
 }
 
+// JWT-shaped: "Bearer <header>.<payload>.<signature>" where header is base64url JSON
+function isJwtShaped(authHeader) {
+  if (!authHeader || typeof authHeader !== 'string') return false;
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  if (!token) return false;
+  const parts = token.split('.');
+  return parts.length === 3 && parts[0].length > 10;
+}
+
+function classifyUpstreamAuth(headers) {
+  if (headers['x-ccxray-auth']) return 'authed';
+  if (headers['chatgpt-account-id'] && isJwtShaped(headers.authorization)) return 'chatgpt-oauth';
+  return 'warn';
+}
+
 module.exports = {
   handleWebSocketUpgrade,
   buildWebSocketHeaders,
   isOpenAIWebSocket,
   normalizeCloseCode,
   drainWebSocketProxy,
+  classifyUpstreamAuth,
 };
