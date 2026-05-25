@@ -51,6 +51,15 @@ const MAX_QUEUE_BYTES = Number.isFinite(DEFAULT_MAX_QUEUE_BYTES) && DEFAULT_MAX_
 const OPENAI_WS_PATHS = new Set(['/v1/responses', '/v1/realtime']);
 const WS_CLOSE_REASON_MAX_BYTES = 120; // WS spec caps reason at 123 bytes; leave headroom.
 
+// Module-level state for graceful shutdown. `activeSessions` holds a
+// forceFinalize fn per upgrade that hasn't been finalized yet — the agent
+// dying can race the OS-driven WS close event, so on shutdown we force-finalize
+// any straggler. `pendingEntries` tracks each finalize's recordWebSocketEntry
+// promise so drainWebSocketProxy() can wait for the writes to be queued in
+// storage before storage.drain() runs.
+const activeSessions = new Set();
+const pendingEntries = new Set();
+
 function isUpgradeRequest(req) {
   return String(req.headers.upgrade || '').toLowerCase() === 'websocket';
 }
@@ -360,6 +369,8 @@ function handleWebSocketUpgrade(req, socket, head) {
     const upstreamBuffer = { queue: [], bufferedBytes: 0, maxBytes: MAX_QUEUE_BYTES };
     let finalized = false;
     let idleTimer = null;
+    const session = { forceFinalize: null };
+    activeSessions.add(session);
 
     function refreshIdleTimer() {
       clearTimeout(idleTimer);
@@ -374,11 +385,21 @@ function handleWebSocketUpgrade(req, socket, head) {
       if (finalized) return;
       finalized = true;
       clearTimeout(idleTimer);
+      activeSessions.delete(session);
       store.activeRequests[sessionId] = Math.max(0, (store.activeRequests[sessionId] || 1) - 1);
       if (store.sessionMeta[sessionId]) store.sessionMeta[sessionId].lastStopReason = null;
       broadcastSessionStatus(sessionId);
-      recordWebSocketEntry(ctx, result).catch(e => console.error('Record ws entry failed:', e.message));
+      const entryPromise = recordWebSocketEntry(ctx, result)
+        .catch(e => console.error('Record ws entry failed:', e.message));
+      pendingEntries.add(entryPromise);
+      entryPromise.finally(() => pendingEntries.delete(entryPromise));
     }
+
+    session.forceFinalize = () => {
+      if (finalized) return;
+      closeBoth(1001, 'proxy shutting down');
+      finalize({ status: 499, error: { message: 'ccxray shutdown before WebSocket closed' } });
+    };
 
     function closeBoth(code, reason) {
       const closeCode = normalizeCloseCode(code);
@@ -466,9 +487,21 @@ function handleWebSocketUpgrade(req, socket, head) {
   return true;
 }
 
+// Force-close any active WS sessions (so their finalize runs and
+// recordWebSocketEntry kicks off writes), then await all in-flight
+// recordWebSocketEntry promises. Storage.drain() should be called AFTER this
+// so the writes recordWebSocketEntry queued are also flushed.
+async function drainWebSocketProxy() {
+  for (const session of [...activeSessions]) {
+    try { session.forceFinalize(); } catch {}
+  }
+  await Promise.allSettled([...pendingEntries]);
+}
+
 module.exports = {
   handleWebSocketUpgrade,
   buildWebSocketHeaders,
   isOpenAIWebSocket,
   normalizeCloseCode,
+  drainWebSocketProxy,
 };

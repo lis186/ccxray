@@ -6,7 +6,9 @@ const { broadcastInterceptToggle, broadcastInterceptRemoved, broadcastSessionSta
 const { forwardRequest } = require('../forward');
 
 function handleInterceptRoutes(clientReq, clientRes) {
-  if (clientReq.url === '/_api/intercept/toggle' && clientReq.method === 'POST') {
+  const pathname = clientReq.url.split('?')[0];
+
+  if (pathname === '/_api/intercept/toggle' && clientReq.method === 'POST') {
     const chunks = []; clientReq.on('data', c => chunks.push(c));
     clientReq.on('end', () => {
       try {
@@ -23,7 +25,7 @@ function handleInterceptRoutes(clientReq, clientRes) {
     return true;
   }
 
-  const approveMatch = clientReq.url.match(/^\/_api\/intercept\/(.+)\/approve$/);
+  const approveMatch = pathname.match(/^\/_api\/intercept\/(.+)\/approve$/);
   if (approveMatch && clientReq.method === 'POST') {
     const reqId = decodeURIComponent(approveMatch[1]);
     const pending = store.pendingRequests.get(reqId);
@@ -48,7 +50,7 @@ function handleInterceptRoutes(clientReq, clientRes) {
     return true;
   }
 
-  const rejectMatch = clientReq.url.match(/^\/_api\/intercept\/(.+)\/reject$/);
+  const rejectMatch = pathname.match(/^\/_api\/intercept\/(.+)\/reject$/);
   if (rejectMatch && clientReq.method === 'POST') {
     const reqId = decodeURIComponent(rejectMatch[1]);
     const pending = store.pendingRequests.get(reqId);
@@ -70,7 +72,7 @@ function handleInterceptRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/intercept/timeout' && clientReq.method === 'POST') {
+  if (pathname === '/_api/intercept/timeout' && clientReq.method === 'POST') {
     const chunks = []; clientReq.on('data', c => chunks.push(c));
     clientReq.on('end', () => {
       try {

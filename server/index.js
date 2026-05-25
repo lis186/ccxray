@@ -18,7 +18,7 @@ const { authMiddleware } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
-const { handleWebSocketUpgrade } = require('./ws-proxy');
+const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const {
   getCodexRawSessionId,
   isOpenAISubagent,
@@ -221,6 +221,17 @@ const server = http.createServer((clientReq, clientRes) => {
     // Quota-check probes: forward to Anthropic (rate limit headers still captured)
     // but skip all logging, session tracking, and entry creation
     if (parsedBody && store.isQuotaCheck(parsedBody)) {
+      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
+      const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
+      forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
+      return;
+    }
+
+    // Codex platform RPC: forward but don't create dashboard entries. These
+    // are codex's internal startup polls (plugin lists, connectors, apps,
+    // usage) — not conversation data. Without this guard, codex 0.133+
+    // pollutes the timeline with ~30 entries before the first user prompt.
+    if (config.isCodexPlatformNoisePath(clientReq.url)) {
       const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
       const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
       forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
@@ -447,10 +458,25 @@ function spawnAgent(command, port, args, onExit) {
   process.on('SIGTERM', () => child.kill('SIGTERM'));
 }
 
+// Drain pending WS finalize promises and storage writes before process.exit.
+// Without this, codex (or the user) killing the agent races with async
+// fs.writeFile calls in ws-proxy/forward, leaving 0-byte _req.json/_res.json
+// for the WS upgrade entry. Bounded by a 5s safety timeout so a stuck write
+// can never block shutdown.
+async function gracefulExit(code) {
+  const deadline = new Promise(resolve => setTimeout(resolve, 5000));
+  const drain = (async () => {
+    try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
+    try { await config.storage.drain(); } catch (e) { console.error('Storage drain failed:', e.message); }
+  })();
+  await Promise.race([drain, deadline]);
+  process.exit(code);
+}
+
 function spawnStandaloneAgent(port, command, args) {
   spawnAgent(command, port, args, (code) => {
     server.close();
-    process.exit(code);
+    gracefulExit(code);
   });
 }
 
@@ -665,7 +691,14 @@ async function startServer() {
     hub.setHubPort(actualPort);
     hub.writeHubLock(actualPort, process.pid);
     hub.startDeadClientCheck();
-    const cleanup = () => { hub.deleteHubLock(); process.exit(0); };
+    hub.setOnShutdown(() => gracefulExit(0));
+    const cleanup = () => { hub.deleteHubLock(); gracefulExit(0); };
+    process.on('SIGTERM', cleanup);
+    process.on('SIGINT', cleanup);
+  } else if (!agentMode) {
+    // Standalone mode (dashboard only, no agent): drain on signal so any WS
+    // entries flush. Agent mode handles signals via the child exit path.
+    const cleanup = () => gracefulExit(0);
     process.on('SIGTERM', cleanup);
     process.on('SIGINT', cleanup);
   }

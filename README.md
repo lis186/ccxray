@@ -69,6 +69,23 @@ Connected clients (2):
 
 Use `--port` to opt out and run an independent server instead.
 
+## Codex support (Beta)
+
+```bash
+npx ccxray codex
+```
+
+Works for both API-key and ChatGPT-auth codex sessions. ChatGPT routing to `chatgpt.com/backend-api/codex` triggers automatically on codex's `chatgpt-account-id` header — no extra config. Codex's startup platform polls (plugin lists, connector directory, app metadata) are proxied but hidden from the dashboard so the timeline shows only conversation traffic.
+
+**Beta caveats:**
+- WebSocket transport (`/v1/responses`, `/v1/realtime`) captures connection-level metadata only: frame counts, byte counts, close status. Per-frame content is not decoded — codex turns show less detail in the dashboard than Claude turns do.
+- Token counts, model, and duration are not yet extracted from codex's telemetry payload; a follow-up will surface these.
+- Limited real-world testing compared to the Claude path.
+
+Env vars for tuning: `OPENAI_BASE_URL`, `CHATGPT_BASE_URL`, `CCXRAY_WS_IDLE_TIMEOUT_MS`, `CCXRAY_WS_MAX_QUEUE_BYTES`. Details in [CLAUDE.md](CLAUDE.md).
+
+File issues on [GitHub](https://github.com/lis186/ccxray/issues) — Beta means we want the rough edges reported.
+
 ## Features
 
 ### Timeline

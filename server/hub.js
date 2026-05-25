@@ -368,19 +368,21 @@ function getHubStatus() {
 // ── Hub route handler (mounted in server) ───────────────────────────
 
 function handleHubRoutes(clientReq, clientRes) {
-  if (clientReq.url === '/_api/health' && clientReq.method === 'GET') {
+  const pathname = clientReq.url.split('?')[0];
+
+  if (pathname === '/_api/health' && clientReq.method === 'GET') {
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ ok: true }));
     return true;
   }
 
-  if (clientReq.url === '/_api/hub/status' && clientReq.method === 'GET') {
+  if (pathname === '/_api/hub/status' && clientReq.method === 'GET') {
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify(getHubStatus()));
     return true;
   }
 
-  if (clientReq.url === '/_api/hub/register' && clientReq.method === 'POST') {
+  if (pathname === '/_api/hub/register' && clientReq.method === 'POST') {
     let body = '';
     clientReq.on('data', c => { body += c; });
     clientReq.on('end', () => {
@@ -398,7 +400,7 @@ function handleHubRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/hub/unregister' && clientReq.method === 'POST') {
+  if (pathname === '/_api/hub/unregister' && clientReq.method === 'POST') {
     let body = '';
     clientReq.on('data', c => { body += c; });
     clientReq.on('end', () => {

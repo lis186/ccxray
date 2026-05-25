@@ -3,7 +3,8 @@
 const store = require('../store');
 
 function handleSSERoute(clientReq, clientRes) {
-  if (clientReq.url !== '/_events') return false;
+  const pathname = clientReq.url.split('?')[0];
+  if (pathname !== '/_events') return false;
 
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream',
