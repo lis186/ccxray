@@ -34,7 +34,9 @@ function computeSettings() {
 }
 
 function handleApiRoutes(clientReq, clientRes) {
-  if (clientReq.url === '/_api/entries') {
+  const pathname = clientReq.url.split('?')[0];
+
+  if (pathname === '/_api/entries') {
     const entries = store.entries.map(summarizeEntry);
     const sessionTitles = Object.fromEntries(
       Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
@@ -45,7 +47,7 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.method === 'GET' && clientReq.url === '/_api/settings') {
+  if (clientReq.method === 'GET' && pathname === '/_api/settings') {
     const s = readSettings();
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ ...computeSettings(), statusLine: s.statusLine }));
@@ -113,7 +115,7 @@ function handleApiRoutes(clientReq, clientRes) {
   }
 
   // Full entry data (req + res) — lazy loaded
-  const entryMatch = clientReq.url.match(/^\/_api\/entry\/(.+)$/);
+  const entryMatch = pathname.match(/^\/_api\/entry\/(.+)$/);
   if (entryMatch) {
     const id = decodeURIComponent(entryMatch[1]);
     const entry = store.entries.find(e => e.id === id);
@@ -132,7 +134,7 @@ function handleApiRoutes(clientReq, clientRes) {
   }
 
   // Lazy tokenization endpoint
-  const tokMatch = clientReq.url.match(/^\/_api\/tokens\/(.+)$/);
+  const tokMatch = pathname.match(/^\/_api\/tokens\/(.+)$/);
   if (tokMatch) {
     const id = decodeURIComponent(tokMatch[1]);
     const entry = store.entries.find(e => e.id === id);
@@ -153,14 +155,14 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.method === 'GET' && clientReq.url === '/_api/stars') {
+  if (clientReq.method === 'GET' && pathname === '/_api/stars') {
     const s = readSettings();
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify(serializeStars(s)));
     return true;
   }
 
-  if (clientReq.method === 'POST' && clientReq.url === '/_api/stars') {
+  if (clientReq.method === 'POST' && pathname === '/_api/stars') {
     let body = '';
     clientReq.on('data', c => { body += c; });
     clientReq.on('end', () => {
@@ -200,7 +202,7 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.method === 'POST' && clientReq.url === '/_api/settings')
+  if (clientReq.method === 'POST' && pathname === '/_api/settings')
   {
     let body = '';
     clientReq.on('data', c => { body += c; });

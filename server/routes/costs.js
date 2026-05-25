@@ -16,7 +16,9 @@ function sendLoadingOrData(clientRes, dataFn) {
 }
 
 function handleCostRoutes(clientReq, clientRes) {
-  if (clientReq.url === '/_api/costs/current-block') {
+  const pathname = clientReq.url.split('?')[0];
+
+  if (pathname === '/_api/costs/current-block') {
     sendLoadingOrData(clientRes, data => {
       const now = Date.now();
       const activeBlock = data.blocks.find(b => b.isActive);
@@ -84,7 +86,7 @@ function handleCostRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/costs/daily') {
+  if (pathname === '/_api/costs/daily') {
     sendLoadingOrData(clientRes, data => {
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify(data.daily));
@@ -92,7 +94,7 @@ function handleCostRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/costs/monthly') {
+  if (pathname === '/_api/costs/monthly') {
     sendLoadingOrData(clientRes, data => {
       const now = new Date();
       const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -103,7 +105,7 @@ function handleCostRoutes(clientReq, clientRes) {
     return true;
   }
 
-  if (clientReq.url === '/_api/pricing') {
+  if (pathname === '/_api/pricing') {
     const result = {};
     for (const [model, rates] of Object.entries(pricingTable)) {
       result[model] = {
