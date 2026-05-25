@@ -14,7 +14,7 @@ const { warmUp: warmUpCosts } = require('./cost-budget');
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { authMiddleware } = require('./auth');
+const { dispatch } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
@@ -188,8 +188,8 @@ const server = http.createServer((clientReq, clientRes) => {
   // Placed before auth: these are local IPC endpoints, not user-facing
   if (hub.handleHubRoutes(clientReq, clientRes)) return;
 
-  // ── Auth check (enabled via AUTH_TOKEN env var) ──
-  if (!authMiddleware(clientReq, clientRes)) return;
+  // ── Auth check (Phase 1.2 dispatcher; legacy-compatible) ──
+  if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
 
   // ── Static files (HTML, CSS, JS) ──
   if (serveStatic(clientReq.url, clientRes)) return;

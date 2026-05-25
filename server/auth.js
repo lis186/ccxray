@@ -137,7 +137,90 @@ function compareSecret(provided, expected) {
   return crypto.timingSafeEqual(ph, eh) && provided.length === expected.length;
 }
 
-// ─── Legacy middleware (preserved verbatim until Phase 1.2) ──────────
+// ─── Two-domain dispatcher (Phase 1.2: warn-only) ────────────────────
+//
+// dispatch(req) classifies a request by path into upstream or dashboard
+// and returns the matching verifier. The verifiers are byte-identical
+// to authMiddleware on success/failure decisions — they internally
+// delegate to it. The only new behavior is X-Ccxray-Deprecation
+// response headers on requests that used credential forms slated for
+// removal in Phase 2:
+//   - dashboard: ?token= → deprecation (Bearer stays permanent)
+//   - upstream:  Bearer or ?token= → deprecation
+//
+// The headers are set via setHeader so they survive the downstream
+// handler's writeHead call; setHeader can never affect status code
+// or body, so this code is incapable of breaking a request that
+// authMiddleware would have allowed.
+
+const UPSTREAM_PREFIXES = ['/v1/'];
+
+function getPathname(url) {
+  const q = url.indexOf('?');
+  return q === -1 ? url : url.slice(0, q);
+}
+
+function classifyDomain(req) {
+  const pathname = getPathname(req.url || '');
+  for (const prefix of UPSTREAM_PREFIXES) {
+    if (pathname === prefix.slice(0, -1) || pathname.startsWith(prefix)) {
+      return 'upstream';
+    }
+  }
+  return 'dashboard';
+}
+
+function whichLegacyMechanism(req) {
+  // Re-derive the same checks authMiddleware did, so we know which
+  // legacy form succeeded. Returns 'bearer' | 'token-query' | null.
+  const token = process.env.AUTH_TOKEN;
+  if (!token) return null;
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader === `Bearer ${token}`) return 'bearer';
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (url.searchParams.get('token') === token) return 'token-query';
+  } catch {}
+  return null;
+}
+
+function setDeprecation(res, value) {
+  if (typeof res.setHeader === 'function') {
+    res.setHeader('X-Ccxray-Deprecation', value);
+  }
+}
+
+function verifyDashboard(req, res) {
+  const ok = authMiddleware(req, res);
+  if (!ok) return false;
+  // Bearer is permanent on the dashboard domain (errata §1.1). Only
+  // ?token= is flagged for removal here.
+  if (whichLegacyMechanism(req) === 'token-query') {
+    setDeprecation(res, 'token-query');
+  }
+  return true;
+}
+
+function verifyUpstream(req, res) {
+  const ok = authMiddleware(req, res);
+  if (!ok) return false;
+  const mech = whichLegacyMechanism(req);
+  if (mech === 'bearer') setDeprecation(res, 'bearer-on-upstream');
+  else if (mech === 'token-query') setDeprecation(res, 'token-query');
+  return true;
+}
+
+function dispatch(req) {
+  const domain = classifyDomain(req);
+  return {
+    domain,
+    verify: domain === 'upstream' ? verifyUpstream : verifyDashboard,
+  };
+}
+
+// ─── Legacy middleware (call site swapped in Phase 1.2; kept exported
+//     so test/auth.test.js stays green and downstream code can still
+//     import it through the deprecation window) ───────────────────────
 
 const AUTH_TOKEN = process.env.AUTH_TOKEN || null;
 
@@ -162,7 +245,13 @@ module.exports = {
   signCookie,
   verifyCookie,
   compareSecret,
-  // Legacy exports — unchanged until Phase 1.2 swaps callers over
+  // Phase 1.2 additions
+  dispatch,
+  verifyDashboard,
+  verifyUpstream,
+  // Legacy exports — call site swapped to dispatch() in Phase 1.2,
+  // but authMiddleware stays exported so test/auth.test.js and any
+  // downstream importer continue to work through the deprecation window.
   authMiddleware,
   AUTH_TOKEN,
 };
