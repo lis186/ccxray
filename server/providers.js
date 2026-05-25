@@ -5,6 +5,17 @@
 // ccxray proxy, so new launchers should be additive registry entries instead
 // of new command-specific branches in server/index.js.
 
+function getUpstreamToken() {
+  try {
+    const auth = require('./auth');
+    const secrets = auth.deriveSecrets(auth.getRootSecret());
+    return secrets.K_upstream.toString('base64url');
+  } catch (e) {
+    console.warn(`[ccxray] Could not derive X-Ccxray-Auth token: ${e.message}`);
+    return null;
+  }
+}
+
 const AGENT_PROVIDERS = Object.freeze({
   claude: Object.freeze({
     id: 'claude',
@@ -13,11 +24,16 @@ const AGENT_PROVIDERS = Object.freeze({
     upstream: 'anthropic',
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
-      return {
-        bin: 'claude',
-        args: [...args],
-        env: { ...env, ANTHROPIC_BASE_URL: `http://localhost:${port}` },
-      };
+      const launchEnv = { ...env, ANTHROPIC_BASE_URL: `http://localhost:${port}` };
+      const token = getUpstreamToken();
+      if (token) {
+        const authHeader = `X-Ccxray-Auth: ${token}`;
+        const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
+        launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
+          ? `${existing}, ${authHeader}`
+          : authHeader;
+      }
+      return { bin: 'claude', args: [...args], env: launchEnv };
     },
   }),
 
@@ -29,6 +45,23 @@ const AGENT_PROVIDERS = Object.freeze({
     installHint: '  npm install -g @openai/codex',
     createLaunch({ port, args, env }) {
       const proxyBaseUrl = `http://localhost:${port}/v1`;
+      const hasApiKey = Boolean(env.OPENAI_API_KEY);
+
+      if (hasApiKey) {
+        const token = getUpstreamToken();
+        if (token) {
+          const mpConfig = `model_providers.ccxray={name="ccxray", base_url="${proxyBaseUrl}", wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
+          return {
+            bin: 'codex',
+            args: ['-c', mpConfig, '-c', 'model_provider="ccxray"', ...args],
+            env: { ...env },
+          };
+        }
+        // Token derivation failed — fall through to legacy path with warning
+        // (warning already emitted by getUpstreamToken)
+      }
+
+      // ChatGPT-OAuth mode or token derivation failure: legacy path
       return {
         bin: 'codex',
         args: [
