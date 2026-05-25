@@ -49,6 +49,7 @@ if (noBrowser) process.argv.splice(process.argv.indexOf('--no-browser'), 1);
 const cliCommand = process.argv[2];
 const unknownCommand = cliCommand
   && cliCommand !== 'status'
+  && cliCommand !== 'open'
   && !cliCommand.startsWith('-')
   && !providers.isAgentProvider(cliCommand);
 if (unknownCommand) {
@@ -74,6 +75,7 @@ const { handleSSERoute } = require('./routes/sse');
 const { handleApiRoutes } = require('./routes/api');
 const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes } = require('./routes/costs');
+const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
 
 // ── Web UI: Static files from public/ ────────────────────────────────
@@ -187,6 +189,12 @@ const server = http.createServer((clientReq, clientRes) => {
   // ── Hub API (health, register, unregister, status) ──
   // Placed before auth: these are local IPC endpoints, not user-facing
   if (hub.handleHubRoutes(clientReq, clientRes)) return;
+
+  // ── Auth bootstrap routes (Phase 1.3) ──
+  // /_auth/redeem and /_auth/status run BEFORE the auth gate: redeem is
+  // the entry point that creates a cookie, status answers "am I
+  // authenticated?" without itself enforcing auth.
+  if (handleAuthRoutes(clientReq, clientRes)) return;
 
   // ── Auth check (Phase 1.2 dispatcher; legacy-compatible) ──
   if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
@@ -478,6 +486,60 @@ function spawnStandaloneAgent(port, command, args) {
     server.close();
     gracefulExit(code);
   });
+}
+
+// ── "open" subcommand (Phase 1.3) ──
+// Mints a one-time bootstrap URL via the running hub (or standalone server
+// on the default port) and prints it. The user opens that URL in a browser;
+// the inline script in index.html redeems the token and mints the session
+// cookie. Token is 60s TTL, single-use, only ever appears here and in the
+// browser's URL bar (the fragment never reaches a server log).
+if (process.argv[2] === 'open') {
+  const lock = hub.readHubLock();
+  const port = lock?.port || config.PORT;
+  const http = require('http');
+  const body = JSON.stringify({});
+  const reqOpts = {
+    hostname: 'localhost',
+    port,
+    path: '/_api/hub/bootstrap-token',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    timeout: 3000,
+  };
+  const req = http.request(reqOpts, res => {
+    let buf = '';
+    res.on('data', c => { buf += c; });
+    res.on('end', () => {
+      if (res.statusCode !== 200) {
+        console.error(`\x1b[31mFailed to mint bootstrap token: HTTP ${res.statusCode}\x1b[0m`);
+        process.exit(1);
+      }
+      let token;
+      try { token = JSON.parse(buf).token; } catch {}
+      if (!token) {
+        console.error('\x1b[31mHub did not return a token. Run "ccxray status" to check.\x1b[0m');
+        process.exit(1);
+      }
+      const url = `http://localhost:${port}/#k=${token}`;
+      console.log(url);
+      console.log('\x1b[90mOpen this URL in your browser (one-time, valid 60 seconds).\x1b[0m');
+      if (!process.env.BROWSER && process.env.BROWSER !== 'none' && !process.env.CI && !process.env.SSH_TTY) {
+        const { exec } = require('child_process');
+        const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+        exec(`${cmd} ${JSON.stringify(url)}`);
+      }
+      process.exit(0);
+    });
+  });
+  req.on('error', err => {
+    console.error(`\x1b[31mCannot reach ccxray on port ${port}: ${err.message}\x1b[0m`);
+    console.error('\x1b[90mStart ccxray first (e.g. "ccxray claude") and try again.\x1b[0m');
+    process.exit(1);
+  });
+  req.on('timeout', () => { req.destroy(); });
+  req.end(body);
+  return; // prevent falling through to startup
 }
 
 // ── "status" subcommand ──

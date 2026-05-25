@@ -14,6 +14,49 @@
   if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
 })();
 </script>
+<script>
+// Phase 1.3 — bootstrap auth flow (errata §1.1).
+// If location.hash carries a one-time #k= token, POST it to /_auth/redeem,
+// scrub the fragment, and reload. Otherwise probe /_auth/status; if it's
+// 401, surface a small banner pointing the user at `ccxray open`. With no
+// AUTH_TOKEN configured (the default), /_auth/status returns 200 and this
+// script has zero user-visible side effects.
+(function() {
+  var m = location.hash.match(/^#k=([A-Za-z0-9_-]{20,})$/);
+  if (m) {
+    var tok = m[1];
+    history.replaceState(null, '', location.pathname + location.search);
+    fetch('/_auth/redeem', {
+      method: 'POST',
+      headers: { 'X-Ccxray-Bootstrap': tok, 'Content-Type': 'application/json' },
+      body: '{}',
+      credentials: 'same-origin'
+    }).then(function(r) {
+      if (r.ok) { location.reload(); return; }
+      showNoSessionBanner('Bootstrap failed. Run `ccxray open` again.');
+    }).catch(function() {
+      showNoSessionBanner('Bootstrap failed (network). Try again.');
+    });
+    return;
+  }
+  fetch('/_auth/status', { credentials: 'same-origin' }).then(function(r) {
+    if (r.status === 401) showNoSessionBanner('No session. Run `ccxray open` in your terminal.');
+  }).catch(function() {});
+
+  function showNoSessionBanner(msg) {
+    function add() {
+      if (document.getElementById('ccxray-auth-banner')) return;
+      var b = document.createElement('div');
+      b.id = 'ccxray-auth-banner';
+      b.textContent = msg;
+      b.style.cssText = 'position:fixed;top:0;left:0;right:0;padding:8px;background:#dc2626;color:#fff;text-align:center;z-index:9999;font:13px monospace';
+      document.body.appendChild(b);
+    }
+    if (document.body) add();
+    else document.addEventListener('DOMContentLoaded', add);
+  }
+})();
+</script>
 <!--__PROXY_CONFIG__-->
 </head>
 <body>

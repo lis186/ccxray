@@ -367,12 +367,32 @@ function getHubStatus() {
 
 // ── Hub route handler (mounted in server) ───────────────────────────
 
+function _isLoopbackPeer(req) {
+  const addr = req.socket?.remoteAddress || '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
 function handleHubRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/health' && clientReq.method === 'GET') {
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ ok: true }));
+    return true;
+  }
+
+  // Phase 1.3: bootstrap-token. Restricted to loopback peers; the real
+  // peer-UID gate lands with Phase 2.3 when we move to a Unix socket.
+  if (pathname === '/_api/hub/bootstrap-token' && clientReq.method === 'POST') {
+    if (!_isLoopbackPeer(clientReq)) {
+      clientRes.writeHead(403, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: 'loopback_only' }));
+      return true;
+    }
+    const auth = require('./auth');
+    const token = auth.mintBootstrapToken();
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({ token }));
     return true;
   }
 

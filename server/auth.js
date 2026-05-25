@@ -190,11 +190,171 @@ function setDeprecation(res, value) {
   }
 }
 
+// ─── Phase 1.3: cookie path + bootstrap flow ─────────────────────────
+
+const ALLOWED_HOSTS = new Set(); // populated lazily from req.headers.host
+const COOKIE_TTL_SECONDS = 24 * 60 * 60; // 24h per "最小開發" decision
+const BOOTSTRAP_TTL_MS = 60 * 1000;
+const BOOTSTRAP_MAX_PENDING = 8;
+
+// Module-level state. Cleared whenever the module is re-required (tests do
+// this via delete require.cache).
+const pendingBootstraps = new Map(); // hashHex → expireEpochMs
+let _cachedSecrets = null;
+
+function getSecrets() {
+  if (_cachedSecrets) return _cachedSecrets;
+  _cachedSecrets = deriveSecrets(getRootSecret());
+  return _cachedSecrets;
+}
+
+function _hashBootstrap(tok) {
+  const { K_bootstrap } = getSecrets();
+  return crypto.createHmac('sha256', K_bootstrap).update(tok, 'utf8').digest('hex');
+}
+
+function _gcBootstraps(now = Date.now()) {
+  for (const [k, exp] of pendingBootstraps) if (exp < now) pendingBootstraps.delete(k);
+}
+
+function mintBootstrapToken() {
+  _gcBootstraps();
+  // Cap the pending set so a runaway minter can't grow it unbounded.
+  while (pendingBootstraps.size >= BOOTSTRAP_MAX_PENDING) {
+    // Drop oldest by insertion order (Map preserves it).
+    const oldest = pendingBootstraps.keys().next().value;
+    pendingBootstraps.delete(oldest);
+  }
+  const tok = crypto.randomBytes(24).toString('base64url');
+  pendingBootstraps.set(_hashBootstrap(tok), Date.now() + BOOTSTRAP_TTL_MS);
+  return tok;
+}
+
+function _isAllowedHost(host) {
+  if (!host) return false;
+  // Phase 1.3 is permissive: any localhost/loopback host is allowed. Phase
+  // 2.2 will tighten this with an explicit allowlist + CCXRAY_PUBLIC_ORIGINS.
+  if (host.startsWith('localhost:') || host === 'localhost') return true;
+  if (host.startsWith('127.0.0.1:') || host === '127.0.0.1') return true;
+  if (host.startsWith('[::1]:') || host === '[::1]') return true;
+  return false;
+}
+
+function _passesCsrfGate(req) {
+  const sfs = req.headers['sec-fetch-site'];
+  if (sfs !== undefined) {
+    return sfs === 'same-origin' || sfs === 'none';
+  }
+  // Older browser / non-browser fallback: require Origin to match Host.
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  let u;
+  try { u = new URL(origin); } catch { return false; }
+  return _isAllowedHost(u.host);
+}
+
+function parseCookie(raw, name) {
+  if (typeof raw !== 'string') return null;
+  for (const part of raw.split(';')) {
+    const trimmed = part.trim();
+    const eq = trimmed.indexOf('=');
+    if (eq <= 0) continue;
+    if (trimmed.slice(0, eq) === name) return trimmed.slice(eq + 1);
+  }
+  return null;
+}
+
+function _readSessionCookie(req) {
+  return parseCookie(req.headers.cookie, 'ccxray_s');
+}
+
+function _signSessionCookie() {
+  const { K_session } = getSecrets();
+  const payload = {
+    v: 1,
+    n: crypto.randomBytes(12).toString('base64url'),
+    exp: Math.floor(Date.now() / 1000) + COOKIE_TTL_SECONDS,
+  };
+  return signCookie(payload, K_session);
+}
+
+function _verifySessionCookieValue(value) {
+  if (!value) return null;
+  const { K_session } = getSecrets();
+  return verifyCookie(value, K_session);
+}
+
+function _send(res, code, body, contentType = 'application/json') {
+  res.writeHead(code, { 'Content-Type': contentType });
+  res.end(body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body)));
+}
+
+function redeemBootstrap(req, res) {
+  // Drain the body (we don't read it — it's required for POST and that's all).
+  let drained = false;
+  const finish = (code) => {
+    if (drained) return;
+    drained = true;
+    if (code === 204) {
+      const setCookie = `ccxray_s=${_signSessionCookie()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${COOKIE_TTL_SECONDS}`;
+      res.setHeader('Set-Cookie', setCookie);
+      res.writeHead(204);
+      res.end();
+    } else if (code === 401) {
+      _send(res, 401, { error: 'invalid_bootstrap' });
+    } else if (code === 403) {
+      _send(res, 403, { error: 'csrf' });
+    }
+  };
+
+  req.on('data', () => {});
+  req.on('end', () => {
+    const tok = req.headers['x-ccxray-bootstrap'];
+    if (!tok) return finish(401);
+    if (!_passesCsrfGate(req)) return finish(403);
+
+    _gcBootstraps();
+    const hash = _hashBootstrap(tok);
+    if (!pendingBootstraps.has(hash)) return finish(401);
+    pendingBootstraps.delete(hash); // single-use
+    finish(204);
+  });
+}
+
+function _isDashboardAuthenticated(req) {
+  // 1. Cookie path — fastest if present and valid.
+  const cookieValue = _readSessionCookie(req);
+  if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
+  // 2. Bearer / ?token= path via legacy authMiddleware.
+  //    We can't call authMiddleware directly because it writes 401 on miss;
+  //    instead replicate its accept checks without the side effect.
+  if (!AUTH_TOKEN) return true;
+  const authHeader = req.headers['authorization'] || '';
+  if (authHeader === `Bearer ${AUTH_TOKEN}`) return true;
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    if (url.searchParams.get('token') === AUTH_TOKEN) return true;
+  } catch {}
+  return false;
+}
+
+function authStatus(req, res) {
+  if (_isDashboardAuthenticated(req)) {
+    _send(res, 200, { ok: true });
+  } else {
+    _send(res, 401, { error: 'no_session' });
+  }
+}
+
 function verifyDashboard(req, res) {
+  // Cookie path first — succeeds silently with no deprecation header.
+  const cookieValue = _readSessionCookie(req);
+  if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
+
+  // Fall through to legacy authMiddleware (byte-identical Phase 1.2 behavior
+  // for callers that never used the cookie path).
   const ok = authMiddleware(req, res);
   if (!ok) return false;
-  // Bearer is permanent on the dashboard domain (errata §1.1). Only
-  // ?token= is flagged for removal here.
   if (whichLegacyMechanism(req) === 'token-query') {
     setDeprecation(res, 'token-query');
   }
@@ -249,6 +409,11 @@ module.exports = {
   dispatch,
   verifyDashboard,
   verifyUpstream,
+  // Phase 1.3 additions
+  mintBootstrapToken,
+  redeemBootstrap,
+  authStatus,
+  parseCookie,
   // Legacy exports — call site swapped to dispatch() in Phase 1.2,
   // but authMiddleware stays exported so test/auth.test.js and any
   // downstream importer continue to work through the deprecation window.
