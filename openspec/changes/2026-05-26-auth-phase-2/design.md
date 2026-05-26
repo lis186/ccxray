@@ -78,9 +78,15 @@ PR description + CHANGELOG note：「Hub mode requires Unix socket (macOS/Linux)
 ## Risks / Trade-offs
 
 - **2.2 是 breaking change**：現有 `curl http://localhost:5577/v1/messages` without auth 會 401。Mitigation: CHANGELOG + version bump + `CCXRAY_LOOPBACK_NO_AUTH=1` escape hatch。
-- **Socket stale file detection**：Hub crash 留下 `hub.sock` 但無 process。Mitigation: startup probe (connect attempt with 1s timeout → ECONNREFUSED or timeout = stale → unlink)。
+- **Socket stale file detection**：Hub crash 留下 `hub.sock` 但無 process。Mitigation: startup probe (connect attempt with 1s timeout → ECONNREFUSED or timeout = stale → unlink)。額外防禦：lockfile pid dead + socket file exists → 直接 unlink（不 probe）。Lockfile 不存在但 socket file 存在 → orphan file，直接 unlink。
 - **Node.js `chmod` on socket fd**：Some BSDs reject `fchmod` on socket fd。Mitigation: `chmod` on path after `listen()` completes。
 - **authMiddleware / _isDashboardAuthenticated 重複**：Phase 2.2 extract shared `_matchesLegacyToken(req)` helper（per Phase 1 review O1）。
+- **Socket framing partial read**：TCP stream 不保證一次 `data` event = 一個完整 JSON line。Server 和 client 都必須 buffer until `\n`。
+- **`ensureHubDir` 權限不修正**：`mkdirSync({recursive:true, mode:0o700})` 不改既有目錄權限。Mitigation: hub startup 時 `chmodSync(HUB_DIR, 0o700)` 強制修正。
+- **Socket listen timing vs lockfile**：`writeHubLock` 必須在 socket listen 成功之後才寫，否則 client 讀到 lockfile 但 socket 還沒 ready → ECONNREFUSED。
+- **Windows hub mode**：`net.createServer().listen(unixPath)` 在 Windows 走 Named Pipe 語法，`chmod` 無效。Hub mode 在 Windows 必須整個 fallback to standalone（不能只跳 socket）。
+- **410 UX for old clients**：舊版 ccxray 不認 `sockPath`，fallback HTTP → 410。Response body 應含 migration hint。
+- **registerClient signature change**：所有 caller（含 `startHubMonitor` recovery callback）必須傳 lock object，不能傳 port number。Recovery callback 在 `.catch(() => {})` 裡，silent failure 不會被測試抓到。
 
 ## Migration Plan
 
