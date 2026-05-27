@@ -335,11 +335,17 @@ describe('checkHubHealth', () => {
 describe('hub fork and readiness', () => {
   let hubPid = null;
 
-  after(() => {
+  after(async () => {
     if (hubPid) {
       try { process.kill(hubPid, 'SIGTERM'); } catch {}
+      // Wait for forked hub to fully exit (it unlinks socket on shutdown)
+      await new Promise(r => {
+        const check = () => hub.isPidAlive(hubPid) ? setTimeout(check, 100) : r();
+        check();
+      });
     }
     hub.deleteHubLock();
+    try { fs.unlinkSync(hub.SOCK_PATH); } catch {}
   });
 
   it('forkHub + waitForHubReady produces a lockfile', async () => {
@@ -370,6 +376,7 @@ describe('register/unregister via socket', () => {
 
   before(async () => {
     clearAllClients();
+    await hub.cleanupStaleSocket();
     sockSrv = await hub.createHubSocket();
   });
 
@@ -407,6 +414,7 @@ describe('firstClient flag', () => {
 
   before(async () => {
     clearAllClients();
+    await hub.cleanupStaleSocket();
     sockSrv = await hub.createHubSocket();
   });
 
@@ -527,6 +535,7 @@ describe('firstClient on idle cycle via socket', () => {
 
   before(async () => {
     clearAllClients();
+    await hub.cleanupStaleSocket();
     sockSrv = await hub.createHubSocket();
   });
 

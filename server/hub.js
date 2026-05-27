@@ -298,8 +298,6 @@ function cleanupStaleSocket() {
 }
 
 function createHubSocket() {
-  // Unlink any leftover socket file to avoid EADDRINUSE
-  try { fs.unlinkSync(SOCK_PATH); } catch {}
   return new Promise((resolve, reject) => {
     const srv = net.createServer(socket => {
       let buf = '';
