@@ -212,11 +212,16 @@ const server = http.createServer((clientReq, clientRes) => {
   // authenticated?" without itself enforcing auth.
   if (handleAuthRoutes(clientReq, clientRes)) return;
 
-  // ── Auth check (Phase 1.2 dispatcher; legacy-compatible) ──
-  if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
-
   // ── Static files (HTML, CSS, JS) ──
+  // Served BEFORE the auth gate (Phase 2.3): the shell + client assets carry
+  // no user data, and the dashboard now enforces auth — so the HTML must stay
+  // reachable without a cookie, otherwise the inline bootstrap script (redeem
+  // #k= / probe /_auth/status) can never run and `ccxray open` can't mint the
+  // first cookie. Conversation data lives behind the gate (/_api/*, /_events).
   if (serveStatic(clientReq.url, clientRes)) return;
+
+  // ── Auth check (Phase 1.2 dispatcher; Phase 2.3 enforce) ──
+  if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
 
   // ── SSE ──
   if (handleSSERoute(clientReq, clientRes)) return;

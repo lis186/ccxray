@@ -192,11 +192,11 @@ describe('/_auth/redeem — rejection cases', () => {
 describe('/_auth/status — probe endpoint for inline browser script', () => {
   beforeEach(() => { delete process.env.AUTH_TOKEN; });
 
-  it('returns 200 when no AUTH_TOKEN configured (ephemeral mode allows)', () => {
+  it('returns 401 when no AUTH_TOKEN configured and no credential (ephemeral now enforces)', () => {
     const auth = loadAuthFresh();
     const { req, res } = mockReqRes({ method: 'GET', url: '/_auth/status' });
     auth.authStatus(req, res);
-    assert.equal(res.statusCode, 200);
+    assert.equal(res.statusCode, 401);
   });
 
   it('returns 401 with AUTH_TOKEN configured and no credentials', () => {

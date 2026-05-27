@@ -321,20 +321,22 @@ function redeemBootstrap(req, res) {
   });
 }
 
+// Single source of truth for "is this dashboard request authenticated?" —
+// pure boolean, no side effects. Shared by verifyDashboard (the gate) and
+// authStatus (the /_auth/status browser probe) so the two never disagree.
+//
+// Phase 2.3 enforce: allow-all is gone, including ephemeral mode with no
+// credential. Accepts (in order) the loopback escape hatch, a valid session
+// cookie, a valid X-Ccxray-Auth (base64url K_upstream — lets scripts/CI reach
+// /_api/* without the bootstrap dance), or a legacy Bearer/?token= match.
+// 'chatgpt-oauth' is deliberately NOT accepted here: codex markers are not a
+// dashboard credential.
 function _isDashboardAuthenticated(req) {
-  // 1. Cookie path — fastest if present and valid.
+  if (isLoopbackBypass(req)) return true;
   const cookieValue = _readSessionCookie(req);
   if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
-  // 2. Bearer / ?token= path via legacy authMiddleware.
-  //    We can't call authMiddleware directly because it writes 401 on miss;
-  //    instead replicate its accept checks without the side effect.
-  if (!AUTH_TOKEN) return true;
-  const authHeader = req.headers['authorization'] || '';
-  if (authHeader === `Bearer ${AUTH_TOKEN}`) return true;
-  try {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    if (url.searchParams.get('token') === AUTH_TOKEN) return true;
-  } catch {}
+  if (verifyUpstreamCredential(req.headers) === 'ok') return true;
+  if (whichLegacyMechanism(req)) return true; // Bearer or ?token= (AUTH_TOKEN-gated)
   return false;
 }
 
@@ -347,17 +349,17 @@ function authStatus(req, res) {
 }
 
 function verifyDashboard(req, res) {
-  // Cookie path first — succeeds silently with no deprecation header.
-  const cookieValue = _readSessionCookie(req);
-  if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
-
-  // Fall through to legacy authMiddleware (byte-identical Phase 1.2 behavior
-  // for callers that never used the cookie path).
-  const ok = authMiddleware(req, res);
-  if (!ok) return false;
-  if (whichLegacyMechanism(req) === 'token-query') {
-    setDeprecation(res, 'token-query');
+  if (!_isDashboardAuthenticated(req)) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'unauthorized',
+      message: 'Dashboard requires a session cookie — run: ccxray open',
+    }));
+    return false;
   }
+  // Legacy ?token= still works but is on the deprecation path (removed in
+  // Phase 3). Bearer is permanent and gets no deprecation header.
+  if (whichLegacyMechanism(req) === 'token-query') setDeprecation(res, 'token-query');
   return true;
 }
 
