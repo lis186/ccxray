@@ -282,9 +282,10 @@ describe('orphan hub probe', () => {
     const result = await hub.discoverHub(5577);
     assert.ok(result, 'should find orphan hub via socket');
     assert.equal(result.pid, process.pid);
-    // lockfile should be reconstructed
+    // lockfile should be reconstructed with sockPath (P1 regression)
     const lock = hub.readHubLock();
     assert.ok(lock, 'lockfile should be reconstructed');
+    assert.equal(lock.sockPath, hub.SOCK_PATH, 'recovered lockfile must include sockPath');
   });
 
   it('returns null when no socket and probed port has no server', async () => {

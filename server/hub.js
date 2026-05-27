@@ -135,7 +135,7 @@ async function discoverHub(defaultPort) {
     try {
       const res = await hubSocketRequest(SOCK_PATH, { cmd: 'status' }, 2000);
       if (res && res.app === 'ccxray' && res.pid && isPidAlive(res.pid)) {
-        const recovered = writeHubLock(res.port, res.pid, res.version);
+        const recovered = writeHubLock(res.port, res.pid, res.version, SOCK_PATH);
         return recovered;
       }
     } catch {}
