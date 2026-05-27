@@ -105,32 +105,26 @@ describe('verifyUpstreamCredential — shared upstream auth taxonomy (2.2)', () 
     });
   });
 
-  describe('CCXRAY_LOOPBACK_NO_AUTH escape hatch (2.2, pulled forward from 2.3)', () => {
-    it('flag "1" → "ok" even with no credential', () => {
+  describe('CCXRAY_LOOPBACK_NO_AUTH — hatch moved out of the taxonomy (2.3)', () => {
+    // 2.3 reworked the escape hatch to be loopback-guarded. The env flag is no
+    // longer honored here: verifyUpstreamCredential is pure header taxonomy with
+    // no access to req.socket. The bypass now lives in the gate functions
+    // (verifyUpstream / isAuthorized / verifyDashboard) via isLoopbackBypass(req).
+    it('flag "1" does NOT rescue a credential-less request → still "reject"', () => {
       const auth = loadAuth({ token: 'sec1' });
       process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
-      try {
-        assert.equal(auth.verifyUpstreamCredential({}), 'ok');
-      } finally {
-        delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
-      }
-    });
-
-    it('flag "1" → "ok" even with a forged X-Ccxray-Auth', () => {
-      const auth = loadAuth({ token: 'sec1' });
-      process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
-      try {
-        assert.equal(auth.verifyUpstreamCredential({ 'x-ccxray-auth': 'forged' }), 'ok');
-      } finally {
-        delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
-      }
-    });
-
-    it('flag not exactly "1" (e.g. "0") → does not bypass', () => {
-      const auth = loadAuth({ token: 'sec1' });
-      process.env.CCXRAY_LOOPBACK_NO_AUTH = '0';
       try {
         assert.equal(auth.verifyUpstreamCredential({}), 'reject');
+      } finally {
+        delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+      }
+    });
+
+    it('flag "1" does NOT rescue a forged X-Ccxray-Auth → still "reject"', () => {
+      const auth = loadAuth({ token: 'sec1' });
+      process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+      try {
+        assert.equal(auth.verifyUpstreamCredential({ 'x-ccxray-auth': 'forged' }), 'reject');
       } finally {
         delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
       }

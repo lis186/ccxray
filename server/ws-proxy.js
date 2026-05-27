@@ -5,7 +5,7 @@ const config = require('./config');
 const store = require('./store');
 const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
-const { verifyUpstreamCredential } = require('./auth');
+const { verifyUpstreamCredential, isLoopbackBypass } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
 const {
   detectOpenAISession,
@@ -81,6 +81,8 @@ function writeSocketResponse(socket, statusCode, reason) {
 }
 
 function isAuthorized(req) {
+  // Phase 2.3: loopback-guarded escape hatch (design 決策 7).
+  if (isLoopbackBypass(req)) return true;
   // Phase 2.2: same upstream gate as the HTTP path — a valid X-Ccxray-Auth or
   // the ChatGPT-OAuth carve-out; everything else is rejected.
   return verifyUpstreamCredential(req.headers) !== 'reject';

@@ -361,6 +361,30 @@ function verifyDashboard(req, res) {
   return true;
 }
 
+// ─── Loopback-guarded escape hatch (Phase 2.3, design 決策 7) ─────────
+//
+// CCXRAY_LOOPBACK_NO_AUTH=1 disables the auth gate, but only for loopback
+// peers. ccxray binds 0.0.0.0, so a blunt header-only bypass (as shipped in
+// 2.2) would expose /v1/* and the dashboard to the whole LAN the moment the
+// flag is set. The check lives in the gate functions (verifyUpstream, WS
+// isAuthorized, verifyDashboard) because they hold req.socket; the taxonomy
+// helper verifyUpstreamCredential(headers) cannot see the peer address.
+//
+// Residual gap: a same-host reverse proxy presents remoteAddress = 127.0.0.1,
+// defeating the guard. That needs double opt-in (proxy + flag) and the startup
+// banner warns regardless — documented, not closed (errata §5).
+
+const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+function isLoopbackAddress(addr) {
+  return typeof addr === 'string' && LOOPBACK_ADDRESSES.has(addr);
+}
+
+function isLoopbackBypass(req) {
+  if (process.env.CCXRAY_LOOPBACK_NO_AUTH !== '1') return false;
+  return isLoopbackAddress(req && req.socket && req.socket.remoteAddress);
+}
+
 // ─── Upstream credential taxonomy (Phase 2.2) ────────────────────────
 //
 // Single source of truth for "is this /v1/* request allowed upstream?",
@@ -382,11 +406,9 @@ function isJwtShaped(authHeader) {
 }
 
 function verifyUpstreamCredential(headers) {
-  // Opt-in escape hatch (CHANGELOG-documented). Blunt bypass with no
-  // loopback-IP check — that check is theater behind a same-host reverse
-  // proxy (errata §5); the loud startup banner is the real safeguard.
-  if (process.env.CCXRAY_LOOPBACK_NO_AUTH === '1') return 'ok';
-
+  // Pure header taxonomy: no env-flag or peer-address awareness. The
+  // CCXRAY_LOOPBACK_NO_AUTH escape hatch is enforced by the gate functions
+  // (isLoopbackBypass), which alone can see req.socket.remoteAddress.
   const headerVal = headers['x-ccxray-auth'];
   if (headerVal) {
     // Header present → it must be the real K_upstream. A forged value rejects
@@ -401,6 +423,8 @@ function verifyUpstreamCredential(headers) {
 }
 
 function verifyUpstream(req, res) {
+  // Phase 2.3: loopback-guarded escape hatch (design 決策 7).
+  if (isLoopbackBypass(req)) return true;
   // Phase 2.2: enforce. Only X-Ccxray-Auth (or the ChatGPT-OAuth carve-out)
   // is accepted upstream — legacy Bearer/?token= no longer pass here.
   if (verifyUpstreamCredential(req.headers) !== 'reject') return true;
@@ -454,6 +478,8 @@ module.exports = {
   // Phase 2.2: shared upstream credential taxonomy (wired into verifyUpstream
   // in 2.2b and ws-proxy isAuthorized in 2.2c).
   verifyUpstreamCredential,
+  // Phase 2.3: loopback-guarded escape hatch, shared by all three gates.
+  isLoopbackBypass,
   // Phase 1.3 additions
   mintBootstrapToken,
   redeemBootstrap,

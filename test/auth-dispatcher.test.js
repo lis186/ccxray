@@ -25,9 +25,12 @@ function upstreamTokenFor(auth) {
   return auth.deriveSecrets(auth.getRootSecret()).K_upstream.toString('base64url');
 }
 
-function mockReqRes(headers = {}, url = '/') {
+function mockReqRes(headers = {}, url = '/', remoteAddress) {
   const setHeaderCalls = {};
   const req = { headers, url };
+  // Only attach a socket when a peer address is supplied, so existing callers
+  // (socket undefined) exercise the "no req.socket" defensive path.
+  if (remoteAddress !== undefined) req.socket = { remoteAddress };
   const res = {
     statusCode: null,
     body: null,
@@ -205,6 +208,76 @@ describe('verifyUpstream — Phase 2.2 enforcement (X-Ccxray-Auth required, lega
     const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: jwt }, '/v1/responses');
     assert.equal(auth.verifyUpstream(req, res), true);
     assert.equal(res.writeHeadCalled, false);
+  });
+});
+
+describe('isLoopbackBypass — loopback-guarded escape hatch (2.3, design 決策 7)', () => {
+  function check(req) {
+    const auth = loadAuthWith('sec1');
+    return auth.isLoopbackBypass(req);
+  }
+
+  it('flag unset → false even from a loopback peer', () => {
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    assert.equal(check({ socket: { remoteAddress: '127.0.0.1' } }), false);
+  });
+
+  it('flag "1" + 127.0.0.1 → true', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try { assert.equal(check({ socket: { remoteAddress: '127.0.0.1' } }), true); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "1" + ::1 (IPv6 loopback) → true', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try { assert.equal(check({ socket: { remoteAddress: '::1' } }), true); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "1" + ::ffff:127.0.0.1 (IPv4-mapped) → true', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try { assert.equal(check({ socket: { remoteAddress: '::ffff:127.0.0.1' } }), true); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "1" + non-loopback LAN address → false (4.10)', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try { assert.equal(check({ socket: { remoteAddress: '192.168.1.50' } }), false); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "0" + loopback → false (only exact "1" bypasses)', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '0';
+    try { assert.equal(check({ socket: { remoteAddress: '127.0.0.1' } }), false); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "1" + missing socket → false (defensive)', () => {
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try { assert.equal(check({}), false); }
+    finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+});
+
+describe('verifyUpstream — loopback-guarded hatch wiring (2.3)', () => {
+  it('flag "1" + loopback peer + no credential → allowed (4.9)', () => {
+    const auth = loadAuthWith('sec1');
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try {
+      const { req, res } = mockReqRes({}, '/v1/messages', '127.0.0.1');
+      assert.equal(auth.verifyUpstream(req, res), true);
+      assert.equal(res.writeHeadCalled, false);
+    } finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+
+  it('flag "1" + non-loopback peer + no credential → 401 (4.10)', () => {
+    const auth = loadAuthWith('sec1');
+    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
+    try {
+      const { req, res } = mockReqRes({}, '/v1/messages', '192.168.1.50');
+      assert.equal(auth.verifyUpstream(req, res), false);
+      assert.equal(res.statusCode, 401);
+    } finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
   });
 });
 
