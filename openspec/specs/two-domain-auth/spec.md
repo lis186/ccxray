@@ -120,6 +120,11 @@ When `AUTH_TOKEN` is unset, ccxray SHALL default to ephemeral mode (auth enforce
 - **WHEN** `CCXRAY_LOOPBACK_NO_AUTH=1` is set
 - **THEN** loopback requests SHALL be allowed without authentication, with a startup warning banner
 
+#### Scenario: Non-loopback request with the flag set
+- **WHEN** `CCXRAY_LOOPBACK_NO_AUTH=1` is set AND a request arrives from a non-loopback `remoteAddress`
+- **THEN** authentication SHALL still be required (the bypass is loopback-scoped, checked at the gate via `req.socket.remoteAddress`)
+- **NOTE** ccxray binds all interfaces (`0.0.0.0`), so the guard limits a set flag to local-only. A same-host reverse proxy presents `remoteAddress = 127.0.0.1`, which defeats the guard — documented, not closed (design 決策 7).
+
 ### Requirement: WebSocket upgrade auth gate
 WebSocket upgrades on `/v1/responses` and `/v1/realtime` SHALL be subject to upstream auth. Phase 1: warn-only. Phase 2: reject without valid credential.
 

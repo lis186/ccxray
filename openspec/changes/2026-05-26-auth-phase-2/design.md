@@ -71,15 +71,21 @@ function verifyUpstream(req, res) {
 }
 ```
 
-### 決策 5：Version bump timing（per reviewer O5）
+### 決策 5：Version bump timing（revised 2026-05-27 — bundle 2.2 + 2.3）
 
-- 2.1 (socket) = version 1.x（non-breaking for external callers；hub IPC is internal）
-- 2.2 (enforcement) = version **2.0.0**（breaking：reject unauthenticated upstream）
-- 2.3 (ephemeral) = version 2.1.0（additive enforcement on dashboard side）
+- 2.1 (socket) = non-breaking（hub IPC is internal；no standalone version bump）
+- **2.2 + 2.3 ship together as a single `2.0.0` breaking release.** Rationale: 2.2 alone (upstream enforce) is pure restriction with no user-visible benefit; the felt value — dashboard now requires `ccxray open`, protecting recorded conversations (which on a `0.0.0.0`-bound proxy are currently LAN-readable) — lands in 2.3. Requiring `ccxray open` is itself a breaking UX change, so it belongs in the major bump, not an "additive 2.1.0". Bundling spends the upgrade-friction budget once.
+- (superseded) ~~2.3 = version 2.1.0~~
 
 ### 決策 6：Windows fallback（per reviewer O4）
 
 PR description + CHANGELOG note：「Hub mode requires Unix socket (macOS/Linux). On Windows, ccxray runs in standalone mode (no multi-project hub sharing). Named Pipes support is a future enhancement.」
+
+### 決策 7：CCXRAY_LOOPBACK_NO_AUTH escape hatch — loopback-guarded（2026-05-27）
+
+ccxray binds `0.0.0.0` (all interfaces — `lsof` shows `*:5577`, `srv.listen(port)` has no host arg), so a **blunt** bypass would expose `/v1/*` + dashboard to the entire LAN the moment the flag is set. Decision: the escape hatch is **loopback-guarded** — it bypasses auth only when `req.socket.remoteAddress` is loopback; a non-loopback request still requires a credential even with the flag set (tasks 4.10). This moves the check from `verifyUpstreamCredential(headers)` (header-only, as shipped blunt in 2.2) up to the gate functions (`verifyUpstream` / WS `isAuthorized` / `verifyDashboard`, which have `req.socket`).
+
+errata §5's "theater" caveat still applies to the **same-host reverse-proxy** case (proxied external traffic presents `remoteAddress = 127.0.0.1`, defeating the guard) — but that requires the operator to both front ccxray with a same-host proxy AND set the flag (double opt-in), and the startup banner warns regardless. The guard is meaningful for the default direct-`0.0.0.0` case; the reverse-proxy gap is documented, not closed. The spec's "Explicit loopback opt-in" scenario already assumes loopback-scoped, so this brings the implementation back in line with the spec (2.2 shipped blunt; 2.3 reworks to guarded).
 
 ## Risks / Trade-offs
 

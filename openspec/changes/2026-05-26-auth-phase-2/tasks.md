@@ -72,25 +72,25 @@
 - [x] 3.19 TDD: ephemeral mode + no X-Ccxray-Auth → 401
 - [x] 3.20 Smoke test: isolated `--port` + temp CCXRAY_HOME — no-auth → 401, `ccxray secret upstream` token → 200 forwarded, forged → 401 (HTTP). WS reject/accept/strip covered by e2e.
 
-## 4. Dashboard enforcement + ephemeral mode (commit 2.3, version 2.1.0)
+## 4. Dashboard enforcement + ephemeral mode (commit 2.3 — ships in 2.0.0, bundled with 2.2 per design 決策 5)
 
-- [ ] 4.1 `verifyDashboard`: reject if no valid cookie and no valid X-Ccxray-Auth
+- [ ] 4.1 `verifyDashboard`: reject if no valid cookie and no valid X-Ccxray-Auth (flip dashboard from allow-all)
 - [ ] 4.2 Keep `Authorization: Bearer <AUTH_TOKEN>` acceptance on dashboard (permanent per spec)
-- [ ] 4.3 Ephemeral mode default: when AUTH_TOKEN unset, auth still required (via local-secret)
-- [x] 4.4 `CCXRAY_LOOPBACK_NO_AUTH=1` env: bypass upstream auth — **pulled forward into 2.2** (design.md lists it as the 2.2 breaking-change mitigation). Implemented as a blunt bypass in `verifyUpstreamCredential`. Dashboard-side bypass still TODO in 2.3.
-- [x] 4.5 Startup banner when CCXRAY_LOOPBACK_NO_AUTH=1 is active (loud warning) — **pulled forward into 2.2** (`server/index.js`).
-- [ ] 4.4-note (2.3): reconcile 4.10 with errata §5 — the loopback-IP check was intentionally NOT added in 2.2 (theater behind a same-host reverse proxy). Decide in 2.3 whether 4.10 stays.
+- [ ] 4.3 Ephemeral mode default: when AUTH_TOKEN unset, dashboard auth still required (via local-secret)
+- [ ] 4.4 Escape hatch **rework to loopback-guarded** (design 決策 7): 2.2 shipped a blunt header-level bypass in `verifyUpstreamCredential`; move the check to the gate functions (`verifyUpstream` / WS `isAuthorized` / `verifyDashboard`) so it bypasses ONLY when `req.socket.remoteAddress` is loopback, and apply it to the dashboard gate too. Removes the blunt `process.env` check from `verifyUpstreamCredential`.
+- [x] 4.5 Startup banner when CCXRAY_LOOPBACK_NO_AUTH=1 is active (loud warning) — **shipped in 2.2** (`server/index.js`).
+- [x] 4.4-note RESOLVED (decision B, 2026-05-27): keep the loopback guard (4.10). ccxray binds `0.0.0.0`, so blunt bypass would expose the LAN; guard limits blast radius. Reverse-proxy gap documented (design 決策 7), not closed. spec.md "Explicit loopback opt-in" scenario already matches.
 - [ ] 4.5a `/_auth/bootstrap-token` HTTP endpoint → require auth (codex R3 P1 deferred from 2.1)
-- [ ] 4.6 `package.json` version bump to 2.1.0
+- [ ] ~~4.6 `package.json` version bump to 2.1.0~~ → dropped; 2.3 ships in 2.0.0 (already bumped in 2.2d). Extend the existing 2.0.0 CHANGELOG entry with dashboard enforcement instead.
 - [ ] 4.7 TDD: dashboard without cookie → 401
 - [ ] 4.8 TDD: dashboard with cookie → 200
-- [ ] 4.9 TDD: CCXRAY_LOOPBACK_NO_AUTH=1 → loopback bypass works
-- [ ] 4.10 TDD: non-loopback request with CCXRAY_LOOPBACK_NO_AUTH → still rejected
+- [ ] 4.9 TDD: CCXRAY_LOOPBACK_NO_AUTH=1 + loopback request → bypass works (upstream + dashboard)
+- [ ] 4.10 TDD: non-loopback request with CCXRAY_LOOPBACK_NO_AUTH → still rejected (gate-level loopback guard)
 - [ ] 4.11 Smoke test: fresh CCXRAY_HOME, no AUTH_TOKEN → dashboard requires ccxray open
 
-## 5. PR + review
+## 5. PR + review (single 2.0.0 PR bundling 2.1 + 2.2 + 2.3 per design 決策 5)
 
-- [ ] 5.1 Open PR (feat/auth-phase-2 → main)
-- [ ] 5.2 Codex review gate
+- [ ] 5.1 Open PR (feat/auth-phase-2 → main) — **after 2.3 lands** (bundled release)
+- [ ] 5.2 Codex review gate — 2.2 slice passed clean (2026-05-27, via `codex-companion review --wait`); re-run on the full branch diff once 2.3 is in
 - [ ] 5.3 Merge after APPROVE
 - [ ] 5.4 Note Windows limitation in PR description (hub mode requires Unix socket; Windows falls back to standalone)
