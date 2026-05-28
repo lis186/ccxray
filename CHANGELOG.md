@@ -1,8 +1,10 @@
 # Changelog
 
-## 2.0.0
+## 1.10.0
 
-### Breaking
+The two-domain auth migration lands as one release. The work was planned as a `2.0.0` breaking bump, but the branch never reached a published `latest` tag during its deprecation window, so the migration ships as a single 1.10.0 minor instead — the deprecation period had no audience to honor. The behavior differences from 1.9.3 are listed below; under strict SemVer they would be breaking, and direct callers of the `/v1/*` proxy or `?token=`-style dashboard URLs may notice. Interactive `ccxray claude` / `ccxray codex` users see no friction — the launcher pre-authenticates the dashboard it opens.
+
+### Notable behavior changes (from 1.9.3)
 
 - **Upstream auth is now enforced.** Requests to `/v1/*` (HTTP and the Codex WebSocket upgrade) must carry a valid `X-Ccxray-Auth` header; the previous warn-only behavior is gone. Legacy `Authorization: Bearer <AUTH_TOKEN>` and `?token=` are no longer accepted on the upstream path and return `401`. This holds even when `AUTH_TOKEN` is unset — in that case the key is derived from `~/.ccxray/local-secret`.
 
@@ -12,19 +14,23 @@
   curl -H "X-Ccxray-Auth: $(ccxray secret upstream)" http://localhost:5577/v1/messages ...
   ```
 
-- **ChatGPT-OAuth Codex carve-out (unchanged behavior, now load-bearing).** Codex on a ChatGPT login cannot inject `X-Ccxray-Auth`, so a request presenting `chatgpt-account-id` plus a JWT-shaped `Authorization` is accepted on the upstream path without the header.
+- **ChatGPT-OAuth Codex carve-out, scoped to ChatGPT-routed requests.** Codex on a ChatGPT login cannot inject `X-Ccxray-Auth`, so a request presenting `chatgpt-account-id` plus a JWT-shaped `Authorization` is accepted on the upstream path without the header — but only on routes that actually go to the ChatGPT backend (`/v1/responses`, `/v1/realtime` with the account-id header). The same shape is not accepted on Anthropic `/v1/messages`.
 
 - **Dashboard auth is now enforced.** The dashboard's data endpoints (`/_api/*`, `/_events`, intercept, costs) now require one of: a valid `ccxray_s` session cookie, `Authorization: Bearer <AUTH_TOKEN>` (permanent), or a valid `X-Ccxray-Auth`. The previous allow-all behavior is gone — including the "no `AUTH_TOKEN` ⇒ open to everyone" default. With `AUTH_TOKEN` unset, the gate is derived from `~/.ccxray/local-secret`, so a fresh install must authenticate the browser before the dashboard shows any data.
 
-  **Migration:** run `ccxray open` once per browser. It mints a one-time bootstrap URL (`http://localhost:<port>/#k=<token>`, 60s, single-use); opening it sets an `HttpOnly; SameSite=Strict` session cookie (24h). The static shell and client assets still load without auth (they carry no conversation data) so the bootstrap page can run — only the data endpoints are gated. Scripts/CI can reach `/_api/*` with `-H "X-Ccxray-Auth: $(ccxray secret upstream)"`. Legacy `?token=<AUTH_TOKEN>` still works on the dashboard with an `X-Ccxray-Deprecation` header (removed in a future release).
+  **Migration:** for the local-launch case (`ccxray claude`, `ccxray codex`, standalone `ccxray`), the launcher auto-bootstraps the auto-opened browser, so nothing changes interactively. For additional browsers, or after the 24h cookie expires, run `ccxray open` to mint a one-time URL. The static shell and client assets still load without auth (they carry no conversation data) so the bootstrap page can always run. Scripts/CI can reach `/_api/*` with `-H "X-Ccxray-Auth: $(ccxray secret upstream)"`.
+
+- **`?token=<AUTH_TOKEN>` query no longer accepted anywhere.** Previously a legacy alternative on the dashboard (with an `X-Ccxray-Deprecation` response header). This release removes the path entirely along with the deprecation-header machinery and the unused `authMiddleware` export. Use a cookie via `ccxray open`, or `Authorization: Bearer <AUTH_TOKEN>` on the dashboard.
 
 ### Added
 
-- **Launcher auto-bootstrap.** `ccxray claude`, `ccxray codex`, and standalone `ccxray` now auto-open the dashboard **already authenticated** — the launcher mints a single-use 60s bootstrap token and opens `http://localhost:<port>/#k=<token>` instead of the bare URL, so the OS-opened browser redeems it on load and lands on a logged-in dashboard. The "launch and look" zero-friction UX from before 2.0.0 is preserved for the local-CLI case. LAN peers, additional browsers, and re-auth after the 24h cookie expiry still go through manual `ccxray open`. Suppressed by `--no-browser`, `BROWSER=none`, `CI`, or `SSH_TTY` (unchanged).
+- **Launcher auto-bootstrap.** `ccxray claude`, `ccxray codex`, and standalone `ccxray` now auto-open the dashboard **already authenticated** — the launcher mints a single-use 60s bootstrap token and opens `http://localhost:<port>/#k=<token>` instead of the bare URL, so the OS-opened browser redeems it on load and lands on a logged-in dashboard. The "launch and look" zero-friction UX from 1.9.x is preserved for the local-CLI case. LAN peers, additional browsers, and re-auth after the 24h cookie expiry still go through manual `ccxray open`. Suppressed by `--no-browser`, `BROWSER=none`, `CI`, or `SSH_TTY` (unchanged).
 
 - **`CCXRAY_LOOPBACK_NO_AUTH=1` escape hatch** — opt-in bypass of the auth gate (both `/v1/*` upstream and the dashboard) for local development. A loud startup banner is printed whenever it is active. The bypass is **loopback-guarded**: it applies only when the request's `remoteAddress` is loopback, so setting the flag on a `0.0.0.0`-bound proxy does not expose `/v1/*` or recorded conversations to the LAN. A same-host reverse proxy presents `127.0.0.1` and defeats the guard — documented, not closed; the banner remains the backstop.
 
 ### Security
+
+- **Hub IPC moved to a Unix domain socket.** `~/.ccxray/hub.sock` (mode `0600`) replaces the HTTP-over-TCP `/_api/hub/*` routes for multi-project client registration, bootstrap-token minting, status, and discovery. Filesystem permissions are the access gate — other-UID processes get `EACCES` from `connect(2)` before reaching Node. The legacy `/_api/hub/*` HTTP routes return `410 Gone`. macOS/Linux only; on Windows, hub mode falls back to standalone (no multi-project sharing).
 
 - **`/_auth/bootstrap-token` is auth-gated.** Minting a browser bootstrap token now requires the same credential as the dashboard, closing a same-host (incl. other-UID) loopback mint→redeem path that could obtain a session without the local secret. `ccxray open` sends the credential automatically.
 
