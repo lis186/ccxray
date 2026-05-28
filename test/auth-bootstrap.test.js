@@ -396,4 +396,35 @@ describe('mintAutoOpenUrl — launcher auto-bootstrap (Phase 2.4)', () => {
     const url = auth.mintAutoOpenUrl(9999);
     assert.match(url, /^http:\/\/localhost:9999\/#k=/);
   });
+
+  it('formatAutoOpenUrl builds a URL from any caller-supplied token (hub-mode socket-minted)', () => {
+    const auth = loadAuthFresh();
+    assert.equal(auth.formatAutoOpenUrl(5577, 'tok-xyz'), 'http://localhost:5577/#k=tok-xyz');
+  });
+});
+
+describe('pending-bootstrap is per-process (hub-mode constraint, codex 2.4 P2 regression)', () => {
+  // Codex review caught: pre-fix, hub-mode `ccxray claude` called
+  // mintAutoOpenUrl() in the *client* process, but pendingBootstraps is a
+  // module-local Map that lives in whichever process minted. Redeem on the
+  // hub process therefore 401'd because the token was never in its map. The
+  // fix is to mint via the hub socket (`bootstrap-token` command) so the
+  // token lives where redeem checks. This test pins the per-process boundary
+  // so the bug can't silently come back via a future refactor.
+  it('a token minted in one auth instance is NOT redeemable on a separately-loaded instance', () => {
+    delete require.cache[require.resolve('../server/auth')];
+    const minter = require('../server/auth');
+    delete require.cache[require.resolve('../server/auth')];
+    const redeemer = require('../server/auth');
+    assert.notEqual(minter, redeemer, 'fresh instances should be distinct objects');
+
+    const url = minter.mintAutoOpenUrl(5577);
+    const tok = url.match(/#k=([A-Za-z0-9_-]+)/)[1];
+    const { req, res } = mockReqRes({
+      headers: { 'x-ccxray-bootstrap': tok, 'sec-fetch-site': 'same-origin', origin: 'http://localhost:5577', host: 'localhost:5577' },
+    });
+    redeemer.redeemBootstrap(req, res);
+    req._deliverBody('{}');
+    assert.equal(res.statusCode, 401);
+  });
 });

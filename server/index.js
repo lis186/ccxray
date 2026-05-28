@@ -14,7 +14,7 @@ const { warmUp: warmUpCosts } = require('./cost-budget');
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { dispatch, mintAutoOpenUrl } = require('./auth');
+const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
@@ -668,8 +668,20 @@ async function startClientMode(lock) {
       if (!noOpen) {
         const { exec } = require('child_process');
         const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-        // Phase 2.4: pre-bootstrap the browser so it lands authenticated.
-        exec(`${cmd} ${mintAutoOpenUrl(lock.port)}`);
+        // Phase 2.4 (hub mode): the redeem endpoint runs in the HUB process,
+        // so the token must be minted there too — pendingBootstraps is a
+        // module-local Map in whichever process called mintBootstrapToken
+        // (codex 2.4 P2). Ask the hub via the socket the same way
+        // `ccxray open` does; on socket failure, warn + skip auto-open
+        // (don't open an unauthenticated URL; user can `ccxray open` manually).
+        let openUrl = null;
+        try {
+          const res = await hub.hubSocketRequest(lock.sockPath, { cmd: 'bootstrap-token' });
+          if (res && res.token) openUrl = formatAutoOpenUrl(lock.port, res.token);
+        } catch (e) {
+          console.error(`\x1b[33m[ccxray] auto-bootstrap mint failed (${e.message}); run \`ccxray open\` manually if needed.\x1b[0m`);
+        }
+        if (openUrl) exec(`${cmd} ${openUrl}`);
       }
     }
   } catch (err) {

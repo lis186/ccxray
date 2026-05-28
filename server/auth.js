@@ -235,8 +235,19 @@ function mintBootstrapToken() {
 // mint a fresh single-use token and pre-load it in the URL fragment — saving
 // the user a manual `ccxray open` for the common local-launch case. No new
 // primitive: same 60s single-use token, same redeem endpoint.
+//
+// formatAutoOpenUrl is a pure builder. Use it directly when the token MUST be
+// minted in a different process (hub mode: redeem runs in the hub process, so
+// pendingBootstraps has to live there — the client process gets the token via
+// the hub socket's `bootstrap-token` command). mintAutoOpenUrl is the in-
+// process convenience that mints + formats; safe only when this process is
+// also the one whose /_auth/redeem will be hit.
+function formatAutoOpenUrl(port, token) {
+  return `http://localhost:${port}/#k=${token}`;
+}
+
 function mintAutoOpenUrl(port) {
-  return `http://localhost:${port}/#k=${mintBootstrapToken()}`;
+  return formatAutoOpenUrl(port, mintBootstrapToken());
 }
 
 function _isAllowedHost(host) {
@@ -495,6 +506,7 @@ module.exports = {
   // Phase 1.3 additions
   mintBootstrapToken,
   mintAutoOpenUrl,
+  formatAutoOpenUrl,
   redeemBootstrap,
   authStatus,
   parseCookie,
