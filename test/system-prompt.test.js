@@ -102,9 +102,11 @@ describe('system-prompt', () => {
       assert.equal(result.label, 'Code Reviewer');
     });
 
-    it('warns once per unique unknown agent (dedup)', () => {
+    it('warns once per unique unknown agent (dedup) when CCXRAY_DEBUG_CLASSIFY=1', () => {
       _resetUnknownAgentSeen();
       const originalWarn = console.warn;
+      const originalFlag = process.env.CCXRAY_DEBUG_CLASSIFY;
+      process.env.CCXRAY_DEBUG_CLASSIFY = '1';
       const warnings = [];
       console.warn = (msg) => warnings.push(msg);
       try {
@@ -127,6 +129,28 @@ describe('system-prompt', () => {
         assert.match(warnings[1], /security-auditor/);
       } finally {
         console.warn = originalWarn;
+        if (originalFlag === undefined) delete process.env.CCXRAY_DEBUG_CLASSIFY;
+        else process.env.CCXRAY_DEBUG_CLASSIFY = originalFlag;
+        _resetUnknownAgentSeen();
+      }
+    });
+
+    it('does NOT warn when CCXRAY_DEBUG_CLASSIFY is unset (default off, avoids leaking into agent terminals)', () => {
+      _resetUnknownAgentSeen();
+      const originalWarn = console.warn;
+      const originalFlag = process.env.CCXRAY_DEBUG_CLASSIFY;
+      delete process.env.CCXRAY_DEBUG_CLASSIFY;
+      const warnings = [];
+      console.warn = (msg) => warnings.push(msg);
+      try {
+        const sys = [{ text: 'billing' }, { text: 'identity' },
+          { text: 'You are a database migration expert that handles schema changes' }];
+        extractAgentType(sys);
+        assert.equal(warnings.length, 0, `expected 0 warnings when flag unset, got ${warnings.length}`);
+      } finally {
+        console.warn = originalWarn;
+        if (originalFlag === undefined) delete process.env.CCXRAY_DEBUG_CLASSIFY;
+        else process.env.CCXRAY_DEBUG_CLASSIFY = originalFlag;
         _resetUnknownAgentSeen();
       }
     });

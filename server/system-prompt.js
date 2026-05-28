@@ -7,6 +7,12 @@ const { safeCountTokens } = require('./helpers');
 const UNKNOWN_AGENT_SEEN = new Set();
 
 function logUnknownAgent(b2, key) {
+  // Maintainer-only debug print: surfaces unknown agent B2 shapes so they can
+  // be added to KNOWN_AGENTS. In hub mode this goes to ~/.ccxray/hub.log (the
+  // detached child's stdio); in standalone agent mode (`ccxray codex` with
+  // --port) ccxray's stderr is `stdio: 'inherit'`-ed by the spawned agent's
+  // terminal, so a default-on warn pollutes the agent UI. Gate it.
+  if (process.env.CCXRAY_DEBUG_CLASSIFY !== '1') return;
   const hash = crypto.createHash('md5').update(b2 || '').digest('hex').slice(0, 12);
   if (UNKNOWN_AGENT_SEEN.has(hash)) return;
   UNKNOWN_AGENT_SEEN.add(hash);
