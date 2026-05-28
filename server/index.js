@@ -61,12 +61,17 @@ if (unknownCommand) {
   console.error(`\x1b[31mError: unsupported provider "${cliCommand}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
   process.exit(1);
 }
-// ── "secret upstream" subcommand — early exit, no side effects ──
-if (process.argv[2] === 'secret' && process.argv[3] === 'upstream') {
-  const auth = require('./auth');
-  const { K_upstream } = auth.deriveSecrets(auth.getRootSecret());
-  process.stdout.write(K_upstream.toString('base64url') + '\n');
-  process.exit(0);
+// ── "secret <subcommand>" — early exit, no side effects ──
+if (process.argv[2] === 'secret') {
+  const sub = process.argv[3];
+  if (sub === 'upstream') {
+    const auth = require('./auth');
+    const { K_upstream } = auth.deriveSecrets(auth.getRootSecret());
+    process.stdout.write(K_upstream.toString('base64url') + '\n');
+    process.exit(0);
+  }
+  console.error(`\x1b[31mError: unknown secret subcommand "${sub || ''}". Supported: upstream\x1b[0m`);
+  process.exit(1);
 }
 
 const agentCommand = providers.isAgentProvider(cliCommand) ? cliCommand : null;

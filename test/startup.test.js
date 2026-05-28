@@ -168,6 +168,22 @@ describe('S5a: secret upstream subcommand', () => {
     const { stdout: b } = await spawnAndCollect(['secret', 'upstream']);
     assert.equal(a.trim(), b.trim());
   });
+
+  // Codex 1.10.0 P3 regression guard: previously `secret` was allow-listed
+  // out of unknownCommand to let `secret upstream` reach its handler, but no
+  // catch-all rejected typos — `ccxray secret foo` or bare `ccxray secret`
+  // silently started the proxy instead of erroring.
+  it('`ccxray secret foo` (unknown subcommand) → exits 1 with error', async () => {
+    const { stderr, code } = await spawnAndCollect(['secret', 'foo']);
+    assert.equal(code, 1, `expected exit 1, got ${code}`);
+    assert.match(stderr, /unknown secret subcommand|secret subcommand/i);
+  });
+
+  it('`ccxray secret` (no subcommand) → exits 1 with error', async () => {
+    const { stderr, code } = await spawnAndCollect(['secret']);
+    assert.equal(code, 1, `expected exit 1, got ${code}`);
+    assert.match(stderr, /unknown secret subcommand|secret subcommand|missing/i);
+  });
 });
 
 // ── S6: hub mode startup ───────────────────────────────────────────
