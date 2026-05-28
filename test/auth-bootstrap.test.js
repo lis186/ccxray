@@ -278,7 +278,7 @@ describe('verifyDashboard — cookie path added in Phase 1.3', () => {
     delete process.env.AUTH_TOKEN;
   });
 
-  it('falls through to authMiddleware when cookie is absent', () => {
+  it('rejects with 401 when cookie is absent (AUTH_TOKEN set, no Bearer)', () => {
     process.env.AUTH_TOKEN = 'sec1';
     const auth = loadAuthFresh();
     const { req, res } = mockReqRes({ method: 'GET', url: '/_api/entries', headers: {} });
@@ -287,7 +287,7 @@ describe('verifyDashboard — cookie path added in Phase 1.3', () => {
     delete process.env.AUTH_TOKEN;
   });
 
-  it('falls through to authMiddleware when cookie is present but invalid', () => {
+  it('rejects with 401 when cookie is present but invalid', () => {
     process.env.AUTH_TOKEN = 'sec1';
     const auth = loadAuthFresh();
     const { req, res } = mockReqRes({

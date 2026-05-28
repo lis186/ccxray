@@ -164,11 +164,12 @@ describe('verifyDashboard — Phase 2.3 enforcement (cookie / Bearer / X-Ccxray-
     assert.equal(res.statusCode, 401);
   });
 
-  it('AUTH_TOKEN set, legacy ?token= → true + X-Ccxray-Deprecation (kept until Phase 3)', () => {
+  it('AUTH_TOKEN set, legacy ?token= → 401 (Phase 3 removed it)', () => {
     const auth = loadAuthWith('sec1');
     const { req, res, setHeaderCalls } = mockReqRes({ host: 'localhost' }, '/_api/entries?token=sec1');
-    assert.equal(auth.verifyDashboard(req, res), true);
-    assert.match(setHeaderCalls['X-Ccxray-Deprecation'] || '', /token-query/);
+    assert.equal(auth.verifyDashboard(req, res), false);
+    assert.equal(res.statusCode, 401);
+    assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
   });
 
   it('loopback-guarded hatch: flag "1" + loopback peer + no cred → true (4.4 dashboard)', () => {
