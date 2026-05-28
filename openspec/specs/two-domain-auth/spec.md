@@ -31,15 +31,19 @@ Upstream-domain requests SHALL be authenticated by the `X-Ccxray-Auth` header co
 - **THEN** request SHALL be allowed (carve-out: cannot carry custom headers without breaking OAuth)
 
 ### Requirement: Dashboard authentication via HttpOnly cookie
-Dashboard-domain requests SHALL be authenticated by an `HttpOnly; SameSite=Strict` cookie (`ccxray_s`) containing an HMAC-signed stateless payload. Cookie is minted via the bootstrap flow.
+Dashboard-domain **data** endpoints (`/_api/*`, `/_events`, intercept, costs) SHALL require authentication by one of: a valid `HttpOnly; SameSite=Strict` `ccxray_s` cookie (HMAC-signed stateless payload, minted via the bootstrap flow), `Authorization: Bearer <AUTH_TOKEN>` (permanent), or a valid `X-Ccxray-Auth` header. The static shell (`/`, `/index.html`) and client assets (CSS/JS) carry no conversation data and SHALL be served WITHOUT authentication, so the inline bootstrap script can run before any cookie exists.
 
 #### Scenario: Valid session cookie
-- **WHEN** dashboard request carries `ccxray_s` cookie with valid HMAC
+- **WHEN** a dashboard data request carries `ccxray_s` cookie with valid HMAC
 - **THEN** request SHALL be allowed
 
-#### Scenario: No cookie, no legacy auth
-- **WHEN** dashboard request has no `ccxray_s` cookie and no `Authorization: Bearer`
+#### Scenario: No cookie, no credential
+- **WHEN** a dashboard data request has no `ccxray_s` cookie, no `Authorization: Bearer`, and no valid `X-Ccxray-Auth`
 - **THEN** request SHALL be rejected with 401 (Phase 2); allowed with warn (Phase 1)
+
+#### Scenario: Static shell served unauthenticated
+- **WHEN** an unauthenticated request arrives at `/`, `/index.html`, or a client asset (e.g. `/style.css`, `/app.js`)
+- **THEN** ccxray SHALL serve it with 200 — only data endpoints are gated — so `ccxray open`'s bootstrap script can redeem the token and mint the first cookie
 
 ### Requirement: Browser bootstrap flow (ccxray open)
 Users SHALL authenticate the browser via `ccxray open` which mints a one-time 60s bootstrap token, opens a URL with the token in the fragment (`#k=`), and the browser redeems it at `POST /_auth/redeem` to receive a session cookie.
