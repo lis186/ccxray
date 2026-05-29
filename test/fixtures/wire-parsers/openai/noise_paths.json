@@ -1,0 +1,14 @@
+{
+  "noise": [
+    "/v1/plugins/list",
+    "/v1/ps/plugins/list",
+    "/v1/connectors/list",
+    "/v1/api/codex/apps",
+    "/v1/api/codex/usage"
+  ],
+  "not_noise": [
+    "/v1/responses",
+    "/v1/chat/completions",
+    "/v1/codex/analytics-events/events"
+  ]
+}

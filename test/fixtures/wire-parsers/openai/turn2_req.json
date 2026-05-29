@@ -1,0 +1,36 @@
+{
+  "model": "gpt-5.5",
+  "instructions": "You are a coding assistant. Follow user instructions carefully.\n\n# Environment\nOS: macOS\nShell: zsh\nCWD: /Users/test/project",
+  "input": [
+    { "role": "user", "content": "List the files in the current directory" },
+    {
+      "type": "function_call",
+      "id": "fc_01",
+      "call_id": "call_01",
+      "name": "shell",
+      "arguments": "{\"command\":\"ls\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_01",
+      "output": "server/\npublic/\npackage.json\nREADME.md"
+    }
+  ],
+  "tools": [
+    { "type": "function", "name": "shell", "description": "Execute a shell command", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } }
+  ],
+  "metadata": {
+    "session_id": "019e6d05-02ad-7d83-afa0-6c480945a1be",
+    "thread_id": "019e6d05-02ad-7d83-afa0-6c480945a1be",
+    "thread_source": "user",
+    "turn_id": "019e6d05-1234-5678-9abc-def012345678",
+    "workspaces": {
+      "/Users/test/project": {
+        "associated_remote_urls": { "origin": "https://github.com/test/project.git" },
+        "latest_git_commit_hash": "abc123def456",
+        "has_changes": false
+      }
+    },
+    "sandbox": "seatbelt"
+  }
+}

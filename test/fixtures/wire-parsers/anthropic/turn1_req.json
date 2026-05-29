@@ -1,0 +1,27 @@
+{
+  "model": "claude-sonnet-4-20250514",
+  "max_tokens": 8096,
+  "system": [
+    { "type": "text", "text": "System configuration block" },
+    { "type": "text", "text": "You are Claude Code, Anthropic's official CLI." },
+    { "type": "text", "text": "# CLAUDE.md\n\nGuidance for Claude Code.\n\n## Commands\n\nnpm test\n\n## Architecture\n\nserver/ - backend\npublic/ - frontend\n\n---\n\n# Environment\nPlatform: darwin\nShell: zsh\nOS: Darwin 25.5.0", "cache_control": { "type": "ephemeral" } }
+  ],
+  "tools": [
+    { "name": "Bash", "description": "Execute a shell command", "input_schema": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } },
+    { "name": "Read", "description": "Read a file", "input_schema": { "type": "object", "properties": { "file_path": { "type": "string" } }, "required": ["file_path"] } }
+  ],
+  "messages": [
+    { "role": "user", "content": "What files are in the project?" },
+    { "role": "assistant", "content": [
+      { "type": "text", "text": "Let me check." },
+      { "type": "tool_use", "id": "toolu_01A", "name": "Bash", "input": { "command": "ls" } }
+    ]},
+    { "role": "user", "content": [
+      { "type": "tool_result", "tool_use_id": "toolu_01A", "content": "server/\npublic/\npackage.json" }
+    ]}
+  ],
+  "metadata": {
+    "session_id": "abc123-test-session-001",
+    "user_id": "user-test"
+  }
+}

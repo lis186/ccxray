@@ -1,0 +1,24 @@
+{
+  "model": "gpt-5.5",
+  "instructions": "You are a coding assistant. Follow user instructions carefully.\n\n# Environment\nOS: macOS\nShell: zsh\nCWD: /Users/test/project",
+  "input": [
+    { "role": "user", "content": "List the files in the current directory" }
+  ],
+  "tools": [
+    { "type": "function", "name": "shell", "description": "Execute a shell command", "parameters": { "type": "object", "properties": { "command": { "type": "string" } }, "required": ["command"] } }
+  ],
+  "metadata": {
+    "session_id": "019e6d05-02ad-7d83-afa0-6c480945a1be",
+    "thread_id": "019e6d05-02ad-7d83-afa0-6c480945a1be",
+    "thread_source": "user",
+    "turn_id": "019e6d05-096f-74b0-b026-9f83af64469e",
+    "workspaces": {
+      "/Users/test/project": {
+        "associated_remote_urls": { "origin": "https://github.com/test/project.git" },
+        "latest_git_commit_hash": "abc123def456",
+        "has_changes": false
+      }
+    },
+    "sandbox": "seatbelt"
+  }
+}
