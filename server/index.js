@@ -18,7 +18,7 @@ const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require('./system-prompt');
 const { findSharedPrefix } = require('./delta-helpers');
 const providers = require('./providers');
-const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
+const { handleWebSocketUpgrade, drainWebSocketProxy, setCwdFallback } = require('./ws-proxy');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const {
   getCodexRawSessionId,
@@ -167,6 +167,7 @@ function buildForwardHeaders(clientHeaders, upstream) {
 function getCodexCwdFallback() {
   return hub.lookupClientCwd() || (agentCommand === 'codex' ? process.cwd() : null);
 }
+setCwdFallback(getCodexCwdFallback);
 
 function getOpenAICwd(parsedBody) {
   return parsedBody?.metadata?.cwd || getCodexCwdFallback();
