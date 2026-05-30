@@ -149,8 +149,8 @@ Architecture 鳥瞰圖（4 registry + disk + dispatch keys 對照表）。要在
 - [x] Phase 4b: Cleanup — 刪 dead code + 刪 openai-session.js。done。
 - [x] Phase 5: WS frame capture — 27 行改動。done。
 - [x] Phase 6: Codex parity gaps — G1-G10 done (2 commits, 57 行)。HTTP SSE + WS entries 完整 metadata（cost/tokens/maxContext/model）。OpenAI pricing rates。Codex tool aliases。
-- [ ] Phase 7: Integration tests + deferred polish — **next**
-- [ ] Phase 8: Cleanup + release
+- [x] Phase 7: Integration tests — done (2 new test files, 7 test cases). WS frame→buildMergedSteps pipeline, 1.9.x provider compat, summarizeEntry fallback. G11-G13 deferred (不 block release).
+- [ ] Phase 8: Cleanup + release — **next**
 
 ## Phase 6 完成明細
 
