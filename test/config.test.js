@@ -451,7 +451,8 @@ describe('self-loop detection', () => {
 // but they shouldn't be tagged 'anthropic' (classification bug) and shouldn't
 // create dashboard entries (noise bug). The telemetry endpoint stays visible.
 describe('codex platform noise routing and predicate', () => {
-  const { isCodexPlatformNoisePath, getProviderForRequest } = require('../server/config');
+  const { getProviderForRequest } = require('../server/config');
+  const openaiParser = require('../server/wire-parsers/openai');
 
   it('classifies /v1/ps/plugins/* as openai (was falling through to anthropic)', () => {
     assert.equal(getProviderForRequest('/v1/ps/plugins/installed?scope=GLOBAL'), 'openai');
@@ -460,18 +461,18 @@ describe('codex platform noise routing and predicate', () => {
   });
 
   it('marks codex startup polls as noise', () => {
-    assert.equal(isCodexPlatformNoisePath('/v1/plugins/featured?platform=codex'), true);
-    assert.equal(isCodexPlatformNoisePath('/v1/plugins/list'), true);
-    assert.equal(isCodexPlatformNoisePath('/v1/ps/plugins/installed?scope=GLOBAL'), true);
-    assert.equal(isCodexPlatformNoisePath('/v1/api/codex/apps'), true);
-    assert.equal(isCodexPlatformNoisePath('/v1/api/codex/usage'), true);
-    assert.equal(isCodexPlatformNoisePath('/v1/connectors/directory/list?external_logos=true'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/plugins/featured?platform=codex'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/plugins/list'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/ps/plugins/installed?scope=GLOBAL'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/api/codex/apps'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/api/codex/usage'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/connectors/directory/list?external_logos=true'), true);
   });
 
   it('keeps the conversation and telemetry paths visible', () => {
-    assert.equal(isCodexPlatformNoisePath('/v1/responses'), false);
-    assert.equal(isCodexPlatformNoisePath('/v1/codex/analytics-events/events'), false);
-    assert.equal(isCodexPlatformNoisePath('/v1/messages'), false);
+    assert.equal(openaiParser.isNoiseRequest('/v1/responses'), false);
+    assert.equal(openaiParser.isNoiseRequest('/v1/codex/analytics-events/events'), false);
+    assert.equal(openaiParser.isNoiseRequest('/v1/messages'), false);
   });
 });
 

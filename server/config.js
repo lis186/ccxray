@@ -162,20 +162,6 @@ function isChatGPTCodexPath(pathname) {
 
 // Codex 0.133+ hits a flurry of platform endpoints on startup (plugin lists,
 // connector directory, app metadata, usage). They're not conversation data —
-// just codex's internal RPC — and would otherwise create ~30 dashboard entries
-// before the first user turn. We still proxy them; only entry creation is
-// skipped. The telemetry endpoint (/v1/codex/analytics-events/events) is kept
-// because a follow-up may parse turn metadata out of it.
-function isCodexPlatformNoisePath(urlPath) {
-  const pathname = (urlPath || '').split('?')[0];
-  if (pathname === '/v1/plugins' || pathname.startsWith('/v1/plugins/')) return true;
-  if (pathname === '/v1/ps/plugins' || pathname.startsWith('/v1/ps/plugins/')) return true;
-  if (pathname === '/v1/connectors' || pathname.startsWith('/v1/connectors/')) return true;
-  if (pathname === '/v1/api/codex/apps' || pathname.startsWith('/v1/api/codex/apps/')) return true;
-  if (pathname === '/v1/api/codex/usage' || pathname.startsWith('/v1/api/codex/usage/')) return true;
-  return false;
-}
-
 function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
   const pathname = (urlPath || '').split('?')[0];
   if (isChatGPTCodexPath(pathname)) {
@@ -340,6 +326,5 @@ module.exports = {
   getUpstream,
   getUpstreamForRequest,
   getUpstreamForRequestAndHeaders,
-  isCodexPlatformNoisePath,
   joinUpstreamPath,
 };

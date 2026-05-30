@@ -22,8 +22,6 @@ const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const {
   getCodexRawSessionId,
   isOpenAISubagent,
-  detectOpenAISession,
-  withCodexMetadata,
 } = require('./openai-session');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 
