@@ -274,8 +274,9 @@ const server = http.createServer((clientReq, clientRes) => {
 
     const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
     const provider = upstream.provider || 'anthropic';
-    if (provider === 'openai' && parsedBody) {
-      parsedBody = withCodexMetadata(parsedBody, clientReq.headers);
+    const parser = getParser(provider);
+    if (parsedBody && parser?.preprocessBody) {
+      parsedBody = parser.preprocessBody(parsedBody, clientReq.headers);
     }
 
     let reqWritePromise = null;
@@ -357,7 +358,7 @@ const server = http.createServer((clientReq, clientRes) => {
     }
 
     const detectedSession = parsedBody
-      ? (provider === 'openai' ? detectOpenAISession(clientReq.headers, parsedBody) : store.detectSession(parsedBody))
+      ? parser.detectSession(clientReq, clientReq.headers, parsedBody)
       : null;
     const { sessionId: reqSessionId, isNewSession, inferred: sessionInferred } = parsedBody
       ? detectedSession
