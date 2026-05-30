@@ -61,7 +61,7 @@ function handleApiRoutes(clientReq, clientRes) {
     const vEntries = [...store.versionIndex.values()]
       .filter(v => !filterAgent || v.agentKey === filterAgent)
       .sort((a, b) => (b.firstSeen || '').localeCompare(a.firstSeen || '') || b.version.localeCompare(a.version));
-    const versions = vEntries.map(({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel }) => ({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel }));
+    const versions = vEntries.map(({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel, provider }) => ({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel, provider }));
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     clientRes.end(JSON.stringify({ versions, agents: allAgents.map(k => ({ key: k, label: store.versionIndex.get([...store.versionIndex.keys()].find(ik => ik.startsWith(k + '::')))?.agentLabel || k })) }));
     return true;

@@ -245,7 +245,7 @@ async function buildVersionIndex() {
           const firstSeen = stat?.mtime ? stat.mtime.toISOString().slice(0, 10) : null;
           store.versionIndex.set(idxKey, {
             reqId: null, sharedFile: filename, b2Len: b2.length, coreLen, coreHash,
-            firstSeen,
+            firstSeen, provider: isOpenAI ? 'openai' : 'anthropic',
             agentKey, agentLabel, version: ver,
           });
         } else {

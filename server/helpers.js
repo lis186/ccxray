@@ -261,8 +261,36 @@ function tokenizeRequest(body) {
     });
     breakdown.messages = total;
   } else if (body.input != null) {
-    const text = typeof body.input === 'string' ? body.input : JSON.stringify(body.input);
-    breakdown.messages = safeCountTokens(text);
+    if (Array.isArray(body.input)) {
+      let total = 0;
+      breakdown.perMessage = body.input.map(item => {
+        let tokens = 0;
+        const blocks = [];
+        if (item.role) {
+          const t = safeCountTokens(typeof item.content === 'string' ? item.content : JSON.stringify(item.content || ''));
+          tokens = t;
+          if (t > 0) blocks.push({ type: 'text', tokens: t });
+        } else if (item.type === 'function_call') {
+          const t = safeCountTokens(typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}));
+          tokens = t;
+          if (t > 0) blocks.push({ type: 'tool_use', name: item.name || null, tokens: t });
+        } else if (item.type === 'function_call_output') {
+          const t = safeCountTokens(typeof item.output === 'string' ? item.output : JSON.stringify(item.output || ''));
+          tokens = t;
+          if (t > 0) blocks.push({ type: 'tool_result', tokens: t });
+        } else {
+          const t = safeCountTokens(JSON.stringify(item));
+          tokens = t;
+          if (t > 0) blocks.push({ type: item.type || 'unknown', tokens: t });
+        }
+        total += tokens;
+        return { role: item.role || item.type || 'unknown', tokens, blocks };
+      });
+      breakdown.messages = total;
+    } else {
+      const text = typeof body.input === 'string' ? body.input : JSON.stringify(body.input);
+      breakdown.messages = safeCountTokens(text);
+    }
   }
   breakdown.total = (breakdown.system || 0) + (breakdown.tools || 0) + (breakdown.messages || 0);
   breakdown.contextBreakdown = analyzeContext(body);

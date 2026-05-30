@@ -172,7 +172,8 @@ function renderVersionList() {
     const hashShort = (v.coreHash || '').slice(0, 5);
     const hashColor = coreChanged ? 'var(--yellow)' : 'var(--dim)';
     html += `<span>${date}</span>`;
-    html += `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="font-family:monospace;font-size:10px;color:${hashColor}">${hashShort}</span> ${escapeHtml(v.version)}</span>`;
+    const provBadge = v.provider === 'openai' ? '<span style="font-size:9px;padding:0 3px;border-radius:3px;background:#2a6;color:#000;margin-left:4px">OpenAI</span>' : '';
+    html += `<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span style="font-family:monospace;font-size:10px;color:${hashColor}">${hashShort}</span> ${escapeHtml(v.version)}${provBadge}</span>`;
     html += `<span class="sp-size-col" style="text-align:right">${size}</span>`;
     html += `<span class="sp-delta-col" style="min-width:38px;text-align:right">${delta}</span>`;
     html += '</div>';
