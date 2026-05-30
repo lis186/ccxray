@@ -132,10 +132,12 @@ function getMessagePreview(m) {
 }
 
 // ── Merged Steps: transform flat messages into logical steps ──
+const CODEX_TOOL_ALIASES = { exec_command: 'Bash', shell: 'Bash', read_mcp_resource: 'Read', apply_patch: 'Edit' };
+
 function getToolPreview(toolUse) {
   const inp = toolUse.input || {};
-  switch (toolUse.name) {
-    case 'Bash': return (inp.command || '').split('\n')[0].slice(0, 60);
+  switch (CODEX_TOOL_ALIASES[toolUse.name] || toolUse.name) {
+    case 'Bash': return (inp.command || inp.cmd || '').split('\n')[0].slice(0, 60);
     case 'Read': case 'Write': case 'Edit': case 'NotebookEdit':
       return (inp.file_path || inp.notebook_path || '').split('/').pop() || '';
     case 'Grep': return (inp.pattern || '').slice(0, 40);

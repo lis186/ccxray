@@ -2705,9 +2705,10 @@ function renderToolDetail(c) {
 
 function renderToolMeta(c) {
   const inp = c.input || {};
-  switch (c.name) {
+  const name = (typeof CODEX_TOOL_ALIASES !== 'undefined' && CODEX_TOOL_ALIASES[c.name]) || c.name;
+  switch (name) {
     case 'Bash': {
-      const cmd = (inp.command || '');
+      const cmd = (inp.command || inp.cmd || '');
       const desc = inp.description ? '<div class="detail-meta-line">' + escapeHtml(inp.description) + '</div>' : '';
       return '<div class="detail-meta"><code class="detail-cmd-block">$ ' + escapeHtml(cmd.split('\n')[0]) + (cmd.includes('\n') ? ' ...' : '') + '</code>' + desc + '</div>';
     }
@@ -2745,13 +2746,14 @@ function renderToolMeta(c) {
 
 function renderToolInput(c) {
   const inp = c.input || {};
+  const name = (typeof CODEX_TOOL_ALIASES !== 'undefined' && CODEX_TOOL_ALIASES[c.name]) || c.name;
 
-  if (c.name === 'Edit' && inp.old_string != null) {
+  if (name === 'Edit' && inp.old_string != null) {
     return renderEditDiff(inp.old_string, inp.new_string || '');
   }
 
-  if (c.name === 'Bash') {
-    const cmd = inp.command || '';
+  if (name === 'Bash') {
+    const cmd = inp.command || inp.cmd || '';
     const lines = cmd.split('\n');
     let html = '<div class="content-block"><div class="type">COMMAND</div>';
     if (lines.length > COLLAPSE_THRESHOLD) {
@@ -2767,7 +2769,7 @@ function renderToolInput(c) {
   // For tools where meta already shows the key info, collapse JSON by default
   const metaTools = ['Read', 'Write', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Agent', 'TaskCreate', 'TaskUpdate'];
   const json = JSON.stringify(inp, null, 2);
-  if (metaTools.includes(c.name)) {
+  if (metaTools.includes(name)) {
     return '<details class="detail-input-details"><summary>INPUT JSON</summary><pre>' + escapeHtml(json) + '</pre></details>';
   }
 
