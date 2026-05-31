@@ -482,7 +482,7 @@ function _applyStepTargetWhenReady(idx, stepIdx, sub, attempts, opts) {
         else resolve({ ok: false, reason: 'render-timeout' });
         return;
       }
-      prepareTimelineSteps(current.req?.messages || current.req?.input || [], Array.isArray(current.res) ? current.res : [], current.provider || 'anthropic');
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : [], current.provider || 'anthropic');
       if (!currentSteps[stepIdx]) {
         resolve({ ok: false, reason: 'missing-step' });
         return;
@@ -755,7 +755,7 @@ function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
       renderDetailCol();
     }
     requestAnimationFrame(() => {
-      prepareTimelineSteps(current.req?.messages || current.req?.input || [], Array.isArray(current.res) ? current.res : [], current.provider || 'anthropic');
+      prepareTimelineSteps(current.req?.messages || [], Array.isArray(current.res) ? current.res : [], current.provider || 'anthropic');
       selectStep(stepIdx, sub);
       if (typeof scrollTimelineStepIntoViewWhenReady === 'function') scrollTimelineStepIntoViewWhenReady(stepIdx, sub);
       else if (typeof scrollTimelineStepIntoView === 'function') scrollTimelineStepIntoView(stepIdx, sub);
@@ -2528,7 +2528,7 @@ function renderDetailCol() {
       if (!isFocusedMode) {
         // Non-focused: show step summary list with minimap (no detail pane)
         // User clicks a step or presses Enter to enter split-pane
-        prepareTimelineSteps(req.messages || req.input, resEvents, e.provider || 'anthropic');
+        prepareTimelineSteps(req.messages, resEvents, e.provider || 'anthropic');
         if (!currentSteps.length) {
           inner = e.reqLoaded ? '<div class="col-empty">No messages</div>' : loading;
           break;
@@ -2554,7 +2554,7 @@ function renderDetailCol() {
       }
 
       // Prepare steps if needed
-      prepareTimelineSteps(req.messages || req.input, resEvents, e.provider || 'anthropic');
+      prepareTimelineSteps(req.messages, resEvents, e.provider || 'anthropic');
       if (!currentSteps.length) {
         inner = e.reqLoaded ? '<div class="col-empty">No messages</div>' : loading;
         break;

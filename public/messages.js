@@ -172,10 +172,6 @@ function getResponseFunctionCallName(item) {
 function buildMergedSteps(messages, resEvents, provider) {
   if ((!messages || !messages.length) && (!resEvents || !resEvents.length)) return [];
 
-  // Normalize provider-native input format to Anthropic-shaped messages
-  const renderer = (typeof getRenderer === 'function') ? getRenderer(provider) : null;
-  if (renderer?.normalizeMessages) messages = renderer.normalizeMessages(messages);
-
   // Phase 1a: Build tool_use_id → tool_result map
   const resultMap = new Map();
   if (messages) {

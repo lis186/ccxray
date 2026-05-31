@@ -153,8 +153,8 @@ Architecture 鳥瞰圖（4 registry + disk + dispatch keys 對照表）。要在
 - [x] Phase 7b: G11 provider badge + G13 perMessage tokens — committed (4788ab9), then user manually reverted G11/G13 + cleaned up setCwdFallback + simplified version index. **6 files with uncommitted cleanup changes.**
 - [x] Phase 7c: WS cwd fix — committed (3b0b691), WS sessions inherit cwd from Codex workspaces metadata.
 - [x] Phase 8: Comprehensive UI audit — done (see below)
-- [x] Phase 8a: WS content capture — committed
-- [x] Phase 8b: buildMergedSteps OpenAI support — done（RENDERERS[provider].normalizeMessages, +34行, 690/690 pass）
+- [x] Phase 8a: WS content capture — done, **未 commit**（ws-proxy.js +67行, test +95行, 690/690 pass）
+- [ ] Phase 8b: buildMergedSteps OpenAI support — **next**（Timeline "No messages" → 有內容）
 - [ ] Phase 8c: perMessage token breakdown — Minimap per-item bars
 - [ ] Phase 8d: extractToolCalls OpenAI — Tool chips
 - [ ] Phase 8e: WS_SKIP_EVENTS 修復 — 5 行，獨立可平行

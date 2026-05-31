@@ -6,32 +6,6 @@
 // as globals since this script loads before messages.js runs buildMergedSteps.
 
 window.RENDERERS.openai = {
-  // Convert OpenAI Responses API input[] to Anthropic-shaped messages[]
-  // so buildMergedSteps Phase 2 loop can process them unchanged.
-  normalizeMessages(input) {
-    if (!input || !input.length) return input;
-    if (!input[0].type) return input; // already Anthropic shape
-    const msgs = [];
-    for (const item of input) {
-      if (item.type === 'message') {
-        const blocks = Array.isArray(item.content) ? item.content : [];
-        const content = blocks.map(b => {
-          if (b.type === 'input_text') return { type: 'text', text: b.text || '' };
-          if (b.type === 'input_image') return { type: 'image', source: b.image_url || b.url || '' };
-          if (b.type === 'input_audio') return { type: 'text', text: '[audio]' };
-          return { type: 'text', text: b.text || JSON.stringify(b) };
-        });
-        msgs.push({ role: item.role === 'developer' ? 'user' : (item.role || 'user'), content });
-      } else if (item.type === 'function_call_output') {
-        msgs.push({
-          role: 'user',
-          content: [{ type: 'tool_result', tool_use_id: item.call_id, content: item.output || '' }],
-        });
-      }
-    }
-    return msgs;
-  },
-
   processEvent(ev, state) {
     const payload = getResponseEventPayload(ev);
     if (ev.type === 'response.output_text.delta') {
