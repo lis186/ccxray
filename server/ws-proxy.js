@@ -16,10 +16,11 @@ const {
 } = require('./wire-parsers/openai');
 const detectOpenAISession = (headers, body) => _detectOpenAISession3(null, headers, body);
 
-// Large envelope events skipped from timeline capture — each is ~35KB (full response object).
-// Blacklist (not whitelist) so new event types are automatically captured.
+// Large envelope events skipped from timeline capture.
+// response.completed/done are kept: they contain the canonical output item list
+// needed for tool-call extraction and timeline rendering.
 const WS_SKIP_EVENTS = new Set([
-  'response.created', 'response.in_progress', 'response.completed', 'response.done',
+  'response.created', 'response.in_progress',
   'codex.rate_limits',
 ]);
 
@@ -287,7 +288,7 @@ async function recordWebSocketEntry(ctx, result) {
     model: ctx.lastModel || null,
     msgCount: Array.isArray(cr?.input) ? cr.input.length : 0,
     toolCount: Array.isArray(cr?.tools) ? cr.tools.length : 0,
-    toolCalls: {},
+    toolCalls: helpers.extractOpenAIToolCalls(ctx.responseEvents),
     isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
     sessionInferred: ctx.sessionInferred,
     title: 'Codex WebSocket session',
