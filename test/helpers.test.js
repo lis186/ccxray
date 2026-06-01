@@ -166,6 +166,55 @@ describe('helpers', () => {
     });
   });
 
+  describe('extractOpenAIToolCalls', () => {
+    const { extractOpenAIToolCalls } = require('../server/helpers');
+
+    it('returns empty for null/empty', () => {
+      assert.deepEqual(extractOpenAIToolCalls(null), {});
+      assert.deepEqual(extractOpenAIToolCalls([]), {});
+    });
+
+    it('extracts from WS response.output_item.done events', () => {
+      const events = [
+        { type: 'response.output_item.done', item: { type: 'function_call', name: 'exec_command', call_id: 'c1' } },
+        { type: 'response.output_item.done', item: { type: 'function_call', name: 'exec_command', call_id: 'c2' } },
+        { type: 'response.output_item.done', item: { type: 'message', role: 'assistant' } },
+      ];
+      const counts = extractOpenAIToolCalls(events);
+      assert.equal(counts.Bash, 2);
+      assert.equal(Object.keys(counts).length, 1);
+    });
+
+    it('extracts from flat HTTP response.output[] items', () => {
+      const output = [
+        { type: 'function_call', name: 'apply_patch', call_id: 'c1' },
+        { type: 'function_call', name: 'exec_command', call_id: 'c2' },
+        { type: 'message', role: 'assistant' },
+      ];
+      const counts = extractOpenAIToolCalls(output);
+      assert.equal(counts.Edit, 1);
+      assert.equal(counts.Bash, 1);
+    });
+
+    it('skips meta-tools without .name', () => {
+      const output = [
+        { type: 'function_call', call_id: 'c1' },
+        { type: 'web_search', call_id: 'c2' },
+      ];
+      const counts = extractOpenAIToolCalls(output);
+      assert.deepEqual(counts, {});
+    });
+
+    it('deduplicates .added + .done for same call_id', () => {
+      const events = [
+        { type: 'response.output_item.added', item: { type: 'function_call', name: 'exec_command', call_id: 'c1' } },
+        { type: 'response.output_item.done', item: { type: 'function_call', name: 'exec_command', call_id: 'c1' } },
+      ];
+      const counts = extractOpenAIToolCalls(events);
+      assert.equal(counts.Bash, 1);
+    });
+  });
+
   describe('computeThinkingDuration', () => {
     it('returns null when no thinking events', () => {
       assert.equal(computeThinkingDuration([{ type: 'message_start' }]), null);
