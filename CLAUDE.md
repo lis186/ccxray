@@ -127,14 +127,6 @@ Claude Code → proxy receives request → detect session (explicit or inferred)
 
 Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` env var.
 
-### Codex First-Turn Input Backfill
-
-Codex's first WS turn sends `input=[]` in `response.create` — the user's prompt is handled by the Codex CLI framework and never appears in any WebSocket frame field. Starting from the second turn, `input` includes full conversation history (all prior user/assistant messages).
-
-**Workaround** (`ws-proxy.js:backfillFirstTurnInput`): when a turn arrives with non-empty `input`, we check if the previous turn in the same session has empty `input`. If so, we extract everything before the first assistant response and write it back to the previous turn's `_req.json`. The next lazy-load picks it up and the timeline shows the user's question.
-
-**Limitation**: the backfill only takes effect after the second turn is recorded. If the user only sends one turn, or views Turn 1 before Turn 2 completes, the user's question won't appear in Turn 1's timeline. A page refresh after Turn 2 completes resolves this.
-
 ### Delta Log Storage
 
 Each `_req.json` normally stores the full `messages` array. For long sessions this wastes 85–90% of disk space (each turn re-stores the entire conversation history). Delta storage writes only new messages and a pointer to the previous turn.

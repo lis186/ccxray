@@ -178,7 +178,7 @@
 
 | Behavior | Detail | Confidence |
 |----------|--------|------------|
-| First-turn `input=[]` | Codex CLI handles the user's first prompt internally; `response.create` sends `input: []`. User message only appears in Turn 2's `input` history | `obs-stable` codex ≥0.131 |
+| WS warm-up before real turn | Codex sends `response.create` with `generate: false` (warm-up) before the real `response.create`. The warm-up has `input: []`; the real request has user messages. Proxies must skip `generate: false` frames when capturing request data | `obs-stable` codex ≥0.131 |
 | `response.completed` stripped fields | `output: null`, `input: null` — large fields omitted from WS event despite being present in HTTP response | `obs-fragile` codex 0.133 |
 | Meta-tools without `.name` | `tool_search`, `web_search`, `image_generation` — these tool definitions have no `name` field. Any `t.name.startsWith(...)` crashes | `obs-stable` codex ≥0.131 |
 | Startup platform pings | Codex 0.133+ sends ~10 requests on startup to `/v1/plugins/*`, `/v1/ps/plugins/*`, `/v1/connectors/*`, `/v1/api/codex/apps`, `/v1/api/codex/usage` | `obs-fragile` codex 0.133 |
