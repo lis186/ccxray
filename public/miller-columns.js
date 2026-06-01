@@ -1386,8 +1386,8 @@ function formatEntryDateShort(id) {
 }
 
 
-function copySessionContinue(sid, btn) {
-  navigator.clipboard.writeText('claude --resume ' + sid).then(() => {
+function copySessionContinue(sid, btn, agent) {
+  navigator.clipboard.writeText((agent || 'claude') + ' --resume ' + sid).then(() => {
     const orig = btn.textContent;
     btn.textContent = '✓ copied!';
     btn.style.color = 'var(--green)';
@@ -1488,9 +1488,10 @@ function renderSessionItem(sess, sid) {
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
-  const copyBtn = sid === 'direct-api'
+  const resumeCmd = (sess.agent || 'claude') + ' --resume ' + sid;
+  const copyBtn = sid === 'direct-api' || sid === 'codex-raw'
     ? ''
-    : '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this)" title="Copy: claude --resume ' + escapeHtml(sid) + '">&#10697;</button>';
+    : '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this,&quot;' + escapeHtml(sess.agent || 'claude') + '&quot;)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>';
   return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +

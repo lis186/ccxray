@@ -228,7 +228,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude' });
     const sessEl = document.createElement('div');
     sessEl.className = 'session-item';
     sessEl.dataset.sessionId = sid;
