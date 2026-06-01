@@ -34,6 +34,15 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ CCXRAY_LOOPBACK_NO_AUTH=1 \
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
 
+## Wire Protocol Documentation
+
+`docs/wire-protocol-reference.md` documents observable wire-level differences between Claude Code (Anthropic Messages API) and Codex (OpenAI Responses API). Every field is tagged with a confidence level (`contractual`, `obs-stable`, `obs-fragile`) and a version range.
+
+**Maintenance rule**: when you discover or fix a wire protocol behavior (new header, changed event shape, undocumented field), update `docs/wire-protocol-reference.md`:
+1. Add/update the relevant row with the correct confidence tag and version range
+2. Add a changelog entry at the top of the file (date, agent, version, what changed)
+3. If a previously `obs-fragile` behavior is confirmed across a version bump, promote it to `obs-stable`
+
 ## Architecture
 
 ### Server (`server/`)
