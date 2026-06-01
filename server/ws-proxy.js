@@ -79,6 +79,40 @@ function isOpenAIWebSocket(req, upstream) {
   return upstream?.provider === 'openai' && OPENAI_WS_PATHS.has(pathname) && isUpgradeRequest(req);
 }
 
+// ── Codex first-turn input backfill ──────────────────────────────────
+// Limitation: Codex's first WS turn sends input=[] because the user's
+// prompt is handled by the Codex CLI framework and never appears in the
+// WebSocket response.create frame. The user message is only visible
+// starting from the second turn, which includes full conversation history
+// in its input[] array.
+//
+// Workaround: when a turn arrives with non-empty input, we check if the
+// previous turn in the same session has empty input. If so, we extract
+// everything before the first assistant response (= Turn 1's context,
+// including the user's question) and write it back to the previous turn's
+// _req.json on disk. The next lazy-load will pick it up.
+function backfillFirstTurnInput(currentEntryId, sessionId, currentInput) {
+  const prev = store.entries.slice().reverse().find(e =>
+    e.id !== currentEntryId &&
+    e.sessionId === sessionId &&
+    e.provider === 'openai' &&
+    e._loaded === false // WS entries are nulled after record → _loaded=false
+  );
+  if (!prev) return;
+  // Read the previous entry's req from disk to check if input is empty
+  config.storage.read(prev.id, '_req.json').then(raw => {
+    const prevReq = JSON.parse(raw);
+    if (Array.isArray(prevReq.input) && prevReq.input.length > 0) return;
+    const firstAsstIdx = currentInput.findIndex(m =>
+      m.type === 'message' && m.role === 'assistant'
+    );
+    if (firstAsstIdx <= 0) return;
+    prevReq.input = currentInput.slice(0, firstAsstIdx);
+    config.storage.write(prev.id, '_req.json', JSON.stringify(prevReq))
+      .catch(err => console.error('Backfill req write failed:', err.message));
+  }).catch(() => {});
+}
+
 function writeSocketResponse(socket, statusCode, reason) {
   if (socket.destroyed) return;
   socket.write(
@@ -308,6 +342,11 @@ async function recordWebSocketEntry(ctx, result) {
   store.entries.push(entry);
   store.trimEntries();
   broadcast(entry);
+
+  // Backfill previous turn's missing user input (see backfillFirstTurnInput comment)
+  if (Array.isArray(cr?.input) && cr.input.length > 0) {
+    backfillFirstTurnInput(entry.id, ctx.sessionId, cr.input);
+  }
 
   const indexLine = JSON.stringify({
     id: entry.id,
