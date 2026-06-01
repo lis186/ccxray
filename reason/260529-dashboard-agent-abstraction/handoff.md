@@ -372,14 +372,14 @@ G1-G9（呼叫已有函數）+ G10（tool aliases）已 commit。
 - 精確 OpenAI token count: 需 tiktoken dependency → 不加，用 Claude tokenizer 近似（±15%）
 - extractOpenAIToolCalls: Phase 8d 處理（Responses API format：`function_call_output` + `call_id`，非 Chat Completions format）
 
-## 進度（2026-06-01 更新）
+## 進度（2026-06-02 更新）
 
 ```
 8a ✅ → 8b ✅ → lazy-load fix ✅ → 8e ✅ → 8d ✅ → 8c ✅ → 8f ✅
-全部 Phase 8 完成 + Codex review findings 修復 + regression tests
+全部 Phase 8 完成 + Codex review 3 rounds + regression tests + dual-provider e2e 驗證
 ```
 
-### 已完成（2026-06-01）
+### 已完成（2026-06-01 ~ 06-02）
 
 - **Phase 8e**: `WS_SKIP_EVENTS` 調整（response.completed/done 回到 skip set — usage/model 在 filter 前提取）
 - **Phase 8d**: `extractOpenAIToolCalls()` + server-side `OPENAI_TOOL_ALIASES`，tool chips 在 dashboard 顯示
@@ -391,12 +391,14 @@ G1-G9（呼叫已有函數）+ G10（tool aliases）已 commit。
 - **HTTP OpenAI toolCalls**: SSE path 用 `events`（非 `ctx.resData`），non-SSE path 用 `openAIEvents || response.output`
 - **Resume button**: `sess.agent`（`'claude'`/`'codex'`）驅動 resume 指令，codex-raw 隱藏 copy button
 - **Wire Protocol Reference**: `docs/wire-protocol-reference.md` Part 1 完成（186 行，6 sections，confidence tags）
-- **Regression tests**: `extractOpenAIToolCalls` unit tests + forward-path e2e tests（SSE text/event-stream + non-SSE JSON）
+- **Regression tests**: `extractOpenAIToolCalls` unit tests + forward-path e2e tests（SSE text/event-stream + non-SSE JSON）— Codex reviewer 3 rounds 確認覆蓋
+- **Dual-provider e2e 驗證**：同一 smoke server 同時跑 Claude + Codex 流量，browser-harness 截圖確認兩個 session 都正確顯示，無 regression
 
 ### 教訓
 
 - **generate:false warm-up bug**: 觀察到 `input=[]` 就假設是協議限制，寫了 backfill workaround。Workflow review 發現真因是 warm-up frame 覆蓋。1 行 fix 取代 34 行 workaround。**教訓：異常值先驗證 root cause，不要直接寫 workaround。**
 - **forward.js variable naming**: SSE path 用了不存在的 `ctx.resData`，non-SSE path 傳 `[]`。Reviewer 抓到。**教訓：integration test 比 unit test 重要 — unit test 不測 wiring。**
+- **mock Content-Type**: SSE regression test 用 `application/json` 不走 `handleOpenAISSE`。Reviewer 抓到。**教訓：mock 的 header 必須匹配真實 dispatch 條件。**
 
 ### Wire Protocol Doc — 待修 Review Findings（19 個）
 
