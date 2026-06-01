@@ -16,12 +16,11 @@ const {
 } = require('./wire-parsers/openai');
 const detectOpenAISession = (headers, body) => _detectOpenAISession3(null, headers, body);
 
-// Large envelope events skipped from timeline capture.
-// response.completed/done are kept for usage/status metadata and thinking-duration
-// end marker (renderers/openai.js). output and input fields are null as of Codex
-// 0.133; tool-call extraction comes from response.output_item.done events.
+// Large envelope events skipped from responseEvents capture (~35KB each).
+// usage and model are extracted before this filter (lines below), so skipping
+// these loses no data. Tool-call extraction uses response.output_item.done events.
 const WS_SKIP_EVENTS = new Set([
-  'response.created', 'response.in_progress',
+  'response.created', 'response.in_progress', 'response.completed', 'response.done',
   'codex.rate_limits',
 ]);
 

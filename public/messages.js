@@ -180,6 +180,13 @@ function normalizeOpenAIInput(input) {
         text: b.text || JSON.stringify(b),
       }));
       msgs.push({ role: item.role || 'user', content });
+    } else if (item.type === 'function_call') {
+      let input = {};
+      try { input = JSON.parse(item.arguments || '{}'); } catch {}
+      msgs.push({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: item.call_id || item.id, name: item.name || 'function_call', input }],
+      });
     } else if (item.type === 'function_call_output') {
       msgs.push({
         role: 'user',
@@ -190,10 +197,15 @@ function normalizeOpenAIInput(input) {
   return msgs;
 }
 
+function isOpenAIInput(items) {
+  if (!Array.isArray(items) || !items.length) return false;
+  return items.some(m => m.type === 'message' || m.type === 'function_call' || m.type === 'function_call_output');
+}
+
 function buildMergedSteps(messages, resEvents, provider) {
   if ((!messages || !messages.length) && (!resEvents || !resEvents.length)) return [];
 
-  if (messages?.length && messages[0].type === 'message') {
+  if (messages?.length && isOpenAIInput(messages)) {
     messages = normalizeOpenAIInput(messages);
   }
 

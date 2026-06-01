@@ -108,6 +108,23 @@ describe('WS frame capture → buildMergedSteps integration', () => {
     assert.ok(humanSteps[1].hasToolResult);
   });
 
+  it('OpenAI function_call in input[] produces tool-group with parsed args', () => {
+    const context = loadMessagesContext();
+    const input = [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'list files' }] },
+      { type: 'function_call', name: 'exec_command', call_id: 'call_123', arguments: '{"cmd":"pwd"}' },
+      { type: 'function_call_output', call_id: 'call_123', output: '/tmp' },
+    ];
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const toolGroups = steps.filter(s => s.type === 'tool-group');
+    assert.equal(toolGroups.length, 1, 'should have one tool-group');
+    assert.equal(toolGroups[0].calls.length, 1);
+    assert.equal(toolGroups[0].calls[0].name, 'exec_command');
+    assert.equal(JSON.stringify(toolGroups[0].calls[0].input), JSON.stringify({ cmd: 'pwd' }));
+    assert.equal(toolGroups[0].calls[0].result, '/tmp');
+    assert.equal(toolGroups[0].calls[0].pending, false);
+  });
+
   it('filters envelope events matching WS_SKIP_EVENTS', () => {
     const raw = fs.readFileSync(path.join(__dirname, 'fixtures', 'codex-ws-frames', 'say-hi.ndjson'), 'utf8');
     let totalU2C = 0;

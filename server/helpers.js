@@ -659,21 +659,20 @@ const OPENAI_TOOL_ALIASES = { exec_command: 'Bash', shell: 'Bash', read_mcp_reso
 // Extract tool call counts from Codex Responses API event stream.
 // Scans response.output_item.done events for function_call items.
 // Falls back to response.output_item.added if .done events are absent.
-function extractOpenAIToolCalls(responseEvents) {
+function extractOpenAIToolCalls(responseEventsOrOutput) {
   const counts = {};
-  if (!Array.isArray(responseEvents)) return counts;
-  // Prefer .done events (have finalized name); fall back to .added.
-  const targetTypes = new Set(['response.output_item.done', 'response.output_item.added']);
-  const seen = new Set(); // dedupe by item id to avoid double-counting .added + .done
-  for (const ev of responseEvents) {
-    if (!targetTypes.has(ev.type)) continue;
-    const item = (ev.data && ev.data.item) || ev.item || {};
+  if (!Array.isArray(responseEventsOrOutput)) return counts;
+  const seen = new Set();
+  for (const ev of responseEventsOrOutput) {
+    // WS events: wrapped in { type: 'response.output_item.done', item: {...} }
+    // HTTP output[]: flat items { type: 'function_call', name: '...', ... }
+    const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
+    if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
+    const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
     if (item.type !== 'function_call' && item.type !== 'tool_call') continue;
-    // Prefer the call_id for dedup; fall back to output_index
-    const itemKey = item.call_id || item.id || String(ev.output_index ?? '');
+    const itemKey = item.call_id || item.id || '';
     if (itemKey && seen.has(itemKey)) continue;
     if (itemKey) seen.add(itemKey);
-    // Guard: Codex meta-tools (tool_search/web_search/image_generation) have no .name
     const rawName = item.name || item.function?.name;
     if (!rawName) continue;
     const name = OPENAI_TOOL_ALIASES[rawName] || rawName;

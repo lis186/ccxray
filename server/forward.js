@@ -734,7 +734,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       model: openaiModel,
       msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
       toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
-      toolCalls: {},
+      toolCalls: helpers.extractOpenAIToolCalls(Array.isArray(ctx.resData) ? ctx.resData : response?.output),
       isSubagent: ctx.isSubagent || false,
       sessionInferred: ctx.sessionInferred || false,
       title: getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response),
@@ -877,7 +877,9 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         || parsedBody?.model || null,
       msgCount: currMsgCount,
       toolCount: parsedBody?.tools?.length || 0,
-      toolCalls: provider === 'anthropic' ? helpers.extractToolCalls(parsedBody?.messages) : {},
+      toolCalls: provider === 'anthropic'
+        ? helpers.extractToolCalls(parsedBody?.messages)
+        : helpers.extractOpenAIToolCalls(Array.isArray(resData) ? resData : []),
       isSubagent,
       sessionInferred: ctx.sessionInferred || false,
       title,
