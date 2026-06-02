@@ -332,6 +332,7 @@ const server = http.createServer((clientReq, clientRes) => {
         const forceFull = !prev ||
           (config.DELTA_SNAPSHOT_N > 0 && (prev.deltaCount || 0) >= config.DELTA_SNAPSHOT_N);
 
+        const meta = peekSid ? { session_id: peekSid } : undefined;
         if (!forceFull && sharedCount >= 2) {
           stripped = {
             model: parsedBody.model,
@@ -341,14 +342,16 @@ const server = http.createServer((clientReq, clientRes) => {
             messages: currMessages.slice(sharedCount),
             sysHash,
             toolsHash,
+            ...(meta && { metadata: meta }),
           };
           sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: (prev.deltaCount || 0) + 1 });
         } else {
-          stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash };
+          stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
           sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: 0 });
         }
       } else {
-        stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash };
+        const meta = peekSid ? { session_id: peekSid } : undefined;
+        stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
       }
 
       reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))
