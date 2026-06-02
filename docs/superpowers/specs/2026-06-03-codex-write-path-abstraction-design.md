@@ -175,7 +175,12 @@ Each phase: full `node --test` green + isolated smoke before the next.
    single source.
 4. Dead WIRE_PARSERS methods removed; `system-prompt.extractAgentType` intact.
 5. Anthropic HUD/intercept SSE injection behaves exactly as before.
-6. Full test suite green + isolated dual-provider smoke passes.
+6. Full test suite green **and** the browser-harness completion gate passes: on an
+   isolated smoke server, real Codex **and** Claude traffic verified live↔restore
+   (maxContext / cost / stopReason / tool chips / timeline steps identical before and
+   after a restart), navigated via deep-link `?e=<entryId>` URLs. See pre-mortem
+   (`2026-06-03-a1a3-premortem.md`) for the protocol and the Go/No-Go checklist. "Done"
+   is not declared until this gate passes for both providers.
 
 ## Out of scope / deferred
 
