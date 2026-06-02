@@ -420,11 +420,22 @@ Workflow-driven audit（6 parallel agents）cross-checked every doc claim agains
 
 **驗證**：browser-harness 確認 Codex turn card 從 `cache:0%` 變為 `cache:17%`。
 
-### 下一步
+### 1.10.0 Release Status: ✅ READY TO SHIP
 
-1. 1.10.0 release blocker 確認
-2. Part 2: ccxray Normalization Map
-3. Part 3: Explanation & War Stories
+**驗證日期**: 2026-06-02
+
+**Blocker 確認**:
+- 所有 Phase 0-8 commit 存在 ✅
+- 702/702 tests pass ✅
+- 未 commit test fixture（`codex-ws-frames/say-hi.ndjson`）已補 commit（eeb61eb）✅
+- Version 1.10.0 ✅
+- Server startup clean ✅
+- Dual-provider e2e 已於 2026-06-01 驗證 ✅
+
+**文件**:
+1. Wire Protocol Reference — `docs/wire-protocol-reference.md` ✅
+2. Normalization Map — `docs/normalization-map.md` ✅（重寫）
+3. War Stories — `docs/war-stories.md` ✅（新增）
 
 ### 驗證方式（所有 phase 通用）
 

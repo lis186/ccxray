@@ -4,16 +4,16 @@
 > Read [Wire Protocol Reference](wire-protocol-reference.md) first for what each agent sends on the wire.
 > This document covers what ccxray **does** with those fields.
 
-**Version baseline**: ccxray 1.10.x · 2026-06-01
+**Version baseline**: ccxray 1.10.0 · 2026-06-02
 
 ---
 
 ## Dispatch Architecture
 
-ccxray uses a two-layer dispatch: `WIRE_PARSERS` (server) and `RENDERERS` (client).
+Two-layer dispatch: `WIRE_PARSERS` (server) and `RENDERERS` (client).
 
 ```
-Wire traffic → server/config.js getUpstreamForRequestAndHeaders()
+Wire traffic → config.getUpstreamForRequestAndHeaders()
              → upstream.provider ("anthropic" | "openai")
              → server/wire-parsers/{provider}.js    ← server-side normalization
              → public/renderers/{provider}.js        ← client-side event rendering
@@ -21,33 +21,31 @@ Wire traffic → server/config.js getUpstreamForRequestAndHeaders()
 
 | Layer | Registry | Source | Dispatch key |
 |-------|----------|--------|-------------|
-| Server: `WIRE_PARSERS` | `server/wire-parsers/index.js` | `{ anthropic, openai }` | `upstream.provider` |
-| Client: `RENDERERS` | `public/renderers/index.js` | `{ anthropic, openai, fallback }` | `entry.provider` |
+| Server | `server/wire-parsers/index.js` | `{ anthropic, openai }` | `upstream.provider` |
+| Client | `public/renderers/index.js` | `{ anthropic, openai, fallback }` | `entry.provider` |
 
-Each `WIRE_PARSERS` module exports the same interface:
+### WIRE_PARSERS interface
 
-| Method | Purpose |
-|--------|---------|
-| `isNoiseRequest(url, headers, body)` | Filter startup/platform noise |
-| `normalizeListMeta(entry)` | Raw stored entry → thin canonical for index |
-| `extractUsage(resData)` | Response data → `{input_tokens, output_tokens}` |
-| `extractAgentType(systemBlob, headers)` | → `{key, label}` for agent classification |
-| `detectSession(req, headers, body)` | → `{sessionId, isNewSession, inferred}` |
-| `preprocessBody(body, headers)` | Inject header-derived metadata into body before storage |
+Every provider module exports:
+
+| Method | Signature | Purpose |
+|--------|-----------|---------|
+| `isNoiseRequest` | `(url, headers, body) → bool` | Filter startup/platform noise |
+| `normalizeListMeta` | `(entry) → ThinCanonical` | Raw stored entry → list-layer metadata |
+| `extractUsage` | `(resData) → usage obj` | Response data → canonical token counts |
+| `extractAgentType` | `(systemBlob, headers) → {key, label}` | Agent classification |
+| `detectSession` | `(req, headers, body) → {sessionId, isNewSession, inferred}` | Session extraction |
+| `preprocessBody` | `(body, headers) → body` | Inject header metadata before storage (OpenAI only) |
 
 ---
 
 ## 1. Session Detection
 
-### Claude Code (Anthropic)
+### Anthropic
 
-```
-body.metadata.session_id → store.detectSession(body)
-```
+Single source — `body.metadata.session_id`. Delegates to `store.detectSession(parsedBody)`.
 
-Single source. `wire-parsers/anthropic.js:detectSession` delegates directly to `store.detectSession`.
-
-### Codex (OpenAI)
+### OpenAI
 
 Priority chain (`wire-parsers/openai.js:getCodexSessionId`):
 
@@ -55,166 +53,248 @@ Priority chain (`wire-parsers/openai.js:getCodexSessionId`):
 1. header "session_id" or "x-openai-session-id"
 2. header "x-codex-turn-metadata" → JSON parse → .session_id
 3. body.metadata.session_id
-4. fallback → "codex-raw" (synthetic bucket for non-session HTTP requests)
+4. fallback → "codex-raw" (synthetic bucket)
 ```
 
-`preprocessBody` (`withCodexMetadata`) merges header-derived `session_id` and `agent_type` into `body.metadata` so downstream code can treat both providers uniformly.
+`preprocessBody` (`withCodexMetadata`) merges header-derived `session_id` + `agent_type` into `body.metadata` so downstream code treats both providers uniformly.
 
 ### Subagent detection
 
-| Provider | Method | Source |
-|----------|--------|--------|
-| Anthropic | Heuristic | Absence of `cwd` in system prompt (`forward.js:309`) |
-| OpenAI | Explicit | Header `x-openai-subagent` / `x-openai-agent-type` / body `metadata.is_subagent` |
-| OpenAI | Agent types | `explorer` → subagent, `worker` → subagent, `default` → main |
+| Provider | Source | Logic |
+|----------|--------|-------|
+| Anthropic | System prompt heuristic | Absence of `cwd` metadata → likely subagent. `store.isLikelySubagent()` adds temporal heuristic (inflight + timing) |
+| OpenAI | Headers/body | `x-openai-subagent` (truthy, checked first) → `body.metadata.is_subagent`/`isSubagent` (fallback) |
+| OpenAI | Agent type | `explorer`/`worker` → subagent; `default` → main |
 
 ---
 
 ## 2. Working Directory (CWD)
 
-### Claude Code
+### Anthropic
 
-Extracted from system prompt content via regex in `store.extractCwd(parsedBody)`.
+Regex extraction from system prompt content (`store.extractCwd`).
 
-### Codex
+### OpenAI — HTTP
 
-Extracted from `x-codex-turn-metadata` header → `workspaces` object (`ws-proxy.js:getWorkspaceCwd`).
+`parsedBody.metadata.cwd`, falling back to hub client CWD or `process.cwd()`.
 
-Fallback chain:
+### OpenAI — WebSocket
+
+`x-codex-turn-metadata` header → `workspaces` object (`ws-proxy.js:getWorkspaceCwd`).
+
+5-strategy fallback:
 
 ```
-1. workspaces.cwd (string)
-2. workspaces.current (string)
+1. workspaces.cwd        (string)
+2. workspaces.current    (string)
 3. First string value in workspaces
-4. First nested object with .cwd field
-5. First key starting with "/" ← Codex actual format (key IS the path)
+4. Nested object with .cwd field
+5. First key starting with "/"  ← Codex format: key IS the path
 ```
 
-Step 5 is the workaround for Codex's `{ "/path/to/project": { metadata } }` format where the key itself is the cwd.
+Step 5 is the workaround for Codex's `{ "/path/to/project": { metadata } }` where the key itself is the cwd.
 
 ---
 
-## 3. Tool Call Extraction
+## 3. Usage & Cost
 
-### Claude Code
+`pricing.js:calculateCost(usage, model)` — identical call for both providers.
+
+### Usage extraction
+
+| Provider | Source | Extractor |
+|----------|--------|-----------|
+| Anthropic | SSE events `message_start` + `message_delta` | `wire-parsers/anthropic.js:extractUsage` |
+| OpenAI (HTTP) | `response.usage` from SSE events or body | `wire-parsers/openai.js:extractUsage` |
+| OpenAI (WS) | `ctx.lastUsage` captured before `WS_SKIP_EVENTS` filter | Same `extractUsage` |
+
+### Field mapping (→ canonical)
+
+| Wire field | Anthropic | OpenAI | Canonical field |
+|------------|-----------|--------|-----------------|
+| Input tokens | `usage.input_tokens` | `usage.input_tokens` or `prompt_tokens` | `input_tokens` |
+| Output tokens | `message_delta.usage.output_tokens` | `usage.output_tokens` or `completion_tokens` | `output_tokens` |
+| Cache creation | `usage.cache_creation_input_tokens` | N/A (hardcoded 0) | `cache_creation_input_tokens` |
+| Cache creation detail | `usage.cache_creation.ephemeral_{5m,1h}_input_tokens` | N/A | `cache_creation` (nested) |
+| Cache read | `usage.cache_read_input_tokens` | `usage.input_tokens_details.cached_tokens` | `cache_read_input_tokens` |
+
+OpenAI's `extractUsage` also preserves native `input_tokens_details` and `output_tokens_details` for provider-specific display.
+
+---
+
+## 4. Token Breakdown
+
+`helpers.js:tokenizeRequest(body)` produces `{ system, tools, messages, perMessage[], total }`.
+
+Both providers share the same function. It branches on `body.messages` (Anthropic) vs `body.input` (OpenAI) vs `body.instructions` (OpenAI system prompt).
+
+### perMessage mapping (OpenAI input items)
+
+| Input item type | Mapped block type | Content source |
+|-----------------|-------------------|----------------|
+| `function_call_output` | `tool_result` | `item.output` |
+| `{content: "string"}` | `text` | `item.content` |
+| `{content: [{text}]}` | `text` (per block) | `b.text` |
+| Items with no `.type` | `text` | `item.content` (string fallback) |
+
+---
+
+## 5. Tool Call Extraction
+
+### Anthropic
 
 `helpers.js:extractToolCalls(messages)` — scans `messages[].content[]` for `type:"tool_use"` blocks, counts by `name`.
 
-### Codex
+### OpenAI
 
-`helpers.js:extractOpenAIToolCalls(responseEvents)` — scans WS response events for `response.output_item.done` and `response.output_item.added` with `item.type:"function_call"`.
+`helpers.js:extractOpenAIToolCalls(responseEventsOrOutput)` — scans:
 
-Dedup: by `item.call_id` or `item.id` to avoid double-counting `.added` + `.done` for the same call.
+- **WS events**: `response.output_item.done` / `.added` with `item.type:"function_call"`
+- **HTTP output[]**: flat items `{ type: "function_call", name, ... }`
 
-Server-side alias map (`helpers.js:OPENAI_TOOL_ALIASES`):
+Dedup by `item.call_id` or `item.id` (avoids double-counting `.added` + `.done`).
+
+### Alias maps
+
+Both server and client maintain identical maps:
 
 ```js
 { exec_command: 'Bash', shell: 'Bash', read_mcp_resource: 'Read', apply_patch: 'Edit' }
 ```
 
-Client-side mirror (`messages.js:CODEX_TOOL_ALIASES`) — same map, used for timeline rendering and tool preview.
+- Server: `helpers.js:OPENAI_TOOL_ALIASES`
+- Client: `messages.js:CODEX_TOOL_ALIASES`
 
-Guard: meta-tools (`tool_search`, `web_search`, `image_generation`) have no `.name` field — both extraction functions check `rawName` before accessing.
+**Guard**: meta-tools (`tool_search`, `web_search`, `image_generation`) have no `.name` — all `t.name` access sites guard with `t.name &&`.
 
 ---
 
-## 4. Tool Call Display (Client)
+## 6. Timeline Rendering (Client)
 
-`public/messages.js:buildMergedSteps(messages, resEvents, provider)` builds the unified timeline:
+`messages.js:buildMergedSteps(messages, resEvents, provider)` builds the unified timeline.
 
-| Phase | Input | Action |
-|-------|-------|--------|
-| Detect OpenAI | `messages[0].type === "message"` | → `normalizeOpenAIInput(messages)` converts to Anthropic shape |
-| Phase 1a | User messages | Build `tool_use_id → tool_result` map |
-| Phase 2 | All messages | Emit `human`, `assistant-text`, `tool-group` steps |
-| Phase 3 | `resEvents` | Dispatch to `RENDERERS[provider].processEvent()` for current-turn events |
+### Auto-detection + normalization
 
-`normalizeOpenAIInput` conversion:
+```
+messages[].type has "message" | "function_call" | "function_call_output"?
+  → yes: normalizeOpenAIInput(messages) → Anthropic-shaped messages
+  → no:  pass through as-is (already Anthropic format)
+```
+
+### normalizeOpenAIInput conversion
 
 | OpenAI input item | → Anthropic message |
 |-------------------|---------------------|
 | `{type:"message", role:"developer"}` | Skipped |
 | `{type:"message", role:"user"\|"assistant"}` | `{role, content:[{type:"text", text}]}` |
+| `{type:"function_call", call_id, name, arguments}` | `{role:"assistant", content:[{type:"tool_use", id:call_id, name, input:JSON.parse(arguments)}]}` |
 | `{type:"function_call_output", call_id, output}` | `{role:"user", content:[{type:"tool_result", tool_use_id:call_id, content:output}]}` |
 
----
+### Pipeline
 
-## 5. Cost Calculation
-
-`pricing.js:calculateCost(usage, model)` — identical call for both providers.
-
-| Provider | Usage source | Fields used |
-|----------|-------------|-------------|
-| Anthropic | `message_start.message.usage` + `message_delta.usage` merged | `input_tokens`, `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens` |
-| OpenAI (HTTP) | `response.usage` from SSE events or response body | `input_tokens` (or `prompt_tokens`), `output_tokens` (or `completion_tokens`) |
-| OpenAI (WS) | `ctx.lastUsage` captured before `WS_SKIP_EVENTS` filter | Same as HTTP |
-
-`wire-parsers/openai.js:extractUsage` normalizes `prompt_tokens` → `input_tokens` and `completion_tokens` → `output_tokens`.
-
-OpenAI has no `cache_creation_input_tokens` equivalent. `cache_read_input_tokens` maps to `usage.input_tokens_details.cached_tokens`.
+| Phase | Input | Action |
+|-------|-------|--------|
+| 1a | User messages | Build `tool_use_id → tool_result` map |
+| 2 | All messages | Emit `human`, `assistant-text`, `tool-group` steps |
+| 3 | `resEvents` | Dispatch to `RENDERERS[provider].processEvent()` for current-turn events |
 
 ---
 
-## 6. Response Event Storage
+## 7. WS Frame Capture
 
-### Claude Code (HTTP SSE)
+`ws-proxy.js` captures Codex WebSocket content on the client→upstream path.
 
-SSE text is parsed into event array and stored as `_res.json`. Each event is a `{event, data}` pair.
+### Capture logic
 
-### Codex (WebSocket)
+```
+clientWs.on('message') → JSON.parse → dispatch on parsed.type:
+  "response.create" (generate !== false)  → first-wins capture of model/instructions/input/tools
+  "session.update"                        → update instructions (forward compat)
+```
 
-`ws-proxy.js:WS_SKIP_EVENTS` filters large envelope events from storage:
+`generate: false` frames are warm-up pings — skipped. Without this guard, the warm-up (which has `input: []`) would shadow the real request.
 
-| Event | Stored? | Reason |
-|-------|---------|--------|
-| `response.created` | No | ~35KB, redundant with `.completed` |
+### Stored as `_req.json`
+
+When `ctx.clientRequest` is populated: full `reqLog` with `{ provider, model, instructions, input, tools, ... }`.
+When absent (non-JSON frames, binary): transport-only fallback with `{ provider: 'openai', transport: 'websocket', ... }`.
+
+### Response events
+
+`WS_SKIP_EVENTS` filters large envelope events from storage:
+
+| Event | Stored? | Why |
+|-------|---------|-----|
+| `response.created` | No | ~35KB, redundant |
 | `response.in_progress` | No | ~35KB, status-only |
-| `response.completed` | **Yes** | Contains usage, needed for timeline |
-| `response.done` | **Yes** | Alias for `.completed` |
+| `response.completed` | No | Usage/model extracted before skip filter |
+| `response.done` | No | Alias for `.completed` |
 | `codex.rate_limits` | No | Non-standard metadata |
 | All others | **Yes** | Tool calls, text deltas, content parts |
 
-Usage/model are extracted from envelope events **before** the skip filter (`ws-proxy.js:488-489`), so skipping doesn't lose cost data.
-
-### Restore-time normalization
-
-`restore.js:loadEntryReqRes` + `forward.js:normalizeOpenAIResponseSummary`:
-- OpenAI entries: `_res.json` (event array) → extract `response` object → populate `model`, `usage`, `stopReason`, `title`
-- Anthropic entries: delta chain reconstruction (`prevId` → `msgOffset` splicing)
+Usage and model are extracted from envelope events **before** the skip filter (`ws-proxy.js:488-489`), so cost data is never lost.
 
 ---
 
-## 7. First-Turn Input Backfill
+## 8. Restore-Time Normalization
 
-Codex first WS turn has `input=[]`. `ws-proxy.js:backfillFirstTurnInput`:
+`restore.js:loadEntryReqRes` handles lazy-loading from disk.
 
-```
-Turn 2 recorded with input.length > 0
-  → find previous entry in same session with _loaded=false
-  → read previous entry's _req.json from disk
-  → check if input is empty
-  → extract current input[0..firstAssistantIndex] (= Turn 1's context)
-  → write back to previous entry's _req.json
-```
+### Anthropic path
 
-Limitation: only fires after Turn 2 is recorded. Single-turn sessions or viewing Turn 1 before Turn 2 completes show no user input.
+1. Read `_req.json` (may be delta format)
+2. If `prevId` + `msgOffset`: follow chain recursively, splice `prevMessages[0..offset]` + delta
+3. Rehydrate `sys_${hash}.json` → `entry.req.system`, `tools_${hash}.json` → `entry.req.tools`
+4. Read `_res.json` → event array → `entry.res`
+
+### OpenAI path
+
+1. Read `_req.json` — store as-is (no dedup/delta for OpenAI)
+2. Read `_res.json` → `normalizeOpenAIResponseSummary`:
+   - Extract `response` object from events
+   - Populate `model`, `usage`, `stopReason`, `title` on `entry`
+   - Build `responseMetadata` object
+
+### Provider dispatch
+
+`entry.provider` (set by `addEntry` during live capture or inferred from `stripped.provider` at restore) determines which path.
 
 ---
 
-## 8. Startup Noise Filtering
+## 9. Noise Filtering
+
+### OpenAI
 
 `wire-parsers/openai.js:isNoiseRequest` matches Codex 0.133+ platform pings:
 
 ```
-/v1/plugins/*
-/v1/ps/plugins/*
-/v1/connectors/*
-/v1/api/codex/apps/*
-/v1/api/codex/usage/*
+/v1/plugins/*       /v1/ps/plugins/*     /v1/connectors/*
+/v1/api/codex/apps/*                     /v1/api/codex/usage/*
 ```
 
-These are forwarded upstream with `skipEntry: true` — the response reaches Codex but no dashboard entry is created.
+Forwarded with `skipEntry: true` — response reaches Codex, no dashboard entry.
 
-`/v1/codex/analytics-events/events` (telemetry) is intentionally **not** filtered — future use for turn metadata extraction.
+`/v1/codex/analytics-events/events` (telemetry) intentionally **not** filtered — reserved for future turn metadata extraction.
 
-Anthropic: `isNoiseRequest` always returns `false` (no known startup noise).
+### Anthropic
+
+`isNoiseRequest` always returns `false` (no known startup noise).
+
+---
+
+## 10. System Prompt Display (Client)
+
+`miller-columns.js` renders the System section:
+
+```js
+if (req.system || req.instructions) {
+  renderSystemBlockViewer(req.system || req.instructions)
+}
+```
+
+| Provider | Source | Format |
+|----------|--------|--------|
+| Anthropic | `req.system` | Array of `{type:"text", text, cache_control?}` blocks. B2 splitting extracts sections |
+| OpenAI | `req.instructions` | Single string. Rendered as-is (no B2 splitting) |
+
+Server-side version tracking (`system-prompt.js:registerPromptVersion`) uses `sysHash` (Anthropic) or instructions hash (OpenAI) for diff comparison.
