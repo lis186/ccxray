@@ -400,13 +400,29 @@ G1-G9（呼叫已有函數）+ G10（tool aliases）已 commit。
 - **forward.js variable naming**: SSE path 用了不存在的 `ctx.resData`，non-SSE path 傳 `[]`。Reviewer 抓到。**教訓：integration test 比 unit test 重要 — unit test 不測 wiring。**
 - **mock Content-Type**: SSE regression test 用 `application/json` 不走 `handleOpenAISSE`。Reviewer 抓到。**教訓：mock 的 header 必須匹配真實 dispatch 條件。**
 
-### Wire Protocol Doc — 待修 Review Findings（19 個）
+### Wire Protocol Doc — ✅ Done（38 findings fixed）
 
-Workflow review 確認 21 個問題，已修 2 個 code issues，剩 19 個 doc issues。詳見 `docs/wire-protocol-reference.md` changelog。
+Workflow-driven audit（6 parallel agents）cross-checked every doc claim against codebase。找到 38 個 findings（13 major + 25 minor），全部修正。Codex reviewer 2 rounds 通過。
+
+詳見 `docs/wire-protocol-reference.md` changelog（2026-06-02 entry）。
+
+### Codex Cache Display Bug — ✅ Fixed
+
+驗證 dashboard 時發現 Codex session cache 顯示 0% 但實際 hit rate 99%。
+
+**Root cause**：
+1. `wire-parsers/openai.js:extractUsage` 只提取 `input_tokens` / `output_tokens` / `total_tokens`，丟掉 `input_tokens_details.cached_tokens`
+2. `ws-proxy.js` 直接存 raw usage 繞過 `extractUsage`
+
+**Fix（provider pattern — option B: thin canonical）**：
+- `extractUsage` 輸出 canonical `cache_read_input_tokens`（同 Anthropic 欄位名）+ 保留 native `input_tokens_details`
+- `ws-proxy.js` WS usage 通過 `extractOpenAIUsage` normalize
+
+**驗證**：browser-harness 確認 Codex turn card 從 `cache:0%` 變為 `cache:17%`。
 
 ### 下一步
 
-1. Wire protocol doc findings batch fix（19 個）
+1. 1.10.0 release blocker 確認
 2. Part 2: ccxray Normalization Map
 3. Part 3: Explanation & War Stories
 
