@@ -2,6 +2,10 @@
 
 const { extractAgentType } = require('../system-prompt');
 const store = require('../store');
+const helpers = require('../helpers');
+const config = require('../config');
+const { calculateCost } = require('../pricing');
+const { agentForProvider } = require('../providers');
 
 // ── isNoiseRequest ──────────────────────────────────────────
 function isNoiseRequest(_url, _headers, _parsedBody) {
@@ -68,10 +72,42 @@ function detectSession(_req, _headers, parsedBody) {
   return store.detectSession(parsedBody);
 }
 
+function buildEntryFields(ctx) {
+  const { parsedBody } = ctx;
+  const usage = ctx.usage || extractUsage(ctx.events) || null;
+  const model = parsedBody?.model || null;
+  const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : !store.extractCwd(parsedBody);
+  return {
+    provider: 'anthropic',
+    agent: agentForProvider('anthropic'),
+    model,
+    msgCount: parsedBody?.messages?.length || 0,
+    toolCount: parsedBody?.tools?.length || 0,
+    toolCalls: helpers.extractToolCalls(parsedBody?.messages),
+    isSubagent,
+    sessionInferred: ctx.sessionInferred || false,
+    cwd: ctx.cwd ?? null,
+    usage,
+    cost: calculateCost(usage, model),
+    maxContext: config.inferMaxContext(model, parsedBody?.system, usage),
+    responseMetadata: undefined,
+    stopReason: ctx.stopReason || '',
+    title: ctx.title || null,
+    thinkingDuration: ctx.thinkingDuration ?? null,
+    toolFail: ctx.toolFail != null ? ctx.toolFail : helpers.hasToolFail(parsedBody),
+    sysHash: ctx.sysHash || null,
+    toolsHash: ctx.toolsHash || null,
+    coreHash: ctx.coreHash || null,
+    thinkingStripped: ctx.thinkingStripped,
+    sessionId: ctx.sessionId,
+  };
+}
+
 module.exports = {
   isNoiseRequest,
   normalizeListMeta,
   extractUsage,
   extractAgentType: extractAgentTypeMethod,
   detectSession,
+  buildEntryFields,
 };

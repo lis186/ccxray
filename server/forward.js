@@ -515,8 +515,6 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     }
 
     const sessionId = reqSessionId;
-    const costInfo = calculateCost(usage, parsedBody?.model);
-    const maxContext = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage);
     const isSubagent = !store.extractCwd(parsedBody);
     const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime);
     const title = titleGenTitle
@@ -526,40 +524,27 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
            || helpers.extractLastUserText(parsedBody)
            || helpers.extractToolResultSummary(parsedBody)))
       || null;
-    const toolFail = helpers.hasToolFail(parsedBody);
     const thinkingDuration = helpers.computeThinkingDuration(events);
     const currMsgCount = parsedBody?.messages?.length || 0;
     const thinkingStripped = computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody);
     const entry = {
-      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
-      provider: 'anthropic',
-      agent: agentForProvider('anthropic'),
+      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
-      tokens: helpers.tokenizeRequest(parsedBody),
-      usage, cost: costInfo,
-      maxContext,
-      cwd: store.sessionMeta[sessionId]?.cwd || null,
       receivedAt: startTime,
-      thinkingDuration,
+      tokens: helpers.tokenizeRequest(parsedBody),
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
-      model: parsedBody?.model || null,
-      msgCount: currMsgCount,
-      toolCount: parsedBody?.tools?.length || 0,
-      toolCalls: helpers.extractToolCalls(parsedBody?.messages),
-      isSubagent,
-      sessionInferred: ctx.sessionInferred || false,
-      title,
-      stopReason,
-      toolFail,
-      sysHash: provider === 'anthropic' ? ctx.sysHash || null : null,
-      toolsHash: provider === 'anthropic' ? ctx.toolsHash || null : null,
-      coreHash: provider === 'anthropic' ? ctx.coreHash || null : null,
-      thinkingStripped,
+      ...getParser('anthropic').buildEntryFields({
+        provider: 'anthropic', transport: 'sse', parsedBody, events, usage,
+        proxyRes, sessionId, sessionInferred: ctx.sessionInferred,
+        sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+        cwd: store.sessionMeta[sessionId]?.cwd || null,
+        stopReason, title, thinkingDuration, thinkingStripped,
+        isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
+      }),
     };
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
-    // Track in-flight writes so lazy-load can await them
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
     store.trimEntries();
@@ -584,9 +569,9 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const prefix = ctx.attribPrefix || '';
     console.log(`${color}📥 [${helpers.taipeiTime()}]  ${prefix}  ${glyph} ${code}  ${elapsed}s${outTok}\x1b[0m`);
     if (usage) helpers.printContextBar(usage, parsedBody?.model, parsedBody?.system);
-    if (costInfo?.cost != null) {
-      store.sessionCosts.set(sessionId, (store.sessionCosts.get(sessionId) || 0) + costInfo.cost);
-      console.log(`  💰 $${costInfo.cost.toFixed(4)} this turn | $${store.sessionCosts.get(sessionId).toFixed(4)} session`);
+    if (entry.cost?.cost != null) {
+      store.sessionCosts.set(sessionId, (store.sessionCosts.get(sessionId) || 0) + entry.cost.cost);
+      console.log(`  💰 $${entry.cost.cost.toFixed(4)} this turn | $${store.sessionCosts.get(sessionId).toFixed(4)} session`);
     }
     helpers.printSeparator();
     console.log();
@@ -747,9 +732,6 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         }),
       };
     } else {
-      // Anthropic non-SSE — migrated in Task 7
-      const nonSSEUsage = resData && typeof resData === 'object' && !Array.isArray(resData) ? (resData.usage || null) : null;
-      const maxContext = config.inferMaxContext(parsedBody?.model, parsedBody?.system, nonSSEUsage);
       const isSubagent = !store.extractCwd(parsedBody);
       const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime);
       const title = titleGenTitle
@@ -759,33 +741,26 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
              || helpers.extractLastUserText(parsedBody)
              || helpers.extractToolResultSummary(parsedBody)))
         || null;
-      const toolFail = helpers.hasToolFail(parsedBody);
       const stopReason = resData?.stop_reason || '';
-      const usage = getParser('anthropic')?.extractUsage(resData) || null;
+      const nonSSEUsage = resData && typeof resData === 'object' && !Array.isArray(resData) ? (resData.usage || null) : null;
       const currMsgCount = parsedBody?.messages?.length || 0;
       const thinkingStripped = computeThinkingStripped(isSubagent, sessionId, currMsgCount, parsedBody);
-      const responseMetadata = buildResponseMetadata('anthropic', resData, proxyRes);
       entry = {
-        id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
-        provider: 'anthropic',
-        agent: agentForProvider('anthropic'),
+        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
-        tokens: helpers.tokenizeRequest(parsedBody),
-        usage, cost: calculateCost(usage, parsedBody?.model),
-        responseMetadata, maxContext,
-        cwd: store.sessionMeta[sessionId]?.cwd || null,
         receivedAt: startTime,
+        tokens: helpers.tokenizeRequest(parsedBody),
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
-        model: parsedBody?.model || null,
-        msgCount: currMsgCount,
-        toolCount: parsedBody?.tools?.length || 0,
-        toolCalls: helpers.extractToolCalls(parsedBody?.messages),
-        isSubagent,
-        sessionInferred: ctx.sessionInferred || false,
-        title, stopReason, toolFail,
-        sysHash: ctx.sysHash || null, toolsHash: ctx.toolsHash || null, coreHash: ctx.coreHash || null,
-        thinkingStripped,
+        ...getParser('anthropic').buildEntryFields({
+          provider: 'anthropic', transport: 'http', parsedBody,
+          usage: nonSSEUsage, proxyRes,
+          sessionId, sessionInferred: ctx.sessionInferred,
+          sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+          cwd: store.sessionMeta[sessionId]?.cwd || null,
+          stopReason, title, thinkingDuration: null, thinkingStripped,
+          isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
+        }),
       };
     }
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;

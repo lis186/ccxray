@@ -54,3 +54,46 @@ test('openai entry → buildIndexLine → parsed-back keeps cost/maxContext/stop
   assert.equal(back.stopReason, f.stopReason);
   assert.ok('responseMetadata' in back);
 });
+
+test('anthropic.buildEntryFields yields canonical fields', () => {
+  const parsedBody = loadFixture('anthropic', 'turn1_req.json');
+  const usage = { input_tokens: 500, output_tokens: 100, total_tokens: 600 };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'sse', parsedBody,
+    proxyRes: { statusCode: 200 }, usage,
+    sessionId: 'abc123', sessionInferred: false,
+    sysHash: 'sh', toolsHash: 'th', coreHash: 'ch',
+    cwd: '/proj', stopReason: 'end_turn', startTime: Date.now(),
+    title: 'Test turn', thinkingDuration: 1.5, thinkingStripped: false,
+    isSubagent: false, toolFail: false,
+  });
+  assert.equal(f.provider, 'anthropic');
+  assert.equal(f.agent, 'claude');
+  assert.equal(f.model, 'claude-sonnet-4-20250514');
+  assert.equal(f.msgCount, 3);
+  assert.equal(f.toolCount, 2);
+  assert.equal(f.sysHash, 'sh');
+  assert.equal(f.coreHash, 'ch');
+  assert.equal(f.stopReason, 'end_turn');
+  assert.equal(f.thinkingDuration, 1.5);
+  assert.equal(f.thinkingStripped, false);
+  assert.ok(f.cost !== null, 'cost computed');
+  assert.ok(f.maxContext > 0, 'maxContext inferred');
+});
+
+test('anthropic entry → buildIndexLine round-trip preserves key fields', () => {
+  const parsedBody = loadFixture('anthropic', 'turn1_req.json');
+  const usage = { input_tokens: 500, output_tokens: 100, total_tokens: 600 };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'sse', parsedBody,
+    proxyRes: { statusCode: 200 }, usage,
+    sessionId: 's', stopReason: 'end_turn', startTime: 1,
+    title: 'T', thinkingDuration: null, thinkingStripped: true,
+  });
+  const entry = { id: 'A', ts: 't', elapsed: '2.0', status: 200, isSSE: true, receivedAt: 1, ...f };
+  const back = JSON.parse(buildIndexLine(entry));
+  assert.equal(back.provider, 'anthropic');
+  assert.equal(back.stopReason, 'end_turn');
+  assert.equal(back.thinkingStripped, true);
+  assert.equal(back.coreHash, f.coreHash);
+});
