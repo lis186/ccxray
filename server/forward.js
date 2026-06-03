@@ -636,44 +636,24 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const response = getOpenAIResponseFromEvents(events);
     const resWritePromise = config.storage.write(id, '_res.json', JSON.stringify(events))
       .catch(e => console.error('Write res.json failed:', e.message));
-    const responseMetadata = buildResponseMetadata('openai', response, proxyRes);
-    responseMetadata.streaming = true;
-    const usage = getParser('openai').extractUsage(response);
-
-    const openaiModel = response?.model || parsedBody?.model || null;
-    const openaiCost = calculateCost(usage, openaiModel);
     const entry = {
-      id, ts: ctx.ts, sessionId: reqSessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
-      provider: 'openai',
-      agent: agentForProvider('openai'),
+      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
-      tokens: helpers.tokenizeRequest(parsedBody),
-      usage, cost: openaiCost,
-      responseMetadata,
-      maxContext: config.inferMaxContext(openaiModel, parsedBody?.instructions, usage),
-      cwd: store.sessionMeta[reqSessionId]?.cwd || null,
       receivedAt: startTime,
-      thinkingDuration: null,
+      tokens: helpers.tokenizeRequest(parsedBody),
       duplicateToolCalls: null,
-      model: openaiModel,
-      msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
-      toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
-      toolCalls: helpers.extractOpenAIToolCalls(events.length ? events : response?.output),
-      isSubagent: ctx.isSubagent || false,
-      sessionInferred: ctx.sessionInferred || false,
-      title: getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response),
-      stopReason: response?.status || '',
-      toolFail: false,
-      sysHash: ctx.sysHash || null,
-      toolsHash: ctx.toolsHash || null,
-      coreHash: ctx.coreHash || null,
-      thinkingStripped: undefined,
+      ...getParser('openai').buildEntryFields({
+        provider: 'openai', transport: 'sse', parsedBody, events, proxyRes,
+        sessionId: reqSessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
+        sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+        cwd: store.sessionMeta[reqSessionId]?.cwd || null,
+      }),
     };
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
+    entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
     store.trimEntries();
@@ -745,63 +725,66 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     }
     const resWritePromise = config.storage.write(id, '_res.json', typeof resData === 'string' ? resData : JSON.stringify(resData))
       .catch(e => console.error('Write res.json failed:', e.message));
-    const nonSSEUsage = provider === 'anthropic' && resData && typeof resData === 'object' && !Array.isArray(resData) ? (resData.usage || null) : null;
-    const maxContext = provider === 'anthropic' ? config.inferMaxContext(parsedBody?.model, parsedBody?.system, nonSSEUsage) : null;
-    const isSubagent = provider === 'openai'
-      ? Boolean(ctx.isSubagent)
-      : provider === 'anthropic' && !store.extractCwd(parsedBody);
-    const titleGenTitle = provider === 'anthropic' ? resolveTitleGenTitle(parsedBody, resData, startTime) : null;
-    const title = provider === 'openai'
-      ? (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(openAIResponse || resData))
-      : (titleGenTitle
+
+    let entry;
+    if (provider === 'openai') {
+      entry = {
+        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        req: parsedBody, res: resData,
+        elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
+        receivedAt: startTime,
+        tokens: helpers.tokenizeRequest(parsedBody),
+        duplicateToolCalls: null,
+        ...getParser('openai').buildEntryFields({
+          provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
+          parsedBody, events: openAIEvents || [], response: openAIResponse || resData, proxyRes,
+          sessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
+          sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+          cwd: store.sessionMeta[sessionId]?.cwd || null,
+        }),
+      };
+    } else {
+      // Anthropic non-SSE — migrated in Task 7
+      const nonSSEUsage = resData && typeof resData === 'object' && !Array.isArray(resData) ? (resData.usage || null) : null;
+      const maxContext = config.inferMaxContext(parsedBody?.model, parsedBody?.system, nonSSEUsage);
+      const isSubagent = !store.extractCwd(parsedBody);
+      const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime);
+      const title = titleGenTitle
         || (isSubagent
           ? helpers.extractFirstUserText(parsedBody)
           : (helpers.extractResponseTitle(resData)
              || helpers.extractLastUserText(parsedBody)
              || helpers.extractToolResultSummary(parsedBody)))
-        || null);
-    const toolFail = provider === 'anthropic' ? helpers.hasToolFail(parsedBody) : false;
-    const stopReason = provider === 'openai' ? ((openAIResponse || resData)?.status || '') : (resData?.stop_reason || '');
-    const usage = getParser(provider)?.extractUsage(openAIResponse || resData) || null;
-    const currMsgCount = provider === 'openai'
-      ? (Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0)
-      : (parsedBody?.messages?.length || 0);
-    const thinkingStripped = provider === 'anthropic'
-      ? computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody)
-      : undefined;
-    const responseMetadata = buildResponseMetadata(provider, openAIResponse || resData, proxyRes);
-    if (openAIEvents) responseMetadata.streaming = true;
-    const entry = {
-      id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
-      provider,
-      agent: agentForProvider(provider),
-      req: parsedBody, res: resData,
-      elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
-      tokens: helpers.tokenizeRequest(parsedBody),
-      usage, cost: calculateCost(usage, parsedBody?.model || (openAIResponse || resData)?.model),
-      responseMetadata,
-      maxContext,
-      cwd: store.sessionMeta[sessionId]?.cwd || null,
-      receivedAt: startTime,
-      duplicateToolCalls: provider === 'anthropic' ? helpers.extractDuplicateToolCalls(parsedBody?.messages) : null,
-      model: (provider === 'openai' && openAIResponse ? openAIResponse.model : null)
-        || (provider === 'openai' && resData && typeof resData === 'object' && !Array.isArray(resData) ? resData.model : null)
-        || parsedBody?.model || null,
-      msgCount: currMsgCount,
-      toolCount: parsedBody?.tools?.length || 0,
-      toolCalls: provider === 'anthropic'
-        ? helpers.extractToolCalls(parsedBody?.messages)
-        : helpers.extractOpenAIToolCalls(openAIEvents || (openAIResponse || resData)?.output || []),
-      isSubagent,
-      sessionInferred: ctx.sessionInferred || false,
-      title,
-      stopReason,
-      toolFail,
-      sysHash: ctx.sysHash || null,
-      toolsHash: ctx.toolsHash || null,
-      coreHash: ctx.coreHash || null,
-      thinkingStripped,
-    };
+        || null;
+      const toolFail = helpers.hasToolFail(parsedBody);
+      const stopReason = resData?.stop_reason || '';
+      const usage = getParser('anthropic')?.extractUsage(resData) || null;
+      const currMsgCount = parsedBody?.messages?.length || 0;
+      const thinkingStripped = computeThinkingStripped(isSubagent, sessionId, currMsgCount, parsedBody);
+      const responseMetadata = buildResponseMetadata('anthropic', resData, proxyRes);
+      entry = {
+        id, ts: ctx.ts, sessionId, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        provider: 'anthropic',
+        agent: agentForProvider('anthropic'),
+        req: parsedBody, res: resData,
+        elapsed, status: proxyRes.statusCode, isSSE: false,
+        tokens: helpers.tokenizeRequest(parsedBody),
+        usage, cost: calculateCost(usage, parsedBody?.model),
+        responseMetadata, maxContext,
+        cwd: store.sessionMeta[sessionId]?.cwd || null,
+        receivedAt: startTime,
+        duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
+        model: parsedBody?.model || null,
+        msgCount: currMsgCount,
+        toolCount: parsedBody?.tools?.length || 0,
+        toolCalls: helpers.extractToolCalls(parsedBody?.messages),
+        isSubagent,
+        sessionInferred: ctx.sessionInferred || false,
+        title, stopReason, toolFail,
+        sysHash: ctx.sysHash || null, toolsHash: ctx.toolsHash || null, coreHash: ctx.coreHash || null,
+        thinkingStripped,
+      };
+    }
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
