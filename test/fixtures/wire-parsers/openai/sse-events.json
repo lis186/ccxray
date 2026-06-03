@@ -1,0 +1,63 @@
+[
+  {
+    "type": "response.output_item.done",
+    "data": {
+      "type": "response.output_item.done",
+      "output_index": 0,
+      "item": {
+        "type": "reasoning",
+        "id": "rs_01",
+        "summary": [
+          { "type": "summary_text", "text": "The user wants to list files. I'll use the shell tool." }
+        ]
+      }
+    }
+  },
+  {
+    "type": "response.output_item.done",
+    "data": {
+      "type": "response.output_item.done",
+      "output_index": 1,
+      "item": {
+        "type": "function_call",
+        "id": "fc_01",
+        "call_id": "call_01",
+        "name": "shell",
+        "arguments": "{\"command\":\"ls\"}"
+      }
+    }
+  },
+  {
+    "type": "response.completed",
+    "data": {
+      "type": "response.completed",
+      "response": {
+        "id": "resp_019e6d05",
+        "object": "response",
+        "model": "gpt-5.5",
+        "status": "completed",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "rs_01",
+            "summary": [
+              { "type": "summary_text", "text": "The user wants to list files. I'll use the shell tool." }
+            ]
+          },
+          {
+            "type": "function_call",
+            "id": "fc_01",
+            "call_id": "call_01",
+            "name": "shell",
+            "arguments": "{\"command\":\"ls\"}"
+          }
+        ],
+        "usage": {
+          "input_tokens": 850,
+          "output_tokens": 35,
+          "total_tokens": 885
+        }
+      }
+    }
+  }
+]

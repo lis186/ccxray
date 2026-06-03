@@ -1,6 +1,14 @@
 'use strict';
 
 const store = require('../store');
+const helpers = require('../helpers');
+const config = require('../config');
+const { calculateCost } = require('../pricing');
+const { agentForProvider } = require('../providers');
+const {
+  getOpenAIResponseFromEvents, getOpenAIInputSummary,
+  getOpenAIOutputSummary, buildResponseMetadata,
+} = require('../openai-response');
 
 // ── Low-level helpers (also exported for ws-proxy.js) ───────
 
@@ -154,6 +162,41 @@ function preprocessBody(parsedBody, headers) {
   return withCodexMetadata(parsedBody, headers);
 }
 
+function buildEntryFields(ctx) {
+  const { parsedBody, proxyRes } = ctx;
+  const response = ctx.response || getOpenAIResponseFromEvents(ctx.events || []);
+  const responseMetadata = buildResponseMetadata('openai', response, proxyRes);
+  if (ctx.events && ctx.events.length) responseMetadata.streaming = true;
+  const usage = ctx.lastUsage || extractUsage(response);
+  const model = ctx.lastModel || response?.model || parsedBody?.model || null;
+  return {
+    provider: 'openai',
+    agent: agentForProvider('openai'),
+    model,
+    msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
+    toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
+    toolCalls: helpers.extractOpenAIToolCalls(
+      (ctx.events && ctx.events.length) ? ctx.events : response?.output
+    ),
+    isSubagent: ctx.isSubagent || false,
+    sessionInferred: ctx.sessionInferred || false,
+    cwd: ctx.cwd ?? null,
+    usage,
+    cost: calculateCost(usage, model),
+    maxContext: config.inferMaxContext(model, parsedBody?.instructions, usage),
+    responseMetadata,
+    stopReason: response?.status || '',
+    title: getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response),
+    thinkingDuration: null,
+    toolFail: false,
+    sysHash: ctx.sysHash || null,
+    toolsHash: ctx.toolsHash || null,
+    coreHash: ctx.coreHash || null,
+    thinkingStripped: undefined,
+    sessionId: ctx.sessionId,
+  };
+}
+
 module.exports = {
   // WIRE_PARSERS interface
   isNoiseRequest,
@@ -162,6 +205,7 @@ module.exports = {
   extractAgentType: extractAgentTypeMethod,
   detectSession,
   preprocessBody,
+  buildEntryFields,
   // Low-level exports for ws-proxy.js compatibility
   getCodexRawSessionId,
   firstHeader,
