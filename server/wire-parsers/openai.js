@@ -87,7 +87,7 @@ function isNoiseRequest(url, _headers, _parsedBody) {
   if (pathname === '/v1/connectors' || pathname.startsWith('/v1/connectors/')) return true;
   if (pathname === '/v1/api/codex' || pathname.startsWith('/v1/api/codex/')) return true;
   if (pathname === '/v1/codex' || pathname.startsWith('/v1/codex/')) return true;
-  if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return true;
+  if (pathname === '/v1/models') return true;
   return false;
 }
 

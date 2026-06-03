@@ -67,20 +67,22 @@ function makeMock404Upstream() {
   });
 }
 
-function fireRequest(port, method, urlPath) {
+function fireRequest(port, method, urlPath, body) {
   return new Promise((resolve, reject) => {
+    const headers = {
+      'x-api-key': 'sk-fake',
+      'chatgpt-account-id': '11111111-2222-3333-4444-555555555555',
+    };
+    if (body) headers['content-type'] = 'application/json';
     const req = http.request({
-      hostname: 'localhost', port, path: urlPath, method,
-      headers: {
-        'x-api-key': 'sk-fake',
-        'chatgpt-account-id': '11111111-2222-3333-4444-555555555555',
-      },
+      hostname: 'localhost', port, path: urlPath, method, headers,
     }, res => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode }));
     });
     req.on('error', reject);
+    if (body) req.write(JSON.stringify(body));
     req.end();
   });
 }
@@ -158,12 +160,17 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
       // Give the proxy a moment to settle any async writes.
       await new Promise(r => setTimeout(r, 200));
 
-      const entries = (await fetchEntries(proxyPort)).entries || [];
-      const noiseEntries = entries.filter(e => noisePaths.some(([, p]) =>
-        e.url === p.split('?')[0] || e.url === p
-      ));
-      assert.equal(noiseEntries.length, 0,
-        `noise paths created ${noiseEntries.length} entries: ${JSON.stringify(noiseEntries.map(e => e.url))}`);
+      let entries = (await fetchEntries(proxyPort)).entries || [];
+      assert.equal(entries.length, 0, `noise-only phase should produce 0 entries, got ${entries.length}`);
+
+      // Positive control: a normal Anthropic /v1/messages request SHOULD record.
+      await fireRequest(proxyPort, 'POST', '/v1/messages', {
+        model: 'claude-sonnet-4-6', max_tokens: 10,
+        messages: [{ role: 'user', content: 'ping' }],
+      });
+      await new Promise(r => setTimeout(r, 200));
+      entries = (await fetchEntries(proxyPort)).entries || [];
+      assert.equal(entries.length, 1, `positive control: expected 1 entry, got ${entries.length}`);
     } finally {
       await killAndWait(child);
       upstream.close();
