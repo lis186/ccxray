@@ -77,14 +77,17 @@ function withCodexMetadata(parsedBody, headers) {
 
 // ── WIRE_PARSERS interface ──────────────────────────────────
 
-// From config.js:169-177 (isCodexPlatformNoisePath)
+// All Codex ChatGPT-platform paths + model-list queries are noise. None carry
+// conversation data; platform paths 404 for API-key users and create garbage
+// "(unknown)" / "Codex Raw" entries. /v1/models is a metadata query, not a turn.
 function isNoiseRequest(url, _headers, _parsedBody) {
   const pathname = (url || '').split('?')[0];
   if (pathname === '/v1/plugins' || pathname.startsWith('/v1/plugins/')) return true;
   if (pathname === '/v1/ps/plugins' || pathname.startsWith('/v1/ps/plugins/')) return true;
   if (pathname === '/v1/connectors' || pathname.startsWith('/v1/connectors/')) return true;
-  if (pathname === '/v1/api/codex/apps' || pathname.startsWith('/v1/api/codex/apps/')) return true;
-  if (pathname === '/v1/api/codex/usage' || pathname.startsWith('/v1/api/codex/usage/')) return true;
+  if (pathname === '/v1/api/codex' || pathname.startsWith('/v1/api/codex/')) return true;
+  if (pathname === '/v1/codex' || pathname.startsWith('/v1/codex/')) return true;
+  if (pathname === '/v1/models') return true;
   return false;
 }
 

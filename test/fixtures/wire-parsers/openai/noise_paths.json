@@ -4,11 +4,16 @@
     "/v1/ps/plugins/list",
     "/v1/connectors/list",
     "/v1/api/codex/apps",
-    "/v1/api/codex/usage"
+    "/v1/api/codex/usage",
+    "/v1/codex/analytics-events/events",
+    "/v1/codex",
+    "/v1/api/codex",
+    "/v1/models"
   ],
   "not_noise": [
     "/v1/responses",
     "/v1/chat/completions",
-    "/v1/codex/analytics-events/events"
+    "/v1/realtime",
+    "/v1/models/gpt-5.5"
   ]
 }

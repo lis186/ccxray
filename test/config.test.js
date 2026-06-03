@@ -469,10 +469,22 @@ describe('codex platform noise routing and predicate', () => {
     assert.equal(openaiParser.isNoiseRequest('/v1/connectors/directory/list?external_logos=true'), true);
   });
 
-  it('keeps the conversation and telemetry paths visible', () => {
+  it('suppresses analytics/telemetry paths (they 404 for API-key users)', () => {
+    assert.equal(openaiParser.isNoiseRequest('/v1/codex/analytics-events/events'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/codex'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/api/codex'), true);
+  });
+
+  it('suppresses model-list query but not individual model lookups', () => {
+    assert.equal(openaiParser.isNoiseRequest('/v1/models'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/models?client_version=0.136.0'), true);
+    assert.equal(openaiParser.isNoiseRequest('/v1/models/gpt-5.5'), false);
+  });
+
+  it('keeps the conversation paths visible', () => {
     assert.equal(openaiParser.isNoiseRequest('/v1/responses'), false);
-    assert.equal(openaiParser.isNoiseRequest('/v1/codex/analytics-events/events'), false);
     assert.equal(openaiParser.isNoiseRequest('/v1/messages'), false);
+    assert.equal(openaiParser.isNoiseRequest('/v1/realtime'), false);
   });
 });
 

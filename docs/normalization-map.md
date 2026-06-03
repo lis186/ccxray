@@ -274,7 +274,7 @@ Usage and model are extracted from envelope events **before** the skip filter (`
 
 Forwarded with `skipEntry: true` — response reaches Codex, no dashboard entry.
 
-`/v1/codex/analytics-events/events` (telemetry) intentionally **not** filtered — reserved for future turn metadata extraction.
+`/v1/codex/analytics-events/events` (telemetry) is also filtered — it 404s for API-key users, creating garbage dashboard entries.
 
 ### Anthropic
 
