@@ -60,28 +60,6 @@ describe('wire-parsers/openai', () => {
     });
   });
 
-  describe('extractAgentType', () => {
-    it('returns default codex type with no headers', () => {
-      const result = openai.extractAgentType(null, {});
-      assert.equal(result.key, 'default');
-      assert.equal(result.label, 'Codex Default');
-    });
-
-    it('detects explorer from headers', () => {
-      const headers = { 'x-openai-agent-type': 'explorer' };
-      const result = openai.extractAgentType(null, headers);
-      assert.equal(result.key, 'explorer');
-      assert.equal(result.label, 'Codex Explorer');
-    });
-
-    it('detects worker from codex headers', () => {
-      const headers = { 'x-codex-agent-type': 'worker' };
-      const result = openai.extractAgentType(null, headers);
-      assert.equal(result.key, 'worker');
-      assert.equal(result.label, 'Codex Worker');
-    });
-  });
-
   describe('detectSession', () => {
     it('extracts sessionId from headers', () => {
       const headers = { 'session_id': 'test-session-abc' };
@@ -101,26 +79,6 @@ describe('wire-parsers/openai', () => {
       const result = openai.detectSession(null, {}, null);
       assert.equal(result.sessionId, 'codex-raw');
       assert.equal(result.inferred, true);
-    });
-  });
-
-  describe('normalizeListMeta', () => {
-    it('produces ThinCanonical with OpenAI fields', () => {
-      const entry = {
-        id: 'test-1', ts: '2026-01-01T00:00:00Z', model: 'gpt-5.5',
-        sessionId: 'sess-1', usage: { input_tokens: 100, output_tokens: 50 },
-        status: 200, elapsed: 1000,
-        req: { input: [{}, {}, {}], tools: [{}, {}] },
-        res: { model: 'gpt-5.5', status: 'completed' },
-        responseMetadata: { id: 'resp_01', streaming: true },
-      };
-      const meta = openai.normalizeListMeta(entry);
-      assert.equal(meta.provider, 'openai');
-      assert.equal(meta.model, 'gpt-5.5');
-      assert.equal(meta.msgCount, 3);
-      assert.equal(meta.toolCount, 2);
-      assert.equal(meta.agentType, 'default');
-      assert.ok(meta.responseMetadata);
     });
   });
 

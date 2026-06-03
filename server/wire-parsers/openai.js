@@ -88,29 +88,6 @@ function isNoiseRequest(url, _headers, _parsedBody) {
   return false;
 }
 
-// READ-path: from raw stored entry → ThinCanonical
-function normalizeListMeta(entry) {
-  const inputLen = Array.isArray(entry.req?.input) ? entry.req.input.length : 0;
-  return {
-    id: entry.id,
-    ts: entry.ts,
-    provider: 'openai',
-    model: entry.model || entry.res?.model || entry.req?.model || 'unknown',
-    sessionId: entry.sessionId,
-    msgCount: entry.msgCount ?? inputLen,
-    toolCount: entry.toolCount ?? (Array.isArray(entry.req?.tools) ? entry.req.tools.length : 0),
-    usage: entry.usage || null,
-    cost: entry.cost || null,
-    agentType: entry.agentType || 'default',
-    agentLabel: entry.agentLabel || 'Codex Default',
-    isSubagent: entry.isSubagent || false,
-    stopReason: entry.stopReason || entry.res?.status || null,
-    status: entry.status,
-    elapsed: entry.elapsed,
-    responseMetadata: entry.responseMetadata || null,
-  };
-}
-
 // From response object's .usage field
 function extractUsage(resData) {
   if (!resData) return null;
@@ -130,18 +107,6 @@ function extractUsage(resData) {
   if (usage.input_tokens_details) result.input_tokens_details = usage.input_tokens_details;
   if (usage.output_tokens_details) result.output_tokens_details = usage.output_tokens_details;
   return result;
-}
-
-// From system-prompt.js:82-99 + openai-session.js:33-42
-function extractAgentTypeMethod(_systemBlob, headers) {
-  if (headers) {
-    const fromHeaders = getOpenAIAgentTypeFromHeaders(headers);
-    if (fromHeaders) {
-      const labelMap = { explorer: 'Codex Explorer', worker: 'Codex Worker', default: 'Codex Default' };
-      return { key: fromHeaders, label: labelMap[fromHeaders] || 'Codex' };
-    }
-  }
-  return { key: 'default', label: 'Codex Default' };
 }
 
 // From openai-session.js:58-70
@@ -238,9 +203,7 @@ function registerPromptVersion(ctx) {
 module.exports = {
   // WIRE_PARSERS interface
   isNoiseRequest,
-  normalizeListMeta,
   extractUsage,
-  extractAgentType: extractAgentTypeMethod,
   detectSession,
   preprocessBody,
   buildEntryFields,

@@ -56,56 +56,6 @@ describe('wire-parsers/anthropic', () => {
     });
   });
 
-  describe('extractAgentType', () => {
-    it('identifies orchestrator from B1', () => {
-      const sys = [
-        { text: 'config' },
-        { text: 'You are Claude Code, Anthropic\'s official CLI.' },
-      ];
-      const result = anthropic.extractAgentType(sys);
-      assert.equal(result.key, 'orchestrator');
-    });
-
-    it('identifies known agent from B2 prefix', () => {
-      const sys = [
-        { text: 'config' },
-        { text: 'branding' },
-        { text: 'You are a file search specialist for locating code.' },
-      ];
-      const result = anthropic.extractAgentType(sys);
-      assert.equal(result.key, 'explore');
-    });
-
-    it('returns unknown for non-array', () => {
-      const result = anthropic.extractAgentType(null);
-      assert.equal(result.key, 'unknown');
-    });
-  });
-
-  describe('normalizeListMeta', () => {
-    it('produces ThinCanonical from entry object', () => {
-      const entry = {
-        id: 'test-1', ts: '2026-01-01T00:00:00Z', model: 'claude-sonnet-4-20250514',
-        sessionId: 'sess-1', msgCount: 3, toolCount: 2,
-        usage: { input_tokens: 100, output_tokens: 50 }, cost: { cost: 0.001 },
-        agentType: 'orchestrator', agentLabel: 'Orchestrator',
-        isSubagent: false, stopReason: 'end_turn', status: 200, elapsed: 1500,
-      };
-      const meta = anthropic.normalizeListMeta(entry);
-      assert.equal(meta.provider, 'anthropic');
-      assert.equal(meta.model, 'claude-sonnet-4-20250514');
-      assert.equal(meta.sessionId, 'sess-1');
-      assert.equal(meta.msgCount, 3);
-      assert.equal(meta.agentType, 'orchestrator');
-    });
-
-    it('infers msgCount from req when entry field missing', () => {
-      const entry = { id: 't', ts: 'x', req: { messages: [{}, {}, {}] }, status: 200, elapsed: 0 };
-      const meta = anthropic.normalizeListMeta(entry);
-      assert.equal(meta.msgCount, 3);
-    });
-  });
-
   describe('detectSession', () => {
     it('is a function that delegates to store', () => {
       assert.equal(typeof anthropic.detectSession, 'function');

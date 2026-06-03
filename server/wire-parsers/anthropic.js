@@ -13,32 +13,6 @@ function isNoiseRequest(_url, _headers, _parsedBody) {
   return false;
 }
 
-// ── normalizeListMeta ───────────────────────────────────────
-// READ-path only: from raw stored entry → ThinCanonical for list layer
-function normalizeListMeta(entry) {
-  return {
-    id: entry.id,
-    ts: entry.ts,
-    provider: 'anthropic',
-    model: entry.model || entry.req?.model || 'unknown',
-    sessionId: entry.sessionId,
-    msgCount: entry.msgCount ?? (Array.isArray(entry.req?.messages) ? entry.req.messages.length : 0),
-    toolCount: entry.toolCount ?? (Array.isArray(entry.req?.tools) ? entry.req.tools.length : 0),
-    usage: entry.usage || null,
-    cost: entry.cost || null,
-    agentType: entry.agentType || 'unknown',
-    agentLabel: entry.agentLabel || 'Unknown',
-    isSubagent: entry.isSubagent || false,
-    stopReason: entry.stopReason || null,
-    status: entry.status,
-    elapsed: entry.elapsed,
-    coreHash: entry.coreHash || null,
-    thinkingDuration: entry.thinkingDuration || null,
-    thinkingStripped: entry.thinkingStripped || false,
-    hasCredential: entry.hasCredential || false,
-  };
-}
-
 // ── extractUsage ────────────────────────────────────────────
 // From helpers.js:272-292 (Anthropic SSE events → usage)
 function extractUsage(resData) {
@@ -59,12 +33,6 @@ function extractUsage(resData) {
     };
   }
   return result;
-}
-
-// ── extractAgentType ────────────────────────────────────────
-// From system-prompt.js:51-79 (Anthropic B2 prefix matching)
-function extractAgentTypeMethod(systemBlob, _headers) {
-  return extractAgentType(systemBlob);
 }
 
 // ── detectSession ───────────────────────────────────────────
@@ -137,9 +105,7 @@ function registerPromptVersion(ctx) {
 
 module.exports = {
   isNoiseRequest,
-  normalizeListMeta,
   extractUsage,
-  extractAgentType: extractAgentTypeMethod,
   detectSession,
   buildEntryFields,
   registerPromptVersion,
