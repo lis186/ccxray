@@ -654,13 +654,11 @@ async function startClientMode(lock) {
 
 // ── Hub/Server startup ──
 async function runPostListenStartupTasks() {
-  // Loud, always-visible (stderr survives the agent/hub console.log muting)
-  // warning: the auth gate is bypassed for loopback peers. Phase 2.3 made the
-  // hatch loopback-guarded (isLoopbackBypass), so the bypass no longer reaches
-  // the LAN; the same-host reverse-proxy gap stays documented (design 決策 7).
-  // The banner is still the real safeguard against forgetting the flag is set.
+  if (process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH === '1') {
+    console.error('\x1b[44m\x1b[97m CCXRAY_LOOPBACK_REQUIRE_AUTH=1 \x1b[0m \x1b[34mloopback dashboard requests require auth (paranoid mode).\x1b[0m');
+  }
   if (process.env.CCXRAY_LOOPBACK_NO_AUTH === '1') {
-    console.error('\x1b[41m\x1b[97m CCXRAY_LOOPBACK_NO_AUTH=1 \x1b[0m \x1b[31mauth is DISABLED for loopback — any local process can reach /v1/* without X-Ccxray-Auth. Unset it unless you know why you need it.\x1b[0m');
+    console.error('\x1b[41m\x1b[97m CCXRAY_LOOPBACK_NO_AUTH=1 \x1b[0m \x1b[31mupstream /v1/* auth is DISABLED for loopback — any local process can reach /v1/* without X-Ccxray-Auth. Dashboard is already loopback-trusted by default; you can unset this unless you need upstream bypass.\x1b[0m');
   }
 
   store.setRestoreState({

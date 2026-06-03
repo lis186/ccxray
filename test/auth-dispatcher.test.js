@@ -172,23 +172,49 @@ describe('verifyDashboard — Phase 2.3 enforcement (cookie / Bearer / X-Ccxray-
     assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
   });
 
-  it('loopback-guarded hatch: flag "1" + loopback peer + no cred → true (4.4 dashboard)', () => {
+  it('dashboard loopback trust: loopback peer + no cred → true (default since 1.11)', () => {
+    const auth = loadAuthWith('sec1');
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    const { req, res } = mockReqRes({}, '/_api/entries', '127.0.0.1');
+    assert.equal(auth.verifyDashboard(req, res), true);
+    assert.equal(res.writeHeadCalled, false);
+  });
+
+  it('dashboard loopback trust: ::1 + no cred → true', () => {
+    const auth = loadAuthWith('sec1');
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    const { req, res } = mockReqRes({}, '/_api/entries', '::1');
+    assert.equal(auth.verifyDashboard(req, res), true);
+  });
+
+  it('dashboard loopback trust: REQUIRE_AUTH=1 + loopback → 401', () => {
+    const auth = loadAuthWith('sec1');
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      const { req, res } = mockReqRes({}, '/_api/entries', '127.0.0.1');
+      assert.equal(auth.verifyDashboard(req, res), false);
+      assert.equal(res.statusCode, 401);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
+  });
+
+  it('dashboard loopback trust: non-loopback + no cred → 401', () => {
+    const auth = loadAuthWith('sec1');
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    const { req, res } = mockReqRes({}, '/_api/entries', '192.168.1.50');
+    assert.equal(auth.verifyDashboard(req, res), false);
+    assert.equal(res.statusCode, 401);
+  });
+
+  it('legacy hatch: flag "1" + loopback peer + no cred → true (still works for dashboard)', () => {
     const auth = loadAuthWith('sec1');
     process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
     try {
       const { req, res } = mockReqRes({}, '/_api/entries', '127.0.0.1');
       assert.equal(auth.verifyDashboard(req, res), true);
       assert.equal(res.writeHeadCalled, false);
-    } finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
-  });
-
-  it('loopback-guarded hatch: flag "1" + non-loopback peer + no cred → 401 (4.10 dashboard)', () => {
-    const auth = loadAuthWith('sec1');
-    process.env.CCXRAY_LOOPBACK_NO_AUTH = '1';
-    try {
-      const { req, res } = mockReqRes({}, '/_api/entries', '192.168.1.50');
-      assert.equal(auth.verifyDashboard(req, res), false);
-      assert.equal(res.statusCode, 401);
     } finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
   });
 });
@@ -320,6 +346,25 @@ describe('verifyUpstream — loopback-guarded hatch wiring (2.3)', () => {
       assert.equal(auth.verifyUpstream(req, res), false);
       assert.equal(res.statusCode, 401);
     } finally { delete process.env.CCXRAY_LOOPBACK_NO_AUTH; }
+  });
+});
+
+describe('dashboard loopback trust does NOT open upstream or WS', () => {
+  it('loopback + /v1/messages + no cred → 401 (upstream still gated)', () => {
+    const auth = loadAuthWith('sec1');
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    const { req, res } = mockReqRes({}, '/v1/messages', '127.0.0.1');
+    assert.equal(auth.verifyUpstream(req, res), false);
+    assert.equal(res.statusCode, 401);
+  });
+
+  it('loopback + dashboard POST (intercept) + no cred → true (dashboard trust covers POSTs)', () => {
+    const auth = loadAuthWith('sec1');
+    delete process.env.CCXRAY_LOOPBACK_NO_AUTH;
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    const { req, res } = mockReqRes({}, '/_api/intercept/toggle', '127.0.0.1');
+    assert.equal(auth.verifyDashboard(req, res), true);
   });
 });
 

@@ -33,11 +33,10 @@ function handleAuthRoutes(req, res) {
       res.end(JSON.stringify({ error: 'loopback_only' }));
       return true;
     }
-    // codex R3 P1: minting a bootstrap token is privileged (mint + redeem ⇒ a
-    // dashboard session). Require the same credential the dashboard does, so an
-    // other-UID loopback process that can't read ~/.ccxray/local-secret (and
-    // thus can't forge X-Ccxray-Auth) can't mint. `ccxray open` authenticates
-    // with X-Ccxray-Auth derived from the shared root secret.
+    // Minting a bootstrap token is privileged (mint + redeem ⇒ dashboard
+    // session). Gated by verifyDashboard: loopback peers pass by default
+    // (isDashboardLoopbackTrusted), so local users can mint without
+    // X-Ccxray-Auth. Non-loopback callers still need a credential.
     if (!auth.verifyDashboard(req, res)) return true; // 401 written by the gate
     const token = auth.mintBootstrapToken();
     res.writeHead(200, { 'Content-Type': 'application/json' });

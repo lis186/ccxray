@@ -25,11 +25,11 @@ No build step. No linting. Restart to apply changes.
 UI or server changes must be verified in a real browser, not just unit tests. Unit tests verify logic; they don't catch lazy-load, SSE, or render pipeline failures.
 
 ```bash
-CCXRAY_HOME=/tmp/ccxray-smoke-$$ CCXRAY_LOOPBACK_NO_AUTH=1 \
-  ccxray --port 5602 --no-browser
+CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 ```
 
-- `CCXRAY_LOOPBACK_NO_AUTH=1` — dashboard has auth; this bypasses it for local testing
+- Dashboard is loopback-trusted by default — no env var needed for local browser access
+- Upstream `/v1/*` still requires `X-Ccxray-Auth` (launchers inject it automatically)
 - `CCXRAY_HOME` — isolates logs/hub/secrets from the user's real data
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)

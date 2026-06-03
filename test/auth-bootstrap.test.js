@@ -349,9 +349,18 @@ describe('/_auth/bootstrap-token via HTTP', () => {
     });
   }
 
-  it('rejects loopback POST without a credential → 401 (codex R3 P1 gate)', async () => {
+  it('loopback POST without credential → 200 (dashboard loopback trust)', async () => {
     const data = await postBootstrap({});
-    assert.equal(data.status, 401);
+    assert.equal(data.status, 200);
+    assert.ok(data.body && data.body.token, 'loopback peer should be able to mint a token');
+  });
+
+  it('loopback POST without credential + REQUIRE_AUTH=1 → 401 (paranoid)', async () => {
+    process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+    try {
+      const data = await postBootstrap({});
+      assert.equal(data.status, 401);
+    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 
   it('returns a token on loopback POST with a valid X-Ccxray-Auth', async () => {

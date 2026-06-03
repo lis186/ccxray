@@ -70,9 +70,8 @@ describe('Dashboard shell stays reachable under enforcement (2.3)', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-shell-e2e-'));
     tmpDirs.push(home);
 
-    const env = { ...process.env, CCXRAY_HOME: home, BROWSER: 'none', RESTORE_DAYS: '0' };
+    const env = { ...process.env, CCXRAY_HOME: home, BROWSER: 'none', RESTORE_DAYS: '0', CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' };
     delete env.AUTH_TOKEN;            // ephemeral
-    delete env.CCXRAY_LOOPBACK_NO_AUTH; // no escape hatch
     child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(proxyPort), '--no-browser'], { env, stdio: ['ignore', 'ignore', 'ignore'] });
 
     await waitForPort(proxyPort);

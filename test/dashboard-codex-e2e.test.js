@@ -127,7 +127,7 @@ describe('Codex dashboard status E2E', () => {
     const home = writeFixtureHome();
     const port = await findFreePort();
     const child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(port), '--no-browser'], {
-      env: { ...process.env, CCXRAY_LOOPBACK_NO_AUTH: '1', CCXRAY_HOME: home, BROWSER: 'none', RESTORE_DAYS: '0' },
+      env: { ...process.env, CCXRAY_HOME: home, BROWSER: 'none', RESTORE_DAYS: '0' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let browser;

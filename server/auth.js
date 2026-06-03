@@ -5,9 +5,10 @@
  *
  * Upstream domain (`/v1/*`): X-Ccxray-Auth header (or scoped ChatGPT-OAuth
  * carve-out). Dashboard domain (everything else): session cookie OR Bearer
- * AUTH_TOKEN OR X-Ccxray-Auth. Loopback escape hatch (CCXRAY_LOOPBACK_NO_AUTH)
- * bypasses both, guarded by req.socket.remoteAddress. Static shell is served
- * before the gate so the bootstrap script can run without a cookie.
+ * AUTH_TOKEN OR X-Ccxray-Auth. Dashboard loopback trust (default-on): loopback
+ * peers see the dashboard without credentials. Upstream loopback bypass
+ * (CCXRAY_LOOPBACK_NO_AUTH=1) is a separate opt-in for /v1/* + WS.
+ * Static shell is served before the gate so the bootstrap script can run.
  *
  * Authoritative design: reason/260525-0055-ccxray-auth-design/candidate-AB.md
  * Implementation deviations: reason/260525-0055-ccxray-auth-design/errata.md
@@ -322,6 +323,7 @@ function redeemBootstrap(req, res) {
 // (permanent dashboard credential per spec). 'chatgpt-oauth' is deliberately
 // NOT accepted: codex markers are not a dashboard credential.
 function _isDashboardAuthenticated(req) {
+  if (isDashboardLoopbackTrusted(req)) return true;
   if (isLoopbackBypass(req)) return true;
   const cookieValue = _readSessionCookie(req);
   if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
@@ -350,23 +352,28 @@ function verifyDashboard(req, res) {
   return true;
 }
 
-// ─── Loopback-guarded escape hatch (Phase 2.3, design 決策 7) ─────────
+// ─── Loopback trust ─────────────────────────────────────────────────
 //
-// CCXRAY_LOOPBACK_NO_AUTH=1 disables the auth gate, but only for loopback
-// peers. ccxray binds 0.0.0.0, so a blunt header-only bypass (as shipped in
-// 2.2) would expose /v1/* and the dashboard to the whole LAN the moment the
-// flag is set. The check lives in the gate functions (verifyUpstream, WS
-// isAuthorized, verifyDashboard) because they hold req.socket; the taxonomy
-// helper verifyUpstreamCredential(headers) cannot see the peer address.
+// Dashboard: loopback peers are trusted by default (isDashboardLoopbackTrusted).
+// Set CCXRAY_LOOPBACK_REQUIRE_AUTH=1 to re-gate dashboard on loopback
+// (e.g. behind a same-host reverse proxy that presents remoteAddress=127.0.0.1).
 //
-// Residual gap: a same-host reverse proxy presents remoteAddress = 127.0.0.1,
-// defeating the guard. That needs double opt-in (proxy + flag) and the startup
-// banner warns regardless — documented, not closed (errata §5).
+// Upstream (/v1/*) + WS: still require X-Ccxray-Auth. The legacy escape hatch
+// CCXRAY_LOOPBACK_NO_AUTH=1 bypasses both dashboard AND upstream, but is
+// separate from the dashboard default trust.
+//
+// Residual gap: a same-host reverse proxy defeats the loopback guard for
+// dashboard access; set CCXRAY_LOOPBACK_REQUIRE_AUTH=1 to close it.
 
 const LOOPBACK_ADDRESSES = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 function isLoopbackAddress(addr) {
   return typeof addr === 'string' && LOOPBACK_ADDRESSES.has(addr);
+}
+
+function isDashboardLoopbackTrusted(req) {
+  if (process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH === '1') return false;
+  return isLoopbackAddress(req && req.socket && req.socket.remoteAddress);
 }
 
 function isLoopbackBypass(req) {
