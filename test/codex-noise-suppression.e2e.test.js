@@ -1,11 +1,10 @@
 'use strict';
 
 // Codex 0.133+ pings ~10 distinct platform endpoints on startup (plugin lists,
-// connector directory, app metadata, usage). Without filtering, ccxray records
-// each one as a dashboard entry — drowning the actual conversation in noise.
-// This test fires those paths at a real proxy with a mock upstream and asserts
-// the dashboard's /_api/entries stays empty, while the telemetry endpoint
-// (kept visible for a future Bonus PR) and a Claude request still record normally.
+// connector directory, app metadata, usage, analytics). Without filtering,
+// ccxray records each one as a dashboard entry — drowning the actual
+// conversation in noise. This test fires those paths at a real proxy with a
+// mock upstream and asserts the dashboard's /_api/entries stays empty.
 
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -104,7 +103,7 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
     for (const d of tmpDirs) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
   });
 
-  it('proxies noise paths but creates zero dashboard entries; keeps telemetry visible', async () => {
+  it('proxies noise paths (including analytics) but creates zero dashboard entries', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-noise-'));
@@ -137,7 +136,9 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
     try {
       await waitForPort(proxyPort);
 
-      // Sampled from a real codex 0.133-alpha startup capture.
+      // Sampled from a real codex 0.133-0.136 startup capture.
+      // Analytics events are included: they 404 for API-key users and create
+      // garbage "(unknown)" / "Codex Raw" entries with !http markers.
       const noisePaths = [
         ['GET', '/v1/plugins/featured?platform=codex'],
         ['GET', '/v1/plugins/list'],
@@ -146,6 +147,8 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
         ['POST', '/v1/api/codex/apps'],
         ['GET', '/v1/api/codex/usage'],
         ['GET', '/v1/connectors/directory/list?external_logos=true'],
+        ['POST', '/v1/codex/analytics-events/events'],
+        ['GET', '/v1/models?client_version=0.136.0'],
       ];
       for (const [method, urlPath] of noisePaths) {
         const out = await fireRequest(proxyPort, method, urlPath);
@@ -155,20 +158,12 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
       // Give the proxy a moment to settle any async writes.
       await new Promise(r => setTimeout(r, 200));
 
-      let entries = (await fetchEntries(proxyPort)).entries || [];
+      const entries = (await fetchEntries(proxyPort)).entries || [];
       const noiseEntries = entries.filter(e => noisePaths.some(([, p]) =>
         e.url === p.split('?')[0] || e.url === p
       ));
       assert.equal(noiseEntries.length, 0,
         `noise paths created ${noiseEntries.length} entries: ${JSON.stringify(noiseEntries.map(e => e.url))}`);
-
-      // Sanity: the telemetry endpoint is NOT in the noise list, so a request
-      // to it SHOULD record an entry (so a future Bonus PR can parse it).
-      await fireRequest(proxyPort, 'POST', '/v1/codex/analytics-events/events');
-      await new Promise(r => setTimeout(r, 200));
-      entries = (await fetchEntries(proxyPort)).entries || [];
-      const telemetry = entries.find(e => e.url === '/v1/codex/analytics-events/events');
-      assert.ok(telemetry, 'telemetry endpoint should still record an entry');
     } finally {
       await killAndWait(child);
       upstream.close();
