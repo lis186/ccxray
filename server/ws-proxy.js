@@ -262,6 +262,7 @@ async function recordWebSocketEntry(ctx, result) {
   const resWritePromise = config.storage.write(ctx.id, '_res.json', JSON.stringify(resLog))
     .catch(e => console.error('Write ws res.json failed:', e.message));
 
+  const { getParser } = require('./wire-parsers');
   const responseMetadata = {
     transport: 'websocket',
     capture: 'transport-only',
@@ -274,37 +275,27 @@ async function recordWebSocketEntry(ctx, result) {
   const entry = {
     id: ctx.id,
     ts: ctx.ts,
-    sessionId: ctx.sessionId,
     method: ctx.req.method,
     url: stripAuthParams(ctx.req.url),
-    provider: 'openai',
-    agent: agentForProvider('openai'),
     req: reqLog,
     res: resLog,
     elapsed,
     status: result.status,
     isSSE: false,
-    tokens: cr ? helpers.tokenizeRequest(reqLog) : null,
-    usage: ctx.lastUsage || null,
-    cost: calculateCost(ctx.lastUsage, ctx.lastModel),
-    responseMetadata,
-    maxContext: ctx.lastModel ? config.inferMaxContext(ctx.lastModel, null, ctx.lastUsage) : null,
-    cwd: store.sessionMeta[ctx.sessionId]?.cwd || null,
     receivedAt: ctx.startTime,
+    tokens: cr ? helpers.tokenizeRequest(reqLog) : null,
     duplicateToolCalls: null,
-    model: ctx.lastModel || null,
-    msgCount: Array.isArray(cr?.input) ? cr.input.length : 0,
-    toolCount: Array.isArray(cr?.tools) ? cr.tools.length : 0,
-    toolCalls: helpers.extractOpenAIToolCalls(ctx.responseEvents),
-    isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
-    sessionInferred: ctx.sessionInferred,
-    title: 'Codex WebSocket session',
-    stopReason: result.close?.reason || result.error?.message || null,
-    toolFail: false,
-    sysHash: null,
-    toolsHash: null,
-    coreHash: null,
-    thinkingStripped: undefined,
+    ...getParser('openai').buildEntryFields({
+      provider: 'openai', transport: 'websocket',
+      parsedBody: cr || {}, responseEvents: ctx.responseEvents,
+      responseMetadata, lastUsage: ctx.lastUsage, lastModel: ctx.lastModel,
+      proxyRes: { statusCode: result.status },
+      sessionId: ctx.sessionId, sessionInferred: ctx.sessionInferred,
+      isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
+      cwd: store.sessionMeta[ctx.sessionId]?.cwd || null,
+      wsCloseReason: result.close?.reason || null,
+      wsErrorMessage: result.error?.message || null,
+    }),
   };
   entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
   entry.toolSources = helpers.buildToolSources(entry) || undefined;

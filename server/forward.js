@@ -177,6 +177,9 @@ function parseSSEText(raw, receivedAt) {
 }
 
 function normalizeOpenAIResponseSummary(meta, resData) {
+  if (meta?.responseMetadata?.transport === 'websocket') {
+    return { summary: { ...meta, isSSE: false }, resData };
+  }
   const events = Array.isArray(resData)
     ? resData
     : (typeof resData === 'string' ? parseSSEText(resData) : null);

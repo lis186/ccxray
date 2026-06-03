@@ -164,11 +164,19 @@ function preprocessBody(parsedBody, headers) {
 
 function buildEntryFields(ctx) {
   const { parsedBody, proxyRes } = ctx;
-  const response = ctx.response || getOpenAIResponseFromEvents(ctx.events || []);
-  const responseMetadata = buildResponseMetadata('openai', response, proxyRes);
-  if (ctx.events && ctx.events.length) responseMetadata.streaming = true;
+  const isWS = ctx.transport === 'websocket';
+  const response = isWS ? null : (ctx.response || getOpenAIResponseFromEvents(ctx.events || []));
   const usage = ctx.lastUsage || extractUsage(response);
   const model = ctx.lastModel || response?.model || parsedBody?.model || null;
+
+  let responseMetadata;
+  if (isWS) {
+    responseMetadata = ctx.responseMetadata || { transport: 'websocket', capture: 'transport-only' };
+  } else {
+    responseMetadata = buildResponseMetadata('openai', response, proxyRes);
+    if (ctx.events && ctx.events.length) responseMetadata.streaming = true;
+  }
+
   return {
     provider: 'openai',
     agent: agentForProvider('openai'),
@@ -176,17 +184,21 @@ function buildEntryFields(ctx) {
     msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
     toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
     toolCalls: helpers.extractOpenAIToolCalls(
-      (ctx.events && ctx.events.length) ? ctx.events : response?.output
+      isWS ? ctx.responseEvents : ((ctx.events && ctx.events.length) ? ctx.events : response?.output)
     ),
     isSubagent: ctx.isSubagent || false,
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
     usage,
     cost: calculateCost(usage, model),
-    maxContext: config.inferMaxContext(model, parsedBody?.instructions, usage),
+    maxContext: model ? config.inferMaxContext(model, parsedBody?.instructions, usage) : null,
     responseMetadata,
-    stopReason: response?.status || '',
-    title: getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response),
+    stopReason: isWS
+      ? (ctx.wsCloseReason || ctx.wsErrorMessage || null)
+      : (response?.status || ''),
+    title: isWS
+      ? 'Codex WebSocket session'
+      : (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response)),
     thinkingDuration: null,
     toolFail: false,
     sysHash: ctx.sysHash || null,
