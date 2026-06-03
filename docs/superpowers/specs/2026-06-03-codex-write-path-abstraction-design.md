@@ -78,13 +78,17 @@ Together they cover every `INDEX_FIELDS` key.
 
 ### `parser.buildEntryFields(ctx)` — per-provider, in `server/wire-parsers/{anthropic,openai}.js`
 
-- **Output contract** (shared across providers): returns an object with the canonical
-  fields — `model, msgCount, toolCount, toolCalls, isSubagent, sessionInferred, cwd,
-  usage, cost, maxContext, responseMetadata, stopReason, title, thinkingDuration,
-  toolFail, sysHash, toolsHash, coreHash, thinkingStripped, hasCredential, toolSources,
-  provider, agent, sessionId`. Fields not applicable to a provider are set to their
-  honest value (e.g. Anthropic `cache_creation` real; OpenAI cache_creation 0), never
-  silently dropped.
+- **Output contract** (shared across providers): returns the canonical fields —
+  `model, msgCount, toolCount, toolCalls, isSubagent, sessionInferred, cwd, usage,
+  cost, maxContext, responseMetadata, stopReason, title, thinkingDuration, toolFail,
+  sysHash, toolsHash, coreHash, thinkingStripped, provider, agent, sessionId`. Fields
+  not applicable to a provider take their honest value (e.g. OpenAI cache_creation 0),
+  never silently dropped. **`hasCredential` and `toolSources` are NOT returned by the
+  parser** — the caller computes them on the fully-assembled entry (they depend on the
+  complete entry incl. `req/res/tokens`) *before* nulling `req/res`. The caller also
+  passes Anthropic `title`/`thinkingDuration`/`thinkingStripped` in via `ctx` (their
+  helpers live in `forward.js`/`helpers.js`; the parser must not require `forward.js`).
+  `ctx` carries an explicit `transport: 'sse' | 'http' | 'websocket'` discriminant.
 - **Input** (`ctx`): a small transport-shaped context, **not** a pre-normalized union.
   Each parser reads what its transport provides:
   - anthropic: parsed request body + collected SSE events (or non-SSE response object).

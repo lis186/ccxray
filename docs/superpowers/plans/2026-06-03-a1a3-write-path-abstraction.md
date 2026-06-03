@@ -59,7 +59,7 @@ Allowlisted deliberate additions vs legacy: OpenAI SSE gains real `cost`+`maxCon
 - Modify: `server/sse-broadcast.js:11`, `server/forward.js:723`, `server/forward.js:865`, `server/ws-proxy.js:279`
 - Test: `test/providers.test.js` (add a case; create if absent)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** (codex: if `test/providers.test.js` already exists, **append** just the `test(...)` block + extend the existing destructured `require('../server/providers')` — don't duplicate the boilerplate shown here)
 
 ```js
 // test/providers.test.js
@@ -201,22 +201,59 @@ git commit -m "feat(3b): add server/entry.js — INDEX_FIELDS + buildIndexLine p
 - [ ] **Step 1: Add the T1 legacy-parity test** (append to `test/entry.test.js`)
 
 ```js
-// Legacy parity: for each provider/transport, buildIndexLine(entry) must keep every
-// key the old hand-rolled line wrote, add new keys only from the allowlist, and keep
-// legacy values deepEqual (except the allowlisted OpenAI fixes).
-const LEGACY_KEYS = {
-  anthropicSSE: ['id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt','sysHash','toolsHash','coreHash','thinkingStripped','hasCredential','toolSources'],
-  openaiSSE: ['id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata','stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt','sysHash','toolsHash','coreHash','hasCredential'],
-  nonSSE: ['id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata','stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt','sysHash','toolsHash','coreHash','thinkingStripped','hasCredential','toolSources'],
-  ws: ['id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata','stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt','sysHash','toolsHash','coreHash','thinkingStripped','hasCredential','toolSources'],
+// T1 (per codex): for each site, compare buildIndexLine(entry) against the GOLDEN
+// legacy line that the old hand-rolled code emitted for the same entry. Four rules:
+//   (1) every legacy key present  (2) excluded keys absent
+//   (3) any new key ∈ the site's explicit allowlist
+//   (4) legacy key values deepEqual — except the allowlisted deliberate fixes.
+const { INDEX_FIELDS, buildIndexLine } = require('../server/entry');
+const EXCLUDED = ['req','res','tokens','duplicateToolCalls','method','url','_loaded','_writePromise','_loadingPromise'];
+
+// A representative OpenAI-SSE entry (the drift site). `entry` = canonical truth;
+// `legacy` = what the OLD handleOpenAISSE index line wrote (note cost/maxContext null bugs).
+const openaiSSEEntry = {
+  id:'X', ts:'t', sessionId:'s', provider:'openai', agent:'codex', model:'gpt-5.5',
+  msgCount:1, toolCount:0, toolCalls:{}, isSubagent:false, sessionInferred:false, cwd:'/p',
+  isSSE:true, usage:{input_tokens:10}, cost:{cost:0.09}, maxContext:400000,
+  responseMetadata:{transport:'http',streaming:true}, stopReason:'completed', title:'t',
+  thinkingDuration:null, toolFail:false, elapsed:'1.0', status:200, receivedAt:1,
+  sysHash:null, toolsHash:null, coreHash:null, hasCredential:undefined,
+  // excluded fields present on the live entry:
+  req:{big:1}, res:[1], tokens:{total:9}, method:'POST', url:'/v1/responses',
 };
-test('INDEX_FIELDS is a superset of every legacy key set', () => {
-  for (const [site, keys] of Object.entries(LEGACY_KEYS))
-    for (const k of keys) assert.ok(INDEX_FIELDS.includes(k), `${site} legacy key missing from INDEX_FIELDS: ${k}`);
+const openaiSSELegacy = { // old hand-built line (with the null bugs)
+  id:'X', ts:'t', sessionId:'s', provider:'openai', agent:'codex', model:'gpt-5.5',
+  msgCount:1, toolCount:0, toolCalls:{}, isSubagent:false, sessionInferred:false, cwd:'/p',
+  isSSE:true, usage:{input_tokens:10}, cost:null, maxContext:null,
+  responseMetadata:{transport:'http',streaming:true}, stopReason:'completed', title:'t',
+  thinkingDuration:null, toolFail:false, elapsed:'1.0', status:200, receivedAt:1,
+  sysHash:null, toolsHash:null, coreHash:null,
+};
+const openaiSSEAllowlist = ['cost','maxContext']; // deliberate OpenAI fixes
+
+function assertParity(entry, legacy, allowlist) {
+  const got = JSON.parse(buildIndexLine(entry));
+  for (const k of EXCLUDED) assert.ok(!(k in got), `excluded key leaked: ${k}`);
+  for (const k of Object.keys(legacy)) assert.ok(k in got, `legacy key dropped: ${k}`);
+  for (const k of Object.keys(got)) {
+    assert.ok(INDEX_FIELDS.includes(k), `non-INDEX key: ${k}`);
+    if (!(k in legacy)) assert.ok(allowlist.includes(k), `unexpected new key: ${k}`);
+    else if (!allowlist.includes(k)) assert.deepEqual(got[k], legacy[k], `legacy value changed: ${k}`);
+  }
+  for (const k of allowlist) assert.deepEqual(got[k], entry[k], `allowlist fix not applied: ${k}`);
+}
+
+test('T1 OpenAI SSE index parity: legacy keys/values preserved, cost/maxContext fixed', () => {
+  assertParity(openaiSSEEntry, openaiSSELegacy, openaiSSEAllowlist);
 });
+// Repeat the same pattern with golden entry+legacy pairs for: anthropicSSE
+// (allowlist []), nonSSE (allowlist ['cost','maxContext'] for openai branch),
+// and ws (allowlist []). Each golden `legacy` object = the exact keys/values the
+// current hand-rolled line at that site emits (see plan "Reference" section).
 ```
 
-> Note: this locks INDEX_FIELDS ⊇ each legacy set. The allowlisted additions (OpenAI gaining real `cost`/`maxContext`, and `responseMetadata`/`thinkingStripped`/`toolSources` appearing where a site lacked them) are intentional and covered by Task 4-6's consistency tests. A field present as `undefined` on an entry is dropped by `buildIndexLine`, so sites that never set e.g. `toolSources` still emit no such key.
+> This is the real T1 guard (codex): plain superset would let `tokens`/`method`/`url`
+> leak in or a legacy value silently change. Land this in 3b① (Task 3), not later.
 
 - [ ] **Step 2: Run, expect pass** (the test only needs `INDEX_FIELDS`)
 
@@ -237,9 +274,10 @@ The 3 forward.js sites and the ws-proxy site all already have a fully-populated 
 
 - [ ] **Step 4: Smoke — confirm the OpenAI SSE drift is fixed on disk**
 
-Run an isolated server + a real Codex turn (see Completion Gate, steps 1-2), then:
+Run an isolated server + a real Codex turn (see Completion Gate, steps 1-2), then
+query the **index line** (maxContext/cost live in entry/index metadata, NOT in the
+`_res.json` payload — codex):
 ```bash
-grep -o '"maxContext":[0-9]*' "$LEDGER_HOME/logs"/*_res.json 2>/dev/null; \
 node -e 'const fs=require("fs"),p=process.env.LEDGER_HOME+"/logs/index.ndjson";for(const l of fs.readFileSync(p,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.provider==="openai"&&o.isSSE)console.log("openai SSE index maxContext=",o.maxContext,"cost=",JSON.stringify(o.cost))}'
 ```
 Expected: OpenAI SSE index lines now show real `maxContext`/`cost`, not null.
@@ -266,7 +304,14 @@ git commit -m "fix(3b): index line via buildIndexLine(entry) — fixes OpenAI SS
 - Modify: `server/wire-parsers/openai.js` (add `buildEntryFields`)
 - Test: `test/wire-parsers-build-entry.test.js`
 
-**Contract** (shared output across providers): `buildEntryFields(ctx)` returns an object with the canonical fields — everything in `INDEX_FIELDS` **except** the caller-owned `id, ts, receivedAt, elapsed, isSSE, status` — plus `provider, agent`. The caller spreads it into the entry. `ctx` for OpenAI SSE carries: `{ provider:'openai', parsedBody, events, response, proxyRes, sessionId, sessionInferred, isSubagent, sysHash, toolsHash, coreHash }`. **`ctx` must include `parsedBody`+`events`+`response` so `entryHasCredential`/`buildToolSources` can be computed here, before the caller nulls req/res** (T2).
+**Contract** (decided per codex — resolves the Task4/5 contradiction):
+- `buildEntryFields(ctx)` returns the canonical fields = everything in `INDEX_FIELDS` **except**:
+  - caller-owned identity/transport: `id, ts, receivedAt, elapsed, isSSE, status`
+  - **`hasCredential` and `toolSources`** — these are **computed by the caller** on the fully-assembled entry (they depend on the complete entry incl. `req/res/tokens/provider`, and keeping them out of the parser avoids parser bloat).
+  - plus the parser DOES return `provider, agent`.
+- The caller assembles `entry = { id, ts, receivedAt, elapsed, isSSE, status, method, url, req, res, tokens, duplicateToolCalls, ...buildEntryFields(ctx) }`, then computes `entry.hasCredential`/`entry.toolSources`, **then** nulls `req/res` (so credential/tool scanning still sees full data — T2).
+- `ctx` uses an explicit **`transport: 'sse' | 'http' | 'websocket'`** discriminant (codex — do not branch on `ctx.wsResult` presence). For OpenAI SSE: `{ provider:'openai', transport:'sse', parsedBody, events, proxyRes, sessionId, sessionInferred, isSubagent, sysHash, toolsHash, coreHash, cwd }`. `response` is derived inside the parser from `events`.
+- **T2 key-set test asserts the FINAL ASSEMBLED entry** (not the parser output alone) ⊇ `INDEX_FIELDS`, and that `hasCredential`/`toolSources` are populated for a credential-bearing fixture.
 
 - [ ] **Step 1: Write the failing test** (use an existing OpenAI SSE fixture)
 
@@ -302,7 +347,7 @@ test('openai.buildEntryFields yields canonical fields incl. non-null maxContext/
 });
 ```
 
-> If `test/fixtures/wire-parsers/openai/sse-events.json` does not exist, create it first by capturing `events` from a real codex turn (Completion Gate step 2 writes `_res.json`; copy a representative one). Document the capture in the fixture file header comment.
+> If `test/fixtures/wire-parsers/openai/sse-events.json` does not exist, create it first by capturing `events` from a real codex turn (Completion Gate step 2 writes `_res.json`; copy a representative one). `.json` cannot hold comments — record provenance in a sibling `test/fixtures/wire-parsers/openai/README.md` (codex), not in the JSON.
 
 - [ ] **Step 2: Run, expect fail**
 
@@ -319,11 +364,13 @@ const helpers = require('../helpers');
 const config = require('../config');
 const { calculateCost } = require('../pricing');
 const { agentForProvider } = require('../providers');
-// getOpenAIResponseFromEvents / buildResponseMetadata / getOpenAIInputSummary /
-// getOpenAIOutputSummary already live in this module or forward; if in forward,
-// move the pure ones (getOpenAIResponseFromEvents, getOpenAIInputSummary,
-// getOpenAIOutputSummary, buildResponseMetadata) into openai.js and re-export to
-// forward to avoid a require cycle.
+// require-cycle rule (codex): openai.js MUST NOT require forward.js.
+// The pure OpenAI response helpers currently in forward.js
+// (getOpenAIResponseFromEvents, getOpenAIInputSummary, getOpenAIOutputSummary,
+// buildResponseMetadata) move into a NEW shared module `server/openai-response.js`,
+// imported by BOTH forward.js and wire-parsers/openai.js. (This keeps the parser
+// file from doubling as a generic response-utility module.)
+const R = require('../openai-response');
 
 function buildEntryFields(ctx) {
   const { parsedBody, proxyRes } = ctx;
@@ -548,7 +595,7 @@ test('anthropic.buildEntryFields keeps thinkingStripped/toolSources/hasCredentia
 
 - [ ] **Step 2: Run, expect fail.** Run: `node --test test/wire-parsers-build-entry.test.js` → FAIL.
 
-- [ ] **Step 3: Implement `anthropic.buildEntryFields(ctx)`** by moving `forward.js` Anthropic SSE field computation (≈570-611: `maxContext, isSubagent, title, toolFail, thinkingDuration, thinkingStripped, model, msgCount, toolCount, toolCalls, sysHash/toolsHash/coreHash`) into the parser, reading from `ctx`. `stopReason` is passed in (the SSE loop computes it). Set `responseMetadata: undefined` (Anthropic has none → dropped). Keep `resolveTitleGenTitle`/`computeThinkingStripped` calls (import into the parser or pass results via ctx — prefer importing the pure helpers).
+- [ ] **Step 3: Implement `anthropic.buildEntryFields(ctx)`** by moving `forward.js` Anthropic SSE field computation (≈570-611: `maxContext, isSubagent, model, msgCount, toolCount, toolCalls, sysHash/toolsHash/coreHash, toolFail`) into the parser, reading from `ctx`. Set `responseMetadata: undefined` (Anthropic has none → dropped). **require-cycle rule (codex): anthropic.js MUST NOT require forward.js.** `resolveTitleGenTitle` and `computeThinkingStripped` currently live in forward.js and are not exported — to keep Anthropic risk low, the **caller computes `title`, `titleGenTitle`, `thinkingDuration`, and `thinkingStripped` and passes them via `ctx`** (rather than moving those functions). So `buildEntryFields` reads `ctx.title, ctx.thinkingDuration, ctx.thinkingStripped, ctx.stopReason` and only *derives* the provider-shape fields (usage already comes from `ctx`/`extractUsage`). Pure helpers that are trivially relocatable (e.g. `extractDuplicateToolCalls` — already in `helpers.js`) stay in `helpers.js`.
 
 - [ ] **Step 4: Run, expect pass.** → PASS.
 
@@ -608,7 +655,7 @@ test('anthropic.registerPromptVersion returns coreHash for the entry', () => {
 
 - [ ] **Step 2: Run, expect fail.** → FAIL.
 
-- [ ] **Step 3: Implement** — move `index.js:379-406` (anthropic cc_version/B2/coreHash + `store.versionIndex` insert) into `anthropic.registerPromptVersion`, and `index.js:305-318` (openai instructions hash) into `openai.registerPromptVersion`. Each returns `{ coreHash }` (and sysHash/toolsHash if computed there) so `index.js` can thread `coreHash` onto the request ctx used by `buildEntryFields`. **coreHash must be produced before entry assembly** (T9).
+- [ ] **Step 3: Implement** — move `index.js:379-406` (anthropic cc_version/B2/coreHash + `store.versionIndex` insert) into `anthropic.registerPromptVersion`, and `index.js:305-318` (openai instructions hash) into `openai.registerPromptVersion`. Each returns `{ coreHash }` (and sysHash/toolsHash if computed there) so `index.js` can thread `coreHash` onto the request ctx used by `buildEntryFields`. **coreHash must be produced before entry assembly** (T9). **Do NOT change the shared-file write order** (codex): `index.js` currently also performs the `sys_<hash>`/`tools_<hash>` `writeSharedIfAbsent` calls — leave those in place and in the same order; `registerPromptVersion` only takes over the version-index registration, not the shared-file writes.
 
 - [ ] **Step 4: Run + full suite.** → PASS.
 
