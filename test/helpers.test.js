@@ -14,6 +14,7 @@ const {
   computeThinkingDuration,
   categorizeTools,
   scanCredentials,
+  scanObjectForCredentials,
   entryHasCredential,
   classifyToolSource,
   buildToolSources,
@@ -328,6 +329,131 @@ describe('helpers', () => {
         }]},
       };
       assert.equal(entryHasCredential(entry), false);
+    });
+
+    // ── OpenAI / Codex credential scanning ──
+    const SK = 'sk-ant-api03-' + 'a'.repeat(30);
+    const GHP = 'ghp_' + 'a'.repeat(36);
+    const AKIA = 'AKIA' + 'A'.repeat(16);
+
+    it('detects credential in OpenAI instructions', () => {
+      assert.equal(entryHasCredential({ req: { instructions: `Use key ${SK}` } }), true);
+    });
+
+    it('detects credential in OpenAI input string (top-level)', () => {
+      assert.equal(entryHasCredential({ req: { input: `deploy with ${SK}` } }), true);
+    });
+
+    it('detects credential in OpenAI input message content (input_text)', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: SK }] }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI function_call_output.output (string)', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'function_call_output', output: `token=${GHP}`, call_id: 'c1' }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI function_call_output.output (array)', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'function_call_output', output: [{ type: 'output_text', text: AKIA }], call_id: 'c1' }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI function_call.arguments', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'function_call', arguments: `{"key":"${SK}"}`, name: 'Bash', call_id: 'c1' }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI input_file.file_data', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'message', role: 'user', content: [{ type: 'input_file', file_data: SK }] }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI reasoning summary text', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: SK }] }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI response output_text.delta event', () => {
+      assert.equal(entryHasCredential({
+        res: [{ type: 'response.output_text.delta', delta: SK }],
+      }), true);
+    });
+
+    it('detects credential in OpenAI response function_call_arguments.delta', () => {
+      assert.equal(entryHasCredential({
+        res: [{ type: 'response.function_call_arguments.delta', delta: `{"token":"${GHP}"}` }],
+      }), true);
+    });
+
+    it('detects credential in OpenAI response reasoning_text.delta', () => {
+      assert.equal(entryHasCredential({
+        res: [{ type: 'response.reasoning_text.delta', delta: SK }],
+      }), true);
+    });
+
+    it('detects credential in OpenAI response refusal.delta', () => {
+      assert.equal(entryHasCredential({
+        res: [{ type: 'response.refusal.delta', delta: SK }],
+      }), true);
+    });
+
+    it('detects credential in OpenAI HTTP non-SSE response.output', () => {
+      assert.equal(entryHasCredential({
+        res: { output: [{ type: 'message', content: [{ type: 'output_text', text: SK }] }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI input message content (string)', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'message', role: 'user', content: SK }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI response output item content (string)', () => {
+      assert.equal(entryHasCredential({
+        res: { output: [{ type: 'message', role: 'assistant', content: SK }] },
+      }), true);
+    });
+
+    it('returns false for clean OpenAI entry', () => {
+      assert.equal(entryHasCredential({
+        req: { instructions: 'You are helpful', input: [
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
+          { type: 'function_call_output', output: 'ok', call_id: 'c1' },
+        ]},
+        res: [{ type: 'response.output_text.delta', delta: 'hi there' }],
+      }), false);
+    });
+  });
+
+  describe('scanObjectForCredentials', () => {
+    const SK = 'sk-ant-api03-' + 'a'.repeat(30);
+
+    it('returns false for null/undefined', () => {
+      assert.equal(scanObjectForCredentials(null, 0), false);
+      assert.equal(scanObjectForCredentials(undefined, 0), false);
+    });
+
+    it('scans string directly', () => {
+      assert.equal(scanObjectForCredentials(SK, 0), true);
+      assert.equal(scanObjectForCredentials('clean', 0), false);
+    });
+
+    it('recurses into nested objects', () => {
+      assert.equal(scanObjectForCredentials({ a: { b: { text: SK } } }, 0), true);
+    });
+
+    it('respects depth cap', () => {
+      let obj = { text: SK };
+      for (let i = 0; i < 25; i++) obj = { nested: obj };
+      assert.equal(scanObjectForCredentials(obj, 0), false);
     });
   });
 

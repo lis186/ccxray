@@ -586,17 +586,48 @@ function scanCredentials(text) {
   return false;
 }
 
-function entryHasCredential(entry) {
-  // Scan current response (assistant text deltas)
-  if (Array.isArray(entry.res)) {
-    for (const ev of entry.res) {
-      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-        if (scanCredentials(ev.delta.text)) return true;
-      }
+const CREDENTIAL_TEXT_KEYS = new Set([
+  'text', 'output', 'arguments', 'delta', 'refusal',
+  'file_data', 'file_url', 'filename', 'instructions',
+  'encrypted_content', 'content',
+]);
+
+function scanObjectForCredentials(obj, depth) {
+  if (depth > 20 || obj == null) return false;
+  if (typeof obj === 'string') return scanCredentials(obj);
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      if (scanObjectForCredentials(item, depth + 1)) return true;
+    }
+    return false;
+  }
+  if (typeof obj !== 'object') return false;
+  for (const key of Object.keys(obj)) {
+    const val = obj[key];
+    if (CREDENTIAL_TEXT_KEYS.has(key)) {
+      if (typeof val === 'string') { if (scanCredentials(val)) return true; }
+      else if (scanObjectForCredentials(val, depth + 1)) return true;
+    } else if (typeof val === 'object' && val !== null) {
+      if (scanObjectForCredentials(val, depth + 1)) return true;
     }
   }
-  // Scan messages history: assistant text blocks + tool_result content
-  const messages = entry.req?.messages;
+  return false;
+}
+
+function entryHasCredential(entry) {
+  // Scan response events (provider-agnostic: recurse into all events)
+  if (scanObjectForCredentials(entry.res, 0)) return true;
+
+  // Scan OpenAI request: instructions + input
+  const req = entry.req;
+  if (req) {
+    if (typeof req.instructions === 'string' && scanCredentials(req.instructions)) return true;
+    if (typeof req.input === 'string' && scanCredentials(req.input)) return true;
+    if (Array.isArray(req.input) && scanObjectForCredentials(req.input, 0)) return true;
+  }
+
+  // Scan Anthropic messages history (preserve existing behavior)
+  const messages = req?.messages;
   if (!Array.isArray(messages)) return false;
   for (const msg of messages) {
     if (!Array.isArray(msg.content)) continue;
@@ -809,6 +840,7 @@ module.exports = {
   extractOpenAIToolCalls,
   extractDuplicateToolCalls,
   scanCredentials,
+  scanObjectForCredentials,
   entryHasCredential,
   classifyToolSource,
   buildToolSources,
