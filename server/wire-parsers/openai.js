@@ -164,10 +164,10 @@ function buildEntryFields(ctx) {
     maxContext: model ? config.inferMaxContext(model, parsedBody?.instructions, usage) : null,
     responseMetadata,
     stopReason: isWS
-      ? (ctx.wsCloseReason || ctx.wsErrorMessage || null)
+      ? (ctx.lastResponseStatus || ctx.wsCloseReason || ctx.wsErrorMessage || null)
       : (response?.status || ''),
     title: isWS
-      ? 'Codex WebSocket session'
+      ? (getOpenAIInputSummary(parsedBody?.input) || 'Codex WebSocket session')
       : (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response)),
     thinkingDuration: null,
     toolFail: false,

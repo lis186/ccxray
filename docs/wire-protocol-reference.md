@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-06-04 | ccxray | 1.10.x | Fix: WS `stopReason` now extracts `response.status` from terminal events (`completed`/`incomplete`/`failed`/`cancelled`) instead of WS close reason. WS `title` extracts user input summary via `getOpenAIInputSummary` instead of hardcoded string. Non-terminal statuses (`in_progress`/`queued`) are ignored to prevent masking close/error reasons. |
 | 2026-06-02 | ccxray | 1.10.0 | Doc audit: 13 major + 25 minor corrections applied (F1–F38) |
 | 2026-06-01 | Codex | 0.133 | Baseline: all observations below recorded |
 | 2026-06-01 | Claude Code | 2.1.159 | Baseline: all observations below recorded |
@@ -145,7 +146,7 @@
 | Cache creation breakdown | `usage.cache_creation.ephemeral_5m_input_tokens`, `usage.cache_creation.ephemeral_1h_input_tokens` | N/A | `obs-fragile` |
 | Cache read | `usage.cache_read_input_tokens` | `usage.input_tokens_details.cached_tokens` (ccxray maps to canonical `cache_read_input_tokens`) | `contractual` (Anthropic) / `obs-stable` (Codex) |
 | Stop reason (HTTP) | `message_delta.delta.stop_reason` (`end_turn`, `tool_use`, `max_tokens`) | `response.status` (`completed`, `failed`, `cancelled`) | `contractual` |
-| Stop reason (WS) | N/A | `response.completed` / `response.done` events carry `response.status` on the wire. Note: ccxray currently stores the WS close reason instead (implementation detail, not wire behavior) | `contractual` (wire) / `obs-stable` (ccxray storage) |
+| Stop reason (WS) | N/A | `response.completed` / `response.done` events carry `response.status` on the wire (`completed`, `incomplete`, `failed`, `cancelled`). ccxray extracts terminal status before `WS_SKIP_EVENTS` discards the envelope; non-terminal (`in_progress`, `queued`) ignored to preserve close/error fallback. | `contractual` (wire) / `obs-stable` (ccxray storage) |
 
 ---
 

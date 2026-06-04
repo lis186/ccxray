@@ -103,6 +103,104 @@ test('T9: openai.registerPromptVersion returns coreHash', () => {
   assert.ok(out && typeof out.coreHash === 'string' && out.coreHash.length > 0);
 });
 
+// ── B1: WS stopReason from terminal response status ──
+
+test('WS stopReason: completed terminal status', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastUsage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'completed',
+    sessionId: 'ws1', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, 'completed');
+});
+
+test('WS stopReason: incomplete terminal status', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'incomplete',
+    sessionId: 'ws2', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, 'incomplete');
+});
+
+test('WS stopReason: failed terminal status', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'failed',
+    sessionId: 'ws3', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, 'failed');
+});
+
+test('WS stopReason: cancelled terminal status', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'cancelled',
+    sessionId: 'ws4', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, 'cancelled');
+});
+
+test('WS stopReason: no terminal status falls back to wsCloseReason', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: null,
+    sessionId: 'ws5', wsCloseReason: 'idle timeout', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, 'idle timeout');
+});
+
+test('WS stopReason: no terminal status, no close reason → null', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {}, responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: null,
+    sessionId: 'ws6', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.stopReason, null);
+});
+
+// ── B2: WS title from input summary ──
+
+test('WS title: extracts user input text', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: { input: [
+      { role: 'developer', content: [{ type: 'input_text', text: 'system prompt' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'say hello world' }] },
+    ] },
+    responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'completed',
+    sessionId: 'ws7', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.title, 'say hello world');
+});
+
+test('WS title: fallback when no input', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: {},
+    responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'gpt-5.5', lastResponseStatus: 'completed',
+    sessionId: 'ws8', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.title, 'Codex WebSocket session');
+});
+
 test('anthropic entry → buildIndexLine round-trip preserves key fields', () => {
   const parsedBody = loadFixture('anthropic', 'turn1_req.json');
   const usage = { input_tokens: 500, output_tokens: 100, total_tokens: 600 };

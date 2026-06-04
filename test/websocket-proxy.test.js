@@ -190,6 +190,40 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(reqLog.headers.agentType, 'worker');
   });
 
+  it('extracts stopReason and title from response events and client request', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', () => {
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: { status: 'completed', model: 'gpt-5.5', usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 } },
+        }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea950';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: {
+        'openai-beta': 'responses_websockets=2026-02-06',
+        session_id: sessionId,
+      },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    ws.send(JSON.stringify({
+      type: 'response.create', generate: true,
+      model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Say hello' }] }],
+    }));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    ws.close(1000, 'done');
+    await new Promise(resolve => ws.on('close', resolve));
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
+    assert.equal(entry.stopReason, 'completed');
+    assert.equal(entry.title, 'Say hello');
+  });
+
   it('closes the client and records an error entry when upstream rejects the handshake', async () => {
     upstreamServer.on('upgrade', (_req, socket) => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');

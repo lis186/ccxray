@@ -27,6 +27,8 @@ const WS_SKIP_EVENTS = new Set([
   'codex.rate_limits',
 ]);
 
+const WS_TERMINAL_STATUSES = new Set(['completed', 'incomplete', 'failed', 'cancelled']);
+
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'keep-alive',
@@ -288,7 +290,7 @@ async function recordWebSocketEntry(ctx, result) {
     ...getParser('openai').buildEntryFields({
       provider: 'openai', transport: 'websocket',
       parsedBody: cr || {}, responseEvents: ctx.responseEvents,
-      responseMetadata, lastUsage: ctx.lastUsage, lastModel: ctx.lastModel,
+      responseMetadata, lastUsage: ctx.lastUsage, lastModel: ctx.lastModel, lastResponseStatus: ctx.lastResponseStatus,
       proxyRes: { statusCode: result.status },
       sessionId: ctx.sessionId, sessionInferred: ctx.sessionInferred,
       isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
@@ -362,6 +364,7 @@ function handleWebSocketUpgrade(req, socket, head) {
       responseEvents: [],
       lastUsage: null,
       lastModel: null,
+      lastResponseStatus: null,
       clientRequest: null,
     };
     // Only client→upstream needs queueing; clientWs is already OPEN inside this
@@ -455,6 +458,7 @@ function handleWebSocketUpgrade(req, socket, head) {
             const r = parsed.response || parsed;
             if (r.usage) ctx.lastUsage = extractOpenAIUsage({ usage: r.usage }) || r.usage;
             if (r.model) ctx.lastModel = r.model;
+            if (typeof r.status === 'string' && WS_TERMINAL_STATUSES.has(r.status)) ctx.lastResponseStatus = r.status;
             if (!WS_SKIP_EVENTS.has(parsed.type)) {
               ctx.responseEvents.push(parsed);
             }
