@@ -410,6 +410,18 @@ describe('helpers', () => {
       }), true);
     });
 
+    it('detects credential in OpenAI input message content (string)', () => {
+      assert.equal(entryHasCredential({
+        req: { input: [{ type: 'message', role: 'user', content: SK }] },
+      }), true);
+    });
+
+    it('detects credential in OpenAI response output item content (string)', () => {
+      assert.equal(entryHasCredential({
+        res: { output: [{ type: 'message', role: 'assistant', content: SK }] },
+      }), true);
+    });
+
     it('returns false for clean OpenAI entry', () => {
       assert.equal(entryHasCredential({
         req: { instructions: 'You are helpful', input: [

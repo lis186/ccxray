@@ -589,7 +589,7 @@ function scanCredentials(text) {
 const CREDENTIAL_TEXT_KEYS = new Set([
   'text', 'output', 'arguments', 'delta', 'refusal',
   'file_data', 'file_url', 'filename', 'instructions',
-  'encrypted_content',
+  'encrypted_content', 'content',
 ]);
 
 function scanObjectForCredentials(obj, depth) {
