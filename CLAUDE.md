@@ -28,8 +28,8 @@ UI or server changes must be verified in a real browser, not just unit tests. Un
 CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 ```
 
-- Dashboard is loopback-trusted by default — no env var needed for local browser access
-- Upstream `/v1/*` still requires `X-Ccxray-Auth` (launchers inject it automatically)
+- Loopback is trusted by default (dashboard + upstream + WS) — no env var needed
+- Set `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` to re-gate loopback (e.g. behind a reverse proxy)
 - `CCXRAY_HOME` — isolates logs/hub/secrets from the user's real data
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)

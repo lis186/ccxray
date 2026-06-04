@@ -34,9 +34,8 @@ function handleAuthRoutes(req, res) {
       return true;
     }
     // Minting a bootstrap token is privileged (mint + redeem ⇒ dashboard
-    // session). Gated by verifyDashboard: loopback peers pass by default
-    // (isDashboardLoopbackTrusted), so local users can mint without
-    // X-Ccxray-Auth. Non-loopback callers still need a credential.
+    // session). Gated by verifyDashboard: loopback peers pass via
+    // isLoopbackBypass. Non-loopback callers still need a credential.
     if (!auth.verifyDashboard(req, res)) return true; // 401 written by the gate
     const token = auth.mintBootstrapToken();
     res.writeHead(200, { 'Content-Type': 'application/json' });
