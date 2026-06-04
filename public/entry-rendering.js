@@ -185,8 +185,14 @@ function isAbnormalStop(stopReason) {
   return !!stopReason && !['end_turn', 'tool_use', 'completed'].includes(stopReason);
 }
 
+function isProxyLifecycleShutdown(entry) {
+  return entry.status === 499 && typeof entry.stopReason === 'string'
+    && entry.stopReason.includes('ccxray shutdown');
+}
+
 function classifySeverity(entry, ctxPct, dupesMax) {
   if (ctxPct > 95) return 'critical';
+  if (isProxyLifecycleShutdown(entry)) return 'warning';
   if (entry.status != null && !isHttpStatusOk(entry.status)) return 'critical';
   if (isAbnormalStop(entry.stopReason)) return 'critical';
   if (ctxPct > 85) return 'warning';
@@ -198,6 +204,7 @@ function classifySeverity(entry, ctxPct, dupesMax) {
 
 function getCriticalMarker(stopReason, httpStatus, ctxPct) {
   // ctx > 95%: no inline marker (left bar only)
+  if (httpStatus === 499 && typeof stopReason === 'string' && stopReason.includes('ccxray shutdown')) return '!stop';
   if (httpStatus != null && !isHttpStatusOk(httpStatus)) return '!http';
   if (stopReason === 'max_tokens') return '!max';
   if (stopReason === 'length') return '!len';
@@ -395,7 +402,7 @@ function addEntry(e) {
   // Line 1: identity + critical marker + star toggle
   const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
   const modelHtml = '<span class="turn-model">' + escapeHtml(shortModel) + '</span>';
-  const dotClass = isHttpStatusOk(e.status) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
+  const dotClass = (isHttpStatusOk(e.status) || isProxyLifecycleShutdown(e)) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
   const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
   const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
