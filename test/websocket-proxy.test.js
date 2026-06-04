@@ -118,10 +118,6 @@ describe('OpenAI Responses WebSocket proxy', () => {
       OPENAI_TEST_HOST: 'localhost',
       OPENAI_TEST_PORT: String(upstreamPort),
       OPENAI_TEST_PROTOCOL: 'http',
-      // 2.2: these tests exercise WS transport mechanics, not the auth gate.
-      // Bypass upstream auth by default; the auth-specific tests below override
-      // this to '0' and supply real credentials.
-      CCXRAY_LOOPBACK_NO_AUTH: '1',
       ...extraEnv,
     });
     await waitForPort(proxyPort);
@@ -366,7 +362,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     upstreamWss.on('connection', () => {
       throw new Error('upstream should not be reached when auth fails');
     });
-    await startProxy({ CCXRAY_LOOPBACK_NO_AUTH: '0', CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
+    await startProxy({ CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
 
     const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
       headers: {
@@ -389,7 +385,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     upstreamWss.on('connection', () => {
       throw new Error('upstream should not be reached when auth fails');
     });
-    await startProxy({ CCXRAY_LOOPBACK_NO_AUTH: '0', CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
+    await startProxy({ CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
 
     const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
       headers: {
@@ -413,7 +409,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     upstreamWss.on('connection', (ws) => {
       ws.on('message', data => ws.send(`echo:${data.toString()}`));
     });
-    await startProxy({ CCXRAY_LOOPBACK_NO_AUTH: '0', CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
+    await startProxy({ CCXRAY_LOOPBACK_REQUIRE_AUTH: '1' });
 
     const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea948';
     const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {

@@ -36,10 +36,6 @@ function spawnServer(args, opts = {}) {
     ...process.env,
     CCXRAY_HOME: TEST_HOME,
     BROWSER: 'none', // never open browser in tests
-    // 2.2: these tests exercise startup/forwarding/restore mechanics, not the
-    // upstream auth gate — bypass it so /v1 requests aren't 401'd. Auth itself
-    // is covered by the auth-*.test.js suites.
-    CCXRAY_LOOPBACK_NO_AUTH: '1',
     ...opts.env,
   };
   const child = spawn(process.execPath, [SERVER_SCRIPT, ...args], {

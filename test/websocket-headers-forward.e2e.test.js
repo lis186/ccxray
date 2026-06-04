@@ -87,7 +87,6 @@ describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507
         // When the client sends chatgpt-account-id, config.js routes to CHATGPT_BASE_URL.
         OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
         CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
-        CCXRAY_LOOPBACK_NO_AUTH: '1', // 2.2: exercises WS header forwarding, not the auth gate
         CCXRAY_HOME: home,
         BROWSER: 'none',
         RESTORE_DAYS: '0',

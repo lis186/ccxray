@@ -149,7 +149,6 @@ describe('AUTH_TOKEN ?token= query param strip (a5d28f0)', () => {
         ANTHROPIC_TEST_PORT: String(upstreamPort),
         ANTHROPIC_TEST_PROTOCOL: 'http',
         AUTH_TOKEN: SECRET,
-        CCXRAY_LOOPBACK_NO_AUTH: '1', // 2.2: ?token= is no longer an auth mechanism; this test verifies URL stripping
         CCXRAY_HOME: home,
         BROWSER: 'none',
         RESTORE_DAYS: '0',

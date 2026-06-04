@@ -219,7 +219,6 @@ describe('proxy survives client and upstream socket errors (efd4a70)', () => {
         ANTHROPIC_TEST_HOST: '127.0.0.1',
         ANTHROPIC_TEST_PORT: String(upstreamPort),
         ANTHROPIC_TEST_PROTOCOL: 'http',
-        CCXRAY_LOOPBACK_NO_AUTH: '1', // 2.2: exercises proxy resilience, not the auth gate
         CCXRAY_HOME: home,
         BROWSER: 'none',
         RESTORE_DAYS: '0',

@@ -92,7 +92,6 @@ describe('Bug 1: ccxray drains WS storage writes before process exit', () => {
         ...process.env,
         OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
         CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
-        CCXRAY_LOOPBACK_NO_AUTH: '1', // 2.2: exercises WS shutdown drain, not the auth gate
         CCXRAY_HOME: home,
         BROWSER: 'none',
         RESTORE_DAYS: '0',

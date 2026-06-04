@@ -127,7 +127,6 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
         OPENAI_TEST_PORT: String(upstreamPort),
         OPENAI_TEST_PROTOCOL: 'http',
         CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
-        CCXRAY_LOOPBACK_NO_AUTH: '1', // 2.2: exercises codex noise suppression, not the auth gate
         CCXRAY_HOME: home,
         BROWSER: 'none',
         RESTORE_DAYS: '0',

@@ -655,10 +655,10 @@ async function startClientMode(lock) {
 // ── Hub/Server startup ──
 async function runPostListenStartupTasks() {
   if (process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH === '1') {
-    console.error('\x1b[44m\x1b[97m CCXRAY_LOOPBACK_REQUIRE_AUTH=1 \x1b[0m \x1b[34mloopback dashboard requests require auth (paranoid mode).\x1b[0m');
+    console.error('\x1b[44m\x1b[97m CCXRAY_LOOPBACK_REQUIRE_AUTH=1 \x1b[0m \x1b[34mloopback requests require auth (paranoid mode).\x1b[0m');
   }
   if (process.env.CCXRAY_LOOPBACK_NO_AUTH === '1') {
-    console.error('\x1b[41m\x1b[97m CCXRAY_LOOPBACK_NO_AUTH=1 \x1b[0m \x1b[31mupstream /v1/* auth is DISABLED for loopback — any local process can reach /v1/* without X-Ccxray-Auth. Dashboard is already loopback-trusted by default; you can unset this unless you need upstream bypass.\x1b[0m');
+    console.error('\x1b[33m CCXRAY_LOOPBACK_NO_AUTH=1 is no longer needed — loopback is trusted by default. You can unset it.\x1b[0m');
   }
 
   store.setRestoreState({
