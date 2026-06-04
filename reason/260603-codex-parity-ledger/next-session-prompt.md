@@ -1,25 +1,29 @@
 # Next-session prompt (paste as first message)
 
-繼續 ccxray Codex parity 工作，分支 `feat/codex-dashboard-foundation`。
+繼續 ccxray Codex parity 工作。
 
-進度：Step1 truth-marker ✓、Step2 gap ledger ✓。**Step3 (A1-A3 寫入面抽象) 已完成
-brainstorm→spec→pre-mortem→plan，spec/pre-mortem/plan 全部經 codex 審過通過
-(plan 審查修正在 commit c63a289)。唯一待拍板 = 執行模式。可直接開工。**
+**前情**：
+- A1-A3 write-path abstraction ✅ PR #37 (50 commits, 708 tests)
+- N3 noise filter ✅ PR #38 (isNoiseRequest 覆蓋所有 ChatGPT platform paths + /v1/models)
+- Auth loopback trust ✅ PR #39 (isLoopbackBypass 預設信任 loopback)
+- N2 credential scanning ✅ PR #40 (recursive scanObjectForCredentials，20 test cases)
+- N1 session collapse ✅ verified non-issue (2026-06-04)：3 concurrent codex exec 正確分離
+- P3 maxContext ✅ verified non-issue (2026-06-04)：SSE-HTTP / WS 都走 buildEntryFields → inferMaxContext
+- B3 N3 啟動雜訊 ✅ already fixed by PR #38 (2026-06-04 re-verified：codex exec 只產生 1 entry，MCP RPC 是 codex-internal 不走 proxy)
+- 分支都已 merge 到 main 並刪除
 
-請依序讀（都已 commit）：
-1. `docs/superpowers/plans/2026-06-03-a1a3-write-path-abstraction.md` ← 可執行計畫，10 tasks
-2. `docs/superpowers/specs/2026-06-03-a1a3-premortem.md` ← 風險 T1-T9 + Go/No-Go
-3. `docs/superpowers/specs/2026-06-03-codex-write-path-abstraction-design.md` ← 設計
+**Ledger 剩餘真 gap（依優先）**：
+1. **B1 stopReason** — Codex 顯示 `?`（live+restore），需從 response.completed/status 取
+2. **B2 title** — 靜態 "Codex WebSocket session"，可改用 input summary
+3. **B4 cache TTL 顯示** — topbar 對 Codex 顯示 Claude 式 "API key · TTL 5m (detecting…)"
+4. **P1 成本頁** — 歷史掃 ~/.codex/sessions
+5. **P5 rate-limit** — Codex rate-limit 偵測
 
-用 `superpowers:executing-plans`（或 `subagent-driven-development`）逐 task 執行，TDD、每 task 一 commit。
+**建議本次目標**：B1 stopReason + B2 title（都在 wire-parsers/openai.js buildEntryFields 裡改）
 
-開工前先問使用者一件事：
-- 執行模式：subagent-driven（推薦，每 task 開新 subagent + task 間審查）還是 inline？
-（plan 已 codex 審過，不需再送審；關鍵 phase 3b①/3b④/完成 gate 可再走 codex 二審。）
+**硬規則**：
+- smoke 用隔離 CCXRAY_HOME + 獨立 port，絕不用 :5577
+- 非 trivial 走 codex review gate
+- 編輯 server/ 前確認 :5577 hub 非 --watch
 
-硬規則：
-- 完成前必跑 plan Task 10：隔離 smoke（獨立 CCXRAY_HOME + 自選 port，**絕不用 :5577**）+ 真實 Codex&Claude 流量 + deep-link `?e=` 導航 + 重啟前後 live↔restore 截圖一致，**雙 provider 都過才算 done**。
-- 編輯 `server/` 前重跑 go/no-go：`ps -o command= -p "$(lsof -iTCP:5577 -sTCP:LISTEN -t | head -1)"` 確認非 `--watch`。
-- 非 trivial 走 codex review gate；未授權前不要 push / 開 PR。
-
-背景全貌在 memory `project_dashboard_agent_abstraction`（RESUME 段）。後續 Step4 P1-P5、Step5 N 層(N1 session-collapse / N2 credential / N3 MCP-noise) 見 `reason/260603-codex-parity-ledger/ledger.md`。
+完整 gap ledger 在 `reason/260603-codex-parity-ledger/ledger.md`。
