@@ -610,4 +610,130 @@ describe('OpenAI Responses WebSocket proxy', () => {
     ws.close(1000, 'done');
     await new Promise(r => ws.on('close', r));
   });
+
+  it('emits a separate entry per response.completed turn within one WS', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    let msgCount = 0;
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        msgCount++;
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            model: 'gpt-5.5',
+            usage: { input_tokens: 100 * msgCount, output_tokens: 10 * msgCount, total_tokens: 110 * msgCount },
+          },
+        }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = 'ws-per-turn-multi-001';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn one' }] }],
+    }));
+    await new Promise(r => setTimeout(r, 300));
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn two' }] }],
+    }));
+    await new Promise(r => setTimeout(r, 300));
+    ws.close(1000, 'done');
+    await new Promise(r => ws.on('close', r));
+
+    await new Promise(r => setTimeout(r, 500));
+    const indexPath = path.join(testHome, 'logs', 'index.ndjson');
+    const entries = fs.readFileSync(indexPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const turnEntries = entries.filter(e => e.sessionId === sessionId && e.title);
+    assert.equal(turnEntries.length, 2, 'should have 2 per-turn entries');
+    assert.notEqual(turnEntries[0].id, turnEntries[1].id, 'entries should have different IDs');
+    assert.equal(turnEntries[0].title, 'Turn one');
+    assert.equal(turnEntries[1].title, 'Turn two');
+    assert.equal(turnEntries[0].usage.input_tokens, 100);
+    assert.equal(turnEntries[1].usage.input_tokens, 200);
+    assert.equal(turnEntries[0].stopReason, 'completed');
+    assert.equal(turnEntries[1].stopReason, 'completed');
+  });
+
+  it('skips warm-up turn (generate=false) and only emits real turns', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            model: 'gpt-5.5',
+            usage: { input_tokens: parsed.generate === false ? 500 : 1000, output_tokens: parsed.generate === false ? 0 : 50, total_tokens: parsed.generate === false ? 500 : 1050 },
+          },
+        }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = 'ws-warmup-skip-001';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    ws.send(JSON.stringify({ type: 'response.create', generate: false, model: 'gpt-5.5' }));
+    await new Promise(r => setTimeout(r, 200));
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Real turn' }] }],
+    }));
+    await new Promise(r => setTimeout(r, 300));
+    ws.close(1000, 'done');
+    await new Promise(r => ws.on('close', r));
+
+    await new Promise(r => setTimeout(r, 500));
+    const indexPath = path.join(testHome, 'logs', 'index.ndjson');
+    const entries = fs.readFileSync(indexPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    const turnEntries = entries.filter(e => e.sessionId === sessionId && e.title);
+    assert.equal(turnEntries.length, 1, 'should have 1 entry (warm-up skipped)');
+    assert.equal(turnEntries[0].title, 'Real turn');
+    assert.equal(turnEntries[0].usage.input_tokens, 1000);
+  });
+
+  it('emits a partial entry when WS closes mid-turn (before response.completed)', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        ws.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial output' }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = 'ws-mid-turn-close-001';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Interrupted turn' }] }],
+    }));
+    await new Promise(r => setTimeout(r, 200));
+    ws.close(1000, 'mid-turn close');
+    await new Promise(r => ws.on('close', r));
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title);
+    assert.equal(entry.title, 'Interrupted turn');
+    assert.equal(entry.status, 101);
+  });
 });

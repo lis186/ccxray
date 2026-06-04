@@ -214,9 +214,16 @@ function normalizeCloseCode(code) {
   return 1000;
 }
 
-async function recordWebSocketEntry(ctx, result) {
-  const elapsed = ((Date.now() - ctx.startTime) / 1000).toFixed(1);
-  const cr = ctx.clientRequest;
+async function recordWebSocketEntry(ctx, result, turn = null) {
+  const t = turn || ctx;
+  const entryId = t.id || ctx.id;
+  const entryTs = t.ts || ctx.ts;
+  const elapsed = ((Date.now() - (t.startTime || ctx.startTime)) / 1000).toFixed(1);
+  const cr = t.clientRequest ?? ctx.clientRequest;
+  const events = t.responseEvents ?? ctx.responseEvents;
+  const lastUsage = t.lastUsage ?? ctx.lastUsage;
+  const lastModel = t.lastModel ?? ctx.lastModel;
+  const lastResponseStatus = t.lastResponseStatus ?? ctx.lastResponseStatus;
   const baseHeaders = {
     openaiBeta: ctx.req.headers['openai-beta'] || null,
     sessionId: ctx.sessionId,
@@ -247,9 +254,9 @@ async function recordWebSocketEntry(ctx, result) {
       headers: baseHeaders,
       metadata: ctx.turnMetadata || null,
     };
-  const hasEvents = ctx.responseEvents.length > 0;
+  const hasEvents = events.length > 0;
   const resLog = hasEvents
-    ? ctx.responseEvents
+    ? events
     : {
       transport: 'websocket',
       capture: 'transport-only',
@@ -259,9 +266,9 @@ async function recordWebSocketEntry(ctx, result) {
       error: result.error || null,
     };
 
-  const reqWritePromise = config.storage.write(ctx.id, '_req.json', JSON.stringify(reqLog))
+  const reqWritePromise = config.storage.write(entryId, '_req.json', JSON.stringify(reqLog))
     .catch(e => console.error('Write ws req.json failed:', e.message));
-  const resWritePromise = config.storage.write(ctx.id, '_res.json', JSON.stringify(resLog))
+  const resWritePromise = config.storage.write(entryId, '_res.json', JSON.stringify(resLog))
     .catch(e => console.error('Write ws res.json failed:', e.message));
 
   const { getParser } = require('./wire-parsers');
@@ -275,8 +282,8 @@ async function recordWebSocketEntry(ctx, result) {
     error: result.error || null,
   };
   const entry = {
-    id: ctx.id,
-    ts: ctx.ts,
+    id: entryId,
+    ts: entryTs,
     method: ctx.req.method,
     url: stripAuthParams(ctx.req.url),
     req: reqLog,
@@ -284,13 +291,13 @@ async function recordWebSocketEntry(ctx, result) {
     elapsed,
     status: result.status,
     isSSE: false,
-    receivedAt: ctx.startTime,
+    receivedAt: t.startTime || ctx.startTime,
     tokens: cr ? helpers.tokenizeRequest(reqLog) : null,
     duplicateToolCalls: null,
     ...getParser('openai').buildEntryFields({
       provider: 'openai', transport: 'websocket',
-      parsedBody: cr || {}, responseEvents: ctx.responseEvents,
-      responseMetadata, lastUsage: ctx.lastUsage, lastModel: ctx.lastModel, lastResponseStatus: ctx.lastResponseStatus,
+      parsedBody: cr || {}, responseEvents: events,
+      responseMetadata, lastUsage, lastModel, lastResponseStatus,
       proxyRes: { statusCode: result.status },
       sessionId: ctx.sessionId, sessionInferred: ctx.sessionInferred,
       isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
@@ -311,7 +318,7 @@ async function recordWebSocketEntry(ctx, result) {
   entry.req = null;
   entry.res = null;
   entry._loaded = false;
-  ctx.clientRequest = null;
+  if (!turn) ctx.clientRequest = null;
 }
 
 function handleWebSocketUpgrade(req, socket, head) {
@@ -372,8 +379,34 @@ function handleWebSocketUpgrade(req, socket, head) {
     const upstreamBuffer = { queue: [], bufferedBytes: 0, maxBytes: MAX_QUEUE_BYTES };
     let finalized = false;
     let idleTimer = null;
+    let currentTurn = null;
+    let turnEmitted = false;
     const session = { forceFinalize: null };
     activeSessions.add(session);
+
+    function startNewTurn(request) {
+      currentTurn = {
+        id: helpers.timestamp(),
+        ts: helpers.taipeiTime(),
+        startTime: Date.now(),
+        clientRequest: request,
+        responseEvents: [],
+        lastUsage: null,
+        lastModel: null,
+        lastResponseStatus: null,
+      };
+    }
+
+    function finalizeTurn(result) {
+      if (!currentTurn) return;
+      const turn = currentTurn;
+      currentTurn = null;
+      turnEmitted = true;
+      const entryPromise = recordWebSocketEntry(ctx, result, turn)
+        .catch(e => console.error('Record ws turn entry failed:', e.message));
+      pendingEntries.add(entryPromise);
+      entryPromise.finally(() => pendingEntries.delete(entryPromise));
+    }
 
     function refreshIdleTimer() {
       clearTimeout(idleTimer);
@@ -392,10 +425,14 @@ function handleWebSocketUpgrade(req, socket, head) {
       store.activeRequests[sessionId] = Math.max(0, (store.activeRequests[sessionId] || 1) - 1);
       if (store.sessionMeta[sessionId]) store.sessionMeta[sessionId].lastStopReason = null;
       broadcastSessionStatus(sessionId);
-      const entryPromise = recordWebSocketEntry(ctx, result)
-        .catch(e => console.error('Record ws entry failed:', e.message));
-      pendingEntries.add(entryPromise);
-      entryPromise.finally(() => pendingEntries.delete(entryPromise));
+      if (currentTurn) {
+        finalizeTurn(result);
+      } else if (!turnEmitted) {
+        const entryPromise = recordWebSocketEntry(ctx, result)
+          .catch(e => console.error('Record ws entry failed:', e.message));
+        pendingEntries.add(entryPromise);
+        entryPromise.finally(() => pendingEntries.delete(entryPromise));
+      }
     }
 
     session.forceFinalize = () => {
@@ -426,16 +463,22 @@ function handleWebSocketUpgrade(req, socket, head) {
       if (!isBinary) {
         try {
           const parsed = JSON.parse(typeof data === 'string' ? data : data.toString());
-          if (parsed.type === 'response.create' && !ctx.clientRequest && parsed.generate !== false) {
-            ctx.clientRequest = {
-              model: parsed.model || null,
-              instructions: parsed.instructions || null,
-              input: parsed.input || null,
-              tools: parsed.tools || null,
-              tool_choice: parsed.tool_choice || null,
-              previous_response_id: parsed.previous_response_id || null,
-            };
+          if (parsed.type === 'response.create') {
+            if (parsed.generate !== false) {
+              if (currentTurn) finalizeTurn({ status: 101 });
+              const request = {
+                model: parsed.model || null,
+                instructions: parsed.instructions || null,
+                input: parsed.input || null,
+                tools: parsed.tools || null,
+                tool_choice: parsed.tool_choice || null,
+                previous_response_id: parsed.previous_response_id || null,
+              };
+              startNewTurn(request);
+              if (!ctx.clientRequest) ctx.clientRequest = request;
+            }
           } else if (parsed.type === 'session.update' && parsed.session?.instructions) {
+            if (currentTurn?.clientRequest) currentTurn.clientRequest.instructions = parsed.session.instructions;
             if (ctx.clientRequest) ctx.clientRequest.instructions = parsed.session.instructions;
           }
         } catch {}
@@ -454,13 +497,25 @@ function handleWebSocketUpgrade(req, socket, head) {
         try {
           const parsed = JSON.parse(data.toString());
           if (parsed.type) {
-            // Extract metadata from envelope events before skipping their large body
             const r = parsed.response || parsed;
-            if (r.usage) ctx.lastUsage = extractOpenAIUsage({ usage: r.usage }) || r.usage;
-            if (r.model) ctx.lastModel = r.model;
-            if (typeof r.status === 'string' && WS_TERMINAL_STATUSES.has(r.status)) ctx.lastResponseStatus = r.status;
-            if (!WS_SKIP_EVENTS.has(parsed.type)) {
-              ctx.responseEvents.push(parsed);
+            const usage = r.usage ? (extractOpenAIUsage({ usage: r.usage }) || r.usage) : null;
+            const model = r.model || null;
+            const isTerminal = typeof r.status === 'string' && WS_TERMINAL_STATUSES.has(r.status);
+
+            if (currentTurn) {
+              if (usage) currentTurn.lastUsage = usage;
+              if (model) currentTurn.lastModel = model;
+              if (isTerminal) currentTurn.lastResponseStatus = r.status;
+              if (!WS_SKIP_EVENTS.has(parsed.type)) currentTurn.responseEvents.push(parsed);
+            }
+
+            if (usage) ctx.lastUsage = usage;
+            if (model) ctx.lastModel = model;
+            if (isTerminal) ctx.lastResponseStatus = r.status;
+            if (!WS_SKIP_EVENTS.has(parsed.type)) ctx.responseEvents.push(parsed);
+
+            if (parsed.type === 'response.completed' && currentTurn) {
+              finalizeTurn({ status: 101 });
             }
           }
         } catch {}
