@@ -512,7 +512,7 @@ function handleWebSocketUpgrade(req, socket, head) {
             if (usage) ctx.lastUsage = usage;
             if (model) ctx.lastModel = model;
             if (isTerminal) ctx.lastResponseStatus = r.status;
-            if (!WS_SKIP_EVENTS.has(parsed.type)) ctx.responseEvents.push(parsed);
+            if (!turnEmitted && !WS_SKIP_EVENTS.has(parsed.type)) ctx.responseEvents.push(parsed);
 
             if (parsed.type === 'response.completed' && currentTurn) {
               finalizeTurn({ status: 101 });
