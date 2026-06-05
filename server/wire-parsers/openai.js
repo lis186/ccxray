@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const store = require('../store');
 const helpers = require('../helpers');
+const { normalizeUsageForProvider } = require('../providers');
 const config = require('../config');
 const { calculateCost } = require('../pricing');
 const { agentForProvider } = require('../providers');
@@ -109,7 +110,7 @@ function extractUsage(resData) {
   // Preserve provider-native detail
   if (usage.input_tokens_details) result.input_tokens_details = usage.input_tokens_details;
   if (usage.output_tokens_details) result.output_tokens_details = usage.output_tokens_details;
-  return result;
+  return normalizeUsageForProvider('openai', result);
 }
 
 // From openai-session.js:58-70

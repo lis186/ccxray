@@ -257,6 +257,7 @@
   .si-cache.cache-near { color: var(--yellow); }
   .si-cache.cache-close { color: var(--red); animation: cachePulse 1s ease-in-out infinite; }
   .si-cache.cache-expired { color: var(--dim); opacity: 0.55; font-style: italic; }
+  .si-cache.cache-server { color: var(--green); opacity: 0.8; }
   @keyframes cachePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
   .launch-btn { background: none; border: 1px solid var(--border); color: var(--green); width: 18px; height: 18px; border-radius: 50%; cursor: pointer; font-size: 10px; display: inline-flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0; }
   .launch-btn:hover { background: var(--green); color: #000; border-color: var(--green); }

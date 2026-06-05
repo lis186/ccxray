@@ -8,6 +8,7 @@ const { tokenizeRequest } = require('../helpers');
 const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
+const { UPSTREAM_PROFILES } = require('../providers');
 const forward = require('../forward');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
@@ -21,6 +22,15 @@ function computeSettings() {
     .map(e => e.usage);
   const { plan, source, confidence } = getEffectivePlan({ recentUsages });
   const cfg = getPlanConfig(plan);
+
+  const fromMeta = Object.values(store.sessionMeta).map(m => m.provider).filter(Boolean);
+  const fromEntries = store.entries.map(e => e.provider).filter(Boolean);
+  const visibleProviders = [...new Set([...fromMeta, ...fromEntries])];
+
+  const providerProfiles = Object.fromEntries(
+    Object.entries(UPSTREAM_PROFILES).map(([k, v]) => [k, { cache: v.cache, label: v.label }])
+  );
+
   return {
     plan,
     label: cfg.label,
@@ -30,6 +40,8 @@ function computeSettings() {
     tokens5h: cfg.tokens5h,
     monthlyUSD: cfg.monthlyUSD,
     autoCompactPct: AUTO_COMPACT_PCT,
+    visibleProviders,
+    providerProfiles,
   };
 }
 

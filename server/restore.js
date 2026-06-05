@@ -8,6 +8,7 @@ const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks } = require(
 const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
+const { normalizeUsageForProvider } = require('./providers');
 
 // Pull stars from settings and shape for computeRetentionSets. Returns the
 // canonical empty shape on any failure — the prune/restore paths must never
@@ -150,6 +151,14 @@ async function restoreFromLogs() {
       meta.maxContext = Math.max(meta.maxContext || 0, inferred);
     }
 
+    if (meta.usage) {
+      const before = meta.usage;
+      meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
+      if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+        meta.cost = calculateCost(meta.usage, meta.model);
+      }
+    }
+
     store.entries.push({ ...meta, req: null, res: null, _loaded: false });
 
     // Track earliest timestamp per sysHash for version dating
@@ -163,6 +172,7 @@ async function restoreFromLogs() {
 
     if (meta.sessionId) {
       if (!store.sessionMeta[meta.sessionId]) store.sessionMeta[meta.sessionId] = {};
+      if (meta.provider) store.sessionMeta[meta.sessionId].provider = meta.provider;
       if (meta.cwd) store.sessionMeta[meta.sessionId].cwd = meta.cwd;
       if (meta.receivedAt) store.sessionMeta[meta.sessionId].lastSeenAt = meta.receivedAt;
     }

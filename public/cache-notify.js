@@ -122,6 +122,19 @@ function fireNotification(sid, minsLeft) {
 function renderNotifyButton() {
   const el = document.getElementById('qt-notify');
   if (!el) return;
+
+  // Hide notification button when no ephemeral-TTL providers are visible
+  const vp = window.ccxraySettings?.visibleProviders;
+  if (Array.isArray(vp) && vp.length > 0) {
+    const hasEphemeral = vp.some(p =>
+      (typeof getCacheMode === 'function' ? getCacheMode(p) : 'ephemeral-ttl') === 'ephemeral-ttl'
+    );
+    if (!hasEphemeral) {
+      el.style.display = 'none';
+      return;
+    }
+  }
+
   const enabled = getNotifySetting();
   const permission = typeof Notification !== 'undefined' ? Notification.permission : 'unsupported';
   const denied = permission === 'denied';

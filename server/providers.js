@@ -80,6 +80,44 @@ const AGENT_PROVIDERS = Object.freeze({
 const PROVIDER_AGENT = Object.freeze({ anthropic: 'claude', openai: 'codex' });
 function agentForProvider(provider) { return PROVIDER_AGENT[provider] || 'claude'; }
 
+// Upstream wire-protocol profiles. Agent launchers describe "how to start";
+// upstream profiles describe "how the wire format differs".
+const UPSTREAM_PROFILES = Object.freeze({
+  anthropic: Object.freeze({
+    cache: 'ephemeral-ttl',
+    inputIncludesCached: false,
+    label: 'Anthropic',
+  }),
+  openai: Object.freeze({
+    cache: 'server-managed',
+    inputIncludesCached: true,
+    label: 'OpenAI',
+  }),
+});
+
+function getUpstreamProfile(upstream) {
+  return UPSTREAM_PROFILES[upstream] || null;
+}
+
+// Normalize usage so canonical fields have the same semantics across providers.
+// After normalization: input_tokens + cache_creation + cache_read = total context.
+// _ccxrayUsageNormalized flag prevents double-subtraction on re-processing.
+function normalizeUsageForProvider(provider, usage) {
+  if (!usage || usage._ccxrayUsageNormalized) return usage;
+  const profile = getUpstreamProfile(provider);
+  if (!profile?.inputIncludesCached) return usage;
+  const cached = usage.input_tokens_details?.cached_tokens
+              || usage.cache_read_input_tokens || 0;
+  if (cached <= 0) return usage;
+  return {
+    ...usage,
+    input_tokens: Math.max(0, (usage.input_tokens || 0) - cached),
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? cached,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    _ccxrayUsageNormalized: true,
+  };
+}
+
 function listAgentProviderIds() {
   return Object.keys(AGENT_PROVIDERS);
 }
@@ -118,11 +156,14 @@ function getAgentLaunch(id, port, args = [], env = process.env) {
 module.exports = {
   AGENT_PROVIDERS,
   PROVIDER_AGENT,
+  UPSTREAM_PROFILES,
   agentForProvider,
   getAgentLaunch,
   getAgentProvider,
   getDisplayName,
+  getUpstreamProfile,
   isAgentProvider,
   listAgentProviderIds,
+  normalizeUsageForProvider,
   supportedProviderList,
 };
