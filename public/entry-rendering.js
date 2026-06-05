@@ -235,7 +235,16 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude' });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0 });
+    // Live-update visibleProviders when a new provider appears
+    const settings = window.ccxraySettings;
+    if (!Array.isArray(settings.visibleProviders)) settings.visibleProviders = [];
+    const entryProvider = e.provider || 'anthropic';
+    if (!settings.visibleProviders.includes(entryProvider)) {
+      settings.visibleProviders.push(entryProvider);
+      if (typeof renderTopbarPlan === 'function') renderTopbarPlan();
+      if (typeof renderNotifyButton === 'function') renderNotifyButton();
+    }
     const sessEl = document.createElement('div');
     sessEl.className = 'session-item';
     sessEl.dataset.sessionId = sid;
@@ -261,6 +270,7 @@ function addEntry(e) {
   const sess = sessionsMap.get(sid);
   // Update cwd if not yet known or was only a quota-check
   if (entryCwd && (!sess.cwd || sess.cwd === '(quota-check)')) sess.cwd = entryCwd;
+  if (model && model !== '?') sess.model = model;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
   const isSubagent = e.isSubagent || false;
@@ -300,16 +310,19 @@ function addEntry(e) {
   if (!_loading) renderProjectsCol();
 
   const statusClass = isHttpStatusOk(e.status) ? 'status-ok' : 'status-err';
-  const shortModel = model.replace('claude-', '').replace(/-[0-9]{8}$/, '');
+  const displayModel = (model && model !== '?') ? model : (sess.model || '?');
+  const shortModel = displayModel.replace('claude-', '').replace(/-[0-9]{8}$/, '');
 
   const ctxCacheCreate = usage ? (usage.cache_creation_input_tokens || 0) : 0;
   const ctxCacheRead   = usage ? (usage.cache_read_input_tokens || 0) : 0;
   const ctxInput       = usage ? (usage.input_tokens || 0) : 0;
   const ctxUsed = ctxCacheCreate + ctxCacheRead + ctxInput;
 
-  // Update session context alert badge for main turns
+  // Update session context alert badge + cache stats for main turns
   if (!isSubagent && ctxUsed > 0) {
     sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
+    sess.latestCacheReadTokens = ctxCacheRead;
+    sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid);
   }
@@ -326,7 +339,10 @@ function addEntry(e) {
     gapMs = Number.isFinite(rawGap) ? Math.max(0, rawGap) : null;
     if (gapMs !== null) {
       gapColor = gapMs < 5 * 60000 ? 'var(--green)' : gapMs < 60 * 60000 ? 'var(--yellow)' : 'var(--red)';
-      gapTitle = gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)';
+      const cacheMode = typeof getCacheMode === 'function' ? getCacheMode(e.provider || 'anthropic') : 'ephemeral-ttl';
+      gapTitle = cacheMode === 'ephemeral-ttl'
+        ? (gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)')
+        : 'Server cache (retention varies)';
     }
   }
 

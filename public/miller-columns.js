@@ -1460,22 +1460,28 @@ function renderSessionItem(sess, sid) {
   const ctxBarHtml = ctxBarInner
     ? '<div class="si-ctx-wrap">' + ctxBarInner + ctxAlertHtml + '</div>'
     : '';
-  // Cache TTL countdown row; only rendered if we have both a response time and
-  // a ttl-capable plan loaded (otherwise skip — api-key users with ttl=300_000
-  // still get a valid countdown, but undefined settings → skip).
-  const cacheTtlMs = window.ccxraySettings?.cacheTtlMs;
-  const cacheFmt = window.ccxrayFormatCacheCountdown;
-  // Only render for sessions whose cache is still alive — historical sessions
-  // omit the row entirely to avoid noisy "cache expired" lines on every old card.
+  // Cache row: provider-aware. ephemeral-ttl → TTL countdown; server-managed → hit ratio.
+  const sessCacheMode = typeof getCacheMode === 'function' ? getCacheMode(sess.provider) : 'ephemeral-ttl';
   let cacheRowHtml = '';
-  if (sess.lastReceivedAt && cacheTtlMs && cacheFmt) {
-    const info = cacheFmt(sess.lastReceivedAt, cacheTtlMs);
-    if (info.active) {
-      cacheRowHtml = '<div class="' + info.cls + '" data-active="1"' +
-        ' data-last-at="' + sess.lastReceivedAt + '" data-cache-ttl-ms="' + cacheTtlMs +
-        '" title="Cache TTL: ' + (cacheTtlMs / 60000) + 'm (' + (window.ccxraySettings.label || 'plan') + ')">' +
-        info.text + '</div>';
+  if (sessCacheMode === 'ephemeral-ttl') {
+    const cacheTtlMs = window.ccxraySettings?.cacheTtlMs;
+    const cacheFmt = window.ccxrayFormatCacheCountdown;
+    if (sess.lastReceivedAt && cacheTtlMs && cacheFmt) {
+      const info = cacheFmt(sess.lastReceivedAt, cacheTtlMs);
+      if (info.active) {
+        cacheRowHtml = '<div class="' + info.cls + '" data-active="1"' +
+          ' data-last-at="' + sess.lastReceivedAt + '" data-cache-ttl-ms="' + cacheTtlMs +
+          '" title="Cache TTL: ' + (cacheTtlMs / 60000) + 'm (' + (window.ccxraySettings.label || 'plan') + ')">' +
+          info.text + '</div>';
+      }
     }
+  } else if (sessCacheMode === 'server-managed' && sess.latestCacheReadTokens > 0) {
+    const pct = Math.round((sess.latestCacheHitRatio || 0) * 100);
+    const tokK = sess.latestCacheReadTokens >= 1000
+      ? Math.round(sess.latestCacheReadTokens / 1000) + 'K'
+      : String(sess.latestCacheReadTokens);
+    cacheRowHtml = '<div class="si-cache cache-server" title="Server-managed cache · last turn">' +
+      'cache ' + pct + '% hit · ' + tokK + ' tok</div>';
   }
   const isOnline = getStatusClass(sid) !== 'sdot-off';
   const isArmed = interceptSessionIds.has(sid);
