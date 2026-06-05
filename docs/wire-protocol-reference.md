@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-06-05 | ccxray | 1.11.x | Usage normalization: OpenAI `input_tokens` includes `cached_tokens` (subset), unlike Anthropic's disjoint fields. `normalizeUsageForProvider` now subtracts the overlap so canonical `input_tokens + cache_read + cache_creation = total context` holds for both providers. Normalized entries carry `_ccxrayUsageNormalized: true`. Historical entries normalized on restore (in-memory, index unchanged). Cache display: Codex sessions show `cache N% hit` instead of TTL countdown; topbar adapts per provider (`ephemeral-ttl` vs `server-managed`). `UPSTREAM_PROFILES` registry added to `providers.js`. |
 | 2026-06-04 | ccxray | 1.10.x | Fix: WS `stopReason` now extracts `response.status` from terminal events (`completed`/`incomplete`/`failed`/`cancelled`) instead of WS close reason. WS `title` extracts user input summary via `getOpenAIInputSummary` instead of hardcoded string. Non-terminal statuses (`in_progress`/`queued`) are ignored to prevent masking close/error reasons. |
 | 2026-06-02 | ccxray | 1.10.0 | Doc audit: 13 major + 25 minor corrections applied (F1–F38) |
 | 2026-06-01 | Codex | 0.133 | Baseline: all observations below recorded |
@@ -140,7 +141,7 @@
 
 | Field | Claude Code | Codex | Confidence |
 |-------|-------------|-------|------------|
-| Input tokens | `message_start.message.usage.input_tokens` | `response.usage.input_tokens` or `prompt_tokens` | `contractual` |
+| Input tokens | `message_start.message.usage.input_tokens` (non-cached only) | `response.usage.input_tokens` or `prompt_tokens` (**includes cached** — ccxray subtracts `cached_tokens` via `normalizeUsageForProvider` so canonical `input_tokens` = non-cached for both providers) | `contractual` |
 | Output tokens | `message_delta.usage.output_tokens` | `response.usage.output_tokens` or `completion_tokens` | `contractual` |
 | Cache creation | `usage.cache_creation_input_tokens` | N/A (no equivalent field) | `contractual` (Anthropic) |
 | Cache creation breakdown | `usage.cache_creation.ephemeral_5m_input_tokens`, `usage.cache_creation.ephemeral_1h_input_tokens` | N/A | `obs-fragile` |
