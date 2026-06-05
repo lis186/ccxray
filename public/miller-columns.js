@@ -1387,7 +1387,8 @@ function formatEntryDateShort(id) {
 
 
 function copySessionContinue(sid, btn, agent) {
-  navigator.clipboard.writeText((agent || 'claude') + ' --resume ' + sid).then(() => {
+  const cmd = agent === 'codex' ? 'codex resume ' + sid : (agent || 'claude') + ' --resume ' + sid;
+  navigator.clipboard.writeText(cmd).then(() => {
     const orig = btn.textContent;
     btn.textContent = '✓ copied!';
     btn.style.color = 'var(--green)';
@@ -1494,7 +1495,9 @@ function renderSessionItem(sess, sid) {
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
-  const resumeCmd = (sess.agent || 'claude') + ' --resume ' + sid;
+  const resumeCmd = (sess.agent || 'claude') === 'codex'
+    ? 'codex resume ' + sid
+    : (sess.agent || 'claude') + ' --resume ' + sid;
   const copyBtn = sid === 'direct-api' || sid === 'codex-raw'
     ? ''
     : '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this,&quot;' + escapeHtml(sess.agent || 'claude') + '&quot;)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>';
