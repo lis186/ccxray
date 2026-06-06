@@ -2,8 +2,8 @@
 
 const path = require('path');
 const fs = require('fs');
-const os = require('os');
 const { createStorage } = require('./storage');
+const { resolveLogsDir } = require('./paths');
 
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
@@ -187,7 +187,7 @@ function joinUpstreamPath(upstream, requestUrl) {
   }
   return basePath + (urlPath.startsWith('/') ? urlPath : `/${urlPath}`);
 }
-const LOGS_DIR = path.join(os.homedir(), '.ccxray', 'logs');
+const LOGS_DIR = resolveLogsDir();
 const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);

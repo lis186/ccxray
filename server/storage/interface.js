@@ -30,6 +30,10 @@
  *   When true, the proxy may write _req.json in delta format (prevId + partial messages)
  *   instead of storing the full messages array every turn. Set false for high-latency or
  *   multi-writer backends (S3) where chain traversal on read would be too costly.
+ *
+ * @property {string} location
+ *   Human-readable destination for the startup banner (e.g. '/home/u/.ccxray/logs'
+ *   for local, 's3://bucket/logs/' for S3). Display-only; not used for I/O.
  */
 
 module.exports = {};

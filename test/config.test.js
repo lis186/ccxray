@@ -35,6 +35,11 @@ function runSnippet(snippet, env = {}) {
     delete sanitised.OPENAI_TEST_HOST;
     delete sanitised.OPENAI_TEST_PORT;
     delete sanitised.OPENAI_TEST_PROTOCOL;
+    // Path/storage vars leak from a developer's shell (or the ccxray hub) and
+    // would corrupt logs-dir resolution tests. Clear them; callers re-add via env.
+    delete sanitised.CCXRAY_HOME;
+    delete sanitised.LOGS_DIR;
+    delete sanitised.STORAGE_BACKEND;
     Object.assign(sanitised, env);
 
     const child = spawn(process.execPath, ['-e', snippet], {
@@ -197,6 +202,89 @@ describe('upstream priority chain', () => {
     });
     const result = JSON.parse(stdout);
     assert.equal(result.basePath, '');
+  });
+});
+
+// ── Logs directory resolution (issue #31: config.LOGS_DIR must honor
+// CCXRAY_HOME, and must not drift from where the storage adapter writes) ──
+
+describe('logs directory resolution (CCXRAY_HOME)', () => {
+  // Prints the config-exported logs dir plus the storage adapter's self-reported
+  // destination, so we can assert they resolve to the same place.
+  const logsSnippet = `
+    const c = require(${JSON.stringify(CONFIG_SCRIPT)});
+    process.stdout.write(JSON.stringify({ logsDir: c.LOGS_DIR, location: c.storage.location }));
+  `;
+
+  it('honors CCXRAY_HOME for the logs directory', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-home-'));
+    try {
+      const { stdout, code } = await runSnippet(logsSnippet, { CCXRAY_HOME: home });
+      assert.equal(code, 0);
+      const r = JSON.parse(stdout);
+      assert.equal(r.logsDir, path.join(home, 'logs'));
+      assert.equal(r.location, path.join(home, 'logs'));
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('LOGS_DIR env takes precedence over CCXRAY_HOME', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-home-'));
+    const explicit = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-logs-'));
+    try {
+      const { stdout, code } = await runSnippet(logsSnippet, { CCXRAY_HOME: home, LOGS_DIR: explicit });
+      assert.equal(code, 0);
+      const r = JSON.parse(stdout);
+      assert.equal(r.logsDir, explicit);
+      assert.equal(r.location, explicit);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(explicit, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to <home>/.ccxray/logs when neither is set', async () => {
+    // Pin HOME (POSIX) and USERPROFILE (Windows) to a temp dir so
+    // os.homedir() is deterministic cross-platform and we never touch the
+    // developer's real ~/.ccxray. No CCXRAY_HOME / LOGS_DIR set.
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fakehome-'));
+    try {
+      const { stdout, code } = await runSnippet(logsSnippet, { HOME: fakeHome, USERPROFILE: fakeHome });
+      assert.equal(code, 0);
+      const r = JSON.parse(stdout);
+      assert.equal(r.logsDir, path.join(fakeHome, '.ccxray', 'logs'));
+    } finally {
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
+  });
+
+  it('config.LOGS_DIR matches where the storage adapter actually writes (no drift)', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-home-'));
+    try {
+      // Write through config.storage and confirm the file lands under
+      // config.LOGS_DIR — proving createStorage() uses the same resolver.
+      const snippet = `
+        const c = require(${JSON.stringify(CONFIG_SCRIPT)});
+        (async () => {
+          await c.storage.init();
+          await c.storage.write('drift-check', '_req.json', 'x');
+          const fsm = require('fs'); const pm = require('path');
+          process.stdout.write(JSON.stringify({
+            logsDir: c.LOGS_DIR,
+            location: c.storage.location,
+            landed: fsm.existsSync(pm.join(c.LOGS_DIR, 'drift-check_req.json')),
+          }));
+        })();
+      `;
+      const { stdout, code } = await runSnippet(snippet, { CCXRAY_HOME: home });
+      assert.equal(code, 0);
+      const r = JSON.parse(stdout);
+      assert.equal(r.location, r.logsDir);
+      assert.equal(r.landed, true, 'storage.write should land under config.LOGS_DIR');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

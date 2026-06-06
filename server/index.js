@@ -801,7 +801,7 @@ async function startServer() {
     const openaiUrl = `${config.OPENAI_PROTOCOL}://${config.OPENAI_HOST}:${config.OPENAI_PORT}${config.OPENAI_BASE_PATH}`;
     const openaiNote = config.OPENAI_BASE_URL_SOURCE === 'OPENAI_BASE_URL' ? ' (from OPENAI_BASE_URL)' : '';
     console.log(`   OpenAI Upstream → ${openaiUrl}${openaiNote}`);
-    console.log(`   Logs → ${config.LOGS_DIR}`);
+    console.log(`   Logs → ${config.storage.location || config.LOGS_DIR}`);
     console.log();
     console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude\x1b[0m`);
     console.log('\x1b[0m');

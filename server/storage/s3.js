@@ -36,6 +36,9 @@ function createS3Storage(opts) {
   return {
     supportsDelta: false,
 
+    // Human-readable destination for the startup banner.
+    location: `s3://${bucket || '(unset)'}/${prefix}`,
+
     async init() {
       // Verify bucket access
       const { HeadBucketCommand } = require('@aws-sdk/client-s3');
