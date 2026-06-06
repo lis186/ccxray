@@ -2,11 +2,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const net = require('net');
 const http = require('http');
+const { resolveCcxrayHome } = require('./paths');
 
-const HUB_DIR = process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
 const HUB_LOG_PATH = path.join(HUB_DIR, 'hub.log');
 const SOCK_PATH = path.join(HUB_DIR, 'hub.sock');

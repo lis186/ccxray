@@ -1,14 +1,14 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
+const { resolveCcxrayHome } = require('./paths');
 
 // Append-only log of `anthropic-ratelimit-*` headers observed from upstream responses.
 // Used for future calibration of plan-specific limits (Max 5x vs 20x tokens5h quota).
 // File: ~/.ccxray/ratelimit-samples.jsonl (respects CCXRAY_HOME env)
 
-const CCXRAY_HOME = process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+const CCXRAY_HOME = resolveCcxrayHome();
 const SAMPLES_FILE = path.join(CCXRAY_HOME, 'ratelimit-samples.jsonl');
 
 // Dedupe per model: skip writing if headers identical to last sample for

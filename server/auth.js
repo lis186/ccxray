@@ -15,14 +15,14 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const config = require('./config');
+const { resolveCcxrayHome } = require('./paths');
 
 // ─── Root secret resolution ──────────────────────────────────────────
 
 function getHubDir() {
-  return process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+  return resolveCcxrayHome();
 }
 
 function ensureHubDir() {

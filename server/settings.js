@@ -2,9 +2,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { resolveCcxrayHome } = require('./paths');
 
-const SETTINGS_DIR = process.env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+const SETTINGS_DIR = resolveCcxrayHome();
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json');
 
 const DEFAULTS = {
