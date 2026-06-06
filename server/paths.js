@@ -3,12 +3,11 @@
 const path = require('path');
 const os = require('os');
 
-// Single source of truth for ccxray's on-disk locations. config.js and
-// storage/index.js both resolve the logs dir from here, so the startup banner
-// and legacy-migration target can no longer drift from where logs actually
-// get written. hub.js, settings.js, ratelimit-log.js, and auth.js still
-// duplicate the home-dir resolution inline and are candidates for future
-// consolidation here.
+// Single source of truth for ccxray's on-disk locations. config.js,
+// storage/index.js, hub.js, settings.js, ratelimit-log.js, and auth.js all
+// resolve their ccxray home/logs paths from here, so the startup banner,
+// legacy-migration target, and every other consumer stay in sync and can no
+// longer drift from where logs actually get written.
 //
 // Precedence (mirrors the storage adapter's historical resolution):
 //   logs dir : LOGS_DIR  >  <home>/logs
