@@ -16,6 +16,9 @@ function createLocalStorage(logsDir) {
   return {
     supportsDelta: true,
 
+    // Human-readable destination for the startup banner.
+    location: logsDir,
+
     async init() {
       await fsp.mkdir(logsDir, { recursive: true });
       await fsp.mkdir(sharedDir, { recursive: true });
