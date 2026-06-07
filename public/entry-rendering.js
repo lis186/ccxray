@@ -235,7 +235,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0 });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null });
     // Live-update visibleProviders when a new provider appears
     const settings = window.ccxraySettings;
     if (!Array.isArray(settings.visibleProviders)) settings.visibleProviders = [];
@@ -268,6 +268,9 @@ function addEntry(e) {
     }
   }
   const sess = sessionsMap.get(sid);
+  // Resume command is computed server-side (single source of truth). Sticky:
+  // once any turn reports a command, keep it even if later turns lack usage.
+  if (e.resumeCommand) sess.resumeCommand = e.resumeCommand;
   // Update cwd if not yet known or was only a quota-check
   if (entryCwd && (!sess.cwd || sess.cwd === '(quota-check)')) sess.cwd = entryCwd;
   if (model && model !== '?') sess.model = model;

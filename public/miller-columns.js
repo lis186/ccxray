@@ -1386,8 +1386,8 @@ function formatEntryDateShort(id) {
 }
 
 
-function copySessionContinue(sid, btn, agent) {
-  const cmd = agent === 'codex' ? 'codex resume ' + sid : (agent || 'claude') + ' --resume ' + sid;
+function copySessionContinue(cmd, btn) {
+  if (!cmd) return;
   navigator.clipboard.writeText(cmd).then(() => {
     const orig = btn.textContent;
     btn.textContent = '✓ copied!';
@@ -1495,12 +1495,12 @@ function renderSessionItem(sess, sid) {
   const titleRow = sess.title
     ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
     : '';
-  const resumeCmd = (sess.agent || 'claude') === 'codex'
-    ? 'codex resume ' + sid
-    : (sess.agent || 'claude') + ' --resume ' + sid;
-  const copyBtn = sid === 'direct-api' || sid === 'codex-raw'
-    ? ''
-    : '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(sid) + '&quot;,this,&quot;' + escapeHtml(sess.agent || 'claude') + '&quot;)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>';
+  // Resume command is computed server-side; null means this session can't be
+  // resumed (e.g. a codex session that only errored before any turn completed).
+  const resumeCmd = sess.resumeCommand || null;
+  const copyBtn = resumeCmd
+    ? '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(resumeCmd) + '&quot;,this)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>'
+    : '';
   return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
