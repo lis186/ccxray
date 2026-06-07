@@ -1,6 +1,13 @@
 'use strict';
 
+const path = require('path');
 const { createLocalStorage } = require('./local');
+
+// Old package-relative logs/ location (<repo>/logs). The local adapter migrates
+// from here into the resolved logs dir on first init(). Resolved here — at the
+// single point where the local adapter is constructed — so it never runs at
+// config-import time and never applies to non-local backends (e.g. S3/R2).
+const LEGACY_LOGS_DIR = path.join(__dirname, '..', '..', 'logs');
 
 // Wraps a storage adapter so every async write is tracked in an in-flight Set.
 // drain() awaits all pending writes — used on shutdown so process.exit doesn't
@@ -54,7 +61,7 @@ function createStorage() {
     case 'local':
     default: {
       const { resolveLogsDir } = require('../paths');
-      adapter = createLocalStorage(resolveLogsDir());
+      adapter = createLocalStorage(resolveLogsDir(), { legacyDir: LEGACY_LOGS_DIR });
       break;
     }
   }
