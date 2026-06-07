@@ -5,6 +5,40 @@ const assert = require('node:assert/strict');
 const { summarizeEntry } = require('../server/sse-broadcast');
 
 describe('sse-broadcast', () => {
+  describe('summarizeEntry – resume fields', () => {
+    it('emits a claude resume command for an anthropic entry', () => {
+      const summary = summarizeEntry({
+        id: 'r-claude', sessionId: 'resume-claude-sid', provider: 'anthropic',
+        usage: { input_tokens: 1 }, isSubagent: false,
+      });
+      assert.equal(summary.resumable, true);
+      assert.equal(summary.resumeCommand, 'claude --resume resume-claude-sid');
+    });
+
+    it('withholds resume for a codex entry until a non-subagent usage turn is seen', () => {
+      const sid = 'resume-codex-sid';
+      const noUsage = summarizeEntry({ id: 'r1', sessionId: sid, provider: 'openai', usage: null, isSubagent: false });
+      assert.equal(noUsage.resumable, false);
+      assert.equal(noUsage.resumeCommand, null);
+
+      // A real completed turn flips the session to resumable; summarizeEntry both
+      // records the signal and reads it back (single source of truth).
+      const withUsage = summarizeEntry({ id: 'r2', sessionId: sid, provider: 'openai', usage: { input_tokens: 9 }, isSubagent: false });
+      assert.equal(withUsage.resumable, true);
+      assert.equal(withUsage.resumeCommand, `codex resume ${sid}`);
+
+      // Subsequent usage-less turns still report resumable (monotonic).
+      const after = summarizeEntry({ id: 'r3', sessionId: sid, provider: 'openai', usage: null, isSubagent: false });
+      assert.equal(after.resumable, true);
+    });
+
+    it('never resumes a codex sentinel session', () => {
+      const summary = summarizeEntry({ id: 'r-raw', sessionId: 'codex-raw', provider: 'openai', usage: { input_tokens: 1 }, isSubagent: false });
+      assert.equal(summary.resumable, false);
+      assert.equal(summary.resumeCommand, null);
+    });
+  });
+
   describe('summarizeEntry', () => {
     it('returns all summary fields from pre-computed entry properties when req/res are null', () => {
       const entry = {

@@ -177,3 +177,71 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     assert.equal(entry.maxContext, null);
   });
 });
+
+// ── codex resume eligibility ────────────────────────────────────────
+
+// Resume-eligibility must survive a restart: it is rebuilt purely from the
+// index (no rollout-file probing), so a codex session is resumable iff the
+// index holds a non-subagent usage turn for it.
+describe('restoreFromLogs — codex resume eligibility', () => {
+  const config = require('../server/config');
+  const store = require('../server/store');
+  const { restoreFromLogs } = require('../server/restore');
+  const { summarizeEntry } = require('../server/sse-broadcast');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-restore-resume-' + Date.now());
+  let realStorage;
+  let realRestoreDays;
+
+  before(async () => {
+    realStorage = config.storage;
+    realRestoreDays = config.RESTORE_DAYS;
+    config.RESTORE_DAYS = 0;
+    const tmpStorage = require('../server/storage/local').createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    config.RESTORE_DAYS = realRestoreDays;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a codex session with a completed turn is resumable after restore', async () => {
+    store.entries.length = 0;
+    const sid = 'codex-restore-ok';
+    await config.storage.appendIndex(JSON.stringify({
+      id: '2026-05-20T10-00-00-000', ts: '10:00:00', sessionId: sid,
+      provider: 'openai', agent: 'codex', model: 'gpt-5',
+      usage: { input_tokens: 42 }, isSubagent: false,
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    assert.deepEqual(
+      store.computeSessionResume(sid, 'openai'),
+      { resumable: true, resumeCommand: `codex resume ${sid}` },
+    );
+    const summary = summarizeEntry(store.entries.find(e => e.sessionId === sid));
+    assert.equal(summary.resumeCommand, `codex resume ${sid}`);
+  });
+
+  it('a codex session with only a 502-style turn (no usage) is not resumable', async () => {
+    store.entries.length = 0;
+    const sid = 'codex-restore-502';
+    await config.storage.appendIndex(JSON.stringify({
+      id: '2026-05-20T11-00-00-000', ts: '11:00:00', sessionId: sid,
+      provider: 'openai', agent: 'codex', model: 'gpt-5',
+      usage: null, isSubagent: false,
+      isSSE: false, status: 502, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    assert.deepEqual(
+      store.computeSessionResume(sid, 'openai'),
+      { resumable: false, resumeCommand: null },
+    );
+    const summary = summarizeEntry(store.entries.find(e => e.sessionId === sid));
+    assert.equal(summary.resumeCommand, null);
+  });
+});

@@ -6,10 +6,17 @@ const { agentForProvider } = require('./providers');
 // Strip req/res from broadcast — browser only needs summary for the turn list
 function summarizeEntry(entry) {
   const tok = entry.tokens;
+  // Server owns the resume-button policy. Record this turn's usage signal first,
+  // then compute the per-session resume command so the client is a pure view.
+  // (Deliberate side-effect in a serialize function: this is the single funnel
+  // both SSE broadcast and the /api/entries restore batch pass through.)
+  store.markSessionUsage(entry);
+  const { resumable, resumeCommand } = store.computeSessionResume(entry.sessionId, entry.provider);
   return {
     id: entry.id, ts: entry.ts, sessionId: entry.sessionId,
     provider: entry.provider || 'anthropic',
     agent: entry.agent || agentForProvider(entry.provider),
+    resumable, resumeCommand,
     method: entry.method, url: entry.url,
     elapsed: entry.elapsed, status: entry.status, isSSE: entry.isSSE,
     receivedAt: entry.receivedAt || null,

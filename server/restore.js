@@ -175,6 +175,10 @@ async function restoreFromLogs() {
       if (meta.provider) store.sessionMeta[meta.sessionId].provider = meta.provider;
       if (meta.cwd) store.sessionMeta[meta.sessionId].cwd = meta.cwd;
       if (meta.receivedAt) store.sessionMeta[meta.sessionId].lastSeenAt = meta.receivedAt;
+      // Mark resume-eligibility before any summarizeEntry pass so every entry in
+      // the session reports the final (monotonic) resumable value, not the value
+      // as of its position in the index.
+      store.markSessionUsage(meta);
     }
     if (meta.cost?.cost != null && meta.sessionId) {
       store.sessionCosts.set(meta.sessionId, (store.sessionCosts.get(meta.sessionId) || 0) + meta.cost.cost);
