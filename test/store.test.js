@@ -100,6 +100,12 @@ describe('store', () => {
       assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
     });
 
+    it('legacy usage without an output_tokens field fails closed', () => {
+      const sid = 'codex-sid-legacy-no-output-field';
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+      assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
+    });
+
     it('a billed zero-output turn does not mark the session (hung WS / cross-session retry)', () => {
       const sid = 'codex-sid-zero-output';
       // Specimen from issue #44: status 499 after 45m, input billed, no output,
