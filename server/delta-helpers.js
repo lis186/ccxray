@@ -47,4 +47,24 @@ function findSharedPrefixFromLast(prevLastMsg, prevCount, currMsgs) {
   return prevCount;
 }
 
-module.exports = { msgNorm, findSharedPrefix, findSharedPrefixFromLast };
+// Build a FULL-format _req.json record from an edited (intercept-approved) body.
+// The edited turn is always persisted full — never delta — because the edit may
+// touch a message inside what would have been the shared prefix, and a delta
+// stores only the suffix, so a delta record could silently serve original
+// content for an edited prefix index on the read path. Writing full sidesteps
+// that and makes the edited turn a fresh chain anchor. system/tools stay
+// content-addressed via sysHash/toolsHash (the caller writes the shared files
+// when the hashes changed).
+function buildEditedReqRecord(parsedBody, { sysHash = null, toolsHash = null, sessionId = null } = {}) {
+  const messages = Array.isArray(parsedBody && parsedBody.messages) ? parsedBody.messages : [];
+  return {
+    model: parsedBody ? parsedBody.model : undefined,
+    max_tokens: parsedBody ? parsedBody.max_tokens : undefined,
+    messages,
+    sysHash,
+    toolsHash,
+    ...(sessionId ? { metadata: { session_id: sessionId } } : {}),
+  };
+}
+
+module.exports = { msgNorm, findSharedPrefix, findSharedPrefixFromLast, buildEditedReqRecord };

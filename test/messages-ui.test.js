@@ -80,3 +80,50 @@ describe('dashboard timeline rendering helpers', () => {
     assert.equal(steps[0].calls[0].pending, true);
   });
 });
+
+describe('renderEditedBanner — intercept-edited badge (client render)', () => {
+  function ctxWithStubs() {
+    const context = loadMessagesContext();
+    // escapeHtml lives in miller-columns.js (not loaded here); renderSingleMessage
+    // is covered by its own tests. Stub both so this isolates renderEditedBanner's
+    // own logic (badge + summary + original toggle).
+    context.escapeHtml = (s) => String(s);
+    context.renderSingleMessage = (m) => '<m>' + (m && m.content) + '</m>';
+    return context;
+  }
+
+  it('renders nothing when the request was not edited', () => {
+    const ctx = ctxWithStubs();
+    assert.equal(ctx.renderEditedBanner({ edited: false }, 0), '');
+    assert.equal(ctx.renderEditedBanner(null, 0), '');
+    assert.equal(ctx.renderEditedBanner(undefined, 0), '');
+  });
+
+  it('renders the EDITED badge and the server-authoritative summary', () => {
+    const ctx = ctxWithStubs();
+    const html = ctx.renderEditedBanner({ edited: true, editSummary: ['user[2]: "say X" → "say BANANA"'] }, 2);
+    assert.ok(html.includes('EDITED'), 'badge must be present');
+    assert.ok(html.includes('say X') && html.includes('say BANANA'), 'summary line must be rendered');
+    // No original supplied → no collapsible "Original before edit".
+    assert.ok(!html.includes('Original before edit'));
+  });
+
+  it('shows the original-before-edit toggle only on the message that actually changed', () => {
+    const ctx = ctxWithStubs();
+    const req = {
+      edited: true,
+      editSummary: ['user[2]: "say X" → "say BANANA"'],
+      messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }, { role: 'user', content: 'say BANANA' }],
+      original: { messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }, { role: 'user', content: 'say X' }] },
+    };
+    // Viewing the changed message (index 2): original toggle present.
+    const changed = ctx.renderEditedBanner(req, 2);
+    assert.ok(changed.includes('Original before edit'), 'changed message must offer the original');
+    assert.ok(changed.includes('say X'), 'original content must render via renderSingleMessage');
+    // Viewing an unchanged message (index 0): badge + summary, but NO misleading
+    // "original" toggle (the content is identical).
+    const unchanged = ctx.renderEditedBanner(req, 0);
+    assert.ok(unchanged.includes('EDITED'), 'turn-level badge still shown on unchanged messages');
+    assert.ok(!unchanged.includes('Original before edit'), 'unchanged message must not offer an identical original');
+  });
+});

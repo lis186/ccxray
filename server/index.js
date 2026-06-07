@@ -11,7 +11,7 @@ const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
-const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled } = require('./forward');
+const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
@@ -85,6 +85,18 @@ if (agentMode || hubMode) console.log = () => {};
 // sessionLastReq tracks the most recent req per session for delta writes.
 // Only populated for sessions with explicit session_id (main orchestrator turns).
 const sessionLastReq = new Map(); // sessionId → { id, messages, deltaCount }
+
+// Narrow recorder injected into forward.js so the intercept-edit rewrite can
+// re-anchor this private map without owning it. messages == null clears the
+// anchor (delete) so the next turn re-anchors FULL instead of writing a delta
+// against an unrecoverable base (split-brain mitigation on rewrite failure);
+// otherwise it sets the edited turn as a fresh full anchor (deltaCount 0).
+function recordSessionAnchor(sessionId, anchorId, messages) {
+  if (!sessionId) return;
+  if (messages == null) { sessionLastReq.delete(sessionId); return; }
+  sessionLastReq.set(sessionId, { id: anchorId, messages, deltaCount: 0 });
+}
+setSessionAnchorRecorder(recordSessionAnchor);
 
 // Route handlers
 const { handleSSERoute } = require('./routes/sse');

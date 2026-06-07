@@ -549,6 +549,28 @@ function getActiveStepKey() {
 }
 
 // Render step detail content as HTML
+// Server-authoritative "edited via intercept" banner. The proxy persists the
+// as-sent request as canonical and exposes req.edited, req.editSummary (the diff
+// lines), and req.original (the pre-edit body from the forensic received
+// sidecar). Dumb renderer — no client-side diffing.
+function renderEditedBanner(req, msgIdx) {
+  if (!req || !req.edited) return '';
+  const summary = (req.editSummary || [])
+    .map(l => '<div class="edit-summary-line">' + escapeHtml(l) + '</div>').join('');
+  // Show the "original before edit" toggle only when THIS message actually
+  // changed — otherwise an unedited message would show an identical "original".
+  const origMsg = req.original && Array.isArray(req.original.messages) ? req.original.messages[msgIdx] : null;
+  const curMsg = req.messages ? req.messages[msgIdx] : null;
+  const changed = origMsg && curMsg && JSON.stringify(origMsg) !== JSON.stringify(curMsg);
+  const original = changed
+    ? '<details class="edit-original"><summary>Original before edit</summary>'
+      + renderSingleMessage(origMsg, null, msgIdx) + '</details>'
+    : '';
+  return '<div class="edit-banner"><span class="edit-badge">&#9998; EDITED</span>'
+    + (summary ? '<div class="edit-summary">' + summary + '</div>' : '')
+    + original + '</div>';
+}
+
 function renderStepDetailHtml(req, tok) {
   if (selectedMessageIdx < 0) return '';
   const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
@@ -561,7 +583,7 @@ function renderStepDetailHtml(req, tok) {
   if (step.type === 'human') {
     const msgIdx = step.msgIndices[0];
     const msg = req?.messages?.[msgIdx];
-    return msg ? '<div class="detail-content">' + renderSingleMessage(msg, tok?.perMessage?.[msgIdx], msgIdx) + '</div>' : '<div class="col-empty">No message</div>';
+    return msg ? '<div class="detail-content">' + renderEditedBanner(req, msgIdx) + renderSingleMessage(msg, tok?.perMessage?.[msgIdx], msgIdx) + '</div>' : '<div class="col-empty">No message</div>';
   } else if (step.type === 'assistant-text') {
     return '<div class="detail-content"><pre>' + highlightCredentials(step.text || '') + '</pre></div>';
   } else if (step.type === 'tool-group') {

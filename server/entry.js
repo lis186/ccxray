@@ -5,6 +5,7 @@ const INDEX_FIELDS = [
   'isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata',
   'stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt',
   'sysHash','toolsHash','coreHash','thinkingStripped','hasCredential','toolSources',
+  'edited','editSummary',
 ];
 
 function buildIndexLine(entry) {
