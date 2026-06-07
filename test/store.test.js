@@ -68,7 +68,7 @@ describe('store', () => {
     });
 
     it('an unknown provider fails closed (no resume command)', () => {
-      store.markSessionUsage({ sessionId: 'future-sid', isSubagent: false, usage: { input_tokens: 5 } });
+      store.markSessionUsage({ sessionId: 'future-sid', isSubagent: false, usage: { input_tokens: 5, output_tokens: 3 } });
       assert.deepEqual(store.computeSessionResume('future-sid', 'future-provider'), { resumable: false, resumeCommand: null });
     });
 
@@ -81,16 +81,16 @@ describe('store', () => {
       assert.deepEqual(r, { resumable: false, resumeCommand: null });
     });
 
-    it('codex session becomes resumable after a non-subagent usage turn', () => {
+    it('codex session becomes resumable after a non-subagent turn with output', () => {
       const sid = 'codex-sid-withusage';
-      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5, output_tokens: 3 } });
       const r = store.computeSessionResume(sid, 'openai');
       assert.deepEqual(r, { resumable: true, resumeCommand: `codex resume ${sid}` });
     });
 
     it('subagent usage alone does not make a codex session resumable', () => {
       const sid = 'codex-sid-subonly';
-      store.markSessionUsage({ sessionId: sid, isSubagent: true, usage: { input_tokens: 5 } });
+      store.markSessionUsage({ sessionId: sid, isSubagent: true, usage: { input_tokens: 5, output_tokens: 3 } });
       assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
     });
 
@@ -100,16 +100,24 @@ describe('store', () => {
       assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
     });
 
+    it('a billed zero-output turn does not mark the session (hung WS / cross-session retry)', () => {
+      const sid = 'codex-sid-zero-output';
+      // Specimen from issue #44: status 499 after 45m, input billed, no output,
+      // no rollout file on disk — `codex resume` would fail.
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 9953, output_tokens: 0 } });
+      assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
+    });
+
     it('hasUsage is monotonic — a later usage-less turn keeps resumability', () => {
       const sid = 'codex-sid-monotonic';
-      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5, output_tokens: 3 } });
       store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: null });
       assert.equal(store.computeSessionResume(sid, 'openai').resumable, true);
     });
 
     it('sentinel sessions are never resumable regardless of provider', () => {
       for (const sid of ['direct-api', 'codex-raw', 'unknown']) {
-        store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+        store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5, output_tokens: 3 } });
         assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
         assert.deepEqual(store.computeSessionResume(sid, 'anthropic'), { resumable: false, resumeCommand: null });
       }

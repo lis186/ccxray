@@ -23,7 +23,7 @@ describe('sse-broadcast', () => {
 
       // A real completed turn flips the session to resumable; summarizeEntry both
       // records the signal and reads it back (single source of truth).
-      const withUsage = summarizeEntry({ id: 'r2', sessionId: sid, provider: 'openai', usage: { input_tokens: 9 }, isSubagent: false });
+      const withUsage = summarizeEntry({ id: 'r2', sessionId: sid, provider: 'openai', usage: { input_tokens: 9, output_tokens: 4 }, isSubagent: false });
       assert.equal(withUsage.resumable, true);
       assert.equal(withUsage.resumeCommand, `codex resume ${sid}`);
 
