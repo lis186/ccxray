@@ -226,6 +226,30 @@ describe('restoreFromLogs — codex resume eligibility', () => {
     assert.equal(summary.resumeCommand, `codex resume ${sid}`);
   });
 
+  it('marks usage before serialization: a usage-less entry earlier in the index still reports the final command', async () => {
+    store.entries.length = 0;
+    const sid = 'codex-restore-late-usage';
+    // First indexed entry has no usage; the usage-bearing turn comes later.
+    // Without the restore-loop pre-marking, serializing entry 1 first would
+    // report resumable:false (summarizeEntry only marks as it goes).
+    await config.storage.appendIndex(JSON.stringify({
+      id: '2026-05-20T12-00-00-000', ts: '12:00:00', sessionId: sid,
+      provider: 'openai', agent: 'codex', model: 'gpt-5',
+      usage: null, isSubagent: false,
+      isSSE: false, status: 502, receivedAt: 1779000000000,
+    }) + '\n');
+    await config.storage.appendIndex(JSON.stringify({
+      id: '2026-05-20T12-01-00-000', ts: '12:01:00', sessionId: sid,
+      provider: 'openai', agent: 'codex', model: 'gpt-5',
+      usage: { input_tokens: 7 }, isSubagent: false,
+      isSSE: true, status: 200, receivedAt: 1779000060000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const first = store.entries.find(e => e.id === '2026-05-20T12-00-00-000');
+    assert.equal(summarizeEntry(first).resumeCommand, `codex resume ${sid}`);
+  });
+
   it('a codex session with only a 502-style turn (no usage) is not resumable', async () => {
     store.entries.length = 0;
     const sid = 'codex-restore-502';

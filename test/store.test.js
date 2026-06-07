@@ -67,6 +67,11 @@ describe('store', () => {
       assert.deepEqual(r, { resumable: true, resumeCommand: 'claude --resume legacy-sid' });
     });
 
+    it('an unknown provider fails closed (no resume command)', () => {
+      store.markSessionUsage({ sessionId: 'future-sid', isSubagent: false, usage: { input_tokens: 5 } });
+      assert.deepEqual(store.computeSessionResume('future-sid', 'future-provider'), { resumable: false, resumeCommand: null });
+    });
+
     it('codex session with no usage is not resumable', () => {
       const r = store.computeSessionResume('codex-sid-nousage', 'openai');
       assert.deepEqual(r, { resumable: false, resumeCommand: null });

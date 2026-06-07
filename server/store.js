@@ -279,7 +279,10 @@ function computeSessionResume(sessionId, provider) {
     return { resumable: false, resumeCommand: null };
   }
   // Entries without a provider predate provider tagging — they are anthropic.
-  const profile = getUpstreamProfile(provider) || getUpstreamProfile('anthropic');
+  // An unknown provider, however, fails closed: better no button than a
+  // command we can't vouch for.
+  const profile = provider ? getUpstreamProfile(provider) : getUpstreamProfile('anthropic');
+  if (!profile) return { resumable: false, resumeCommand: null };
   const resume = profile.resume;
   if (!resume) return { resumable: false, resumeCommand: null };
   if (resume.condition === 'has-usage' && !sessionMeta[sessionId]?.hasUsage) {
