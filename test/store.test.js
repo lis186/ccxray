@@ -72,6 +72,10 @@ describe('store', () => {
       assert.deepEqual(store.computeSessionResume('future-sid', 'future-provider'), { resumable: false, resumeCommand: null });
     });
 
+    it('a present-but-empty provider fails closed (only missing falls back to anthropic)', () => {
+      assert.deepEqual(store.computeSessionResume('empty-provider-sid', ''), { resumable: false, resumeCommand: null });
+    });
+
     it('codex session with no usage is not resumable', () => {
       const r = store.computeSessionResume('codex-sid-nousage', 'openai');
       assert.deepEqual(r, { resumable: false, resumeCommand: null });
