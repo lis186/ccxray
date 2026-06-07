@@ -28,7 +28,7 @@ function computeSettings() {
   const visibleProviders = [...new Set([...fromMeta, ...fromEntries])];
 
   const providerProfiles = Object.fromEntries(
-    Object.entries(UPSTREAM_PROFILES).map(([k, v]) => [k, { cache: v.cache, label: v.label }])
+    Object.entries(UPSTREAM_PROFILES).map(([k, v]) => [k, { cache: v.cache, label: v.label, resume: v.resume }])
   );
 
   return {

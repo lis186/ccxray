@@ -74,6 +74,18 @@ describe('agent provider registry', () => {
     assert.equal(providers.PROVIDER_AGENT.openai, 'codex');
   });
 
+  it('declares resume profiles per upstream', () => {
+    const { UPSTREAM_PROFILES } = providers;
+    assert.deepEqual(UPSTREAM_PROFILES.anthropic.resume, {
+      template: '{agent} --resume {sid}',
+      condition: 'always',
+    });
+    assert.deepEqual(UPSTREAM_PROFILES.openai.resume, {
+      template: 'codex resume {sid}',
+      condition: 'has-usage',
+    });
+  });
+
   it('centralizes display names and unsupported-provider handling', () => {
     assert.equal(providers.getDisplayName('claude', {}), 'ccxray');
     assert.equal(providers.getDisplayName('codex', {}), 'ccxray');

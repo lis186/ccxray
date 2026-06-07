@@ -64,4 +64,16 @@ describe('/_api/settings (computeSettings)', () => {
     const s = computeSettings();
     assert.equal(s.autoCompactPct, 0.835);
   });
+
+  it('exposes resume profiles in providerProfiles', () => {
+    const s = computeSettings();
+    assert.deepEqual(s.providerProfiles.anthropic.resume, {
+      template: '{agent} --resume {sid}',
+      condition: 'always',
+    });
+    assert.deepEqual(s.providerProfiles.openai.resume, {
+      template: 'codex resume {sid}',
+      condition: 'has-usage',
+    });
+  });
 });
