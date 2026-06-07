@@ -643,3 +643,11 @@
   .detail-copy-btn:hover { color: var(--text); background: var(--surface); }
   .detail-input-details summary { cursor: pointer; font-size: 11px; color: var(--yellow); margin-bottom: 2px; }
   .detail-input-details { margin-bottom: 6px; padding: 6px 8px; background: var(--bg); border-radius: 4px; }
+
+  /* Intercept-edited request banner (server-authoritative; see renderEditedBanner) */
+  .edit-banner { margin-bottom: 8px; padding: 6px 8px; background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--yellow); border-radius: 4px; }
+  .edit-badge { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: var(--bg); background: var(--yellow); padding: 1px 6px; border-radius: 3px; }
+  .edit-summary { margin-top: 4px; }
+  .edit-summary-line { font-size: 11px; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  .edit-original { margin-top: 6px; }
+  .edit-original summary { cursor: pointer; font-size: 11px; color: var(--yellow); }

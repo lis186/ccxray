@@ -3,8 +3,10 @@
 const https = require('https');
 const http = require('http');
 const tls = require('tls');
+const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
+const { buildEditedReqRecord } = require('./delta-helpers');
 const { calculateCost } = require('./pricing');
 const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
@@ -242,6 +244,130 @@ function stripInjectedStats(parsedBody) {
   return modified;
 }
 
+// Build the human-readable diff lines injected into the response stream when a
+// request was edited via dashboard intercept. Pure function so it can be tested
+// independently of the SSE plumbing. Returns an array of one-line strings.
+function buildEditSummary(orig, mod, opts) {
+  const MAX_SHOWN = (opts && opts.maxShown) || 5;
+  const MAX_LEN = (opts && opts.maxLen) || 60;
+  const diffs = [];
+  if (!orig || !mod) return diffs;
+
+  const snippet = (c) => {
+    if (c == null) return '';
+    const s = typeof c === 'string' ? c : JSON.stringify(c);
+    const flat = s.replace(/\s+/g, ' ').trim();
+    return flat.length > MAX_LEN ? flat.slice(0, MAX_LEN) + '…' : flat;
+  };
+
+  if (orig.model !== mod.model) diffs.push('Model: ' + orig.model + ' → ' + mod.model);
+
+  const origMsgs = orig.messages || [];
+  const modMsgs = mod.messages || [];
+  if (origMsgs.length !== modMsgs.length) {
+    diffs.push('Messages: ' + origMsgs.length + ' → ' + modMsgs.length);
+  }
+
+  // Per-message edits: show old → new snippet, not just a count, so the CLI
+  // notice tells the user what actually changed.
+  const edited = [];
+  for (let i = 0; i < modMsgs.length; i++) {
+    const o = origMsgs[i];
+    if (!o) continue;
+    const oStr = typeof o.content === 'string' ? o.content : JSON.stringify(o.content);
+    const mStr = typeof modMsgs[i].content === 'string' ? modMsgs[i].content : JSON.stringify(modMsgs[i].content);
+    if (oStr !== mStr) {
+      edited.push((modMsgs[i].role || 'msg') + '[' + i + ']: "' + snippet(o.content) + '" → "' + snippet(modMsgs[i].content) + '"');
+    }
+  }
+  for (const line of edited.slice(0, MAX_SHOWN)) diffs.push(line);
+  if (edited.length > MAX_SHOWN) diffs.push('…and ' + (edited.length - MAX_SHOWN) + ' more message(s) edited');
+
+  const origToolLen = (orig.tools || []).length;
+  const modToolLen = (mod.tools || []).length;
+  if (origToolLen !== modToolLen) {
+    diffs.push('Tools: ' + origToolLen + ' → ' + modToolLen + ' (' + (modToolLen - origToolLen >= 0 ? '+' : '') + (modToolLen - origToolLen) + ')');
+  }
+
+  const origSys = typeof orig.system === 'string' ? orig.system : JSON.stringify(orig.system);
+  const modSys = typeof mod.system === 'string' ? mod.system : JSON.stringify(mod.system);
+  if (origSys !== modSys) diffs.push('System prompt: "' + snippet(orig.system) + '" → "' + snippet(mod.system) + '"');
+
+  return diffs;
+}
+
+// ── Intercept-edit persistence ───────────────────────────────────────
+// sessionLastReq (the per-session delta anchor) lives privately in index.js.
+// It injects a narrow recorder so this module can re-anchor the chain after an
+// edited rewrite (messages = clone of edited) or CLEAR it on failure (messages
+// = null → next turn re-anchors full). Keeps mutable session state encapsulated.
+let sessionAnchorRecorder = null;
+function setSessionAnchorRecorder(fn) { sessionAnchorRecorder = fn; }
+
+function sha12(value) {
+  return value == null ? null
+    : crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
+}
+
+// Persist an intercept-edited request. _req.json was written at receipt time
+// (index.js) from the ORIGINAL body; this rewrites it as-sent so the dashboard
+// shows what actually went upstream, while preserving the original in a
+// non-authoritative `_req.received.json` sidecar (forensics + the "original
+// before edit" view). Order matters: write the received sidecar and edited
+// shared sys/tools FIRST, then overwrite the canonical _req.json, so a lazy load
+// never observes a half-applied edit. On full success re-anchor the delta chain
+// from a CLONE of the edited messages; on ANY failure clear the anchor so the
+// next turn re-anchors full (no split-brain between disk and the in-memory anchor).
+// Returns a promise; the caller folds it into ctx.reqWritePromise.
+async function persistEditedRequest(ctx) {
+  const { id, parsedBody, originalBody, reqSessionId } = ctx;
+  if (!parsedBody) return;
+
+  ctx.edited = true;
+  ctx.editSummary = ctx.editSummary || buildEditSummary(originalBody, parsedBody);
+
+  try {
+    // 1. Forensic original, preserved before _req.json is overwritten.
+    if (originalBody) {
+      await config.storage.write(id, '_req.received.json', JSON.stringify(originalBody));
+    }
+
+    // 2. Edited system/tools, content-addressed. Write the shared file only when
+    //    the edit actually changed it (compare against the ORIGINAL hash, not
+    //    ctx.sysHash, which the forward gate may have already set to the edited
+    //    value). Update ctx so entry/index metadata point at the edited content.
+    const editedSysHash = parsedBody.system ? sha12(parsedBody.system) : null;
+    const editedToolsHash = parsedBody.tools ? sha12(parsedBody.tools) : null;
+    const origSysHash = originalBody && originalBody.system ? sha12(originalBody.system) : null;
+    const origToolsHash = originalBody && originalBody.tools ? sha12(originalBody.tools) : null;
+    if (editedSysHash && editedSysHash !== origSysHash) {
+      await config.storage.writeSharedIfAbsent(`sys_${editedSysHash}.json`, JSON.stringify(parsedBody.system));
+    }
+    if (editedToolsHash && editedToolsHash !== origToolsHash) {
+      await config.storage.writeSharedIfAbsent(`tools_${editedToolsHash}.json`, JSON.stringify(parsedBody.tools));
+    }
+    ctx.sysHash = editedSysHash;
+    ctx.toolsHash = editedToolsHash;
+
+    // 3. Canonical _req.json, as-sent, full format (no prevId/msgOffset).
+    const record = buildEditedReqRecord(parsedBody, {
+      sysHash: editedSysHash, toolsHash: editedToolsHash, sessionId: reqSessionId,
+    });
+    await config.storage.write(id, '_req.json', JSON.stringify(record));
+
+    // 4. Re-anchor the delta chain from a CLONE (never the live parsedBody array),
+    //    only for delta-eligible turns (explicit session + delta-capable storage).
+    if (reqSessionId && config.storage.supportsDelta && sessionAnchorRecorder) {
+      sessionAnchorRecorder(reqSessionId, id, JSON.parse(JSON.stringify(record.messages)));
+    }
+  } catch (e) {
+    console.error('Edited request persistence failed:', e.message);
+    // Split-brain mitigation: disk is uncertain → clear the anchor so the next
+    // turn writes FULL rather than a delta against an unrecoverable base.
+    if (reqSessionId && sessionAnchorRecorder) sessionAnchorRecorder(reqSessionId, id, null);
+  }
+}
+
 // ── Forward request to Anthropic ─────────────────────────────────────
 function forwardRequest(ctx) {
   const { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId } = ctx;
@@ -290,6 +416,26 @@ function forwardRequest(ctx) {
   const statsStripped = stripInjectedStats(parsedBody);
   const modelPrefixed = applyModelPrefix(parsedBody, config.REWRITE_MODEL_PREFIX);
   const bodyToSend = (ctx.bodyModified || statsStripped || modelPrefixed) ? Buffer.from(JSON.stringify(parsedBody)) : rawBody;
+
+  // Intercept-edited body: persist it as-sent (rewrite _req.json) + a forensic
+  // _req.received.json. This runs AFTER stripInjectedStats/applyModelPrefix so
+  // the persisted record matches the bytes actually sent. Chain after the
+  // original receipt-time write (never Promise.all — the original must not land
+  // last and restore stale bytes); loadEntryReqRes awaits entry._writePromise,
+  // which bundles ctx.reqWritePromise, so the read path observes the rewrite.
+  if (ctx.bodyModified && provider === 'anthropic' && !ctx.skipEntry) {
+    // Set edited state + as-sent hashes synchronously so the entry built in the
+    // response handler (and its index line) reference the edited content
+    // regardless of when the async persist runs. persist decides shared-file
+    // writes by comparing against the ORIGINAL hashes (from originalBody), so
+    // mutating ctx.sysHash/toolsHash here does not affect that decision.
+    ctx.edited = true;
+    ctx.editSummary = buildEditSummary(ctx.originalBody, parsedBody);
+    ctx.sysHash = parsedBody.system ? sha12(parsedBody.system) : null;
+    ctx.toolsHash = parsedBody.tools ? sha12(parsedBody.tools) : null;
+    const prior = ctx.reqWritePromise || Promise.resolve();
+    ctx.reqWritePromise = prior.then(() => persistEditedRequest(ctx), () => persistEditedRequest(ctx));
+  }
 
   const transport = upstream.protocol === 'http' ? http : https;
   const tunnelAgent = getTunnelAgent(upstream);
@@ -471,27 +617,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
 
     // Inject intercept modification summary
     if (ctx.bodyModified && ctx.originalBody) {
-      const orig = ctx.originalBody;
-      const mod = parsedBody;
-      const diffs = [];
-      if (orig.model !== mod.model) diffs.push('Model: ' + orig.model + ' → ' + mod.model);
-      const origMsgLen = (orig.messages || []).length;
-      const modMsgLen = (mod.messages || []).length;
-      if (origMsgLen !== modMsgLen) diffs.push('Messages: ' + origMsgLen + ' → ' + modMsgLen);
-      const msgEdits = (mod.messages || []).reduce((cnt, m, i) => {
-        const o = (orig.messages || [])[i];
-        if (!o) return cnt;
-        const oStr = typeof o.content === 'string' ? o.content : JSON.stringify(o.content);
-        const mStr = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-        return oStr !== mStr ? cnt + 1 : cnt;
-      }, 0);
-      if (msgEdits > 0) diffs.push(msgEdits + ' message(s) edited');
-      const origToolLen = (orig.tools || []).length;
-      const modToolLen = (mod.tools || []).length;
-      if (origToolLen !== modToolLen) diffs.push('Tools: ' + origToolLen + ' → ' + modToolLen + ' (' + (modToolLen - origToolLen) + ')');
-      const origSys = typeof orig.system === 'string' ? orig.system : JSON.stringify(orig.system);
-      const modSys = typeof mod.system === 'string' ? mod.system : JSON.stringify(mod.system);
-      if (origSys !== modSys) diffs.push('System prompt: modified');
+      const diffs = buildEditSummary(ctx.originalBody, parsedBody);
       if (diffs.length > 0) {
         const interceptIdx = maxBlockIndex + (usage && totalCtx && stopReason !== 'tool_use' ? 2 : 1);
         const iText = '\n\n---\n🔀 Request was modified by dashboard intercept:\n  ' + diffs.join('\n  ');
@@ -532,6 +658,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
+      edited: ctx.edited, editSummary: ctx.editSummary,
       tokens: helpers.tokenizeRequest(parsedBody),
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
       ...getParser('anthropic').buildEntryFields({
@@ -750,6 +877,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
+        edited: ctx.edited, editSummary: ctx.editSummary,
         tokens: helpers.tokenizeRequest(parsedBody),
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
         ...getParser('anthropic').buildEntryFields({
@@ -797,9 +925,12 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
 
 module.exports = {
   forwardRequest,
+  persistEditedRequest,
+  setSessionAnchorRecorder,
   resolveProxyAgent,
   applyModelPrefix,
   stripInjectedStats,
+  buildEditSummary,
   setStatusLineEnabled,
   getStatusLineEnabled,
   parseSSEFrame,

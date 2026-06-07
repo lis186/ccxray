@@ -60,6 +60,28 @@ function loadEntryReqRes(entry) {
         delete entry.req.prevId;
         delete entry.req.msgOffset;
       }
+
+      // Intercept-edited turn: surface the edited flag, the server-authoritative
+      // edit summary (for the badge), and the forensic original from the
+      // _req.received.json sidecar (the "original before edit" view). Display-only:
+      // the sidecar is NEVER spliced for delta reconstruction (line ~52 always
+      // uses the canonical as-sent _req.json messages).
+      if (entry.edited && entry.req) {
+        entry.req.edited = true;
+        entry.req.editSummary = Array.isArray(entry.editSummary) ? entry.editSummary : [];
+        try {
+          const original = JSON.parse(await config.storage.read(entry.id, '_req.received.json'));
+          const oSys = original.sysHash
+            ? await config.storage.readShared(`sys_${original.sysHash}.json`).then(JSON.parse).catch(() => null)
+            : (original.system != null ? original.system : null);
+          const oTools = original.toolsHash
+            ? await config.storage.readShared(`tools_${original.toolsHash}.json`).then(JSON.parse).catch(() => null)
+            : (original.tools != null ? original.tools : null);
+          entry.req.original = { ...original, system: oSys, tools: oTools };
+          delete entry.req.original.sysHash;
+          delete entry.req.original.toolsHash;
+        } catch { /* sidecar missing → degrade: edited flag + summary still shown */ }
+      }
     } catch { entry.req = null; }
     try {
       const raw = await config.storage.read(entry.id, '_res.json');
@@ -312,7 +334,7 @@ async function pruneLogs() {
 
   let deleted = 0, kept = 0;
   for (const filename of files) {
-    const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req|res)\.json$/);
+    const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req\.received|req|res)\.json$/);
     if (!m) continue;
     if (filename.slice(0, 10) >= cutoffStr) continue;
     if (protectedIds.has(m[1])) { kept++; continue; }
