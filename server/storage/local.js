@@ -7,11 +7,34 @@ const path = require('path');
 /**
  * Local filesystem storage adapter.
  * @param {string} logsDir — absolute path to the logs directory
+ * @param {object} [opts]
+ * @param {string} [opts.legacyDir] — absolute path to a pre-existing
+ *   package-relative logs/ directory to migrate from on first init(). When
+ *   omitted, no legacy migration is attempted. This logic lives only on the
+ *   local adapter, so non-local backends (e.g. S3) never touch the local FS.
  * @returns {import('./interface').StorageAdapter}
  */
-function createLocalStorage(logsDir) {
+function createLocalStorage(logsDir, opts = {}) {
   const sharedDir = path.join(logsDir, 'shared');
   const indexPath = path.join(logsDir, 'index.ndjson');
+  const legacyDir = opts.legacyDir || null;
+
+  // One-time, best-effort migration from the old package-relative logs/
+  // location. Errors are logged and swallowed — a failed migration must never
+  // crash startup (mirrors the original catch-and-log behavior).
+  async function migrateLegacyLogs() {
+    if (!legacyDir) return;
+    const legacyIndex = path.join(legacyDir, 'index.ndjson');
+    if (!fs.existsSync(legacyIndex)) return;
+    try {
+      for (const f of await fsp.readdir(legacyDir)) {
+        await fsp.rename(path.join(legacyDir, f), path.join(logsDir, f));
+      }
+      console.log(`Migrated logs from ${legacyDir} → ${logsDir}`);
+    } catch (e) {
+      console.error(`Log migration failed: ${e.message}`);
+    }
+  }
 
   return {
     supportsDelta: true,
@@ -20,8 +43,13 @@ function createLocalStorage(logsDir) {
     location: logsDir,
 
     async init() {
+      // Snapshot before mkdir so we migrate only into a freshly-created logs
+      // dir — mirrors the original `if (!fs.existsSync(LOGS_DIR))` guard and
+      // never clobbers a populated logs dir.
+      const logsDirExisted = fs.existsSync(logsDir);
       await fsp.mkdir(logsDir, { recursive: true });
       await fsp.mkdir(sharedDir, { recursive: true });
+      if (!logsDirExisted) await migrateLegacyLogs();
     },
 
     async write(id, suffix, data) {

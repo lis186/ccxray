@@ -1,7 +1,5 @@
 'use strict';
 
-const path = require('path');
-const fs = require('fs');
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
 
@@ -188,7 +186,6 @@ function joinUpstreamPath(upstream, requestUrl) {
   return basePath + (urlPath.startsWith('/') ? urlPath : `/${urlPath}`);
 }
 const LOGS_DIR = resolveLogsDir();
-const LEGACY_LOGS_DIR = path.join(__dirname, '..', 'logs');
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
@@ -279,23 +276,11 @@ function inferMaxContext(model, system, usage) {
   return base;
 }
 
-// Ensure logs dir exists; migrate from legacy location if needed
-if (!fs.existsSync(LOGS_DIR)) {
-  fs.mkdirSync(LOGS_DIR, { recursive: true });
-  // One-time migration from old package-relative logs/
-  const legacyIndex = path.join(LEGACY_LOGS_DIR, 'index.ndjson');
-  if (fs.existsSync(legacyIndex)) {
-    try {
-      const files = fs.readdirSync(LEGACY_LOGS_DIR);
-      for (const f of files) {
-        fs.renameSync(path.join(LEGACY_LOGS_DIR, f), path.join(LOGS_DIR, f));
-      }
-      console.log(`Migrated logs from ${LEGACY_LOGS_DIR} → ${LOGS_DIR}`);
-    } catch (e) {
-      console.error(`Log migration failed: ${e.message}`);
-    }
-  }
-}
+// Logs-dir creation and the one-time legacy-logs migration now live in the
+// local storage adapter's init() (server/storage/local.js), invoked once at
+// startup via `await config.storage.init()`. config.js performs no filesystem
+// side effects at require time, and the migration only runs for the local
+// backend (S3/R2 never reads LOGS_DIR).
 
 module.exports = {
   PORT,
