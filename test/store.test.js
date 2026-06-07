@@ -54,6 +54,64 @@ describe('store', () => {
     });
   });
 
+  describe('computeSessionResume / markSessionUsage', () => {
+    const store = require('../server/store');
+
+    it('claude sessions are always resumable with --resume', () => {
+      const r = store.computeSessionResume('claude-sid-aaa', 'anthropic');
+      assert.deepEqual(r, { resumable: true, resumeCommand: 'claude --resume claude-sid-aaa' });
+    });
+
+    it('entries without a provider fall back to anthropic (always resumable)', () => {
+      const r = store.computeSessionResume('legacy-sid', undefined);
+      assert.deepEqual(r, { resumable: true, resumeCommand: 'claude --resume legacy-sid' });
+    });
+
+    it('codex session with no usage is not resumable', () => {
+      const r = store.computeSessionResume('codex-sid-nousage', 'openai');
+      assert.deepEqual(r, { resumable: false, resumeCommand: null });
+    });
+
+    it('codex session becomes resumable after a non-subagent usage turn', () => {
+      const sid = 'codex-sid-withusage';
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+      const r = store.computeSessionResume(sid, 'openai');
+      assert.deepEqual(r, { resumable: true, resumeCommand: `codex resume ${sid}` });
+    });
+
+    it('subagent usage alone does not make a codex session resumable', () => {
+      const sid = 'codex-sid-subonly';
+      store.markSessionUsage({ sessionId: sid, isSubagent: true, usage: { input_tokens: 5 } });
+      assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
+    });
+
+    it('a turn without usage does not mark the session', () => {
+      const sid = 'codex-sid-nousagefield';
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: null });
+      assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
+    });
+
+    it('hasUsage is monotonic — a later usage-less turn keeps resumability', () => {
+      const sid = 'codex-sid-monotonic';
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+      store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: null });
+      assert.equal(store.computeSessionResume(sid, 'openai').resumable, true);
+    });
+
+    it('sentinel sessions are never resumable regardless of provider', () => {
+      for (const sid of ['direct-api', 'codex-raw', 'unknown']) {
+        store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5 } });
+        assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
+        assert.deepEqual(store.computeSessionResume(sid, 'anthropic'), { resumable: false, resumeCommand: null });
+      }
+    });
+
+    it('empty/missing session id is not resumable', () => {
+      assert.deepEqual(store.computeSessionResume(null, 'anthropic'), { resumable: false, resumeCommand: null });
+      assert.deepEqual(store.computeSessionResume('', 'openai'), { resumable: false, resumeCommand: null });
+    });
+  });
+
   describe('detectSession – subagent attribution', () => {
     // Fresh store state for each test — we manipulate module-level globals
     // so we need to reset between tests.

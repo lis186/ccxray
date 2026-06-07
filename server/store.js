@@ -1,5 +1,10 @@
 'use strict';
 
+const { agentForProvider, getUpstreamProfile } = require('./providers');
+
+// Synthetic session buckets that have no resumable rollout/session file.
+const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
+
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
 const entries = [];
@@ -252,6 +257,40 @@ function setRestoreState(patch) {
   restoreState.entryCount = entries.length;
 }
 
+// Mark a session as having produced a real completed turn. Codex only writes a
+// resumable rollout file once a turn reports usage; a non-subagent entry with
+// usage is our proxy-side signal for "this session can be resumed". Monotonic:
+// once true it never flips back.
+function markSessionUsage(entry) {
+  const sid = entry?.sessionId;
+  if (!sid || NON_RESUMABLE_SESSIONS.has(sid)) return;
+  if (entry.isSubagent) return;
+  if (!entry.usage) return;
+  const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
+  meta.hasUsage = true;
+}
+
+// Single source of truth for the dashboard's resume button. Interprets the
+// declarative resume profile from UPSTREAM_PROFILES ({template, condition}):
+// 'always' resumes unconditionally, 'has-usage' requires a completed turn.
+// Returns the resume command string (null when the session can't be resumed).
+function computeSessionResume(sessionId, provider) {
+  if (!sessionId || NON_RESUMABLE_SESSIONS.has(sessionId)) {
+    return { resumable: false, resumeCommand: null };
+  }
+  // Entries without a provider predate provider tagging — they are anthropic.
+  const profile = getUpstreamProfile(provider) || getUpstreamProfile('anthropic');
+  const resume = profile.resume;
+  if (!resume) return { resumable: false, resumeCommand: null };
+  if (resume.condition === 'has-usage' && !sessionMeta[sessionId]?.hasUsage) {
+    return { resumable: false, resumeCommand: null };
+  }
+  const resumeCommand = resume.template
+    .replace('{agent}', agentForProvider(provider))
+    .replace('{sid}', sessionId);
+  return { resumable: true, resumeCommand };
+}
+
 module.exports = {
   MAX_ENTRIES,
   entries,
@@ -281,4 +320,7 @@ module.exports = {
   getSessionTitle,
   attributeTitleGen,
   propagateLoadedSkills,
+  markSessionUsage,
+  computeSessionResume,
+  NON_RESUMABLE_SESSIONS,
 };
