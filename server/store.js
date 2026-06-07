@@ -258,14 +258,17 @@ function setRestoreState(patch) {
 }
 
 // Mark a session as having produced a real completed turn. Codex only writes a
-// resumable rollout file once a turn reports usage; a non-subagent entry with
-// usage is our proxy-side signal for "this session can be resumed". Monotonic:
-// once true it never flips back.
+// resumable rollout file once a turn produces output; turns that billed input
+// but emitted zero output (hung WS turns, cross-session retries) leave no
+// rollout file, so `usage` alone is a false signal — status and stopReason are
+// unreliable too (verified against ~/.codex/sessions ground truth, issue #44).
+// output_tokens > 0 on a non-subagent entry is the only discriminator that
+// matches. Monotonic: once true it never flips back.
 function markSessionUsage(entry) {
   const sid = entry?.sessionId;
   if (!sid || NON_RESUMABLE_SESSIONS.has(sid)) return;
   if (entry.isSubagent) return;
-  if (!entry.usage) return;
+  if (!(entry.usage?.output_tokens > 0)) return;
   const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
   meta.hasUsage = true;
 }
