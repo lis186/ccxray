@@ -58,7 +58,7 @@ function buildEntryFields(ctx) {
     cwd: ctx.cwd ?? null,
     usage,
     cost: calculateCost(usage, model),
-    maxContext: config.inferMaxContext(model, parsedBody?.system, usage),
+    maxContext: config.inferMaxContext(model, parsedBody?.system, usage, { beta1m: ctx.beta1m }),
     responseMetadata: undefined,
     stopReason: ctx.stopReason || '',
     title: ctx.title || null,

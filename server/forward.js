@@ -589,7 +589,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         console.log(`\x1b[90m   Context HUD: injecting into session ${reqSessionId.slice(0, 8)}\x1b[0m`);
         _hudLoggedSessions.add(reqSessionId);
       }
-      const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage);
+      const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage, { beta1m: ctx.beta1m });
       const pct = (totalCtx / maxCtx * 100).toFixed(1);
       const newIdx = maxBlockIndex + 1;
       const costInfo = calculateCost(usage, parsedBody?.model);
@@ -666,7 +666,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         proxyRes, sessionId, sessionInferred: ctx.sessionInferred,
         sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         cwd: store.sessionMeta[sessionId]?.cwd || null,
-        stopReason, title, thinkingDuration, thinkingStripped,
+        stopReason, title, thinkingDuration, thinkingStripped, beta1m: ctx.beta1m,
         isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
       }),
     };
@@ -695,7 +695,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const outTok = usage?.output_tokens ? `  out=${usage.output_tokens.toLocaleString()} tok` : '';
     const prefix = ctx.attribPrefix || '';
     console.log(`${color}📥 [${helpers.taipeiTime()}]  ${prefix}  ${glyph} ${code}  ${elapsed}s${outTok}\x1b[0m`);
-    if (usage) helpers.printContextBar(usage, parsedBody?.model, parsedBody?.system);
+    if (usage) helpers.printContextBar(usage, parsedBody?.model, parsedBody?.system, ctx.beta1m);
     if (entry.cost?.cost != null) {
       store.sessionCosts.set(sessionId, (store.sessionCosts.get(sessionId) || 0) + entry.cost.cost);
       console.log(`  💰 $${entry.cost.cost.toFixed(4)} this turn | $${store.sessionCosts.get(sessionId).toFixed(4)} session`);
@@ -886,7 +886,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
           sessionId, sessionInferred: ctx.sessionInferred,
           sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
           cwd: store.sessionMeta[sessionId]?.cwd || null,
-          stopReason, title, thinkingDuration: null, thinkingStripped,
+          stopReason, title, thinkingDuration: null, thinkingStripped, beta1m: ctx.beta1m,
           isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
         }),
       };

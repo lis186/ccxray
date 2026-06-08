@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-06-09 | Claude Code | 2.1.x | Confirmed via loopback wire capture: `anthropic-beta` carries `context-1m-2025-08-07` on **every** request when the account's 1M context is enabled — including haiku title-gen turns (it is a client/account-level capability flag, not a per-turn window declaration). ccxray now uses it as the non-lagging 1M-window signal, gated by model capability (`SUPPORTS_1M`), replacing sole reliance on the lagging system-prompt `[1m]` marker (#58). |
 | 2026-06-05 | ccxray | 1.11.x | Usage normalization: OpenAI `input_tokens` includes `cached_tokens` (subset), unlike Anthropic's disjoint fields. `normalizeUsageForProvider` now subtracts the overlap so canonical `input_tokens + cache_read + cache_creation = total context` holds for both providers. Normalized entries carry `_ccxrayUsageNormalized: true`. Historical entries normalized on restore (in-memory, index unchanged). Cache display: Codex sessions show `cache N% hit` instead of TTL countdown; topbar adapts per provider (`ephemeral-ttl` vs `server-managed`). `UPSTREAM_PROFILES` registry added to `providers.js`. |
 | 2026-06-04 | ccxray | 1.10.x | Fix: WS `stopReason` now extracts `response.status` from terminal events (`completed`/`incomplete`/`failed`/`cancelled`) instead of WS close reason. WS `title` extracts user input summary via `getOpenAIInputSummary` instead of hardcoded string. Non-terminal statuses (`in_progress`/`queued`) are ignored to prevent masking close/error reasons. |
 | 2026-06-02 | ccxray | 1.10.0 | Doc audit: 13 major + 25 minor corrections applied (F1–F38) |
@@ -65,6 +66,8 @@
 | ChatGPT base path | N/A | `/backend-api/codex/...` (the proxy strips the `/v1` prefix before prepending the base path, so `POST /v1/responses` → `/backend-api/codex/responses`) | `obs-stable` codex ≥0.131 |
 | Version header | `anthropic-version: 2023-06-01` | N/A | `contractual` |
 | Beta features | `anthropic-beta: ...` (comma-separated) | `openai-beta: ...` | `contractual` |
+| 1M context window signal | `anthropic-beta` list contains `context-1m-2025-08-07` (present on every request when 1M enabled — a client-level flag, also on haiku turns; does **not** lag a mid-session model switch, unlike the system-prompt `[1m]` marker) | N/A | `obs-stable` Claude Code ≥2.1.x |
+| ~~Rate-limit ≠ context window~~ | `anthropic-ratelimit-tokens-limit` (e.g. `80000`) is a per-window quota, **not** the context window — never use it to size the denominator | N/A | `obs-stable` |
 
 ---
 

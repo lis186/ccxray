@@ -224,6 +224,14 @@ const MODEL_CONTEXT_FALLBACK = {
 };
 const DEFAULT_CONTEXT = 200_000;
 
+// Models that can actually be served with a 1M context window. The 1M signal
+// (anthropic-beta context-1m header, or the system "[1m]" marker) is a
+// client/account-level capability flag — it rides on EVERY Claude Code request,
+// including haiku title-gen turns. Gate the 1M jump on the model itself so a
+// haiku request carrying the beta header is not shown as a 1M window. New 1M
+// families get one line here, not a logic change.
+const SUPPORTS_1M = /^claude-(opus|sonnet)-4/;
+
 // Extract effective model ID from system prompt (includes [1m] suffix if present).
 // API request model field never includes [1m], but system prompt does:
 //   "The exact model ID is claude-opus-4-6[1m]."
@@ -237,14 +245,27 @@ function extractModelFromSystem(system) {
   return null;
 }
 
-function getMaxContext(model, system) {
-  // Prefer model ID from system prompt (has [1m] suffix when applicable)
-  const effective = extractModelFromSystem(system) || model;
-  if (!effective) return DEFAULT_CONTEXT;
-  // 1) Explicit suffix: "claude-opus-4-6[1m]" → 1M
-  if (/\[1m\]/i.test(effective)) return 1_000_000;
-  // 2) Known Claude Code defaults (200K standard plan)
-  const stripped = effective.replace(/\[.*\]/, '');
+function getMaxContext(model, system, opts = {}) {
+  // Model IDENTITY comes from the request `model` field — it updates immediately
+  // on a mid-session model switch. The system marker is only a fallback for
+  // identity, because Claude Code's "The exact model ID is ..." line lags several
+  // turns behind the switch and would otherwise corrupt the window denominator
+  // (issue #58). The system marker is still the place the "[1m]" suffix appears.
+  const sysModel = extractModelFromSystem(system);
+  const identity = model || sysModel;
+  if (!identity) return DEFAULT_CONTEXT;
+  const stripped = identity.replace(/\[.*\]/, '');
+  // 1) 1M plan active? Two non-mutually-exclusive signals:
+  //    - opts.beta1m: anthropic-beta `context-1m-*` request header (non-lagging,
+  //      present on every turn — the authoritative plan flag).
+  //    - "[1m]" suffix in the system marker (legacy; lags after a model switch).
+  //    Either signal counts, but only for a 1M-capable model (SUPPORTS_1M) so a
+  //    client-level flag riding on a haiku request does not over-claim 1M.
+  const has1mSignal = opts.beta1m === true
+    || /\[1m\]/i.test(sysModel || '')
+    || /\[1m\]/i.test(model || '');
+  if (has1mSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
+  // 2) Known Claude Code / Codex defaults (200K / 400K)
   const keys = Object.keys(MODEL_CONTEXT_FALLBACK).sort((a, b) => b.length - a.length);
   for (const key of keys) {
     if (stripped.startsWith(key)) return MODEL_CONTEXT_FALLBACK[key];
@@ -263,8 +284,8 @@ function getMaxContext(model, system) {
 // base, bump Claude models up to 1M so the dashboard "X / Y (Z%)" stays
 // self-consistent. Non-Claude models are not bumped because we have no
 // reliable next tier to escalate to.
-function inferMaxContext(model, system, usage) {
-  const base = getMaxContext(model, system);
+function inferMaxContext(model, system, usage, opts = {}) {
+  const base = getMaxContext(model, system, opts);
   if (!usage) return base;
   const used = (usage.input_tokens || 0)
     + (usage.cache_creation_input_tokens || 0)
