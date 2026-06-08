@@ -345,7 +345,7 @@ function addEntry(e) {
       const cacheMode = typeof getCacheMode === 'function' ? getCacheMode(e.provider || 'anthropic') : 'ephemeral-ttl';
       gapTitle = cacheMode === 'ephemeral-ttl'
         ? (gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)')
-        : 'Server cache (retention varies)';
+        : 'Cached automatically';
     }
   }
 

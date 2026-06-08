@@ -1481,7 +1481,7 @@ function renderSessionItem(sess, sid) {
     const tokK = sess.latestCacheReadTokens >= 1000
       ? Math.round(sess.latestCacheReadTokens / 1000) + 'K'
       : String(sess.latestCacheReadTokens);
-    cacheRowHtml = '<div class="si-cache cache-server" title="Server-managed cache · last turn">' +
+    cacheRowHtml = '<div class="si-cache cache-server" title="Cached automatically · last turn">' +
       'cache ' + pct + '% hit · ' + tokK + ' tok</div>';
   }
   const isOnline = getStatusClass(sid) !== 'sdot-off';
