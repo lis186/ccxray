@@ -376,9 +376,17 @@ const server = http.createServer((clientReq, clientRes) => {
     // Build context for forwarding
     const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
 
+    // #58: the 1M context window is enabled via the `anthropic-beta:
+    // context-1m-*` request header. Unlike the system-prompt "[1m]" marker, this
+    // header rides every turn (it does not lag a mid-session model switch), so it
+    // is the authoritative, non-lagging signal for the context-window denominator.
+    // Carried on ctx and fed into inferMaxContext downstream.
+    const beta1m = /(^|,)\s*context-1m-/.test(clientReq.headers['anthropic-beta'] || '');
+
     const ctx = {
       id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders,
       reqSessionId, reqWritePromise, sysHash, toolsHash, coreHash, sessionInferred, upstream,
+      beta1m,
       isSubagent: provider === 'openai' ? isOpenAISubagent(clientReq.headers, parsedBody) : undefined,
     };
 

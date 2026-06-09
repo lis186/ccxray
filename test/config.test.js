@@ -649,3 +649,59 @@ describe('inferMaxContext', () => {
     assert.equal(inferMaxContext('claude-opus-4-7', null, usage), 1_000_000);
   });
 });
+
+// ── #58: anthropic-beta context-1m header as a non-lagging 1M signal ─────────
+// Empirically confirmed (2026-06-09): Claude Code sends
+//   anthropic-beta: ...,context-1m-2025-08-07,...
+// on EVERY request when the account has the 1M context beta enabled. Unlike the
+// system-prompt "[1m]" marker (which lags several turns after a mid-session
+// model switch), this header is present on every turn, so it fixes the lag-window
+// flicker / ctx% cliff at the source. Because the header is a client-level
+// capability flag (also present on haiku title-gen requests), it must be GATED by
+// model 1M-capability so it does not over-claim a 1M window for haiku.
+describe('getMaxContext / inferMaxContext — context-1m beta header (#58)', () => {
+  const { getMaxContext, inferMaxContext } = require('../server/config');
+  const staleMarker = [{ type: 'text', text: 'The exact model ID is claude-opus-4-6.' }];
+
+  it('FIX: stale system marker no longer corrupts identity — beta header wins (fail-on-old)', () => {
+    // The reported bug: request model already switched to opus-4-8 (1M plan), but
+    // the system marker still lags on opus-4-6 with no [1m]. Old code trusted the
+    // stale marker for identity AND had no beta signal → 200K → ctx% ~99%.
+    const usage = { input_tokens: 196_602 }; // turn 35 from the issue, < 200K
+    assert.equal(inferMaxContext('claude-opus-4-8', staleMarker, usage, { beta1m: true }), 1_000_000);
+  });
+
+  it('FIX: beta header gives 1M even with no [1m] marker and small usage (fail-on-old)', () => {
+    // Lag window, early turn: no [1m] anywhere, usage below 200K. The header is the
+    // only non-lagging signal — without it the turn shows 200K until usage crosses.
+    assert.equal(getMaxContext('claude-opus-4-8', null, { beta1m: true }), 1_000_000);
+    assert.equal(inferMaxContext('claude-opus-4-8', null, { input_tokens: 50_000 }, { beta1m: true }), 1_000_000);
+    assert.equal(inferMaxContext('claude-sonnet-4-6', null, { input_tokens: 50_000 }, { beta1m: true }), 1_000_000);
+  });
+
+  it('GUARD: beta header does NOT over-claim 1M for non-1M-capable models', () => {
+    // haiku title-gen requests carry the same client-level beta header but haiku
+    // does not support 1M — must stay at base when usage is small.
+    assert.equal(getMaxContext('claude-haiku-4-5', null, { beta1m: true }), 200_000);
+    assert.equal(inferMaxContext('claude-haiku-4-5', null, { input_tokens: 50_000 }, { beta1m: true }), 200_000);
+    // claude-3 families are not 1M-capable either.
+    assert.equal(getMaxContext('claude-3-opus', null, { beta1m: true }), 200_000);
+  });
+
+  it('GUARD: no signal at all stays at base (no false 1M)', () => {
+    assert.equal(getMaxContext('claude-opus-4-8', null), 200_000);
+    assert.equal(getMaxContext('claude-opus-4-8', null, {}), 200_000);
+    assert.equal(inferMaxContext('claude-opus-4-8', null, { input_tokens: 50_000 }), 200_000);
+  });
+
+  it('REGRESSION: existing [1m] marker path and usage hatch still work without opts', () => {
+    const marker1m = [{ type: 'text', text: 'The exact model ID is claude-opus-4-8[1m].' }];
+    assert.equal(getMaxContext('claude-opus-4-8', marker1m), 1_000_000);
+    assert.equal(inferMaxContext('claude-haiku-4-5', null, { input_tokens: 260_000 }), 1_000_000); // usage hatch
+    assert.equal(getMaxContext('gpt-5.1-codex', null), 400_000);
+  });
+
+  it('GUARD: beta header is ignored for OpenAI models (no 1M concept there)', () => {
+    assert.equal(getMaxContext('gpt-5.1-codex', null, { beta1m: true }), 400_000);
+  });
+});

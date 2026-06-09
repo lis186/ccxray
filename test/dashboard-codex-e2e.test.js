@@ -14,6 +14,17 @@ const PROJECT_CWD = path.resolve(__dirname, '..');
 const PROJECT_NAME = path.basename(PROJECT_CWD);
 const tmpDirs = [];
 
+// Mirror of the dashboard's project-label truncation (public/miller-columns.js
+// truncateMiddle). The project label is the cwd basename, which is long when the
+// suite runs from a git worktree (e.g. ".claude/worktrees/<branch>"), so compare
+// against the same truncation the UI applies rather than the raw name.
+function truncateMiddle(s, max) {
+  if (s.length <= max) return s;
+  const tail = Math.ceil(max * 0.6);
+  const head = max - tail - 1;
+  return s.slice(0, head) + '…' + s.slice(-tail);
+}
+
 function makeOpenAISSE() {
   return [
     'event: response.created',
@@ -162,7 +173,7 @@ describe('Codex dashboard status E2E', () => {
         };
       });
 
-      assert.equal(state.projectText, PROJECT_NAME);
+      assert.equal(state.projectText, truncateMiddle(PROJECT_NAME, 20));
       assert.equal(state.sessionText, 'Codex Raw');
       assert.match(state.url, /s=codex-raw/);
       assert.equal(state.hasOkDot, true);

@@ -369,14 +369,16 @@ function totalContextTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
-function printContextBar(usage, model, system) {
+function printContextBar(usage, model, system, beta1m) {
   const { inferMaxContext } = require('./config');
   if (!usage) return;
   // Use inferMaxContext (not getMaxContext) so the terminal HUD bumps
   // claude-opus-* / claude-sonnet-* to 1M when observed usage exceeds 200K
   // but the [1m] marker isn't present in the system prompt — otherwise the
-  // bar clamps to "100% (X / 200,000)" while X overflows the max.
-  const maxCtx = inferMaxContext(model, system, usage);
+  // bar clamps to "100% (X / 200,000)" while X overflows the max. beta1m
+  // (anthropic-beta context-1m header) gives 1M immediately, before usage
+  // crosses 200K and without waiting for the lagging [1m] marker (#58).
+  const maxCtx = inferMaxContext(model, system, usage, { beta1m });
   const used = totalContextTokens(usage);
   if (!used) return;
   const pct = Math.min(100, (used / maxCtx) * 100);
