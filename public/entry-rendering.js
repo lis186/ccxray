@@ -235,7 +235,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, retryCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null });
     // Live-update visibleProviders when a new provider appears
     const settings = window.ccxraySettings;
     if (!Array.isArray(settings.visibleProviders)) settings.visibleProviders = [];
@@ -277,10 +277,12 @@ function addEntry(e) {
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
   const isSubagent = e.isSubagent || false;
-  sess.count++; // total (shown in session item as "Nt")
-  if (isSubagent) sess.subCount++;
+  const isRetry = !isSubagent && !isHttpStatusOk(e.status) && !(usage && usage.output_tokens > 0);
+  sess.count++;
+  if (isRetry) { sess.retryCount = (sess.retryCount || 0) + 1; }
+  else if (isSubagent) sess.subCount++;
   else sess.mainCount++;
-  const displayNum = isSubagent ? ('s' + sess.subCount) : String(sess.mainCount);
+  const displayNum = isRetry ? ('r' + (sess.retryCount || 0)) : isSubagent ? ('s' + sess.subCount) : String(sess.mainCount);
   if (entryId && window.entryById) {
     window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null, displayNum });
   }
@@ -333,7 +335,7 @@ function addEntry(e) {
   // Gap timing: idle time from end of previous turn to start of this turn
   let prevInSession = null;
   for (let i = allEntries.length - 1; i >= 0; i--) {
-    if (allEntries[i].sessionId === sid && allEntries[i].receivedAt) { prevInSession = allEntries[i]; break; }
+    if (allEntries[i].sessionId === sid && !allEntries[i].isRetry && allEntries[i].receivedAt) { prevInSession = allEntries[i]; break; }
   }
   let gapMs = null, gapColor = '', gapTitle = '';
   if (prevInSession && e.receivedAt) {
@@ -356,7 +358,7 @@ function addEntry(e) {
   if (!isSubagent && ctxUsed > 0 && msgCount > 0) {
     for (let i = allEntries.length - 1; i >= 0; i--) {
       const prev = allEntries[i];
-      if (prev.sessionId === sid && !prev.isSubagent && prev.ctxUsed > 0) {
+      if (prev.sessionId === sid && !prev.isSubagent && !prev.isRetry && prev.ctxUsed > 0) {
         const msgDrop = (prev.msgCount || 0) - msgCount;
         const tokenDrop = prev.ctxUsed - ctxUsed;
         // Require both: msgCount dropped by 5+ AND tokens dropped by >15% of window
@@ -371,7 +373,7 @@ function addEntry(e) {
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
     msgCount, toolCount, toolCalls: e.toolCalls || {}, stopReason,
     status: e.status, elapsed: e.elapsed, method: e.method, id: e.id,
-    isSubagent, sessionInferred: e.sessionInferred || false, displayNum, ctxUsed, isCompacted, receivedAt: e.receivedAt || null,
+    isSubagent, isRetry, sessionInferred: e.sessionInferred || false, displayNum, ctxUsed, isCompacted, receivedAt: e.receivedAt || null,
     thinkingDuration: e.thinkingDuration || null,
     duplicateToolCalls: e.duplicateToolCalls || null,
     hasCredential: e.hasCredential || false,
@@ -382,6 +384,8 @@ function addEntry(e) {
     thinkingStripped: e.thinkingStripped || false,
     provider: e.provider || 'anthropic',
   });
+
+  if (isRetry) return;
 
   // ── V3 turn card: five-line layout ──
   const toolFail = e.toolFail || false;
