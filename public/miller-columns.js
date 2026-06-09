@@ -1510,7 +1510,7 @@ function renderSessionItem(sess, sid) {
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModel) + '</span> · ' + sess.count + 't</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModel) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + '</div>' +
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +
@@ -1676,7 +1676,25 @@ function setFocus(col) {
 function getVisibleTurnIndices() {
   return allEntries
     .map((e, i) => i)
-    .filter(i => selectedSessionId && allEntries[i].sessionId === selectedSessionId);
+    .filter(i => selectedSessionId && allEntries[i].sessionId === selectedSessionId && !allEntries[i].isRetry);
+}
+
+function updateRetryEmptyState(sid) {
+  let el = colTurns.querySelector('.retry-empty-state');
+  if (!sid) { if (el) el.remove(); return; }
+  const sess = sessionsMap.get(sid);
+  const hasVisibleTurns = colTurns.querySelector('.turn-item[style=""]') || colTurns.querySelector('.turn-item:not([style*="display: none"])');
+  if (!hasVisibleTurns && sess && sess.retryCount > 0) {
+    if (!el) { el = document.createElement('div'); el.className = 'retry-empty-state col-empty'; colTurns.appendChild(el); }
+    const rc = sess.retryCount;
+    const codes = [];
+    for (let i = 0; i < allEntries.length; i++) {
+      if (allEntries[i].sessionId === sid && allEntries[i].isRetry) codes.push(allEntries[i].status);
+    }
+    const summary = Object.entries(codes.reduce((a, c) => { a[c] = (a[c] || 0) + 1; return a; }, {})).map(([k, v]) => v > 1 ? v + '× ' + k : k).join(', ');
+    el.textContent = 'No turns — ' + rc + ' failed request' + (rc > 1 ? 's' : '') + ' (' + summary + ')';
+    el.style.display = '';
+  } else { if (el) el.remove(); }
 }
 
 function renderSessionToolBar(sid) {
@@ -1963,6 +1981,7 @@ function selectSessionAndLatestTurn(sid) {
   // Auto-select latest turn in this session
   const visible = getVisibleTurnIndices();
   if (visible.length) selectTurn(visible[visible.length - 1]);
+  updateRetryEmptyState(sid);
   renderSessionToolBar(sid);
   renderSessionSparkline(sid);
   renderBreadcrumb();
@@ -2064,6 +2083,7 @@ function selectSession(id) {
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
 
+  updateRetryEmptyState(id);
   renderSessionToolBar(id);
   renderSessionSparkline(id);
   renderBreadcrumb();
@@ -2346,7 +2366,7 @@ function fetchPricingData() {
 
 function renderCostEfficiencyPanel(currentEntry) {
   const sid = currentEntry.sessionId;
-  const sessionTurns = allEntries.filter(e => e.sessionId === sid && !e.isSubagent && e.usage);
+  const sessionTurns = allEntries.filter(e => e.sessionId === sid && !e.isSubagent && !e.isRetry && e.usage && (e.usage.input_tokens || 0) > 0);
 
   // --- Cache efficiency ---
   let totalCacheRead = 0, totalCacheCreate = 0;
