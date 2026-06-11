@@ -49,7 +49,11 @@ async function loadCostPage() {
 
   // Each zone fetches and renders independently — no Promise.all
   fetchWithRetry('/_api/costs/current-block', { active: false })
-    .then(blockData => { renderZone1(blockData); updateRow2Usage(blockData, null); });
+    .then(blockData => {
+      renderZone1(blockData);
+      renderAccounts(blockData);
+      updateRow2Usage(blockData, null);
+    });
 
   const dailyPromise = fetchWithRetry('/_api/costs/daily', []);
   const monthlyPromise = fetchWithRetry('/_api/costs/monthly', { monthly: [], currentMonth: { costUSD: 0 } });
@@ -306,5 +310,65 @@ function renderZone3(dailyData) {
   container.innerHTML = html;
 }
 
+
+function renderAccounts(blockData) {
+  const card = document.getElementById('cp-accounts');
+  const el = document.getElementById('cp-accounts-content');
+  if (!card || !el) return;
+
+  const accounts = blockData.accounts || [];
+  const configured = blockData.claudeStatuslineConfigured;
+
+  if (accounts.length === 0 && configured !== false) {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = '';
+
+  let html = '';
+
+  for (const acct of accounts) {
+    const provLabel = acct.provider === 'openai' ? 'Codex' : 'Claude';
+    const planStr = acct.planType ? ` · ${acct.planType}` : '';
+    const freshDot = acct.fresh
+      ? '<span style="color:var(--green)">●</span> live'
+      : '<span style="color:var(--dim)">○</span> cached';
+
+    html += `<div style="margin-bottom:10px">`;
+    html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">`;
+    html += `<span style="font-weight:600">${provLabel}${planStr}</span>`;
+    html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
+    html += `</div>`;
+
+    html += renderAccountBar('5h', acct.fiveHour);
+    if (acct.sevenDay) html += renderAccountBar('7d', acct.sevenDay);
+
+    html += `</div>`;
+  }
+
+  if (configured === false && !accounts.find(a => a.provider === 'anthropic')) {
+    html += `<div style="font-size:11px;color:var(--dim);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
+      Claude rate limits available<br>
+      <span style="font-size:10px">Run: <code style="background:var(--surface);padding:1px 4px;border-radius:3px">ccxray setup-statusline</code></span>
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+function renderAccountBar(label, win) {
+  if (!win) return '';
+  const leftPct = win.leftPct ?? (100 - win.usedPct);
+  const barColor = leftPct > 30 ? 'var(--green)' : leftPct > 10 ? 'var(--yellow)' : 'var(--red)';
+  const resetStr = win.resetLabel ? ` in ${win.resetLabel}` : '';
+  return `<div style="margin-bottom:4px">
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:1px">
+      <span>${label}</span><span>${leftPct}% left${resetStr}</span>
+    </div>
+    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+      <div style="height:100%;width:${Math.min(leftPct,100)}%;background:${barColor};border-radius:3px"></div>
+    </div>
+  </div>`;
+}
 
 // Escape handler moved to unified fullscreen-page listener in app.js

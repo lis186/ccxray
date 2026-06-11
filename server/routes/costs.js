@@ -1,8 +1,22 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 const store = require('../store');
 const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
 const { pricingTable } = require('../pricing');
+const { readAllAccounts } = require('../local-usage-reader');
+const { resolveCcxrayHome } = require('../paths');
+
+function isClaudeStatuslineConfigured() {
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  try {
+    const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+    const settings = JSON.parse(raw);
+    return (settings.statusLine?.command || '').includes('claude-adapter');
+  } catch { return false; }
+}
 
 // Helper: return loading response if cache not ready (triggers background computation)
 function sendLoadingOrData(clientRes, dataFn) {
@@ -15,18 +29,27 @@ function sendLoadingOrData(clientRes, dataFn) {
   dataFn(data);
 }
 
+function getAccountsPayload() {
+  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  return {
+    accounts: readAllAccounts(statusDir),
+    claudeStatuslineConfigured: isClaudeStatuslineConfigured(),
+  };
+}
+
 function handleCostRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/costs/current-block') {
     sendLoadingOrData(clientRes, data => {
       const now = Date.now();
+      const acctPayload = getAccountsPayload();
       const activeBlock = data.blocks.find(b => b.isActive);
       if (!activeBlock) {
         const lastBlock = data.blocks[data.blocks.length - 1];
         if (!lastBlock) {
           clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-          clientRes.end(JSON.stringify({ active: false }));
+          clientRes.end(JSON.stringify({ active: false, ...acctPayload }));
           return;
         }
         clientRes.writeHead(200, { 'Content-Type': 'application/json' });
@@ -40,6 +63,7 @@ function handleCostRoutes(clientReq, clientRes) {
             models: lastBlock.models,
             minutesAgo: Math.round((now - lastBlock._lastTs) / 60000),
           },
+          ...acctPayload,
         }));
         return;
       }
@@ -79,6 +103,7 @@ function handleCostRoutes(clientReq, clientRes) {
         minutesElapsed,
         timePct,
         source: rateLimitState ? 'live' : 'jsonl',
+        ...acctPayload,
       };
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify(resp));

@@ -1,0 +1,15 @@
+{
+  "id": "codex-default",
+  "label": "Codex",
+  "provider": "openai",
+  "planType": "prolite",
+  "fiveHour": {
+    "usedPct": 7,
+    "resetsAt": 1781171400
+  },
+  "sevenDay": {
+    "usedPct": 44,
+    "resetsAt": 1781757572
+  },
+  "updatedAt": 9999999999
+}

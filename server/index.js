@@ -4,6 +4,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
@@ -53,6 +54,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'status'
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
+  && cliCommand !== 'setup-statusline'
   && !cliCommand.startsWith('-')
   && !providers.isAgentProvider(cliCommand);
 if (unknownCommand) {
@@ -542,6 +544,31 @@ if (process.argv[2] === 'open') {
     }
   })();
   return; // prevent falling through to startup
+}
+
+// ── "setup-statusline" subcommand ──
+if (process.argv[2] === 'setup-statusline') {
+  const claudeHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home') || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const settingsPath = path.join(claudeHome, 'settings.json');
+  const adapterCmd = `node ${path.join(__dirname, 'adapters/claude-adapter.js')}`;
+
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /* new file */ }
+
+  const existing = settings.statusLine?.command || '';
+  if (existing.includes('claude-adapter')) {
+    console.log('\x1b[32m✓ Already configured.\x1b[0m');
+    process.exit(0);
+  }
+
+  const fullCmd = existing ? `${adapterCmd} --delegate "${existing}"` : adapterCmd;
+  if (!settings.statusLine) settings.statusLine = {};
+  settings.statusLine.command = fullCmd;
+
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  console.log('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
+  if (existing) console.log(`\x1b[90m  (existing statusline delegated: ${existing})\x1b[0m`);
+  process.exit(0);
 }
 
 // ── "status" subcommand ──
