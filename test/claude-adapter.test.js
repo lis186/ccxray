@@ -99,4 +99,59 @@ describe('claude-adapter', () => {
     const files = fs.readdirSync(outDir).filter(f => f.endsWith('.json'));
     assert.equal(files.length, 1);
   });
+
+  it('derives alias from CLAUDE_CONFIG_DIR and writes correct filename', () => {
+    const input = JSON.stringify({
+      rate_limits: {
+        five_hour: { used_percentage: 30, resets_at: 1750000000 },
+        seven_day: { used_percentage: 12, resets_at: 1750400000 },
+      },
+    });
+
+    execFileSync('node', [adapterPath, '--out-dir', outDir], {
+      input,
+      timeout: 5000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: '/Users/test/.claude-personal' },
+    });
+
+    assert.ok(fs.existsSync(path.join(outDir, 'claude-personal.json')), 'should write claude-personal.json');
+    const snap = JSON.parse(fs.readFileSync(path.join(outDir, 'claude-personal.json'), 'utf8'));
+    assert.equal(snap.id, 'claude-personal');
+    assert.equal(snap.label, 'Claude · personal');
+  });
+
+  it('uses "default" alias when CLAUDE_CONFIG_DIR is ~/.claude', () => {
+    const input = JSON.stringify({
+      rate_limits: {
+        five_hour: { used_percentage: 15, resets_at: 1750000000 },
+      },
+    });
+
+    execFileSync('node', [adapterPath, '--out-dir', outDir], {
+      input,
+      timeout: 5000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(os.homedir(), '.claude') },
+    });
+
+    assert.ok(fs.existsSync(path.join(outDir, 'claude-default.json')));
+    const snap = JSON.parse(fs.readFileSync(path.join(outDir, 'claude-default.json'), 'utf8'));
+    assert.equal(snap.id, 'claude-default');
+    assert.equal(snap.label, 'Claude');
+  });
+
+  it('uses "default" alias when CLAUDE_CONFIG_DIR is unset', () => {
+    const input = JSON.stringify({
+      rate_limits: {
+        five_hour: { used_percentage: 15, resets_at: 1750000000 },
+      },
+    });
+
+    const env = { ...process.env };
+    delete env.CLAUDE_CONFIG_DIR;
+    execFileSync('node', [adapterPath, '--out-dir', outDir], {
+      input, timeout: 5000, env,
+    });
+
+    assert.ok(fs.existsSync(path.join(outDir, 'claude-default.json')));
+  });
 });

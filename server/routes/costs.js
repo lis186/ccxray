@@ -9,6 +9,7 @@ const { pricingTable } = require('../pricing');
 const { readAllAccounts } = require('../local-usage-reader');
 const { refreshCodex } = require('../adapters/codex-adapter');
 const { resolveCcxrayHome } = require('../paths');
+const { getUpstreamProfile } = require('../providers');
 
 function isClaudeStatuslineConfigured() {
   const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -51,8 +52,12 @@ function getAccountsPayload() {
     try { refreshCodex(codexSessions, statusDir); } catch {}
   }
   const configured = isClaudeStatuslineConfigured();
+  const accounts = readAllAccounts(statusDir).map(acct => ({
+    ...acct,
+    brandColor: getUpstreamProfile(acct.provider)?.brandColor || null,
+  }));
   return {
-    accounts: readAllAccounts(statusDir),
+    accounts,
     claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null,
   };
 }

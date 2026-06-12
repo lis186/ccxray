@@ -447,6 +447,24 @@ function installStatusline(claudeHome) {
   return { status: 'installed', delegated: existing || null };
 }
 
+function uninstallStatusline(claudeHome) {
+  const settingsPath = path.join(claudeHome, 'settings.json');
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return { status: 'not_installed' }; }
+
+  const cmd = settings.statusLine?.command || '';
+  if (!cmd.includes('claude-adapter')) return { status: 'not_installed' };
+
+  const delegateMatch = cmd.match(/--delegate "(.+)"/);
+  if (delegateMatch) {
+    settings.statusLine.command = delegateMatch[1];
+  } else {
+    delete settings.statusLine;
+  }
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  return { status: 'removed' };
+}
+
 function promptClaudeStatusline() {
   const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const ccxrayHome = resolveCcxrayHome();
@@ -464,7 +482,7 @@ function promptClaudeStatusline() {
         rl.close();
         if (answer.trim().toLowerCase() === 'y') {
           const result = installStatusline(claudeHome);
-          if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
+          if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
         } else {
           fs.mkdirSync(ccxrayHome, { recursive: true });
           fs.writeFileSync(declinedPath, '');
@@ -613,15 +631,116 @@ if (process.argv[2] === 'open') {
 
 // ── "setup-statusline" subcommand ──
 if (process.argv[2] === 'setup-statusline') {
-  const claudeHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home') || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  const result = installStatusline(claudeHome);
-  if (result.status === 'already') {
-    console.log('\x1b[32m✓ Already configured.\x1b[0m');
-  } else {
-    console.log('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
-    if (result.delegated) console.log(`\x1b[90m  (existing statusline delegated: ${result.delegated})\x1b[0m`);
+  const explicitHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home');
+
+  function discoverClaudeHomes() {
+    const home = os.homedir();
+    const found = [];
+    const defaultHome = path.join(home, '.claude');
+    if (fs.existsSync(path.join(defaultHome, 'settings.json'))) {
+      let email = null;
+      try { email = JSON.parse(fs.readFileSync(path.join(defaultHome, '.claude.json'), 'utf8')).oauthAccount?.emailAddress; } catch {}
+      found.push({ path: defaultHome, label: '.claude', email, installed: isStatuslineInstalled(defaultHome) });
+    }
+    for (const d of fs.readdirSync(home)) {
+      if (!d.startsWith('.claude-') || !fs.existsSync(path.join(home, d, 'settings.json'))) continue;
+      const p = path.join(home, d);
+      let email = null;
+      try { email = JSON.parse(fs.readFileSync(path.join(p, '.claude.json'), 'utf8')).oauthAccount?.emailAddress; } catch {}
+      found.push({ path: p, label: d, email, installed: isStatuslineInstalled(p) });
+    }
+    return found;
   }
-  process.exit(0);
+
+  function checkboxPicker(items) {
+    const selected = items.map(it => it.installed);
+    let cursor = 0;
+    let firstRender = true;
+    const render = () => {
+      process.stdout.write('\x1b[?25l');
+      if (!firstRender) process.stdout.write(`\x1b[${items.length + 1}A`);
+      firstRender = false;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const box = selected[i] ? '\x1b[36m◉\x1b[0m' : '○';
+        const arrow = i === cursor ? '\x1b[36m❯\x1b[0m ' : '  ';
+        const emailStr = it.email ? `  \x1b[90m${it.email}\x1b[0m` : '';
+        process.stdout.write(`\x1b[2K${arrow}${box} ${it.label}${emailStr}\n`);
+      }
+      process.stdout.write(`\x1b[2K\x1b[90m  ↑↓ move · space toggle · enter confirm\x1b[0m\n`);
+    };
+    return new Promise(resolve => {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      render();
+      process.stdin.on('data', (key) => {
+        const k = key.toString();
+        if (k === '\x03') { process.stdout.write('\x1b[?25h\n'); process.exit(0); }
+        if (k === '\r' || k === '\n') {
+          process.stdin.setRawMode(false);
+          process.stdin.pause();
+          process.stdout.write('\x1b[?25h');
+          const toInstall = items.filter((it, i) => selected[i] && !it.installed).map(it => it.path);
+          const toRemove = items.filter((it, i) => !selected[i] && it.installed).map(it => it.path);
+          resolve({ toInstall, toRemove });
+          return;
+        }
+        if (k === ' ') { selected[cursor] = !selected[cursor]; }
+        if (k === '\x1b[A' || k === 'k') cursor = Math.max(0, cursor - 1);
+        if (k === '\x1b[B' || k === 'j') cursor = Math.min(items.length - 1, cursor + 1);
+        render();
+      });
+    });
+  }
+
+  (async () => {
+    if (explicitHome) {
+      const result = installStatusline(explicitHome);
+      const label = path.basename(explicitHome);
+      if (result.status === 'already') console.log(`\x1b[32m✓ ${label}: already configured.\x1b[0m`);
+      else { console.log(`\x1b[32m✓ ${label}: done.\x1b[0m`); console.log('\x1b[90mRestart Claude Code sessions to activate.\x1b[0m'); }
+      process.exit(0);
+    }
+
+    const found = discoverClaudeHomes();
+    if (!found.length) {
+      console.log('\x1b[33mNo Claude homes found.\x1b[0m');
+      process.exit(0);
+    }
+
+    let toInstall, toRemove = [];
+    if (found.length === 1 && !found[0].installed) {
+      toInstall = [found[0].path];
+    } else if (process.stdin.isTTY) {
+      console.log('Claude rate-limit tracking \x1b[90m(space=toggle, enter=confirm)\x1b[0m');
+      ({ toInstall, toRemove } = await checkboxPicker(found));
+    } else {
+      toInstall = found.filter(f => !f.installed).map(f => f.path);
+    }
+
+    let changed = 0;
+    for (const h of toInstall) {
+      const label = path.basename(h);
+      const result = installStatusline(h);
+      if (result.status === 'installed') {
+        changed++;
+        console.log(`\x1b[32m✓ ${label}: installed.\x1b[0m`);
+        if (result.delegated) console.log(`\x1b[90m  (existing statusline delegated: ${result.delegated})\x1b[0m`);
+      }
+    }
+    for (const h of toRemove) {
+      const label = path.basename(h);
+      const result = uninstallStatusline(h);
+      if (result.status === 'removed') {
+        changed++;
+        console.log(`\x1b[33m✗ ${label}: removed.\x1b[0m`);
+      }
+    }
+    if (!changed && !toInstall.length && !toRemove.length) console.log('No changes.');
+    if (changed) console.log('\x1b[90mRestart Claude Code sessions to activate.\x1b[0m');
+    process.exit(0);
+  })();
+  return;
 }
 
 // ── "status" subcommand ──

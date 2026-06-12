@@ -3,7 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execSync } = require('node:child_process');
 const { normalizeEpoch } = require('./shared');
 
 function parseArgs(argv) {
@@ -15,7 +15,15 @@ function parseArgs(argv) {
   return args;
 }
 
-function processInput(raw, outDir) {
+function deriveAlias() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || '';
+  const base = path.basename(configDir);
+  if (!base || base === '.claude') return 'default';
+  if (base.startsWith('.claude-')) return base.slice('.claude-'.length);
+  return base;
+}
+
+function processInput(raw, outDir, alias) {
   let data;
   try { data = JSON.parse(raw); } catch { return; }
 
@@ -24,9 +32,10 @@ function processInput(raw, outDir) {
 
   fs.mkdirSync(outDir, { recursive: true });
 
+  const id = `claude-${alias}`;
   const snap = {
-    id: 'claude-default',
-    label: 'Claude',
+    id,
+    label: alias === 'default' ? 'Claude' : `Claude · ${alias}`,
     provider: 'anthropic',
     planType: null,
     fiveHour: {
@@ -40,7 +49,7 @@ function processInput(raw, outDir) {
     updatedAt: Math.floor(Date.now() / 1000),
   };
 
-  const outPath = path.join(outDir, 'claude-default.json');
+  const outPath = path.join(outDir, `${id}.json`);
   const tmpPath = outPath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(snap, null, 2));
   fs.renameSync(tmpPath, outPath);
@@ -55,11 +64,11 @@ if (require.main === module) {
   process.stdin.on('data', c => chunks.push(c));
   process.stdin.on('end', () => {
     const raw = Buffer.concat(chunks).toString();
-    processInput(raw, targetDir);
+    processInput(raw, targetDir, deriveAlias());
 
     if (delegate) {
       try {
-        execFileSync(delegate, [], { input: raw, stdio: ['pipe', 'inherit', 'inherit'], timeout: 5000 });
+        execSync(delegate, { input: raw, stdio: ['pipe', 'inherit', 'inherit'], timeout: 10000 });
       } catch { /* delegate failure is non-fatal */ }
     }
   });

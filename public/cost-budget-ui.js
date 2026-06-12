@@ -23,15 +23,10 @@ function hideCostPage() {
 }
 
 async function loadCostPage() {
-  const z1 = document.getElementById('cp-z1-content');
-  const z2 = document.getElementById('cp-z2-content');
   const z3 = document.getElementById('cp-z3-content');
   const spinner = '<div style="color:var(--dim);padding:20px;text-align:center">Loading usage data…</div>';
-  z1.innerHTML = spinner;
-  z2.innerHTML = spinner;
-  z3.innerHTML = spinner;
+  if (z3) z3.innerHTML = spinner;
 
-  // Poll until data is ready (server returns 202 while computing)
   async function fetchWithRetry(url, fallback, maxRetries = 20) {
     for (let i = 0; i < maxRetries; i++) {
       try {
@@ -47,10 +42,8 @@ async function loadCostPage() {
     return fallback;
   }
 
-  // Each zone fetches and renders independently — no Promise.all
   fetchWithRetry('/_api/costs/current-block', { active: false })
     .then(blockData => {
-      renderZone1(blockData);
       renderAccounts(blockData);
       updateRow2Usage(blockData, null);
     });
@@ -58,132 +51,8 @@ async function loadCostPage() {
   const dailyPromise = fetchWithRetry('/_api/costs/daily', []);
   const monthlyPromise = fetchWithRetry('/_api/costs/monthly', { monthly: [], currentMonth: { costUSD: 0 } });
 
-  // Zone 2 needs both monthly and daily data
-  Promise.all([monthlyPromise, dailyPromise])
-    .then(([monthlyData, dailyData]) => { renderZone2(monthlyData, dailyData); updateRow2Usage(null, monthlyData); });
-
-  // Zone 3 only needs daily data
+  monthlyPromise.then(monthlyData => updateRow2Usage(null, monthlyData));
   dailyPromise.then(dailyData => renderZone3(dailyData));
-}
-
-function renderZone1(block) {
-  const el = document.getElementById('cp-z1-content');
-  if (!block.active) {
-    const lb = block.lastBlock;
-    if (lb) {
-      const agoH = Math.floor(lb.minutesAgo / 60), agoM = lb.minutesAgo % 60;
-      const agoStr = agoH > 0 ? agoH + 'h ' + agoM + 'min ago' : agoM + 'min ago';
-      el.innerHTML = `
-        <div style="color:var(--dim);font-size:12px;margin-bottom:6px">No active window · last ended ${agoStr}</div>
-        <div style="font-size:11px;color:var(--dim)">
-          ${lb.totalTokens.toLocaleString()} tokens · $${lb.costUSD} · ${lb.models.slice(0,2).map(m=>m.split('-')[1]).join('/')}
-        </div>
-      `;
-    } else {
-      el.innerHTML = '<div style="color:var(--dim);font-size:12px">No history data</div>';
-    }
-    return;
-  }
-
-  const pct = block.percentUsed || 0;
-  const timePct = block.timePct || 0;
-  const tokenColor = pct < 60 ? 'var(--green)' : pct < 85 ? 'var(--yellow)' : 'var(--red)';
-  const paceRatio = timePct > 0 ? pct / timePct : 0;
-  let statusDot, statusMsg, statusColor;
-  if (paceRatio > 1.3) {
-    statusDot = '🔴'; statusMsg = 'Burning faster than time'; statusColor = 'var(--red)';
-  } else if (paceRatio > 1.1) {
-    statusDot = '🟡'; statusMsg = 'Slightly fast, watch it'; statusColor = 'var(--yellow)';
-  } else if (paceRatio < 0.7 && timePct > 20) {
-    statusDot = '🟢'; statusMsg = 'Quota comfortable'; statusColor = 'var(--green)';
-  } else {
-    statusDot = '🟢'; statusMsg = 'Rate normal'; statusColor = 'var(--green)';
-  }
-
-  const minRemaining = block.minutesRemaining || 0;
-  const remainH = Math.floor(minRemaining / 60), remainM = minRemaining % 60;
-  const remainStr = remainH > 0 ? remainH + 'h ' + remainM + 'm' : remainM + 'm';
-  const br = block.burnRate;
-  const proj = block.projection;
-
-  el.innerHTML = `
-    <div style="font-size:12px;font-weight:600;color:${statusColor};margin-bottom:10px">${statusDot} ${statusMsg}</div>
-    <div style="margin-bottom:8px">
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:2px">
-        <span>TOKENS</span><span style="color:${tokenColor}">${pct.toFixed(1)}% · ${(block.totalTokens/1000).toFixed(0)}k / ${((block.tokenLimit || window.ccxraySettings?.tokens5h || 220000)/1000).toFixed(0)}k${pct>100?' ⚠️':''}</span>
-      </div>
-      <div style="height:7px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px">
-        <div style="height:100%;width:${Math.min(pct,100)}%;background:${tokenColor};border-radius:3px;transition:width 0.5s"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:2px">
-        <span>TIME</span><span>${timePct.toFixed(1)}% · ${remainStr} left</span>
-      </div>
-      <div style="height:7px;background:var(--border);border-radius:3px;overflow:hidden">
-        <div style="height:100%;width:${Math.min(timePct,100)}%;background:var(--dim);border-radius:3px;opacity:0.5;transition:width 0.5s"></div>
-      </div>
-    </div>
-    ${br ? `<div style="font-size:10px;color:var(--dim);border-top:1px solid var(--border);padding-top:7px;display:flex;gap:12px;flex-wrap:wrap">
-      <span>${br.tokensPerMinute.toLocaleString()} tok/min</span>
-      <span>$${br.costPerHour}/hr</span>
-      ${proj ? `<span>proj ${(proj.totalTokens/1000).toFixed(0)}k ($${proj.totalCost})</span>` : ''}
-      <span style="margin-left:auto">$${block.costUSD} equiv.</span>
-    </div>` : `<div style="font-size:10px;color:var(--dim)">$${block.costUSD} equiv. API cost</div>`}
-  `;
-}
-
-const PLAN_OPTIONS = [
-  { label: 'Pro $20/mo', price: 20 },
-  { label: 'Max 5x $100/mo', price: 100 },
-  { label: 'Max 20x $200/mo', price: 200 },
-];
-
-function getSelectedPlanPrice() {
-  // Priority: explicit user override > auto-detected plan > legacy default
-  const override = parseInt(localStorage.getItem('planPrice'));
-  if (Number.isFinite(override) && override > 0) return override;
-  const auto = window.ccxraySettings?.monthlyUSD;
-  if (Number.isFinite(auto) && auto > 0) return auto;
-  return 200;
-}
-
-function renderZone2(monthlyData, dailyData) {
-  const el = document.getElementById('cp-z2-content');
-  const currentCost = monthlyData.currentMonth?.costUSD || 0;
-  const planPrice = getSelectedPlanPrice();
-  const roi = (currentCost / planPrice).toFixed(1);
-  const saved = (currentCost - planPrice).toFixed(0);
-  const roiColor = parseFloat(roi) >= 1 ? 'var(--green)' : 'var(--yellow)';
-
-  const optionsHtml = PLAN_OPTIONS.map(p =>
-    `<option value="${p.price}"${p.price === planPrice ? ' selected' : ''}>${p.label}</option>`
-  ).join('');
-
-  // Render plan selector in card label
-  const labelEl = document.getElementById('cp-z2-label');
-  if (labelEl) {
-    labelEl.innerHTML = `ROI &amp; Plan Fit <select onchange="localStorage.setItem('planPrice',this.value);renderZone2(window._zone2Monthly,window._zone2Daily)" style="background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">${optionsHtml}</select>`;
-  }
-
-  el.innerHTML = `
-    <div style="display:flex;gap:20px;flex-wrap:wrap">
-      <div>
-        <div style="font-size:10px;color:var(--dim);margin-bottom:2px">Equiv. API cost this month (not actual spend)</div>
-        <div style="font-size:20px;font-weight:700;color:${roiColor}">$${currentCost.toFixed(2)}</div>
-      </div>
-      <div>
-        <div style="font-size:10px;color:var(--dim);margin-bottom:2px">Monthly ROI</div>
-        <div style="font-size:20px;font-weight:700;color:${roiColor}">${roi}x</div>
-      </div>
-      ${parseFloat(saved) > 0 ? `<div>
-        <div style="font-size:10px;color:var(--dim);margin-bottom:2px">Saved</div>
-        <div style="font-size:20px;font-weight:700;color:var(--green)">$${saved}</div>
-      </div>` : ''}
-    </div>
-  `;
-
-  // Store data for re-render on plan change
-  window._zone2Monthly = monthlyData;
-  window._zone2Daily = dailyData;
 }
 
 let zone3Metric = 'sessions'; // 'sessions' | 'tokens'
@@ -327,47 +196,63 @@ function renderAccounts(blockData) {
 
   let html = '';
 
-  for (const acct of accounts) {
-    const provLabel = acct.provider === 'openai' ? 'Codex' : 'Claude';
+  const brandColor = acct => acct.brandColor || 'var(--text)';
+  const copyIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+
+  for (let idx = 0; idx < accounts.length; idx++) {
+    const acct = accounts[idx];
+    const nameStr = acct.label || (acct.provider === 'openai' ? 'Codex' : 'Claude');
     const planStr = acct.planType ? ` · ${acct.planType}` : '';
     const freshDot = acct.fresh
       ? '<span style="color:var(--green)">●</span> live'
       : '<span style="color:var(--dim)">○</span> cached';
+    const sep = idx > 0 ? 'border-top:1px solid var(--border);padding-top:12px;margin-top:4px;' : '';
 
-    html += `<div style="margin-bottom:10px">`;
-    html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:4px">`;
-    html += `<span style="font-weight:600">${provLabel}${planStr}</span>`;
+    html += `<div style="${sep}">`;
+    html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:8px">`;
+    html += `<span style="font-weight:600;color:${brandColor(acct)}">${nameStr}${planStr}</span>`;
     html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
     html += `</div>`;
 
-    html += renderAccountBar('5h', acct.fiveHour);
-    if (acct.sevenDay) html += renderAccountBar('7d', acct.sevenDay);
+    html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
+    html += renderAccountCard('5-Hour', acct.fiveHour);
+    if (acct.sevenDay) html += renderAccountCard('Weekly', acct.sevenDay);
+    html += `</div>`;
 
     html += `</div>`;
   }
 
   if (configured === false && !accounts.find(a => a.provider === 'anthropic')) {
-    html += `<div style="font-size:11px;color:var(--dim);border-top:1px solid var(--border);padding-top:8px;margin-top:4px">
-      Claude rate limits available<br>
-      <span style="font-size:10px">Run: <code style="background:var(--surface);padding:1px 4px;border-radius:3px">ccxray setup-statusline</code></span>
+    html += `<div style="font-size:11px;color:var(--dim);border-top:1px solid var(--border);padding-top:8px;margin-top:8px;display:flex;align-items:center;justify-content:space-between">
+      <span>Track Claude rate limits</span>
+      <span style="display:flex;align-items:center;gap:4px;font-size:10px"><code style="background:var(--surface);padding:1px 4px;border-radius:3px">ccxray setup-statusline</code>
+      <button id="cp-copy-cmd" style="background:none;color:var(--dim);border:none;padding:0;cursor:pointer;line-height:1;display:flex" title="Copy command">${copyIcon}</button></span>
     </div>`;
   }
 
   el.innerHTML = html;
+  const copyBtn = document.getElementById('cp-copy-cmd');
+  if (copyBtn) {
+    const originalSvg = copyBtn.innerHTML;
+    copyBtn.onclick = () => navigator.clipboard.writeText('ccxray setup-statusline').then(() => {
+      copyBtn.textContent = '✓';
+      setTimeout(() => { copyBtn.innerHTML = originalSvg; }, 1500);
+    });
+  }
 }
 
-function renderAccountBar(label, win) {
+function renderAccountCard(label, win) {
   if (!win) return '';
   const leftPct = win.leftPct ?? (100 - win.usedPct);
   const barColor = leftPct > 30 ? 'var(--green)' : leftPct > 10 ? 'var(--yellow)' : 'var(--red)';
-  const resetStr = win.resetLabel ? ` in ${win.resetLabel}` : '';
-  return `<div style="margin-bottom:4px">
-    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--dim);margin-bottom:1px">
-      <span>${label}</span><span>${leftPct}% left${resetStr}</span>
-    </div>
-    <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden">
+  const resetStr = win.resetLabel ? `Resets in ${win.resetLabel}` : '';
+  return `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
+    <div style="font-size:10px;color:var(--dim);margin-bottom:4px">${label}</div>
+    <div style="font-size:18px;font-weight:700;margin-bottom:6px">${leftPct}% <span style="font-size:11px;font-weight:400;color:var(--dim)">left</span></div>
+    <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px">
       <div style="height:100%;width:${Math.min(leftPct,100)}%;background:${barColor};border-radius:3px"></div>
     </div>
+    ${resetStr ? `<div style="font-size:10px;color:var(--dim)">${resetStr}</div>` : ''}
   </div>`;
 }
 
