@@ -2,29 +2,29 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeEpoch } = require('./shared');
 
-function normalizeEpoch(v) {
-  return v > 1e10 ? Math.floor(v / 1000) : v;
+function collectJsonls(dir, result) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) { collectJsonls(full, result); continue; }
+    if (!ent.name.endsWith('.jsonl')) continue;
+    try { result.push({ path: full, mtime: fs.statSync(full).mtimeMs }); } catch {}
+  }
 }
 
 function findLatestRateLimits(sessionsDir) {
-  let entries;
-  try { entries = fs.readdirSync(sessionsDir); } catch { return null; }
+  const all = [];
+  collectJsonls(sessionsDir, all);
+  if (!all.length) return null;
 
-  const jsonls = entries
-    .filter(f => f.endsWith('.jsonl'))
-    .map(f => {
-      try {
-        const st = fs.statSync(path.join(sessionsDir, f));
-        return { name: f, mtime: st.mtimeMs };
-      } catch { return null; }
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.mtime - a.mtime)
-    .slice(0, 20);
+  all.sort((a, b) => b.mtime - a.mtime);
+  const candidates = all.slice(0, 5);
 
-  for (const { name } of jsonls) {
-    const content = fs.readFileSync(path.join(sessionsDir, name), 'utf8');
+  for (const { path: filePath } of candidates) {
+    const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i].trim();
@@ -34,7 +34,7 @@ function findLatestRateLimits(sessionsDir) {
         if (obj.type === 'event_msg' && obj.payload?.type === 'token_count' && obj.payload?.rate_limits) {
           return obj.payload.rate_limits;
         }
-      } catch { /* skip malformed lines */ }
+      } catch {}
     }
   }
   return null;

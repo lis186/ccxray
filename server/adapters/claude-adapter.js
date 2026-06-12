@@ -4,10 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-
-function normalizeEpoch(v) {
-  return v > 1e10 ? Math.floor(v / 1000) : v;
-}
+const { normalizeEpoch } = require('./shared');
 
 function parseArgs(argv) {
   const args = { outDir: null, delegate: null };

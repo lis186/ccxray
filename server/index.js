@@ -8,6 +8,7 @@ const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
+const { resolveCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
@@ -422,40 +423,104 @@ server.on('upgrade', (req, socket, head) => {
 
 
 // ── Spawn agent CLI with proxy routing ──
-function spawnAgent(command, port, args, onExit) {
-  const { spawn } = require('child_process');
-  const launch = providers.getAgentLaunch(command, port, args);
-  let finished = false;
-  const finish = (code) => {
-    if (finished) return;
-    finished = true;
-    onExit(code);
-  };
-  if (!launch) {
-    console.error(`\x1b[31mError: unsupported provider "${command}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
-    finish(1);
-    return;
+function isStatuslineInstalled(claudeHome) {
+  try {
+    const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+    return (JSON.parse(raw).statusLine?.command || '').includes('claude-adapter');
+  } catch { return false; }
+}
+
+function installStatusline(claudeHome) {
+  const settingsPath = path.join(claudeHome, 'settings.json');
+  const adapterCmd = `node ${path.join(__dirname, 'adapters/claude-adapter.js')}`;
+
+  let settings = {};
+  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
+
+  const existing = settings.statusLine?.command || '';
+  if (existing.includes('claude-adapter')) return { status: 'already' };
+
+  const fullCmd = existing ? `${adapterCmd} --delegate "${existing}"` : adapterCmd;
+  if (!settings.statusLine) settings.statusLine = {};
+  settings.statusLine.command = fullCmd;
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  return { status: 'installed', delegated: existing || null };
+}
+
+function promptClaudeStatusline() {
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const ccxrayHome = resolveCcxrayHome();
+
+  if (isStatuslineInstalled(claudeHome)) return;
+
+  const declinedPath = path.join(ccxrayHome, '.statusline-declined');
+  const hintShownPath = path.join(ccxrayHome, '.statusline-hint-shown');
+
+  if (process.stdin.isTTY && !fs.existsSync(declinedPath)) {
+    const readline = require('readline');
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise(resolve => {
+      rl.question('\x1b[35m📊 Track Claude rate limits on the Usage page? [y/N] \x1b[0m', answer => {
+        rl.close();
+        if (answer.trim().toLowerCase() === 'y') {
+          const result = installStatusline(claudeHome);
+          if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
+        } else {
+          fs.mkdirSync(ccxrayHome, { recursive: true });
+          fs.writeFileSync(declinedPath, '');
+        }
+        resolve();
+      });
+    });
   }
-  const child = spawn(launch.bin, launch.args, {
-    stdio: 'inherit',
-    env: launch.env,
-  });
-  child.on('error', (err) => {
-    if (err.code === 'ENOENT') {
-      console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
-      console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
-    } else {
-      console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
+
+  if (!fs.existsSync(hintShownPath)) {
+    _origLog('\x1b[90m💡 Claude rate limits: ccxray setup-statusline\x1b[0m');
+    fs.mkdirSync(ccxrayHome, { recursive: true });
+    fs.writeFileSync(hintShownPath, '');
+  }
+}
+
+function spawnAgent(command, port, args, onExit) {
+  const doSpawn = () => {
+    const { spawn } = require('child_process');
+    const launch = providers.getAgentLaunch(command, port, args);
+    let finished = false;
+    const finish = (code) => {
+      if (finished) return;
+      finished = true;
+      onExit(code);
+    };
+    if (!launch) {
+      console.error(`\x1b[31mError: unsupported provider "${command}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
+      finish(1);
+      return;
     }
-    finish(1);
-  });
-  child.on('exit', (code, signal) => {
-    finish(code ?? (signal === 'SIGINT' ? 130 : 1));
-  });
-  // SIGINT is already sent to the child by the terminal (same process group).
-  // Just prevent Node's default exit so we wait for the child exit event.
-  process.on('SIGINT', () => {});
-  process.on('SIGTERM', () => child.kill('SIGTERM'));
+    const child = spawn(launch.bin, launch.args, {
+      stdio: 'inherit',
+      env: launch.env,
+    });
+    child.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
+        console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
+      } else {
+        console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
+      }
+      finish(1);
+    });
+    child.on('exit', (code, signal) => {
+      finish(code ?? (signal === 'SIGINT' ? 130 : 1));
+    });
+    process.on('SIGINT', () => {});
+    process.on('SIGTERM', () => child.kill('SIGTERM'));
+  };
+
+  if (command === 'claude') {
+    const p = promptClaudeStatusline();
+    if (p && typeof p.then === 'function') { p.then(doSpawn).catch(() => doSpawn()); return; }
+  }
+  doSpawn();
 }
 
 // Drain pending WS finalize promises and storage writes before process.exit.
@@ -549,25 +614,13 @@ if (process.argv[2] === 'open') {
 // ── "setup-statusline" subcommand ──
 if (process.argv[2] === 'setup-statusline') {
   const claudeHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home') || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
-  const settingsPath = path.join(claudeHome, 'settings.json');
-  const adapterCmd = `node ${path.join(__dirname, 'adapters/claude-adapter.js')}`;
-
-  let settings = {};
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { /* new file */ }
-
-  const existing = settings.statusLine?.command || '';
-  if (existing.includes('claude-adapter')) {
+  const result = installStatusline(claudeHome);
+  if (result.status === 'already') {
     console.log('\x1b[32m✓ Already configured.\x1b[0m');
-    process.exit(0);
+  } else {
+    console.log('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
+    if (result.delegated) console.log(`\x1b[90m  (existing statusline delegated: ${result.delegated})\x1b[0m`);
   }
-
-  const fullCmd = existing ? `${adapterCmd} --delegate "${existing}"` : adapterCmd;
-  if (!settings.statusLine) settings.statusLine = {};
-  settings.statusLine.command = fullCmd;
-
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  console.log('\x1b[32m✓ Done. Claude rate limits will appear on the Usage page.\x1b[0m');
-  if (existing) console.log(`\x1b[90m  (existing statusline delegated: ${existing})\x1b[0m`);
   process.exit(0);
 }
 

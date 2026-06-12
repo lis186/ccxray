@@ -165,4 +165,35 @@ describe('codex-adapter', () => {
       fs.rmSync(tmpSessions, { recursive: true, force: true });
     }
   });
+
+  it('finds .jsonl files in nested subdirectories (real codex layout)', () => {
+    const tmpSessions = makeTmpDir();
+    try {
+      const nested = path.join(tmpSessions, '2026', '06', '11');
+      fs.mkdirSync(nested, { recursive: true });
+
+      const line = JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          rate_limits: {
+            plan_type: 'plus',
+            primary: { used_percent: 42, window_minutes: 300, resets_at: 1780000000 },
+            secondary: { used_percent: 15, window_minutes: 10080, resets_at: 1780500000 },
+          },
+        },
+      });
+      fs.writeFileSync(path.join(nested, 'rollout-test.jsonl'), line + '\n');
+
+      refreshCodex(tmpSessions, outDir);
+
+      const files = fs.readdirSync(outDir).filter(f => f.endsWith('.json'));
+      assert.equal(files.length, 1);
+      const snap = JSON.parse(fs.readFileSync(path.join(outDir, files[0]), 'utf8'));
+      assert.equal(snap.planType, 'plus');
+      assert.equal(snap.fiveHour.usedPct, 42);
+    } finally {
+      fs.rmSync(tmpSessions, { recursive: true, force: true });
+    }
+  });
 });

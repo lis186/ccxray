@@ -7,6 +7,7 @@ const store = require('../store');
 const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
 const { pricingTable } = require('../pricing');
 const { readAllAccounts } = require('../local-usage-reader');
+const { refreshCodex } = require('../adapters/codex-adapter');
 const { resolveCcxrayHome } = require('../paths');
 
 function isClaudeStatuslineConfigured() {
@@ -17,6 +18,18 @@ function isClaudeStatuslineConfigured() {
     return (settings.statusLine?.command || '').includes('claude-adapter');
   } catch { return false; }
 }
+
+function hasClaudeTraffic() {
+  for (const meta of Object.values(store.sessionMeta)) {
+    if (meta.provider === 'anthropic') return true;
+  }
+  for (const entry of store.entries) {
+    if (!entry.provider || entry.provider === 'anthropic') return true;
+  }
+  return false;
+}
+
+let _lastCodexRefresh = 0;
 
 // Helper: return loading response if cache not ready (triggers background computation)
 function sendLoadingOrData(clientRes, dataFn) {
@@ -31,9 +44,16 @@ function sendLoadingOrData(clientRes, dataFn) {
 
 function getAccountsPayload() {
   const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  const now = Date.now();
+  if (now - _lastCodexRefresh > 30_000) {
+    _lastCodexRefresh = now;
+    const codexSessions = path.join(os.homedir(), '.codex', 'sessions');
+    try { refreshCodex(codexSessions, statusDir); } catch {}
+  }
+  const configured = isClaudeStatuslineConfigured();
   return {
     accounts: readAllAccounts(statusDir),
-    claudeStatuslineConfigured: isClaudeStatuslineConfigured(),
+    claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null,
   };
 }
 
