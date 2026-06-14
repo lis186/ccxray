@@ -2807,6 +2807,17 @@ function renderToolInput(c) {
   return '<div class="content-block"><div class="type">INPUT</div><pre>' + escapeHtml(json) + '</pre></div>';
 }
 
+const SAFE_IMAGE_MIMES = /^image\/(png|jpeg|gif|webp)$/;
+const BASE64_RE = /^[A-Za-z0-9+/\n\r]+=*$/;
+
+function buildSafeImageDataUrl(source) {
+  const mime = source.media_type || 'image/png';
+  if (!SAFE_IMAGE_MIMES.test(mime)) return null;
+  const data = source.data;
+  if (typeof data !== 'string' || data.length === 0 || !BASE64_RE.test(data)) return null;
+  return 'data:' + mime + ';base64,' + data;
+}
+
 function renderToolOutput(c) {
   if (c.result == null) {
     if (c.pending) {
@@ -2822,12 +2833,16 @@ function renderToolOutput(c) {
       let html = '';
       for (const block of c.result) {
         if (block.type === 'image' && block.source?.data) {
-          const mediaType = block.source.media_type || 'image/png';
-          html += '<div class="content-block"><div class="type">IMAGE</div>'
-            + '<img src="data:' + escapeHtml(mediaType) + ';base64,' + block.source.data + '" '
-            + 'style="max-width:100%;border-radius:4px;margin-top:4px;background:var(--bg);cursor:pointer" '
-            + 'onclick="showImageOverlay(this.src)" title="Click to enlarge">'
-            + '</div>';
+          const safeUrl = buildSafeImageDataUrl(block.source);
+          if (safeUrl) {
+            html += '<div class="content-block"><div class="type">IMAGE</div>'
+              + '<img src="' + safeUrl + '" '
+              + 'style="max-width:100%;border-radius:4px;margin-top:4px;background:var(--bg);cursor:pointer" '
+              + 'onclick="showImageOverlay(this.src)" title="Click to enlarge">'
+              + '</div>';
+          } else {
+            html += '<div class="content-block"><div class="type">IMAGE</div><pre>[invalid image data]</pre></div>';
+          }
         } else if (block.type === 'text' && block.text) {
           html += '<div class="content-block"><div class="type">TEXT</div><pre>' + highlightCredentials(block.text) + '</pre></div>';
         }
@@ -2921,7 +2936,11 @@ function showImageOverlay(src) {
     overlay.addEventListener('click', () => overlay.style.display = 'none');
     document.body.appendChild(overlay);
   }
-  overlay.innerHTML = '<img src="' + src + '" style="max-width:90vw;max-height:90vh;border-radius:6px;box-shadow:0 4px 30px rgba(0,0,0,0.5)">';
+  overlay.textContent = '';
+  const img = document.createElement('img');
+  img.src = src;
+  img.style.cssText = 'max-width:90vw;max-height:90vh;border-radius:6px;box-shadow:0 4px 30px rgba(0,0,0,0.5)';
+  overlay.appendChild(img);
   overlay.style.display = 'flex';
 }
 
