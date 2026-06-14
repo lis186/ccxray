@@ -34,7 +34,6 @@ function switchTab(tab, forceDiff) {
 
   // Update Row 2 contextual content
   document.getElementById('row2-dashboard').style.display = tab === 'dashboard' ? '' : 'none';
-  document.getElementById('row2-usage').style.display = tab === 'usage' ? '' : 'none';
   document.getElementById('row2-sysprompt').style.display = tab === 'sysprompt' ? '' : 'none';
 
   // Sync URL

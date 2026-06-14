@@ -79,7 +79,7 @@ Connected clients (2):
 
 ### 用量與成本
 
-追蹤你的實際花費。工作階段熱力圖、消耗速率、ROI 計算 — 精確掌握 token 流向。
+追蹤你的實際花費。消耗速率、各帳號 Claude 及 Codex 速率限制卡片 — 精確掌握 token 流向。
 
 ![用量分析](docs/usage.png)
 
@@ -107,7 +107,11 @@ Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login butto
 
 ### 計畫自動偵測
 
-ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測你的訂閱計畫（Pro、Max 5x、Max 20x），無需任何設定。頂部列顯示 `Plan: Max 5x · TTL 1h (auto)`。ROI 計算和配額面板均使用偵測到的計畫。若偵測結果有誤，可用 `CCXRAY_PLAN` 覆蓋。
+ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測你的訂閱計畫（Pro、Max 5x、Max 20x），無需任何設定。Cache TTL 和配額門檻均使用偵測到的計畫。若偵測結果有誤，可用 `CCXRAY_PLAN` 覆蓋。
+
+### 各帳號速率限制
+
+在同一個儀表板上查看每個 Claude 和 Codex 帳號的 5 小時和每週配額用量。自動偵測 `~/.codex-*/sessions/` 以支援多帳號 Codex 設定，並透過 `ccxray setup-statusline` 讀取 Claude statusline 資料。Business/unlimited Codex 計畫顯示 `∞ Unlimited`。資料每 30 秒在背景非同步刷新，不阻塞 proxy。
 
 ### 請求攔截與編輯
 

@@ -96,7 +96,7 @@ Watch your agent think in real-time. Every turn renders as a five-line card: cos
 
 ### Usage & Cost
 
-Track your real spending. Session heatmap, burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
+Track your real spending. Burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
 
 ![Usage analytics](docs/usage.png)
 
