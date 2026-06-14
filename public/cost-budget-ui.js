@@ -217,8 +217,12 @@ function renderAccounts(blockData) {
     html += `</div>`;
 
     html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
-    html += renderAccountCard('5-Hour', acct.fiveHour);
-    if (acct.sevenDay) html += renderAccountCard('Weekly', acct.sevenDay);
+    if (acct.unlimited) {
+      html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--green)">∞ Unlimited</div>`;
+    } else {
+      html += renderAccountCard('5-Hour', acct.fiveHour);
+      if (acct.sevenDay) html += renderAccountCard('Weekly', acct.sevenDay);
+    }
     html += `</div>`;
 
     html += `</div>`;

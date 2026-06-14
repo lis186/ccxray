@@ -46,17 +46,27 @@ function findLatestRateLimits(sessionsDir) {
   return null;
 }
 
-function refreshCodex(sessionsDir, outDir) {
-  const rl = findLatestRateLimits(sessionsDir);
-  if (!rl || !rl.primary) return;
-
-  fs.mkdirSync(outDir, { recursive: true });
-
-  const snap = {
-    id: 'codex-default',
-    label: 'Codex',
+function buildSnap(rl, alias) {
+  const id = `codex-${alias}`;
+  // ponytail: business/unlimited plans have no primary/secondary, just credits
+  if (!rl.primary && rl.credits?.unlimited) {
+    return {
+      id,
+      label: alias === 'default' ? 'Codex' : `Codex · ${alias}`,
+      provider: 'openai',
+      planType: rl.plan_type || null,
+      fiveHour: { usedPct: 0, resetsAt: null },
+      sevenDay: null,
+      unlimited: true,
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+  }
+  if (!rl.primary) return null;
+  return {
+    id,
+    label: alias === 'default' ? 'Codex' : `Codex · ${alias}`,
     provider: 'openai',
-    planType: rl.plan_type || 'unknown',
+    planType: rl.plan_type || null,
     fiveHour: {
       usedPct: rl.primary.used_percent,
       resetsAt: normalizeEpoch(rl.primary.resets_at),
@@ -67,8 +77,17 @@ function refreshCodex(sessionsDir, outDir) {
     } : null,
     updatedAt: Math.floor(Date.now() / 1000),
   };
+}
 
-  const outPath = path.join(outDir, 'codex-default.json');
+function refreshCodex(sessionsDir, outDir, alias = 'default') {
+  const rl = findLatestRateLimits(sessionsDir);
+  if (!rl) return;
+  const snap = buildSnap(rl, alias);
+  if (!snap) return;
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const outPath = path.join(outDir, `${snap.id}.json`);
   const tmpPath = outPath + '.tmp';
   fs.writeFileSync(tmpPath, JSON.stringify(snap, null, 2));
   fs.renameSync(tmpPath, outPath);
@@ -87,7 +106,7 @@ async function collectJsonlsAsync(dir) {
   return results;
 }
 
-async function refreshCodexAsync(sessionsDir, outDir) {
+async function refreshCodexAsync(sessionsDir, outDir, alias = 'default') {
   const all = await collectJsonlsAsync(sessionsDir);
   if (!all.length) return;
   all.sort((a, b) => b.mtime - a.mtime);
@@ -109,16 +128,11 @@ async function refreshCodexAsync(sessionsDir, outDir) {
     }
     if (rl) break;
   }
-  if (!rl || !rl.primary) return;
+  if (!rl) return;
+  const snap = buildSnap(rl, alias);
+  if (!snap) return;
   await fsp.mkdir(outDir, { recursive: true });
-  const snap = {
-    id: 'codex-default', label: 'Codex', provider: 'openai',
-    planType: rl.plan_type || 'unknown',
-    fiveHour: { usedPct: rl.primary.used_percent, resetsAt: normalizeEpoch(rl.primary.resets_at) },
-    sevenDay: rl.secondary ? { usedPct: rl.secondary.used_percent, resetsAt: normalizeEpoch(rl.secondary.resets_at) } : null,
-    updatedAt: Math.floor(Date.now() / 1000),
-  };
-  const outPath = path.join(outDir, 'codex-default.json');
+  const outPath = path.join(outDir, `${snap.id}.json`);
   const tmpPath = outPath + '.tmp';
   await fsp.writeFile(tmpPath, JSON.stringify(snap, null, 2));
   await fsp.rename(tmpPath, outPath);

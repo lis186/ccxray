@@ -44,17 +44,45 @@ function _buildAccountsPayload() {
   return { accounts, claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null };
 }
 
+function discoverCodexHomes() {
+  // ponytail: scan ~/.codex, ~/.codex-work, ~/.codex-personal etc.
+  const home = os.homedir();
+  const results = [];
+  try {
+    for (const d of fs.readdirSync(home)) {
+      if (!d.startsWith('.codex') || d.includes('.bak')) continue;
+      if (d === '.codex') continue; // ponytail: skip bare .codex if named homes exist; added as fallback below
+      if (!d.startsWith('.codex-')) continue;
+      const sessions = path.join(home, d, 'sessions');
+      if (fs.existsSync(sessions)) results.push({ sessions, alias: d.slice('.codex-'.length) });
+    }
+  } catch {}
+  // fallback: no named homes → use bare ~/.codex/
+  if (!results.length) {
+    const sessions = path.join(home, '.codex', 'sessions');
+    if (fs.existsSync(sessions)) results.push({ sessions, alias: 'default' });
+  }
+  return results;
+}
+
 function startCodexRefresh() {
   const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
-  const codexSessions = path.join(os.homedir(), '.codex', 'sessions');
-  try { refreshCodex(codexSessions, statusDir); } catch {}
+  const homes = discoverCodexHomes();
+  for (const { sessions, alias } of homes) {
+    try { refreshCodex(sessions, statusDir, alias); } catch {}
+  }
   _accountsCache = _buildAccountsPayload();
 
   async function tick() {
     if (_refreshing) return;
     _refreshing = true;
-    try { await refreshCodexAsync(codexSessions, statusDir); _accountsCache = _buildAccountsPayload(); }
-    catch {} finally { _refreshing = false; }
+    try {
+      const h = discoverCodexHomes();
+      for (const { sessions, alias } of h) {
+        await refreshCodexAsync(sessions, statusDir, alias);
+      }
+      _accountsCache = _buildAccountsPayload();
+    } catch {} finally { _refreshing = false; }
   }
   _codexRefreshTimer = setInterval(tick, 30_000);
   _codexRefreshTimer.unref();

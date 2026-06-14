@@ -74,10 +74,7 @@
   .qt-bar-track { width: 80px; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
   #qt-bar-fill { height: 100%; width: 0%; background: var(--green); border-radius: 4px; transition: width 0.5s, background 0.5s; }
   #qt-bar-pct, #qt-bar-time { font-size: 10px; color: var(--dim); }
-  #qt-roi { font-size: 10px; color: var(--green); cursor: pointer; padding: 2px 6px; border: 1px solid var(--green); border-radius: 10px; }
-  #qt-roi:hover { background: rgba(63,185,80,0.1); }
   #qt-chip { font-size: 10px; color: var(--dim); }
-  #qt-plan { font-size: 10px; color: var(--dim); cursor: help; }
   .qt-notify { font-size: 12px; background: none; border: none; cursor: pointer; padding: 0 4px; line-height: 1; filter: grayscale(1); opacity: 0.6; transition: opacity 0.15s, filter 0.15s; }
   .qt-notify:hover { opacity: 1; }
   .qt-notify.enabled { filter: none; opacity: 1; }
