@@ -66,9 +66,14 @@ if (require.main === module) {
     const raw = Buffer.concat(chunks).toString();
     processInput(raw, targetDir, deriveAlias());
 
-    if (delegate) {
+    let delegateCmd = delegate;
+    if (!delegateCmd) {
+      const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(require('node:os').homedir(), '.claude');
+      try { delegateCmd = JSON.parse(fs.readFileSync(path.join(configDir, 'settings.json'), 'utf8')).statusLine?._ccxrayDelegate || null; } catch {}
+    }
+    if (delegateCmd) {
       try {
-        execSync(delegate, { input: raw, stdio: ['pipe', 'inherit', 'inherit'], timeout: 10000 });
+        execSync(delegateCmd, { input: raw, stdio: ['pipe', 'inherit', 'inherit'], timeout: 10000 });
       } catch { /* delegate failure is non-fatal */ }
     }
   });

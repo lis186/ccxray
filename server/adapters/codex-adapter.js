@@ -1,8 +1,12 @@
 'use strict';
 
 const fs = require('node:fs');
+const fsp = fs.promises;
 const path = require('node:path');
 const { normalizeEpoch } = require('./shared');
+
+const CODEX_SCAN_MAX_FILES = 50;
+const CODEX_SCAN_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 
 function collectJsonls(dir, result) {
   let entries;
@@ -21,9 +25,11 @@ function findLatestRateLimits(sessionsDir) {
   if (!all.length) return null;
 
   all.sort((a, b) => b.mtime - a.mtime);
-  const candidates = all.slice(0, 5);
+  const cutoff = Date.now() - CODEX_SCAN_MAX_AGE_MS;
 
-  for (const { path: filePath } of candidates) {
+  for (let i = 0; i < Math.min(all.length, CODEX_SCAN_MAX_FILES); i++) {
+    if (all[i].mtime < cutoff) break;
+    const filePath = all[i].path;
     const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split('\n');
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -68,4 +74,54 @@ function refreshCodex(sessionsDir, outDir) {
   fs.renameSync(tmpPath, outPath);
 }
 
-module.exports = { refreshCodex };
+async function collectJsonlsAsync(dir) {
+  let entries;
+  try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return []; }
+  const results = [];
+  for (const ent of entries) {
+    const full = path.join(dir, ent.name);
+    if (ent.isDirectory()) { results.push(...await collectJsonlsAsync(full)); continue; }
+    if (!ent.name.endsWith('.jsonl')) continue;
+    try { results.push({ path: full, mtime: (await fsp.stat(full)).mtimeMs }); } catch {}
+  }
+  return results;
+}
+
+async function refreshCodexAsync(sessionsDir, outDir) {
+  const all = await collectJsonlsAsync(sessionsDir);
+  if (!all.length) return;
+  all.sort((a, b) => b.mtime - a.mtime);
+  const cutoff = Date.now() - CODEX_SCAN_MAX_AGE_MS;
+  let rl = null;
+  for (let i = 0; i < Math.min(all.length, CODEX_SCAN_MAX_FILES); i++) {
+    if (all[i].mtime < cutoff) break;
+    const content = await fsp.readFile(all[i].path, 'utf8');
+    const lines = content.split('\n');
+    for (let j = lines.length - 1; j >= 0; j--) {
+      const line = lines[j].trim();
+      if (!line) continue;
+      try {
+        const obj = JSON.parse(line);
+        if (obj.type === 'event_msg' && obj.payload?.type === 'token_count' && obj.payload?.rate_limits) {
+          rl = obj.payload.rate_limits; break;
+        }
+      } catch {}
+    }
+    if (rl) break;
+  }
+  if (!rl || !rl.primary) return;
+  await fsp.mkdir(outDir, { recursive: true });
+  const snap = {
+    id: 'codex-default', label: 'Codex', provider: 'openai',
+    planType: rl.plan_type || 'unknown',
+    fiveHour: { usedPct: rl.primary.used_percent, resetsAt: normalizeEpoch(rl.primary.resets_at) },
+    sevenDay: rl.secondary ? { usedPct: rl.secondary.used_percent, resetsAt: normalizeEpoch(rl.secondary.resets_at) } : null,
+    updatedAt: Math.floor(Date.now() / 1000),
+  };
+  const outPath = path.join(outDir, 'codex-default.json');
+  const tmpPath = outPath + '.tmp';
+  await fsp.writeFile(tmpPath, JSON.stringify(snap, null, 2));
+  await fsp.rename(tmpPath, outPath);
+}
+
+module.exports = { refreshCodex, refreshCodexAsync };

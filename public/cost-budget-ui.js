@@ -1,4 +1,6 @@
 // ── Cost Budget: Client-side ──────────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+
 let _row2Block = null, _row2Monthly = null;
 function updateRow2Usage(block, monthly) {
   if (block) _row2Block = block;
@@ -210,7 +212,7 @@ function renderAccounts(blockData) {
 
     html += `<div style="${sep}">`;
     html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:8px">`;
-    html += `<span style="font-weight:600;color:${brandColor(acct)}">${nameStr}${planStr}</span>`;
+    html += `<span style="font-weight:600;color:${brandColor(acct)}">${esc(nameStr)}${esc(planStr)}</span>`;
     html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
     html += `</div>`;
 
@@ -245,7 +247,7 @@ function renderAccountCard(label, win) {
   if (!win) return '';
   const leftPct = win.leftPct ?? (100 - win.usedPct);
   const barColor = leftPct > 30 ? 'var(--green)' : leftPct > 10 ? 'var(--yellow)' : 'var(--red)';
-  const resetStr = win.resetLabel ? `Resets in ${win.resetLabel}` : '';
+  const resetStr = win.resetLabel ? `Resets in ${esc(win.resetLabel)}` : '';
   return `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
     <div style="font-size:10px;color:var(--dim);margin-bottom:4px">${label}</div>
     <div style="font-size:18px;font-weight:700;margin-bottom:6px">${leftPct}% <span style="font-size:11px;font-weight:400;color:var(--dim)">left</span></div>

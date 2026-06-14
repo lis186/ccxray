@@ -7,7 +7,7 @@ const store = require('../store');
 const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
 const { pricingTable } = require('../pricing');
 const { readAllAccounts } = require('../local-usage-reader');
-const { refreshCodex } = require('../adapters/codex-adapter');
+const { refreshCodex, refreshCodexAsync } = require('../adapters/codex-adapter');
 const { resolveCcxrayHome } = require('../paths');
 const { getUpstreamProfile } = require('../providers');
 
@@ -30,7 +30,39 @@ function hasClaudeTraffic() {
   return false;
 }
 
-let _lastCodexRefresh = 0;
+let _accountsCache = null;
+let _refreshing = false;
+let _codexRefreshTimer = null;
+
+function _buildAccountsPayload() {
+  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  const configured = isClaudeStatuslineConfigured();
+  const accounts = readAllAccounts(statusDir).map(acct => ({
+    ...acct,
+    brandColor: getUpstreamProfile(acct.provider)?.brandColor || null,
+  }));
+  return { accounts, claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null };
+}
+
+function startCodexRefresh() {
+  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  const codexSessions = path.join(os.homedir(), '.codex', 'sessions');
+  try { refreshCodex(codexSessions, statusDir); } catch {}
+  _accountsCache = _buildAccountsPayload();
+
+  async function tick() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try { await refreshCodexAsync(codexSessions, statusDir); _accountsCache = _buildAccountsPayload(); }
+    catch {} finally { _refreshing = false; }
+  }
+  _codexRefreshTimer = setInterval(tick, 30_000);
+  _codexRefreshTimer.unref();
+}
+
+function stopCodexRefresh() {
+  if (_codexRefreshTimer) { clearInterval(_codexRefreshTimer); _codexRefreshTimer = null; }
+}
 
 // Helper: return loading response if cache not ready (triggers background computation)
 function sendLoadingOrData(clientRes, dataFn) {
@@ -44,22 +76,8 @@ function sendLoadingOrData(clientRes, dataFn) {
 }
 
 function getAccountsPayload() {
-  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
-  const now = Date.now();
-  if (now - _lastCodexRefresh > 30_000) {
-    _lastCodexRefresh = now;
-    const codexSessions = path.join(os.homedir(), '.codex', 'sessions');
-    try { refreshCodex(codexSessions, statusDir); } catch {}
-  }
-  const configured = isClaudeStatuslineConfigured();
-  const accounts = readAllAccounts(statusDir).map(acct => ({
-    ...acct,
-    brandColor: getUpstreamProfile(acct.provider)?.brandColor || null,
-  }));
-  return {
-    accounts,
-    claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null,
-  };
+  // ponytail: reads from in-memory cache; background timer refreshes it
+  return _accountsCache || { accounts: [], claudeStatuslineConfigured: null };
 }
 
 function handleCostRoutes(clientReq, clientRes) {
@@ -173,4 +191,4 @@ function handleCostRoutes(clientReq, clientRes) {
   return false;
 }
 
-module.exports = { handleCostRoutes };
+module.exports = { handleCostRoutes, startCodexRefresh, stopCodexRefresh };

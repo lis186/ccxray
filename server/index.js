@@ -105,7 +105,7 @@ setSessionAnchorRecorder(recordSessionAnchor);
 const { handleSSERoute } = require('./routes/sse');
 const { handleApiRoutes } = require('./routes/api');
 const { handleInterceptRoutes } = require('./routes/intercept');
-const { handleCostRoutes } = require('./routes/costs');
+const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
 
@@ -440,9 +440,9 @@ function installStatusline(claudeHome) {
   const existing = settings.statusLine?.command || '';
   if (existing.includes('claude-adapter')) return { status: 'already' };
 
-  const fullCmd = existing ? `${adapterCmd} --delegate "${existing}"` : adapterCmd;
   if (!settings.statusLine) settings.statusLine = {};
-  settings.statusLine.command = fullCmd;
+  settings.statusLine.command = adapterCmd;
+  if (existing) settings.statusLine._ccxrayDelegate = existing;
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   return { status: 'installed', delegated: existing || null };
 }
@@ -455,11 +455,15 @@ function uninstallStatusline(claudeHome) {
   const cmd = settings.statusLine?.command || '';
   if (!cmd.includes('claude-adapter')) return { status: 'not_installed' };
 
-  const delegateMatch = cmd.match(/--delegate "(.+)"/);
-  if (delegateMatch) {
-    settings.statusLine.command = delegateMatch[1];
+  const delegate = settings.statusLine._ccxrayDelegate;
+  if (delegate) {
+    settings.statusLine.command = delegate;
+    delete settings.statusLine._ccxrayDelegate;
   } else {
-    delete settings.statusLine;
+    // ponytail: legacy fallback for old --delegate "cmd" format installs
+    const legacyMatch = cmd.match(/--delegate "(.+)"/);
+    if (legacyMatch) settings.statusLine.command = legacyMatch[1];
+    else delete settings.statusLine;
   }
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
   return { status: 'removed' };
@@ -547,6 +551,7 @@ function spawnAgent(command, port, args, onExit) {
 // for the WS upgrade entry. Bounded by a 5s safety timeout so a stuck write
 // can never block shutdown.
 async function gracefulExit(code) {
+  stopCodexRefresh();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
   const drain = (async () => {
     try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
@@ -949,6 +954,7 @@ async function startServer() {
   }
 
   await config.storage.init();
+  startCodexRefresh();
 
   // Agent mode (with --port, standalone): scan up to 10 ports.
   // Hub mode: fixed port, but retry if old hub is still releasing it (race with idle shutdown).
