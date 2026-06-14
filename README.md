@@ -96,7 +96,7 @@ Watch your agent think in real-time. Every turn renders as a five-line card: cos
 
 ### Usage & Cost
 
-Track your real spending. Session heatmap, burn rate, ROI calculator — know exactly where your tokens go.
+Track your real spending. Session heatmap, burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
 
 ![Usage analytics](docs/usage.png)
 
@@ -124,7 +124,11 @@ Session cards show Claude Code's generated titles (e.g. `Fix login button on mob
 
 ### Plan Detection
 
-ccxray auto-detects your subscription plan (Pro vs Max 5x vs Max 20x) by reading Anthropic's `cache_creation` usage fields — no configuration needed. Topbar shows `Plan: Max 5x · TTL 1h (auto)`. ROI calculations and quota panel use the detected plan. Override with `CCXRAY_PLAN` if auto-detection gets it wrong.
+ccxray auto-detects your subscription plan (Pro vs Max 5x vs Max 20x) by reading Anthropic's `cache_creation` usage fields — no configuration needed. Cache TTL and quota thresholds use the detected plan. Override with `CCXRAY_PLAN` if auto-detection gets it wrong.
+
+### Per-Account Rate Limits
+
+See 5-hour and weekly quota usage for every Claude and Codex account on one dashboard. Cards auto-discover `~/.codex-*/sessions/` for multi-account Codex setups, and read Claude statusline data via `ccxray setup-statusline`. Business/unlimited Codex plans show `∞ Unlimited`. Data refreshes in the background every 30 seconds without blocking the proxy.
 
 ### Intercept & Edit Requests
 
