@@ -45,23 +45,23 @@ function _buildAccountsPayload() {
 }
 
 function discoverCodexHomes() {
-  // ponytail: scan ~/.codex, ~/.codex-work, ~/.codex-personal etc.
   const home = os.homedir();
   const results = [];
+  const inodes = new Set();
   try {
     for (const d of fs.readdirSync(home)) {
       if (!d.startsWith('.codex') || d.includes('.bak')) continue;
-      if (d === '.codex') continue; // ponytail: skip bare .codex if named homes exist; added as fallback below
-      if (!d.startsWith('.codex-')) continue;
+      const isNamed = d.startsWith('.codex-');
+      if (d !== '.codex' && !isNamed) continue;
       const sessions = path.join(home, d, 'sessions');
-      if (fs.existsSync(sessions)) results.push({ sessions, alias: d.slice('.codex-'.length) });
+      try {
+        const ino = fs.statSync(sessions).ino;
+        if (inodes.has(ino)) continue; // ponytail: dedup symlinked/identical sessions dirs
+        inodes.add(ino);
+        results.push({ sessions, alias: isNamed ? d.slice('.codex-'.length) : 'default' });
+      } catch {}
     }
   } catch {}
-  // fallback: no named homes → use bare ~/.codex/
-  if (!results.length) {
-    const sessions = path.join(home, '.codex', 'sessions');
-    if (fs.existsSync(sessions)) results.push({ sessions, alias: 'default' });
-  }
   return results;
 }
 
