@@ -1,0 +1,52 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+
+const FRESH_THRESHOLD_S = 90;
+
+function formatDuration(seconds) {
+  if (seconds <= 0) return '';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function enrichWindow(win, nowS) {
+  if (!win) return null;
+  const leftPct = Math.max(0, 100 - win.usedPct);
+  const remaining = win.resetsAt - nowS;
+  const resetLabel = remaining > 0 ? formatDuration(remaining) : '';
+  return { ...win, leftPct, resetLabel };
+}
+
+function readAllAccounts(statusDir) {
+  let entries;
+  try { entries = fs.readdirSync(statusDir); } catch { return []; }
+
+  const nowS = Math.floor(Date.now() / 1000);
+  const accounts = [];
+
+  for (const name of entries) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = fs.readFileSync(path.join(statusDir, name), 'utf8');
+      const snap = JSON.parse(raw);
+      if (!snap.id || !snap.fiveHour) continue;
+
+      accounts.push({
+        ...snap,
+        fiveHour: enrichWindow(snap.fiveHour, nowS),
+        sevenDay: enrichWindow(snap.sevenDay, nowS),
+        fresh: (nowS - snap.updatedAt) < FRESH_THRESHOLD_S,
+      });
+    } catch { /* skip malformed */ }
+  }
+
+  return accounts;
+}
+
+module.exports = { readAllAccounts };

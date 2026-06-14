@@ -1,0 +1,15 @@
+{
+  "id": "claude-default",
+  "label": "Claude",
+  "provider": "anthropic",
+  "planType": null,
+  "fiveHour": {
+    "usedPct": 20,
+    "resetsAt": 1750000000
+  },
+  "sevenDay": {
+    "usedPct": 5,
+    "resetsAt": 1750400000
+  },
+  "updatedAt": 9999999999
+}

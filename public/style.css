@@ -6,10 +6,6 @@
     --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
     --green: #3fb950; --yellow: #d29922; --red: #f85149;
     --purple: #bc8cff; --orange: #f0883e;
-    /* Heatmap */
-    --heatmap-empty: #161b22;
-    --heatmap-0: #2a1508; --heatmap-1: #4d2510; --heatmap-2: #7a3a18;
-    --heatmap-3: #b05628; --heatmap-4: #d4784a; --heatmap-5: #f0a070;
     /* Context bar segments */
     --color-cache-read: #4dd0e1; --color-cache-write: #ff8a65; --color-input: #ce93d8;
     /* Section categories */
@@ -27,9 +23,6 @@
     --text: #1f2328; --dim: #656d76; --accent: #0969da;
     --green: #1a7f37; --yellow: #9a6700; --red: #d1242f;
     --purple: #8250df; --orange: #bc4c00;
-    --heatmap-empty: #ebedf0;
-    --heatmap-0: #9be9a8; --heatmap-1: #6fdc8c; --heatmap-2: #40c463;
-    --heatmap-3: #30a14e; --heatmap-4: #216e39; --heatmap-5: #0e4429;
     --color-cache-read: #0891b2; --color-cache-write: #c2410c; --color-input: #9333ea;
     --color-system: #0969da; --color-system-deep: #0550ae; --color-system-mid: #0969da;
     --color-system-light: #218bff; --color-system-pale: #54aeff; --color-system-muted: #3d5a8a;
@@ -62,7 +55,7 @@
   #topbar-row1 #stats-toggle { font-size: 10px; letter-spacing: 0.05em; flex-shrink: 0; user-select: none; cursor: pointer; }
   #topbar-row1 #stats-toggle:hover { opacity: 0.8; }
   #topbar-row2 { display: flex; align-items: center; padding: 3px 16px 5px; font-size: 12px; border-top: 1px solid var(--border); min-height: 26px; }
-  #row2-dashboard, #row2-usage, #row2-sysprompt { display: flex; align-items: center; gap: 8px; width: 100%; }
+  #row2-dashboard, #row2-sysprompt { display: flex; align-items: center; gap: 8px; width: 100%; }
   #breadcrumb { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 120px; flex: 1; }
   #breadcrumb .bc-seg { cursor: pointer; transition: color 0.1s; }
   #breadcrumb .bc-seg:hover { color: var(--accent); }
@@ -74,15 +67,12 @@
   .qt-bar-track { width: 80px; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
   #qt-bar-fill { height: 100%; width: 0%; background: var(--green); border-radius: 4px; transition: width 0.5s, background 0.5s; }
   #qt-bar-pct, #qt-bar-time { font-size: 10px; color: var(--dim); }
-  #qt-roi { font-size: 10px; color: var(--green); cursor: pointer; padding: 2px 6px; border: 1px solid var(--green); border-radius: 10px; }
-  #qt-roi:hover { background: rgba(63,185,80,0.1); }
   #qt-chip { font-size: 10px; color: var(--dim); }
-  #qt-plan { font-size: 10px; color: var(--dim); cursor: help; }
   .qt-notify { font-size: 12px; background: none; border: none; cursor: pointer; padding: 0 4px; line-height: 1; filter: grayscale(1); opacity: 0.6; transition: opacity 0.15s, filter 0.15s; }
   .qt-notify:hover { opacity: 1; }
   .qt-notify.enabled { filter: none; opacity: 1; }
   .qt-notify.denied { opacity: 0.4; cursor: not-allowed; }
-  #row2-usage span, #row2-sysprompt span { font-size: 11px; color: var(--dim); }
+  #row2-sysprompt span { font-size: 11px; color: var(--dim); }
 
   #columns { display: flex; flex: 1; min-height: 0; overflow: hidden; }
   .col { overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); flex-shrink: 0; min-width: 0; border-top: 2px solid transparent; transition: border-top-color 0.15s; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
@@ -554,11 +544,8 @@
   .fp-toolbar { padding: 8px 16px; border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .fp-content { flex: 1; overflow-y: auto; padding: 20px; }
 
-  /* ── Fullscreen Page: Cost-specific responsive ── */
-  .cost-layout { display: flex; gap: 16px; align-items: flex-start; max-width: 960px; margin: 0 auto; }
-  .cost-left { flex: 1; min-width: 280px; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
-  .cost-right { flex: 2; min-width: 320px; }
-  .cost-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+  /* ── Fullscreen Page: Cost-specific ── */
+  .cost-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; max-width: 400px; }
   .cost-card-label { font-size: 10px; color: var(--dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
 
   /* ── Fullscreen Page: Changelog-specific ── */
@@ -581,13 +568,6 @@
   .sp-content-area { flex: 1; overflow-y: auto; padding: 12px 16px; }
   .sp-status-bar { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 12px; font-size: 11px; color: var(--dim); border-top: 1px solid var(--border); flex-shrink: 0; overflow-x: auto; overflow-y: hidden; white-space: nowrap; user-select: none; }
 
-  @media (max-width: 1023px) {
-    .cost-layout { flex-direction: column; }
-    .cost-left { max-width: none; flex-direction: row; gap: 12px; flex-wrap: wrap; }
-    .cost-left > * { flex: 1; min-width: 240px; }
-    .cost-right { min-width: 0; }
-  }
-
   /* ── iPad (768–1024px): narrower version list ── */
   @media (max-width: 1024px) and (min-width: 768px) {
     .sp-version-list { width: 160px; }
@@ -608,10 +588,7 @@
   }
   @media (max-width: 599px) {
     .fp-content { padding: 12px; }
-    .cost-left { flex-direction: column; }
-    .cost-left > * { min-width: 0; }
-    .cost-card { border: none; border-radius: 0; border-bottom: 1px solid var(--border); }
-    .cost-right .cost-card { overflow-x: auto; }
+    .cost-card { border: none; border-radius: 0; border-bottom: 1px solid var(--border); max-width: none; }
   }
 
   /* ── Toast Notifications ── */

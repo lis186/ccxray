@@ -40,54 +40,10 @@ async function loadSettings() {
         (s.autoCompactPct * 100).toFixed(2) + '%'
       );
     }
-    renderTopbarPlan();
     document.dispatchEvent(new CustomEvent('ccxray:settings-loaded', { detail: s }));
   } catch (err) {
     console.warn('[ccxray] failed to load /_api/settings', err?.message || err);
   }
-}
-
-function renderTopbarPlan() {
-  const el = document.getElementById('qt-plan');
-  if (!el) return;
-  const s = window.ccxraySettings;
-  const vp = Array.isArray(s.visibleProviders) ? s.visibleProviders : [];
-
-  if (vp.length === 0) {
-    // No providers detected yet — show default Claude plan detecting display
-    const ttlLabel = s.cacheTtlMs >= 3_600_000 ? '1h' : `${Math.round(s.cacheTtlMs / 60000)}m`;
-    const sourceBadge = s.source === 'env' ? ' (env)'
-      : s.source === 'auto' ? ' (auto)'
-      : s.source === 'default' && s.confidence === 'insufficient' ? ' (detecting…)'
-      : '';
-    el.textContent = `Plan: ${s.label} · TTL ${ttlLabel}${sourceBadge}`;
-    el.title = `Plan detected via ${s.source} (confidence: ${s.confidence})`;
-  } else {
-    const modes = vp.map(p => getCacheMode(p));
-    const hasEphemeral = modes.includes('ephemeral-ttl');
-    const hasServerManaged = modes.includes('server-managed');
-
-    if (hasEphemeral && !hasServerManaged) {
-      // Pure Anthropic — unchanged
-      const ttlLabel = s.cacheTtlMs >= 3_600_000 ? '1h' : `${Math.round(s.cacheTtlMs / 60000)}m`;
-      const sourceBadge = s.source === 'env' ? ' (env)'
-        : s.source === 'auto' ? ' (auto)'
-        : s.source === 'default' && s.confidence === 'insufficient' ? ' (detecting…)'
-        : '';
-      el.textContent = `Plan: ${s.label} · TTL ${ttlLabel}${sourceBadge}`;
-      el.title = `Plan detected via ${s.source} (confidence: ${s.confidence})`;
-    } else if (hasServerManaged && !hasEphemeral) {
-      // Pure server-managed (e.g. Codex only)
-      el.textContent = 'Cache: server-managed';
-      el.title = 'Cache retention is controlled by the upstream provider';
-    } else {
-      // Mixed
-      const ttlLabel = s.cacheTtlMs >= 3_600_000 ? '1h' : `${Math.round(s.cacheTtlMs / 60000)}m`;
-      el.textContent = `Plan: ${s.label} · TTL ${ttlLabel} · Server cache`;
-      el.title = `Claude plan via ${s.source} + server-managed cache for other providers`;
-    }
-  }
-  el.style.display = 'inline';
 }
 
 loadSettings();

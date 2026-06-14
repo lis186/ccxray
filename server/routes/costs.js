@@ -1,8 +1,96 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 const store = require('../store');
 const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
 const { pricingTable } = require('../pricing');
+const { readAllAccounts } = require('../local-usage-reader');
+const { refreshCodex, refreshCodexAsync } = require('../adapters/codex-adapter');
+const { resolveCcxrayHome } = require('../paths');
+const { getUpstreamProfile } = require('../providers');
+
+function isClaudeStatuslineConfigured() {
+  const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  try {
+    const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+    const settings = JSON.parse(raw);
+    return (settings.statusLine?.command || '').includes('claude-adapter');
+  } catch { return false; }
+}
+
+function hasClaudeTraffic() {
+  for (const meta of Object.values(store.sessionMeta)) {
+    if (meta.provider === 'anthropic') return true;
+  }
+  for (const entry of store.entries) {
+    if (!entry.provider || entry.provider === 'anthropic') return true;
+  }
+  return false;
+}
+
+let _accountsCache = null;
+let _refreshing = false;
+let _codexRefreshTimer = null;
+
+function _buildAccountsPayload() {
+  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  const configured = isClaudeStatuslineConfigured();
+  const accounts = readAllAccounts(statusDir).map(acct => ({
+    ...acct,
+    brandColor: getUpstreamProfile(acct.provider)?.brandColor || null,
+  }));
+  return { accounts, claudeStatuslineConfigured: hasClaudeTraffic() ? configured : null };
+}
+
+function discoverCodexHomes() {
+  const home = os.homedir();
+  const results = [];
+  const inodes = new Set();
+  try {
+    for (const d of fs.readdirSync(home)) {
+      if (!d.startsWith('.codex') || d.includes('.bak')) continue;
+      const isNamed = d.startsWith('.codex-');
+      if (d !== '.codex' && !isNamed) continue;
+      const sessions = path.join(home, d, 'sessions');
+      try {
+        const ino = fs.statSync(sessions).ino;
+        if (inodes.has(ino)) continue; // ponytail: dedup symlinked/identical sessions dirs
+        inodes.add(ino);
+        results.push({ sessions, alias: isNamed ? d.slice('.codex-'.length) : 'default' });
+      } catch {}
+    }
+  } catch {}
+  return results;
+}
+
+function startCodexRefresh() {
+  const statusDir = path.join(resolveCcxrayHome(), 'usage-status');
+  const homes = discoverCodexHomes();
+  for (const { sessions, alias } of homes) {
+    try { refreshCodex(sessions, statusDir, alias); } catch {}
+  }
+  _accountsCache = _buildAccountsPayload();
+
+  async function tick() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      const h = discoverCodexHomes();
+      for (const { sessions, alias } of h) {
+        await refreshCodexAsync(sessions, statusDir, alias);
+      }
+      _accountsCache = _buildAccountsPayload();
+    } catch {} finally { _refreshing = false; }
+  }
+  _codexRefreshTimer = setInterval(tick, 30_000);
+  _codexRefreshTimer.unref();
+}
+
+function stopCodexRefresh() {
+  if (_codexRefreshTimer) { clearInterval(_codexRefreshTimer); _codexRefreshTimer = null; }
+}
 
 // Helper: return loading response if cache not ready (triggers background computation)
 function sendLoadingOrData(clientRes, dataFn) {
@@ -15,18 +103,24 @@ function sendLoadingOrData(clientRes, dataFn) {
   dataFn(data);
 }
 
+function getAccountsPayload() {
+  // ponytail: reads from in-memory cache; background timer refreshes it
+  return _accountsCache || { accounts: [], claudeStatuslineConfigured: null };
+}
+
 function handleCostRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/costs/current-block') {
     sendLoadingOrData(clientRes, data => {
       const now = Date.now();
+      const acctPayload = getAccountsPayload();
       const activeBlock = data.blocks.find(b => b.isActive);
       if (!activeBlock) {
         const lastBlock = data.blocks[data.blocks.length - 1];
         if (!lastBlock) {
           clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-          clientRes.end(JSON.stringify({ active: false }));
+          clientRes.end(JSON.stringify({ active: false, ...acctPayload }));
           return;
         }
         clientRes.writeHead(200, { 'Content-Type': 'application/json' });
@@ -40,6 +134,7 @@ function handleCostRoutes(clientReq, clientRes) {
             models: lastBlock.models,
             minutesAgo: Math.round((now - lastBlock._lastTs) / 60000),
           },
+          ...acctPayload,
         }));
         return;
       }
@@ -79,6 +174,7 @@ function handleCostRoutes(clientReq, clientRes) {
         minutesElapsed,
         timePct,
         source: rateLimitState ? 'live' : 'jsonl',
+        ...acctPayload,
       };
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify(resp));
@@ -123,4 +219,4 @@ function handleCostRoutes(clientReq, clientRes) {
   return false;
 }
 
-module.exports = { handleCostRoutes };
+module.exports = { handleCostRoutes, startCodexRefresh, stopCodexRefresh };

@@ -74,7 +74,7 @@ Connected clients (2):
 
 ### 使用量とコスト
 
-実際の支出を把握。セッションヒートマップ、消費レート、ROI計算 — トークンの行き先を正確に把握できます。
+実際の支出を把握。消費レート、アカウント別の Claude・Codex レート制限カード — トークンの行き先を正確に把握できます。
 
 ![使用量分析](docs/usage.png)
 
@@ -102,7 +102,11 @@ Connected clients (2):
 
 ### プラン自動検出
 
-ccxray は Anthropic の `cache_creation` 使用量フィールドを読み取り、設定不要でサブスクリプションプラン（Pro、Max 5x、Max 20x）を自動検出します。トップバーに `Plan: Max 5x · TTL 1h (auto)` と表示されます。ROI 計算とクォータパネルは検出されたプランを使用します。自動検出が誤っている場合は `CCXRAY_PLAN` で上書きできます。
+ccxray は Anthropic の `cache_creation` 使用量フィールドを読み取り、設定不要でサブスクリプションプラン（Pro、Max 5x、Max 20x）を自動検出します。キャッシュ TTL とクォータしきい値は検出されたプランを使用します。自動検出が誤っている場合は `CCXRAY_PLAN` で上書きできます。
+
+### アカウント別レート制限
+
+同一ダッシュボード上で、すべての Claude および Codex アカウントの 5 時間・週間クォータ使用量を確認できます。`~/.codex-*/sessions/` を自動検出してマルチアカウント Codex 構成をサポートし、`ccxray setup-statusline` で Claude ステータスラインデータを読み取ります。Business/unlimited Codex プランは `∞ Unlimited` と表示されます。データは 30 秒ごとにバックグラウンドで非同期更新され、プロキシをブロックしません。
 
 ### リクエストの傍受と編集
 

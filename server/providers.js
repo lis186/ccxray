@@ -87,12 +87,14 @@ const UPSTREAM_PROFILES = Object.freeze({
     cache: 'ephemeral-ttl',
     inputIncludesCached: false,
     label: 'Anthropic',
+    brandColor: '#e8956a',
     resume: Object.freeze({ template: '{agent} --resume {sid}', condition: 'always' }),
   }),
   openai: Object.freeze({
     cache: 'server-managed',
     inputIncludesCached: true,
     label: 'OpenAI',
+    brandColor: '#74aa9c',
     // Codex only writes a rollout file (resumable session) after a successful
     // API turn — sessions with only startup errors can't be resumed.
     resume: Object.freeze({ template: 'codex resume {sid}', condition: 'has-usage' }),

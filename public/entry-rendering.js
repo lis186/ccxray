@@ -242,7 +242,6 @@ function addEntry(e) {
     const entryProvider = e.provider || 'anthropic';
     if (!settings.visibleProviders.includes(entryProvider)) {
       settings.visibleProviders.push(entryProvider);
-      if (typeof renderTopbarPlan === 'function') renderTopbarPlan();
       if (typeof renderNotifyButton === 'function') renderNotifyButton();
     }
     const sessEl = document.createElement('div');
