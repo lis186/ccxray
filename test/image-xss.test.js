@@ -16,16 +16,17 @@ function loadImageHelpers() {
       remove() {},
     };
   }
-  // showImageOverlay needs getElementById('img-overlay') to return null first (create path),
-  // then the same object on subsequent calls. Track it via namedEls.
+  // During script load, return stubs for init-time getElementById calls.
+  // After load, return null for unknown IDs so showImageOverlay hits the create path.
   const namedEls = {};
+  let initPhase = true;
   const bodyEl = el();
   const origAppend = bodyEl.appendChild.bind(bodyEl);
   bodyEl.appendChild = function(c) { if (c.id) namedEls[c.id] = c; return origAppend(c); };
   const context = {
     console, window: {},
     document: {
-      getElementById: (id) => namedEls[id] || el(),
+      getElementById: (id) => namedEls[id] || (initPhase ? el() : null),
       createElement: (tag) => { const e = el(); e._tag = tag; return e; },
       querySelector: () => el(), querySelectorAll: () => [],
       addEventListener() {}, body: bodyEl,
@@ -48,6 +49,7 @@ function loadImageHelpers() {
   for (const f of ['session-label.js', 'miller-columns.js', 'entry-rendering.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', f), 'utf8'), context);
   }
+  initPhase = false;
   vm.runInContext(`
     this.buildSafeImageDataUrl = buildSafeImageDataUrl;
     this.renderToolOutput = renderToolOutput;
@@ -114,13 +116,15 @@ describe('image XSS prevention', () => {
   });
 
   describe('showImageOverlay', () => {
-    it('does not use innerHTML with untrusted src', () => {
-      // showImageOverlay gets an existing stub from getElementById;
-      // verify it does NOT write to innerHTML (the old XSS vector)
-      const overlay = ctx.document.getElementById('img-overlay');
-      overlay.innerHTML = '';
+    it('creates overlay via DOM, not innerHTML', () => {
       ctx.showImageOverlay('data:image/png;base64,iVBOR');
-      assert.equal(overlay.innerHTML, '', 'innerHTML must not be set — DOM construction expected');
+      const overlay = ctx.document.getElementById('img-overlay');
+      assert.ok(overlay, 'overlay should be created and tracked via body.appendChild');
+      assert.ok(overlay._children?.length > 0, 'img should be appended as child');
+      const img = overlay._children[overlay._children.length - 1];
+      assert.equal(img._tag, 'img');
+      assert.equal(img.src, 'data:image/png;base64,iVBOR');
+      assert.equal(overlay.innerHTML, '', 'innerHTML must not be used');
     });
   });
 });
