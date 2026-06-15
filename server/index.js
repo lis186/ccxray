@@ -305,6 +305,17 @@ const server = http.createServer((clientReq, clientRes) => {
       const peekSid = store.extractSessionId(parsedBody);
       let stripped;
 
+      // Preserve request-level params (thinking, temperature, etc.) that
+      // aren't stored elsewhere.  system/tools go to shared files; messages
+      // are handled by the delta logic below.
+      const extraParams = {};
+      for (const k of Object.keys(parsedBody)) {
+        if (k !== 'system' && k !== 'tools' && k !== 'messages' &&
+            k !== 'model' && k !== 'max_tokens' && k !== 'metadata') {
+          extraParams[k] = parsedBody[k];
+        }
+      }
+
       if (provider === 'openai') {
         stripped = parsedBody;
       } else if (peekSid && config.storage.supportsDelta) {
@@ -318,6 +329,7 @@ const server = http.createServer((clientReq, clientRes) => {
           stripped = {
             model: parsedBody.model,
             max_tokens: parsedBody.max_tokens,
+            ...extraParams,
             prevId: prev.id,
             msgOffset: sharedCount,
             messages: currMessages.slice(sharedCount),
@@ -327,12 +339,12 @@ const server = http.createServer((clientReq, clientRes) => {
           };
           sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: (prev.deltaCount || 0) + 1 });
         } else {
-          stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
+          stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, ...extraParams, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
           sessionLastReq.set(peekSid, { id, messages: currMessages, deltaCount: 0 });
         }
       } else {
         const meta = peekSid ? { session_id: peekSid } : undefined;
-        stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
+        stripped = { model: parsedBody.model, max_tokens: parsedBody.max_tokens, ...extraParams, messages: currMessages, sysHash, toolsHash, ...(meta && { metadata: meta }) };
       }
 
       reqWritePromise = config.storage.write(id, '_req.json', JSON.stringify(stripped))

@@ -45,7 +45,10 @@ function buildEntryFields(ctx) {
   const { parsedBody } = ctx;
   const usage = ctx.usage || extractUsage(ctx.events) || null;
   const model = parsedBody?.model || null;
-  const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : !store.extractCwd(parsedBody);
+  // Requests with explicit session_id are from the main orchestrator (or goal
+  // verifier), not subagents — real subagents have no metadata.session_id.
+  const hasExplicitSession = !!store.extractSessionId(parsedBody);
+  const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : (!store.extractCwd(parsedBody) && !hasExplicitSession);
   return {
     provider: 'anthropic',
     agent: agentForProvider('anthropic'),

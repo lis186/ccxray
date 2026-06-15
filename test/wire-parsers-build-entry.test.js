@@ -201,6 +201,40 @@ test('WS title: fallback when no input', () => {
   assert.equal(f.title, 'Codex WebSocket session');
 });
 
+test('anthropic: goal verifier (session_id, no cwd) is NOT marked subagent', () => {
+  const parsedBody = {
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [{ role: 'user', content: 'Is the task complete?' }],
+    metadata: { session_id: 'abc-123' },
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'sse', parsedBody,
+    proxyRes: { statusCode: 200 },
+    usage: { input_tokens: 50, output_tokens: 10 },
+    sessionId: 'abc-123', sessionInferred: false,
+    stopReason: 'end_turn', startTime: Date.now(),
+  });
+  assert.equal(f.isSubagent, false, 'verifier with session_id should not be subagent');
+  assert.equal(f.model, 'claude-haiku-4-5-20251001');
+});
+
+test('anthropic: bare request (no session_id, no cwd) IS marked subagent', () => {
+  const parsedBody = {
+    model: 'claude-opus-4-6',
+    max_tokens: 8096,
+    messages: [{ role: 'user', content: 'Do a task' }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'sse', parsedBody,
+    proxyRes: { statusCode: 200 },
+    usage: { input_tokens: 50, output_tokens: 10 },
+    sessionId: 's-inferred', sessionInferred: true,
+    stopReason: 'end_turn', startTime: Date.now(),
+  });
+  assert.equal(f.isSubagent, true, 'bare request without session_id or cwd should be subagent');
+});
+
 test('anthropic entry → buildIndexLine round-trip preserves key fields', () => {
   const parsedBody = loadFixture('anthropic', 'turn1_req.json');
   const usage = { input_tokens: 500, output_tokens: 100, total_tokens: 600 };
