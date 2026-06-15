@@ -639,6 +639,34 @@ describe('P0: proxy end-to-end forwarding', () => {
     assert.equal(reqContent.model, 'claude-sonnet-4-20250514');
     assert.ok(reqContent.messages);
   });
+
+  it('preserves request-level params (thinking, stream, etc.) in _req.json', async () => {
+    const requestBody = JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1024,
+      thinking: { type: 'adaptive' },
+      stream: true,
+      output_config: { effort: 'high' },
+      context_management: { edits: [{ type: 'clear_thinking_20251015', keep: 'all' }] },
+      messages: [{ role: 'user', content: 'extraparams-test' }],
+    });
+
+    await sendProxyRequest(proxyPort, requestBody);
+    await new Promise(r => setTimeout(r, 500));
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const reqFiles = fs.readdirSync(logsDir)
+      .filter(f => f.endsWith('_req.json'))
+      .sort()
+      .reverse();
+    const req = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+
+    assert.equal(req.model, 'claude-haiku-4-5-20251001');
+    assert.deepEqual(req.thinking, { type: 'adaptive' }, 'thinking must be preserved');
+    assert.equal(req.stream, true, 'stream must be preserved');
+    assert.deepEqual(req.output_config, { effort: 'high' }, 'output_config must be preserved');
+    assert.ok(req.context_management, 'context_management must be preserved');
+  });
 });
 
 // ── SSE streaming proxy E2E ─────────────────────────────────────────
