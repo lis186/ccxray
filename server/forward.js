@@ -415,10 +415,10 @@ function forwardRequest(ctx) {
   // Counter + attribution prefix are committed here, not at request receipt.
   // This guarantees intercepted-then-rejected requests never advance the
   // per-session sequence number that the dashboard's displayNum mirrors.
-  // Counter classification uses !extractCwd to match dashboard's isSubagent.
+  // Counter classification uses isAnthropicSubagent to match dashboard's isSubagent.
   if (!ctx.skipEntry && parsedBody) {
     const meta = reqSessionId ? (store.sessionMeta[reqSessionId] || (store.sessionMeta[reqSessionId] = {})) : null;
-    const isSubagent = provider === 'anthropic' && !store.extractCwd(parsedBody);
+    const isSubagent = provider === 'anthropic' && store.isAnthropicSubagent(parsedBody);
     if (meta) {
       if (isSubagent) meta.subCount = (meta.subCount || 0) + 1;
       else meta.mainCount = (meta.mainCount || 0) + 1;
@@ -701,7 +701,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     }
 
     const sessionId = reqSessionId;
-    const isSubagent = !store.extractCwd(parsedBody);
+    const isSubagent = store.isAnthropicSubagent(parsedBody);
     const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime);
     const title = titleGenTitle
       || (isSubagent
@@ -919,7 +919,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         }),
       };
     } else {
-      const isSubagent = !store.extractCwd(parsedBody);
+      const isSubagent = store.isAnthropicSubagent(parsedBody);
       const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime);
       const title = titleGenTitle
         || (isSubagent

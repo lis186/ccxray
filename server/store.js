@@ -70,6 +70,12 @@ function extractSessionId(req) {
   return m ? m[1] : null;
 }
 
+// Anthropic subagent heuristic: no cwd AND no explicit session_id.
+// Goal verifiers carry session_id but no cwd — they are NOT subagents.
+function isAnthropicSubagent(parsedBody) {
+  return !extractCwd(parsedBody) && !extractSessionId(parsedBody);
+}
+
 // Bare subagent requests: no session_id, no system prompt, no tools, 1-2 messages.
 // These are Claude Code's Agent tool kickoff calls that lack any identifying metadata.
 function isLikelySubagent(req) {
@@ -318,6 +324,7 @@ module.exports = {
   isQuotaCheck,
   extractCwd,
   extractSessionId,
+  isAnthropicSubagent,
   detectSession,
   printSessionBanner,
   extractFirstUserMsgText,

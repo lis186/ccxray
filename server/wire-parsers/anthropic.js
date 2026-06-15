@@ -45,7 +45,7 @@ function buildEntryFields(ctx) {
   const { parsedBody } = ctx;
   const usage = ctx.usage || extractUsage(ctx.events) || null;
   const model = parsedBody?.model || null;
-  const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : !store.extractCwd(parsedBody);
+  const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : store.isAnthropicSubagent(parsedBody);
   return {
     provider: 'anthropic',
     agent: agentForProvider('anthropic'),
