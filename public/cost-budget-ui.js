@@ -79,7 +79,6 @@ function renderAccounts(blockData) {
   for (let idx = 0; idx < accounts.length; idx++) {
     const acct = accounts[idx];
     const nameStr = acct.label || (acct.provider === 'openai' ? 'Codex' : 'Claude');
-    const planStr = acct.planType ? ` · ${acct.planType}` : '';
     const freshDot = acct.fresh
       ? '<span style="color:var(--green)">●</span> live'
       : '<span style="color:var(--dim)">○</span> cached';
@@ -87,7 +86,7 @@ function renderAccounts(blockData) {
 
     html += `<div style="${sep}">`;
     html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:8px">`;
-    html += `<span style="font-weight:600;color:${brandColor(acct)}">${esc(nameStr)}${esc(planStr)}</span>`;
+    html += `<span style="font-weight:600;color:${brandColor(acct)}">${esc(nameStr)}${acct.planType ? ` <span style="font-weight:400;color:var(--dim);font-size:10px">${esc(acct.planType)}</span>` : ''}</span>`;
     html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
     html += `</div>`;
 
