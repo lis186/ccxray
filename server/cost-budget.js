@@ -146,16 +146,22 @@ function groupByDay(entries) {
   const days = {};
   for (const e of entries) {
     const date = new Date(e.timestamp).toLocaleDateString('sv-SE');
-    if (!days[date]) days[date] = { date, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set() };
+    if (!days[date]) days[date] = { date, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set(), byAccount: {} };
     const d = days[date];
-    d.totalTokens +=
+    const tokens =
       (e.usage.input_tokens || 0) +
       (e.usage.output_tokens || 0) +
       (e.usage.cache_creation_input_tokens || 0) +
       (e.usage.cache_read_input_tokens || 0);
+    d.totalTokens += tokens;
     d.costUSD += e.costUSD || 0;
     if (e.model) d.models.add(e.model);
     if (e.sessionId) d.sessions.add(e.sessionId);
+    if (e.accountId) {
+      const a = d.byAccount[e.accountId] || (d.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0 });
+      a.totalTokens += tokens;
+      a.costUSD += e.costUSD || 0;
+    }
   }
   const result = [];
   const now = new Date();
@@ -163,8 +169,12 @@ function groupByDay(entries) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     const dateStr = d.toLocaleDateString('sv-SE');
-    const day = days[dateStr] || { date: dateStr, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set() };
-    result.push({ date: day.date, totalTokens: day.totalTokens, costUSD: Math.round(day.costUSD * 100) / 100, models: [...day.models], sessionCount: day.sessions.size });
+    const day = days[dateStr] || { date: dateStr, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set(), byAccount: {} };
+    const byAccount = {};
+    for (const [k, v] of Object.entries(day.byAccount)) {
+      byAccount[k] = { totalTokens: v.totalTokens, costUSD: Math.round(v.costUSD * 100) / 100 };
+    }
+    result.push({ date: day.date, totalTokens: day.totalTokens, costUSD: Math.round(day.costUSD * 100) / 100, models: [...day.models], sessionCount: day.sessions.size, byAccount });
   }
   return result;
 }
@@ -174,18 +184,30 @@ function groupByMonth(entries) {
   for (const e of entries) {
     const d = new Date(e.timestamp);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    if (!months[key]) months[key] = { month: key, totalTokens: 0, costUSD: 0, models: new Set() };
+    if (!months[key]) months[key] = { month: key, totalTokens: 0, costUSD: 0, models: new Set(), byAccount: {} };
     const m = months[key];
-    m.totalTokens +=
+    const tokens =
       (e.usage.input_tokens || 0) +
       (e.usage.output_tokens || 0) +
       (e.usage.cache_creation_input_tokens || 0) +
       (e.usage.cache_read_input_tokens || 0);
+    m.totalTokens += tokens;
     m.costUSD += e.costUSD || 0;
     if (e.model) m.models.add(e.model);
+    if (e.accountId) {
+      const a = m.byAccount[e.accountId] || (m.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0 });
+      a.totalTokens += tokens;
+      a.costUSD += e.costUSD || 0;
+    }
   }
   return Object.values(months)
-    .map(m => ({ month: m.month, totalTokens: m.totalTokens, costUSD: Math.round(m.costUSD * 100) / 100, models: [...m.models] }))
+    .map(m => {
+      const byAccount = {};
+      for (const [k, v] of Object.entries(m.byAccount)) {
+        byAccount[k] = { totalTokens: v.totalTokens, costUSD: Math.round(v.costUSD * 100) / 100 };
+      }
+      return { month: m.month, totalTokens: m.totalTokens, costUSD: Math.round(m.costUSD * 100) / 100, models: [...m.models], byAccount };
+    })
     .sort((a, b) => a.month.localeCompare(b.month));
 }
 

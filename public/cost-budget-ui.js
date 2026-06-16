@@ -1,6 +1,8 @@
 // ── Cost Budget: Client-side ──────────────────────────────────────────
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
+let _costActiveFilter = null; // null = All
+let _costPageCache = null;
 
 function showCostPage() {
   switchTab('usage');
@@ -25,11 +27,36 @@ async function loadCostPage() {
     return fallback;
   }
 
-  fetchWithRetry('/_api/costs/current-block', { active: false })
-    .then(blockData => renderAccounts(blockData));
+  const [blockData, dailyData, monthlyResp] = await Promise.all([
+    fetchWithRetry('/_api/costs/current-block', { active: false }),
+    fetchWithRetry('/_api/costs/daily', []),
+    fetchWithRetry('/_api/costs/monthly', { monthly: [], currentMonth: null }),
+  ]);
+
+  _costPageCache = { blockData, dailyData, monthlyResp };
+  renderAccounts(blockData);
+  renderDailyHeatmap(dailyData);
+  renderMonthlySummary(monthlyResp);
 }
 
+// ── Account brand colors ──────────────────────────────────────────────
+const _acctColors = {
+  anthropic: '#e8956a',
+  openai: '#74aa9c',
+};
+function acctColor(accountId) {
+  if (!accountId) return 'var(--dim)';
+  return accountId.startsWith('codex') ? _acctColors.openai : _acctColors.anthropic;
+}
+function acctLabel(accountId) {
+  if (!accountId) return 'Unknown';
+  const [provider, ...rest] = accountId.split('-');
+  const alias = rest.join('-');
+  const name = provider === 'codex' ? 'Codex' : 'Claude';
+  return alias === 'default' ? name : `${name} · ${alias}`;
+}
 
+// ── Accounts card ─────────────────────────────────────────────────────
 function renderAccounts(blockData) {
   const card = document.getElementById('cp-accounts');
   const el = document.getElementById('cp-accounts-content');
@@ -110,4 +137,163 @@ function renderAccountCard(label, win) {
   </div>`;
 }
 
-// Escape handler moved to unified fullscreen-page listener in app.js
+// ── Filter bar ────────────────────────────────────────────────────────
+function collectAccounts(dailyData) {
+  const set = new Set();
+  for (const d of dailyData) {
+    if (d.byAccount) for (const k of Object.keys(d.byAccount)) set.add(k);
+  }
+  return [...set].sort();
+}
+
+function renderFilterBar(container, accounts) {
+  if (!accounts.length) return;
+  let html = '<div id="cp-filter-bar" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:12px;max-width:400px">';
+  html += `<button class="cp-filter-btn${_costActiveFilter === null ? ' active' : ''}" data-filter="" style="font-size:10px;padding:2px 8px;border-radius:10px;border:1px solid var(--border);background:${_costActiveFilter === null ? 'var(--accent)' : 'var(--surface)'};color:${_costActiveFilter === null ? '#000' : 'var(--dim)'};cursor:pointer">All</button>`;
+  for (const id of accounts) {
+    const active = _costActiveFilter === id;
+    const color = acctColor(id);
+    html += `<button class="cp-filter-btn${active ? ' active' : ''}" data-filter="${esc(id)}" style="font-size:10px;padding:2px 8px;border-radius:10px;border:1px solid ${active ? color : 'var(--border)'};background:${active ? color : 'var(--surface)'};color:${active ? '#000' : color};cursor:pointer">${esc(acctLabel(id))}</button>`;
+  }
+  html += '</div>';
+  container.insertAdjacentHTML('afterbegin', html);
+  container.querySelector('#cp-filter-bar').addEventListener('click', e => {
+    const btn = e.target.closest('.cp-filter-btn');
+    if (!btn) return;
+    _costActiveFilter = btn.dataset.filter || null;
+    // ponytail: re-render from cache, don't re-fetch
+    if (_costPageCache) {
+      renderAccounts(_costPageCache.blockData);
+      renderDailyHeatmap(_costPageCache.dailyData);
+      renderMonthlySummary(_costPageCache.monthlyResp);
+    } else {
+      loadCostPage();
+    }
+  });
+}
+
+// ── Daily heatmap ─────────────────────────────────────────────────────
+function renderDailyHeatmap(dailyData) {
+  let container = document.getElementById('cp-daily');
+  if (!container) {
+    const fp = document.querySelector('#cost-page .fp-content');
+    if (!fp) return;
+    container = document.createElement('div');
+    container.id = 'cp-daily';
+    container.className = 'cost-card';
+    fp.appendChild(container);
+  }
+  const accounts = collectAccounts(dailyData);
+
+  // Filter to last 30 days with data (or all if filter active)
+  const recent = dailyData.slice(-30);
+  const maxCost = Math.max(...recent.map(d => {
+    if (_costActiveFilter) return (d.byAccount?.[_costActiveFilter]?.costUSD || 0);
+    return d.costUSD || 0;
+  }), 0.01);
+
+  let html = '<div class="cost-card-label">Daily Cost (last 30 days)</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:2px">';
+
+  for (const day of recent) {
+    const cost = _costActiveFilter
+      ? (day.byAccount?.[_costActiveFilter]?.costUSD || 0)
+      : (day.costUSD || 0);
+    const pct = Math.min(100, (cost / maxCost) * 100);
+    const weekday = new Date(day.date + 'T12:00:00').toLocaleDateString('en', { weekday: 'short' });
+    const isWeekend = weekday === 'Sat' || weekday === 'Sun';
+
+    html += `<div style="display:flex;align-items:center;gap:8px;font-size:10px;height:16px;opacity:${cost === 0 ? 0.3 : 1}">`;
+    html += `<span style="width:56px;text-align:right;color:${isWeekend ? 'var(--dim)' : 'var(--text)'};flex-shrink:0">${day.date.slice(5)} ${weekday}</span>`;
+    html += `<div style="flex:1;height:10px;background:var(--border);border-radius:3px;overflow:hidden;display:flex">`;
+
+    if (_costActiveFilter || !day.byAccount || !Object.keys(day.byAccount).length) {
+      const color = _costActiveFilter ? acctColor(_costActiveFilter) : 'var(--accent)';
+      html += `<div style="height:100%;width:${pct}%;background:${color};border-radius:3px;min-width:${cost > 0 ? 2 : 0}px"></div>`;
+    } else {
+      // Stacked segments by account
+      const sorted = Object.entries(day.byAccount).sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [acctId, acctData] of sorted) {
+        const aPct = Math.max(0, (acctData.costUSD / maxCost) * 100);
+        if (aPct <= 0) continue;
+        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId))}: $${acctData.costUSD.toFixed(2)}"></div>`;
+      }
+    }
+    html += `</div>`;
+    html += `<span style="width:48px;text-align:right;color:var(--dim);flex-shrink:0">$${cost.toFixed(2)}</span>`;
+    html += `</div>`;
+  }
+  html += '</div>';
+
+  // 30-day total
+  const total30 = recent.reduce((s, d) => {
+    return s + (_costActiveFilter ? (d.byAccount?.[_costActiveFilter]?.costUSD || 0) : (d.costUSD || 0));
+  }, 0);
+  const activeDays = recent.filter(d => (_costActiveFilter ? (d.byAccount?.[_costActiveFilter]?.costUSD || 0) : (d.costUSD || 0)) > 0).length;
+  const avgPerDay = activeDays > 0 ? total30 / activeDays : 0;
+  html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">`;
+  html += `<span style="color:var(--dim)">30-day total: <span style="color:var(--text);font-weight:600">$${total30.toFixed(2)}</span></span>`;
+  html += `<span style="color:var(--dim)">avg $${avgPerDay.toFixed(2)}/active day</span>`;
+  html += `</div>`;
+
+  container.innerHTML = html;
+
+  // Re-render filter bar properly (with event handler)
+  const fp = document.querySelector('#cost-page .fp-content');
+  if (fp) {
+    let existing = document.getElementById('cp-filter-bar');
+    if (existing) existing.remove();
+    if (accounts.length > 0) renderFilterBar(fp, accounts);
+  }
+}
+
+// ── Monthly summary ───────────────────────────────────────────────────
+function renderMonthlySummary(monthlyResp) {
+  let container = document.getElementById('cp-monthly');
+  if (!container) {
+    const fp = document.querySelector('#cost-page .fp-content');
+    if (!fp) return;
+    container = document.createElement('div');
+    container.id = 'cp-monthly';
+    container.className = 'cost-card';
+    fp.appendChild(container);
+  }
+
+  const months = monthlyResp.monthly || [];
+  if (!months.length) { container.innerHTML = ''; return; }
+
+  let html = '<div class="cost-card-label">Monthly</div>';
+  html += '<div style="display:flex;flex-direction:column;gap:4px">';
+
+  const maxCost = Math.max(...months.map(m => {
+    if (_costActiveFilter) return (m.byAccount?.[_costActiveFilter]?.costUSD || 0);
+    return m.costUSD || 0;
+  }), 0.01);
+
+  for (const m of months) {
+    const cost = _costActiveFilter
+      ? (m.byAccount?.[_costActiveFilter]?.costUSD || 0)
+      : (m.costUSD || 0);
+    const pct = Math.min(100, (cost / maxCost) * 100);
+    html += `<div style="display:flex;align-items:center;gap:8px;font-size:11px">`;
+    html += `<span style="width:56px;text-align:right;color:var(--text);flex-shrink:0">${m.month}</span>`;
+    html += `<div style="flex:1;height:14px;background:var(--border);border-radius:3px;overflow:hidden;display:flex">`;
+
+    if (_costActiveFilter || !m.byAccount || !Object.keys(m.byAccount).length) {
+      const color = _costActiveFilter ? acctColor(_costActiveFilter) : 'var(--accent)';
+      html += `<div style="height:100%;width:${pct}%;background:${color};border-radius:3px;min-width:${cost > 0 ? 2 : 0}px"></div>`;
+    } else {
+      const sorted = Object.entries(m.byAccount).sort((a, b) => a[0].localeCompare(b[0]));
+      for (const [acctId, acctData] of sorted) {
+        const aPct = Math.max(0, (acctData.costUSD / maxCost) * 100);
+        if (aPct <= 0) continue;
+        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId))}: $${acctData.costUSD.toFixed(2)}"></div>`;
+      }
+    }
+    html += `</div>`;
+    html += `<span style="width:56px;text-align:right;color:var(--dim);flex-shrink:0">$${cost.toFixed(2)}</span>`;
+    html += `</div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}

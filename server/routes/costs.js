@@ -194,7 +194,7 @@ function handleCostRoutes(clientReq, clientRes) {
     sendLoadingOrData(clientRes, data => {
       const now = new Date();
       const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const currentMonthData = data.monthly.find(m => m.month === currentMonth) || { month: currentMonth, totalTokens: 0, costUSD: 0, models: [] };
+      const currentMonthData = data.monthly.find(m => m.month === currentMonth) || { month: currentMonth, totalTokens: 0, costUSD: 0, models: [], byAccount: {} };
       clientRes.writeHead(200, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify({ monthly: data.monthly, currentMonth: currentMonthData }));
     });

@@ -546,6 +546,7 @@
 
   /* ── Fullscreen Page: Cost-specific ── */
   .cost-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; max-width: 400px; }
+  .cost-card + .cost-card { margin-top: 12px; }
   .cost-card-label { font-size: 10px; color: var(--dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
 
   /* ── Fullscreen Page: Changelog-specific ── */
