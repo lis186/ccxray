@@ -145,6 +145,9 @@ function collectAccounts(dailyData) {
   for (const d of dailyData) {
     if (d.byAccount) for (const k of Object.keys(d.byAccount)) set.add(k);
   }
+  // Include accounts from rate-limit data even if they have no cost history
+  const accts = _costPageCache?.blockData?.accounts;
+  if (accts) for (const a of accts) { if (a.id) set.add(a.id); }
   return [...set].sort();
 }
 
