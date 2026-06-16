@@ -25,11 +25,11 @@ function getEffectivePlanConfig() {
 }
 
 function getEffectiveTokenLimit() {
-  return getEffectivePlanConfig()?.tokens5h || TOKEN_LIMIT;
+  return getEffectivePlanConfig()?.tokens5h ?? TOKEN_LIMIT;
 }
 
 function getEffectiveMonthlyUSD() {
-  return getEffectivePlanConfig()?.monthlyUSD || SUBSCRIPTION_USD;
+  return getEffectivePlanConfig()?.monthlyUSD ?? SUBSCRIPTION_USD;
 }
 
 // 5-minute server-side cache
