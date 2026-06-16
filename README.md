@@ -198,17 +198,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 
 Logs are stored in `~/.ccxray/logs/` as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 
-### S3 / R2 storage backend
-
-Set `STORAGE_BACKEND=s3` to write logs to S3-compatible storage (AWS S3, Cloudflare R2, MinIO) instead of local disk. Requires `@aws-sdk/client-s3` to be installed.
-
-| Variable | Default | Description |
-|---|---|---|
-| `STORAGE_BACKEND` | `local` | `local` or `s3` |
-| `S3_BUCKET` | _(required)_ | Bucket name |
-| `S3_REGION` | `auto` | Region (use `auto` for R2) |
-| `S3_ENDPOINT` | _(unset)_ | Custom endpoint URL (R2 / MinIO) |
-| `S3_PREFIX` | `logs/` | Key prefix inside the bucket |
+ccxray currently stores logs on the local filesystem only. A remote object-storage backend (S3 / R2) is not supported yet — it needs more work on the storage interface and on the security model for sending request/response logs off-machine.
 
 ## Docker
 

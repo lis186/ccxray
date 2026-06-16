@@ -39,7 +39,11 @@ function withWriteTracking(adapter) {
  * Create the appropriate storage adapter based on STORAGE_BACKEND env var.
  *
  * STORAGE_BACKEND=local (default) — local filesystem
- * STORAGE_BACKEND=s3 — S3/R2 (requires @aws-sdk/client-s3)
+ *
+ * A remote object-storage backend (S3/R2) is not supported yet. The adapter in
+ * ./s3.js is incomplete (missing index/shared methods) and sending logs
+ * off-machine has unresolved security considerations, so selecting it fails
+ * fast at startup rather than starting a misconfigured proxy.
  *
  * @returns {import('./interface').StorageAdapter}
  */
@@ -49,14 +53,10 @@ function createStorage() {
   let adapter;
   switch (backend) {
     case 's3': {
-      const { createS3Storage } = require('./s3');
-      adapter = createS3Storage({
-        bucket: process.env.S3_BUCKET,
-        region: process.env.S3_REGION || 'auto',
-        endpoint: process.env.S3_ENDPOINT || undefined,
-        prefix: process.env.S3_PREFIX || 'logs/',
-      });
-      break;
+      throw new Error(
+        'STORAGE_BACKEND=s3 is not supported yet. ccxray stores logs on the ' +
+        'local filesystem only. Omit STORAGE_BACKEND or set it to "local".'
+      );
     }
     case 'local':
     default: {

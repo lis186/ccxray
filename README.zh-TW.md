@@ -181,17 +181,7 @@ ccxray 是透明的 HTTP 代理。它將請求轉發到 Anthropic，將請求與
 
 日誌儲存在 `~/.ccxray/logs/`，格式為 `{timestamp}_req.json` 和 `{timestamp}_res.json`。從 v1.0 升級？`./logs/` 中的日誌會在首次啟動時自動遷移。
 
-### S3 / R2 儲存後端
-
-設定 `STORAGE_BACKEND=s3` 即可把日誌寫到 S3 相容儲存（AWS S3、Cloudflare R2、MinIO）而不是本機磁碟。需要安裝 `@aws-sdk/client-s3`。
-
-| 變數 | 預設值 | 說明 |
-|---|---|---|
-| `STORAGE_BACKEND` | `local` | `local` 或 `s3` |
-| `S3_BUCKET` | _（必填）_ | Bucket 名稱 |
-| `S3_REGION` | `auto` | 區域（R2 請用 `auto`） |
-| `S3_ENDPOINT` | _（未設定）_ | 自訂 endpoint URL（R2 / MinIO） |
-| `S3_PREFIX` | `logs/` | Bucket 內的 key 前綴 |
+ccxray 目前僅將日誌儲存於本機檔案系統。遠端物件儲存後端（S3 / R2）尚未支援——它還需要在儲存介面以及「把 request／response 日誌送出本機」的安全模型上做更多設計。
 
 ## Docker
 

@@ -192,7 +192,7 @@ const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
 const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';
 
-// Storage adapter (local by default, S3 via STORAGE_BACKEND=s3)
+// Storage adapter (local filesystem only; remote object storage not yet supported)
 const storage = createStorage();
 
 // Model → context window fallback mapping (used when LiteLLM data unavailable)
