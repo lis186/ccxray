@@ -189,7 +189,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
 | `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
-| `RESTORE_DAYS` | `0` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
+| `RESTORE_DAYS` | `3` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
