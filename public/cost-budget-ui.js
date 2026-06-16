@@ -356,11 +356,24 @@ function renderMonthlySummary(monthlyResp) {
     fp.appendChild(container);
   }
 
-  const months = monthlyResp.monthly || [];
-  if (!months.length) { container.innerHTML = ''; return; }
+  const allMonths = monthlyResp.monthly || [];
+  if (!allMonths.length) { container.innerHTML = ''; return; }
   const accounts = collectAccounts(_costPageCache?.dailyData || []);
 
-  let html = '<div class="cost-card-label">Monthly</div>';
+  const years = [...new Set(allMonths.map(m => m.month.slice(0, 4)))].sort();
+  if (!window._costYearFilter || !years.includes(window._costYearFilter)) window._costYearFilter = years[years.length - 1];
+  const months = allMonths.filter(m => m.month.startsWith(window._costYearFilter));
+
+  let html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">';
+  html += '<div class="cost-card-label" style="margin-bottom:0">Monthly</div>';
+  if (years.length > 1) {
+    html += '<select id="cp-year-filter" style="font-size:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:3px;padding:1px 4px;cursor:pointer">';
+    for (const y of years) html += `<option value="${y}"${y === window._costYearFilter ? ' selected' : ''}>${y}</option>`;
+    html += '</select>';
+  } else {
+    html += `<span style="font-size:10px;color:var(--dim)">${esc(years[0])}</span>`;
+  }
+  html += '</div>';
   html += '<div style="display:flex;flex-direction:column;gap:4px">';
 
   const f = _costActiveFilter;
@@ -370,7 +383,7 @@ function renderMonthlySummary(monthlyResp) {
     const cost = filteredCost(m, f);
     const pct = Math.min(100, (cost / maxCost) * 100);
     html += `<div style="display:flex;align-items:center;gap:8px;font-size:11px">`;
-    html += `<span style="width:56px;text-align:right;color:var(--text);flex-shrink:0">${m.month}</span>`;
+    html += `<span style="width:36px;text-align:right;color:var(--text);flex-shrink:0">${m.month.slice(5)}</span>`;
     html += `<div style="flex:1;height:14px;background:var(--border);border-radius:3px;overflow:hidden;display:flex">`;
 
     if (f || !m.byAccount || !Object.keys(m.byAccount).length) {
@@ -390,4 +403,6 @@ function renderMonthlySummary(monthlyResp) {
   }
   html += '</div>';
   container.innerHTML = html;
+  const yearSel = document.getElementById('cp-year-filter');
+  if (yearSel) yearSel.onchange = () => { window._costYearFilter = yearSel.value; renderMonthlySummary(monthlyResp); };
 }
