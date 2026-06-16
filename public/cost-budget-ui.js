@@ -34,9 +34,9 @@ async function loadCostPage() {
   ]);
 
   _costPageCache = { blockData, dailyData, monthlyResp };
-  renderAccounts(blockData);
   renderDailyHeatmap(dailyData);
   renderMonthlySummary(monthlyResp);
+  renderAccounts(blockData);
 }
 
 // ── Account brand colors ──────────────────────────────────────────────
@@ -112,6 +112,9 @@ function renderAccounts(blockData) {
   }
 
   el.innerHTML = html;
+  // Move accounts card to end of fp-content (after daily/monthly)
+  const fp = card.parentElement;
+  if (fp) fp.appendChild(card);
   const copyBtn = document.getElementById('cp-copy-cmd');
   if (copyBtn) {
     const originalSvg = copyBtn.innerHTML;
@@ -163,9 +166,9 @@ function renderFilterBar(container, accounts) {
     _costActiveFilter = btn.dataset.filter || null;
     // ponytail: re-render from cache, don't re-fetch
     if (_costPageCache) {
-      renderAccounts(_costPageCache.blockData);
       renderDailyHeatmap(_costPageCache.dailyData);
       renderMonthlySummary(_costPageCache.monthlyResp);
+      renderAccounts(_costPageCache.blockData);
     } else {
       loadCostPage();
     }
