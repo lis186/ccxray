@@ -468,7 +468,8 @@ function toggleKbdOverlay() {
 
 // ── Keyboard navigation ──
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   const key = e.key;
 
   // kbd overlay: ? to open, Escape to close (highest priority after input guard)
