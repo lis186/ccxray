@@ -28,12 +28,11 @@ async function updateQuotaTicker() {
       barWrap.style.display = 'none';
     }
 
-    // Recommendation chip
+    // Recommendation chip — hidden for metered plans (tokens5h === 0)
     const chipEl = document.getElementById('qt-chip');
-    if (block.active && block.burnRate) {
+    const tokens5h = (window.ccxraySettings || {}).tokens5h ?? 220000;
+    if (block.active && block.burnRate && tokens5h > 0) {
       const br = block.burnRate.tokensPerMinute || 0;
-      // Capacity from plan's 5h tokens budget; fall back to legacy constant when settings absent
-      const tokens5h = (window.ccxraySettings || {}).tokens5h || 220000;
       const capacity = tokens5h / 300; // tokens per min at full speed
       const ratio = br / capacity;
       if (ratio < 0.3) {
