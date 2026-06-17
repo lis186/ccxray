@@ -186,8 +186,9 @@ function joinUpstreamPath(upstream, requestUrl) {
   return basePath + (urlPath.startsWith('/') ? urlPath : `/${urlPath}`);
 }
 const LOGS_DIR = resolveLogsDir();
-const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || '3', 10);
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
+// ponytail: aligned with LOG_RETENTION_DAYS so the index is a cache, not a sole record
+const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS), 10);
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
 const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';
