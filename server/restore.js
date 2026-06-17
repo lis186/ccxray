@@ -300,6 +300,15 @@ async function buildVersionIndex() {
 async function pruneLogs() {
   if (!config.LOG_RETENTION_DAYS || config.LOG_RETENTION_DAYS <= 0) return;
 
+  // ponytail: if index is empty/missing, star-protection cascade can't map
+  // turn→session→project — starred old entries would be silently deleted.
+  // Skip prune entirely so files survive for `ccxray rebuild-index`.
+  const idx = await config.storage.readIndex();
+  if (!idx || !idx.trim()) {
+    console.log('\x1b[33m[ccxray] Skipping prune: index.ndjson empty/missing — star protection cannot be computed.\x1b[0m');
+    return;
+  }
+
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - config.LOG_RETENTION_DAYS);
   const cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
