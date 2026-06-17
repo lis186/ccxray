@@ -1,0 +1,5 @@
+recovered 2 / 2 turns; 0 unrecoverable (source pruned)
+  index: 0 existing lines + 2 recovered
+  wrote /var/folders/jn/z1j0832949l9hs4_bgwrr5rr0000gn/T/ccxray-ev-rfYgfF/logs/index.ndjson (2 lines). Restart the dashboard to see recovered turns.
+
+[ccxray] Warning: anthropic upstream http://localhost:5577 points back at the proxy itself — requests will loop

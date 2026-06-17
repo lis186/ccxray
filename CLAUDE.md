@@ -33,6 +33,7 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 - `CCXRAY_HOME` — isolates logs/hub/secrets from the user's real data
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
+- `BU_CDP_URL=http://127.0.0.1:<port>` — point browser-harness at a self-launched Chrome with `--remote-debugging-port=<port>` to skip the manual "Allow remote debugging" dialog
 
 ## Wire Protocol Documentation
 

@@ -55,6 +55,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'status'
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
+  && cliCommand !== 'rebuild-index'
   && cliCommand !== 'setup-statusline'
   && !cliCommand.startsWith('-')
   && !providers.isAgentProvider(cliCommand);
@@ -73,6 +74,17 @@ if (process.argv[2] === 'secret') {
   }
   console.error(`\x1b[31mError: unknown secret subcommand "${sub || ''}". Supported: upstream\x1b[0m`);
   process.exit(1);
+}
+
+// ── "rebuild-index [--apply]" — early exit, no server/hub boot ──
+// Rebuilds index.ndjson from surviving _req/_res log files. Dry-run by default;
+// --apply atomically writes the merged index. Merge-only and hub-safe.
+if (process.argv[2] === 'rebuild-index') {
+  const { rebuildIndex } = require('./rebuild-index');
+  rebuildIndex({ apply: process.argv.includes('--apply') })
+    .then(r => process.exit(r && r.refused ? 1 : 0))
+    .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
+  return;
 }
 
 const agentCommand = providers.isAgentProvider(cliCommand) ? cliCommand : null;
