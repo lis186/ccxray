@@ -81,7 +81,7 @@ GitHub issue #48（做法 1：手動 CLI，merge-only / atomic / hub-safe / hone
 - 復原行只含 `INDEX_FIELDS` 子集
 - atomic：tmp 消失、index 行數正確
 
-**e2e（browser-harness）** — 證明端到端自癒：
+**e2e（browser-harness）** — `test/rebuild-index.browser-harness.e2e.sh`，真 browser-harness（CDP/Chrome）跑通：自啟專用 remote-debugging Chrome（`BU_CDP_URL`，繞過 M144 的 Allow 對話框）→ 種 log 無 index → rebuild → 啟 dashboard → 導航斷言「2 turns、project=ccxray、復原標題」→ 截圖 `evidence/browser-harness-after-rebuild.png`。另有等效的 puppeteer headless 版（`test/rebuild-index.e2e.test.js`）進 `npm test` 供 CI。原始流程：
 - 合成 `CCXRAY_HOME`（含 anchor + delta + subagent + 一個 pruned-source-only index 行）
 - 刪 `index.ndjson` → 跑 `node server/index.js rebuild-index --apply`
 - 啟 `ccxray --port 56xx --no-browser`
