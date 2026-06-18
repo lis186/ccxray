@@ -126,7 +126,7 @@ function renderAccounts(blockData) {
 
 function renderAccountCard(label, win) {
   if (!win) return '';
-  const leftPct = win.leftPct ?? (100 - win.usedPct);
+  const leftPct = Math.round(win.leftPct ?? (100 - win.usedPct));
   const barColor = leftPct > 30 ? 'var(--green)' : leftPct > 10 ? 'var(--yellow)' : 'var(--red)';
   const resetStr = win.resetLabel ? `Resets in ${esc(win.resetLabel)}` : '';
   return `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
