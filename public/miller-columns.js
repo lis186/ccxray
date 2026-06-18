@@ -1994,8 +1994,8 @@ function renderBreadcrumb() {
   if (projName) segments.push({ label: projName, action: () => { selectProject(projName); } });
   if (selectedSessionId) {
     const bcSess = sessionsMap.get(selectedSessionId);
-    const bcLabel = 'session: ' + formatSessionLabel(bcSess, selectedSessionId);
-    segments.push({ label: bcLabel, action: () => { selectSessionAndLatestTurn(selectedSessionId); } });
+    const bcLabel = 'session: ' + formatSessionIdLabel(selectedSessionId);
+    segments.push({ label: bcLabel, title: formatSessionTooltip(bcSess, selectedSessionId), action: () => { selectSessionAndLatestTurn(selectedSessionId); } });
   }
   if (selectedTurnIdx >= 0) {
     const e = allEntries[selectedTurnIdx];
@@ -2023,6 +2023,7 @@ function renderBreadcrumb() {
     const span = document.createElement('span');
     span.className = 'bc-seg';
     span.textContent = seg.label;
+    if (seg.title) span.title = seg.title;
     if (seg.action && i < segments.length - 1) {
       span.onclick = (e) => { e.stopPropagation(); seg.action(); };
     } else {
