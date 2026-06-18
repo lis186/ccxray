@@ -103,8 +103,11 @@ async function reconstructReq(id, storage, cache, seen = new Set()) {
   delete parsedBody.prevId;
   delete parsedBody.msgOffset;
 
-  const result = { provider: 'anthropic', parsedBody };
-  cache.set(id, result);
+  const result = { provider: 'anthropic', parsedBody, prevId: stripped.prevId || null };
+  // ponytail: cache only what delta splicing needs (messages array). Full parsedBody
+  // (system 50-100KB + tools 10-50KB per entry) is returned to caller but NOT retained.
+  // Without this, 65K entries × 100KB = 4GB+ cache → OOM.
+  cache.set(id, { provider: 'anthropic', parsedBody: { messages } });
   return result;
 }
 
@@ -203,7 +206,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   // ── 3. Pass 1: reconstruct every orphan body; extend the explicit timeline. ──
   // (Only Anthropic turns survive reconstructReq; non-Anthropic/WS are skipped.)
   const cache = new Map();
-  const recon = []; // { id, parsedBody, explicitSid }
+  const recon = []; // { id, parsedBody, explicitSid, prevId }
   let unrecoverable = 0;
   for (const id of orphanIds) {
     let r;
@@ -212,9 +215,18 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // Canonical explicit-session read (handles metadata.session_id + the
     // user_id-embedded formats), same primitive the live pipeline uses.
     const explicitSid = store.extractSessionId(r.parsedBody);
-    recon.push({ id, parsedBody: r.parsedBody, explicitSid });
+    recon.push({ id, parsedBody: r.parsedBody, explicitSid, prevId: r.prevId });
     if (explicitSid) explicitTimeline.push({ id, sid: explicitSid, cwd: store.extractCwd(r.parsedBody) });
   }
+
+  // ponytail: lazy refcount eviction — delete cache entries once their last
+  // downstream consumer is projected. Combined with the stripped cache in
+  // reconstructReq, memory stays O(active chain depth × messages-only size).
+  const ancestorRefs = new Map();
+  for (const { prevId } of recon) {
+    if (prevId) ancestorRefs.set(prevId, (ancestorRefs.get(prevId) || 0) + 1);
+  }
+
   explicitTimeline.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   // Latest cwd wins per session (timeline is id-ascending) — mirrors the live
   // pipeline using the session's current store.sessionMeta[sid].cwd.
@@ -222,7 +234,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
 
   // ── 4. Pass 2: project each (Anthropic) orphan through the canonical pipeline. ──
   const recovered = []; // [{ id, line }]
-  for (const { id, parsedBody, explicitSid } of recon) {
+  for (const { id, parsedBody, explicitSid, prevId } of recon) {
     const events = await readResEvents(storage, id);
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
@@ -278,6 +290,15 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
+
+    // ── Cache eviction: entries are already stripped (messages-only) by
+    // reconstructReq; here we delete entries no longer needed as ancestors. ──
+    if (!ancestorRefs.has(id)) cache.delete(id);
+    if (prevId && ancestorRefs.has(prevId)) {
+      const remaining = ancestorRefs.get(prevId) - 1;
+      if (remaining <= 0) { ancestorRefs.delete(prevId); cache.delete(prevId); }
+      else ancestorRefs.set(prevId, remaining);
+    }
   }
 
   // ── 5. Report. ──
@@ -288,11 +309,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
 
   if (N === 0) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
-    return { refused: false, recovered: 0, total: M, unrecoverable, applied: false };
+    return { refused: false, recovered: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
   if (!apply) {
     log(`  dry run — pass --apply to write ${storage.location || 'index.ndjson'}.`);
-    return { refused: false, recovered: N, total: M, unrecoverable, applied: false };
+    return { refused: false, recovered: N, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
 
   // ── 6. Atomic merge-write (local filesystem only). ──
@@ -312,7 +333,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   fs.writeFileSync(tmpPath, merged.join('\n') + '\n');
   fs.renameSync(tmpPath, indexPath);
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
-  return { refused: false, recovered: N, total: M, unrecoverable, applied: true };
+  return { refused: false, recovered: N, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
 }
 
 module.exports = { rebuildIndex, reconstructReq, tsFromId, nearestPrecedingSession };
