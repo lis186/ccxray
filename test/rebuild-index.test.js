@@ -272,6 +272,64 @@ describe('rebuild-index', () => {
     assert.equal(old.stopReason, 'end_turn');
   });
 
+  it('cache is bounded: 2-session × 3-turn chains evict ancestors after use (OOM fix #82)', async () => {
+    writeShared();
+    // Session A: 3-turn delta chain (anchor → delta1 → delta2)
+    writeReq('2026-06-01T06-00-00-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      messages: [{ role: 'user', content: 'A0' }], metadata: { session_id: 'SA' },
+    });
+    writeRes('2026-06-01T06-00-00-000', sseEvents());
+    writeReq('2026-06-01T06-00-01-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      prevId: '2026-06-01T06-00-00-000', msgOffset: 1,
+      messages: [{ role: 'assistant', content: 'a1' }, { role: 'user', content: 'A1' }],
+      metadata: { session_id: 'SA' },
+    });
+    writeRes('2026-06-01T06-00-01-000', sseEvents());
+    writeReq('2026-06-01T06-00-02-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      prevId: '2026-06-01T06-00-01-000', msgOffset: 3,
+      messages: [{ role: 'assistant', content: 'a2' }, { role: 'user', content: 'A2' }],
+      metadata: { session_id: 'SA' },
+    });
+    writeRes('2026-06-01T06-00-02-000', sseEvents());
+
+    // Session B: 3-turn delta chain (anchor → delta1 → delta2)
+    writeReq('2026-06-01T07-00-00-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      messages: [{ role: 'user', content: 'B0' }], metadata: { session_id: 'SB' },
+    });
+    writeRes('2026-06-01T07-00-00-000', sseEvents());
+    writeReq('2026-06-01T07-00-01-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      prevId: '2026-06-01T07-00-00-000', msgOffset: 1,
+      messages: [{ role: 'assistant', content: 'b1' }, { role: 'user', content: 'B1' }],
+      metadata: { session_id: 'SB' },
+    });
+    writeRes('2026-06-01T07-00-01-000', sseEvents());
+    writeReq('2026-06-01T07-00-02-000', {
+      model: 'claude-x', max_tokens: 100, sysHash: SYS_HASH,
+      prevId: '2026-06-01T07-00-01-000', msgOffset: 3,
+      messages: [{ role: 'assistant', content: 'b2' }, { role: 'user', content: 'B2' }],
+      metadata: { session_id: 'SB' },
+    });
+    writeRes('2026-06-01T07-00-02-000', sseEvents());
+
+    const r = await rebuildIndex({ apply: true, storage, log });
+    assert.equal(r.recovered, 6);
+
+    // Correctness: all delta chains spliced correctly
+    const byId = new Map(readIndexIds().map(o => [o.id, o]));
+    assert.equal(byId.get('2026-06-01T06-00-02-000').msgCount, 5, 'SA chain: 1+2+2');
+    assert.equal(byId.get('2026-06-01T07-00-02-000').msgCount, 5, 'SB chain: 1+2+2');
+
+    // OOM proxy: after eviction, cache should be empty — every entry was either
+    // projected (and deleted if no downstream refs) or consumed as an ancestor
+    // (and deleted when last child finished). Old code: cache.size === 6.
+    assert.equal(r.cacheFinalSize, 0, 'cache fully evicted after rebuild (OOM fix #82)');
+  });
+
   it('refuses to run while a live hub holds the index', async () => {
     hub.readHubLock = () => ({ pid: process.pid, port: 5577 }); // our own pid is alive
     try {
