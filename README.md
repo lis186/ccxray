@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/lis186-ccxray-badge.png)](https://mseep.ai/app/lis186-ccxray)
+
 # ccxray
 
 **English** | [正體中文](README.zh-TW.md) | [日本語](README.ja.md)
