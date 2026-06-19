@@ -197,9 +197,9 @@ function registerPromptVersion(ctx) {
   store.versionIndex.set(idxKey, {
     reqId: null, sharedFile: sf, b2Len: promptText.length,
     coreLen: promptText.length, coreHash, firstSeen: now,
-    agentKey, agentLabel, version: coreHash,
+    agentKey, agentLabel, version: coreHash, provider: 'openai',
   });
-  const vData = JSON.stringify({ _type: 'version_detected', version: coreHash, b2Len: promptText.length, agentKey, agentLabel });
+  const vData = JSON.stringify({ _type: 'version_detected', version: coreHash, b2Len: promptText.length, agentKey, agentLabel, provider: 'openai' });
   for (const res of store.sseClients) res.write(`data: ${vData}\n\n`);
   return { coreHash, agentKey, agentLabel };
 }

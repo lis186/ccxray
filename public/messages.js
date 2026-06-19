@@ -571,6 +571,74 @@ function renderEditedBanner(req, msgIdx) {
     + original + '</div>';
 }
 
+function renderPromptBadgeHtml(entry) {
+  if (!entry) return '';
+  const provider = entry.provider || 'anthropic';
+  const providerClass = provider === 'openai' ? 'provider-openai' : (provider === 'anthropic' ? 'provider-anthropic' : 'provider-unknown');
+  const dot = provider === 'openai' ? '◆' : '●';
+  const agent = entry.agent || 'Unknown';
+  const hash = entry.coreHash;
+
+  let badge;
+  if (hash) {
+    const shortHash = hash.slice(0, 5);
+    badge = '<span class="provider-dot ' + providerClass + '">' + dot + '</span> '
+      + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> · '
+      + '<span class="prompt-ver">' + escapeHtml(shortHash) + '</span>'
+      + ' <a class="prompt-link" onclick="switchTab(\'sysprompt\',true);'
+      + 'setTimeout(()=>openSystemPromptPanel&&openSystemPromptPanel(true),100)"'
+      + ' title="View in System Prompt">→ prompt</a>';
+  } else if (entry.isSubagent) {
+    badge = '<span class="provider-dot provider-unknown">○</span> '
+      + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> (subagent)';
+  } else {
+    return '';
+  }
+
+  // Tools-changed warning: compare with previous non-subagent turn in same session
+  let toolsWarning = '';
+  if (entry.toolsHash && typeof allEntries !== 'undefined') {
+    const myIdx = allEntries.indexOf(entry);
+    if (myIdx > 0) {
+      for (let i = myIdx - 1; i >= 0; i--) {
+        const prev = allEntries[i];
+        if (prev.sessionId === entry.sessionId && !prev.isSubagent) {
+          if (prev.toolsHash && prev.toolsHash !== entry.toolsHash) {
+            toolsWarning = '<div class="tools-warning">⚠ tools changed · cache miss'
+              + ' <a class="tools-compare-toggle" data-a="' + prev.toolsHash + '" data-b="' + entry.toolsHash + '"'
+              + ' onclick="toggleToolsDiff(this)">compare tools</a>'
+              + '<div class="tools-diff" style="display:none"></div></div>';
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return '<div class="prompt-badge">' + badge + '</div>' + toolsWarning;
+}
+
+function toggleToolsDiff(el) {
+  const diffEl = el.parentElement.querySelector('.tools-diff');
+  if (!diffEl) return;
+  if (diffEl.style.display !== 'none') { diffEl.style.display = 'none'; return; }
+  diffEl.style.display = 'block';
+  if (diffEl.dataset.loaded) return;
+  diffEl.textContent = 'Loading...';
+  const a = el.dataset.a, b = el.dataset.b;
+  fetch('/_api/tools-diff?a=' + a + '&b=' + b).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(data => {
+    diffEl.dataset.loaded = '1';
+    const lines = [];
+    (data.added || []).forEach(n => lines.push('<div class="tools-added">+ ' + escapeHtml(n) + '</div>'));
+    (data.removed || []).forEach(n => lines.push('<div class="tools-removed">- ' + escapeHtml(n) + '</div>'));
+    const summary = '(' + (data.added || []).length + ' added, ' + (data.removed || []).length + ' removed)';
+    diffEl.innerHTML = lines.join('') + '<div class="tools-diff-summary">' + summary + '</div>';
+  }).catch(() => { diffEl.textContent = 'diff unavailable'; diffEl.dataset.loaded = '1'; });
+}
+
 function renderStepDetailHtml(req, tok) {
   if (selectedMessageIdx < 0) return '';
   const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;

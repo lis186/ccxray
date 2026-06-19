@@ -2569,7 +2569,9 @@ function renderDetailCol() {
         currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreqPreview[c.name] = (toolFreqPreview[c.name] || 0) + 1; }); });
         const totalPreview = currentSteps.filter(s => s.type === 'tool-group').length;
         const errorPreview = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
-        const summaryPreview = '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
+        const promptBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
+        const summaryPreview = promptBadge
+          + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
           + totalPreview + ' steps · ' + (totalPreview - errorPreview) + '✓'
           + (errorPreview ? ' <span style="color:var(--red)">' + errorPreview + '✗</span>' : '')
           + '</div>';
