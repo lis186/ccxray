@@ -74,7 +74,26 @@ function run(argv) {
     try { entries.push(JSON.parse(line)); } catch {}
   }
 
-  // ponytail: #1 smart --session — alias → UUID prefix → title substring
+  if (args.since) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
+  // ponytail: #4 smart --cwd — an absolute/`~` path is a prefix match; anything
+  // else (a bare name or relative fragment) is a case-insensitive substring.
+  // `~` is expanded first since stored cwds are absolute (a literal `~/…`
+  // prefix would never match); a leading `./` is stripped so `./foo` == `foo`.
+  if (args.cwds.length) {
+    const expand = p => p === '~' || p.startsWith('~/') ? os.homedir() + p.slice(1) : p;
+    entries = entries.filter(e => {
+      if (!e.cwd) return false;
+      return args.cwds.some(raw => {
+        const p = expand(raw);
+        return p.startsWith('/')
+          ? e.cwd.startsWith(p)
+          : e.cwd.toLowerCase().includes(p.replace(/^\.\//, '').toLowerCase());
+      });
+    });
+  }
+  // ponytail: #1 smart --session — resolved AFTER --last/--cwd so `latest` and
+  // `costliest` pick the newest/priciest session *within* the filtered scope,
+  // not globally (alias → UUID prefix → title substring).
   if (args.sessionIds.length) {
     const exact = [], fuzzy = [];
     for (const id of args.sessionIds) {
@@ -95,23 +114,6 @@ function run(argv) {
       exact.some(id => id && e.sessionId === id) ||
       fuzzy.some(id => e.sessionId.startsWith(id) || (e.title && e.title.toLowerCase().includes(id.toLowerCase())))
     ));
-  }
-  if (args.since) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
-  // ponytail: #4 smart --cwd — an absolute/`~` path is a prefix match; anything
-  // else (a bare name or relative fragment) is a case-insensitive substring.
-  // `~` is expanded first since stored cwds are absolute (a literal `~/…`
-  // prefix would never match); a leading `./` is stripped so `./foo` == `foo`.
-  if (args.cwds.length) {
-    const expand = p => p === '~' || p.startsWith('~/') ? os.homedir() + p.slice(1) : p;
-    entries = entries.filter(e => {
-      if (!e.cwd) return false;
-      return args.cwds.some(raw => {
-        const p = expand(raw);
-        return p.startsWith('/')
-          ? e.cwd.startsWith(p)
-          : e.cwd.toLowerCase().includes(p.replace(/^\.\//, '').toLowerCase());
-      });
-    });
   }
 
   if (!entries.length) {

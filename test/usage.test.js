@@ -326,6 +326,20 @@ describe('usage parseArgs', () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('--session latest is scoped by --cwd (alias resolved after filtering)', () => {
+    // global latest is /other/project-gamma; within /work the latest is session bbbb…
+    const r = JSON.parse(cli('--json', '--session', 'latest', '--cwd', '/work'));
+    assert.equal(r.meta.totalSessions, 1);
+    assert.equal(r.sessions.topSessions[0].sessionId, 'bbbbbbbb-5555-6666-7777-888888888888');
+  });
+
+  it('--session costliest is scoped by --cwd (alias resolved after filtering)', () => {
+    // global costliest is session aaaa ($0.80); restricted to /work/project-beta it's bbbb
+    const r = JSON.parse(cli('--json', '--session', 'costliest', '--cwd', '/work/project-beta'));
+    assert.equal(r.meta.totalSessions, 1);
+    assert.equal(r.sessions.topSessions[0].sessionId, 'bbbbbbbb-5555-6666-7777-888888888888');
+  });
 });
 
 describe('usage CLI', () => {
