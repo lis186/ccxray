@@ -145,6 +145,7 @@ ccxray usage --session latest         # 最近的 session
 ccxray usage --session costliest      # 最貴的 session
 ccxray usage --session "fix login"    # 依 session 標題搜尋
 ccxray usage --session 950432         # UUID 前綴比對
+ccxray usage --session costliest --open  # 在儀表板開啟該 session
 ccxray usage --tools                  # 完整工具呼叫明細
 ```
 

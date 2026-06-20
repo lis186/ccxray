@@ -12,6 +12,7 @@ Options:
   --session <id>      Filter to session(s), comma-separated or repeated
   --last <duration>   Time filter: 7d, 24h, 30m (default: all)
   --cwd <path>        Filter to entries from this working directory (prefix match)
+  --open              Open dashboard to the matched session after output
   --help              Show this help`;
 
 function parseDuration(s) {
@@ -23,11 +24,12 @@ function parseDuration(s) {
 }
 
 function parseArgs(argv) {
-  const args = { json: false, tools: false, sessionIds: [], since: null, cwds: [] };
+  const args = { json: false, tools: false, open: false, sessionIds: [], since: null, cwds: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--help' || argv[i] === '-h') { console.log(HELP); process.exit(0); }
     else if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--tools') args.tools = true;
+    else if (argv[i] === '--open') args.open = true;
     else if (argv[i] === '--session' && argv[i + 1]) {
       for (const id of argv[++i].split(',')) if (id) args.sessionIds.push(id);
     }
@@ -65,7 +67,7 @@ function run(argv) {
   if (args.sessionIds.length) {
     const exact = [], fuzzy = [];
     for (const id of args.sessionIds) {
-      if (id === 'latest') { exact.push(entries.reduce((a, b) => (b.receivedAt || 0) > (a.receivedAt || 0) ? b : a, entries[0])?.sessionId); }
+      if (id === 'latest') { exact.push(entries[entries.length - 1]?.sessionId); }
       else if (id === 'costliest') {
         const bySess = {};
         for (const e of entries) if (e.sessionId) bySess[e.sessionId] = (bySess[e.sessionId] || 0) + (e.cost?.cost || 0);
@@ -100,20 +102,17 @@ function run(argv) {
     process.exit(1);
   }
 
-  // ponytail: #2 multi-cwd comparison — 2+ cwds → per-project summary table
+  // ponytail: #2 multi-cwd comparison — 2+ cwds → per-project summary via analyze()
   if (args.cwds.length >= 2) {
     const groups = {};
     for (const e of entries) { const k = e.cwd || 'unknown'; if (!groups[k]) groups[k] = []; groups[k].push(e); }
     const rows = Object.entries(groups).map(([cwd, es]) => {
-      const cost = es.reduce((s, e) => s + (e.cost?.cost || 0), 0);
-      const sids = new Set(es.map(e => e.sessionId));
-      const cr = es.reduce((s, e) => s + (e.usage?.cache_read_input_tokens || 0), 0);
-      const ti = es.reduce((s, e) => s + (e.usage?.input_tokens || 0) + (e.usage?.cache_creation_input_tokens || 0) + (e.usage?.cache_read_input_tokens || 0), 0);
-      return { cwd, cost: +cost.toFixed(2), sessions: sids.size, turns: es.length, cacheHit: ti ? +(cr / ti).toFixed(3) : 0 };
+      const r = analyze(es);
+      return { cwd, cost: r.meta.totalCost, sessions: r.meta.totalSessions, turns: r.meta.totalEntries, cacheHit: r.cache.hitRate };
     }).sort((a, b) => b.cost - a.cost);
     if (args.json) { console.log(JSON.stringify(rows)); }
     else {
-      const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
+      const B = '\x1b[1m', R = '\x1b[0m';
       console.log(`\n${B}Project Comparison${R}`);
       for (const r of rows) console.log(`  ${r.cwd}  $${r.cost}  ${r.sessions} sessions  ${r.turns} turns  cache ${(r.cacheHit * 100).toFixed(1)}%`);
       console.log();
@@ -124,6 +123,17 @@ function run(argv) {
   const result = analyze(entries, args);
   if (args.json) console.log(JSON.stringify(result));
   else printHuman(result, args);
+
+  // ponytail: --open jumps to dashboard for the resolved session
+  if (args.open) {
+    const sessions = new Set(entries.map(e => e.sessionId).filter(Boolean));
+    if (sessions.size === 1) {
+      const sid = [...sessions][0];
+      openDashboard(`s=${encodeURIComponent(sid.slice(0, 8))}`);
+    } else if (sessions.size > 1) {
+      console.error('--open requires a single session (got ' + sessions.size + '). Narrow with --session.');
+    }
+  }
 }
 
 // ── Analysis ────────────────────────────────────────────────────────────
@@ -259,16 +269,16 @@ function analyze(entries, opts = {}) {
   const legacySkill = toolAgg['Skill'] || 0;
   if (legacySkill) skills.push({ name: '(pre-tracking)', invocations: legacySkill, loads: null, scope: null });
 
-  const gapCache = gapVsCache(bySession);
+  // sort session turns once for both hashStability and gapVsCache
+  for (const turns of Object.values(bySession)) turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
 
-  return { meta, sessions, models, tools, skills, prompts: { hashStability: hashStability(bySession) }, cache, gapCache };
+  return { meta, sessions, models, tools, skills, prompts: { hashStability: hashStability(bySession) }, cache, gapCache: gapVsCache(bySession) };
 }
 
 function hashStability(bySession) {
   let sysC = 0, sysP = 0, toolsC = 0, toolsP = 0, coreC = 0, coreP = 0;
 
   for (const turns of Object.values(bySession)) {
-    turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
     for (let i = 1; i < turns.length; i++) {
       const prev = turns[i - 1], curr = turns[i];
       if (prev.sysHash && curr.sysHash) { sysP++; if (prev.sysHash !== curr.sysHash) sysC++; }
@@ -297,7 +307,6 @@ function gapVsCache(bySession) {
 
   for (const turns of Object.values(bySession)) {
     if (turns.length < 2) continue;
-    turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
     for (let i = 1; i < turns.length; i++) {
       const e = turns[i], prev = turns[i - 1];
       const elapsed = parseFloat(prev.elapsed) || 0;
@@ -329,12 +338,12 @@ function buildSkillScopeMap() {
   const map = {};
   const home = process.env.HOME || '';
   const dirs = [
-    { glob: path.join(home, '.claude-personal', 'skills'), scope: 'user' },
-    { glob: path.join(home, '.claude', 'skills'), scope: 'user' },
-    { glob: '.claude/skills', scope: 'project' },
+    { dir: path.join(home, '.claude-personal', 'skills'), scope: 'user' },
+    { dir: path.join(home, '.claude', 'skills'), scope: 'user' },
+    { dir: '.claude/skills', scope: 'project' },
   ];
 
-  for (const { glob: dir, scope } of dirs) {
+  for (const { dir, scope } of dirs) {
     try {
       for (const name of fs.readdirSync(dir)) {
         if (name.startsWith('.')) continue;
@@ -364,6 +373,16 @@ function buildSkillScopeMap() {
   } catch {}
 
   return map;
+}
+
+// ── Dashboard open ──────────────────────────────────────────────────────
+
+function openDashboard(queryString) {
+  const port = require('./hub').readHubLock()?.port || 5577;
+  const url = `http://localhost:${port}/?${queryString}`;
+  const { exec } = require('child_process');
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  exec(`${cmd} ${JSON.stringify(url)}`);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -396,7 +415,7 @@ function printHuman(r, opts = {}) {
     console.log(`  ${D}costliest sessions:${R}`);
     for (const s of r.sessions.topSessions) {
       const id = s.sessionId.length > 16 ? s.sessionId.slice(0, 8) + '…' : s.sessionId;
-      const title = s.title ? `  ${D}${s.title.slice(0, 40)}${R}` : '';
+      const title = s.title ? `  ${D}${s.title}${R}` : '';
       console.log(`  ${id.padEnd(10)} $${String(s.cost).padEnd(9)} ${String(s.turns).padStart(5)} turns  ${fmtDur(s.durationMin).padStart(7)}  ${s.model}${title}`);
     }
   }

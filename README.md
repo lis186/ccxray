@@ -162,6 +162,7 @@ ccxray usage --session latest         # Most recent session
 ccxray usage --session costliest      # Highest-cost session
 ccxray usage --session "fix login"    # Search by session title
 ccxray usage --session 950432         # UUID prefix match
+ccxray usage --session costliest --open  # Jump to that session in the dashboard
 ccxray usage --tools                  # Full tool breakdown
 ```
 

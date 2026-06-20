@@ -140,6 +140,7 @@ ccxray usage --session latest         # 最新セッション
 ccxray usage --session costliest      # 最高コストセッション
 ccxray usage --session "fix login"    # セッションタイトルで検索
 ccxray usage --session 950432         # UUID 前方一致
+ccxray usage --session costliest --open  # ダッシュボードで該当セッションを開く
 ccxray usage --tools                  # 全ツール呼び出しの内訳
 ```
 
