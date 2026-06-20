@@ -234,7 +234,7 @@ function analyze(entries, opts = {}) {
   const sessions = {
     count: sessionCount,
     byProvider,
-    subagentRatio: +(subagentCount / entries.length).toFixed(3),
+    subagentRatio: entries.length ? +(subagentCount / entries.length).toFixed(3) : 0,
     turnDistribution: percentiles(turnCounts),
     topSessions,
   };
@@ -314,7 +314,9 @@ function gapVsCache(bySession) {
       const e = turns[i], prev = turns[i - 1];
       const elapsed = parseFloat(prev.elapsed) || 0;
       const gapSec = (e.receivedAt - (prev.receivedAt + elapsed * 1000)) / 1000;
-      if (gapSec < 0) continue;
+      // skip non-finite gaps (missing/non-numeric receivedAt) — a NaN gap would
+      // miss every bucket (even max:Infinity) and crash the bucket lookup below.
+      if (!(gapSec >= 0)) continue;
       const cacheRead = e.usage?.cache_read_input_tokens || 0;
       const totalIn = (e.usage?.input_tokens || 0) + (e.usage?.cache_creation_input_tokens || 0) + cacheRead;
       if (!totalIn) continue;

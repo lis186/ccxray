@@ -148,6 +148,25 @@ describe('usage analyze', () => {
     assert.equal(r.gapCache[0].avgHitRate, 0.9);
   });
 
+  it('analyze([]) returns a zeroed result with no NaN', () => {
+    const r = analyze([]);
+    assert.equal(r.meta.totalEntries, 0);
+    assert.equal(r.sessions.subagentRatio, 0);
+    assert.equal(r.tools.failRate, 0);
+    assert.equal(r.cache.hitRate, 0);
+    assert.deepEqual(r.gapCache, []);
+  });
+
+  it('gapVsCache skips non-finite gaps instead of crashing', () => {
+    // missing/non-numeric receivedAt → NaN gap must be skipped (a NaN misses
+    // even the max:Infinity bucket and would throw on the bucket lookup)
+    const r = analyze([
+      entry({ sessionId: 'g', receivedAt: undefined, elapsed: 'x' }),
+      entry({ sessionId: 'g', receivedAt: undefined, elapsed: 'x' }),
+    ]);
+    assert.deepEqual(r.gapCache, []);
+  });
+
   it('includes title in topSessions', () => {
     const r = analyze([
       entry({ sessionId: 'titled', title: 'Fix login bug' }),
