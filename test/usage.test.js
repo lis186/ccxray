@@ -115,6 +115,14 @@ describe('usage analyze', () => {
     const ag = r.skills.find(s => s.name === 'agmsg');
     assert.equal(ag.invocations, 1);
     assert.equal(ag.loads, 1);
+    // analyze() is pure: scope resolves only from an explicit scopeMap, never
+    // the runner's installed skills.
+    assert.equal(cr.scope, null);
+  });
+
+  it('resolves skill scope from an injected scopeMap (analyze stays pure)', () => {
+    const r = analyze([entry({ skillCalls: { 'code-review': 1 } })], { scopeMap: { 'code-review': 'plugin' } });
+    assert.equal(r.skills.find(s => s.name === 'code-review').scope, 'plugin');
   });
 
   it('shows legacy Skill as pre-tracking', () => {

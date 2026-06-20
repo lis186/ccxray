@@ -125,7 +125,9 @@ function run(argv) {
     return;
   }
 
-  const result = analyze(entries, args);
+  // Build the skill-scope map once here (it reads the filesystem) and pass it
+  // in, keeping analyze() pure and deterministic for direct/test callers.
+  const result = analyze(entries, { ...args, scopeMap: buildSkillScopeMap() });
   if (args.json) console.log(JSON.stringify(result));
   else printHuman(result, args);
 
@@ -267,7 +269,7 @@ function analyze(entries, opts = {}) {
     totalCacheReadTokens: totalCacheRead,
   };
 
-  const scopeMap = buildSkillScopeMap();
+  const scopeMap = opts.scopeMap || {};
   const skills = Object.entries(skillMap)
     .sort((a, b) => b[1].invocations - a[1].invocations)
     .map(([name, s]) => ({
