@@ -85,9 +85,13 @@ function run(argv) {
       if (!e.cwd) return false;
       return args.cwds.some(raw => {
         const p = expand(raw);
-        return p.startsWith('/')
-          ? e.cwd.startsWith(p)
-          : e.cwd.toLowerCase().includes(p.replace(/^\.\//, '').toLowerCase());
+        if (p.startsWith('/')) {
+          // path-bound prefix: /work/proj matches /work/proj and /work/proj/sub,
+          // but not a sibling like /work/proj-other.
+          const pn = p.replace(/\/+$/, '');
+          return e.cwd === pn || e.cwd.startsWith(pn + '/');
+        }
+        return e.cwd.toLowerCase().includes(p.replace(/^\.\//, '').toLowerCase());
       });
     });
   }

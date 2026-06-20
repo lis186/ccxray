@@ -239,6 +239,26 @@ describe('usage parseArgs', () => {
     assert.equal(r.meta.totalEntries, 2); // /work/project-beta
   });
 
+  it('--cwd absolute prefix is path-bound (no sibling-dir bleed)', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-cwdbound-'));
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    const lines = [
+      { id: 'a', sessionId: 's-in', receivedAt: 2, cwd: '/work/proj', cost: { cost: 1 } },
+      { id: 'b', sessionId: 's-sib', receivedAt: 1, cwd: '/work/proj-sibling', cost: { cost: 1 } },
+    ];
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    try {
+      const r = JSON.parse(execFileSync(
+        process.execPath, ['server/index.js', 'usage', '--json', '--cwd', '/work/proj'],
+        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+      ).toString());
+      assert.equal(r.meta.totalEntries, 1); // /work/proj only, not /work/proj-sibling
+      assert.equal(r.sessions.topSessions[0].sessionId, 's-in');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('--cwd expands ~ to home for prefix matching', () => {
     // stored cwds are absolute, so a literal ~/… prefix must be expanded first.
     // Use a throwaway $HOME so the test never touches the real home directory.
