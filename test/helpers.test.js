@@ -11,6 +11,7 @@ const {
   extractFirstUserText,
   hasToolFail,
   extractToolCalls,
+  extractSkillCalls,
   computeThinkingDuration,
   categorizeTools,
   scanCredentials,
@@ -164,6 +165,42 @@ describe('helpers', () => {
       const counts = extractToolCalls(messages);
       assert.equal(counts.Read, 2);
       assert.equal(counts.Edit, 1);
+    });
+
+    it('keeps Skill/Workflow as plain keys — never expands to Skill:<name>', () => {
+      // contract guard: toolCalls flows to the dashboard (tc['Skill'], chips,
+      // usedTools); per-skill detail lives in skillCalls, not here.
+      const messages = [{ role: 'assistant', content: [
+        { type: 'tool_use', name: 'Skill', input: { skill: 'superpowers:brainstorming' } },
+        { type: 'tool_use', name: 'Skill', input: { skill: 'code-review' } },
+        { type: 'tool_use', name: 'Workflow', input: { script: 'x' } },
+      ]}];
+      assert.deepEqual(extractToolCalls(messages), { Skill: 2, Workflow: 1 });
+    });
+  });
+
+  describe('extractSkillCalls', () => {
+    it('returns empty object for null/empty', () => {
+      assert.deepEqual(extractSkillCalls(null), {});
+      assert.deepEqual(extractSkillCalls([]), {});
+    });
+
+    it('counts Skill tool calls keyed by skill name', () => {
+      const messages = [{ role: 'assistant', content: [
+        { type: 'tool_use', name: 'Skill', input: { skill: 'code-review' } },
+        { type: 'tool_use', name: 'Skill', input: { skill: 'code-review' } },
+        { type: 'tool_use', name: 'Skill', input: { skill: 'agmsg' } },
+      ]}];
+      assert.deepEqual(extractSkillCalls(messages), { 'code-review': 2, agmsg: 1 });
+    });
+
+    it('ignores non-Skill tools and Skill calls without a skill input', () => {
+      const messages = [{ role: 'assistant', content: [
+        { type: 'tool_use', name: 'Bash', input: {} },
+        { type: 'tool_use', name: 'Workflow', input: { script: 'x' } },
+        { type: 'tool_use', name: 'Skill', input: {} },
+      ]}];
+      assert.deepEqual(extractSkillCalls(messages), {});
     });
   });
 
