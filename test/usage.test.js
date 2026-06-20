@@ -3,11 +3,31 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { analyze } = require('../server/usage');
+
+// Deterministic CLI fixture: an isolated CCXRAY_HOME with a known index so the
+// e2e tests don't depend on the runner's real ~/.ccxray (which is empty in CI).
+// Two sessions live under /work/*, one under /other/* so a `/work` prefix is a
+// strict subset; session A is the costliest so its id leads topSessions.
+const FIXTURE = [
+  { id: '2026-06-01T10-00-00-000', ts: '10:00:00', sessionId: 'aaaaaaaa-1111-2222-3333-444444444444', provider: 'anthropic', agent: 'claude', model: 'claude-opus-4-6', msgCount: 10, toolCount: 5, toolCalls: { Bash: 3, Read: 2, Skill: 1 }, skillCalls: { 'superpowers:brainstorming': 1 }, isSubagent: false, cwd: '/work/project-alpha', receivedAt: 1717236000000, usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 200, cache_read_input_tokens: 700 }, cost: { cost: 0.50 }, title: 'Fix login bug', sysHash: 'a1', toolsHash: 'b1', coreHash: 'c1', toolFail: false, elapsed: '2.0' },
+  { id: '2026-06-01T10-01-00-000', ts: '10:01:00', sessionId: 'aaaaaaaa-1111-2222-3333-444444444444', provider: 'anthropic', agent: 'claude', model: 'claude-opus-4-6', msgCount: 12, toolCount: 5, toolCalls: { Bash: 1 }, isSubagent: false, cwd: '/work/project-alpha', receivedAt: 1717236060000, usage: { input_tokens: 80, output_tokens: 40, cache_creation_input_tokens: 0, cache_read_input_tokens: 900 }, cost: { cost: 0.30 }, title: 'Fix login bug', sysHash: 'a1', toolsHash: 'b1', coreHash: 'c2', toolFail: false, elapsed: '1.5' },
+  { id: '2026-06-02T10-00-00-000', ts: '10:00:00', sessionId: 'bbbbbbbb-5555-6666-7777-888888888888', provider: 'anthropic', agent: 'claude', model: 'claude-sonnet-4-6', msgCount: 6, toolCount: 3, toolCalls: { Read: 1 }, isSubagent: false, cwd: '/work/project-beta', receivedAt: 1717322400000, usage: { input_tokens: 50, output_tokens: 20, cache_creation_input_tokens: 100, cache_read_input_tokens: 150 }, cost: { cost: 0.20 }, title: 'Add tests', sysHash: 's1', toolsHash: 't1', coreHash: 'u1', toolFail: false, elapsed: '1.0' },
+  { id: '2026-06-02T10-01-00-000', ts: '10:01:00', sessionId: 'bbbbbbbb-5555-6666-7777-888888888888', provider: 'anthropic', agent: 'claude', model: 'claude-sonnet-4-6', msgCount: 8, toolCount: 3, toolCalls: { Edit: 1 }, isSubagent: true, cwd: '/work/project-beta', receivedAt: 1717322460000, usage: { input_tokens: 40, output_tokens: 10, cache_creation_input_tokens: 0, cache_read_input_tokens: 200 }, cost: { cost: 0.10 }, title: 'Add tests', sysHash: 's1', toolsHash: 't1', coreHash: 'u1', toolFail: true, elapsed: '0.8' },
+  { id: '2026-06-03T10-00-00-000', ts: '10:00:00', sessionId: 'cccccccc-9999-0000-1111-222222222222', provider: 'anthropic', agent: 'claude', model: 'claude-opus-4-6', msgCount: 4, toolCount: 2, toolCalls: { Bash: 1 }, isSubagent: false, cwd: '/other/project-gamma', receivedAt: 1717408800000, usage: { input_tokens: 30, output_tokens: 15, cache_creation_input_tokens: 50, cache_read_input_tokens: 60 }, cost: { cost: 0.05 }, title: 'Tweak config', sysHash: 'g1', toolsHash: 'h1', coreHash: 'i1', toolFail: false, elapsed: '0.5' },
+];
+
+const FIX_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-usage-test-'));
+fs.mkdirSync(path.join(FIX_HOME, 'logs'), { recursive: true });
+fs.writeFileSync(path.join(FIX_HOME, 'logs', 'index.ndjson'), FIXTURE.map(e => JSON.stringify(e)).join('\n') + '\n');
+process.on('exit', () => { try { fs.rmSync(FIX_HOME, { recursive: true, force: true }); } catch {} });
 
 const cli = (...args) => execFileSync(
   process.execPath, ['server/index.js', 'usage', ...args],
-  { env: { ...process.env, CCXRAY_HOME: process.env.CCXRAY_HOME || process.env.HOME + '/.ccxray' }, timeout: 10000 }
+  { env: { ...process.env, CCXRAY_HOME: FIX_HOME }, timeout: 10000 }
 ).toString();
 
 const cliErr = (...args) => {
@@ -171,12 +191,11 @@ describe('usage parseArgs', () => {
 
   it('--cwd with broad prefix returns subset', () => {
     const all = JSON.parse(cli('--json'));
-    if (all.meta.totalEntries < 2) return;
-    // use home dir as a broad prefix — should match most but not entries with cwd='/' or null
-    const out = cli('--json', '--cwd', process.env.HOME);
+    // /work matches project-alpha + project-beta (4 turns) but not /other/project-gamma
+    const out = cli('--json', '--cwd', '/work');
     const r = JSON.parse(out);
-    assert.ok(r.meta.totalEntries > 0);
-    assert.ok(r.meta.totalEntries <= all.meta.totalEntries);
+    assert.equal(r.meta.totalEntries, 4);
+    assert.ok(r.meta.totalEntries < all.meta.totalEntries);
   });
 
   it('--cwd comma-separated matches union of paths', () => {
