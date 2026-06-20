@@ -597,8 +597,9 @@ function renderPromptBadgeHtml(entry) {
   if (hash) {
     const shortHash = hash.slice(0, 5);
     const dlParams = agentKey ? 'agent=' + encodeURIComponent(agentKey) + '&hash=' + encodeURIComponent(hash) : '';
+    // ponytail: single quotes inside onclick="" to avoid attribute breakout
     const dlScript = dlParams
-      ? 'var p=new URLSearchParams(location.search);p.set(\"agent\",\"' + escapeHtml(agentKey) + '\");p.set(\"hash\",\"' + escapeHtml(hash) + '\");history.replaceState(null,\"\",\"?\"+p);'
+      ? "var p=new URLSearchParams(location.search);p.set('agent','" + escapeHtml(agentKey) + "');p.set('hash','" + escapeHtml(hash) + "');history.replaceState(null,'','?'+p);"
       : '';
     badge = '<span class="provider-dot ' + providerClass + '">' + dot + '</span> '
       + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> · '
