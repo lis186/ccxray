@@ -81,6 +81,35 @@ test('anthropic.buildEntryFields yields canonical fields', () => {
   assert.ok(f.maxContext > 0, 'maxContext inferred');
 });
 
+test('anthropic Skill message → buildEntryFields → buildIndexLine persists clean toolCalls + skillCalls', () => {
+  // full write-path guard: a Skill tool_use must surface as a plain Skill key in
+  // toolCalls AND as a per-name entry in the persisted skillCalls index field.
+  const parsedBody = {
+    model: 'claude-opus-4-6',
+    system: [{ type: 'text', text: 'cc_version=1.0.0; x' }],
+    tools: [{ name: 'Skill' }, { name: 'Bash' }],
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'go' }] },
+      { role: 'assistant', content: [
+        { type: 'tool_use', name: 'Skill', input: { skill: 'code-review' } },
+        { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
+      ]},
+    ],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'sse', parsedBody,
+    proxyRes: { statusCode: 200 }, usage: { input_tokens: 10, output_tokens: 5 },
+    sessionId: 's1', sessionInferred: false, stopReason: 'end_turn',
+  });
+  assert.deepEqual(f.toolCalls, { Skill: 1, Bash: 1 });
+  assert.deepEqual(f.skillCalls, { 'code-review': 1 });
+  // survives the INDEX_FIELDS projection onto an index line
+  assert.ok(INDEX_FIELDS.includes('skillCalls'));
+  const back = JSON.parse(buildIndexLine({ id: 'X', ts: 't', status: 200, isSSE: true, receivedAt: 1, ...f }));
+  assert.deepEqual(back.toolCalls, { Skill: 1, Bash: 1 });
+  assert.deepEqual(back.skillCalls, { 'code-review': 1 });
+});
+
 test('T9: anthropic.registerPromptVersion returns coreHash', () => {
   const longB2 = 'You are Claude Code, Anthropic\'s official CLI for Claude. ' + 'x'.repeat(600);
   const parsedBody = {
