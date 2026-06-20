@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
+// ── "usage" — fast-path, no server deps ──
+if (process.argv[2] === 'usage') {
+  require('./usage').run(process.argv.slice(3));
+  return;
+}
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -57,6 +63,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
   && cliCommand !== 'setup-statusline'
+  && cliCommand !== 'usage'
   && !cliCommand.startsWith('-')
   && !providers.isAgentProvider(cliCommand);
 if (unknownCommand) {

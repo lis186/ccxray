@@ -133,6 +133,23 @@ Timeline 的個別步驟也可以加星（每個步驟 row 上有 `★`/`☆` to
 
 ![星號保留與子項目 popover](docs/stars.png)
 
+### 使用量分析 CLI
+
+```bash
+ccxray usage                          # 人類可讀摘要
+ccxray usage --json                   # JSON 輸出，供 agent 消費 (< 4KB)
+ccxray usage --last 7d                # 最近 7 天（支援 d/h/m）
+ccxray usage --cwd myproject          # 目錄名子字串智慧比對
+ccxray usage --cwd proj-a,proj-b      # 多個專案 → 比較表
+ccxray usage --session latest         # 最近的 session
+ccxray usage --session costliest      # 最貴的 session
+ccxray usage --session "fix login"    # 依 session 標題搜尋
+ccxray usage --session 950432         # UUID 前綴比對
+ccxray usage --tools                  # 完整工具呼叫明細
+```
+
+0.6 秒完成自動化使用量分析 — 不用手動翻 log 就能知道 token 和錢花在哪。直接讀取 `index.ndjson`，不需要啟動 server。顯示模型成本分佈、工具與 skill 使用量、prompt hash 穩定性（system/tools/core prompt 在 turn 間的變化頻率）、依 turn 間隔的 cache 命中率、以及花費最高的 10 個 session（含標題）。
+
 ### 其他功能
 
 - **Deep Link 導航** — 每個選取狀態（project / session / turn / step）都會反映在網址列 URL 中。把 URL 貼到新分頁，儀表板會直接導航到相同的畫面。

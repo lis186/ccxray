@@ -128,6 +128,23 @@ turn、session、または project カードにある star をクリックする
 
 ![スター保持と子孫ポップオーバー](docs/stars.png)
 
+### 使用量分析 CLI
+
+```bash
+ccxray usage                          # 人間が読めるサマリー
+ccxray usage --json                   # エージェント向け JSON 出力 (< 4KB)
+ccxray usage --last 7d                # 直近 7 日間（d/h/m 対応）
+ccxray usage --cwd myproject          # ディレクトリ名の部分一致でスマート検索
+ccxray usage --cwd proj-a,proj-b      # 複数プロジェクト → 比較テーブル
+ccxray usage --session latest         # 最新セッション
+ccxray usage --session costliest      # 最高コストセッション
+ccxray usage --session "fix login"    # セッションタイトルで検索
+ccxray usage --session 950432         # UUID 前方一致
+ccxray usage --tools                  # 全ツール呼び出しの内訳
+```
+
+0.6 秒で自動使用量分析 — ログを手動で掘らなくても、トークンとコストの行き先が分かります。`index.ndjson` を直接読み取り、サーバー起動不要。モデル別コスト、ツール・スキル使用量、プロンプトハッシュ安定性（system/tools/core プロンプトのターン間変化頻度）、ターン間隔別キャッシュヒット率、コスト上位 10 セッション（タイトル付き）を表示します。
+
 ### その他
 
 - **ディープリンクナビゲーション** — すべての選択状態（project / session / turn / step）はアドレスバーの URL に反映されます。URL を新しいタブに貼り付けると、ダッシュボードが同じ画面に直接ナビゲートします。

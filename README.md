@@ -150,6 +150,23 @@ When a parent inherits protection from a starred descendant, the badge becomes `
 
 ![Star retention and descendant popover](docs/stars.png)
 
+### Usage Analytics CLI
+
+```bash
+ccxray usage                          # Human-readable summary
+ccxray usage --json                   # JSON for agents (< 4KB)
+ccxray usage --last 7d                # Last 7 days (supports d/h/m)
+ccxray usage --cwd myproject          # Smart match by directory name substring
+ccxray usage --cwd proj-a,proj-b      # Multiple projects → comparison table
+ccxray usage --session latest         # Most recent session
+ccxray usage --session costliest      # Highest-cost session
+ccxray usage --session "fix login"    # Search by session title
+ccxray usage --session 950432         # UUID prefix match
+ccxray usage --tools                  # Full tool breakdown
+```
+
+Automated usage analysis in 0.6 seconds — know where your tokens and dollars go without manual log diving. Reads `index.ndjson` directly, no server needed. Shows model cost breakdown, tool & skill usage, prompt hash stability (how often system/tools/core prompts change between turns), cache hit rates by inter-turn gap, and the 10 costliest sessions with titles.
+
 ### More
 
 - **Deep Link Navigation** — Every selection (project / session / turn / step) is reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view.

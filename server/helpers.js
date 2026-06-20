@@ -719,7 +719,11 @@ function extractToolCalls(messages) {
   (messages || []).forEach(m => {
     if (!Array.isArray(m.content)) return;
     m.content.forEach(b => {
-      if (b.type === 'tool_use' && b.name) counts[b.name] = (counts[b.name] || 0) + 1;
+      if (b.type !== 'tool_use' || !b.name) return;
+      // ponytail: expand Skill/Workflow to Skill:<name> for per-skill tracking
+      const key = (b.name === 'Skill' || b.name === 'Workflow') && b.input?.skill
+        ? `${b.name}:${b.input.skill}` : b.name;
+      counts[key] = (counts[key] || 0) + 1;
     });
   });
   return counts;
