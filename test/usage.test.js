@@ -275,6 +275,14 @@ describe('usage parseArgs', () => {
     assert.equal(r.code, 1);
   });
 
+  it('empty result from --session + --cwd names both filters in the hint', () => {
+    const r = cliErr('--json', '--session', 'aaaaaaaa', '--cwd', '/no/such/dir');
+    assert.equal(r.code, 1);
+    const err = JSON.parse(r.stdout);
+    assert.match(err.hint, /--session/);
+    assert.match(err.hint, /--cwd/);
+  });
+
   it('--last and --session combine', () => {
     const all = JSON.parse(cli('--json'));
     if (!all.sessions.topSessions?.length) return;

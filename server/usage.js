@@ -115,10 +115,15 @@ function run(argv) {
   }
 
   if (!entries.length) {
-    const hint = args.sessionIds.length
-      ? `no match for "${args.sessionIds.join(', ')}". Try --session latest, --session costliest, or a title keyword.`
-      : args.cwds.length ? `no match for "${args.cwds.join(', ')}". Try a directory name substring.`
-      : 'index is empty';
+    const filters = [];
+    if (args.sessionIds.length) filters.push(`--session "${args.sessionIds.join(', ')}"`);
+    if (args.cwds.length) filters.push(`--cwd "${args.cwds.join(', ')}"`);
+    if (args.since) filters.push('--last window');
+    const hint = filters.length === 0
+      ? 'index is empty'
+      : filters.length === 1
+        ? `no match for ${filters[0]}. Try --session latest/costliest, a title keyword, or a directory substring.`
+        : `no entries match all of ${filters.join(' + ')}. Loosen one filter.`;
     const err = { error: 'no matching entries', hint };
     if (args.json) console.log(JSON.stringify(err));
     else console.error(`${err.error} — ${hint}`);
