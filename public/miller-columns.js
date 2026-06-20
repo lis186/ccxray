@@ -2603,7 +2603,9 @@ function renderDetailCol() {
       currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreq[c.name] = (toolFreq[c.name] || 0) + 1; }); });
       const totalSteps = currentSteps.filter(s => s.type === 'tool-group').length;
       const errorCount = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
-      const summaryHtml = '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
+      const focusedBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
+      const summaryHtml = focusedBadge
+        + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
         + totalSteps + ' steps · ' + (totalSteps - errorCount) + '✓'
         + (errorCount ? ' <span style="color:var(--red)">' + errorCount + '✗</span>' : '')
         + '</div>';
