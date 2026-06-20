@@ -53,6 +53,7 @@ function buildEntryFields(ctx) {
     msgCount: parsedBody?.messages?.length || 0,
     toolCount: parsedBody?.tools?.length || 0,
     toolCalls: helpers.extractToolCalls(parsedBody?.messages),
+    skillCalls: helpers.extractSkillCalls(parsedBody?.messages),
     isSubagent,
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,

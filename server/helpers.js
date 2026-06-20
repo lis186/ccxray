@@ -720,10 +720,26 @@ function extractToolCalls(messages) {
     if (!Array.isArray(m.content)) return;
     m.content.forEach(b => {
       if (b.type !== 'tool_use' || !b.name) return;
-      // ponytail: expand Skill/Workflow to Skill:<name> for per-skill tracking
-      const key = (b.name === 'Skill' || b.name === 'Workflow') && b.input?.skill
-        ? `${b.name}:${b.input.skill}` : b.name;
-      counts[key] = (counts[key] || 0) + 1;
+      counts[b.name] = (counts[b.name] || 0) + 1;
+    });
+  });
+  return counts;
+}
+
+// Per-skill invocation counts, keyed by the skill name passed to the `Skill`
+// tool (e.g. `superpowers:brainstorming`). Kept separate from extractToolCalls
+// so `toolCalls` stays a clean {toolName: count} contract for the dashboard —
+// only `ccxray usage` (which reads the summarized index, not raw messages)
+// needs this breakdown. Only the model-initiated `Skill` tool_use is counted;
+// the `Workflow` tool has no `skill` input, so it is intentionally excluded.
+function extractSkillCalls(messages) {
+  const counts = {};
+  (messages || []).forEach(m => {
+    if (!Array.isArray(m.content)) return;
+    m.content.forEach(b => {
+      if (b.type !== 'tool_use' || b.name !== 'Skill') return;
+      const skill = b.input?.skill;
+      if (skill) counts[skill] = (counts[skill] || 0) + 1;
     });
   });
   return counts;
@@ -843,6 +859,7 @@ module.exports = {
   extractFirstUserText,
   hasToolFail,
   extractToolCalls,
+  extractSkillCalls,
   extractOpenAIToolCalls,
   extractDuplicateToolCalls,
   scanCredentials,

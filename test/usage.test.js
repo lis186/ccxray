@@ -82,11 +82,11 @@ describe('usage analyze', () => {
     assert.equal(r.tools.failRate, 0.5);
   });
 
-  it('tracks skill invocations and loads from Skill:<name> keys', () => {
+  it('tracks skill invocations and loads from the skillCalls field', () => {
     const r = analyze([
-      entry({ toolCalls: { 'Skill:code-review': 1, Bash: 2 } }),
-      entry({ toolCalls: { 'Skill:code-review': 2, 'Skill:agmsg': 1 } }),
-      entry({ toolCalls: { 'Skill:code-review': 1 }, sessionId: 's2' }),
+      entry({ skillCalls: { 'code-review': 1 } }),
+      entry({ skillCalls: { 'code-review': 2, 'agmsg': 1 } }),
+      entry({ skillCalls: { 'code-review': 1 }, sessionId: 's2' }),
     ]);
     assert.equal(r.skills.length, 2);
     const cr = r.skills.find(s => s.name === 'code-review');

@@ -145,7 +145,7 @@ function analyze(entries, opts = {}) {
   const modelMap = {};
   const toolAgg = {};
   const skillMap = {}; // skill name → { invocations, sessions: Set }
-  let totalCost = 0, totalToolCalls = 0, failCount = 0, subagentCount = 0;
+  let totalCost = 0, totalToolCalls = 0, failCount = 0, subagentCount = 0, legacySkillCount = 0;
   let totalInput = 0, totalCacheCreate = 0, totalCacheRead = 0, totalOutput = 0;
 
   for (const e of entries) {
@@ -171,14 +171,18 @@ function analyze(entries, opts = {}) {
       for (const [name, count] of Object.entries(e.toolCalls)) {
         toolAgg[name] = (toolAgg[name] || 0) + count;
         totalToolCalls += count;
-        // track Skill:<name> detail
-        if (name.startsWith('Skill:')) {
-          const sn = name.slice(6);
-          if (!skillMap[sn]) skillMap[sn] = { invocations: 0, sessions: new Set() };
-          skillMap[sn].invocations += count;
-          skillMap[sn].sessions.add(sid);
-        }
       }
+    }
+    // Per-skill detail comes from the dedicated skillCalls field (new data).
+    // Entries without it predate skill tracking → counted as (pre-tracking).
+    if (e.skillCalls && Object.keys(e.skillCalls).length) {
+      for (const [sn, count] of Object.entries(e.skillCalls)) {
+        if (!skillMap[sn]) skillMap[sn] = { invocations: 0, sessions: new Set() };
+        skillMap[sn].invocations += count;
+        skillMap[sn].sessions.add(sid);
+      }
+    } else {
+      legacySkillCount += e.toolCalls?.Skill || 0;
     }
     if (e.toolFail) failCount++;
 
@@ -265,9 +269,8 @@ function analyze(entries, opts = {}) {
       name, invocations: s.invocations, loads: s.sessions.size,
       scope: scopeMap[name] || scopeMap[name.split(':').pop()] || null,
     }));
-  // legacy: count un-expanded "Skill" calls from old data
-  const legacySkill = toolAgg['Skill'] || 0;
-  if (legacySkill) skills.push({ name: '(pre-tracking)', invocations: legacySkill, loads: null, scope: null });
+  // legacy: Skill tool calls from entries that predate the skillCalls field
+  if (legacySkillCount) skills.push({ name: '(pre-tracking)', invocations: legacySkillCount, loads: null, scope: null });
 
   // sort session turns once for both hashStability and gapVsCache
   for (const turns of Object.values(bySession)) turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
