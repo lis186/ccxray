@@ -115,6 +115,10 @@ async function openSystemPromptPanel(forceDiff) {
   const data = await fetch('/_api/sysprompt/versions').then(r => r.json());
   spAllVersions = data.versions || [];
   spAgents = buildAgentList(spAllVersions, data.agents);
+  // Keep badge agent map in sync
+  if (typeof _hashAgentMap !== 'undefined') {
+    (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = v.agentLabel || v.agentKey; });
+  }
 
   if (!spAgents.length) {
     if (panel) panel.innerHTML = '<div style="color:var(--dim);font-size:11px">No versions found.</div>';

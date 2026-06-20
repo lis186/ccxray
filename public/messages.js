@@ -1,6 +1,17 @@
 // ── Messages column helpers ──
 const INJECTED_TAG_RE = /^<(system-reminder|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
 
+// P1: coreHash → agentLabel map, lazy-fetched from versions API
+// ponytail: one fetch, no retry, badge falls back to entry.agent until loaded
+let _hashAgentMap = null;
+function _seedHashAgentMap() {
+  if (_hashAgentMap) return;
+  _hashAgentMap = {};
+  fetch('/_api/sysprompt/versions').then(r => r.json()).then(d => {
+    (d.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = v.agentLabel || v.agentKey; });
+  }).catch(() => {});
+}
+
 // ── Credential highlight ──────────────────────────────────────────────
 const CRED_PATTERNS = [
   /sk-ant-[a-zA-Z0-9_-]{20,}/g,
@@ -573,10 +584,11 @@ function renderEditedBanner(req, msgIdx) {
 
 function renderPromptBadgeHtml(entry) {
   if (!entry) return '';
+  _seedHashAgentMap();
   const provider = entry.provider || 'anthropic';
   const providerClass = provider === 'openai' ? 'provider-openai' : (provider === 'anthropic' ? 'provider-anthropic' : 'provider-unknown');
   const dot = provider === 'openai' ? '◆' : '●';
-  const agent = entry.agent || 'Unknown';
+  const agent = (_hashAgentMap && _hashAgentMap[entry.coreHash]) || entry.agent || 'Unknown';
   const hash = entry.coreHash;
 
   let badge;

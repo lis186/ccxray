@@ -383,6 +383,8 @@ function addEntry(e) {
     toolsHash: e.toolsHash || null,
     thinkingStripped: e.thinkingStripped || false,
     provider: e.provider || 'anthropic',
+    agent: e.agent || null,
+    cwd: e.cwd || null,
   });
 
   if (isRetry) return;
