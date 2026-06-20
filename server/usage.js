@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { resolveCcxrayHome } = require('./paths');
 
@@ -11,7 +12,8 @@ Options:
   --tools             Show all tools (default: top 7)
   --session <id>      Filter to session(s), comma-separated or repeated
   --last <duration>   Time filter: 7d, 24h, 30m (default: all)
-  --cwd <path>        Filter to entries from this working directory (prefix match)
+  --cwd <path>        Filter by working dir: /abs or ~/path = prefix match,
+                      a bare name = case-insensitive substring
   --open              Open dashboard to the matched session after output
   --help              Show this help`;
 
@@ -86,13 +88,20 @@ function run(argv) {
     ));
   }
   if (args.since) entries = entries.filter(e => (e.receivedAt || 0) >= args.since);
-  // ponytail: #4 smart --cwd — non-path values do case-insensitive substring match
+  // ponytail: #4 smart --cwd — an absolute/`~` path is a prefix match; anything
+  // else (a bare name or relative fragment) is a case-insensitive substring.
+  // `~` is expanded first since stored cwds are absolute (a literal `~/…`
+  // prefix would never match); a leading `./` is stripped so `./foo` == `foo`.
   if (args.cwds.length) {
+    const expand = p => p === '~' || p.startsWith('~/') ? os.homedir() + p.slice(1) : p;
     entries = entries.filter(e => {
       if (!e.cwd) return false;
-      return args.cwds.some(p => p.startsWith('/') || p.startsWith('~')
-        ? e.cwd.startsWith(p)
-        : e.cwd.toLowerCase().includes(p.toLowerCase()));
+      return args.cwds.some(raw => {
+        const p = expand(raw);
+        return p.startsWith('/')
+          ? e.cwd.startsWith(p)
+          : e.cwd.toLowerCase().includes(p.replace(/^\.\//, '').toLowerCase());
+      });
     });
   }
 

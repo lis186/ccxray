@@ -233,6 +233,34 @@ describe('usage parseArgs', () => {
     assert.ok(r.meta.totalEntries < all.meta.totalEntries);
   });
 
+  it('--cwd bare name is a case-insensitive substring match', () => {
+    const r = JSON.parse(cli('--json', '--cwd', 'ALPHA'));
+    assert.equal(r.meta.totalEntries, 2); // /work/project-alpha
+  });
+
+  it('--cwd strips a leading ./ before substring matching', () => {
+    const r = JSON.parse(cli('--json', '--cwd', './project-beta'));
+    assert.equal(r.meta.totalEntries, 2); // /work/project-beta
+  });
+
+  it('--cwd expands ~ to home for prefix matching', () => {
+    // stored cwds are absolute, so a literal ~/… prefix must be expanded first
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-cwd-'));
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    const projCwd = path.join(os.homedir(), 'ccxray-demo-proj-xyz');
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'),
+      JSON.stringify({ id: 'i', sessionId: 's', receivedAt: 1, cwd: projCwd, cost: { cost: 1 } }) + '\n');
+    try {
+      const r = JSON.parse(execFileSync(
+        process.execPath, ['server/index.js', 'usage', '--json', '--cwd', '~/ccxray-demo-proj-xyz'],
+        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+      ).toString());
+      assert.equal(r.meta.totalEntries, 1);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('--cwd comma-separated matches union of paths', () => {
     const r = cliErr('--json', '--cwd', '/no/match/a,/no/match/b');
     assert.equal(r.code, 1);
