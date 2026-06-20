@@ -407,9 +407,13 @@ function buildSkillScopeMap() {
 function openDashboard(queryString) {
   const port = require('./hub').readHubLock()?.port || 5577;
   const url = `http://localhost:${port}/?${queryString}`;
-  const { exec } = require('child_process');
-  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-  exec(`${cmd} ${JSON.stringify(url)}`);
+  const { execFile } = require('child_process');
+  // execFile with an args array — no shell, so the url is never interpolated
+  // into a command string. (win32 `start` is a cmd builtin: cmd /c start "" url,
+  // the empty "" being start's window-title argument.)
+  if (process.platform === 'darwin') execFile('open', [url]);
+  else if (process.platform === 'win32') execFile('cmd', ['/c', 'start', '', url]);
+  else execFile('xdg-open', [url]);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
