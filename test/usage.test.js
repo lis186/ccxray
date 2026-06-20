@@ -65,6 +65,14 @@ describe('usage analyze', () => {
     assert.equal(r.tools.top[0].count, 5);
   });
 
+  it('caps tools.top at 7 by default; --tools lifts the cap', () => {
+    const tools = {};
+    for (let i = 0; i < 10; i++) tools['T' + i] = 10 - i;
+    const e = entry({ toolCalls: tools });
+    assert.equal(analyze([e]).tools.top.length, 7);
+    assert.equal(analyze([e], { tools: true }).tools.top.length, 10);
+  });
+
   it('computes hash stability within session', () => {
     const r = analyze([
       entry({ receivedAt: 1, sysHash: 'a', toolsHash: 'x', coreHash: 'p' }),

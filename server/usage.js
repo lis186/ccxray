@@ -129,7 +129,7 @@ function run(argv) {
   // in, keeping analyze() pure and deterministic for direct/test callers.
   const result = analyze(entries, { ...args, scopeMap: buildSkillScopeMap() });
   if (args.json) console.log(JSON.stringify(result));
-  else printHuman(result, args);
+  else printHuman(result);
 
   // ponytail: --open jumps to dashboard for the resolved session
   if (args.open) {
@@ -257,7 +257,9 @@ function analyze(entries, opts = {}) {
 
   const tools = {
     totalCalls: totalToolCalls,
-    top: Object.entries(toolAgg).sort((a, b) => b[1] - a[1]).slice(0, opts.tools ? Infinity : 10).map(([name, count]) => ({ name, count })),
+    // single source for the "top 7" default (documented in --help/README);
+    // --tools lifts the cap for both JSON and human output.
+    top: Object.entries(toolAgg).sort((a, b) => b[1] - a[1]).slice(0, opts.tools ? Infinity : 7).map(([name, count]) => ({ name, count })),
     failRate: entries.length ? +(failCount / entries.length).toFixed(3) : 0,
   };
 
@@ -414,7 +416,7 @@ function percentiles(arr) {
 
 // ── Human output ─────────────────────────────────────────────────────────
 
-function printHuman(r, opts = {}) {
+function printHuman(r) {
   const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
 
   console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · $${r.meta.totalCost}`);
@@ -438,7 +440,7 @@ function printHuman(r, opts = {}) {
   console.log();
 
   console.log(`${B}Tools${R}  ${r.tools.totalCalls} calls · ${pct(r.tools.failRate)} fail`);
-  for (const t of (opts.tools ? r.tools.top : r.tools.top.slice(0, 7))) console.log(`  ${t.name}: ${t.count}`);
+  for (const t of r.tools.top) console.log(`  ${t.name}: ${t.count}`);
   console.log();
 
   if (r.skills.length) {
