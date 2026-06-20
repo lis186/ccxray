@@ -67,7 +67,12 @@ function run(argv) {
   if (args.sessionIds.length) {
     const exact = [], fuzzy = [];
     for (const id of args.sessionIds) {
-      if (id === 'latest') { exact.push(entries[entries.length - 1]?.sessionId); }
+      if (id === 'latest') {
+        // by receivedAt, not array order: index lines are append-order and can
+        // arrive out of sequence under hub concurrency or startup restoration.
+        const newest = entries.reduce((a, e) => (e.receivedAt || 0) > (a?.receivedAt || 0) ? e : a, null);
+        exact.push(newest?.sessionId);
+      }
       else if (id === 'costliest') {
         const bySess = {};
         for (const e of entries) if (e.sessionId) bySess[e.sessionId] = (bySess[e.sessionId] || 0) + (e.cost?.cost || 0);

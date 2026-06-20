@@ -253,6 +253,28 @@ describe('usage parseArgs', () => {
     const r = JSON.parse(out);
     assert.ok(r.meta.totalEntries > 0);
   });
+
+  it('--session latest resolves by receivedAt, not file order', () => {
+    // newest-by-receivedAt is the FIRST line; the last line is older — file
+    // order would pick the wrong session under hub concurrency / restoration.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-latest-'));
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    const lines = [
+      { id: 'x1', sessionId: 'newest-sess', receivedAt: 5000, cost: { cost: 0.1 } },
+      { id: 'x2', sessionId: 'older-sess', receivedAt: 1000, cost: { cost: 0.1 } },
+    ];
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    try {
+      const r = JSON.parse(execFileSync(
+        process.execPath, ['server/index.js', 'usage', '--json', '--session', 'latest'],
+        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+      ).toString());
+      assert.equal(r.meta.totalSessions, 1);
+      assert.equal(r.sessions.topSessions[0].sessionId, 'newest-sess');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('usage CLI', () => {
