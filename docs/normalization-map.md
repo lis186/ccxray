@@ -143,7 +143,9 @@ Both providers share the same function. It branches on `body.messages` (Anthropi
 
 ### Anthropic
 
-`helpers.js:extractToolCalls(messages)` — scans `messages[].content[]` for `type:"tool_use"` blocks, counts by `name`.
+`helpers.js:extractToolCalls(messages)` — scans `messages[].content[]` for `type:"tool_use"` blocks, counts by `name` (e.g. `{Skill: 3, Bash: 1}`). `Skill`/`Workflow` are **not** expanded to per-name keys here — the key stays the plain tool name so `toolCalls` remains a stable contract for the dashboard (`tc['Skill']`, tool chips, tool-utilization).
+
+`helpers.js:extractSkillCalls(messages)` — companion that counts only the model-initiated `Skill` tool, keyed by the invoked skill name (e.g. `{ "superpowers:brainstorming": 2 }`). Persisted as the separate `skillCalls` index field and read by `ccxray usage` for per-skill stats. (`Workflow` has no `skill` input, so it is excluded.)
 
 ### OpenAI
 

@@ -28,6 +28,7 @@ Produced by `server/sse-broadcast.js` `summarizeEntry()`. The full request/respo
 | `msgCount` | number | Length of `messages[]` |
 | `toolCount` | number | Length of `tools[]` |
 | `toolCalls` | object | `{ toolName: count }` — tool_use blocks across messages |
+| `skillCalls` | object | `{ skillName: count }` — `Skill` tool calls by invoked skill (Anthropic only; absent on older entries). Read by `ccxray usage` for per-skill stats |
 
 ### Response outcome
 
@@ -77,6 +78,7 @@ const hasCredential = entry.hasCredential ?? false;
 | `title` | `server/forward.js` title cascade using `server/helpers.js` extractors |
 | `tokens` | `server/helpers.js` `tokenizeRequest()` |
 | `toolCalls`, `duplicateToolCalls` | `server/helpers.js` `extractToolCalls()` / `extractDuplicateToolCalls()` |
+| `skillCalls` | `server/helpers.js` `extractSkillCalls()` |
 | `toolFail` | `server/helpers.js` `hasToolFail()` |
 | `hasCredential` | `server/helpers.js` `entryHasCredential()` |
 | `toolSources` | `server/helpers.js` `buildToolSources()` |
