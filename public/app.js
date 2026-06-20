@@ -4,8 +4,11 @@ const DEFAULT_MAX_CTX = window.__PROXY_CONFIG__?.DEFAULT_CONTEXT || 200000;
 // ── Active Tab State ─────────────────────────────────────────────────
 let activeTab = 'dashboard';
 
+let _switchTabPush = false; // true → next syncViewParam uses pushState
+
 function switchTab(tab, forceDiff) {
   if (activeTab === tab) return;
+  _switchTabPush = true; // cross-tab = history entry
   activeTab = tab;
 
   // Update tab buttons
@@ -38,6 +41,7 @@ function switchTab(tab, forceDiff) {
 
   // Sync URL
   syncViewParam();
+  _switchTabPush = false;
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
@@ -50,7 +54,9 @@ function syncViewParam() {
     if (activeTab === 'dashboard') params.delete('view');
     else params.set('view', activeTab);
     const qs = params.toString();
-    history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    const url = window.location.pathname + (qs ? '?' + qs : '');
+    if (_switchTabPush) history.pushState(null, '', url);
+    else history.replaceState(null, '', url);
   }
 }
 
@@ -63,6 +69,17 @@ function restoreTabFromUrl() {
     switchTab(view);
   }
 }
+
+// Back/Forward button restores tab state
+window.addEventListener('popstate', () => {
+  const view = new URLSearchParams(window.location.search).get('view');
+  const target = (view === 'usage' || view === 'sysprompt') ? view : 'dashboard';
+  if (activeTab !== target) {
+    _switchTabPush = false; // popstate should not push again
+    activeTab = ''; // force switchTab to run
+    switchTab(target);
+  }
+});
 
 // ── Theme Toggle ─────────────────────────────────────────────────────
 function toggleTheme() {

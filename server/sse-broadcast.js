@@ -34,6 +34,7 @@ function summarizeEntry(entry) {
     toolFail: entry.toolFail || false,
     hasCredential: entry.hasCredential || undefined,
     coreHash: entry.coreHash || null,
+    toolsHash: entry.toolsHash || null,
     thinkingStripped: entry.thinkingStripped || false,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,

@@ -1,6 +1,17 @@
 // ── Messages column helpers ──
 const INJECTED_TAG_RE = /^<(system-reminder|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
 
+// P1: coreHash → {label, key} map, lazy-fetched from versions API
+// ponytail: one fetch, no retry, badge falls back to entry.agent until loaded
+let _hashAgentMap = null;
+function _seedHashAgentMap() {
+  if (_hashAgentMap) return;
+  _hashAgentMap = {};
+  fetch('/_api/sysprompt/versions').then(r => r.json()).then(d => {
+    (d.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
+  }).catch(() => {});
+}
+
 // ── Credential highlight ──────────────────────────────────────────────
 const CRED_PATTERNS = [
   /sk-ant-[a-zA-Z0-9_-]{20,}/g,
@@ -569,6 +580,82 @@ function renderEditedBanner(req, msgIdx) {
   return '<div class="edit-banner"><span class="edit-badge">&#9998; EDITED</span>'
     + (summary ? '<div class="edit-summary">' + summary + '</div>' : '')
     + original + '</div>';
+}
+
+function renderPromptBadgeHtml(entry) {
+  if (!entry) return '';
+  _seedHashAgentMap();
+  const provider = entry.provider || 'anthropic';
+  const providerClass = provider === 'openai' ? 'provider-openai' : (provider === 'anthropic' ? 'provider-anthropic' : 'provider-unknown');
+  const dot = provider === 'openai' ? '◆' : '●';
+  const mapped = _hashAgentMap && _hashAgentMap[entry.coreHash];
+  const agent = (mapped && mapped.label) || entry.agent || 'Unknown';
+  const agentKey = (mapped && mapped.key) || '';
+  const hash = entry.coreHash;
+
+  let badge;
+  if (hash) {
+    const shortHash = hash.slice(0, 5);
+    const dlParams = agentKey ? 'agent=' + encodeURIComponent(agentKey) + '&hash=' + encodeURIComponent(hash) : '';
+    // ponytail: single quotes inside onclick="" to avoid attribute breakout
+    const dlScript = dlParams
+      ? "var p=new URLSearchParams(location.search);p.set('agent','" + escapeHtml(agentKey) + "');p.set('hash','" + escapeHtml(hash) + "');history.replaceState(null,'','?'+p);"
+      : '';
+    badge = '<span class="provider-dot ' + providerClass + '">' + dot + '</span> '
+      + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> · '
+      + '<span class="prompt-ver">' + escapeHtml(shortHash) + '</span>'
+      + ' <a class="prompt-link" onclick="' + dlScript + 'switchTab(\'sysprompt\',true);'
+      + 'setTimeout(()=>openSystemPromptPanel&&openSystemPromptPanel(true),100)"'
+      + ' title="View in System Prompt">View in System Prompt</a>';
+  } else if (entry.isSubagent) {
+    badge = '<span class="provider-dot provider-unknown">○</span> '
+      + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> (subagent)';
+  } else {
+    return '';
+  }
+
+  // Tools-changed warning: compare with previous non-subagent turn in same session
+  let toolsWarning = '';
+  if (entry.toolsHash && typeof allEntries !== 'undefined') {
+    const myIdx = allEntries.indexOf(entry);
+    if (myIdx > 0) {
+      for (let i = myIdx - 1; i >= 0; i--) {
+        const prev = allEntries[i];
+        if (prev.sessionId === entry.sessionId && !prev.isSubagent) {
+          if (prev.toolsHash && prev.toolsHash !== entry.toolsHash) {
+            toolsWarning = '<div class="tools-warning">⚠ tools changed · cache miss'
+              + ' <a class="tools-compare-toggle" data-a="' + prev.toolsHash + '" data-b="' + entry.toolsHash + '"'
+              + ' onclick="toggleToolsDiff(this)">compare tools</a>'
+              + '<div class="tools-diff" style="display:none"></div></div>';
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return '<div class="prompt-badge">' + badge + '</div>' + toolsWarning;
+}
+
+function toggleToolsDiff(el) {
+  const diffEl = el.parentElement.querySelector('.tools-diff');
+  if (!diffEl) return;
+  if (diffEl.style.display !== 'none') { diffEl.style.display = 'none'; return; }
+  diffEl.style.display = 'block';
+  if (diffEl.dataset.loaded) return;
+  diffEl.textContent = 'Loading...';
+  const a = el.dataset.a, b = el.dataset.b;
+  fetch('/_api/tools-diff?a=' + a + '&b=' + b).then(r => {
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }).then(data => {
+    diffEl.dataset.loaded = '1';
+    const lines = [];
+    (data.added || []).forEach(n => lines.push('<div class="tools-added">+ ' + escapeHtml(n) + '</div>'));
+    (data.removed || []).forEach(n => lines.push('<div class="tools-removed">- ' + escapeHtml(n) + '</div>'));
+    const summary = '(' + (data.added || []).length + ' added, ' + (data.removed || []).length + ' removed)';
+    diffEl.innerHTML = lines.join('') + '<div class="tools-diff-summary">' + summary + '</div>';
+  }).catch(() => { diffEl.textContent = 'diff unavailable'; diffEl.dataset.loaded = '1'; });
 }
 
 function renderStepDetailHtml(req, tok) {

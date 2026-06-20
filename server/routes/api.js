@@ -70,12 +70,52 @@ function handleApiRoutes(clientReq, clientRes) {
     const urlParams = new URLSearchParams(clientReq.url.split('?')[1] || '');
     const filterAgent = urlParams.get('agent') || null;
     const allAgents = [...new Set([...store.versionIndex.values()].map(v => v.agentKey))].sort();
+    const sessionsByHash = {};
+    for (const e of store.entries) {
+      if (!e.coreHash || !e.sessionId) continue;
+      if (!sessionsByHash[e.coreHash]) sessionsByHash[e.coreHash] = new Set();
+      sessionsByHash[e.coreHash].add(e.sessionId);
+    }
     const vEntries = [...store.versionIndex.values()]
       .filter(v => !filterAgent || v.agentKey === filterAgent)
       .sort((a, b) => (b.firstSeen || '').localeCompare(a.firstSeen || '') || b.version.localeCompare(a.version));
-    const versions = vEntries.map(({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel }) => ({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel }));
+    const versions = vEntries.map(({ version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel, provider }) => ({
+      version, reqId, b2Len, coreLen, coreHash, firstSeen, agentKey, agentLabel,
+      provider: provider || 'anthropic',
+      sessionCount: sessionsByHash[coreHash] ? sessionsByHash[coreHash].size : 0,
+    }));
+    const agentInfo = allAgents.map(k => {
+      const entry = store.versionIndex.get([...store.versionIndex.keys()].find(ik => ik.startsWith(k + '::')));
+      return { key: k, label: entry?.agentLabel || k, provider: entry?.provider || 'anthropic' };
+    });
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ versions, agents: allAgents.map(k => ({ key: k, label: store.versionIndex.get([...store.versionIndex.keys()].find(ik => ik.startsWith(k + '::')))?.agentLabel || k })) }));
+    clientRes.end(JSON.stringify({ versions, agents: agentInfo }));
+    return true;
+  }
+
+  if (clientReq.url.startsWith('/_api/tools-diff')) {
+    const params = new URLSearchParams(clientReq.url.split('?')[1] || '');
+    const hashA = params.get('a'), hashB = params.get('b');
+    if (!hashA || !hashB) {
+      clientRes.writeHead(400, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: 'missing a or b param' }));
+      return true;
+    }
+    const readTools = async (h) => {
+      for (const prefix of ['tools_', 'openai_tools_']) {
+        try { return JSON.parse(await config.storage.readShared(`${prefix}${h}.json`)); } catch {}
+      }
+      return null;
+    };
+    const extractNames = (tools) => (tools || []).map(t => t.name || t.function?.name).filter(Boolean);
+    Promise.all([readTools(hashA), readTools(hashB)]).then(([a, b]) => {
+      if (!a && !b) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'shared files not found' })); return; }
+      const namesA = new Set(extractNames(a)), namesB = new Set(extractNames(b));
+      const added = [...namesB].filter(n => !namesA.has(n));
+      const removed = [...namesA].filter(n => !namesB.has(n));
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ added, removed }));
+    }).catch(() => { clientRes.writeHead(500, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'internal error' })); });
     return true;
   }
 

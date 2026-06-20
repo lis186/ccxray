@@ -94,9 +94,9 @@ function registerPromptVersion(ctx) {
       const sharedFile = sysHash ? `sys_${sysHash}.json` : null;
       store.versionIndex.set(idxKey, {
         reqId: null, sharedFile, b2Len: b2.length, coreLen: coreText.length,
-        coreHash, firstSeen: now, agentKey, agentLabel, version: liveVer,
+        coreHash, firstSeen: now, agentKey, agentLabel, version: liveVer, provider: 'anthropic',
       });
-      const vData = JSON.stringify({ _type: 'version_detected', version: liveVer, b2Len: b2.length, agentKey, agentLabel });
+      const vData = JSON.stringify({ _type: 'version_detected', version: liveVer, b2Len: b2.length, agentKey, agentLabel, provider: 'anthropic' });
       for (const res of store.sseClients) res.write(`data: ${vData}\n\n`);
     }
   }

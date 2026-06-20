@@ -282,7 +282,7 @@ async function buildVersionIndex() {
           store.versionIndex.set(idxKey, {
             reqId: null, sharedFile: filename, b2Len: b2.length, coreLen, coreHash,
             firstSeen,
-            agentKey, agentLabel, version: ver,
+            agentKey, agentLabel, version: ver, provider: isOpenAI ? 'openai' : 'anthropic',
           });
         } else {
           if (ver > existing.version) existing.version = ver;

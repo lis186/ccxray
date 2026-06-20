@@ -26,19 +26,23 @@ function buildAgentList(allVersions, apiAgents) {
   const agentMap = {};
   for (const v of allVersions) {
     const k = v.agentKey;
-    if (!agentMap[k]) agentMap[k] = { key: k, label: v.agentLabel || k, count: 0, latestCoreHash: '', uniqueHashes: new Set() };
+    if (!agentMap[k]) agentMap[k] = { key: k, label: v.agentLabel || k, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: v.provider || 'anthropic' };
     agentMap[k].count++;
     if (v.coreHash) agentMap[k].uniqueHashes.add(v.coreHash);
     if (!agentMap[k].latestCoreHash) agentMap[k].latestCoreHash = v.coreHash || '';
   }
-  // Also include agents from API that may have 0 versions in current data
   for (const a of (apiAgents || [])) {
-    if (!agentMap[a.key]) agentMap[a.key] = { key: a.key, label: a.label, count: 0, latestCoreHash: '', uniqueHashes: new Set() };
+    if (!agentMap[a.key]) agentMap[a.key] = { key: a.key, label: a.label, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: a.provider || 'anthropic' };
+    else if (a.provider) agentMap[a.key].provider = a.provider;
   }
   const agents = Object.values(agentMap);
+  // ponytail: sort by provider group (anthropic first), then version count desc, then alpha
+  const providerOrder = { anthropic: 0, openai: 1 };
   agents.sort((a, b) => {
-    const ia = AGENT_ORDER.indexOf(a.key), ib = AGENT_ORDER.indexOf(b.key);
-    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    const pa = providerOrder[a.provider] ?? 2, pb = providerOrder[b.provider] ?? 2;
+    if (pa !== pb) return pa - pb;
+    if (b.count !== a.count) return b.count - a.count;
+    return a.key.localeCompare(b.key);
   });
   return agents;
 }
@@ -47,10 +51,20 @@ function renderAgentList() {
   const container = document.getElementById('sp-agent-list');
   if (!container) return;
   let html = '<div class="sp-version-list-title">Agents</div>';
+  const providerLabels = { anthropic: 'Claude Code', openai: 'Codex' };
+  const providerDots = { anthropic: '<span class="provider-dot provider-anthropic">●</span>', openai: '<span class="provider-dot provider-openai">◆</span>' };
+  let lastProvider = null;
   for (const a of spAgents) {
+    const p = a.provider || 'anthropic';
+    if (p !== lastProvider) {
+      const groupLabel = providerLabels[p] || 'Other';
+      html += '<div class="agent-group-header">── ' + escapeHtml(groupLabel) + ' ──</div>';
+      lastProvider = p;
+    }
     const isActive = a.key === spSelectedAgent;
     html += '<div class="sp-agent-item' + (isActive ? ' active' : '') + '" onclick="selectAgent(\'' + a.key + '\')">';
-    html += '<div class="sp-agent-label">' + escapeHtml(a.label) + '</div>';
+    const dot = providerDots[p] || '<span class="provider-dot provider-unknown">○</span>';
+    html += '<div class="sp-agent-label">' + dot + ' ' + escapeHtml(a.label) + '</div>';
     const changes = a.uniqueHashes ? a.uniqueHashes.size : 0;
     const changesStr = changes > 1 ? ' · ' + changes + ' changes' : '';
     html += '<div class="sp-agent-meta">' + a.count + ' ver' + (a.count !== 1 ? 's' : '') + changesStr + '</div>';
@@ -101,14 +115,24 @@ async function openSystemPromptPanel(forceDiff) {
   const data = await fetch('/_api/sysprompt/versions').then(r => r.json());
   spAllVersions = data.versions || [];
   spAgents = buildAgentList(spAllVersions, data.agents);
+  // Keep badge agent map in sync
+  if (typeof _hashAgentMap !== 'undefined') {
+    (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
+  }
 
   if (!spAgents.length) {
     if (panel) panel.innerHTML = '<div style="color:var(--dim);font-size:11px">No versions found.</div>';
     return;
   }
 
-  // Select first agent (or keep current if still valid)
-  if (!spSelectedAgent || !spAgents.find(a => a.key === spSelectedAgent)) {
+  // URL deep-link: ?agent=X&hash=Y from Dashboard prompt badge
+  const urlParams = new URLSearchParams(window.location.search);
+  const deepAgent = urlParams.get('agent');
+  const deepHash = urlParams.get('hash');
+
+  if (deepAgent && spAgents.find(a => a.key === deepAgent)) {
+    spSelectedAgent = deepAgent;
+  } else if (!spSelectedAgent || !spAgents.find(a => a.key === spSelectedAgent)) {
     spSelectedAgent = spAgents[0].key;
   }
   spVersions = spAllVersions.filter(v => v.agentKey === spSelectedAgent);
@@ -117,7 +141,13 @@ async function openSystemPromptPanel(forceDiff) {
   if (latest) localStorage.setItem('sysprompt_last_seen', latest);
   if (badge) badge.style.display = 'none';
 
-  spSelectedIdx = 0;
+  // Deep-link to specific version by coreHash
+  let deepIdx = 0;
+  if (deepHash) {
+    const found = spVersions.findIndex(v => v.coreHash === deepHash);
+    if (found >= 0) deepIdx = found;
+  }
+  spSelectedIdx = deepIdx;
   spMode = hasBadge ? 'diff' : 'content';
   spFocusedCol = 'agents';
   renderAgentList();
@@ -176,6 +206,9 @@ function renderVersionList() {
     html += `<span class="sp-size-col" style="text-align:right">${size}</span>`;
     html += `<span class="sp-delta-col" style="min-width:38px;text-align:right">${delta}</span>`;
     html += '</div>';
+    if (v.sessionCount > 0) {
+      html += `<div class="version-sessions" data-hash="${v.coreHash}" onclick="toggleVersionSessions(this, '${v.coreHash}')">${v.sessionCount} session${v.sessionCount > 1 ? 's' : ''} ▸</div>`;
+    }
   }
   container.innerHTML = html;
   container.classList.toggle('focused', spFocusedCol === 'versions');
@@ -470,3 +503,35 @@ document.addEventListener('keydown', (e) => {
     prevHunk();
   }
 });
+
+function toggleVersionSessions(el, coreHash) {
+  const existing = el.nextElementSibling;
+  if (existing && existing.classList.contains('session-list')) {
+    existing.remove();
+    el.textContent = el.textContent.replace('▾', '▸');
+    return;
+  }
+  el.textContent = el.textContent.replace('▸', '▾');
+  // Build session list from client-side allEntries
+  const sessions = {};
+  if (typeof allEntries !== 'undefined') {
+    for (const e of allEntries) {
+      if (e.coreHash === coreHash && e.sessionId) {
+        if (!sessions[e.sessionId]) sessions[e.sessionId] = { count: 0, cwd: e.cwd || '', ts: e.ts || '' };
+        sessions[e.sessionId].count++;
+      }
+    }
+  }
+  const entries = Object.entries(sessions);
+  if (!entries.length) return;
+  const listEl = document.createElement('div');
+  listEl.className = 'session-list';
+  for (const [sid, info] of entries) {
+    const project = (info.cwd || '').split('/').pop() || '?';
+    const a = document.createElement('a');
+    a.textContent = '├ ' + project + ' / ' + info.ts + '  ' + info.count + ' turns';
+    a.onclick = () => { if (typeof switchTab === 'function') switchTab('dashboard'); };
+    listEl.appendChild(a);
+  }
+  el.after(listEl);
+}

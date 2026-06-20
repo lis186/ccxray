@@ -2053,7 +2053,11 @@ function syncUrlFromState() {
   writeTargetToUrlParams(targetFromCurrentSelection(), params);
   const qs = params.toString();
   const newUrl = qs ? '?' + qs : location.pathname;
-  history.replaceState(null, '', newUrl);
+  if (typeof _switchTabPush !== 'undefined' && _switchTabPush) {
+    history.pushState(null, '', newUrl);
+  } else {
+    history.replaceState(null, '', newUrl);
+  }
 }
 
 function formatCurrentStepBreadcrumb() {
@@ -2569,7 +2573,9 @@ function renderDetailCol() {
         currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreqPreview[c.name] = (toolFreqPreview[c.name] || 0) + 1; }); });
         const totalPreview = currentSteps.filter(s => s.type === 'tool-group').length;
         const errorPreview = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
-        const summaryPreview = '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
+        const promptBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
+        const summaryPreview = promptBadge
+          + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
           + totalPreview + ' steps · ' + (totalPreview - errorPreview) + '✓'
           + (errorPreview ? ' <span style="color:var(--red)">' + errorPreview + '✗</span>' : '')
           + '</div>';
@@ -2597,7 +2603,9 @@ function renderDetailCol() {
       currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreq[c.name] = (toolFreq[c.name] || 0) + 1; }); });
       const totalSteps = currentSteps.filter(s => s.type === 'tool-group').length;
       const errorCount = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
-      const summaryHtml = '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
+      const focusedBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
+      const summaryHtml = focusedBadge
+        + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
         + totalSteps + ' steps · ' + (totalSteps - errorCount) + '✓'
         + (errorCount ? ' <span style="color:var(--red)">' + errorCount + '✗</span>' : '')
         + '</div>';

@@ -629,3 +629,30 @@
   .edit-summary-line { font-size: 11px; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
   .edit-original { margin-top: 6px; }
   .edit-original summary { cursor: pointer; font-size: 11px; color: var(--yellow); }
+
+/* ── Prompt badge (#89) ── */
+.prompt-badge { padding: 4px 10px; font-size: 11px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 4px; }
+.prompt-badge-sub { opacity: 0.5; }
+.provider-dot { font-size: 10px; }
+.provider-anthropic { color: #a855f7; }
+.provider-openai { color: #22c55e; }
+.provider-unknown { color: #6b7280; }
+.prompt-link { color: var(--accent); text-decoration: none; cursor: pointer; margin-left: 6px; font-size: 10px; }
+.prompt-link:hover { text-decoration: underline; }
+.tools-warning { padding: 4px 10px; font-size: 11px; color: #f59e0b; background: rgba(245,158,11,0.08); border-bottom: 1px solid var(--border); }
+.tools-compare-toggle { color: var(--accent); cursor: pointer; text-decoration: none; margin-left: 8px; font-size: 10px; }
+.tools-compare-toggle:hover { text-decoration: underline; }
+.tools-diff { padding: 4px 10px; font-family: monospace; font-size: 11px; }
+.tools-added { color: #22c55e; }
+.tools-removed { color: #f87171; }
+.tools-diff-summary { color: var(--dim); margin-top: 2px; }
+/* ── Agent group headers (#89) ── */
+.agent-group-header { padding: 6px 10px 2px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.version-sessions { font-size: 10px; color: var(--dim); cursor: pointer; padding: 0 10px 4px; }
+.version-sessions:hover { color: var(--fg); }
+.session-list { padding: 0 10px 4px 20px; font-size: 10px; font-family: monospace; }
+.session-list a { color: var(--accent); text-decoration: none; display: block; padding: 1px 0; }
+.session-list a:hover { text-decoration: underline; }
+.sysprompt-breadcrumb { padding: 6px 12px; font-size: 11px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.sysprompt-breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.sysprompt-breadcrumb a:hover { text-decoration: underline; }

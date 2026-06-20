@@ -380,8 +380,11 @@ function addEntry(e) {
     toolSources: e.toolSources || null,
     title: e.title || null,
     coreHash: e.coreHash || null,
+    toolsHash: e.toolsHash || null,
     thinkingStripped: e.thinkingStripped || false,
     provider: e.provider || 'anthropic',
+    agent: e.agent || null,
+    cwd: e.cwd || null,
   });
 
   if (isRetry) return;
@@ -524,11 +527,12 @@ function addEntry(e) {
   if (toolFail) riskMarkers.push('tool-fail');
   if (dupesMax >= 2) riskMarkers.push('dupes\xD7' + dupesMax);
   if (e.thinkingStripped === true) riskMarkers.push('thinking-stripped');
-  if (e.coreHash) {
+  if (e.coreHash || e.toolsHash) {
     for (let i = allEntries.length - 2; i >= 0; i--) {
       const prev = allEntries[i];
       if (prev.sessionId === sid && !prev.isSubagent) {
-        if (prev.coreHash && prev.coreHash !== e.coreHash) riskMarkers.push('sys-changed');
+        if (prev.coreHash && e.coreHash && prev.coreHash !== e.coreHash) riskMarkers.push('sys-changed');
+        if (prev.toolsHash && e.toolsHash && prev.toolsHash !== e.toolsHash) riskMarkers.push('tools-changed');
         break;
       }
     }
