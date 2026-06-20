@@ -36,8 +36,13 @@ function parseArgs(argv) {
       for (const id of argv[++i].split(',')) if (id) args.sessionIds.push(id);
     }
     else if (argv[i] === '--last' && argv[i + 1]) {
-      const ms = parseDuration(argv[++i]);
-      if (ms != null) args.since = Date.now() - ms;
+      const dur = argv[++i];
+      const ms = parseDuration(dur);
+      if (ms == null) {
+        console.error(`Invalid --last duration: "${dur}". Use forms like 7d, 24h, 30m.`);
+        process.exit(1);
+      }
+      args.since = Date.now() - ms;
     }
     else if (argv[i] === '--cwd' && argv[i + 1]) {
       for (const p of argv[++i].split(',')) if (p) args.cwds.push(p);

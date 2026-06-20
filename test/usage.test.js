@@ -194,15 +194,11 @@ describe('usage analyze', () => {
 });
 
 describe('usage parseArgs', () => {
-  // import parseArgs for direct testing
-  // ponytail: reach into module internals via a thin wrapper
-  const parseArgs = (() => {
-    const src = require('fs').readFileSync(require('path').join(__dirname, '..', 'server', 'usage.js'), 'utf8');
-    const match = src.match(/function parseArgs\(argv\)\s*\{/);
-    if (!match) throw new Error('parseArgs not found');
-    // just test via CLI output instead — parseArgs is not exported
-    return null;
-  })();
+  it('--last with an invalid duration exits 1 instead of silently ignoring it', () => {
+    const r = cliErr('--json', '--last', '7x');
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /Invalid --last duration/);
+  });
 
   it('--last 0d matches nothing and exits 1', () => {
     const r = cliErr('--json', '--last', '0d');
