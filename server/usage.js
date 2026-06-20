@@ -58,6 +58,10 @@ function run(argv) {
     process.exit(1);
   }
 
+  // ponytail: whole-file read + split holds the full index in memory (~tens of
+  // MB in practice). Fine for this one-shot CLI; if index.ndjson grows into the
+  // hundreds of MB or this ever runs long-lived, switch to a streaming
+  // readline pass (which would make run() async).
   const raw = fs.readFileSync(indexPath, 'utf8');
   let entries = [];
   for (const line of raw.split('\n')) {
