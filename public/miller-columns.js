@@ -2053,7 +2053,11 @@ function syncUrlFromState() {
   writeTargetToUrlParams(targetFromCurrentSelection(), params);
   const qs = params.toString();
   const newUrl = qs ? '?' + qs : location.pathname;
-  history.replaceState(null, '', newUrl);
+  if (typeof _switchTabPush !== 'undefined' && _switchTabPush) {
+    history.pushState(null, '', newUrl);
+  } else {
+    history.replaceState(null, '', newUrl);
+  }
 }
 
 function formatCurrentStepBreadcrumb() {
