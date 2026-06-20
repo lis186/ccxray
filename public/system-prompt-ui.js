@@ -117,7 +117,7 @@ async function openSystemPromptPanel(forceDiff) {
   spAgents = buildAgentList(spAllVersions, data.agents);
   // Keep badge agent map in sync
   if (typeof _hashAgentMap !== 'undefined') {
-    (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = v.agentLabel || v.agentKey; });
+    (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
   }
 
   if (!spAgents.length) {

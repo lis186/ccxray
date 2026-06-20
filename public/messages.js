@@ -1,14 +1,14 @@
 // ── Messages column helpers ──
 const INJECTED_TAG_RE = /^<(system-reminder|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
 
-// P1: coreHash → agentLabel map, lazy-fetched from versions API
+// P1: coreHash → {label, key} map, lazy-fetched from versions API
 // ponytail: one fetch, no retry, badge falls back to entry.agent until loaded
 let _hashAgentMap = null;
 function _seedHashAgentMap() {
   if (_hashAgentMap) return;
   _hashAgentMap = {};
   fetch('/_api/sysprompt/versions').then(r => r.json()).then(d => {
-    (d.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = v.agentLabel || v.agentKey; });
+    (d.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
   }).catch(() => {});
 }
 
@@ -588,18 +588,24 @@ function renderPromptBadgeHtml(entry) {
   const provider = entry.provider || 'anthropic';
   const providerClass = provider === 'openai' ? 'provider-openai' : (provider === 'anthropic' ? 'provider-anthropic' : 'provider-unknown');
   const dot = provider === 'openai' ? '◆' : '●';
-  const agent = (_hashAgentMap && _hashAgentMap[entry.coreHash]) || entry.agent || 'Unknown';
+  const mapped = _hashAgentMap && _hashAgentMap[entry.coreHash];
+  const agent = (mapped && mapped.label) || entry.agent || 'Unknown';
+  const agentKey = (mapped && mapped.key) || '';
   const hash = entry.coreHash;
 
   let badge;
   if (hash) {
     const shortHash = hash.slice(0, 5);
+    const dlParams = agentKey ? 'agent=' + encodeURIComponent(agentKey) + '&hash=' + encodeURIComponent(hash) : '';
+    const dlScript = dlParams
+      ? 'var p=new URLSearchParams(location.search);p.set(\"agent\",\"' + escapeHtml(agentKey) + '\");p.set(\"hash\",\"' + escapeHtml(hash) + '\");history.replaceState(null,\"\",\"?\"+p);'
+      : '';
     badge = '<span class="provider-dot ' + providerClass + '">' + dot + '</span> '
       + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> · '
       + '<span class="prompt-ver">' + escapeHtml(shortHash) + '</span>'
-      + ' <a class="prompt-link" onclick="switchTab(\'sysprompt\',true);'
+      + ' <a class="prompt-link" onclick="' + dlScript + 'switchTab(\'sysprompt\',true);'
       + 'setTimeout(()=>openSystemPromptPanel&&openSystemPromptPanel(true),100)"'
-      + ' title="View in System Prompt">→ prompt</a>';
+      + ' title="View in System Prompt">View in System Prompt</a>';
   } else if (entry.isSubagent) {
     badge = '<span class="provider-dot provider-unknown">○</span> '
       + '<span class="prompt-agent">' + escapeHtml(agent) + '</span> (subagent)';
