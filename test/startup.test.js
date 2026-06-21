@@ -98,16 +98,24 @@ function killAndWait(child) {
 async function waitFor(fn, { timeoutMs = 8000, intervalMs = 50 } = {}) {
   const start = Date.now();
   let lastErr;
-  for (;;) {
+  while (Date.now() - start < timeoutMs) {
+    const remaining = timeoutMs - (Date.now() - start);
+    let timer;
     try {
-      const result = await fn();
+      // Race fn() against the remaining budget so an async predicate that never
+      // settles (e.g. an httpGet to a dead proxy) can't hang the test — the
+      // timeout still fires. clearTimeout below keeps the loser timer from
+      // lingering on the event loop.
+      const result = await Promise.race([
+        Promise.resolve().then(fn),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('predicate exceeded deadline')), remaining); }),
+      ]);
       if (result) return result;
     } catch (e) { lastErr = e; }
-    if (Date.now() - start > timeoutMs) {
-      throw new Error(`waitFor: condition not met within ${timeoutMs}ms${lastErr ? ` (last error: ${lastErr.message})` : ''}`);
-    }
+    finally { clearTimeout(timer); }
     await new Promise(r => setTimeout(r, intervalMs));
   }
+  throw new Error(`waitFor: condition not met within ${timeoutMs}ms${lastErr ? ` (last error: ${lastErr.message})` : ''}`);
 }
 
 // Read index.ndjson as a parsed array, or [] if not written yet.
@@ -1806,14 +1814,17 @@ function sendOpenAIResponsesRequest(port, body, urlPath = '/v1/responses', extra
 
 function httpGet(port, urlPath) {
   return new Promise((resolve, reject) => {
-    http.get(`http://localhost:${port}${urlPath}`, res => {
+    const req = http.get(`http://localhost:${port}${urlPath}`, res => {
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch { reject(new Error(`Bad JSON: ${data}`)); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    // Reject (don't hang) if the proxy accepts the socket but never responds.
+    req.setTimeout(5000, () => req.destroy(new Error('httpGet timeout')));
   });
 }
 
