@@ -422,3 +422,138 @@ describe('usage CLI', () => {
     }
   });
 });
+
+// Locks the agent-facing contract documented in docs/usage.md: the exact key
+// set and field types of every section, plus the multi-cwd and error shapes.
+// Exact-key assertions (not just "key exists") fail on BOTH a removed field and
+// an accidentally-leaked extra one. A deliberate shape change must update this
+// test AND docs/usage.md in the same commit — that coupling is the point.
+describe('usage --json shape contract', () => {
+  const sameKeys = (o, expected) => assert.deepEqual(Object.keys(o).sort(), [...expected].sort());
+
+  it('single-scope object has exactly the documented top-level keys', () => {
+    sameKeys(JSON.parse(cli('--json')), ['meta', 'sessions', 'models', 'tools', 'skills', 'prompts', 'cache', 'gapCache']);
+  });
+
+  it('meta has the documented shape', () => {
+    const { meta } = JSON.parse(cli('--json'));
+    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'timeRange']);
+    assert.equal(typeof meta.totalEntries, 'number');
+    assert.equal(typeof meta.totalSessions, 'number');
+    assert.equal(typeof meta.totalCost, 'number');
+    sameKeys(meta.timeRange, ['from', 'to']);
+    // ISO strings here (every fixture entry has receivedAt); null only when absent.
+    assert.equal(typeof meta.timeRange.from, 'string');
+    assert.equal(typeof meta.timeRange.to, 'string');
+  });
+
+  it('sessions + topSessions[] have the documented shape', () => {
+    const { sessions } = JSON.parse(cli('--json'));
+    sameKeys(sessions, ['count', 'byProvider', 'subagentRatio', 'turnDistribution', 'topSessions']);
+    assert.equal(typeof sessions.count, 'number');
+    assert.equal(typeof sessions.byProvider, 'object');
+    assert.equal(typeof sessions.subagentRatio, 'number');
+    sameKeys(sessions.turnDistribution, ['min', 'median', 'p75', 'max']);
+    assert.ok(Array.isArray(sessions.topSessions) && sessions.topSessions.length <= 10);
+    for (const s of sessions.topSessions) {
+      sameKeys(s, ['sessionId', 'turns', 'cost', 'durationMin', 'title', 'model', 'provider']);
+      assert.equal(typeof s.sessionId, 'string');
+      assert.equal(typeof s.turns, 'number');
+      assert.equal(typeof s.cost, 'number');
+      assert.equal(typeof s.durationMin, 'number');
+      assert.ok(s.title === null || typeof s.title === 'string');
+      assert.equal(typeof s.model, 'string'); // dominant model, not a map
+      assert.equal(typeof s.provider, 'string');
+    }
+  });
+
+  it('models[] have the documented shape (≤10)', () => {
+    const { models } = JSON.parse(cli('--json'));
+    assert.ok(Array.isArray(models) && models.length <= 10);
+    for (const m of models) {
+      sameKeys(m, ['model', 'turns', 'cost', 'costShare']);
+      assert.equal(typeof m.model, 'string');
+      assert.equal(typeof m.turns, 'number');
+      assert.equal(typeof m.cost, 'number');
+      assert.equal(typeof m.costShare, 'number');
+    }
+  });
+
+  it('tools + tools.top[] have the documented shape (default cap 7)', () => {
+    const { tools } = JSON.parse(cli('--json'));
+    sameKeys(tools, ['totalCalls', 'top', 'failRate']);
+    assert.equal(typeof tools.totalCalls, 'number');
+    assert.equal(typeof tools.failRate, 'number');
+    assert.ok(Array.isArray(tools.top) && tools.top.length <= 7);
+    for (const t of tools.top) {
+      sameKeys(t, ['name', 'count']);
+      assert.equal(typeof t.name, 'string');
+      assert.equal(typeof t.count, 'number');
+    }
+  });
+
+  it('skills[] have the documented shape (loads/scope nullable)', () => {
+    const { skills } = JSON.parse(cli('--json'));
+    assert.ok(Array.isArray(skills));
+    for (const s of skills) {
+      sameKeys(s, ['name', 'invocations', 'loads', 'scope']);
+      assert.equal(typeof s.name, 'string');
+      assert.equal(typeof s.invocations, 'number');
+      assert.ok(s.loads === null || typeof s.loads === 'number');
+      assert.ok(s.scope === null || typeof s.scope === 'string');
+    }
+  });
+
+  it('prompts.hashStability has the three documented hashes', () => {
+    const { prompts } = JSON.parse(cli('--json'));
+    sameKeys(prompts, ['hashStability']);
+    sameKeys(prompts.hashStability, ['sysHash', 'toolsHash', 'coreHash']);
+    for (const h of Object.values(prompts.hashStability)) {
+      sameKeys(h, ['changeRate', 'pairs', 'label']);
+      assert.equal(typeof h.changeRate, 'number');
+      assert.equal(typeof h.pairs, 'number');
+      assert.equal(typeof h.label, 'string');
+    }
+  });
+
+  it('cache has the documented shape (all numeric)', () => {
+    const { cache } = JSON.parse(cli('--json'));
+    sameKeys(cache, ['hitRate', 'totalInputTokens', 'totalOutputTokens', 'totalCacheReadTokens']);
+    for (const v of Object.values(cache)) assert.equal(typeof v, 'number');
+  });
+
+  it('gapCache[] have the documented shape (≤5 buckets)', () => {
+    const { gapCache } = JSON.parse(cli('--json'));
+    assert.ok(Array.isArray(gapCache) && gapCache.length <= 5);
+    for (const b of gapCache) {
+      sameKeys(b, ['gap', 'turns', 'avgHitRate', 'medianHitRate']);
+      assert.equal(typeof b.gap, 'string');
+      assert.equal(typeof b.turns, 'number');
+      assert.equal(typeof b.avgHitRate, 'number');
+      assert.equal(typeof b.medianHitRate, 'number');
+    }
+  });
+
+  it('multi-cwd mode returns an array of the documented row shape, cost-desc', () => {
+    const rows = JSON.parse(cli('--json', '--cwd', '/work,/other'));
+    assert.ok(Array.isArray(rows) && rows.length > 0);
+    for (const row of rows) {
+      sameKeys(row, ['cwd', 'cost', 'sessions', 'turns', 'cacheHit']);
+      assert.equal(typeof row.cwd, 'string');
+      assert.equal(typeof row.cost, 'number');
+      assert.equal(typeof row.sessions, 'number');
+      assert.equal(typeof row.turns, 'number');
+      assert.equal(typeof row.cacheHit, 'number');
+    }
+    for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].cost >= rows[i].cost);
+  });
+
+  it('error object is exactly { error, hint }', () => {
+    const r = cliErr('--json', '--cwd', '/no/such/dir/at/all');
+    assert.equal(r.code, 1);
+    const err = JSON.parse(r.stdout);
+    sameKeys(err, ['error', 'hint']);
+    assert.equal(typeof err.error, 'string');
+    assert.equal(typeof err.hint, 'string');
+  });
+});

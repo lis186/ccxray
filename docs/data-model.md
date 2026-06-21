@@ -2,6 +2,8 @@
 
 Reference for the entry summary objects broadcast from server to dashboard via SSE, and persisted to `~/.ccxray/logs/index.ndjson`.
 
+For the **aggregated** schema that `ccxray usage --json` derives from these entries, see [`usage.md`](usage.md).
+
 ## Entry summary
 
 Produced by `server/sse-broadcast.js` `summarizeEntry()`. The full request/response payloads are NOT included — they live on disk and are lazy-loaded when a turn is selected.
