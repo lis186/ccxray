@@ -135,6 +135,7 @@ ccxray usage                          # 人間が読めるサマリー
 ccxray usage --json                   # エージェント向け JSON 出力 (< 4KB)
 ccxray usage --last 7d                # 直近 7 日間（d/h/m 対応）
 ccxray usage --cwd myproject          # ディレクトリ名の部分一致でスマート検索
+ccxray usage --cwd ~/code/app         # 絶対パスまたは ~ パス → サブツリー前方一致
 ccxray usage --cwd proj-a,proj-b      # 複数プロジェクト → 比較テーブル
 ccxray usage --session latest         # 最新セッション
 ccxray usage --session costliest      # 最高コストセッション

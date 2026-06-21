@@ -157,6 +157,7 @@ ccxray usage                          # Human-readable summary
 ccxray usage --json                   # JSON for agents (< 4KB)
 ccxray usage --last 7d                # Last 7 days (supports d/h/m)
 ccxray usage --cwd myproject          # Smart match by directory name substring
+ccxray usage --cwd ~/code/app         # Absolute or ~ path → exact-subtree prefix match
 ccxray usage --cwd proj-a,proj-b      # Multiple projects → comparison table
 ccxray usage --session latest         # Most recent session
 ccxray usage --session costliest      # Highest-cost session

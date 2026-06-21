@@ -140,6 +140,7 @@ ccxray usage                          # 人類可讀摘要
 ccxray usage --json                   # JSON 輸出，供 agent 消費 (< 4KB)
 ccxray usage --last 7d                # 最近 7 天（支援 d/h/m）
 ccxray usage --cwd myproject          # 目錄名子字串智慧比對
+ccxray usage --cwd ~/code/app         # 絕對路徑或 ~ 路徑 → 子目錄樹前綴比對
 ccxray usage --cwd proj-a,proj-b      # 多個專案 → 比較表
 ccxray usage --session latest         # 最近的 session
 ccxray usage --session costliest      # 最貴的 session
