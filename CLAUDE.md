@@ -35,6 +35,14 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
 - `BU_CDP_URL=http://127.0.0.1:<port>` — point browser-harness at a self-launched Chrome with `--remote-debugging-port=<port>` to skip the manual "Allow remote debugging" dialog
 
+## Test Hygiene
+
+`docs/testing.md` documents how the suite is run and the isolation rules every test must follow. In short: any test that touches storage or spawns the CLI/server must point `CCXRAY_HOME` at a throwaway temp dir with its own synthetic `index.ndjson` — never read the real `~/.ccxray`, never embed real logs/usernames/paths. `test/usage.test.js` is the canonical pattern.
+
+Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(mktemp -d) npm test`. CI runs the suite with an empty `CCXRAY_HOME` as a backstop, so a test that reads the real `~/.ccxray` (the PR #94 failure class) fails the build.
+
+**Maintenance rule**: when you add a test that reads `CCXRAY_HOME`, depends on `$HOME`, or introduces a new fixture shape, keep `docs/testing.md` accurate — especially the `$HOME` vs `CCXRAY_HOME` distinction (scrubbing `$HOME` broadly breaks the puppeteer browser e2e tests).
+
 ## Wire Protocol Documentation
 
 `docs/wire-protocol-reference.md` documents observable wire-level differences between Claude Code (Anthropic Messages API) and Codex (OpenAI Responses API). Every field is tagged with a confidence level (`contractual`, `obs-stable`, `obs-fragile`) and a version range.
