@@ -147,6 +147,8 @@ Both providers share the same function. It branches on `body.messages` (Anthropi
 
 `helpers.js:extractSkillCalls(messages)` — companion that counts only the model-initiated `Skill` tool, keyed by the invoked skill name (e.g. `{ "superpowers:brainstorming": 2 }`). Persisted as the separate `skillCalls` index field and read by `ccxray usage` for per-skill stats. (`Workflow` has no `skill` input, so it is excluded.)
 
+Why two fields instead of one: see [ADR 0001 — toolCalls vs skillCalls](decisions/0001-toolcalls-vs-skillcalls.md). Short version: `toolCalls` is a dashboard contract, so per-skill detail lives in a separate index — don't merge them back.
+
 ### OpenAI
 
 `helpers.js:extractOpenAIToolCalls(responseEventsOrOutput)` — scans:
