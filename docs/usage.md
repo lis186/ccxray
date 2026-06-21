@@ -2,21 +2,30 @@
 
 `ccxray usage` summarizes your logged Claude Code / Codex traffic straight from
 `~/.ccxray/logs/index.ndjson` — no running server required. The `--json` output
-is an **agent-facing contract**: deterministic, idempotent for a given index,
-and small (target `<4KB`).
+is an **agent-facing contract**: small (target `<4KB`) with a **stable shape** —
+the key set and field types below don't change without a deliberate, changelogged
+update. Field *values* are derived from the index plus your arguments, with a few
+inputs resolved at run time: `--last` is relative to wall-clock `now` and
+`--cwd ~` expands to the local home dir (see [Filter semantics](#filter-semantics)),
+and `skills[].scope` is read from the local filesystem (see the [`skills`](#skills)
+note). So treat the **shape** as the contract; expect values to track the index
+and the runtime environment.
 
 The single source of truth for the shapes below is
-[`server/usage.js`](../server/usage.js) (`analyze()`). This doc mirrors it; if
-they ever disagree, the code wins — and that disagreement is a bug to fix here.
+[`server/usage.js`](../server/usage.js): `analyze()` builds the single-scope
+object, while `run()` assembles the multi-cwd array and the error object. This
+doc mirrors them; if they ever disagree, the code wins — and that disagreement
+is a bug to fix here.
 
 > **Contract note.** Because agents consume `--json`, the field set, types, and
 > the three top-level shapes (single-scope object, multi-cwd array, error
 > object) are treated as a contract. Shape changes must be deliberate and noted
 > in the changelog below. The `usage --json shape contract` block in
 > [`test/usage.test.js`](../test/usage.test.js) locks every section's exact key
-> set and field types (plus the multi-cwd/error shapes and the e2e size budget),
-> so an accidental field add/remove fails CI — a deliberate change must update
-> both that test and this doc in the same commit.
+> set and field types (plus the multi-cwd and error shapes), so an accidental
+> field add/remove fails CI — a deliberate change must update both that test and
+> this doc in the same commit. A separate test guards the `<5KB` size ceiling
+> (the `<4KB` above is the working target that sits under that ceiling).
 
 ---
 
