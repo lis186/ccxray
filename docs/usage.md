@@ -11,10 +11,12 @@ they ever disagree, the code wins — and that disagreement is a bug to fix here
 
 > **Contract note.** Because agents consume `--json`, the field set, types, and
 > the three top-level shapes (single-scope object, multi-cwd array, error
-> object) are treated as a contract. Shape changes should be deliberate, noted
-> in the changelog below, and ideally guarded by a test. Today
-> [`test/usage.test.js`](../test/usage.test.js) asserts the e2e size budget and
-> per-section semantics.
+> object) are treated as a contract. Shape changes must be deliberate and noted
+> in the changelog below. The `usage --json shape contract` block in
+> [`test/usage.test.js`](../test/usage.test.js) locks every section's exact key
+> set and field types (plus the multi-cwd/error shapes and the e2e size budget),
+> so an accidental field add/remove fails CI — a deliberate change must update
+> both that test and this doc in the same commit.
 
 ---
 
@@ -278,4 +280,5 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 - **2026-06-21** (Claude, Opus 4.8) — Initial schema reference for
   `ccxray usage --json` as shipped in PR #94. Documents the single-scope object,
   multi-cwd array, and error object, plus filter semantics and per-field
-  precision.
+  precision. Backed by the `usage --json shape contract` test that locks the key
+  set and field types of every section.
