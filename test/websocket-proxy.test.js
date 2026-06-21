@@ -89,6 +89,27 @@ async function waitForIndexEntry(logsDir, predicate, timeoutMs = 4000) {
   throw new Error('timeout waiting for index entry');
 }
 
+// Wait until at least `minCount` index entries match, returning the matches.
+// Polling beats a fixed sleep before reading index.ndjson — the proxy writes
+// from a separate process and a guessed delay flakes under load. See #100.
+async function waitForIndexEntries(logsDir, predicate, minCount, timeoutMs = 4000) {
+  const indexPath = path.join(logsDir, 'index.ndjson');
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (fs.existsSync(indexPath)) {
+      const matches = fs.readFileSync(indexPath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line))
+        .filter(predicate);
+      if (matches.length >= minCount) return matches;
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  throw new Error(`timeout waiting for ${minCount} index entries`);
+}
+
 describe('OpenAI Responses WebSocket proxy', () => {
   let testHome;
   let upstreamServer;
@@ -650,10 +671,11 @@ describe('OpenAI Responses WebSocket proxy', () => {
     ws.close(1000, 'done');
     await new Promise(r => ws.on('close', r));
 
-    await new Promise(r => setTimeout(r, 500));
-    const indexPath = path.join(testHome, 'logs', 'index.ndjson');
-    const entries = fs.readFileSync(indexPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
-    const turnEntries = entries.filter(e => e.sessionId === sessionId && e.title);
+    const turnEntries = await waitForIndexEntries(
+      path.join(testHome, 'logs'),
+      e => e.sessionId === sessionId && e.title,
+      2,
+    );
     assert.equal(turnEntries.length, 2, 'should have 2 per-turn entries');
     assert.notEqual(turnEntries[0].id, turnEntries[1].id, 'entries should have different IDs');
     assert.equal(turnEntries[0].title, 'Turn one');
@@ -698,9 +720,12 @@ describe('OpenAI Responses WebSocket proxy', () => {
     ws.close(1000, 'done');
     await new Promise(r => ws.on('close', r));
 
-    await new Promise(r => setTimeout(r, 500));
-    const indexPath = path.join(testHome, 'logs', 'index.ndjson');
-    const entries = fs.readFileSync(indexPath, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+    // Wait for the real turn to land, then assert the warm-up produced no entry.
+    // Warm-up is sent first, so by the time the real-turn entry exists, a wrongly
+    // recorded warm-up entry would already be present too.
+    const logsDir = path.join(testHome, 'logs');
+    await waitForIndexEntry(logsDir, e => e.sessionId === sessionId && e.title === 'Real turn');
+    const entries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
     const turnEntries = entries.filter(e => e.sessionId === sessionId && e.title);
     assert.equal(turnEntries.length, 1, 'should have 1 entry (warm-up skipped)');
     assert.equal(turnEntries[0].title, 'Real turn');

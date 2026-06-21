@@ -91,6 +91,32 @@ function killAndWait(child) {
   });
 }
 
+// Poll until fn() returns a truthy value (or stops throwing) instead of
+// guessing a fixed setTimeout. The proxy writes logs from a separate process,
+// so the test can only observe completion by polling the filesystem/API —
+// a fixed sleep flakes under parallel-suite load. See issue #100.
+async function waitFor(fn, { timeoutMs = 8000, intervalMs = 50 } = {}) {
+  const start = Date.now();
+  let lastErr;
+  for (;;) {
+    try {
+      const result = await fn();
+      if (result) return result;
+    } catch (e) { lastErr = e; }
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitFor: condition not met within ${timeoutMs}ms${lastErr ? ` (last error: ${lastErr.message})` : ''}`);
+    }
+    await new Promise(r => setTimeout(r, intervalMs));
+  }
+}
+
+// Read index.ndjson as a parsed array, or [] if not written yet.
+function readIndex(logsDir) {
+  const p = path.join(logsDir, 'index.ndjson');
+  if (!fs.existsSync(p)) return [];
+  return fs.readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+}
+
 // ── S4: standalone mode (ccxray without claude) ────────────────────
 
 describe('S4: standalone mode', () => {
@@ -623,10 +649,12 @@ describe('P0: proxy end-to-end forwarding', () => {
   });
 
   it('writes req/res log files', async () => {
-    // Give a moment for async writes
-    await new Promise(r => setTimeout(r, 500));
-
     const logsDir = path.join(TEST_HOME, 'logs');
+    await waitFor(() => {
+      const f = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
+      return f.some(x => x.endsWith('_req.json')) && f.some(x => x.endsWith('_res.json'));
+    });
+
     const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
     const reqFiles = files.filter(f => f.endsWith('_req.json'));
     const resFiles = files.filter(f => f.endsWith('_res.json'));
@@ -652,14 +680,16 @@ describe('P0: proxy end-to-end forwarding', () => {
     });
 
     await sendProxyRequest(proxyPort, requestBody);
-    await new Promise(r => setTimeout(r, 500));
 
     const logsDir = path.join(TEST_HOME, 'logs');
-    const reqFiles = fs.readdirSync(logsDir)
-      .filter(f => f.endsWith('_req.json'))
-      .sort()
-      .reverse();
-    const req = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+    const req = await waitFor(() => {
+      const reqFiles = fs.existsSync(logsDir)
+        ? fs.readdirSync(logsDir).filter(f => f.endsWith('_req.json')).sort().reverse()
+        : [];
+      if (!reqFiles.length) return null;
+      const latest = JSON.parse(fs.readFileSync(path.join(logsDir, reqFiles[0]), 'utf8'));
+      return latest.model === 'claude-haiku-4-5-20251001' ? latest : null;
+    });
 
     assert.equal(req.model, 'claude-haiku-4-5-20251001');
     assert.deepEqual(req.thinking, { type: 'adaptive' }, 'thinking must be preserved');
@@ -770,17 +800,15 @@ describe('SSE streaming proxy', () => {
   });
 
   it('writes SSE response to log as parsed events array', async () => {
-    // Wait for async log write
-    await new Promise(r => setTimeout(r, 500));
-
     const logsDir = path.join(TEST_HOME, 'logs');
-    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
-    const resFiles = files.filter(f => f.endsWith('_res.json'));
-
-    // Find the SSE response log (most recent)
-    assert.ok(resFiles.length > 0, 'Should have res log files');
-    const lastResFile = resFiles.sort().pop();
-    const resContent = JSON.parse(fs.readFileSync(path.join(logsDir, lastResFile), 'utf8'));
+    const resContent = await waitFor(() => {
+      const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
+      const resFiles = files.filter(f => f.endsWith('_res.json'));
+      if (!resFiles.length) return null;
+      const lastResFile = resFiles.sort().pop();
+      const parsed = JSON.parse(fs.readFileSync(path.join(logsDir, lastResFile), 'utf8'));
+      return (Array.isArray(parsed) && parsed.length >= 5) ? parsed : null;
+    });
 
     // SSE responses are stored as parsed event arrays
     assert.ok(Array.isArray(resContent), 'SSE res log should be an array of events');
@@ -913,15 +941,8 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(receivedReq.url, '/v1/responses?trace=1');
     assert.equal(JSON.parse(receivedReq.body).instructions, 'You are Codex in raw capture mode.');
 
-    await new Promise(r => setTimeout(r, 500));
-
     const logsDir = path.join(TEST_HOME, 'logs');
-    const indexPath = path.join(logsDir, 'index.ndjson');
-    const indexEntries = fs.readFileSync(indexPath, 'utf8')
-      .trim()
-      .split('\n')
-      .map(line => JSON.parse(line));
-    const entry = indexEntries.find(e => e.provider === 'openai' && e.agent === 'codex' && e.model === 'gpt-5.1-codex');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.provider === 'openai' && e.agent === 'codex' && e.model === 'gpt-5.1-codex'));
     assert.ok(entry, 'expected OpenAI index entry');
     assert.equal(entry.sessionId, 'codex-raw');
     assert.equal(entry.cost, null);
@@ -947,14 +968,8 @@ describe('OpenAI Responses raw capture', () => {
 
     assert.equal(response.status, 200);
 
-    await new Promise(r => setTimeout(r, 500));
-
     const logsDir = path.join(TEST_HOME, 'logs');
-    const indexEntries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8')
-      .trim()
-      .split('\n')
-      .map(line => JSON.parse(line));
-    const entry = indexEntries.find(e => e.responseMetadata?.id === 'resp_stream_v0');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.responseMetadata?.id === 'resp_stream_v0'));
     assert.ok(entry, 'expected OpenAI stream index entry');
     assert.equal(entry.isSSE, true);
     assert.equal(entry.model, 'gpt-5.5');
@@ -971,12 +986,9 @@ describe('OpenAI Responses raw capture', () => {
   it('HTTP SSE OpenAI response with function_call populates entry.toolCalls', async () => {
     const requestBody = JSON.stringify({ model: 'gpt-5.5', input: 'run ls', stream: true });
     await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?stream=1&tools=1');
-    await new Promise(r => setTimeout(r, 500));
 
     const logsDir = path.join(TEST_HOME, 'logs');
-    const indexEntries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8')
-      .trim().split('\n').map(line => JSON.parse(line));
-    const entry = indexEntries.find(e => e.responseMetadata?.id === 'resp_sse_tools');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.responseMetadata?.id === 'resp_sse_tools'));
     assert.ok(entry, 'expected SSE tools entry');
     assert.equal(entry.toolCalls.Bash, 1, 'exec_command should be aliased to Bash');
   });
@@ -984,12 +996,9 @@ describe('OpenAI Responses raw capture', () => {
   it('HTTP non-SSE OpenAI JSON with function_call in output[] populates entry.toolCalls', async () => {
     const requestBody = JSON.stringify({ model: 'gpt-5.5', input: 'edit file' });
     await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?tools=1');
-    await new Promise(r => setTimeout(r, 500));
 
     const logsDir = path.join(TEST_HOME, 'logs');
-    const indexEntries = fs.readFileSync(path.join(logsDir, 'index.ndjson'), 'utf8')
-      .trim().split('\n').map(line => JSON.parse(line));
-    const entry = indexEntries.find(e => e.provider === 'openai' && e.responseMetadata?.id === 'resp_json_tools');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.provider === 'openai' && e.responseMetadata?.id === 'resp_json_tools'));
     assert.ok(entry, 'expected non-SSE JSON tools entry');
     assert.equal(entry.toolCalls.Bash, 1, 'exec_command should be aliased to Bash');
     assert.equal(entry.toolCalls.Edit, 1, 'apply_patch should be aliased to Edit');
@@ -1013,13 +1022,11 @@ describe('OpenAI Responses raw capture', () => {
       session_id: sessionId,
       'x-openai-subagent': 'worker',
     });
-    await new Promise(r => setTimeout(r, 500));
-
-    const indexEntries = fs.readFileSync(path.join(TEST_HOME, 'logs', 'index.ndjson'), 'utf8')
-      .trim()
-      .split('\n')
-      .map(line => JSON.parse(line))
-      .filter(e => e.sessionId === sessionId);
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const indexEntries = await waitFor(() => {
+      const es = readIndex(logsDir).filter(e => e.sessionId === sessionId);
+      return es.length === 2 ? es : null;
+    });
 
     assert.equal(indexEntries.length, 2);
     assert.equal(indexEntries[0].isSubagent, false);
@@ -1040,10 +1047,10 @@ describe('OpenAI Responses raw capture', () => {
       session_id: sessionId,
       'x-openai-subagent': 'explorer',
     });
-    await new Promise(r => setTimeout(r, 500));
-
-    const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
-    const explorer = data.versions.find(v => v.agentKey === 'explorer');
+    const explorer = await waitFor(async () => {
+      const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
+      return data.versions.find(v => v.agentKey === 'explorer');
+    });
     assert.ok(explorer, 'expected Codex explorer prompt version');
     assert.equal(explorer.agentLabel, 'Codex Explorer');
     assert.ok(explorer.coreHash);
@@ -1062,7 +1069,13 @@ describe('OpenAI Responses raw capture', () => {
       session_id: sessionId,
       'x-openai-subagent': 'worker',
     });
-    await new Promise(r => setTimeout(r, 500));
+    const workerLen = 'Inspect the codebase and report findings.'.length;
+    // Ensure the prompt version is persisted before we kill the proxy, so the
+    // restart genuinely tests restore (not a write that never reached disk).
+    await waitFor(async () => {
+      const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
+      return data.versions.find(v => v.agentKey === 'worker' && v.b2Len === workerLen);
+    });
 
     await killAndWait(proxyChild);
     proxyChild = spawnServer(['--port', String(proxyPort)], {
@@ -1073,10 +1086,11 @@ describe('OpenAI Responses raw capture', () => {
       },
     });
     await waitForPort(proxyPort);
-    await new Promise(r => setTimeout(r, 500));
 
-    const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
-    const worker = data.versions.find(v => v.agentKey === 'worker' && v.b2Len === 'Inspect the codebase and report findings.'.length);
+    const worker = await waitFor(async () => {
+      const data = await httpGet(proxyPort, '/_api/sysprompt/versions');
+      return data.versions.find(v => v.agentKey === 'worker' && v.b2Len === workerLen);
+    });
     assert.ok(worker, 'expected restored Codex worker prompt version');
     assert.equal(worker.agentLabel, 'Codex Worker');
   });
@@ -1520,10 +1534,11 @@ describe('Store state consistency after errors', () => {
     await sendProxyRequest(proxyPort, makeBody('trigger 500'));
     nextResponse = null;
 
-    // Check session status via SSE — should be inactive
-    await new Promise(r => setTimeout(r, 200));
-    const sseData = await collectSSESnapshot(proxyPort);
-    const sessionStatus = sseData.find(d => d._type === 'session_status' && d.sessionId === SESSION_ID);
+    // Check session status via SSE — should become inactive after the error
+    const sessionStatus = await waitFor(async () => {
+      const sseData = await collectSSESnapshot(proxyPort);
+      return sseData.find(d => d._type === 'session_status' && d.sessionId === SESSION_ID && d.active === false);
+    });
     assert.ok(sessionStatus, 'Should have session_status event');
     assert.equal(sessionStatus.active, false, 'Session should be inactive after error');
   });
@@ -1641,10 +1656,12 @@ describe('Concurrent proxy requests', () => {
   });
 
   it('all concurrent requests are logged separately', async () => {
-    await new Promise(r => setTimeout(r, 500));
     const logsDir = path.join(TEST_HOME, 'logs');
-    const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
-    const reqFiles = files.filter(f => f.endsWith('_req.json'));
+    const reqFiles = await waitFor(() => {
+      const files = fs.existsSync(logsDir) ? fs.readdirSync(logsDir) : [];
+      const rf = files.filter(f => f.endsWith('_req.json'));
+      return rf.length >= 5 ? rf : null;
+    });
     // Should have at least 5 req files from concurrent test
     assert.ok(reqFiles.length >= 5, `Expected >= 5 req logs, got ${reqFiles.length}`);
   });
