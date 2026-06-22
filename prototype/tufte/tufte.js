@@ -340,26 +340,94 @@ function renderMinimap() {
     const vx = x(viewT0), vw = Math.max(2, x(viewT1) - vx);
     ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, vx, MH); ctx.fillRect(vx + vw, 0, MW - vx - vw, MH);
     ctx.strokeStyle = '#58a6ff'; ctx.lineWidth = 1.5; ctx.strokeRect(vx + 0.5, 0.5, vw, MH - 1);
+    // Viewport duration label — right-bottom with background pill
+    const vpLabel = fmtDur(viewT1 - viewT0);
+    ctx.font = '8px SF Mono,Menlo,monospace';
+    const lw = ctx.measureText(vpLabel).width;
+    const lx = vx + vw - lw - 1, ly = MH - 10;
+    ctx.fillStyle = '#58a6ff'; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.roundRect(lx - 3, ly - 1, lw + 6, 11, 2); ctx.fill();
+    ctx.fillStyle = '#0d1117'; ctx.globalAlpha = 1;
+    ctx.fillText(vpLabel, lx, ly + 8);
+    ctx.globalAlpha = 1;
   }
+  // ponytail: 3 modes — brush-to-zoom (not zoomed), edge resize (on edges), pan (middle)
+  const EDGE_PX = 6;
+  $minimap.style.cursor = isZoomed ? 'grab' : 'crosshair';
+  $minimap.onmousemove = isZoomed ? (e) => {
+    const rect = $minimap.getBoundingClientRect();
+    const vx = x(viewT0), vw = x(viewT1) - vx;
+    const mx = (e.clientX - rect.left) / rect.width * MW;
+    if (Math.abs(mx - vx) < EDGE_PX || Math.abs(mx - (vx + vw)) < EDGE_PX) $minimap.style.cursor = 'col-resize';
+    else if (mx > vx && mx < vx + vw) $minimap.style.cursor = 'grab';
+    else $minimap.style.cursor = 'crosshair';
+  } : null;
+
   $minimap.onmousedown = (e) => {
     e.stopPropagation();
     const rect = $minimap.getBoundingClientRect();
-    const clickFrac = (e.clientX - rect.left) / rect.width;
-    const clickTime = sessionTimeMin + clickFrac * totalRange;
-    const span = viewT1 - viewT0;
-    let t0 = clickTime - span / 2, t1 = clickTime + span / 2;
-    if (t0 < sessionTimeMin) { t0 = sessionTimeMin; t1 = sessionTimeMin + span; }
-    if (t1 > sessionTimeMax) { t1 = sessionTimeMax; t0 = sessionTimeMax - span; }
-    viewT0 = t0; viewT1 = t1; document.body.classList.add('dragging'); renderTimeline();
-    const mmStartX = e.clientX, mmStartT0 = t0;
+    const pxToTime = (cx) => sessionTimeMin + ((cx - rect.left) / rect.width) * totalRange;
+    const clickTime = pxToTime(e.clientX);
+
+    if (isZoomed) {
+      const vx = x(viewT0), vw = x(viewT1) - vx;
+      const mx = (e.clientX - rect.left) / rect.width * MW;
+      const onLeft = Math.abs(mx - vx) < EDGE_PX;
+      const onRight = Math.abs(mx - (vx + vw)) < EDGE_PX;
+
+      if (onLeft || onRight) {
+        // Edge resize: drag left or right boundary
+        document.body.classList.add('dragging');
+        const onMove = (ev) => {
+          const t = Math.max(sessionTimeMin, Math.min(sessionTimeMax, pxToTime(ev.clientX)));
+          if (onLeft) { viewT0 = Math.min(t, viewT1 - 2000); }
+          else { viewT1 = Math.max(t, viewT0 + 2000); }
+          renderTimeline();
+        };
+        const onUp = () => { document.body.classList.remove('dragging'); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+        return;
+      }
+      if (mx > vx && mx < vx + vw) {
+        // Pan: drag viewport middle
+        const span = viewT1 - viewT0, mmStartX = e.clientX, mmStartT0 = viewT0;
+        document.body.classList.add('dragging');
+        const onMove = (ev) => {
+          const dt = ((ev.clientX - mmStartX) / rect.width) * totalRange;
+          let t0 = mmStartT0 + dt, t1 = mmStartT0 + dt + span;
+          if (t0 < sessionTimeMin) { t0 = sessionTimeMin; t1 = sessionTimeMin + span; }
+          if (t1 > sessionTimeMax) { t1 = sessionTimeMax; t0 = sessionTimeMax - span; }
+          viewT0 = t0; viewT1 = t1; renderTimeline();
+        };
+        const onUp = () => { document.body.classList.remove('dragging'); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+        return;
+      }
+    }
+
+    // Brush-to-zoom: drag to select range (works when not zoomed, or clicking outside viewport)
+    const brushStart = clickTime;
+    let brushEnd = brushStart;
+    document.body.classList.add('dragging');
+    $minimap.style.cursor = 'crosshair';
     const onMove = (ev) => {
-      const dt = ((ev.clientX - mmStartX) / rect.width) * totalRange, sp = span;
-      let nt0 = mmStartT0 + dt, nt1 = mmStartT0 + dt + sp;
-      if (nt0 < sessionTimeMin) { nt0 = sessionTimeMin; nt1 = sessionTimeMin + sp; }
-      if (nt1 > sessionTimeMax) { nt1 = sessionTimeMax; nt0 = sessionTimeMax - sp; }
-      viewT0 = nt0; viewT1 = nt1; renderTimeline();
+      brushEnd = Math.max(sessionTimeMin, Math.min(sessionTimeMax, pxToTime(ev.clientX)));
+      // Preview: draw brush selection
+      const bx0 = x(Math.min(brushStart, brushEnd)), bx1 = x(Math.max(brushStart, brushEnd));
+      renderMinimap(); // redraw base (leaves 2x scale on ctx)
+      const c2 = $minimap.getContext('2d');
+      c2.fillStyle = 'rgba(88, 166, 255, 0.15)';
+      c2.fillRect(bx0, 0, bx1 - bx0, MH);
+      c2.strokeStyle = '#58a6ff'; c2.lineWidth = 1;
+      c2.strokeRect(bx0 + 0.5, 0.5, bx1 - bx0 - 1, MH - 1);
     };
-    const onUp = () => { document.body.classList.remove('dragging'); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+    const onUp = () => {
+      document.body.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp);
+      const t0 = Math.min(brushStart, brushEnd), t1 = Math.max(brushStart, brushEnd);
+      if (t1 - t0 > 1000) { viewT0 = t0; viewT1 = t1; }
+      renderTimeline();
+    };
     window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
   };
 }
@@ -616,19 +684,42 @@ function renderSteps(scrollTo) {
     }
     const isSel = selectedTurnId === t.id;
     const tools = Object.entries(t.toolCalls || {});
-    const spawns = t.agentSpawns?.length > 0;
+    const spawns = t.agentSpawns || [];
     const isStarred = starredTurns.has(t.id);
-    // ctx% colored by cache rate: green = warm (>50%), yellow = cold (<50%)
     const cacheRate = perTurnCache[idx] || 0;
     const ctxColor = cacheRate >= 50 ? '#8b949e' : '#d29922';
+    const mc = modelColor(t.model);
+
+    // Turn header row (always shown)
     html += `<div class="step-row${isSel ? ' selected' : ''}" id="step-${t.id}" data-tid="${t.id}">`;
     html += `<span class="step-star${isStarred ? ' starred' : ''}" onclick="event.stopPropagation();toggleTurnStar('${t.id}')">${isStarred ? '★' : '☆'}</span>`;
     html += `<span class="step-num">#${t.turnIndex}</span>`;
-    html += `<span class="step-type"><span class="step-type-badge" style="color:${modelColor(t.model)};border-color:${modelColor(t.model)}44">${shortModel(t.model)}</span></span>`;
+    html += `<span class="step-type"><span class="step-type-badge" style="color:${mc};border-color:${mc}44">${shortModel(t.model)}</span></span>`;
     html += `<span class="step-content">`;
-    if (tools.length) html += tools.map(([n, c]) => `<span class="tool-name">${esc(n)}${c > 1 ? '×' + c : ''}</span>`).join(' ');
-    if (spawns) html += ` <span class="spawn-badge">⑂${t.agentSpawns.length} ${t.agentSpawns.map(s => esc(s.name || s.subagent_type)).join(', ')}</span>`;
-    if (!tools.length && !spawns) html += '<span class="tool-result">(thinking / text)</span>';
+
+    if (!tools.length && !spawns.length) {
+      // Thinking / text only turn
+      html += `<span class="tool-result">🧠 thinking${t.elapsed > 5000 ? ' ' + fmtDur(t.elapsed) : ''}</span>`;
+    } else {
+      // Tool group with brackets (matches production ccxray style)
+      const allCalls = [...tools.map(([n, c]) => ({name: n, count: c, type: 'tool'})), ...spawns.map(s => ({name: 'Agent', count: 1, type: 'spawn', label: s.name || s.subagent_type}))];
+      const multi = allCalls.length > 1;
+      html += `<span class="step-tools">`;
+      for (let ci = 0; ci < allCalls.length; ci++) {
+        const c = allCalls[ci];
+        const bracket = multi ? (ci === 0 ? '┌' : ci === allCalls.length - 1 ? '└' : '│') : '';
+        html += `<span class="step-tool-line">`;
+        if (bracket) html += `<span class="step-bracket">${bracket}</span>`;
+        if (c.type === 'spawn') {
+          html += `<span class="spawn-badge">⑂ ${esc(c.label)}</span>`;
+        } else {
+          html += `<span class="tool-name">${esc(c.name)}</span>`;
+          if (c.count > 1) html += `<span class="tool-count">×${c.count}</span>`;
+        }
+        html += `</span>`;
+      }
+      html += `</span>`;
+    }
     html += `</span>`;
     html += `<span class="step-ctx" style="color:${ctxColor}">${t.contextPercent.toFixed(1)}%</span>`;
     html += `<span class="step-duration">${fmtDur(t.elapsed)}</span>`;
