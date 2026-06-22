@@ -2,6 +2,65 @@
 
 Issue: #91 — Session timeline can't express dynamic agent workflows
 
+## Vocabulary
+
+All code, comments, and discussions use these names consistently.
+
+```
+┌─ Topbar ─────────────────────────────────────────────────────────────────┐
+├──────────┬──────────────┬────────────────────────────────────────────────┤
+│          │              │ Overview Bar          Duration Badge  + − ⟲   │
+│          │              │ ░░░░░░[Viewport Rect]░░░░░  Scale Labels      │
+│ Projects │ Sessions     ├── Timeline Header (STICKY) ────────────────────┤
+│ Column   │ Column       │  Lane Label │ Turn Bars ▕▕▕  Sparkline ▁▂▃▅  │
+│          │              ├── Sub-lanes (SCROLLABLE) ──────────────────────┤
+│          │              │  Lane Label │ Turn Bars ▕▕  Spawn Connector ╲ │
+│          │              │  Lane Label │ Turn Bars ▕▕▕  Sparkline ▁▂    │
+│          │              ├══ Resize Handle ═══════════════════════════════┤
+│          │              │ ┌ Agent Card ────┐ ┌ Steps Panel ─────────────┤
+│          │              │ │ Color Bar ▎    │ │ Step Row                 │
+│          │              │ │ Context Chart  │ │  ┌ Tool Group (brackets) │
+│          │              │ │  Idle Gap ⏸    │ │  └ Spawn Badge           │
+│          │              │ │ Cache Chart    │ │ Idle Separator ⏸ 10m     │
+│          │              │ │ Cost Chart     │ │ Step Row (ctx% colored)  │
+│          │              │ └────────────────┘ └──────────────────────────┤
+├── Bottom Bar ────────────────────────────────────────────────────────────┤
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### Term Definitions
+
+| Term | Code ID/Class | Description |
+|------|--------------|-------------|
+| **Topbar** | `#topbar` | Branding, nav tabs, quota ticker. Unchanged from main ccxray. |
+| **Projects Column** | `#projects-col` | Left sidebar (160px). Lists monitored projects. |
+| **Sessions Column** | `#sessions-col` | Second column (200px). Lists sessions for selected project. |
+| **Overview Bar** | `#overview-bar` | Full-width bar at top of right area. Shows entire session at reduced scale. Always visible. |
+| **Viewport Rect** | — (canvas drawing) | Blue rectangle in Overview Bar showing currently visible time range. |
+| **Duration Badge** | — (canvas drawing) | Blue pill at bottom-right of Viewport Rect showing its time span (e.g. "15.3m"). |
+| **Scale Labels** | — (canvas drawing) | Time markers at 0 / midpoint / end in Overview Bar. |
+| **Timeline Header** | `#timeline-header` | Sticky container for time axis + Main Lane. Never scrolls away. |
+| **Sub-lanes** | `#macro-svg` | Scrollable SVG containing all agent lanes except main. |
+| **Lane** | — (SVG group) | One horizontal row representing a single agent. Contains Turn Bars + Sparkline. |
+| **Lane Label** | `.lane-label` | Agent name + model + context window shown left of each Lane (240px). |
+| **Turn Bar** | `.turn-bar` | Colored rectangle in a Lane. Width ∝ elapsed duration, color = model. |
+| **Sparkline** | — (SVG path) | 16px area chart below Turn Bars showing context % over time. |
+| **Spawn Connector** | `.spawn-line` | 0.5px gray line from parent Turn Bar to child Lane's first turn. |
+| **Resize Handle** | `#resize-handle` | 4px draggable divider between timeline and Detail Area. |
+| **Agent Card** | `#agent-card` | Left panel (240px) in Detail Area. Shows selected agent's summary + charts. |
+| **Color Bar** | — (inline style) | 2px left border on Agent Card in the agent's model color. |
+| **Context Chart** | `#ctx-minimap` | Bar chart in Agent Card. Three zone colors: green (<40%), yellow (40-83.5%), red (>83.5%). |
+| **Cache Chart** | `#cache-spark` | Bar chart in Agent Card. Green (≥50% hit), yellow (<50% hit). |
+| **Cost Chart** | `#cost-spark` | Bar chart in Agent Card. Orange bars, height ∝ turn cost. |
+| **Idle Gap Marker** | — (canvas drawing) | Amber dashed vertical line in charts where idle > 5 min (cache TTL). |
+| **Steps Panel** | `#timeline-steps` | Right panel in Detail Area. Scrollable list of turns for selected agent. |
+| **Step Row** | `.step-row` | One turn's display in Steps Panel. Star + #num + model + Tool Group + ctx% + duration. |
+| **Tool Group** | `.step-tools` | Vertical list of tool calls with ┌│└ brackets when multiple. |
+| **Spawn Badge** | `.spawn-badge` | `⑂ agent-name` marker in a Tool Group indicating an Agent spawn. |
+| **Idle Separator** | `.step-idle-sep` | Amber `⏸ 10.0m` row between Step Rows where idle > 5 min. |
+| **Star** | `.step-star` | ★/☆ toggle on Step Row (per-turn) or Agent Card header (per-agent). |
+| **Bottom Bar** | `#bottom-bar` | Keyboard shortcut hints at bottom of window. |
+
 ## Problems to Solve
 
 ### Structure (1-5)
