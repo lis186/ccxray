@@ -74,38 +74,43 @@ body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !
 /* Right content area: timeline + detail, no separator */
 #right-area { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 
-/* Timeline section — scrollable when many lanes */
-#timeline-section { position: relative; flex-shrink: 0; padding: 4px 0; background: #0d1117; max-height: 45vh; overflow-y: auto; }
-#macro-svg { user-select: none; -webkit-user-select: none; cursor: grab; display: block; }
-/* Workflow collapse toggle */
+/* Timeline section — two-SVG split: sticky main lane + scrollable sub-lanes */
+#timeline-section { position: relative; flex-shrink: 0; background: #0d1117; max-height: 45vh; overflow-y: auto; overflow-x: hidden; }
+#timeline-header { position: sticky; top: 0; z-index: 5; background: #0d1117; }
+#main-svg, #macro-svg { user-select: none; -webkit-user-select: none; cursor: grab; display: block; }
 .wf-toggle { cursor: pointer; fill: #8b949e; }
 .wf-toggle:hover { fill: #e6edf3; }
 #zoom-label {
   position: absolute; top: 4px; right: 12px; color: #484f58; font-size: 10px;
   font-family: 'SF Mono','Menlo','Monaco',monospace; z-index: 10;
 }
+/* Resize handle between timeline and detail */
+#resize-handle {
+  height: 4px; cursor: row-resize; background: #0d1117; flex-shrink: 0;
+  border-top: 1px solid #30363d; border-bottom: 1px solid #30363d;
+}
+#resize-handle:hover { background: #58a6ff33; }
 
-/* Minimap */
-#minimap-wrap {
-  position: absolute; bottom: 6px; right: 12px; z-index: 10;
-  background: #161b22; border: 1px solid #484f58; border-radius: 4px; overflow: hidden;
+/* Overview bar (Shneiderman: overview first, then zoom+filter, then detail) */
+#overview-bar {
+  display: flex; align-items: center; height: 32px; flex-shrink: 0;
+  border-bottom: 1px solid #30363d; background: #161b22;
 }
-#minimap-toolbar {
-  display: flex; align-items: center; gap: 2px; padding: 2px 6px;
-  border-bottom: 1px solid #30363d; background: #1c2128;
-}
-#minimap-title {
+#overview-label {
+  width: 240px; flex-shrink: 0; padding: 0 10px;
+  display: flex; align-items: center; gap: 4px;
+  font-family: 'SF Mono','Menlo','Monaco',monospace;
   font-size: 9px; color: #484f58; text-transform: uppercase; letter-spacing: 0.5px;
-  font-family: 'SF Mono','Menlo','Monaco',monospace; margin-right: auto;
 }
-#minimap-toolbar button {
+#overview-label span { margin-right: auto; }
+#overview-label button {
   background: transparent; border: 1px solid #30363d; color: #8b949e;
   width: 18px; height: 18px; font-size: 12px; line-height: 1; cursor: pointer;
   border-radius: 2px; font-family: 'SF Mono','Menlo','Monaco',monospace;
   display: flex; align-items: center; justify-content: center; padding: 0;
 }
-#minimap-toolbar button:hover { color: #e6edf3; border-color: #8b949e; }
-#minimap { display: block; cursor: pointer; margin: 3px; }
+#overview-label button:hover { color: #e6edf3; border-color: #8b949e; }
+#minimap { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
 
 /* Detail area (flows continuously from timeline, no border between) */
 #detail-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -155,7 +160,7 @@ body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !
 
 /* Timeline Steps (right side of detail) */
 #timeline-steps {
-  flex: 1; overflow-y: auto; padding: 0;
+  flex: 1; overflow-y: auto; overflow-x: auto; padding: 0;
   font-family: 'SF Mono','Menlo','Monaco',monospace; font-size: 12px;
 }
 #steps-header {
@@ -184,6 +189,13 @@ body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !
 .step-star:hover { color: #d29922; }
 .step-star.starred { color: #d29922; }
 .spawn-badge { color: #ff8a65; }
+.step-idle-sep {
+  display: flex; align-items: center; gap: 6px; padding: 2px 12px;
+  font-size: 10px; color: #d29922;
+  font-family: 'SF Mono','Menlo','Monaco',monospace;
+}
+.step-idle-line { flex: 1; height: 1px; background: #d2992244; }
+.step-idle-label { white-space: nowrap; flex-shrink: 0; }
 .agent-empty { color: #484f58; padding: 20px 16px; }
 
 /* Shared */
@@ -242,22 +254,29 @@ body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !
 
   <!-- Right area: timeline + detail -->
   <div id="right-area">
-    <!-- Timeline (top, no bottom border — flows into detail) -->
-    <div id="timeline-section">
-      <span id="zoom-label"></span>
-      <svg id="macro-svg"></svg>
-      <div id="minimap-wrap">
-        <div id="minimap-toolbar">
-          <span id="minimap-title">overview</span>
-          <button id="zoom-in-btn" title="Zoom in">+</button>
-          <button id="zoom-out-btn" title="Zoom out">−</button>
-          <button id="zoom-reset-btn" title="Reset zoom">⟲</button>
-        </div>
-        <canvas id="minimap"></canvas>
+    <!-- Overview bar: full-width navigation, always visible above timeline -->
+    <div id="overview-bar">
+      <div id="overview-label">
+        <span>OVERVIEW</span>
+        <button id="zoom-in-btn" title="Zoom in">+</button>
+        <button id="zoom-out-btn" title="Zoom out">−</button>
+        <button id="zoom-reset-btn" title="Reset zoom">⟲</button>
       </div>
+      <canvas id="minimap"></canvas>
     </div>
 
-    <!-- Detail area (bottom, no top border — continuous with timeline) -->
+    <!-- Timeline: sticky main lane + scrollable sub-lanes -->
+    <div id="timeline-section">
+      <div id="timeline-header">
+        <span id="zoom-label"></span>
+        <svg id="main-svg"></svg>
+      </div>
+      <svg id="macro-svg"></svg>
+    </div>
+
+    <div id="resize-handle" title="Drag to resize"></div>
+
+    <!-- Detail area -->
     <div id="detail-area">
       <div id="agent-card">
         <div id="agent-card-header"></div>
@@ -279,10 +298,10 @@ body.dragging { user-select: none; -webkit-user-select: none; cursor: grabbing !
   <span><kbd>Esc</kbd> exit</span>
   <span><kbd>f</kbd> ★ star</span>
   <span><kbd>n</kbd> next star</span>
-  <span><kbd>E</kbd> prev error</span>
+  <span>scroll ↔ pan  ↕ lanes  <kbd>⌘</kbd>scroll zoom</span>
 </div>
 
 <div id="tooltip"></div>
-<script src="tufte.js"></script>
+<script src="tufte.js?v=2"></script>
 </body>
 </html>

@@ -53,61 +53,34 @@ Issue: #91 — Session timeline can't express dynamic agent workflows
 
 ```
 ┌─ Topbar (unchanged) ──────────────────────────────────────────────────────┐
-│ ● ccxray  Dashboard  Usage  System Prompt ●                               │
-│ root › ccxray › session: 4ff947ed › #460 › timeline                       │
-│                                        ◐ ████░░ 63.8% · 1h49m ▲ Slow    │
 ├──────────┬───────────────┬────────────────────────────────────────────────┤
-│ PROJECTS │ SESSIONS      │ WORKFLOW TIMELINE (extends to right edge)      │
-│          │               │                                                │
-│ (full    │ (full         │  0m    10m    20m    30m    40m    50m         │
-│  height) │  height)      │                                                │
-│          │               │  main ▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕ │
-│ ● ccxray │ ● 4ff947ed    │       ▁▂▃▃▃▅▅▆▆▇▇██████                      │
-│   10 sess│   opus-4-6    │                                                │
-│          │   455t $54.70  │ ▶rout ▕▕▕▕▕▕░░▕▕            OVERVIEW + - ⟲  │
-│          │               │  llm  ▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕      ┌──────────┐    │
-│          │ ○ 1085045f    │  stat ▕▕▕▕▕▕▕▕▕              │▕▕▕▕▕▕▕▕▕│    │
-│          │   opus-4-8    │  time ▕▕▕▕▕                   │ ▕▕       │    │
-│          │   154t $26.42 │  flex ▕▕▕▕▕                   └──────────┘    │
-│          │               │  supa ▕▕▕▕▕▕                                  │
-│          │ ○ 1bd91918    │                                                │
-│          │   opus-4-6    │         (no separator — continuous flow)       │
-│          │   72t $2.58   │                                                │
-│          │               │  ┌─ Agent Card (240px) ─┐ ┌─ Timeline Steps ─┐│
-│          │ ○ ea47fafd    │  │ spec-routing       ★ │ │ TIMELINE          ││
-│          │   opus-4-6    │  │ fable-5 19t 1.7m     │ │ ● spec-routing   ││
-│          │   46t $4.49   │  │ general-purpose      │ │ 19 steps · 0✗    ││
-│          │               │  │                      │ │                   ││
-│          │ ○ f1504e19    │  │ 39.7% (397K/1000K)  │ │ #44               ││
-│          │   opus-4-8    │  │ peak 39.7%           │ │  Agent×6 ⑂6      ││
-│          │   125t $21.45 │  │ ┌──────────────────┐ │ │  spec-routing... ││
-│          │               │  │ │╌╌╌╌╌╌╌╌╌╌╌╌83.5%│ │ │                   ││
-│          │ ○ a9c6a2ac    │  │ │══════════════ 40% │ │ │ ★ #45            ││
-│          │   opus-4-6    │  │ │   ╱──╲           │ │ │  ┌ Bash  ✓ local ││
-│          │   64t $8.01   │  │ │▁▁╱    ╲▁▁▁▁▁▁▁▁▁│ │ │  └ Bash  ✓ local ││
+│ PROJECTS │ SESSIONS      │ OVERVIEW (full-width bar)         + − ⟲      │
+│          │               │ ░░░░░░░░[████████████]░░░░░░░  0    2.5h  5h │
+│ (full    │ (full         ├────────────────────────────────────────────────┤
+│  height) │  height)      │ ▶main ▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕  (STICKY)     │
+│          │               │       ▁▂▃▃▃▅▅▆▆▇▇██████                      │
+│ ● ccxray │ ● 4ff947ed    │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ (scrollable) ─ │
+│          │   opus-4-6    │  sub1 ▕▕▕▕▕▕░░▕▕                             │
+│          │               │  sub2 ▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕▕                       │
+│          │ ○ 1085045f    │  sub3 ▕▕▕▕▕▕▕▕▕                              │
+│          │   opus-4-8    ├══ resize handle (drag to adjust) ═════════════┤
+│          │   154t $26.42 │  ┌─ Agent Card (240px) ─┐ ┌─ Timeline Steps ─┐│
+│          │               │  │ ▎spec-routing      ★ │ │ TIMELINE          ││
+│          │ ○ 1bd91918    │  │ ▎fable-5 19t 1.7m    │ │ ● spec-routing   ││
+│          │   opus-4-6    │  │                      │ │                   ││
+│          │   72t $2.58   │  │ 39.7% (397K/1000K)  │ │ #44  Bash  13.2% ││
+│          │               │  │ peak 39.7%           │ │ #45  Read  13.5% ││
+│          │               │  │ ┌───────zone bars──┐ │ │ ⏸ 10.0m          ││
+│          │               │  │ │╌╌╌╌╌╌╌╌╌╌╌83.5% │ │ │ #46  Bash  14.1% ││
+│          │               │  │ │═══════════ 40%   │ │ │  (ctx% yellow    ││
+│          │               │  │ │█████████ ⏸ ████  │ │ │   = cache cold)  ││
 │          │               │  │ └──────────────────┘ │ │                   ││
-│          │ ○ 527eba79    │  │                      │ │ #46               ││
-│          │   opus-4-8    │  │ CACHE                │ │  🤖 thinking      ││
-│          │   34t $3.86   │  │ 93.1% hit            │ │                   ││
-│          │               │  │ ▓▓▓▓▓▓▓█▓▓▓▓▓▓▓▓▓▓ │ │▶★ #51             ││
-│          │ ○ b29e111b    │  │                      │ │  ┌ Read×4  ✓     ││
-│          │   opus-4-8    │  │ COST                 │ │                   ││
-│          │   290t $56.21 │  │ $0.738 avg $0.11/t   │ │ #52               ││
-│          │               │  │ ▒▒ ▒▒▒▒▒▒ ▒▒ ▒████  │ │  ┌ Read×6  ✓     ││
-│          │               │  │                      │ │                   ││
-│          │               │  │ ● Timeline 19     › │ │ #53               ││
-│          │               │  │ CONTEXT              │ │  ┌ Read×14 ✓     ││
-│          │               │  │  ● System  6.4K   › │ │                   ││
-│          │               │  │  ● Core    34t     › │ │                   ││
-│          │               │  │  ● MCP     91t     › │ │                   ││
-│          │               │  │  ● Skills  2/251   › │ │                   ││
-│          │               │  │ ANALYSIS             │ │                   ││
-│          │               │  │  💰 Cost          › │ │                   ││
-│          │               │  │ RAW                  │ │                   ││
-│          │               │  │  Request           › │ │                   ││
-│          │               │  │  Events 14         › │ │                   ││
+│          │               │  │ CACHE  95.2% hit     │ │                   ││
+│          │               │  │ ████████ ⏸ █░░████   │ │                   ││
+│          │               │  │ COST  $0.738         │ │                   ││
+│          │               │  │ ▒▒▒▒▒▒▒▒ ⏸ ▒▒████   │ │                   ││
 │          │               │  └──────────────────────┘ └───────────────────┘│
-│          │               │  ↑↓ steps  Esc exit  f ★ star  n next star    │
+│          │               │  ↑↓ steps  Esc exit  ⌘scroll zoom  drag pan   │
 └──────────┴───────────────┴────────────────────────────────────────────────┘
 ```
 
@@ -117,9 +90,13 @@ Issue: #91 — Session timeline can't express dynamic agent workflows
 2. **Projects column** (160px) — full window height, scrollable independently
 3. **Sessions column** (200px) — full window height, scrollable independently
 4. **Right area** — everything right of Sessions extends to window edge
-5. **No separator** between Workflow Timeline and Detail area — continuous vertical flow
-6. **Lane label width = Agent Card width** (240px) — visually one continuous left column through timeline and detail
-7. **Star (★)** appears before step number in Timeline Steps, not after
+5. **Overview bar** (32px) — full-width, always visible at top of right area (Shneiderman: "overview first")
+6. **Main lane + time axis** — sticky at top of timeline section, never scrolls away
+7. **Sub-agent lanes** — scrollable below the sticky main lane
+8. **Resize handle** — draggable divider between timeline and detail (min 60px timeline, min 150px detail)
+9. **Agent Card** — 2px left border in model color, connects visually to timeline lane
+10. **Lane label width = Agent Card width** (240px) — visually one continuous left column
+11. **Star (★)** appears before step number in Timeline Steps, not after
 
 ## Interaction Flow
 
@@ -141,30 +118,36 @@ Issue: #91 — Session timeline can't express dynamic agent workflows
 ### Timeline Interaction
 | Action | Result |
 |--------|--------|
-| Drag | Pan (shift visible time range) |
-| Scroll wheel | Zoom centered on cursor |
+| Horizontal drag | Pan time axis |
+| Vertical drag | Scroll lanes (when many sub-agents) |
+| Horizontal scroll (trackpad) | Pan time axis |
+| Vertical scroll | Scroll lanes |
+| Ctrl/⌘ + scroll | Zoom centered on cursor |
 | Double-click | Reset to full session view |
 | Hover turn bar | Tooltip: turn#, model, ctx%, tools, duration |
 
-### Minimap (always visible, bottom-right of timeline area)
-- Shows full session at reduced scale
-- Blue rectangle = current viewport
-- Dimmed area outside viewport
-- Click/drag minimap = pan viewport
+### Overview Bar (always visible, top of right area)
+- Full-width horizontal bar showing entire session at reduced scale
+- Scale labels: 0 / midpoint / total duration
+- Blue rectangle = current viewport, dimmed outside
+- Click/drag overview = pan viewport
 - `+` / `−` / `⟲` buttons for zoom in / out / reset
-- Bar heights proportional to lane density
+- Lane density bars proportional to turn activity
 
 ### Agent Card (240px, left side of detail area)
 
 **Agent summary** (default state):
 - Agent name, model badge, turn count, duration, type (orchestrator/fork/general/codex)
 - ★ star toggle (stars the entire agent; reflected on lane label)
-- Context minimap with threshold lines:
-  - 40% green dashed — smart zone ceiling
-  - 83.5% red dashed — autocompact threshold (⚠ warning if peak exceeds)
+- Context bar chart with three zone colors:
+  - Green (#3fb950) — 0-40% (smart zone, good cache behavior)
+  - Yellow (#d29922) — 40-83.5% (degradation zone)
+  - Red (#f85149) — 83.5%+ (danger zone, near autocompact)
+  - Context % normalized to lane's context window (avoids zigzag from model switches)
 - Cache hit rate + inline bar chart (yellow bars for < 50% cache hit turns)
 - Cost total + avg/turn + inline bar chart
 - All three charts share X axis (turn index), clickable → select turn, blue cursor line pierces all three
+- **Idle gap markers**: amber (#d29922) dashed vertical lines between turns where idle > 5 min (cache TTL); markers span all three charts at the same X position
 - Navigation items: Timeline (step count), Context (System/Core/MCP/Skills), Analysis (Cost), RAW (Request/Events) — with › chevrons
 - Tools summary, Tokens summary, Spawns count
 - ← main button (for subagent cards)
@@ -175,6 +158,8 @@ Issue: #91 — Session timeline can't express dynamic agent workflows
 - Tool group brackets (┌ │ └)
 - Selected step highlighted with blue left border
 - Scrollable; auto-scrolls to selected turn
+- **ctx% color**: gray (#8b949e) = cache warm (≥50% hit), yellow (#d29922) = cache cold (<50% hit)
+- **Idle separator rows**: when gap between turns > 5 min, insert `⏸ 10.0m` separator in amber; only states the idle duration (no assumptions about cache state — the ctx% color is the evidence)
 - Keyboard nav: ↑↓/jk steps, f star, n next star, E prev error, s next skill, a next subagent
 
 ### Star Functionality
@@ -283,22 +268,27 @@ Turns assigned to lanes using:
 
 10 sessions in `prototype-fixture.json`:
 
-| Session | Turns | Models | Pattern |
-|---------|------:|--------|---------|
-| two-wave-eval | 15 | opus-4-6 | Two waves of 3×3 spawn |
-| fork-build | 14 | opus-4-6/4-8 | Long prep then 3× fork |
-| code-review-4x | 5 | opus-4-6/4-8 | Immediate 4-way fan-out |
-| serial-codex | 7 | opus+sonnet | Serial codex-rescue |
-| sequential-fork | 9 | opus-4-6/4-8 | Spawn → work → spawn again |
-| **fable-337** | **346** | **fable+opus+sonnet+opus-4-8** | 80min, 4 models, 2 waves (6+3) |
-| **fable-161** | **471** | **fable+opus+sonnet+haiku** | 56min, 4 models, largest |
-| **workflow-147** | **147** | opus-4-6 | Workflow audit, dense parallel |
-| **workflow-149** | **149** | opus-4-8+haiku | Mixed model workflow |
-| **workflow-129** | **129** | opus+opus+haiku | 3-model workflow |
+12 sessions extracted from real ccxray logs via `scripts/extract-fixture.js`:
+
+| Session | Turns | Lanes | Model | Pattern |
+|---------|------:|------:|-------|---------|
+| `0df173ba` Simple baseline | 14 | 1 | opus-4-6 | Monotonic context growth |
+| `9e8cfc3f` Compaction | 30 | 1 | sonnet-4-6 | Peak 88%, compaction drop |
+| `00b05c48` Spawn-heavy | 83 | 1 | opus-4-6 | 48 subagents |
+| `e80743c5` Workflow | 88 | **18** | opus+haiku | Multi-phase workflow |
+| `84895640` Long session | 319 | 1 | opus-4-6 | Peak 100%, 5 idle gaps |
+| `d4cc4b15` Fable ceiling | 44 | 1 | fable-5 | Peak 99%, edit-heavy |
+| `1085045f` Opus-4-8 marathon | 154 | 4 | opus-4-8 | TaskUpdate-heavy, 5 idle gaps |
+| `89e613a0` Model upgrade | 133 | 32 | opus-4-6→4-8 | Window shrink+expand |
+| `b14c6bba` Low-context | 30 | 1 | opus-4-6 | Never exceeds 15% |
+| `c609059b` Tiny compaction | 10 | 1 | sonnet-4-6 | 83→100→20% in 3 turns |
+| `e0ef3ad0` Medium Bash | 41 | 1 | opus-4-8 | Debugging, peak 61% |
+| `1bd91918` Haiku stress | 72 | 6 | opus+haiku | 10 Agent spawns |
 
 ## File Map
 
 - Prototype: `prototype/tufte/index.html` + `tufte.js`
-- Fixture: `prototype-fixture.json`
+- Fixture: `prototype-fixture.json` (extracted from real logs)
+- Fixture generator: `scripts/extract-fixture.js` (re-run to refresh from latest logs)
 - Production target: `public/miller-columns.js` (replace Turns column), `public/workflow-timeline.js` (new), `public/messages.js` (reuse detail rendering)
 - Server: no changes needed for v1 (all data already captured)

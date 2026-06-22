@@ -21,10 +21,10 @@ let workflowMeta = null; // current session's workflow meta
 
 const $projectsList = document.getElementById('projects-list');
 const $sessionsList = document.getElementById('sessions-list');
+const $mainSvg = document.getElementById('main-svg');
 const $svg = document.getElementById('macro-svg');
 const $tooltip = document.getElementById('tooltip');
 const $zoomLabel = document.getElementById('zoom-label');
-const $minimapWrap = document.getElementById('minimap-wrap');
 const $minimap = document.getElementById('minimap');
 const $agentCardHeader = document.getElementById('agent-card-header');
 const $agentCardBody = document.getElementById('agent-card-body');
@@ -156,8 +156,14 @@ function findBestSpawn(turn, pending) {
 // ── Helpers ────────────────────────────────────────────────────────────────
 function modelColor(m) { return MODEL_COLORS[m] || Object.entries(MODEL_COLORS).find(([k]) => m.startsWith(k))?.[1] || DIM; }
 function shortModel(m) { return m.replace('claude-', '').replace('-20251001', ''); }
-function fmtDur(ms) { return ms < 1000 ? ms + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : (ms / 60000).toFixed(1) + 'm'; }
-function fmtMin(ms, base) { const s = (ms - base) / 1000; return s < 60 ? Math.round(s) + 's' : (s / 60 < 10 ? (s / 60).toFixed(1) + 'm' : Math.round(s / 60) + 'm'); }
+function fmtDur(ms) { return ms < 1000 ? Math.round(ms) + 'ms' : ms < 60000 ? (ms / 1000).toFixed(1) + 's' : ms < 3600000 ? (ms / 60000).toFixed(1) + 'm' : (ms / 3600000).toFixed(1) + 'h'; }
+function fmtMin(ms, base) {
+  const s = (ms - base) / 1000;
+  if (s < 60) return Math.round(s) + 's';
+  if (s < 3600) return (s / 60).toFixed(s < 600 ? 1 : 0) + 'm';
+  const h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h + 'h' + (m ? m + 'm' : '');
+}
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function findTurn(id) { for (const l of lanes) for (const t of l.turns) if (t.id === id) return t; return null; }
 function findLane(tid) { for (const l of lanes) for (const t of l.turns) if (t.id === tid) return l; return null; }
@@ -189,120 +195,145 @@ function getVisibleLanes() {
   return [mainLane, collapsedLane];
 }
 
-function renderTimeline() {
-  if (!lanes.length) { $svg.innerHTML = ''; return; }
-  const visLanes = getVisibleLanes();
-  const W = $svg.parentElement.clientWidth;
-  const chartW = W - LABEL_WIDTH - 12;
-  const H = PAD_TOP + AXIS_H + visLanes.length * LANE_H + PAD_BOT;
-  $svg.setAttribute('width', W); $svg.setAttribute('height', H);
-  $svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+// ponytail: two-SVG split — main lane sticky, sub-lanes scroll
+function renderLaneSvg(lane, li, W, chartW, x, tRange, visLanes) {
+  const ly = 0, trY = 0, spY = TURN_ROW_H;
+  const color = modelColor(lane.model);
+  const isSel = selectedLane?.name === lane.name;
+  const isStarred = starredAgents.has(lane.name);
+  let svg = '';
 
+  if (isSel) {
+    svg += `<rect x="0" y="0" width="3" height="${LANE_H - LANE_GAP}" fill="#58a6ff" rx="1"/>`;
+    svg += `<rect x="0" y="0" width="${W}" height="${LANE_H - LANE_GAP}" fill="#58a6ff" opacity="0.04"/>`;
+  }
+
+  if (lane.isCollapsedWorkflow) {
+    svg += `<rect x="0" y="0" width="${W}" height="${LANE_H - LANE_GAP}" fill="transparent" class="lane-bg" data-lane="${li}" style="cursor:pointer" onclick="toggleWorkflowCollapse('${esc(lane.workflowName)}')"/>`;
+    svg += `<text x="8" y="${7}" class="lane-label wf-toggle" onclick="toggleWorkflowCollapse('${esc(lane.workflowName)}')">${esc(lane.name)}</text>`;
+    const meta = `${lane.subLaneCount} agents · ${lane.subTurnCount}t · ${(lane.phases || []).join(' → ')}`;
+    svg += `<text x="8" y="${spY + 10}" class="lane-label-dim">${esc(meta)}</text>`;
+  } else {
+    svg += `<rect x="0" y="0" width="${W}" height="${LANE_H - LANE_GAP}" fill="transparent" class="lane-bg" data-lane="${li}" style="cursor:pointer"/>`;
+    const prefix = isSel ? '▶ ' : '';
+    const starMark = isStarred ? ' ★' : '';
+    let namePrefix = prefix;
+    if (workflowMeta && !collapsedWorkflows.has(workflowMeta.name) && lane.name !== 'main' && lanes.length > 2) {
+      namePrefix = li === 1 ? '▾ ' + prefix : '  ' + prefix;
+    }
+    svg += `<text x="8" y="${7}" class="lane-label">${esc(namePrefix + lane.name + starMark)}</text>`;
+    svg += `<text x="8" y="${spY + 10}" class="lane-label-dim">${esc(shortModel(lane.model))}  ${Math.round((lane.ctxWindow || 0) / 1000)}K</text>`;
+  }
+
+  for (const t of lane.turns) {
+    const tend = t.receivedAt + (t.elapsed || 0);
+    if (tend < viewT0 || t.receivedAt > viewT1) continue;
+    const tx = Math.max(LABEL_WIDTH, x(t.receivedAt));
+    const tw = Math.max(MIN_TURN_PX, x(tend) - tx);
+    const tc = t.failed ? FAIL_COLOR : modelColor(t.model);
+    const isTSel = selectedTurnId === t.id;
+    svg += `<rect x="${tx}" y="${trY}" width="${tw}" height="${TURN_ROW_H}" fill="${tc}" opacity="${isTSel ? 1 : 0.85}"${isTSel ? ` stroke="${TEXT}" stroke-width="1"` : ''} data-turn-id="${t.id}" data-lane="${li}" class="turn-bar" style="cursor:pointer"/>`;
+    if (starredTurns.has(t.id)) svg += `<text x="${tx + tw/2}" y="${trY - 1}" fill="#d29922" font-size="6" text-anchor="middle">▲</text>`;
+  }
+
+  const vis = lane.turns.filter(t => t.receivedAt >= viewT0 - tRange * 0.05 && t.receivedAt <= viewT1 + tRange * 0.05);
+  if (vis.length > 1) {
+    const pts = vis.map(t => ({ x: Math.max(LABEL_WIDTH, Math.min(W - 12, x(t.receivedAt))), y: spY + SPARKLINE_H - (t.contextPercent / 100) * SPARKLINE_H }));
+    let d = `M${pts[0].x},${spY + SPARKLINE_H}`;
+    for (const p of pts) d += ` L${p.x},${p.y}`;
+    d += ` L${pts[pts.length - 1].x},${spY + SPARKLINE_H} Z`;
+    svg += `<path d="${d}" fill="${color}" opacity="0.15"/>`;
+    let ld = `M${pts[0].x},${pts[0].y}`;
+    for (let i = 1; i < pts.length; i++) ld += ` L${pts[i].x},${pts[i].y}`;
+    svg += `<path d="${ld}" fill="none" stroke="${color}" stroke-width="0.8" opacity="0.6"/>`;
+  } else if (vis.length === 1) {
+    svg += `<circle cx="${x(vis[0].receivedAt)}" cy="${spY + SPARKLINE_H - (vis[0].contextPercent / 100) * SPARKLINE_H}" r="1.5" fill="${color}" opacity="0.6"/>`;
+  }
+  return svg;
+}
+
+function renderTimeline() {
+  if (!lanes.length) { $mainSvg.innerHTML = ''; $svg.innerHTML = ''; return; }
+  const visLanes = getVisibleLanes();
+  const W = $mainSvg.parentElement.parentElement.clientWidth;
+  const chartW = W - LABEL_WIDTH - 12;
   const tRange = viewT1 - viewT0 || 1;
   const x = t => LABEL_WIDTH + ((t - viewT0) / tRange) * chartW;
-  let svg = '';
   const isZoomed = viewT0 > sessionTimeMin + 100 || viewT1 < sessionTimeMax - 100;
   $zoomLabel.textContent = isZoomed ? `${fmtMin(viewT0, sessionTimeMin)} – ${fmtMin(viewT1, sessionTimeMin)}` : '';
 
+  // Main SVG: time axis + main lane (sticky)
+  const mainH = PAD_TOP + AXIS_H + LANE_H;
+  $mainSvg.setAttribute('width', W); $mainSvg.setAttribute('height', mainH);
+  $mainSvg.setAttribute('viewBox', `0 0 ${W} ${mainH}`);
+  let mainSvg = '';
   const nTicks = Math.max(2, Math.min(12, Math.ceil(tRange / 1000 / 5)));
   const tickStep = tRange / nTicks;
   for (let i = 0; i <= nTicks; i++) {
     const t = viewT0 + i * tickStep;
-    svg += `<text x="${x(t)}" y="${PAD_TOP + 12}" class="time-axis" text-anchor="middle">${fmtMin(t, sessionTimeMin)}</text>`;
+    mainSvg += `<text x="${x(t)}" y="${PAD_TOP + 12}" class="time-axis" text-anchor="middle">${fmtMin(t, sessionTimeMin)}</text>`;
   }
+  const mainLaneY = PAD_TOP + AXIS_H;
+  mainSvg += `<g transform="translate(0,${mainLaneY})">${renderLaneSvg(visLanes[0], 0, W, chartW, x, tRange, visLanes)}</g>`;
+  $mainSvg.innerHTML = mainSvg;
 
-  const lyStart = PAD_TOP + AXIS_H;
-  const spawnLines = [];
-
-  for (let li = 0; li < visLanes.length; li++) {
-    const lane = visLanes[li];
-    const ly = lyStart + li * LANE_H, trY = ly, spY = ly + TURN_ROW_H;
-    const color = modelColor(lane.model);
-    const isSel = selectedLane?.name === lane.name;
-    const isStarred = starredAgents.has(lane.name);
-
-    if (isSel) {
-      svg += `<rect x="0" y="${ly}" width="3" height="${LANE_H - LANE_GAP}" fill="#58a6ff" rx="1"/>`;
-      svg += `<rect x="0" y="${ly}" width="${W}" height="${LANE_H - LANE_GAP}" fill="#58a6ff" opacity="0.04"/>`;
-    }
-
-    // Collapsed workflow lane — clickable toggle
-    if (lane.isCollapsedWorkflow) {
-      svg += `<rect x="0" y="${ly}" width="${W}" height="${LANE_H - LANE_GAP}" fill="transparent" class="lane-bg" data-lane="${li}" style="cursor:pointer" onclick="toggleWorkflowCollapse('${esc(lane.workflowName)}')"/>`;
-      svg += `<text x="8" y="${trY + 7}" class="lane-label wf-toggle" onclick="toggleWorkflowCollapse('${esc(lane.workflowName)}')">${esc(lane.name)}</text>`;
-      const meta = `${lane.subLaneCount} agents · ${lane.subTurnCount}t · ${(lane.phases || []).join(' → ')}`;
-      svg += `<text x="8" y="${spY + 10}" class="lane-label-dim">${esc(meta)}</text>`;
-    } else {
-      svg += `<rect x="0" y="${ly}" width="${W}" height="${LANE_H - LANE_GAP}" fill="transparent" class="lane-bg" data-lane="${li}" style="cursor:pointer"/>`;
-      const prefix = isSel ? '▶ ' : '';
-      const starMark = isStarred ? ' ★' : '';
-      // Expanded workflow lane — show ▾ prefix for subagent lanes
-      let namePrefix = prefix;
-      if (workflowMeta && !collapsedWorkflows.has(workflowMeta.name) && lane.name !== 'main' && lanes.length > 2) {
-        namePrefix = li === 1 ? '▾ ' + prefix : '  ' + prefix;
-      }
-      svg += `<text x="8" y="${trY + 7}" class="lane-label">${esc(namePrefix + lane.name + starMark)}</text>`;
-      svg += `<text x="8" y="${spY + 10}" class="lane-label-dim">${esc(shortModel(lane.model))}  ${Math.round((lane.ctxWindow || 0) / 1000)}K</text>`;
-    }
-
-    for (const t of lane.turns) {
-      const tend = t.receivedAt + (t.elapsed || 0);
-      if (tend < viewT0 || t.receivedAt > viewT1) continue;
-      const tx = Math.max(LABEL_WIDTH, x(t.receivedAt));
-      const tw = Math.max(MIN_TURN_PX, x(tend) - tx);
-      const tc = t.failed ? FAIL_COLOR : modelColor(t.model);
-      const isTSel = selectedTurnId === t.id;
-      svg += `<rect x="${tx}" y="${trY}" width="${tw}" height="${TURN_ROW_H}" fill="${tc}" opacity="${isTSel ? 1 : 0.85}"${isTSel ? ` stroke="${TEXT}" stroke-width="1"` : ''} data-turn-id="${t.id}" data-lane="${li}" class="turn-bar" style="cursor:pointer"/>`;
-      if (starredTurns.has(t.id)) {
-        svg += `<text x="${tx + tw/2}" y="${trY - 1}" fill="#d29922" font-size="6" text-anchor="middle">▲</text>`;
+  // Sub SVG: remaining lanes (scrollable)
+  const subLanes = visLanes.slice(1);
+  if (subLanes.length) {
+    const subH = subLanes.length * LANE_H + PAD_BOT;
+    $svg.setAttribute('width', W); $svg.setAttribute('height', subH);
+    $svg.setAttribute('viewBox', `0 0 ${W} ${subH}`);
+    let subSvg = '';
+    const spawnLines = [];
+    for (let si = 0; si < subLanes.length; si++) {
+      const lane = subLanes[si];
+      const li = si + 1; // global lane index
+      subSvg += `<g transform="translate(0,${si * LANE_H})">${renderLaneSvg(lane, li, W, chartW, x, tRange, visLanes)}</g>`;
+      if (lane.spawnParent && !lane.isCollapsedWorkflow) {
+        const pt = visLanes[0].turns.find(t => t.turnIndex === lane.spawnParent.parentTurnIdx);
+        if (pt && lane.turns.length) spawnLines.push({ x1: x(pt.receivedAt), y1: 0, x2: x(lane.turns[0].receivedAt), y2: si * LANE_H });
       }
     }
-
-    const vis = lane.turns.filter(t => t.receivedAt >= viewT0 - tRange * 0.05 && t.receivedAt <= viewT1 + tRange * 0.05);
-    if (vis.length > 1) {
-      const pts = vis.map(t => ({ x: Math.max(LABEL_WIDTH, Math.min(W - 12, x(t.receivedAt))), y: spY + SPARKLINE_H - (t.contextPercent / 100) * SPARKLINE_H }));
-      let d = `M${pts[0].x},${spY + SPARKLINE_H}`;
-      for (const p of pts) d += ` L${p.x},${p.y}`;
-      d += ` L${pts[pts.length - 1].x},${spY + SPARKLINE_H} Z`;
-      svg += `<path d="${d}" fill="${color}" opacity="0.15"/>`;
-      let ld = `M${pts[0].x},${pts[0].y}`;
-      for (let i = 1; i < pts.length; i++) ld += ` L${pts[i].x},${pts[i].y}`;
-      svg += `<path d="${ld}" fill="none" stroke="${color}" stroke-width="0.8" opacity="0.6"/>`;
-    } else if (vis.length === 1) {
-      svg += `<circle cx="${x(vis[0].receivedAt)}" cy="${spY + SPARKLINE_H - (vis[0].contextPercent / 100) * SPARKLINE_H}" r="1.5" fill="${color}" opacity="0.6"/>`;
-    }
-
-    if (lane.spawnParent && li > 0 && !lane.isCollapsedWorkflow) {
-      const pt = visLanes[0].turns.find(t => t.turnIndex === lane.spawnParent.parentTurnIdx);
-      if (pt && lane.turns.length) spawnLines.push({ x1: x(pt.receivedAt), y1: lyStart + TURN_ROW_H, x2: x(lane.turns[0].receivedAt), y2: trY });
-    }
+    for (const c of spawnLines) subSvg += `<line x1="${c.x1}" y1="${c.y1}" x2="${c.x2}" y2="${c.y2}" class="spawn-line"/>`;
+    $svg.innerHTML = subSvg;
+    $svg.style.display = '';
+  } else {
+    $svg.innerHTML = '';
+    $svg.style.display = 'none';
   }
-  for (const c of spawnLines) svg += `<line x1="${c.x1}" y1="${c.y1}" x2="${c.x2}" y2="${c.y2}" class="spawn-line"/>`;
-  $svg.innerHTML = svg;
+
   setupInteractions(W, chartW, tRange, visLanes);
   renderMinimap();
 }
 
-// ── Minimap ───────────────────────────────────────────────────────────────
+// ── Overview bar (full-width, dynamic sizing) ─────────────────────────────
 function renderMinimap() {
   if (!lanes.length) return;
-  const MW = 180, totalRange = sessionTimeMax - sessionTimeMin || 1;
-  const barH = Math.max(3, Math.min(8, MW / lanes.length / 3));
-  const MH = Math.max(30, lanes.length * (barH + 2) + 4);
+  const MW = $minimap.clientWidth, MH = $minimap.clientHeight;
+  if (!MW || !MH) return;
+  const totalRange = sessionTimeMax - sessionTimeMin || 1;
   $minimap.width = MW * 2; $minimap.height = MH * 2;
-  $minimap.style.width = MW + 'px'; $minimap.style.height = MH + 'px';
   const ctx = $minimap.getContext('2d'); ctx.scale(2, 2);
   const x = t => ((t - sessionTimeMin) / totalRange) * MW;
-  ctx.fillStyle = '#0d1117'; ctx.fillRect(0, 0, MW, MH);
-  const laneStep = barH + 2;
+  ctx.fillStyle = '#161b22'; ctx.fillRect(0, 0, MW, MH);
+  const barH = Math.max(2, Math.min(6, (MH - 4) / lanes.length - 1));
+  const laneStep = barH + 1;
+  const startY = Math.max(1, (MH - lanes.length * laneStep) / 2);
   for (let li = 0; li < lanes.length; li++) {
-    const ly = 2 + li * laneStep, color = modelColor(lanes[li].model);
+    const ly = startY + li * laneStep, color = modelColor(lanes[li].model);
     const isSel = selectedLane?.name === lanes[li].name;
     for (const t of lanes[li].turns) {
       ctx.fillStyle = color; ctx.globalAlpha = isSel ? 0.9 : 0.5;
       ctx.fillRect(x(t.receivedAt), ly, Math.max(0.5, (t.elapsed / totalRange) * MW), barH);
     }
   }
+  ctx.globalAlpha = 1;
+  // Scale labels: 0, mid, end
+  ctx.font = '8px SF Mono,Menlo,monospace'; ctx.fillStyle = '#484f58'; ctx.globalAlpha = 0.7;
+  ctx.fillText('0', 2, MH - 2);
+  const endLabel = fmtDur(totalRange);
+  ctx.fillText(endLabel, MW - ctx.measureText(endLabel).width - 2, MH - 2);
+  if (MW > 200) { const midLabel = fmtDur(totalRange / 2); ctx.fillText(midLabel, MW / 2 - ctx.measureText(midLabel).width / 2, MH - 2); }
   ctx.globalAlpha = 1;
   const isZoomed = viewT0 > sessionTimeMin + 100 || viewT1 < sessionTimeMax - 100;
   if (isZoomed) {
@@ -347,67 +378,99 @@ document.getElementById('zoom-reset-btn').onclick = () => { viewT0 = sessionTime
 // ── Interactions ──────────────────────────────────────────────────────────
 function setupInteractions(W, chartW, tRange, visibleLanes) {
   const vLanes = visibleLanes || lanes;
-  let dragging = false, dragStartX = 0, dragStartT0 = 0, dragStartT1 = 0, dragMoved = false;
   function pxToTime(px) { return viewT0 + ((px - LABEL_WIDTH) / chartW) * (viewT1 - viewT0); }
-  function laneAt(my) { const i = Math.floor((my - PAD_TOP - AXIS_H) / LANE_H); return i >= 0 && i < vLanes.length ? i : -1; }
 
-  $svg.onmousedown = (e) => {
-    const r = $svg.getBoundingClientRect(), mx = e.clientX - r.left;
-    if (mx < LABEL_WIDTH) {
-      const li = laneAt(e.clientY - r.top);
-      if (li >= 0 && vLanes[li]) {
-        if (vLanes[li].isCollapsedWorkflow) { toggleWorkflowCollapse(vLanes[li].workflowName); return; }
-        selectedLane = vLanes[li]; selectedTurnId = null; renderTimeline(); renderAgentCard(); renderSteps();
+  // Shared handlers applied to both main-svg and macro-svg
+  function attachSvgHandlers(svgEl) {
+    svgEl.onmousedown = (e) => {
+      const r = svgEl.getBoundingClientRect(), mx = e.clientX - r.left;
+      if (mx < LABEL_WIDTH) {
+        const target = document.elementFromPoint(e.clientX, e.clientY);
+        if (target?.classList?.contains('lane-bg')) {
+          const li = parseInt(target.getAttribute('data-lane'));
+          const curLanes = getVisibleLanes();
+          if (li >= 0 && li < curLanes.length) {
+            if (curLanes[li].isCollapsedWorkflow) { toggleWorkflowCollapse(curLanes[li].workflowName); return; }
+            selectedLane = curLanes[li]; selectedTurnId = null; renderTimeline(); renderAgentCard(); renderSteps();
+          }
+        }
+        return;
       }
-      return;
-    }
-    dragging = true; dragMoved = false; dragStartX = e.clientX; dragStartT0 = viewT0; dragStartT1 = viewT1;
-    document.body.classList.add('dragging');
-  };
-  $svg.onmousemove = (e) => {
-    if (dragging) {
-      const dx = e.clientX - dragStartX; if (Math.abs(dx) > 3) dragMoved = true;
-      const dt = -(dx / chartW) * (dragStartT1 - dragStartT0), span = dragStartT1 - dragStartT0;
-      let t0 = dragStartT0 + dt, t1 = dragStartT1 + dt;
-      if (t0 < sessionTimeMin) { t0 = sessionTimeMin; t1 = sessionTimeMin + span; }
-      if (t1 > sessionTimeMax) { t1 = sessionTimeMax; t0 = sessionTimeMax - span; }
-      viewT0 = t0; viewT1 = t1; renderTimeline(); syncStepsHighlight(); return;
-    }
-    const target = e.target;
-    if (target.classList.contains('turn-bar')) {
-      showTooltip(e, findTurn(target.getAttribute('data-turn-id'))); $svg.style.cursor = 'pointer';
-    } else {
-      $tooltip.style.display = 'none';
-      $svg.style.cursor = (e.clientX - $svg.getBoundingClientRect().left) >= LABEL_WIDTH ? 'grab' : 'pointer';
-    }
-  };
-  $svg.onmouseup = (e) => {
-    document.body.classList.remove('dragging');
-    if (!dragging) return; dragging = false; $svg.style.cursor = 'grab';
-    if (dragMoved) return;
-    const target = e.target;
-    if (target.classList.contains('turn-bar')) {
-      const tid = target.getAttribute('data-turn-id'), lane = findLane(tid);
-      if (lane) { selectedLane = lane; selectedTurnId = tid; renderTimeline(); renderAgentCard(); renderSteps(tid); }
-    } else if (target.classList.contains('lane-bg')) {
-      const li = parseInt(target.getAttribute('data-lane'));
-      if (li >= 0 && li < vLanes.length && vLanes[li]) {
-        if (vLanes[li].isCollapsedWorkflow) { toggleWorkflowCollapse(vLanes[li].workflowName); return; }
-        selectedLane = vLanes[li]; selectedTurnId = null; renderTimeline(); renderAgentCard(); renderSteps();
+      const startX = e.clientX, startY = e.clientY, startT0 = viewT0, startT1 = viewT1;
+      const startScroll = document.getElementById('timeline-section').scrollTop;
+      const cW = chartW;
+      let moved = false;
+      document.body.classList.add('dragging');
+      const onMove = (ev) => {
+        const dx = ev.clientX - startX, dy = ev.clientY - startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+        const span = startT1 - startT0, dt = -(dx / cW) * span;
+        let t0 = startT0 + dt, t1 = startT1 + dt;
+        if (t0 < sessionTimeMin) { t0 = sessionTimeMin; t1 = sessionTimeMin + span; }
+        if (t1 > sessionTimeMax) { t1 = sessionTimeMax; t0 = sessionTimeMax - span; }
+        viewT0 = t0; viewT1 = t1;
+        document.getElementById('timeline-section').scrollTop = startScroll - dy;
+        renderTimeline(); syncStepsHighlight();
+      };
+      const onUp = (ev) => {
+        document.body.classList.remove('dragging');
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (moved) return;
+        const target = document.elementFromPoint(ev.clientX, ev.clientY);
+        if (target?.classList?.contains('turn-bar')) {
+          const tid = target.getAttribute('data-turn-id'), lane = findLane(tid);
+          if (lane) { selectedLane = lane; selectedTurnId = tid; renderTimeline(); renderAgentCard(); renderSteps(tid); }
+        } else if (target?.classList?.contains('lane-bg')) {
+          const li = parseInt(target.getAttribute('data-lane'));
+          const curLanes = getVisibleLanes();
+          if (li >= 0 && li < curLanes.length && curLanes[li]) {
+            if (curLanes[li].isCollapsedWorkflow) { toggleWorkflowCollapse(curLanes[li].workflowName); return; }
+            selectedLane = curLanes[li]; selectedTurnId = null; renderTimeline(); renderAgentCard(); renderSteps();
+          }
+        }
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+    svgEl.onmousemove = (e) => {
+      if (document.body.classList.contains('dragging')) return;
+      const target = e.target;
+      if (target.classList.contains('turn-bar')) {
+        showTooltip(e, findTurn(target.getAttribute('data-turn-id'))); svgEl.style.cursor = 'pointer';
+      } else {
+        $tooltip.style.display = 'none';
+        svgEl.style.cursor = (e.clientX - svgEl.getBoundingClientRect().left) >= LABEL_WIDTH ? 'grab' : 'pointer';
       }
-    }
-  };
-  $svg.onmouseleave = () => { $tooltip.style.display = 'none'; if (dragging) { dragging = false; document.body.classList.remove('dragging'); } $svg.style.cursor = 'grab'; };
-  $svg.ondblclick = () => { viewT0 = sessionTimeMin; viewT1 = sessionTimeMax; renderTimeline(); syncStepsToView(); };
-  $svg.onwheel = (e) => {
-    e.preventDefault(); const r = $svg.getBoundingClientRect(), mx = e.clientX - r.left;
-    if (mx < LABEL_WIDTH) return;
-    const cursor = pxToTime(mx), factor = e.deltaY > 0 ? 1.3 : 0.7, span = viewT1 - viewT0, ratio = (cursor - viewT0) / span, ns = span * factor;
-    if (ns >= (sessionTimeMax - sessionTimeMin) * 1.1) { viewT0 = sessionTimeMin; viewT1 = sessionTimeMax; }
-    else if (ns < 2000) return;
-    else { viewT0 = Math.max(sessionTimeMin, cursor - ns * ratio); viewT1 = Math.min(sessionTimeMax, cursor + ns * (1 - ratio)); }
-    renderTimeline(); syncStepsToView();
-  };
+    };
+    svgEl.onmouseleave = () => { $tooltip.style.display = 'none'; };
+    svgEl.ondblclick = () => { viewT0 = sessionTimeMin; viewT1 = sessionTimeMax; renderTimeline(); syncStepsToView(); };
+    svgEl.onwheel = (e) => {
+      const r = svgEl.getBoundingClientRect(), mx = e.clientX - r.left;
+      if (mx < LABEL_WIDTH) return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const cursor = pxToTime(mx), factor = e.deltaY > 0 ? 1.3 : 0.7, span = viewT1 - viewT0, ratio = (cursor - viewT0) / span, ns = span * factor;
+        if (ns >= (sessionTimeMax - sessionTimeMin) * 1.1) { viewT0 = sessionTimeMin; viewT1 = sessionTimeMax; }
+        else if (ns < 2000) return;
+        else { viewT0 = Math.max(sessionTimeMin, cursor - ns * ratio); viewT1 = Math.min(sessionTimeMax, cursor + ns * (1 - ratio)); }
+        renderTimeline(); syncStepsToView();
+        return;
+      }
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        e.preventDefault();
+        const span = viewT1 - viewT0, dt = (e.deltaX / chartW) * span;
+        let t0 = viewT0 + dt, t1 = viewT1 + dt;
+        if (t0 < sessionTimeMin) { t0 = sessionTimeMin; t1 = t0 + span; }
+        if (t1 > sessionTimeMax) { t1 = sessionTimeMax; t0 = t1 - span; }
+        viewT0 = t0; viewT1 = t1;
+        renderTimeline(); syncStepsHighlight();
+        return;
+      }
+    };
+  }
+  attachSvgHandlers($mainSvg);
+  attachSvgHandlers($svg);
 }
 
 function showTooltip(e, t) {
@@ -430,11 +493,14 @@ function renderAgentCard() {
   const lane = selectedLane, turns = lane.turns, color = modelColor(lane.model);
   const totalDur = turns.length ? turns[turns.length - 1].receivedAt + (turns[turns.length - 1].elapsed || 0) - turns[0].receivedAt : 0;
   const totalSpawns = turns.reduce((s, t) => s + (t.agentSpawns?.length || 0), 0);
-  const peakCtx = Math.max(...turns.map(t => t.contextPercent));
-  const lastCtx = turns.length ? turns[turns.length - 1].contextPercent : 0;
+  // ponytail: normalize to lane's window so model switches don't distort %
+  const laneWin = lane.ctxWindow || (turns.length ? turns[0].contextWindow : 1) || 1;
+  const peakCtx = Math.max(...turns.map(t => (t.contextUsed / laneWin) * 100));
+  const lastCtx = turns.length ? (turns[turns.length - 1].contextUsed / laneWin) * 100 : 0;
   const typeLabel = lane.spawnParent ? lane.spawnParent.type || 'subagent' : 'orchestrator';
   const isStarred = starredAgents.has(lane.name);
 
+  document.getElementById('agent-card').style.borderLeft = `2px solid ${color}`;
   $agentCardHeader.innerHTML = `
     <span class="ac-star" onclick="toggleAgentStar('${esc(lane.name)}')">${isStarred ? '★' : '☆'}</span>
     <div class="ac-name">${esc(lane.name)} <span class="ac-model" style="background:${color}22;color:${color}">${shortModel(lane.model)}</span></div>
@@ -527,12 +593,34 @@ function renderSteps(scrollTo) {
   const lane = selectedLane, turns = lane.turns, color = modelColor(lane.model);
   $stepsHeader.innerHTML = `<span>TIMELINE</span> · <span class="sh-agent" style="color:${color}">● ${esc(lane.name)}</span> · ${turns.length} steps`;
 
+  // ponytail: per-turn cache rate for coloring ctx%
+  const perTurnCache = lane._perTurnCache || turns.map(t => {
+    const u = t.usage || {};
+    const tot = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    return tot > 0 ? ((u.cache_read_input_tokens || 0) / tot) * 100 : 0;
+  });
+
   let html = '';
-  for (const t of turns) {
+  for (let idx = 0; idx < turns.length; idx++) {
+    const t = turns[idx];
+    // Idle separator: gap > 5 min between turns
+    if (idx > 0) {
+      const idle = t.receivedAt - (turns[idx - 1].receivedAt + (turns[idx - 1].elapsed || 0));
+      if (idle > IDLE_THRESHOLD) {
+        html += `<div class="step-idle-sep" title="${fmtDur(idle)} idle">`;
+        html += `<span class="step-idle-line"></span>`;
+        html += `<span class="step-idle-label">⏸ ${fmtDur(idle)}</span>`;
+        html += `<span class="step-idle-line"></span>`;
+        html += `</div>`;
+      }
+    }
     const isSel = selectedTurnId === t.id;
     const tools = Object.entries(t.toolCalls || {});
     const spawns = t.agentSpawns?.length > 0;
     const isStarred = starredTurns.has(t.id);
+    // ctx% colored by cache rate: green = warm (>50%), yellow = cold (<50%)
+    const cacheRate = perTurnCache[idx] || 0;
+    const ctxColor = cacheRate >= 50 ? '#8b949e' : '#d29922';
     html += `<div class="step-row${isSel ? ' selected' : ''}" id="step-${t.id}" data-tid="${t.id}">`;
     html += `<span class="step-star${isStarred ? ' starred' : ''}" onclick="event.stopPropagation();toggleTurnStar('${t.id}')">${isStarred ? '★' : '☆'}</span>`;
     html += `<span class="step-num">#${t.turnIndex}</span>`;
@@ -542,7 +630,7 @@ function renderSteps(scrollTo) {
     if (spawns) html += ` <span class="spawn-badge">⑂${t.agentSpawns.length} ${t.agentSpawns.map(s => esc(s.name || s.subagent_type)).join(', ')}</span>`;
     if (!tools.length && !spawns) html += '<span class="tool-result">(thinking / text)</span>';
     html += `</span>`;
-    html += `<span class="step-ctx">${t.contextPercent.toFixed(1)}%</span>`;
+    html += `<span class="step-ctx" style="color:${ctxColor}">${t.contextPercent.toFixed(1)}%</span>`;
     html += `<span class="step-duration">${fmtDur(t.elapsed)}</span>`;
     html += `</div>`;
   }
@@ -640,32 +728,72 @@ window.toggleAgentStar = function(name) {
 };
 
 // ── Summary charts (context minimap + cache + cost sparklines) ────────────
+// ponytail: X = turn-index (dense) + idle gap markers for cache-drop visibility
+const IDLE_THRESHOLD = 5 * 60 * 1000; // 5 min — matches Anthropic prompt cache TTL
+const GAP_PX = 6;
+
+function computeChartLayout(turns, canvasW) {
+  const gaps = [];
+  for (let i = 0; i < turns.length - 1; i++) {
+    const idle = turns[i + 1].receivedAt - (turns[i].receivedAt + (turns[i].elapsed || 0));
+    if (idle > IDLE_THRESHOLD) gaps.push({ after: i, dur: idle });
+  }
+  const usableW = canvasW - gaps.length * GAP_PX;
+  const bw = Math.max(0.5, usableW / turns.length);
+  const pos = []; // {x} per turn
+  const gapPos = []; // {x, dur} per gap
+  let cx = 0, gi = 0;
+  for (let i = 0; i < turns.length; i++) {
+    pos.push(cx);
+    cx += bw;
+    if (gi < gaps.length && gaps[gi].after === i) {
+      gapPos.push({ x: cx, dur: gaps[gi].dur });
+      cx += GAP_PX;
+      gi++;
+    }
+  }
+  return { pos, gapPos, bw };
+}
+
 function drawAllSummaryCharts(lane) {
   const turns = lane.turns;
   if (!turns.length) return;
   const cacheData = lane._perTurnCache || [], costData = lane._perTurnCost || [];
-  const color = modelColor(lane.model);
-  const turnFrac = (i) => turns.length > 1 ? i / (turns.length - 1) : 0.5;
   const selIdx = selectedTurnId ? turns.findIndex(t => t.id === selectedTurnId) : -1;
 
-  function attachClick(canvas) {
+  // Shared helpers using layout
+  function attachClick(canvas, layout) {
     canvas.onclick = (e) => {
-      const rect = canvas.getBoundingClientRect(), frac = (e.clientX - rect.left) / rect.width;
-      const idx = Math.round(frac * (turns.length - 1));
-      const nearest = turns[Math.max(0, Math.min(turns.length - 1, idx))];
-      if (nearest) { selectedTurnId = nearest.id; renderTimeline(); renderAgentCard(); renderSteps(nearest.id); }
+      const rect = canvas.getBoundingClientRect(), cx = (e.clientX - rect.left) / rect.width * canvas.clientWidth;
+      let best = 0, bestD = Infinity;
+      for (let i = 0; i < turns.length; i++) {
+        const d = Math.abs(layout.pos[i] + layout.bw / 2 - cx);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      selectedTurnId = turns[best].id; renderTimeline(); renderAgentCard(); renderSteps(turns[best].id);
     };
   }
-  function drawCursor(c, w, h, idx) {
-    if (idx < 0) return;
-    c.beginPath(); c.moveTo(turnFrac(idx) * w, 0); c.lineTo(turnFrac(idx) * w, h);
+  function drawCursor(c, layout, h, idx) {
+    if (idx < 0 || !layout.pos[idx]) return;
+    const cx = layout.pos[idx] + layout.bw / 2;
+    c.beginPath(); c.moveTo(cx, 0); c.lineTo(cx, h);
     c.strokeStyle = '#58a6ff'; c.lineWidth = 1; c.stroke();
   }
-  // ponytail: steps scroll viewport indicator on charts
-  function drawStepsViewRange(c, w, h) {
+  function drawGaps(c, layout, h) {
+    for (const g of layout.gapPos) {
+      c.fillStyle = '#d29922'; c.globalAlpha = 0.3;
+      c.fillRect(g.x, 0, GAP_PX, h);
+      c.setLineDash([2, 2]);
+      c.strokeStyle = '#d29922'; c.lineWidth = 0.5; c.globalAlpha = 0.6;
+      c.beginPath(); c.moveTo(g.x + GAP_PX / 2, 0); c.lineTo(g.x + GAP_PX / 2, h); c.stroke();
+      c.setLineDash([]);
+      c.globalAlpha = 1;
+    }
+  }
+  function drawStepsViewRange(c, layout, h) {
     const vr = lane._stepsViewRange;
-    if (!vr || vr.startIdx < 0) return;
-    const x1 = turnFrac(vr.startIdx) * w, x2 = turnFrac(vr.endIdx) * w;
+    if (!vr || vr.startIdx < 0 || !layout.pos[vr.startIdx]) return;
+    const x1 = layout.pos[vr.startIdx], x2 = layout.pos[vr.endIdx] + layout.bw;
     c.fillStyle = 'rgba(88, 166, 255, 0.06)';
     c.fillRect(x1, 0, Math.max(2, x2 - x1), h);
     c.strokeStyle = 'rgba(88, 166, 255, 0.3)';
@@ -673,61 +801,101 @@ function drawAllSummaryCharts(lane) {
     c.strokeRect(x1, 0, Math.max(2, x2 - x1), h);
   }
 
+  // Context bar chart with 3 zones
   const ctxCanvas = document.getElementById('ctx-minimap');
   if (ctxCanvas) {
     const w = ctxCanvas.clientWidth, h = ctxCanvas.clientHeight;
     if (w && h) {
+      const layout = computeChartLayout(turns, w);
       ctxCanvas.width = w * 2; ctxCanvas.height = h * 2;
       const c = ctxCanvas.getContext('2d'); c.scale(2, 2);
       c.fillStyle = '#21262d'; c.fillRect(0, 0, w, h);
-      [{pct:40,color:'#3fb950',label:'40%',dash:[4,3]},{pct:83.5,color:'#f85149',label:'83.5%',dash:[3,2]}].forEach(th => {
-        const y = h - (th.pct / 100) * h;
-        c.beginPath(); c.setLineDash(th.dash); c.moveTo(0, y); c.lineTo(w, y);
+      const y40 = h - (40 / 100) * h, y83 = h - (83.5 / 100) * h;
+      c.fillStyle = 'rgba(63, 185, 80, 0.06)'; c.fillRect(0, y40, w, h - y40);
+      c.fillStyle = 'rgba(210, 153, 34, 0.06)'; c.fillRect(0, y83, w, y40 - y83);
+      c.fillStyle = 'rgba(248, 81, 73, 0.06)'; c.fillRect(0, 0, w, y83);
+      [{y:y40,color:'#3fb950',label:'40%'},{y:y83,color:'#f85149',label:'83.5%'}].forEach(th => {
+        c.beginPath(); c.setLineDash([3,2]); c.moveTo(0, th.y); c.lineTo(w, th.y);
         c.strokeStyle = th.color; c.lineWidth = 0.5; c.globalAlpha = 0.5; c.stroke();
         c.setLineDash([]); c.globalAlpha = 0.4; c.font = '7px SF Mono,Menlo,monospace'; c.fillStyle = th.color;
-        c.fillText(th.label, w - c.measureText(th.label).width - 1, y - 1); c.globalAlpha = 1;
+        c.fillText(th.label, w - c.measureText(th.label).width - 1, th.y - 1); c.globalAlpha = 1;
       });
-      c.beginPath(); c.moveTo(0, h);
-      turns.forEach((t, i) => c.lineTo(turnFrac(i) * w, h - (t.contextPercent / 100) * h));
-      c.lineTo(turnFrac(turns.length - 1) * w, h); c.closePath(); c.fillStyle = color + '33'; c.fill();
-      c.beginPath();
-      turns.forEach((t, i) => { const px = turnFrac(i) * w, py = h - (t.contextPercent / 100) * h; i ? c.lineTo(px, py) : c.moveTo(px, py); });
-      c.strokeStyle = color; c.lineWidth = 1; c.stroke();
-      drawStepsViewRange(c, w, h); drawCursor(c, w, h, selIdx); attachClick(ctxCanvas);
+      const laneWin = lane.ctxWindow || turns[0].contextWindow || 1;
+      for (let i = 0; i < turns.length; i++) {
+        const pct = (turns[i].contextUsed / laneWin) * 100;
+        const bh = Math.max(0.5, (pct / 100) * h);
+        c.fillStyle = pct <= 40 ? '#3fb950' : pct <= 83.5 ? '#d29922' : '#f85149';
+        c.globalAlpha = 0.8;
+        c.fillRect(layout.pos[i], h - bh, Math.max(0.5, layout.bw), bh);
+      }
+      c.globalAlpha = 1;
+      drawGaps(c, layout, h); drawStepsViewRange(c, layout, h); drawCursor(c, layout, h, selIdx); attachClick(ctxCanvas, layout);
     }
   }
   const cacheCanvas = document.getElementById('cache-spark');
   if (cacheCanvas && cacheData.length) {
     const w = cacheCanvas.clientWidth, h = cacheCanvas.clientHeight;
     if (w && h) {
+      const layout = computeChartLayout(turns, w);
       cacheCanvas.width = w * 2; cacheCanvas.height = h * 2;
       const c = cacheCanvas.getContext('2d'); c.scale(2, 2);
-      const barW = Math.max(1, (w - 2) / cacheData.length);
       for (let i = 0; i < cacheData.length; i++) {
         c.fillStyle = cacheData[i] < 50 ? '#d29922' : '#3fb950'; c.globalAlpha = 0.7;
-        c.fillRect(1 + i * barW, h - Math.max(0.5, (cacheData[i] / 100) * (h - 1)), Math.max(0.5, barW - 0.5), Math.max(0.5, (cacheData[i] / 100) * (h - 1)));
+        const bh = Math.max(0.5, (cacheData[i] / 100) * (h - 1));
+        c.fillRect(layout.pos[i], h - bh, Math.max(0.5, layout.bw), bh);
       }
-      c.globalAlpha = 1; drawStepsViewRange(c, w, h); drawCursor(c, w, h, selIdx); attachClick(cacheCanvas);
+      c.globalAlpha = 1;
+      drawGaps(c, layout, h); drawStepsViewRange(c, layout, h); drawCursor(c, layout, h, selIdx); attachClick(cacheCanvas, layout);
     }
   }
   const costCanvas = document.getElementById('cost-spark');
   if (costCanvas && costData.length) {
     const w = costCanvas.clientWidth, h = costCanvas.clientHeight;
     if (w && h) {
+      const layout = computeChartLayout(turns, w);
       costCanvas.width = w * 2; costCanvas.height = h * 2;
       const c = costCanvas.getContext('2d'); c.scale(2, 2);
-      const maxCost = Math.max(...costData) || 1, barW = Math.max(1, (w - 2) / costData.length);
+      const maxCost = Math.max(...costData) || 1;
       for (let i = 0; i < costData.length; i++) {
         c.fillStyle = '#ffa657'; c.globalAlpha = 0.7;
-        c.fillRect(1 + i * barW, h - Math.max(0.5, (costData[i] / maxCost) * (h - 1)), Math.max(0.5, barW - 0.5), Math.max(0.5, (costData[i] / maxCost) * (h - 1)));
+        const bh = Math.max(0.5, (costData[i] / maxCost) * (h - 1));
+        c.fillRect(layout.pos[i], h - bh, Math.max(0.5, layout.bw), bh);
       }
-      c.globalAlpha = 1; drawStepsViewRange(c, w, h); drawCursor(c, w, h, selIdx); attachClick(costCanvas);
+      c.globalAlpha = 1;
+      drawGaps(c, layout, h); drawStepsViewRange(c, layout, h); drawCursor(c, layout, h, selIdx); attachClick(costCanvas, layout);
     }
   }
 }
 
 window.selectMain = () => { selectedLane = lanes[0] || null; selectedTurnId = null; renderTimeline(); renderAgentCard(); renderSteps(); };
 window.addEventListener('resize', () => renderTimeline());
+
+// ── Resize handle: drag to adjust timeline vs detail split ───────────────
+(function() {
+  const handle = document.getElementById('resize-handle');
+  const section = document.getElementById('timeline-section');
+  if (!handle || !section) return;
+  // ponytail: min = main lane visible (header ~50px), max = leave 150px for detail
+  const MIN_H = 60, MIN_DETAIL = 150;
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    const startY = e.clientY, startH = section.offsetHeight;
+    document.body.classList.add('dragging');
+    const onMove = (ev) => {
+      const dy = ev.clientY - startY;
+      const maxH = window.innerHeight - section.getBoundingClientRect().top - MIN_DETAIL;
+      const newH = Math.max(MIN_H, Math.min(maxH, startH + dy));
+      section.style.maxHeight = newH + 'px';
+    };
+    const onUp = () => {
+      document.body.classList.remove('dragging');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+})();
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const isZoomed = viewT0 > sessionTimeMin + 100 || viewT1 < sessionTimeMax - 100;
