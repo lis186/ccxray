@@ -135,24 +135,22 @@ describe('store', () => {
     });
   });
 
+  // Shared test helpers — used by detectSession and linkParentSession tests
+  function resetSessionState(store) {
+    for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
+    for (const k of Object.keys(store.activeRequests)) delete store.activeRequests[k];
+  }
+
+  function mainReq(sessionId, msgCount) {
+    return {
+      metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
+      system: [{ text: 'Primary working directory: /home/user/project' }],
+      messages: new Array(msgCount).fill({ role: 'user', content: 'hi' }),
+      tools: new Array(90).fill({ name: 'Read' }),
+    };
+  }
+
   describe('detectSession – subagent attribution', () => {
-    // Fresh store state for each test — we manipulate module-level globals
-    // so we need to reset between tests.
-    function resetSessionState(store) {
-      // Clear mutable session state
-      for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
-      for (const k of Object.keys(store.activeRequests)) delete store.activeRequests[k];
-    }
-
-    function mainReq(sessionId, msgCount) {
-      return {
-        metadata: { user_id: JSON.stringify({ session_id: sessionId }) },
-        system: [{ text: 'Primary working directory: /home/user/project' }],
-        messages: new Array(msgCount).fill({ role: 'user', content: 'hi' }),
-        tools: new Array(90).fill({ name: 'Read' }),
-      };
-    }
-
     function bareSubagentReq() {
       return { messages: [{ role: 'user', content: 'do research' }] };
     }
@@ -311,6 +309,136 @@ describe('store', () => {
 
       const r = store.detectSession(bareSubagentReq());
       assert.equal(r.sessionId, 'aaa-111');
+    });
+  });
+
+  describe('linkParentSession – cross-session subagent linkage', () => {
+    it('links subagent session to inflight parent', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      // New session with own session_id, no cwd, 1 message — looks like a subagent
+      const childBody = { metadata: { session_id: 'child-bbb' }, messages: [{ role: 'user', content: 'research' }] };
+      store.detectSession(childBody);
+      store.sessionMeta['child-bbb'] = store.sessionMeta['child-bbb'] || {};
+      store.sessionMeta['child-bbb'].lastSeenAt = Date.now();
+
+      const parent = store.linkParentSession('child-bbb', childBody, false);
+      assert.equal(parent, 'parent-aaa');
+      assert.equal(store.sessionMeta['child-bbb'].parentSessionId, 'parent-aaa');
+    });
+
+    it('links when isSubagentHint is true (Codex header)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      // Even with cwd and tools, isSubagentHint=true forces the linkage
+      const childBody = mainReq('child-ccc', 5);
+      store.detectSession(childBody);
+      store.sessionMeta['child-ccc'] = store.sessionMeta['child-ccc'] || {};
+      store.sessionMeta['child-ccc'].lastSeenAt = Date.now();
+
+      const parent = store.linkParentSession('child-ccc', childBody, true);
+      assert.equal(parent, 'parent-aaa');
+    });
+
+    it('does not link when session has cwd and many messages', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      // Normal session with cwd and 5 messages — not a subagent
+      const normalBody = mainReq('normal-ddd', 5);
+      store.detectSession(normalBody);
+      store.sessionMeta['normal-ddd'] = store.sessionMeta['normal-ddd'] || {};
+      store.sessionMeta['normal-ddd'].lastSeenAt = Date.now();
+
+      const parent = store.linkParentSession('normal-ddd', normalBody, false);
+      assert.equal(parent, null);
+      assert.equal(store.sessionMeta['normal-ddd'].parentSessionId, undefined);
+    });
+
+    it('does not link when no parent session is active', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      // No active sessions
+      const childBody = { metadata: { session_id: 'orphan-eee' }, messages: [{ role: 'user', content: 'hi' }] };
+      store.detectSession(childBody);
+      store.sessionMeta['orphan-eee'] = store.sessionMeta['orphan-eee'] || {};
+      store.sessionMeta['orphan-eee'].lastSeenAt = Date.now();
+
+      const parent = store.linkParentSession('orphan-eee', childBody, false);
+      assert.equal(parent, null);
+    });
+
+    it('links even when child session meta exists (but no activeRequests/lastSeenAt yet)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      // detectSession creates sessionMeta for child but does NOT set lastSeenAt or activeRequests
+      const childBody = { metadata: { session_id: 'child-ggg' }, messages: [{ role: 'user', content: 'hi' }] };
+      store.detectSession(childBody);
+      // Production: linkParentSession runs BEFORE activeRequests increment
+      const parent = store.linkParentSession('child-ggg', childBody, false);
+      assert.equal(parent, 'parent-aaa');
+    });
+
+    it('self-links when child is strictly more recent than parent (documents ordering requirement)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      const now = Date.now();
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: now, bannerPrinted: true };
+
+      const childBody = { metadata: { session_id: 'child-hhh' }, messages: [{ role: 'user', content: 'hi' }] };
+      store.detectSession(childBody);
+      // WRONG ordering: active tracking before linkParentSession.
+      // Child is strictly newer → inferParentSession returns child → self-link → guard drops.
+      store.activeRequests['child-hhh'] = 1;
+      store.sessionMeta['child-hhh'].lastSeenAt = now + 1;
+      const parent = store.linkParentSession('child-hhh', childBody, false);
+      assert.equal(parent, null, 'self-link dropped — production avoids this by calling linkParentSession before activeRequests increment');
+    });
+
+    it('does not re-link if parentSessionId already set', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+
+      store.detectSession(mainReq('parent-aaa', 3));
+      store.activeRequests['parent-aaa'] = 1;
+      store.sessionMeta['parent-aaa'] = { cwd: '/home', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      store.detectSession(mainReq('parent-bbb', 3));
+      store.activeRequests['parent-bbb'] = 1;
+      store.sessionMeta['parent-bbb'] = { cwd: '/other', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const childBody = { metadata: { session_id: 'child-fff' }, messages: [{ role: 'user', content: 'hi' }] };
+      store.detectSession(childBody);
+      store.sessionMeta['child-fff'] = store.sessionMeta['child-fff'] || {};
+      store.sessionMeta['child-fff'].lastSeenAt = Date.now();
+      store.sessionMeta['child-fff'].parentSessionId = 'parent-aaa';
+
+      // Second call should not override
+      const parent = store.linkParentSession('child-fff', childBody, false);
+      assert.equal(parent, 'parent-aaa');
     });
   });
 

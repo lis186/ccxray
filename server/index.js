@@ -393,6 +393,11 @@ const server = http.createServer((clientReq, clientRes) => {
       if (anthropicPromptInfo) coreHash = anthropicPromptInfo.coreHash;
     }
 
+    // Cross-session parent linkage — MUST run before activeRequests increment,
+    // otherwise inferParentSession sees the child as its own best parent candidate.
+    const isSubagentHint = provider === 'openai' ? isOpenAISubagent(clientReq.headers, parsedBody) : undefined;
+    if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
+
     // Track active requests
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = (store.activeRequests[reqSessionId] || 0) + 1;
@@ -421,7 +426,7 @@ const server = http.createServer((clientReq, clientRes) => {
       id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders,
       reqSessionId, reqWritePromise, sysHash, toolsHash, coreHash, sessionInferred, upstream,
       beta1m,
-      isSubagent: provider === 'openai' ? isOpenAISubagent(clientReq.headers, parsedBody) : undefined,
+      isSubagent: isSubagentHint,
     };
 
     // ── Intercept check ──

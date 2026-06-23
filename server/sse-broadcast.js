@@ -36,6 +36,7 @@ function summarizeEntry(entry) {
     coreHash: entry.coreHash || null,
     toolsHash: entry.toolsHash || null,
     thinkingStripped: entry.thinkingStripped || false,
+    parentSessionId: store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
       contextBreakdown: tok.contextBreakdown,

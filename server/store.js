@@ -170,6 +170,27 @@ function attributeTitleGen(parsedBody, receivedAt, windowMs = 1000) {
   return matches.length === 1 ? matches[0] : null;
 }
 
+// Link a new session to its parent when it looks like a subagent spawn.
+// Called from index.js after detectSession, where ctx.isSubagent is available.
+// Idempotent: no-op if parentSessionId already set or no parent found.
+function linkParentSession(sessionId, parsedBody, isSubagentHint) {
+  if (!sessionId || sessionId === 'direct-api') return null;
+  const meta = sessionMeta[sessionId];
+  if (!meta) return null;
+  if (meta.parentSessionId) return meta.parentSessionId;
+  // Unlike isLikelySubagent (which screens orphan requests without session_id),
+  // this handles sessions WITH their own session_id. Tools and metadata guards
+  // are intentionally absent because Codex subagents may carry both.
+  const looksSubagent = isSubagentHint || (!extractCwd(parsedBody) && (parsedBody?.messages?.length || 0) <= 2);
+  if (!looksSubagent) return null;
+  const parent = inferParentSession();
+  if (parent && parent !== sessionId) {
+    meta.parentSessionId = parent;
+    return parent;
+  }
+  return null;
+}
+
 function detectSession(req) {
   const realId = extractSessionId(req);
 
@@ -325,6 +346,7 @@ module.exports = {
   extractCwd,
   extractSessionId,
   isAnthropicSubagent,
+  linkParentSession,
   detectSession,
   printSessionBanner,
   extractFirstUserMsgText,
