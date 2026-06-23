@@ -1,0 +1,809 @@
+// ── Workflow Swimlane Timeline (#91) ──────────────────────────────────────
+// Renders SVG swimlane lanes inside #col-turns when a session is selected.
+// Depends on globals from miller-columns.js: allEntries, selectedSessionId,
+// sessionsMap, colTurns, colSections, selectTurn.
+
+// ── Constants ─────────────────────────────────────────────────────────────
+const WF_MODEL_COLORS = {
+  'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
+  'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
+};
+const WF_LABEL_W = 240, WF_SPARKLINE_H = 16, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
+const WF_LANE_H = WF_TURN_ROW_H + WF_SPARKLINE_H + WF_LANE_GAP;
+const WF_AXIS_H = 18, WF_PAD = 4, WF_MIN_TURN_PX = 1.5;
+const WF_MONO = "'SF Mono','Cascadia Code','Fira Code',monospace";
+
+// ── State ─────────────────────────────────────────────────────────────────
+var wfState = null;
+var _wfPendingRender = 0;
+var _wfTooltipEl = null;
+var _wfCssCache = null;
+function _wfGetCssColors() {
+  if (_wfCssCache) return _wfCssCache;
+  var cs = getComputedStyle(document.documentElement);
+  _wfCssCache = { surface: cs.getPropertyValue('--surface').trim() || '#161b22', dim: cs.getPropertyValue('--dim').trim() || '#8b949e', accent: cs.getPropertyValue('--accent').trim() || '#58a6ff', bg: cs.getPropertyValue('--bg').trim() || '#0d1117' };
+  return _wfCssCache;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function wfModelColor(m) {
+  if (!m) return 'var(--dim)';
+  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || 'var(--dim)';
+}
+function wfShortModel(m) { return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, ''); }
+function wfFmtDur(ms) {
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+  if (ms < 3600000) return (ms / 60000).toFixed(1) + 'm';
+  return (ms / 3600000).toFixed(1) + 'h';
+}
+function wfFmtMin(ms, base) {
+  var s = (ms - base) / 1000;
+  if (s < 60) return Math.round(s) + 's';
+  if (s < 3600) return (s / 60).toFixed(s < 600 ? 1 : 0) + 'm';
+  var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
+  return h + 'h' + (m ? m + 'm' : '');
+}
+// ponytail: reuse escapeHtml from miller-columns.js (loaded before us)
+var wfEsc = typeof escapeHtml === 'function' ? escapeHtml : function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+
+function wfCtxPct(e) {
+  var win = e.maxContext || 200000;
+  return Math.min(100, (e.ctxUsed || 0) / win * 100);
+}
+
+// ── Lane Inference ────────────────────────────────────────────────────────
+function _wfPushToSubLane(laneMap, key, entry) {
+  if (!laneMap.has(key)) laneMap.set(key, { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null });
+  laneMap.get(key).turns.push(entry);
+}
+
+function wfInferLanes(entries, childEntries) {
+  if (!entries.length && !childEntries.length) return [];
+
+  var laneMap = new Map();
+  var mainLane = { name: 'main', turns: [], model: null, ctxWindow: 0, spawnParent: null };
+  laneMap.set('main', mainLane);
+  var orchCtx = 0;
+
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    var subKey = 'subagent-' + wfShortModel(e.model);
+    var sub = false;
+
+    if (e.isSubagent || (mainLane.model && e.model !== mainLane.model)) {
+      _wfPushToSubLane(laneMap, subKey, e);
+      sub = true;
+    } else if (!e.isCompacted && orchCtx > 20 && wfCtxPct(e) < orchCtx * 0.5 && wfCtxPct(e) < 25) {
+      _wfPushToSubLane(laneMap, subKey, e);
+      sub = true;
+    }
+
+    if (!sub) {
+      mainLane.turns.push(e);
+      if (!mainLane.model) mainLane.model = e.model;
+      mainLane.ctxWindow = e.maxContext || mainLane.ctxWindow;
+      var p = wfCtxPct(e);
+      if (p > orchCtx * 0.8) orchCtx = Math.max(orchCtx, p);
+    }
+  }
+
+  // Child session entries → their own lanes
+  if (childEntries.length) {
+    var childBySid = new Map();
+    for (var ci = 0; ci < childEntries.length; ci++) {
+      var ce = childEntries[ci];
+      var sid = ce.sessionId;
+      if (!childBySid.has(sid)) childBySid.set(sid, []);
+      childBySid.get(sid).push(ce);
+    }
+    childBySid.forEach(function(turns, sid) {
+      var label = sid.slice(0, 8);
+      var m = turns[0]?.model;
+      if (m) label = wfShortModel(m) + ' ' + label;
+      laneMap.set('child-' + sid, { name: label, turns: turns, model: m, ctxWindow: turns[0]?.maxContext || 0, spawnParent: null, childSessionId: sid });
+    });
+  }
+
+  // Build sorted array: main first, then by first turn time
+  var result = [mainLane];
+  laneMap.forEach(function(lane, k) {
+    if (k !== 'main' && lane.turns.length) result.push(lane);
+  });
+  result.sort(function(a, b) {
+    if (a.name === 'main') return -1;
+    if (b.name === 'main') return 1;
+    var aT = a.turns.length ? a.turns[0].receivedAt : Infinity;
+    var bT = b.turns.length ? b.turns[0].receivedAt : Infinity;
+    return aT - bT;
+  });
+
+  // Dominant model per lane
+  for (var li = 0; li < result.length; li++) {
+    var lane = result[li];
+    if (!lane.turns.length) continue;
+    var mc = {};
+    for (var ti = 0; ti < lane.turns.length; ti++) {
+      var tm = lane.turns[ti].model;
+      mc[tm] = (mc[tm] || 0) + 1;
+    }
+    lane.model = Object.entries(mc).sort(function(a, b) { return b[1] - a[1]; })[0][0];
+    lane.ctxWindow = lane.turns[0].maxContext || lane.ctxWindow;
+  }
+
+  return result;
+}
+
+// ── Build State ───────────────────────────────────────────────────────────
+function wfBuildState(sessionId) {
+  if (!sessionId) return null;
+
+  var entries = [];
+  var childEntries = [];
+  var childSids = new Set();
+  if (typeof sessionsMap !== 'undefined') {
+    sessionsMap.forEach(function(sess, sid) {
+      if (sess.parentSessionId === sessionId) childSids.add(sid);
+    });
+  }
+  for (var i = 0; i < allEntries.length; i++) {
+    var e = allEntries[i];
+    if (e.sessionId === sessionId) entries.push(e);
+    else if (childSids.has(e.sessionId)) childEntries.push(e);
+  }
+
+  if (!entries.length && !childEntries.length) return null;
+
+  var allTurns = entries.concat(childEntries);
+  var tMin = Infinity, tMax = -Infinity;
+  for (var k = 0; k < allTurns.length; k++) {
+    var t = allTurns[k];
+    var ts = Number(t.receivedAt) || 0;
+    if (ts && ts < tMin) tMin = ts;
+    var end = ts + (parseFloat(t.elapsed) || 0) * 1000;
+    if (end > tMax) tMax = end;
+  }
+  if (tMin === Infinity) { tMin = 0; tMax = 1; }
+
+  var lanes = wfInferLanes(entries, childEntries);
+
+  return {
+    lanes: lanes,
+    tMin: tMin, tMax: tMax,
+    viewT0: tMin, viewT1: tMax,
+    selectedLane: lanes[0] || null,
+    selectedTurnId: null,
+  };
+}
+
+// ── Incremental Update ────────────────────────────────────────────────────
+function wfAddEntry(entry) {
+  if (!wfState) return { lanesChanged: false };
+  var prevCount = wfState.lanes.length;
+
+  var ts = Number(entry.receivedAt) || 0;
+  var end = ts + (parseFloat(entry.elapsed) || 0) * 1000;
+  if (ts && ts < wfState.tMin) wfState.tMin = ts;
+  if (end > wfState.tMax) wfState.tMax = end;
+
+  var mainModel = wfState.lanes[0]?.model;
+  var needsSub = entry.isSubagent || (mainModel && entry.model !== mainModel);
+  if (needsSub) {
+    var key = 'subagent-' + wfShortModel(entry.model);
+    var lane = wfState.lanes.find(function(l) { return l.name === key; });
+    if (!lane) {
+      lane = { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null };
+      wfState.lanes.push(lane);
+    }
+    lane.turns.push(entry);
+  } else if (wfState.lanes[0]) {
+    wfState.lanes[0].turns.push(entry);
+  }
+
+  if (wfState.viewT1 >= wfState.tMax - 1000) wfState.viewT1 = wfState.tMax;
+  return { lanesChanged: wfState.lanes.length !== prevCount };
+}
+
+// ── Lane Summary ──────────────────────────────────────────────────────────
+function wfLaneSummary(lane) {
+  var turns = lane.turns;
+  if (!turns.length) return { peakCtx: 0, avgCache: 0, totalCost: 0, turnCount: 0, duration: 0, totalIn: 0, totalOut: 0 };
+  var peakCtx = 0, totalCacheR = 0, totalCacheAll = 0, totalCost = 0, totalIn = 0, totalOut = 0;
+  for (var i = 0; i < turns.length; i++) {
+    var t = turns[i];
+    var pct = wfCtxPct(t);
+    if (pct > peakCtx) peakCtx = pct;
+    var cr = (t.usage?.cache_read_input_tokens || 0);
+    var cc = (t.usage?.cache_creation_input_tokens || 0);
+    totalCacheR += cr; totalCacheAll += cr + cc;
+    totalCost += (t.cost || 0);
+    totalIn += (t.usage?.input_tokens || 0) + cr + cc;
+    totalOut += (t.usage?.output_tokens || 0);
+  }
+  var dur = turns[turns.length - 1].receivedAt + (parseFloat(turns[turns.length - 1].elapsed) || 0) * 1000 - turns[0].receivedAt;
+  return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
+}
+
+// ── SVG: Single Lane ──────────────────────────────────────────────────────
+function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
+  var color = wfModelColor(lane.model);
+  var isSel = wfState.selectedLane?.name === lane.name;
+  var svg = '';
+
+  // Selection indicator
+  if (isSel) {
+    svg += '<rect x="0" y="0" width="3" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="var(--accent)" rx="1"/>';
+    svg += '<rect x="0" y="0" width="' + W + '" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="var(--accent)" opacity="0.04"/>';
+  }
+
+  // Lane background (clickable)
+  svg += '<rect x="0" y="0" width="' + W + '" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="transparent" class="wf-lane-bg" data-lane="' + laneIdx + '" style="cursor:pointer"/>';
+
+  // Label
+  var prefix = isSel ? '▶ ' : '';
+  var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
+  svg += '<text x="8" y="7" font="9px ' + WF_MONO + '" fill="var(--text)" style="font-size:9px;font-family:' + WF_MONO + '"><title>' + wfEsc(lane.name + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K') + '</title>' + wfEsc(prefix + lane.name) + '</text>';
+  svg += '<text x="8" y="' + (WF_TURN_ROW_H + 10) + '" font="8px ' + WF_MONO + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + wfEsc(wfShortModel(lane.model)) + '  ' + ctxK + 'K</text>';
+
+  // Turn bars
+  for (var i = 0; i < lane.turns.length; i++) {
+    var t = lane.turns[i];
+    var ts = Number(t.receivedAt) || 0;
+    var dur = (parseFloat(t.elapsed) || 0) * 1000;
+    var tend = ts + dur;
+    if (tend < wfState.viewT0 || ts > wfState.viewT1) continue;
+    var tx = Math.max(WF_LABEL_W, xFn(ts));
+    var tw = Math.max(WF_MIN_TURN_PX, xFn(tend) - tx);
+    var tc = (t.status && !isHttpStatusOk(t.status)) ? 'var(--red)' : wfModelColor(t.model);
+    var isTSel = wfState.selectedTurnId === t.id;
+    svg += '<rect x="' + tx.toFixed(1) + '" y="0" width="' + tw.toFixed(1) + '" height="' + WF_TURN_ROW_H + '" fill="' + tc + '" opacity="' + (isTSel ? 1 : 0.85) + '"' + (isTSel ? ' stroke="var(--text)" stroke-width="1"' : '') + ' data-turn-id="' + t.id + '" data-lane="' + laneIdx + '" class="wf-turn-bar" style="cursor:pointer"/>';
+  }
+
+  // Sparkline (context % area chart)
+  var vis = [];
+  var margin = tRange * 0.05;
+  for (var si = 0; si < lane.turns.length; si++) {
+    var st = lane.turns[si];
+    var sts = Number(st.receivedAt) || 0;
+    if (sts >= wfState.viewT0 - margin && sts <= wfState.viewT1 + margin) vis.push(st);
+  }
+  var spY = WF_TURN_ROW_H;
+  if (vis.length > 1) {
+    var pts = [];
+    for (var pi = 0; pi < vis.length; pi++) {
+      var px = Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[pi].receivedAt))));
+      var py = spY + WF_SPARKLINE_H - (wfCtxPct(vis[pi]) / 100) * WF_SPARKLINE_H;
+      pts.push({ x: px, y: py });
+    }
+    var d = 'M' + pts[0].x + ',' + (spY + WF_SPARKLINE_H);
+    for (var di = 0; di < pts.length; di++) d += ' L' + pts[di].x + ',' + pts[di].y;
+    d += ' L' + pts[pts.length - 1].x + ',' + (spY + WF_SPARKLINE_H) + ' Z';
+    svg += '<path d="' + d + '" fill="' + color + '" opacity="0.15"/>';
+    var ld = 'M' + pts[0].x + ',' + pts[0].y;
+    for (var ldi = 1; ldi < pts.length; ldi++) ld += ' L' + pts[ldi].x + ',' + pts[ldi].y;
+    svg += '<path d="' + ld + '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.6"/>';
+  } else if (vis.length === 1) {
+    svg += '<circle cx="' + xFn(Number(vis[0].receivedAt)) + '" cy="' + (spY + WF_SPARKLINE_H - (wfCtxPct(vis[0]) / 100) * WF_SPARKLINE_H) + '" r="1.5" fill="' + color + '" opacity="0.6"/>';
+  }
+
+  return svg;
+}
+
+// ── SVG: Full Timeline ────────────────────────────────────────────────────
+function wfRenderTimeline() {
+  if (!wfState || !wfState.lanes.length) return;
+
+  var existing = document.getElementById('wf-timeline');
+  if (existing) existing.remove();
+
+  var container = document.createElement('div');
+  container.id = 'wf-timeline';
+
+  // Overview bar
+  var overviewDiv = document.createElement('div');
+  overviewDiv.id = 'wf-overview';
+  var canvas = document.createElement('canvas');
+  canvas.id = 'wf-minimap-canvas';
+  overviewDiv.appendChild(canvas);
+  container.appendChild(overviewDiv);
+
+  // Main SVG (sticky: time axis + main lane)
+  var mainSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  mainSvg.id = 'wf-main-svg';
+  container.appendChild(mainSvg);
+
+  // Sub lanes scroll wrapper
+  var subScroll = document.createElement('div');
+  subScroll.id = 'wf-sub-scroll';
+  var subSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  subSvg.id = 'wf-sub-svg';
+  subScroll.appendChild(subSvg);
+  container.appendChild(subScroll);
+
+  // Resize handle
+  var resizeHandle = document.createElement('div');
+  resizeHandle.id = 'wf-resize';
+  container.appendChild(resizeHandle);
+
+  colTurns.appendChild(container);
+
+  // P1: content-driven height for sub-scroll
+  var laneCount = wfState.lanes.length;
+  var subLaneCount = Math.max(0, laneCount - 1);
+  var maxSubH = window.innerHeight * 0.35;
+  var subContentH = WF_PAD + subLaneCount * WF_LANE_H + WF_PAD;
+  subScroll.style.maxHeight = Math.min(subContentH, maxSubH) + 'px';
+
+  _wfRenderSvgContent(mainSvg, subSvg, canvas);
+  wfSetupInteractions(mainSvg, subSvg);
+  wfInitResize(subScroll, resizeHandle);
+}
+
+function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
+  var lanes = wfState.lanes;
+  var W = colTurns.clientWidth || 600;
+  var chartW = W - WF_LABEL_W - 12;
+  var tRange = wfState.viewT1 - wfState.viewT0 || 1;
+  var xFn = function(t) { return WF_LABEL_W + ((t - wfState.viewT0) / tRange) * chartW; };
+
+  // Main SVG: time axis + main lane
+  var mainH = WF_PAD + WF_AXIS_H + WF_LANE_H;
+  mainSvg.setAttribute('width', W);
+  mainSvg.setAttribute('height', mainH);
+  mainSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + mainH);
+
+  var ms = '';
+  var nTicks = Math.max(2, Math.min(12, Math.ceil(tRange / 1000 / 5)));
+  var tickStep = tRange / nTicks;
+  for (var i = 0; i <= nTicks; i++) {
+    var tt = wfState.viewT0 + i * tickStep;
+    ms += '<text x="' + xFn(tt) + '" y="' + (WF_PAD + 12) + '" text-anchor="middle" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + wfFmtMin(tt, wfState.tMin) + '</text>';
+  }
+  var mainLaneY = WF_PAD + WF_AXIS_H;
+  ms += '<g transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, tRange) + '</g>';
+  mainSvg.innerHTML = ms;
+
+  // Sub SVG: remaining lanes
+  var subLanes = lanes.slice(1);
+  if (subLanes.length) {
+    var subH = WF_PAD + subLanes.length * WF_LANE_H + WF_PAD;
+    subSvg.setAttribute('width', W);
+    subSvg.setAttribute('height', subH);
+    subSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + subH);
+    var ss = '';
+    for (var si = 0; si < subLanes.length; si++) {
+      ss += '<g transform="translate(0,' + (WF_PAD + si * WF_LANE_H) + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn, tRange) + '</g>';
+    }
+    subSvg.innerHTML = ss;
+    subSvg.parentElement.style.display = '';
+  } else {
+    subSvg.innerHTML = '';
+    subSvg.parentElement.style.display = 'none';
+  }
+
+  // Overview bar
+  wfRenderOverview(canvas);
+}
+
+// ── Deferred re-render (rAF throttled) ────────────────────────────────────
+function wfDeferRender() {
+  if (_wfPendingRender) return;
+  _wfPendingRender = requestAnimationFrame(function() {
+    _wfPendingRender = 0;
+    var mainSvg = document.getElementById('wf-main-svg');
+    var subSvg = document.getElementById('wf-sub-svg');
+    var canvas = document.getElementById('wf-minimap-canvas');
+    if (mainSvg && subSvg && canvas) _wfRenderSvgContent(mainSvg, subSvg, canvas);
+  });
+}
+
+// ── Overview Bar (Canvas) ─────────────────────────────────────────────────
+function wfRenderOverview(canvas) {
+  if (!wfState || !canvas) return;
+  var MW = canvas.clientWidth, MH = canvas.clientHeight;
+  if (!MW || !MH) return;
+  canvas.width = MW * 2; canvas.height = MH * 2;
+  var ctx = canvas.getContext('2d');
+  ctx.scale(2, 2);
+  var totalRange = wfState.tMax - wfState.tMin || 1;
+  var x = function(t) { return ((t - wfState.tMin) / totalRange) * MW; };
+
+  // ponytail: canvas can't resolve CSS vars; cache computed values (invalidated on theme change)
+  var c = _wfGetCssColors();
+  var surfaceColor = c.surface, dimColor = c.dim, accentColor = c.accent, bgColor = c.bg;
+
+  ctx.fillStyle = surfaceColor;
+  ctx.fillRect(0, 0, MW, MH);
+
+  var lanes = wfState.lanes;
+  var barH = Math.max(2, Math.min(6, (MH - 4) / lanes.length - 1));
+  var laneStep = barH + 1;
+  var startY = Math.max(1, (MH - lanes.length * laneStep) / 2);
+
+  for (var li = 0; li < lanes.length; li++) {
+    var ly = startY + li * laneStep;
+    var color = wfModelColor(lanes[li].model);
+    // ponytail: canvas can't use CSS vars for fill, resolve model colors directly
+    var fillColor = WF_MODEL_COLORS[lanes[li].model] || dimColor;
+    var isSel = wfState.selectedLane?.name === lanes[li].name;
+    for (var ti = 0; ti < lanes[li].turns.length; ti++) {
+      var t = lanes[li].turns[ti];
+      var ts = Number(t.receivedAt) || 0;
+      var dur = (parseFloat(t.elapsed) || 0) * 1000;
+      ctx.fillStyle = fillColor;
+      ctx.globalAlpha = isSel ? 0.9 : 0.5;
+      ctx.fillRect(x(ts), ly, Math.max(0.5, (dur / totalRange) * MW), barH);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  // Scale labels
+  ctx.font = '8px SF Mono,Menlo,monospace';
+  ctx.fillStyle = dimColor;
+  ctx.globalAlpha = 0.7;
+  ctx.fillText('0', 2, MH - 2);
+  var endLabel = wfFmtDur(totalRange);
+  ctx.fillText(endLabel, MW - ctx.measureText(endLabel).width - 2, MH - 2);
+  ctx.globalAlpha = 1;
+
+  // Viewport rect when zoomed
+  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  if (isZoomed) {
+    var vx = x(wfState.viewT0), vw = Math.max(2, x(wfState.viewT1) - vx);
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, vx, MH);
+    ctx.fillRect(vx + vw, 0, MW - vx - vw, MH);
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(vx + 0.5, 0.5, vw, MH - 1);
+    // Duration badge
+    var vpLabel = wfFmtDur(wfState.viewT1 - wfState.viewT0);
+    ctx.font = '8px SF Mono,Menlo,monospace';
+    var lw = ctx.measureText(vpLabel).width;
+    var lx = vx + vw - lw - 1, lly = MH - 10;
+    ctx.fillStyle = accentColor; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.roundRect(lx - 3, lly - 1, lw + 6, 11, 2); ctx.fill();
+    ctx.fillStyle = bgColor; ctx.globalAlpha = 1;
+    ctx.fillText(vpLabel, lx, lly + 8);
+    ctx.globalAlpha = 1;
+  }
+
+  // Minimap interactions
+  _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
+}
+
+function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
+  var EDGE_PX = 6;
+  canvas.style.cursor = isZoomed ? 'grab' : 'crosshair';
+
+  canvas.onmousemove = isZoomed ? function(e) {
+    var rect = canvas.getBoundingClientRect();
+    var vx = x(wfState.viewT0), vw = x(wfState.viewT1) - vx;
+    var mx = (e.clientX - rect.left) / rect.width * MW;
+    if (Math.abs(mx - vx) < EDGE_PX || Math.abs(mx - (vx + vw)) < EDGE_PX) canvas.style.cursor = 'col-resize';
+    else if (mx > vx && mx < vx + vw) canvas.style.cursor = 'grab';
+    else canvas.style.cursor = 'crosshair';
+  } : null;
+
+  canvas.onmousedown = function(e) {
+    e.stopPropagation();
+    var rect = canvas.getBoundingClientRect();
+    var pxToTime = function(cx) { return wfState.tMin + ((cx - rect.left) / rect.width) * totalRange; };
+    var clickTime = pxToTime(e.clientX);
+    var zoomedNow = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+
+    if (zoomedNow) {
+      var vx = x(wfState.viewT0), vw = x(wfState.viewT1) - vx;
+      var mx = (e.clientX - rect.left) / rect.width * MW;
+      var onLeft = Math.abs(mx - vx) < EDGE_PX;
+      var onRight = Math.abs(mx - (vx + vw)) < EDGE_PX;
+
+      if (onLeft || onRight) {
+        var onMove = function(ev) {
+          var t = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
+          if (onLeft) wfState.viewT0 = Math.min(t, wfState.viewT1 - 2000);
+          else wfState.viewT1 = Math.max(t, wfState.viewT0 + 2000);
+          wfDeferRender();
+        };
+        var onUp = function() { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+        return;
+      }
+      if (mx > vx && mx < vx + vw) {
+        var span = wfState.viewT1 - wfState.viewT0, mmStartX = e.clientX, mmStartT0 = wfState.viewT0;
+        var onMoveP = function(ev) {
+          var dt = ((ev.clientX - mmStartX) / rect.width) * totalRange;
+          var t0 = mmStartT0 + dt, t1 = mmStartT0 + dt + span;
+          if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = wfState.tMin + span; }
+          if (t1 > wfState.tMax) { t1 = wfState.tMax; t0 = wfState.tMax - span; }
+          wfState.viewT0 = t0; wfState.viewT1 = t1;
+          wfDeferRender();
+        };
+        var onUpP = function() { window.removeEventListener('mousemove', onMoveP); window.removeEventListener('mouseup', onUpP); };
+        window.addEventListener('mousemove', onMoveP);
+        window.addEventListener('mouseup', onUpP);
+        return;
+      }
+    }
+
+    // Brush-to-zoom
+    var brushStart = clickTime, brushEnd = clickTime;
+    var onMoveB = function(ev) {
+      brushEnd = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
+    };
+    var onUpB = function() {
+      window.removeEventListener('mousemove', onMoveB);
+      window.removeEventListener('mouseup', onUpB);
+      var t0 = Math.min(brushStart, brushEnd), t1 = Math.max(brushStart, brushEnd);
+      if (t1 - t0 > 1000) { wfState.viewT0 = t0; wfState.viewT1 = t1; }
+      wfDeferRender();
+    };
+    window.addEventListener('mousemove', onMoveB);
+    window.addEventListener('mouseup', onUpB);
+  };
+}
+
+// ── Zoom ──────────────────────────────────────────────────────────────────
+function wfZoomBy(factor) {
+  if (!wfState) return;
+  var mid = (wfState.viewT0 + wfState.viewT1) / 2;
+  var span = wfState.viewT1 - wfState.viewT0;
+  var ns = span * factor;
+  var full = wfState.tMax - wfState.tMin;
+  if (ns >= full * 1.1) { wfState.viewT0 = wfState.tMin; wfState.viewT1 = wfState.tMax; }
+  else if (ns < 2000) return;
+  else { wfState.viewT0 = Math.max(wfState.tMin, mid - ns / 2); wfState.viewT1 = Math.min(wfState.tMax, mid + ns / 2); }
+  wfDeferRender();
+}
+
+// ── SVG Interactions ──────────────────────────────────────────────────────
+function wfSetupInteractions(mainSvg, subSvg) {
+  function attach(svgEl) {
+    var chartW = (colTurns.clientWidth || 600) - WF_LABEL_W - 12;
+
+    svgEl.onmousedown = function(e) {
+      var r = svgEl.getBoundingClientRect(), mx = e.clientX - r.left;
+
+      // Click in label area
+      if (mx < WF_LABEL_W) {
+        var target = document.elementFromPoint(e.clientX, e.clientY);
+        if (target?.classList?.contains('wf-lane-bg')) {
+          var li = parseInt(target.getAttribute('data-lane'));
+          if (li >= 0 && li < wfState.lanes.length) {
+            wfState.selectedLane = wfState.lanes[li];
+            wfState.selectedTurnId = null;
+            wfDeferRender();
+            wfRenderAgentCard(wfState.lanes[li]);
+          }
+        }
+        return;
+      }
+
+      // Drag to pan
+      var startX = e.clientX, startT0 = wfState.viewT0, startT1 = wfState.viewT1;
+      var moved = false;
+      var onMove = function(ev) {
+        var dx = ev.clientX - startX;
+        if (Math.abs(dx) > 3) moved = true;
+        var span = startT1 - startT0, dt = -(dx / chartW) * span;
+        var t0 = startT0 + dt, t1 = startT1 + dt;
+        if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = wfState.tMin + span; }
+        if (t1 > wfState.tMax) { t1 = wfState.tMax; t0 = wfState.tMax - span; }
+        wfState.viewT0 = t0; wfState.viewT1 = t1;
+        wfDeferRender();
+      };
+      var onUp = function(ev) {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (moved) return;
+        // Click — check if turn bar or lane bg
+        var target = document.elementFromPoint(ev.clientX, ev.clientY);
+        if (target?.classList?.contains('wf-turn-bar')) {
+          var tid = target.getAttribute('data-turn-id');
+          var lane = null;
+          for (var i = 0; i < wfState.lanes.length; i++) {
+            for (var j = 0; j < wfState.lanes[i].turns.length; j++) {
+              if (wfState.lanes[i].turns[j].id === tid) { lane = wfState.lanes[i]; break; }
+            }
+            if (lane) break;
+          }
+          if (lane) {
+            wfState.selectedLane = lane;
+            wfState.selectedTurnId = tid;
+            wfDeferRender();
+            wfRenderAgentCard(lane);
+            // Bridge to existing detail rendering
+            for (var k = 0; k < allEntries.length; k++) {
+              if (allEntries[k].id === tid) { selectTurn(k); break; }
+            }
+          }
+        } else if (target?.classList?.contains('wf-lane-bg')) {
+          var li = parseInt(target.getAttribute('data-lane'));
+          if (li >= 0 && li < wfState.lanes.length) {
+            wfState.selectedLane = wfState.lanes[li];
+            wfState.selectedTurnId = null;
+            wfDeferRender();
+            wfRenderAgentCard(wfState.lanes[li]);
+          }
+        }
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
+    // Tooltip on hover
+    svgEl.onmousemove = function(e) {
+      var hmx = e.clientX - svgEl.getBoundingClientRect().left;
+      var target = e.target;
+      if (target.classList.contains('wf-turn-bar')) {
+        var tid = target.getAttribute('data-turn-id');
+        var turn = null;
+        for (var i = 0; i < wfState.lanes.length && !turn; i++)
+          for (var j = 0; j < wfState.lanes[i].turns.length; j++)
+            if (wfState.lanes[i].turns[j].id === tid) { turn = wfState.lanes[i].turns[j]; break; }
+        if (turn) _wfShowTooltip(e, turn);
+        svgEl.style.cursor = 'pointer';
+      } else {
+        _wfHideTooltip();
+        svgEl.style.cursor = hmx >= WF_LABEL_W ? 'grab' : 'pointer';
+      }
+    };
+    svgEl.onmouseleave = function() { _wfHideTooltip(); };
+
+    // Double-click reset zoom
+    svgEl.ondblclick = function() {
+      wfState.viewT0 = wfState.tMin;
+      wfState.viewT1 = wfState.tMax;
+      wfDeferRender();
+    };
+
+    // Ctrl+wheel zoom, horizontal scroll pan
+    svgEl.onwheel = function(e) {
+      var r = svgEl.getBoundingClientRect(), mx = e.clientX - r.left;
+      if (mx < WF_LABEL_W) return;
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        var cursor = wfState.viewT0 + ((mx - WF_LABEL_W) / chartW) * (wfState.viewT1 - wfState.viewT0);
+        var factor = e.deltaY > 0 ? 1.3 : 0.7;
+        var span = wfState.viewT1 - wfState.viewT0;
+        var ratio = (cursor - wfState.viewT0) / span;
+        var ns = span * factor;
+        var full = wfState.tMax - wfState.tMin;
+        if (ns >= full * 1.1) { wfState.viewT0 = wfState.tMin; wfState.viewT1 = wfState.tMax; }
+        else if (ns < 2000) return;
+        else { wfState.viewT0 = Math.max(wfState.tMin, cursor - ns * ratio); wfState.viewT1 = Math.min(wfState.tMax, cursor + ns * (1 - ratio)); }
+        wfDeferRender();
+        return;
+      }
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+        e.preventDefault();
+        var span2 = wfState.viewT1 - wfState.viewT0;
+        var dt = (e.deltaX / chartW) * span2;
+        var t0 = wfState.viewT0 + dt, t1 = wfState.viewT1 + dt;
+        if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = t0 + span2; }
+        if (t1 > wfState.tMax) { t1 = wfState.tMax; t0 = t1 - span2; }
+        wfState.viewT0 = t0; wfState.viewT1 = t1;
+        wfDeferRender();
+      }
+    };
+  }
+  attach(mainSvg);
+  attach(subSvg);
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────────
+function _wfShowTooltip(e, t) {
+  if (!_wfTooltipEl) {
+    _wfTooltipEl = document.createElement('div');
+    _wfTooltipEl.className = 'wf-tooltip';
+    document.body.appendChild(_wfTooltipEl);
+  }
+  var pct = wfCtxPct(t).toFixed(1);
+  var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : 'none';
+  _wfTooltipEl.textContent = 'turn ' + (t.displayNum || '?') + '\n' + wfShortModel(t.model) + '  ctx ' + pct + '%\n' + wfFmtDur((parseFloat(t.elapsed) || 0) * 1000) + '  tools: ' + tools;
+  _wfTooltipEl.style.display = 'block';
+  var tx = e.clientX + 12, ty = e.clientY + 12;
+  if (tx + _wfTooltipEl.offsetWidth > window.innerWidth) tx = e.clientX - _wfTooltipEl.offsetWidth - 12;
+  if (ty + _wfTooltipEl.offsetHeight > window.innerHeight) ty = e.clientY - _wfTooltipEl.offsetHeight - 12;
+  _wfTooltipEl.style.left = tx + 'px';
+  _wfTooltipEl.style.top = ty + 'px';
+}
+function _wfHideTooltip() {
+  if (_wfTooltipEl) _wfTooltipEl.style.display = 'none';
+}
+
+// ── Resize Handle ─────────────────────────────────────────────────────────
+function wfInitResize(subScroll, handle) {
+  handle.onmousedown = function(e) {
+    e.preventDefault();
+    var startY = e.clientY;
+    var startH = subScroll.offsetHeight;
+    var onMove = function(ev) {
+      var delta = ev.clientY - startY;
+      var newH = Math.max(60, startH + delta);
+      subScroll.style.maxHeight = newH + 'px';
+    };
+    var onUp = function() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+}
+
+// ── Highlight Turn (without full re-render) ───────────────────────────────
+function wfHighlightTurn(turnId) {
+  if (!wfState) return;
+  wfState.selectedTurnId = turnId;
+  // Update lane selection based on turn
+  if (turnId) {
+    for (var i = 0; i < wfState.lanes.length; i++) {
+      for (var j = 0; j < wfState.lanes[i].turns.length; j++) {
+        if (wfState.lanes[i].turns[j].id === turnId) {
+          wfState.selectedLane = wfState.lanes[i];
+          break;
+        }
+      }
+    }
+  }
+  // ponytail: full re-render is fine at click frequency, no DOM diffing needed
+  wfDeferRender();
+}
+
+// ── Agent Card ────────────────────────────────────────────────────────────
+function wfRenderAgentCard(lane) {
+  if (!lane || typeof colSections === 'undefined') return;
+  var summary = wfLaneSummary(lane);
+  var color = wfModelColor(lane.model);
+  var resolvedColor = WF_MODEL_COLORS[lane.model] || '#8b949e';
+
+  var toolTotals = {};
+  for (var i = 0; i < lane.turns.length; i++) {
+    var tc = lane.turns[i].toolCalls || {};
+    for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
+  }
+  var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
+
+  var html = '<div class="wf-agent-card" style="border-left:2px solid ' + resolvedColor + '">';
+  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + resolvedColor + '22;color:' + resolvedColor + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
+
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
+  html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
+  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round((lane.ctxWindow || 0) / 1000) + 'K</span></div></div>';
+
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cache</div>';
+  html += '<div class="wf-ac-row"><span>Hit rate</span><span class="wf-ac-val">' + summary.avgCache.toFixed(1) + '%</span></div></div>';
+
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cost</div>';
+  html += '<div class="wf-ac-row"><span>Total</span><span class="wf-ac-val">$' + summary.totalCost.toFixed(4) + '</span></div></div>';
+
+  if (topTools.length) {
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tools</div>';
+    for (var ti = 0; ti < topTools.length; ti++) {
+      html += '<div class="wf-ac-row"><span class="wf-ac-tool">' + wfEsc(topTools[ti][0]) + '</span><span class="wf-ac-tool-count">' + topTools[ti][1] + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  // Navigation: click first turn in lane
+  if (lane.turns.length) {
+    html += '<div class="wf-ac-nav">';
+    html += '<span class="wf-ac-nav-item" onclick="(function(){ for(var i=0;i<allEntries.length;i++) if(allEntries[i].id===\'' + wfEsc(lane.turns[0].id) + '\'){selectTurn(i);break;} })()">Timeline →</span>';
+    html += '</div>';
+  }
+
+  html += '</div>';
+  colSections.innerHTML = html;
+}
+
+// ── Window Resize ─────────────────────────────────────────────────────────
+var _wfResizeTimer = 0;
+window.addEventListener('resize', function() {
+  if (!wfState) return;
+  clearTimeout(_wfResizeTimer);
+  _wfCssCache = null;
+  _wfResizeTimer = setTimeout(wfDeferRender, 200);
+});
