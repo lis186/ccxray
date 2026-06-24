@@ -1011,23 +1011,45 @@ function _wfUpdateChartHeader() {
     '<div class="wf-chart-label"><span>Cache hit</span><span>' + cacheHitPct.toFixed(1) + '%</span></div>' + cacheSvg +
     '<div class="wf-chart-label"><span>Cost</span><span>$' + totalCost.toFixed(2) + '</span></div>' + costSvg;
 
-  // Click chart → select nearest turn → bridge to selectTurn
-  el.onclick = function(ev) {
+  // Drag = pan viewport, click = select turn
+  el.style.cursor = 'grab';
+  el.onmousedown = function(ev) {
     if (!vis.length) return;
-    var svgEl = ev.target.closest('svg');
-    if (!svgEl) return;
-    var rect = svgEl.getBoundingClientRect();
-    var mx = (ev.clientX - rect.left) / rect.width * W;
-    var idx = Math.round((mx - 2) / barW);
-    idx = Math.max(0, Math.min(vis.length - 1, idx));
-    var turn = vis[idx];
-    if (!turn) return;
-    wfState.selectedTurnId = turn.id;
-    for (var fi = 0; fi < allEntries.length; fi++) {
-      if (allEntries[fi].id === turn.id) { selectTurn(fi); break; }
-    }
+    var startX = ev.clientX, startT0 = wfState.viewT0, startT1 = wfState.viewT1;
+    var span = startT1 - startT0;
+    var chartW = el.clientWidth || 600;
+    var moved = false;
+    var onMove = function(mv) {
+      var dx = mv.clientX - startX;
+      if (Math.abs(dx) > 3) moved = true;
+      var dt = -(dx / chartW) * span;
+      var t0 = startT0 + dt, t1 = startT1 + dt;
+      if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = wfState.tMin + span; }
+      if (t1 > wfState.tMax) { t1 = wfState.tMax; t0 = wfState.tMax - span; }
+      wfState.viewT0 = t0; wfState.viewT1 = t1;
+      wfDeferRender();
+    };
+    var onUp = function(up) {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      if (moved) return;
+      // Click: select nearest turn
+      var svgEl = up.target.closest('svg');
+      if (!svgEl) return;
+      var rect = svgEl.getBoundingClientRect();
+      var mx = (up.clientX - rect.left) / rect.width * W;
+      var idx = Math.round((mx - 2) / barW);
+      idx = Math.max(0, Math.min(vis.length - 1, idx));
+      var turn = vis[idx];
+      if (!turn) return;
+      wfState.selectedTurnId = turn.id;
+      for (var fi = 0; fi < allEntries.length; fi++) {
+        if (allEntries[fi].id === turn.id) { selectTurn(fi); break; }
+      }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   };
-  el.style.cursor = 'pointer';
 }
 
 // ── Keyboard Handler (dispatched from keyboard-nav.js) ────────────────────
