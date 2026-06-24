@@ -362,6 +362,7 @@ function wfRenderTimeline() {
   wfInitResize(lanesSection, resizeHandle);
   wfRenderAgentCard(wfState.selectedLane);
   _wfUpdateChartHeader();
+  wfRenderSteps();
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
@@ -406,9 +407,11 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     subSvg.parentElement.style.display = 'none';
   }
 
-  // Overview bar + charts (synced with viewport)
+  // Overview bar + charts + step highlights (synced with viewport)
   wfRenderOverview(canvas);
   _wfUpdateChartHeader();
+  var stepsEl = document.getElementById('wf-steps-content');
+  if (stepsEl) _wfSyncStepsHighlight(stepsEl);
 }
 
 // ── Deferred re-render (rAF throttled) ────────────────────────────────────
@@ -607,6 +610,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
           wfState.selectedTurnId = null;
           wfDeferRender();
           wfRenderAgentCard(wfState.lanes[li]);
+          wfRenderSteps();
         }
         return;
       }
@@ -656,6 +660,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
             wfState.selectedTurnId = null;
             wfDeferRender();
             wfRenderAgentCard(wfState.lanes[li]);
+            wfRenderSteps();
           }
         }
       };
@@ -779,8 +784,8 @@ function wfHighlightTurn(turnId) {
       }
     }
   }
-  // ponytail: full re-render is fine at click frequency, no DOM diffing needed
   wfDeferRender();
+  wfRenderSteps(turnId);
 }
 
 // ── Agent Card ────────────────────────────────────────────────────────────
@@ -829,6 +834,100 @@ function wfRenderAgentCard(lane) {
 
   html += '</div>';
   agentPanel.innerHTML = html;
+}
+
+// ── Steps Panel (flat turn list for selected lane, prototype-style) ───────
+var WF_IDLE_THRESHOLD = 300000;
+function wfRenderSteps(scrollToId) {
+  var el = document.getElementById('wf-steps-content');
+  if (!el || !wfState) return;
+  var lane = wfState.selectedLane;
+  if (!lane || !lane.turns.length) { el.innerHTML = '<div style="padding:12px;color:var(--dim)">Select a lane</div>'; return; }
+
+  var turns = lane.turns;
+  var color = wfModelColor(lane.model);
+  var html = '<div class="wf-steps-header" style="padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">TIMELINE · <span style="color:' + color + '">● ' + wfEsc(lane.name) + '</span> · ' + turns.length + ' turns</div>';
+
+  for (var idx = 0; idx < turns.length; idx++) {
+    var t = turns[idx];
+    // Idle separator
+    if (idx > 0) {
+      var prevEnd = Number(turns[idx - 1].receivedAt) + (parseFloat(turns[idx - 1].elapsed) || 0) * 1000;
+      var idle = Number(t.receivedAt) - prevEnd;
+      if (idle > WF_IDLE_THRESHOLD) {
+        html += '<div style="display:flex;align-items:center;gap:6px;padding:2px 8px;color:var(--yellow);font-size:10px"><span style="flex:1;border-top:1px dashed var(--yellow);opacity:0.3"></span>⏸ ' + wfFmtDur(idle) + '<span style="flex:1;border-top:1px dashed var(--yellow);opacity:0.3"></span></div>';
+      }
+    }
+    var isSel = wfState.selectedTurnId === t.id;
+    var tools = Object.entries(t.toolCalls || {});
+    var mc = wfModelColor(t.model);
+    var pct = wfCtxPct(t);
+    var u = t.usage || {};
+    var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
+    var cacheRate = (cr + cc) > 0 ? cr / (cr + cc) * 100 : 0;
+    var ctxColor = cacheRate >= 50 ? 'var(--dim)' : 'var(--yellow)';
+    var dur = (parseFloat(t.elapsed) || 0) * 1000;
+
+    html += '<div class="wf-step-row' + (isSel ? ' wf-step-selected' : '') + '" data-tid="' + t.id + '" style="display:grid;grid-template-columns:28px minmax(0,1fr) 50px 50px;align-items:start;padding:3px 8px;cursor:pointer;font-size:11px;border-left:3px solid ' + (isSel ? 'var(--accent)' : 'transparent') + ';background:' + (isSel ? 'var(--surface-active)' : 'transparent') + '">';
+    html += '<span style="color:var(--dim);font-size:10px">#' + (t.displayNum || idx + 1) + '</span>';
+    html += '<span>';
+    if (!tools.length) {
+      html += '<span style="color:var(--dim)">🧠 thinking' + (dur > 5000 ? ' ' + wfFmtDur(dur) : '') + '</span>';
+    } else {
+      for (var ti = 0; ti < Math.min(tools.length, 4); ti++) {
+        var bracket = tools.length > 1 ? (ti === 0 ? '┌' : ti === Math.min(tools.length, 4) - 1 ? '└' : '│') : '';
+        html += '<span style="display:block"><span style="color:var(--border);margin-right:2px">' + bracket + '</span><span style="color:var(--green)">' + wfEsc(tools[ti][0]) + '</span>' + (tools[ti][1] > 1 ? '<span style="color:var(--dim)">×' + tools[ti][1] + '</span>' : '') + '</span>';
+      }
+      if (tools.length > 4) html += '<span style="color:var(--dim)">+' + (tools.length - 4) + ' more</span>';
+    }
+    html += '</span>';
+    html += '<span style="text-align:right;color:' + ctxColor + '">' + pct.toFixed(1) + '%</span>';
+    html += '<span style="text-align:right;color:var(--dim)">' + wfFmtDur(dur) + '</span>';
+    html += '</div>';
+  }
+
+  el.innerHTML = html;
+
+  // Click handler on step rows
+  el.querySelectorAll('.wf-step-row').forEach(function(row) {
+    row.onclick = function() {
+      var tid = row.getAttribute('data-tid');
+      wfState.selectedTurnId = tid;
+      // Find allEntries index and selectTurn
+      for (var i = 0; i < allEntries.length; i++) {
+        if (allEntries[i].id === tid) { selectTurn(i); break; }
+      }
+      wfRenderSteps(tid);
+    };
+  });
+
+  // Scroll to selected turn
+  if (scrollToId) {
+    var selRow = el.querySelector('.wf-step-row[data-tid="' + scrollToId + '"]');
+    if (selRow) selRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  // Highlight turns visible in zoomed viewport
+  _wfSyncStepsHighlight(el);
+}
+
+function _wfSyncStepsHighlight(container) {
+  if (!wfState) return;
+  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  container.querySelectorAll('.wf-step-row').forEach(function(row) {
+    var tid = row.getAttribute('data-tid');
+    var inView = false;
+    if (isZoomed) {
+      for (var i = 0; i < wfState.lanes.length && !inView; i++)
+        for (var j = 0; j < wfState.lanes[i].turns.length; j++)
+          if (wfState.lanes[i].turns[j].id === tid) {
+            var ts = Number(wfState.lanes[i].turns[j].receivedAt);
+            inView = ts >= wfState.viewT0 && ts <= wfState.viewT1;
+            break;
+          }
+    }
+    row.style.opacity = isZoomed && !inView ? '0.4' : '1';
+  });
 }
 
 // ── Chart Header (renders into #wf-chart-header, synced with viewport) ────
@@ -965,6 +1064,7 @@ function wfKeyHandler(key, e) {
     wfState.selectedTurnId = null;
     wfDeferRender();
     wfRenderAgentCard(lanes[nextLi]);
+    wfRenderSteps();
     return true;
   }
 

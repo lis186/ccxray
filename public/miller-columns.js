@@ -2544,8 +2544,8 @@ function renderDetailCol() {
     requestAnimationFrame(() => {
       setTimeout(() => {
         if (renderToken !== renderDetailRenderToken) return;
-        // Workflow mode: redirect detail content to #wf-steps-content (inside #wf-steps-panel)
-        var target = (typeof wfState !== 'undefined' && wfState) ? document.getElementById('wf-steps-content') : null;
+        // Workflow mode: steps panel is rendered by wfRenderSteps, skip commitDetailHtml
+        var target = null;
         (target || colDetail).innerHTML = html;
         requestAnimationFrame(() => {
           if (renderToken !== renderDetailRenderToken) return;
