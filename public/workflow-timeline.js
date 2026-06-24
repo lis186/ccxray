@@ -338,6 +338,14 @@ function wfRenderTimeline() {
   detailArea.appendChild(agentPanel);
   var stepsPanel = document.createElement('div');
   stepsPanel.id = 'wf-steps-panel';
+  stepsPanel.style.cssText = 'display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden';
+  var chartHeader = document.createElement('div');
+  chartHeader.id = 'wf-chart-header';
+  stepsPanel.appendChild(chartHeader);
+  var stepsContent = document.createElement('div');
+  stepsContent.id = 'wf-steps-content';
+  stepsContent.style.cssText = 'flex:1;overflow-y:auto';
+  stepsPanel.appendChild(stepsContent);
   detailArea.appendChild(stepsPanel);
   container.appendChild(detailArea);
 
@@ -353,6 +361,7 @@ function wfRenderTimeline() {
   wfSetupInteractions(mainSvg, subSvg);
   wfInitResize(lanesSection, resizeHandle);
   wfRenderAgentCard(wfState.selectedLane);
+  _wfUpdateChartHeader();
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
@@ -397,8 +406,9 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     subSvg.parentElement.style.display = 'none';
   }
 
-  // Overview bar
+  // Overview bar + charts (synced with viewport)
   wfRenderOverview(canvas);
+  _wfUpdateChartHeader();
 }
 
 // ── Deferred re-render (rAF throttled) ────────────────────────────────────
@@ -816,73 +826,86 @@ function wfRenderAgentCard(lane) {
   agentPanel.innerHTML = html;
 }
 
-// ── Chart Header (prepended to detail column in timeline view) ────────────
-function wfRenderChartHeader(lane) {
-  if (!lane || !lane.turns.length) return '';
-  var turns = lane.turns;
-  var c = _wfGetCssColors();
+// ── Chart Header (renders into #wf-chart-header, synced with viewport) ────
+function _wfUpdateChartHeader() {
+  var el = document.getElementById('wf-chart-header');
+  if (!el || !wfState || !wfState.selectedLane) { if (el) el.innerHTML = ''; return; }
+  var lane = wfState.selectedLane;
+  if (!lane.turns.length) { el.innerHTML = ''; return; }
 
-  // Filter to viewport if zoomed
-  var vis = turns;
-  if (wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100) {
-    vis = turns.filter(function(t) { return Number(t.receivedAt) >= wfState.viewT0 && Number(t.receivedAt) <= wfState.viewT1; });
-  }
+  // Filter to viewport
+  var turns = lane.turns;
+  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  var vis = isZoomed
+    ? turns.filter(function(t) { return Number(t.receivedAt) >= wfState.viewT0 && Number(t.receivedAt) <= wfState.viewT1; })
+    : turns;
   if (!vis.length) vis = turns;
 
-  var ctxH = 48, sparkH = 14;
-  var barW = Math.max(2, Math.min(6, 296 / vis.length));
-  var W = Math.max(300, vis.length * barW + 4);
-  var gap = Math.min(1, barW * 0.15);
+  var ctxH = 40, sparkH = 16;
+  var W = el.clientWidth || 600;
+  var barW = Math.max(2, (W - 4) / vis.length);
+  var gap = Math.min(1, barW * 0.1);
 
-  // Context minimap
-  var ctxSvg = '<svg viewBox="0 0 ' + W + ' ' + ctxH + '" style="width:100%;height:' + ctxH + 'px;display:block">';
+  // Cursor line (shared across all 3 charts)
+  var cursorX = -1;
+  if (wfState.selectedTurnId) {
+    for (var si = 0; si < vis.length; si++) {
+      if (vis[si].id === wfState.selectedTurnId) { cursorX = 2 + si * barW + barW / 2; break; }
+    }
+  }
+  var cursorSvg = cursorX >= 0 ? '<line x1="' + cursorX.toFixed(1) + '" y1="0" x2="' + cursorX.toFixed(1) + '" y2="999" stroke="var(--accent)" stroke-width="1.5" opacity="0.8"/>' : '';
+
+  // Summaries
+  var peakCtx = 0, totalCacheR = 0, totalCacheAll = 0, totalCost = 0;
+  for (var si2 = 0; si2 < vis.length; si2++) {
+    var pct = wfCtxPct(vis[si2]);
+    if (pct > peakCtx) peakCtx = pct;
+    var u = vis[si2].usage || {};
+    var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
+    totalCacheR += cr; totalCacheAll += cr + cc;
+    totalCost += (vis[si2].cost || 0);
+  }
+  var cacheHitPct = totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0;
+
+  // Context chart
+  var ctxSvg = '<svg viewBox="0 0 ' + W + ' ' + ctxH + '" preserveAspectRatio="none" style="width:100%;height:' + ctxH + 'px;display:block">';
   var thY40 = (ctxH - 2 - 0.4 * (ctxH - 4)).toFixed(1);
   var thY83 = (ctxH - 2 - 0.835 * (ctxH - 4)).toFixed(1);
-  ctxSvg += '<line x1="2" y1="' + thY40 + '" x2="' + (W - 2) + '" y2="' + thY40 + '" stroke="var(--green)" stroke-width="0.5" stroke-dasharray="2 2" opacity="0.4"/>';
-  ctxSvg += '<line x1="2" y1="' + thY83 + '" x2="' + (W - 2) + '" y2="' + thY83 + '" stroke="var(--red)" stroke-width="0.5" stroke-dasharray="2 2" opacity="0.4"/>';
+  ctxSvg += '<line x1="0" y1="' + thY40 + '" x2="' + W + '" y2="' + thY40 + '" stroke="var(--green)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.3"/>';
+  ctxSvg += '<line x1="0" y1="' + thY83 + '" x2="' + W + '" y2="' + thY83 + '" stroke="var(--red)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.3"/>';
   for (var ci = 0; ci < vis.length; ci++) {
-    var pct = wfCtxPct(vis[ci]);
-    var barH = pct / 100 * (ctxH - 4);
-    var color = pct > 90 ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--accent)';
-    ctxSvg += '<rect x="' + (2 + ci * barW).toFixed(1) + '" y="' + (ctxH - 2 - barH).toFixed(1) + '" width="' + (barW - gap).toFixed(1) + '" height="' + barH.toFixed(1) + '" fill="' + color + '" opacity="0.8"/>';
-  }
-  // Cursor line (shared across all 3 charts)
-  var cursorSvg = '';
-  if (wfState.selectedTurnId) {
-    var selIdx = vis.findIndex(function(t) { return t.id === wfState.selectedTurnId; });
-    if (selIdx >= 0) {
-      var cx = 2 + selIdx * barW + barW / 2;
-      cursorSvg = '<line x1="' + cx.toFixed(1) + '" y1="0" x2="' + cx.toFixed(1) + '" y2="999" stroke="var(--accent)" stroke-width="1" opacity="0.7"/>';
-    }
+    var p = wfCtxPct(vis[ci]);
+    var bH = p / 100 * (ctxH - 4);
+    var col = p > 90 ? 'var(--red)' : p > 80 ? 'var(--yellow)' : 'var(--green)';
+    ctxSvg += '<rect x="' + (2 + ci * barW).toFixed(1) + '" y="' + (ctxH - 2 - bH).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + bH.toFixed(1) + '" fill="' + col + '" opacity="0.85"/>';
   }
   ctxSvg += cursorSvg + '</svg>';
 
-  // Cache sparkline
-  var cacheSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" style="width:100%;height:' + sparkH + 'px;display:block">';
+  // Cache chart
+  var cacheSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" preserveAspectRatio="none" style="width:100%;height:' + sparkH + 'px;display:block">';
   for (var ki = 0; ki < vis.length; ki++) {
-    var u = vis[ki].usage || {};
-    var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
-    var hit = (cr + cc) > 0 ? cr / (cr + cc) : 0;
-    var bh = hit * (sparkH - 2);
-    cacheSvg += '<rect x="' + (2 + ki * barW).toFixed(1) + '" y="' + (sparkH - 1 - bh).toFixed(1) + '" width="' + (barW - gap).toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="' + (hit > 0.8 ? 'var(--green)' : 'var(--yellow)') + '" opacity="0.7"/>';
+    var ku = vis[ki].usage || {};
+    var kcr = ku.cache_read_input_tokens || 0, kcc = ku.cache_creation_input_tokens || 0;
+    var khit = (kcr + kcc) > 0 ? kcr / (kcr + kcc) : 0;
+    var kbh = khit * (sparkH - 2);
+    cacheSvg += '<rect x="' + (2 + ki * barW).toFixed(1) + '" y="' + (sparkH - 1 - kbh).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + kbh.toFixed(1) + '" fill="' + (khit > 0.5 ? 'var(--green)' : 'var(--yellow)') + '" opacity="0.8"/>';
   }
   cacheSvg += cursorSvg + '</svg>';
 
-  // Cost sparkline
+  // Cost chart
   var maxCost = 0;
   for (var mi = 0; mi < vis.length; mi++) if ((vis[mi].cost || 0) > maxCost) maxCost = vis[mi].cost;
-  var costSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" style="width:100%;height:' + sparkH + 'px;display:block">';
+  var costSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" preserveAspectRatio="none" style="width:100%;height:' + sparkH + 'px;display:block">';
   for (var oi = 0; oi < vis.length; oi++) {
     var ch = maxCost > 0 ? (vis[oi].cost || 0) / maxCost * (sparkH - 2) : 0;
-    costSvg += '<rect x="' + (2 + oi * barW).toFixed(1) + '" y="' + (sparkH - 1 - ch).toFixed(1) + '" width="' + (barW - gap).toFixed(1) + '" height="' + ch.toFixed(1) + '" fill="var(--orange)" opacity="0.7"/>';
+    costSvg += '<rect x="' + (2 + oi * barW).toFixed(1) + '" y="' + (sparkH - 1 - ch).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + ch.toFixed(1) + '" fill="var(--orange)" opacity="0.8"/>';
   }
   costSvg += cursorSvg + '</svg>';
 
-  return '<div class="wf-chart-header">' +
-    '<div class="wf-chart-label"><span>Context %</span><span>' + vis.length + ' turns</span></div>' + ctxSvg +
-    '<div class="wf-chart-label"><span>Cache hit</span></div>' + cacheSvg +
-    '<div class="wf-chart-label"><span>Cost</span></div>' + costSvg +
-    '</div>';
+  el.innerHTML =
+    '<div class="wf-chart-label"><span>Context %</span><span>PEAK ' + peakCtx.toFixed(0) + '%</span></div>' + ctxSvg +
+    '<div class="wf-chart-label"><span>Cache hit</span><span>' + cacheHitPct.toFixed(1) + '%</span></div>' + cacheSvg +
+    '<div class="wf-chart-label"><span>Cost</span><span>$' + totalCost.toFixed(2) + '</span></div>' + costSvg;
 }
 
 // ── Keyboard Handler (dispatched from keyboard-nav.js) ────────────────────

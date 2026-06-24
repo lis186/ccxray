@@ -2544,8 +2544,8 @@ function renderDetailCol() {
     requestAnimationFrame(() => {
       setTimeout(() => {
         if (renderToken !== renderDetailRenderToken) return;
-        // Workflow mode: redirect detail content to #wf-steps-panel
-        var target = (typeof wfState !== 'undefined' && wfState) ? document.getElementById('wf-steps-panel') : null;
+        // Workflow mode: redirect detail content to #wf-steps-content (inside #wf-steps-panel)
+        var target = (typeof wfState !== 'undefined' && wfState) ? document.getElementById('wf-steps-content') : null;
         (target || colDetail).innerHTML = html;
         requestAnimationFrame(() => {
           if (renderToken !== renderDetailRenderToken) return;
@@ -2587,12 +2587,6 @@ function renderDetailCol() {
       } else { inner = e.reqLoaded ? '<div class="col-empty">No system prompt</div>' : loading; }
       break;
     case 'timeline': {
-      // Workflow chart header: context/cache/cost sparklines above steps
-      var wfChartHtml = '';
-      if (typeof wfState !== 'undefined' && wfState && typeof wfRenderChartHeader === 'function') {
-        var wfLane = wfState.selectedLane;
-        if (wfLane) wfChartHtml = wfRenderChartHeader(wfLane);
-      }
       if (!isFocusedMode) {
         // Non-focused: show step summary list with minimap (no detail pane)
         // User clicks a step or presses Enter to enter split-pane
@@ -2615,7 +2609,7 @@ function renderDetailCol() {
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
           ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, e.maxContext, e.usage)
           : '';
-        inner = wfChartHtml + summaryPreview
+        inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
           + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + previewMinimapHtml + '</div>'
           + '<div class="tl-scroll-area">' + previewStepsHtml + '</div>'
