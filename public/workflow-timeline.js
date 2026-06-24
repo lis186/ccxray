@@ -9,7 +9,9 @@ const WF_MODEL_COLORS = {
   'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
 };
 const WF_LABEL_W = 240, WF_SPARKLINE_H = 16, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
+const WF_EXTRA_SPARK_H = 10;
 const WF_LANE_H = WF_TURN_ROW_H + WF_SPARKLINE_H + WF_LANE_GAP;
+const WF_LANE_H_EXPANDED = WF_TURN_ROW_H + WF_SPARKLINE_H + WF_EXTRA_SPARK_H * 2 + WF_LANE_GAP;
 const WF_AXIS_H = 18, WF_PAD = 4, WF_MIN_TURN_PX = 1.5;
 const WF_MONO = "'SF Mono','Cascadia Code','Fira Code',monospace";
 
@@ -228,16 +230,17 @@ function wfLaneSummary(lane) {
 function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
   var color = wfModelColor(lane.model);
   var isSel = wfState.selectedLane?.name === lane.name;
+  var laneH = isSel ? WF_LANE_H_EXPANDED : WF_LANE_H;
   var svg = '';
 
   // Selection indicator
   if (isSel) {
-    svg += '<rect x="0" y="0" width="3" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="var(--accent)" rx="1"/>';
-    svg += '<rect x="0" y="0" width="' + W + '" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="var(--accent)" opacity="0.04"/>';
+    svg += '<rect x="0" y="0" width="3" height="' + (laneH - WF_LANE_GAP) + '" fill="var(--accent)" rx="1"/>';
+    svg += '<rect x="0" y="0" width="' + W + '" height="' + (laneH - WF_LANE_GAP) + '" fill="var(--accent)" opacity="0.04"/>';
   }
 
   // Lane background (clickable)
-  svg += '<rect x="0" y="0" width="' + W + '" height="' + (WF_LANE_H - WF_LANE_GAP) + '" fill="transparent" class="wf-lane-bg" data-lane="' + laneIdx + '" style="cursor:pointer"/>';
+  svg += '<rect x="0" y="0" width="' + W + '" height="' + (laneH - WF_LANE_GAP) + '" fill="transparent" class="wf-lane-bg" data-lane="' + laneIdx + '" style="cursor:pointer"/>';
 
   // Label
   var prefix = isSel ? '▶ ' : '';
@@ -284,6 +287,46 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
     svg += '<path d="' + ld + '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.6"/>';
   } else if (vis.length === 1) {
     svg += '<circle cx="' + xFn(Number(vis[0].receivedAt)) + '" cy="' + (spY + WF_SPARKLINE_H - (wfCtxPct(vis[0]) / 100) * WF_SPARKLINE_H) + '" r="1.5" fill="' + color + '" opacity="0.6"/>';
+  }
+
+  // Selected lane: extra cache hit + cost sparklines
+  if (isSel && vis.length > 0) {
+    var esY = spY + WF_SPARKLINE_H;
+    // Cache hit sparkline
+    if (vis.length > 1) {
+      var cPts = [];
+      for (var cpi = 0; cpi < vis.length; cpi++) {
+        var cu = vis[cpi].usage || {};
+        var ccr = cu.cache_read_input_tokens || 0, ccc = cu.cache_creation_input_tokens || 0;
+        var chit = (ccr + ccc) > 0 ? ccr / (ccr + ccc) : 0;
+        cPts.push({ x: Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[cpi].receivedAt)))), y: esY + WF_EXTRA_SPARK_H - chit * WF_EXTRA_SPARK_H });
+      }
+      var cd = 'M' + cPts[0].x + ',' + (esY + WF_EXTRA_SPARK_H);
+      for (var cdi = 0; cdi < cPts.length; cdi++) cd += ' L' + cPts[cdi].x + ',' + cPts[cdi].y;
+      cd += ' L' + cPts[cPts.length - 1].x + ',' + (esY + WF_EXTRA_SPARK_H) + ' Z';
+      svg += '<path d="' + cd + '" fill="var(--green)" opacity="0.12"/>';
+      var cld = 'M' + cPts[0].x + ',' + cPts[0].y;
+      for (var cli = 1; cli < cPts.length; cli++) cld += ' L' + cPts[cli].x + ',' + cPts[cli].y;
+      svg += '<path d="' + cld + '" fill="none" stroke="var(--green)" stroke-width="0.8" opacity="0.5"/>';
+    }
+    // Cost sparkline
+    var costY = esY + WF_EXTRA_SPARK_H;
+    var maxC = 0;
+    for (var mci = 0; mci < vis.length; mci++) if ((vis[mci].cost || 0) > maxC) maxC = vis[mci].cost;
+    if (vis.length > 1 && maxC > 0) {
+      var oPts = [];
+      for (var opi = 0; opi < vis.length; opi++) {
+        var oh = (vis[opi].cost || 0) / maxC;
+        oPts.push({ x: Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[opi].receivedAt)))), y: costY + WF_EXTRA_SPARK_H - oh * WF_EXTRA_SPARK_H });
+      }
+      var od = 'M' + oPts[0].x + ',' + (costY + WF_EXTRA_SPARK_H);
+      for (var odi = 0; odi < oPts.length; odi++) od += ' L' + oPts[odi].x + ',' + oPts[odi].y;
+      od += ' L' + oPts[oPts.length - 1].x + ',' + (costY + WF_EXTRA_SPARK_H) + ' Z';
+      svg += '<path d="' + od + '" fill="var(--orange)" opacity="0.12"/>';
+      var old2 = 'M' + oPts[0].x + ',' + oPts[0].y;
+      for (var oli = 1; oli < oPts.length; oli++) old2 += ' L' + oPts[oli].x + ',' + oPts[oli].y;
+      svg += '<path d="' + old2 + '" fill="none" stroke="var(--orange)" stroke-width="0.8" opacity="0.5"/>';
+    }
   }
 
   return svg;
@@ -339,9 +382,6 @@ function wfRenderTimeline() {
   var stepsPanel = document.createElement('div');
   stepsPanel.id = 'wf-steps-panel';
   stepsPanel.style.cssText = 'display:flex;flex-direction:column;flex:1;min-width:0;overflow:hidden';
-  var chartHeader = document.createElement('div');
-  chartHeader.id = 'wf-chart-header';
-  stepsPanel.appendChild(chartHeader);
   var stepsContent = document.createElement('div');
   stepsContent.id = 'wf-steps-content';
   stepsContent.style.cssText = 'flex:1;overflow-y:auto';
@@ -351,17 +391,10 @@ function wfRenderTimeline() {
 
   colTurns.appendChild(container);
 
-  // P1: content-driven height for lanes section
-  var laneCount = wfState.lanes.length;
-  var contentH = WF_PAD + WF_AXIS_H + laneCount * WF_LANE_H + WF_PAD;
-  var maxH = window.innerHeight * 0.45;
-  lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
-
   _wfRenderSvgContent(mainSvg, subSvg, canvas);
   wfSetupInteractions(mainSvg, subSvg);
   wfInitResize(lanesSection, resizeHandle);
   wfRenderAgentCard(wfState.selectedLane);
-  _wfUpdateChartHeader();
   wfRenderSteps();
 }
 
@@ -372,8 +405,9 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   var tRange = wfState.viewT1 - wfState.viewT0 || 1;
   var xFn = function(t) { return WF_LABEL_W + ((t - wfState.viewT0) / tRange) * chartW; };
 
-  // Main SVG: time axis + main lane
-  var mainH = WF_PAD + WF_AXIS_H + WF_LANE_H;
+  // Main SVG: time axis + main lane (expanded if selected)
+  var mainLaneSel = wfState.selectedLane?.name === lanes[0]?.name;
+  var mainH = WF_PAD + WF_AXIS_H + (mainLaneSel ? WF_LANE_H_EXPANDED : WF_LANE_H);
   mainSvg.setAttribute('width', W);
   mainSvg.setAttribute('height', mainH);
   mainSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + mainH);
@@ -389,17 +423,20 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   ms += '<g transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, tRange) + '</g>';
   mainSvg.innerHTML = ms;
 
-  // Sub SVG: remaining lanes
+  // Sub SVG: remaining lanes (variable height per lane based on selection)
   var subLanes = lanes.slice(1);
   if (subLanes.length) {
-    var subH = WF_PAD + subLanes.length * WF_LANE_H + WF_PAD;
+    var ss = '', curY = WF_PAD;
+    for (var si = 0; si < subLanes.length; si++) {
+      var slSel = wfState.selectedLane?.name === subLanes[si].name;
+      var slH = slSel ? WF_LANE_H_EXPANDED : WF_LANE_H;
+      ss += '<g transform="translate(0,' + curY + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn, tRange) + '</g>';
+      curY += slH;
+    }
+    var subH = curY + WF_PAD;
     subSvg.setAttribute('width', W);
     subSvg.setAttribute('height', subH);
     subSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + subH);
-    var ss = '';
-    for (var si = 0; si < subLanes.length; si++) {
-      ss += '<g transform="translate(0,' + (WF_PAD + si * WF_LANE_H) + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn, tRange) + '</g>';
-    }
     subSvg.innerHTML = ss;
     subSvg.parentElement.style.display = '';
   } else {
@@ -407,9 +444,19 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     subSvg.parentElement.style.display = 'none';
   }
 
-  // Overview bar + charts + step highlights (synced with viewport)
+  // P1: content-driven max-height for lanes section
+  var lanesEl = document.getElementById('wf-lanes-section');
+  if (lanesEl) {
+    var totalH = mainH;
+    for (var lhi = 0; lhi < subLanes.length; lhi++) {
+      totalH += (wfState.selectedLane?.name === subLanes[lhi].name) ? WF_LANE_H_EXPANDED : WF_LANE_H;
+    }
+    totalH += WF_PAD * 2;
+    lanesEl.style.maxHeight = Math.min(totalH, window.innerHeight * 0.45) + 'px';
+  }
+
+  // Overview bar + step highlights (synced with viewport)
   wfRenderOverview(canvas);
-  _wfUpdateChartHeader();
   var stepsEl = document.getElementById('wf-steps-content');
   if (stepsEl) _wfSyncStepsHighlight(stepsEl);
 }
@@ -602,8 +649,13 @@ function wfSetupInteractions(mainSvg, subSvg) {
           // Main SVG: one lane at y = WF_PAD + WF_AXIS_H
           if (my >= WF_PAD + WF_AXIS_H) li = 0;
         } else {
-          // Sub SVG: lanes at y = WF_PAD + i * WF_LANE_H
-          li = Math.floor((my - WF_PAD) / WF_LANE_H) + 1;
+          // Sub SVG: variable lane heights (selected lane is taller)
+          var accY = WF_PAD;
+          for (var sli = 1; sli < wfState.lanes.length; sli++) {
+            var h = (wfState.selectedLane?.name === wfState.lanes[sli].name) ? WF_LANE_H_EXPANDED : WF_LANE_H;
+            if (my < accY + h) { li = sli; break; }
+            accY += h;
+          }
         }
         if (li >= 0 && li < wfState.lanes.length) {
           wfState.selectedLane = wfState.lanes[li];
@@ -928,130 +980,6 @@ function _wfSyncStepsHighlight(container) {
     }
     row.style.opacity = isZoomed && !inView ? '0.4' : '1';
   });
-}
-
-// ── Chart Header (renders into #wf-chart-header, synced with viewport) ────
-// Shows ALL turns in lane; viewport range highlighted, out-of-view dimmed.
-function _wfUpdateChartHeader() {
-  var el = document.getElementById('wf-chart-header');
-  if (!el || !wfState || !wfState.selectedLane) { if (el) el.innerHTML = ''; return; }
-  var lane = wfState.selectedLane;
-  var turns = lane.turns;
-  if (!turns.length) { el.innerHTML = ''; return; }
-
-  var ctxH = 40, sparkH = 16;
-  var W = el.clientWidth || 600;
-  var barW = Math.max(2, (W - 4) / turns.length);
-  var gap = Math.min(1, barW * 0.1);
-  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
-
-  // Viewport range in bar indices (for dimming out-of-view bars)
-  var vpStart = 0, vpEnd = turns.length - 1;
-  if (isZoomed) {
-    for (var vi = 0; vi < turns.length; vi++) {
-      if (Number(turns[vi].receivedAt) >= wfState.viewT0) { vpStart = vi; break; }
-    }
-    for (var ve = turns.length - 1; ve >= 0; ve--) {
-      if (Number(turns[ve].receivedAt) <= wfState.viewT1) { vpEnd = ve; break; }
-    }
-  }
-
-  // Cursor + summaries (computed from ALL turns for stable labels)
-  var cursorX = -1, peakCtx = 0, totalCacheR = 0, totalCacheAll = 0, totalCost = 0;
-  for (var si = 0; si < turns.length; si++) {
-    if (wfState.selectedTurnId && turns[si].id === wfState.selectedTurnId) cursorX = 2 + si * barW + barW / 2;
-    var pct = wfCtxPct(turns[si]);
-    if (pct > peakCtx) peakCtx = pct;
-    var u = turns[si].usage || {};
-    totalCacheR += (u.cache_read_input_tokens || 0);
-    totalCacheAll += (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-    totalCost += (turns[si].cost || 0);
-  }
-  var cacheHitPct = totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0;
-  var cursorSvg = cursorX >= 0 ? '<line x1="' + cursorX.toFixed(1) + '" y1="0" x2="' + cursorX.toFixed(1) + '" y2="999" stroke="var(--accent)" stroke-width="1.5" opacity="0.8"/>' : '';
-
-  // Helper: viewport highlight rect (semi-transparent overlay on out-of-view areas)
-  function vpOverlay(h) {
-    if (!isZoomed) return '';
-    var x0 = 2 + vpStart * barW, x1 = 2 + (vpEnd + 1) * barW;
-    return '<rect x="0" y="0" width="' + x0.toFixed(1) + '" height="' + h + '" fill="var(--bg)" opacity="0.6"/>' +
-           '<rect x="' + x1.toFixed(1) + '" y="0" width="' + (W - x1).toFixed(1) + '" height="' + h + '" fill="var(--bg)" opacity="0.6"/>';
-  }
-
-  // Context chart
-  var ctxSvg = '<svg viewBox="0 0 ' + W + ' ' + ctxH + '" preserveAspectRatio="none" style="width:100%;height:' + ctxH + 'px;display:block">';
-  ctxSvg += '<line x1="0" y1="' + (ctxH - 2 - 0.4 * (ctxH - 4)).toFixed(1) + '" x2="' + W + '" y2="' + (ctxH - 2 - 0.4 * (ctxH - 4)).toFixed(1) + '" stroke="var(--green)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.3"/>';
-  ctxSvg += '<line x1="0" y1="' + (ctxH - 2 - 0.835 * (ctxH - 4)).toFixed(1) + '" x2="' + W + '" y2="' + (ctxH - 2 - 0.835 * (ctxH - 4)).toFixed(1) + '" stroke="var(--red)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.3"/>';
-  for (var ci = 0; ci < turns.length; ci++) {
-    var p = wfCtxPct(turns[ci]);
-    var bH = p / 100 * (ctxH - 4);
-    var col = p > 90 ? 'var(--red)' : p > 80 ? 'var(--yellow)' : 'var(--green)';
-    ctxSvg += '<rect x="' + (2 + ci * barW).toFixed(1) + '" y="' + (ctxH - 2 - bH).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + bH.toFixed(1) + '" fill="' + col + '" opacity="0.85"/>';
-  }
-  ctxSvg += vpOverlay(ctxH) + cursorSvg + '</svg>';
-
-  // Cache chart
-  var cacheSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" preserveAspectRatio="none" style="width:100%;height:' + sparkH + 'px;display:block">';
-  for (var ki = 0; ki < turns.length; ki++) {
-    var ku = turns[ki].usage || {};
-    var kcr = ku.cache_read_input_tokens || 0, kcc = ku.cache_creation_input_tokens || 0;
-    var khit = (kcr + kcc) > 0 ? kcr / (kcr + kcc) : 0;
-    cacheSvg += '<rect x="' + (2 + ki * barW).toFixed(1) + '" y="' + (sparkH - 1 - khit * (sparkH - 2)).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + (khit * (sparkH - 2)).toFixed(1) + '" fill="' + (khit > 0.5 ? 'var(--green)' : 'var(--yellow)') + '" opacity="0.8"/>';
-  }
-  cacheSvg += vpOverlay(sparkH) + cursorSvg + '</svg>';
-
-  // Cost chart
-  var maxCost = 0;
-  for (var mi = 0; mi < turns.length; mi++) if ((turns[mi].cost || 0) > maxCost) maxCost = turns[mi].cost;
-  var costSvg = '<svg viewBox="0 0 ' + W + ' ' + sparkH + '" preserveAspectRatio="none" style="width:100%;height:' + sparkH + 'px;display:block">';
-  for (var oi = 0; oi < turns.length; oi++) {
-    var ch = maxCost > 0 ? (turns[oi].cost || 0) / maxCost * (sparkH - 2) : 0;
-    costSvg += '<rect x="' + (2 + oi * barW).toFixed(1) + '" y="' + (sparkH - 1 - ch).toFixed(1) + '" width="' + Math.max(1, barW - gap).toFixed(1) + '" height="' + ch.toFixed(1) + '" fill="var(--orange)" opacity="0.8"/>';
-  }
-  costSvg += vpOverlay(sparkH) + cursorSvg + '</svg>';
-
-  el.innerHTML =
-    '<div class="wf-chart-label"><span>Context %</span><span>PEAK ' + peakCtx.toFixed(0) + '%</span></div>' + ctxSvg +
-    '<div class="wf-chart-label"><span>Cache hit</span><span>' + cacheHitPct.toFixed(1) + '%</span></div>' + cacheSvg +
-    '<div class="wf-chart-label"><span>Cost</span><span>$' + totalCost.toFixed(2) + '</span></div>' + costSvg;
-
-  // Drag = pan viewport, click = select turn
-  el.style.cursor = 'grab';
-  el.onmousedown = function(ev) {
-    var startX = ev.clientX, startT0 = wfState.viewT0, startT1 = wfState.viewT1;
-    var span = startT1 - startT0;
-    var chartPxW = el.clientWidth || 600;
-    var moved = false;
-    var onMove = function(mv) {
-      var dx = mv.clientX - startX;
-      if (Math.abs(dx) > 3) moved = true;
-      var dt = -(dx / chartPxW) * span;
-      var t0 = startT0 + dt, t1 = startT1 + dt;
-      if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = wfState.tMin + span; }
-      if (t1 > wfState.tMax) { t1 = wfState.tMax; t0 = wfState.tMax - span; }
-      wfState.viewT0 = t0; wfState.viewT1 = t1;
-      wfDeferRender();
-    };
-    var onUp = function(up) {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-      if (moved) return;
-      var svgEl = up.target.closest('svg');
-      if (!svgEl) return;
-      var rect = svgEl.getBoundingClientRect();
-      var mx = (up.clientX - rect.left) / rect.width * W;
-      var idx = Math.round((mx - 2) / barW);
-      idx = Math.max(0, Math.min(turns.length - 1, idx));
-      var turn = turns[idx];
-      if (!turn) return;
-      wfState.selectedTurnId = turn.id;
-      for (var fi = 0; fi < allEntries.length; fi++) {
-        if (allEntries[fi].id === turn.id) { selectTurn(fi); break; }
-      }
-    };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-  };
 }
 
 // ── Keyboard Handler (dispatched from keyboard-nav.js) ────────────────────
