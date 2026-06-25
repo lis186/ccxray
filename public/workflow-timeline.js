@@ -473,7 +473,7 @@ function wfDeferRender() {
   });
 }
 
-// ── Overview Bar (Canvas) ─────────────────────────────────────────────────
+// ── Overview Bar (Canvas) — selected lane's context bar chart ─────────────
 function wfRenderOverview(canvas) {
   if (!wfState || !canvas) return;
   var MW = canvas.clientWidth, MH = canvas.clientHeight;
@@ -481,75 +481,75 @@ function wfRenderOverview(canvas) {
   canvas.width = MW * 2; canvas.height = MH * 2;
   var ctx = canvas.getContext('2d');
   ctx.scale(2, 2);
-  var totalRange = wfState.tMax - wfState.tMin || 1;
-  var x = function(t) { return ((t - wfState.tMin) / totalRange) * MW; };
 
-  // ponytail: canvas can't resolve CSS vars; cache computed values (invalidated on theme change)
   var c = _wfGetCssColors();
-  var surfaceColor = c.surface, dimColor = c.dim, accentColor = c.accent, bgColor = c.bg;
-
-  ctx.fillStyle = surfaceColor;
+  ctx.fillStyle = c.surface;
   ctx.fillRect(0, 0, MW, MH);
 
-  var lanes = wfState.lanes;
-  var barH = Math.max(2, Math.min(6, (MH - 4) / lanes.length - 1));
-  var laneStep = barH + 1;
-  var startY = Math.max(1, (MH - lanes.length * laneStep) / 2);
+  var lane = wfState.selectedLane;
+  var turns = lane ? lane.turns : [];
+  if (!turns.length) return;
 
-  for (var li = 0; li < lanes.length; li++) {
-    var ly = startY + li * laneStep;
-    var color = wfModelColor(lanes[li].model);
-    // ponytail: canvas can't use CSS vars for fill, resolve model colors directly
-    var fillColor = WF_MODEL_COLORS[lanes[li].model] || dimColor;
-    var isSel = wfState.selectedLane?.name === lanes[li].name;
-    for (var ti = 0; ti < lanes[li].turns.length; ti++) {
-      var t = lanes[li].turns[ti];
-      var ts = Number(t.receivedAt) || 0;
-      var dur = (parseFloat(t.elapsed) || 0) * 1000;
-      ctx.fillStyle = fillColor;
-      ctx.globalAlpha = isSel ? 0.9 : 0.5;
-      ctx.fillRect(x(ts), ly, Math.max(0.5, (dur / totalRange) * MW), barH);
-    }
+  var barW = Math.max(1, MW / turns.length);
+  var gap = Math.min(0.5, barW * 0.1);
+
+  // Context % bars (green/yellow/red zones)
+  for (var i = 0; i < turns.length; i++) {
+    var pct = wfCtxPct(turns[i]);
+    var bH = pct / 100 * (MH - 2);
+    var col = pct > 90 ? '#f85149' : pct > 80 ? '#d29922' : '#3fb950';
+    ctx.fillStyle = col;
+    ctx.globalAlpha = 0.85;
+    ctx.fillRect(i * barW, MH - 1 - bH, Math.max(0.5, barW - gap), bH);
   }
   ctx.globalAlpha = 1;
 
-  // Scale labels
-  ctx.font = '8px SF Mono,Menlo,monospace';
-  ctx.fillStyle = dimColor;
-  ctx.globalAlpha = 0.7;
-  ctx.fillText('0', 2, MH - 2);
-  var endLabel = wfFmtDur(totalRange);
-  ctx.fillText(endLabel, MW - ctx.measureText(endLabel).width - 2, MH - 2);
-  ctx.globalAlpha = 1;
+  // Cursor for selected turn
+  if (wfState.selectedTurnId) {
+    for (var ci = 0; ci < turns.length; ci++) {
+      if (turns[ci].id === wfState.selectedTurnId) {
+        var cx = ci * barW + barW / 2;
+        ctx.strokeStyle = c.accent;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, MH); ctx.stroke();
+        break;
+      }
+    }
+  }
 
-  // Viewport rect when zoomed
+  // Viewport overlay when zoomed
   var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
   if (isZoomed) {
-    var vx = x(wfState.viewT0), vw = Math.max(2, x(wfState.viewT1) - vx);
+    // Find bar index range for viewport
+    var totalRange = wfState.tMax - wfState.tMin || 1;
+    var vpX0 = ((wfState.viewT0 - wfState.tMin) / totalRange) * MW;
+    var vpX1 = ((wfState.viewT1 - wfState.tMin) / totalRange) * MW;
+    var vw = Math.max(2, vpX1 - vpX0);
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, 0, vx, MH);
-    ctx.fillRect(vx + vw, 0, MW - vx - vw, MH);
-    ctx.strokeStyle = accentColor;
+    ctx.fillRect(0, 0, vpX0, MH);
+    ctx.fillRect(vpX0 + vw, 0, MW - vpX0 - vw, MH);
+    ctx.strokeStyle = c.accent;
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(vx + 0.5, 0.5, vw, MH - 1);
+    ctx.strokeRect(vpX0 + 0.5, 0.5, vw, MH - 1);
     // Duration badge
     var vpLabel = wfFmtDur(wfState.viewT1 - wfState.viewT0);
     ctx.font = '8px SF Mono,Menlo,monospace';
     var lw = ctx.measureText(vpLabel).width;
-    var lx = vx + vw - lw - 1, lly = MH - 10;
-    ctx.fillStyle = accentColor; ctx.globalAlpha = 0.85;
+    var lx = vpX0 + vw - lw - 1, lly = MH - 10;
+    ctx.fillStyle = c.accent; ctx.globalAlpha = 0.85;
     ctx.beginPath(); ctx.roundRect(lx - 3, lly - 1, lw + 6, 11, 2); ctx.fill();
-    ctx.fillStyle = bgColor; ctx.globalAlpha = 1;
+    ctx.fillStyle = c.bg; ctx.globalAlpha = 1;
     ctx.fillText(vpLabel, lx, lly + 8);
     ctx.globalAlpha = 1;
   }
 
-  // Minimap interactions
-  _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
+  _wfSetupMinimapInteractions(canvas, MW, MH, turns, isZoomed);
 }
 
-function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
+function _wfSetupMinimapInteractions(canvas, MW, MH, turns, isZoomed) {
   var EDGE_PX = 6;
+  var totalRange = wfState.tMax - wfState.tMin || 1;
+  var x = function(t) { return ((t - wfState.tMin) / totalRange) * MW; };
   canvas.style.cursor = isZoomed ? 'grab' : 'crosshair';
 
   canvas.onmousemove = isZoomed ? function(e) {
@@ -608,11 +608,24 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
     var onMoveB = function(ev) {
       brushEnd = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
     };
-    var onUpB = function() {
+    var onUpB = function(upEv) {
       window.removeEventListener('mousemove', onMoveB);
       window.removeEventListener('mouseup', onUpB);
       var t0 = Math.min(brushStart, brushEnd), t1 = Math.max(brushStart, brushEnd);
-      if (t1 - t0 > 1000) { wfState.viewT0 = t0; wfState.viewT1 = t1; }
+      if (t1 - t0 > 1000) {
+        wfState.viewT0 = t0; wfState.viewT1 = t1;
+      } else if (turns.length) {
+        // Click (no drag): select nearest turn
+        var rect = canvas.getBoundingClientRect();
+        var mx = (upEv.clientX - rect.left) / rect.width * MW;
+        var barW = MW / turns.length;
+        var idx = Math.round(mx / barW - 0.5);
+        idx = Math.max(0, Math.min(turns.length - 1, idx));
+        wfState.selectedTurnId = turns[idx].id;
+        for (var fi = 0; fi < allEntries.length; fi++) {
+          if (allEntries[fi].id === turns[idx].id) { selectTurn(fi); break; }
+        }
+      }
       wfDeferRender();
     };
     window.addEventListener('mousemove', onMoveB);
