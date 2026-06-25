@@ -174,6 +174,7 @@ function wfBuildState(sessionId) {
     viewT0: tMin, viewT1: tMax,
     selectedLane: lanes[0] || null,
     selectedTurnId: null,
+    selectedSection: 'timeline',
   };
 }
 
@@ -883,15 +884,55 @@ function wfRenderAgentCard(lane) {
     html += '</div>';
   }
 
-  // Navigation: click first turn in lane
-  if (lane.turns.length) {
-    html += '<div class="wf-ac-nav">';
-    html += '<span class="wf-ac-nav-item" onclick="(function(){ for(var i=0;i<allEntries.length;i++) if(allEntries[i].id===\'' + wfEsc(lane.turns[0].id) + '\'){selectTurn(i);break;} })()">Timeline →</span>';
-    html += '</div>';
+  // Section navigation (reuses v1.9.2 sections column concept)
+  var secs = [
+    { name: 'timeline', label: 'Timeline', badge: lane.turns.length + ' turns' },
+    { name: 'system', label: 'System' },
+    { name: 'core-tools', label: 'Core' },
+    { name: 'mcp-tools', label: 'MCP' },
+    { name: 'skills', label: 'Skills' },
+    { name: 'cost-efficiency', label: 'Cost Efficiency' },
+    { name: 'raw-req', label: 'Request' },
+    { name: 'raw-res', label: 'Events' },
+  ];
+  var curSec = wfState.selectedSection || 'timeline';
+  html += '<div class="wf-ac-nav">';
+  for (var si = 0; si < secs.length; si++) {
+    var s = secs[si];
+    var sel = curSec === s.name ? ' wf-ac-nav-active' : '';
+    html += '<span class="wf-ac-nav-item' + sel + '" data-section="' + s.name + '" onclick="wfSelectSection(\'' + s.name + '\')">' + wfEsc(s.label);
+    if (s.badge) html += ' <span class="wf-ac-nav-badge">' + wfEsc(s.badge) + '</span>';
+    html += '</span>';
   }
+  html += '</div>';
 
   html += '</div>';
   agentPanel.innerHTML = html;
+}
+
+// ── Section Navigation ───────────────────────────────────────────────────
+function wfSelectSection(name) {
+  if (!wfState) return;
+  wfState.selectedSection = name;
+  // Update nav highlight
+  var panel = document.getElementById('wf-agent-card-panel');
+  if (panel) {
+    panel.querySelectorAll('.wf-ac-nav-item').forEach(function(el) {
+      el.classList.toggle('wf-ac-nav-active', el.getAttribute('data-section') === name);
+    });
+  }
+  if (name === 'timeline') {
+    wfRenderSteps();
+    return;
+  }
+  // Non-timeline: set global selectedSection first, then selectTurn triggers renderDetailCol
+  var lane = wfState.selectedLane;
+  if (!lane || !lane.turns.length) return;
+  var tid = wfState.selectedTurnId || lane.turns[lane.turns.length - 1].id;
+  selectedSection = name;
+  for (var i = 0; i < allEntries.length; i++) {
+    if (allEntries[i].id === tid) { selectTurn(i); break; }
+  }
 }
 
 // ── Steps Panel (flat turn list for selected lane, prototype-style) ───────

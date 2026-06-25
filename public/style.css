@@ -693,9 +693,11 @@
 .wf-agent-card .wf-ac-row .wf-ac-val { color: var(--text); }
 .wf-agent-card .wf-ac-tool { color: var(--dim); }
 .wf-agent-card .wf-ac-tool-count { color: var(--text); margin-left: 4px; }
-.wf-agent-card .wf-ac-nav { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
-.wf-agent-card .wf-ac-nav-item { display: block; padding: 3px 0; color: var(--accent); cursor: pointer; font-size: 11px; }
-.wf-agent-card .wf-ac-nav-item:hover { text-decoration: underline; }
+.wf-agent-card .wf-ac-nav { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 1px; }
+.wf-agent-card .wf-ac-nav-item { display: flex; justify-content: space-between; padding: 4px 6px; color: var(--dim); cursor: pointer; font-size: 11px; border-radius: 3px; }
+.wf-agent-card .wf-ac-nav-item:hover { background: var(--surface-hover); color: var(--text); }
+.wf-agent-card .wf-ac-nav-active { background: var(--surface-active); color: var(--text); }
+.wf-agent-card .wf-ac-nav-badge { font-size: 10px; color: var(--dim); }
 #wf-steps-content { flex: 1; overflow-y: auto; }
 @media (pointer: coarse) {
   #wf-resize { height: 16px; }

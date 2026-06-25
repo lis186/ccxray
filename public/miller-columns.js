@@ -2114,6 +2114,10 @@ function selectSession(id) {
     columnsEl.classList.remove('wf-active');
   }
 
+  // Auto-select latest turn so agent card + steps panel populate
+  var visible = getVisibleTurnIndices();
+  if (visible.length) selectTurn(visible[visible.length - 1]);
+
   renderBreadcrumb();
 }
 
@@ -2544,8 +2548,9 @@ function renderDetailCol() {
     requestAnimationFrame(() => {
       setTimeout(() => {
         if (renderToken !== renderDetailRenderToken) return;
-        // Workflow mode: steps panel is rendered by wfRenderSteps, skip commitDetailHtml
-        var target = null;
+        // Workflow mode: redirect non-timeline sections to #wf-steps-content
+        var target = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection && wfState.selectedSection !== 'timeline')
+          ? document.getElementById('wf-steps-content') : null;
         (target || colDetail).innerHTML = html;
         requestAnimationFrame(() => {
           if (renderToken !== renderDetailRenderToken) return;
