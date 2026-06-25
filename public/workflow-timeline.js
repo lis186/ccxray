@@ -8,10 +8,9 @@ const WF_MODEL_COLORS = {
   'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
   'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
 };
-const WF_LABEL_W = 240, WF_SPARKLINE_H = 16, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
-const WF_CTX_CHART_H = 48, WF_MINI_CHART_H = 20, WF_CHART_GAP = 4;
-const WF_LANE_H = WF_TURN_ROW_H + WF_SPARKLINE_H + WF_LANE_GAP;
-const WF_LANE_H_EXPANDED = WF_TURN_ROW_H + 2 + WF_CTX_CHART_H + WF_CHART_GAP + WF_MINI_CHART_H + 2 + WF_MINI_CHART_H + WF_LANE_GAP;
+const WF_LABEL_W = 240, WF_CTX_H = 28, WF_CACHE_H = 20, WF_COST_H = 20, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
+const WF_LANE_H = WF_TURN_ROW_H + WF_CTX_H + WF_LANE_GAP; // 40px unselected
+const WF_LANE_H_SEL = WF_TURN_ROW_H + WF_CTX_H + WF_CACHE_H + WF_COST_H + WF_LANE_GAP; // 80px selected
 const WF_AXIS_H = 18, WF_PAD = 4, WF_MIN_TURN_PX = 1.5;
 const WF_MONO = "'SF Mono','Cascadia Code','Fira Code',monospace";
 
@@ -226,11 +225,23 @@ function wfLaneSummary(lane) {
   return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
 
+// ── Lane Height Helpers ───────────────────────────────────────────────────
+function _wfLaneHeight(laneIdx) {
+  if (!wfState || laneIdx >= wfState.lanes.length) return WF_LANE_H;
+  return wfState.selectedLane?.name === wfState.lanes[laneIdx].name ? WF_LANE_H_SEL : WF_LANE_H;
+}
+function _wfTotalLanesHeight() {
+  if (!wfState) return 0;
+  var h = 0;
+  for (var i = 0; i < wfState.lanes.length; i++) h += _wfLaneHeight(i);
+  return h;
+}
+
 // ── SVG: Single Lane ──────────────────────────────────────────────────────
 function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
   var color = wfModelColor(lane.model);
   var isSel = wfState.selectedLane?.name === lane.name;
-  var laneH = isSel ? WF_LANE_H_EXPANDED : WF_LANE_H;
+  var laneH = isSel ? WF_LANE_H_SEL : WF_LANE_H;
   var svg = '';
 
   // Selection indicator
@@ -262,9 +273,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
     svg += '<rect x="' + tx.toFixed(1) + '" y="0" width="' + tw.toFixed(1) + '" height="' + WF_TURN_ROW_H + '" fill="' + tc + '" opacity="' + (isTSel ? 1 : 0.85) + '"' + (isTSel ? ' stroke="var(--text)" stroke-width="1"' : '') + ' data-turn-id="' + t.id + '" data-lane="' + laneIdx + '" class="wf-turn-bar" style="cursor:pointer"/>';
   }
 
-  // Sparkline (context % area chart) — skip for selected lane (bar chart replaces it)
-  if (isSel) { /* bar charts rendered below */ }
-  else {
+  // Visible turns for sparklines
   var vis = [];
   var margin = tRange * 0.05;
   for (var si = 0; si < lane.turns.length; si++) {
@@ -272,102 +281,64 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
     var sts = Number(st.receivedAt) || 0;
     if (sts >= wfState.viewT0 - margin && sts <= wfState.viewT1 + margin) vis.push(st);
   }
+
+  // Context sparkline (always shown, WF_CTX_H tall)
   var spY = WF_TURN_ROW_H;
-  if (vis.length > 1) {
-    var pts = [];
-    for (var pi = 0; pi < vis.length; pi++) {
-      var px = Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[pi].receivedAt))));
-      var py = spY + WF_SPARKLINE_H - (wfCtxPct(vis[pi]) / 100) * WF_SPARKLINE_H;
-      pts.push({ x: px, y: py });
-    }
-    var d = 'M' + pts[0].x + ',' + (spY + WF_SPARKLINE_H);
-    for (var di = 0; di < pts.length; di++) d += ' L' + pts[di].x + ',' + pts[di].y;
-    d += ' L' + pts[pts.length - 1].x + ',' + (spY + WF_SPARKLINE_H) + ' Z';
-    svg += '<path d="' + d + '" fill="' + color + '" opacity="0.15"/>';
-    var ld = 'M' + pts[0].x + ',' + pts[0].y;
-    for (var ldi = 1; ldi < pts.length; ldi++) ld += ' L' + pts[ldi].x + ',' + pts[ldi].y;
-    svg += '<path d="' + ld + '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.6"/>';
-  } else if (vis.length === 1) {
-    svg += '<circle cx="' + xFn(Number(vis[0].receivedAt)) + '" cy="' + (spY + WF_SPARKLINE_H - (wfCtxPct(vis[0]) / 100) * WF_SPARKLINE_H) + '" r="1.5" fill="' + color + '" opacity="0.6"/>';
-  }
-  } // end else (unselected sparkline)
+  svg += _wfSparklineArea(vis, spY, WF_CTX_H, color, W, xFn, function(t) { return wfCtxPct(t) / 100; });
+  // Label
+  svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (spY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">ctx%</text>';
 
-  // Selected lane: bar charts (context, cache hit, cost) — Tufte layered separation
-  if (isSel && lane.turns.length > 0) {
-    var allT = lane.turns;
-    var chartW = W - WF_LABEL_W - 12;
-    var barW2 = Math.max(2, chartW / allT.length);
-    var gap2 = Math.min(1, barW2 * 0.1);
-
-    // Pre-compute summaries
-    var curX = -1, peakCtx2 = 0, totalCR = 0, totalCA = 0, totalCost2 = 0, maxCost3 = 0;
-    for (var ai = 0; ai < allT.length; ai++) {
-      if (wfState.selectedTurnId && allT[ai].id === wfState.selectedTurnId) curX = WF_LABEL_W + ai * barW2 + barW2 / 2;
-      var ap = wfCtxPct(allT[ai]);
-      if (ap > peakCtx2) peakCtx2 = ap;
-      var au = allT[ai].usage || {};
-      totalCR += (au.cache_read_input_tokens || 0);
-      totalCA += (au.cache_read_input_tokens || 0) + (au.cache_creation_input_tokens || 0);
-      totalCost2 += (allT[ai].cost || 0);
-      if ((allT[ai].cost || 0) > maxCost3) maxCost3 = allT[ai].cost;
+  // Selected lane: add cache hit + cost bar charts
+  if (isSel && vis.length) {
+    var cacheY = spY + WF_CTX_H;
+    var costY = cacheY + WF_CACHE_H;
+    // Cache hit bars
+    for (var ci2 = 0; ci2 < vis.length; ci2++) {
+      var cu = vis[ci2].usage || {};
+      var ccr = cu.cache_read_input_tokens || 0, ccc = cu.cache_creation_input_tokens || 0;
+      var chit = (ccr + ccc) > 0 ? ccr / (ccr + ccc) : 0;
+      var cbh = chit * (WF_CACHE_H - 2);
+      var cx = Math.max(WF_LABEL_W, xFn(Number(vis[ci2].receivedAt)));
+      var cbw = Math.max(WF_MIN_TURN_PX, ci2 < vis.length - 1 ? xFn(Number(vis[ci2 + 1].receivedAt)) - cx : 4);
+      svg += '<rect x="' + cx.toFixed(1) + '" y="' + (cacheY + WF_CACHE_H - 1 - cbh).toFixed(1) + '" width="' + Math.min(cbw, 6).toFixed(1) + '" height="' + cbh.toFixed(1) + '" fill="' + (chit > 0.5 ? 'var(--green)' : 'var(--yellow)') + '" opacity="0.7"/>';
     }
-    var cacheHitPct2 = totalCA > 0 ? (totalCR / totalCA * 100) : 0;
-    var cursorLine = curX >= 0 ? '<line x1="' + curX.toFixed(1) + '" y1="0" x2="' + curX.toFixed(1) + '" y2="999" stroke="var(--accent)" stroke-width="1.5" opacity="0.8"/>' : '';
-
-    // ── Context % bar chart (48px) ──
-    var ctxY = spY + 2;
-    var ctxH = WF_CTX_CHART_H;
-    // Labels in left label area
-    svg += '<text x="8" y="' + (ctxY + 10) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">Context %</text>';
-    svg += '<text x="8" y="' + (ctxY + 20) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">peak ' + peakCtx2.toFixed(0) + '%</text>';
-    // Threshold lines: 40% and 80%
-    var thY40 = ctxY + ctxH - 0.4 * ctxH;
-    var thY80 = ctxY + ctxH - 0.8 * ctxH;
-    svg += '<line x1="' + WF_LABEL_W + '" y1="' + thY80.toFixed(1) + '" x2="' + W + '" y2="' + thY80.toFixed(1) + '" stroke="var(--red)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.25"/>';
-    svg += '<line x1="' + WF_LABEL_W + '" y1="' + thY40.toFixed(1) + '" x2="' + W + '" y2="' + thY40.toFixed(1) + '" stroke="var(--yellow)" stroke-width="0.5" stroke-dasharray="3 2" opacity="0.25"/>';
-    // Context bars: <40% green (smart), 40-80% gradient to yellow (getting dumb), >80% red (danger)
-    for (var bi = 0; bi < allT.length; bi++) {
-      var bp = wfCtxPct(allT[bi]);
-      var bh = bp / 100 * ctxH;
-      var bc;
-      if (bp > 80) bc = 'var(--red)';
-      else if (bp > 40) bc = 'var(--yellow)';
-      else bc = 'var(--green)';
-      svg += '<rect x="' + (WF_LABEL_W + bi * barW2).toFixed(1) + '" y="' + (ctxY + ctxH - bh).toFixed(1) + '" width="' + Math.max(1, barW2 - gap2).toFixed(1) + '" height="' + bh.toFixed(1) + '" fill="' + bc + '" opacity="0.85"/>';
+    svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (cacheY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cache</text>';
+    // Cost bars
+    var maxCost = 0;
+    for (var mi2 = 0; mi2 < vis.length; mi2++) if ((vis[mi2].cost || 0) > maxCost) maxCost = vis[mi2].cost;
+    for (var oi2 = 0; oi2 < vis.length; oi2++) {
+      var coh = maxCost > 0 ? (vis[oi2].cost || 0) / maxCost * (WF_COST_H - 2) : 0;
+      var cox = Math.max(WF_LABEL_W, xFn(Number(vis[oi2].receivedAt)));
+      var cow = Math.max(WF_MIN_TURN_PX, oi2 < vis.length - 1 ? xFn(Number(vis[oi2 + 1].receivedAt)) - cox : 4);
+      svg += '<rect x="' + cox.toFixed(1) + '" y="' + (costY + WF_COST_H - 1 - coh).toFixed(1) + '" width="' + Math.min(cow, 6).toFixed(1) + '" height="' + coh.toFixed(1) + '" fill="var(--orange)" opacity="0.7"/>';
     }
-    svg += cursorLine;
-    // Separator
-    svg += '<line x1="' + WF_LABEL_W + '" y1="' + (ctxY + ctxH + 2) + '" x2="' + W + '" y2="' + (ctxY + ctxH + 2) + '" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>';
-
-    // ── Cache hit % bar chart (20px) ──
-    var cchY = ctxY + ctxH + WF_CHART_GAP;
-    svg += '<text x="8" y="' + (cchY + 10) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">Cache hit</text>';
-    svg += '<text x="8" y="' + (cchY + 18) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + cacheHitPct2.toFixed(1) + '%</text>';
-    for (var ci2 = 0; ci2 < allT.length; ci2++) {
-      var cu2 = allT[ci2].usage || {};
-      var cr2 = cu2.cache_read_input_tokens || 0, cc2 = cu2.cache_creation_input_tokens || 0;
-      var hitPct = (cr2 + cc2) > 0 ? cr2 / (cr2 + cc2) * 100 : 0;
-      var cbh = hitPct / 100 * (WF_MINI_CHART_H - 2);
-      // <80% red (cache miss danger), >=80% green (healthy)
-      var ccol = hitPct >= 80 ? 'var(--green)' : 'var(--red)';
-      svg += '<rect x="' + (WF_LABEL_W + ci2 * barW2).toFixed(1) + '" y="' + (cchY + WF_MINI_CHART_H - 1 - cbh).toFixed(1) + '" width="' + Math.max(1, barW2 - gap2).toFixed(1) + '" height="' + cbh.toFixed(1) + '" fill="' + ccol + '" opacity="0.8"/>';
-    }
-    svg += cursorLine;
-    // Separator
-    svg += '<line x1="' + WF_LABEL_W + '" y1="' + (cchY + WF_MINI_CHART_H + 1) + '" x2="' + W + '" y2="' + (cchY + WF_MINI_CHART_H + 1) + '" stroke="var(--border)" stroke-width="0.5" opacity="0.3"/>';
-
-    // ── Cost bar chart (20px) ──
-    var cosY = cchY + WF_MINI_CHART_H + 2;
-    svg += '<text x="8" y="' + (cosY + 10) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">Cost</text>';
-    svg += '<text x="8" y="' + (cosY + 18) + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">$' + totalCost2.toFixed(2) + '</text>';
-    for (var oi2 = 0; oi2 < allT.length; oi2++) {
-      var coh = maxCost3 > 0 ? (allT[oi2].cost || 0) / maxCost3 * (WF_MINI_CHART_H - 2) : 0;
-      svg += '<rect x="' + (WF_LABEL_W + oi2 * barW2).toFixed(1) + '" y="' + (cosY + WF_MINI_CHART_H - 1 - coh).toFixed(1) + '" width="' + Math.max(1, barW2 - gap2).toFixed(1) + '" height="' + coh.toFixed(1) + '" fill="var(--orange)" opacity="0.8"/>';
-    }
-    svg += cursorLine;
+    svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (costY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cost</text>';
   }
 
   return svg;
+}
+
+// Helper: render area sparkline for a value function (0..1)
+function _wfSparklineArea(vis, y, h, color, W, xFn, valueFn) {
+  if (vis.length > 1) {
+    var pts = [];
+    for (var i = 0; i < vis.length; i++) {
+      var px = Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[i].receivedAt))));
+      var py = y + h - valueFn(vis[i]) * h;
+      pts.push({ x: px, y: py });
+    }
+    var d = 'M' + pts[0].x + ',' + (y + h);
+    for (var di = 0; di < pts.length; di++) d += ' L' + pts[di].x + ',' + pts[di].y;
+    d += ' L' + pts[pts.length - 1].x + ',' + (y + h) + ' Z';
+    var svg = '<path d="' + d + '" fill="' + color + '" opacity="0.15"/>';
+    var ld = 'M' + pts[0].x + ',' + pts[0].y;
+    for (var li = 1; li < pts.length; li++) ld += ' L' + pts[li].x + ',' + pts[li].y;
+    svg += '<path d="' + ld + '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.6"/>';
+    return svg;
+  } else if (vis.length === 1) {
+    return '<circle cx="' + xFn(Number(vis[0].receivedAt)) + '" cy="' + (y + h - valueFn(vis[0]) * h) + '" r="1.5" fill="' + color + '" opacity="0.6"/>';
+  }
+  return '';
 }
 
 // ── SVG: Full Timeline ────────────────────────────────────────────────────
@@ -429,10 +400,16 @@ function wfRenderTimeline() {
 
   colTurns.appendChild(container);
 
+  // P1: content-driven height (selected lane is taller)
+  var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
+  var maxH = window.innerHeight * 0.45;
+  lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+
   _wfRenderSvgContent(mainSvg, subSvg, canvas);
   wfSetupInteractions(mainSvg, subSvg);
   wfInitResize(lanesSection, resizeHandle);
   wfRenderAgentCard(wfState.selectedLane);
+  // ponytail: charts now inline in selected lane SVG, no separate header
   wfRenderSteps();
 }
 
@@ -443,9 +420,9 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   var tRange = wfState.viewT1 - wfState.viewT0 || 1;
   var xFn = function(t) { return WF_LABEL_W + ((t - wfState.viewT0) / tRange) * chartW; };
 
-  // Main SVG: time axis + main lane (expanded if selected)
-  var mainLaneSel = wfState.selectedLane?.name === lanes[0]?.name;
-  var mainH = WF_PAD + WF_AXIS_H + (mainLaneSel ? WF_LANE_H_EXPANDED : WF_LANE_H);
+  // Main SVG: time axis + main lane (height depends on selection)
+  var mainLaneH = _wfLaneHeight(0);
+  var mainH = WF_PAD + WF_AXIS_H + mainLaneH;
   mainSvg.setAttribute('width', W);
   mainSvg.setAttribute('height', mainH);
   mainSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + mainH);
@@ -461,20 +438,21 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   ms += '<g transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, tRange) + '</g>';
   mainSvg.innerHTML = ms;
 
-  // Sub SVG: remaining lanes (variable height per lane based on selection)
+  // Sub SVG: remaining lanes (dynamic height per lane)
   var subLanes = lanes.slice(1);
   if (subLanes.length) {
-    var ss = '', curY = WF_PAD;
-    for (var si = 0; si < subLanes.length; si++) {
-      var slSel = wfState.selectedLane?.name === subLanes[si].name;
-      var slH = slSel ? WF_LANE_H_EXPANDED : WF_LANE_H;
-      ss += '<g transform="translate(0,' + curY + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn, tRange) + '</g>';
-      curY += slH;
-    }
-    var subH = curY + WF_PAD;
+    var subTotalH = 0;
+    for (var sh = 0; sh < subLanes.length; sh++) subTotalH += _wfLaneHeight(sh + 1);
+    var subH = WF_PAD + subTotalH + WF_PAD;
     subSvg.setAttribute('width', W);
     subSvg.setAttribute('height', subH);
     subSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + subH);
+    var ss = '';
+    var subY = WF_PAD;
+    for (var si = 0; si < subLanes.length; si++) {
+      ss += '<g transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn, tRange) + '</g>';
+      subY += _wfLaneHeight(si + 1);
+    }
     subSvg.innerHTML = ss;
     subSvg.parentElement.style.display = '';
   } else {
@@ -482,19 +460,9 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     subSvg.parentElement.style.display = 'none';
   }
 
-  // P1: content-driven max-height for lanes section
-  var lanesEl = document.getElementById('wf-lanes-section');
-  if (lanesEl) {
-    var totalH = mainH;
-    for (var lhi = 0; lhi < subLanes.length; lhi++) {
-      totalH += (wfState.selectedLane?.name === subLanes[lhi].name) ? WF_LANE_H_EXPANDED : WF_LANE_H;
-    }
-    totalH += WF_PAD * 2;
-    lanesEl.style.maxHeight = Math.min(totalH, window.innerHeight * 0.45) + 'px';
-  }
-
-  // Overview bar + step highlights (synced with viewport)
+  // Overview bar + charts + step highlights (synced with viewport)
   wfRenderOverview(canvas);
+  // ponytail: charts now inline in selected lane SVG, no separate header
   var stepsEl = document.getElementById('wf-steps-content');
   if (stepsEl) _wfSyncStepsHighlight(stepsEl);
 }
@@ -687,12 +655,12 @@ function wfSetupInteractions(mainSvg, subSvg) {
           // Main SVG: one lane at y = WF_PAD + WF_AXIS_H
           if (my >= WF_PAD + WF_AXIS_H) li = 0;
         } else {
-          // Sub SVG: variable lane heights (selected lane is taller)
+          // Sub SVG: lanes have variable height, walk to find index
           var accY = WF_PAD;
-          for (var sli = 1; sli < wfState.lanes.length; sli++) {
-            var h = (wfState.selectedLane?.name === wfState.lanes[sli].name) ? WF_LANE_H_EXPANDED : WF_LANE_H;
-            if (my < accY + h) { li = sli; break; }
-            accY += h;
+          for (var si2 = 1; si2 < wfState.lanes.length; si2++) {
+            var lh = _wfLaneHeight(si2);
+            if (my >= accY && my < accY + lh) { li = si2; break; }
+            accY += lh;
           }
         }
         if (li >= 0 && li < wfState.lanes.length) {
