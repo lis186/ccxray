@@ -292,7 +292,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
   for (var ci3 = 0; ci3 < vis.length; ci3++) {
     var cp = wfCtxPct(vis[ci3]);
     var cbH = cp / 100 * WF_CTX_H;
-    var ccol = cp > 90 ? 'var(--red)' : cp > 80 ? 'var(--yellow)' : 'var(--green)';
+    var ccol = cp > 90 ? 'var(--red)' : cp > 80 ? 'var(--yellow)' : 'var(--accent)';
     var cx3 = Math.max(WF_LABEL_W, xFn(Number(vis[ci3].receivedAt)));
     var cw3 = Math.max(WF_MIN_TURN_PX, ci3 < vis.length - 1 ? xFn(Number(vis[ci3 + 1].receivedAt)) - cx3 : 4);
     svg += '<rect x="' + cx3.toFixed(1) + '" y="' + (spY + WF_CTX_H - cbH).toFixed(1) + '" width="' + Math.min(cw3, 8).toFixed(1) + '" height="' + cbH.toFixed(1) + '" fill="' + ccol + '" opacity="0.8"/>';
