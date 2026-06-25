@@ -24,9 +24,17 @@ All code, comments, and discussions use these names consistently.
 │          │              │ ┌ Agent Card ────┐ ┌ Steps Panel ─────────────┤
 │          │              │ │ Color Bar ▎    │ │ Step Row                 │
 │          │              │ │ Context stats  │ │  ┌ Tool Group (brackets) │
-│          │              │ │ Cache stats    │ │  └ Spawn Badge           │
-│          │              │ │ Cost stats     │ │ Idle Separator ⏸ 10m     │
-│          │              │ │ Tool summary   │ │ Step Row (ctx% colored)  │
+│          │              │ │ Cache / Cost   │ │  └ Spawn Badge           │
+│          │              │ │ Tool summary   │ │ Idle Separator ⏸ 10m     │
+│          │              │ ├────────────────┤ │ Step Row (ctx% colored)  │
+│          │              │ │ ● Timeline  30 │ │                          │
+│          │              │ │ ● System   884 │ │ ← Detail view changes    │
+│          │              │ │ ● Core    9·19 │ │   based on nav selection │
+│          │              │ │ ● MCP      91  │ │                          │
+│          │              │ │ ● Skills  220  │ │                          │
+│          │              │ │ 💰 Cost Eff.   │ │                          │
+│          │              │ │   Request      │ │                          │
+│          │              │ │   Events  231  │ │                          │
 │          │              │ └────────────────┘ └──────────────────────────┤
 ├── Bottom Bar ────────────────────────────────────────────────────────────┤
 └──────────────────────────────────────────────────────────────────────────┘
@@ -53,9 +61,10 @@ All code, comments, and discussions use these names consistently.
 | **Cost Chart** | — (SVG rects) | 20px bar chart showing per-turn cost. Only visible on the **selected** lane. Orange bars, height ∝ turn cost. |
 | **Spawn Connector** | `.spawn-line` | 0.5px gray line from parent Turn Bar to child Lane's first turn. |
 | **Resize Handle** | `#wf-resize` | 4px draggable divider between timeline and Detail Area. |
-| **Agent Card** | `#wf-agent-card-panel` | Left panel (240px) in Detail Area. Text-only summary: context stats, cache hit rate, cost, tool frequency. |
+| **Agent Card** | `#wf-agent-card-panel` | Left panel (240px) in Detail Area. Top: lane summary (context, cache, cost, tools). Bottom: **Section Nav** — clickable section items matching the existing ccxray sections column (Timeline, System, Core, MCP, Skills, Cost Efficiency, Request, Events). Clicking a nav item selects a turn and switches the Steps Panel to that section's detail view. |
 | **Color Bar** | — (inline style) | 2px left border on Agent Card in the agent's model color. |
-| **Steps Panel** | `#wf-steps-content` | Right panel in Detail Area. Scrollable flat list of all turns for selected agent. |
+| **Section Nav** | — (inside Agent Card) | Reuses the existing `renderSectionsCol` section items from v1.9.2. Each item shows: colored dot + label + badge (token/tool/event count) + chevron. Clicking sets `selectedSection` and renders the corresponding detail in the Steps Panel via `renderDetailCol`. |
+| **Steps Panel** | `#wf-steps-content` | Right panel in Detail Area. Content depends on the Section Nav selection: **Timeline** shows a flat turn list (default); other sections (System, Core, MCP, etc.) show the same detail views as the existing ccxray dashboard's detail column. |
 | **Step Row** | `.step-row` | One turn's display in Steps Panel. Star + #num + model + Tool Group + ctx% + duration. |
 | **Tool Group** | `.step-tools` | Vertical list of tool calls with ┌│└ brackets when multiple. |
 | **Spawn Badge** | `.spawn-badge` | `⑂ agent-name` marker in a Tool Group indicating an Agent spawn. |
