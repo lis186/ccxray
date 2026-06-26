@@ -972,7 +972,12 @@ function wfSelectSection(name) {
       el.classList.toggle('wf-ac-nav-active', el.getAttribute('data-section') === name);
     });
   }
-  // All sections (including timeline) route through selectTurn → renderDetailCol → #wf-steps-content
+  // Timeline non-focused: flat turn list (all turns visible, click scrolls)
+  // Timeline focused or other sections: per-turn detail via renderDetailCol
+  if (name === 'timeline' && !isFocusedMode) {
+    wfRenderSteps(wfState.selectedTurnId);
+    return;
+  }
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var tid = wfState.selectedTurnId || lane.turns[lane.turns.length - 1].id;
@@ -985,10 +990,16 @@ function wfSelectSection(name) {
 // Render current section into #wf-steps-content (selectTurn → renderDetailCol redirect)
 function wfRenderCurrentSection() {
   if (!wfState) return;
+  var sec = wfState.selectedSection || 'timeline';
+  // Timeline non-focused: flat turn list
+  if (sec === 'timeline' && !isFocusedMode) {
+    wfRenderSteps(wfState.selectedTurnId);
+    return;
+  }
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var tid = wfState.selectedTurnId || lane.turns[lane.turns.length - 1].id;
-  selectedSection = wfState.selectedSection || 'timeline';
+  selectedSection = sec;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === tid) { selectTurn(i); break; }
   }

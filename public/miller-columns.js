@@ -1331,8 +1331,14 @@ function exitFocusedMode() {
   isFocusedMode = false;
   document.getElementById('columns').classList.remove('focused');
   setFocus('sections');
-  renderDetailCol();
-  if (typeof wfDeferRender === 'function' && typeof wfState !== 'undefined' && wfState) wfDeferRender();
+  // Workflow timeline: wfRenderCurrentSection handles the switch to flat turn list;
+  // skip renderDetailCol to avoid its delayed commitDetailHtml overwriting wfRenderSteps
+  var isWfTimeline = typeof wfState !== 'undefined' && wfState && wfState.selectedSection === 'timeline';
+  if (!isWfTimeline) renderDetailCol();
+  if (typeof wfDeferRender === 'function' && typeof wfState !== 'undefined' && wfState) {
+    wfDeferRender();
+    if (isWfTimeline && typeof wfRenderCurrentSection === 'function') wfRenderCurrentSection();
+  }
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 const colProjects = document.getElementById('col-projects');
