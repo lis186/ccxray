@@ -682,10 +682,10 @@ function wfSetupInteractions(mainSvg, subSvg) {
 
       // Drag to pan
       var startX = e.clientX, startT0 = wfState.viewT0, startT1 = wfState.viewT1;
-      var moved = false;
+      var moved = false, startTime = Date.now();
       var onMove = function(ev) {
         var dx = ev.clientX - startX;
-        if (Math.abs(dx) > 3) moved = true;
+        if (Math.abs(dx) > 5) moved = true; // ponytail: was 3px, too low for HiDPI/touchpad
         var span = startT1 - startT0, dt = -(dx / chartW) * span;
         var t0 = startT0 + dt, t1 = startT1 + dt;
         if (t0 < wfState.tMin) { t0 = wfState.tMin; t1 = wfState.tMin + span; }
@@ -696,7 +696,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
       var onUp = function(ev) {
         window.removeEventListener('mousemove', onMove);
         window.removeEventListener('mouseup', onUp);
-        if (moved) return;
+        if (moved && (Date.now() - startTime) > 200) return; // ponytail: fast tap = always click
         // Click — check if turn bar or lane bg
         var target = document.elementFromPoint(ev.clientX, ev.clientY);
         if (target?.classList?.contains('wf-turn-bar')) {
