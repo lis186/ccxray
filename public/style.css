@@ -674,6 +674,7 @@
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
 #wf-minimap-canvas { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
 #wf-lanes-section { position: relative; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; transition: max-height 200ms ease; }
+#wf-cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--accent); opacity: 0.6; pointer-events: none; z-index: 10; }
 #wf-main-svg { display: block; position: sticky; top: 0; z-index: 5; background: var(--bg); }
 #wf-sub-scroll { overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 #wf-sub-scroll::-webkit-scrollbar { width: 4px; }

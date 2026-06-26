@@ -476,7 +476,10 @@ function wfDeferRender() {
     var mainSvg = document.getElementById('wf-main-svg');
     var subSvg = document.getElementById('wf-sub-svg');
     var canvas = document.getElementById('wf-minimap-canvas');
-    if (mainSvg && subSvg && canvas) _wfRenderSvgContent(mainSvg, subSvg, canvas);
+    if (mainSvg && subSvg && canvas) {
+      _wfRenderSvgContent(mainSvg, subSvg, canvas);
+      _wfUpdateCursor(wfState ? wfState.selectedTurnId : null);
+    }
   });
 }
 
@@ -550,6 +553,9 @@ function wfRenderOverview(canvas) {
     ctx.fillText(vpLabel, lx, lly + 8);
     ctx.globalAlpha = 1;
   }
+
+  // Selected turn cursor on overview
+  _wfDrawOverviewCursor(canvas);
 
   // Minimap interactions
   _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
@@ -844,9 +850,53 @@ function wfHighlightTurn(turnId) {
     }
   }
   wfDeferRender();
-  // ponytail: don't call wfRenderCurrentSection here — selectTurn already triggers renderDetailCol
-  // which writes to #wf-steps-content via commitDetailHtml redirect. Calling it here causes
-  // selectTurn → wfHighlightTurn → wfRenderCurrentSection → selectTurn → infinite recursion.
+  _wfUpdateCursor(turnId);
+}
+
+// ── Cursor line — syncs overview + swimlane + step list position ─────────
+function _wfUpdateCursor(turnId) {
+  var cursor = document.getElementById('wf-cursor');
+  if (!cursor) {
+    cursor = document.createElement('div');
+    cursor.id = 'wf-cursor';
+    var lanes = document.getElementById('wf-lanes-section');
+    if (lanes) lanes.appendChild(cursor);
+    else return;
+  }
+  if (!turnId || !wfState) { cursor.style.display = 'none'; return; }
+  // Find turn timestamp
+  var ts = 0;
+  for (var i = 0; i < wfState.lanes.length; i++) {
+    for (var j = 0; j < wfState.lanes[i].turns.length; j++) {
+      if (wfState.lanes[i].turns[j].id === turnId) { ts = Number(wfState.lanes[i].turns[j].receivedAt); break; }
+    }
+    if (ts) break;
+  }
+  if (!ts || ts < wfState.viewT0 || ts > wfState.viewT1) { cursor.style.display = 'none'; return; }
+  var W = (document.getElementById('wf-main-svg') || {}).clientWidth || 600;
+  var tRange = wfState.viewT1 - wfState.viewT0 || 1;
+  var px = WF_LABEL_W + ((ts - wfState.viewT0) / tRange) * (W - WF_LABEL_W);
+  cursor.style.display = '';
+  cursor.style.left = px.toFixed(1) + 'px';
+}
+
+// Also update overview canvas with cursor
+function _wfDrawOverviewCursor(canvas) {
+  if (!canvas || !wfState || !wfState.selectedTurnId) return;
+  var ts = 0;
+  for (var i = 0; i < wfState.lanes.length && !ts; i++)
+    for (var j = 0; j < wfState.lanes[i].turns.length; j++)
+      if (wfState.lanes[i].turns[j].id === wfState.selectedTurnId) { ts = Number(wfState.lanes[i].turns[j].receivedAt); break; }
+  if (!ts) return;
+  var MW = canvas.clientWidth, totalRange = wfState.tMax - wfState.tMin || 1;
+  var px = ((ts - wfState.tMin) / totalRange) * MW;
+  var ctx2 = canvas.getContext('2d');
+  var c = _wfGetCssColors();
+  ctx2.strokeStyle = c.accent;
+  ctx2.lineWidth = 1.5;
+  ctx2.globalAlpha = 0.8;
+  ctx2.beginPath(); ctx2.moveTo(px, 0); ctx2.lineTo(px, canvas.clientHeight); ctx2.stroke();
+  ctx2.globalAlpha = 1;
 }
 
 // ── Agent Card ────────────────────────────────────────────────────────────
