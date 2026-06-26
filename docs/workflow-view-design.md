@@ -53,16 +53,16 @@ All code, comments, and discussions use these names consistently.
 | **Scale Labels** | — (canvas drawing) | Time markers at 0 / midpoint / end in Overview Bar. |
 | **Timeline Header** | `#timeline-header` | Sticky container for time axis + Main Lane. Never scrolls away. |
 | **Sub-lanes** | `#macro-svg` | Scrollable SVG containing all agent lanes except main. |
-| **Lane** | — (SVG group) | One horizontal row representing a single agent. Unselected: 40px (turn bars + context sparkline). Selected: 80px (adds cache hit + cost charts). |
+| **Lane** | — (SVG group) | One horizontal row representing a single agent. Unselected: turn bars only (8px + 4px gap). Selected: expands with cache hit + cost rows (+40px). |
 | **Lane Label** | `.lane-label` | Agent name + model + context window shown left of each Lane (240px). |
-| **Turn Bar** | `.wf-turn-bar` | Colored rectangle in a Lane. Width ∝ elapsed duration, color = model. |
-| **Context Sparkline** | — (SVG path) | 28px area chart below Turn Bars showing context % over time. Always visible on all lanes. |
+| **Turn Bar** | `.wf-turn-bar` | Colored rectangle in a Lane. Width ∝ elapsed duration, color = context zone (green <40% / yellow 40-80% / red ≥80%). Error turns add 45° hatching overlay. |
+| **Context Sparkline** | — (SVG path) | **Removed in v1.10** — context signal now encoded directly in Turn Bar color (zone coloring). |
 | **Cache Hit Chart** | — (SVG rects) | 20px bar chart showing per-turn cache hit ratio. Only visible on the **selected** lane. Green (≥50%), yellow (<50%). |
 | **Cost Chart** | — (SVG rects) | 20px bar chart showing per-turn cost. Only visible on the **selected** lane. Orange bars, height ∝ turn cost. |
 | **Spawn Connector** | `.spawn-line` | 0.5px gray line from parent Turn Bar to child Lane's first turn. |
 | **Resize Handle** | `#wf-resize` | 4px draggable divider between timeline and Detail Area. |
 | **Agent Card** | `#wf-agent-card-panel` | Left panel (240px) in Detail Area. Top: lane summary (context, cache, cost, tools). Bottom: **Section Nav** — clickable section items matching the existing ccxray sections column (Timeline, System, Core, MCP, Skills, Cost Efficiency, Request, Events). Clicking a nav item selects a turn and switches the Steps Panel to that section's detail view. |
-| **Color Bar** | — (inline style) | 2px left border on Agent Card in the agent's model color. |
+| **Color Bar** | — (inline style) | 2px left border on Agent Card. Decorative accent only — not tied to turn bar encoding. |
 | **Section Nav** | — (inside Agent Card) | Reuses the existing `renderSectionsCol` section items from v1.9.2. Each item shows: colored dot + label + badge (token/tool/event count) + chevron. Clicking sets `selectedSection` and renders the corresponding detail in the Steps Panel via `renderDetailCol`. |
 | **Steps Panel** | `#wf-steps-content` | Right panel in Detail Area. Uses flex column layout so headers stay fixed and split panes scroll independently. Content depends on Section Nav selection — all sections (including Timeline) render via `renderDetailCol` → `commitDetailHtml` redirect. |
 | **Timeline (v1.9.2)** | — (inside Steps Panel) | Reuses the full v1.9.2 timeline renderer (`renderStepListHtml`): human messages, thinking blocks with duration, tool calls with name/preview/status, star buttons, minimap, and focused split-pane mode. Replaces the earlier flat turn list. |
@@ -167,7 +167,7 @@ All code, comments, and discussions use these names consistently.
 6. **Main lane + time axis** — sticky at top of timeline section, never scrolls away
 7. **Sub-agent lanes** — scrollable below the sticky main lane
 8. **Resize handle** — draggable divider between timeline and detail (min 60px timeline, min 150px detail)
-9. **Agent Card** — 2px left border in model color, connects visually to timeline lane
+9. **Agent Card** — 2px left border accent, connects visually to timeline lane
 10. **Lane label width = Agent Card width** (240px) — visually one continuous left column
 11. **Star (★)** appears before step number in Timeline Steps, not after
 
@@ -222,8 +222,8 @@ All code, comments, and discussions use these names consistently.
 - ★ star toggle (stars the entire agent; reflected on lane label)
 - Context bar chart with three zone colors:
   - Green (#3fb950) — 0-40% (smart zone, good cache behavior)
-  - Yellow (#d29922) — 40-83.5% (degradation zone)
-  - Red (#f85149) — 83.5%+ (danger zone, near autocompact)
+  - Yellow (#d29922) — 40-80% (degradation zone)
+  - Red (#f85149) — 80%+ (danger zone, near autocompact)
   - Context % normalized to lane's context window (avoids zigzag from model switches)
 - Cache hit rate + inline bar chart (yellow bars for < 50% cache hit turns)
 - Cost total + avg/turn + inline bar chart
@@ -252,36 +252,117 @@ All code, comments, and discussions use these names consistently.
 
 ## Sparkline Timeline Visual Encoding
 
-Each agent lane = two thin rows:
+### v1.10 — Context-Zone Turn Coloring (replaces per-model color)
 
-**Row 1 — Turn bars:**
-- Tiny rectangles, width ∝ elapsed duration
-- Color by model: opus-4-6 #58a6ff, opus-4-8 #7ee787, fable-5 #d2a8ff, sonnet-4-6 #ffa657, haiku-4-5 #f0883e
-- Failed turns: #f85149
-- Selected turn: white stroke
-- Gaps between bars = waiting time (data, not decoration)
+**Problem:** Turn bars were colored by model name (hardcoded color table). This doesn't scale — model count grows with new providers, human color perception caps at ~8 distinguishable hues, and the lane label already displays the model name (redundant encoding). Meanwhile, the most actionable signal (context window pressure) required reading a separate sparkline that was hard to parse at overview scale.
 
-**Row 2 — Context sparkline:**
-- 16px area chart showing contextPercent over time
-- Fill color = model color at 15% opacity
-- Line color = model color at 60% opacity
+**Decision:** Turn bar color encodes **context window zone** — the one dimension that demands immediate attention. Model identity stays in the lane label (text) where it belongs.
 
-**Spawn connectors:** 0.5px gray (#30363d) vertical lines from parent turn to child lane's first turn. Subtle — spatial alignment on time axis is the primary signal.
+**Constraints:**
+- Width already encodes elapsed duration — cannot use width for a second dimension
+- Must work at 4px minimum turn width (zoomed out)
+- Must work on iPad touch (44px tap target per row)
+- Overview minimap must use the same visual language as turn bars
 
-**Lane labels (240px, same width as Agent Card):** `agent-name` + `model  ctxWindowK` directly integrated. Selected lane: `▶` prefix + 2px blue left bar + subtle blue background.
+#### Turn bar color — context zone (3 discrete levels)
+
+| Zone | Condition | Color | Meaning |
+|------|-----------|-------|---------|
+| Smart | ctx < 40% | green (#3fb950) | Healthy — good cache behavior, plenty of room |
+| Dumb | 40% ≤ ctx < 80% | yellow (#d29922) | Degrading — cache less effective, context filling |
+| Danger | ctx ≥ 80% | red (#f85149) | Near autocompact — agent may lose context |
+
+Context % = `tokens.input / contextWindow` (per-model, from `server/config.js`).
+
+#### HTTP error turns — hatched fill (independent of ctx zone)
+
+Error (non-2xx status) and ctx zone are orthogonal. A turn can be green+error or red+error. Encoding both:
+
+- **Normal turn:** solid fill in zone color
+- **Error turn:** zone color fill + 45° SVG hatching pattern overlay
+
+```
+ Normal ctx-green:   ████████
+ Error  ctx-green:   ▨▨▨▨▨▨▨▨   ← green + hatching = "healthy context, but call failed"
+ Normal ctx-red:     ████████
+ Error  ctx-red:     ▨▨▨▨▨▨▨▨   ← red + hatching = "danger zone AND call failed"
+```
+
+Hatching is visible at any width (pattern tiles at 4px) and uses a distinct visual channel (texture) from color, so the two signals never conflict.
+
+#### Model fallback turns — dashed border
+
+When a turn's model differs from the lane's primary model (e.g. haiku fallback in an opus lane):
+
+- 1px dashed border on the turn bar (zone color fill unchanged)
+- Tooltip shows actual model name
+
+This is rare; a subtle marker suffices.
+
+#### Selected turn — white stroke (unchanged)
+
+#### Unselected lane — turn bars only
+
+No sparkline. Turn bar zone color IS the context signal. One row, 8px height + 4px gap.
+
+```
+ main         ██ ██  ████ ██████ ██ ████ ██ ██████ ██ ██
+ opus-4-6 1000K       yel   RED              yel
+```
+
+#### Selected lane — turn bars + cache + cost (+2 rows)
+
+Turn bars stay identical. Two rows expand below:
+
+```
+ ▶ main         ██ ██  ████ ██████ ██ ████ ██ ██████ ██ ██
+   opus-4-6 1000K       yel   RED              yel
+ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+   CACHE        ██ ██  ████ ░░░░░░ ██ ████ ██ ██░░██ ██ ██
+ ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+   COST         ▁▁ ▁▁  ▂▂▂▂ ████████ ▁▁ ▃▃▃▃ ▁▁ ▂▂▁▁ ▁▁
+```
+
+**Cache row** (20px): same position and width as turn bar. Brightness encodes cache hit %. Bright (#3fb950 at full opacity) = high hit, dim (#3fb950 at 20% opacity) = low hit. Continuous encoding via opacity, not discrete buckets.
+
+**Cost row** (20px): bar chart, bottom-aligned. Height ∝ relative cost within the lane (max turn = full height). Color: orange (#ffa657). Spike turns are visually obvious.
+
+Three visual channels, three questions: **color** = context enough? **brightness** = cache working? **height** = how much did it cost?
+
+#### Overview minimap — same zone colors (M1)
+
+Minimap turn marks use the same ctx zone color as the main turn bars. The minimap is a 1:1 color-reduced thumbnail of the timeline — zero new visual language to learn.
+
+```
+ ┌──────────────────────────────────────────────────────────┐
+ │ main  ▪▪ ▪▪ ▪▪▪▪ ▪▪▪▪▪▪ ▪▪ ▪▪▪▪ ▪▪ ▪▪▪▪▪▪ ▪▪ ▪▪      │
+ │        g  g   y    R            y       g   y           │
+ │ sub-7 ▪ ▪▪ ▪ ▪▪▪ ▪ ▪▪ ▪▪▪ ▪ ▪▪                         │
+ └──────────────────────────────────────────────────────────┘
+```
+
+Error hatching is omitted at minimap scale (too small to render). Error turns appear as their zone color — the minimap's job is spatial overview, not per-turn diagnosis.
+
+### Deprecated: per-model color table
+
+`WF_MODEL_COLORS` is no longer used for turn bars or overview minimap. It may be retained solely for the Agent Card color bar (2px left border) if desired, but is no longer a scaling concern since it doesn't affect the main timeline encoding.
+
+**Spawn connectors:** 0.5px gray (#30363d) vertical lines from parent turn to child lane's first turn. Subtle — spatial alignment on time axis is the primary signal (unchanged).
+
+**Lane labels (240px, same width as Agent Card):** `agent-name` + `model  ctxWindowK` directly integrated. Selected lane: `▶` prefix + 2px blue left bar + subtle blue background (unchanged).
 
 ## Context Threshold Reference Lines
 
 On the Agent Card minimap:
 - **40%** — green dashed line, labeled "40%" — smart zone ceiling
-- **83.5%** — red dashed line, labeled "83.5%" — autocompact threshold, shows ⚠ warning if peak exceeds
+- **80%** — red dashed line, labeled "80%" — danger threshold, shows ⚠ warning if peak exceeds
 
 ## Agent Card Charts (unified X axis)
 
 Three charts stacked vertically in the Agent Card, all sharing turn-index X axis:
 
 1. **Context minimap** (48px height) — area chart with threshold lines
-2. **Cache hit sparkline** (14px height) — bar chart, green (#3fb950), yellow (#d29922) when < 50%
+2. **Cache hit sparkline** (14px height) — bar chart, green (#3fb950), dim when < 50%
 3. **Cost sparkline** (14px height) — bar chart, orange (#ffa657)
 
 Click any chart → select nearest turn → accent cursor rect appears on all three → Timeline Steps scrolls to that turn.
@@ -372,12 +453,11 @@ timelineH = clamp(MIN_H, laneCount × LANE_H + AXIS_H + PAD, 45vh)
 ### P2: Charts Inline in Selected Lane (score 9.1, revised)
 
 Cache hit and cost charts render **inside the selected lane's SVG**, not in a separate header:
-- **Unselected lanes**: 40px — turn bars (8px) + context sparkline (28px) + gap (4px)
-- **Selected lane**: 80px — turn bars (8px) + context sparkline (28px) + cache hit bars (20px) + cost bars (20px) + gap (4px)
+- **Unselected lanes**: 12px — turn bars (8px) + gap (4px). No sparkline — context zone is encoded in turn bar color.
+- **Selected lane**: 52px — turn bars (8px) + cache hit row (20px) + cost row (20px) + gap (4px)
 - Charts share the same time axis as the lane's turn bars — no separate X axis or viewport mapping
 - Selecting a different lane collapses the previous and expands the new (SVG height recalculated per render)
 - Agent Card is text-only summary (context stats, cache %, cost total, tool frequency)
-- Context sparkline is always visible on **all** lanes (area chart, model-colored)
 
 ### P5: Bidirectional Selection Sync (spec clarification)
 
@@ -395,7 +475,7 @@ SVG `<title>` element on lane label text shows full `name · model · ctxWindowK
 ### P7: Streaming State (score 9.2)
 
 Active/in-progress turns have distinct visual treatment:
-- **Turn bar**: ghost bar — model color at 30% opacity + dashed right border, width grows 1fps via rAF
+- **Turn bar**: ghost bar — zone color at 30% opacity + dashed right border, width grows 1fps via rAF (streaming turns use dim green until ctx% is known)
 - **Sparkline**: gap (no point until response completes)
 - **Steps Panel**: pulsing green dot (●) replaces ☆, tools appear incrementally, elapsed timer ticks
 - **Thinking**: `>3s` no content_block_start → show `🧠 thinking...`
