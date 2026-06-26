@@ -625,8 +625,26 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
       window.removeEventListener('mousemove', onMoveB);
       window.removeEventListener('mouseup', onUpB);
       var t0 = Math.min(brushStart, brushEnd), t1 = Math.max(brushStart, brushEnd);
-      if (t1 - t0 > 1000) { wfState.viewT0 = t0; wfState.viewT1 = t1; }
-      wfDeferRender();
+      if (t1 - t0 > 1000) { wfState.viewT0 = t0; wfState.viewT1 = t1; wfDeferRender(); return; }
+      // ponytail: small brush = click → hit-test nearest turn
+      var bestD = Infinity, bestTid = null, bestLane = null;
+      for (var li = 0; li < wfState.lanes.length; li++) {
+        var lane = wfState.lanes[li];
+        for (var ti = 0; ti < lane.turns.length; ti++) {
+          var tt = Number(lane.turns[ti].receivedAt);
+          var d = Math.abs(tt - clickTime);
+          if (d < bestD) { bestD = d; bestTid = lane.turns[ti].id; bestLane = lane; }
+        }
+      }
+      if (bestTid && bestD < totalRange * 0.02) {
+        wfState.selectedLane = bestLane;
+        wfState.selectedTurnId = bestTid;
+        wfDeferRender();
+        wfRenderAgentCard(bestLane);
+        for (var si = 0; si < allEntries.length; si++) {
+          if (allEntries[si].id === bestTid) { selectTurn(si); break; }
+        }
+      } else { wfDeferRender(); }
     };
     window.addEventListener('mousemove', onMoveB);
     window.addEventListener('mouseup', onUpB);
