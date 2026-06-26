@@ -554,6 +554,9 @@ function wfRenderOverview(canvas) {
     ctx.globalAlpha = 1;
   }
 
+  // Selected turn cursor on overview
+  _wfDrawOverviewCursor(canvas);
+
   // Minimap interactions
   _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
 }
@@ -850,52 +853,54 @@ function wfHighlightTurn(turnId) {
   _wfUpdateCursor(turnId);
 }
 
-// ── Cursor line — syncs overview + swimlane position ────────────────────
-function _wfFindTurnTs(turnId) {
-  if (!turnId || !wfState) return 0;
+// ── Cursor line — syncs overview + swimlane + step list position ─────────
+function _wfFindTurn(turnId) {
+  if (!turnId || !wfState) return null;
   for (var i = 0; i < wfState.lanes.length; i++)
     for (var j = 0; j < wfState.lanes[i].turns.length; j++)
-      if (wfState.lanes[i].turns[j].id === turnId) return Number(wfState.lanes[i].turns[j].receivedAt);
-  return 0;
-}
-
-function _wfEnsureCursorEl(id, parentId) {
-  var el = document.getElementById(id);
-  if (!el) {
-    el = document.createElement('div');
-    el.id = id;
-    var parent = document.getElementById(parentId);
-    if (parent) parent.appendChild(el); else return null;
-  }
-  return el;
+      if (wfState.lanes[i].turns[j].id === turnId) return wfState.lanes[i].turns[j];
+  return null;
 }
 
 function _wfUpdateCursor(turnId) {
-  var ts = _wfFindTurnTs(turnId);
-  // Swimlane cursor (viewport coords)
-  var laneCursor = _wfEnsureCursorEl('wf-cursor', 'wf-lanes-section');
-  if (laneCursor) {
-    if (!ts || ts < wfState.viewT0 || ts > wfState.viewT1) { laneCursor.style.display = 'none'; }
-    else {
-      var W = (document.getElementById('wf-main-svg') || {}).clientWidth || 600;
-      var tRange = wfState.viewT1 - wfState.viewT0 || 1;
-      laneCursor.style.display = '';
-      laneCursor.style.left = (WF_LABEL_W + ((ts - wfState.viewT0) / tRange) * (W - WF_LABEL_W)).toFixed(1) + 'px';
-    }
+  var cursor = document.getElementById('wf-cursor');
+  if (!cursor) {
+    cursor = document.createElement('div');
+    cursor.id = 'wf-cursor';
+    var lanes = document.getElementById('wf-lanes-section');
+    if (lanes) lanes.appendChild(cursor);
+    else return;
   }
-  // Overview cursor (global time coords, positioned relative to canvas)
-  var ovCursor = _wfEnsureCursorEl('wf-overview-cursor', 'wf-overview');
-  if (ovCursor) {
-    var canvas = document.getElementById('wf-minimap-canvas');
-    if (!ts || !canvas || !canvas.clientWidth) { ovCursor.style.display = 'none'; }
-    else {
-      var totalRange = wfState.tMax - wfState.tMin || 1;
-      var canvasLeft = canvas.offsetLeft;
-      var canvasW = canvas.clientWidth;
-      ovCursor.style.display = '';
-      ovCursor.style.left = (canvasLeft + ((ts - wfState.tMin) / totalRange) * canvasW).toFixed(1) + 'px';
-    }
-  }
+  var t = _wfFindTurn(turnId);
+  var ts = t ? Number(t.receivedAt) : 0;
+  if (!ts || ts < wfState.viewT0 || ts > wfState.viewT1) { cursor.style.display = 'none'; return; }
+  var endTs = ts + (parseFloat(t.elapsed) || 0) * 1000;
+  var W = (document.getElementById('wf-main-svg') || {}).clientWidth || 600;
+  var chartW = W - WF_LABEL_W - 12, tRange = wfState.viewT1 - wfState.viewT0 || 1;
+  var px = WF_LABEL_W + ((ts - wfState.viewT0) / tRange) * chartW;
+  var px2 = endTs > ts ? WF_LABEL_W + ((Math.min(endTs, wfState.viewT1) - wfState.viewT0) / tRange) * chartW : px;
+  cursor.style.display = '';
+  cursor.style.left = px.toFixed(1) + 'px';
+  cursor.style.width = Math.max(px2 - px, 3) + 'px';
+}
+
+function _wfDrawOverviewCursor(canvas) {
+  if (!canvas || !wfState || !wfState.selectedTurnId) return;
+  var t = _wfFindTurn(wfState.selectedTurnId);
+  if (!t) return;
+  var ts = Number(t.receivedAt);
+  var endTs = ts + (parseFloat(t.elapsed) || 0) * 1000;
+  var MW = canvas.clientWidth, MH = canvas.clientHeight, totalRange = wfState.tMax - wfState.tMin || 1;
+  var px1 = ((ts - wfState.tMin) / totalRange) * MW;
+  var px2 = endTs > ts ? ((endTs - wfState.tMin) / totalRange) * MW : px1;
+  var w = Math.max(px2 - px1, 3); // ponytail: min 3px so short turns stay visible
+  if (px1 + w > MW) px1 = MW - w; // clamp: keep rect inside canvas
+  var ctx2 = canvas.getContext('2d');
+  var c = _wfGetCssColors();
+  ctx2.fillStyle = c.accent;
+  ctx2.globalAlpha = 0.35;
+  ctx2.fillRect(px1, 0, w, MH);
+  ctx2.globalAlpha = 1;
 }
 
 // ── Agent Card ────────────────────────────────────────────────────────────
@@ -972,12 +977,7 @@ function wfSelectSection(name) {
       el.classList.toggle('wf-ac-nav-active', el.getAttribute('data-section') === name);
     });
   }
-  // Timeline non-focused: flat turn list (all turns visible, click scrolls)
-  // Timeline focused or other sections: per-turn detail via renderDetailCol
-  if (name === 'timeline' && !isFocusedMode) {
-    wfRenderSteps(wfState.selectedTurnId);
-    return;
-  }
+  // All sections (including timeline) route through selectTurn → renderDetailCol → #wf-steps-content
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var tid = wfState.selectedTurnId || lane.turns[lane.turns.length - 1].id;
@@ -990,16 +990,10 @@ function wfSelectSection(name) {
 // Render current section into #wf-steps-content (selectTurn → renderDetailCol redirect)
 function wfRenderCurrentSection() {
   if (!wfState) return;
-  var sec = wfState.selectedSection || 'timeline';
-  // Timeline non-focused: flat turn list
-  if (sec === 'timeline' && !isFocusedMode) {
-    wfRenderSteps(wfState.selectedTurnId);
-    return;
-  }
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var tid = wfState.selectedTurnId || lane.turns[lane.turns.length - 1].id;
-  selectedSection = sec;
+  selectedSection = wfState.selectedSection || 'timeline';
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === tid) { selectTurn(i); break; }
   }

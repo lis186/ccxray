@@ -67,7 +67,7 @@ All code, comments, and discussions use these names consistently.
 | **Steps Panel** | `#wf-steps-content` | Right panel in Detail Area. Uses flex column layout so headers stay fixed and split panes scroll independently. Content depends on Section Nav selection — all sections (including Timeline) render via `renderDetailCol` → `commitDetailHtml` redirect. |
 | **Timeline (v1.9.2)** | — (inside Steps Panel) | Reuses the full v1.9.2 timeline renderer (`renderStepListHtml`): human messages, thinking blocks with duration, tool calls with name/preview/status, star buttons, minimap, and focused split-pane mode. Replaces the earlier flat turn list. |
 | **Focused Mode** | `.focused.wf-active` | Enter key or step click enters split-pane view (left: step list + minimap, right: step detail). `#col-turns` stays visible (CSS override). SVG/canvas re-renders at new width via `wfDeferRender`. `selectTurn` skips focused-mode exit when `wfState` is active. Keyboard nav (↑↓ steps, e/E/s/S/a/A/m/M jump) queries `#wf-steps-content` instead of `colDetail`. |
-| **Position Cursor** | `#wf-cursor` | Vertical line in swimlane SVG (`position:absolute`, `z-index:10`) marking the selected turn's time position. Overview canvas draws a matching accent-colored line. Updated by `wfHighlightTurn`, `wfDeferRender` (pan/zoom), and `selectStep` (step navigation). All three areas (overview, swimlane, step list) stay in sync. |
+| **Position Cursor** | `#wf-cursor` | Semi-transparent accent-colored rect in swimlane (`position:absolute`, `z-index:10`) spanning the selected turn's time range (`receivedAt` to `receivedAt + elapsed`). Overview canvas draws a matching `fillRect`. Both use `_wfFindTurn` to resolve the turn object. Min width 3px; overview clamps to canvas bounds. Updated by `wfHighlightTurn`, `wfDeferRender` (pan/zoom), and `selectStep` (step navigation). All three areas (overview, swimlane, step list) stay in sync. |
 | **Step Row** | `.tl-step-summary` | One step's display in the focused timeline. Row number + tool name/preview + status (✓/✗) + star + optional source badge. |
 | **Tool Group** | `.step-tools` | Vertical list of tool calls with ┌│└ brackets when multiple. |
 | **Spawn Badge** | `.spawn-badge` | `⑂ agent-name` marker in a Tool Group indicating an Agent spawn. |
@@ -227,7 +227,7 @@ All code, comments, and discussions use these names consistently.
   - Context % normalized to lane's context window (avoids zigzag from model switches)
 - Cache hit rate + inline bar chart (yellow bars for < 50% cache hit turns)
 - Cost total + avg/turn + inline bar chart
-- All three charts share X axis (turn index), clickable → select turn, blue cursor line pierces all three
+- All three charts share X axis (turn index), clickable → select turn, accent cursor highlights the selected turn across all three
 - **Idle gap markers**: amber (#d29922) dashed vertical lines between turns where idle > 5 min (cache TTL); markers span all three charts at the same X position
 - Navigation items: Timeline (step count), Context (System/Core/MCP/Skills), Analysis (Cost), RAW (Request/Events) — with › chevrons
 - Tools summary, Tokens summary, Spawns count
@@ -284,7 +284,7 @@ Three charts stacked vertically in the Agent Card, all sharing turn-index X axis
 2. **Cache hit sparkline** (14px height) — bar chart, green (#3fb950), yellow (#d29922) when < 50%
 3. **Cost sparkline** (14px height) — bar chart, orange (#ffa657)
 
-Click any chart → select nearest turn → blue cursor line appears on all three → Timeline Steps scrolls to that turn.
+Click any chart → select nearest turn → accent cursor rect appears on all three → Timeline Steps scrolls to that turn.
 
 ## Timeline Vertical Scrolling
 
