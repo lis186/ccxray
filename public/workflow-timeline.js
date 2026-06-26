@@ -435,6 +435,12 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     var tt = wfState.viewT0 + i * tickStep;
     ms += '<text x="' + xFn(tt) + '" y="' + (WF_PAD + 12) + '" text-anchor="middle" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + wfFmtMin(tt, wfState.tMin) + '</text>';
   }
+  // ponytail: zoom badge on time axis when zoomed
+  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  if (isZoomed) {
+    var fullRange = wfState.tMax - wfState.tMin;
+    ms += '<text x="' + (W - 6) + '" y="' + (WF_PAD + 12) + '" text-anchor="end" fill="var(--accent)" style="font-size:8px;font-family:' + WF_MONO + ';cursor:pointer" ondblclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">' + wfFmtDur(tRange) + ' / ' + wfFmtDur(fullRange) + ' ⟲</text>';
+  }
   var mainLaneY = WF_PAD + WF_AXIS_H;
   ms += '<g transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, tRange) + '</g>';
   mainSvg.innerHTML = ms;
