@@ -872,10 +872,11 @@ function _wfUpdateCursor(turnId) {
     }
     if (ts) break;
   }
-  if (!ts || ts < wfState.viewT0 || ts > wfState.viewT1) { cursor.style.display = 'none'; return; }
+  if (!ts || ts < wfState.viewT0) { cursor.style.display = 'none'; return; }
   var W = (document.getElementById('wf-main-svg') || {}).clientWidth || 600;
   var tRange = wfState.viewT1 - wfState.viewT0 || 1;
-  var px = WF_LABEL_W + ((ts - wfState.viewT0) / tRange) * (W - WF_LABEL_W);
+  // ponytail: clamp to right edge when turn is beyond viewport (streaming turn)
+  var px = WF_LABEL_W + Math.min(1, (ts - wfState.viewT0) / tRange) * (W - WF_LABEL_W);
   cursor.style.display = '';
   cursor.style.left = px.toFixed(1) + 'px';
 }
@@ -889,7 +890,7 @@ function _wfDrawOverviewCursor(canvas) {
       if (wfState.lanes[i].turns[j].id === wfState.selectedTurnId) { ts = Number(wfState.lanes[i].turns[j].receivedAt); break; }
   if (!ts) return;
   var MW = canvas.clientWidth, totalRange = wfState.tMax - wfState.tMin || 1;
-  var px = ((ts - wfState.tMin) / totalRange) * MW;
+  var px = Math.min(MW, ((ts - wfState.tMin) / totalRange) * MW);
   var ctx2 = canvas.getContext('2d');
   var c = _wfGetCssColors();
   ctx2.strokeStyle = c.accent;
