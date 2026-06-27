@@ -903,6 +903,9 @@ function _wfDrawOverviewCursor(canvas) {
   ctx2.fillStyle = c.accent;
   ctx2.globalAlpha = 0.35;
   ctx2.fillRect(px1, 0, w, MH);
+  // P15: 1px bright indicator line at selected turn's start position
+  ctx2.globalAlpha = 0.9;
+  ctx2.fillRect(Math.round(px1), 0, 1, MH);
   ctx2.globalAlpha = 1;
 }
 
