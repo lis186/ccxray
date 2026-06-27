@@ -8,9 +8,9 @@ const WF_MODEL_COLORS = {
   'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
   'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
 };
-const WF_LABEL_W = 240, WF_CTX_H = 28, WF_CACHE_H = 20, WF_COST_H = 20, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
-const WF_LANE_H = WF_TURN_ROW_H + WF_CTX_H + WF_LANE_GAP; // 40px unselected
-const WF_LANE_H_SEL = WF_TURN_ROW_H + WF_CTX_H + WF_CACHE_H + WF_COST_H + WF_LANE_GAP; // 80px selected
+const WF_LABEL_W = 240, WF_CACHE_H = 20, WF_COST_H = 20, WF_TURN_ROW_H = 8, WF_LANE_GAP = 4;
+const WF_LANE_H = WF_TURN_ROW_H + WF_LANE_GAP; // 12px unselected (turn bars only, no sparkline)
+const WF_LANE_H_SEL = WF_TURN_ROW_H + WF_CACHE_H + WF_COST_H + WF_LANE_GAP; // 52px selected
 const WF_AXIS_H = 18, WF_PAD = 4, WF_MIN_TURN_PX = 1.5;
 const WF_MONO = "'SF Mono','Cascadia Code','Fira Code',monospace";
 
@@ -51,6 +51,11 @@ var wfEsc = typeof escapeHtml === 'function' ? escapeHtml : function(s) { return
 function wfCtxPct(e) {
   var win = e.maxContext || 200000;
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
+}
+// ponytail: 3-zone context color — green/yellow/red replaces per-model color on turn bars
+function wfCtxZoneColor(t) {
+  var pct = wfCtxPct(t);
+  return pct >= 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
 }
 
 // ── Lane Inference ────────────────────────────────────────────────────────
@@ -240,10 +245,12 @@ function _wfTotalLanesHeight() {
 
 // ── SVG: Single Lane ──────────────────────────────────────────────────────
 function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
-  var color = wfModelColor(lane.model);
   var isSel = wfState.selectedLane?.name === lane.name;
   var laneH = isSel ? WF_LANE_H_SEL : WF_LANE_H;
   var svg = '';
+
+  // SVG defs: 45° hatching pattern for error turns
+  svg += '<defs><pattern id="wf-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="4" stroke="var(--bg)" stroke-width="1.5" opacity="0.6"/></pattern></defs>';
 
   // Selection indicator
   if (isSel) {
@@ -258,9 +265,8 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
   svg += '<text x="8" y="7" font="9px ' + WF_MONO + '" fill="var(--text)" style="font-size:9px;font-family:' + WF_MONO + '"><title>' + wfEsc(lane.name + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K') + '</title>' + wfEsc(prefix + lane.name) + '</text>';
-  svg += '<text x="8" y="' + (WF_TURN_ROW_H + 10) + '" font="8px ' + WF_MONO + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + wfEsc(wfShortModel(lane.model)) + '  ' + ctxK + 'K</text>';
 
-  // Turn bars
+  // Turn bars — zone color (green/yellow/red by ctx%), hatching for errors, dashed for model fallback
   for (var i = 0; i < lane.turns.length; i++) {
     var t = lane.turns[i];
     var ts = Number(t.receivedAt) || 0;
@@ -269,77 +275,55 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, tRange) {
     if (tend < wfState.viewT0 || ts > wfState.viewT1) continue;
     var tx = Math.max(WF_LABEL_W, xFn(ts));
     var tw = Math.max(WF_MIN_TURN_PX, xFn(tend) - tx);
-    var tc = (t.status && !isHttpStatusOk(t.status)) ? 'var(--red)' : wfModelColor(t.model);
+    var zoneColor = wfCtxZoneColor(t);
+    var isErr = t.status && !isHttpStatusOk(t.status);
+    var isFallback = lane.model && t.model !== lane.model;
     var isTSel = wfState.selectedTurnId === t.id;
-    svg += '<rect x="' + tx.toFixed(1) + '" y="0" width="' + tw.toFixed(1) + '" height="' + WF_TURN_ROW_H + '" fill="' + tc + '" opacity="' + (isTSel ? 1 : 0.85) + '"' + (isTSel ? ' stroke="var(--text)" stroke-width="1"' : '') + ' data-turn-id="' + t.id + '" data-lane="' + laneIdx + '" class="wf-turn-bar" style="cursor:pointer"/>';
+    var stroke = isTSel ? ' stroke="var(--text)" stroke-width="1"' : isFallback ? ' stroke="' + zoneColor + '" stroke-width="1" stroke-dasharray="2,1"' : '';
+    svg += '<rect x="' + tx.toFixed(1) + '" y="0" width="' + tw.toFixed(1) + '" height="' + WF_TURN_ROW_H + '" fill="' + zoneColor + '" opacity="' + (isTSel ? 1 : 0.85) + '"' + stroke + ' data-turn-id="' + t.id + '" data-lane="' + laneIdx + '" class="wf-turn-bar" style="cursor:pointer"/>';
+    if (isErr) svg += '<rect x="' + tx.toFixed(1) + '" y="0" width="' + tw.toFixed(1) + '" height="' + WF_TURN_ROW_H + '" fill="url(#wf-hatch)" class="wf-turn-bar" data-turn-id="' + t.id + '" data-lane="' + laneIdx + '" style="cursor:pointer;pointer-events:none"/>';
   }
 
-  // Visible turns for sparklines
-  var vis = [];
-  var margin = tRange * 0.05;
-  for (var si = 0; si < lane.turns.length; si++) {
-    var st = lane.turns[si];
-    var sts = Number(st.receivedAt) || 0;
-    if (sts >= wfState.viewT0 - margin && sts <= wfState.viewT1 + margin) vis.push(st);
-  }
-
-  // Context sparkline (always shown, WF_CTX_H tall)
-  var spY = WF_TURN_ROW_H;
-  svg += _wfSparklineArea(vis, spY, WF_CTX_H, color, W, xFn, function(t) { return wfCtxPct(t) / 100; });
-  // Label
-  svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (spY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">ctx%</text>';
-
-  // Selected lane: add cache hit + cost bar charts
-  if (isSel && vis.length) {
-    var cacheY = spY + WF_CTX_H;
-    var costY = cacheY + WF_CACHE_H;
-    // Cache hit bars
-    for (var ci2 = 0; ci2 < vis.length; ci2++) {
-      var cu = vis[ci2].usage || {};
-      var ccr = cu.cache_read_input_tokens || 0, ccc = cu.cache_creation_input_tokens || 0;
-      var chit = (ccr + ccc) > 0 ? ccr / (ccr + ccc) : 0;
-      var cbh = chit * (WF_CACHE_H - 2);
-      var cx = Math.max(WF_LABEL_W, xFn(Number(vis[ci2].receivedAt)));
-      var cbw = Math.max(WF_MIN_TURN_PX, ci2 < vis.length - 1 ? xFn(Number(vis[ci2 + 1].receivedAt)) - cx : 4);
-      svg += '<rect x="' + cx.toFixed(1) + '" y="' + (cacheY + WF_CACHE_H - 1 - cbh).toFixed(1) + '" width="' + Math.min(cbw, 6).toFixed(1) + '" height="' + cbh.toFixed(1) + '" fill="' + (chit > 0.5 ? 'var(--green)' : 'var(--yellow)') + '" opacity="0.7"/>';
+  // Selected lane: cache row + cost row (no sparkline)
+  if (isSel) {
+    var vis = [];
+    var margin = tRange * 0.05;
+    for (var si = 0; si < lane.turns.length; si++) {
+      var st = lane.turns[si];
+      var sts = Number(st.receivedAt) || 0;
+      if (sts >= wfState.viewT0 - margin && sts <= wfState.viewT1 + margin) vis.push(st);
     }
-    svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (cacheY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cache</text>';
-    // Cost bars
-    var maxCost = 0;
-    for (var mi2 = 0; mi2 < vis.length; mi2++) if ((vis[mi2].cost || 0) > maxCost) maxCost = vis[mi2].cost;
-    for (var oi2 = 0; oi2 < vis.length; oi2++) {
-      var coh = maxCost > 0 ? (vis[oi2].cost || 0) / maxCost * (WF_COST_H - 2) : 0;
-      var cox = Math.max(WF_LABEL_W, xFn(Number(vis[oi2].receivedAt)));
-      var cow = Math.max(WF_MIN_TURN_PX, oi2 < vis.length - 1 ? xFn(Number(vis[oi2 + 1].receivedAt)) - cox : 4);
-      svg += '<rect x="' + cox.toFixed(1) + '" y="' + (costY + WF_COST_H - 1 - coh).toFixed(1) + '" width="' + Math.min(cow, 6).toFixed(1) + '" height="' + coh.toFixed(1) + '" fill="var(--orange)" opacity="0.7"/>';
+    if (vis.length) {
+      var cacheY = WF_TURN_ROW_H;
+      var costY = cacheY + WF_CACHE_H;
+      // Cache row: same width/position as turn bar, opacity = cache_read / total_input
+      for (var ci2 = 0; ci2 < vis.length; ci2++) {
+        var cu = vis[ci2].usage || {};
+        var inTot = (cu.input_tokens || 0) + (cu.cache_read_input_tokens || 0) + (cu.cache_creation_input_tokens || 0);
+        var cacheOp = inTot > 0 ? Math.max(0.2, (cu.cache_read_input_tokens || 0) / inTot) : 0.2;
+        var cts = Number(vis[ci2].receivedAt) || 0;
+        var cdur = (parseFloat(vis[ci2].elapsed) || 0) * 1000;
+        var cx = Math.max(WF_LABEL_W, xFn(cts));
+        var cbw = Math.max(WF_MIN_TURN_PX, xFn(cts + cdur) - cx);
+        svg += '<rect x="' + cx.toFixed(1) + '" y="' + cacheY + '" width="' + cbw.toFixed(1) + '" height="' + (WF_CACHE_H - 2) + '" fill="#3fb950" opacity="' + cacheOp.toFixed(2) + '"/>';
+      }
+      svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (cacheY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cache</text>';
+      // Cost row: bottom-aligned bars, height ∝ relative cost within lane
+      var maxCost = 0;
+      for (var mi2 = 0; mi2 < vis.length; mi2++) if ((vis[mi2].cost || 0) > maxCost) maxCost = vis[mi2].cost;
+      for (var oi2 = 0; oi2 < vis.length; oi2++) {
+        var coh = maxCost > 0 ? (vis[oi2].cost || 0) / maxCost * (WF_COST_H - 2) : 0;
+        var ots = Number(vis[oi2].receivedAt) || 0;
+        var odur = (parseFloat(vis[oi2].elapsed) || 0) * 1000;
+        var cox = Math.max(WF_LABEL_W, xFn(ots));
+        var cow = Math.max(WF_MIN_TURN_PX, xFn(ots + odur) - cox);
+        svg += '<rect x="' + cox.toFixed(1) + '" y="' + (costY + WF_COST_H - 1 - coh).toFixed(1) + '" width="' + cow.toFixed(1) + '" height="' + coh.toFixed(1) + '" fill="var(--orange)" opacity="0.7"/>';
+      }
+      svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (costY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cost</text>';
     }
-    svg += '<text x="' + (WF_LABEL_W + 4) + '" y="' + (costY + 9) + '" fill="var(--dim)" style="font-size:7px;font-family:' + WF_MONO + '" opacity="0.6">cost</text>';
   }
 
   return svg;
-}
-
-// Helper: render area sparkline for a value function (0..1)
-function _wfSparklineArea(vis, y, h, color, W, xFn, valueFn) {
-  if (vis.length > 1) {
-    var pts = [];
-    for (var i = 0; i < vis.length; i++) {
-      var px = Math.max(WF_LABEL_W, Math.min(W - 12, xFn(Number(vis[i].receivedAt))));
-      var py = y + h - valueFn(vis[i]) * h;
-      pts.push({ x: px, y: py });
-    }
-    var d = 'M' + pts[0].x + ',' + (y + h);
-    for (var di = 0; di < pts.length; di++) d += ' L' + pts[di].x + ',' + pts[di].y;
-    d += ' L' + pts[pts.length - 1].x + ',' + (y + h) + ' Z';
-    var svg = '<path d="' + d + '" fill="' + color + '" opacity="0.15"/>';
-    var ld = 'M' + pts[0].x + ',' + pts[0].y;
-    for (var li = 1; li < pts.length; li++) ld += ' L' + pts[li].x + ',' + pts[li].y;
-    svg += '<path d="' + ld + '" fill="none" stroke="' + color + '" stroke-width="0.8" opacity="0.6"/>';
-    return svg;
-  } else if (vis.length === 1) {
-    return '<circle cx="' + xFn(Number(vis[0].receivedAt)) + '" cy="' + (y + h - valueFn(vis[0]) * h) + '" r="1.5" fill="' + color + '" opacity="0.6"/>';
-  }
-  return '';
 }
 
 // ── SVG: Full Timeline ────────────────────────────────────────────────────
@@ -514,15 +498,12 @@ function wfRenderOverview(canvas) {
 
   for (var li = 0; li < lanes.length; li++) {
     var ly = startY + li * laneStep;
-    var color = wfModelColor(lanes[li].model);
-    // ponytail: canvas can't use CSS vars for fill, resolve model colors directly
-    var fillColor = WF_MODEL_COLORS[lanes[li].model] || dimColor;
     var isSel = wfState.selectedLane?.name === lanes[li].name;
     for (var ti = 0; ti < lanes[li].turns.length; ti++) {
       var t = lanes[li].turns[ti];
       var ts = Number(t.receivedAt) || 0;
       var dur = (parseFloat(t.elapsed) || 0) * 1000;
-      ctx.fillStyle = fillColor;
+      ctx.fillStyle = wfCtxZoneColor(t);
       ctx.globalAlpha = isSel ? 0.9 : 0.5;
       ctx.fillRect(x(ts), ly, Math.max(0.5, (dur / totalRange) * MW), barH);
     }
@@ -542,9 +523,7 @@ function wfRenderOverview(canvas) {
   var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
   if (isZoomed) {
     var vx = x(wfState.viewT0), vw = Math.max(2, x(wfState.viewT1) - vx);
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(0, 0, vx, MH);
-    ctx.fillRect(vx + vw, 0, MW - vx - vw, MH);
+    // ponytail: no dimming overlay — viewport border alone signals the range
     ctx.strokeStyle = accentColor;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(vx + 0.5, 0.5, vw, MH - 1);
