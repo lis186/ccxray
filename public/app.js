@@ -92,6 +92,9 @@ function toggleTheme() {
   document.documentElement.setAttribute('data-theme', next);
   localStorage.setItem('theme', next);
   updateThemeIcon();
+  // Invalidate canvas color cache so overview/swimlane repaint with new theme
+  if (typeof _wfCssCache !== 'undefined') _wfCssCache = null;
+  if (typeof wfRenderTimeline === 'function') wfRenderTimeline();
 }
 function updateThemeIcon() {
   const btn = document.getElementById('theme-toggle');
