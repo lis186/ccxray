@@ -44,6 +44,10 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 2. Add a changelog entry at the top of the file (date, agent, version, what changed)
 3. If a previously `obs-fragile` behavior is confirmed across a version bump, promote it to `obs-stable`
 
+## Design Principles
+
+`docs/design-principles.md` — UI design decision framework. Read before making visual/interaction design choices. Core hierarchy: Information Colocation (decision) → Channel Discipline + Layout Stability + Rendering Budget (constraints) → Follow Attention (behavior) → Implicit Bridging + Structured Emptiness (techniques).
+
 ## Architecture
 
 ### Server (`server/`)
