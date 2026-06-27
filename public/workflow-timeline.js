@@ -3,6 +3,13 @@
 // Depends on globals from miller-columns.js: allEntries, selectedSessionId,
 // sessionsMap, colTurns, colSections, selectTurn.
 
+// A1: shared root resolver — all workflow-aware DOM queries go through this
+function wfStepsRoot() {
+  return (wfState && wfState.selectedSection)
+    ? (document.getElementById('wf-steps-content') || colDetail)
+    : colDetail;
+}
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const WF_MODEL_COLORS = {
   'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
@@ -173,8 +180,15 @@ function wfBuildState(sessionId) {
 
   var lanes = wfInferLanes(entries, childEntries);
 
+  // E1: O(1) turn lookup — avoids repeated O(lanes×turns) scans in hot paths
+  var turnIndex = new Map();
+  for (var li = 0; li < lanes.length; li++)
+    for (var ti = 0; ti < lanes[li].turns.length; ti++)
+      turnIndex.set(lanes[li].turns[ti].id, { turn: lanes[li].turns[ti], laneIdx: li });
+
   return {
     lanes: lanes,
+    turnIndex: turnIndex,
     tMin: tMin, tMax: tMax,
     viewT0: tMin, viewT1: tMax,
     selectedLane: lanes[0] || null,
@@ -203,8 +217,10 @@ function wfAddEntry(entry) {
       wfState.lanes.push(lane);
     }
     lane.turns.push(entry);
+    if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(lane) });
   } else if (wfState.lanes[0]) {
     wfState.lanes[0].turns.push(entry);
+    if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
   }
 
   if (wfState.viewT1 >= wfState.tMax - 1000) wfState.viewT1 = wfState.tMax;
@@ -859,10 +875,8 @@ function wfHighlightTurn(turnId) {
 // ── Cursor line — syncs overview + swimlane + step list position ─────────
 function _wfFindTurn(turnId) {
   if (!turnId || !wfState) return null;
-  for (var i = 0; i < wfState.lanes.length; i++)
-    for (var j = 0; j < wfState.lanes[i].turns.length; j++)
-      if (wfState.lanes[i].turns[j].id === turnId) return wfState.lanes[i].turns[j];
-  return null;
+  var hit = wfState.turnIndex && wfState.turnIndex.get(turnId);
+  return hit ? hit.turn : null;
 }
 
 function _wfUpdateCursor(turnId) {
@@ -1121,13 +1135,11 @@ function _wfSyncStepsHighlight(container) {
     var tid = row.getAttribute('data-tid');
     var inView = false;
     if (isZoomed) {
-      for (var i = 0; i < wfState.lanes.length && !inView; i++)
-        for (var j = 0; j < wfState.lanes[i].turns.length; j++)
-          if (wfState.lanes[i].turns[j].id === tid) {
-            var ts = Number(wfState.lanes[i].turns[j].receivedAt);
-            inView = ts >= wfState.viewT0 && ts <= wfState.viewT1;
-            break;
-          }
+      var hit = wfState.turnIndex && wfState.turnIndex.get(tid);
+      if (hit) {
+        var ts = Number(hit.turn.receivedAt);
+        inView = ts >= wfState.viewT0 && ts <= wfState.viewT1;
+      }
     }
     row.style.opacity = isZoomed && !inView ? '0.4' : '1';
   });

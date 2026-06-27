@@ -572,8 +572,7 @@ document.addEventListener('keydown', (e) => {
     }
     if ((key === 'ArrowUp' || key === 'ArrowDown') && selectedSection === 'timeline') {
       e.preventDefault();
-      const _kbRoot = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection)
-        ? (document.getElementById('wf-steps-content') || colDetail) : colDetail;
+      const _kbRoot = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
       const all = [..._kbRoot.querySelectorAll('.tl-step-summary')];
       if (!all.length) return;
       const curEl = _kbRoot.querySelector('.tl-step-summary.active');
@@ -679,8 +678,7 @@ document.addEventListener('keydown', (e) => {
 
 // ── T12: Step-type jump shortcuts ─────────────────────────────────────────────
 function jumpToStepType(type, dir) {
-  const _jRoot = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection)
-    ? (document.getElementById('wf-steps-content') || colDetail) : colDetail;
+  const _jRoot = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
   const allStepEls = [..._jRoot.querySelectorAll('.tl-step-summary')];
   if (!allStepEls.length) return;
   const curEl = _jRoot.querySelector('.tl-step-summary.active');

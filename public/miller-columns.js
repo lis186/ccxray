@@ -2673,8 +2673,7 @@ function renderDetailCol() {
       commitDetailHtml(focusedHtml, function() {
         requestAnimationFrame(() => {
           // In workflow mode, focused timeline renders into #wf-steps-content
-          var _root = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection)
-            ? (document.getElementById('wf-steps-content') || colDetail) : colDetail;
+          var _root = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
           const mm = _root.querySelector('.minimap');
           const sa = _root.querySelector('.tl-scroll-area');
           if (mm && sa) { layoutMinimapBlocks(mm); initMinimapInteractions(mm, sa); }
@@ -2755,8 +2754,7 @@ function renderDetailCol() {
   commitDetailHtml(headerHtml + '<div class="detail-scroll"' + scrollStyle + '>' + inner + '</div>', function() {
     if (selectedSection === 'timeline') {
       requestAnimationFrame(() => {
-        var _root2 = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection)
-          ? (document.getElementById('wf-steps-content') || colDetail) : colDetail;
+        var _root2 = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
         const mm = _root2.querySelector('.minimap');
         const sa = _root2.querySelector('.tl-scroll-area');
         if (mm && sa) { layoutMinimapBlocks(mm); initMinimapInteractions(mm, sa); }

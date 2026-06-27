@@ -703,8 +703,7 @@ function selectStep(stepIdx, sub) {
 
   // Split pane: update list highlights + detail pane
   // In workflow mode, focused timeline renders into #wf-steps-content, not colDetail
-  var _stepRoot = (typeof wfState !== 'undefined' && wfState && wfState.selectedSection)
-    ? (document.getElementById('wf-steps-content') || colDetail) : colDetail;
+  var _stepRoot = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
   const listEl = _stepRoot.querySelector('.tl-scroll-area');
   const detailEl = _stepRoot.querySelector('.tl-split-detail');
   if (listEl) {
