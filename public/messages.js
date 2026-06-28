@@ -923,9 +923,13 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) 
     const isActive = activeStepIdx >= 0 && b.stepIdx === activeStepIdx;
     const errStyle = b.isError ? ';border-left:2px solid var(--red)' : '';
     const cls = 'minimap-block' + (b.isError ? ' mm-error' : '') + (isActive ? ' mm-active' : '');
+    // ponytail: inline label — short name visible without hover, tooltip has token count
+    var shortLabel = b.label.replace(/^tool_result:/, '').replace(/^tool_use:/, '');
+    if (shortLabel.length > 10) shortLabel = shortLabel.slice(0, 9) + '…';
     html += '<div class="' + cls + '" data-step="' + b.stepIdx + '" data-block="' + i + '" data-tokens="' + b.tokens + '" '
       + 'style="background:' + b.color + errStyle + '" '
-      + 'title="' + b.label + ' · ' + b.tokens.toLocaleString() + ' tok"></div>';
+      + 'title="' + b.label + ' · ' + b.tokens.toLocaleString() + ' tok">'
+      + '<span class="mm-label">' + shortLabel + '</span></div>';
   }
   html += '</div>';
 
@@ -933,7 +937,8 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) 
   html += '<div class="minimap-empty" title="' + remaining.toLocaleString() + ' remaining"></div>';
 
   // Usage label (hover only)
-  html += '<div class="minimap-usage">' + usedPct + '%</div>';
+  var ctxLabel = ctxWindow >= 1000000 ? (ctxWindow / 1000000).toFixed(0) + 'M' : Math.round(ctxWindow / 1000) + 'K';
+  html += '<div class="minimap-usage">' + usedPct + '% · ' + ctxLabel + '</div>';
 
   return html;
 }
@@ -971,7 +976,11 @@ function layoutMinimapBlocks(minimapEl) {
 
   for (const el of blockEls) {
     const tokens = parseInt(el.dataset.tokens) || 1;
-    el.style.height = Math.max(0.5, tokens * scale) + 'px';
+    const h = Math.max(0.5, tokens * scale);
+    el.style.height = h + 'px';
+    // ponytail: hide label when block too short to read
+    const lbl = el.querySelector('.mm-label');
+    if (lbl) lbl.style.display = h < 8 ? 'none' : '';
   }
 
   blocksContainer.style.height = blocksH + 'px';

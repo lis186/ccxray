@@ -118,30 +118,24 @@
   /* Token minimap — vertical color strip beside timeline */
   .tl-with-minimap { display: flex; flex: 1; overflow: hidden; }
   .tl-scroll-area { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--border) transparent; scroll-padding-block: 40px; }
-  .minimap { width: 36px; flex-shrink: 0; position: relative; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; cursor: pointer; }
-  /* Auto-compact landmark: horizontal tick at 83.5% down from top (the minimap
-     fills top-down — blocks at top, empty below). Shared via --compact-threshold
-     so all three levels of the ctx hierarchy move together. See design D10. */
-  .minimap::after {
-    content: '';
-    position: absolute;
-    top: var(--compact-threshold);
-    left: 0; right: 0;
-    height: 1px;
-    background: var(--text);
-    opacity: 0.45;
-    pointer-events: none;
+  .minimap { width: 64px; flex-shrink: 0; position: relative; border-right: 1px solid var(--border); background: var(--bg); overflow: hidden; cursor: pointer; }
+  /* ponytail: zone threshold lines — smart (40%) and danger (80%). CSS-only, no JS needed */
+  .minimap::before, .minimap::after {
+    content: ''; position: absolute; left: 0; right: 0; height: 0;
+    border-top: 1px dashed; pointer-events: none; z-index: 2;
   }
+  .minimap::before { top: 40%; border-color: var(--green); opacity: 0.5; }
+  .minimap::after { top: 80%; border-color: var(--red); opacity: 0.5; }
   .minimap-cache-bar { display: flex; height: 4px; width: 100%; flex-shrink: 0; }
   .minimap-cache-bar > div { min-width: 1px; }
-  .minimap-blocks { width: 100%; opacity: 0.5; transition: opacity 0.25s ease; overflow: hidden; }
+  .minimap-blocks { width: 100%; opacity: 0.7; transition: opacity 0.25s ease; overflow: hidden; }
   .minimap:hover .minimap-blocks { opacity: 1; }
-  .minimap-block { width: 100%; transition: opacity 0.15s; position: relative; }
+  .minimap-block { width: 100%; transition: opacity 0.15s; position: relative; overflow: hidden; }
+  .minimap-block .mm-label { position: absolute; left: 2px; top: 0; right: 2px; font-size: 8px; line-height: 1; color: var(--bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; opacity: 0.9; }
   .minimap-block.mm-active { opacity: 1 !important; filter: brightness(1.8); outline: 1px solid var(--text); z-index: 1; }
   .minimap-block.mm-highlight { filter: brightness(2); z-index: 1; box-shadow: 0 0 0 1px var(--text); }
   .minimap-empty { width: 100%; }
-  .minimap-usage { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 9px; color: var(--dim); opacity: 0; transition: opacity 0.25s; pointer-events: none; }
-  .minimap:hover .minimap-usage { opacity: 1; }
+  .minimap-usage { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 8px; color: var(--dim); pointer-events: none; }
   .tl-step-summary.mm-hover { background: var(--surface-hover); outline: 1px solid var(--border); outline-offset: -1px; }
   [data-theme="light"] .minimap-cache-bar > div { opacity: 0.8; }
   #col-projects { width: 220px; }
