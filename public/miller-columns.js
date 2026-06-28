@@ -577,7 +577,8 @@ function _navigateTargetInner(target, opts) {
       if (!loadResult.ok) return loadResult;
       selectedSection = 'timeline';
       setSelectedStepSelection(target.stepIdx, target.sub);
-      if (!isFocusedMode && opts.focus !== false && typeof enterFocusedMode === 'function') {
+      var _wf = typeof wfState !== 'undefined' && wfState;
+      if (!isFocusedMode && !_wf && opts.focus !== false && typeof enterFocusedMode === 'function') {
         enterFocusedMode();
       } else {
         renderDetailCol();
@@ -748,7 +749,8 @@ function _selectTimelineStepWhenReady(turnIdx, stepIdx, sub) {
     const current = allEntries[turnIdx];
     if (!current || !current.reqLoaded || typeof prepareTimelineSteps !== 'function' || typeof selectStep !== 'function') return;
     selectedSection = 'timeline';
-    if (!isFocusedMode && typeof enterFocusedMode === 'function') {
+    var _wf2 = typeof wfState !== 'undefined' && wfState;
+    if (!isFocusedMode && !_wf2 && typeof enterFocusedMode === 'function') {
       setSelectedStepSelection(stepIdx, sub);
       enterFocusedMode();
     } else {
@@ -1315,13 +1317,14 @@ let selectedStepSub = null;
 let selectedStepSubExplicit = false;
 let focusedCol = 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
 let isFocusedMode = false;
+// ponytail: "split pane active" — classic focused OR workflow timeline (P16: workflow never uses isFocusedMode)
+function inSplitView() { return isFocusedMode || (typeof wfState !== 'undefined' && !!wfState && selectedSection === 'timeline'); }
 
 function enterFocusedMode() {
   if (isFocusedMode) return;
   isFocusedMode = true;
   document.getElementById('columns').classList.add('focused');
   renderDetailCol();
-  // Workflow: re-render SVG/canvas at new width after columns collapse
   if (typeof wfDeferRender === 'function' && typeof wfState !== 'undefined' && wfState) wfDeferRender();
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
@@ -2583,7 +2586,13 @@ function renderDetailCol() {
 
   const sectionLabel = selectedSection.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   let headerHtml;
-  if (isFocusedMode) {
+  var isWf = typeof wfState !== 'undefined' && wfState;
+  if (isWf) {
+    // P16: workflow — always side-by-side, no focused mode toggle
+    headerHtml = '<div class="col-header" style="display:flex;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)">'
+      + '<span style="font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:0.08em">' + escapeHtml(sectionLabel) + '</span>'
+      + '</div>';
+  } else if (isFocusedMode) {
     headerHtml = '<div class="fp-header">'
       + '<button class="fp-back" onclick="exitFocusedMode()">←</button>'
       + '<span class="fp-title">' + escapeHtml(sectionLabel) + '</span>'
@@ -2602,8 +2611,8 @@ function renderDetailCol() {
       } else { inner = e.reqLoaded ? '<div class="col-empty">No system prompt</div>' : loading; }
       break;
     case 'timeline': {
-      if (!isFocusedMode) {
-        // Non-focused: show step summary list with minimap (no detail pane)
+      if (!isFocusedMode && !isWf) {
+        // Non-focused (classic only): show step summary list with minimap (no detail pane)
         // User clicks a step or presses Enter to enter split-pane
         prepareTimelineSteps(req.messages || req.input, resEvents, e.provider || 'anthropic');
         if (!currentSteps.length) {
@@ -2662,12 +2671,14 @@ function renderDetailCol() {
       const detailHtml = selectedMessageIdx >= 0
         ? renderStepDetailHtml(req, tok)
         : '<div class="col-empty" style="padding:20px">← Select a step</div>';
+      var savedStepsW = localStorage.getItem('ccxray-steps-width') || '280';
       const focusedHtml = headerHtml + summaryHtml
         + '<div class="tl-split">'
-        + '<div class="tl-with-minimap" style="width:280px;min-width:200px;max-width:400px;flex-shrink:0;border-right:1px solid var(--border)">'
+        + '<div class="tl-with-minimap" style="width:' + Math.min(parseInt(savedStepsW) || 280, 500) + 'px;min-width:180px">'
         + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + minimapHtml + '</div>'
         + '<div class="tl-scroll-area">' + stepsHtml + '</div>'
         + '</div>'
+        + '<div class="tl-resize-handle"></div>'
         + '<div class="tl-split-detail">' + detailHtml + '</div>'
         + '</div>';
       commitDetailHtml(focusedHtml, function() {
@@ -2677,6 +2688,10 @@ function renderDetailCol() {
           const mm = _root.querySelector('.minimap');
           const sa = _root.querySelector('.tl-scroll-area');
           if (mm && sa) { layoutMinimapBlocks(mm); initMinimapInteractions(mm, sa); }
+          // P16: wire up horizontal resize handle
+          var handle = _root.querySelector('.tl-resize-handle');
+          var leftPane = _root.querySelector('.tl-with-minimap');
+          if (handle && leftPane) initStepsResize(handle, leftPane);
           if (typeof renderCmdBar === 'function') renderCmdBar();
         });
         if (currentSteps.length && selectedMessageIdx < 0) {

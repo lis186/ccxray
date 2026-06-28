@@ -690,7 +690,9 @@ function renderStepDetailHtml(req, tok) {
 function selectStep(stepIdx, sub) {
   if (!currentSteps[stepIdx]) return; // guard: invalid step index
   // If not in focused mode, enter it first (click on step = drill into timeline)
-  if (!isFocusedMode && typeof enterFocusedMode === 'function') {
+  // P16: workflow is always split pane — no focused mode needed
+  var _isWf = typeof wfState !== 'undefined' && wfState;
+  if (!isFocusedMode && !_isWf && typeof enterFocusedMode === 'function') {
     if (typeof setSelectedStepSelection === 'function') setSelectedStepSelection(stepIdx, sub);
     else selectedMessageIdx = stepIdx * 1000 + (sub === 'thinking' ? 999 : (typeof sub === 'number' ? sub : 0));
     enterFocusedMode();
@@ -1021,7 +1023,7 @@ function initMinimapInteractions(minimapEl, scrollAreaEl) {
     return closest;
   }
 
-  // Click to navigate
+  // Click to navigate — P15: full sync via wfHighlightTurn + selectStep
   minimapEl.addEventListener('click', (e) => {
     if (e.target.classList.contains('minimap-empty')) return;
     const mmRect = minimapEl.getBoundingClientRect();
@@ -1029,6 +1031,10 @@ function initMinimapInteractions(minimapEl, scrollAreaEl) {
     if (block) {
       const targetStep = parseInt(block.dataset.step);
       if (targetStep >= 0 && typeof selectStep === 'function') {
+        // ponytail: sync overview + swimlane cursor (P15)
+        if (typeof wfHighlightTurn === 'function' && typeof wfState !== 'undefined' && wfState && selectedTurnIdx >= 0) {
+          wfHighlightTurn(allEntries[selectedTurnIdx]?.id);
+        }
         selectStep(targetStep);
         const stepEl = scrollAreaEl.querySelector('[data-step="' + targetStep + '"]');
         if (stepEl) stepEl.scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1072,4 +1078,27 @@ function initMinimapInteractions(minimapEl, scrollAreaEl) {
   ro.observe(minimapEl);
 
   _minimapCleanup = () => { ro.disconnect(); };
+}
+
+// P16: draggable horizontal resize between Steps and Detail panels
+function initStepsResize(handle, leftPane) {
+  var startX, startW;
+  function onMove(e) {
+    var newW = Math.max(180, startW + (e.clientX - startX));
+    var parent = leftPane.parentElement;
+    if (parent) newW = Math.min(newW, parent.clientWidth - 200 - handle.offsetWidth);
+    leftPane.style.width = newW + 'px';
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    localStorage.setItem('ccxray-steps-width', parseInt(leftPane.style.width));
+  }
+  handle.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = leftPane.offsetWidth;
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 }

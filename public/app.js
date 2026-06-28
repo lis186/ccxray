@@ -106,8 +106,8 @@ updateThemeIcon();
 // ── Unified Escape + tab switching handler ──────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-  // Don't intercept when miller-columns focused mode is active
-  if (typeof isFocusedMode !== 'undefined' && isFocusedMode) return;
+  // Don't intercept when in split view (focused mode or workflow timeline)
+  if (typeof inSplitView === 'function' ? inSplitView() : (typeof isFocusedMode !== 'undefined' && isFocusedMode)) return;
 
   // Escape → switch to dashboard
   if (e.key === 'Escape' && activeTab !== 'dashboard') {
