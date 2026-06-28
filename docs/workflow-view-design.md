@@ -582,6 +582,16 @@ Rules:
 
 The upgrade path if this becomes a real pain: add a keyboard shortcut (e.g. `m`) to toggle between "proportional mode" (height=tokens, current) and "equal mode" (all steps same height, pure navigation). But YAGNI until user feedback says otherwise.
 
+#### Edge cases
+
+**Compaction:** A turn after auto-compaction shows reduced context (e.g. 95% → 20%). No special handling — P14 (follow attention) means the minimap shows cumulative state at the selected turn, so selecting the post-compaction turn simply shows 20% fill. The visual "shrink" when scrubbing past a compaction turn IS the information.
+
+**System prompt / tools tokens:** Included as steps. System prompt, tool definitions, and MCP schemas occupy context and the user needs to see this. They appear as the first (thickest) block at the top of the minimap — making it visually obvious how much "overhead" each turn carries.
+
+**Model switch mid-session:** Use the selected turn's model's `contextWindow` as the 100% reference. Bottom label updates (e.g. `1M` → `200K`). Zone thresholds are percentages, so they adapt automatically. Pixel height stays fixed (P11). No special handling needed — P14 + P11 + existing turn data cover it.
+
+**Streaming turn:** Use current known token counts (input_tokens from request + output_tokens accumulated so far). Step height grows as output tokens accumulate — this is informative, not a bug. Visual treatment matches P7: 30% opacity + dashed top border on the streaming step. Completes to solid on `message_stop`.
+
 ### P12: Zone Color Consistency — Semantic Unity + Form Distinction (score 10.0)
 
 All three zone-colored elements use the **same hex values and thresholds**. Identity is conveyed by form, not color variation.
