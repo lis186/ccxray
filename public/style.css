@@ -112,7 +112,7 @@
 
   /* Timeline split pane in focused mode */
   .tl-split { display: flex; flex: 1; overflow: hidden; }
-  .tl-split .tl-with-minimap { flex: none; }
+  .tl-split .tl-with-minimap { flex: none; min-width: 180px; max-width: 60%; }
   .tl-split-list { width: 280px; min-width: 200px; max-width: 400px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .tl-split-detail { flex: 1; min-width: 320px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 

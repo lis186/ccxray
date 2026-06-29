@@ -2670,10 +2670,10 @@ function renderDetailCol() {
       const detailHtml = selectedMessageIdx >= 0
         ? renderStepDetailHtml(req, tok)
         : '<div class="col-empty" style="padding:20px">← Select a step</div>';
-      var savedStepsW = localStorage.getItem('ccxray-steps-width') || '280';
+      var savedStepsW = Math.max(180, Math.min(parseInt(localStorage.getItem('ccxray-steps-width')) || 280, 500));
       const focusedHtml = headerHtml + summaryHtml
         + '<div class="tl-split">'
-        + '<div class="tl-with-minimap" style="width:' + Math.min(parseInt(savedStepsW) || 280, 500) + 'px;min-width:180px">'
+        + '<div class="tl-with-minimap" style="width:' + savedStepsW + 'px">'
         + '<div class="minimap" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' + minimapHtml + '</div>'
         + '<div class="tl-scroll-area">' + stepsHtml + '</div>'
         + '</div>'
