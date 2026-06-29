@@ -2670,7 +2670,7 @@ function renderDetailCol() {
       const detailHtml = selectedMessageIdx >= 0
         ? renderStepDetailHtml(req, tok)
         : '<div class="col-empty" style="padding:20px">← Select a step</div>';
-      var savedStepsW = Math.max(220, Math.min(parseInt(localStorage.getItem('ccxray-steps-width')) || 280, 500));
+      var savedStepsW = Math.max(280, Math.min(parseInt(localStorage.getItem('ccxray-steps-width')) || 280, 500));
       const focusedHtml = headerHtml + summaryHtml
         + '<div class="tl-split">'
         + '<div class="tl-with-minimap" style="width:' + savedStepsW + 'px">'
