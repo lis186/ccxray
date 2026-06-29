@@ -1081,10 +1081,10 @@ function initMinimapInteractions(minimapEl, scrollAreaEl) {
 function initStepsResize(handle, leftPane) {
   var startX, startW;
   function onMove(e) {
-    var newW = Math.max(180, startW + (e.clientX - startX));
+    var raw = startW + (e.clientX - startX);
     var parent = leftPane.parentElement;
-    if (parent) newW = Math.min(newW, parent.clientWidth - 200 - handle.offsetWidth);
-    leftPane.style.width = newW + 'px';
+    var maxW = parent ? parent.clientWidth - 320 - handle.offsetWidth : 500;
+    leftPane.style.width = Math.max(180, Math.min(raw, maxW)) + 'px';
   }
   function onUp() {
     document.removeEventListener('mousemove', onMove);
