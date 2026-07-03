@@ -604,8 +604,9 @@ document.addEventListener('keydown', (e) => {
       renderCmdBar();
       return;
     }
-    // Workflow lane nav (j/k/Tab/Esc) — the split-view swallow below must not eat these
-    if (!isFocusedMode && typeof wfState !== 'undefined' && wfState && typeof wfKeyHandler === 'function') {
+    // Workflow lane nav (j/k/Tab/Esc) — the split-view swallow below must not eat these.
+    // Dashboard tab only: a hidden workflow view must not react to keys from other tabs.
+    if (!isFocusedMode && activeTab === 'dashboard' && typeof wfState !== 'undefined' && wfState && typeof wfKeyHandler === 'function') {
       if (wfKeyHandler(key, e)) { e.preventDefault(); return; }
     }
     return; // swallow other keys in focused mode

@@ -106,8 +106,9 @@ updateThemeIcon();
 // ── Unified Escape + tab switching handler ──────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-  // Don't intercept when in split view (focused mode or workflow timeline)
-  if (inSplitView()) return;
+  // Don't intercept when in split view (focused mode or workflow timeline) —
+  // dashboard tab only: Esc/1-3 must keep working from Usage/System Prompt
+  if (activeTab === 'dashboard' && inSplitView()) return;
 
   // Escape → switch to dashboard
   if (e.key === 'Escape' && activeTab !== 'dashboard') {
