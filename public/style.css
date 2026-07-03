@@ -111,9 +111,9 @@
   .tl-step-detail { padding: 8px 12px; border-top: 1px solid var(--border); background: var(--bg); }
 
   /* Timeline split pane in focused mode */
-  .tl-split { display: flex; flex: 1; overflow: hidden; }
+  /* overflow-x auto: below the min-width sum (~645px) the split scrolls instead of clipping the detail pane */
+  .tl-split { display: flex; flex: 1; overflow-x: auto; overflow-y: hidden; }
   .tl-split .tl-with-minimap { flex: none; min-width: 360px; max-width: 500px; }
-  .tl-split-list { width: 280px; min-width: 200px; max-width: 400px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
   .tl-split-detail { flex: 1; min-width: 280px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 
   /* Horizontal resize handle between steps and detail */
