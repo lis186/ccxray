@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Swimlane Turn Bar — Design Evolution</title>
+<style>
+:root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--dim:#8b949e;--accent:#58a6ff}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font:14px/1.6 'SF Mono','Cascadia Code',monospace;background:var(--bg);color:var(--text);padding:40px;max-width:900px;margin:0 auto}
+h1{font-size:20px;color:var(--accent);margin-bottom:4px}
+.sub{color:var(--dim);font-size:12px;margin-bottom:32px}
+.group{margin-bottom:32px;border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.group-head{padding:12px 16px;background:var(--surface);font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.group-head .badge{font-size:10px;padding:2px 6px;border-radius:10px;font-weight:400}
+.card{display:flex;gap:16px;padding:12px 16px;border-top:1px solid var(--border);align-items:baseline}
+.card:hover{background:rgba(88,166,255,0.05)}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.ver{font-weight:600;min-width:28px}
+.score{font-size:11px;padding:1px 5px;border-radius:8px;margin-left:6px}
+.score.pass{background:#3fb95022;color:#3fb950}
+.score.fail{background:#f8514922;color:#f85149}
+.score.na{background:#30363d;color:var(--dim)}
+.desc{color:var(--dim);font-size:12px}
+.lesson{color:#d29922;font-size:11px;margin-top:2px}
+.tag{font-size:10px;color:var(--dim);border:1px solid var(--border);padding:0 4px;border-radius:3px}
+.docs{margin-top:32px;padding:16px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:12px}
+.docs a{display:block;margin:4px 0}
+</style></head><body>
+
+<h1>Swimlane Turn Bar — Design Evolution</h1>
+<div class="sub">ccxray Workflow View (issue #91) · 8 versions · 6 autoresearch rounds · 4 expert consultations<br>
+<code>python3 -m http.server 8199 --directory prototype/swimlane</code></div>
+
+<!-- Group 1: Bar encoding -->
+<div class="group">
+  <div class="group-head">
+    <span>Phase 1 — Bar Encoding</span>
+    <span class="badge" style="background:#bc8cff22;color:#bc8cff">how to pack 4 dimensions into one bar</span>
+  </div>
+  <div class="card">
+    <span class="ver">v1</span>
+    <div>
+      <a href="turnbar-proto.html">3-zone hue + cache/cost expand rows</a> <span class="score fail">7.0</span>
+      <div class="desc">height=cost, hue=zone, lightness=ctx%, expand rows for cache+cost</div>
+      <div class="lesson">lesson: expand rows break layout stability; opacity on dark bg = invisible</div>
+    </div>
+  </div>
+  <div class="card">
+    <span class="ver">v2</span>
+    <div>
+      <a href="turnbar-proto.html">min-width 4px + red ΔL ×2.3 + clip-path</a> <span class="score pass">9.05</span>
+      <div class="desc">fixed dense-region readability; added model-switch gray dashed line</div>
+      <div class="lesson">lesson: min-width > precision; ΔL separation matters in the red zone</div>
+    </div>
+  </div>
+  <div class="card">
+    <span class="ver">v3</span>
+    <div>
+      <a href="turnbar-proto.html">clip-path → bright top border</a> <span class="score pass">9.0</span>
+      <div class="desc">clip-path signal ∝ 1/bar-width (anti-correlated with importance) → replaced by 3px top border</div>
+      <div class="lesson">lesson: encoding signal strength must not depend on another free variable</div>
+    </div>
+  </div>
+</div>
+
+<!-- Group 2: Event track -->
+<div class="group">
+  <div class="group-head">
+    <span>Phase 2 — Event Separation</span>
+    <span class="badge" style="background:#3fb95022;color:#3fb950">events leave the bar, enter their own track</span>
+  </div>
+  <div class="card">
+    <span class="ver">v4</span>
+    <div>
+      <a href="turnbar-proto.html">8px event track + flat filter toggles</a> <span class="score pass">~9.5</span>
+      <div class="desc">events out of bar border → separate 8px track. bar returns to pure 4D</div>
+      <div class="lesson">lesson: discrete events and continuous metrics need separate containers</div>
+    </div>
+  </div>
+  <div class="card">
+    <span class="ver">v5</span>
+    <div>
+      <a href="turnbar-proto.html">Usage-style dropdown filter + ghost dots</a> <span class="score pass">9.07</span>
+      <div class="desc">4 group split-buttons (click=toggle, ▾=dropdown). Ghost dots at 10% opacity</div>
+      <div class="lesson">lesson: borrow filter UX patterns users already know (Usage page)</div>
+    </div>
+  </div>
+</div>
+
+<!-- Group 3: Dashboard integration -->
+<div class="group">
+  <div class="group-head">
+    <span>Phase 3 — Dashboard Integration</span>
+    <span class="badge" style="background:#d2992222;color:#d29922">from bar chart to full multi-lane dashboard</span>
+  </div>
+  <div class="card">
+    <span class="ver">v6</span>
+    <div>
+      <a href="dashboard-v6.html">weather icon + 4 fixed tracks + lane expand</a> <span class="score na">—</span>
+      <div class="desc">Jenkins-style session health (☀️⛅☁️🌧️⛈️), expand → 4 tracks (push, not overlay), agent naming from system prompt</div>
+      <div class="lesson">lesson: aggregate health at the user's decision unit (session), not the saturated layer (turn)</div>
+    </div>
+  </div>
+  <div class="card">
+    <span class="ver">v7</span>
+    <div>
+      <a href="dashboard-v7-waterline.html">waterline — bar reduces to 2.5D, ctx → greyscale ribbon</a> <span class="score pass">9.26</span>
+      <div class="desc">bar height=cost, 3 flat zone colors (no lightness). ctx% → 8px greyscale L* ribbon with danger pulse</div>
+      <div class="lesson">lesson: "evaluator 有數值宣稱就實算" — R2 caught L* ramp math impossibility</div>
+    </div>
+  </div>
+</div>
+
+<!-- Group 4: v8 redesign -->
+<div class="group">
+  <div class="group-head">
+    <span>Phase 4 — Context-Centric Redesign</span>
+    <span class="badge" style="background:#58a6ff22;color:#58a6ff">bar = ctx%, not cost; 3-state interaction model</span>
+  </div>
+  <div class="card">
+    <span class="ver">v8</span>
+    <div>
+      <a href="v7-vs-v8.html">ctx-split — v7 vs v8 side-by-side</a> <span class="score pass">9.03</span>
+      <div class="desc">bar=ctx% (cache read/write split), 40%/80% threshold lines, cost→8px track, 4 event tracks (exclusive color families), Idle→Hover→Locked, 1..N cumulative highlight, cross-lane dim</div>
+      <div class="lesson">lesson: highlight 1..N maps the mental model that each API call sends the full conversation history</div>
+    </div>
+  </div>
+</div>
+
+<div class="docs">
+  <strong>Documentation</strong>
+  <a href="DESIGN-DECISIONS.md">DESIGN-DECISIONS.md</a> — full record: evaluator quotes, scores, rejected proposals, 16 lessons
+  <a href="README.md">README.md</a> — quick reference: encoding specs, denied approaches, implementation todos
+</div>
+
+</body></html>

@@ -12,6 +12,7 @@ python3 -m http.server 8199 --directory prototype/swimlane
 # → http://localhost:8199/turnbar-proto.html           設計演進 v1–v6
 # → http://localhost:8199/dashboard-v6.html            dashboard 整合 mock（v6）
 # → http://localhost:8199/dashboard-v7-waterline.html  v7 waterline（autoresearch 收案 9.26/10）
+# → http://localhost:8199/v7-vs-v8.html                v7 vs v8 並排比較（v8 ctx-split, 9.03/10）
 ```
 
 資料是真實 session log（68134a99，128 turns，opus-4-6 + haiku-4-5），抽在 `data.js`。
@@ -76,6 +77,18 @@ R3 9.26 收案），實作守則與驗證清單見 memory `swimlane-turnbar-desi
 - **In-bar % label 碰撞檢查**——相鄰 label 中心距 <20px 只畫第一個
 - Escape 鍵 reset filter
 
+## v8 — ctx-split（9.03/10）
+
+Bar 從 cost 改 ctx%（cache read/write split），zone 改 40%/80% threshold lines，cost 拆到獨立 8px track，事件軌道重新分類（Faults/Context/Mutations/Safety, exclusive color families），三態互動（Idle→Hover→Locked）含 1..N 累積 highlight + 跨 lane dim + global guide。
+
+> 口訣：**高=滿 · 色=區 · 位=勢 · 線=界 · 點=事 · 橘=貴**
+
+![v8-collapsed](assets/v8-collapsed.png)
+![v8-expanded](assets/v8-expanded.png)
+![v8-expanded-locked](assets/v8-expanded-locked.png)
+
+設計過程：4 位專家 subagent（Tufte/Charity Majors/Munzner/Willison）提案 → 3 輪 autoresearch（R1 7.41 → R2 8.53 → R3 9.03）。Zone 另經獨立 autoresearch（bands 5.95 否決 → threshold lines 9.0 通過）。
+
 ## 後續（正式實作到 public/workflow-timeline.js 時）
 
 - [ ] agentKey 目前只在 server 的 versionIndex，要加到 entry summary / SSE broadcast
@@ -83,3 +96,4 @@ R3 9.26 收案），實作守則與驗證清單見 memory `swimlane-turnbar-desi
 - [ ] 色盲安全調色盤 toggle（Okabe-Ito）
 - [ ] filter URL hash 同步、鍵盤操作（1–4 toggle 群組）
 - [ ] weather 權重改非線性衰減
+- [ ] v8 三態互動實作到 workflow-timeline.js

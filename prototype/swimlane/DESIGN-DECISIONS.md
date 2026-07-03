@@ -186,6 +186,109 @@ collapsed 68px · expanded 92px（+cache%/cost$ 軌道時 108px）
 
 ---
 
+## v8 — ctx-split：bar 從 cost 改 context%，事件軌道重新分類（9.03）
+
+**問題重述**：v7 的 bar height 編碼 cost，但使用者最常問的問題是「context 到哪了、cache 比例如何」。Cost 是結果，context 是原因。Bar 的主通道應該給因不給果。
+
+**設計過程**：
+
+1. **四位專家 subagent 研究**（Tufte、Charity Majors、Tamara Munzner、Simon Willison）：各從 data-ink ratio、observability trace、task-aligned grouping、practical failure modes 角度提案
+2. **Autoresearch 三輪**（R1 7.41 → R2 8.53 → R3 9.03）：
+   - R1 失敗原因：Faults 7 dot types（max 4）、4 個跨軌顏色碰撞、collapsed 被 mutations 淹沒（58% dots）
+   - R2 修掉結構但 ΔE₀₀ 不足（2 pair < 10）、cost spike 移除後無預注意信號
+   - R3 定點修復：推開色差、cost track outlier 轉橘、dangerous bash 提亮至 WCAG AA
+
+**最終編碼（v8）**：
+
+```
+┌─ ctx% bars 44px ────────────────────────────┐  bar: height=ctx window %
+│   ██▓▓██▓▓██▓▓██▓▓██▓▓  ██▓▓  ██▓▓██▓▓██▓▓ │   ██ cache read (#58a6ff)
+│   ▓▓ cache write (#f0883e)  ■ input (#8b5cf6)│   40% gray + 80% red threshold lines
+├─ cost 8px ──────────────────────────────────┤  mini bars ∝ $
+│  ╶╴╶──╴╶───╴╶────╴╶██████╴╶─╴╶─────╴       │   gray #484f58 / orange #f0883e if >3× median
+├─ event tracks (collapsed 8px / expanded 32px)┤  4 tracks × exclusive color family
+│  Faults(red) Context(purple) Mutations(green)│
+│  Safety(amber)                               │
+└──────────────────────────────────────────────┘
+collapsed 64px · expanded 88px
+```
+
+**口訣**：**高=滿 · 色=區 · 位=勢 · 線=界 · 點=事 · 橘=貴**
+
+![v8-collapsed](assets/v8-collapsed.png)
+![v8-expanded](assets/v8-expanded.png)
+![v8-expanded-locked](assets/v8-expanded-locked.png)
+
+### 事件軌道（4 tracks，固定順序，exclusive color families）
+
+| Track | Event | Shape | Hex | L* |
+|-------|-------|-------|-----|----|
+| **Faults** (紅系) | Error (API/tool) | ■ | `#f85149` | 55 |
+| | Rate-limit hit | ▲ | `#ff9b8e` | 72 |
+| | Retry | ● | `#a82828` | 33 |
+| | Permission denied | ■ | `#ff7b72` | 65 |
+| **Context** (紫系) | Compaction | ▲ | `#bc8cff` | 65 |
+| | Cache miss | ● | `#d2a8ff` | 74 |
+| | ctx>80% crossing | ■ | `#8957e5` | 46 |
+| **Mutations** (綠系) | File write/edit | ● | `#2ea043` | 57 |
+| | Git commit | ▲ | `#56d364` | 75 |
+| | Dangerous bash | ■ | `#238636` | 47 |
+| **Safety** (琥珀系) | Credential exposure | ■ | `#b87800` | 55 |
+| | Permission prompt | ▲ | `#f0c746` | 82 |
+| | Unsafe cmd blocked | ● | `#d29922` | 68 |
+
+**跨 lane 垂直線（不重複做 dot）**：model switch（灰虛線）、subagent spawn（紫實線）、git push（橘粗線）。
+
+**Collapsed 只顯示 Faults + Safety**：~6 dots/50 turns。Clean = healthy。
+
+**MCP/skill 呼叫**：不進 event track（不夠 sparse）→ turn bar hover popover 顯示 `read ×4, mcp:github ×1, skill:code-review ×1`。
+
+**Zone thresholds**：40% gray dashed line (`#8b949e` 0.35) + 80% red dashed line (`#f85149` 0.40)，labels "40"/"80" 在右邊（7px, 0.7 opacity）。取代了 2px 底邊色（R1 bands 5.95 不可見）和 50% 單線。三區間自解釋：線下=smart、線間=dumb、線上=danger。
+
+### 三態互動模型（v8 核心創新）
+
+| 狀態 | 觸發 | 視覺 |
+|------|------|------|
+| **Idle** | 初始 | 所有元素 100% opacity |
+| **Hover** | 鼠標進入 lane-row | 瞬態 spotlight：bars 1..N 亮（context 累積 mapping）、cost/events 只 N 亮、per-lane cursor guide、tooltip |
+| **Locked** | click chart 區域 | 持久 spotlight + 其他 lanes dim 0.35 + global guide 貫穿 + lane head 連動 dim |
+
+**互動規則（已驗證）**：
+
+1. **Hover bars 1..N**：映射「這次 request 送了整段對話」。從左掃到右，亮區像水位一樣往右漲
+2. **Click chart = Lock turn**：auto-expand lane → spotlight 持續 → 其他 lanes dim → global guide 貫穿所有 lanes
+3. **Per-lane cursor guide 唯一**：只出現在使用者正在操作的那條 lane（hover lane 或 lock+idle lane）。Locked lane 被 hover 到別處時，locked lane 的 guide 藏起來，hover lane 拿到 guide
+4. **Hover dimmed lane = 暫時提亮**：hover 結束後 snap back 到 locked lane 的 spotlight
+5. **Click lane-head = 展開/收合**（與 lock 獨立）
+6. **Esc = 解除 lock**
+7. **同一 turn 再 click = unlock**
+
+### v7 → v8 差異表
+
+| | v7 | v8 |
+|--|----|----|
+| bar height | cost ($) | ctx window % |
+| bar 內部 | 單色 zone hue | cache read/write/input 三色拆分 |
+| ctx 資訊 | 8px 灰階 ribbon | bar 本體 |
+| zone 資訊 | bar hue (3 色) | 40%/80% threshold lines (gray/red dashed) |
+| cost 資訊 | bar height | 獨立 8px track (gray/orange outlier) |
+| event tracks | 4 群組 (Tools/Context/Security/Cost) | 4 群組 (Faults/Context/Mutations/Safety) |
+| 每軌 max types | 無限制 | max 4, exclusive color family |
+| collapsed 事件 | 全部混合 | Faults + Safety only |
+| hover | bar-only, scaleY 1.5x | full-lane spotlight, 1..N accumulation |
+| click | toggle expand | lock turn + cross-lane dim |
+| cross-lane | 無 | dim 0.35 + global guide + lane head 連動 |
+
+### 設計決策
+
+10. **Per-lane guide 唯一規則**：cursor guide 是「我正在看這裡」的指示器，同時出現在多條 lane 上會混淆「哪條被選中」。Global guide（淡色半透明）處理跨 lane 時間對齊，per-lane guide（亮色粗線）只出現在焦點 lane
+11. **Bars 1..N 累積 highlight**：LLM API 每次送整段對話歷史，highlight 從頭到 hover turn 直接映射這個心智模型。比只 highlight 單一 turn 更能傳達「context = 累積」
+12. **Cost spike 不做 dot**：cost track 的 outlier bar 轉橘（ΔE₀₀ 62.5 vs gray）已是足夠的 preattentive 信號。比在 Faults 裡多一個 dot type 更乾淨
+13. **Collapsed 只 Faults + Safety**：健康 session 的 collapsed track 應該看起來空的。Mutations（~15 dots/50 turns）會讓每個 session 都看起來 busy，無法區分健康與不健康
+14. **Zone 用 threshold lines 不用 color bands**：6% opacity 色帶在 #161b22 背景上 ΔE₀₀ 僅 3.8（等於隱形），autoresearch R1 5.95 否決。兩條 dashed lines（40% gray + 80% red）自解釋、position-encoded、color-blind safe（9.0 通過）。80% 用紅色是因為跨越它是事件（warning），40% 用灰色是因為它只是資訊性參考
+
+---
+
 ## 跨版本教訓總表
 
 | # | 教訓 | 出處 |
@@ -200,7 +303,13 @@ collapsed 68px · expanded 92px（+cache%/cost$ 軌道時 108px）
 | 8 | 聚合指標掛在使用者的決策單位層（session），不掛已飽和或無意義的層 | v6 weather |
 | 9 | 位置編碼 > 形狀+顏色：分軌道後 legend 和形狀系統可以刪，是 data-ink 回收 | v6 分軌決策 |
 | 10 | 「隱藏 ≠ 重排」：filter 收窄時軌道消失但順序永固，保護肌肉記憶 | v6/v7 filter |
+| 11 | 每軌 exclusive color family + max 4 types：消除 collapsed 混合時的跨軌顏色碰撞 | v8 R1→R2 |
+| 12 | Collapsed 必須讓健康 session 看起來空的：高頻 dots 淹沒低頻信號 | v8 R1 Mutations 58% 問題 |
+| 13 | Hover 映射心智模型：1..N 累積 = API 送整段對話；單一 turn 無法傳達「context 是累積的」 | v8 互動設計 |
+| 14 | Focus 指示器（cursor guide）唯一：同時出現在多條 lane 會混淆選取狀態 | v8 跨 lane 互動 |
+| 15 | 專家 subagent 研究 + autoresearch 可以組合：先用不同心智模型發散，再用 evaluator 收斂 | v8 設計過程 |
+| 16 | 深色背景上的色彩編碼必須實算 rendered color：6% opacity 的「綠黃紅」在 #161b22 上全變成 ΔE₀₀<4 的暗灰 | v8 zone bands 否決 |
 
 ---
 
-*記錄日期：2026-07-03。v1–v5 evaluator 原話挖自 session transcript（09074ded），v6–v7 為當輪 session 產物。*
+*記錄日期：2026-07-03（v1–v7），2026-07-04（v8）。v1–v5 evaluator 原話挖自 session transcript（09074ded），v6–v7 為當輪 session 產物，v8 autoresearch 含 4 expert subagent + 3 round designer/evaluator。*
