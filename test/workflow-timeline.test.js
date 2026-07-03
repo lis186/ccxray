@@ -150,6 +150,46 @@ describe('workflow-timeline data layer', () => {
     assert.ok(summary.peakCtx > 0);
   });
 
+  it('wfDetectEvents maps entry signals to v8 events', () => {
+    const ctx = loadWfModule();
+    // vm realm arrays fail deepStrictEqual prototype check → compare joined strings
+    var ev = function(t, prev) { return ctx.wfDetectEvents(t, prev).join(','); };
+    // mkEntry default usage is 30% cache-read (= cache-miss); healthy = 90% read
+    var healthy = { usage: { input_tokens: 2000, cache_read_input_tokens: 45000, cache_creation_input_tokens: 3000, output_tokens: 5000 } };
+    assert.equal(ev(mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, healthy), null), '');
+    var ok = mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, healthy);
+    // error + compaction + file write + credential
+    var bad = mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, Object.assign({
+      status: 500, isCompacted: true, hasCredential: true, toolCalls: { Edit: 2 },
+    }, healthy));
+    assert.equal(ev(bad, ok), 'error,compaction,file-write,credential');
+    // 429 → rate-limit, retry flag wins over status
+    assert.equal(ev(mkEntry('t3', 's1', 'm', 1, 1, Object.assign({ status: 429 }, healthy)), ok), 'rate-limit');
+    assert.equal(ev(mkEntry('t4', 's1', 'm', 1, 1, Object.assign({ status: 429, isRetry: true }, healthy)), ok), 'retry');
+    // cache miss: read ratio < 50%
+    var miss = mkEntry('t5', 's1', 'm', 1, 1, { usage: { input_tokens: 30000, cache_read_input_tokens: 1000, cache_creation_input_tokens: 0, output_tokens: 10 } });
+    assert.equal(ev(miss, ok), 'cache-miss');
+    // ctx80 fires only on crossing
+    var high = mkEntry('t6', 's1', 'm', 1, 1, Object.assign({ ctxUsed: 170000 }, healthy));
+    assert.equal(ev(high, ok), 'ctx80');
+    assert.equal(ev(high, high), '');
+  });
+
+  it('wfLaneCostMedian caches and invalidates on wfAddEntry', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { cost: 0.01 }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 3000, 5, { cost: 0.05 }),
+      mkEntry('t3', 's1', 'claude-opus-4-6', 5000, 5, { cost: 0.09 }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    var lane = ctx.wfState.lanes[0];
+    assert.equal(ctx.wfLaneCostMedian(lane), 0.05);
+    ctx.wfAddEntry(mkEntry('t4', 's1', 'claude-opus-4-6', 7000, 5, { cost: 0.2 }));
+    assert.equal(lane._costMedian, null);
+    assert.equal(ctx.wfLaneCostMedian(lane), 0.09);
+  });
+
   it('lanes sorted by first turn receivedAt', () => {
     const ctx = loadWfModule();
     var entries = [
