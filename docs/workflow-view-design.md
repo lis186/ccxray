@@ -590,7 +590,7 @@ The upgrade path if this becomes a real pain: add a keyboard shortcut (e.g. `m`)
 
 **Compaction:** A turn after auto-compaction shows reduced context (e.g. 95% → 20%). No special handling — P14 (follow attention) means the minimap shows cumulative state at the selected turn, so selecting the post-compaction turn simply shows 20% fill. The visual "shrink" when scrubbing past a compaction turn IS the information.
 
-**System prompt / tools tokens:** Included as steps. System prompt, tool definitions, and MCP schemas occupy context and the user needs to see this. They appear as the first (thickest) block at the top of the minimap — making it visually obvious how much "overhead" each turn carries.
+**System prompt / tools tokens:** Not yet rendered as a dedicated block — `buildMinimapBlocks()` currently builds only from the selected turn's step/message token blocks. Rendering the system prompt + tool definitions overhead as the first (thickest) block at the top remains the design intent; deferred until the fixed-tax token data is exposed per turn.
 
 **Model switch mid-session:** Use the selected turn's model's `contextWindow` as the 100% reference. Bottom label updates (e.g. `1M` → `200K`). Zone thresholds are percentages, so they adapt automatically. Pixel height stays fixed (P11). No special handling needed — P14 + P11 + existing turn data cover it.
 
@@ -642,10 +642,10 @@ The workflow layout (Agent Card + minimap + Steps + Detail) already shows all in
 
 | Behavior | Detail |
 |----------|--------|
-| Default ratio | Steps 40% / Detail 60% (or persisted from last drag) |
-| Drag | Adjusts flex ratio, live resize, no layout reflow outside the two panels |
-| Min widths | Steps ≥ 180px, Detail ≥ 200px (prevents collapse to zero) |
-| Persist | Save ratio to `localStorage` key `wf-detail-ratio` |
+| Default width | Steps 360px (or persisted from last drag, clamped 360–500px) |
+| Drag | Adjusts steps pane pixel width, live resize, no layout reflow outside the two panels |
+| Min widths | Steps ≥ 360px (includes 64px minimap), Detail ≥ 280px (CSS `min-width`) |
+| Persist | Save pixel width to `localStorage` key `ccxray-steps-width` on drag end |
 | Keyboard | No keyboard equivalent needed — j/k navigate steps, content appears in Detail |
 
 #### Impact on existing code
@@ -680,9 +680,9 @@ Minimap participates in the existing bidirectional selection sync (P5). No new s
 
 This matches swimlane behavior: hover shows tooltip, click triggers sync. Consistent across all three elements.
 
-#### Overview indicator line (parked — #111 closed)
+#### Overview indicator line (implemented — #111)
 
-A 1px bright vertical line in the overview at the selected turn's position was considered but parked — the swimlane position cursor is visible enough in the current layout. Revisit if P10 minimap changes the focused-area proportions enough to obscure the swimlane cursor.
+A 1px bright vertical line is drawn on the overview canvas at the selected turn's position (`workflow-timeline.js` overview render), keeping the overview and swimlane selection in sync.
 
 ### P14: Minimap Follows Selected Turn (score 9.2)
 
