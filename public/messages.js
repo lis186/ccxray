@@ -747,7 +747,8 @@ function findTimelineStepElement(listEl, stepIdx, sub) {
 
 function scrollTimelineStepIntoView(stepIdx, sub, opts) {
   opts = opts || {};
-  const listEl = colDetail.querySelector('.tl-scroll-area');
+  const stepsHost = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
+  const listEl = stepsHost.querySelector('.tl-scroll-area');
   if (!listEl) return false;
   const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
   if (!stepEl) return false;
@@ -763,7 +764,8 @@ function scrollTimelineStepIntoViewWhenReady(stepIdx, sub, attempts, opts) {
   opts = opts || {};
   return new Promise(resolve => {
     requestAnimationFrame(() => {
-      const listEl = colDetail.querySelector('.tl-scroll-area');
+      const stepsHost = typeof wfStepsRoot === 'function' ? wfStepsRoot() : colDetail;
+      const listEl = stepsHost.querySelector('.tl-scroll-area');
       const stepEl = findTimelineStepElement(listEl, stepIdx, sub);
       if (listEl && stepEl) {
         const ok = scrollTimelineStepIntoView(stepIdx, sub, opts);

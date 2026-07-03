@@ -561,8 +561,9 @@ function addEntry(e) {
   if (selectedSessionId === sid) renderSessionSparkline(sid);
   if (!_loading && selectedSessionId === sid) {
     // Only auto-follow if toggle is on AND user is currently on the live edge
-    // Never interrupt split view — user is drilling into a turn's detail
-    const wasOnLiveEdge = followLiveTurn && !inSplitView() &&
+    // Never interrupt focused mode (drill-down); workflow split view is the default
+    // state and must keep following live turns
+    const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
       (selectedTurnIdx === -1 || selectedTurnIdx === idx - 1);
     if (wasOnLiveEdge) {
       selectTurn(idx);

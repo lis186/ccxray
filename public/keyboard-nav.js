@@ -604,6 +604,10 @@ document.addEventListener('keydown', (e) => {
       renderCmdBar();
       return;
     }
+    // Workflow lane nav (j/k/Tab/Esc) — the split-view swallow below must not eat these
+    if (!isFocusedMode && typeof wfState !== 'undefined' && wfState && typeof wfKeyHandler === 'function') {
+      if (wfKeyHandler(key, e)) { e.preventDefault(); return; }
+    }
     return; // swallow other keys in focused mode
   }
 
