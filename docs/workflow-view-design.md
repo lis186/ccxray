@@ -555,13 +555,16 @@ These match the existing turn bar zone colors (green <40%, yellow 40-80%, red �
 | First hover on minimap | One-time tooltip: `"高度 = context window (200K)"` — dismissed permanently |
 | Cursor | `pointer` on steps, `default` on empty space |
 
+> **Status:** hover/click/viewport are implemented (`renderMinimapHtml`); the one-time
+> first-hover onboarding tooltip is design intent, not yet implemented.
+
 #### Placement
 
 **Always visible** in the workflow detail area (no focused mode toggle needed — see P16). Minimap renders as a 60-70px column on the **left edge** of the step list pane — adjacent to the Agent Card's context stats, forming a visual unit with all context information on the left side. (Zed puts its minimap on the right because it's navigation-first; ours is health-first, so it belongs next to the context numbers.)
 
 Agent Card retains its existing text-only context stats (peak %, cache rate, cost) as the numeric complement to the minimap's visual.
 
-#### Step coalescence
+#### Step coalescence（design intent — not yet implemented）
 
 When a burst of small tool calls would render as <3px each:
 
@@ -650,7 +653,7 @@ The workflow layout (Agent Card + minimap + Steps + Detail) already shows all in
 
 #### Impact on existing code
 
-Removes: `isFocusedMode`, `enterFocusedMode()`, `exitFocusedMode()`, `.focused` CSS class, `wfDeferRender` width-change re-renders triggered by focus toggle. The existing `#wf-resize` handle (between timeline and detail area) stays; this adds a second handle within the detail area.
+Workflow mode **bypasses** focused mode rather than removing it: `enterFocusedMode()` returns early when `wfState` is active, and `isFocusedMode` / `exitFocusedMode()` / `.focused` remain in place for classic (non-workflow) sessions. `inSplitView()` covers both states. The existing `#wf-resize` handle (between timeline and detail area) stays; this adds a second handle within the detail area.
 
 #### Layout (always-on)
 
