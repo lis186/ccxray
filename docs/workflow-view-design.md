@@ -60,7 +60,7 @@ All code, comments, and discussions use these names consistently.
 | **Cache Hit Chart** | — (SVG rects) | 20px bar chart showing per-turn cache hit ratio. Only visible on the **selected** lane. Green (≥50%), yellow (<50%). |
 | **Cost Chart** | — (SVG rects) | 20px bar chart showing per-turn cost. Only visible on the **selected** lane. Orange bars, height ∝ turn cost. |
 | **Spawn Connector** | `.spawn-line` | 0.5px gray line from parent Turn Bar to child Lane's first turn. |
-| **Resize Handle** | `#wf-resize` | 4px draggable divider between timeline and Detail Area. |
+| **Resize Handle** | `#wf-resize` | 8px draggable divider between timeline and Detail Area, with a permanent centered grip pill (#114). |
 | **Agent Card** | `#wf-agent-card-panel` | Left panel (240px) in Detail Area. Top: lane summary (context, cache, cost, tools). Bottom: **Section Nav** — clickable section items matching the existing ccxray sections column (Timeline, System, Core, MCP, Skills, Cost Efficiency, Request, Events). Clicking a nav item selects a turn and switches the Steps Panel to that section's detail view. |
 | **Color Bar** | — (inline style) | 2px left border on Agent Card. Decorative accent only — not tied to turn bar encoding. |
 | **Section Nav** | — (inside Agent Card) | Reuses the existing `renderSectionsCol` section items from v1.9.2. Each item shows: colored dot + label + badge (token/tool/event count) + chevron. Clicking sets `selectedSection` and renders the corresponding detail in the Steps Panel via `renderDetailCol`. |
@@ -163,7 +163,7 @@ All code, comments, and discussions use these names consistently.
 2. **Projects column** (160px) — full window height, scrollable independently
 3. **Sessions column** (200px) — full window height, scrollable independently
 4. **Right area** — everything right of Sessions extends to window edge
-5. **Overview bar** (32px) — full-width, always visible at top of right area (Shneiderman: "overview first")
+5. **Overview bar** (canvas 28-48px, dynamic by lane count) — full-width, always visible at top of right area (Shneiderman: "overview first")
 6. **Main lane + time axis** — sticky at top of timeline section, never scrolls away
 7. **Sub-agent lanes** — scrollable below the sticky main lane
 8. **Resize handle** — draggable divider between timeline and detail (min 60px timeline, min 150px detail)
@@ -206,6 +206,7 @@ All code, comments, and discussions use these names consistently.
 - **Viewport duration label**: blue pill badge at bottom-right of viewport rect
 - `+` / `−` / `⟲` buttons for zoom in / out / reset
 - Lane density bars proportional to turn activity
+- **Dynamic height** (multi-agent legibility, 2026-07-04): canvas height = `clamp(28, lanes×7+6, 48)` px. Single-lane sessions stay compact (28px); 4-6 lane sessions get ~6px per-lane bars instead of 2-3px slivers. Capped at 48px (#114) — beyond ~10 lanes the per-lane gap compresses away and bars shrink toward 1px so every lane stays inside the canvas (no clipping); accepted because per-lane analysis is the swimlane's job; the overview is global positioning. Rejected alternatives: aggregating sub-agents into one activity band (destroys the per-agent distribution the user needs); per-lane rows aligned to lane labels (duplicates the swimlane, P13-style responsibility overlap). Unselected-lane alpha 0.65 (was 0.5 — sank into the dark bg), min bar width 1px (was 0.5)
 
 **Overview interactions:**
 | State | Action | Result |
@@ -680,7 +681,7 @@ Overview, swimlane turn bars, and minimap fill all reference this one object.
 
 | Element | Direction | Selection marker | Additional signals |
 |---------|-----------|------------------|--------------------|
-| Overview | Horizontal, 2-6px micro blocks | Viewport rect + 1px selected-turn indicator line (#111) | Scale labels, duration badge |
+| Overview | Horizontal, 1-8px micro blocks (canvas 28-48px by lane count) | Viewport rect + 1px selected-turn indicator line (#111) | Scale labels, duration badge |
 | Swimlane turn bar | Horizontal, 44px × width∝duration, height∝ctx% (v8) | Semi-transparent accent position cursor rect | Threshold dashed lines, cost track, event tracks |
 | Minimap fill | **Vertical**, height∝tokens, 60-70px wide | Hover highlight | Zone threshold dashed lines, bottom size label, **inline step labels** |
 

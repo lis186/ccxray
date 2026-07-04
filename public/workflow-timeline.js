@@ -798,8 +798,24 @@ function wfDeferRender() {
 }
 
 // ── Overview Bar (Canvas) ─────────────────────────────────────────────────
+// Multi-agent legibility: canvas grows with lane count so 4-6 lanes get
+// ~6px bars instead of 2-3px slivers. Capped at 48px (#114) — beyond ~10
+// lanes bars shrink toward 1px; per-lane analysis is the swimlane's job.
+function wfOverviewHeight(laneCount) {
+  return Math.min(48, Math.max(28, laneCount * 7 + 6));
+}
+
+// slot = px per lane; when tight (<3px) the 1px gap compresses away so
+// every lane stays inside the canvas instead of clipping the last rows
+function wfOverviewBarGeom(MH, laneCount) {
+  var slot = (MH - 4) / laneCount;
+  var barH = Math.max(1, Math.min(8, slot - 1));
+  return { barH: barH, laneStep: Math.min(slot, barH + 1) };
+}
+
 function wfRenderOverview(canvas) {
   if (!wfState || !canvas) return;
+  canvas.style.height = wfOverviewHeight(wfState.lanes.length) + 'px';
   var MW = canvas.clientWidth, MH = canvas.clientHeight;
   if (!MW || !MH) return;
   canvas.width = MW * 2; canvas.height = MH * 2;
@@ -816,8 +832,8 @@ function wfRenderOverview(canvas) {
   ctx.fillRect(0, 0, MW, MH);
 
   var lanes = wfState.lanes;
-  var barH = Math.max(2, Math.min(6, (MH - 4) / lanes.length - 1));
-  var laneStep = barH + 1;
+  var geom = wfOverviewBarGeom(MH, lanes.length);
+  var barH = geom.barH, laneStep = geom.laneStep;
   var startY = Math.max(1, (MH - lanes.length * laneStep) / 2);
 
   for (var li = 0; li < lanes.length; li++) {
@@ -828,8 +844,9 @@ function wfRenderOverview(canvas) {
       var ts = Number(t.receivedAt) || 0;
       var dur = (parseFloat(t.elapsed) || 0) * 1000;
       ctx.fillStyle = wfCtxZoneColor(t);
-      ctx.globalAlpha = isSel ? 0.9 : 0.5;
-      ctx.fillRect(x(ts), ly, Math.max(0.5, (dur / totalRange) * MW), barH);
+      // 0.5 alpha sank into the dark bg (lesson: low-luminance signals drown)
+      ctx.globalAlpha = isSel ? 0.9 : 0.65;
+      ctx.fillRect(x(ts), ly, Math.max(1, (dur / totalRange) * MW), barH);
     }
   }
   ctx.globalAlpha = 1;

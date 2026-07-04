@@ -666,10 +666,11 @@
 #columns.wf-active #col-turns .turn-item { display: none !important; }
 #columns.wf-active #col-turns .col-sticky-header { display: none; }
 #wf-timeline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-#wf-overview { height: 32px; flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
+#wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
 #wf-overview-label { width: 240px; flex-shrink: 0; padding: 0 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px; }
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
+/* height set by JS: wfOverviewHeight(laneCount), 28-48px */
 #wf-minimap-canvas { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
 #wf-lanes-section { position: relative; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; transition: max-height 200ms ease; }
 #wf-cursor { position: absolute; top: 0; bottom: 0; min-width: 3px; background: var(--accent); opacity: 0.35; pointer-events: none; z-index: 10; }
@@ -678,8 +679,10 @@
 #wf-sub-scroll::-webkit-scrollbar { width: 4px; }
 #wf-sub-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 #wf-sub-svg { display: block; }
-#wf-resize { height: 4px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s; }
+#wf-resize { height: 8px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s; display: flex; align-items: center; justify-content: center; }
+#wf-resize::after { content: ''; width: 32px; height: 3px; border-radius: 2px; background: var(--border); }
 #wf-resize:hover { background: rgba(88,166,255,0.2); }
+#wf-resize:hover::after { background: var(--dim); }
 #wf-detail-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }

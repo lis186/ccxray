@@ -302,6 +302,8 @@ collapsed 64px · expanded 88px
 21. **點 lane = 選擇全範圍**（使用者需求，二修定案）：lane 選中且無 turn 鎖定時，Timeline section 直接渲染**最後一個 turn 的完整 detail**（最後 turn 的 request 含整段對話 = 全範圍），swimlane 不上 lock 視覺（`_wfShowTurnDetail` 抑制 selectTurn→wfHighlightTurn 回聲）。第一版做成 flat step list 被否——那是第三種中間狀態，使用者要的是「點了直接進 detail」，狀態只有兩種：lane 全範圍 detail / turn 鎖定 detail。跨頁 deep-link 用 `spPendingDeepLink` 狀態交接而非 URL 參數——`syncUrlFromState` 會重建 URL 把外部參數丟掉（prompt badge 的 View in System Prompt 同有此 race）
 22. **Lane 分類改 agent 身分優先，model heuristic 降為 fallback**（使用者 bug report）：session 中途換 model（opus→fable）時，「model ≠ main model 即 subagent」的 heuristic 把換模後的主 agent turns 全切進假的 sub lane（157c0faa：main 剩 32 turns、287 turns 掛在名叫 Orchestrator 的 sub lane——名字直接暴露誤判）。現在 entry 帶 server 偵測的 `agentKey`：main keys（orchestrator/sdk-agent/codex default）無條件進 main lane，其他 key 進 `agent-<key>` lane；無 agentKey 的舊資料才走 model/ctx heuristics。排序不變（main 最上、其餘按首 turn 時間）——分類修好後「main 最長、subagent 較晚出現在下方」自然成立
 
+23. **Overview 高度隨 lane 數動態（clamp 28–48px）**（使用者 bug report「多 agent 時每條 2–3px 幾乎不可見」）：canvas 高 = `clamp(28, lanes×7+6, 48)`，6 lanes 時 bar 從 3px 升到 ~6px；單 lane session 維持 28px 不浪費垂直空間。否決聚合 sub-agent 帶（消滅使用者要的 per-agent 分布）與 per-lane 對齊 lane 標籤（複製 swimlane，P13 同款職責重疊）。>10 lanes 時 gap 壓縮、bar 縮向 1px 但所有 lane 保證在 canvas 內（codex R1 抓到原式 barH floor 2 + gap 1 會裁掉尾端 lanes——此 clipping 其實是 28px 時代既有 bug，9+ lanes 就裁）——接受微小 bar，per-lane 分析是泳道的職責，overview 只管全局定位。同批:未選中 lane alpha 0.5→0.65（教訓 2:暗背景吃低亮度信號）、min bar width 0.5→1px、cap 6→8px
+
 事件偵測對齊真實 SSE 欄位（error/rate-limit/retry/compaction/cache-miss/ctx80/file-write/credential）；設計表中偵測不到的 perm-denied、git-commit、danger-bash、perm-prompt、unsafe-blocked **明文 defer**，等 server 訊號，不用 heuristic 造假事件。ctx80 只在**穿越**時觸發（非每個 >80% turn 都打點），否則長時間高水位 session 的 Context 軌會被淹沒。
 
 ## 跨版本教訓總表

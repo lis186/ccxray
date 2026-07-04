@@ -224,6 +224,31 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfLaneCostMedian(lane), 0.09);
   });
 
+  it('wfOverviewHeight scales with lane count, clamped 28-48', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfOverviewHeight(1), 28);   // floor: single lane
+    assert.equal(ctx.wfOverviewHeight(3), 28);   // 3*7+6=27 → floor
+    assert.equal(ctx.wfOverviewHeight(4), 34);
+    assert.equal(ctx.wfOverviewHeight(6), 48);   // 6*7+6=48 → exactly cap
+    assert.equal(ctx.wfOverviewHeight(18), 48);  // cap: many lanes
+  });
+
+  it('wfOverviewBarGeom keeps every lane inside the canvas (no clipping)', () => {
+    const ctx = loadWfModule();
+    // codex R1: old formula (barH floor 2 + fixed 1px gap) clipped trailing
+    // lanes once laneCount * 3 > MH — e.g. 18 lanes at MH=48 drew 54px
+    for (const [MH, n] of [[28, 1], [28, 2], [34, 4], [48, 6], [48, 18], [28, 12]]) {
+      const g = ctx.wfOverviewBarGeom(MH, n);
+      const startY = Math.max(1, (MH - n * g.laneStep) / 2);
+      assert.ok(startY + n * g.laneStep <= MH, `MH=${MH} n=${n} overflows`);
+      assert.ok(g.barH >= 1 && g.barH <= 8);
+      assert.ok(g.laneStep >= g.barH);
+    }
+    // roomy case keeps the 1px gap and 8px cap
+    assert.equal(ctx.wfOverviewBarGeom(28, 1).barH, 8);
+    assert.equal(ctx.wfOverviewBarGeom(28, 1).laneStep, 9);
+  });
+
   it('lanes sorted by first turn receivedAt', () => {
     const ctx = loadWfModule();
     var entries = [

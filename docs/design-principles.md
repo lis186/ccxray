@@ -60,7 +60,7 @@ Containers don't change size on state transitions. Content inside containers may
 
 - Minimap pixel height stays fixed when switching agents (P11)
 - Swimlane lane height stays fixed per selection state (v8: 64px unselected, 88px selected)
-- Overview bar height never changes
+- Overview bar height is fixed for a given session (28-48px by lane count — a session-level property; selecting agents/turns never resizes it)
 
 **Test:** "If the user clicks rapidly between agents/turns, does any container resize?" If yes, the layout is unstable.
 
