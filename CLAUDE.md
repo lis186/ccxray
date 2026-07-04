@@ -91,6 +91,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `public/style.css` | Dark theme, Miller column layout |
 | `public/app.js` | App initialization |
 | `public/miller-columns.js` | Projects → Sessions → Turns → Sections → Timeline → Detail |
+| `public/workflow-timeline.js` | Swimlane workflow view (#91): v8 ctx-split turn bars, cost/event tracks, hover/lock spotlight, lane inference. Encoding spec: `docs/workflow-view-design.md` §v8 |
 | `public/entry-rendering.js` | Turn rendering, session/project tracking |
 | `public/messages.js` | Merged steps: thinking + tool groups, timeline detail, minimap rendering + layout |
 | `public/cost-budget-ui.js` | Cost analysis page, heatmap, burn rate |

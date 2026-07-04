@@ -289,6 +289,16 @@ collapsed 64px · expanded 88px
 
 ---
 
+## v8 → 正式 dashboard 整合（2026-07-04, branch feat/v8-dashboard-integration）
+
+實作在 `public/workflow-timeline.js`。三個整合期決策（使用者 feedback 定案）：
+
+15. **Legend 放 axis row 的 label 空白區，不佔 overview 空間**：overview row 塞 flex legend 會擠壓 minimap 並和 zoom badge 相撞。time axis 的 x 0–240（lane label 欄正上方）本來就是空的，legend 畫進 SVG 零版面成本
+16. **Per-lane cursor guide + lock ghost 在 production 刪除**：prototype 沒有跨 lane 色帶，guide 是唯一位置指示器所以必要；production 已有 `#wf-cursor` 色帶（P15），hover 位置又有亮 bars 1..N 的右緣可讀，guide/ghost 變成第二、三重複。設計規則 10「guide 唯一」在 production 的正確實現是「不需要 guide」
+17. **色帶維持只框選中 turn，不拉成 1..N**：累積範圍已由 bar spotlight（亮 1..N vs 0.2）編碼，色帶拉寬會蓋掉 spotlight 對比與 event dots，且跨 lane 時間對位需要窄標記。分工：**bar 亮度 = 累積範圍（lane 內），色帶 = 時間位置（跨 lane）**
+
+事件偵測對齊真實 SSE 欄位（error/rate-limit/retry/compaction/cache-miss/ctx80/file-write/credential）；設計表中偵測不到的 perm-denied、git-commit、danger-bash、perm-prompt、unsafe-blocked **明文 defer**，等 server 訊號，不用 heuristic 造假事件。ctx80 只在**穿越**時觸發（非每個 >80% turn 都打點），否則長時間高水位 session 的 Context 軌會被淹沒。
+
 ## 跨版本教訓總表
 
 | # | 教訓 | 出處 |
@@ -309,6 +319,8 @@ collapsed 64px · expanded 88px
 | 14 | Focus 指示器（cursor guide）唯一：同時出現在多條 lane 會混淆選取狀態 | v8 跨 lane 互動 |
 | 15 | 專家 subagent 研究 + autoresearch 可以組合：先用不同心智模型發散，再用 evaluator 收斂 | v8 設計過程 |
 | 16 | 深色背景上的色彩編碼必須實算 rendered color：6% opacity 的「綠黃紅」在 #161b22 上全變成 ΔE₀₀<4 的暗灰 | v8 zone bands 否決 |
+| 17 | Prototype 機制搬進 production 前，先盤點 production 既有的等價 channel：prototype 為缺某元件做的補償（per-lane guide），在有該元件（#wf-cursor 色帶）的環境是冗餘，該刪 prototype 那份 | v8 整合，決策 16 |
+| 18 | 事件偵測只接真實資料欄位，偵測不到的 event type 明文 defer 而非 heuristic 模擬；穿越型事件（ctx80）在 crossing 打點而非狀態持續期間連續打點 | v8 整合 |
 
 ---
 

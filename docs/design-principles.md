@@ -59,7 +59,7 @@ Origin: P12 — same hex values everywhere, form distinguishes elements.
 Containers don't change size on state transitions. Content inside containers may change freely.
 
 - Minimap pixel height stays fixed when switching agents (P11)
-- Swimlane lane height stays fixed per selection state (12px unselected, 52px selected)
+- Swimlane lane height stays fixed per selection state (v8: 64px unselected, 88px selected)
 - Overview bar height never changes
 
 **Test:** "If the user clicks rapidly between agents/turns, does any container resize?" If yes, the layout is unstable.
@@ -94,9 +94,9 @@ Origin: P14 — minimap shows cumulative context up to selected turn. P15 — cl
 
 Areas connect through shared encoding rather than explicit bridge elements. This only works when channel discipline is maintained — the shared encoding must mean the same thing everywhere.
 
-Turn bar zone color is the bridge between swimlane and minimap: user sees yellow bar → knows context is degrading → looks at minimap for details. No explicit gauge needed in the swimlane.
+The shared 40/80 thresholds are the bridge between swimlane and minimap (v8): user sees a bar top crossing the red dashed line → knows context is near danger → looks at minimap for the same red threshold with fill detail. Before v8 the bridge was turn-bar zone *color*; v8 moved it to threshold *position* — the bridge survived an encoding change because the semantic (same thresholds, same red/gray) stayed shared. No explicit gauge needed in the swimlane.
 
-**Prerequisite:** Channel discipline. If swimlane colors encoded "model type" while minimap colors encoded "zone," the bridge would be broken.
+**Prerequisite:** Channel discipline. If swimlane thresholds sat at different percentages than minimap thresholds, or swimlane colors encoded "model type" while minimap colors encoded "zone," the bridge would be broken.
 
 **Test:** "Can the user connect what they see in area A to area B without an explicit link element?" If yes, the bridge works.
 

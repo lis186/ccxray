@@ -252,7 +252,50 @@ All code, comments, and discussions use these names consistently.
 
 ## Sparkline Timeline Visual Encoding
 
-### v1.10 — Context-Zone Turn Coloring (replaces per-model color)
+### v8 — ctx-split turn bars (2026-07-04, current; supersedes v1.10 zone coloring below)
+
+Design iteration history and rationale live in `prototype/swimlane/DESIGN-DECISIONS.md` (v8 chapter, 9.03/10). This section records what production (`public/workflow-timeline.js`) implements.
+
+**Motto:** 高=滿 · 色=區 · 位=勢 · 線=界 · 點=事 · 橘=貴
+
+#### Lane anatomy (collapsed 64px / expanded 88px)
+
+| Track | Height | Encoding |
+|-------|--------|----------|
+| ctx% bars | 44px | Bar height = context window %. Stacked fill: cache read `#58a6ff` (bottom) / cache write `#f0883e` / input `#8b5cf6` (top). 40% gray + 80% red dashed threshold lines with right-edge labels |
+| cost | 8px | Mini bars ∝ $ within lane; gray `#484f58`, orange `#f0883e` when > 3× lane median (outlier = the only preattentive cost signal — no cost event dot) |
+| events | 8px collapsed / 4×8px expanded | 4 fixed-order tracks × exclusive color family, max 4 types each: Faults (red) / Context (purple) / Mutations (green) / Safety (amber). Collapsed shows **Faults + Safety only** — a healthy session's collapsed track looks empty |
+
+Zone hue on turn bars is **removed** — zone semantics moved to the threshold lines (position-encoded, color-blind safe). Zone colors (`#3fb950/#d29922/#f85149`) still apply to the overview minimap, context minimap fill, and step list ctx% column (see P12 amendment).
+
+#### Event detection (wired to real SSE entry fields)
+
+| Event | Track | Signal |
+|-------|-------|--------|
+| error | Faults | non-2xx `status` or `toolFail` |
+| rate-limit | Faults | `status` 429 |
+| retry | Faults | `isRetry` (wins over 429) |
+| compaction | Context | `isCompacted` |
+| cache-miss | Context | cache read < 50% of input, input > 1k tokens |
+| ctx80 | Context | ctx% crosses 80% (fires on crossing only, not every turn above) |
+| file-write | Mutations | `toolCalls` has Write/Edit/MultiEdit/NotebookEdit |
+| credential | Safety | `hasCredential` |
+
+Deferred until server signals exist: perm-denied, git-commit, danger-bash, perm-prompt, unsafe-blocked. MCP/skill calls stay out of event tracks (not sparse enough) — tooltip only.
+
+#### Tri-state interaction
+
+| State | Trigger | Visual |
+|-------|---------|--------|
+| Idle | — | everything 100% opacity |
+| Hover | mousemove over lane chart | **bars 1..N bright** (cumulative — API sends the whole conversation), rest 0.2; cost/event dots only N; rich tooltip |
+| Locked | click chart (nearest turn) | spotlight persists across re-renders; other lanes dim 0.35; `#wf-cursor` band marks the locked turn across all lanes. Same-turn click or Esc unlocks |
+
+Position marking is carried by the bar-highlight boundary (hover edge) plus the pre-existing `#wf-cursor` band (lock position). The prototype's per-lane cursor guide and lock-ghost line were **dropped in production** — they compensated for the prototype's lack of a cross-lane band (see DESIGN-DECISIONS.md dashboard-integration lessons). The band stays selected-turn-only: cumulative extent is the bar spotlight's job (within lane), the band's job is cross-lane time alignment.
+
+Legend (read/write/input) renders inside the main SVG's axis row label zone (x 0–240, otherwise empty) — zero layout cost, no competition with the overview minimap.
+
+### v1.10 — Context-Zone Turn Coloring (superseded by v8 above; kept for minimap/overview/step-list rationale)
 
 **Problem:** Turn bars were colored by model name (hardcoded color table). This doesn't scale — model count grows with new providers, human color perception caps at ~8 distinguishable hues, and the lane label already displays the model name (redundant encoding). Meanwhile, the most actionable signal (context window pressure) required reading a separate sparkline that was hard to parse at overview scale.
 
@@ -615,12 +658,14 @@ const ZONE = {
 
 Overview, swimlane turn bars, and minimap fill all reference this one object.
 
+**v8 amendment (2026-07-04):** swimlane turn bars no longer use zone *hue* — they encode ctx% via height against the same 40/80 thresholds, drawn as dashed lines in the bar area. The ZONE object still drives the overview minimap, context minimap fill, step-list ctx% column, and the swimlane's threshold-line colors (gray/red). Semantic unity holds: the same thresholds appear everywhere; the swimlane expresses them by position, the others by color.
+
 #### Form distinction (why they won't be confused)
 
 | Element | Direction | Selection marker | Additional signals |
 |---------|-----------|------------------|--------------------|
 | Overview | Horizontal, 2-6px micro blocks | Viewport rect + 1px selected-turn indicator line (#111) | Scale labels, duration badge |
-| Swimlane turn bar | Horizontal, 8px × width∝duration | Semi-transparent accent position cursor rect | Spawn connectors, gap spacing |
+| Swimlane turn bar | Horizontal, 44px × width∝duration, height∝ctx% (v8) | Semi-transparent accent position cursor rect | Threshold dashed lines, cost track, event tracks |
 | Minimap fill | **Vertical**, height∝tokens, 60-70px wide | Hover highlight | Zone threshold dashed lines, bottom size label, **inline step labels** |
 
 The vertical vs horizontal orientation is the strongest differentiator — minimap is the only vertical element. Overview and swimlane are both horizontal but differ in scale (micro vs readable), selection marker (indicator line vs cursor rect), and reading distance (global positioning vs time navigation).
