@@ -679,8 +679,10 @@
 #wf-sub-scroll::-webkit-scrollbar { width: 4px; }
 #wf-sub-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 #wf-sub-svg { display: block; }
-#wf-resize { height: 4px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s; }
+#wf-resize { height: 8px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s; display: flex; align-items: center; justify-content: center; }
+#wf-resize::after { content: ''; width: 32px; height: 3px; border-radius: 2px; background: var(--border); }
 #wf-resize:hover { background: rgba(88,166,255,0.2); }
+#wf-resize:hover::after { background: var(--dim); }
 #wf-detail-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }
