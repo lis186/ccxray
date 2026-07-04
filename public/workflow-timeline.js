@@ -751,7 +751,9 @@ function _wfNearestTurn(lane, mx) {
   for (var i = 0; i < lane.turns.length; i++) {
     var s = _wfBarSpan(lane.turns[i]);
     var d = mx < s.x0 ? s.x0 - mx : (mx > s.x1 ? mx - s.x1 : 0);
-    if (d < bestD) { bestD = d; best = i; }
+    // <= : on overlap (d=0 for several bars) prefer the later turn, matching
+    // SVG paint order — later bars draw on top, so pick what the user sees
+    if (d <= bestD) { bestD = d; best = i; }
   }
   return { idx: best, dist: bestD };
 }
