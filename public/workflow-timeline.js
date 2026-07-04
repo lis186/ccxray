@@ -126,12 +126,16 @@ function wfLaneCostMedian(lane) {
   return lane._costMedian;
 }
 
-// Shared x-position for a turn's bar (matches xFn in _wfRenderSvgContent)
-function _wfBarX(t) {
+// Shared bar span for a turn (matches the tx/tw math in wfRenderLaneSvg)
+function _wfBarSpan(t) {
   var W = colTurns.clientWidth || 600;
   var chartW = W - WF_LABEL_W - 12;
   var tRange = wfState.viewT1 - wfState.viewT0 || 1;
-  return Math.max(WF_LABEL_W, WF_LABEL_W + ((Number(t.receivedAt) - wfState.viewT0) / tRange) * chartW);
+  var ts = Number(t.receivedAt) || 0;
+  var tend = ts + (parseFloat(t.elapsed) || 0) * 1000;
+  var x0 = Math.max(WF_LABEL_W, WF_LABEL_W + ((ts - wfState.viewT0) / tRange) * chartW);
+  var x1 = Math.max(x0 + WF_MIN_TURN_PX, WF_LABEL_W + ((tend - wfState.viewT0) / tRange) * chartW);
+  return { x0: x0, x1: x1 };
 }
 
 // ── Lane Inference ────────────────────────────────────────────────────────
@@ -739,11 +743,17 @@ function _wfLaneIdxAtY(svgEl, my) {
   return -1;
 }
 
+// #126: bars span x0..x1 (width ∝ duration) — distance is 0 inside the bar,
+// else distance to the nearer edge. Start-x-only distance made clicks/hovers
+// inside long bars (>40px from the left edge) read as empty space.
 function _wfNearestTurn(lane, mx) {
   var best = -1, bestD = Infinity;
   for (var i = 0; i < lane.turns.length; i++) {
-    var d = Math.abs(_wfBarX(lane.turns[i]) - mx);
-    if (d < bestD) { bestD = d; best = i; }
+    var s = _wfBarSpan(lane.turns[i]);
+    var d = mx < s.x0 ? s.x0 - mx : (mx > s.x1 ? mx - s.x1 : 0);
+    // <= : on overlap (d=0 for several bars) prefer the later turn, matching
+    // SVG paint order — later bars draw on top, so pick what the user sees
+    if (d <= bestD) { bestD = d; best = i; }
   }
   return { idx: best, dist: bestD };
 }

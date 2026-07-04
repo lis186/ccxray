@@ -249,6 +249,59 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfOverviewBarGeom(28, 1).laneStep, 9);
   });
 
+  it('_wfNearestTurn hit-tests the full bar span, not just the start x (#126)', () => {
+    const ctx = loadWfModule();
+    // long turn (100s) followed by a short one, full session in view
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 100, {}),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 201000, 1, {}),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.viewT0 = ctx.wfState.tMin;
+    ctx.wfState.viewT1 = ctx.wfState.tMax;
+    const lane = ctx.wfState.lanes[0];
+    const s1 = ctx._wfBarSpan(lane.turns[0]);
+    const s2 = ctx._wfBarSpan(lane.turns[1]);
+
+    // deep inside the long bar, >40px from its left edge — the old start-x
+    // distance rejected this as empty space (dist would be ~mid-bar width)
+    const mid = (s1.x0 + s1.x1) / 2;
+    assert.ok(mid - s1.x0 > 40, `test setup: bar must be wide (${s1.x1 - s1.x0}px)`);
+    let near = ctx._wfNearestTurn(lane, mid);
+    assert.equal(near.idx, 0);
+    assert.equal(near.dist, 0);
+
+    // just past the long bar's right edge → small edge distance, still turn 0
+    near = ctx._wfNearestTurn(lane, s1.x1 + 5);
+    assert.equal(near.idx, 0);
+    assert.ok(Math.abs(near.dist - 5) < 0.01);
+
+    // near the short bar's start → turn 1
+    near = ctx._wfNearestTurn(lane, s2.x0 - 3);
+    assert.equal(near.idx, 1);
+    assert.ok(Math.abs(near.dist - 3) < 0.01);
+  });
+
+  it('_wfNearestTurn prefers the later turn on overlap (SVG paint order)', () => {
+    const ctx = loadWfModule();
+    // t2 starts while t1 is still running — spans overlap; later bar draws on top
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 100, {}),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 51000, 100, {}),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.viewT0 = ctx.wfState.tMin;
+    ctx.wfState.viewT1 = ctx.wfState.tMax;
+    const lane = ctx.wfState.lanes[0];
+    const s1 = ctx._wfBarSpan(lane.turns[0]);
+    const s2 = ctx._wfBarSpan(lane.turns[1]);
+    const overlapMid = (s2.x0 + s1.x1) / 2;
+    assert.ok(overlapMid > s2.x0 && overlapMid < s1.x1, 'test setup: spans must overlap');
+    const near = ctx._wfNearestTurn(lane, overlapMid);
+    assert.equal(near.idx, 1);
+    assert.equal(near.dist, 0);
+  });
+
   it('lanes sorted by first turn receivedAt', () => {
     const ctx = loadWfModule();
     var entries = [
