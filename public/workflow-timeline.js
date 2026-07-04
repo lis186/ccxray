@@ -450,9 +450,6 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
     }
   }
 
-  // Per-lane cursor guide (positioned by hover/lock interaction, hidden by default)
-  svg += '<line class="wf-guide" x1="0" x2="0" y1="0" y2="' + boxH + '" stroke="rgba(230,237,243,0.4)" stroke-width="1" visibility="hidden"/>';
-
   return svg;
 }
 
@@ -476,11 +473,6 @@ function wfRenderTimeline() {
   var canvas = document.createElement('canvas');
   canvas.id = 'wf-minimap-canvas';
   overviewDiv.appendChild(canvas);
-  // v8 bar legend: cache read / cache write / input
-  var legend = document.createElement('div');
-  legend.id = 'wf-legend';
-  legend.innerHTML = '<i style="background:' + WF_V8_CACHE_READ + '"></i>read <i style="background:' + WF_V8_CACHE_WRITE + '"></i>write <i style="background:' + WF_V8_INPUT + '"></i>input';
-  overviewDiv.appendChild(legend);
   container.appendChild(overviewDiv);
 
   // Lanes section (contains sticky main SVG + scrollable sub-lanes)
@@ -548,6 +540,12 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   mainSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + mainH);
 
   var ms = '';
+  // v8 bar legend in the axis row's empty label zone (x 0..240 has no ticks)
+  var legendY = WF_PAD + 12;
+  [[WF_V8_CACHE_READ, 'read', 8], [WF_V8_CACHE_WRITE, 'write', 62], [WF_V8_INPUT, 'input', 122]].forEach(function(lg) {
+    ms += '<rect x="' + lg[2] + '" y="' + (legendY - 7) + '" width="7" height="7" rx="1" fill="' + lg[0] + '"/>';
+    ms += '<text x="' + (lg[2] + 10) + '" y="' + legendY + '" fill="var(--dim)" style="font-size:8px;font-family:' + WF_MONO + '">' + lg[1] + '</text>';
+  });
   var nTicks = Math.max(2, Math.min(12, Math.ceil(tRange / 1000 / 5)));
   var tickStep = tRange / nTicks;
   for (var i = 0; i <= nTicks; i++) {
@@ -596,7 +594,7 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
 
   // innerHTML replaced → hover spotlight DOM state is gone; re-apply lock visuals
   _wfHover = { lane: -1, tidx: -1 };
-  _wfApplyLockVisuals(false);
+  _wfApplyLockVisuals();
 
   // Overview bar + charts + step highlights (synced with viewport)
   wfRenderOverview(canvas);
@@ -622,42 +620,35 @@ function _wfLockInfo() {
   return { li: hit.laneIdx, tidx: tidx, lane: lane };
 }
 
-// Spotlight: bars 1..N bright (context accumulates), cost/events only N, per-lane guide
-function _wfApplySpotlight(laneG, lane, tidx, showGuide) {
+// Spotlight: bars 1..N bright (context accumulates), cost/events only N.
+// Position marking (hover edge + locked turn) is carried by the bar highlight
+// boundary and the #wf-cursor band — no per-lane guide line.
+function _wfApplySpotlight(laneG, lane, tidx) {
   laneG.classList.add('wf-spot');
+  laneG.classList.remove('dim'); // active lane is never dimmed (prototype: full undim, not :hover 0.7)
   laneG.querySelectorAll('.wf-b').forEach(function(el) {
     el.classList.toggle('hl', parseInt(el.getAttribute('data-i')) <= tidx);
   });
   laneG.querySelectorAll('.wf-c, .wf-e').forEach(function(el) {
     el.classList.toggle('hl', parseInt(el.getAttribute('data-i')) === tidx);
   });
-  var guide = laneG.querySelector('.wf-guide');
-  if (guide) {
-    if (showGuide) {
-      var x = _wfBarX(lane.turns[tidx]).toFixed(1);
-      guide.setAttribute('x1', x);
-      guide.setAttribute('x2', x);
-      guide.setAttribute('visibility', 'visible');
-    } else {
-      guide.setAttribute('visibility', 'hidden');
-    }
-  }
 }
 
 function _wfClearSpotlight(laneG) {
   laneG.classList.remove('wf-spot');
   laneG.querySelectorAll('.hl').forEach(function(el) { el.classList.remove('hl'); });
-  var guide = laneG.querySelector('.wf-guide');
-  if (guide) guide.setAttribute('visibility', 'hidden');
+  // Restore cross-lane dim if a lock is active on another lane
+  var lock = _wfLockInfo();
+  var li = parseInt(laneG.getAttribute('data-lane'));
+  laneG.classList.toggle('dim', !!(lock && lock.li !== li));
 }
 
-// Locked turn keeps a persistent spotlight; hideGuide=true when a hover on
-// another lane owns the (unique) cursor guide.
-function _wfApplyLockVisuals(hideGuide) {
+// Locked turn keeps a persistent spotlight across hovers and re-renders
+function _wfApplyLockVisuals() {
   var lock = _wfLockInfo();
   if (!lock) return;
   var g = _wfLaneG(lock.li);
-  if (g) _wfApplySpotlight(g, lock.lane, lock.tidx, !hideGuide);
+  if (g) _wfApplySpotlight(g, lock.lane, lock.tidx);
 }
 
 function _wfLaneIdxAtY(svgEl, my) {
@@ -687,7 +678,7 @@ function _wfHoverClear() {
   var lock = _wfLockInfo();
   if (g && (!lock || lock.li !== _wfHover.lane)) _wfClearSpotlight(g);
   _wfHover = { lane: -1, tidx: -1 };
-  _wfApplyLockVisuals(false); // snap back: locked lane reclaims spotlight + guide
+  _wfApplyLockVisuals(); // snap back: locked lane reclaims its spotlight
 }
 
 // Returns {lane, turn} under cursor (nearest by x within the hovered lane), or null
@@ -706,12 +697,11 @@ function _wfHoverMove(svgEl, e) {
       var prevG = _wfLaneG(_wfHover.lane);
       var lock0 = _wfLockInfo();
       if (prevG && (!lock0 || lock0.li !== _wfHover.lane)) _wfClearSpotlight(prevG);
+      else _wfApplyLockVisuals(); // prev hover lane is the locked lane: snap its hl back to the lock
     }
     _wfHover = { lane: li, tidx: near.idx };
     var g = _wfLaneG(li);
-    if (g) _wfApplySpotlight(g, lane, near.idx, true);
-    var lock = _wfLockInfo();
-    if (lock && lock.li !== li) _wfApplyLockVisuals(true); // guide is unique: hover lane owns it
+    if (g) _wfApplySpotlight(g, lane, near.idx);
   }
   return { lane: lane, turn: lane.turns[near.idx], li: li, tidx: near.idx };
 }
@@ -1065,9 +1055,13 @@ function _wfShowTooltip(e, t, lane) {
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
+  // Locked lane, hovering a different turn → remind where the lock is
+  var lock = _wfLockInfo();
+  var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
+    ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
   var row = function(l, v) { return '<div class="r"><span class="l">' + l + '</span><span class="v">' + v + '</span></div>'; };
   _wfTooltipEl.innerHTML =
-    row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)))
+    row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + lockLbl)
     + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
     + row('Cost', '$' + (t.cost || 0).toFixed(4) + outlier)

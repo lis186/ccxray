@@ -691,6 +691,7 @@
 .wf-tooltip .wf-tt-warn { color: #d29922; }
 .wf-tooltip .wf-tt-danger { color: #f85149; }
 .wf-tooltip .wf-tt-outlier { color: #f0883e; font-weight: 400; }
+.wf-tooltip .wf-tt-lock { color: var(--accent); font-size: 9px; font-weight: 400; }
 /* v8 spotlight (hover/lock) + cross-lane dim */
 #wf-timeline g.wf-lane.dim { opacity: 0.35; transition: opacity 0.15s; }
 #wf-timeline g.wf-lane.dim:hover { opacity: 0.7; }
@@ -700,8 +701,6 @@
 #wf-timeline g.wf-lane.wf-spot .wf-b.hl,
 #wf-timeline g.wf-lane.wf-spot .wf-c.hl,
 #wf-timeline g.wf-lane.wf-spot .wf-e.hl { opacity: 1; }
-#wf-legend { flex-shrink: 0; padding: 0 10px; font-size: 9px; color: var(--dim); display: flex; align-items: center; gap: 4px; }
-#wf-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 1px; }
 .wf-agent-card { padding: 8px 12px; }
 .wf-agent-card .wf-ac-name { font-size: 13px; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; }
 .wf-agent-card .wf-ac-model { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: normal; }
