@@ -6,6 +6,7 @@ let spVersions = [];      // filtered versions for selected agent
 let spSelectedIdx = 0;    // index into spVersions
 let spMode = 'content';   // 'content' or 'diff'
 let spFocusedCol = 'agents'; // 'agents' | 'versions'
+let spPendingDeepLink = null; // {agent, hash} set by other views before switchTab('sysprompt') — survives the URL rewrite in syncUrlFromState
 let hideMinorEdit = false;
 let currentHunkIdx = 0;
 
@@ -125,10 +126,12 @@ async function openSystemPromptPanel(forceDiff) {
     return;
   }
 
-  // URL deep-link: ?agent=X&hash=Y from Dashboard prompt badge
+  // Deep-link: spPendingDeepLink (state handoff) beats ?agent=X&hash=Y (URL —
+  // may already be rewritten by syncUrlFromState by the time the fetch resolves)
   const urlParams = new URLSearchParams(window.location.search);
-  const deepAgent = urlParams.get('agent');
-  const deepHash = urlParams.get('hash');
+  const deepAgent = (spPendingDeepLink && spPendingDeepLink.agent) || urlParams.get('agent');
+  const deepHash = (spPendingDeepLink && spPendingDeepLink.hash) || urlParams.get('hash');
+  spPendingDeepLink = null;
 
   if (deepAgent && spAgents.find(a => a.key === deepAgent)) {
     spSelectedAgent = deepAgent;

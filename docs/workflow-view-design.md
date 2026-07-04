@@ -295,6 +295,16 @@ Position marking is carried by the bar-highlight boundary (hover edge) plus the 
 
 Legend (read/write/input) renders inside the main SVG's axis row label zone (x 0–240, otherwise empty) — zero layout cost, no competition with the overview minimap.
 
+#### Lane label gutter (240px, 3-row agent info block)
+
+| Row | Content | Behavior |
+|-----|---------|----------|
+| 1 (11px) | agent name — main lane keeps `main`; other lanes use the dominant detected `agentLabel` (server-side KNOWN_AGENTS detection, carried on every entry as `agentKey`/`agentLabel`); child-session lanes append the 8-char session id; fallback `subagent-<model>` when no system prompt exists to detect from | click (anywhere in gutter) selects the lane |
+| 2 (10px dim) | `<model> · <ctx window>K` | — |
+| 3 (10px) | `sys` + version chips, one per distinct `coreHash` in first-seen order, width-budgeted (~196px) with `+n` overflow; `↗` at the end | chip click locks the turn where that version first appeared (existing lock semantics: cursor band + detail); `↗` opens the System Prompt page pre-selected to the lane's agent + latest version via `spPendingDeepLink` state handoff (URL params don't survive `syncUrlFromState`) |
+
+Lane selection with no turn locked renders the **last turn's Timeline detail** (its request carries the whole conversation = full range) — same rich view as a locked turn, but without lock visuals in the swimlane (`_wfShowTurnDetail` suppresses the `selectTurn → wfHighlightTurn` echo). There is no intermediate flat-list state. Other sections keep the lane-level summary until a turn is locked. Zoom viewport untouched.
+
 Type scale (post-legibility pass, 2026-07-04): lane label 11px; axis ticks / legend / zoom badge / overview canvas 10px; threshold `40`/`80` and event-track labels 9px. Nothing in the SVG below 9px — 7–8px was unreadable on the user's display.
 
 ### v1.10 — Context-Zone Turn Coloring (superseded by v8 above; kept for minimap/overview/step-list rationale)
@@ -467,13 +477,17 @@ Real data: 751 sessions, 612 are ≤10-turn subagent sessions. They MUST be join
 
 ### Heuristic (within a single session's turns)
 
-Turns assigned to lanes using priority order:
+**Agent-identity classification (production, authoritative when present):** every entry carries a server-detected `agentKey`/`agentLabel` (KNOWN_AGENTS). Main-agent keys (`orchestrator`, `sdk-agent`, codex `default`) go to the main lane **regardless of model or `isSubagent` flag** — a mid-session model switch stays in main (marked by the dashed model-switch line). All other keys get an `agent-<key>` lane named by `agentLabel`. This fixed the misclassification where a model switch split the orchestrator into a phantom "Orchestrator" sub-lane (session `157c0faa`: opus→fable switch left 32 turns in main and pushed 287 orchestrator turns into a sub-lane).
+
+**Fallback heuristics** (entries without agent identity — old data, requests with no system prompt), priority order:
 1. **Model mismatch** (strongest signal): if `turn.model !== mainLane.model`, the turn is a subagent — no time limit on spawn matching
 2. **Context % drop** (secondary): `contextPercent < orchCtx * 0.5 AND < 25%` with 120s time window
 3. **Orphan lane**: if model mismatches but no spawn matches at all, assign to `subagent-{model}` catch-all lane
 4. **Placeholder lanes**: spawns with no matched turns (subagent in separate session) get empty lanes with spawn marker
 5. Main lane gets everything else
 6. Lane model = dominant model across turns
+
+Lane order: main always first; remaining lanes by first-turn time — subagents naturally sort below and later.
 
 ### Prototype changes from original spec
 - Model mismatch removes the `orchCtx > 20` gate that blocked all separation for low-context sessions

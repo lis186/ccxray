@@ -110,6 +110,40 @@ describe('workflow-timeline data layer', () => {
     assert.equal(lanes[1].turns.length, 2);
   });
 
+  it('agentKey classification: model switch stays in main, subagents lane by agent', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      // model switch mid-session — must NOT leave the main lane
+      mkEntry('t2', 's1', 'claude-fable-5', 6000, 3, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      // compact-style request: isSubagent flag but orchestrator prompt → main
+      mkEntry('t3', 's1', 'claude-fable-5', 8000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator', isSubagent: true }),
+      mkEntry('t4', 's1', 'claude-haiku-4-5', 9000, 2, { agentKey: 'explore', agentLabel: 'Explore', isSubagent: true }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.length, 3);
+    assert.equal(lanes[1].name, 'agent-explore');
+    assert.equal(lanes[1].agentLabel, 'Explore');
+  });
+
+  it('wfAddEntry uses agentKey classification', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    // model switch with orchestrator identity → stays in main
+    ctx.wfAddEntry(mkEntry('t2', 's1', 'claude-fable-5', 6000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }));
+    assert.equal(ctx.wfState.lanes.length, 1);
+    assert.equal(ctx.wfState.lanes[0].turns.length, 2);
+    // subagent identity → own agent lane
+    ctx.wfAddEntry(mkEntry('t3', 's1', 'claude-haiku-4-5', 8000, 2, { agentKey: 'explore', agentLabel: 'Explore', isSubagent: true }));
+    assert.equal(ctx.wfState.lanes.length, 2);
+    assert.equal(ctx.wfState.lanes[1].name, 'agent-explore');
+  });
+
   it('wfBuildState computes time bounds', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [

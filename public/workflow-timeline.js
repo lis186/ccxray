@@ -50,6 +50,16 @@ const WF_EV_INFO = {
 
 // ── State ─────────────────────────────────────────────────────────────────
 var wfState = null;
+// coreHash → {version, agentKey, agentLabel} for the gutter version chips
+var _wfVerMap = null;
+function _wfLoadVersions() {
+  if (_wfVerMap) return;
+  _wfVerMap = {}; // set before fetch resolves so concurrent renders don't refetch
+  fetch('/_api/sysprompt/versions').then(function(r) { return r.json(); }).then(function(d) {
+    (d.versions || []).forEach(function(v) { if (v.coreHash) _wfVerMap[v.coreHash] = v; });
+    wfDeferRender();
+  }).catch(function() {});
+}
 var _wfPendingRender = 0;
 var _wfTooltipEl = null;
 var _wfCssCache = null;
@@ -125,8 +135,12 @@ function _wfBarX(t) {
 }
 
 // ── Lane Inference ────────────────────────────────────────────────────────
+// Agent keys whose turns belong to the main lane — model switches within the
+// main conversation stay in main (the dashed model-switch line marks them)
+var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
+
 function _wfPushToSubLane(laneMap, key, entry) {
-  if (!laneMap.has(key)) laneMap.set(key, { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null });
+  if (!laneMap.has(key)) laneMap.set(key, { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null });
   laneMap.get(key).turns.push(entry);
 }
 
@@ -140,15 +154,26 @@ function wfInferLanes(entries, childEntries) {
 
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
-    var subKey = 'subagent-' + wfShortModel(e.model);
     var sub = false;
 
-    if (e.isSubagent || (mainLane.model && e.model !== mainLane.model)) {
-      _wfPushToSubLane(laneMap, subKey, e);
-      sub = true;
-    } else if (!e.isCompacted && orchCtx > 20 && wfCtxPct(e) < orchCtx * 0.5 && wfCtxPct(e) < 25) {
-      _wfPushToSubLane(laneMap, subKey, e);
-      sub = true;
+    if (e.agentKey) {
+      // Agent-identity classification (server-detected, authoritative):
+      // main-agent keys → main lane regardless of model or isSubagent flag
+      if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
+        _wfPushToSubLane(laneMap, 'agent-' + e.agentKey, e);
+        sub = true;
+      }
+    } else {
+      // Fallback heuristics for entries without agent identity (old data,
+      // requests without a system prompt)
+      var subKey = 'subagent-' + wfShortModel(e.model);
+      if (e.isSubagent || (mainLane.model && e.model !== mainLane.model)) {
+        _wfPushToSubLane(laneMap, subKey, e);
+        sub = true;
+      } else if (!e.isCompacted && orchCtx > 20 && wfCtxPct(e) < orchCtx * 0.5 && wfCtxPct(e) < 25) {
+        _wfPushToSubLane(laneMap, subKey, e);
+        sub = true;
+      }
     }
 
     if (!sub) {
@@ -190,17 +215,24 @@ function wfInferLanes(entries, childEntries) {
     return aT - bT;
   });
 
-  // Dominant model per lane
+  // Dominant model + agent identity per lane
   for (var li = 0; li < result.length; li++) {
     var lane = result[li];
     if (!lane.turns.length) continue;
-    var mc = {};
+    var mc = {}, ac = {};
     for (var ti = 0; ti < lane.turns.length; ti++) {
       var tm = lane.turns[ti].model;
       mc[tm] = (mc[tm] || 0) + 1;
+      var ak = lane.turns[ti].agentKey;
+      if (ak) {
+        if (!ac[ak]) ac[ak] = { n: 0, label: lane.turns[ti].agentLabel || ak };
+        ac[ak].n++;
+      }
     }
     lane.model = Object.entries(mc).sort(function(a, b) { return b[1] - a[1]; })[0][0];
     lane.ctxWindow = lane.turns[0].maxContext || lane.ctxWindow;
+    var topA = Object.entries(ac).sort(function(a, b) { return b[1].n - a[1].n; })[0];
+    if (topA) { lane.agentKey = topA[0]; lane.agentLabel = topA[1].label; }
   }
 
   return result;
@@ -266,17 +298,24 @@ function wfAddEntry(entry) {
   if (ts && ts < wfState.tMin) wfState.tMin = ts;
   if (end > wfState.tMax) wfState.tMax = end;
 
-  var mainModel = wfState.lanes[0]?.model;
-  var needsSub = entry.isSubagent || (mainModel && entry.model !== mainModel);
+  var needsSub, key;
+  if (entry.agentKey) {
+    needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
+    key = 'agent-' + entry.agentKey;
+  } else {
+    var mainModel = wfState.lanes[0]?.model;
+    needsSub = entry.isSubagent || (mainModel && entry.model !== mainModel);
+    key = 'subagent-' + wfShortModel(entry.model);
+  }
   if (needsSub) {
-    var key = 'subagent-' + wfShortModel(entry.model);
     var lane = wfState.lanes.find(function(l) { return l.name === key; });
     if (!lane) {
-      lane = { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null };
+      lane = { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null };
       wfState.lanes.push(lane);
     }
     lane.turns.push(entry);
     lane._costMedian = null;
+    if (!lane.agentKey && entry.agentKey) { lane.agentKey = entry.agentKey; lane.agentLabel = entry.agentLabel; }
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(lane) });
   } else if (wfState.lanes[0]) {
     wfState.lanes[0].turns.push(entry);
@@ -347,10 +386,46 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
   // Lane background (clickable)
   svg += '<rect x="0" y="0" width="' + W + '" height="' + boxH + '" fill="transparent" class="wf-lane-bg" data-lane="' + laneIdx + '" style="cursor:pointer"/>';
 
-  // Label
+  // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
-  svg += '<text x="8" y="10" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + wfEsc(lane.name + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K') + '</title>' + wfEsc(prefix + lane.name) + '</text>';
+  var dispName = lane.childSessionId
+    ? (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8)
+    : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name));
+  var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
+  svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
+  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '">' + wfEsc(wfShortModel(lane.model) + ' · ' + ctxK + 'K') + '</text>';
+  // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
+  // to the turn where that version first appeared; ↗ opens the System Prompt page
+  // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
+  // lines are local data, but escapeHtml doesn't cover quotes, so validate)
+  var vHashes = [], vSeen = {};
+  for (var vh = 0; vh < lane.turns.length; vh++) {
+    var vhash = lane.turns[vh].coreHash;
+    if (vhash && /^[0-9a-f]{4,64}$/i.test(vhash) && !vSeen[vhash]) { vSeen[vhash] = 1; vHashes.push(vhash); }
+  }
+  if (vHashes.length) {
+    var chipY = 40, vx = 8, chW = 6.02; // 10px mono char width
+    svg += '<text x="' + vx + '" y="' + chipY + '" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '">sys</text>';
+    vx += 4 * chW;
+    // Width-budgeted chips: stop before x=196 so +n and ↗ stay inside the gutter
+    var vShownN = 0;
+    for (var vc = 0; vc < vHashes.length; vc++) {
+      var vinfo = _wfVerMap && _wfVerMap[vHashes[vc]];
+      var vlabel = vinfo && vinfo.version ? 'v' + vinfo.version : vHashes[vc].slice(0, 5);
+      if (vc > 0 && vx + vlabel.length * chW > 196) break;
+      svg += '<text class="wf-sysver" data-lane="' + laneIdx + '" data-hash="' + vHashes[vc] + '" x="' + vx.toFixed(1) + '" y="' + chipY + '" fill="var(--accent)" style="font-size:10px;font-family:' + WF_MONO + ';cursor:pointer"><title>' + wfEsc('跳到 ' + vlabel + ' 第一個 turn') + '</title>' + wfEsc(vlabel) + '</text>';
+      vx += (vlabel.length + 1) * chW;
+      vShownN++;
+    }
+    if (vHashes.length > vShownN) {
+      var moreTxt = '+' + (vHashes.length - vShownN);
+      svg += '<text x="' + vx.toFixed(1) + '" y="' + chipY + '" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(vHashes.length + ' versions total') + '</title>' + moreTxt + '</text>';
+      vx += (moreTxt.length + 1) * chW;
+    }
+    var safeAgent = /^[a-z0-9_-]{1,64}$/i.test(lane.agentKey || '') ? lane.agentKey : '';
+    svg += '<text class="wf-sysver-link" data-agent="' + safeAgent + '" data-hash="' + vHashes[vHashes.length - 1] + '" x="' + vx.toFixed(1) + '" y="' + chipY + '" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + ';cursor:pointer"><title>open in System Prompt</title>↗</text>';
+  }
 
   // Track backgrounds (subtle separation from bar area)
   svg += '<rect x="' + WF_LABEL_W + '" y="' + costY + '" width="' + (W - WF_LABEL_W) + '" height="' + WF_COST_TRACK_H + '" fill="var(--surface)" opacity="0.5"/>';
@@ -511,6 +586,7 @@ function wfRenderTimeline() {
   container.appendChild(detailArea);
 
   colTurns.appendChild(container);
+  _wfLoadVersions();
 
   // P1: content-driven height (selected lane is taller)
   var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
@@ -905,6 +981,35 @@ function wfSetupInteractions(mainSvg, subSvg) {
     svgEl.onmousedown = function(e) {
       var r = svgEl.getBoundingClientRect(), mx = e.clientX - r.left;
 
+      // Version chip → lock the turn where that sysprompt version first appeared
+      var chipEl = e.target.closest ? e.target.closest('.wf-sysver') : null;
+      if (chipEl) {
+        var cLane = wfState.lanes[parseInt(chipEl.getAttribute('data-lane'))];
+        var cHash = chipEl.getAttribute('data-hash');
+        if (cLane) {
+          for (var cti = 0; cti < cLane.turns.length; cti++) {
+            if (cLane.turns[cti].coreHash !== cHash) continue;
+            wfState.selectedLane = cLane;
+            wfState.selectedTurnId = cLane.turns[cti].id;
+            wfDeferRender();
+            wfRenderAgentCard(cLane);
+            for (var cak = 0; cak < allEntries.length; cak++) {
+              if (allEntries[cak].id === wfState.selectedTurnId) { selectTurn(cak); break; }
+            }
+            break;
+          }
+        }
+        return;
+      }
+      // ↗ → System Prompt page; state handoff via spPendingDeepLink because
+      // switchTab's syncUrlFromState rebuilds the URL and drops foreign params
+      var linkEl = e.target.closest ? e.target.closest('.wf-sysver-link') : null;
+      if (linkEl) {
+        spPendingDeepLink = { agent: linkEl.getAttribute('data-agent') || null, hash: linkEl.getAttribute('data-hash') || null };
+        switchTab('sysprompt');
+        return;
+      }
+
       // Click in label area — compute lane index from Y coordinate
       if (mx < WF_LABEL_W) {
         var my = e.clientY - r.top;
@@ -1100,8 +1205,24 @@ function wfInitResize(subScroll, handle) {
 }
 
 // ── Highlight Turn (without full re-render) ───────────────────────────────
+// Render a turn's detail into the steps panel without locking it in the
+// swimlane (used by lane selection: last turn = full conversation range).
+// selectTurn feeds back into wfHighlightTurn, so suppress that echo.
+var _wfSuppressHighlight = false;
+function _wfShowTurnDetail(turn) {
+  if (!turn) return;
+  for (var i = 0; i < allEntries.length; i++) {
+    if (allEntries[i].id === turn.id) {
+      _wfSuppressHighlight = true;
+      try { selectTurn(i); } finally { _wfSuppressHighlight = false; }
+      return;
+    }
+  }
+}
+
 function wfHighlightTurn(turnId) {
   if (!wfState) return;
+  if (_wfSuppressHighlight) return;
   wfState.selectedTurnId = turnId;
   // Update lane selection based on turn
   if (turnId) {
@@ -1278,8 +1399,11 @@ function wfSelectSection(name) {
   }
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
-  // ponytail: no turn selected → lane-level summary instead of fallback to last turn
-  if (!wfState.selectedTurnId) { _wfRenderLaneSummary(lane, name); return; }
+  // No turn selected: timeline = last turn's detail (full range), no lock
+  if (!wfState.selectedTurnId) {
+    if (name === 'timeline') { selectedSection = name; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    _wfRenderLaneSummary(lane, name); return;
+  }
   selectedSection = name;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }
@@ -1292,7 +1416,12 @@ function wfRenderCurrentSection() {
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var sec = wfState.selectedSection || 'timeline';
-  if (!wfState.selectedTurnId) { _wfRenderLaneSummary(lane, sec); return; }
+  if (!wfState.selectedTurnId) {
+    // Timeline with no lock = last turn's detail (its request holds the whole
+    // conversation = full range) without lock visuals; other sections keep summary
+    if (sec === 'timeline') { selectedSection = sec; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    _wfRenderLaneSummary(lane, sec); return;
+  }
   selectedSection = sec;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }

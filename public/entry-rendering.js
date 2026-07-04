@@ -380,6 +380,8 @@ function addEntry(e) {
     toolSources: e.toolSources || null,
     title: e.title || null,
     coreHash: e.coreHash || null,
+    agentKey: e.agentKey || null,
+    agentLabel: e.agentLabel || null,
     toolsHash: e.toolsHash || null,
     thinkingStripped: e.thinkingStripped || false,
     provider: e.provider || 'anthropic',
