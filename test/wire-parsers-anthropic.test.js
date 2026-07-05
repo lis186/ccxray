@@ -25,8 +25,14 @@ describe('wire-parsers/index', () => {
 
 describe('wire-parsers/anthropic', () => {
   describe('isNoiseRequest', () => {
-    it('always returns false for Anthropic', () => {
+    it('classifies count_tokens as noise (#146: fake subagent lanes)', () => {
+      assert.equal(anthropic.isNoiseRequest('/v1/messages/count_tokens', {}, {}), true);
+      assert.equal(anthropic.isNoiseRequest('/v1/messages/count_tokens?beta=true', {}, {}), true);
+    });
+
+    it('keeps real conversation and other paths as entries', () => {
       assert.equal(anthropic.isNoiseRequest('/v1/messages', {}, {}), false);
+      assert.equal(anthropic.isNoiseRequest('/v1/messages?beta=true', {}, {}), false);
       assert.equal(anthropic.isNoiseRequest('/v1/plugins/list', {}, {}), false);
     });
   });

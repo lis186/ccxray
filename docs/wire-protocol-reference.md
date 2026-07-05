@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-07-06 | Claude Code | 2.1.x | Discovered: `POST /v1/messages/count_tokens` calls (token pre-counting for large content). Body is bare `{model, messages}` — no `system`, no `metadata`, no `tools`, no `max_tokens`; response is exactly `{"input_tokens": N}` (non-SSE). Satisfied every subagent heuristic and polluted sessions with fake single-turn subagent entries (#146). ccxray now classifies the path as noise (`skipEntry`), matching quota-check / codex-platform-ping handling. |
 | 2026-06-09 | Claude Code | 2.1.x | Confirmed via loopback wire capture: `anthropic-beta` carries `context-1m-2025-08-07` on **every** request when the account's 1M context is enabled — including haiku title-gen turns (it is a client/account-level capability flag, not a per-turn window declaration). ccxray now uses it as the non-lagging 1M-window signal, gated by model capability (`SUPPORTS_1M`), replacing sole reliance on the lagging system-prompt `[1m]` marker (#58). |
 | 2026-06-05 | ccxray | 1.11.x | Usage normalization: OpenAI `input_tokens` includes `cached_tokens` (subset), unlike Anthropic's disjoint fields. `normalizeUsageForProvider` now subtracts the overlap so canonical `input_tokens + cache_read + cache_creation = total context` holds for both providers. Normalized entries carry `_ccxrayUsageNormalized: true`. Historical entries normalized on restore (in-memory, index unchanged). Cache display: Codex sessions show `cache N% hit` instead of TTL countdown; topbar adapts per provider (`ephemeral-ttl` vs `server-managed`). `UPSTREAM_PROFILES` registry added to `providers.js`. |
 | 2026-06-04 | ccxray | 1.10.x | Fix: WS `stopReason` now extracts `response.status` from terminal events (`completed`/`incomplete`/`failed`/`cancelled`) instead of WS close reason. WS `title` extracts user input summary via `getOpenAIInputSummary` instead of hardcoded string. Non-terminal statuses (`in_progress`/`queued`) are ignored to prevent masking close/error reasons. |
@@ -43,7 +44,7 @@
 |--------|-------------|-------|------------|
 | Protocol | HTTP POST + SSE streaming | HTTP POST (SSE) + WebSocket upgrade | `contractual` |
 | Primary path | `POST /v1/messages` | `POST /v1/responses` (HTTP) or WS upgrade on `/v1/responses` | `contractual` |
-| Alternative paths | — | `/v1/realtime` (Realtime API, not used by Codex CLI for chat) | `contractual` |
+| Alternative paths | `POST /v1/messages/count_tokens` (token pre-counting; bare `{model, messages}` body, non-SSE `{"input_tokens": N}` response; classified as noise by ccxray, #146) | `/v1/realtime` (Realtime API, not used by Codex CLI for chat) | `contractual` |
 | WS upgrade detection | N/A | `upgrade: websocket` header on `/v1/responses` or `/v1/realtime`; ccxray also requires `upstream.provider === 'openai'` | `contractual` |
 | WS handshake header | N/A | `openai-beta: responses_websockets=2026-02-06` (observed value from Codex wire traffic; ccxray passes through without validation) | `obs-stable` codex ≥0.131 |
 | WS idle timeout (proxy) | N/A | ccxray: 60s default, configurable via `CCXRAY_WS_IDLE_TIMEOUT_MS` | `obs-stable` |

@@ -9,8 +9,13 @@ const { calculateCost } = require('../pricing');
 const { agentForProvider } = require('../providers');
 
 // ── isNoiseRequest ──────────────────────────────────────────
-function isNoiseRequest(_url, _headers, _parsedBody) {
-  return false;
+// count_tokens (#146): Claude Code pre-counts tokens for large content. The
+// body is bare {model, messages} — no system, no metadata, no tools — which
+// satisfies every subagent heuristic, so each call became a fake single-turn
+// subagent entry glued onto the active session (one swimlane per call).
+// Forward it, but don't record an entry.
+function isNoiseRequest(url, _headers, _parsedBody) {
+  return typeof url === 'string' && url.split('?')[0] === '/v1/messages/count_tokens';
 }
 
 // ── extractUsage ────────────────────────────────────────────
