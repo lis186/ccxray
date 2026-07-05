@@ -112,7 +112,7 @@ return Math.min(Math.round(remaining / stableAvg), 99);
 4. metric: median absolute percent error
 5. 目標：median 誤差 <50%，worst case 不超過 2x 高估
 
-可用 `test/agent-classify-eval.js` 同款架構寫 `test/predict-eval.js`。
+可用 `scripts/agent-classify-eval.js` 同款架構寫 `scripts/predict-eval.js`（讀真實資料的 eval harness 放 `scripts/`，不放 `test/`，見 docs/testing.md 規則 5）。
 
 ## Impact
 
