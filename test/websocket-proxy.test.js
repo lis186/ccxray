@@ -741,13 +741,27 @@ describe('OpenAI Responses WebSocket proxy', () => {
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
 
+    // ponytail: event barrier — wait for proxy to forward warm-up's completed back to client
+    const warmupDone = new Promise(r => {
+      const onMsg = d => {
+        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
+      };
+      ws.on('message', onMsg);
+    });
     ws.send(JSON.stringify({ type: 'response.create', generate: false, model: 'gpt-5.5' }));
-    await new Promise(r => setTimeout(r, 200));
+    await warmupDone;
+
+    const realDone = new Promise(r => {
+      const onMsg = d => {
+        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
+      };
+      ws.on('message', onMsg);
+    });
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Real turn' }] }],
     }));
-    await new Promise(r => setTimeout(r, 300));
+    await realDone;
     ws.close(1000, 'done');
     await new Promise(r => ws.on('close', r));
 
