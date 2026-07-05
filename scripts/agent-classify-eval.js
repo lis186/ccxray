@@ -1,6 +1,9 @@
 'use strict';
 
 // Ground-truth evaluation harness for extractAgentType.
+// Manual tool: run with `node scripts/agent-classify-eval.js`. Lives outside
+// test/ because it scans real user data and takes ~30s+ — `node --test`
+// auto-discovers every .js under test/, so it must not sit there (issue #134).
 // Scans ~/.ccxray/logs/shared/sys_*.json (real captured prompts) and compares
 // the algorithm's prediction against a canonical prefix table.
 //

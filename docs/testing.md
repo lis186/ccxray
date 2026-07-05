@@ -79,6 +79,16 @@ process.on('exit', () => { try { fs.rmSync(FIX_HOME, { recursive: true, force: t
 
 Use `finally` instead for dirs scoped to a single test.
 
+### 5. Evaluation harnesses live in `scripts/`, not `test/`
+
+`node --test` auto-discovers every `.js` file under `test/` and tries to run
+each as a test. Scripts that intentionally scan the real `~/.ccxray` (e.g.
+`scripts/agent-classify-eval.js`) must never live in `test/` — they read live
+user data, so their runtime and result depend on whatever the machine has
+captured (issue #134: a 30s+ scan of ~100k files whose verdict drifts with the
+data). Anything in `scripts/` is a manual developer tool invoked explicitly;
+anything in `test/` must be a hygienic, self-contained test.
+
 ## Canonical pattern
 
 `test/usage.test.js` is the reference. Copy its setup:
