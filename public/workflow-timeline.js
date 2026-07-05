@@ -72,8 +72,10 @@ function _wfGetCssColors() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function wfModelColor(m) {
-  if (!m) return 'var(--dim)';
-  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || 'var(--dim)';
+  if (!m) return '#8b949e';
+  // Single source of truth for model→color (exact, then prefix). Falls back to a
+  // concrete hex (not var(--dim)) so callers can safely alpha-suffix (color+'22').
+  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || '#8b949e';
 }
 function wfShortModel(m) { return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, ''); }
 function wfFmtDur(ms) {
@@ -454,7 +456,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
     : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
-  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '">' + wfEsc(wfShortModel(lane.model) + ' · ' + ctxK + 'K') + '</text>';
+  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfModelColor(lane.model) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -1390,7 +1392,6 @@ function wfRenderAgentCard(lane) {
   if (!lane || !agentPanel) return;
   var summary = wfLaneSummary(lane);
   var color = wfModelColor(lane.model);
-  var resolvedColor = WF_MODEL_COLORS[lane.model] || '#8b949e';
 
   var toolTotals = {};
   for (var i = 0; i < lane.turns.length; i++) {
@@ -1399,8 +1400,8 @@ function wfRenderAgentCard(lane) {
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
-  var html = '<div class="wf-agent-card" style="border-left:2px solid ' + resolvedColor + '">';
-  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + resolvedColor + '22;color:' + resolvedColor + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
+  var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
+  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
   html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';

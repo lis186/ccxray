@@ -587,6 +587,19 @@ describe('workflow-timeline zoom predicate (#138)', () => {
   });
 });
 
+describe('workflow-timeline model color resolver (A: unify lane/card color)', () => {
+  it('wfModelColor: exact, prefix, and a hex fallback safe to alpha-suffix', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfModelColor('claude-sonnet-4-6'), '#ffa657'); // exact
+    assert.equal(ctx.wfModelColor('claude-haiku-4-5-20251001'), '#f0883e'); // exact
+    assert.ok(ctx.wfModelColor('claude-opus-4-8-preview').startsWith('#')); // prefix → hex
+    // unknown (e.g. a non-Claude/Codex model) and null must fall back to a HEX,
+    // not 'var(--dim)', so the agent-card chip's `color + '22'` alpha stays valid.
+    assert.equal(ctx.wfModelColor('gpt-5.5')[0], '#'); // RED before fix: 'v' (var(--dim))
+    assert.equal(ctx.wfModelColor(null)[0], '#'); // RED before fix: 'v'
+  });
+});
+
 describe('workflow-timeline focus dim follows selectedLane', () => {
   function twoLanes(ctx) {
     ctx.allEntries = [
