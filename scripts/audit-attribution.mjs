@@ -5,14 +5,14 @@
 //   node scripts/audit-attribution.mjs [--port 5577] [--deep]
 //
 // Invariants:
-//   I1  a session with its own cwd must not have a parentSessionId
-//   I2  a child session's cwd must equal its parent's cwd (or be absent)
+//   I1  a linked child's own cwd must not differ from its parent's cwd
+//       (equal = legal hinted child; parent cwd unknown = warning only)
 //   I4  a convId must not appear under more than one session
 //   I3  (--deep) every inferred entry's first-message content must be findable
 //       in its attributed session's other request bodies (content join).
 //       Reads _req.json files from CCXRAY_HOME/logs — slow, report-only.
 //
-// Exit code 1 on I1/I2 violations (hard invariants). I3/I4 are report-only:
+// Exit code 1 on I1 violations (hard invariant). I3/I4 are report-only:
 // I3 has known false negatives (pruned req files), I4 can be a legit re-run
 // of the same prompt. Silence is not success: every check prints its count.
 
@@ -42,19 +42,20 @@ for (const e of entries) {
 
 let hard = 0;
 
-console.log('I1: sessions with own cwd that have a parentSessionId');
+// I1/I2 share one semantic: a linked child whose own cwd CONTRADICTS its
+// parent is misattributed. A child whose cwd equals the parent's is legal
+// (explicitly-hinted Codex children may inherit one — linkParentSession
+// allows the hint path regardless of cwd), so equality is clean, difference
+// is a hard violation, and an unknown parent cwd is report-only (codex R1).
+console.log('I1: linked child with own cwd differing from parent cwd');
+let i1 = 0, i1warn = 0;
 for (const [sid, s] of sess) {
-  if (s.parent && s.cwd) { hard++; console.log(`  VIOLATION ${sid.slice(0, 8)} cwd=${s.cwd} → parent ${s.parent.slice(0, 8)}`); }
+  if (!s.parent || !s.cwd) continue;
+  const p = sess.get(s.parent);
+  if (p?.cwd && s.cwd !== p.cwd) { i1++; hard++; console.log(`  VIOLATION ${sid.slice(0, 8)} cwd=${s.cwd} ≠ parent cwd=${p.cwd}`); }
+  else if (!p?.cwd) { i1warn++; console.log(`  WARN ${sid.slice(0, 8)} cwd=${s.cwd} → parent ${s.parent.slice(0, 8)} (parent cwd unknown)`); }
 }
-console.log(`  ${hard ? hard + ' violation(s)' : 'clean'}\n`);
-
-console.log('I2: child cwd ≠ parent cwd');
-let i2 = 0;
-for (const [sid, s] of sess) {
-  const p = s.parent && sess.get(s.parent);
-  if (p && s.cwd && p.cwd && s.cwd !== p.cwd) { i2++; hard++; console.log(`  VIOLATION ${sid.slice(0, 8)} cwd=${s.cwd} ≠ parent cwd=${p.cwd}`); }
-}
-console.log(`  ${i2 ? i2 + ' violation(s)' : 'clean'}\n`);
+console.log(`  ${i1 ? i1 + ' violation(s)' : 'clean'}${i1warn ? ` (${i1warn} warning(s))` : ''}\n`);
 
 console.log('I4: convId under multiple sessions (report-only)');
 const conv = new Map();
@@ -77,6 +78,11 @@ if (deep) {
       // Longest single line: survives the line-number prefixes that Read tool
       // results carry inside the parent's stored history (whole-block substring
       // matching false-negatives on those).
+      // Delta-format siblings are not a blind spot: each stores only its NEW
+      // message suffix, so every message of a spliced conversation appears
+      // verbatim in exactly one file of the chain — scanning all raw siblings
+      // collectively covers the full history. The one gap is a pruned chain
+      // anchor, which surfaces as `unreadable`, not a false SUSPECT (codex R1).
       const line = blocks.join('\n').split('\n').sort((a, b) => b.length - a.length)[0]?.trim().slice(0, 120);
       if (!line || line.length < 20) { unreadable++; continue; }
       const needle = JSON.stringify(line).slice(1, -1);

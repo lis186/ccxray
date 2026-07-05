@@ -696,15 +696,17 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
 
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = Math.max(0, (store.activeRequests[reqSessionId] || 1) - 1);
-      broadcastSessionStatus(reqSessionId);
       if (store.sessionMeta[reqSessionId]) {
         store.sessionMeta[reqSessionId].lastStopReason = stopReason || null;
         // Refresh at stream END too: lastSeenAt is otherwise stamped at request
         // arrival, so after an orchestrator turn longer than the 30s inference
         // window, a subagent spawned right after the stream closes would find
-        // no parent candidate and fall to the direct-api sentinel.
+        // no parent candidate and fall to the direct-api sentinel. Must happen
+        // before broadcastSessionStatus so the status event carries the fresh
+        // timestamp (codex R1).
         store.sessionMeta[reqSessionId].lastSeenAt = Date.now();
       }
+      broadcastSessionStatus(reqSessionId);
     }
 
     const sessionId = reqSessionId;
