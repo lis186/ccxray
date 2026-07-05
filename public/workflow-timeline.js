@@ -135,7 +135,7 @@ function wfCtxPct(e) {
 // ponytail: 3-zone context color — still used by minimap + step list
 function wfCtxZoneColor(t) {
   var pct = wfCtxPct(t);
-  return pct >= 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
+  return pct > 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
 }
 
 // v8 event detection against real SSE entry summaries (prev = previous turn in same lane)
@@ -1289,8 +1289,8 @@ function _wfShowTooltip(e, t, lane) {
   var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
   var inT = (u.input_tokens || 0) + cr + cc;
   var pct = wfCtxPct(t);
-  var zone = pct >= 80 ? 'danger' : pct >= 40 ? 'dumb' : 'smart';
-  var zoneCls = pct >= 80 ? 'wf-tt-danger' : pct >= 40 ? 'wf-tt-warn' : 'wf-tt-good';
+  var zone = pct > 80 ? 'danger' : pct >= 40 ? 'dumb' : 'smart';
+  var zoneCls = pct > 80 ? 'wf-tt-danger' : pct >= 40 ? 'wf-tt-warn' : 'wf-tt-good';
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
