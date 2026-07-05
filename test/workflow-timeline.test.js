@@ -421,6 +421,23 @@ describe('workflow-timeline incremental child-session filing (#137)', () => {
     assert.equal(ctx.wfState.turnIndex.get('c1').laneIdx, ctx.wfState.lanes.indexOf(child));
   });
 
+  it('files a child session that spawned AFTER wfBuildState (late child, no rebuild)', () => {
+    const ctx = loadWfModule();
+    // at build time only the parent exists — the child hasn't spawned yet
+    ctx.sessionsMap = new Map([['s1', { parentSessionId: null }]]);
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.childSids.has('cs2'), false); // unknown at snapshot time
+    // child session spawns live and registers in the (live) sessionsMap
+    ctx.sessionsMap.set('cs2', { parentSessionId: 's1' });
+    // its first turn streams in (same model as main → would misfile into main)
+    ctx.wfAddEntry(mkEntry('c1', 'cs2', 'claude-opus-4-6', 3000, 2, {}));
+    assert.equal(ctx.wfState.lanes[0].turns.length, 1); // main not polluted (RED: 2)
+    const child = ctx.wfState.lanes.find((l) => l.childSessionId === 'cs2');
+    assert.ok(child, 'late child routed to its own child lane'); // RED: undefined
+    assert.equal(ctx.wfState.childSids.has('cs2'), true); // childSids kept live
+  });
+
   it('incremental child filing matches a full rebuild (no lane jump on re-select)', () => {
     const ctx = loadWfModule();
     withChild(ctx);

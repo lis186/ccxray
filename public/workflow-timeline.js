@@ -290,6 +290,7 @@ function wfBuildState(sessionId) {
 
   return {
     lanes: lanes,
+    sessionId: sessionId,
     childSids: childSids,
     turnIndex: turnIndex,
     tMin: tMin, tMax: tMax,
@@ -329,6 +330,15 @@ function wfAddEntry(entry) {
   var oldTMax = wfState.tMax;
   if (ts && ts < wfState.tMin) wfState.tMin = ts;
   if (end > wfState.tMax) wfState.tMax = end;
+
+  // childSids is snapshotted at build time; a child session that spawns while
+  // the view is already live isn't in it yet. Refresh from the live sessionsMap
+  // so late-arriving child turns still route to a child lane, not main.
+  if (wfState.childSids && wfState.sessionId && !wfState.childSids.has(entry.sessionId) &&
+      typeof sessionsMap !== 'undefined' && sessionsMap.get) {
+    var sess = sessionsMap.get(entry.sessionId);
+    if (sess && sess.parentSessionId === wfState.sessionId) wfState.childSids.add(entry.sessionId);
+  }
 
   // Child-session turns get their own child-<sid> lane, mirroring wfInferLanes.
   // Match/create by childSessionId (not .name — child .name is a display label).
