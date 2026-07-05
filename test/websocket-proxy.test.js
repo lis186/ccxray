@@ -110,6 +110,22 @@ async function waitForIndexEntries(logsDir, predicate, minCount, timeoutMs = 400
   throw new Error(`timeout waiting for ${minCount} index entries`);
 }
 
+// ponytail: bounded barrier — rejects on close/error/timeout instead of hanging forever
+function waitForCompleted(ws, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { cleanup(); reject(new Error('barrier timeout: no response.completed')); }, timeoutMs);
+    const onMsg = d => {
+      if (JSON.parse(d.toString()).type === 'response.completed') { cleanup(); resolve(); }
+    };
+    const onClose = () => { cleanup(); reject(new Error('ws closed before response.completed')); };
+    const onError = err => { cleanup(); reject(err); };
+    function cleanup() { clearTimeout(timer); ws.off('message', onMsg); ws.off('close', onClose); ws.off('error', onError); }
+    ws.on('message', onMsg);
+    ws.on('close', onClose);
+    ws.on('error', onError);
+  });
+}
+
 describe('OpenAI Responses WebSocket proxy', () => {
   let testHome;
   let upstreamServer;
@@ -689,25 +705,14 @@ describe('OpenAI Responses WebSocket proxy', () => {
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
 
-    // ponytail: event barrier — wait for completed before sending next turn
-    const turn1Done = new Promise(r => {
-      const onMsg = d => {
-        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
-      };
-      ws.on('message', onMsg);
-    });
+    const turn1Done = waitForCompleted(ws);
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn one' }] }],
     }));
     await turn1Done;
 
-    const turn2Done = new Promise(r => {
-      const onMsg = d => {
-        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
-      };
-      ws.on('message', onMsg);
-    });
+    const turn2Done = waitForCompleted(ws);
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn two' }] }],
@@ -755,22 +760,11 @@ describe('OpenAI Responses WebSocket proxy', () => {
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
 
-    // ponytail: event barrier — wait for proxy to forward warm-up's completed back to client
-    const warmupDone = new Promise(r => {
-      const onMsg = d => {
-        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
-      };
-      ws.on('message', onMsg);
-    });
+    const warmupDone = waitForCompleted(ws);
     ws.send(JSON.stringify({ type: 'response.create', generate: false, model: 'gpt-5.5' }));
     await warmupDone;
 
-    const realDone = new Promise(r => {
-      const onMsg = d => {
-        if (JSON.parse(d.toString()).type === 'response.completed') { ws.off('message', onMsg); r(); }
-      };
-      ws.on('message', onMsg);
-    });
+    const realDone = waitForCompleted(ws);
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Real turn' }] }],
