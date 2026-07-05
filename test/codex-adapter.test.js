@@ -24,14 +24,19 @@ describe('codex-adapter', () => {
   });
 
   it('extracts rate_limits from real fixture and writes unified snapshot', () => {
-    const sessionsDir = path.join(__dirname, 'fixtures/codex-sessions');
     // #119: the adapter drops files older than CODEX_SCAN_MAX_AGE_MS (7 days),
-    // and fixture mtime is the checkout date — touch so old working trees pass.
-    const now = new Date();
-    for (const f of fs.readdirSync(sessionsDir).filter(f => f.endsWith('.jsonl'))) {
-      fs.utimesSync(path.join(sessionsDir, f), now, now);
+    // and fixture mtime is the checkout date — copy to a temp dir so the
+    // copies get a fresh mtime and the repo checkout stays untouched.
+    const fixturesDir = path.join(__dirname, 'fixtures/codex-sessions');
+    const sessionsDir = makeTmpDir();
+    try {
+      for (const f of fs.readdirSync(fixturesDir).filter(f => f.endsWith('.jsonl'))) {
+        fs.copyFileSync(path.join(fixturesDir, f), path.join(sessionsDir, f));
+      }
+      refreshCodex(sessionsDir, outDir);
+    } finally {
+      fs.rmSync(sessionsDir, { recursive: true, force: true });
     }
-    refreshCodex(sessionsDir, outDir);
 
     const files = fs.readdirSync(outDir).filter(f => f.endsWith('.json'));
     assert.equal(files.length, 1);
