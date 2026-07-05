@@ -1424,6 +1424,7 @@ function _wfRenderLaneSummary(lane, section) {
 function wfSelectSection(name) {
   if (!wfState) return;
   wfState.selectedSection = name;
+  selectedSection = name;
   // Update nav highlight
   var panel = document.getElementById('wf-agent-card-panel');
   if (panel) {
@@ -1435,10 +1436,9 @@ function wfSelectSection(name) {
   if (!lane || !lane.turns.length) return;
   // No turn selected: timeline = last turn's detail (full range), no lock
   if (!wfState.selectedTurnId) {
-    if (name === 'timeline') { selectedSection = name; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (name === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
     _wfRenderLaneSummary(lane, name); return;
   }
-  selectedSection = name;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }
   }
@@ -1450,13 +1450,13 @@ function wfRenderCurrentSection() {
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var sec = wfState.selectedSection || 'timeline';
+  selectedSection = sec;
   if (!wfState.selectedTurnId) {
     // Timeline with no lock = last turn's detail (its request holds the whole
     // conversation = full range) without lock visuals; other sections keep summary
-    if (sec === 'timeline') { selectedSection = sec; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (sec === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
     _wfRenderLaneSummary(lane, sec); return;
   }
-  selectedSection = sec;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }
   }

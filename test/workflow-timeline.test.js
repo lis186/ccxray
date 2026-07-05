@@ -352,3 +352,34 @@ describe('workflow-timeline data layer', () => {
     assert.ok(lanes[2].name.includes('sonnet'));
   });
 });
+
+describe('workflow-timeline section state sync (#136)', () => {
+  function setupLaneSelected(ctx) {
+    ctx.selectedSection = 'timeline'; // stale global left by a prior turn
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, {}),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectedTurnId = null; // lane selected, no turn locked
+  }
+
+  // Invariant: the module-global selectedSection (drives renderDetailCol) must
+  // stay in lockstep with wfState.selectedSection (drives nav highlight) in
+  // EVERY branch, including the lane-summary branch that today skips the sync.
+  it('wfSelectSection mirrors global selectedSection in the lane-summary branch', () => {
+    const ctx = loadWfModule();
+    setupLaneSelected(ctx);
+    ctx.wfSelectSection('system'); // non-timeline, no turn locked → _wfRenderLaneSummary branch
+    assert.equal(ctx.wfState.selectedSection, 'system');
+    assert.equal(ctx.selectedSection, 'system'); // RED before fix: stays 'timeline'
+  });
+
+  it('wfRenderCurrentSection mirrors global selectedSection for a non-timeline lane summary', () => {
+    const ctx = loadWfModule();
+    setupLaneSelected(ctx);
+    ctx.wfState.selectedSection = 'cost-efficiency';
+    ctx.wfRenderCurrentSection(); // lane summary branch, no turn locked
+    assert.equal(ctx.selectedSection, 'cost-efficiency'); // RED before fix: stays 'timeline'
+  });
+});
