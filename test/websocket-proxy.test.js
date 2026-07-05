@@ -711,6 +711,8 @@ describe('OpenAI Responses WebSocket proxy', () => {
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn one' }] }],
     }));
     await turn1Done;
+    // ponytail: 2ms guard against ms-precision timestamp collision on fast roundtrips
+    await new Promise(r => setTimeout(r, 2));
 
     const turn2Done = waitForCompleted(ws);
     ws.send(JSON.stringify({
