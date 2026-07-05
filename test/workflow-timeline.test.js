@@ -25,6 +25,8 @@ function loadWfModule() {
     isHttpStatusOk: (s) => s === 101 || (s >= 200 && s < 300),
     selectedSessionId: null,
     console,
+    Set,
+    Map,
   };
   vm.createContext(ctx);
   vm.runInContext(src, ctx);
@@ -350,5 +352,312 @@ describe('workflow-timeline data layer', () => {
     assert.equal(lanes[0].name, 'main');
     assert.ok(lanes[1].name.includes('haiku'));
     assert.ok(lanes[2].name.includes('sonnet'));
+  });
+});
+
+describe('workflow-timeline section state sync (#136)', () => {
+  function setupLaneSelected(ctx) {
+    ctx.selectedSection = 'timeline'; // stale global left by a prior turn
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, {}),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectedTurnId = null; // lane selected, no turn locked
+  }
+
+  // Invariant: the module-global selectedSection (drives renderDetailCol) must
+  // stay in lockstep with wfState.selectedSection (drives nav highlight) in
+  // EVERY branch, including the lane-summary branch that today skips the sync.
+  it('wfSelectSection mirrors global selectedSection in the lane-summary branch', () => {
+    const ctx = loadWfModule();
+    setupLaneSelected(ctx);
+    ctx.wfSelectSection('system'); // non-timeline, no turn locked → _wfRenderLaneSummary branch
+    assert.equal(ctx.wfState.selectedSection, 'system');
+    assert.equal(ctx.selectedSection, 'system'); // RED before fix: stays 'timeline'
+  });
+
+  it('wfRenderCurrentSection mirrors global selectedSection for a non-timeline lane summary', () => {
+    const ctx = loadWfModule();
+    setupLaneSelected(ctx);
+    ctx.wfState.selectedSection = 'cost-efficiency';
+    ctx.wfRenderCurrentSection(); // lane summary branch, no turn locked
+    assert.equal(ctx.selectedSection, 'cost-efficiency'); // RED before fix: stays 'timeline'
+  });
+});
+
+describe('workflow-timeline incremental child-session filing (#137)', () => {
+  function withChild(ctx) {
+    ctx.sessionsMap = new Map([
+      ['s1', { parentSessionId: null }],
+      ['cs2', { parentSessionId: 's1' }], // genuine child session of the parent we view
+    ]);
+    ctx.allEntries = [ mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}) ];
+    ctx.wfState = ctx.wfBuildState('s1');
+  }
+
+  it('wfBuildState exposes childSids so the incremental path can see child sessions', () => {
+    const ctx = loadWfModule();
+    withChild(ctx);
+    assert.ok(ctx.wfState.childSids instanceof Set); // RED before fix: undefined
+    assert.ok(ctx.wfState.childSids.has('cs2'));
+  });
+
+  it('wfAddEntry files a live same-model child-session turn into a child lane, not main', () => {
+    const ctx = loadWfModule();
+    withChild(ctx);
+    assert.equal(ctx.wfState.lanes.length, 1); // only main before the child streams
+
+    // Live child turn, SAME model as main → today (no child awareness) it is
+    // misfiled straight into the main lane; a full rebuild would give it a lane.
+    ctx.wfAddEntry(mkEntry('c1', 'cs2', 'claude-opus-4-6', 3000, 2, {}));
+
+    assert.equal(ctx.wfState.lanes[0].turns.length, 1); // main not polluted (RED: 2)
+    const child = ctx.wfState.lanes.find((l) => l.childSessionId === 'cs2');
+    assert.ok(child, 'dedicated child lane created'); // RED: undefined
+    assert.equal(child.turns.length, 1);
+    assert.equal(ctx.wfState.lanes.length, 2);
+    // turnIndex must point the new turn at its child lane, not main
+    assert.equal(ctx.wfState.turnIndex.get('c1').laneIdx, ctx.wfState.lanes.indexOf(child));
+  });
+
+  it('files a child session that spawned AFTER wfBuildState (late child, no rebuild)', () => {
+    const ctx = loadWfModule();
+    // at build time only the parent exists — the child hasn't spawned yet
+    ctx.sessionsMap = new Map([['s1', { parentSessionId: null }]]);
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.childSids.has('cs2'), false); // unknown at snapshot time
+    // child session spawns live and registers in the (live) sessionsMap
+    ctx.sessionsMap.set('cs2', { parentSessionId: 's1' });
+    // its first turn streams in (same model as main → would misfile into main)
+    ctx.wfAddEntry(mkEntry('c1', 'cs2', 'claude-opus-4-6', 3000, 2, {}));
+    assert.equal(ctx.wfState.lanes[0].turns.length, 1); // main not polluted (RED: 2)
+    const child = ctx.wfState.lanes.find((l) => l.childSessionId === 'cs2');
+    assert.ok(child, 'late child routed to its own child lane'); // RED: undefined
+    assert.equal(ctx.wfState.childSids.has('cs2'), true); // childSids kept live
+  });
+
+  it('live childSids refresh only adds direct children (grandchild / unrelated excluded)', () => {
+    const ctx = loadWfModule();
+    ctx.sessionsMap = new Map([['s1', { parentSessionId: null }]]);
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
+    ctx.wfState = ctx.wfBuildState('s1');
+    // a grandchild (parent is a child of s1, not s1 itself) and an unrelated session
+    ctx.sessionsMap.set('cs2', { parentSessionId: 's1' });   // real child
+    ctx.sessionsMap.set('gc3', { parentSessionId: 'cs2' });  // grandchild
+    ctx.sessionsMap.set('other', { parentSessionId: 'zzz' }); // unrelated
+    ctx.wfAddEntry(mkEntry('g1', 'gc3', 'claude-opus-4-6', 3000, 2, {}));
+    ctx.wfAddEntry(mkEntry('o1', 'other', 'claude-opus-4-6', 4000, 2, {}));
+    assert.equal(ctx.wfState.childSids.has('gc3'), false); // parent != viewed session
+    assert.equal(ctx.wfState.childSids.has('other'), false);
+    assert.equal(ctx.wfState.lanes.find((l) => l.childSessionId === 'gc3'), undefined);
+  });
+
+  it('incremental child filing matches a full rebuild (no lane jump on re-select)', () => {
+    const ctx = loadWfModule();
+    withChild(ctx);
+    ctx.wfAddEntry(mkEntry('c1', 'cs2', 'claude-opus-4-6', 3000, 2, {}));
+
+    ctx.allEntries.push(mkEntry('c1', 'cs2', 'claude-opus-4-6', 3000, 2, {}));
+    const rebuilt = ctx.wfBuildState('s1');
+    assert.equal(rebuilt.lanes.length, ctx.wfState.lanes.length); // RED: 2 vs 1
+    const rc = rebuilt.lanes.find((l) => l.childSessionId === 'cs2');
+    assert.ok(rc && rc.turns.length === 1);
+  });
+});
+
+describe('workflow-timeline stable lane .key (#139)', () => {
+  it('every lane carries a stable .key = its map key, distinct from display .name', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes(
+      [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})],
+      [mkEntry('c1', 'sid-aaaa', 'claude-haiku-4-5', 2000, 2, {})]
+    );
+    var main = lanes.find((l) => l.name === 'main');
+    assert.equal(main.key, 'main'); // RED before fix: undefined
+    var child = lanes.find((l) => l.childSessionId === 'sid-aaaa');
+    assert.equal(child.key, 'child-sid-aaaa'); // stable map key
+    assert.notEqual(child.key, child.name); // .name is the display label
+  });
+
+  it('sub-lane .key equals its map key (the string wfAddEntry find relies on)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('e1', 's1', 'claude-sonnet-4-6', 2000, 3, { agentKey: 'explore', agentLabel: 'Explore' }),
+    ], []);
+    var sub = lanes.find((l) => l.agentKey === 'explore');
+    assert.equal(sub.key, 'agent-explore'); // RED before fix: undefined
+    assert.equal(sub.key, sub.name); // today they coincide — the fragile coupling
+  });
+
+  it('colliding child display labels stay distinct by .key (no multi-lane selection)', () => {
+    const ctx = loadWfModule();
+    // two child sessions, same model + same first-8 hex → identical display .name
+    var lanes = ctx.wfInferLanes(
+      [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})],
+      [
+        mkEntry('c1', 'abcd1234-one', 'claude-haiku-4-5', 2000, 2, {}),
+        mkEntry('c2', 'abcd1234-two', 'claude-haiku-4-5', 3000, 2, {}),
+      ]
+    );
+    var a = lanes.find((l) => l.childSessionId === 'abcd1234-one');
+    var b = lanes.find((l) => l.childSessionId === 'abcd1234-two');
+    assert.equal(a.name, b.name); // labels collide (same model + first-8 hex)
+    assert.notEqual(a.key, b.key); // RED before fix: undefined === undefined
+    // the render-time selection predicate (selectedLane.key === lane.key) must
+    // match exactly one lane, not two.
+    var selected = lanes.filter((l) => a.key === l.key);
+    assert.equal(selected.length, 1); // RED before fix: 3 (all keys undefined)
+  });
+
+  it('wfAddEntry appends to the right sub-lane even if .name later becomes a label', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('e1', 's1', 'claude-sonnet-4-6', 2000, 3, { agentKey: 'explore', agentLabel: 'Explore', convId: 'aaaa1111' }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    var sub = ctx.wfState.lanes.find((l) => l.agentKey === 'explore');
+    // simulate a future world where sub .name is a display label ≠ its key
+    sub.name = 'Explore #1';
+    ctx.wfAddEntry(mkEntry('e2', 's1', 'claude-sonnet-4-6', 5000, 2, { agentKey: 'explore', agentLabel: 'Explore', convId: 'aaaa1111' }));
+    // find-by-key must still hit the existing lane → no duplicate
+    assert.equal(ctx.wfState.lanes.length, 2); // RED before fix: 3 (find-by-name missed)
+    assert.equal(sub.turns.length, 2);
+  });
+});
+
+describe('workflow-timeline lock-turn convergence (#140)', () => {
+  function twoLanes(ctx) {
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('e1', 's1', 'claude-sonnet-4-6', 2000, 3, { agentKey: 'explore', agentLabel: 'Explore' }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+  }
+
+  // Invariant A==B: the expanded lane (selectedLane) must equal the lane that
+  // holds the locked turn (selectedTurnId). Two of the 13 setters set turnId
+  // without lane; converge them on a single helper that derives lane from
+  // turnIndex.laneIdx.
+  it('wfLockTurn sets selectedLane to the locked turn\'s lane (A==B)', () => {
+    const ctx = loadWfModule();
+    twoLanes(ctx);
+    const exploreLane = ctx.wfState.lanes.find((l) => l.agentKey === 'explore');
+    assert.notEqual(ctx.wfState.selectedLane, exploreLane); // precondition: A(main) ≠ B(explore)
+    ctx.wfLockTurn('e1'); // RED before fix: wfLockTurn is undefined
+    assert.equal(ctx.wfState.selectedTurnId, 'e1');
+    assert.equal(ctx.wfState.selectedLane, exploreLane); // expanded lane == locked-turn lane
+  });
+
+  it('wfLockTurn bridges to selectTurn so the detail pane syncs', () => {
+    const ctx = loadWfModule();
+    let picked = -1;
+    ctx.selectTurn = (i) => { picked = i; };
+    twoLanes(ctx);
+    ctx.wfLockTurn('e1');
+    assert.equal(picked, 1); // selectTurn called with allEntries index of e1
+  });
+
+  it('wfLockTurn is a no-op when the turn id is unknown (no phantom lock)', () => {
+    const ctx = loadWfModule();
+    twoLanes(ctx);
+    const before = ctx.wfState.selectedLane;
+    ctx.wfLockTurn('nope');
+    // unknown id: leave both fields untouched rather than pointing the lock at a
+    // turn that lives in no lane (the #8 soft-desync gap).
+    assert.equal(ctx.wfState.selectedLane, before);
+    assert.equal(ctx.wfState.selectedTurnId, null);
+  });
+});
+
+describe('workflow-timeline zoom predicate (#138)', () => {
+  it('wfIsZoomed reflects viewport vs full range (single source of truth)', () => {
+    const ctx = loadWfModule();
+    ctx.wfState = { tMin: 0, tMax: 100000, viewT0: 0, viewT1: 100000 };
+    assert.equal(ctx.wfIsZoomed(), false); // full range → not zoomed
+    ctx.wfState.viewT0 = 5000;
+    assert.equal(ctx.wfIsZoomed(), true); // zoomed from the left
+    ctx.wfState.viewT0 = 0; ctx.wfState.viewT1 = 90000;
+    assert.equal(ctx.wfIsZoomed(), true); // zoomed from the right
+    ctx.wfState.viewT0 = 50; ctx.wfState.viewT1 = 99950; // within the 100ms slop
+    assert.equal(ctx.wfIsZoomed(), false);
+  });
+});
+
+describe('workflow-timeline model color resolver (A: unify lane/card color)', () => {
+  it('wfModelColor: exact, prefix, and a hex fallback safe to alpha-suffix', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfModelColor('claude-sonnet-4-6'), '#ffa657'); // exact
+    assert.equal(ctx.wfModelColor('claude-haiku-4-5-20251001'), '#f0883e'); // exact
+    assert.ok(ctx.wfModelColor('claude-opus-4-8-preview').startsWith('#')); // prefix → hex
+    // unknown (e.g. a non-Claude/Codex model) and null must fall back to a HEX,
+    // not 'var(--dim)', so the agent-card chip's `color + '22'` alpha stays valid.
+    assert.equal(ctx.wfModelColor('gpt-5.5')[0], '#'); // RED before fix: 'v' (var(--dim))
+    assert.equal(ctx.wfModelColor(null)[0], '#'); // RED before fix: 'v'
+  });
+});
+
+describe('workflow-timeline focus dim follows selectedLane', () => {
+  function twoLanes(ctx) {
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('e1', 's1', 'claude-sonnet-4-6', 2000, 3, { agentKey: 'explore', agentLabel: 'Explore' }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+  }
+
+  // The cross-lane dim must key off selectedLane, not selectedTurnId — so
+  // selecting a lane (even with no turn locked) recedes the others consistently.
+  it('_wfFocusLaneIdx tracks selectedLane regardless of lock', () => {
+    const ctx = loadWfModule();
+    twoLanes(ctx);
+    // default: main (lanes[0]) selected, no turn locked
+    assert.equal(ctx.wfState.selectedTurnId, null);
+    assert.equal(ctx._wfFocusLaneIdx(), 0);
+    // select the subagent lane WITHOUT locking a turn — focus must follow it
+    ctx.wfState.selectedLane = ctx.wfState.lanes[1];
+    ctx.wfState.selectedTurnId = null;
+    assert.equal(ctx._wfFocusLaneIdx(), 1); // RED before fix: helper undefined
+    // no selection → no focus
+    ctx.wfState.selectedLane = null;
+    assert.equal(ctx._wfFocusLaneIdx(), -1);
+  });
+});
+
+describe('workflow-timeline tail-follow sliding window (#138 Fix B)', () => {
+  it('slides a fixed-span window instead of expanding while following the tail', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 10, {})]; // ends at 11000
+    ctx.wfState = ctx.wfBuildState('s1'); // tMin=1000, tMax=11000, view=[1000,11000] (at tail)
+    ctx.wfAddEntry(mkEntry('t2', 's1', 'claude-opus-4-6', 21000, 10, {})); // tMax→31000
+    assert.equal(ctx.wfState.viewT1, ctx.wfState.tMax); // tracks the tail (31000)
+    assert.equal(ctx.wfState.viewT1 - ctx.wfState.viewT0, 10000); // span frozen (RED: 30000)
+    assert.equal(ctx.wfState.viewT0, 21000); // slid to tMax - span (RED: 1000)
+  });
+
+  it('does not yank a scrolled-back (non-following) view', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 10, {})];
+    ctx.wfState = ctx.wfBuildState('s1'); // tMax=11000
+    ctx.wfState.viewT0 = 1000; ctx.wfState.viewT1 = 4000; // user zoomed to an early window
+    ctx.wfAddEntry(mkEntry('t2', 's1', 'claude-opus-4-6', 21000, 10, {})); // tMax→31000
+    assert.equal(ctx.wfState.viewT0, 1000);
+    assert.equal(ctx.wfState.viewT1, 4000); // untouched — not at the tail
+  });
+
+  it('child-lane live turns also tail-follow with a fixed span', () => {
+    const ctx = loadWfModule();
+    ctx.sessionsMap = new Map([
+      ['s1', { parentSessionId: null }],
+      ['cs2', { parentSessionId: 's1' }],
+    ]);
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 10, {})];
+    ctx.wfState = ctx.wfBuildState('s1'); // tMax=11000, view=[1000,11000]
+    ctx.wfAddEntry(mkEntry('c1', 'cs2', 'claude-opus-4-6', 21000, 10, {})); // child turn, tMax→31000
+    assert.equal(ctx.wfState.viewT1, ctx.wfState.tMax); // RED: stays 11000 (old guard false)
+    assert.equal(ctx.wfState.viewT1 - ctx.wfState.viewT0, 10000); // fixed span
   });
 });

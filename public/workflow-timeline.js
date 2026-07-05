@@ -72,8 +72,10 @@ function _wfGetCssColors() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 function wfModelColor(m) {
-  if (!m) return 'var(--dim)';
-  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || 'var(--dim)';
+  if (!m) return '#8b949e';
+  // Single source of truth for model→color (exact, then prefix). Falls back to a
+  // concrete hex (not var(--dim)) so callers can safely alpha-suffix (color+'22').
+  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || '#8b949e';
 }
 function wfShortModel(m) { return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, ''); }
 function wfFmtDur(ms) {
@@ -144,7 +146,7 @@ function _wfBarSpan(t) {
 var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
 
 function _wfPushToSubLane(laneMap, key, entry) {
-  if (!laneMap.has(key)) laneMap.set(key, { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null });
+  if (!laneMap.has(key)) laneMap.set(key, { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null });
   laneMap.get(key).turns.push(entry);
 }
 
@@ -159,7 +161,7 @@ function wfInferLanes(entries, childEntries) {
   if (!entries.length && !childEntries.length) return [];
 
   var laneMap = new Map();
-  var mainLane = { name: 'main', turns: [], model: null, ctxWindow: 0, spawnParent: null };
+  var mainLane = { name: 'main', key: 'main', turns: [], model: null, ctxWindow: 0, spawnParent: null };
   laneMap.set('main', mainLane);
   var orchCtx = 0;
 
@@ -209,7 +211,7 @@ function wfInferLanes(entries, childEntries) {
       var label = sid.slice(0, 8);
       var m = turns[0]?.model;
       if (m) label = wfShortModel(m) + ' ' + label;
-      laneMap.set('child-' + sid, { name: label, turns: turns, model: m, ctxWindow: turns[0]?.maxContext || 0, spawnParent: null, childSessionId: sid });
+      laneMap.set('child-' + sid, { name: label, key: 'child-' + sid, turns: turns, model: m, ctxWindow: turns[0]?.maxContext || 0, spawnParent: null, childSessionId: sid });
     });
   }
 
@@ -290,6 +292,8 @@ function wfBuildState(sessionId) {
 
   return {
     lanes: lanes,
+    sessionId: sessionId,
+    childSids: childSids,
     turnIndex: turnIndex,
     tMin: tMin, tMax: tMax,
     viewT0: tMin, viewT1: tMax,
@@ -299,6 +303,25 @@ function wfBuildState(sessionId) {
   };
 }
 
+// tail-follow slop, aligned with wfIsZoomed's 100ms so a following-but-unzoomed
+// view is never misclassified as zoomed (closes the old ~900ms band).
+const WF_FOLLOW_SLOP = 100;
+
+// If the view was tracking the old tail, keep the newest turn in view. Slide a
+// fixed-span window (tail -f) rather than growing it, so recent bars keep their
+// width instead of compressing to the min-pixel floor. Degenerate fit-all
+// (span >= full range) just keeps viewT1 pinned to the tail.
+function _wfFollowTail(oldTMax) {
+  if (wfState.viewT1 < oldTMax - WF_FOLLOW_SLOP) return; // user scrolled back → leave it
+  var span = wfState.viewT1 - wfState.viewT0;
+  if (span < wfState.tMax - wfState.tMin) {
+    wfState.viewT1 = wfState.tMax;
+    wfState.viewT0 = Math.max(wfState.tMin, wfState.tMax - span);
+  } else {
+    wfState.viewT1 = wfState.tMax;
+  }
+}
+
 // ── Incremental Update ────────────────────────────────────────────────────
 function wfAddEntry(entry) {
   if (!wfState) return { lanesChanged: false };
@@ -306,8 +329,36 @@ function wfAddEntry(entry) {
 
   var ts = Number(entry.receivedAt) || 0;
   var end = ts + (parseFloat(entry.elapsed) || 0) * 1000;
+  var oldTMax = wfState.tMax;
   if (ts && ts < wfState.tMin) wfState.tMin = ts;
   if (end > wfState.tMax) wfState.tMax = end;
+
+  // childSids is snapshotted at build time; a child session that spawns while
+  // the view is already live isn't in it yet. Refresh from the live sessionsMap
+  // so late-arriving child turns still route to a child lane, not main.
+  if (wfState.childSids && wfState.sessionId && !wfState.childSids.has(entry.sessionId) &&
+      typeof sessionsMap !== 'undefined' && sessionsMap.get) {
+    var sess = sessionsMap.get(entry.sessionId);
+    if (sess && sess.parentSessionId === wfState.sessionId) wfState.childSids.add(entry.sessionId);
+  }
+
+  // Child-session turns get their own child-<sid> lane, mirroring wfInferLanes.
+  // Match/create by childSessionId (not .name — child .name is a display label).
+  if (wfState.childSids && wfState.childSids.has(entry.sessionId)) {
+    var csid = entry.sessionId;
+    var clane = wfState.lanes.find(function(l) { return l.childSessionId === csid; });
+    if (!clane) {
+      var clabel = csid.slice(0, 8);
+      if (entry.model) clabel = wfShortModel(entry.model) + ' ' + clabel;
+      clane = { name: clabel, key: 'child-' + csid, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, childSessionId: csid };
+      wfState.lanes.push(clane);
+    }
+    clane.turns.push(entry);
+    clane._costMedian = null;
+    if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(clane) });
+    _wfFollowTail(oldTMax);
+    return { lanesChanged: wfState.lanes.length !== prevCount };
+  }
 
   var needsSub, key;
   if (entry.agentKey) {
@@ -319,9 +370,9 @@ function wfAddEntry(entry) {
     key = _wfSubLaneKey('subagent-' + wfShortModel(entry.model), entry);
   }
   if (needsSub) {
-    var lane = wfState.lanes.find(function(l) { return l.name === key; });
+    var lane = wfState.lanes.find(function(l) { return l.key === key; });
     if (!lane) {
-      lane = { name: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null };
+      lane = { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null };
       wfState.lanes.push(lane);
     }
     lane.turns.push(entry);
@@ -334,7 +385,7 @@ function wfAddEntry(entry) {
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
   }
 
-  if (wfState.viewT1 >= wfState.tMax - 1000) wfState.viewT1 = wfState.tMax;
+  _wfFollowTail(oldTMax);
   return { lanesChanged: wfState.lanes.length !== prevCount };
 }
 
@@ -361,7 +412,7 @@ function wfLaneSummary(lane) {
 // ── Lane Height Helpers ───────────────────────────────────────────────────
 function _wfLaneHeight(laneIdx) {
   if (!wfState || laneIdx >= wfState.lanes.length) return WF_LANE_H;
-  return wfState.selectedLane?.name === wfState.lanes[laneIdx].name ? WF_LANE_H_SEL : WF_LANE_H;
+  return wfState.selectedLane?.key === wfState.lanes[laneIdx].key ? WF_LANE_H_SEL : WF_LANE_H;
 }
 function _wfTotalLanesHeight() {
   if (!wfState) return 0;
@@ -382,7 +433,7 @@ function wfDotSvg(shape, color, x, y, tidx) {
 }
 
 function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
-  var isSel = wfState.selectedLane?.name === lane.name;
+  var isSel = wfState.selectedLane?.key === lane.key;
   var laneH = isSel ? WF_LANE_H_SEL : WF_LANE_H;
   var boxH = laneH - WF_LANE_GAP;
   var costY = WF_BAR_H, evY = WF_BAR_H + WF_COST_TRACK_H;
@@ -405,7 +456,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
     : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
-  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '">' + wfEsc(wfShortModel(lane.model) + ' · ' + ctxK + 'K') + '</text>';
+  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfModelColor(lane.model) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -640,18 +691,15 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     ms += '<text x="' + xFn(tt) + '" y="' + (WF_PAD + 12) + '" text-anchor="middle" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '">' + wfFmtMin(tt, wfState.tMin) + '</text>';
   }
   // ponytail: zoom badge on time axis when zoomed
-  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  var isZoomed = wfIsZoomed();
   if (isZoomed) {
     var fullRange = wfState.tMax - wfState.tMin;
     ms += '<text x="' + (W - 6) + '" y="' + (WF_PAD + 12) + '" text-anchor="end" fill="var(--accent)" style="font-size:10px;font-family:' + WF_MONO + ';cursor:pointer" ondblclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">' + wfFmtDur(tRange) + ' / ' + wfFmtDur(fullRange) + ' ⟲</text>';
   }
-  // Locked state: dim non-focused lanes (v8 cross-lane dim)
-  var lockedLi = -1;
-  if (wfState.selectedTurnId && wfState.turnIndex) {
-    var lockHit = wfState.turnIndex.get(wfState.selectedTurnId);
-    if (lockHit) lockedLi = lockHit.laneIdx;
-  }
-  var laneCls = function(li) { return 'wf-lane' + (lockedLi >= 0 && lockedLi !== li ? ' dim' : ''); };
+  // Cross-lane dim recedes every lane except the focused (selected) one, so a
+  // plain lane-select dims the others just like a locked turn does.
+  var focusLi = _wfFocusLaneIdx();
+  var laneCls = function(li) { return 'wf-lane' + (focusLi >= 0 && focusLi !== li ? ' dim' : ''); };
 
   var mainLaneY = WF_PAD + WF_AXIS_H;
   ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn) + '</g>';
@@ -697,6 +745,20 @@ function _wfLaneG(li) {
   return document.querySelector('#wf-timeline g.wf-lane[data-lane="' + li + '"]');
 }
 
+// Single source of truth for "is the timeline zoomed in from the full range?"
+// (100ms slop absorbs float drift). Replaces 5 inline duplicates.
+function wfIsZoomed() {
+  return wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+}
+
+// Focused lane index = the selected lane. Cross-lane dim keys off this (not the
+// locked turn) so selecting any lane — the default main or a clicked subagent —
+// consistently recedes the others.
+function _wfFocusLaneIdx() {
+  if (!wfState || !wfState.selectedLane) return -1;
+  return wfState.lanes.indexOf(wfState.selectedLane);
+}
+
 function _wfLockInfo() {
   if (!wfState || !wfState.selectedTurnId || !wfState.turnIndex) return null;
   var hit = wfState.turnIndex.get(wfState.selectedTurnId);
@@ -724,10 +786,10 @@ function _wfApplySpotlight(laneG, lane, tidx) {
 function _wfClearSpotlight(laneG) {
   laneG.classList.remove('wf-spot');
   laneG.querySelectorAll('.hl').forEach(function(el) { el.classList.remove('hl'); });
-  // Restore cross-lane dim if a lock is active on another lane
-  var lock = _wfLockInfo();
+  // Restore cross-lane dim for non-focused lanes when the hover ends
+  var focusLi = _wfFocusLaneIdx();
   var li = parseInt(laneG.getAttribute('data-lane'));
-  laneG.classList.toggle('dim', !!(lock && lock.li !== li));
+  laneG.classList.toggle('dim', focusLi >= 0 && focusLi !== li);
 }
 
 // Locked turn keeps a persistent spotlight across hovers and re-renders
@@ -855,7 +917,7 @@ function wfRenderOverview(canvas) {
 
   for (var li = 0; li < lanes.length; li++) {
     var ly = startY + li * laneStep;
-    var isSel = wfState.selectedLane?.name === lanes[li].name;
+    var isSel = wfState.selectedLane?.key === lanes[li].key;
     for (var ti = 0; ti < lanes[li].turns.length; ti++) {
       var t = lanes[li].turns[ti];
       var ts = Number(t.receivedAt) || 0;
@@ -878,7 +940,7 @@ function wfRenderOverview(canvas) {
   ctx.globalAlpha = 1;
 
   // Viewport rect when zoomed
-  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  var isZoomed = wfIsZoomed();
   if (isZoomed) {
     var vx = x(wfState.viewT0), vw = Math.max(2, x(wfState.viewT1) - vx);
     // ponytail: no dimming overlay — viewport border alone signals the range
@@ -922,7 +984,7 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
     var rect = canvas.getBoundingClientRect();
     var pxToTime = function(cx) { return wfState.tMin + ((cx - rect.left) / rect.width) * totalRange; };
     var clickTime = pxToTime(e.clientX);
-    var zoomedNow = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+    var zoomedNow = wfIsZoomed();
 
     if (zoomedNow) {
       var vx = x(wfState.viewT0), vw = x(wfState.viewT1) - vx;
@@ -968,7 +1030,7 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
       window.removeEventListener('mousemove', onMoveB);
       window.removeEventListener('mouseup', onUpB);
       var t0 = Math.min(brushStart, brushEnd), t1 = Math.max(brushStart, brushEnd);
-      if (t1 - t0 > 1000) { wfState.viewT0 = t0; wfState.viewT1 = t1; wfDeferRender(); return; }
+      if (t1 - t0 >= 2000) { wfState.viewT0 = t0; wfState.viewT1 = t1; wfDeferRender(); return; }
       // ponytail: small brush = click → hit-test nearest turn
       var bestD = Infinity, bestTid = null, bestLane = null;
       for (var li = 0; li < wfState.lanes.length; li++) {
@@ -1330,7 +1392,6 @@ function wfRenderAgentCard(lane) {
   if (!lane || !agentPanel) return;
   var summary = wfLaneSummary(lane);
   var color = wfModelColor(lane.model);
-  var resolvedColor = WF_MODEL_COLORS[lane.model] || '#8b949e';
 
   var toolTotals = {};
   for (var i = 0; i < lane.turns.length; i++) {
@@ -1339,8 +1400,8 @@ function wfRenderAgentCard(lane) {
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
-  var html = '<div class="wf-agent-card" style="border-left:2px solid ' + resolvedColor + '">';
-  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + resolvedColor + '22;color:' + resolvedColor + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
+  var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
+  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
   html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
@@ -1402,7 +1463,7 @@ function _wfRenderLaneSummary(lane, section) {
       var t = lane.turns[i], u = t.usage || {}, inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
       var allTok = inTok + (u.output_tokens || 0), cache = u.cache_read_input_tokens || 0;
       var pct = inTok > 0 ? (cache / inTok * 100).toFixed(0) + '%' : '-';
-      html += '<tr style="cursor:pointer;border-top:1px solid var(--border)" onclick="wfState.selectedTurnId=\'' + t.id + '\';wfSelectSection(\'cost-efficiency\')">';
+      html += '<tr style="cursor:pointer;border-top:1px solid var(--border)" onclick="wfLockTurn(\'' + t.id + '\');wfSelectSection(\'cost-efficiency\')">';
       html += '<td style="padding:4px 8px;color:var(--dim)">' + (i + 1) + '</td>';
       html += '<td style="padding:4px 8px">' + wfEsc(wfShortModel(t.model)) + '</td>';
       html += '<td style="padding:4px 8px;text-align:right">$' + (t.cost || 0).toFixed(4) + '</td>';
@@ -1420,10 +1481,27 @@ function _wfRenderLaneSummary(lane, section) {
   el.innerHTML = html;
 }
 
+// Lock a turn AND its lane atomically, deriving the lane from turnIndex
+// (the collision-free laneIdx) so the A==B invariant — expanded lane ==
+// locked-turn lane — holds structurally for every caller. Bridges to
+// selectTurn (detail pane) and refreshes swimlane visuals via wfDeferRender.
+function wfLockTurn(turnId) {
+  if (!wfState || !turnId) return;
+  var hit = wfState.turnIndex && wfState.turnIndex.get(turnId);
+  if (!hit) return; // unknown turn → no phantom lock (leave selection untouched)
+  wfState.selectedTurnId = turnId;
+  wfState.selectedLane = wfState.lanes[hit.laneIdx];
+  wfDeferRender();
+  for (var k = 0; k < allEntries.length; k++) {
+    if (allEntries[k].id === turnId) { selectTurn(k); break; }
+  }
+}
+
 // ── Section Navigation ───────────────────────────────────────────────────
 function wfSelectSection(name) {
   if (!wfState) return;
   wfState.selectedSection = name;
+  selectedSection = name;
   // Update nav highlight
   var panel = document.getElementById('wf-agent-card-panel');
   if (panel) {
@@ -1435,10 +1513,9 @@ function wfSelectSection(name) {
   if (!lane || !lane.turns.length) return;
   // No turn selected: timeline = last turn's detail (full range), no lock
   if (!wfState.selectedTurnId) {
-    if (name === 'timeline') { selectedSection = name; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (name === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
     _wfRenderLaneSummary(lane, name); return;
   }
-  selectedSection = name;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }
   }
@@ -1450,13 +1527,13 @@ function wfRenderCurrentSection() {
   var lane = wfState.selectedLane;
   if (!lane || !lane.turns.length) return;
   var sec = wfState.selectedSection || 'timeline';
+  selectedSection = sec;
   if (!wfState.selectedTurnId) {
     // Timeline with no lock = last turn's detail (its request holds the whole
     // conversation = full range) without lock visuals; other sections keep summary
-    if (sec === 'timeline') { selectedSection = sec; _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (sec === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
     _wfRenderLaneSummary(lane, sec); return;
   }
-  selectedSection = sec;
   for (var i = 0; i < allEntries.length; i++) {
     if (allEntries[i].id === wfState.selectedTurnId) { selectTurn(i); break; }
   }
@@ -1518,11 +1595,7 @@ function wfRenderSteps(scrollToId) {
   el.querySelectorAll('.wf-step-row').forEach(function(row) {
     row.onclick = function() {
       var tid = row.getAttribute('data-tid');
-      wfState.selectedTurnId = tid;
-      // Find allEntries index and selectTurn
-      for (var i = 0; i < allEntries.length; i++) {
-        if (allEntries[i].id === tid) { selectTurn(i); break; }
-      }
+      wfLockTurn(tid);
       wfRenderSteps(tid);
     };
   });
@@ -1539,7 +1612,7 @@ function wfRenderSteps(scrollToId) {
 
 function _wfSyncStepsHighlight(container) {
   if (!wfState) return;
-  var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+  var isZoomed = wfIsZoomed();
   container.querySelectorAll('.wf-step-row').forEach(function(row) {
     var tid = row.getAttribute('data-tid');
     var inView = false;
@@ -1599,7 +1672,7 @@ function wfKeyHandler(key, e) {
       wfDeferRender();
       return true;
     }
-    var isZoomed = wfState.viewT0 > wfState.tMin + 100 || wfState.viewT1 < wfState.tMax - 100;
+    var isZoomed = wfIsZoomed();
     if (isZoomed) {
       wfState.viewT0 = wfState.tMin; wfState.viewT1 = wfState.tMax;
       wfDeferRender();
