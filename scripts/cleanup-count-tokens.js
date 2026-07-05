@@ -42,14 +42,22 @@ function hubAlive() {
   }
 }
 
-function isCountTokensRes(id) {
-  let raw;
-  try { raw = fs.readFileSync(path.join(LOGS, id + '_res.json'), 'utf8'); } catch { return false; }
-  let res;
-  try { res = JSON.parse(raw); } catch { return false; }
+function readJson(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
+
+// Both sides of the wire must agree before we remove anything:
+// res is exactly {"input_tokens": N} (the count_tokens response contract),
+// and req has no max_tokens (required on /v1/messages, absent on
+// count_tokens). Missing or unreadable files → keep the entry.
+function isCountTokens(id) {
+  const res = readJson(path.join(LOGS, id + '_res.json'));
   if (!res || typeof res !== 'object' || Array.isArray(res)) return false;
   const keys = Object.keys(res);
-  return keys.length === 1 && keys[0] === 'input_tokens' && typeof res.input_tokens === 'number';
+  if (keys.length !== 1 || keys[0] !== 'input_tokens' || typeof res.input_tokens !== 'number') return false;
+  const req = readJson(path.join(LOGS, id + '_req.json'));
+  if (!req || typeof req !== 'object' || Array.isArray(req)) return false;
+  return req.max_tokens == null && Array.isArray(req.messages);
 }
 
 function main() {
@@ -67,7 +75,7 @@ function main() {
     try { e = JSON.parse(line); } catch { keep.push(line); continue; }
     // Cheap prefilter: count_tokens entries never have usage and are never SSE.
     const candidate = e && e.id && e.usage == null && !e.isSSE;
-    if (candidate && isCountTokensRes(e.id)) {
+    if (candidate && isCountTokens(e.id)) {
       removed.push(e);
     } else {
       keep.push(line);
@@ -96,7 +104,10 @@ function main() {
 
   const backup = INDEX + '.bak-' + Date.now();
   fs.copyFileSync(INDEX, backup);
-  fs.writeFileSync(INDEX, keep.join('\n') + '\n');
+  // Atomic swap: a crash mid-write must not leave a truncated live index.
+  const tmp = INDEX + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, keep.join('\n') + '\n');
+  fs.renameSync(tmp, INDEX);
   console.log('\nremoved ' + removed.length + ' entries; backup at ' + backup);
 }
 
