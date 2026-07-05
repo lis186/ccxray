@@ -654,7 +654,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       const newIdx = maxBlockIndex + 1;
       const costInfo = calculateCost(usage, parsedBody?.model);
 
-      let text = '\n\n---\n📊 Context: ' + pct + '% (' + totalCtx.toLocaleString() + ' / ' + maxCtx.toLocaleString() + ')';
+      let text = '\n\n---\nContext: ' + pct + '% (' + totalCtx.toLocaleString() + ' / ' + maxCtx.toLocaleString() + ')';
       text += ' | ' + totalCtx.toLocaleString() + ' in + ' + (usage.output_tokens || 0).toLocaleString() + ' out';
       if (usage.cache_read_input_tokens) {
         const hitRate = (usage.cache_read_input_tokens / totalCtx * 100).toFixed(0);
@@ -663,10 +663,11 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       if (costInfo?.cost != null) {
         text += ' | $' + costInfo.cost.toFixed(4);
       }
-      if (pct >= 90) {
-        text += '\n⚠️ Context ' + pct + '% — consider /clear';
-      } else if (pct >= 70) {
-        text += '\n⚡ Context ' + pct + '% — getting full';
+      // #142: align advice bands to the unified colour thresholds (80/40).
+      if (Number(pct) > helpers.CTX_RED_PCT) {
+        text += '\nContext ' + pct + '% — consider /clear';
+      } else if (Number(pct) >= helpers.CTX_YELLOW_PCT) {
+        text += '\nContext ' + pct + '% — getting full';
       }
 
       const sseEvent = (eventType, data) => 'event: ' + eventType + '\ndata: ' + JSON.stringify(data) + '\n\n';
