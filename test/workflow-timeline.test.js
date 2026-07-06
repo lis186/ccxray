@@ -661,3 +661,77 @@ describe('workflow-timeline tail-follow sliding window (#138 Fix B)', () => {
     assert.equal(ctx.wfState.viewT1 - ctx.wfState.viewT0, 10000); // fixed span
   });
 });
+
+// ── #144 option B: per-agent identity color ──────────────────────────────────
+describe('#144 wfLaneColor — per-agent identity color', () => {
+  it('exposes wfLaneColor + wfComputeLaneColors', () => {
+    const ctx = loadWfModule();
+    assert.equal(typeof ctx.wfLaneColor, 'function');
+    assert.equal(typeof ctx.wfComputeLaneColors, 'function');
+  });
+
+  it('main lane gets a stable pinned color', () => {
+    const ctx = loadWfModule();
+    const a = ctx.wfLaneColor({ key: 'main', name: 'main' });
+    const b = ctx.wfLaneColor({ key: 'main', name: 'main' });
+    assert.ok(a, 'main color is non-empty');
+    assert.equal(a, b);
+  });
+
+  it('same lane.key -> same color across calls (stable identity)', () => {
+    const ctx = loadWfModule();
+    assert.equal(
+      ctx.wfLaneColor({ key: 'agent-general-purpose:abc123' }),
+      ctx.wfLaneColor({ key: 'agent-general-purpose:abc123' }),
+    );
+  });
+
+  it('main color differs from every hashed lane color', () => {
+    const ctx = loadWfModule();
+    const main = ctx.wfLaneColor({ key: 'main', name: 'main' });
+    for (const key of ['agent-a:1', 'agent-b:2', 'agent-c:3', 'agent-d:4', 'agent-e:5']) {
+      assert.notEqual(ctx.wfLaneColor({ key }), main);
+    }
+  });
+
+  it('wfComputeLaneColors: main + 5 concurrent hashed lanes are all distinct (open-addressing)', () => {
+    const ctx = loadWfModule();
+    const lanes = [
+      { key: 'main', name: 'main' },
+      { key: 'agent-a:1' }, { key: 'agent-b:2' }, { key: 'agent-c:3' },
+      { key: 'agent-d:4' }, { key: 'agent-e:5' },
+    ];
+    const map = ctx.wfComputeLaneColors(lanes);
+    const colors = lanes.map((l) => map.get(l.key));
+    assert.ok(colors.every(Boolean), 'every lane got a color');
+    assert.equal(new Set(colors).size, colors.length, 'all 6 lanes distinct');
+  });
+
+  it('lane and card read the same resolver -> same color for a lane', () => {
+    const ctx = loadWfModule();
+    const lane = { key: 'agent-explore:zzz', model: 'claude-haiku-4-5' };
+    // both the gutter and the card call wfLaneColor(lane); one source of truth
+    assert.equal(ctx.wfLaneColor(lane), ctx.wfLaneColor(lane));
+  });
+});
+
+// ── #142: workflow ctx zone color must share the >80/>=40 band contract ──────
+describe('#142 wfCtxZoneColor band boundaries', () => {
+  const t = (pct) => ({ ctxUsed: pct / 100 * 200000, maxContext: 200000 });
+  it('80% -> yellow, not red (boundary is >80)', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfCtxZoneColor(t(80)), '#d29922');
+  });
+  it('81% -> red', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfCtxZoneColor(t(81)), '#f85149');
+  });
+  it('40% -> yellow', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfCtxZoneColor(t(40)), '#d29922');
+  });
+  it('39% -> green', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfCtxZoneColor(t(39)), '#3fb950');
+  });
+});

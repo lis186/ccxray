@@ -369,6 +369,12 @@ function totalContextTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
+// #142: one named threshold source for the server-side context bands.
+const CTX_RED_PCT = 80, CTX_YELLOW_PCT = 40;
+function ctxBarColor(pct) {
+  return pct > CTX_RED_PCT ? '\x1b[31m' : pct >= CTX_YELLOW_PCT ? '\x1b[33m' : '\x1b[32m';
+}
+
 function printContextBar(usage, model, system, beta1m) {
   const { inferMaxContext } = require('./config');
   if (!usage) return;
@@ -385,7 +391,7 @@ function printContextBar(usage, model, system, beta1m) {
   const barWidth = 40;
   const filled = Math.round(barWidth * pct / 100);
   const empty = barWidth - filled;
-  const color = pct > 90 ? '\x1b[31m' : pct > 70 ? '\x1b[33m' : '\x1b[32m';
+  const color = ctxBarColor(pct);
   const bar = color + '█'.repeat(filled) + '\x1b[90m' + '░'.repeat(empty) + '\x1b[0m';
   console.log(`  Context ${bar} ${pct.toFixed(0)}% (${used.toLocaleString()} / ${maxCtx.toLocaleString()})`);
   const parts = [];
@@ -850,6 +856,9 @@ module.exports = {
   renderAttributionPrefix,
   totalContextTokens,
   printContextBar,
+  ctxBarColor,
+  CTX_RED_PCT,
+  CTX_YELLOW_PCT,
   computeThinkingDuration,
   parseSSEEvents,
   extractResponseTitle,

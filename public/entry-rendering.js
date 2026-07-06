@@ -111,7 +111,7 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   const windowSize = maxContext || DEFAULT_MAX_CTX;
   const pct = (total / windowSize * 100).toFixed(0);
   const usedPct = Math.min(100, total / windowSize * 100);
-  const barColor = usedPct > 90 ? 'var(--red)' : usedPct > 70 ? 'var(--yellow)' : null;
+  const barColor = ctxColor(usedPct);
 
   let bar = '<div class="ctx-big-bar" style="display:flex;height:8px;border-radius:2px;overflow:visible;margin:4px 0 2px;background:var(--border)">';
   for (const c of cats) {
@@ -122,7 +122,7 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   }
   bar += '</div>';
 
-  const pctColor = usedPct > 90 ? 'var(--red)' : usedPct > 70 ? 'var(--yellow)' : 'var(--dim)';
+  const pctColor = ctxColor(usedPct) || 'var(--dim)';
   const label = '<div style="font-size:10px;color:var(--dim)">' +
     fmt(total) + ' / ' + fmt(windowSize) + ' <span style="color:' + pctColor + '">(' + pct + '%)</span></div>';
 
@@ -140,7 +140,7 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
   const usedPct = Math.min(100, total / windowSize * 100);
-  const barColor = usedPct > 90 ? 'var(--red)' : usedPct > 70 ? 'var(--yellow)' : null;
+  const barColor = ctxColor(usedPct);
 
   // Each segment is a fraction of windowSize; bar total = usedPct% of full width
   let bar = '<div class="ctx-big-bar" style="display:flex;height:12px;border-radius:3px;overflow:visible;margin-bottom:6px;background:var(--border)">';

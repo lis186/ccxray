@@ -9,6 +9,12 @@ function isHttpStatusOk(status) {
   return status === 101 || (status >= 200 && status < 300);
 }
 
+// #142: single source for context-usage bands (pct>80 red / >=40 yellow / else safe).
+// Returns null for the safe band so each caller keeps its own "safe" color via `|| ...`.
+function ctxColor(pct) {
+  return pct > 80 ? 'var(--red)' : pct >= 40 ? 'var(--yellow)' : null;
+}
+
 // ── Toast notifications ──
 function showToast(message, duration) {
   duration = duration || 5000;
@@ -1762,7 +1768,7 @@ function renderBarChart(el, turns) {
   turns.forEach((e, i) => {
     const ctx = e.ctxUsed || 0;
     const pct = Math.min(100, ctx / maxCtx * 100);
-    const color = pct > 90 ? 'var(--red)' : pct > 80 ? 'var(--yellow)' : 'var(--accent)';
+    const color = ctxColor(pct) || 'var(--accent)';
     const x = PAD + i * barW;
     const barH = pct / 100 * (H - 2 * PAD);
     const y = H - PAD - barH;

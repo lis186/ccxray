@@ -15,6 +15,10 @@ const WF_MODEL_COLORS = {
   'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
   'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
 };
+// #144 option B: per-agent identity palette (docs/wf-color-identity/DESIGN.md).
+// `main` is pinned; the rest are hashed off lane.key. Palette = "relaxed" set:
+// avoids status red/yellow/green; dark-legible, CVD-clean (min ΔE00 ~12).
+const WF_LANE_COLORS = { main: '#42a3fd', hashed: ['#ffdbaa', '#dc7d96', '#a1a716', '#45f8ef', '#d1d843'] };
 const WF_LABEL_W = 240, WF_LANE_GAP = 4;
 // v8 ctx-split (#121): 44px ctx% bars + 8px cost track + event tracks (8px collapsed / 4×8px expanded)
 const WF_BAR_H = 44, WF_COST_TRACK_H = 8, WF_EV_H = 8, WF_EV_H_SEL = 32;
@@ -78,6 +82,36 @@ function wfModelColor(m) {
   return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || '#8b949e';
 }
 function wfShortModel(m) { return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, ''); }
+// #144: identity color keyed off lane.key (not model). One resolver for lane + card.
+function _wfFnv1a(s) {
+  var h = 0x811c9dc5;
+  for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+// Per-render assignment: main pinned, hashed lanes placed by hash with live-set
+// open-addressing so concurrently-visible lanes never share a color (up to pool
+// size). Beyond pool size a color repeats (honest collision; the label + lane
+// position disambiguate — a shape channel is the planned fast-follow).
+function wfComputeLaneColors(lanes) {
+  var map = new Map(), pool = WF_LANE_COLORS.hashed, used = new Set();
+  for (var i = 0; i < lanes.length; i++) if (_wfIsMainLane(lanes[i])) map.set(lanes[i].key, WF_LANE_COLORS.main);
+  for (var j = 0; j < lanes.length; j++) {
+    var l = lanes[j];
+    if (_wfIsMainLane(l)) continue;
+    var slot = _wfFnv1a(l.key || '') % pool.length;
+    for (var k = 0; k < pool.length && used.has(slot); k++) slot = (slot + 1) % pool.length;
+    used.add(slot);
+    map.set(l.key, pool[slot]);
+  }
+  return map;
+}
+function _wfIsMainLane(lane) { return lane && (lane.key === 'main' || lane.name === 'main'); }
+function wfLaneColor(lane) {
+  if (!lane) return WF_LANE_COLORS.main;
+  if (_wfIsMainLane(lane)) return WF_LANE_COLORS.main;
+  var c = wfState && wfState.laneColors && wfState.laneColors.get(lane.key);
+  return c || WF_LANE_COLORS.hashed[_wfFnv1a(lane.key || '') % WF_LANE_COLORS.hashed.length];
+}
 function wfFmtDur(ms) {
   if (ms < 1000) return Math.round(ms) + 'ms';
   if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
@@ -101,7 +135,7 @@ function wfCtxPct(e) {
 // ponytail: 3-zone context color — still used by minimap + step list
 function wfCtxZoneColor(t) {
   var pct = wfCtxPct(t);
-  return pct >= 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
+  return pct > 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
 }
 
 // v8 event detection against real SSE entry summaries (prev = previous turn in same lane)
@@ -456,7 +490,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
     : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
-  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfModelColor(lane.model) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -593,6 +627,10 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
 // ── SVG: Full Timeline ────────────────────────────────────────────────────
 function wfRenderTimeline() {
   if (!wfState || !wfState.lanes.length) return;
+
+  // #144: (re)assign identity colors over the current live lane set each render,
+  // so concurrent lanes stay distinct (open-addressing) as lanes appear/leave.
+  wfState.laneColors = wfComputeLaneColors(wfState.lanes);
 
   var existing = document.getElementById('wf-timeline');
   if (existing) existing.remove();
@@ -1251,8 +1289,8 @@ function _wfShowTooltip(e, t, lane) {
   var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
   var inT = (u.input_tokens || 0) + cr + cc;
   var pct = wfCtxPct(t);
-  var zone = pct >= 80 ? 'danger' : pct >= 40 ? 'dumb' : 'smart';
-  var zoneCls = pct >= 80 ? 'wf-tt-danger' : pct >= 40 ? 'wf-tt-warn' : 'wf-tt-good';
+  var zone = pct > 80 ? 'danger' : pct >= 40 ? 'dumb' : 'smart';
+  var zoneCls = pct > 80 ? 'wf-tt-danger' : pct >= 40 ? 'wf-tt-warn' : 'wf-tt-good';
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
@@ -1391,7 +1429,7 @@ function wfRenderAgentCard(lane) {
     var agentPanel = document.getElementById('wf-agent-card-panel');
   if (!lane || !agentPanel) return;
   var summary = wfLaneSummary(lane);
-  var color = wfModelColor(lane.model);
+  var color = wfLaneColor(lane);
 
   var toolTotals = {};
   for (var i = 0; i < lane.turns.length; i++) {
@@ -1548,7 +1586,7 @@ function wfRenderSteps(scrollToId) {
   if (!lane || !lane.turns.length) { el.innerHTML = '<div style="padding:12px;color:var(--dim)">Select a lane</div>'; return; }
 
   var turns = lane.turns;
-  var color = wfModelColor(lane.model);
+  var color = wfLaneColor(lane);
   var html = '<div class="wf-steps-header" style="padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">TIMELINE · <span style="color:' + color + '">● ' + wfEsc(lane.name) + '</span> · ' + turns.length + ' turns</div>';
 
   for (var idx = 0; idx < turns.length; idx++) {
@@ -1568,7 +1606,7 @@ function wfRenderSteps(scrollToId) {
     var u = t.usage || {};
     var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
     var cacheRate = (cr + cc) > 0 ? cr / (cr + cc) * 100 : 0;
-    var ctxColor = cacheRate >= 50 ? 'var(--dim)' : 'var(--yellow)';
+    var pctLabelColor = cacheRate >= 50 ? 'var(--dim)' : 'var(--yellow)';
     var dur = (parseFloat(t.elapsed) || 0) * 1000;
 
     html += '<div class="wf-step-row' + (isSel ? ' wf-step-selected' : '') + '" data-tid="' + t.id + '" style="display:grid;grid-template-columns:28px minmax(0,1fr) 50px 50px;align-items:start;padding:3px 8px;cursor:pointer;font-size:11px;border-left:3px solid ' + (isSel ? 'var(--accent)' : 'transparent') + ';background:' + (isSel ? 'var(--surface-active)' : 'transparent') + '">';
@@ -1584,7 +1622,7 @@ function wfRenderSteps(scrollToId) {
       if (tools.length > 4) html += '<span style="color:var(--dim)">+' + (tools.length - 4) + ' more</span>';
     }
     html += '</span>';
-    html += '<span style="text-align:right;color:' + ctxColor + '">' + pct.toFixed(1) + '%</span>';
+    html += '<span style="text-align:right;color:' + pctLabelColor + '">' + pct.toFixed(1) + '%</span>';
     html += '<span style="text-align:right;color:var(--dim)">' + wfFmtDur(dur) + '</span>';
     html += '</div>';
   }
