@@ -88,29 +88,77 @@ function _wfFnv1a(s) {
   for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return h >>> 0;
 }
+// #149: shape/glyph second channel — SVG primitives legible at ~10px on #0d1117.
+// main=circle (pinned); 8 hashed glyphs × 5 colors = 40 unique pairs before repeat.
+var WF_LANE_GLYPHS = { main: 'circle', hashed: ['square', 'triangleUp', 'diamond', 'plus', 'hollowCircle', 'hollowSquare', 'triangleDown', 'star'] };
+function wfGlyphSvg(glyph, cx, cy, s, fill) {
+  var r = s / 2;
+  switch (glyph) {
+    case 'circle': return '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="'+fill+'"/>';
+    case 'square': return '<rect x="'+(cx-r)+'" y="'+(cy-r)+'" width="'+s+'" height="'+s+'" fill="'+fill+'"/>';
+    case 'triangleUp': return '<polygon points="'+cx+','+(cy-r)+' '+(cx-r)+','+(cy+r)+' '+(cx+r)+','+(cy+r)+'" fill="'+fill+'"/>';
+    case 'diamond': return '<polygon points="'+cx+','+(cy-r)+' '+(cx+r)+','+cy+' '+cx+','+(cy+r)+' '+(cx-r)+','+cy+'" fill="'+fill+'"/>';
+    case 'plus': return '<path d="M'+(cx-r)+' '+cy+'H'+(cx+r)+'M'+cx+' '+(cy-r)+'V'+(cy+r)+'" stroke="'+fill+'" stroke-width="2" fill="none"/>';
+    case 'hollowCircle': return '<circle cx="'+cx+'" cy="'+cy+'" r="'+(r-1)+'" fill="none" stroke="'+fill+'" stroke-width="1.5"/>';
+    case 'hollowSquare': return '<rect x="'+(cx-r+1)+'" y="'+(cy-r+1)+'" width="'+(s-2)+'" height="'+(s-2)+'" fill="none" stroke="'+fill+'" stroke-width="1.5"/>';
+    case 'triangleDown': return '<polygon points="'+(cx-r)+','+(cy-r)+' '+(cx+r)+','+(cy-r)+' '+cx+','+(cy+r)+'" fill="'+fill+'"/>';
+    case 'star': var ir=r*0.4,p=''; for(var si=0;si<5;si++){var a=Math.PI/2+si*Math.PI*2/5;var b=a+Math.PI/5;p+=cx+Math.cos(-a)*r+','+( cy+Math.sin(-a)*r)+' '+cx+Math.cos(-b)*ir+','+(cy+Math.sin(-b)*ir)+' ';}return '<polygon points="'+p.trim()+'" fill="'+fill+'"/>';
+    default: return '<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="'+fill+'"/>';
+  }
+}
+function wfGlyphHtml(glyph, size, fill) {
+  var s = size || 8;
+  return '<svg width="'+s+'" height="'+s+'" viewBox="0 0 '+s+' '+s+'" style="vertical-align:middle;display:inline-block">'+wfGlyphSvg(glyph, s/2, s/2, s*0.8, fill)+'</svg>';
+}
 // Per-render assignment: main pinned, hashed lanes placed by hash with live-set
-// open-addressing so concurrently-visible lanes never share a color (up to pool
-// size). Beyond pool size a color repeats (honest collision; the label + lane
-// position disambiguate — a shape channel is the planned fast-follow).
-function wfComputeLaneColors(lanes) {
-  var map = new Map(), pool = WF_LANE_COLORS.hashed, used = new Set();
-  for (var i = 0; i < lanes.length; i++) if (_wfIsMainLane(lanes[i])) map.set(lanes[i].key, WF_LANE_COLORS.main);
+// open-addressing on color; glyph hashed independently, bumped to keep
+// (color,glyph) pairs jointly unique (5 colors × 8 glyphs = 40 combos).
+function wfComputeLaneStyles(lanes) {
+  var map = new Map(), cPool = WF_LANE_COLORS.hashed, gPool = WF_LANE_GLYPHS.hashed;
+  var usedColors = new Set(), usedPairs = new Set();
+  var mainStyle = { color: WF_LANE_COLORS.main, glyph: WF_LANE_GLYPHS.main };
+  usedPairs.add(mainStyle.color + ':' + mainStyle.glyph);
+  for (var i = 0; i < lanes.length; i++) if (_wfIsMainLane(lanes[i])) map.set(lanes[i].key, mainStyle);
   for (var j = 0; j < lanes.length; j++) {
     var l = lanes[j];
     if (_wfIsMainLane(l)) continue;
-    var slot = _wfFnv1a(l.key || '') % pool.length;
-    for (var k = 0; k < pool.length && used.has(slot); k++) slot = (slot + 1) % pool.length;
-    used.add(slot);
-    map.set(l.key, pool[slot]);
+    var h = _wfFnv1a(l.key || '');
+    var cSlot = h % cPool.length;
+    for (var k = 0; k < cPool.length && usedColors.has(cSlot); k++) cSlot = (cSlot + 1) % cPool.length;
+    usedColors.add(cSlot);
+    var ci = cSlot, gi = (h >>> 16) % gPool.length;
+    var pair = cPool[ci] + ':' + gPool[gi];
+    // ponytail: two-level probe — glyph first, bump color on glyph wrap, covers full 5×8 Cartesian
+    var giStart = gi, maxProbes = cPool.length * gPool.length;
+    for (var p = 0; p < maxProbes && usedPairs.has(pair); p++) {
+      gi = (gi + 1) % gPool.length;
+      if (gi === giStart) ci = (ci + 1) % cPool.length;
+      pair = cPool[ci] + ':' + gPool[gi];
+    }
+    usedPairs.add(pair);
+    map.set(l.key, { color: cPool[ci], glyph: gPool[gi] });
   }
+  return map;
+}
+// ponytail: backward-compat shim — callers that only need the color Map
+function wfComputeLaneColors(lanes) {
+  var styles = wfComputeLaneStyles(lanes);
+  var map = new Map();
+  for (var entry of styles) map.set(entry[0], entry[1].color);
   return map;
 }
 function _wfIsMainLane(lane) { return lane && (lane.key === 'main' || lane.name === 'main'); }
 function wfLaneColor(lane) {
   if (!lane) return WF_LANE_COLORS.main;
   if (_wfIsMainLane(lane)) return WF_LANE_COLORS.main;
-  var c = wfState && wfState.laneColors && wfState.laneColors.get(lane.key);
-  return c || WF_LANE_COLORS.hashed[_wfFnv1a(lane.key || '') % WF_LANE_COLORS.hashed.length];
+  var s = wfState && wfState.laneStyles && wfState.laneStyles.get(lane.key);
+  return (s && s.color) || WF_LANE_COLORS.hashed[_wfFnv1a(lane.key || '') % WF_LANE_COLORS.hashed.length];
+}
+function wfLaneShape(lane) {
+  if (!lane) return WF_LANE_GLYPHS.main;
+  if (_wfIsMainLane(lane)) return WF_LANE_GLYPHS.main;
+  var s = wfState && wfState.laneStyles && wfState.laneStyles.get(lane.key);
+  return (s && s.glyph) || WF_LANE_GLYPHS.hashed[(_wfFnv1a(lane.key || '') >>> 16) % WF_LANE_GLYPHS.hashed.length];
 }
 function wfFmtDur(ms) {
   if (ms < 1000) return Math.round(ms) + 'ms';
@@ -490,7 +538,8 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
     : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
-  svg += '<text x="8" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
+  svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(wfShortModel(lane.model)) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -628,9 +677,9 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
 function wfRenderTimeline() {
   if (!wfState || !wfState.lanes.length) return;
 
-  // #144: (re)assign identity colors over the current live lane set each render,
-  // so concurrent lanes stay distinct (open-addressing) as lanes appear/leave.
-  wfState.laneColors = wfComputeLaneColors(wfState.lanes);
+  // #144/#149: (re)assign identity (color+glyph) over the current live lane set
+  // each render, so concurrent lanes stay distinct as lanes appear/leave.
+  wfState.laneStyles = wfComputeLaneStyles(wfState.lanes);
 
   var existing = document.getElementById('wf-timeline');
   if (existing) existing.remove();
@@ -1439,7 +1488,7 @@ function wfRenderAgentCard(lane) {
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
-  html += '<div class="wf-ac-name">' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
+  html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
   html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
@@ -1587,7 +1636,7 @@ function wfRenderSteps(scrollToId) {
 
   var turns = lane.turns;
   var color = wfLaneColor(lane);
-  var html = '<div class="wf-steps-header" style="padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">TIMELINE · <span style="color:' + color + '">● ' + wfEsc(lane.name) + '</span> · ' + turns.length + ' turns</div>';
+  var html = '<div class="wf-steps-header" style="padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">TIMELINE · <span style="color:' + color + '">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + '</span> · ' + turns.length + ' turns</div>';
 
   for (var idx = 0; idx < turns.length; idx++) {
     var t = turns[idx];

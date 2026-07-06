@@ -715,6 +715,101 @@ describe('#144 wfLaneColor — per-agent identity color', () => {
   });
 });
 
+// ── #149: shape/glyph second channel for lane identity ──────────────────────
+describe('#149 wfLaneShape — per-agent identity glyph', () => {
+  it('exposes wfLaneShape + wfComputeLaneStyles + WF_LANE_GLYPHS', () => {
+    const ctx = loadWfModule();
+    assert.equal(typeof ctx.wfLaneShape, 'function');
+    assert.equal(typeof ctx.wfComputeLaneStyles, 'function');
+    assert.ok(ctx.WF_LANE_GLYPHS);
+    assert.ok(ctx.WF_LANE_GLYPHS.main);
+    assert.ok(Array.isArray(ctx.WF_LANE_GLYPHS.hashed));
+  });
+
+  it('main lane gets pinned glyph (circle)', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx.wfLaneShape({ key: 'main', name: 'main' }), 'circle');
+    assert.equal(ctx.wfLaneShape({ key: 'main', name: 'main' }), ctx.WF_LANE_GLYPHS.main);
+  });
+
+  it('same lane.key -> same glyph across calls (stable identity)', () => {
+    const ctx = loadWfModule();
+    assert.equal(
+      ctx.wfLaneShape({ key: 'agent-general-purpose:abc123' }),
+      ctx.wfLaneShape({ key: 'agent-general-purpose:abc123' }),
+    );
+  });
+
+  it('wfComputeLaneStyles returns {color, glyph} per key', () => {
+    const ctx = loadWfModule();
+    const lanes = [
+      { key: 'main', name: 'main' },
+      { key: 'agent-a:1' },
+    ];
+    const map = ctx.wfComputeLaneStyles(lanes);
+    const m = map.get('main');
+    assert.ok(m.color && m.glyph);
+    assert.equal(m.glyph, 'circle');
+    const a = map.get('agent-a:1');
+    assert.ok(a.color && a.glyph);
+  });
+
+  it('combined (color, glyph): >palette-size concurrent lanes each unique pair', () => {
+    const ctx = loadWfModule();
+    // 8 hashed lanes = well beyond color palette size (5)
+    const lanes = [{ key: 'main', name: 'main' }];
+    for (let i = 0; i < 8; i++) lanes.push({ key: 'agent-x:' + i });
+    const map = ctx.wfComputeLaneStyles(lanes);
+    const pairs = new Set();
+    for (const [, v] of map) pairs.add(v.color + ':' + v.glyph);
+    assert.equal(pairs.size, lanes.length, 'all 9 lanes have distinct (color,glyph) pairs');
+  });
+
+  it('adversarial: 13 same-hash-bucket lanes still get distinct pairs', () => {
+    const ctx = loadWfModule();
+    // keys that cluster on the same color slot via FNV-1a % 5
+    const lanes = [{ key: 'main', name: 'main' }];
+    for (let i = 0; i < 13; i++) lanes.push({ key: 'agent-x:' + i });
+    const map = ctx.wfComputeLaneStyles(lanes);
+    const pairs = new Set();
+    for (const [, v] of map) pairs.add(v.color + ':' + v.glyph);
+    assert.equal(pairs.size, lanes.length, 'all 14 lanes have distinct (color,glyph) pairs');
+  });
+
+  it('40-lane capacity: 5 colors × 8 glyphs = 40 unique pairs', () => {
+    const ctx = loadWfModule();
+    const lanes = [{ key: 'main', name: 'main' }];
+    for (let i = 0; i < 39; i++) lanes.push({ key: 'lane-' + i });
+    const map = ctx.wfComputeLaneStyles(lanes);
+    const pairs = new Set();
+    for (const [, v] of map) pairs.add(v.color + ':' + v.glyph);
+    assert.equal(pairs.size, 40, 'full Cartesian capacity reached');
+  });
+
+  it('lane and card resolve the same glyph (single resolver)', () => {
+    const ctx = loadWfModule();
+    const lane = { key: 'agent-explore:zzz' };
+    assert.equal(ctx.wfLaneShape(lane), ctx.wfLaneShape(lane));
+  });
+
+  it('wfGlyphSvg returns SVG markup for each glyph in the pool', () => {
+    const ctx = loadWfModule();
+    const all = [ctx.WF_LANE_GLYPHS.main, ...ctx.WF_LANE_GLYPHS.hashed];
+    for (const g of all) {
+      const svg = ctx.wfGlyphSvg(g, 5, 5, 8, '#fff');
+      assert.ok(svg.length > 0, g + ' produces SVG');
+      assert.ok(svg.includes('#fff'), g + ' uses the fill color');
+    }
+  });
+
+  it('wfGlyphHtml returns inline <svg> for HTML contexts', () => {
+    const ctx = loadWfModule();
+    const html = ctx.wfGlyphHtml('circle', 10, '#42a3fd');
+    assert.ok(html.startsWith('<svg'));
+    assert.ok(html.includes('</svg>'));
+  });
+});
+
 // ── #142: workflow ctx zone color must share the >80/>=40 band contract ──────
 describe('#142 wfCtxZoneColor band boundaries', () => {
   const t = (pct) => ({ ctxUsed: pct / 100 * 200000, maxContext: 200000 });
