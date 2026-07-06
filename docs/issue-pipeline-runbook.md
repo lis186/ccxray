@@ -11,6 +11,19 @@
 - **不停、直接做**：開分支/worktree、commit、開 PR、跑測試與 smoke、重驗證據、修 review findings、留 issue/PR comment、批內序列推進下一張。
 - 不確定屬於哪類時，看「錯了能不能廉價回滾」——能就做、做完報告；不能就停。
 
+## 模型選擇原則（依複雜度）
+
+Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
+
+| 模型 | 適用子工作 | 判斷準則 |
+|---|---|---|
+| `haiku` | Explore 重驗 subagent | 純讀檔比對 file:line，無邏輯判斷 |
+| `haiku` | 驗證 subagent | 跑 diff-check / rg / npm test，讀腳本輸出 |
+| `sonnet` | 開發 subagent — 簡單修復 | 改動 ≤2 個函式、有明確 file:line、Batch 0/2 一般 issue |
+| `opus` | 開發 subagent — 複雜重構 | 跨模組依賴、多層抽象、有架構設計判斷；Batch 3（#158/#159/#160）一律 opus |
+
+複雜度不確定時，優先 `sonnet`；Batch 3+ 預設 `opus`。
+
 ## 真相來源：GitHub，不是 session 記憶
 
 - 每批開始先 `gh issue list --state open` + `gh pr list` 重讀實況；**同時 `git log --oneline -5` + `git status` 重驗 git 狀態**（session 快照與記憶都會過時；本機有自動 sync 會推 main，分支可能已被 rebase/merge）。
