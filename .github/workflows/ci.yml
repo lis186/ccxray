@@ -19,6 +19,8 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      - name: Audit dependencies (high+)
+        run: npm audit --audit-level=high
       # Run against an empty CCXRAY_HOME so a test that forgets to isolate
       # (rule 1 in docs/testing.md) can't read the real ~/.ccxray and starts
       # from an empty log dir. $HOME is left untouched so puppeteer's Chrome
