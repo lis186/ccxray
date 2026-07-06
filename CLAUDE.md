@@ -43,6 +43,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 
 **Maintenance rule**: when you add a test that reads `CCXRAY_HOME`, depends on `$HOME`, or introduces a new fixture shape, keep `docs/testing.md` accurate — especially the `$HOME` vs `CCXRAY_HOME` distinction (scrubbing `$HOME` broadly breaks the puppeteer browser e2e tests).
 
+**Verification rule**: 修 bug 類改動宣告完成前，須依 `docs/verification-principles.md` 附差異檢查證據——同一測試在舊碼 FAIL、新碼 PASS（fallback 流程見該文件末段）。純重構若出現 fail-on-old 的測試，視為行為變更警訊而非成就。效能改動附同條件 before/after 中位數，不收體感。
+
 ## Wire Protocol Documentation
 
 `docs/wire-protocol-reference.md` documents observable wire-level differences between Claude Code (Anthropic Messages API) and Codex (OpenAI Responses API). Every field is tagged with a confidence level (`contractual`, `obs-stable`, `obs-fragile`) and a version range.
