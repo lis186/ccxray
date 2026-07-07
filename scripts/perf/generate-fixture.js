@@ -175,7 +175,8 @@ async function generate({ entries: numEntries = DEFAULT_ENTRIES, output } = {}) 
     coreHash: shortHash(9997),
   };
 
-  let baseMs = new Date('2026-01-15T10:00:00.000Z').getTime();
+  // ponytail: use recent dates so server's RESTORE_DAYS filter doesn't discard them
+  let baseMs = Date.now() - 3 * 24 * 60 * 60 * 1000; // 3 days ago
   const allEntries = [];  // { id, indexLine, reqJson, resJson }
 
   // ── 1. Delta chain (8 hops) ─────────────────────────────────────
