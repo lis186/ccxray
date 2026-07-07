@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ccxray Git Graph</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --red: #f85149;
+  --yellow: #d29922;
+  --orange: #db6d28;
+  --purple: #bc8cff;
+  --pink: #f778ba;
+  --cyan: #39d353;
+  --teal: #2ea043;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  overflow-x: hidden;
+}
+
+/* ── Header ── */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.header-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.header-title span {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.session-select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  min-width: 280px;
+}
+
+.session-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(88,166,255,0.15);
+}
+
+.session-desc {
+  font-size: 12px;
+  color: var(--dim);
+  flex: 1;
+}
+
+/* ── Column Header ── */
+.col-header {
+  display: grid;
+  grid-template-columns: var(--graph-col-width, 320px) 1fr 110px 120px 90px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 49px;
+  z-index: 99;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--dim);
+}
+
+.col-header > div {
+  padding: 8px 12px;
+  border-right: 1px solid var(--border);
+}
+
+.col-header > div:last-child { border-right: none; }
+
+/* ── Main Container ── */
+.graph-container {
+  position: relative;
+}
+
+/* ── Row ── */
+.graph-row {
+  display: grid;
+  grid-template-columns: var(--graph-col-width, 320px) 1fr 110px 120px 90px;
+  min-height: 48px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+
+.graph-row:hover {
+  background: rgba(88,166,255,0.04);
+}
+
+.graph-row .cell {
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.graph-row .cell:last-child { border-right: none; }
+
+/* Graph cell */
+.graph-cell {
+  position: relative;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+
+/* Description cell */
+.desc-cell {
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  background: rgba(88,166,255,0.12);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.tool-chip.spawn {
+  background: rgba(219,109,40,0.15);
+  color: var(--orange);
+}
+
+.tool-chip.spawn::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--orange);
+  margin-right: 2px;
+}
+
+.agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-badge .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Model cell */
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.model-badge.opus-4-8 {
+  background: rgba(188,140,255,0.15);
+  color: var(--purple);
+}
+
+.model-badge.opus-4-6 {
+  background: rgba(88,166,255,0.12);
+  color: var(--accent);
+}
+
+.model-badge.sonnet-4-6 {
+  background: rgba(63,185,80,0.12);
+  color: var(--green);
+}
+
+.model-badge.haiku-4-5 {
+  background: rgba(210,153,34,0.15);
+  color: var(--yellow);
+}
+
+/* Context cell */
+.context-cell {
+  flex-direction: column;
+  align-items: flex-start !important;
+  gap: 3px;
+  padding: 6px 12px !important;
+}
+
+.context-bar-outer {
+  width: 100%;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.context-bar-inner {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.context-text {
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Duration cell */
+.duration-cell {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* ── Tooltip ── */
+.tooltip {
+  position: fixed;
+  z-index: 200;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  pointer-events: none;
+  max-width: 320px;
+  display: none;
+}
+
+.tooltip .tt-label {
+  color: var(--dim);
+  margin-right: 6px;
+}
+
+.tooltip .tt-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.tooltip .tt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.tooltip .tt-divider {
+  border-top: 1px solid var(--border);
+  margin: 6px 0;
+}
+
+/* ── Legend ── */
+.legend-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--dim);
+  flex-wrap: wrap;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend-swatch {
+  width: 12px;
+  height: 3px;
+  border-radius: 1.5px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-title">ccxray <span>Git Graph</span></div>
+  <select class="session-select" id="sessionSelect"></select>
+  <div class="session-desc" id="sessionDesc"></div>
+</div>
+
+<div class="legend-bar" id="legendBar"></div>
+
+<div class="col-header" id="colHeader">
+  <div>GRAPH</div>
+  <div>DESCRIPTION</div>
+  <div>MODEL</div>
+  <div>CONTEXT</div>
+  <div>DURATION</div>
+</div>
+
+<div class="graph-container" id="graphContainer"></div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script src="gitgraph.js"></script>
+</body>
+</html>

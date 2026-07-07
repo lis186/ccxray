@@ -174,7 +174,7 @@ function wfFmtMin(ms, base) {
   return h + 'h' + (m ? m + 'm' : '');
 }
 // ponytail: reuse escapeHtml from miller-columns.js (loaded before us)
-var wfEsc = typeof escapeHtml === 'function' ? escapeHtml : function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
+var wfEsc = typeof escapeHtml === 'function' ? escapeHtml : function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
 
 function wfCtxPct(e) {
   var win = e.maxContext || 200000;

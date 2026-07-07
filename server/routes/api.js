@@ -96,7 +96,8 @@ function handleApiRoutes(clientReq, clientRes) {
   if (clientReq.url.startsWith('/_api/tools-diff')) {
     const params = new URLSearchParams(clientReq.url.split('?')[1] || '');
     const hashA = params.get('a'), hashB = params.get('b');
-    if (!hashA || !hashB) {
+    const HASH_RE = /^[0-9a-f]{12}$/i;
+    if (!hashA || !hashB || !HASH_RE.test(hashA) || !HASH_RE.test(hashB)) {
       clientRes.writeHead(400, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify({ error: 'missing a or b param' }));
       return true;
