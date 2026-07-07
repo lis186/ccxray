@@ -175,6 +175,7 @@ async function openSystemPromptPanel(forceDiff) {
   }
 
   if (!spAgents.length) {
+    const panel = document.getElementById('diff-text-panel');
     if (panel) panel.innerHTML = '<div style="color:var(--dim);font-size:11px">No versions found.</div>';
     return;
   }
