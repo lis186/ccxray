@@ -83,19 +83,21 @@ const SP_BLOCK_OWNERS = {
   autoMemory: 'user', customAgents: 'user',
 };
 
+// eslint-disable-next-line no-var -- file-scope var so vm.runInContext tests can read B2_MARKER_DEFS (a top-level const does not attach to the context global)
+var B2_MARKER_DEFS = [
+  { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
+  { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
+  { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
+  { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
+  { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
+  { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
+  { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
+];
+
 function splitB2IntoBlocks(b2) {
-  const markerDefs = [
-    { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
-    { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
-    { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
-    { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
-    { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
-    { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
-    { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
-  ];
   var positions = [];
-  for (var i = 0; i < markerDefs.length; i++) {
-    var m = markerDefs[i];
+  for (var i = 0; i < B2_MARKER_DEFS.length; i++) {
+    var m = B2_MARKER_DEFS[i];
     var match = m.pattern.exec(b2);
     if (match) positions.push({ key: m.key, index: match.index });
   }
