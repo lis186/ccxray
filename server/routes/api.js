@@ -171,7 +171,7 @@ function handleApiRoutes(clientReq, clientRes) {
   const entryMatch = pathname.match(/^\/_api\/entry\/(.+)$/);
   if (entryMatch) {
     const id = decodeURIComponent(entryMatch[1]);
-    const entry = store.entries.find(e => e.id === id);
+    const entry = store.getEntryById(id);
     if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
       await loadEntryReqRes(entry);
@@ -190,7 +190,7 @@ function handleApiRoutes(clientReq, clientRes) {
   const tokMatch = pathname.match(/^\/_api\/tokens\/(.+)$/);
   if (tokMatch) {
     const id = decodeURIComponent(tokMatch[1]);
-    const entry = store.entries.find(e => e.id === id);
+    const entry = store.getEntryById(id);
     if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
       if (!entry.tokens) {

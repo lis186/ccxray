@@ -45,7 +45,7 @@ function loadEntryReqRes(entry) {
         // gracefully — the delta portion is returned as-is.
         let messages = stripped.messages || [];
         if (stripped.prevId != null && stripped.msgOffset != null) {
-          const prevEntry = store.entries.find(e => e.id === stripped.prevId);
+          const prevEntry = store.getEntryById(stripped.prevId);
           if (prevEntry) {
             await loadEntryReqRes(prevEntry);
             if (Array.isArray(prevEntry.req?.messages)) {
@@ -181,7 +181,9 @@ async function restoreFromLogs() {
       }
     }
 
-    store.entries.push({ ...meta, req: null, res: null, _loaded: false });
+    const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
+    store.entries.push(restoredEntry);
+    store.entryIndex.set(meta.id, restoredEntry);
 
     // Track earliest timestamp per sysHash for version dating
     if (meta.sysHash && meta.id) {

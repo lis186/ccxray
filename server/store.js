@@ -8,6 +8,7 @@ const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
 const entries = [];
+const entryIndex = new Map(); // id → entry for O(1) delta chain lookup
 const sseClients = [];
 const restoreState = {
   phase: 'idle',
@@ -21,8 +22,13 @@ const restoreState = {
 
 function trimEntries() {
   if (entries.length > MAX_ENTRIES) {
-    entries.splice(0, entries.length - MAX_ENTRIES);
+    const removed = entries.splice(0, entries.length - MAX_ENTRIES);
+    for (const e of removed) entryIndex.delete(e.id);
   }
+}
+
+function getEntryById(id) {
+  return entryIndex.get(id) || entries.find(e => e.id === id) || null;
 }
 
 // ── Rate limit state (from Anthropic response headers) ──────────────
@@ -360,7 +366,9 @@ function computeSessionResume(sessionId, provider) {
 module.exports = {
   MAX_ENTRIES,
   entries,
+  entryIndex,
   trimEntries,
+  getEntryById,
   sseClients,
   restoreState,
   setRestoreState,
