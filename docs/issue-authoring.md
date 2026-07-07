@@ -15,6 +15,8 @@ Blocks: #NNN（或「無」）
 Related: #NNN（可省略）
 ```
 
+**Hard gate 僅 `Blocked-by:`**——它是 dependency resolver 的唯一輸入，缺它 pre-flight lint 即判 `pipeline:needs-owner`。`Blocks:` 為 **advisory**（建議填、pre-flight 提示但不擋）：它是同一條相依邊的反向宣告、可從其他 issue 的 `Blocked-by:` 反推，雙向宣告也無從機械驗一致性。`Related:` 可省略。此與 `docs/issue-pipeline-runbook.md` step 0 及 `scripts/pipeline/issue-lint.sh` 的實際 gate 行為一致。
+
 ### 2. 驗收 schema
 
 驗收段必須包含：
