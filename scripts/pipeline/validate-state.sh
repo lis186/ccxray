@@ -68,8 +68,17 @@ done
 # 回傳連結某 issue 的 PR 號（空 = 無）
 pr_for() { grep -E "^$1=" <<<"$pr_linked" | head -1 | cut -d= -f2 || true; }
 
-# 從 body 首 20 行擷取 Blocked-by 的 issue 號（「無」→ 空）
-blockers_of() { printf '%s\n' "$1" | head -n 20 | grep -iE '^[[:space:]]*Blocked-by:' | head -1 | grep -oE '#[0-9]+' | tr -d '#' || true; }
+# 從 body 首 20 行擷取 Blocked-by 的 issue 號。值以「無」開頭 → 空，
+# 且忽略其後的括號註解（否則 `Blocked-by: 無（與 #166/#167 平行）` 會把註解裡的
+# #166/#167 誤抓成 blocker）。
+blockers_of() {
+  local line val
+  line="$(printf '%s\n' "$1" | head -n 20 | grep -iE '^[[:space:]]*Blocked-by:' | head -1 || true)"
+  [[ -z "$line" ]] && return 0
+  val="$(sed -E 's/^[[:space:]]*[Bb]locked-by:[[:space:]]*//' <<<"$line")"
+  [[ "$val" == 無* ]] && return 0
+  grep -oE '#[0-9]+' <<<"$val" | tr -d '#' || true
+}
 
 rows=()          # tab-separated: num|current|parsed|illegal|pr|blockers|lint|proposed|action
 any_illegal=0

@@ -75,6 +75,12 @@ describe('validate-state normalizer (fixture dry-run)', () => {
     assert.equal(rows['907'].proposed, 'needs_owner');
   });
 
+  it('「無」with a parenthetical mentioning #refs is NOT parsed as blockers', () => {
+    // Blocked-by: 無（與 #999 平行）——#999 是註解，不是相依；舊碼會誤抓成 blocker
+    assert.equal(rows['910'].blockers, '-');
+    assert.equal(rows['910'].proposed, 'untriaged');
+  });
+
   it('failure-budget blocked (blocked label, Blocked-by: 無) is NOT stale → stays blocked', () => {
     // 兩次失敗型 blocked 無相依宣告；舊碼誤判 stale-blocked→needs_owner，新碼須維持 blocked
     assert.equal(rows['908'].parsed, 'blocked');
