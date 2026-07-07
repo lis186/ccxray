@@ -31,6 +31,13 @@
   "bugs": {
     "url": "https://github.com/lis186/ccxray/issues"
   },
+  "files": [
+    "server/",
+    "public/",
+    "shared/",
+    "README*.md",
+    "LICENSE"
+  ],
   "type": "commonjs",
   "engines": {
     "node": ">=18"

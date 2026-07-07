@@ -14,6 +14,15 @@ const path = require('path');
  *   local adapter, so non-local backends (e.g. S3) never touch the local FS.
  * @returns {import('./interface').StorageAdapter}
  */
+function safeJoin(base, filename) {
+  if (filename.includes('\0')) throw new Error(`unsafe filename: NUL byte`);
+  const resolved = path.resolve(base, filename);
+  if (!resolved.startsWith(path.resolve(base) + path.sep) && resolved !== path.resolve(base)) {
+    throw new Error(`unsafe filename: traversal detected`);
+  }
+  return resolved;
+}
+
 function createLocalStorage(logsDir, opts = {}) {
   const sharedDir = path.join(logsDir, 'shared');
   const indexPath = path.join(logsDir, 'index.ndjson');
@@ -94,7 +103,7 @@ function createLocalStorage(logsDir, opts = {}) {
     // ── Shared content-addressed storage (shared/) ───────────────────
 
     async writeSharedIfAbsent(filename, data) {
-      const p = path.join(sharedDir, filename);
+      const p = safeJoin(sharedDir, filename);
       try {
         await fsp.writeFile(p, data, { flag: 'wx' });
       } catch (e) {
@@ -103,12 +112,12 @@ function createLocalStorage(logsDir, opts = {}) {
     },
 
     async readShared(filename) {
-      return fsp.readFile(path.join(sharedDir, filename), 'utf8');
+      return fsp.readFile(safeJoin(sharedDir, filename), 'utf8');
     },
 
     async statShared(filename) {
       try {
-        return await fsp.stat(path.join(sharedDir, filename));
+        return await fsp.stat(safeJoin(sharedDir, filename));
       } catch { return null; }
     },
 

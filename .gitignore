@@ -14,7 +14,10 @@ reference/
 dogfood-output/
 skills-lock.json
 videos/
-ccxray-init.png
+# root-level dogfood screenshots (design assets belong in docs/ or prototype/*/assets/)
+/*.png
+# raw dogfood originals kept for reference/re-crop, never committed
+.dogfood-backup/
 docs/src/
 .tmp/
 handoff.md

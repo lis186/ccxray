@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ccxray · Workflow View Prototypes</title>
+<style>
+  body { margin: 0; background: #0d1117; color: #e6edf3; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .header { padding: 24px 32px 16px; border-bottom: 1px solid #30363d; }
+  h1 { margin: 0 0 8px; font-size: 20px; font-weight: 700; }
+  .sub { color: #8b949e; font-size: 13px; }
+  .cards { display: flex; gap: 20px; padding: 32px; flex-wrap: wrap; }
+  .card {
+    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
+    padding: 24px; width: 320px; cursor: pointer; transition: border-color 0.15s;
+    text-decoration: none; color: inherit;
+  }
+  .card:hover { border-color: #58a6ff; }
+  .card h2 { margin: 0 0 8px; font-size: 16px; }
+  .card .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-bottom: 12px; }
+  .card p { color: #8b949e; font-size: 13px; line-height: 1.5; margin: 0; }
+  .tag-a { background: #1a365d; color: #58a6ff; }
+  .tag-b { background: #2a1f3d; color: #bc8cff; }
+  .tag-c { background: #3d1f1a; color: #ff8a65; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>ccxray · Workflow View Prototypes</h1>
+  <div class="sub">Issue #91 — 三個方向，五個真實 session，選一個繼續</div>
+</div>
+<div class="cards">
+  <a class="card" href="swimlane/index.html">
+    <span class="tag tag-a">A</span>
+    <h2>Swimlane Flow</h2>
+    <p>水平泳道，X = wall-clock time。Bar 寬度 ∝ duration，內部 fill ∝ context usage。Spawn/fan-in 曲線連接 lanes。</p>
+  </a>
+  <a class="card" href="gitgraph/index.html">
+    <span class="tag tag-b">B</span>
+    <h2>Git Graph</h2>
+    <p>垂直拓撲，彩色分叉線。節點 + 右側詳情欄（model、context、duration）。靈感來自 Git Graph+。</p>
+  </a>
+  <a class="card" href="heatmap/index.html">
+    <span class="tag tag-c">C</span>
+    <h2>Context Heatmap Swim</h2>
+    <p>水平泳道，色溫為主視覺。Context usage 決定 bar 顏色（藍→紅），sparkline 顯示 context 趨勢。</p>
+  </a>
+  <a class="card" href="swimlane/turnbar-proto.html">
+    <span class="tag tag-a">A+</span>
+    <h2>Turn Bar 設計演進 v1→v6</h2>
+    <p>教學用：6 個版本垂直排列，展示 4D bar 編碼（height=cost · hue=zone · lightness=ctx% · pulse=danger）+ event track + filter 的迭代過程與每輪修了什麼。</p>
+  </a>
+  <a class="card" href="swimlane/dashboard-v6.html">
+    <span class="tag tag-a">A+</span>
+    <h2>Dashboard 整合 Mock (v6)</h2>
+    <p>最終形態模擬：lane heads 左欄（agent 命名 + session weather ⛈️）+ 可展開 4 分類事件軌道（點 lane head）+ Usage-style filter + statusbar 聚合健康度。</p>
+  </a>
+  <a class="card" href="swimlane/dashboard-v7-waterline.html">
+    <span class="tag tag-b">v7</span>
+    <h2>Waterline (v7, 9.26/10)</h2>
+    <p>Autoresearch 3 輪收案：bar 降 2.5 維（height=cost + 3 平色），context 趨勢拆到 8px 灰階水位帶——L* 線性 #424242→#9b9b9b，≥80% 等亮轉紅 + 2px contour + pulse。「高=貴 · 色=區 · 位=勢 · 線=界 · 點=事」</p>
+  </a>
+</div>
+</body>
+</html>
