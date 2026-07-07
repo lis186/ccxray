@@ -32,8 +32,10 @@ function readAllAccounts(statusDir) {
 
   for (const name of entries) {
     if (!name.endsWith('.json')) continue;
+    const filePath = path.resolve(statusDir, name);
+    if (!filePath.startsWith(path.resolve(statusDir))) continue;
     try {
-      const raw = fs.readFileSync(path.join(statusDir, name), 'utf8');
+      const raw = fs.readFileSync(filePath, 'utf8');
       const snap = JSON.parse(raw);
       if (!snap.id || !snap.fiveHour) continue;
 
