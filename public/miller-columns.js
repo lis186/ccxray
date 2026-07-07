@@ -1506,7 +1506,8 @@ function renderSessionItem(sess, sid) {
   const isHeld = currentPending && currentPending.sessionId === sid;
   const sdotClasses = 'sdot ' + getStatusClass(sid) + (isArmed ? ' sdot-armed' : '');
   const sdotTitle = !isOnline ? '' : isArmed ? 'Intercept armed · click to disable' : 'Click to arm intercept';
-  const sdotOnclick = isOnline ? 'event.stopPropagation();toggleIntercept(&quot;' + escapeHtml(sid) + '&quot;)' : '';
+  const sdotOnclick = isOnline ? 'event.stopPropagation();toggleIntercept(this.dataset.sid)' : '';
+  const sdotDataSid = isOnline ? ' data-sid="' + escapeHtml(sid) + '"' : '';
   const heldHtml = isHeld ? '<span class="held-badge" onclick="event.stopPropagation();showInterceptOverlay()">HELD</span>' : '';
   const pinBtn = renderStarBadge('session', sid);
   const titleRow = sess.title
@@ -1516,10 +1517,10 @@ function renderSessionItem(sess, sid) {
   // resumed (e.g. a codex session that only errored before any turn completed).
   const resumeCmd = sess.resumeCommand || null;
   const copyBtn = resumeCmd
-    ? '<button class="launch-btn" onclick="event.stopPropagation();copySessionContinue(&quot;' + escapeHtml(resumeCmd) + '&quot;,this)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>'
+    ? '<button class="launch-btn" data-resume="' + escapeHtml(resumeCmd) + '" onclick="event.stopPropagation();copySessionContinue(this.dataset.resume,this)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>'
     : '';
   return '<div class="si-row1">' +
-    '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
+    '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + sdotDataSid + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
     copyBtn +
     heldHtml +
@@ -1678,7 +1679,7 @@ function selectProject(name) {
 
 function escapeHtml(s) {
   if (typeof s !== 'string') s = JSON.stringify(s, null, 2);
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
