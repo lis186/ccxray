@@ -43,6 +43,15 @@ describe('scrub-output gate', () => {
     assert.match(r.stderr, /R1b/);
   });
 
+  it('UNCLOSED fenced block (open ``` + 60 lines, no close) → blocked', () => {
+    // 未閉合 fence：GitHub 仍會把後續整段 render 成 code block，等同 dump 逃逸
+    const text = ['```', ...Array.from({ length: 60 }, (_, i) => `dump ${i}`)].join('\n');
+    const r = scrub(text);
+    assert.equal(r.status, 1);
+    assert.equal(r.stdout, '');
+    assert.match(r.stderr, /R1/);
+  });
+
   it('secret split across a newline still trips (sk- threshold lowered)', () => {
     const r = scrub('key:\nsk-abcdefghijkl\nmnopqrstuvwx1234567890');
     assert.equal(r.status, 1);

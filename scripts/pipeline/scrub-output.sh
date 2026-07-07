@@ -46,7 +46,8 @@ violations=()
 read -r maxlen totlen < <(awk '
   /^[[:space:]]*```/ { if (inf) { if (cnt>mx) mx=cnt; tot+=cnt; inf=0 } else { inf=1; cnt=0 }; next }
   inf { cnt++ }
-  END { printf "%d %d\n", mx+0, tot+0 }
+  # 未閉合 fence（開了 ``` 但 EOF 前沒收尾）：尾端行數也要計入，否則整坨 dump 逃逸
+  END { if (inf) { if (cnt>mx) mx=cnt; tot+=cnt } printf "%d %d\n", mx+0, tot+0 }
 ' <<<"$text")
 if [[ "$maxlen" -gt "$max_fence" ]]; then
   violations+=("R1a 單一 fenced 區塊過長（${maxlen} 行 > ${max_fence}）：改貼 bounded excerpt / hash / exit code")
