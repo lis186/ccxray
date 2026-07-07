@@ -22,6 +22,16 @@ function logUnknownAgent(b2, key) {
 
 // ── System prompt diff helpers ───────────────────────────────────────
 
+const B2_MARKER_DEFS = [
+  { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
+  { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
+  { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
+  { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
+  { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
+  { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
+  { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
+];
+
 const BLOCK_OWNERS_SERVER = {
   billingHeader: 'anthropic', coreIdentity: 'anthropic', coreInstructions: 'anthropic',
   customSkills: 'user', pluginSkills: 'user', mcpServersList: 'user', settingsJson: 'user', envAndGit: 'user',
@@ -102,17 +112,8 @@ function extractPromptAgentType(provider, req) {
 }
 
 function splitB2IntoBlocks(b2) {
-  const markerDefs = [
-    { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
-    { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
-    { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
-    { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
-    { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
-    { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
-    { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
-  ];
   const positions = [];
-  for (const m of markerDefs) {
+  for (const m of B2_MARKER_DEFS) {
     const match = m.pattern.exec(b2);
     if (match) positions.push({ key: m.key, index: match.index });
   }
@@ -213,6 +214,7 @@ function computeUnifiedDiff(textA, textB, labelA, labelB) {
 }
 
 module.exports = {
+  B2_MARKER_DEFS,
   BLOCK_OWNERS_SERVER,
   extractAgentType,
   extractPromptAgentType,

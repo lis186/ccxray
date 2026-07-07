@@ -25,6 +25,17 @@ function safeCountTokens(text) {
 }
 
 // ── Context Breakdown Analysis ───────────────────────────────────────
+
+const B2_MARKER_DEFS = [
+  { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
+  { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
+  { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
+  { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
+  { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
+  { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
+  { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
+];
+
 const TOOL_CATEGORIES = {
   core:  ['Bash','Read','Write','Edit','Glob','Grep','WebFetch','WebSearch','NotebookEdit','ToolSearch'],
   agent: ['Agent','Skill','TaskOutput','TaskStop','AskUserQuestion','EnterPlanMode','ExitPlanMode'],
@@ -47,17 +58,8 @@ function parseSystemBlocks(system) {
   const mainText = system.slice(2).map(b => b.text || '').join('\n');
   if (!mainText) return result;
 
-  const markerDefs = [
-    { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
-    { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
-    { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
-    { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
-    { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
-    { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
-    { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
-  ];
   const positions = [];
-  for (const m of markerDefs) {
+  for (const m of B2_MARKER_DEFS) {
     const match = m.pattern.exec(mainText);
     if (match) positions.push({ key: m.key, index: match.index });
   }
@@ -841,6 +843,7 @@ function isProtectedByStar(meta, sets) {
 }
 
 module.exports = {
+  B2_MARKER_DEFS,
   timestamp,
   taipeiTime,
   printSeparator,
