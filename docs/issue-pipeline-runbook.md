@@ -67,6 +67,10 @@ Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
 - 只在 feature branch 工作；不 commit/push main。
 - 刪檔/覆寫前先 `git status` 看該路徑的追蹤狀態——session 快照不可信。
 
+## 收尾沉澱（compound）
+
+批次結束時：本批 codex findings 與修復模式寫入 `docs/solutions/`（一檔一事，含 issue/PR 連結）；同類 finding 第二次出現 → 升級清單附 runbook/authoring 修訂提案（PR，人工 merge）。intake 與開發 subagent 開工前先搜 `docs/solutions/`。
+
 ## 升級給人的固定格式
 
 批次結束輸出三欄：**待 merge 的 PR**（各附證據層級：爬到可信度階梯第幾層）／**blocked 清單**（含已試路徑）／**待決策題**（一句話講清 A/B 與你的建議）。
