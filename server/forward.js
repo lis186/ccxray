@@ -745,6 +745,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
+    store.entryIndex.set(entry.id, entry);
     store.trimEntries();
     store.propagateLoadedSkills(entry, sessionId);
     broadcast(entry);
@@ -843,6 +844,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
+    store.entryIndex.set(entry.id, entry);
     store.trimEntries();
     broadcast(entry);
 
@@ -969,6 +971,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
     store.entries.push(entry);
+    store.entryIndex.set(entry.id, entry);
     store.trimEntries();
     store.propagateLoadedSkills(entry, sessionId);
     broadcast(entry);

@@ -353,6 +353,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   entry.toolSources = helpers.buildToolSources(entry) || undefined;
   entry._writePromise = Promise.all([reqWritePromise, resWritePromise]);
   store.entries.push(entry);
+  store.entryIndex.set(entry.id, entry);
   store.trimEntries();
   broadcast(entry);
 
