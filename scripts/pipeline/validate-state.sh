@@ -104,8 +104,9 @@ for ((i=0; i<icount; i++)); do
   # 事實
   prnum="$(pr_for "$num")"
   pr_open=0; [[ -n "$prnum" ]] && pr_open=1
-  unmet=()
+  declared=(); unmet=()
   for b in $(blockers_of "$body"); do
+    declared+=("$b")
     grep -qxF "$b" <<<"$open_set" && unmet+=("$b")
   done
   # lint 只呼叫一次，捕捉輸出與 exit code
@@ -120,9 +121,11 @@ for ((i=0; i<icount; i++)); do
       [[ $pr_open -eq 1 ]] && ilist+=("ready+open-PR(#$prnum)")
       [[ ${#unmet[@]} -gt 0 ]] && ilist+=("ready+unmet-blocker(#${unmet[*]})")
     fi
-    # stale-blocked：標 blocked 但無 unmet blocker（blocker 已解，resolver 該放行）
-    if printf '%s\n' "${status[@]:-}" | grep -qx blocked && [[ ${#unmet[@]} -eq 0 ]]; then
-      ilist+=("stale-blocked(blocker-resolved)")
+    # stale-blocked：**曾宣告 ≥1 相依且全部已解** 才算（resolver 該放行卻沒放）。
+    #   blocked 也可能是「兩次失敗」型（無相依宣告）——那是合法終態，不得誤判 stale。
+    if printf '%s\n' "${status[@]:-}" | grep -qx blocked \
+       && [[ ${#declared[@]} -ge 1 && ${#unmet[@]} -eq 0 ]]; then
+      ilist+=("stale-blocked(deps-resolved)")
     fi
     [[ ${#ilist[@]} -gt 0 ]] && illegal="$(IFS=';'; echo "${ilist[*]}")"
   fi
@@ -136,9 +139,12 @@ for ((i=0; i<icount; i++)); do
   pr_cell="-"; [[ $pr_open -eq 1 ]] && pr_cell="#$prnum"
 
   # ── proposedState（migration；Q2(a) 推事實態、ready 不代標）──
-  #   優先序：illegal → needs_owner；否則 PR→pr_open；unmet→blocked；lint fail→needs_owner；else untriaged
+  #   優先序：illegal→needs_owner；既有合法 status label→沿用；否則對 untriaged 推事實態。
   if [[ "$illegal" != "-" ]]; then
     proposed=needs_owner; action="reconcile labels：$illegal"
+  elif [[ "$parsed" != untriaged ]]; then
+    # 已有單一合法 status label 且無 illegal combo → 尊重既有標定（含失敗型 blocked）
+    proposed="$parsed"; action="沿用既有 $parsed label（無 illegal combo）"
   elif [[ $pr_open -eq 1 ]]; then
     proposed=pr_open; action="review/merge 連結 PR #$prnum"
   elif [[ ${#unmet[@]} -gt 0 ]]; then

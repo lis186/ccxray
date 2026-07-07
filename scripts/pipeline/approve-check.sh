@@ -52,8 +52,10 @@ for ((k=0; k<n; k++)); do
   body="$(jq -r ".comments[$k].body // \"\"" <<<"$data")"
   # 排除自簽：body 含被排除的 runId
   if [[ -n "$exclude" ]] && grep -qF "$exclude" <<<"$body"; then continue; fi
+  # 去除 fenced code block——``` 內的示例標記（如文件裡的 `APPROVE-DESIGN <runId>`）不算簽核
+  scan="$(awk '/^[[:space:]]*```/{f=!f; next} !f{print}' <<<"$body")"
   # 行首精確標記 + 後接非空 token
-  line="$(printf '%s\n' "$body" | grep -E "^[[:space:]]*${marker}[[:space:]]+[^[:space:]]" | head -1 || true)"
+  line="$(printf '%s\n' "$scan" | grep -E "^[[:space:]]*${marker}[[:space:]]+[^[:space:]]" | head -1 || true)"
   if [[ -n "$line" ]]; then
     token="$(sed -E "s/^[[:space:]]*${marker}[[:space:]]+//" <<<"$line" | awk '{print $1}')"
     echo "✓ 簽核成立：$marker by $assoc  token=$token"

@@ -68,6 +68,7 @@ done
 ccount="$(jq '.issue.comments | length' <<<"$data" 2>/dev/null || echo 0)"
 trusted_comments=0
 struct_block=0
+blocked_evidence=0
 sol_ref=""; sol_exists=0
 for ((k=0; k<ccount; k++)); do
   assoc="$(jq -r ".issue.comments[$k].authorAssociation // \"\"" <<<"$data")"
@@ -79,6 +80,10 @@ for ((k=0; k<ccount; k++)); do
      && grep -qiE 'required[ _-]?owner[ _-]?action|requiredOwnerAction' <<<"$cbody" \
      && grep -qiE 'run[ _-]?id' <<<"$cbody"; then
     struct_block=1
+  fi
+  # T2 blocked 證據：留言須含「已試路徑/原因」訊號，光有 comment（如 "ack"）不算
+  if grep -qiE '已試|試過|嘗試|試了|tried|attempt|blocked|卡在|卡住|失敗|fail|error|reason|因為|因此' <<<"$cbody"; then
+    blocked_evidence=1
   fi
   # T4 solutions 連結
   ref="$(grep -oE 'docs/solutions/[A-Za-z0-9._/-]+' <<<"$cbody" | head -1 || true)"
@@ -92,7 +97,7 @@ done
 # ── 判定 ──
 hits=()
 [[ -n "$linked_pr" ]] && hits+=("T1:evidence-PR(#$linked_pr)")
-if has_label "pipeline:blocked" && [[ "$trusted_comments" -ge 1 ]]; then hits+=("T2:blocked"); fi
+if has_label "pipeline:blocked" && [[ "$blocked_evidence" -eq 1 ]]; then hits+=("T2:blocked"); fi
 if has_label "pipeline:needs-owner" && [[ "$struct_block" -eq 1 ]]; then hits+=("T3:needs-owner-structured"); fi
 if has_label "pipeline:needs-owner" && [[ -n "$sol_ref" && "$sol_exists" -eq 1 ]]; then hits+=("T4:diagnostic($sol_ref)"); fi
 
@@ -105,7 +110,7 @@ fi
 echo "✗ #$num 未達任何合法終態"
 echo "  labels: $( [[ ${#labels[@]} -gt 0 ]] && (IFS=,; echo "${labels[*]}") || echo '-' )"
 echo "  linked open PR: $( [[ -n "$linked_pr" ]] && echo "#$linked_pr" || echo '無' )（T1）"
-echo "  blocked+comment: $( has_label pipeline:blocked && echo "label✓ comments=$trusted_comments" || echo 'label✗' )（T2）"
+echo "  blocked+comment: $( has_label pipeline:blocked && echo "label✓ evidence=${blocked_evidence} tc=${trusted_comments}" || echo 'label✗' )（T2）"
 echo "  needs-owner+結構化: $( has_label pipeline:needs-owner && echo "label✓ struct=$struct_block" || echo 'label✗' )（T3）"
 echo "  診斷 solutions 檔: ref=${sol_ref:-無} exists=${sol_exists}（T4；dir=${solutions_dir}）"
 exit 1

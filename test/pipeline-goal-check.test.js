@@ -44,6 +44,18 @@ describe('goal-check terminal states', () => {
     assert.match(r.stdout, /T2:blocked/);
   });
 
+  it('T2 rejects a trivial comment with no tried-path evidence (blocked + "ack") → exit 1', () => {
+    const r = run({
+      issue: {
+        number: 311,
+        labels: [{ name: 'pipeline:blocked' }],
+        comments: [{ authorAssociation: 'OWNER', body: 'ack' }],
+      },
+      prs: [],
+    });
+    assert.equal(r.status, 1, 'a bare comment must not satisfy T2 blocked evidence');
+  });
+
   it('T3: needs-owner + structured block {reason,requiredOwnerAction,runId} → exit 0', () => {
     const r = run({
       issue: {

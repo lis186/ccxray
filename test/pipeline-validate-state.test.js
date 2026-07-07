@@ -70,9 +70,16 @@ describe('validate-state normalizer (fixture dry-run)', () => {
     assert.equal(rows['906'].proposed, 'needs_owner');
   });
 
-  it('blocked label but blocker resolved → stale-blocked illegal', () => {
+  it('blocked label with a DECLARED blocker now resolved → stale-blocked illegal', () => {
     assert.match(rows['907'].illegal, /stale-blocked/);
     assert.equal(rows['907'].proposed, 'needs_owner');
+  });
+
+  it('failure-budget blocked (blocked label, Blocked-by: 無) is NOT stale → stays blocked', () => {
+    // 兩次失敗型 blocked 無相依宣告；舊碼誤判 stale-blocked→needs_owner，新碼須維持 blocked
+    assert.equal(rows['908'].parsed, 'blocked');
+    assert.equal(rows['908'].illegal, '-');
+    assert.equal(rows['908'].proposed, 'blocked');
   });
 
   it('closing keyword in PR body links the issue (Closes #905)', () => {

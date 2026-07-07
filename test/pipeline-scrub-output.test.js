@@ -35,6 +35,26 @@ describe('scrub-output gate', () => {
     assert.match(r.stderr, /R1/);
   });
 
+  it('multiple small fences totaling over max → blocked (R1b, anti-split-dump)', () => {
+    // 四段各 12 行（<15 單塊上限）但總 48 行 > 30 總上限
+    const block = ['```', ...Array.from({ length: 12 }, (_, i) => `l${i}`), '```'].join('\n');
+    const r = scrub([block, block, block, block].join('\n\n'));
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /R1b/);
+  });
+
+  it('secret split across a newline still trips (sk- threshold lowered)', () => {
+    const r = scrub('key:\nsk-abcdefghijkl\nmnopqrstuvwx1234567890');
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /R3/);
+  });
+
+  it('long hex run (e.g. leaked digest/token) → blocked', () => {
+    const r = scrub(`digest ${'a1b2c3d4'.repeat(6)}`); // 48 hex chars
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /R3/);
+  });
+
   it('home path with username → blocked', () => {
     const r = scrub('see /Users/justinlee/.ccxray/logs/x_req.json for detail');
     assert.equal(r.status, 1);

@@ -44,7 +44,7 @@ Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
 - 多個狀態 label 並存（`multiple-status`）
 - `ready` ＋ 有連結的 open PR（`ready+open-PR`）
 - `ready` ＋ 相依未滿足（`ready+unmet-blocker`）
-- `blocked` label 但相依已解（`stale-blocked`；resolver 該放行卻沒放）
+- `blocked` label 且**曾宣告 ≥1 相依但全已解**（`stale-blocked`；resolver 該放行卻沒放）。⚠️ 兩次失敗型 blocked（`Blocked-by: 無`）是合法終態，**不**算 stale、不正規化
 
 **dependency resolver**：blocker 是否未滿足 ＝「它是否仍在 open 集合」，每輪即時重算——blocker merge/close 後下游自動不再 blocked，不靠一次性 label 翻轉。
 

@@ -36,6 +36,13 @@ describe('approve-check owner sign-off', () => {
     assert.equal(r.status, 1);
   });
 
+  it('marker at line-start INSIDE a fenced code block is NOT a sign-off → exit 1', () => {
+    // 文件示例：OWNER 在 ``` 內貼 `APPROVE-DESIGN <runId>` 當範例，不得當真簽核
+    const body = 'Usage example:\n```\nAPPROVE-DESIGN <runId>\n```\nDo not treat this as approval.';
+    const r = withInput({ comments: [{ authorAssociation: 'OWNER', body }] }, ['--marker', 'APPROVE-DESIGN']);
+    assert.equal(r.status, 1);
+  });
+
   it('non-owner author with valid marker → exit 1 (forgery guard)', () => {
     const r = withInput(
       { comments: [{ authorAssociation: 'CONTRIBUTOR', body: 'APPROVE-DESIGN run-x' }] },
