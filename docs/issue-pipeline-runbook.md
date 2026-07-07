@@ -30,6 +30,14 @@ Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
 - 下方批次表是 2026-07-06 制定的快照。**與 GitHub 實況衝突時以 GitHub 為準，並更新本檔**（改表提交進 PR 或獨立 docs commit）。
 - 每張 issue 完成或 blocked，當下就留 issue comment——進度不留在對話裡。
 
+## 開批 pre-flight（每批一次，擋掉可預防的來回）
+
+派第一張工之前跑一次，結果寫進批次開場摘要：
+
+1. **Base branch protection**：`gh api repos/<owner>/<repo>/branches/main/protection --jq '{strict:.required_status_checks.strict, checks:.required_status_checks.contexts, reviews:.required_pull_request_reviews}'`。確認：是否 require「分支與 base 同步」(`strict`)、必過的 CI check 名、是否需 PR review approval。**知道規則才不會每張 PR 到 merge 才踩「branch behind / CI 未過 / 需 approval」。**（2026-07-07 實測 strict=true + 需 CI 綠 + auto-merge 未開，導致每張 merge 前都得補 `git merge origin/main` 再等 CI。）
+2. **二審通道存活**：確認 codex 二審走哪條。codex CLI 預設帳號可能額度 429；備援是 agmsg `reviewer`（見標準流程 gate）。開批前 ping 一次，別做完才發現二審跑不動。
+3. **有界驗證指令**：本 repo 驗證一律 `perl -e 'alarm shift @ARGV; exec @ARGV' 300 sh -c 'node --test test/*.test.js'`。**不要用 `npm test`**（管線＋npm overhead，多 worktree 併發時會慢到像 hang——2026-07-07 踩過、被使用者提醒才發現沒死只是慢）。
+
 ## 批次順序（批內序列執行，不平行——同檔互撞）
 
 **相依分支規則**：有前置相依的 issue（例：#156 依 #150 的 escapeHtml 搬家）必須等前置 PR **merge 進 main 後**、從最新 main 開分支才動工；**絕不 stack PR**（不以另一個未 merge 的 branch 為 base）。等待前置 merge 期間，可以先做同批內無相依的下一張。
@@ -54,7 +62,10 @@ Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
    - 重構類（#156/#158/#159/#160）：rg 結構指標＋確認沒有 fail-on-old 測試混入
    - 效能類（#166/#167）：同條件 before/after ≥5 次中位數
 5. **Orchestrator 親自重跑**：只採信自己重跑的 exit code 與數字，不採信任何 subagent 的文字轉述。
-6. **Gates**（全過才開 PR）：`CCXRAY_HOME=$(mktemp -d) npm test` 全綠 → 隔離 smoke（`CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser`；UI 改動用 browser-harness/CDP）→ codex review gate（codex CLI 二審 clean）。
+6. **Gates**（全過才開 PR）：
+   - **有界全測試綠**：`perl -e 'alarm shift @ARGV; exec @ARGV' 300 sh -c 'node --test test/*.test.js'`（**非 `npm test`**，見 pre-flight #3）。
+   - **隔離 smoke**：跑 **worktree 內的 ccxray**（`node <worktree>/server/index.js …`，其 node_modules 才含本次改動——全域 `ccxray` 是舊版）；`CCXRAY_HOME=/tmp/ccxray-smoke-$$`、避開 5577；**用絕對路徑、勿 `cd` 進 mktemp 目錄**（會弄壞 shell hook 讓 `curl`/`rtk` command not found——2026-07-07 踩過）。UI 改動用 browser-harness/CDP：腳本走 **stdin heredoc（非 `-c`）**、特殊字元用 `String.fromCharCode` 避免引號地獄、並加**負向對照**證明 smoke 真能偵測（如 #150 舊形式點擊會執行 payload、新形式不會）。packaging 改動要**從 tarball 實裝**跑一次確認沒漏 runtime 檔。
+   - **codex review gate**：codex CLI 二審 clean；**CLI 額度 429 時改走 agmsg `reviewer`**（team `ccxray-dev` 的 codex agent，用 `send.sh ccxray-dev claude reviewer "<branch+範圍+證據>"`，verdict 回 inbox monitor；它從 diff 審、可在自己 worktree 跑測試，請附上 orchestrator 已跑的證據）。
 7. **PR**：附證據（diff-check 輸出、基準數字、rg 計數、pack 清單），link issue，明說驗了什麼、**沒**驗什麼。
 8. **失敗預算**：同一 issue 兩次修不動 → 留下已試路徑與驗證輸出的 comment、標 blocked → 跳下一張。不硬試第三次。
 
@@ -63,6 +74,17 @@ Orchestrator 讀完 issue 後，依下表為每個 subagent 指定 `model`：
 - 絕不碰 port 5577、絕不讀寫真實 `~/.ccxray`（使用者的活 hub 正在監控）。
 - 只在 feature branch 工作；不 commit/push main。
 - 刪檔/覆寫前先 `git status` 看該路徑的追蹤狀態——session 快照不可信。
+- **Commit-before-experiment**：dev subagent 交付後、orchestrator 要做 mutation check 或任何破壞性實驗前，**先把交付物 commit**。**絕不對含未 commit 改動的工作樹跑 `git checkout -- <file>`**——它會連 dev 未存檔的工作一起清掉（2026-07-07 mutation check 時踩過，靠手動重建救回）。要暫時弄髒檔案就 `cp` 備份或用可逆 sed 再還原。
+
+## Merge 與 base branch protection
+
+merge 是暫停點（見自主推進原則），owner 授權後由 orchestrator 執行時：
+
+- 本機 auto-sync 會推 main，且同批 sibling PR 陸續 merge，**分支很快變 behind base**；strict protection 下 behind 就擋 merge。策略二選一：
+  - **趁 main 沒動時整批 merge**：PR 一開好、檔案 disjoint 者可任意序，一口氣 merge 完，少被 sibling merge 推進。
+  - **接受 rebase 成本**：每張 merge 前補 `git merge origin/main --no-edit` + push，等新 CI 綠再 merge（disjoint 檔案不衝突）。
+- **auto-merge** 本 repo 目前未開（`enablePullRequestAutoMerge` 被拒）。owner 若願開，可省掉「等 CI→手動 merge→又 behind」的迴圈——pre-flight 問一次值得。
+- 帶 `--delete-branch` merge 會因本地 worktree 佔用而在「刪本地分支」報錯，但**遠端 merge＋遠端刪支已成功**，非失敗；worktree／本地分支批末統一 `git worktree remove --force` + `git branch -D` 清理。
 
 ## 升級給人的固定格式
 
