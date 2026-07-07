@@ -4,6 +4,7 @@ description: >
   Orchestrate the ccxray GitHub issue backlog in dependency order with subagents —
   re-verify, develop in worktrees, verify with diff-check evidence, gate, PR.
   Use when asked to 處理 issue、跑 issue pipeline、continue the backlog、process batch N.
+  Not for creating/intaking new issues (use ccxray-intake) nor morning review (use ccxray-morning).
 ---
 
 # Issue Pipeline
