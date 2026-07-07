@@ -1,0 +1,18 @@
+{
+  "issues": [
+    { "number": 901, "labels": [], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\nbefore/after 中位數 ≥5 次" },
+    { "number": 902, "labels": [], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\n目標指標: 可腳本化" },
+    { "number": 903, "labels": [], "body": "Blocked-by: #999\nBlocks: 無\n\n## 驗收\nfail-on-old / new-pass 差異證據" },
+    { "number": 904, "labels": [], "body": "just prose with no structure and no acceptance criteria" },
+    { "number": 905, "labels": [{ "name": "pipeline:ready" }], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\n目標指標" },
+    { "number": 906, "labels": [{ "name": "pipeline:ready" }, { "name": "pipeline:blocked" }], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\n目標指標" },
+    { "number": 907, "labels": [{ "name": "pipeline:blocked" }], "body": "Blocked-by: #950\nBlocks: 無\n\n## 驗收\n目標指標" },
+    { "number": 908, "labels": [{ "name": "pipeline:blocked" }], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\n目標指標（兩次失敗型 blocked，無相依）" },
+    { "number": 910, "labels": [], "body": "Blocked-by: 無（與 #999 平行）\nBlocks: 無\n\n## 驗收\n目標指標" },
+    { "number": 999, "labels": [], "body": "Blocked-by: 無\nBlocks: 無\n\n## 驗收\n目標指標" }
+  ],
+  "prs": [
+    { "number": 801, "headRefName": "fix/902-something", "body": "implements the fix" },
+    { "number": 802, "headRefName": "chore/misc", "body": "Closes #905\n\ndone" }
+  ]
+}
