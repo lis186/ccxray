@@ -100,6 +100,7 @@ function updateSysPromptBadge() {
   }).catch(() => {});
 }
 
+// INVARIANT: skeleton IDs must match render function lookups — see docs/decisions/0004-skeleton-lifecycle.md
 function renderSyspromptSkeletons() {
   // Agent list skeleton
   const agentList = document.getElementById('sp-agent-list');
@@ -174,6 +175,7 @@ async function openSystemPromptPanel(forceDiff) {
     (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
   }
 
+  // INVARIANT: no-data branch must clear skeleton content — see docs/decisions/0004-skeleton-lifecycle.md
   if (!spAgents.length) {
     const panel = document.getElementById('diff-text-panel');
     if (panel) panel.innerHTML = '<div style="color:var(--dim);font-size:11px">No versions found.</div>';

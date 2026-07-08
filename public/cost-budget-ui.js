@@ -11,6 +11,7 @@ function hideCostPage() {
   switchTab('dashboard');
 }
 
+// INVARIANT: skeleton IDs must match render function lookups — see docs/decisions/0004-skeleton-lifecycle.md
 function renderCostSkeletons() {
   // Left panel: account card skeleton
   const left = document.getElementById('cp-left');
@@ -131,6 +132,7 @@ function renderAccounts(blockData) {
   const accounts = blockData.accounts || [];
   const configured = blockData.claudeStatuslineConfigured;
 
+  // INVARIANT: early-return must clear innerHTML — see docs/decisions/0004-skeleton-lifecycle.md
   if (accounts.length === 0 && configured !== false) {
     el.innerHTML = '';
     card.style.display = 'none';
@@ -421,6 +423,7 @@ function renderMonthlySummary(monthlyResp) {
   }
 
   const allMonths = monthlyResp.monthly || [];
+  // INVARIANT: early-return must clear innerHTML — see docs/decisions/0004-skeleton-lifecycle.md
   if (!allMonths.length) { container.innerHTML = ''; return; }
   const accounts = collectAccounts(_costPageCache?.dailyData || []);
 

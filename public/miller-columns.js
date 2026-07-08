@@ -1550,6 +1550,7 @@ if (typeof window !== 'undefined') {
 }
 
 function renderProjectsCol() {
+  // INVARIANT: sigParts must include every rendered field — see docs/decisions/0002-dirty-check-signature.md
   const sigParts = [
     projectFilterMode,
     selectedProjectName || '',
