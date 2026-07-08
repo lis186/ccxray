@@ -182,6 +182,7 @@ async function restoreFromLogs() {
     }
 
     const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
+    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
     store.entries.push(restoredEntry);
     store.entryIndex.set(meta.id, restoredEntry);
 

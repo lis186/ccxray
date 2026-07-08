@@ -20,6 +20,14 @@ npm test                                         # Run tests
 
 No build step. No linting. Restart to apply changes.
 
+## Invariants
+
+These constraints have guard comments at their mutation sites. Read the linked ADR before modifying the affected code.
+
+- **entryIndex must mirror entries[]** at all push/trim sites (forward.js, ws-proxy.js, restore.js, store.js) — @docs/decisions/0003-entry-index-map.md
+- **renderProjectsCol signature must include every field that affects rendered output** — adding a rendered field without updating `sigParts` = silent stale render — @docs/decisions/0002-dirty-check-signature.md
+- **Skeleton early-return must clear innerHTML** before returning; skeleton containers must have the same `id` as the render function's `getElementById` target — @docs/decisions/0004-skeleton-lifecycle.md
+
 ## Smoke Testing
 
 UI or server changes must be verified in a real browser, not just unit tests. Unit tests verify logic; they don't catch lazy-load, SSE, or render pipeline failures.

@@ -352,6 +352,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
   entry.toolSources = helpers.buildToolSources(entry) || undefined;
   entry._writePromise = Promise.all([reqWritePromise, resWritePromise]);
+  // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
   store.entries.push(entry);
   store.entryIndex.set(entry.id, entry);
   store.trimEntries();

@@ -8,7 +8,8 @@ const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
 const entries = [];
-const entryIndex = new Map(); // id → entry for O(1) delta chain lookup
+// INVARIANT: entryIndex must mirror entries[] — see docs/decisions/0003-entry-index-map.md
+const entryIndex = new Map();
 const sseClients = [];
 const restoreState = {
   phase: 'idle',
@@ -20,6 +21,7 @@ const restoreState = {
   entryCount: 0,
 };
 
+// INVARIANT: trim must delete from entryIndex — see docs/decisions/0003-entry-index-map.md
 function trimEntries() {
   if (entries.length > MAX_ENTRIES) {
     const removed = entries.splice(0, entries.length - MAX_ENTRIES);

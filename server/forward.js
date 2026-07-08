@@ -744,6 +744,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
+    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
     store.entries.push(entry);
     store.entryIndex.set(entry.id, entry);
     store.trimEntries();
@@ -843,6 +844,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
+    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
     store.entries.push(entry);
     store.entryIndex.set(entry.id, entry);
     store.trimEntries();
@@ -970,6 +972,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
+    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
     store.entries.push(entry);
     store.entryIndex.set(entry.id, entry);
     store.trimEntries();
