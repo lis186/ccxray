@@ -33,7 +33,8 @@ function readAllAccounts(statusDir) {
   for (const name of entries) {
     if (!name.endsWith('.json')) continue;
     const filePath = path.resolve(statusDir, name);
-    if (!filePath.startsWith(path.resolve(statusDir))) continue;
+    if (!filePath.startsWith(path.resolve(statusDir) + path.sep) && filePath !== path.resolve(statusDir)) continue;
+    try { if (fs.lstatSync(filePath).isSymbolicLink()) continue; } catch { continue; }
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
       const snap = JSON.parse(raw);
