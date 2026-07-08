@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # 差異檢查：同一測試在舊碼必須 FAIL、新碼必須 PASS。
+# 通用獨立驗證器（非某條 pipeline 專屬）——手動或自動化驗 bug 修復的 old-fail/
+# new-pass 差異證據皆用它；即使 repo 內無文件連結它，也**刻意保留**，勿當死碼清除。
 # 用法: diff-check.sh <base-ref> <test-file...> -- <test-cmd...>
 # 例:   diff-check.sh main test/escape.test.js -- node --test test/escape.test.js
 # Exit: 0 = old FAIL / new PASS   1 = 新碼失敗   2 = 舊碼也 PASS(測試分辨不出新舊)

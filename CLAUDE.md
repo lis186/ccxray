@@ -43,10 +43,6 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
 - `BU_CDP_URL=http://127.0.0.1:<port>` — point browser-harness at a self-launched Chrome with `--remote-debugging-port=<port>` to skip the manual "Allow remote debugging" dialog
 
-## Issue Workflow
-
-開 issue 依 `docs/issue-authoring.md`（首行相依宣告、驗收 schema、risk checklist——命中即拆診斷型；診斷型 issue 不產 PR）。Pipeline 執行規範見 `docs/issue-pipeline-runbook.md`。
-
 ## Test Hygiene
 
 `docs/testing.md` documents how the suite is run and the isolation rules every test must follow. In short: any test that touches storage or spawns the CLI/server must point `CCXRAY_HOME` at a throwaway temp dir with its own synthetic `index.ndjson` — never read the real `~/.ccxray`, never embed real logs/usernames/paths. `test/usage.test.js` is the canonical pattern.
