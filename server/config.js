@@ -187,6 +187,7 @@ function joinUpstreamPath(upstream, requestUrl) {
 }
 const LOGS_DIR = resolveLogsDir();
 const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
+const MAX_SSE_PER_IP = parseInt(process.env.CCXRAY_SSE_MAX_PER_IP || '20', 10);
 // ponytail: aligned with LOG_RETENTION_DAYS so the index is a cache, not a sole record
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS), 10);
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
@@ -321,6 +322,7 @@ module.exports = {
   RESTORE_DAYS,
   LOG_RETENTION_DAYS,
   DELTA_SNAPSHOT_N,
+  MAX_SSE_PER_IP,
   REWRITE_MODEL_PREFIX,
   storage,
   MODEL_CONTEXT_FALLBACK,

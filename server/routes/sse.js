@@ -1,10 +1,26 @@
 'use strict';
 
 const store = require('../store');
+const { MAX_SSE_PER_IP } = require('../config');
+
+function normalizeIp(raw) {
+  if (!raw) return '';
+  if (raw === '::1' || raw === '::ffff:127.0.0.1') return '127.0.0.1';
+  if (raw.startsWith('::ffff:')) return raw.slice(7);
+  return raw;
+}
 
 function handleSSERoute(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
   if (pathname !== '/_events') return false;
+
+  const ip = normalizeIp(clientReq.socket.remoteAddress);
+  const count = store.sseClients.filter(c => normalizeIp(c.socket && c.socket.remoteAddress) === ip).length;
+  if (count >= MAX_SSE_PER_IP) {
+    clientRes.writeHead(429, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({ error: 'SSE connection limit per IP exceeded' }));
+    return true;
+  }
 
   clientRes.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -42,4 +58,4 @@ function handleSSERoute(clientReq, clientRes) {
   return true;
 }
 
-module.exports = { handleSSERoute };
+module.exports = { handleSSERoute, normalizeIp };

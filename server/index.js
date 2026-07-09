@@ -467,6 +467,11 @@ const server = http.createServer((clientReq, clientRes) => {
   });
 });
 
+server.headersTimeout = 60_000;    // 60s — only header phase, safe
+server.keepAliveTimeout = 5_000;   // 5s — idle keep-alive connections
+// ponytail: requestTimeout=0 — proxy SSE streams can last minutes; a non-zero value kills long thinking/output turns. Revisit if slowloris via request body becomes a concern (body size cap in #152 mitigates the OOM vector).
+server.requestTimeout = 0;         // disabled — see comment above
+
 server.on('upgrade', (req, socket, head) => {
   handleWebSocketUpgrade(req, socket, head);
 });
