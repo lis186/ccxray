@@ -92,6 +92,25 @@ describe('local-usage-reader', () => {
     }
   });
 
+  it('skips symlinks pointing outside statusDir', () => {
+    const dir = makeTmpDir();
+    const outside = makeTmpDir();
+    try {
+      fs.writeFileSync(path.join(outside, 'secret.json'), JSON.stringify({
+        id: 'stolen', label: 'Stolen', provider: 'openai', planType: 'plus',
+        fiveHour: { usedPct: 99, resetsAt: 1780000000 }, sevenDay: null,
+        updatedAt: Math.floor(Date.now() / 1000),
+      }));
+      fs.symlinkSync(path.join(outside, 'secret.json'), path.join(dir, 'evil.json'));
+
+      const accounts = readAllAccounts(dir);
+      assert.equal(accounts.length, 0, 'symlink should be skipped');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('skips malformed JSON files', () => {
     const dir = makeTmpDir();
     try {
