@@ -43,7 +43,6 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@anthropic-ai/tokenizer": "^0.0.4",
     "ws": "^8.19.0"
   },
   "devDependencies": {

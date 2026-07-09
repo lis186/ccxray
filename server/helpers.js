@@ -1,6 +1,5 @@
 'use strict';
 
-const { countTokens } = require('@anthropic-ai/tokenizer');
 const { isInjectedText } = require('../shared/injected-tags');
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -19,9 +18,10 @@ function printSeparator() {
   console.log('\x1b[33m' + '═'.repeat(60) + '\x1b[0m');
 }
 
+// ponytail: char/4 estimate replaces WASM tokenizer (#198); upgrade to tiktoken if drift matters
 function safeCountTokens(text) {
   if (!text) return 0;
-  try { return countTokens(text); } catch { return 0; }
+  return Math.ceil(text.length / 4);
 }
 
 // ── Context Breakdown Analysis ───────────────────────────────────────

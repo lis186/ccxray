@@ -334,7 +334,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     status: result.status,
     isSSE: false,
     receivedAt: t.startTime || ctx.startTime,
-    tokens: cr ? helpers.tokenizeRequest(reqLog) : null,
+    tokens: null,
     duplicateToolCalls: null,
     ...getParser('openai').buildEntryFields({
       provider: 'openai', transport: 'websocket',

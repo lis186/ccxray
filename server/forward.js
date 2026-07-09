@@ -729,7 +729,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
       edited: ctx.edited, editSummary: ctx.editSummary,
-      tokens: helpers.tokenizeRequest(parsedBody),
+      tokens: null,
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
       ...getParser('anthropic').buildEntryFields({
         provider: 'anthropic', transport: 'sse', parsedBody, events, usage,
@@ -831,7 +831,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
-      tokens: helpers.tokenizeRequest(parsedBody),
+      tokens: null,
       duplicateToolCalls: null,
       ...getParser('openai').buildEntryFields({
         provider: 'openai', transport: 'sse', parsedBody, events, proxyRes,
@@ -924,7 +924,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
         receivedAt: startTime,
-        tokens: helpers.tokenizeRequest(parsedBody),
+        tokens: null,
         duplicateToolCalls: null,
         ...getParser('openai').buildEntryFields({
           provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
@@ -955,7 +955,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
         edited: ctx.edited, editSummary: ctx.editSummary,
-        tokens: helpers.tokenizeRequest(parsedBody),
+        tokens: null,
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
         ...getParser('anthropic').buildEntryFields({
           provider: 'anthropic', transport: 'http', parsedBody,
