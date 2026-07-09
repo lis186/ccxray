@@ -1,0 +1,15 @@
+{
+  "content-type": "application/json",
+  "authorization": "Bearer test-token",
+  "accept": "text/event-stream",
+  "user-agent": "grok-shell/0.2.93 (macos; aarch64)",
+  "x-grok-client-version": "0.2.93",
+  "x-grok-client-identifier": "grok-shell",
+  "x-grok-model-override": "grok-4.5",
+  "x-grok-session-id": "019f4619-0000-7000-8000-000000000001",
+  "x-grok-conv-id": "019f4619-0000-7000-8000-000000000001",
+  "x-grok-req-id": "req-main-001",
+  "x-grok-agent-id": "agent-001",
+  "x-grok-turn-idx": "1",
+  "x-compaction-at": "400000"
+}

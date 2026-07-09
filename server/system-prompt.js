@@ -91,6 +91,22 @@ function extractAgentType(sys) {
 
 function extractPromptAgentType(provider, req) {
   if (provider === 'openai') {
+    // Grok CLI: same Responses wire as Codex, but different agent identity.
+    // Detect via metadata.client (set by preprocessBody) or model id prefix.
+    const isGrok = req?.metadata?.client === 'grok'
+      || (typeof req?.model === 'string' && /^grok/i.test(req.model));
+    if (isGrok) {
+      // Prefer first system-role input for prompt fingerprinting / agent flavor
+      const systemMsg = Array.isArray(req?.input)
+        ? req.input.find(i => i && i.role === 'system')
+        : null;
+      const sysText = typeof systemMsg?.content === 'string'
+        ? systemMsg.content
+        : (typeof req?.instructions === 'string' ? req.instructions : '');
+      if (/session title/i.test(sysText)) return { key: 'title', label: 'Grok Title' };
+      return { key: 'default', label: 'Grok' };
+    }
+
     const explicit = req?.metadata?.agent_type || req?.metadata?.agentType || req?.metadata?.agent;
     if (explicit === 'explorer') return { key: 'explorer', label: 'Codex Explorer' };
     if (explicit === 'worker') return { key: 'worker', label: 'Codex Worker' };

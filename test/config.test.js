@@ -309,12 +309,27 @@ describe('provider-aware OpenAI upstream configuration', () => {
       providers: {
         messages: c.getProviderForRequest('/v1/messages'),
         responses: c.getProviderForRequest('/v1/responses'),
+        chatCompletions: c.getProviderForRequest('/v1/chat/completions'),
         realtime: c.getProviderForRequest('/v1/realtime?model=gpt-realtime'),
         models: c.getProviderForRequest('/v1/models?client_version=0.125.0'),
         chatgptCodexApps: c.getProviderForRequest('/v1/api/codex/apps'),
         chatgptAnalytics: c.getProviderForRequest('/v1/codex/analytics-events/events'),
         chatgptPlugins: c.getProviderForRequest('/v1/plugins/featured?platform=codex'),
         chatgptConnectors: c.getProviderForRequest('/v1/connectors/directory/list?external_logos=true'),
+      },
+      xai: {
+        host: c.UPSTREAMS.xai.host,
+        port: c.UPSTREAMS.xai.port,
+        protocol: c.UPSTREAMS.xai.protocol,
+        source: c.UPSTREAMS.xai.source,
+        basePath: c.UPSTREAMS.xai.basePath,
+        provider: c.UPSTREAMS.xai.provider,
+      },
+      grokRoute: {
+        host: c.getUpstreamForRequestAndHeaders('/v1/responses', {
+          'x-grok-client-identifier': 'grok-shell',
+        }).host,
+        codexHost: c.getUpstreamForRequestAndHeaders('/v1/responses', {}).host,
       },
       chatgpt: {
         source: c.UPSTREAMS.openaiChatGPT.source,
@@ -352,6 +367,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
     });
     assert.equal(result.providers.messages, 'anthropic');
     assert.equal(result.providers.responses, 'openai');
+    assert.equal(result.providers.chatCompletions, 'openai');
     assert.equal(result.providers.realtime, 'openai');
     assert.equal(result.providers.models, 'openai');
     assert.equal(result.providers.chatgptCodexApps, 'openai');
@@ -366,6 +382,16 @@ describe('provider-aware OpenAI upstream configuration', () => {
       basePath: '/backend-api/codex',
       stripPathPrefix: '/v1',
     });
+    assert.deepEqual(result.xai, {
+      host: 'cli-chat-proxy.grok.com',
+      port: 443,
+      protocol: 'https',
+      source: 'xai-default',
+      basePath: '/v1',
+      provider: 'openai',
+    });
+    assert.equal(result.grokRoute.host, 'cli-chat-proxy.grok.com');
+    assert.equal(result.grokRoute.codexHost, 'api.openai.com');
     assert.equal(result.paths.chatgptResponses, '/backend-api/codex/responses');
     assert.equal(result.paths.chatgptApps, '/backend-api/codex/api/codex/apps');
   });

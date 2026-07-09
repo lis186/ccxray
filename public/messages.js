@@ -1,5 +1,13 @@
 // ── Messages column helpers ──
-const INJECTED_TAG_RE = /^<(system-reminder|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
+// Grok also uses <user_info> scaffolding as role:user; treat as injected SYS, not YOU.
+const INJECTED_TAG_RE = /^<(system-reminder|user_info|user-prompt-submit-hook|context|antml:function_calls)[^>]*>/;
+const USER_QUERY_BODY_RE = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/i;
+
+function unwrapUserQueryText(text) {
+  if (!text) return text;
+  const m = String(text).match(USER_QUERY_BODY_RE);
+  return m ? m[1].trim() : text;
+}
 
 // P1: coreHash → {label, key} map, lazy-fetched from versions API
 // ponytail: one fetch, no retry, badge falls back to entry.agent until loaded
@@ -102,7 +110,7 @@ function getUserMessagePreview(msg, cls) {
     ? msg.content : [{ type: 'text', text: String(msg.content || '') }];
   const text = blocks
     .filter(b => b.type === 'text' && b.text && !INJECTED_TAG_RE.test(b.text.trimStart()))
-    .map(b => b.text).join(' ').trim();
+    .map(b => unwrapUserQueryText(b.text)).join(' ').trim();
   return text.slice(0, 40) || getMessagePreview(msg);
 }
 
@@ -180,16 +188,28 @@ function getResponseFunctionCallName(item) {
   return item?.name || item?.function?.name || item?.tool_name || item?.type || 'function_call';
 }
 
+// Grok CLI sends message.content as a plain string; Codex uses part arrays
+// ({type:input_text,text}). String content must become a text block or the
+// timeline drops the user's first instruction (live QA 2026-07-09).
+function normalizeOpenAIMessageContent(raw) {
+  if (typeof raw === 'string') {
+    return raw ? [{ type: 'text', text: raw }] : [];
+  }
+  if (!Array.isArray(raw)) return [];
+  return raw.map(b => {
+    if (typeof b === 'string') return { type: 'text', text: b };
+    const text = b?.text || b?.input_text || b?.output_text;
+    if (text != null) return { type: 'text', text: String(text) };
+    return { type: 'text', text: JSON.stringify(b) };
+  });
+}
+
 function normalizeOpenAIInput(input) {
   const msgs = [];
   for (const item of input) {
     if (item.type === 'message') {
       if (item.role === 'developer') continue;
-      const blocks = Array.isArray(item.content) ? item.content : [];
-      const content = blocks.map(b => ({
-        type: 'text',
-        text: b.text || JSON.stringify(b),
-      }));
+      const content = normalizeOpenAIMessageContent(item.content);
       msgs.push({ role: item.role || 'user', content });
     } else if (item.type === 'function_call') {
       let input = {};
@@ -263,7 +283,8 @@ function buildMergedSteps(messages, resEvents, provider) {
           steps.push({
             type: 'human',
             source: 'history',
-            humanText: humanTexts.map(b => b.text).join('\n').slice(0, 200),
+            // Unwrap Grok <user_query> wrappers for readable YOU bubbles
+            humanText: humanTexts.map(b => unwrapUserQueryText(b.text)).join('\n').slice(0, 200),
             hasSys,
             hasToolResult,
             msgIndices: [i],
@@ -658,6 +679,18 @@ function toggleToolsDiff(el) {
   }).catch(() => { diffEl.textContent = 'diff unavailable'; diffEl.dataset.loaded = '1'; });
 }
 
+// History array that matches buildMergedSteps indices.
+// Anthropic: req.messages. OpenAI/Grok: normalize req.input (string content → text blocks).
+// Looking up req.messages for Grok always misses → "No message" in detail pane.
+function getRequestTimelineMessages(req) {
+  if (!req) return null;
+  if (Array.isArray(req.messages) && req.messages.length) return req.messages;
+  if (Array.isArray(req.input) && req.input.length) {
+    return isOpenAIInput(req.input) ? normalizeOpenAIInput(req.input) : req.input;
+  }
+  return null;
+}
+
 function renderStepDetailHtml(req, tok) {
   if (selectedMessageIdx < 0) return '';
   const selection = typeof getSelectedStepSelection === 'function' ? getSelectedStepSelection() : null;
@@ -669,8 +702,30 @@ function renderStepDetailHtml(req, tok) {
 
   if (step.type === 'human') {
     const msgIdx = step.msgIndices[0];
-    const msg = req?.messages?.[msgIdx];
-    return msg ? '<div class="detail-content">' + renderEditedBanner(req, msgIdx) + renderSingleMessage(msg, tok?.perMessage?.[msgIdx], msgIdx) + '</div>' : '<div class="col-empty">No message</div>';
+    const history = getRequestTimelineMessages(req);
+    let msg = history?.[msgIdx] || null;
+    // Fallback: reconstruct from step fields when index lookup fails
+    if (!msg && (step.humanText || step.hasSys)) {
+      const parts = [];
+      if (step.humanText) parts.push({ type: 'text', text: step.humanText });
+      if (step.hasSys && !step.humanText) parts.push({ type: 'text', text: '<system-reminder>(system scaffolding)</system-reminder>' });
+      msg = { role: 'user', content: parts };
+    }
+    if (!msg) return '<div class="col-empty">No message</div>';
+    // Prefer unwrapped body for pure user_query string content
+    if (Array.isArray(msg.content)) {
+      msg = {
+        ...msg,
+        content: msg.content.map(b => {
+          if (b?.type === 'text' && b.text) {
+            const unwrapped = unwrapUserQueryText(b.text);
+            return unwrapped !== b.text ? { ...b, text: unwrapped } : b;
+          }
+          return b;
+        }),
+      };
+    }
+    return '<div class="detail-content">' + renderEditedBanner(req, msgIdx) + renderSingleMessage(msg, tok?.perMessage?.[msgIdx], msgIdx) + '</div>';
   } else if (step.type === 'assistant-text') {
     return '<div class="detail-content"><pre>' + highlightCredentials(step.text || '') + '</pre></div>';
   } else if (step.type === 'tool-group') {
