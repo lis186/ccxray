@@ -999,10 +999,10 @@ async function startServer() {
     if (chatgpt && chatgpt.source !== 'chatgpt-default') {
       candidates.push({ key: 'openaiChatGPT', upstream: chatgpt, envVar: chatgpt.source || 'CHATGPT_BASE_URL' });
     }
-    // Grok/xAI upstream is independent of OPENAI_BASE_URL so hub multi-agent
-    // routing can keep Codex on api.openai.com. Still guard self-loop.
+    // Only check xAI self-loop when user explicitly set XAI_BASE_URL/GROK_BASE_URL.
+    // Default (cli-chat-proxy.grok.com) can never self-loop.
     const xai = config.UPSTREAMS.xai;
-    if (xai) {
+    if (xai && xai.source !== 'xai-default') {
       candidates.push({ key: 'xai', upstream: xai, envVar: xai.source || 'XAI_BASE_URL' });
     }
     for (const { upstream, envVar } of candidates) {

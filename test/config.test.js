@@ -309,7 +309,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
       providers: {
         messages: c.getProviderForRequest('/v1/messages'),
         responses: c.getProviderForRequest('/v1/responses'),
-        chatCompletions: c.getProviderForRequest('/v1/chat/completions'),
+        chatCompletions: c.getProviderForRequest('/v1/chat/completions'),  // falls through to anthropic (no parser yet)
         realtime: c.getProviderForRequest('/v1/realtime?model=gpt-realtime'),
         models: c.getProviderForRequest('/v1/models?client_version=0.125.0'),
         chatgptCodexApps: c.getProviderForRequest('/v1/api/codex/apps'),
@@ -367,7 +367,7 @@ describe('provider-aware OpenAI upstream configuration', () => {
     });
     assert.equal(result.providers.messages, 'anthropic');
     assert.equal(result.providers.responses, 'openai');
-    assert.equal(result.providers.chatCompletions, 'openai');
+    assert.equal(result.providers.chatCompletions, 'anthropic');  // no parser yet → falls through
     assert.equal(result.providers.realtime, 'openai');
     assert.equal(result.providers.models, 'openai');
     assert.equal(result.providers.chatgptCodexApps, 'openai');

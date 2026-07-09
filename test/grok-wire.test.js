@@ -45,8 +45,8 @@ describe('Grok wire contract', () => {
       assert.equal(up.host, config.OPENAI_HOST);
     });
 
-    it('classifies chat/completions as openai wire family', () => {
-      assert.equal(config.getProviderForRequest('/v1/chat/completions'), 'openai');
+    it('chat/completions falls through to anthropic (no parser yet)', () => {
+      assert.equal(config.getProviderForRequest('/v1/chat/completions'), 'anthropic');
     });
   });
 

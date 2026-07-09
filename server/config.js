@@ -183,7 +183,7 @@ function getUpstream(provider) {
 function getProviderForRequest(urlPath) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
-  if (pathname === '/v1/chat/completions' || pathname.startsWith('/v1/chat/completions/')) return 'openai';
+  // ponytail: chat/completions classification deferred until wire parser handles the shape
   if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
   if (isChatGPTCodexPath(pathname)) return 'openai';
