@@ -44,4 +44,8 @@ function stripAuthParams(url) {
   return remaining ? pathname + '?' + remaining : pathname;
 }
 
-module.exports = { stripAuthParams, AUTH_QUERY_PARAMS };
+function stripControlChars(str) {
+  return typeof str === 'string' ? str.replace(/[\x00-\x1f\x7f]/g, '') : str;
+}
+
+module.exports = { stripAuthParams, AUTH_QUERY_PARAMS, stripControlChars };

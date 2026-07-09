@@ -79,7 +79,7 @@ describe('Dashboard shell stays reachable under enforcement (2.3)', () => {
     const root = await get(proxyPort, '/');
     assert.equal(root.statusCode, 200, 'GET / should serve the shell without a cookie');
     assert.match(root.headers['content-type'] || '', /text\/html/);
-    assert.match(root.body, /__PROXY_CONFIG__/);
+    assert.match(root.body, /id="proxy-config"/);
 
     const css = await get(proxyPort, '/style.css');
     assert.equal(css.statusCode, 200, 'GET /style.css should serve without a cookie');

@@ -147,7 +147,7 @@ function rebuildIndexHTML(port) { serverPort = port; }
 function serveStatic(url, clientRes) {
   const pathname = url.split('?')[0];
   if (pathname === '/' || pathname === '/index.html') {
-    const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled(), APP_NAME: DISPLAY_NAME })}</script>`;
+    const script = `<script type="application/json" id="proxy-config">${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled(), APP_NAME: DISPLAY_NAME })}</script>`;
     const html = rawIndexHTML ? rawIndexHTML.replace('<!--__PROXY_CONFIG__-->', script) : '<html><body>Error loading dashboard</body></html>';
     clientRes.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     clientRes.end(html);

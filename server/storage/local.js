@@ -56,13 +56,13 @@ function createLocalStorage(logsDir, opts = {}) {
       // dir — mirrors the original `if (!fs.existsSync(LOGS_DIR))` guard and
       // never clobbers a populated logs dir.
       const logsDirExisted = fs.existsSync(logsDir);
-      await fsp.mkdir(logsDir, { recursive: true });
-      await fsp.mkdir(sharedDir, { recursive: true });
+      await fsp.mkdir(logsDir, { recursive: true, mode: 0o700 });
+      await fsp.mkdir(sharedDir, { recursive: true, mode: 0o700 });
       if (!logsDirExisted) await migrateLegacyLogs();
     },
 
     async write(id, suffix, data) {
-      await fsp.writeFile(path.join(logsDir, id + suffix), data);
+      await fsp.writeFile(path.join(logsDir, id + suffix), data, { mode: 0o600 });
     },
 
     async read(id, suffix) {
@@ -88,7 +88,7 @@ function createLocalStorage(logsDir, opts = {}) {
     // ── Index (index.ndjson) ──────────────────────────────────────────
 
     async appendIndex(line) {
-      await fsp.appendFile(indexPath, line);
+      await fsp.appendFile(indexPath, line, { mode: 0o600 });
     },
 
     async readIndex() {
@@ -105,7 +105,7 @@ function createLocalStorage(logsDir, opts = {}) {
     async writeSharedIfAbsent(filename, data) {
       const p = safeJoin(sharedDir, filename);
       try {
-        await fsp.writeFile(p, data, { flag: 'wx' });
+        await fsp.writeFile(p, data, { flag: 'wx', mode: 0o600 });
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
       }

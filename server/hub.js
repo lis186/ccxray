@@ -23,7 +23,7 @@ const HUB_LOG_KEEP_BYTES = 100 * 1024;     // 100 KB
 // ── Lockfile operations ─────────────────────────────────────────────
 
 function ensureHubDir() {
-  if (!fs.existsSync(HUB_DIR)) fs.mkdirSync(HUB_DIR, { recursive: true });
+  if (!fs.existsSync(HUB_DIR)) fs.mkdirSync(HUB_DIR, { recursive: true, mode: 0o700 });
 }
 
 function readHubLock() {
@@ -39,7 +39,7 @@ function writeHubLock(port, pid, versionOverride, sockPath) {
   const version = versionOverride || require('../package.json').version;
   const data = { port, pid, version, startedAt: new Date().toISOString() };
   if (sockPath) data.sockPath = sockPath;
-  fs.writeFileSync(HUB_LOCK_PATH, JSON.stringify(data));
+  fs.writeFileSync(HUB_LOCK_PATH, JSON.stringify(data), { mode: 0o600 });
   return data;
 }
 
@@ -334,6 +334,8 @@ function handleSocketCommand(msg, socket) {
       socket.write(JSON.stringify({ ok: true }) + '\n');
       break;
     case 'register': {
+      if (typeof msg.pid !== 'number' || msg.pid <= 0 || msg.pid > 4194304 || !Number.isInteger(msg.pid)) return;
+      if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
       addClient(msg.pid, msg.cwd);
       socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty }) + '\n');
@@ -449,7 +451,7 @@ function truncateHubLog() {
       // Find first newline to avoid partial line
       const nl = buf.indexOf(0x0a);
       const clean = nl >= 0 ? buf.subarray(nl + 1) : buf;
-      fs.writeFileSync(HUB_LOG_PATH, clean);
+      fs.writeFileSync(HUB_LOG_PATH, clean, { mode: 0o600 });
     }
   } catch {}
 }

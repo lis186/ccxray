@@ -1292,7 +1292,8 @@ function scrollTurnsToBottom() {
 }
 
 // ── Status line injection state ──
-let statusLineEnabled = window.__PROXY_CONFIG__?.statusLine !== false;
+// eslint-disable-next-line no-undef
+let statusLineEnabled = (typeof __PROXY_CONFIG__ !== 'undefined' ? __PROXY_CONFIG__ : {})?.statusLine !== false;
 
 function toggleStatusLine() {
   statusLineEnabled = !statusLineEnabled;

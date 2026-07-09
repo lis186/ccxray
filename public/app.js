@@ -1,5 +1,6 @@
 // ── Global Config ────────────────────────────────────────────────────
-const DEFAULT_MAX_CTX = window.__PROXY_CONFIG__?.DEFAULT_CONTEXT || 200000;
+const __PROXY_CONFIG__ = JSON.parse(document.getElementById('proxy-config').textContent);
+const DEFAULT_MAX_CTX = __PROXY_CONFIG__?.DEFAULT_CONTEXT || 200000;
 
 // ── Active Tab State ─────────────────────────────────────────────────
 let activeTab = 'dashboard';

@@ -12,7 +12,7 @@ const helpers = require('./helpers');
 const { broadcast, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
 const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
-const { stripAuthParams } = require('./url-sanitize');
+const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
 const { agentForProvider } = require('./providers');
 const { buildIndexLine } = require('./entry');
@@ -446,7 +446,7 @@ function forwardRequest(ctx) {
       reqId: id,
     });
     helpers.printSeparator();
-    console.log(`\x1b[36m📤 [${ts}]  ${ctx.attribPrefix}  ${clientReq.method} ${stripAuthParams(clientReq.url)}\x1b[0m`);
+    console.log(`\x1b[36m📤 [${ts}]  ${ctx.attribPrefix}  ${stripControlChars(clientReq.method)} ${stripControlChars(stripAuthParams(clientReq.url))}\x1b[0m`);
     console.log(helpers.summarizeRequest(parsedBody));
   }
 
