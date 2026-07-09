@@ -31,6 +31,9 @@ const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const {
   getCodexRawSessionId,
   isOpenAISubagent,
+  getOpenAIInstructionsText,
+  resolveOpenAIAgent,
+  extractOpenAICwd,
 } = require('./wire-parsers/openai');
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -199,11 +202,12 @@ function buildForwardHeaders(clientHeaders, upstream) {
 }
 
 function getCodexCwdFallback() {
-  return hub.lookupClientCwd() || (agentCommand === 'codex' ? process.cwd() : null);
+  return hub.lookupClientCwd()
+    || (agentCommand === 'codex' || agentCommand === 'grok' ? process.cwd() : null);
 }
 
 function getOpenAICwd(parsedBody) {
-  return parsedBody?.metadata?.cwd || getCodexCwdFallback();
+  return extractOpenAICwd(parsedBody) || getCodexCwdFallback();
 }
 
 
@@ -287,9 +291,11 @@ const server = http.createServer((clientReq, clientRes) => {
     let coreHash = null;
     let agentKey = null, agentLabel = null;
     if (parsedBody) {
+      // OpenAI-wire: Codex uses `instructions`; Grok embeds system as input[role=system].
+      const openAIInstructions = provider === 'openai' ? getOpenAIInstructionsText(parsedBody) : null;
       sysHash = provider === 'openai'
-        ? (parsedBody.instructions != null
-          ? crypto.createHash('sha256').update(JSON.stringify(parsedBody.instructions)).digest('hex').slice(0, 12)
+        ? (openAIInstructions != null
+          ? crypto.createHash('sha256').update(JSON.stringify(openAIInstructions)).digest('hex').slice(0, 12)
           : null)
         : (parsedBody.system
           ? crypto.createHash('sha256').update(JSON.stringify(parsedBody.system)).digest('hex').slice(0, 12)
@@ -305,7 +311,7 @@ const server = http.createServer((clientReq, clientRes) => {
           .catch(e => console.error('Write tools failed:', e.message));
       } else if (provider === 'openai') {
         if (sysHash) {
-          config.storage.writeSharedIfAbsent(`openai_instructions_${sysHash}.json`, JSON.stringify(parsedBody.instructions))
+          config.storage.writeSharedIfAbsent(`openai_instructions_${sysHash}.json`, JSON.stringify(openAIInstructions))
             .catch(e => console.error('Write OpenAI instructions failed:', e.message));
           const promptInfo = getParser('openai')?.registerPromptVersion?.({
             parsedBody, sysHash, sharedFile: `openai_instructions_${sysHash}.json`,
@@ -381,14 +387,15 @@ const server = http.createServer((clientReq, clientRes) => {
       ? detectedSession
       : { sessionId: provider === 'openai' ? getCodexRawSessionId() : store.getCurrentSessionId(), isNewSession: false };
 
-    // Extract and store cwd
+    // Extract and store cwd + agent identity (Grok vs Codex share openai wire)
     if (parsedBody && reqSessionId) {
       const cwd = provider === 'openai' ? getOpenAICwd(parsedBody) : store.extractCwd(parsedBody);
-      if (cwd) {
-        if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
-        store.sessionMeta[reqSessionId].provider = provider;
-        store.sessionMeta[reqSessionId].cwd = cwd;
+      if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
+      store.sessionMeta[reqSessionId].provider = provider;
+      if (provider === 'openai') {
+        store.sessionMeta[reqSessionId].agent = resolveOpenAIAgent(clientReq.headers, parsedBody);
       }
+      if (cwd) store.sessionMeta[reqSessionId].cwd = cwd;
     }
 
     // Detect new cc_version for live requests; compute coreHash for all qualifying requests
@@ -992,6 +999,12 @@ async function startServer() {
     if (chatgpt && chatgpt.source !== 'chatgpt-default') {
       candidates.push({ key: 'openaiChatGPT', upstream: chatgpt, envVar: chatgpt.source || 'CHATGPT_BASE_URL' });
     }
+    // Only check xAI self-loop when user explicitly set XAI_BASE_URL/GROK_BASE_URL.
+    // Default (cli-chat-proxy.grok.com) can never self-loop.
+    const xai = config.UPSTREAMS.xai;
+    if (xai && xai.source !== 'xai-default') {
+      candidates.push({ key: 'xai', upstream: xai, envVar: xai.source || 'XAI_BASE_URL' });
+    }
     for (const { upstream, envVar } of candidates) {
       if (upstream && localHosts.has(upstream.host) && upstream.port === config.PORT) {
         const url = `${upstream.protocol}://${upstream.host}:${upstream.port}`;
@@ -1076,9 +1089,16 @@ async function startServer() {
     const openaiUrl = `${config.OPENAI_PROTOCOL}://${config.OPENAI_HOST}:${config.OPENAI_PORT}${config.OPENAI_BASE_PATH}`;
     const openaiNote = config.OPENAI_BASE_URL_SOURCE === 'OPENAI_BASE_URL' ? ' (from OPENAI_BASE_URL)' : '';
     console.log(`   OpenAI Upstream → ${openaiUrl}${openaiNote}`);
+    const xai = config.UPSTREAMS.xai;
+    if (xai) {
+      const xaiUrl = `${xai.protocol}://${xai.host}:${xai.port}${xai.basePath || ''}`;
+      const xaiNote = xai.source && xai.source !== 'xai-default' ? ` (from ${xai.source})` : '';
+      console.log(`   xAI Upstream → ${xaiUrl}${xaiNote}`);
+    }
     console.log(`   Logs → ${config.storage.location || config.LOGS_DIR}`);
     console.log();
-    console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude\x1b[0m`);
+    console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude`);
+    console.log(`          ccxray codex | ccxray grok\x1b[0m`);
     console.log('\x1b[0m');
   }
 

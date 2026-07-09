@@ -32,8 +32,15 @@ function parseCodexTurnMetadata(headers) {
 }
 
 function getCodexSessionId(headers, parsedBody) {
-  const direct = firstHeader(headers, 'session_id') || firstHeader(headers, 'x-openai-session-id');
-  if (direct) return String(direct);
+  const direct = firstHeader(headers, 'session_id')
+    || firstHeader(headers, 'x-openai-session-id')
+    // Grok CLI (obs-stable 0.2.93): session + conversation ids on every main turn
+    || firstHeader(headers, 'x-grok-session-id')
+    || firstHeader(headers, 'x-grok-conv-id');
+  if (direct) {
+    const text = String(direct).trim();
+    if (text) return text;
+  }
   const turnMetadata = parseCodexTurnMetadata(headers);
   if (typeof turnMetadata?.session_id === 'string') return turnMetadata.session_id;
   return parsedBody?.metadata?.session_id || null;
@@ -41,6 +48,16 @@ function getCodexSessionId(headers, parsedBody) {
 
 function getCodexRawSessionId() {
   return 'codex-raw';
+}
+
+// Title-gen and other Grok turns sometimes omit x-grok-session-id. Keep them
+// out of the Codex "codex-raw" bucket so the dashboard does not label Grok
+// traffic as Codex (screenshot QA 2026-07-09).
+function getOpenAIRawSessionId(headers, parsedBody) {
+  if (config.isGrokClient(headers) || isGrokModel(parsedBody?.model) || parsedBody?.metadata?.client === 'grok') {
+    return 'grok-raw';
+  }
+  return getCodexRawSessionId();
 }
 
 function getOpenAIAgentTypeFromHeaders(headers) {
@@ -63,25 +80,67 @@ function isOpenAISubagent(headers, parsedBody) {
   return Boolean(parsedBody?.metadata?.is_subagent || parsedBody?.metadata?.isSubagent);
 }
 
+function isGrokModel(model) {
+  return typeof model === 'string' && /^grok/i.test(model);
+}
+
+// Resolve the agent label for an OpenAI-wire request. Grok reuses the openai
+// wire family but must not be labeled "codex" in the dashboard.
+function resolveOpenAIAgent(headers, parsedBody) {
+  if (config.isGrokClient(headers) || isGrokModel(parsedBody?.model) || parsedBody?.metadata?.client === 'grok') {
+    return 'grok';
+  }
+  return agentForProvider('openai');
+}
+
+// System prompt text: Codex uses top-level `instructions`; Grok puts system
+// content in input[role=system] as a plain string (obs-stable 0.2.93).
+function getOpenAIInstructionsText(parsedBody) {
+  if (!parsedBody || typeof parsedBody !== 'object') return null;
+  if (parsedBody.instructions != null) {
+    return typeof parsedBody.instructions === 'string'
+      ? parsedBody.instructions
+      : JSON.stringify(parsedBody.instructions);
+  }
+  if (!Array.isArray(parsedBody.input)) return null;
+  for (const item of parsedBody.input) {
+    if (!item || item.role !== 'system') continue;
+    if (item.content == null) continue;
+    return typeof item.content === 'string' ? item.content : JSON.stringify(item.content);
+  }
+  return null;
+}
+
 function withCodexMetadata(parsedBody, headers) {
   if (!parsedBody || typeof parsedBody !== 'object') return parsedBody;
   const sessionId = getCodexSessionId(headers, parsedBody);
   const agentType = getOpenAIAgentTypeFromHeaders(headers);
-  if (!sessionId && !agentType) return parsedBody;
+  const grok = config.isGrokClient(headers) || isGrokModel(parsedBody.model);
+  if (!sessionId && !agentType && !grok) return parsedBody;
   const metadata = parsedBody.metadata && typeof parsedBody.metadata === 'object'
     ? { ...parsedBody.metadata }
     : {};
   if (sessionId && !metadata.session_id) metadata.session_id = sessionId;
   if (agentType && !metadata.agent_type) metadata.agent_type = agentType;
+  if (grok && !metadata.client) metadata.client = 'grok';
   return { ...parsedBody, metadata };
 }
 
 // ── WIRE_PARSERS interface ──────────────────────────────────
 
+// Conversation turns that should create dashboard entries.
+function isOpenAIConversationPath(pathname) {
+  return pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')
+    || pathname === '/v1/chat/completions' || pathname.startsWith('/v1/chat/completions/')
+    || pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/');
+}
+
 // All Codex ChatGPT-platform paths + model-list queries are noise. None carry
 // conversation data; platform paths 404 for API-key users and create garbage
 // "(unknown)" / "Codex Raw" entries. /v1/models is a metadata query, not a turn.
-function isNoiseRequest(url, _headers, _parsedBody) {
+// Grok also probes settings/feedback/control-plane under /v1/* — those must not
+// create anthropic-misrouted entries (see grok wire experiment 2026-07-09).
+function isNoiseRequest(url, headers, _parsedBody) {
   const pathname = (url || '').split('?')[0];
   if (pathname === '/v1/plugins' || pathname.startsWith('/v1/plugins/')) return true;
   if (pathname === '/v1/ps/plugins' || pathname.startsWith('/v1/ps/plugins/')) return true;
@@ -89,6 +148,11 @@ function isNoiseRequest(url, _headers, _parsedBody) {
   if (pathname === '/v1/api/codex' || pathname.startsWith('/v1/api/codex/')) return true;
   if (pathname === '/v1/codex' || pathname.startsWith('/v1/codex/')) return true;
   if (pathname === '/v1/models') return true;
+  // Grok control-plane under /v1/* that is not a conversation turn
+  if (config.isGrokClient(headers) && pathname.startsWith('/v1/') && !isOpenAIConversationPath(pathname)
+      && pathname !== '/v1/messages' && !pathname.startsWith('/v1/messages/')) {
+    return true;
+  }
   return false;
 }
 
@@ -117,12 +181,12 @@ function extractUsage(resData) {
 function detectSession(_req, headers, parsedBody) {
   const sessionId = getCodexSessionId(headers, parsedBody);
   if (!sessionId) {
-    return { sessionId: getCodexRawSessionId(), isNewSession: false, inferred: true };
+    return { sessionId: getOpenAIRawSessionId(headers, parsedBody), isNewSession: false, inferred: true };
   }
   const bodyForDetection = parsedBody || { metadata: { session_id: sessionId } };
   const detected = store.detectSession(bodyForDetection);
   return {
-    sessionId: detected.sessionId || sessionId || getCodexRawSessionId(),
+    sessionId: detected.sessionId || sessionId || getOpenAIRawSessionId(headers, parsedBody),
     isNewSession: detected.isNewSession || false,
     inferred: detected.inferred || false,
   };
@@ -131,6 +195,34 @@ function detectSession(_req, headers, parsedBody) {
 // Optional preprocessor: inject header-derived metadata into parsedBody
 function preprocessBody(parsedBody, headers) {
   return withCodexMetadata(parsedBody, headers);
+}
+
+// Grok embeds workspace in a user message:
+//   <user_info> ... Workspace Path: /tmp/foo Shell: ... </user_info>
+// Codex may put CWD in instructions. metadata.cwd wins when present.
+function extractOpenAICwd(parsedBody) {
+  if (!parsedBody || typeof parsedBody !== 'object') return null;
+  if (typeof parsedBody.metadata?.cwd === 'string' && parsedBody.metadata.cwd) {
+    return parsedBody.metadata.cwd;
+  }
+  if (Array.isArray(parsedBody.input)) {
+    for (const item of parsedBody.input) {
+      if (!item || item.role !== 'user') continue;
+      const text = typeof item.content === 'string'
+        ? item.content
+        : (Array.isArray(item.content)
+          ? item.content.map(p => p?.text || '').join('\n')
+          : '');
+      // Paths are usually unquoted; stop at next labeled field (Shell/OS/Today) or tag.
+      const m = text.match(/Workspace Path:\s*(\S+?)(?:\s+(?:Shell|OS|Today)\b|\s*<|$)/i)
+        || text.match(/Workspace Path:\s*(\S+)/i);
+      if (m) return m[1].trim();
+    }
+  }
+  const instructions = typeof parsedBody.instructions === 'string' ? parsedBody.instructions : '';
+  const m2 = instructions.match(/(?:^|\n)CWD:\s*(.+)/);
+  if (m2) return m2[1].trim();
+  return null;
 }
 
 function buildEntryFields(ctx) {
@@ -148,9 +240,10 @@ function buildEntryFields(ctx) {
     if (ctx.events && ctx.events.length) responseMetadata.streaming = true;
   }
 
+  const agent = resolveOpenAIAgent(null, parsedBody);
   return {
     provider: 'openai',
-    agent: agentForProvider('openai'),
+    agent,
     model,
     msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
     toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
@@ -162,13 +255,14 @@ function buildEntryFields(ctx) {
     cwd: ctx.cwd ?? null,
     usage,
     cost: calculateCost(usage, model),
-    maxContext: model ? config.inferMaxContext(model, parsedBody?.instructions, usage) : null,
+    // Pass instructions text (Codex) or system-role input (Grok) for context sizing
+    maxContext: model ? config.inferMaxContext(model, getOpenAIInstructionsText(parsedBody), usage) : null,
     responseMetadata,
     stopReason: isWS
       ? (ctx.lastResponseStatus || ctx.wsCloseReason || ctx.wsErrorMessage || null)
       : (response?.status || ''),
     title: isWS
-      ? (getOpenAIInputSummary(parsedBody?.input) || 'Codex WebSocket session')
+      ? (getOpenAIInputSummary(parsedBody?.input) || (agent === 'grok' ? 'Grok WebSocket session' : 'Codex WebSocket session'))
       : (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response)),
     thinkingDuration: null,
     toolFail: false,
@@ -184,7 +278,7 @@ function buildEntryFields(ctx) {
 
 function registerPromptVersion(ctx) {
   const { parsedBody, sysHash, sharedFile } = ctx;
-  const promptText = typeof parsedBody?.instructions === 'string' ? parsedBody.instructions : null;
+  const promptText = getOpenAIInstructionsText(parsedBody);
   if (!promptText) return null;
   const { key: agentKey, label: agentLabel } = extractPromptAgentType('openai', parsedBody);
   const coreHash = crypto.createHash('md5').update(promptText).digest('hex').slice(0, 12);
@@ -216,6 +310,7 @@ module.exports = {
   registerPromptVersion,
   // Low-level exports for ws-proxy.js compatibility
   getCodexRawSessionId,
+  getOpenAIRawSessionId,
   firstHeader,
   parseCodexTurnMetadata,
   getCodexSessionId,
@@ -223,4 +318,8 @@ module.exports = {
   isOpenAISubagent,
   detectOpenAISession: detectSession,
   withCodexMetadata,
+  getOpenAIInstructionsText,
+  resolveOpenAIAgent,
+  isGrokModel,
+  extractOpenAICwd,
 };

@@ -79,6 +79,99 @@ describe('dashboard timeline rendering helpers', () => {
     assert.equal(JSON.stringify(steps[0].calls[0].input), JSON.stringify({ command: 'npm test' }));
     assert.equal(steps[0].calls[0].pending, true);
   });
+
+  it('Grok string content + user_query appears as a human timeline step (not dropped)', () => {
+    const context = loadMessagesContext();
+    // Live Grok shape: plain-string content; user_query then trailing MCP system-reminder
+    const input = [
+      { type: 'message', role: 'system', content: 'You are Grok.' },
+      { type: 'message', role: 'user', content: '<user_info> Workspace Path: /tmp/proj </user_info>' },
+      {
+        type: 'message',
+        role: 'user',
+        content: '<user_query> 這個專案是做什麼的？分析一下整體架構 </user_query>',
+      },
+      {
+        type: 'message',
+        role: 'user',
+        content: '<system-reminder> MCP servers connected: - pointer (1 tool) </system-reminder>',
+      },
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: '我先從專案根目錄著手。' }],
+      },
+    ];
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const human = steps.filter(s => s.type === 'human');
+    assert.ok(human.length >= 1, 'expected at least one human step');
+    const queryStep = human.find(s => (s.humanText || '').includes('這個專案是做什麼的'));
+    assert.ok(queryStep, 'user_query body must appear in a human step');
+    assert.ok(!queryStep.humanText.includes('<user_query>'), 'user_query tags should be unwrapped');
+  });
+
+  it('normalizeOpenAIInput preserves plain-string message content', () => {
+    const context = loadMessagesContext();
+    const msgs = context.normalizeOpenAIInput([
+      { type: 'message', role: 'user', content: '<user_query> hello </user_query>' },
+    ]);
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0].role, 'user');
+    assert.equal(msgs[0].content.length, 1);
+    assert.equal(msgs[0].content[0].type, 'text');
+    assert.match(msgs[0].content[0].text, /hello/);
+  });
+
+  it('getRequestTimelineMessages uses normalized input for Grok (not req.messages)', () => {
+    const context = loadMessagesContext();
+    const req = {
+      model: 'grok-4.5',
+      input: [
+        { type: 'message', role: 'user', content: '<user_info> Workspace Path: /tmp/x </user_info>' },
+        { type: 'message', role: 'user', content: '<user_query> 這個專案是做什麼的？ </user_query>' },
+        { type: 'message', role: 'user', content: '<system-reminder> MCP servers connected </system-reminder>' },
+      ],
+    };
+    const history = context.getRequestTimelineMessages(req);
+    assert.ok(Array.isArray(history));
+    assert.equal(history.length, 3);
+    assert.match(history[1].content[0].text, /這個專案是做什麼的/);
+  });
+
+  it('renderStepDetailHtml shows Grok human step (not No message)', () => {
+    const context = loadMessagesContext();
+    // Minimal stubs used by select/detail path
+    context.escapeHtml = (s) => String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    context.highlightCredentials = (s) => s;
+    context.renderSingleMessage = (m) => {
+      const t = Array.isArray(m.content)
+        ? m.content.map(b => b.text || '').join('')
+        : String(m.content || '');
+      return '<pre class="msg">' + context.escapeHtml(t) + '</pre>';
+    };
+    context.selectedMessageIdx = 0;
+    context.getSelectedStepSelection = () => ({ stepIdx: 1, sub: null });
+    // Build steps like the live turn: user_info (sys), user_query (human), system-reminder (sys)
+    const input = [
+      { type: 'message', role: 'user', content: '<user_info> Workspace Path: /tmp/x </user_info>' },
+      { type: 'message', role: 'user', content: '<user_query> 這個專案是做什麼的？分析一下整體架構 </user_query>' },
+      { type: 'message', role: 'user', content: '<system-reminder> MCP servers connected: - pointer </system-reminder>' },
+    ];
+    // currentSteps is a top-level `let` in messages.js — a context property
+    // won't shadow the lexical binding, so assign inside the vm instead.
+    context.__grokSteps = context.buildMergedSteps(input, [], 'openai');
+    vm.runInContext('currentSteps = __grokSteps;', context);
+    // Step 1 should be the user_query human step after user_info sys-only step
+    const humanIdx = context.__grokSteps.findIndex(
+      s => s.type === 'human' && (s.humanText || '').includes('這個專案')
+    );
+    assert.ok(humanIdx >= 0, 'human user_query step exists');
+    context.getSelectedStepSelection = () => ({ stepIdx: humanIdx, sub: null });
+    const html = context.renderStepDetailHtml({ input, model: 'grok-4.5' }, null);
+    assert.ok(!html.includes('No message'), 'detail must not be empty: ' + html.slice(0, 200));
+    assert.ok(html.includes('這個專案是做什麼的'), 'detail shows user query body');
+  });
 });
 
 describe('renderEditedBanner — intercept-edited badge (client render)', () => {

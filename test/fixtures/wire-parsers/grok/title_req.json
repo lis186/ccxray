@@ -1,0 +1,34 @@
+{
+  "model": "grok-build",
+  "stream": true,
+  "store": false,
+  "temperature": 1,
+  "max_output_tokens": 100,
+  "include": ["reasoning.encrypted_content"],
+  "reasoning": { "summary": "concise" },
+  "tool_choice": { "type": "function", "name": "session_title" },
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "You are tasked with generating the session title. The user is asking almost always software engineering questions."
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_query> Reply with exactly one word: pong </user_query>"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "session_title",
+      "description": "Set the session title",
+      "parameters": {
+        "type": "object",
+        "properties": { "session_title": { "type": "string" } },
+        "required": ["session_title"]
+      }
+    }
+  ]
+}

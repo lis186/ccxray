@@ -11,6 +11,8 @@ A transparent HTTP proxy that sits between Claude Code and the Anthropic API. It
 ```bash
 npx ccxray claude                                # One command: proxy + Claude Code
 ccxray claude                                    # Multiple terminals auto-share one hub
+ccxray codex                                     # Proxy + Codex CLI
+ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
 ccxray status                                    # Show hub info and connected clients
 ccxray                                           # Proxy + dashboard only
@@ -134,6 +136,7 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 - Launchers are registered in `server/providers.js`. Add future providers there with one entry for command name, display name, upstream family, launch args/env, and install hint; avoid adding new `if provider` branches in `server/index.js`.
 - Claude mode sets `ANTHROPIC_BASE_URL=http://localhost:<port>` in the spawned Claude process.
 - Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' -c 'chatgpt_base_url="http://localhost:<port>/v1"' ...args`, covering both API-key and ChatGPT-auth Codex transports.
+- Grok mode sets `GROK_CLI_CHAT_PROXY_BASE_URL=http://localhost:<port>/v1`. Inference uses the OpenAI Responses wire (`POST /v1/responses`). Upstream host is chosen by **client headers** (`x-grok-client-*` / `User-Agent: grok-shell`) → `UPSTREAMS.xai` (default `cli-chat-proxy.grok.com`, override with `XAI_BASE_URL` / `GROK_BASE_URL`) so a shared hub can run Claude + Codex + Grok without swapping `OPENAI_BASE_URL`. Session id: `x-grok-session-id`; system prompt lives in `input[role=system]` (not `instructions`). Wire notes: `docs/grok-wire-experiment-2026-07-09.md`.
 - Extra user args pass through unchanged after ccxray's injected launcher config.
 - `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
 - Codex's main session traffic upgrades to a WebSocket on `POST /v1/responses` (with `openai-beta: responses_websockets=*`), not `/v1/realtime`. `/v1/realtime` exists for the older Realtime API but is not what current codex uses for normal `/goal` / chat turns. When ChatGPT auth is active, codex also sends `chatgpt-account-id`, which `getUpstreamForRequestAndHeaders` (see `server/config.js`) uses to route to `CHATGPT_BASE_URL` instead of `OPENAI_BASE_URL`.
@@ -150,6 +153,16 @@ Claude Code → proxy receives request → detect session (explicit or inferred)
 ```
 
 Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` env var.
+
+### Pricing lag overrides
+
+`server/pricing.js` has `LITELLM_LAG_OVERRIDES` for models LiteLLM has not listed yet (e.g. new Grok wire ids). These are **temporary**:
+
+1. On every `fetchPricing()`, if LiteLLM already has any watched `litellmKeys`, the override is **not applied** (LiteLLM wins) and startup prints a yellow `pricing lag override obsolete: … Delete the row…` reminder.
+2. Search `LITELLM_LAG_OVERRIDES` or `pricing lag override` to find rows to delete.
+3. Lifecycle tests live in `test/pricing.test.js` (`LITELLM_LAG_OVERRIDES lifecycle`).
+
+Do not dump temporary rates into permanent `DEFAULT_PRICING` — that table is the offline safety net for Claude/OpenAI only.
 
 ### Delta Log Storage
 

@@ -7,8 +7,8 @@ const providers = require('../server/providers');
 
 describe('agent provider registry', () => {
   it('lists the supported provider launchers', () => {
-    assert.deepEqual(providers.listAgentProviderIds(), ['claude', 'codex']);
-    assert.equal(providers.supportedProviderList(), 'claude, codex');
+    assert.deepEqual(providers.listAgentProviderIds(), ['claude', 'codex', 'grok']);
+    assert.equal(providers.supportedProviderList(), 'claude, codex, grok');
   });
 
   it('builds the Claude launch through the registry', () => {
@@ -67,6 +67,21 @@ describe('agent provider registry', () => {
     assert.equal(launch.env.PATH, '/usr/bin');
   });
 
+  it('builds the Grok launch through the registry', () => {
+    const launch = providers.getAgentLaunch('grok', 5577, ['-p', 'hi'], {
+      PATH: '/usr/bin',
+    });
+
+    assert.equal(launch.provider, 'grok');
+    assert.equal(launch.label, 'Grok CLI');
+    assert.equal(launch.upstream, 'openai');
+    assert.equal(launch.bin, 'grok');
+    assert.deepEqual(launch.args, ['-p', 'hi']);
+    assert.equal(launch.env.PATH, '/usr/bin');
+    assert.equal(launch.env.GROK_CLI_CHAT_PROXY_BASE_URL, 'http://localhost:5577/v1');
+    assert.match(launch.installHint, /x\.ai\/cli/);
+  });
+
   it('PROVIDER_AGENT maps upstream family to agent label', () => {
     assert.equal(providers.agentForProvider('openai'), 'codex');
     assert.equal(providers.agentForProvider('anthropic'), 'claude');
@@ -84,14 +99,20 @@ describe('agent provider registry', () => {
       template: 'codex resume {sid}',
       condition: 'has-usage',
     });
+    assert.deepEqual(UPSTREAM_PROFILES.xai.resume, {
+      template: 'grok --resume {sid}',
+      condition: 'has-usage',
+    });
   });
 
   it('centralizes display names and unsupported-provider handling', () => {
     assert.equal(providers.getDisplayName('claude', {}), 'ccxray');
     assert.equal(providers.getDisplayName('codex', {}), 'ccxray');
+    assert.equal(providers.getDisplayName('grok', {}), 'ccxray');
     assert.equal(providers.getDisplayName('codex', { CCXRAY_DISPLAY_NAME: 'customray' }), 'customray');
     assert.equal(providers.getAgentLaunch('unknown-ai', 5577, []), null);
     assert.equal(providers.getAgentProvider('unknown-ai'), null);
     assert.equal(providers.isAgentProvider('unknown-ai'), false);
+    assert.equal(providers.isAgentProvider('grok'), true);
   });
 });

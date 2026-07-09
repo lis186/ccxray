@@ -75,8 +75,32 @@ const AGENT_PROVIDERS = Object.freeze({
       };
     },
   }),
+
+  // Grok CLI (xAI): OpenAI Responses wire → cli-chat-proxy.grok.com by default.
+  // Upstream host selection is header-based (x-grok-*) so a shared hub can serve
+  // Claude/Codex/Grok without flipping OPENAI_BASE_URL. See docs/grok-wire-experiment-2026-07-09.md.
+  grok: Object.freeze({
+    id: 'grok',
+    label: 'Grok CLI',
+    displayName: 'ccxray',
+    upstream: 'openai',
+    installHint: '  curl -fsSL https://x.ai/cli/install.sh | bash',
+    createLaunch({ port, args, env }) {
+      const proxyBaseUrl = `http://localhost:${port}/v1`;
+      const launchEnv = {
+        ...env,
+        GROK_CLI_CHAT_PROXY_BASE_URL: proxyBaseUrl,
+      };
+      // When X-Ccxray-Auth is required (non-loopback), Grok can send extra headers
+      // via custom model config — but the stock cli path has no env-header hook
+      // equivalent to ANTHROPIC_CUSTOM_HEADERS. Loopback is trusted by default.
+      return { bin: 'grok', args: [...args], env: launchEnv };
+    },
+  }),
 });
 
+// Upstream wire family → default agent label. Grok also speaks the openai wire
+// family but is distinguished at entry-build time via client headers / model id.
 const PROVIDER_AGENT = Object.freeze({ anthropic: 'claude', openai: 'codex' });
 function agentForProvider(provider) { return PROVIDER_AGENT[provider] || 'claude'; }
 
@@ -98,6 +122,15 @@ const UPSTREAM_PROFILES = Object.freeze({
     // Codex only writes a rollout file (resumable session) after a successful
     // API turn — sessions with only startup errors can't be resumed.
     resume: Object.freeze({ template: 'codex resume {sid}', condition: 'has-usage' }),
+  }),
+  // Same wire semantics as openai (Responses + cache in input_tokens); distinct
+  // brand + resume for Grok-labeled sessions.
+  xai: Object.freeze({
+    cache: 'server-managed',
+    inputIncludesCached: true,
+    label: 'xAI',
+    brandColor: '#a78bfa',
+    resume: Object.freeze({ template: 'grok --resume {sid}', condition: 'has-usage' }),
   }),
 });
 
