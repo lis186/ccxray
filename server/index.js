@@ -133,6 +133,14 @@ const hub = require('./hub');
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MIME_TYPES = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript' };
 
+// Security headers for dashboard static responses only.
+// NOT applied to proxy-forwarded responses (those go to Anthropic unchanged).
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+};
+
 // Load persisted settings and apply immediately
 const settings = readSettings();
 setStatusLineEnabled(settings.statusLine);
@@ -149,7 +157,7 @@ function serveStatic(url, clientRes) {
   if (pathname === '/' || pathname === '/index.html') {
     const script = `<script>window.__PROXY_CONFIG__=${JSON.stringify({ DEFAULT_CONTEXT: config.DEFAULT_CONTEXT, PORT: serverPort, statusLine: getStatusLineEnabled(), APP_NAME: DISPLAY_NAME })}</script>`;
     const html = rawIndexHTML ? rawIndexHTML.replace('<!--__PROXY_CONFIG__-->', script) : '<html><body>Error loading dashboard</body></html>';
-    clientRes.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    clientRes.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     clientRes.end(html);
     return true;
   }
@@ -161,7 +169,7 @@ function serveStatic(url, clientRes) {
   if (!filePath.startsWith(PUBLIC_DIR)) return false;
   try {
     const content = fs.readFileSync(filePath);
-    clientRes.writeHead(200, { 'Content-Type': mime + '; charset=utf-8', 'Cache-Control': 'no-store' });
+    clientRes.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': mime + '; charset=utf-8', 'Cache-Control': 'no-store' });
     clientRes.end(content);
     return true;
   } catch {
