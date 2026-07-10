@@ -170,7 +170,18 @@ async function restoreFromLogs() {
     // correct 1M values when current usage happens to fit inside 200K.
     if (meta.provider === 'anthropic') {
       const inferred = config.inferMaxContext(meta.model, null, meta.usage);
-      meta.maxContext = Math.max(meta.maxContext || 0, inferred);
+      // #211: a stored value is only trusted over the re-inference for
+      // SUPPORTS_1M models, where it can encode a beta-header signal that is
+      // not re-derivable here (headers are not persisted). For non-capable
+      // models a stored 1M can only be pre-clamp LiteLLM pollution (or the
+      // usage hatch, which re-inference reproduces) — re-derive instead.
+      // Pollution on SUPPORTS_1M models (pre-fix fable-5 lines) is healed by
+      // `ccxray rebuild-index --apply`, which re-reads the persisted system
+      // prompt and recomputes from the ground-truth [1m] marker.
+      const stripped = (meta.model || '').replace(/\[.*\]/, '');
+      meta.maxContext = stripped.startsWith('claude-') && !config.SUPPORTS_1M.test(stripped)
+        ? inferred
+        : Math.max(meta.maxContext || 0, inferred);
     }
 
     if (meta.usage) {

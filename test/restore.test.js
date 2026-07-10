@@ -159,6 +159,29 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     assert.equal(entry.maxContext, 1_000_000);
   });
 
+  it('re-derives polluted maxContext=1M for non-1M-capable Claude models (#211, fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T14-30-00-000';
+    // A stored 1M on a model outside SUPPORTS_1M cannot encode a legitimate
+    // beta-header signal — it can only be pre-clamp LiteLLM pollution (#211)
+    // or the usage hatch, which re-inference reproduces. Re-derive instead of
+    // keeping the max. (Pre-fix fable-5 pollution is healed by rebuild-index,
+    // since fable is 1M-capable and stays trusted here.)
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '14:30:00', sessionId: 'sess-4e68c773',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-haiku-4-5',
+      usage: { input_tokens: 172_700 },
+      maxContext: 1_000_000, // polluted by LiteLLM max-capability
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 200_000);
+  });
+
   it('leaves OpenAI entries untouched (no Claude bump)', async () => {
     store.entries.length = 0;
     const id = '2026-05-14T15-00-00-000';
