@@ -362,7 +362,7 @@ function wfBuildState(sessionId) {
     var end = ts + (parseFloat(t.elapsed) || 0) * 1000;
     if (end > tMax) tMax = end;
   }
-  if (tMin === Infinity) { tMin = 0; tMax = 1; }
+  if (tMin === Infinity) { tMin = 0; if (tMax === -Infinity) tMax = 1; }
 
   var lanes = wfInferLanes(entries, childEntries);
 

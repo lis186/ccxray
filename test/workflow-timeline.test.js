@@ -198,6 +198,15 @@ describe('workflow-timeline data layer', () => {
     assert.equal(state.lanes[0].turns.length, 2);
   });
 
+  it('#143: sentinel does not clobber valid tMax when receivedAt is falsy', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 0, 10, {}), // receivedAt = 0 (falsy)
+    ];
+    var state = ctx.wfBuildState('s1');
+    assert.equal(state.tMax, 10000); // 0 + 10*1000, NOT sentinel 1
+  });
+
   it('wfAddEntry assigns to correct lane and extends tMax', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
