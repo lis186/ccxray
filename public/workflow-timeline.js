@@ -830,20 +830,30 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
 // #wf-lanes-section clips lanes off the bottom with no scroll affordance).
 // Focused mode narrows the sub-lane area to just the selected lane; main
 // stays visible (pinned/cheap) so orchestrator context is never lost.
+// Two rows: zoom/focus-toggle controls stay together (row 1, unchanged
+// position), the lane pager gets its own row (row 2, right-aligned) instead
+// of sharing row 1's 4px gap with the toggle button — nine-gate review found
+// that adjacency put a functionally-opposite control (toggle exits focus
+// entirely) right next to "next lane," the same misclick shape this whole
+// redesign exists to avoid. Row 2 renders empty/collapsed outside focus mode.
 function _wfOverviewLabelHtml() {
   var focusLi = _wfFocusLaneIdx();
-  var navHtml = wfState.laneFocusMode
-    ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
-      '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
-      '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>'
-    : '';
-  return '<span>Overview</span>' +
+  var row1 = '<div class="wf-ol-row">' +
+    '<span>Overview</span>' +
     '<button onclick="wfZoomBy(0.5)">+</button>' +
     '<button onclick="wfZoomBy(2)">−</button>' +
     '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
     '<button onclick="wfToggleLaneFocus()" title="' + (wfState.laneFocusMode ? 'Show all agents' : 'Focus selected agent') +
       '" class="' + (wfState.laneFocusMode ? 'active' : '') + '">' + (wfState.laneFocusMode ? '▤' : '▥') + '</button>' +
-    navHtml;
+    '</div>';
+  var row2 = wfState.laneFocusMode
+    ? '<div class="wf-ol-row wf-ol-row-pager">' +
+        '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
+        '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
+        '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>' +
+      '</div>'
+    : '';
+  return row1 + row2;
 }
 
 function _wfRefreshLaneFocusUI() {

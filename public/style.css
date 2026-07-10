@@ -679,7 +679,12 @@
 #columns.wf-active #col-turns .col-sticky-header { display: none; }
 #wf-timeline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 #wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
-#wf-overview-label { width: 240px; flex-shrink: 0; padding: 0 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px; }
+#wf-overview-label { width: 240px; flex-shrink: 0; padding: 4px 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; flex-direction: column; gap: 3px; }
+#wf-overview-label .wf-ol-row { display: flex; align-items: center; gap: 4px; }
+/* Lane pager (row 2) — right-aligned, own row so it never shares the 4px
+   gap with the focus-mode toggle button (nine-gate: that adjacency risked
+   the same misclick shape as the original show-all-agents collision). */
+#wf-overview-label .wf-ol-row-pager { justify-content: flex-end; }
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
 #wf-overview-label button.active { color: var(--accent); border-color: var(--accent); }
