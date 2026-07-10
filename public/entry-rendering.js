@@ -353,6 +353,7 @@ function addEntry(e) {
     sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
     sess.latestCacheReadTokens = ctxCacheRead;
     sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
+    sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid);
   }
@@ -373,6 +374,7 @@ function addEntry(e) {
       gapTitle = cacheMode === 'ephemeral-ttl'
         ? (gapMs < 5 * 60000 ? 'Cache likely warm (< 5m)' : gapMs < 60 * 60000 ? 'Default cache expired (5m–1h)' : 'All cache expired (> 1h)')
         : 'Cached automatically';
+      if (window.ccxraySettings?.cacheTtlMs && gapMs > window.ccxraySettings.cacheTtlMs) sess.cacheBreaks = (sess.cacheBreaks || 0) + 1;
     }
   }
 
