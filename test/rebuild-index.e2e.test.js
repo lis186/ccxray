@@ -136,8 +136,11 @@ describe('rebuild-index E2E — self-heal a lost index to a real browser render'
 
       // The recovered turn must render under its session — proves the rebuilt
       // index flows through restore → SSE → render, not just sits on disk.
+      // Projects column render is rAF-coalesced (docs/decisions/0002-dirty-check-signature.md),
+      // so wait for it too — the turn-item can commit a frame before it does.
       await page.waitForFunction(
-        (sid) => !!document.querySelector(`.turn-item[data-session-id="${sid}"]`),
+        (sid) => !!document.querySelector(`.turn-item[data-session-id="${sid}"]`) &&
+                 !!document.querySelector('.project-item.selected .pi-label')?.textContent,
         { timeout: 8000 }, SESSION_ID,
       );
 
