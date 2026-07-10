@@ -27,6 +27,9 @@ These constraints have guard comments at their mutation sites. Read the linked A
 - **entryIndex must mirror entries[]** at all push/trim sites (forward.js, ws-proxy.js, restore.js, store.js) — @docs/decisions/0003-entry-index-map.md
 - **renderProjectsCol signature must include every field that affects rendered output** — adding a rendered field without updating `sigParts` = silent stale render — @docs/decisions/0002-dirty-check-signature.md
 - **Skeleton early-return must clear innerHTML** before returning; skeleton containers must have the same `id` as the render function's `getElementById` target — @docs/decisions/0004-skeleton-lifecycle.md
+- **agentKey main/subagent classification must gate on AGENT_KEY_UNRELIABLE** in both `entry-rendering.js` and `workflow-timeline.js` (`wfInferLanes`, `wfAddEntry`) — the two files must never disagree on the same turn — @docs/decisions/0005-agent-key-unreliable-shared-contract.md
+- **Lane-focus geometry must match what `_wfRenderSvgContent` actually draws** — `_wfTotalLanesHeight`, `_wfLaneIdxAtY`, and the label-click hit-test in `workflow-timeline.js` must all agree with it under `laneFocusMode` — @docs/decisions/0006-lane-focus-geometry-consistency.md
+- **Use `_wfIsMainLane(lane)` for main/orchestrator detection, never `!lane.spawnParent`** (`spawnParent` is always `null`, in every lane object, everywhere) — @docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
 
 ## Smoke Testing
 

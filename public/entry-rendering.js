@@ -332,6 +332,7 @@ function addEntry(e) {
   // a future main-agent variant could hit it too, and forcing it to subagent
   // would silently break auto-follow for legitimate main content (codex
   // review round 3). For those, fall back to the raw flag as before.
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
   const isSubagent = e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]
     ? (typeof WF_MAIN_AGENT_KEYS !== 'undefined' ? !WF_MAIN_AGENT_KEYS[e.agentKey] : !!e.isSubagent)
     : (e.isSubagent || false);

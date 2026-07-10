@@ -139,6 +139,9 @@ function wfComputeLaneColors(lanes) {
   for (var entry of styles) map.set(entry[0], entry[1].color);
   return map;
 }
+// INVARIANT: this is the only correct way to test "is this the main/orchestrator
+// lane" — never !lane.spawnParent, which is null for every lane (see
+// docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md).
 function _wfIsMainLane(lane) { return lane && (lane.key === 'main' || lane.name === 'main'); }
 function wfLaneColor(lane) {
   if (!lane) return WF_LANE_COLORS.main;
@@ -210,9 +213,10 @@ var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
 // agentKey values that don't reliably mean "not main" — both are catch-all
 // defaults from extractAgentType()'s regex fallback for unrecognized prompts
 // (server/system-prompt.js), which could be a genuinely new main-agent
-// variant, not necessarily a subagent (codex review round 3). Shared with
-// entry-rendering.js (loaded after this file) so both files agree on when
-// agentKey is trustworthy enough to override the raw isSubagent flag.
+// variant, not necessarily a subagent (codex review round 3).
+// INVARIANT: every agentKey-based main/subagent classification site in this
+// file AND entry-rendering.js must gate on this — see
+// docs/decisions/0005-agent-key-unreliable-shared-contract.md
 var AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 };
 
 function _wfPushToSubLane(laneMap, key, entry) {
@@ -239,6 +243,7 @@ function wfInferLanes(entries, childEntries) {
     var e = entries[i];
     var sub = false;
 
+    // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
     if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
       // Agent-identity classification (server-detected, authoritative):
       // main-agent keys → main lane regardless of model or isSubagent flag
@@ -433,6 +438,7 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
   if (entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]) {
     needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
     key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
@@ -486,6 +492,8 @@ function _wfLaneHeight(laneIdx) {
   if (!wfState || laneIdx >= wfState.lanes.length) return WF_LANE_H;
   return wfState.selectedLane?.key === wfState.lanes[laneIdx].key ? WF_LANE_H_SEL : WF_LANE_H;
 }
+// INVARIANT: must match what _wfRenderSvgContent actually draws in
+// laneFocusMode — see docs/decisions/0006-lane-focus-geometry-consistency.md
 function _wfTotalLanesHeight() {
   if (!wfState) return 0;
   // Focus mode: only main (index 0) + the selected lane (if not main) take
@@ -794,6 +802,9 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   // (collapse toggle) narrows this to just the selected lane (or none, if
   // main is selected) so a session with many subagents can't overflow the
   // fixed-height overview area.
+  // INVARIANT: this is ground truth for lane geometry — _wfTotalLanesHeight
+  // and _wfLaneIdxAtY must match it — see
+  // docs/decisions/0006-lane-focus-geometry-consistency.md
   var subIndices;
   if (wfState.laneFocusMode) {
     subIndices = focusLi > 0 ? [focusLi] : [];
@@ -966,6 +977,8 @@ function _wfApplyLockVisuals() {
   if (g) _wfApplySpotlight(g, lock.lane, lock.tidx);
 }
 
+// INVARIANT: must match what _wfRenderSvgContent actually draws in
+// laneFocusMode — see docs/decisions/0006-lane-focus-geometry-consistency.md
 function _wfLaneIdxAtY(svgEl, my) {
   if (!wfState) return -1;
   if (svgEl.id === 'wf-main-svg') return my >= WF_PAD + WF_AXIS_H ? 0 : -1;
@@ -1288,6 +1301,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
         } else if (wfState.laneFocusMode) {
           // Focus mode: sub SVG draws only the focused lane (see _wfRenderSvgContent) —
           // walking 1..lanes.length would hit-test against a layout that isn't rendered.
+          // INVARIANT: see docs/decisions/0006-lane-focus-geometry-consistency.md
           var focusLiClick = _wfFocusLaneIdx();
           if (focusLiClick > 0 && my >= WF_PAD) li = focusLiClick;
         } else {
@@ -1613,9 +1627,8 @@ function wfRenderAgentCard(lane) {
   var color = wfLaneColor(lane);
 
   // Orchestrator lane only: session-wide rollup (see comment above wfRenderAgentCard).
-  // _wfIsMainLane, not !lane.spawnParent — other non-subagent-flagged lanes (e.g.
-  // Task-tool subagents whose requests carry the parent's session_id, which the
-  // server's isAnthropicSubagent() heuristic doesn't detect) also have spawnParent: null.
+  // INVARIANT: _wfIsMainLane, not !lane.spawnParent — see
+  // docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
   var isOrchestrator = _wfIsMainLane(lane);
   var sess = (isOrchestrator && wfState && typeof sessionsMap !== 'undefined')
     ? sessionsMap.get(wfState.sessionId) : null;
@@ -1635,7 +1648,9 @@ function wfRenderAgentCard(lane) {
 
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
-  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
+  // INVARIANT: main/subagent label must use _wfIsMainLane, not lane.spawnParent
+  // — see docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
