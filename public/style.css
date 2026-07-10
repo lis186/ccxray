@@ -682,6 +682,8 @@
 #wf-overview-label { width: 240px; flex-shrink: 0; padding: 0 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px; }
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
+#wf-overview-label button.active { color: var(--accent); border-color: var(--accent); }
+#wf-overview-label .wf-lane-pos { font-size: 10px; color: var(--dim); white-space: nowrap; }
 /* height set by JS: wfOverviewHeight(laneCount), 28-48px */
 #wf-minimap-canvas { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
 #wf-lanes-section { position: relative; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; transition: max-height 200ms ease; }

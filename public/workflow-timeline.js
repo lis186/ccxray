@@ -363,6 +363,7 @@ function wfBuildState(sessionId) {
     selectedLane: lanes[0] || null,
     selectedTurnId: null,
     selectedSection: 'timeline',
+    laneFocusMode: false,
   };
 }
 
@@ -479,6 +480,13 @@ function _wfLaneHeight(laneIdx) {
 }
 function _wfTotalLanesHeight() {
   if (!wfState) return 0;
+  // Focus mode: only main (index 0) + the selected lane (if not main) take
+  // height — matches what _wfRenderSvgContent actually draws, so the
+  // container doesn't reserve empty space for lanes that are hidden.
+  if (wfState.laneFocusMode) {
+    var focusLi = _wfFocusLaneIdx();
+    return _wfLaneHeight(0) + (focusLi > 0 ? _wfLaneHeight(focusLi) : 0);
+  }
   var h = 0;
   for (var i = 0; i < wfState.lanes.length; i++) h += _wfLaneHeight(i);
   return h;
@@ -673,7 +681,7 @@ function wfRenderTimeline() {
   overviewDiv.id = 'wf-overview';
   var overviewLabel = document.createElement('div');
   overviewLabel.id = 'wf-overview-label';
-  overviewLabel.innerHTML = '<span>Overview</span><button onclick="wfZoomBy(0.5)">+</button><button onclick="wfZoomBy(2)">−</button><button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>';
+  overviewLabel.innerHTML = _wfOverviewLabelHtml();
   overviewDiv.appendChild(overviewLabel);
   var canvas = document.createElement('canvas');
   canvas.id = 'wf-minimap-canvas';
@@ -773,20 +781,29 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn) + '</g>';
   mainSvg.innerHTML = ms;
 
-  // Sub SVG: remaining lanes (dynamic height per lane)
-  var subLanes = lanes.slice(1);
-  if (subLanes.length) {
+  // Sub SVG: remaining lanes (dynamic height per lane). Lane-focus mode
+  // (collapse toggle) narrows this to just the selected lane (or none, if
+  // main is selected) so a session with many subagents can't overflow the
+  // fixed-height overview area.
+  var subIndices;
+  if (wfState.laneFocusMode) {
+    subIndices = focusLi > 0 ? [focusLi] : [];
+  } else {
+    subIndices = lanes.slice(1).map(function(_, i) { return i + 1; });
+  }
+  if (subIndices.length) {
     var subTotalH = 0;
-    for (var sh = 0; sh < subLanes.length; sh++) subTotalH += _wfLaneHeight(sh + 1);
+    for (var sh = 0; sh < subIndices.length; sh++) subTotalH += _wfLaneHeight(subIndices[sh]);
     var subH = WF_PAD + subTotalH + WF_PAD;
     subSvg.setAttribute('width', W);
     subSvg.setAttribute('height', subH);
     subSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + subH);
     var ss = '';
     var subY = WF_PAD;
-    for (var si = 0; si < subLanes.length; si++) {
-      ss += '<g class="' + laneCls(si + 1) + '" data-lane="' + (si + 1) + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn) + '</g>';
-      subY += _wfLaneHeight(si + 1);
+    for (var si = 0; si < subIndices.length; si++) {
+      var li = subIndices[si];
+      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn) + '</g>';
+      subY += _wfLaneHeight(li);
     }
     subSvg.innerHTML = ss;
     subSvg.parentElement.style.display = '';
@@ -804,6 +821,58 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   // ponytail: charts now inline in selected lane SVG, no separate header
   var stepsEl = document.getElementById('wf-steps-content');
   if (stepsEl) _wfSyncStepsHighlight(stepsEl);
+}
+
+// ── Lane focus mode ────────────────────────────────────────────────────────
+// Collapse toggle for sessions with many subagent lanes (heuristic finding:
+// #wf-lanes-section clips lanes off the bottom with no scroll affordance).
+// Focused mode narrows the sub-lane area to just the selected lane; main
+// stays visible (pinned/cheap) so orchestrator context is never lost.
+function _wfOverviewLabelHtml() {
+  var focusLi = _wfFocusLaneIdx();
+  var navHtml = wfState.laneFocusMode
+    ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
+      '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
+      '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>'
+    : '';
+  return '<span>Overview</span>' +
+    '<button onclick="wfZoomBy(0.5)">+</button>' +
+    '<button onclick="wfZoomBy(2)">−</button>' +
+    '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+    '<button onclick="wfToggleLaneFocus()" title="' + (wfState.laneFocusMode ? 'Show all agents' : 'Focus selected agent') +
+      '" class="' + (wfState.laneFocusMode ? 'active' : '') + '">' + (wfState.laneFocusMode ? '▤' : '▥') + '</button>' +
+    navHtml;
+}
+
+function _wfRefreshLaneFocusUI() {
+  var overviewLabel = document.getElementById('wf-overview-label');
+  if (overviewLabel) overviewLabel.innerHTML = _wfOverviewLabelHtml();
+  var lanesSection = document.getElementById('wf-lanes-section');
+  if (lanesSection) {
+    var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
+    var maxH = window.innerHeight * 0.45;
+    lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+  }
+  wfDeferRender();
+}
+
+function wfToggleLaneFocus() {
+  if (!wfState) return;
+  wfState.laneFocusMode = !wfState.laneFocusMode;
+  _wfRefreshLaneFocusUI();
+}
+
+// Shared by the ▲/▼ buttons and the Tab/Shift+Tab keyboard shortcut.
+function wfCycleLane(dir) {
+  if (!wfState || !wfState.lanes.length) return;
+  var lanes = wfState.lanes;
+  var curLi = lanes.indexOf(wfState.selectedLane);
+  var nextLi = (curLi + dir + lanes.length) % lanes.length;
+  wfState.selectedLane = lanes[nextLi];
+  wfState.selectedTurnId = null;
+  _wfRefreshLaneFocusUI();
+  wfRenderAgentCard(lanes[nextLi]);
+  wfRenderCurrentSection();
 }
 
 // ── v8 spotlight / lock visuals ───────────────────────────────────────────
@@ -1181,6 +1250,11 @@ function wfSetupInteractions(mainSvg, subSvg) {
         if (svgEl.id === 'wf-main-svg') {
           // Main SVG: one lane at y = WF_PAD + WF_AXIS_H
           if (my >= WF_PAD + WF_AXIS_H) li = 0;
+        } else if (wfState.laneFocusMode) {
+          // Focus mode: sub SVG draws only the focused lane (see _wfRenderSvgContent) —
+          // walking 1..lanes.length would hit-test against a layout that isn't rendered.
+          var focusLiClick = _wfFocusLaneIdx();
+          if (focusLiClick > 0 && my >= WF_PAD) li = focusLiClick;
         } else {
           // Sub SVG: lanes have variable height, walk to find index
           var accY = WF_PAD;
@@ -1193,7 +1267,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
         if (li >= 0 && li < wfState.lanes.length) {
           wfState.selectedLane = wfState.lanes[li];
           wfState.selectedTurnId = null;
-          wfDeferRender();
+          _wfRefreshLaneFocusUI();
           wfRenderAgentCard(wfState.lanes[li]);
           wfRenderCurrentSection();
         }
@@ -1628,7 +1702,7 @@ function wfLockTurn(turnId) {
   if (!hit) return; // unknown turn → no phantom lock (leave selection untouched)
   wfState.selectedTurnId = turnId;
   wfState.selectedLane = wfState.lanes[hit.laneIdx];
-  wfDeferRender();
+  _wfRefreshLaneFocusUI();
   for (var k = 0; k < allEntries.length; k++) {
     if (allEntries[k].id === turnId) { selectTurn(k); break; }
   }
@@ -1788,17 +1862,10 @@ function wfKeyHandler(key, e) {
     return true;
   }
 
-  // Tab / Shift+Tab: cycle lanes
+  // Tab / Shift+Tab: cycle lanes (same stepping logic as the ▲/▼ overview buttons)
   if (key === 'Tab') {
     e.preventDefault();
-    var lanes = wfState.lanes;
-    var curLi = lanes.indexOf(lane);
-    var nextLi = e.shiftKey ? (curLi - 1 + lanes.length) % lanes.length : (curLi + 1) % lanes.length;
-    wfState.selectedLane = lanes[nextLi];
-    wfState.selectedTurnId = null;
-    wfDeferRender();
-    wfRenderAgentCard(lanes[nextLi]);
-    wfRenderCurrentSection();
+    wfCycleLane(e.shiftKey ? -1 : 1);
     return true;
   }
 
@@ -1818,7 +1885,7 @@ function wfKeyHandler(key, e) {
     if (lane.name !== 'main') {
       wfState.selectedLane = wfState.lanes[0];
       wfState.selectedTurnId = null;
-      wfDeferRender();
+      _wfRefreshLaneFocusUI();
       wfRenderAgentCard(wfState.lanes[0]);
       return true;
     }

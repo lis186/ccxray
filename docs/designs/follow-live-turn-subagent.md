@@ -235,6 +235,27 @@ TIME                                   ← NEW section
   Active            ~2.3h
 ```
 
+### Overview swimlane strip — lane-focus mode (added post-review)
+
+`ux-heuristic-analysis` on a real 5-subagent session found a MAJOR issue:
+`#wf-lanes-section` hard-clips lanes off the bottom with a fixed max-height
+and no scroll affordance (no visible scrollbar, no lane count, no fade
+cue) — directly undermining this design's own motivating scenario (a
+session with 473 Agent tool calls). This is pre-existing behavior from the
+earlier swimlane feature (#91), not something Problems 1-3 introduced, but
+it makes the new Agent Card metrics hard to reach in exactly the sessions
+where they're most useful.
+
+Fix: a collapse toggle button in `#wf-overview-label` (`wfToggleLaneFocus()`)
+that narrows the sub-lane area to just the selected lane — main stays
+visible (pinned, cheap) so orchestrator context is never lost; if main
+itself is selected, the sub-lane area shows nothing. Two ▲/▼ buttons appear
+next to the toggle when active, showing a "N/total" position and cycling
+`wfState.selectedLane` — reusing the same stepping logic as the existing
+Tab/Shift+Tab lane-cycle shortcut (`wfCycleLane(dir)`, extracted so both
+call sites share one implementation). No build step, no new dependency —
+pure CSS/JS reusing the existing `#wf-overview-label button` style.
+
 ### Data availability
 
 | Metric | Source | Status |
