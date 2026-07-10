@@ -10,6 +10,22 @@ const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
 
+// #211: does the persisted system prompt for this sysHash carry the "[1m]"
+// marker? true / false / null (unverifiable: unreadable or no marker line).
+// Cached per hash — restore sees the same few sysHashes across many entries.
+const sysMarker1mCache = new Map();
+async function sysHas1mMarker(sysHash) {
+  if (sysMarker1mCache.has(sysHash)) return sysMarker1mCache.get(sysHash);
+  let result = null;
+  try {
+    const system = JSON.parse(await config.storage.readShared(`sys_${sysHash}.json`));
+    const marker = config.extractModelFromSystem(system);
+    result = marker ? /\[1m\]/i.test(marker) : null;
+  } catch { /* unreadable/pruned → unverifiable */ }
+  sysMarker1mCache.set(sysHash, result);
+  return result;
+}
+
 // Pull stars from settings and shape for computeRetentionSets. Returns the
 // canonical empty shape on any failure — the prune/restore paths must never
 // throw because of star bookkeeping.
@@ -175,13 +191,18 @@ async function restoreFromLogs() {
       // not re-derivable here (headers are not persisted). For non-capable
       // models a stored 1M can only be pre-clamp LiteLLM pollution (or the
       // usage hatch, which re-inference reproduces) — re-derive instead.
-      // Pollution on SUPPORTS_1M models (pre-fix fable-5 lines) is healed by
-      // `ccxray rebuild-index --apply`, which re-reads the persisted system
-      // prompt and recomputes from the ground-truth [1m] marker.
       const stripped = (meta.model || '').replace(/\[.*\]/, '');
-      meta.maxContext = stripped.startsWith('claude-') && !config.SUPPORTS_1M.test(stripped)
-        ? inferred
-        : Math.max(meta.maxContext || 0, inferred);
+      let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
+      // Even for SUPPORTS_1M models, a stored value above the re-inference can
+      // be pre-clamp LiteLLM pollution (the #211 fable-5 lines). The persisted
+      // system prompt carries the ground-truth [1m] marker — when it is
+      // readable and provably lacks the marker, the stored value is bogus.
+      // Unverifiable cases (no sysHash: title-gen/subagent legs; pruned shared
+      // file) keep the stored value, so genuine 1M turns never downgrade.
+      if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
+        if (await sysHas1mMarker(meta.sysHash) === false) trustStored = false;
+      }
+      meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
     }
 
     if (meta.usage) {

@@ -182,6 +182,56 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     assert.equal(entry.maxContext, 200_000);
   });
 
+  it('heals polluted 1M on a SUPPORTS_1M model via the persisted system prompt (#211, fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T15-30-00-000';
+    // The reported session: claude-fable-5 ran a 200K window (system marker has
+    // no [1m]) but pre-clamp code stored maxContext=1M from LiteLLM. fable IS
+    // in SUPPORTS_1M, so the model gate alone cannot distinguish pollution
+    // from a genuine beta-header 1M — the persisted system prompt can.
+    const sysHash = 'aaa1m0';
+    await config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify([
+      { type: 'text', text: 'You are Claude Code.' },
+      { type: 'text', text: 'The exact model ID is claude-fable-5.' },
+    ]));
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '15:30:00', sessionId: 'sess-4e68c773',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-fable-5', sysHash,
+      usage: { input_tokens: 172_700 },
+      maxContext: 1_000_000, // polluted by LiteLLM max-capability
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 200_000);
+  });
+
+  it('keeps stored 1M when the persisted system prompt carries the [1m] marker', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T16-00-00-000';
+    const sysHash = 'bbb1m1';
+    await config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify([
+      { type: 'text', text: 'You are Claude Code.' },
+      { type: 'text', text: 'The exact model ID is claude-fable-5[1m].' },
+    ]));
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '16:00:00', sessionId: 'sess-genuine-1m',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-fable-5', sysHash,
+      usage: { input_tokens: 70_500 },
+      maxContext: 1_000_000,
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
   it('leaves OpenAI entries untouched (no Claude bump)', async () => {
     store.entries.length = 0;
     const id = '2026-05-14T15-00-00-000';

@@ -265,10 +265,14 @@ function getMaxContext(model, system, opts = {}) {
   //    - opts.beta1m: anthropic-beta `context-1m-*` request header (non-lagging,
   //      present on every turn — the authoritative plan flag).
   //    - "[1m]" suffix in the system marker (legacy; lags after a model switch).
+  //      The marker only counts when it names the same model as the request —
+  //      a stale fable-5[1m] marker must not carry its 1M over to a freshly
+  //      switched-to sonnet-5 leg (#212 review).
   //    Either signal counts, but only for a 1M-capable model (SUPPORTS_1M) so a
   //    client-level flag riding on a haiku request does not over-claim 1M.
+  const markerMatchesIdentity = !!sysModel && sysModel.replace(/\[.*\]/, '') === stripped;
   const has1mSignal = opts.beta1m === true
-    || /\[1m\]/i.test(sysModel || '')
+    || (markerMatchesIdentity && /\[1m\]/i.test(sysModel))
     || /\[1m\]/i.test(model || '');
   if (has1mSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
   // 2) Known Claude Code / Codex defaults (200K / 400K)
@@ -340,6 +344,7 @@ module.exports = {
   MODEL_CONTEXT_FALLBACK,
   DEFAULT_CONTEXT,
   SUPPORTS_1M,
+  extractModelFromSystem,
   getMaxContext,
   inferMaxContext,
   parseBaseUrl,

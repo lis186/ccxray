@@ -746,6 +746,20 @@ describe('getMaxContext — LiteLLM max-capability clamp for Claude models (#211
     assert.equal(getMaxContext('claude-sonnet-5', null, { beta1m: true }), 1_000_000);
   });
 
+  it('GUARD: stale [1m] marker does not leak across a mid-session model switch (fail-on-old)', () => {
+    // #212 review: switch from claude-fable-5[1m] to bare claude-sonnet-5.
+    // The request model updates immediately; the system marker lags several
+    // turns. Both models are in SUPPORTS_1M, so without the identity match
+    // the stale fable [1m] marker would over-claim 1M for the sonnet leg.
+    const staleFable1m = [{ type: 'text', text: 'The exact model ID is claude-fable-5[1m].' }];
+    assert.equal(getMaxContext('claude-sonnet-5', staleFable1m), 200_000);
+    // The beta header stays authoritative across switches (rides every turn).
+    assert.equal(getMaxContext('claude-sonnet-5', staleFable1m, { beta1m: true }), 1_000_000);
+    // Same-model marker still works, and non-[1m] bracket suffixes are inert.
+    assert.equal(getMaxContext('claude-sonnet-5', [{ type: 'text', text: 'The exact model ID is claude-sonnet-5[1m].' }]), 1_000_000);
+    assert.equal(getMaxContext('claude-sonnet-5', [{ type: 'text', text: 'The exact model ID is claude-sonnet-5[beta].' }]), 200_000);
+  });
+
   it('REGRESSION: LiteLLM values at or below 200K pass through unclamped', () => {
     pricing.getModelContext = (m) => (m === 'claude-3-7-sonnet' ? 200_000 : null);
     assert.equal(getMaxContext('claude-3-7-sonnet', null), 200_000);
