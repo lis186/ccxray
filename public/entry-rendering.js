@@ -307,7 +307,16 @@ function addEntry(e) {
   if (model && model !== '?') sess.model = model;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
-  const isSubagent = e.isSubagent || false;
+  // Prefer the server-detected agent identity (from system-prompt content,
+  // via agentKey) over the raw isSubagent flag when available — codex review:
+  // isAnthropicSubagent() in store.js classifies by !cwd && !session_id, but
+  // current Claude Code Task-tool subagents carry the parent's session_id, so
+  // isSubagent is false for exactly the common subagent case. agentKey isn't
+  // fooled by that (same authoritative signal wfInferLanes already uses in
+  // workflow-timeline.js, loaded before this file — WF_MAIN_AGENT_KEYS).
+  const isSubagent = e.agentKey
+    ? (typeof WF_MAIN_AGENT_KEYS !== 'undefined' ? !WF_MAIN_AGENT_KEYS[e.agentKey] : !!e.isSubagent)
+    : (e.isSubagent || false);
   const isRetry = !isSubagent && !isHttpStatusOk(e.status) && !(usage && usage.output_tokens > 0);
   sess.count++;
   if (isRetry) { sess.retryCount = (sess.retryCount || 0) + 1; }

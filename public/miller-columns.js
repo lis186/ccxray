@@ -1694,6 +1694,7 @@ function selectProject(name) {
   if (name !== null && name === selectedProjectName) return;
   selectedProjectName = name;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  if (typeof hideSubagentPill === 'function') hideSubagentPill();
   renderProjectsCol();
   applySessionFilter();
 
@@ -2237,6 +2238,7 @@ function _smoothScrollBy(el, deltaY, durationMs) {
 function selectTurn(idx, opts) {
   if (idx < 0 || idx >= allEntries.length) return;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  if (typeof hideSubagentPill === 'function') hideSubagentPill();
   // Exit focused mode when switching turns — user is browsing, not drilling into timeline
   // In workflow mode, keep focused mode (timeline stays in split-pane view)
   if (isFocusedMode && !(typeof wfState !== 'undefined' && wfState)) {

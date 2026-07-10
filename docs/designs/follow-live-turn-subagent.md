@@ -34,16 +34,30 @@ Investigate job but have no home in the current UI.
 Subagent turns append to the Turns list silently (visible as cards) but
 do NOT call `selectTurn`.
 
-**Known limitation (codex review)**: this rule is only as good as the
-`isSubagent` signal it reads, and that signal has the same gap documented
-under Problem 3's "Dropped from this pass" section below —
+**Fixed (codex review round 2)**: the raw `isSubagent` flag has a real gap —
 `isAnthropicSubagent()` in `store.js` classifies by `!cwd && !session_id`,
 but current Claude Code Task-tool subagents carry the parent's
-`session_id`, so those turns arrive with `isSubagent: false` and are NOT
-recognized as subagents by this rule either. They enter the "main" branch
-and auto-select normally — the exact jumping behavior this whole design
-exists to prevent, for exactly the common subagent case. Not fixed here
-(same out-of-scope server-side detection gap); tracked as the same
+`session_id`, so those turns arrive with `e.isSubagent: false`. Codex
+correctly rejected documenting this as an accepted limitation for the pill
+mechanism specifically, since it's the exact jumping behavior this whole
+design exists to prevent. Fixed client-side by preferring `e.agentKey`
+(server-detected from system-prompt content via `extractAgentType()` in
+`server/system-prompt.js` — not fooled by shared `session_id`) over the raw
+flag when available, reusing `WF_MAIN_AGENT_KEYS` — the same "authoritative"
+classification `wfInferLanes()` in `workflow-timeline.js` already uses to
+build correct lanes. Verified in-browser against the real session that
+originally exposed this: entries with `agentKey: 'general-purpose'` that
+were previously misclassified `isSubagent: false` are now correctly `true`.
+
+Important: `isSubagent` is computed once in `addEntry()` and read
+throughout the function (retry detection, main/sub counts, this pill,
+etc.), so this fix corrects the signal at its source — every downstream
+use benefits, including the exact `isSubagent`-keyed accumulation that
+caused Problem 3's Main/Subagent cost split to be dropped below. That
+split is *not* re-added here — re-introducing a feature that was
+deliberately cut is a separate scoping decision the fix for a different
+bug shouldn't make unilaterally — but it's worth noting the fix removes
+the reason it was cut, so re-adding it later is no longer blocked on
 follow-up as Problem 3's cost-split limitation, not a separate issue.
 
 ### Subagent pill notification
@@ -209,6 +223,12 @@ lane-inference signal the workflow timeline already uses to split lanes
 correctly (it isn't fooled by the shared session_id, per the verification
 screenshots that caught this). Tracked as a separate follow-up, not blocking
 this PR.
+
+**Update (codex review round 2)**: the second option above is now done —
+`addEntry()`'s `isSubagent` computation (Problem 1, above) was fixed to
+prefer `agentKey`/`WF_MAIN_AGENT_KEYS`, the same signal `sess.mainCost`/
+`subCost` would need. Re-adding this split is no longer blocked; it's a
+scope decision, not a data-availability one.
 
 ### New/enhanced sections
 
