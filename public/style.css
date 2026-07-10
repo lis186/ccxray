@@ -681,10 +681,13 @@
 #wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
 #wf-overview-label { width: 240px; flex-shrink: 0; padding: 4px 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; flex-direction: column; gap: 3px; }
 #wf-overview-label .wf-ol-row { display: flex; align-items: center; gap: 4px; }
-/* Lane pager (row 2) — right-aligned, own row so it never shares the 4px
-   gap with the focus-mode toggle button (nine-gate: that adjacency risked
-   the same misclick shape as the original show-all-agents collision). */
-#wf-overview-label .wf-ol-row-pager { justify-content: flex-end; }
+/* Row 2 always renders (toggle button never disappears) so the label's
+   height and every button's position stay fixed whether focus mode is on
+   or off — only the pager fades in on the right, filling otherwise-empty
+   space instead of the row itself appearing/disappearing. Toggle stays far
+   left, pager far right — more separation than the flagged 4px gap, so
+   they don't read as one adjacent control pair. */
+#wf-overview-label .wf-ol-row-mode { justify-content: space-between; }
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
 #wf-overview-label button.active { color: var(--accent); border-color: var(--accent); }

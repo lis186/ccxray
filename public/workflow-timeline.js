@@ -836,6 +836,10 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
 // that adjacency put a functionally-opposite control (toggle exits focus
 // entirely) right next to "next lane," the same misclick shape this whole
 // redesign exists to avoid. Row 2 renders empty/collapsed outside focus mode.
+// Row 1 (zoom) and row 2 (mode) both always render, so #wf-overview-label's
+// height never changes when focus mode toggles — only the pager fades in on
+// row 2's right side, filling space that's otherwise just empty. Keeps the
+// zoom buttons' and toggle button's positions stable regardless of state.
 function _wfOverviewLabelHtml() {
   var focusLi = _wfFocusLaneIdx();
   var row1 = '<div class="wf-ol-row">' +
@@ -843,16 +847,17 @@ function _wfOverviewLabelHtml() {
     '<button onclick="wfZoomBy(0.5)">+</button>' +
     '<button onclick="wfZoomBy(2)">−</button>' +
     '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+    '</div>';
+  var pagerHtml = wfState.laneFocusMode
+    ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
+      '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
+      '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>'
+    : '';
+  var row2 = '<div class="wf-ol-row wf-ol-row-mode">' +
     '<button onclick="wfToggleLaneFocus()" title="' + (wfState.laneFocusMode ? 'Show all agents' : 'Focus selected agent') +
       '" class="' + (wfState.laneFocusMode ? 'active' : '') + '">' + (wfState.laneFocusMode ? '▤' : '▥') + '</button>' +
+    pagerHtml +
     '</div>';
-  var row2 = wfState.laneFocusMode
-    ? '<div class="wf-ol-row wf-ol-row-pager">' +
-        '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
-        '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
-        '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>' +
-      '</div>'
-    : '';
   return row1 + row2;
 }
 
