@@ -565,4 +565,57 @@ describe('store', () => {
       store.entries.splice(startLen, 20);
     });
   });
+
+  // #223: session attribution edge cases
+  describe('inferParentSession — 30s window (#223)', () => {
+    it('finds session with lastSeenAt within 30s', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.sessionMeta['parent-1'] = { cwd: '/proj', lastSeenAt: Date.now() - 10000 };
+      store.activeRequests['parent-1'] = 1;
+      assert.equal(store.inferParentSession(), 'parent-1');
+    });
+
+    it('does NOT find session with lastSeenAt older than 30s', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.sessionMeta['stale-1'] = { cwd: '/proj', lastSeenAt: Date.now() - 40000 };
+      store.activeRequests['stale-1'] = 1;
+      assert.equal(store.inferParentSession(), null);
+    });
+
+    it('streaming refresh keeps session within window (simulated)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      // Session started 40s ago but streaming refreshed lastSeenAt 5s ago
+      store.sessionMeta['streaming-1'] = { cwd: '/proj', lastSeenAt: Date.now() - 5000 };
+      store.activeRequests['streaming-1'] = 1;
+      assert.equal(store.inferParentSession(), 'streaming-1');
+    });
+  });
+
+  describe('linkParentSession — cwd ordering (#223)', () => {
+    it('links subagent when meta.cwd is NOT yet set (reorder fix)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      // Parent session is inflight
+      store.sessionMeta['parent-2'] = { cwd: '/proj', lastSeenAt: Date.now() };
+      store.activeRequests['parent-2'] = 1;
+      // Child session — no cwd on meta yet (linkParentSession runs before cwd assignment)
+      store.sessionMeta['child-2'] = {};
+      const result = store.linkParentSession('child-2', { messages: [{ role: 'user', content: 'go' }] });
+      assert.equal(result, 'parent-2');
+    });
+
+    it('does NOT re-parent a session that already has cwd', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.sessionMeta['parent-3'] = { cwd: '/proj', lastSeenAt: Date.now() };
+      store.activeRequests['parent-3'] = 1;
+      // Established session with cwd already set
+      store.sessionMeta['established-3'] = { cwd: '/other-proj' };
+      const result = store.linkParentSession('established-3', { messages: [{ role: 'user', content: 'hi' }] });
+      assert.equal(result, null);
+    });
+  });
 });

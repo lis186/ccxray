@@ -402,6 +402,7 @@ module.exports = {
   extractCwd,
   extractSessionId,
   isAnthropicSubagent,
+  inferParentSession,
   linkParentSession,
   detectSession,
   printSessionBanner,

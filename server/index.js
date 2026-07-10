@@ -405,7 +405,14 @@ const server = http.createServer((clientReq, clientRes) => {
       ? detectedSession
       : { sessionId: provider === 'openai' ? getCodexRawSessionId() : store.getCurrentSessionId(), isNewSession: false };
 
-    // Extract and store cwd
+    // Cross-session parent linkage — MUST run before cwd assignment AND
+    // activeRequests increment (#223: cwd was set first, causing
+    // linkParentSession to bail on meta.cwd for subagents with their own
+    // session_id on their very first turn).
+    const isSubagentHint = provider === 'openai' ? isOpenAISubagent(clientReq.headers, parsedBody) : undefined;
+    if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
+
+    // Extract and store cwd (after linkParentSession — see #223)
     if (parsedBody && reqSessionId) {
       const cwd = provider === 'openai' ? getOpenAICwd(parsedBody) : store.extractCwd(parsedBody);
       if (cwd) {
@@ -430,11 +437,6 @@ const server = http.createServer((clientReq, clientRes) => {
       const at = extractPromptAgentType(provider, parsedBody);
       if (at && at.key !== 'unknown') { agentKey = at.key; agentLabel = at.label; }
     }
-
-    // Cross-session parent linkage — MUST run before activeRequests increment,
-    // otherwise inferParentSession sees the child as its own best parent candidate.
-    const isSubagentHint = provider === 'openai' ? isOpenAISubagent(clientReq.headers, parsedBody) : undefined;
-    if (reqSessionId) store.linkParentSession(reqSessionId, parsedBody, isSubagentHint);
 
     // Track active requests
     if (reqSessionId) {

@@ -592,6 +592,13 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
           const evt = JSON.parse(dataMatch[1]);
           eventTimestamps.push({ seqIdx: eventSeqIdx++, ts: Date.now() });
           if (evt.index != null && evt.index > maxBlockIndex) maxBlockIndex = evt.index;
+          // Refresh mid-stream so long turns (>30s) don't fall outside
+          // inferParentSession()'s window before a subagent spawn arrives (#223).
+          // Throttled to message_start/content_block_start — a few times per
+          // turn, not per token.
+          if (reqSessionId && (evt.type === 'message_start' || evt.type === 'content_block_start') && store.sessionMeta[reqSessionId]) {
+            store.sessionMeta[reqSessionId].lastSeenAt = Date.now();
+          }
           if (evt.type === 'message_delta' || evt.type === 'message_stop') {
             heldEvents.push(part + '\n\n');
             continue;
