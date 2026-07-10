@@ -232,6 +232,60 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     assert.equal(entry.maxContext, 1_000_000);
   });
 
+  it('a stale marker naming another model is not evidence — no downgrade (fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T16-30-00-000';
+    // Post-switch lag window: entry ran claude-fable-5 on a genuine 1M plan
+    // (beta header at capture → stored 1M), but the system marker still names
+    // the previous bare sonnet-5 leg. The marker describes another model, so
+    // it must not downgrade this entry.
+    const sysHash = 'ccc1m2';
+    await config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify([
+      { type: 'text', text: 'You are Claude Code.' },
+      { type: 'text', text: 'The exact model ID is claude-sonnet-5.' },
+    ]));
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '16:30:00', sessionId: 'sess-switch-lag',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-fable-5', sysHash,
+      usage: { input_tokens: 70_500 },
+      maxContext: 1_000_000, // genuine, from the beta header at capture time
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
+  it('a stale [1m] marker from another model keeps stored value conservatively', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T17-00-00-000';
+    // Inverse lag case: bare fable-5 entry with polluted stored 1M whose
+    // marker still names sonnet-5[1m]. The marker is not about this model, so
+    // the entry is unverifiable → keep stored (conservative; heals once the
+    // marker catches up on later turns).
+    const sysHash = 'ddd1m3';
+    await config.storage.writeSharedIfAbsent(`sys_${sysHash}.json`, JSON.stringify([
+      { type: 'text', text: 'You are Claude Code.' },
+      { type: 'text', text: 'The exact model ID is claude-sonnet-5[1m].' },
+    ]));
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '17:00:00', sessionId: 'sess-switch-lag-2',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-fable-5', sysHash,
+      usage: { input_tokens: 50_000 },
+      maxContext: 1_000_000,
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
   it('leaves OpenAI entries untouched (no Claude bump)', async () => {
     store.entries.length = 0;
     const id = '2026-05-14T15-00-00-000';

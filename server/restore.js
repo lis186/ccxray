@@ -10,20 +10,19 @@ const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
 
-// #211: does the persisted system prompt for this sysHash carry the "[1m]"
-// marker? true / false / null (unverifiable: unreadable or no marker line).
-// Cached per hash — restore sees the same few sysHashes across many entries.
-const sysMarker1mCache = new Map();
-async function sysHas1mMarker(sysHash) {
-  if (sysMarker1mCache.has(sysHash)) return sysMarker1mCache.get(sysHash);
-  let result = null;
+// #211: model marker ("The exact model ID is ...") from the persisted system
+// prompt for this sysHash, or null (unreadable / no marker line). Cached per
+// hash — restore sees the same few sysHashes across many entries.
+const sysMarkerCache = new Map();
+async function sysModelMarker(sysHash) {
+  if (sysMarkerCache.has(sysHash)) return sysMarkerCache.get(sysHash);
+  let marker = null;
   try {
     const system = JSON.parse(await config.storage.readShared(`sys_${sysHash}.json`));
-    const marker = config.extractModelFromSystem(system);
-    result = marker ? /\[1m\]/i.test(marker) : null;
+    marker = config.extractModelFromSystem(system);
   } catch { /* unreadable/pruned → unverifiable */ }
-  sysMarker1mCache.set(sysHash, result);
-  return result;
+  sysMarkerCache.set(sysHash, marker);
+  return marker;
 }
 
 // Pull stars from settings and shape for computeRetentionSets. Returns the
@@ -195,12 +194,16 @@ async function restoreFromLogs() {
       let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
       // Even for SUPPORTS_1M models, a stored value above the re-inference can
       // be pre-clamp LiteLLM pollution (the #211 fable-5 lines). The persisted
-      // system prompt carries the ground-truth [1m] marker — when it is
-      // readable and provably lacks the marker, the stored value is bogus.
-      // Unverifiable cases (no sysHash: title-gen/subagent legs; pruned shared
-      // file) keep the stored value, so genuine 1M turns never downgrade.
+      // system prompt carries the ground-truth [1m] marker — when it names
+      // THIS entry's model and provably lacks [1m], the stored value is bogus.
+      // A marker naming another model (post-switch lag window) is not evidence
+      // about this entry. Unverifiable cases (no sysHash: title-gen/subagent
+      // legs; pruned shared file; foreign marker) keep the stored value, so
+      // genuine 1M turns never downgrade.
       if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
-        if (await sysHas1mMarker(meta.sysHash) === false) trustStored = false;
+        const marker = await sysModelMarker(meta.sysHash);
+        const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
+        if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
       }
       meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
     }
