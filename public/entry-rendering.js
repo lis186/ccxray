@@ -1,10 +1,7 @@
 // ── Entry rendering ──
 let newTurnCount = 0;
-// agentKey values that don't reliably mean "not main" — both are catch-all
-// defaults from extractAgentType()'s regex fallback for unrecognized prompts
-// (server/system-prompt.js), which could be a genuinely new main-agent
-// variant, not necessarily a subagent (codex review round 3).
-const AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 };
+// AGENT_KEY_UNRELIABLE lives in workflow-timeline.js (loaded before this
+// file) so both files agree on which agentKey values are untrustworthy.
 
 function cleanTitle(raw) {
   if (!raw) return null;
@@ -293,7 +290,7 @@ function addEntry(e) {
     sessEl.dataset.sessionId = sid;
     sessEl.id = 'sess-' + shortSid;
     sessEl.onclick = () => selectSession(sid);
-    sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid);
+    sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, sessEl);
     // Insert at top (after col-title) — newest sessions first
     const firstSession = colSessions.querySelector('.session-item');
     if (firstSession) colSessions.insertBefore(sessEl, firstSession);
@@ -361,7 +358,7 @@ function addEntry(e) {
   if (!_loading) {
     const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessEl) {
-      sessEl.innerHTML = renderSessionItem(sess, sid);
+      sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
       const firstSession = colSessions.querySelector('.session-item');
       if (firstSession && firstSession !== sessEl) colSessions.insertBefore(sessEl, firstSession);
     }
@@ -398,7 +395,7 @@ function addEntry(e) {
     sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
     sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid);
+    if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
   }
 
   // Gap timing: idle time from end of previous turn to start of this turn
@@ -695,7 +692,7 @@ evtSource.onmessage = (ev) => {
       const sid = data.sessionId;
       const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
       const sess = sessionsMap.get(sid);
-      if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+      if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
       renderProjectsCol();
       applySessionFilter();
       updateTopbarStatus();
@@ -707,7 +704,7 @@ evtSource.onmessage = (ev) => {
         sess.title = data.title;
         sess.titleReqTs = nextTs;
         const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid);
+        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
         if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
       }
     } else {
@@ -721,7 +718,7 @@ setInterval(() => {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
     const sess = sessionsMap.get(sid);
-    if (sess) el.innerHTML = renderSessionItem(sess, sid);
+    if (sess) el.innerHTML = renderSessionItem(sess, sid, el);
   });
   renderProjectsCol();
   updateTopbarStatus();
@@ -996,7 +993,7 @@ Promise.all([_entriesReady, _starsReady]).then(async ([data]) => {
     for (const sid of sortedSids) {
       const el = document.getElementById('sess-' + sid.slice(0, 8));
       if (!el) continue;
-      el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid);
+      el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, el);
       colSessEl.appendChild(el); // appendChild in desc order → most-recent rises to top
     }
   }

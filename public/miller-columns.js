@@ -1013,7 +1013,7 @@ function rerenderColumnsAfterStar() {
   // Sessions column: re-render every visible session card so derived counts update.
   for (const [sid, sess] of sessionsMap) {
     const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
   }
   applySessionFilter();
   // Turn cards: only the directly affected turn changes glyph; cheap to redraw all
@@ -1393,7 +1393,7 @@ function clearAll() { // kept for console use if needed
   renderBreadcrumb();
 }
 
-function renderSessionItem(sess, sid) {
+function renderSessionItem(sess, sid, sessEl) {
   const shortSid = formatSessionIdLabel(sid);
   const tooltip = formatSessionTooltip(null, sid);
   const shortModelStr = shortModel(sess.model);
@@ -1440,6 +1440,12 @@ function renderSessionItem(sess, sid) {
       sessionCardTooltip += '\n' + sess.cacheBreaks + ' cache break' + (sess.cacheBreaks === 1 ? '' : 's');
     }
   }
+  // Card-level tooltip (codex review: was only on .si-row1, so hovering the
+  // title/model/cost/context/preview rows showed nothing) — set on the outer
+  // card element itself; title-less descendants inherit it on hover, while
+  // elements with their own more specific title (sid, status dot, cache row)
+  // keep taking precedence per normal HTML tooltip nesting.
+  if (sessEl) sessEl.title = sessionCardTooltip;
 
   const previewText = sess.lastAssistantText
     ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
@@ -1517,7 +1523,7 @@ function renderSessionItem(sess, sid) {
   const copyBtn = resumeCmd
     ? '<button class="launch-btn" data-resume="' + escapeHtml(resumeCmd) + '" onclick="event.stopPropagation();copySessionContinue(this.dataset.resume,this)" title="Copy: ' + escapeHtml(resumeCmd) + '">&#10697;</button>'
     : '';
-  return '<div class="si-row1"' + (sessionCardTooltip ? ' title="' + escapeHtml(sessionCardTooltip) + '"' : '') + '>' +
+  return '<div class="si-row1">' +
     '<button class="' + sdotClasses + '"' + (sdotTitle ? ' title="' + sdotTitle + '"' : '') + sdotDataSid + (sdotOnclick ? ' onclick="' + sdotOnclick + '"' : '') + ' tabindex="-1"></button>' +
     '<span class="sid" title="' + escapeHtml(tooltip) + '">' + escapeHtml(shortSid) + '</span>' +
     copyBtn +

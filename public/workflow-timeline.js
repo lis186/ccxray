@@ -207,6 +207,13 @@ function _wfBarSpan(t) {
 // Agent keys whose turns belong to the main lane — model switches within the
 // main conversation stay in main (the dashed model-switch line marks them)
 var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
+// agentKey values that don't reliably mean "not main" — both are catch-all
+// defaults from extractAgentType()'s regex fallback for unrecognized prompts
+// (server/system-prompt.js), which could be a genuinely new main-agent
+// variant, not necessarily a subagent (codex review round 3). Shared with
+// entry-rendering.js (loaded after this file) so both files agree on when
+// agentKey is trustworthy enough to override the raw isSubagent flag.
+var AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 };
 
 function _wfPushToSubLane(laneMap, key, entry) {
   if (!laneMap.has(key)) laneMap.set(key, { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null });
@@ -232,7 +239,7 @@ function wfInferLanes(entries, childEntries) {
     var e = entries[i];
     var sub = false;
 
-    if (e.agentKey) {
+    if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
       // Agent-identity classification (server-detected, authoritative):
       // main-agent keys → main lane regardless of model or isSubagent flag
       if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
@@ -426,7 +433,7 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
-  if (entry.agentKey) {
+  if (entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]) {
     needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
     key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
   } else {
@@ -962,6 +969,12 @@ function _wfApplyLockVisuals() {
 function _wfLaneIdxAtY(svgEl, my) {
   if (!wfState) return -1;
   if (svgEl.id === 'wf-main-svg') return my >= WF_PAD + WF_AXIS_H ? 0 : -1;
+  if (wfState.laneFocusMode) {
+    // Focus mode: sub SVG draws only the focused lane (see _wfRenderSvgContent) —
+    // walking 1..lanes.length would hit-test against a layout that isn't rendered.
+    var focusLi = _wfFocusLaneIdx();
+    return (focusLi > 0 && my >= WF_PAD) ? focusLi : -1;
+  }
   var accY = WF_PAD;
   for (var i = 1; i < wfState.lanes.length; i++) {
     var lh = _wfLaneHeight(i);
@@ -1599,13 +1612,6 @@ function wfRenderAgentCard(lane) {
   var summary = wfLaneSummary(lane);
   var color = wfLaneColor(lane);
 
-  var toolTotals = {};
-  for (var i = 0; i < lane.turns.length; i++) {
-    var tc = lane.turns[i].toolCalls || {};
-    for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
-  }
-  var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
-
   // Orchestrator lane only: session-wide rollup (see comment above wfRenderAgentCard).
   // _wfIsMainLane, not !lane.spawnParent — other non-subagent-flagged lanes (e.g.
   // Task-tool subagents whose requests carry the parent's session_id, which the
@@ -1613,6 +1619,19 @@ function wfRenderAgentCard(lane) {
   var isOrchestrator = _wfIsMainLane(lane);
   var sess = (isOrchestrator && wfState && typeof sessionsMap !== 'undefined')
     ? sessionsMap.get(wfState.sessionId) : null;
+
+  // Session-wide on the main lane (matches Context/Cache/Tokens below — a lane
+  // has no view of "the other lanes," so main's tool rollup must read sess.toolCalls,
+  // not just this lane's own turns, or counts like a 473-call Agent/Task tool
+  // total would be undercounted to whatever subset the orchestrator itself called).
+  var toolTotals = (isOrchestrator && sess && sess.toolCalls) ? sess.toolCalls : {};
+  if (!isOrchestrator || !sess || !sess.toolCalls) {
+    for (var i = 0; i < lane.turns.length; i++) {
+      var tc = lane.turns[i].toolCalls || {};
+      for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
+    }
+  }
+  var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
@@ -1640,6 +1659,15 @@ function wfRenderAgentCard(lane) {
     html += '<div class="wf-ac-row"><span>Input</span><span class="wf-ac-val">' + _wfFmtSessTok(inTok) + '</span></div>';
     html += '<div class="wf-ac-row"><span>Output</span><span class="wf-ac-val">' + _wfFmtSessTok(outTok) + '</span></div>';
     html += '<div class="wf-ac-row"><span>I/O ratio</span><span class="wf-ac-val">' + ioRatio + '</span></div>';
+    html += '</div>';
+  }
+
+  // Turns/intervene dropped — design doc's own data-availability table marks
+  // it "Complex — may defer" (no signal yet for user-turn vs auto-approved).
+  // Retries is available (sess.retryCount, tracked in entry-rendering.js).
+  if (sess && sess.retryCount) {
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Autonomy</div>';
+    html += '<div class="wf-ac-row"><span>Retries</span><span class="wf-ac-val">' + sess.retryCount + '</span></div>';
     html += '</div>';
   }
 
