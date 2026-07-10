@@ -314,3 +314,31 @@ describe('Issue #44: Compression detection — retries not used as baseline', ()
     // Without the fix, comparison vs retry would show no compaction
   });
 });
+
+// ── #222: temporal overlap consistency with swimlane ──────────────────────────
+describe('Issue #222: entry-rendering temporal overlap classifies parallel fork as subagent', () => {
+  it('parallel entry (receivedAt inside prior main turn range) is classified as subagent', () => {
+    const ctx = loadDashboardContext();
+    // Main turn: receivedAt=1000000, elapsed=30 → runs [1000000, 1030000]
+    ctx.addEntry(makeEntry({ id: 'fork-main', sessionId: 'fork-sess', receivedAt: '1000000', elapsed: '30.0', status: 200 }));
+    // Fork: receivedAt=1005000, starts 5s into main turn → overlap
+    ctx.addEntry(makeEntry({ id: 'fork-sub', sessionId: 'fork-sess', receivedAt: '1005000', elapsed: '10.0', status: 200 }));
+
+    const sess = ctx.sessionsMap.get('fork-sess');
+    assert.equal(sess.mainCount, 1, 'only one main turn (the earlier one)');
+    assert.equal(sess.subCount, 1, 'overlapping turn classified as subagent');
+    assert.equal(ctx.allEntries[1].displayNum, 's1', 'fork gets s-prefix displayNum');
+  });
+
+  it('sequential entries (non-overlapping) both stay as main', () => {
+    const ctx = loadDashboardContext();
+    // Turn 1: [1000000, 1030000]
+    ctx.addEntry(makeEntry({ id: 'seq-1', sessionId: 'seq-sess', receivedAt: '1000000', elapsed: '30.0', status: 200 }));
+    // Turn 2: starts at 1035000 (after turn 1 ends) → no overlap
+    ctx.addEntry(makeEntry({ id: 'seq-2', sessionId: 'seq-sess', receivedAt: '1035000', elapsed: '20.0', status: 200 }));
+
+    const sess = ctx.sessionsMap.get('seq-sess');
+    assert.equal(sess.mainCount, 2, 'both sequential turns are main');
+    assert.equal(sess.subCount || 0, 0, 'no subagent classification');
+  });
+});

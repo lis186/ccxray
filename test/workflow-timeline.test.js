@@ -986,3 +986,34 @@ describe('#221 subagent lane inference when session_id no longer separates agent
     assert.equal(lanes[1].turns[0].id, 't2');
   });
 });
+
+// ── #222: fork subagent false-positive guards ────────────────────────────────
+describe('#222 temporal overlap does not false-positive on compaction or model switch', () => {
+  it('compaction (msgCount drop) with sequential turns stays in main', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 40 }),
+      // compaction: msgCount drops from 40 to 10, but turns are sequential
+      mkEntry('t2', 's1', 'claude-opus-4-6', 7000, 3, { msgCount: 10, isCompacted: true }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 2);
+  });
+
+  it('fork-style parallel with orchestrator agentKey is correctly split', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      // main orchestrator turn running from 1000 to 31000
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 30, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      // fork: same agentKey, same model, overlapping time — no agentKey or
+      // isSubagent signal, only temporal overlap catches this
+      mkEntry('t2', 's1', 'claude-opus-4-6', 5000, 10, {}),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.length, 1);
+    assert.equal(lanes[0].turns[0].id, 't1');
+  });
+});

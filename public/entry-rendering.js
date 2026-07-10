@@ -333,14 +333,38 @@ function addEntry(e) {
   // would silently break auto-follow for legitimate main content (codex
   // review round 3). For those, fall back to the raw flag as before.
   // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
-  const isSubagent = e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]
+  let isSubagent = e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]
     ? (typeof WF_MAIN_AGENT_KEYS !== 'undefined' ? !WF_MAIN_AGENT_KEYS[e.agentKey] : !!e.isSubagent)
     : (e.isSubagent || false);
   const isRetry = !isSubagent && !isHttpStatusOk(e.status) && !(usage && usage.output_tokens > 0);
+  // #222: temporal overlap — mirrors wfAddEntry's parallel-fork detection so
+  // the turn list and swimlane agree on classification (ADR 0005 contract).
+  // Runs after isRetry so retries are never reclassified. Only flags overlap
+  // when start is strictly between another turn's [start, end) — same
+  // receivedAt means sequential, not parallel.
+  if (!isSubagent && !isRetry) {
+    const entryStart = Number(e.receivedAt) || 0;
+    const spans = sess._recentMainSpans || [];
+    for (let ri = spans.length - 1; ri >= 0; ri--) {
+      if (entryStart > 0 && entryStart > spans[ri][0] && entryStart < spans[ri][1]) {
+        isSubagent = true; break;
+      }
+    }
+  }
   sess.count++;
   if (isRetry) { sess.retryCount = (sess.retryCount || 0) + 1; }
   else if (isSubagent) sess.subCount++;
-  else sess.mainCount++;
+  else {
+    sess.mainCount++;
+    // Track recent main turn [start, end] spans for temporal overlap detection (#222)
+    const startMs = Number(e.receivedAt) || 0;
+    const endMs = startMs + (parseFloat(e.elapsed) || 0) * 1000;
+    if (startMs > 0 && endMs > startMs) {
+      if (!sess._recentMainSpans) sess._recentMainSpans = [];
+      sess._recentMainSpans.push([startMs, endMs]);
+      if (sess._recentMainSpans.length > 5) sess._recentMainSpans.shift();
+    }
+  }
   const displayNum = isRetry ? ('r' + (sess.retryCount || 0)) : isSubagent ? ('s' + sess.subCount) : String(sess.mainCount);
   if (entryId && window.entryById) {
     window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null, displayNum });
