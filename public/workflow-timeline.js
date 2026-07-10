@@ -1649,8 +1649,12 @@ function wfRenderAgentCard(lane) {
       html += '<div class="wf-ac-row"><span class="wf-ac-tool">' + wfEsc(topTools[ti][0]) + '</span><span class="wf-ac-tool-count">' + topTools[ti][1] + '</span></div>';
     }
     if (sess && (sess.toolCallTurns || 0) > 0) {
+      // Turn-level, not call-level: a turn with 1 failed call among many still
+      // counts as fully failed (toolFail is a turn boolean, not a per-call
+      // count — codex review flagged the old "Failure rate" label as implying
+      // more precision than this data actually has).
       var failRate = (sess.toolFailTurns || 0) / sess.toolCallTurns * 100;
-      html += '<div class="wf-ac-row"><span>Failure rate</span><span class="wf-ac-val">' + failRate.toFixed(1) + '%</span></div>';
+      html += '<div class="wf-ac-row"><span title="Turns with 1+ failed tool result, not individual call failures">Turn failure rate</span><span class="wf-ac-val">' + failRate.toFixed(1) + '%</span></div>';
     }
     html += '</div>';
   }

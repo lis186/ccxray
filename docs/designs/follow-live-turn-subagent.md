@@ -34,6 +34,18 @@ Investigate job but have no home in the current UI.
 Subagent turns append to the Turns list silently (visible as cards) but
 do NOT call `selectTurn`.
 
+**Known limitation (codex review)**: this rule is only as good as the
+`isSubagent` signal it reads, and that signal has the same gap documented
+under Problem 3's "Dropped from this pass" section below —
+`isAnthropicSubagent()` in `store.js` classifies by `!cwd && !session_id`,
+but current Claude Code Task-tool subagents carry the parent's
+`session_id`, so those turns arrive with `isSubagent: false` and are NOT
+recognized as subagents by this rule either. They enter the "main" branch
+and auto-select normally — the exact jumping behavior this whole design
+exists to prevent, for exactly the common subagent case. Not fixed here
+(same out-of-scope server-side detection gap); tracked as the same
+follow-up as Problem 3's cost-split limitation, not a separate issue.
+
 ### Subagent pill notification
 
 When subagent turns arrive while the user is on the main live edge, a
@@ -227,7 +239,8 @@ TOOLS
   Bash              6758
   Agent             473
   Read              396
-  Failure rate      2.3%               ← NEW: tool failure rate
+  Turn failure rate 2.3%               ← NEW: turns with 1+ failed tool result
+                                          (turn-level, not per-call — codex review)
 
 TIME                                   ← NEW section
   Started           Jul 10 04:30

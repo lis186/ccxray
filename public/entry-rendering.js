@@ -23,7 +23,13 @@ function showNewTurnPill(count) {
   pill.className = 'new-turn-pill';
   pill.textContent = '+' + count + ' main';
   pill.onclick = function() {
-    selectTurn(allEntries.length - 1);
+    // Go to the latest MAIN turn, not literally the last entry — a subagent
+    // turn can append after the last main turn while off-edge (codex review:
+    // allEntries.length - 1 would silently select that subagent turn instead
+    // of what this "+N main" pill advertises).
+    const s = sessionsMap.get(selectedSessionId);
+    const targetIdx = (s && s.latestMainTurnIdx != null) ? s.latestMainTurnIdx : allEntries.length - 1;
+    selectTurn(targetIdx);
     scrollTurnsToBottom();
   };
   colTurns.appendChild(pill);
@@ -603,6 +609,13 @@ function addEntry(e) {
   colTurns.appendChild(el);
 
   if (selectedSessionId === sid) renderSessionSparkline(sid);
+  // Track unconditionally (not gated by !_loading) — codex review: this was
+  // previously only set while live, so a session restored from history had
+  // it unset until the first live main turn, meaning that very first live
+  // turn was never recognized as "on the live edge" even though a user
+  // viewing the just-loaded latest turn genuinely is on it.
+  const prevMainIdx = sess.latestMainTurnIdx;
+  if (!isSubagent) sess.latestMainTurnIdx = idx;
   if (!_loading && selectedSessionId === sid) {
     // Only auto-follow if toggle is on AND user is currently on the live edge
     // Never interrupt focused mode (drill-down); workflow split view is the default
@@ -622,8 +635,7 @@ function addEntry(e) {
       // Off the main live edge: subagent turns append silently, no pill bump.
     } else {
       const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
-        (selectedTurnIdx === -1 || selectedTurnIdx === sess.latestMainTurnIdx);
-      sess.latestMainTurnIdx = idx;
+        (selectedTurnIdx === -1 || selectedTurnIdx === prevMainIdx);
       if (wasOnLiveEdge) {
         selectTurn(idx);
         scrollTurnsToBottom();
