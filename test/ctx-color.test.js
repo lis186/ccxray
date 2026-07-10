@@ -1,6 +1,6 @@
 'use strict';
 
-// #142: unified context-usage color thresholds — pct>80 red / pct>=40 yellow / else safe.
+// #142/#156: unified context-usage color thresholds — pct>80 red / pct>=40 yellow / else safe.
 // Contract test locks the band boundaries (39/40/80/81) on both sides.
 
 const { describe, it } = require('node:test');
@@ -32,19 +32,35 @@ function loadClient() {
     function clearInterval() {} window.ccxraySettings = { visibleProviders: [] };
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
+  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'miller-columns.js'), 'utf8'), context);
   return context;
 }
 
-describe('#142 client ctxColor(pct) band boundaries', () => {
+describe('#156 client ctxZone(pct) band boundaries', () => {
   const ctx = loadClient();
-  it('exposes ctxColor', () => assert.equal(typeof ctx.ctxColor, 'function'));
-  it('39 -> safe (null)', () => assert.equal(ctx.ctxColor(39), null));
-  it('40 -> yellow', () => assert.equal(ctx.ctxColor(40), 'var(--yellow)'));
-  it('80 -> yellow (not red at exactly 80)', () => assert.equal(ctx.ctxColor(80), 'var(--yellow)'));
-  it('81 -> red', () => assert.equal(ctx.ctxColor(81), 'var(--red)'));
-  it('0 -> safe (null)', () => assert.equal(ctx.ctxColor(0), null));
-  it('100 -> red', () => assert.equal(ctx.ctxColor(100), 'var(--red)'));
+  it('exposes ctxZone', () => assert.equal(typeof ctx.ctxZone, 'function'));
+  it('39 -> safe (null cssVar)', () => {
+    const z = ctx.ctxZone(39);
+    assert.equal(z.zone, 'safe');
+    assert.equal(z.cssVar, null);
+  });
+  it('40 -> yellow', () => assert.equal(ctx.ctxZone(40).cssVar, 'var(--yellow)'));
+  it('80 -> yellow (not red at exactly 80)', () => assert.equal(ctx.ctxZone(80).cssVar, 'var(--yellow)'));
+  it('81 -> red', () => assert.equal(ctx.ctxZone(81).cssVar, 'var(--red)'));
+  it('0 -> safe (null cssVar)', () => assert.equal(ctx.ctxZone(0).cssVar, null));
+  it('100 -> red', () => assert.equal(ctx.ctxZone(100).cssVar, 'var(--red)'));
+});
+
+describe('#156 client shortModel(model)', () => {
+  const ctx = loadClient();
+  it('exposes shortModel', () => assert.equal(typeof ctx.shortModel, 'function'));
+  it('basic model name', () => assert.equal(ctx.shortModel('claude-opus-4-6'), 'opus-4-6'));
+  it('strips trailing YYYYMMDD date suffix', () => assert.equal(ctx.shortModel('claude-sonnet-4-20250514'), 'sonnet-4'));
+  it('missing -> ?', () => {
+    assert.equal(ctx.shortModel(null), '?');
+    assert.equal(ctx.shortModel(undefined), '?');
+  });
 });
 
 // ── server: helpers.js exports ctxBarColor + named thresholds ──

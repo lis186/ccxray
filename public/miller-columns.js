@@ -9,12 +9,6 @@ function isHttpStatusOk(status) {
   return status === 101 || (status >= 200 && status < 300);
 }
 
-// #142: single source for context-usage bands (pct>80 red / >=40 yellow / else safe).
-// Returns null for the safe band so each caller keeps its own "safe" color via `|| ...`.
-function ctxColor(pct) {
-  return pct > 80 ? 'var(--red)' : pct >= 40 ? 'var(--yellow)' : null;
-}
-
 // ── Toast notifications ──
 function showToast(message, duration) {
   duration = duration || 5000;
@@ -822,15 +816,6 @@ function _formatStarRelativeTime(entryOrId) {
   return formatRelativeTime(entryOrId);
 }
 
-function formatRelativeTimeFromMs(ts) {
-  const diff = Date.now() - ts;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
-  return Math.floor(diff / 604800000) + 'w ago';
-}
-
 function _formatStarredTurnLabel(entryId) {
   return formatTargetLabel({ kind: 'turn', entryId });
 }
@@ -1372,40 +1357,6 @@ function getProjectName(cwd) {
   return parts[parts.length - 1] || cwd;
 }
 
-function formatEntryDate(id) {
-  // id format: "2026-03-08T17-47-13-000"
-  if (!id || id.length < 16) return '';
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const month = parseInt(id.slice(5, 7)) - 1;
-  const day = id.slice(8, 10);
-  const hour = id.slice(11, 13);
-  const min = id.slice(14, 16);
-  if (month < 0 || month > 11) return '';
-  return months[month] + ' ' + day + '  ' + hour + ':' + min;
-}
-
-function formatRelativeTime(id) {
-  if (!id || id.length < 19) return formatEntryDate(id);
-  const ts = new Date(id.slice(0, 10) + 'T' + id.slice(11, 19).replace(/-/g, ':')).getTime();
-  if (!ts) return formatEntryDate(id);
-  const diff = Date.now() - ts;
-  if (diff < 60000) return 'just now';
-  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-  if (diff < 604800000) return Math.floor(diff / 86400000) + 'd ago';
-  return formatEntryDate(id);
-}
-
-function formatEntryDateShort(id) {
-  if (!id || id.length < 10) return '';
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const month = parseInt(id.slice(5, 7)) - 1;
-  const day = id.slice(8, 10);
-  if (month < 0 || month > 11) return '';
-  return months[month] + ' ' + day;
-}
-
-
 function copySessionContinue(cmd, btn) {
   if (!cmd) return;
   navigator.clipboard.writeText(cmd).then(() => {
@@ -1445,7 +1396,7 @@ function clearAll() { // kept for console use if needed
 function renderSessionItem(sess, sid) {
   const shortSid = formatSessionIdLabel(sid);
   const tooltip = formatSessionTooltip(null, sid);
-  const shortModel = (sess.model || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');
+  const shortModelStr = shortModel(sess.model);
   const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
   const previewText = sess.lastAssistantText
@@ -1531,7 +1482,7 @@ function renderSessionItem(sess, sid) {
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModel) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + '</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + '</div>' +
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +
@@ -1719,11 +1670,6 @@ function selectProject(name) {
   setFocus('projects');
 }
 
-function escapeHtml(s) {
-  if (typeof s !== 'string') s = JSON.stringify(s, null, 2);
-  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
 
 // ── Miller Columns: Selection ──
@@ -1811,7 +1757,7 @@ function renderBarChart(el, turns) {
   turns.forEach((e, i) => {
     const ctx = e.ctxUsed || 0;
     const pct = Math.min(100, ctx / maxCtx * 100);
-    const color = ctxColor(pct) || 'var(--accent)';
+    const color = ctxZone(pct).cssVar || 'var(--accent)';
     const x = PAD + i * barW;
     const barH = pct / 100 * (H - 2 * PAD);
     const y = H - PAD - barH;
@@ -2328,7 +2274,7 @@ function renderSectionsCol(idx) {
   const resEvents = Array.isArray(e.res) ? e.res : [];
   const stopReason = e.stopReason || (Array.isArray(resEvents) ? (resEvents.find(ev => ev.type === 'message_delta')?.delta?.stop_reason || '') : '');
   const turnCost = e.cost;
-  const shortModel = (e.model || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');
+  const shortModelStr = shortModel(e.model);
   const isSubagent = e.isSubagent || false;
   const displayNum = e.displayNum || String(idx + 1);
   const subBadge = isSubagent
@@ -2339,7 +2285,7 @@ function renderSectionsCol(idx) {
     : '';
 
   let html = '<div class="col-header">';
-  html += '<div class="ch-line1"><span style="color:var(--dim)">' + (isSubagent ? '' : '#') + escapeHtml(displayNum) + '</span> <span style="color:var(--purple)">' + escapeHtml(shortModel) + '</span>' + subBadge + inferBadge + '</div>';
+  html += '<div class="ch-line1"><span style="color:var(--dim)">' + (isSubagent ? '' : '#') + escapeHtml(displayNum) + '</span> <span style="color:var(--purple)">' + escapeHtml(shortModelStr) + '</span>' + subBadge + inferBadge + '</div>';
   html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
   if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';

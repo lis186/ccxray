@@ -52,6 +52,7 @@ function loadClient() {
     function clearInterval() {} window.ccxraySettings = { visibleProviders: [] };
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
+  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'miller-columns.js'), 'utf8'), context);
   return context;
 }

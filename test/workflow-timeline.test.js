@@ -7,6 +7,7 @@ const fs = require('node:fs');
 
 // Load workflow-timeline.js in a browser-like global context
 function loadWfModule() {
+  const formatSrc = fs.readFileSync(require('path').join(__dirname, '../public/format.js'), 'utf8');
   const src = fs.readFileSync(require('path').join(__dirname, '../public/workflow-timeline.js'), 'utf8');
   const ctx = {
     document: { createElement: () => ({ appendChild() {}, style: {}, id: '' }), createElementNS: () => ({ setAttribute() {}, innerHTML: '' }), getElementById: () => null, body: { appendChild() {} }, documentElement: {} },
@@ -29,6 +30,7 @@ function loadWfModule() {
     Map,
   };
   vm.createContext(ctx);
+  vm.runInContext(formatSrc, ctx);
   vm.runInContext(src, ctx);
   return ctx;
 }

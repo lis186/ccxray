@@ -11,14 +11,6 @@ function cleanTitle(raw) {
   return t.length >= 4 ? t : null;
 }
 
-function formatGap(ms) {
-  const s = Math.round(ms / 1000);
-  if (s < 60) return s + 's';
-  const m = Math.floor(s / 60), rem = s % 60;
-  if (m < 60) return m + 'm' + (rem ? rem + 's' : '');
-  return Math.floor(m / 60) + 'h' + (m % 60 ? (m % 60) + 'm' : '');
-}
-
 function showNewTurnPill(count) {
   const existing = document.getElementById('new-turn-pill');
   if (existing) {
@@ -315,7 +307,7 @@ function addEntry(e) {
 
   const statusClass = isHttpStatusOk(e.status) ? 'status-ok' : 'status-err';
   const displayModel = (model && model !== '?') ? model : (sess.model || '?');
-  const shortModel = displayModel.replace('claude-', '').replace(/-[0-9]{8}$/, '');
+  const shortModelStr = shortModel(displayModel);
 
   const ctxCacheCreate = usage ? (usage.cache_creation_input_tokens || 0) : 0;
   const ctxCacheRead   = usage ? (usage.cache_read_input_tokens || 0) : 0;
@@ -441,7 +433,7 @@ function addEntry(e) {
 
   // Line 1: identity + critical marker + star toggle
   const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
-  const modelHtml = '<span class="turn-model">' + escapeHtml(shortModel) + '</span>';
+  const modelHtml = '<span class="turn-model">' + escapeHtml(shortModelStr) + '</span>';
   const dotClass = (isHttpStatusOk(e.status) || isProxyLifecycleShutdown(e)) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
   const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
   const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);

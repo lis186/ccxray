@@ -44,7 +44,7 @@ function showInterceptOverlay() {
   // Header
   html += '<div class="intercept-header">';
   html += '<span class="ih-title">⏸ Request Intercepted</span>';
-  html += '<span class="ih-session">session:' + escapeHtml(shortSid) + ' · ' + escapeHtml(model.replace('claude-', '')) + '</span>';
+  html += '<span class="ih-session">session:' + escapeHtml(shortSid) + ' · ' + escapeHtml(shortModel(model)) + '</span>';
   html += '</div>';
 
   // Tabs

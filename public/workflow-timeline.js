@@ -11,10 +11,6 @@ function wfStepsRoot() {
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const WF_MODEL_COLORS = {
-  'claude-opus-4-6':'#58a6ff','claude-opus-4-8':'#7ee787','claude-fable-5':'#d2a8ff',
-  'claude-sonnet-4-6':'#ffa657','claude-haiku-4-5':'#f0883e','claude-haiku-4-5-20251001':'#f0883e',
-};
 // #144/#149: per-agent identity palette (docs/wf-color-identity/DESIGN.md).
 // `main` pinned; hashed off lane.key. 7 hues × 7 shapes = 50 combos.
 // CVD-verified: magenta (#d742a5) + indigo (#4242d7) clear all 9 reserved.
@@ -75,13 +71,9 @@ function _wfGetCssColors() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
-function wfModelColor(m) {
-  if (!m) return '#8b949e';
-  // Single source of truth for model→color (exact, then prefix). Falls back to a
-  // concrete hex (not var(--dim)) so callers can safely alpha-suffix (color+'22').
-  return WF_MODEL_COLORS[m] || Object.entries(WF_MODEL_COLORS).find(function(kv) { return m.startsWith(kv[0]); })?.[1] || '#8b949e';
-}
-function wfShortModel(m) { return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, ''); }
+// #156: moved to format.js — kept as local aliases so call sites are unchanged.
+var wfModelColor = modelColor;
+var wfShortModel = shortModel;
 // #144: identity color keyed off lane.key (not model). One resolver for lane + card.
 function _wfFnv1a(s) {
   var h = 0x811c9dc5;
@@ -160,30 +152,19 @@ function wfLaneShape(lane) {
   var s = wfState && wfState.laneStyles && wfState.laneStyles.get(lane.key);
   return (s && s.glyph) || WF_LANE_GLYPHS.hashed[(_wfFnv1a(lane.key || '') >>> 16) % WF_LANE_GLYPHS.hashed.length];
 }
-function wfFmtDur(ms) {
-  if (ms < 1000) return Math.round(ms) + 'ms';
-  if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
-  if (ms < 3600000) return (ms / 60000).toFixed(1) + 'm';
-  return (ms / 3600000).toFixed(1) + 'h';
-}
-function wfFmtMin(ms, base) {
-  var s = (ms - base) / 1000;
-  if (s < 60) return Math.round(s) + 's';
-  if (s < 3600) return (s / 60).toFixed(s < 600 ? 1 : 0) + 'm';
-  var h = Math.floor(s / 3600), m = Math.round((s % 3600) / 60);
-  return h + 'h' + (m ? m + 'm' : '');
-}
-// ponytail: reuse escapeHtml from miller-columns.js (loaded before us)
-var wfEsc = typeof escapeHtml === 'function' ? escapeHtml : function(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); };
+// #156: moved to format.js — kept as local aliases so call sites are unchanged.
+var wfFmtDur = fmtDur;
+var wfFmtMin = fmtMin;
+var wfEsc = escapeHtml;
 
 function wfCtxPct(e) {
   var win = e.maxContext || 200000;
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
-// ponytail: 3-zone context color — still used by minimap + step list
+
+// #156: moved to format.js — kept as a thin wrapper (old signature took the turn, not pct).
 function wfCtxZoneColor(t) {
-  var pct = wfCtxPct(t);
-  return pct > 80 ? '#f85149' : pct >= 40 ? '#d29922' : '#3fb950';
+  return ctxZone(wfCtxPct(t)).hex;
 }
 
 // v8 event detection against real SSE entry summaries (prev = previous turn in same lane)
@@ -1009,7 +990,7 @@ function wfRenderOverview(canvas) {
       var t = lanes[li].turns[ti];
       var ts = Number(t.receivedAt) || 0;
       var dur = (parseFloat(t.elapsed) || 0) * 1000;
-      ctx.fillStyle = wfCtxZoneColor(t);
+      ctx.fillStyle = ctxZone(wfCtxPct(t)).hex;
       // 0.5 alpha sank into the dark bg (lesson: low-luminance signals drown)
       ctx.globalAlpha = isSel ? 0.9 : 0.65;
       ctx.fillRect(x(ts), ly, Math.max(1, (dur / totalRange) * MW), barH);
@@ -1338,8 +1319,9 @@ function _wfShowTooltip(e, t, lane) {
   var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
   var inT = (u.input_tokens || 0) + cr + cc;
   var pct = wfCtxPct(t);
-  var zone = pct > 80 ? 'danger' : pct >= 40 ? 'dumb' : 'smart';
-  var zoneCls = pct > 80 ? 'wf-tt-danger' : pct >= 40 ? 'wf-tt-warn' : 'wf-tt-good';
+  var cz = ctxZone(pct);
+  var zone = cz.zone;
+  var zoneCls = 'wf-tt-' + (zone === 'safe' ? 'good' : zone);
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';

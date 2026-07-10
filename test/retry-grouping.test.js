@@ -42,7 +42,7 @@ function loadDashboardContext() {
     window.ccxraySettings = { visibleProviders: [] };
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
-  for (const f of ['session-label.js', 'miller-columns.js', 'entry-rendering.js']) {
+  for (const f of ['format.js', 'session-label.js', 'miller-columns.js', 'entry-rendering.js']) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
   }
   // Bridge const/let declarations into the context object for test access

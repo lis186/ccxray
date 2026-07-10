@@ -31,7 +31,7 @@ function loadMillerColumnsContext() {
     URLSearchParams, setTimeout, clearTimeout,
   };
   vm.createContext(context);
-  for (const f of ['session-label.js', 'miller-columns.js']) {
+  for (const f of ['format.js', 'session-label.js', 'miller-columns.js']) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
   }
   return context;
