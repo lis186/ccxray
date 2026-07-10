@@ -192,6 +192,7 @@ const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_D
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
 const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';
+const MAX_BODY_BYTES = parseInt(process.env.CCXRAY_MAX_BODY_MB || '50', 10) * 1024 * 1024;
 
 // Storage adapter (local filesystem only; remote object storage not yet supported)
 const storage = createStorage();
@@ -340,6 +341,7 @@ module.exports = {
   LOG_RETENTION_DAYS,
   DELTA_SNAPSHOT_N,
   REWRITE_MODEL_PREFIX,
+  MAX_BODY_BYTES,
   storage,
   MODEL_CONTEXT_FALLBACK,
   DEFAULT_CONTEXT,

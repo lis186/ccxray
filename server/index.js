@@ -249,8 +249,23 @@ const server = http.createServer((clientReq, clientRes) => {
   const startTime = Date.now();
 
   const reqChunks = [];
-  clientReq.on('data', chunk => reqChunks.push(chunk));
+  let bodySize = 0;
+  let rejected = false;
+  clientReq.on('data', chunk => {
+    bodySize += chunk.length;
+    if (bodySize > config.MAX_BODY_BYTES) {
+      if (!rejected) {
+        rejected = true;
+        const mb = Math.round(config.MAX_BODY_BYTES / (1024 * 1024));
+        clientRes.writeHead(413, { 'Content-Type': 'application/json' });
+        clientRes.end(JSON.stringify({ type: 'error', error: { type: 'request_too_large', message: `Request body exceeds CCXRAY_MAX_BODY_MB (${mb} MB)` } }));
+      }
+      return;
+    }
+    reqChunks.push(chunk);
+  });
   clientReq.on('end', () => {
+    if (rejected) return;
     const rawBody = Buffer.concat(reqChunks);
     let parsedBody = null;
     try { parsedBody = JSON.parse(rawBody.toString()); } catch {}
