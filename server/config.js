@@ -231,7 +231,12 @@ const DEFAULT_CONTEXT = 200_000;
 // including haiku title-gen turns. Gate the 1M jump on the model itself so a
 // haiku request carrying the beta header is not shown as a 1M window. New 1M
 // families get one line here, not a logic change.
-const SUPPORTS_1M = /^claude-(opus|sonnet)-4/;
+// #211: fable-5 verified live — `claude --model 'claude-fable-5[1m]'` sends
+// context-1m-* in anthropic-beta plus the "[1m]" system marker; the bare model
+// sends neither and runs 200K. sonnet-5 / mythos are 1M-capable per Anthropic
+// model docs (1M is the API default for fable/mythos; Claude Code still
+// serves 200K sessions unless [1m] is selected).
+const SUPPORTS_1M = /^claude-(opus-4|sonnet-4|sonnet-5|fable-5|mythos)/;
 
 // Extract effective model ID from system prompt (includes [1m] suffix if present).
 // API request model field never includes [1m], but system prompt does:
@@ -260,10 +265,14 @@ function getMaxContext(model, system, opts = {}) {
   //    - opts.beta1m: anthropic-beta `context-1m-*` request header (non-lagging,
   //      present on every turn — the authoritative plan flag).
   //    - "[1m]" suffix in the system marker (legacy; lags after a model switch).
+  //      The marker only counts when it names the same model as the request —
+  //      a stale fable-5[1m] marker must not carry its 1M over to a freshly
+  //      switched-to sonnet-5 leg (#212 review).
   //    Either signal counts, but only for a 1M-capable model (SUPPORTS_1M) so a
   //    client-level flag riding on a haiku request does not over-claim 1M.
+  const markerMatchesIdentity = !!sysModel && sysModel.replace(/\[.*\]/, '') === stripped;
   const has1mSignal = opts.beta1m === true
-    || /\[1m\]/i.test(sysModel || '')
+    || (markerMatchesIdentity && /\[1m\]/i.test(sysModel))
     || /\[1m\]/i.test(model || '');
   if (has1mSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
   // 2) Known Claude Code / Codex defaults (200K / 400K)
@@ -271,10 +280,19 @@ function getMaxContext(model, system, opts = {}) {
   for (const key of keys) {
     if (stripped.startsWith(key)) return MODEL_CONTEXT_FALLBACK[key];
   }
-  // 3) LiteLLM dynamic data — only for unknown models not in fallback table
+  // 3) LiteLLM dynamic data — only for unknown models not in fallback table.
+  //    #211: LiteLLM's max_input_tokens is the model's max *capability*
+  //    (claude-fable-5 → 1M), not the default serving window. Claude Code
+  //    sessions default to 200K; a bigger window requires the 1M signal
+  //    handled above. Trusting the raw value made every fable-5 turn divide
+  //    by 1M and under-report context usage ~5x (17% shown for an 86% -full
+  //    session). Clamp Claude models to DEFAULT_CONTEXT — genuine 1M sessions
+  //    recover via the signals above or inferMaxContext's usage hatch.
   const { getModelContext } = require('./pricing');
   const dynamic = getModelContext(stripped);
-  if (dynamic) return dynamic;
+  if (dynamic) {
+    return stripped.startsWith('claude-') ? Math.min(dynamic, DEFAULT_CONTEXT) : dynamic;
+  }
   return DEFAULT_CONTEXT;
 }
 
@@ -325,6 +343,8 @@ module.exports = {
   storage,
   MODEL_CONTEXT_FALLBACK,
   DEFAULT_CONTEXT,
+  SUPPORTS_1M,
+  extractModelFromSystem,
   getMaxContext,
   inferMaxContext,
   parseBaseUrl,

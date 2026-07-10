@@ -5,7 +5,7 @@
 // directly (exported for testability) and re-require config in isolated
 // child processes via spawnAndCollect for integration scenarios.
 
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawn } = require('child_process');
 const path = require('path');
@@ -703,5 +703,65 @@ describe('getMaxContext / inferMaxContext — context-1m beta header (#58)', () 
 
   it('GUARD: beta header is ignored for OpenAI models (no 1M concept there)', () => {
     assert.equal(getMaxContext('gpt-5.1-codex', null, { beta1m: true }), 400_000);
+  });
+});
+
+// #211: LiteLLM's max_input_tokens is the model's max *capability*, not the
+// default serving window. claude-fable-5 is listed at 1M there, but Claude Code
+// sessions run 200K by default (no context-1m beta header, no [1m] marker —
+// verified against live traffic). Trusting the raw LiteLLM value made every
+// fable-5 turn divide by 1M: 172.7K used showed as 17% instead of 86%.
+describe('getMaxContext — LiteLLM max-capability clamp for Claude models (#211)', () => {
+  const { getMaxContext, inferMaxContext } = require('../server/config');
+  const pricing = require('../server/pricing');
+  const origGetModelContext = pricing.getModelContext;
+
+  afterEach(() => { pricing.getModelContext = origGetModelContext; });
+
+  it('FIX: LiteLLM 1M for claude-fable-5 does not become the window denominator (fail-on-old)', () => {
+    pricing.getModelContext = (m) => (m === 'claude-fable-5' ? 1_000_000 : null);
+    assert.equal(getMaxContext('claude-fable-5', null), 200_000);
+    // The reported session: 172.7K used in a 200K window (86%), shown as 17%.
+    assert.equal(inferMaxContext('claude-fable-5', null, { input_tokens: 172_700 }), 200_000);
+  });
+
+  it('REGRESSION: non-Claude unknown models still trust LiteLLM dynamic data', () => {
+    pricing.getModelContext = (m) => (m === 'grok-4' ? 256_000 : null);
+    assert.equal(getMaxContext('grok-4', null), 256_000);
+  });
+
+  it('REGRESSION: usage hatch still recovers a genuine 1M fable session', () => {
+    pricing.getModelContext = (m) => (m === 'claude-fable-5' ? 1_000_000 : null);
+    assert.equal(inferMaxContext('claude-fable-5', null, { input_tokens: 260_000 }), 1_000_000);
+  });
+
+  it('FIX: fable-5 with a 1M signal gets 1M (SUPPORTS_1M now covers fable/mythos/sonnet-5)', () => {
+    // Verified live: `claude --model 'claude-fable-5[1m]'` sends context-1m-*
+    // in anthropic-beta and "The exact model ID is claude-fable-5[1m]" in the
+    // system prompt; the bare model sends neither.
+    pricing.getModelContext = (m) => (m === 'claude-fable-5' ? 1_000_000 : null);
+    assert.equal(getMaxContext('claude-fable-5', null, { beta1m: true }), 1_000_000);
+    const marker1m = [{ type: 'text', text: 'The exact model ID is claude-fable-5[1m].' }];
+    assert.equal(getMaxContext('claude-fable-5', marker1m), 1_000_000);
+    assert.equal(getMaxContext('claude-sonnet-5', null, { beta1m: true }), 1_000_000);
+  });
+
+  it('GUARD: stale [1m] marker does not leak across a mid-session model switch (fail-on-old)', () => {
+    // #212 review: switch from claude-fable-5[1m] to bare claude-sonnet-5.
+    // The request model updates immediately; the system marker lags several
+    // turns. Both models are in SUPPORTS_1M, so without the identity match
+    // the stale fable [1m] marker would over-claim 1M for the sonnet leg.
+    const staleFable1m = [{ type: 'text', text: 'The exact model ID is claude-fable-5[1m].' }];
+    assert.equal(getMaxContext('claude-sonnet-5', staleFable1m), 200_000);
+    // The beta header stays authoritative across switches (rides every turn).
+    assert.equal(getMaxContext('claude-sonnet-5', staleFable1m, { beta1m: true }), 1_000_000);
+    // Same-model marker still works, and non-[1m] bracket suffixes are inert.
+    assert.equal(getMaxContext('claude-sonnet-5', [{ type: 'text', text: 'The exact model ID is claude-sonnet-5[1m].' }]), 1_000_000);
+    assert.equal(getMaxContext('claude-sonnet-5', [{ type: 'text', text: 'The exact model ID is claude-sonnet-5[beta].' }]), 200_000);
+  });
+
+  it('REGRESSION: LiteLLM values at or below 200K pass through unclamped', () => {
+    pricing.getModelContext = (m) => (m === 'claude-3-7-sonnet' ? 200_000 : null);
+    assert.equal(getMaxContext('claude-3-7-sonnet', null), 200_000);
   });
 });

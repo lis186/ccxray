@@ -10,6 +10,21 @@ const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
 
+// #211: model marker ("The exact model ID is ...") from the persisted system
+// prompt for this sysHash, or null (unreadable / no marker line). Cached per
+// hash — restore sees the same few sysHashes across many entries.
+const sysMarkerCache = new Map();
+async function sysModelMarker(sysHash) {
+  if (sysMarkerCache.has(sysHash)) return sysMarkerCache.get(sysHash);
+  let marker = null;
+  try {
+    const system = JSON.parse(await config.storage.readShared(`sys_${sysHash}.json`));
+    marker = config.extractModelFromSystem(system);
+  } catch { /* unreadable/pruned → unverifiable */ }
+  sysMarkerCache.set(sysHash, marker);
+  return marker;
+}
+
 // Pull stars from settings and shape for computeRetentionSets. Returns the
 // canonical empty shape on any failure — the prune/restore paths must never
 // throw because of star bookkeeping.
@@ -170,7 +185,27 @@ async function restoreFromLogs() {
     // correct 1M values when current usage happens to fit inside 200K.
     if (meta.provider === 'anthropic') {
       const inferred = config.inferMaxContext(meta.model, null, meta.usage);
-      meta.maxContext = Math.max(meta.maxContext || 0, inferred);
+      // #211: a stored value is only trusted over the re-inference for
+      // SUPPORTS_1M models, where it can encode a beta-header signal that is
+      // not re-derivable here (headers are not persisted). For non-capable
+      // models a stored 1M can only be pre-clamp LiteLLM pollution (or the
+      // usage hatch, which re-inference reproduces) — re-derive instead.
+      const stripped = (meta.model || '').replace(/\[.*\]/, '');
+      let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
+      // Even for SUPPORTS_1M models, a stored value above the re-inference can
+      // be pre-clamp LiteLLM pollution (the #211 fable-5 lines). The persisted
+      // system prompt carries the ground-truth [1m] marker — when it names
+      // THIS entry's model and provably lacks [1m], the stored value is bogus.
+      // A marker naming another model (post-switch lag window) is not evidence
+      // about this entry. Unverifiable cases (no sysHash: title-gen/subagent
+      // legs; pruned shared file; foreign marker) keep the stored value, so
+      // genuine 1M turns never downgrade.
+      if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
+        const marker = await sysModelMarker(meta.sysHash);
+        const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
+        if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
+      }
+      meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
     }
 
     if (meta.usage) {
