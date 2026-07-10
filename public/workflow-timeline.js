@@ -273,6 +273,31 @@ function wfInferLanes(entries, childEntries) {
     }
   }
 
+  // Post-pass (#221): two turns in main whose time ranges overlap cannot be
+  // the same serial conversation — they must be parallel agents (e.g. a fork
+  // whose session_id matches the parent, so the agentKey signal above missed
+  // it). Split the later-starting one into its own sub-lane. Turns that
+  // reached main via an authoritative agentKey (WF_MAIN_AGENT_KEYS) are
+  // exempt — that server-side signal already resolved them definitively.
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  for (var oi = mainLane.turns.length - 1; oi >= 1; oi--) {
+    var cur = mainLane.turns[oi];
+    if (cur.agentKey && !AGENT_KEY_UNRELIABLE[cur.agentKey]) continue;
+    var curStart = Number(cur.receivedAt) || 0;
+    if (!curStart) continue;
+    for (var oj = oi - 1; oj >= 0 && oj >= oi - 5; oj--) {
+      var prev = mainLane.turns[oj];
+      var prevStart = Number(prev.receivedAt) || 0;
+      var prevEnd = prevStart + (parseFloat(prev.elapsed) || 0) * 1000;
+      if (curStart < prevEnd && prevStart > 0) {
+        var olKey = _wfSubLaneKey('parallel-' + wfShortModel(cur.model), cur);
+        _wfPushToSubLane(laneMap, olKey, cur);
+        mainLane.turns.splice(oi, 1);
+        break;
+      }
+    }
+  }
+
   // Child session entries → their own lanes
   if (childEntries.length) {
     var childBySid = new Map();
@@ -446,6 +471,25 @@ function wfAddEntry(entry) {
     var mainModel = wfState.lanes[0]?.model;
     needsSub = entry.isSubagent || (mainModel && entry.model !== mainModel);
     key = _wfSubLaneKey('subagent-' + wfShortModel(entry.model), entry);
+  }
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  if (!needsSub && !(entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey])) {
+    // Temporal overlap check (#221): if this entry's time range overlaps a
+    // recent main-lane turn, it must be a parallel agent (e.g. a fork
+    // sharing the parent's session_id) — split it to a sub-lane, mirroring
+    // the wfInferLanes post-pass. Entries with an authoritative agentKey
+    // already went through the WF_MAIN_AGENT_KEYS check above — exempt.
+    var mainTurns = wfState.lanes[0]?.turns || [];
+    for (var mi = mainTurns.length - 1; mi >= 0 && mi >= mainTurns.length - 5; mi--) {
+      var mt = mainTurns[mi];
+      var mtStart = Number(mt.receivedAt) || 0;
+      var mtEnd = mtStart + (parseFloat(mt.elapsed) || 0) * 1000;
+      if (ts < mtEnd && mtStart > 0) {
+        needsSub = true;
+        key = _wfSubLaneKey('parallel-' + wfShortModel(entry.model), entry);
+        break;
+      }
+    }
   }
   if (needsSub) {
     var lane = wfState.lanes.find(function(l) { return l.key === key; });

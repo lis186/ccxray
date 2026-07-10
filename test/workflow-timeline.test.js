@@ -263,13 +263,13 @@ describe('workflow-timeline data layer', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { cost: 0.01 }),
-      mkEntry('t2', 's1', 'claude-opus-4-6', 3000, 5, { cost: 0.05 }),
-      mkEntry('t3', 's1', 'claude-opus-4-6', 5000, 5, { cost: 0.09 }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 7000, 5, { cost: 0.05 }),
+      mkEntry('t3', 's1', 'claude-opus-4-6', 13000, 5, { cost: 0.09 }),
     ];
     ctx.wfState = ctx.wfBuildState('s1');
     var lane = ctx.wfState.lanes[0];
     assert.equal(ctx.wfLaneCostMedian(lane), 0.05);
-    ctx.wfAddEntry(mkEntry('t4', 's1', 'claude-opus-4-6', 7000, 5, { cost: 0.2 }));
+    ctx.wfAddEntry(mkEntry('t4', 's1', 'claude-opus-4-6', 19000, 5, { cost: 0.2 }));
     assert.equal(lane._costMedian, null);
     assert.equal(ctx.wfLaneCostMedian(lane), 0.09);
   });
@@ -336,8 +336,8 @@ describe('workflow-timeline data layer', () => {
     const ctx = loadWfModule();
     // t2 starts while t1 is still running — spans overlap; later bar draws on top
     ctx.allEntries = [
-      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 100, {}),
-      mkEntry('t2', 's1', 'claude-opus-4-6', 51000, 100, {}),
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 100, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 51000, 100, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
     ];
     ctx.wfState = ctx.wfBuildState('s1');
     ctx.wfState.viewT0 = ctx.wfState.tMin;
@@ -897,5 +897,79 @@ describe('#142 wfCtxZoneColor band boundaries', () => {
   it('39% -> green', () => {
     const ctx = loadWfModule();
     assert.equal(ctx.wfCtxZoneColor(t(39)), '#3fb950');
+  });
+});
+
+// ── #221: subagents carrying the parent's session_id ─────────────────────────
+describe('#221 subagent lane inference when session_id no longer separates agents', () => {
+  it('agentKey-identified subagent lanes by agentKey regardless of isSubagent flag', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      // server now sets agentKey from the B2 prompt even though session_id
+      // matches the parent (isSubagent stays false) — agentKey must still win
+      mkEntry('t2', 's1', 'claude-sonnet-4-6', 7000, 3, { agentKey: 'general-purpose', agentLabel: 'General Purpose', isSubagent: false }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.length, 1);
+    assert.equal(lanes[1].name, 'agent-general-purpose');
+    assert.equal(lanes[1].turns.length, 1);
+  });
+
+  it('wfInferLanes post-pass splits temporally overlapping main-lane turns into a parallel lane', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      // t1 runs 1000..6000
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      // t2 starts at 3000, while t1 is still running — no agentKey, so only
+      // the temporal-overlap post-pass can catch this
+      mkEntry('t2', 's1', 'claude-opus-4-6', 3000, 4, {}),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.length, 1);
+    assert.equal(lanes[0].turns[0].id, 't1');
+    assert.equal(lanes[1].name, 'parallel-opus-4-6');
+    assert.equal(lanes[1].turns.length, 1);
+    assert.equal(lanes[1].turns[0].id, 't2');
+  });
+
+  it('wfAddEntry splits a temporally overlapping incremental entry into a parallel lane', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}), // runs 1000..6000
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.lanes.length, 1);
+    // arrives at 3000, overlapping t1's 1000..6000 span
+    var result = ctx.wfAddEntry(mkEntry('t2', 's1', 'claude-opus-4-6', 3000, 4, {}));
+    assert.equal(result.lanesChanged, true);
+    assert.equal(ctx.wfState.lanes.length, 2);
+    assert.equal(ctx.wfState.lanes[0].turns.length, 1);
+    assert.equal(ctx.wfState.lanes[1].name, 'parallel-opus-4-6');
+    assert.equal(ctx.wfState.lanes[1].turns.length, 1);
+    assert.equal(ctx.wfState.lanes[1].turns[0].id, 't2');
+  });
+
+  it('non-overlapping same-model turns stay in main (no false positive)', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),   // ends at 6000
+      mkEntry('t2', 's1', 'claude-opus-4-6', 7000, 3, {}),   // starts after t1 ends
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.length, 2);
+
+    ctx.allEntries = entries.slice(0, 1);
+    ctx.wfState = ctx.wfBuildState('s1');
+    var result = ctx.wfAddEntry(entries[1]);
+    assert.equal(result.lanesChanged, false);
+    assert.equal(ctx.wfState.lanes.length, 1);
+    assert.equal(ctx.wfState.lanes[0].turns.length, 2);
   });
 });

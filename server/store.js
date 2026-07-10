@@ -1,6 +1,7 @@
 'use strict';
 
 const { agentForProvider, getUpstreamProfile } = require('./providers');
+const { extractAgentType } = require('./system-prompt');
 
 // Synthetic session buckets that have no resumable rollout/session file.
 const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
@@ -88,8 +89,20 @@ function extractSessionId(req) {
 
 // Anthropic subagent heuristic: no cwd AND no explicit session_id.
 // Goal verifiers carry session_id but no cwd — they are NOT subagents.
+// #221: newer Claude Code builds stamp subagent requests with the parent's
+// session_id, so the "no session_id" signal alone under-detects. When cwd
+// is absent but session_id is present, fall back to agentKey — a known
+// non-main key (e.g. 'general-purpose') still means subagent.
 function isAnthropicSubagent(parsedBody) {
-  return !extractCwd(parsedBody) && !extractSessionId(parsedBody);
+  const noCwd = !extractCwd(parsedBody);
+  const noSid = !extractSessionId(parsedBody);
+  if (noCwd && noSid) return true;
+  if (noCwd) {
+    const { key } = extractAgentType(parsedBody?.system);
+    if (key !== 'orchestrator' && key !== 'sdk-agent' && key !== 'default'
+        && key !== 'unknown' && key !== 'agent') return true;
+  }
+  return false;
 }
 
 // Bare subagent requests: no session_id, no system prompt, no tools, 1-2 messages.

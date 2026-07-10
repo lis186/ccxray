@@ -150,6 +150,48 @@ describe('store', () => {
     };
   }
 
+  // #221: newer Claude Code builds stamp subagent requests with the parent's
+  // session_id, so the old "no cwd AND no session_id" heuristic under-detects.
+  describe('isAnthropicSubagent', () => {
+    function withAgentType(b1, b2, extra) {
+      return Object.assign({ system: [{ text: 'billing' }, { text: b1 }, { text: b2 }] }, extra || {});
+    }
+
+    it('old path: no cwd, no session_id → subagent', () => {
+      const store = require('../server/store');
+      assert.equal(store.isAnthropicSubagent({}), true);
+    });
+
+    it('new path: no cwd, has session_id, agentKey general-purpose → subagent', () => {
+      const store = require('../server/store');
+      const req = withAgentType(
+        'You are Claude Code',
+        'You are an agent for Claude Code, tasked with completing a task.',
+        { metadata: { session_id: 'child-sid' } }
+      );
+      assert.equal(store.isAnthropicSubagent(req), true);
+    });
+
+    it('main orchestrator: has cwd and session_id → not a subagent', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ text: 'Primary working directory: /home/user/project' }],
+        metadata: { session_id: 'parent-sid' },
+      };
+      assert.equal(store.isAnthropicSubagent(req), false);
+    });
+
+    it('fork (orchestrator key, no cwd, has session_id) → not a subagent (fork detection is #222)', () => {
+      const store = require('../server/store');
+      const req = withAgentType(
+        'You are Claude Code',
+        'You are an interactive agent for coding tasks.',
+        { metadata: { session_id: 'parent-sid' } }
+      );
+      assert.equal(store.isAnthropicSubagent(req), false);
+    });
+  });
+
   describe('detectSession – subagent attribution', () => {
     function bareSubagentReq() {
       return { messages: [{ role: 'user', content: 'do research' }] };
