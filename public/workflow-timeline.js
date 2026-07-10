@@ -280,6 +280,9 @@ function wfInferLanes(entries, childEntries) {
   // reached main via an authoritative agentKey (WF_MAIN_AGENT_KEYS) are
   // exempt — that server-side signal already resolved them definitively.
   // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  // Sort by receivedAt so the earliest-starting turn stays in main (codex R1:
+  // entries arrive in completion order which may differ from start order).
+  mainLane.turns.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
   for (var oi = mainLane.turns.length - 1; oi >= 1; oi--) {
     var cur = mainLane.turns[oi];
     if (cur.agentKey && !AGENT_KEY_UNRELIABLE[cur.agentKey]) continue;

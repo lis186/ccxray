@@ -972,4 +972,17 @@ describe('#221 subagent lane inference when session_id no longer separates agent
     assert.equal(ctx.wfState.lanes.length, 1);
     assert.equal(ctx.wfState.lanes[0].turns.length, 2);
   });
+
+  it('completion-order mismatch: earlier-starting turn stays in main even if it finishes last (codex R1)', () => {
+    const ctx = loadWfModule();
+    // t2 completes first but started after t1 — arrival order ≠ start order
+    var entries = [
+      mkEntry('t2', 's1', 'claude-opus-4-6', 3000, 1, {}),
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].turns[0].id, 't1');
+    assert.equal(lanes[1].turns[0].id, 't2');
+  });
 });
