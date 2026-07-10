@@ -139,6 +139,9 @@ function wfComputeLaneColors(lanes) {
   for (var entry of styles) map.set(entry[0], entry[1].color);
   return map;
 }
+// INVARIANT: this is the only correct way to test "is this the main/orchestrator
+// lane" — never !lane.spawnParent, which is null for every lane (see
+// docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md).
 function _wfIsMainLane(lane) { return lane && (lane.key === 'main' || lane.name === 'main'); }
 function wfLaneColor(lane) {
   if (!lane) return WF_LANE_COLORS.main;
@@ -207,6 +210,14 @@ function _wfBarSpan(t) {
 // Agent keys whose turns belong to the main lane — model switches within the
 // main conversation stay in main (the dashed model-switch line marks them)
 var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
+// agentKey values that don't reliably mean "not main" — both are catch-all
+// defaults from extractAgentType()'s regex fallback for unrecognized prompts
+// (server/system-prompt.js), which could be a genuinely new main-agent
+// variant, not necessarily a subagent (codex review round 3).
+// INVARIANT: every agentKey-based main/subagent classification site in this
+// file AND entry-rendering.js must gate on this — see
+// docs/decisions/0005-agent-key-unreliable-shared-contract.md
+var AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 };
 
 function _wfPushToSubLane(laneMap, key, entry) {
   if (!laneMap.has(key)) laneMap.set(key, { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null });
@@ -232,7 +243,8 @@ function wfInferLanes(entries, childEntries) {
     var e = entries[i];
     var sub = false;
 
-    if (e.agentKey) {
+    // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+    if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
       // Agent-identity classification (server-detected, authoritative):
       // main-agent keys → main lane regardless of model or isSubagent flag
       if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
@@ -363,6 +375,8 @@ function wfBuildState(sessionId) {
     selectedLane: lanes[0] || null,
     selectedTurnId: null,
     selectedSection: 'timeline',
+    laneFocusMode: false,
+    laneHeightManual: false,
   };
 }
 
@@ -424,7 +438,8 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
-  if (entry.agentKey) {
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  if (entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]) {
     needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
     key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
   } else {
@@ -477,8 +492,17 @@ function _wfLaneHeight(laneIdx) {
   if (!wfState || laneIdx >= wfState.lanes.length) return WF_LANE_H;
   return wfState.selectedLane?.key === wfState.lanes[laneIdx].key ? WF_LANE_H_SEL : WF_LANE_H;
 }
+// INVARIANT: must match what _wfRenderSvgContent actually draws in
+// laneFocusMode — see docs/decisions/0006-lane-focus-geometry-consistency.md
 function _wfTotalLanesHeight() {
   if (!wfState) return 0;
+  // Focus mode: only main (index 0) + the selected lane (if not main) take
+  // height — matches what _wfRenderSvgContent actually draws, so the
+  // container doesn't reserve empty space for lanes that are hidden.
+  if (wfState.laneFocusMode) {
+    var focusLi = _wfFocusLaneIdx();
+    return _wfLaneHeight(0) + (focusLi > 0 ? _wfLaneHeight(focusLi) : 0);
+  }
   var h = 0;
   for (var i = 0; i < wfState.lanes.length; i++) h += _wfLaneHeight(i);
   return h;
@@ -673,7 +697,7 @@ function wfRenderTimeline() {
   overviewDiv.id = 'wf-overview';
   var overviewLabel = document.createElement('div');
   overviewLabel.id = 'wf-overview-label';
-  overviewLabel.innerHTML = '<span>Overview</span><button onclick="wfZoomBy(0.5)">+</button><button onclick="wfZoomBy(2)">−</button><button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>';
+  overviewLabel.innerHTML = _wfOverviewLabelHtml();
   overviewDiv.appendChild(overviewLabel);
   var canvas = document.createElement('canvas');
   canvas.id = 'wf-minimap-canvas';
@@ -726,6 +750,7 @@ function wfRenderTimeline() {
   _wfRenderSvgContent(mainSvg, subSvg, canvas);
   wfSetupInteractions(mainSvg, subSvg);
   wfInitResize(lanesSection, resizeHandle);
+  resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
   wfRenderAgentCard(wfState.selectedLane);
   // ponytail: charts now inline in selected lane SVG, no separate header
   wfRenderCurrentSection();
@@ -773,20 +798,32 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn) + '</g>';
   mainSvg.innerHTML = ms;
 
-  // Sub SVG: remaining lanes (dynamic height per lane)
-  var subLanes = lanes.slice(1);
-  if (subLanes.length) {
+  // Sub SVG: remaining lanes (dynamic height per lane). Lane-focus mode
+  // (collapse toggle) narrows this to just the selected lane (or none, if
+  // main is selected) so a session with many subagents can't overflow the
+  // fixed-height overview area.
+  // INVARIANT: this is ground truth for lane geometry — _wfTotalLanesHeight
+  // and _wfLaneIdxAtY must match it — see
+  // docs/decisions/0006-lane-focus-geometry-consistency.md
+  var subIndices;
+  if (wfState.laneFocusMode) {
+    subIndices = focusLi > 0 ? [focusLi] : [];
+  } else {
+    subIndices = lanes.slice(1).map(function(_, i) { return i + 1; });
+  }
+  if (subIndices.length) {
     var subTotalH = 0;
-    for (var sh = 0; sh < subLanes.length; sh++) subTotalH += _wfLaneHeight(sh + 1);
+    for (var sh = 0; sh < subIndices.length; sh++) subTotalH += _wfLaneHeight(subIndices[sh]);
     var subH = WF_PAD + subTotalH + WF_PAD;
     subSvg.setAttribute('width', W);
     subSvg.setAttribute('height', subH);
     subSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + subH);
     var ss = '';
     var subY = WF_PAD;
-    for (var si = 0; si < subLanes.length; si++) {
-      ss += '<g class="' + laneCls(si + 1) + '" data-lane="' + (si + 1) + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(subLanes[si], si + 1, W, xFn) + '</g>';
-      subY += _wfLaneHeight(si + 1);
+    for (var si = 0; si < subIndices.length; si++) {
+      var li = subIndices[si];
+      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn) + '</g>';
+      subY += _wfLaneHeight(li);
     }
     subSvg.innerHTML = ss;
     subSvg.parentElement.style.display = '';
@@ -804,6 +841,78 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   // ponytail: charts now inline in selected lane SVG, no separate header
   var stepsEl = document.getElementById('wf-steps-content');
   if (stepsEl) _wfSyncStepsHighlight(stepsEl);
+}
+
+// ── Lane focus mode ────────────────────────────────────────────────────────
+// Collapse toggle for sessions with many subagent lanes (heuristic finding:
+// #wf-lanes-section clips lanes off the bottom with no scroll affordance).
+// Focused mode narrows the sub-lane area to just the selected lane; main
+// stays visible (pinned/cheap) so orchestrator context is never lost.
+// Two rows: zoom/focus-toggle controls stay together (row 1, unchanged
+// position), the lane pager gets its own row (row 2, right-aligned) instead
+// of sharing row 1's 4px gap with the toggle button — nine-gate review found
+// that adjacency put a functionally-opposite control (toggle exits focus
+// entirely) right next to "next lane," the same misclick shape this whole
+// redesign exists to avoid. Row 2 renders empty/collapsed outside focus mode.
+// Row 1 (zoom) and row 2 (mode) both always render, so #wf-overview-label's
+// height never changes when focus mode toggles — only the pager fades in on
+// row 2's right side, filling space that's otherwise just empty. Keeps the
+// zoom buttons' and toggle button's positions stable regardless of state.
+function _wfOverviewLabelHtml() {
+  var focusLi = _wfFocusLaneIdx();
+  var row1 = '<div class="wf-ol-row">' +
+    '<span>Overview</span>' +
+    '<button onclick="wfZoomBy(0.5)">+</button>' +
+    '<button onclick="wfZoomBy(2)">−</button>' +
+    '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+    '</div>';
+  var pagerHtml = wfState.laneFocusMode
+    ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
+      '<span class="wf-lane-pos">' + (focusLi + 1) + '/' + wfState.lanes.length + '</span>' +
+      '<button onclick="wfCycleLane(1)" title="Next agent">▼</button>'
+    : '';
+  var row2 = '<div class="wf-ol-row wf-ol-row-mode">' +
+    '<button onclick="wfToggleLaneFocus()" title="' + (wfState.laneFocusMode ? 'Show all agents' : 'Focus selected agent') +
+      '" class="' + (wfState.laneFocusMode ? 'active' : '') + '">' + (wfState.laneFocusMode ? '▤' : '▥') + '</button>' +
+    pagerHtml +
+    '</div>';
+  return row1 + row2;
+}
+
+function _wfRefreshLaneFocusUI() {
+  var overviewLabel = document.getElementById('wf-overview-label');
+  if (overviewLabel) overviewLabel.innerHTML = _wfOverviewLabelHtml();
+  // Respect a manual drag-resize (wfInitResize) — don't silently overwrite
+  // it on the next toggle/cycle/click, or the resize handle would appear
+  // broken (ux-heuristic-analysis: drags that don't stick read as a bug).
+  var lanesSection = document.getElementById('wf-lanes-section');
+  if (lanesSection && !(wfState && wfState.laneHeightManual)) {
+    var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
+    var maxH = window.innerHeight * 0.45;
+    lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+  }
+  var resizeHandle = document.getElementById('wf-resize');
+  if (resizeHandle) resizeHandle.classList.toggle('wf-resize-expand', !!(wfState && wfState.laneFocusMode));
+  wfDeferRender();
+}
+
+function wfToggleLaneFocus() {
+  if (!wfState) return;
+  wfState.laneFocusMode = !wfState.laneFocusMode;
+  _wfRefreshLaneFocusUI();
+}
+
+// Shared by the ▲/▼ buttons and the Tab/Shift+Tab keyboard shortcut.
+function wfCycleLane(dir) {
+  if (!wfState || !wfState.lanes.length) return;
+  var lanes = wfState.lanes;
+  var curLi = lanes.indexOf(wfState.selectedLane);
+  var nextLi = (curLi + dir + lanes.length) % lanes.length;
+  wfState.selectedLane = lanes[nextLi];
+  wfState.selectedTurnId = null;
+  _wfRefreshLaneFocusUI();
+  wfRenderAgentCard(lanes[nextLi]);
+  wfRenderCurrentSection();
 }
 
 // ── v8 spotlight / lock visuals ───────────────────────────────────────────
@@ -868,9 +977,17 @@ function _wfApplyLockVisuals() {
   if (g) _wfApplySpotlight(g, lock.lane, lock.tidx);
 }
 
+// INVARIANT: must match what _wfRenderSvgContent actually draws in
+// laneFocusMode — see docs/decisions/0006-lane-focus-geometry-consistency.md
 function _wfLaneIdxAtY(svgEl, my) {
   if (!wfState) return -1;
   if (svgEl.id === 'wf-main-svg') return my >= WF_PAD + WF_AXIS_H ? 0 : -1;
+  if (wfState.laneFocusMode) {
+    // Focus mode: sub SVG draws only the focused lane (see _wfRenderSvgContent) —
+    // walking 1..lanes.length would hit-test against a layout that isn't rendered.
+    var focusLi = _wfFocusLaneIdx();
+    return (focusLi > 0 && my >= WF_PAD) ? focusLi : -1;
+  }
   var accY = WF_PAD;
   for (var i = 1; i < wfState.lanes.length; i++) {
     var lh = _wfLaneHeight(i);
@@ -1181,6 +1298,12 @@ function wfSetupInteractions(mainSvg, subSvg) {
         if (svgEl.id === 'wf-main-svg') {
           // Main SVG: one lane at y = WF_PAD + WF_AXIS_H
           if (my >= WF_PAD + WF_AXIS_H) li = 0;
+        } else if (wfState.laneFocusMode) {
+          // Focus mode: sub SVG draws only the focused lane (see _wfRenderSvgContent) —
+          // walking 1..lanes.length would hit-test against a layout that isn't rendered.
+          // INVARIANT: see docs/decisions/0006-lane-focus-geometry-consistency.md
+          var focusLiClick = _wfFocusLaneIdx();
+          if (focusLiClick > 0 && my >= WF_PAD) li = focusLiClick;
         } else {
           // Sub SVG: lanes have variable height, walk to find index
           var accY = WF_PAD;
@@ -1193,7 +1316,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
         if (li >= 0 && li < wfState.lanes.length) {
           wfState.selectedLane = wfState.lanes[li];
           wfState.selectedTurnId = null;
-          wfDeferRender();
+          _wfRefreshLaneFocusUI();
           wfRenderAgentCard(wfState.lanes[li]);
           wfRenderCurrentSection();
         }
@@ -1352,9 +1475,17 @@ function _wfHideTooltip() {
 // ── Resize Handle ─────────────────────────────────────────────────────────
 function wfInitResize(subScroll, handle) {
   handle.onmousedown = function(e) {
+    // Lane-focus mode drives the height from content, not the user — there's
+    // nothing to drag (see wf-resize-expand in style.css). A plain click still
+    // fires below and exits focus mode instead.
+    if (wfState && wfState.laneFocusMode) return;
     e.preventDefault();
     var startY = e.clientY;
     var startH = subScroll.offsetHeight;
+    // Once the user drags, stop auto-computing maxHeight on lane-select
+    // (_wfRefreshLaneFocusUI) — otherwise the next toggle/cycle/click
+    // silently overwrites their resize with no feedback (ux-heuristic-analysis).
+    if (wfState) wfState.laneHeightManual = true;
     var onMove = function(ev) {
       var delta = ev.clientY - startY;
       var newH = Math.max(60, startH + delta);
@@ -1366,6 +1497,9 @@ function wfInitResize(subScroll, handle) {
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+  };
+  handle.onclick = function() {
+    if (wfState && wfState.laneFocusMode) wfToggleLaneFocus();
   };
 }
 
@@ -1456,38 +1590,126 @@ function _wfDrawOverviewCursor(canvas) {
 }
 
 // ── Agent Card ────────────────────────────────────────────────────────────
+// Session-wide rollup fields (inputTokens/outputTokens/compactCount/cacheBreaks/
+// idleMs/toolFailTurns/toolCallTurns) live on the sessionsMap session object,
+// accumulated per-entry in entry-rendering.js addEntry(). Only meaningful for the
+// orchestrator lane — a single lane has no view of "other lanes" so these are session,
+// not lane, aggregates. See docs/designs/follow-live-turn-subagent.md "Overview Panel (L3)".
+// No main/subagent cost split here — isAnthropicSubagent() in store.js can't
+// tell them apart when the subagent request carries the parent's session_id
+// (current Claude Code behavior), so the split would silently misattribute
+// subagent spend as main. Tracked separately; add back once that's fixed.
+function _wfFmtSessTok(n) {
+  n = n || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(0) + 'K';
+  return String(n);
+}
+function _wfFmtSessDur(ms) {
+  if (ms == null || !isFinite(ms) || ms < 0) return '-';
+  if (ms < 3600000) return Math.round(ms / 60000) + 'm';
+  if (ms < 86400000) return (ms / 3600000).toFixed(1) + 'h';
+  return (ms / 86400000).toFixed(1) + 'd';
+}
+// Parse an entry-id timestamp ("2026-03-08T17-47-13-000") to epoch ms.
+// Same 4-line parse as formatRelativeTime in miller-columns.js — not reused
+// directly since that helper returns a formatted string, not raw ms.
+function _wfParseIdMs(id) {
+  if (!id || id.length < 19) return null;
+  var ts = new Date(id.slice(0, 10) + 'T' + id.slice(11, 19).replace(/-/g, ':')).getTime();
+  return isFinite(ts) ? ts : null;
+}
+
 function wfRenderAgentCard(lane) {
     var agentPanel = document.getElementById('wf-agent-card-panel');
   if (!lane || !agentPanel) return;
   var summary = wfLaneSummary(lane);
   var color = wfLaneColor(lane);
 
-  var toolTotals = {};
-  for (var i = 0; i < lane.turns.length; i++) {
-    var tc = lane.turns[i].toolCalls || {};
-    for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
+  // Orchestrator lane only: session-wide rollup (see comment above wfRenderAgentCard).
+  // INVARIANT: _wfIsMainLane, not !lane.spawnParent — see
+  // docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
+  var isOrchestrator = _wfIsMainLane(lane);
+  var sess = (isOrchestrator && wfState && typeof sessionsMap !== 'undefined')
+    ? sessionsMap.get(wfState.sessionId) : null;
+
+  // Session-wide on the main lane (matches Context/Cache/Tokens below — a lane
+  // has no view of "the other lanes," so main's tool rollup must read sess.toolCalls,
+  // not just this lane's own turns, or counts like a 473-call Agent/Task tool
+  // total would be undercounted to whatever subset the orchestrator itself called).
+  var toolTotals = (isOrchestrator && sess && sess.toolCalls) ? sess.toolCalls : {};
+  if (!isOrchestrator || !sess || !sess.toolCalls) {
+    for (var i = 0; i < lane.turns.length; i++) {
+      var tc = lane.turns[i].toolCalls || {};
+      for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
+    }
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" style="background:' + color + '22;color:' + color + '">' + wfEsc(wfShortModel(lane.model)) + '</span></div>';
-  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (lane.spawnParent ? 'subagent' : 'orchestrator') + '</div>';
+  // INVARIANT: main/subagent label must use _wfIsMainLane, not lane.spawnParent
+  // — see docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
-  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round((lane.ctxWindow || 0) / 1000) + 'K</span></div></div>';
+  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round((lane.ctxWindow || 0) / 1000) + 'K</span></div>';
+  if (sess) html += '<div class="wf-ac-row"><span>Compacts</span><span class="wf-ac-val">' + (sess.compactCount || 0) + '</span></div>';
+  html += '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cache</div>';
-  html += '<div class="wf-ac-row"><span>Hit rate</span><span class="wf-ac-val">' + summary.avgCache.toFixed(1) + '%</span></div></div>';
+  html += '<div class="wf-ac-row"><span>Hit rate</span><span class="wf-ac-val">' + summary.avgCache.toFixed(1) + '%</span></div>';
+  if (sess) html += '<div class="wf-ac-row"><span>Breaks</span><span class="wf-ac-val">' + (sess.cacheBreaks || 0) + '</span></div>';
+  html += '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cost</div>';
-  html += '<div class="wf-ac-row"><span>Total</span><span class="wf-ac-val">$' + summary.totalCost.toFixed(4) + '</span></div></div>';
+  html += '<div class="wf-ac-row"><span>Total</span><span class="wf-ac-val">$' + summary.totalCost.toFixed(4) + '</span></div>';
+  html += '</div>';
+
+  if (sess && (sess.inputTokens || sess.outputTokens)) {
+    var inTok = sess.inputTokens || 0, outTok = sess.outputTokens || 0;
+    var ioRatio = outTok > 0 ? (inTok / outTok).toFixed(1) + ':1' : '-';
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tokens</div>';
+    html += '<div class="wf-ac-row"><span>Input</span><span class="wf-ac-val">' + _wfFmtSessTok(inTok) + '</span></div>';
+    html += '<div class="wf-ac-row"><span>Output</span><span class="wf-ac-val">' + _wfFmtSessTok(outTok) + '</span></div>';
+    html += '<div class="wf-ac-row"><span>I/O ratio</span><span class="wf-ac-val">' + ioRatio + '</span></div>';
+    html += '</div>';
+  }
+
+  // Turns/intervene dropped — design doc's own data-availability table marks
+  // it "Complex — may defer" (no signal yet for user-turn vs auto-approved).
+  // Retries is available (sess.retryCount, tracked in entry-rendering.js).
+  if (sess && sess.retryCount) {
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Autonomy</div>';
+    html += '<div class="wf-ac-row"><span>Retries</span><span class="wf-ac-val">' + sess.retryCount + '</span></div>';
+    html += '</div>';
+  }
 
   if (topTools.length) {
     html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tools</div>';
     for (var ti = 0; ti < topTools.length; ti++) {
       html += '<div class="wf-ac-row"><span class="wf-ac-tool">' + wfEsc(topTools[ti][0]) + '</span><span class="wf-ac-tool-count">' + topTools[ti][1] + '</span></div>';
     }
+    if (sess && (sess.toolCallTurns || 0) > 0) {
+      // Turn-level, not call-level: a turn with 1 failed call among many still
+      // counts as fully failed (toolFail is a turn boolean, not a per-call
+      // count — codex review flagged the old "Failure rate" label as implying
+      // more precision than this data actually has).
+      var failRate = (sess.toolFailTurns || 0) / sess.toolCallTurns * 100;
+      html += '<div class="wf-ac-row"><span title="Turns with 1+ failed tool result, not individual call failures">Turn failure rate</span><span class="wf-ac-val">' + failRate.toFixed(1) + '%</span></div>';
+    }
+    html += '</div>';
+  }
+
+  if (sess) {
+    var startMs = _wfParseIdMs(sess.firstId);
+    var durationMs = (startMs != null && sess.lastReceivedAt) ? (sess.lastReceivedAt - startMs) : null;
+    var activeMs = durationMs != null ? Math.max(0, durationMs - (sess.idleMs || 0)) : null;
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Time</div>';
+    html += '<div class="wf-ac-row"><span>Started</span><span class="wf-ac-val">' + (sess.firstId ? wfEsc(formatEntryDate(sess.firstId)) : '-') + '</span></div>';
+    html += '<div class="wf-ac-row"><span>Duration</span><span class="wf-ac-val">' + _wfFmtSessDur(durationMs) + '</span></div>';
+    html += '<div class="wf-ac-row"><span>Active</span><span class="wf-ac-val">' + _wfFmtSessDur(activeMs) + '</span></div>';
     html += '</div>';
   }
 
@@ -1560,7 +1782,7 @@ function wfLockTurn(turnId) {
   if (!hit) return; // unknown turn → no phantom lock (leave selection untouched)
   wfState.selectedTurnId = turnId;
   wfState.selectedLane = wfState.lanes[hit.laneIdx];
-  wfDeferRender();
+  _wfRefreshLaneFocusUI();
   for (var k = 0; k < allEntries.length; k++) {
     if (allEntries[k].id === turnId) { selectTurn(k); break; }
   }
@@ -1720,17 +1942,10 @@ function wfKeyHandler(key, e) {
     return true;
   }
 
-  // Tab / Shift+Tab: cycle lanes
+  // Tab / Shift+Tab: cycle lanes (same stepping logic as the ▲/▼ overview buttons)
   if (key === 'Tab') {
     e.preventDefault();
-    var lanes = wfState.lanes;
-    var curLi = lanes.indexOf(lane);
-    var nextLi = e.shiftKey ? (curLi - 1 + lanes.length) % lanes.length : (curLi + 1) % lanes.length;
-    wfState.selectedLane = lanes[nextLi];
-    wfState.selectedTurnId = null;
-    wfDeferRender();
-    wfRenderAgentCard(lanes[nextLi]);
-    wfRenderCurrentSection();
+    wfCycleLane(e.shiftKey ? -1 : 1);
     return true;
   }
 
@@ -1750,7 +1965,7 @@ function wfKeyHandler(key, e) {
     if (lane.name !== 'main') {
       wfState.selectedLane = wfState.lanes[0];
       wfState.selectedTurnId = null;
-      wfDeferRender();
+      _wfRefreshLaneFocusUI();
       wfRenderAgentCard(wfState.lanes[0]);
       return true;
     }

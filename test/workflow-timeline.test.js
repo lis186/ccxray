@@ -638,6 +638,65 @@ describe('workflow-timeline focus dim follows selectedLane', () => {
   });
 });
 
+describe('workflow-timeline lane-focus hit-testing (codex round 4)', () => {
+  function threeLanes(ctx) {
+    ctx.allEntries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('e1', 's1', 'claude-sonnet-4-6', 2000, 3, { agentKey: 'explore', agentLabel: 'Explore' }),
+      mkEntry('g1', 's1', 'claude-sonnet-4-6', 2500, 3, { agentKey: 'general-purpose', agentLabel: 'General' }),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+  }
+
+  // Focus mode draws only the selected sub-lane (see _wfRenderSvgContent), at
+  // y=WF_PAD — walking 1..lanes.length as if all sub-lanes are stacked (the old
+  // behavior) hit-tests against a layout that isn't actually on screen.
+  it('_wfLaneIdxAtY returns the focused lane, not whatever unfocused lane occupies that y-slot', () => {
+    const ctx = loadWfModule();
+    threeLanes(ctx);
+    assert.equal(ctx.wfState.lanes.length, 3); // main + explore + general-purpose
+    ctx.wfState.laneFocusMode = true;
+    ctx.wfState.selectedLane = ctx.wfState.lanes[2]; // focus the 3rd lane (general-purpose)
+    var my = 9; // WF_PAD(4) + 5 — inside lane[1]'s slot under the old sequential walk
+    assert.equal(ctx._wfLaneIdxAtY({ id: 'wf-sub-svg' }, my), 2); // RED before fix: 1
+    // main SVG hit-testing is untouched by focus mode
+    assert.equal(ctx._wfLaneIdxAtY({ id: 'wf-main-svg' }, 30), 0);
+    // focus on main itself → sub SVG has nothing to hit-test
+    ctx.wfState.selectedLane = ctx.wfState.lanes[0];
+    assert.equal(ctx._wfLaneIdxAtY({ id: 'wf-sub-svg' }, my), -1);
+  });
+});
+
+describe('workflow-timeline agentKey classification agrees with entry-rendering.js (codex round 4)', () => {
+  // 'unknown'/'agent' are extractAgentType()'s catch-all defaults — could be a
+  // genuinely new main-agent variant, not necessarily a subagent. Both the batch
+  // build (wfInferLanes) and the live-update path (wfAddEntry) must fall back to
+  // the raw isSubagent flag for these, matching AGENT_KEY_UNRELIABLE in
+  // entry-rendering.js — otherwise the same turn classifies differently in the
+  // turn list (main) vs the workflow lanes (subagent).
+  it('wfInferLanes keeps an unreliable-agentKey, non-subagent turn in main', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator' }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, { agentKey: 'unknown', isSubagent: false }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1); // RED before fix: 2 (t2 split into its own 'agent-unknown' lane)
+    assert.equal(lanes[0].turns.length, 2);
+  });
+
+  it('wfAddEntry (live update) keeps an unreliable-agentKey, non-subagent turn in main', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator' })];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.lanes.length, 1);
+    var t2 = mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, { agentKey: 'unknown', isSubagent: false });
+    ctx.wfAddEntry(t2);
+    assert.equal(ctx.wfState.lanes.length, 1); // RED before fix: 2 (routed into an 'agent-unknown' sub-lane)
+    assert.equal(ctx.wfState.lanes[0].turns.length, 2);
+  });
+});
+
 describe('workflow-timeline tail-follow sliding window (#138 Fix B)', () => {
   it('slides a fixed-span window instead of expanding while following the tail', () => {
     const ctx = loadWfModule();

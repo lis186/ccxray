@@ -1013,7 +1013,7 @@ function rerenderColumnsAfterStar() {
   // Sessions column: re-render every visible session card so derived counts update.
   for (const [sid, sess] of sessionsMap) {
     const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
   }
   applySessionFilter();
   // Turn cards: only the directly affected turn changes glyph; cheap to redraw all
@@ -1393,12 +1393,60 @@ function clearAll() { // kept for console use if needed
   renderBreadcrumb();
 }
 
-function renderSessionItem(sess, sid) {
+function renderSessionItem(sess, sid, sessEl) {
   const shortSid = formatSessionIdLabel(sid);
   const tooltip = formatSessionTooltip(null, sid);
   const shortModelStr = shortModel(sess.model);
   const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
+
+  // Duration: from firstId to lastReceivedAt (or now if ongoing)
+  let durationStr = '';
+  if (sess.firstId && sess.firstId.length >= 19) {
+    const startTs = new Date(sess.firstId.slice(0, 10) + 'T' + sess.firstId.slice(11, 19).replace(/-/g, ':')).getTime();
+    if (!isNaN(startTs)) {
+      const endTs = sess.lastReceivedAt ? Number(sess.lastReceivedAt) : Date.now();
+      const durationMs = endTs - startTs;
+      if (durationMs >= 86400000) { // >= 24h
+        durationStr = (durationMs / 86400000).toFixed(1) + 'd';
+      } else if (durationMs >= 3600000) { // >= 1h
+        durationStr = (durationMs / 3600000).toFixed(1) + 'h';
+      } else if (durationMs >= 60000) { // >= 1m
+        durationStr = Math.floor(durationMs / 60000) + 'm';
+      }
+    }
+  }
+
+  // Context window size formatting (e.g., "1M", "200K")
+  let windowSizeStr = '';
+  if (sess.latestMaxContext) {
+    const w = sess.latestMaxContext;
+    if (w >= 1000000) {
+      windowSizeStr = Math.round(w / 1000000) + 'M';
+    } else if (w >= 1000) {
+      windowSizeStr = Math.round(w / 1000) + 'K';
+    } else {
+      windowSizeStr = String(w);
+    }
+  }
+
+  // Session tooltip: started, last activity, cache breaks
+  let sessionCardTooltip = '';
+  if (sess.firstId) {
+    const startDate = formatEntryDate(sess.firstId);
+    const lastActivityStr = sess.lastId ? formatRelativeTime(sess.lastId) : '';
+    sessionCardTooltip = 'Started ' + startDate + '\n' + 'Last activity ' + lastActivityStr;
+    if (sess.cacheBreaks > 0) {
+      sessionCardTooltip += '\n' + sess.cacheBreaks + ' cache break' + (sess.cacheBreaks === 1 ? '' : 's');
+    }
+  }
+  // Card-level tooltip (codex review: was only on .si-row1, so hovering the
+  // title/model/cost/context/preview rows showed nothing) — set on the outer
+  // card element itself; title-less descendants inherit it on hover, while
+  // elements with their own more specific title (sid, status dot, cache row)
+  // keep taking precedence per normal HTML tooltip nesting.
+  if (sessEl) sessEl.title = sessionCardTooltip;
+
   const previewText = sess.lastAssistantText
     ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
     : null;
@@ -1420,7 +1468,9 @@ function renderSessionItem(sess, sid) {
                                        : 'ctx-alert-dim';
   }
   const ctxAlertHtml = ctxPct > 0
-    ? '<span class="ctx-alert ' + ctxPctClass + '">' + Math.round(ctxPct) + '%</span>'
+    ? '<span class="ctx-alert ' + ctxPctClass + '">' + Math.round(ctxPct) + '%' +
+      (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + '</span>' : '') +
+      '</span>'
     : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.
   const ctxBarInner = ctxPct > 0
@@ -1482,7 +1532,7 @@ function renderSessionItem(sess, sid) {
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + '</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + '</div>' +
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +
@@ -1650,6 +1700,7 @@ function selectProject(name) {
   if (name !== null && name === selectedProjectName) return;
   selectedProjectName = name;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  if (typeof hideSubagentPill === 'function') hideSubagentPill();
   renderProjectsCol();
   applySessionFilter();
 
@@ -2088,8 +2139,13 @@ function formatCurrentStepBreadcrumb() {
 function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
+  const prevSessionId = selectedSessionId;
   selectedSessionId = id;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  // Pass the OLD session id — selectedSessionId already points at the new
+  // one above, but the pill/counters being cleared belong to the session
+  // being left (codex review round 3).
+  if (typeof hideSubagentPill === 'function') hideSubagentPill(prevSessionId);
   selectedTurnIdx = -1;
   selectedSection = null;
   clearSelectedStepSelection();
@@ -2192,6 +2248,7 @@ function _smoothScrollBy(el, deltaY, durationMs) {
 function selectTurn(idx, opts) {
   if (idx < 0 || idx >= allEntries.length) return;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  if (typeof hideSubagentPill === 'function') hideSubagentPill();
   // Exit focused mode when switching turns — user is browsing, not drilling into timeline
   // In workflow mode, keep focused mode (timeline stays in split-pane view)
   if (isFocusedMode && !(typeof wfState !== 'undefined' && wfState)) {

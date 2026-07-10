@@ -416,26 +416,38 @@
 
   /* ── Detail column ── */
   #col-detail { display: flex; flex-direction: column; overflow: hidden; transition: opacity 0.15s ease; }
-  .new-turn-pill {
+  .new-turn-pill, .sub-pill {
     position: sticky;
     bottom: 12px;
     align-self: center;
     margin: 0 auto;
     display: block;
     width: fit-content;
-    background: var(--accent);
-    color: var(--bg);
     padding: 3px 12px;
     border-radius: 12px;
     font-size: 11px;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     z-index: 10;
+  }
+  .new-turn-pill {
+    background: var(--accent);
+    color: var(--bg);
     animation: slideUp 0.3s ease;
   }
   @keyframes slideUp {
     from { transform: translateX(-50%) translateY(10px); opacity: 0; }
     to { transform: translateX(-50%) translateY(0); opacity: 1; }
+  }
+  /* Peek-only pill for subagent turns — no animation (HELD badge retains
+     animation monopoly, see docs/designs/follow-live-turn-subagent.md SP3) */
+  .sub-pill {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--dim);
+  }
+  .sub-pill.has-errors {
+    color: var(--red);
   }
   .ctx-sticky { position: sticky; top: 0; background: var(--surface); border-bottom: 2px solid var(--border); padding: 10px 12px; z-index: 2; flex-shrink: 0; }
   .ctx-sticky-title { font-size: 11px; color: var(--dim); margin-bottom: 6px; }
@@ -667,9 +679,19 @@
 #columns.wf-active #col-turns .col-sticky-header { display: none; }
 #wf-timeline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 #wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
-#wf-overview-label { width: 240px; flex-shrink: 0; padding: 0 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 4px; }
+#wf-overview-label { width: 240px; flex-shrink: 0; padding: 4px 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; flex-direction: column; gap: 3px; }
+#wf-overview-label .wf-ol-row { display: flex; align-items: center; gap: 4px; }
+/* Row 2 always renders (toggle button never disappears) so the label's
+   height and every button's position stay fixed whether focus mode is on
+   or off — only the pager fades in on the right, filling otherwise-empty
+   space instead of the row itself appearing/disappearing. Toggle stays far
+   left, pager far right — more separation than the flagged 4px gap, so
+   they don't read as one adjacent control pair. */
+#wf-overview-label .wf-ol-row-mode { justify-content: space-between; }
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
+#wf-overview-label button.active { color: var(--accent); border-color: var(--accent); }
+#wf-overview-label .wf-lane-pos { font-size: 10px; color: var(--dim); white-space: nowrap; }
 /* height set by JS: wfOverviewHeight(laneCount), 28-48px */
 #wf-minimap-canvas { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
 #wf-lanes-section { position: relative; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; transition: max-height 200ms ease; }
@@ -679,10 +701,16 @@
 #wf-sub-scroll::-webkit-scrollbar { width: 4px; }
 #wf-sub-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 #wf-sub-svg { display: block; }
-#wf-resize { height: 8px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s; display: flex; align-items: center; justify-content: center; }
+#wf-resize { height: 8px; cursor: row-resize; background: var(--bg); flex-shrink: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); transition: background 0.15s, height 0.15s; display: flex; align-items: center; justify-content: center; }
 #wf-resize::after { content: ''; width: 32px; height: 3px; border-radius: 2px; background: var(--border); }
 #wf-resize:hover { background: rgba(88,166,255,0.2); }
 #wf-resize:hover::after { background: var(--dim); }
+/* Lane-focus mode locks the strip's height (nothing left to drag), so this
+   same spot becomes a click target back to the normal draggable state
+   instead of a grip handle that silently stops responding at the floor. */
+#wf-resize.wf-resize-expand { height: 15px; cursor: pointer; }
+#wf-resize.wf-resize-expand::after { content: '▾ show all agents'; width: auto; height: auto; border-radius: 0; background: none; color: var(--dim); font-size: 10px; letter-spacing: 0.2px; }
+#wf-resize.wf-resize-expand:hover::after { color: var(--text); }
 #wf-detail-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }

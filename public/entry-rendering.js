@@ -1,5 +1,7 @@
 // ── Entry rendering ──
 let newTurnCount = 0;
+// AGENT_KEY_UNRELIABLE lives in workflow-timeline.js (loaded before this
+// file) so both files agree on which agentKey values are untrustworthy.
 
 function cleanTitle(raw) {
   if (!raw) return null;
@@ -14,16 +16,22 @@ function cleanTitle(raw) {
 function showNewTurnPill(count) {
   const existing = document.getElementById('new-turn-pill');
   if (existing) {
-    existing.textContent = '↓ ' + count + ' new';
+    existing.textContent = '+' + count + ' main';
     return;
   }
 
   const pill = document.createElement('div');
   pill.id = 'new-turn-pill';
   pill.className = 'new-turn-pill';
-  pill.textContent = '↓ ' + count + ' new';
+  pill.textContent = '+' + count + ' main';
   pill.onclick = function() {
-    selectTurn(allEntries.length - 1);
+    // Go to the latest MAIN turn, not literally the last entry — a subagent
+    // turn can append after the last main turn while off-edge (codex review:
+    // allEntries.length - 1 would silently select that subagent turn instead
+    // of what this "+N main" pill advertises).
+    const s = sessionsMap.get(selectedSessionId);
+    const targetIdx = (s && s.latestMainTurnIdx != null) ? s.latestMainTurnIdx : allEntries.length - 1;
+    selectTurn(targetIdx);
     scrollTurnsToBottom();
   };
   colTurns.appendChild(pill);
@@ -33,6 +41,47 @@ function hideNewTurnPill() {
   const pill = document.getElementById('new-turn-pill');
   if (pill) pill.remove();
   newTurnCount = 0;
+}
+
+// Peek-only pill for subagent turns arriving while the user is on the main
+// live edge (docs/designs/follow-live-turn-subagent.md Problem 1). Never
+// calls selectTurn — clicking it only scrolls to reveal the subagent cards.
+function showSubagentPill(count, errCount, sinceNum) {
+  const hasErrors = errCount > 0;
+  const text = '+' + count + ' sub' + (hasErrors ? ' · ' + errCount + ' err' : '');
+  const title = count + ' subagent turns (' + errCount + ' errors)' + (sinceNum != null ? ' since main #' + sinceNum : '');
+  const existing = document.getElementById('sub-turn-pill');
+  if (existing) {
+    existing.textContent = text;
+    existing.title = title;
+    existing.classList.toggle('has-errors', hasErrors);
+    return;
+  }
+
+  const pill = document.createElement('div');
+  pill.id = 'sub-turn-pill';
+  pill.className = 'sub-pill' + (hasErrors ? ' has-errors' : '');
+  pill.textContent = text;
+  pill.title = title;
+  pill.onclick = function() {
+    scrollTurnsToBottom();
+    hideSubagentPill();
+  };
+  colTurns.appendChild(pill);
+}
+
+// sid defaults to selectedSessionId, but callers leaving a session (e.g.
+// selectSession switching to a different one) must pass the OLD id
+// explicitly — by the time they call this, selectedSessionId may already
+// point at the new session. Without resetting the counters (not just
+// removing the DOM node), the next qualifying subagent arrival on the
+// abandoned session recreates the pill with the stale prior count/errors
+// (codex review round 3).
+function hideSubagentPill(sid) {
+  const pill = document.getElementById('sub-turn-pill');
+  if (pill) pill.remove();
+  const s = sessionsMap.get(sid || selectedSessionId);
+  if (s) { s.subPillCount = 0; s.subPillErrCount = 0; }
 }
 
 function renderMessages(messages, perMessage) {
@@ -241,7 +290,7 @@ function addEntry(e) {
     sessEl.dataset.sessionId = sid;
     sessEl.id = 'sess-' + shortSid;
     sessEl.onclick = () => selectSession(sid);
-    sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid);
+    sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, sessEl);
     // Insert at top (after col-title) — newest sessions first
     const firstSession = colSessions.querySelector('.session-item');
     if (firstSession) colSessions.insertBefore(sessEl, firstSession);
@@ -267,7 +316,26 @@ function addEntry(e) {
   if (model && model !== '?') sess.model = model;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
-  const isSubagent = e.isSubagent || false;
+  // Prefer the server-detected agent identity (from system-prompt content,
+  // via agentKey) over the raw isSubagent flag when available — codex review:
+  // isAnthropicSubagent() in store.js classifies by !cwd && !session_id, but
+  // current Claude Code Task-tool subagents carry the parent's session_id, so
+  // isSubagent is false for exactly the common subagent case. agentKey isn't
+  // fooled by that (same authoritative signal wfInferLanes already uses in
+  // workflow-timeline.js, loaded before this file — WF_MAIN_AGENT_KEYS).
+  //
+  // Only trust agentKey to force isSubagent=true for keys we're actually
+  // confident are non-main — never for AGENT_KEY_UNRELIABLE ('unknown', the
+  // extractAgentType() catch-all default; 'agent', its regex-fallback default
+  // when role extraction fails). Those come from the SAME regex fallback that
+  // handles genuinely new/unrecognized prompts (server/system-prompt.js) —
+  // a future main-agent variant could hit it too, and forcing it to subagent
+  // would silently break auto-follow for legitimate main content (codex
+  // review round 3). For those, fall back to the raw flag as before.
+  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  const isSubagent = e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]
+    ? (typeof WF_MAIN_AGENT_KEYS !== 'undefined' ? !WF_MAIN_AGENT_KEYS[e.agentKey] : !!e.isSubagent)
+    : (e.isSubagent || false);
   const isRetry = !isSubagent && !isHttpStatusOk(e.status) && !(usage && usage.output_tokens > 0);
   sess.count++;
   if (isRetry) { sess.retryCount = (sess.retryCount || 0) + 1; }
@@ -283,11 +351,15 @@ function addEntry(e) {
   Object.entries(e.toolCalls || {}).forEach(([name, cnt]) => {
     sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
   });
+  if (Object.keys(e.toolCalls || {}).length > 0) {
+    sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
+    if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+  }
   // During batch load, suppress per-entry DOM rerenders (post-batch does one final pass).
   if (!_loading) {
     const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessEl) {
-      sessEl.innerHTML = renderSessionItem(sess, sid);
+      sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
       const firstSession = colSessions.querySelector('.session-item');
       if (firstSession && firstSession !== sessEl) colSessions.insertBefore(sessEl, firstSession);
     }
@@ -314,13 +386,17 @@ function addEntry(e) {
   const ctxInput       = usage ? (usage.input_tokens || 0) : 0;
   const ctxUsed = ctxCacheCreate + ctxCacheRead + ctxInput;
 
+  sess.inputTokens = (sess.inputTokens || 0) + (usage ? (usage.input_tokens || 0) : 0);
+  sess.outputTokens = (sess.outputTokens || 0) + (usage ? (usage.output_tokens || 0) : 0);
+
   // Update session context alert badge + cache stats for main turns
   if (!isSubagent && ctxUsed > 0) {
     sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
     sess.latestCacheReadTokens = ctxCacheRead;
     sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
+    sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid);
+    if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
   }
 
   // Gap timing: idle time from end of previous turn to start of this turn
@@ -342,6 +418,12 @@ function addEntry(e) {
     }
   }
 
+  const cacheTtlMs = window.ccxraySettings?.cacheTtlMs;
+  if (gapMs !== null && cacheTtlMs && gapMs > cacheTtlMs) {
+    sess.cacheBreaks = (sess.cacheBreaks || 0) + 1;
+    sess.idleMs = (sess.idleMs || 0) + gapMs;
+  }
+
   // Compression detection: compare message count AND context tokens vs previous main turn.
   // True compaction = msgCount drops significantly (messages got summarized/removed).
   // Token-only drops can happen from cache eviction or normal conversation flow.
@@ -358,6 +440,7 @@ function addEntry(e) {
       }
     }
   }
+  if (isCompacted) sess.compactCount = (sess.compactCount || 0) + 1;
 
   allEntries.push({
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, sessionId: sid,
@@ -554,18 +637,43 @@ function addEntry(e) {
   colTurns.appendChild(el);
 
   if (selectedSessionId === sid) renderSessionSparkline(sid);
+  // Track unconditionally (not gated by !_loading) — codex review: this was
+  // previously only set while live, so a session restored from history had
+  // it unset until the first live main turn, meaning that very first live
+  // turn was never recognized as "on the live edge" even though a user
+  // viewing the just-loaded latest turn genuinely is on it.
+  const prevMainIdx = sess.latestMainTurnIdx;
+  if (!isSubagent) sess.latestMainTurnIdx = idx;
   if (!_loading && selectedSessionId === sid) {
     // Only auto-follow if toggle is on AND user is currently on the live edge
     // Never interrupt focused mode (drill-down); workflow split view is the default
-    // state and must keep following live turns
-    const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
-      (selectedTurnIdx === -1 || selectedTurnIdx === idx - 1);
-    if (wasOnLiveEdge) {
-      selectTurn(idx);
-      scrollTurnsToBottom();
-    } else if (followLiveTurn) {
-      newTurnCount++;
-      showNewTurnPill(newTurnCount);
+    // state and must keep following live turns.
+    // Subagent turns never auto-select (docs/designs/follow-live-turn-subagent.md
+    // Problem 1) — heavy subagent activity would otherwise yank the detail panel
+    // away from the main thread on every turn. They bump a peek-only "+N sub"
+    // pill instead, tracked on sess so switching sessions needs no manual reset.
+    if (isSubagent) {
+      const wasOnMainLiveEdge = followLiveTurn && !isFocusedMode &&
+        (selectedTurnIdx === -1 || selectedTurnIdx === sess.latestMainTurnIdx);
+      if (wasOnMainLiveEdge) {
+        sess.subPillCount = (sess.subPillCount || 0) + 1;
+        if (!isHttpStatusOk(e.status)) sess.subPillErrCount = (sess.subPillErrCount || 0) + 1;
+        showSubagentPill(sess.subPillCount, sess.subPillErrCount || 0, allEntries[sess.latestMainTurnIdx]?.displayNum);
+      }
+      // Off the main live edge: subagent turns append silently, no pill bump.
+    } else {
+      const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
+        (selectedTurnIdx === -1 || selectedTurnIdx === prevMainIdx);
+      if (wasOnLiveEdge) {
+        selectTurn(idx);
+        scrollTurnsToBottom();
+        sess.subPillCount = 0;
+        sess.subPillErrCount = 0;
+        hideSubagentPill();
+      } else if (followLiveTurn) {
+        newTurnCount++;
+        showNewTurnPill(newTurnCount);
+      }
     }
   }
 }
@@ -585,7 +693,7 @@ evtSource.onmessage = (ev) => {
       const sid = data.sessionId;
       const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
       const sess = sessionsMap.get(sid);
-      if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid);
+      if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
       renderProjectsCol();
       applySessionFilter();
       updateTopbarStatus();
@@ -597,7 +705,7 @@ evtSource.onmessage = (ev) => {
         sess.title = data.title;
         sess.titleReqTs = nextTs;
         const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid);
+        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
         if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
       }
     } else {
@@ -611,7 +719,7 @@ setInterval(() => {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     const sid = el.dataset.sessionId;
     const sess = sessionsMap.get(sid);
-    if (sess) el.innerHTML = renderSessionItem(sess, sid);
+    if (sess) el.innerHTML = renderSessionItem(sess, sid, el);
   });
   renderProjectsCol();
   updateTopbarStatus();
@@ -886,7 +994,7 @@ Promise.all([_entriesReady, _starsReady]).then(async ([data]) => {
     for (const sid of sortedSids) {
       const el = document.getElementById('sess-' + sid.slice(0, 8));
       if (!el) continue;
-      el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid);
+      el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, el);
       colSessEl.appendChild(el); // appendChild in desc order → most-recent rises to top
     }
   }
