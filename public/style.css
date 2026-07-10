@@ -416,26 +416,38 @@
 
   /* ── Detail column ── */
   #col-detail { display: flex; flex-direction: column; overflow: hidden; transition: opacity 0.15s ease; }
-  .new-turn-pill {
+  .new-turn-pill, .sub-pill {
     position: sticky;
     bottom: 12px;
     align-self: center;
     margin: 0 auto;
     display: block;
     width: fit-content;
-    background: var(--accent);
-    color: var(--bg);
     padding: 3px 12px;
     border-radius: 12px;
     font-size: 11px;
     cursor: pointer;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     z-index: 10;
+  }
+  .new-turn-pill {
+    background: var(--accent);
+    color: var(--bg);
     animation: slideUp 0.3s ease;
   }
   @keyframes slideUp {
     from { transform: translateX(-50%) translateY(10px); opacity: 0; }
     to { transform: translateX(-50%) translateY(0); opacity: 1; }
+  }
+  /* Peek-only pill for subagent turns — no animation (HELD badge retains
+     animation monopoly, see docs/designs/follow-live-turn-subagent.md SP3) */
+  .sub-pill {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--dim);
+  }
+  .sub-pill.has-errors {
+    color: var(--red);
   }
   .ctx-sticky { position: sticky; top: 0; background: var(--surface); border-bottom: 2px solid var(--border); padding: 10px 12px; z-index: 2; flex-shrink: 0; }
   .ctx-sticky-title { font-size: 11px; color: var(--dim); margin-bottom: 6px; }

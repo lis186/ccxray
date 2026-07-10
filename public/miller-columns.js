@@ -2090,6 +2090,7 @@ function selectSession(id) {
   if (id === selectedSessionId) return;
   selectedSessionId = id;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
+  if (typeof hideSubagentPill === 'function') hideSubagentPill();
   selectedTurnIdx = -1;
   selectedSection = null;
   clearSelectedStepSelection();

@@ -14,14 +14,14 @@ function cleanTitle(raw) {
 function showNewTurnPill(count) {
   const existing = document.getElementById('new-turn-pill');
   if (existing) {
-    existing.textContent = '↓ ' + count + ' new';
+    existing.textContent = '+' + count + ' main';
     return;
   }
 
   const pill = document.createElement('div');
   pill.id = 'new-turn-pill';
   pill.className = 'new-turn-pill';
-  pill.textContent = '↓ ' + count + ' new';
+  pill.textContent = '+' + count + ' main';
   pill.onclick = function() {
     selectTurn(allEntries.length - 1);
     scrollTurnsToBottom();
@@ -33,6 +33,40 @@ function hideNewTurnPill() {
   const pill = document.getElementById('new-turn-pill');
   if (pill) pill.remove();
   newTurnCount = 0;
+}
+
+// Peek-only pill for subagent turns arriving while the user is on the main
+// live edge (docs/designs/follow-live-turn-subagent.md Problem 1). Never
+// calls selectTurn — clicking it only scrolls to reveal the subagent cards.
+function showSubagentPill(count, errCount, sinceNum) {
+  const hasErrors = errCount > 0;
+  const text = '+' + count + ' sub' + (hasErrors ? ' · ' + errCount + ' err' : '');
+  const title = count + ' subagent turns (' + errCount + ' errors)' + (sinceNum != null ? ' since main #' + sinceNum : '');
+  const existing = document.getElementById('sub-turn-pill');
+  if (existing) {
+    existing.textContent = text;
+    existing.title = title;
+    existing.classList.toggle('has-errors', hasErrors);
+    return;
+  }
+
+  const pill = document.createElement('div');
+  pill.id = 'sub-turn-pill';
+  pill.className = 'sub-pill' + (hasErrors ? ' has-errors' : '');
+  pill.textContent = text;
+  pill.title = title;
+  pill.onclick = function() {
+    scrollTurnsToBottom();
+    const s = sessionsMap.get(selectedSessionId);
+    if (s) { s.subPillCount = 0; s.subPillErrCount = 0; }
+    hideSubagentPill();
+  };
+  colTurns.appendChild(pill);
+}
+
+function hideSubagentPill() {
+  const pill = document.getElementById('sub-turn-pill');
+  if (pill) pill.remove();
 }
 
 function renderMessages(messages, perMessage) {
@@ -557,15 +591,34 @@ function addEntry(e) {
   if (!_loading && selectedSessionId === sid) {
     // Only auto-follow if toggle is on AND user is currently on the live edge
     // Never interrupt focused mode (drill-down); workflow split view is the default
-    // state and must keep following live turns
-    const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
-      (selectedTurnIdx === -1 || selectedTurnIdx === idx - 1);
-    if (wasOnLiveEdge) {
-      selectTurn(idx);
-      scrollTurnsToBottom();
-    } else if (followLiveTurn) {
-      newTurnCount++;
-      showNewTurnPill(newTurnCount);
+    // state and must keep following live turns.
+    // Subagent turns never auto-select (docs/designs/follow-live-turn-subagent.md
+    // Problem 1) — heavy subagent activity would otherwise yank the detail panel
+    // away from the main thread on every turn. They bump a peek-only "+N sub"
+    // pill instead, tracked on sess so switching sessions needs no manual reset.
+    if (isSubagent) {
+      const wasOnMainLiveEdge = followLiveTurn && !isFocusedMode &&
+        (selectedTurnIdx === -1 || selectedTurnIdx === sess.latestMainTurnIdx);
+      if (wasOnMainLiveEdge) {
+        sess.subPillCount = (sess.subPillCount || 0) + 1;
+        if (!isHttpStatusOk(e.status)) sess.subPillErrCount = (sess.subPillErrCount || 0) + 1;
+        showSubagentPill(sess.subPillCount, sess.subPillErrCount || 0, allEntries[sess.latestMainTurnIdx]?.displayNum);
+      }
+      // Off the main live edge: subagent turns append silently, no pill bump.
+    } else {
+      const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
+        (selectedTurnIdx === -1 || selectedTurnIdx === sess.latestMainTurnIdx);
+      sess.latestMainTurnIdx = idx;
+      if (wasOnLiveEdge) {
+        selectTurn(idx);
+        scrollTurnsToBottom();
+        sess.subPillCount = 0;
+        sess.subPillErrCount = 0;
+        hideSubagentPill();
+      } else if (followLiveTurn) {
+        newTurnCount++;
+        showNewTurnPill(newTurnCount);
+      }
     }
   }
 }
