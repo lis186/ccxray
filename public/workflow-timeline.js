@@ -634,13 +634,18 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
-  // Numbered parallel-lane instances (ADR 0008) share agentLabel AND convId
-  // (forks inherit both) — surface the #k ordinal so 7 fork lanes don't all
-  // read as the same "Orchestrator 5212".
+  // Parallel-lane instances (ADR 0008) share agentLabel AND convId (forks
+  // inherit both), so they'd all read as the same "Orchestrator 5212" —
+  // semantically wrong too: one session has one orchestrator. Label them
+  // "Fork <conv> #k" instead (owner decision, PR #232 acceptance).
   var laneOrd = /#(\d+)$/.exec(lane.key || '');
+  var isParallelLane = (lane.key || '').indexOf('parallel-') === 0;
   var dispName = lane.childSessionId
     ? (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8)
-    : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + (laneOrd ? ' #' + laneOrd[1] : ''));
+    : (laneIdx === 0 ? lane.name
+      : isParallelLane
+        ? 'Fork' + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1')
+        : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
