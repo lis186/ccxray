@@ -31,6 +31,7 @@ These constraints have guard comments at their mutation sites. Read the linked A
 - **Lane-focus geometry must match what `_wfRenderSvgContent` actually draws** — `_wfTotalLanesHeight`, `_wfLaneIdxAtY`, and the label-click hit-test in `workflow-timeline.js` must all agree with it under `laneFocusMode` — @docs/decisions/0006-lane-focus-geometry-consistency.md
 - **Use `_wfIsMainLane(lane)` for main/orchestrator detection, never `!lane.spawnParent`** (`spawnParent` is always `null`, in every lane object, everywhere) — @docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
 - **Temporal overlap overrides agentKey for lane placement** — no lane may hold two temporally-overlapping turns; never exempt a turn from the overlap split because its agentKey looks authoritative (forks carry the parent's `orchestrator` key) — @docs/decisions/0008-temporal-overlap-overrides-agent-key.md
+- **Sequential-interleave classification goes through the shared seq tracker in both files** (`wfCreateSeqTracker` in `workflow-timeline.js`; instances in `wfInferLanes`, `wfAddEntry`, and `entry-rendering.js` `addEntry`), and the tracker never consults `isCompacted` (fan-out first-turns carry a false flag) — @docs/decisions/0009-sequential-interleave-conv-bracketing.md
 
 ## Smoke Testing
 
