@@ -30,28 +30,38 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$WORKTREE" && -n "$REF" && -n "$ROLLBACK" ]] || { echo "need --worktree --ref --rollback-ref" >&2; exit 3; }
 [[ -d "$WORKTREE" ]] || { echo "worktree not found: $WORKTREE" >&2; exit 3; }
-WORKTREE_ABS="$(cd "$WORKTREE" && pwd)"
+# pwd -P resolves symlinks (/tmp → /private/tmp on macOS)
+WORKTREE_ABS="$(cd "$WORKTREE" && pwd -P)"
 
 LOG="${HOME}/.ccxray/stable-server.log"
 LOCKDIR="${HOME}/.ccxray/stable-server.lock"
 say() { echo "[stable-server] $*"; }
 
+# ── canonicalization ──────────────────────────────────────────────────────
+# Portable realpath: resolve symlinks via cd+pwd -P.
+canon() { (cd "$(dirname "$1")" 2>/dev/null && echo "$(pwd -P)/$(basename "$1")") || echo "$1"; }
+
 # ── serialisation ─────────────────────────────────────────────────────────
-# Prevent concurrent swaps on the same port. mkdir is atomic on all platforms.
 mkdir "$LOCKDIR" 2>/dev/null || { echo "another stable-server is running (lock: $LOCKDIR)" >&2; exit 3; }
 trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 
 # ── identity helpers ──────────────────────────────────────────────────────
-# is_ccxray_on_port PID — true when PID is a node server/index.js whose cwd
-# is inside WORKTREE_ABS.  Prevents killing unrelated listeners on the port.
-is_ccxray_on_port() {
+# is_ccxray_process PID — true when PID is a `node .../server/index.js`
+# whose cwd is exactly WORKTREE_ABS (not a prefix/sibling).
+is_ccxray_process() {
   local pid="$1"
   local cmd
   cmd=$(ps -o command= -p "$pid" 2>/dev/null) || return 1
+  # argv must be: node ... server/index.js (reject arbitrary commands
+  # that happen to contain the substring)
+  [[ "$cmd" =~ ^node[[:space:]] ]] || return 1
   [[ "$cmd" == *server/index.js* ]] || return 1
   local cwd
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep '^n' | head -1 | cut -c2-)
-  [[ "$cwd" == "$WORKTREE_ABS"* ]] || return 1
+  [[ -z "$cwd" ]] && return 1
+  # Canonicalize lsof path (macOS: /private/tmp vs /tmp)
+  cwd="$(canon "$cwd")"
+  [[ "$cwd" == "$WORKTREE_ABS" ]] || return 1
   return 0
 }
 
@@ -68,17 +78,16 @@ CUR=$(git -C "$WORKTREE" rev-parse HEAD)
 
 health() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null)" = "200" ]; }
 
-# Idempotence: already at target and serving → done.
+# Idempotence: already at target, serving, AND the listener is our ccxray → done.
 if [[ "$CUR" == "$TARGET" ]] && health; then
-  say "already at $(git -C "$WORKTREE" rev-parse --short "$TARGET") and healthy on :$PORT"
-  exit 0
+  LP=$(listener_pid)
+  if [[ -n "$LP" ]] && is_ccxray_process "$LP"; then
+    say "already at $(git -C "$WORKTREE" rev-parse --short "$TARGET") and healthy on :$PORT (pid $LP)"
+    exit 0
+  fi
 fi
 
 # ── idle check (skippable with --force) ───────────────────────────────────
-# Approximation: last completed entry within IDLE_MIN minutes = sessions are
-# active. In-flight requests that started AFTER a quiet period are invisible
-# to this check (entries record on completion) — hence supervised first runs
-# and --force being explicit. ponytail: refine only if false swaps happen.
 if [[ "$FORCE" -ne 1 ]] && health; then
   LAST_MS=$(curl -s --max-time 5 "http://127.0.0.1:$PORT/_api/entries" 2>/dev/null \
     | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{const es=JSON.parse(d).entries;const last=es[es.length-1];console.log(last?Math.round(Number(last.receivedAt)+(parseFloat(last.elapsed)||0)*1000):0)}catch(e){console.log(0)}})")
@@ -90,33 +99,51 @@ if [[ "$FORCE" -ne 1 ]] && health; then
   fi
 fi
 
-# ── pin + install + side-port verification (live server untouched so far) ─
-pin_and_verify() { # $1 = commit
-  git -C "$WORKTREE" checkout --detach --quiet "$1" || return 1
-  local PREV="$CUR"
-  if ! git -C "$WORKTREE" diff --quiet "$PREV" "$1" -- package-lock.json 2>/dev/null; then
-    say "package-lock changed — npm ci"
-    (cd "$WORKTREE" && npm ci --silent) || return 1
+# ── checked pin + deps restore ────────────────────────────────────────────
+# restore_pin COMMIT FROM — checked checkout + conditional npm ci.
+# Used for: target pin, side-smoke failure restore, and rollback.
+restore_pin() {
+  local to="$1" from="$2"
+  if ! git -C "$WORKTREE" checkout --detach --quiet "$to"; then
+    say "ERROR: checkout $to failed"
+    return 1
   fi
+  if ! git -C "$WORKTREE" diff --quiet "$from" "$to" -- package-lock.json 2>/dev/null; then
+    say "package-lock changed ($from → $to) — npm ci"
+    if ! (cd "$WORKTREE" && npm ci --silent); then
+      say "ERROR: npm ci failed for $to"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ── side-port verification (live server untouched) ────────────────────────
+side_verify() { # $1 = commit
+  restore_pin "$1" "$CUR" || return 1
   local SIDE=$(( PORT + 71 ))
   if [[ -x "$WORKTREE/scripts/boot-smoke.sh" ]]; then
     "$WORKTREE/scripts/boot-smoke.sh" "$SIDE" || return 1
   else
-    # ref predates boot-smoke.sh — inline minimal check (mirrors boot-smoke.sh contract)
-    local SMOKE_HOME
+    # ref predates boot-smoke.sh — inline minimal check (mirrors contract)
+    local SMOKE_HOME SMOKE_LOG BP
     SMOKE_HOME="$(mktemp -d)"
-    local SMOKE_LOG
     SMOKE_LOG="$(mktemp)"
+    local _smoke_cleanup_done=0
+    _smoke_cleanup() {
+      [[ "$_smoke_cleanup_done" -eq 1 ]] && return; _smoke_cleanup_done=1
+      kill "$BP" 2>/dev/null; wait "$BP" 2>/dev/null
+      rm -rf "$SMOKE_HOME" "$SMOKE_LOG"
+    }
+    trap '_smoke_cleanup' RETURN INT TERM
     env -u ANTHROPIC_BASE_URL CCXRAY_HOME="$SMOKE_HOME" PROXY_PORT="$SIDE" \
-      node "$WORKTREE/server/index.js" >"$SMOKE_LOG" 2>&1 & local BP=$!
-    trap 'kill "$BP" 2>/dev/null; wait "$BP" 2>/dev/null; rm -rf "$SMOKE_HOME" "$SMOKE_LOG"' RETURN
+      node "$WORKTREE/server/index.js" >"$SMOKE_LOG" 2>&1 & BP=$!
     local ok=1
     for _ in $(seq 1 30); do
       if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SIDE/" 2>/dev/null)" = "200" ]; then
-        # Verify the 200 came from our spawned process, not a stale listener
-        local side_listener
-        side_listener=$(lsof -nP -iTCP:"$SIDE" -sTCP:LISTEN -t 2>/dev/null | head -1)
-        if [[ "$side_listener" == "$BP" ]]; then
+        local side_lp
+        side_lp=$(lsof -nP -iTCP:"$SIDE" -sTCP:LISTEN -t 2>/dev/null | head -1)
+        if [[ "$side_lp" == "$BP" ]]; then
           grep -m1 "listening" "$SMOKE_LOG" || true
           say "BOOT OK: dashboard HTTP 200 on :$SIDE (pid $BP)"
           ok=0; break
@@ -125,20 +152,19 @@ pin_and_verify() { # $1 = commit
       kill -0 "$BP" 2>/dev/null || break
       sleep 0.5
     done
-    kill "$BP" 2>/dev/null; wait "$BP" 2>/dev/null
-    rm -rf "$SMOKE_HOME" "$SMOKE_LOG"
-    trap - RETURN
     if [[ "$ok" -ne 0 ]]; then
       say "BOOT FAIL: no dashboard HTTP 200 on :$SIDE within bound"
+      tail -20 "$SMOKE_LOG" >&2
     fi
+    _smoke_cleanup
+    trap - RETURN INT TERM
     return $ok
   fi
 }
 
 # ── swap with identity verification ───────────────────────────────────────
-swap_to() { # $1 = commit (used for checkout before launch)
+swap_to() { # $1 = commit
   local commit="$1"
-  # Ensure worktree is at the requested commit
   local head_now
   head_now=$(git -C "$WORKTREE" rev-parse HEAD)
   if [[ "$head_now" != "$(git -C "$WORKTREE" rev-parse --verify "$commit^{commit}" 2>/dev/null)" ]]; then
@@ -148,11 +174,11 @@ swap_to() { # $1 = commit (used for checkout before launch)
   local OLD_PID
   OLD_PID=$(listener_pid)
   if [[ -n "$OLD_PID" ]]; then
-    if ! is_ccxray_on_port "$OLD_PID"; then
+    if ! is_ccxray_process "$OLD_PID"; then
       say "ERROR: pid $OLD_PID on :$PORT is NOT a ccxray process in $WORKTREE_ABS — refusing to kill"
       return 1
     fi
-    kill "$OLD_PID" 2>/dev/null   # SIGTERM → gracefulExit drains writes (≤5s)
+    kill "$OLD_PID" 2>/dev/null
     for _ in $(seq 1 20); do
       kill -0 "$OLD_PID" 2>/dev/null || break
       sleep 0.5
@@ -161,7 +187,6 @@ swap_to() { # $1 = commit (used for checkout before launch)
       say "ERROR: old listener (pid $OLD_PID) did not exit within 10s"
       return 1
     fi
-    # Verify port actually released (another process could have grabbed it)
     local stale
     stale=$(listener_pid)
     if [[ -n "$stale" ]]; then
@@ -170,20 +195,16 @@ swap_to() { # $1 = commit (used for checkout before launch)
     fi
   fi
 
-  ( cd "$WORKTREE" && env -u ANTHROPIC_BASE_URL PROXY_PORT="$PORT" \
-      nohup node server/index.js >> "$LOG" 2>&1 & echo $! > /tmp/.ccxray-swap-pid-$PORT ) </dev/null
-  local NEW_PID
-  NEW_PID=$(cat /tmp/.ccxray-swap-pid-$PORT 2>/dev/null)
-  rm -f /tmp/.ccxray-swap-pid-$PORT
-
-  if [[ -z "$NEW_PID" ]]; then
-    say "ERROR: failed to capture new server PID"
-    return 1
-  fi
+  # Launch node directly: exec inside subshell replaces the subshell with
+  # the node process, so $! == the actual listener PID (no wrapper layer).
+  # trap '' HUP replaces nohup; </dev/null detaches stdin.
+  (cd "$WORKTREE" && trap '' HUP && exec env -u ANTHROPIC_BASE_URL PROXY_PORT="$PORT" \
+    node server/index.js >> "$LOG" 2>&1) </dev/null &
+  local NEW_PID=$!
+  disown "$NEW_PID" 2>/dev/null
 
   for _ in $(seq 1 30); do
     if health; then
-      # Verify the listener is our new process
       local live_pid
       live_pid=$(listener_pid)
       if [[ "$live_pid" == "$NEW_PID" ]]; then
@@ -199,9 +220,11 @@ swap_to() { # $1 = commit (used for checkout before launch)
 }
 
 say "verifying $(git -C "$WORKTREE" rev-parse --short "$TARGET") on side port before touching :$PORT"
-if ! pin_and_verify "$TARGET"; then
-  say "side-port verification FAILED — restoring pin, live server untouched"
-  git -C "$WORKTREE" checkout --detach --quiet "$CUR"
+if ! side_verify "$TARGET"; then
+  say "side-port verification FAILED — restoring pin+deps, live server untouched"
+  restore_pin "$CUR" "$TARGET" || {
+    say "WARNING: could not restore worktree to $CUR — manually: git -C $WORKTREE checkout --detach $CUR && (cd $WORKTREE && npm ci)"
+  }
   exit 1
 fi
 
@@ -214,21 +237,10 @@ fi
 # ── rollback ──────────────────────────────────────────────────────────────
 say "swap FAILED — rolling back to $(git -C "$WORKTREE" rev-parse --short "$ROLLBACK")"
 
-# Checkout rollback ref — must succeed or we're in manual-recovery territory
-if ! git -C "$WORKTREE" checkout --detach --quiet "$ROLLBACK"; then
-  echo "[stable-server] FATAL: rollback checkout failed — :$PORT may be DOWN." >&2
+if ! restore_pin "$ROLLBACK" "$TARGET"; then
+  echo "[stable-server] FATAL: rollback pin+deps failed — :$PORT may be DOWN." >&2
   echo "  manual recovery: (cd $WORKTREE && git checkout --detach $ROLLBACK && npm ci --silent && env -u ANTHROPIC_BASE_URL PROXY_PORT=$PORT nohup node server/index.js >> $LOG 2>&1 &)" >&2
   exit 2
-fi
-
-# Restore dependencies if rollback ref has different package-lock
-if ! git -C "$WORKTREE" diff --quiet "$TARGET" "$ROLLBACK" -- package-lock.json 2>/dev/null; then
-  say "rollback: package-lock differs — npm ci"
-  (cd "$WORKTREE" && npm ci --silent) || {
-    echo "[stable-server] FATAL: rollback npm ci failed — :$PORT may be DOWN." >&2
-    echo "  manual recovery: (cd $WORKTREE && npm ci && env -u ANTHROPIC_BASE_URL PROXY_PORT=$PORT nohup node server/index.js >> $LOG 2>&1 &)" >&2
-    exit 2
-  }
 fi
 
 if swap_to "$ROLLBACK"; then
