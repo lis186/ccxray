@@ -477,7 +477,7 @@
   .tool-tag { background: var(--border); padding: 2px 8px; border-radius: 4px; font-size: 11px; color: var(--dim); }
   .content-block { margin-bottom: 6px; padding: 6px 8px; background: var(--bg); border-radius: 4px; }
   .content-block .type { font-size: 11px; color: var(--yellow); margin-bottom: 2px; }
-  .msg-list-row { display: flex; align-items: baseline; gap: 4px; font-size: 11px; line-height: 1.4; }
+  .msg-list-row { display: flex; align-items: baseline; gap: 4px; font-size: 11px; line-height: 1.4; overflow: hidden; }
   .msg-list-idx { flex-shrink: 0; color: var(--dim); }
   .msg-list-preview { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
   .msg-list-tok { flex-shrink: 0; font-size: 10px; color: var(--dim); margin-left: auto; }

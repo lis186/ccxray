@@ -450,8 +450,6 @@ function toggleTimelineStepStar(event, btn) {
 function renderStepListHtml(steps, activeStepKey, toolSources) {
   let html = '';
   let lastSource = null;
-  let rowNum = 0;
-
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si];
 
@@ -465,7 +463,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
       html += '<div class="step-separator" style="height:2px;background:var(--accent);margin:8px 0 2px"></div>';
       const sel = (activeStepKey === si + ':') ? ' active' : '';
       html += '<div class="tl-step-summary' + sel + '" data-step="' + si + '" onclick="selectStep(' + si + ')">';
-      html += renderTimelineStepNumHtml(++rowNum);
+      html += renderTimelineStepNumHtml(si + 1);
       html += '<div class="tl-step-main">';
       html += '<div style="color:var(--accent);padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;background:rgba(88,166,255,0.08);border-radius:4px;border-left:2px solid var(--accent);margin:4px 0">';
       html += '<span style="font-size:13px">👤</span> ' + escapeHtml((step.humanText || '').slice(0, 300));
@@ -481,7 +479,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
       if (step.thinking != null) {
         const tSel = (activeStepKey === si + ':thinking') ? ' active' : '';
         html += '<div class="tl-step-summary' + tSel + '" data-step="' + si + '" data-sub="thinking" onclick="selectStep(' + si + ',&quot;thinking&quot;)" style="color:var(--dim);padding-top:2px;padding-bottom:2px;font-size:11px">';
-        html += renderTimelineStepNumHtml(++rowNum);
+        html += renderTimelineStepNumHtml(si + 1);
         html += '<div class="tl-step-main">';
         if (step.source === 'history') {
           html += '🧠'; // indicator only — prior turn content not shown
@@ -506,7 +504,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
         const errAttr = c.isError ? ' data-has-error="1"' : '';
         const toolAttr = ' data-tool="' + escapeHtml(c.name) + '"';
         html += '<div class="tl-step-summary' + cSel + errCls + '" data-step="' + si + '" data-call="' + ci + '"' + errAttr + toolAttr + ' onclick="selectStep(' + si + ',' + ci + ')">';
-        html += renderTimelineStepNumHtml(++rowNum);
+        html += (ci === 0 && step.thinking == null) ? renderTimelineStepNumHtml(si + 1) : '<span class="tl-step-num"></span>';
         html += '<div class="tl-step-main">';
         html += '<div class="msg-list-row" style="gap:4px">';
         html += '<span style="color:var(--dim);width:8px;text-align:center;flex-shrink:0">' + bracket + '</span>';
@@ -535,7 +533,7 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
     } else if (step.type === 'assistant-text') {
       const aSel = (activeStepKey === si + ':') ? ' active' : '';
       html += '<div class="tl-step-summary' + aSel + '" data-step="' + si + '" onclick="selectStep(' + si + ')">';
-      html += renderTimelineStepNumHtml(++rowNum);
+      html += renderTimelineStepNumHtml(si + 1);
       html += '<div class="tl-step-main">';
       html += '<div style="color:var(--text);padding:6px 8px;font-size:12px;white-space:normal;line-height:1.5;background:rgba(63,185,80,0.08);border-radius:4px;border-left:2px solid var(--green);margin:4px 0">';
       html += '<span style="font-size:13px">🤖</span> ' + escapeHtml((step.text || '').slice(0, 200));
