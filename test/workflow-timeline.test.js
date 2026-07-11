@@ -1113,3 +1113,187 @@ describe('#221/#222 redo: overlap overrides authoritative agentKey (ADR 0008)', 
     assert.equal(lanes[0].turns.length, 6);
   });
 });
+
+// ── #230: sequential interleave — convId bracketing + msgCount dip (ADR 0009) ─
+// Overlap (ADR 0008) only catches PARALLEL agents. These fixtures mirror the
+// two real residue shapes it cannot see:
+//  - teammate: agentKey 'orchestrator' (inherits the standard CC prompt), own
+//    convId, interleaved A-B-A with zero time overlap (session 4b15c248)
+//  - sequential fork continuation: agentKey 'orchestrator', SAME convId as
+//    main, msgCount dip continuing an overlap-split frontier (session
+//    86949194's 55→51). Never agentKey:null — Batch 11's fake-fixture trap.
+describe('#230 sequential interleave (ADR 0009)', () => {
+  function mkSeq(id, at, elapsed, conv, msg, opts) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed, Object.assign(
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, msgCount: msg }, opts || {}));
+  }
+  function assertSerialLanes(lanes) {
+    for (var li = 0; li < lanes.length; li++) {
+      var spans = lanes[li].turns.map(function(t) {
+        var s = Number(t.receivedAt) || 0;
+        return [s, s + (parseFloat(t.elapsed) || 0) * 1000];
+      }).sort(function(a, b) { return a[0] - b[0]; });
+      for (var i = 1; i < spans.length; i++) {
+        assert.ok(spans[i][0] >= spans[i - 1][1] || spans[i][0] === spans[i - 1][0],
+          'lane ' + lanes[li].key + ': turn @' + spans[i][0] + ' overlaps previous ending @' + spans[i - 1][1]);
+      }
+    }
+  }
+  function ids(lane) { return lane.turns.map(function(t) { return t.id; }).join(','); }
+
+  it('AC1: A-B-A convId runs with zero overlap → B run splits to a sub-lane (fail-on-old)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('a1', 1000, 5, 'convA', 10),
+      mkSeq('a2', 7000, 5, 'convA', 12),
+      mkSeq('b1', 13000, 5, 'convB', 4, { model: 'claude-sonnet-5' }),
+      mkSeq('b2', 19000, 5, 'convB', 6, { model: 'claude-sonnet-5' }),
+      mkSeq('a3', 25000, 5, 'convA', 14),
+    ], []);
+    assert.equal(lanes.length, 2);
+    assert.equal(ids(lanes[0]), 'a1,a2,a3');
+    assert.equal(ids(lanes[1]), 'b1,b2');
+    assertSerialLanes(lanes);
+  });
+
+  it('R2: sequential fork dip stitches onto its overlap-split frontier lane (fail-on-old)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('m1', 1000, 5, 'convA', 53),
+      mkSeq('m2', 10000, 60, 'convA', 55),   // long main turn 10000..70000
+      mkSeq('f1', 20000, 5, 'convA', 51),    // starts inside m2 → overlap split
+      mkSeq('f2', 71000, 5, 'convA', 51),    // after m2 ends — overlap-blind
+      mkSeq('m3', 80000, 5, 'convA', 57),
+    ], []);
+    assert.equal(lanes.length, 2);
+    assert.equal(ids(lanes[0]), 'm1,m2,m3');
+    assert.equal(ids(lanes[1]), 'f1,f2', 'dip must land in the same fork lane as its frontier');
+    assertSerialLanes(lanes);
+  });
+
+  it('compaction: conv advance that never returns stays in main (isCompacted true)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('c1', 1000, 5, 'convA', 100),
+      mkSeq('c2', 7000, 5, 'convA', 102),
+      mkSeq('c3', 13000, 5, 'convB', 10, { isCompacted: true }),
+      mkSeq('c4', 19000, 5, 'convB', 12),
+    ], []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 4);
+  });
+
+  it('compaction variant: same shape without the isCompacted flag also stays in main', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('c1', 1000, 5, 'convA', 100),
+      mkSeq('c2', 7000, 5, 'convA', 102),
+      mkSeq('c3', 13000, 5, 'convB', 10),
+      mkSeq('c4', 19000, 5, 'convB', 12),
+    ], []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 4);
+  });
+
+  it('rewind: same-conv msgCount dip with no split-out frontier stays in main (7e1d9272 shape)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('r1', 1000, 5, 'convA', 540),
+      mkSeq('r2', 7000, 5, 'convA', 493),
+      mkSeq('r3', 13000, 5, 'convA', 495),
+      mkSeq('r4', 19000, 5, 'convA', 497),
+    ], []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 4);
+  });
+
+  it('fan-out: multi-conv interleave splits fully even when a first turn is mislabeled isCompacted (a7fef8a8 shape)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('m1', 1000, 5, 'convA', 294),
+      mkSeq('x1', 7000, 5, 'convX', 2, { model: 'claude-opus-4-8', isCompacted: true }),
+      mkSeq('m2', 13000, 5, 'convA', 296),
+      mkSeq('y1', 19000, 5, 'convY', 2, { model: 'claude-opus-4-8' }),
+      mkSeq('m3', 25000, 5, 'convA', 298),
+      mkSeq('x2', 31000, 5, 'convX', 5, { model: 'claude-opus-4-8' }),
+      mkSeq('m4', 37000, 5, 'convA', 300),
+    ], []);
+    assert.equal(ids(lanes[0]), 'm1,m2,m3,m4');
+    for (var i = 0; i < lanes[0].turns.length; i++)
+      assert.equal(lanes[0].turns[i].model, 'claude-opus-4-6', 'main must be model-pure after the split');
+    assert.equal(lanes.length, 3); // main + convX lane + convY lane
+    assertSerialLanes(lanes);
+  });
+
+  it('live path: R1 bracket retro-moves out of main when the trunk conv returns', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkSeq('a1', 1000, 5, 'convA', 10)];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfAddEntry(mkSeq('a2', 7000, 5, 'convA', 12));
+    ctx.wfAddEntry(mkSeq('b1', 13000, 5, 'convB', 4, { model: 'claude-sonnet-5' }));
+    ctx.wfAddEntry(mkSeq('b2', 19000, 5, 'convB', 6, { model: 'claude-sonnet-5' }));
+    // provisional: foreign-conv turns sit in main until the trunk returns
+    assert.equal(ctx.wfState.lanes[0].turns.length, 4);
+    var res = ctx.wfAddEntry(mkSeq('a3', 25000, 5, 'convA', 14));
+    assert.equal(res.lanesChanged, true);
+    assert.equal(ids(ctx.wfState.lanes[0]), 'a1,a2,a3');
+    var sub = ctx.wfState.lanes.find(function(l) { return l.key !== 'main' && l.turns.length; });
+    assert.equal(ids(sub), 'b1,b2');
+    // turnIndex must follow the retro-move (ADR 0003-style consistency)
+    assert.equal(ctx.wfState.turnIndex.get('b1').laneIdx, ctx.wfState.lanes.indexOf(sub));
+    assertSerialLanes(ctx.wfState.lanes);
+  });
+
+  it('live path: R2 dip routes to the frontier lane immediately (no retro needed)', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [
+      mkSeq('m1', 1000, 5, 'convA', 53),
+      mkSeq('m2', 10000, 60, 'convA', 55),
+      mkSeq('f1', 20000, 5, 'convA', 51),
+    ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.lanes.length, 2, 'overlap already split f1');
+    ctx.wfAddEntry(mkSeq('f2', 71000, 5, 'convA', 51));
+    assert.equal(ids(ctx.wfState.lanes[1]), 'f1,f2');
+    ctx.wfAddEntry(mkSeq('m3', 80000, 5, 'convA', 57));
+    assert.equal(ids(ctx.wfState.lanes[0]), 'm1,m2,m3');
+    assertSerialLanes(ctx.wfState.lanes);
+  });
+
+  it('batch/live equivalence: incremental feed (with retro) matches one-shot wfInferLanes', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkSeq('a1', 1000, 5, 'convA', 10),
+      mkSeq('a2', 7000, 5, 'convA', 12),
+      mkSeq('b1', 13000, 5, 'convB', 4, { model: 'claude-sonnet-5' }),
+      mkSeq('b2', 19000, 5, 'convB', 6, { model: 'claude-sonnet-5' }),
+      mkSeq('a3', 25000, 60, 'convA', 14),   // long turn 25000..85000
+      mkSeq('f1', 30000, 5, 'convA', 13),    // overlaps a3 → parallel
+      mkSeq('f2', 86000, 5, 'convA', 13),    // sequential fork continuation (dip)
+      mkSeq('a4', 90000, 5, 'convA', 16),
+    ];
+    function sig(lanes) {
+      return lanes.filter(function(l) { return l.turns.length; })
+        .map(function(l) { return l.turns.map(function(t) { return t.id; }).sort().join(','); })
+        .sort().join('|');
+    }
+    var batch = ctx.wfInferLanes(entries.slice(), []);
+    const ctx2 = loadWfModule();
+    ctx2.allEntries = entries.slice(0, 1);
+    ctx2.wfState = ctx2.wfBuildState('s1');
+    for (var i = 1; i < entries.length; i++) ctx2.wfAddEntry(entries[i]);
+    assert.equal(sig(ctx2.wfState.lanes), sig(batch));
+    assertSerialLanes(ctx2.wfState.lanes);
+  });
+
+  it('legacy data without convId is inert: no boundaries, nothing moved', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 40 }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 7000, 5, { msgCount: 10 }),
+      mkEntry('t3', 's1', 'claude-opus-4-6', 13000, 5, { msgCount: 42 }),
+    ], []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 3);
+  });
+});
