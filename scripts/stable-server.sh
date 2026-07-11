@@ -12,7 +12,7 @@
 #       --rollback-ref <sha> [--port 5577] [--idle-min 3] [--force]
 #
 # Exit: 0 = serving requested ref   1 = swap failed, ROLLED BACK OK
-#       2 = swap AND rollback failed (server down — see recovery line)
+#       2 = auto-recovery failed (worktree or server may need manual fix)
 #       3 = precondition/usage error (nothing touched)
 set -u
 
@@ -30,7 +30,6 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$WORKTREE" && -n "$REF" && -n "$ROLLBACK" ]] || { echo "need --worktree --ref --rollback-ref" >&2; exit 3; }
 [[ -d "$WORKTREE" ]] || { echo "worktree not found: $WORKTREE" >&2; exit 3; }
-# pwd -P resolves symlinks (/tmp → /private/tmp on macOS)
 WORKTREE_ABS="$(cd "$WORKTREE" && pwd -P)"
 
 LOG="${HOME}/.ccxray/stable-server.log"
@@ -38,7 +37,6 @@ LOCKDIR="${HOME}/.ccxray/stable-server.lock"
 say() { echo "[stable-server] $*"; }
 
 # ── canonicalization ──────────────────────────────────────────────────────
-# Portable realpath: resolve symlinks via cd+pwd -P.
 canon() { (cd "$(dirname "$1")" 2>/dev/null && echo "$(pwd -P)/$(basename "$1")") || echo "$1"; }
 
 # ── serialisation ─────────────────────────────────────────────────────────
@@ -46,26 +44,31 @@ mkdir "$LOCKDIR" 2>/dev/null || { echo "another stable-server is running (lock: 
 trap 'rmdir "$LOCKDIR" 2>/dev/null' EXIT
 
 # ── identity helpers ──────────────────────────────────────────────────────
-# is_ccxray_process PID — true when PID is a `node .../server/index.js`
-# whose cwd is exactly WORKTREE_ABS (not a prefix/sibling).
+# is_ccxray_process PID — true when PID is `node server/index.js` (argv[0]
+# ends with /node or is literally "node", argv[1] is exactly
+# "server/index.js") and its cwd is exactly WORKTREE_ABS.
 is_ccxray_process() {
   local pid="$1"
   local cmd
   cmd=$(ps -o command= -p "$pid" 2>/dev/null) || return 1
-  # argv must be: node ... server/index.js (reject arbitrary commands
-  # that happen to contain the substring)
-  [[ "$cmd" =~ ^node[[:space:]] ]] || return 1
-  [[ "$cmd" == *server/index.js* ]] || return 1
+  # Parse argv tokens: $1=executable, $2=script.  A flag before the script
+  # (e.g. node -e "..." server/index.js) makes $2="-e", not the script.
+  local exe script
+  exe=$(awk '{print $1}' <<< "$cmd")
+  script=$(awk '{print $2}' <<< "$cmd")
+  [[ "$(basename "$exe")" == "node" ]] || return 1
+  [[ "$script" == "server/index.js" ]] || return 1
+  # Verify the script file exists at the expected path
+  [[ -f "$WORKTREE_ABS/server/index.js" ]] || return 1
+  # Verify cwd is exactly the worktree (canonicalized)
   local cwd
   cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | grep '^n' | head -1 | cut -c2-)
   [[ -z "$cwd" ]] && return 1
-  # Canonicalize lsof path (macOS: /private/tmp vs /tmp)
   cwd="$(canon "$cwd")"
   [[ "$cwd" == "$WORKTREE_ABS" ]] || return 1
   return 0
 }
 
-# listener_pid — PID of the TCP LISTEN-er on PORT, or empty string.
 listener_pid() { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
 
 # ── preconditions ─────────────────────────────────────────────────────────
@@ -78,7 +81,7 @@ CUR=$(git -C "$WORKTREE" rev-parse HEAD)
 
 health() { [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://127.0.0.1:$PORT/" 2>/dev/null)" = "200" ]; }
 
-# Idempotence: already at target, serving, AND the listener is our ccxray → done.
+# Idempotence: already at target, serving, AND listener is our ccxray → done.
 if [[ "$CUR" == "$TARGET" ]] && health; then
   LP=$(listener_pid)
   if [[ -n "$LP" ]] && is_ccxray_process "$LP"; then
@@ -100,8 +103,6 @@ if [[ "$FORCE" -ne 1 ]] && health; then
 fi
 
 # ── checked pin + deps restore ────────────────────────────────────────────
-# restore_pin COMMIT FROM — checked checkout + conditional npm ci.
-# Used for: target pin, side-smoke failure restore, and rollback.
 restore_pin() {
   local to="$1" from="$2"
   if ! git -C "$WORKTREE" checkout --detach --quiet "$to"; then
@@ -119,14 +120,13 @@ restore_pin() {
 }
 
 # ── side-port verification (live server untouched) ────────────────────────
-side_verify() { # $1 = commit
+side_verify() {
   restore_pin "$1" "$CUR" || return 1
   local SIDE=$(( PORT + 71 ))
   if [[ -x "$WORKTREE/scripts/boot-smoke.sh" ]]; then
     "$WORKTREE/scripts/boot-smoke.sh" "$SIDE" || return 1
   else
-    # ref predates boot-smoke.sh — inline minimal check (mirrors contract)
-    local SMOKE_HOME SMOKE_LOG BP
+    local SMOKE_HOME SMOKE_LOG BP _smoke_trapped_sig=""
     SMOKE_HOME="$(mktemp -d)"
     SMOKE_LOG="$(mktemp)"
     local _smoke_cleanup_done=0
@@ -135,9 +135,18 @@ side_verify() { # $1 = commit
       kill "$BP" 2>/dev/null; wait "$BP" 2>/dev/null
       rm -rf "$SMOKE_HOME" "$SMOKE_LOG"
     }
-    trap '_smoke_cleanup' RETURN INT TERM
+    _smoke_signal_handler() {
+      _smoke_trapped_sig="$1"
+      _smoke_cleanup
+      trap - "$1"
+      kill -s "$1" $$
+    }
     env -u ANTHROPIC_BASE_URL CCXRAY_HOME="$SMOKE_HOME" PROXY_PORT="$SIDE" \
       node "$WORKTREE/server/index.js" >"$SMOKE_LOG" 2>&1 & BP=$!
+    # Trap installed AFTER BP is assigned (set -u safe)
+    trap '_smoke_cleanup' RETURN
+    trap '_smoke_signal_handler INT' INT
+    trap '_smoke_signal_handler TERM' TERM
     local ok=1
     for _ in $(seq 1 30); do
       if [ "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$SIDE/" 2>/dev/null)" = "200" ]; then
@@ -163,7 +172,7 @@ side_verify() { # $1 = commit
 }
 
 # ── swap with identity verification ───────────────────────────────────────
-swap_to() { # $1 = commit
+swap_to() {
   local commit="$1"
   local head_now
   head_now=$(git -C "$WORKTREE" rev-parse HEAD)
@@ -195,9 +204,6 @@ swap_to() { # $1 = commit
     fi
   fi
 
-  # Launch node directly: exec inside subshell replaces the subshell with
-  # the node process, so $! == the actual listener PID (no wrapper layer).
-  # trap '' HUP replaces nohup; </dev/null detaches stdin.
   (cd "$WORKTREE" && trap '' HUP && exec env -u ANTHROPIC_BASE_URL PROXY_PORT="$PORT" \
     node server/index.js >> "$LOG" 2>&1) </dev/null &
   local NEW_PID=$!
@@ -222,9 +228,11 @@ swap_to() { # $1 = commit
 say "verifying $(git -C "$WORKTREE" rev-parse --short "$TARGET") on side port before touching :$PORT"
 if ! side_verify "$TARGET"; then
   say "side-port verification FAILED — restoring pin+deps, live server untouched"
-  restore_pin "$CUR" "$TARGET" || {
-    say "WARNING: could not restore worktree to $CUR — manually: git -C $WORKTREE checkout --detach $CUR && (cd $WORKTREE && npm ci)"
-  }
+  if ! restore_pin "$CUR" "$TARGET"; then
+    echo "[stable-server] FATAL: side-verify failed AND pin restore failed — worktree at wrong ref." >&2
+    echo "  manual recovery: (cd $WORKTREE && git checkout --detach $CUR && npm ci --silent)" >&2
+    exit 2
+  fi
   exit 1
 fi
 
