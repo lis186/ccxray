@@ -231,8 +231,187 @@ function _wfSubLaneKey(base, entry) {
   return entry.convId ? base + ':' + entry.convId : base;
 }
 
-function wfInferLanes(entries, childEntries) {
+// ── Sequential-interleave tracker (#230) ──────────────────────────────────
+// Temporal overlap (ADR 0008) only catches PARALLEL agents. A sequential
+// teammate — dispatched while main idles, zero time overlap — leaves two
+// wire-level footprints instead:
+//   R1: main's convId (messages[0] hash) only moves forward. If runs of
+//       conv A resume AFTER foreign-conv runs, the runs in between are
+//       excursions (bracketing). A conv change that never returns is a
+//       compaction — legal, stays main (trunk-advance). isCompacted is
+//       deliberately NOT consulted: real fan-out first-turns get mislabeled
+//       isCompacted (big msg+token drop), so gating on it would exempt
+//       exactly the target case (session a7fef8a8 evidence).
+//   R2: a fork shares main's convId, so R1 is blind to it — but its turns
+//       continue a frontier already split out of main (by overlap or R1):
+//       same conv, msgCount within [tail, tail+2], starting at/after the
+//       tail ends. A dip with NO such frontier is a rewind/edit and stays
+//       in main (session 7e1d9272's 540→493 must not split).
+// One tracker implementation serves BOTH entry-rendering.js and this file
+// (each holds an instance, fed the same per-turn signals), so the two
+// files cannot disagree — the ADR 0005 shape, like AGENT_KEY_UNRELIABLE.
+// INVARIANT: sequential-interleave classification must go through this
+// tracker in both files, and it never consults isCompacted — see
+// docs/decisions/0009-sequential-interleave-conv-bracketing.md
+function wfCreateSeqTracker() {
+  // list: main-candidate turns kept sorted by (receivedAt, id) — entries
+  // arrive in COMPLETION order (a nested turn can finish before the longer
+  // turn that started first), so run structure must derive from start
+  // order, never arrival order: a foreign-conv turn arriving first would
+  // otherwise become the trunk and no bracket would ever close (codex P2,
+  // round 1).
+  // tails: Map(convId → [ { msg, end }, ... ]) — APPEND-ONLY tail points,
+  // one per split turn of that conv. Per-conv so no shared FIFO can evict
+  // a still-active conv's evidence (codex P2, round 3); append-only so a
+  // historical branch point survives later splits that "continue" it —
+  // merging erased the fork point another concurrent track's sequential
+  // continuation still needed (439-session re-audit regression,
+  // 2026-07-11: jumpreturn residue 3→8). No cap: memory is O(split turns)
+  // per session — trivial.
+  return { list: [], tails: new Map() };
+}
+
+// R2 frontier time-to-live: a dip only stitches onto a frontier whose
+// track ended within this window. Measurement basis (439-session audit,
+// 2026-07-11, owner-approved): real stitch gaps p50=22s, p90=3min, every
+// verified-good stitch ≤2min; all 6 sampled >10min fits were edit/rewind
+// shapes, not fork continuations. 15min keeps ~30× headroom over the real
+// distribution while structurally closing hour-scale rewind collisions
+// with stale branch points (codex P2, round 4).
+var WF_SEQ_FRONTIER_TTL_MS = 15 * 60 * 1000;
+
+// Best-fit continuation frontier: msg within [f.msg, f.msg+2], the
+// frontier ends at/before this turn starts AND within the TTL window;
+// among fits, the latest-ending one (mirrors the parallel-lane best-fit).
+// Retired points stay in the Map — eligibility is decided at lookup.
+function _wfSeqBestFrontier(frontiers, msg, ts) {
+  var best = null;
+  for (var i = 0; i < frontiers.length; i++) {
+    var f = frontiers[i];
+    if (f.msg > 0 && f.msg <= msg && msg <= f.msg + 2 && f.end <= ts &&
+        ts - f.end <= WF_SEQ_FRONTIER_TTL_MS &&
+        (!best || f.end > best.end)) best = f;
+  }
+  return best;
+}
+
+// Evidence feed: a turn already split out of main (agent-keyed lane,
+// overlap overflow, or a closed R1 bracket). Its (msg, end) becomes an
+// append-only tail point for its conv — R2 stitches later same-conv dips
+// onto the best-fitting point. NEVER merged: a fork can branch several
+// concurrent tracks from the same historical msgCount, and folding a
+// "continuation" split into an earlier point erases the branch point that
+// another track's sequential continuation still needs. Only an R2 stitch
+// advances a point — the dip consumed it, so its old value has no further
+// consumer.
+function wfSeqFeedSplit(tracker, turn) {
+  if (!tracker || !turn.convId || !(turn.msgCount > 0)) return;
+  var ts = Number(turn.receivedAt) || 0;
+  var frontiers = tracker.tails.get(turn.convId);
+  if (!frontiers) tracker.tails.set(turn.convId, frontiers = []);
+  frontiers.push({ msg: turn.msgCount, end: ts + (parseFloat(turn.elapsed) || 0) * 1000 });
+}
+
+// Main-candidate feed. Returns { place: 'main'|'excursion', closed }.
+// 'excursion' = R2 stitch — route to a parallel lane now. closed = an R1
+// bracket just closed: those turns were provisionally main and the caller
+// must retro-move them out.
+function wfSeqFeedMain(tracker, turn) {
+  var res = { place: 'main', closed: null };
+  if (!tracker) return res;
+  var conv = turn.convId, msg = turn.msgCount || 0;
+  var ts = Number(turn.receivedAt) || 0;
+  if (!conv || !ts) return res; // inert: never a boundary, never moved
+  // Sorted insertion point by (receivedAt, id): deterministic under the
+  // arrival-order ≠ start-order inversions of nested turns (codex P2).
+  var list = tracker.list;
+  var lo = 0, hi = list.length;
+  while (lo < hi) {
+    var mid = (lo + hi) >> 1;
+    var mts = Number(list[mid].receivedAt) || 0;
+    if (mts < ts || (mts === ts && String(list[mid].id) <= String(turn.id))) lo = mid + 1;
+    else hi = mid;
+  }
+  // R2 first: a dip that stitches onto a split-out frontier is NOT a trunk
+  // return — it must not join the list or close a bracket. prevSame is the
+  // chronologically previous same-conv turn (scan back from the insertion
+  // point), never the last-ARRIVED one.
+  var prevSame = null;
+  for (var i = lo - 1; i >= 0 && !prevSame; i--) {
+    if (list[i].convId === conv) prevSame = list[i];
+  }
+  if (prevSame && msg > 0 && msg < (prevSame.msgCount || 0)) {
+    var frontiers = tracker.tails.get(conv);
+    var fit = frontiers ? _wfSeqBestFrontier(frontiers, msg, ts) : null;
+    if (fit) {
+      fit.msg = msg; // frontier advances with the stitched turn
+      fit.end = ts + (parseFloat(turn.elapsed) || 0) * 1000;
+      res.place = 'excursion';
+      return res;
+    }
+  }
+  // Inserted before existing turns ⇒ chronological truth was reordered:
+  // already-closed excursions may need overturning (the trunk itself can
+  // change), but closed turns have left this list — no incremental step
+  // can reopen them. The live caller uses this flag to fall back to a
+  // full batch rebuild (codex P2, round 5).
+  res.reordered = lo < list.length;
+  list.splice(lo, 0, turn);
+  res.closed = _wfSeqCloseBrackets(tracker);
+  return res;
+}
+
+// Rebuild convId runs from the (receivedAt, id)-sorted candidate list and
+// re-run the trunk walk. Any run bracketed by a reappearance of an earlier
+// conv is an excursion; leftover pending runs mean that trunk conv never
+// returned — trunk advances (compaction) and they stay main. Because runs
+// derive from the sorted list (never arrival order) and the walk reruns on
+// every feed, the live path converges to the batch pass regardless of the
+// order entries complete in.
+function _wfSeqCloseBrackets(tracker) {
+  var list = tracker.list;
+  if (list.length < 3) return null;
+  var runs = [];
+  for (var li = 0; li < list.length; li++) {
+    var last = runs[runs.length - 1];
+    if (last && last.conv === list[li].convId) last.turns.push(list[li]);
+    else runs.push({ conv: list[li].convId, turns: [list[li]] });
+  }
+  if (runs.length < 3) return null;
+  var excursed = new Set();
+  var work = runs;
+  while (work.length) {
+    var trunk = work[0].conv;
+    var pending = [];
+    for (var i = 1; i < work.length; i++) {
+      if (work[i].conv === trunk) {
+        for (var p = 0; p < pending.length; p++) excursed.add(pending[p]);
+        pending = [];
+      } else pending.push(work[i]);
+    }
+    work = pending;
+  }
+  if (!excursed.size) return null;
+  var turns = [];
+  excursed.forEach(function(r) {
+    for (var e = 0; e < r.turns.length; e++) {
+      turns.push(r.turns[e]);
+      // INVARIANT: a closed-bracket excursion must immediately become an
+      // R2 frontier — dropping this feed makes later same-conv sequential
+      // continuations silently fall back into main — see
+      // docs/decisions/0009-sequential-interleave-conv-bracketing.md
+      wfSeqFeedSplit(tracker, r.turns[e]);
+    }
+  });
+  var turnSet = new Set(turns);
+  tracker.list = list.filter(function(t) { return !turnSet.has(t); });
+  turns.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
+  return turns;
+}
+
+function wfInferLanes(entries, childEntries, seqTracker) {
   if (!entries.length && !childEntries.length) return [];
+  if (!seqTracker) seqTracker = wfCreateSeqTracker();
 
   var laneMap = new Map();
   var mainLane = { name: 'main', key: 'main', turns: [], model: null, ctxWindow: 0, spawnParent: null };
@@ -288,42 +467,106 @@ function wfInferLanes(entries, childEntries) {
   // turn is parallel iff its start falls strictly inside the previous main
   // turn's (start, end) — equal starts count as sequential.
   mainLane.turns.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
-  var serialTurns = [], overflowTurns = [];
-  for (var oi = 0; oi < mainLane.turns.length; oi++) {
-    var cur = mainLane.turns[oi];
-    var curStart = Number(cur.receivedAt) || 0;
-    var last = serialTurns[serialTurns.length - 1];
-    var lastStart = last ? (Number(last.receivedAt) || 0) : 0;
-    var lastEnd = last ? lastStart + (parseFloat(last.elapsed) || 0) * 1000 : 0;
-    if (curStart > lastStart && curStart < lastEnd) overflowTurns.push(cur);
-    else serialTurns.push(cur);
-  }
-  if (overflowTurns.length) {
-    mainLane.turns = serialTurns;
-    // Overflow turns go to numbered parallel lanes, best-fit: among lanes
-    // of the same base key (model+convId — forks share both), pick the one
-    // whose chain ends latest but still before this turn's start. Serial
-    // turns of the same fork tend to reconstruct as one lane; the numbered
-    // lanes bound out at the session's true max concurrency.
-    var pFamilies = new Map(); // baseKey → [{ key, lastEnd }]
-    for (var ov = 0; ov < overflowTurns.length; ov++) {
-      var oTurn = overflowTurns[ov];
-      var oStart = Number(oTurn.receivedAt) || 0;
-      var oEnd = oStart + (parseFloat(oTurn.elapsed) || 0) * 1000;
-      var baseKey = _wfSubLaneKey('parallel-' + wfShortModel(oTurn.model), oTurn);
-      var fam = pFamilies.get(baseKey);
-      if (!fam) { fam = []; pFamilies.set(baseKey, fam); }
-      var best = null;
-      for (var pi = 0; pi < fam.length; pi++) {
-        if (fam[pi].lastEnd <= oStart && (!best || fam[pi].lastEnd > best.lastEnd)) best = fam[pi];
-      }
-      if (!best) {
-        best = { key: fam.length ? baseKey + '#' + (fam.length + 1) : baseKey, lastEnd: 0 };
-        fam.push(best);
-      }
-      best.lastEnd = Math.max(best.lastEnd, oEnd);
-      _wfPushToSubLane(laneMap, best.key, oTurn);
+
+  // Post-pass 2 (#230): sequential interleave, interleaved with the overlap
+  // sweep to a fixpoint. Overlap only proves PARALLEL agents; a sequential
+  // teammate/fork leaves only main's convId run structure (R1) or a
+  // split-out frontier's msgCount continuation (R2) as its footprint. Each
+  // round: sweep the candidates into a serial chain (ADR 0008), then feed
+  // the tracker the same chronological stream the live path sees — split
+  // turns as frontier evidence, serial turns as main candidates. When the
+  // seq pass excurses a turn, the sweep re-runs WITHOUT it, so a main turn
+  // that only overlapped an excursion is re-admitted — keeping the batch
+  // rebuild equal to the live path (which never saw the excursion in main).
+  // Terminates: each extra round removes ≥1 excursed turn from candidates.
+  // INVARIANT: the sweep runs before the seq pass in every round, and the
+  // seq pass never consults isCompacted — see
+  // docs/decisions/0009-sequential-interleave-conv-bracketing.md
+  var fixedEvidence = [];
+  laneMap.forEach(function(lane, lk) {
+    if (lk === 'main') return;
+    for (var si = 0; si < lane.turns.length; si++) fixedEvidence.push(lane.turns[si]);
+  });
+  var candidates = mainLane.turns;
+  var exiled = [];
+  for (;;) {
+    var serialTurns = [], overflowTurns = [];
+    for (var oi = 0; oi < candidates.length; oi++) {
+      var cur = candidates[oi];
+      var curStart = Number(cur.receivedAt) || 0;
+      var last = serialTurns[serialTurns.length - 1];
+      var lastStart = last ? (Number(last.receivedAt) || 0) : 0;
+      var lastEnd = last ? lastStart + (parseFloat(last.elapsed) || 0) * 1000 : 0;
+      if (curStart > lastStart && curStart < lastEnd) overflowTurns.push(cur);
+      else serialTurns.push(cur);
     }
+    var roundTracker = wfCreateSeqTracker();
+    var seqStream = [];
+    for (var fe = 0; fe < fixedEvidence.length; fe++) seqStream.push({ t: fixedEvidence[fe], split: true });
+    for (var xe = 0; xe < exiled.length; xe++) seqStream.push({ t: exiled[xe], split: true });
+    for (var oe = 0; oe < overflowTurns.length; oe++) seqStream.push({ t: overflowTurns[oe], split: true });
+    for (var se = 0; se < serialTurns.length; se++) seqStream.push({ t: serialTurns[se], split: false });
+    seqStream.sort(function(a, b) { return (Number(a.t.receivedAt) || 0) - (Number(b.t.receivedAt) || 0); });
+    var excursed = [];
+    for (var qi = 0; qi < seqStream.length; qi++) {
+      if (seqStream[qi].split) { wfSeqFeedSplit(roundTracker, seqStream[qi].t); continue; }
+      var verdict = wfSeqFeedMain(roundTracker, seqStream[qi].t);
+      if (verdict.place === 'excursion') excursed.push(seqStream[qi].t);
+      if (verdict.closed) for (var vc = 0; vc < verdict.closed.length; vc++) excursed.push(verdict.closed[vc]);
+    }
+    if (!excursed.length) {
+      mainLane.turns = serialTurns;
+      exiled = exiled.concat(overflowTurns);
+      break;
+    }
+    exiled = exiled.concat(excursed);
+    var exSet = new Set(excursed);
+    candidates = serialTurns.filter(function(t) { return !exSet.has(t); }).concat(overflowTurns);
+    candidates.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
+  }
+
+  // Excursion/parallel turns go to numbered parallel lanes, best-fit: among
+  // lanes of the same base key (model+convId — forks share both), pick the
+  // one whose chain ends latest but still before this turn's start. Serial
+  // turns of the same fork tend to reconstruct as one lane; the numbered
+  // lanes bound out at the session's true max concurrency. One family map
+  // for overlap overflow AND seq excursions, so a stitched dip lands in the
+  // same lane as its overlap-split siblings.
+  var pFamilies = new Map(); // baseKey → [{ key, lastEnd }]
+  exiled.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
+  for (var ex = 0; ex < exiled.length; ex++) {
+    var oTurn = exiled[ex];
+    var oStart = Number(oTurn.receivedAt) || 0;
+    var oEnd = oStart + (parseFloat(oTurn.elapsed) || 0) * 1000;
+    var baseKey = _wfSubLaneKey('parallel-' + wfShortModel(oTurn.model), oTurn);
+    var fam = pFamilies.get(baseKey);
+    if (!fam) { fam = []; pFamilies.set(baseKey, fam); }
+    var best = null;
+    for (var pi = 0; pi < fam.length; pi++) {
+      if (fam[pi].lastEnd <= oStart && (!best || fam[pi].lastEnd > best.lastEnd)) best = fam[pi];
+    }
+    if (!best) {
+      best = { key: fam.length ? baseKey + '#' + (fam.length + 1) : baseKey, lastEnd: 0 };
+      fam.push(best);
+    }
+    best.lastEnd = Math.max(best.lastEnd, oEnd);
+    _wfPushToSubLane(laneMap, best.key, oTurn);
+  }
+
+  // Hand the converged classification to the live path: replay the final
+  // stream into the caller's tracker so wfAddEntry continues from exactly
+  // the batch state (R1 brackets spanning the build boundary still close).
+  // INVARIANT: this replay must survive any refactor — removing it paints
+  // the first frame correctly and corrupts every live update after it — see
+  // docs/decisions/0009-sequential-interleave-conv-bracketing.md
+  var finalStream = [];
+  for (var fv = 0; fv < fixedEvidence.length; fv++) finalStream.push({ t: fixedEvidence[fv], split: true });
+  for (var fx = 0; fx < exiled.length; fx++) finalStream.push({ t: exiled[fx], split: true });
+  for (var fm = 0; fm < mainLane.turns.length; fm++) finalStream.push({ t: mainLane.turns[fm], split: false });
+  finalStream.sort(function(a, b) { return (Number(a.t.receivedAt) || 0) - (Number(b.t.receivedAt) || 0); });
+  for (var ff = 0; ff < finalStream.length; ff++) {
+    if (finalStream[ff].split) wfSeqFeedSplit(seqTracker, finalStream[ff].t);
+    else wfSeqFeedMain(seqTracker, finalStream[ff].t);
   }
 
   // Child session entries → their own lanes
@@ -410,7 +653,10 @@ function wfBuildState(sessionId) {
   }
   if (tMin === Infinity) { tMin = 0; if (tMax === -Infinity) tMax = 1; }
 
-  var lanes = wfInferLanes(entries, childEntries);
+  // #230: the tracker built during the batch pass carries over to the live
+  // path (wfAddEntry) so R1 brackets spanning the build boundary still close.
+  var seqTracker = wfCreateSeqTracker();
+  var lanes = wfInferLanes(entries, childEntries, seqTracker);
 
   // E1: O(1) turn lookup — avoids repeated O(lanes×turns) scans in hot paths
   var turnIndex = new Map();
@@ -423,6 +669,7 @@ function wfBuildState(sessionId) {
     sessionId: sessionId,
     childSids: childSids,
     turnIndex: turnIndex,
+    _seqTracker: seqTracker,
     tMin: tMin, tMax: tMax,
     viewT0: tMin, viewT1: tMax,
     selectedLane: lanes[0] || null,
@@ -453,6 +700,10 @@ function _wfFollowTail(oldTMax) {
 }
 
 // ── Incremental Update ────────────────────────────────────────────────────
+// Caller contract: `entry` must already be pushed into allEntries before
+// this call — the reordered-arrival path (_wfSeqRebuild) recomputes the
+// whole state from allEntries and would otherwise drop the entry
+// (entry-rendering.js pushes at its allEntries.push site, then calls here).
 function wfAddEntry(entry) {
   if (!wfState) return { lanesChanged: false };
   var prevCount = wfState.lanes.length;
@@ -526,6 +777,37 @@ function wfAddEntry(entry) {
       }
     }
   }
+  // #230 sequential interleave: after agentKey and overlap both said "main",
+  // ask the tracker. R2 dips route to a parallel lane immediately; R1
+  // foreign-conv turns stay provisionally in main until the trunk conv
+  // returns, at which point _wfSeqRetroMove relocates the closed bracket.
+  // INVARIANT: same tracker semantics as wfInferLanes' post-pass and
+  // entry-rendering.js — see docs/decisions/0009-sequential-interleave-conv-bracketing.md
+  var seqVerdict = null;
+  if (wfState._seqTracker) {
+    if (needsSub) {
+      wfSeqFeedSplit(wfState._seqTracker, entry);
+    } else {
+      seqVerdict = wfSeqFeedMain(wfState._seqTracker, entry);
+      // codex P2 round 5: an earlier-starting turn arriving late can
+      // invalidate ALREADY-CLOSED excursions — the chronological truth can
+      // reorder the trunk itself (B0-A-B-A where B was already retro-moved
+      // on the A-B-A prefix). Closed turns left the tracker list, so no
+      // incremental step can reopen them: rebuild the whole state from
+      // allEntries (the batch pass is the authority). Bounded: fires only
+      // on inserted-before-tail arrivals (overlap inversion) — occasional
+      // even in fork-heavy sessions.
+      // INVARIANT: reordered convergence is two-sided — entry-rendering.js
+      // must run _seqRecomputeSession (flips AND unflips) on the same flag,
+      // or the two files diverge (the ADR 0005 round-4 shape) — see
+      // docs/decisions/0009-sequential-interleave-conv-bracketing.md
+      if (seqVerdict.reordered) return _wfSeqRebuild(oldTMax);
+      if (seqVerdict.place === 'excursion') {
+        needsSub = true;
+        key = _wfSubLaneKey('parallel-' + wfShortModel(entry.model), entry);
+      }
+    }
+  }
   if (needsSub) {
     var lane;
     if (key.indexOf('parallel-') === 0) {
@@ -559,8 +841,74 @@ function wfAddEntry(entry) {
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
   }
 
+  // #230 R1: the trunk conv just returned — turns of the closed bracket were
+  // provisionally drawn in main and must relocate to parallel lanes.
+  if (seqVerdict && seqVerdict.closed) _wfSeqRetroMove(seqVerdict.closed);
+
   _wfFollowTail(oldTMax);
   return { lanesChanged: wfState.lanes.length !== prevCount };
+}
+
+// Full-state rebuild for the live path (#230 codex P2 round 5): a
+// late-arriving turn that starts earlier than already-processed turns can
+// overturn closed excursions, so recompute everything from allEntries via
+// wfBuildState (the entry is already in allEntries — entry-rendering pushes
+// before calling wfAddEntry) and migrate the user's view state onto the
+// fresh wfState. entry-rendering converges on the same signal via
+// _seqRecomputeSession (round 6).
+// GUARD: the migration list below (view window, selection, focus, manual
+// lane height) must evolve together with wfBuildState's returned fields —
+// a new user-facing wfState field that isn't migrated here silently resets
+// on every reordered arrival.
+function _wfSeqRebuild(oldTMax) {
+  var old = wfState;
+  var fresh = wfBuildState(old.sessionId);
+  if (!fresh) return { lanesChanged: false };
+  fresh.viewT0 = old.viewT0;
+  fresh.viewT1 = old.viewT1;
+  fresh.selectedTurnId = old.selectedTurnId;
+  fresh.selectedSection = old.selectedSection;
+  fresh.laneFocusMode = old.laneFocusMode;
+  fresh.laneHeightManual = old.laneHeightManual;
+  if (old.selectedLane) {
+    fresh.selectedLane = fresh.lanes.find(function(l) { return l.key === old.selectedLane.key; }) || fresh.lanes[0];
+  }
+  wfState = fresh;
+  _wfFollowTail(oldTMax);
+  return { lanesChanged: true };
+}
+
+// Retro-move a closed R1 bracket (#230) out of the live main lane, using the
+// same best-fit-by-family placement as the batch pass (latest-ending lane of
+// key/key#N that still ends at/before the turn's start — keeps every lane
+// serial, preserving the ADR 0008 no-intra-lane-overlap invariant).
+function _wfSeqRetroMove(closedTurns) {
+  if (!wfState.lanes[0] || !closedTurns.length) return;
+  var closedSet = new Set(closedTurns);
+  wfState.lanes[0].turns = wfState.lanes[0].turns.filter(function(t) { return !closedSet.has(t); });
+  wfState.lanes[0]._costMedian = null;
+  for (var i = 0; i < closedTurns.length; i++) {
+    var t = closedTurns[i];
+    var ts = Number(t.receivedAt) || 0;
+    var key = _wfSubLaneKey('parallel-' + wfShortModel(t.model), t);
+    var famLanes = wfState.lanes.filter(function(l) {
+      return l.key === key || l.key.indexOf(key + '#') === 0;
+    });
+    var lane = null, bestEnd = -1;
+    for (var fi = 0; fi < famLanes.length; fi++) {
+      var lt = famLanes[fi].turns[famLanes[fi].turns.length - 1];
+      var ltEnd = lt ? (Number(lt.receivedAt) || 0) + (parseFloat(lt.elapsed) || 0) * 1000 : 0;
+      if (ltEnd <= ts && ltEnd > bestEnd) { lane = famLanes[fi]; bestEnd = ltEnd; }
+    }
+    if (!lane) {
+      if (famLanes.length) key = key + '#' + (famLanes.length + 1);
+      lane = { name: key, key: key, turns: [], model: t.model, ctxWindow: t.maxContext || 0, spawnParent: null, agentKey: t.agentKey || null, agentLabel: t.agentLabel || null, convId: t.convId || null };
+      wfState.lanes.push(lane);
+    }
+    lane.turns.push(t);
+    lane._costMedian = null;
+    if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
+  }
 }
 
 // ── Lane Summary ──────────────────────────────────────────────────────────
@@ -615,7 +963,40 @@ function wfDotSvg(shape, color, x, y, tidx) {
   return '<circle' + a + ' cx="' + (x + 2).toFixed(1) + '" cy="' + (y + 4) + '" r="2" fill="' + color + '"/>';
 }
 
-function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
+// convIds present in the main lane — computed once per render pass and
+// passed down (rendering budget: never rescan lanes[0].turns per lane).
+function _wfMainConvSet(lanes) {
+  var s = new Set();
+  var main = lanes && lanes[0];
+  if (main && main.turns) {
+    for (var i = 0; i < main.turns.length; i++) {
+      if (main.turns[i].convId) s.add(main.turns[i].convId);
+    }
+  }
+  return s;
+}
+
+// Display name for a lane. Parallel-lane instances (ADR 0008/0009) share
+// agentLabel AND often convId, so they'd all read as the same
+// "Orchestrator 5212" — semantically wrong too: one session has one
+// orchestrator. Split by conversation identity (owner decision, PR #232
+// acceptance; refined 2026-07-11 #230 visual review):
+//   convId ∈ main's conv set  → "Fork <conv> #k"     (same-conversation
+//     twin: overlap-split fork, R2-stitched continuation)
+//   convId ∉ main's conv set  → "Teammate <conv> #k" (independent
+//     conversation: agent-team teammate, workflow fan-out — R1 excursion)
+function _wfLaneDispName(lane, laneIdx, mainConvs) {
+  if (lane.childSessionId) return (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8);
+  if (laneIdx === 0) return lane.name;
+  var laneOrd = /#(\d+)$/.exec(lane.key || '');
+  if ((lane.key || '').indexOf('parallel-') === 0) {
+    var kin = lane.convId && mainConvs && mainConvs.has(lane.convId) ? 'Fork' : 'Teammate';
+    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1');
+  }
+  return (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '');
+}
+
+function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   var isSel = wfState.selectedLane?.key === lane.key;
   var laneH = isSel ? WF_LANE_H_SEL : WF_LANE_H;
   var boxH = laneH - WF_LANE_GAP;
@@ -634,18 +1015,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
-  // Parallel-lane instances (ADR 0008) share agentLabel AND convId (forks
-  // inherit both), so they'd all read as the same "Orchestrator 5212" —
-  // semantically wrong too: one session has one orchestrator. Label them
-  // "Fork <conv> #k" instead (owner decision, PR #232 acceptance).
-  var laneOrd = /#(\d+)$/.exec(lane.key || '');
-  var isParallelLane = (lane.key || '').indexOf('parallel-') === 0;
-  var dispName = lane.childSessionId
-    ? (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8)
-    : (laneIdx === 0 ? lane.name
-      : isParallelLane
-        ? 'Fork' + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1')
-        : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
+  var dispName = _wfLaneDispName(lane, laneIdx, mainConvs);
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
@@ -899,8 +1269,13 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   var focusLi = _wfFocusLaneIdx();
   var laneCls = function(li) { return 'wf-lane' + (focusLi >= 0 && focusLi !== li ? ' dim' : ''); };
 
+  // Main conv set for lane naming — once per render pass, so it can't go
+  // stale when new turns arrive (every render recomputes) and never rescans
+  // main's turns inside the per-lane loop (rendering budget).
+  var mainConvs = _wfMainConvSet(lanes);
+
   var mainLaneY = WF_PAD + WF_AXIS_H;
-  ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn) + '</g>';
+  ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, mainConvs) + '</g>';
   mainSvg.innerHTML = ms;
 
   // Sub SVG: remaining lanes (dynamic height per lane). Lane-focus mode
@@ -927,7 +1302,7 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     var subY = WF_PAD;
     for (var si = 0; si < subIndices.length; si++) {
       var li = subIndices[si];
-      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn) + '</g>';
+      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn, mainConvs) + '</g>';
       subY += _wfLaneHeight(li);
     }
     subSvg.innerHTML = ss;
