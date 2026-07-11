@@ -80,6 +80,22 @@ per-turn signals — the ADR 0005 shape, like `AGENT_KEY_UNRELIABLE`:
 - Turns without `convId` or `receivedAt` are inert: never boundaries,
   never moved (legacy data, codex sessions).
 
+## Invariants (mutation-site guards)
+
+- **Reordered convergence is two-sided**: when the swimlane falls back to
+  `_wfSeqRebuild` on an inserted-before-tail arrival, the turn list must
+  run `_seqRecomputeSession` (flips AND unflips) on the same signal —
+  fixing only one side recreates the ADR 0005 round-4 divergence shape.
+- **Batch hands its final classification to the live tracker**: the
+  finalStream replay at the end of `wfInferLanes` seeds the caller's
+  tracker with the converged state; removing it paints the first frame
+  correctly and corrupts every live update after it.
+- **Closed-bracket excursions immediately become R2 frontiers**
+  (`wfSeqFeedSplit` inside `_wfSeqCloseBrackets`): dropping that feed makes
+  later same-conv sequential continuations silently fall back into main.
+- **Rebuilds treat `allEntries` as the authoritative snapshot** — callers
+  must push the entry into `allEntries` before invoking `wfAddEntry`.
+
 ## Consequences
 
 **Good**: real-data replay (439 sessions): 1,018 turns leave main lanes

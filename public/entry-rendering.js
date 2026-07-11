@@ -272,6 +272,11 @@ function _seqApplyFlips(sid, sess, flipIds, unflipIds) {
   for (let i = 0; i < allEntries.length; i++) {
     const en = allEntries[i];
     if (en.sessionId !== sid) continue;
+    // GUARD (_seqFlipped ownership): every seq-layer isSubagent flip is
+    // written HERE (or at the allEntries push for the arriving entry) and
+    // must set _seqFlipped alongside it; non-seq flips (agentKey/overlap/
+    // raw) must never set it — _seqRecomputeSession derives base
+    // classification from `isSubagent && !_seqFlipped`.
     if (flipIds && flipIds.has(en.id)) { en.isSubagent = true; en._seqFlipped = true; }
     else if (unflipIds && unflipIds.has(en.id)) { en.isSubagent = false; en._seqFlipped = false; }
     const num = en.isRetry ? 'r' + (++retryN) : en.isSubagent ? 's' + (++subN) : String(++mainN);
@@ -313,6 +318,9 @@ function _seqRecomputeSession(sid, sess, currentSeqTurn) {
   for (let i = 0; i < allEntries.length; i++) {
     const en = allEntries[i];
     if (en.sessionId !== sid || en.isRetry) continue; // retries: neither evidence nor candidates
+    // GUARD (_seqFlipped ownership): baseSub strips ONLY seq-layer flips —
+    // it must stay `isSubagent && !_seqFlipped`; using raw isSubagent here
+    // would feed seq excursions as split evidence and lock them in.
     replay.push({ id: en.id, convId: en.convId || null, msgCount: en.msgCount, receivedAt: en.receivedAt,
                   elapsed: en.elapsed, baseSub: !!(en.isSubagent && !en._seqFlipped), en });
   }
@@ -460,7 +468,11 @@ function addEntry(e) {
       // earlier-starting turn arriving late can overturn seq flips this
       // file already applied — including flipping a closed excursion BACK
       // to main. Recompute the session's seq layer from scratch so the
-      // turn list converges with the rebuilt swimlane (ADR 0005).
+      // turn list converges with the rebuilt swimlane.
+      // INVARIANT: reordered convergence is two-sided — this recompute and
+      // wfAddEntry's _wfSeqRebuild fire on the same flag; removing either
+      // side recreates the ADR 0005 round-4 divergence shape — see
+      // docs/decisions/0009-sequential-interleave-conv-bracketing.md
       if (seqVerdict.reordered) {
         if (_seqRecomputeSession(sid, sess, seqTurn) === 'excursion') { isSubagent = true; seqFlipped = true; }
         seqVerdict = null; // closed brackets were handled inside the recompute
@@ -588,6 +600,8 @@ function addEntry(e) {
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
     msgCount, toolCount, toolCalls: e.toolCalls || {}, stopReason,
     status: e.status, elapsed: e.elapsed, method: e.method, id: e.id,
+    // GUARD (_seqFlipped ownership): true iff the seq layer flipped THIS
+    // arrival (R2 stitch / reordered recompute) — see _seqApplyFlips guard
     isSubagent, isRetry, _seqFlipped: seqFlipped, sessionInferred: e.sessionInferred || false, displayNum, ctxUsed, isCompacted, receivedAt: e.receivedAt || null,
     thinkingDuration: e.thinkingDuration || null,
     duplicateToolCalls: e.duplicateToolCalls || null,
@@ -611,6 +625,8 @@ function addEntry(e) {
     var isDirectSession = sid === selectedSessionId;
     var isChildSession = !isDirectSession && sessionsMap.get(sid)?.parentSessionId === selectedSessionId;
     if (isDirectSession || isChildSession) {
+      // wfAddEntry caller contract: the entry is already in allEntries
+      // (pushed above) — its reordered-rebuild path recomputes from there.
       var lastEntry = allEntries[allEntries.length - 1];
       var wfResult = wfAddEntry(lastEntry);
       if (wfResult.lanesChanged) wfRenderTimeline();

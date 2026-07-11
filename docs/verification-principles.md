@@ -97,6 +97,23 @@ git worktree remove --force /tmp/before
 
 ---
 
+## 分類/歸因類改動:unit fixture 綠不足以收工
+
+改的是「這筆資料屬於誰/哪條 lane/哪個 session」一類的**分類或歸因邏輯**時,
+手寫 fixture 只能覆蓋你想得到的形狀;真實流量的形狀分佈才是驗收面。收工前
+必須用 vm harness 模式(`test/workflow-timeline.test.js` 的 `loadWfModule`
+形狀)對**全量真實 session 重放**,以一個機械可判的殘留指標做 before/after:
+
+- #232:overlap 拆道——殘留 overlap pairs 547 → 0。
+- #230:sequential interleave——jumpreturn 殘留 3 → 8(069246a 的 frontier
+  合併回歸,**unit fixture 全綠、只有 439-session re-audit 攔到**)→ 3
+  (append-only 重做;詳見 `docs/solutions/seq-tracker-event-time-ordering.md`)。
+
+規則:改動涉及分類/歸因時,PR 證據欄必附全量重放的殘留指標數字;unit 綠
+但 re-audit 未跑 = 未驗證。
+
+---
+
 ## 一句話總結
 
 > 改完別只問「測試過了嗎?」,要問:

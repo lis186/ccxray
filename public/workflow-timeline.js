@@ -396,7 +396,11 @@ function _wfSeqCloseBrackets(tracker) {
   excursed.forEach(function(r) {
     for (var e = 0; e < r.turns.length; e++) {
       turns.push(r.turns[e]);
-      wfSeqFeedSplit(tracker, r.turns[e]); // excursed turns become frontiers
+      // INVARIANT: a closed-bracket excursion must immediately become an
+      // R2 frontier — dropping this feed makes later same-conv sequential
+      // continuations silently fall back into main — see
+      // docs/decisions/0009-sequential-interleave-conv-bracketing.md
+      wfSeqFeedSplit(tracker, r.turns[e]);
     }
   });
   var turnSet = new Set(turns);
@@ -552,6 +556,9 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // Hand the converged classification to the live path: replay the final
   // stream into the caller's tracker so wfAddEntry continues from exactly
   // the batch state (R1 brackets spanning the build boundary still close).
+  // INVARIANT: this replay must survive any refactor — removing it paints
+  // the first frame correctly and corrupts every live update after it — see
+  // docs/decisions/0009-sequential-interleave-conv-bracketing.md
   var finalStream = [];
   for (var fv = 0; fv < fixedEvidence.length; fv++) finalStream.push({ t: fixedEvidence[fv], split: true });
   for (var fx = 0; fx < exiled.length; fx++) finalStream.push({ t: exiled[fx], split: true });
@@ -693,6 +700,10 @@ function _wfFollowTail(oldTMax) {
 }
 
 // ── Incremental Update ────────────────────────────────────────────────────
+// Caller contract: `entry` must already be pushed into allEntries before
+// this call — the reordered-arrival path (_wfSeqRebuild) recomputes the
+// whole state from allEntries and would otherwise drop the entry
+// (entry-rendering.js pushes at its allEntries.push site, then calls here).
 function wfAddEntry(entry) {
   if (!wfState) return { lanesChanged: false };
   var prevCount = wfState.lanes.length;
@@ -786,6 +797,10 @@ function wfAddEntry(entry) {
       // allEntries (the batch pass is the authority). Bounded: fires only
       // on inserted-before-tail arrivals (overlap inversion) — occasional
       // even in fork-heavy sessions.
+      // INVARIANT: reordered convergence is two-sided — entry-rendering.js
+      // must run _seqRecomputeSession (flips AND unflips) on the same flag,
+      // or the two files diverge (the ADR 0005 round-4 shape) — see
+      // docs/decisions/0009-sequential-interleave-conv-bracketing.md
       if (seqVerdict.reordered) return _wfSeqRebuild(oldTMax);
       if (seqVerdict.place === 'excursion') {
         needsSub = true;
@@ -839,9 +854,12 @@ function wfAddEntry(entry) {
 // overturn closed excursions, so recompute everything from allEntries via
 // wfBuildState (the entry is already in allEntries — entry-rendering pushes
 // before calling wfAddEntry) and migrate the user's view state onto the
-// fresh wfState. Turn-list (entry-rendering) classification stays
-// forward-only by design — same eventual-consistency boundary as ADR 0008's
-// reverse overlap, batch is the authority.
+// fresh wfState. entry-rendering converges on the same signal via
+// _seqRecomputeSession (round 6).
+// GUARD: the migration list below (view window, selection, focus, manual
+// lane height) must evolve together with wfBuildState's returned fields —
+// a new user-facing wfState field that isn't migrated here silently resets
+// on every reordered arrival.
 function _wfSeqRebuild(oldTMax) {
   var old = wfState;
   var fresh = wfBuildState(old.sessionId);

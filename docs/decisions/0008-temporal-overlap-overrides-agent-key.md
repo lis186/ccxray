@@ -76,3 +76,14 @@ signature. Overlap is the strictly stronger signal.
 **One shared parallel lane per model+convId (the #226 shape)**: rejected —
 concurrent forks share model AND convId, so they pile into one lane that
 overlaps internally, recreating the bug one level down.
+
+## Amended by ADR 0009 (2026-07-11)
+
+The overlap sweep is no longer a single terminal pass, and `parallel-*`
+lanes no longer imply temporal overlap alone: #230's sequential-interleave
+post-pass iterates with the sweep to a fixpoint inside `wfInferLanes`, and
+parallel lanes now also hold *sequential* excursions (teammates, fan-out
+runs, stitched fork continuations), labeled Fork/Teammate by conversation
+identity. This section is navigation only — the mechanism, its invariants,
+and the live-path convergence rules live in
+`0009-sequential-interleave-conv-bracketing.md`.
