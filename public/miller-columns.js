@@ -2672,13 +2672,13 @@ function renderDetailCol() {
         }
         const toolFreqPreview = {};
         currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreqPreview[c.name] = (toolFreqPreview[c.name] || 0) + 1; }); });
-        const totalPreview = currentSteps.filter(s => s.type === 'tool-group').length;
+        const totalPreview = currentSteps.length;
         const errorPreview = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
         const promptBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
         const summaryPreview = promptBadge
           + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
-          + totalPreview + ' steps · ' + (totalPreview - errorPreview) + '✓'
-          + (errorPreview ? ' <span style="color:var(--red)">' + errorPreview + '✗</span>' : '')
+          + totalPreview + ' steps'
+          + (errorPreview ? ' · <span style="color:var(--red)">' + errorPreview + '✗</span>' : '')
           + '</div>';
         const previewStepsHtml = renderStepListHtml(currentSteps, getActiveStepKey(), e.toolSources);
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
@@ -2702,13 +2702,13 @@ function renderDetailCol() {
       // Tool frequency summary
       const toolFreq = {};
       currentSteps.forEach(s => { if (s.type === 'tool-group') s.calls.forEach(c => { toolFreq[c.name] = (toolFreq[c.name] || 0) + 1; }); });
-      const totalSteps = currentSteps.filter(s => s.type === 'tool-group').length;
+      const totalSteps = currentSteps.length;
       const errorCount = currentSteps.filter(s => s.type === 'tool-group' && s.calls.some(c => c.isError)).length;
       const focusedBadge = (typeof renderPromptBadgeHtml === 'function') ? renderPromptBadgeHtml(e) : '';
       const summaryHtml = focusedBadge
         + '<div style="padding:4px 8px 6px;border-bottom:1px solid var(--border);font-size:11px;color:var(--dim)">'
-        + totalSteps + ' steps · ' + (totalSteps - errorCount) + '✓'
-        + (errorCount ? ' <span style="color:var(--red)">' + errorCount + '✗</span>' : '')
+        + totalSteps + ' steps'
+        + (errorCount ? ' · <span style="color:var(--red)">' + errorCount + '✗</span>' : '')
         + '</div>';
 
       const activeKey = getActiveStepKey();
