@@ -120,9 +120,11 @@ describe('workflow-timeline data layer', () => {
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
       // model switch mid-session — must NOT leave the main lane
       mkEntry('t2', 's1', 'claude-fable-5', 6000, 3, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
-      // compact-style request: isSubagent flag but orchestrator prompt → main
-      mkEntry('t3', 's1', 'claude-fable-5', 8000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator', isSubagent: true }),
-      mkEntry('t4', 's1', 'claude-haiku-4-5', 9000, 2, { agentKey: 'explore', agentLabel: 'Explore', isSubagent: true }),
+      // compact-style request: isSubagent flag but orchestrator prompt → main.
+      // Starts after t2 ends (9000) — real compact requests are sequential;
+      // a genuinely overlapping start would now split per ADR 0008.
+      mkEntry('t3', 's1', 'claude-fable-5', 9500, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator', isSubagent: true }),
+      mkEntry('t4', 's1', 'claude-haiku-4-5', 12000, 2, { agentKey: 'explore', agentLabel: 'Explore', isSubagent: true }),
     ];
     var lanes = ctx.wfInferLanes(entries, []);
     assert.equal(lanes.length, 2);
@@ -342,7 +344,11 @@ describe('workflow-timeline data layer', () => {
     ctx.wfState = ctx.wfBuildState('s1');
     ctx.wfState.viewT0 = ctx.wfState.tMin;
     ctx.wfState.viewT1 = ctx.wfState.tMax;
-    const lane = ctx.wfState.lanes[0];
+    // Hand-built lane: since ADR 0008, temporally overlapping turns no longer
+    // share a lane, but bars can still overlap in PIXELS (min-width floor,
+    // equal starts) — this tests _wfNearestTurn's paint-order preference on
+    // overlapping pixel spans in isolation.
+    const lane = { turns: ctx.allEntries };
     const s1 = ctx._wfBarSpan(lane.turns[0]);
     const s2 = ctx._wfBarSpan(lane.turns[1]);
     const overlapMid = (s2.x0 + s1.x1) / 2;
@@ -1015,5 +1021,95 @@ describe('#222 temporal overlap does not false-positive on compaction or model s
     assert.equal(lanes[0].name, 'main');
     assert.equal(lanes[0].turns.length, 1);
     assert.equal(lanes[0].turns[0].id, 't1');
+  });
+});
+
+// ── #221/#222 redo: overlap overrides authoritative agentKey (ADR 0008) ─────
+// Fixture shape mirrors real fork traffic (e.g. session 86949194 on 2026-07-10):
+// forks inherit the parent's full prompt → agentKey 'orchestrator'
+// (authoritative main key), same convId, same model. The Batch 11 post-pass
+// exempted authoritative keys from the overlap split, so these stayed in main.
+describe('#221/#222 redo: overlap overrides authoritative agentKey (ADR 0008)', () => {
+  function mkFork(id, at, elapsed) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed,
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: 'c0ffee' });
+  }
+  function assertNoIntraLaneOverlap(lanes) {
+    for (var li = 0; li < lanes.length; li++) {
+      var spans = lanes[li].turns.map(function(t) {
+        var s = Number(t.receivedAt) || 0;
+        return [s, s + (parseFloat(t.elapsed) || 0) * 1000];
+      }).sort(function(a, b) { return a[0] - b[0]; });
+      for (var i = 1; i < spans.length; i++) {
+        assert.ok(spans[i][0] >= spans[i - 1][1] || spans[i][0] === spans[i - 1][0],
+          'lane ' + lanes[li].key + ': turn @' + spans[i][0] + ' overlaps previous ending @' + spans[i - 1][1]);
+      }
+    }
+  }
+
+  it('fork with authoritative orchestrator agentKey is split out of main (fail-on-old)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkFork('parent', 1000, 60),  // 1000..61000
+      mkFork('fork1', 11000, 55),  // starts strictly inside parent's span
+    ], []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[0].name, 'main');
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), ['parent'].join(','));
+    assert.equal(lanes[1].turns[0].id, 'fork1');
+  });
+
+  it('fan-out: no lane holds overlapping turns; lane count bound at max concurrency', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkFork('parent', 1000, 60),
+      mkFork('f1', 11000, 50),
+      mkFork('f2', 13000, 55),
+      mkFork('f3', 15000, 52),
+    ], []);
+    assert.equal(lanes.length, 4); // main + 3 parallel instances
+    assertNoIntraLaneOverlap(lanes);
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), ['parent'].join(','));
+  });
+
+  it("a fork's own serial turns reconstruct into one parallel lane (best-fit)", () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkFork('parent', 1000, 60),
+      mkFork('f1a', 11000, 10),  // 11000..21000
+      mkFork('f1b', 22000, 10),  // starts after f1a ends, still inside parent's span
+    ], []);
+    assert.equal(lanes.length, 2);
+    assert.equal(lanes[1].turns.map(function(t) { return t.id; }).join(','), ['f1a', 'f1b'].join(','));
+  });
+
+  it('live path (wfAddEntry) splits authoritative-key forks and best-fits instances', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkFork('parent', 1000, 60)];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfAddEntry(mkFork('f1', 11000, 10));   // → first parallel lane
+    ctx.wfAddEntry(mkFork('f2', 13000, 10));   // overlaps f1 → second parallel lane
+    ctx.wfAddEntry(mkFork('f1b', 22000, 10));  // fits after f1 → back into first lane
+    assert.equal(ctx.wfState.lanes.length, 3);
+    assertNoIntraLaneOverlap(ctx.wfState.lanes);
+    assert.equal(ctx.wfState.lanes[0].turns.map(function(t) { return t.id; }).join(','), ['parent'].join(','));
+    assert.equal(ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(','), ['f1', 'f1b'].join(','));
+    assert.equal(ctx.wfState.lanes[2].turns.map(function(t) { return t.id; }).join(','), ['f2'].join(','));
+  });
+
+  it('equal receivedAt stays sequential in main (entry-rendering predicate alignment)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([mkFork('t1', 1000, 5), mkFork('t2', 1000, 3)], []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 2);
+  });
+
+  it('serial orchestrator turns never split (no false positives)', () => {
+    const ctx = loadWfModule();
+    var entries = [];
+    for (var i = 0; i < 6; i++) entries.push(mkFork('t' + i, 1000 + i * 10000, 8));
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].turns.length, 6);
   });
 });

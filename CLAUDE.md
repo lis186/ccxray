@@ -30,6 +30,7 @@ These constraints have guard comments at their mutation sites. Read the linked A
 - **agentKey main/subagent classification must gate on AGENT_KEY_UNRELIABLE** in both `entry-rendering.js` and `workflow-timeline.js` (`wfInferLanes`, `wfAddEntry`) — the two files must never disagree on the same turn — @docs/decisions/0005-agent-key-unreliable-shared-contract.md
 - **Lane-focus geometry must match what `_wfRenderSvgContent` actually draws** — `_wfTotalLanesHeight`, `_wfLaneIdxAtY`, and the label-click hit-test in `workflow-timeline.js` must all agree with it under `laneFocusMode` — @docs/decisions/0006-lane-focus-geometry-consistency.md
 - **Use `_wfIsMainLane(lane)` for main/orchestrator detection, never `!lane.spawnParent`** (`spawnParent` is always `null`, in every lane object, everywhere) — @docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
+- **Temporal overlap overrides agentKey for lane placement** — no lane may hold two temporally-overlapping turns; never exempt a turn from the overlap split because its agentKey looks authoritative (forks carry the parent's `orchestrator` key) — @docs/decisions/0008-temporal-overlap-overrides-agent-key.md
 
 ## Smoke Testing
 

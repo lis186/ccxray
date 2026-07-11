@@ -23,3 +23,6 @@ docs/src/
 handoff.md
 .antigravitycli/
 .codex/
+
+# Visual-review acceptance reports (untracked evidence bundles, see ops runbook UI track)
+.visual-review/

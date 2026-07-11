@@ -273,31 +273,56 @@ function wfInferLanes(entries, childEntries) {
     }
   }
 
-  // Post-pass (#221): two turns in main whose time ranges overlap cannot be
-  // the same serial conversation — they must be parallel agents (e.g. a fork
-  // whose session_id matches the parent, so the agentKey signal above missed
-  // it). Split the later-starting one into its own sub-lane. Turns that
-  // reached main via an authoritative agentKey (WF_MAIN_AGENT_KEYS) are
-  // exempt — that server-side signal already resolved them definitively.
-  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
-  // Sort by receivedAt so the earliest-starting turn stays in main (codex R1:
+  // Post-pass (#221/#222): main must stay a serial chain — two turns whose
+  // time ranges overlap cannot be the same serial conversation, so the
+  // later-starting one is a parallel agent. Typically a fork, which inherits
+  // the parent's prompt and therefore carries the SAME authoritative
+  // 'orchestrator' agentKey — agentKey is authoritative about prompt
+  // content, NOT about instance identity, so it must never exempt a turn
+  // from this physical-overlap check (the Batch 11 merged-but-broken bug).
+  // INVARIANT: overlap overrides agentKey for lane placement — see
+  // docs/decisions/0008-temporal-overlap-overrides-agent-key.md
+  // Sort by receivedAt so the earliest-starting turn anchors main (codex R1:
   // entries arrive in completion order which may differ from start order).
+  // Overlap predicate matches entry-rendering.js (ADR 0005 alignment): a
+  // turn is parallel iff its start falls strictly inside the previous main
+  // turn's (start, end) — equal starts count as sequential.
   mainLane.turns.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
-  for (var oi = mainLane.turns.length - 1; oi >= 1; oi--) {
+  var serialTurns = [], overflowTurns = [];
+  for (var oi = 0; oi < mainLane.turns.length; oi++) {
     var cur = mainLane.turns[oi];
-    if (cur.agentKey && !AGENT_KEY_UNRELIABLE[cur.agentKey]) continue;
     var curStart = Number(cur.receivedAt) || 0;
-    if (!curStart) continue;
-    for (var oj = oi - 1; oj >= 0 && oj >= oi - 5; oj--) {
-      var prev = mainLane.turns[oj];
-      var prevStart = Number(prev.receivedAt) || 0;
-      var prevEnd = prevStart + (parseFloat(prev.elapsed) || 0) * 1000;
-      if (curStart < prevEnd && prevStart > 0) {
-        var olKey = _wfSubLaneKey('parallel-' + wfShortModel(cur.model), cur);
-        _wfPushToSubLane(laneMap, olKey, cur);
-        mainLane.turns.splice(oi, 1);
-        break;
+    var last = serialTurns[serialTurns.length - 1];
+    var lastStart = last ? (Number(last.receivedAt) || 0) : 0;
+    var lastEnd = last ? lastStart + (parseFloat(last.elapsed) || 0) * 1000 : 0;
+    if (curStart > lastStart && curStart < lastEnd) overflowTurns.push(cur);
+    else serialTurns.push(cur);
+  }
+  if (overflowTurns.length) {
+    mainLane.turns = serialTurns;
+    // Overflow turns go to numbered parallel lanes, best-fit: among lanes
+    // of the same base key (model+convId — forks share both), pick the one
+    // whose chain ends latest but still before this turn's start. Serial
+    // turns of the same fork tend to reconstruct as one lane; the numbered
+    // lanes bound out at the session's true max concurrency.
+    var pFamilies = new Map(); // baseKey → [{ key, lastEnd }]
+    for (var ov = 0; ov < overflowTurns.length; ov++) {
+      var oTurn = overflowTurns[ov];
+      var oStart = Number(oTurn.receivedAt) || 0;
+      var oEnd = oStart + (parseFloat(oTurn.elapsed) || 0) * 1000;
+      var baseKey = _wfSubLaneKey('parallel-' + wfShortModel(oTurn.model), oTurn);
+      var fam = pFamilies.get(baseKey);
+      if (!fam) { fam = []; pFamilies.set(baseKey, fam); }
+      var best = null;
+      for (var pi = 0; pi < fam.length; pi++) {
+        if (fam[pi].lastEnd <= oStart && (!best || fam[pi].lastEnd > best.lastEnd)) best = fam[pi];
       }
+      if (!best) {
+        best = { key: fam.length ? baseKey + '#' + (fam.length + 1) : baseKey, lastEnd: 0 };
+        fam.push(best);
+      }
+      best.lastEnd = Math.max(best.lastEnd, oEnd);
+      _wfPushToSubLane(laneMap, best.key, oTurn);
     }
   }
 
@@ -475,19 +500,26 @@ function wfAddEntry(entry) {
     needsSub = entry.isSubagent || (mainModel && entry.model !== mainModel);
     key = _wfSubLaneKey('subagent-' + wfShortModel(entry.model), entry);
   }
-  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
-  if (!needsSub && !(entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey])) {
-    // Temporal overlap check (#221): if this entry's time range overlaps a
-    // recent main-lane turn, it must be a parallel agent (e.g. a fork
-    // sharing the parent's session_id) — split it to a sub-lane, mirroring
-    // the wfInferLanes post-pass. Entries with an authoritative agentKey
-    // already went through the WF_MAIN_AGENT_KEYS check above — exempt.
+  if (!needsSub) {
+    // Temporal overlap check (#221/#222): if this entry starts strictly
+    // inside a recent main-lane turn's time range, it must be a parallel
+    // agent (typically a fork sharing the parent's session_id AND its
+    // authoritative 'orchestrator' agentKey) — split it to a parallel lane,
+    // mirroring the wfInferLanes post-pass. agentKey never exempts a turn
+    // from this check: it's authoritative about prompt content, not about
+    // instance identity.
+    // INVARIANT: overlap overrides agentKey for lane placement — see
+    // docs/decisions/0008-temporal-overlap-overrides-agent-key.md
+    // Predicate matches entry-rendering.js (ADR 0005): strictly inside
+    // (start, end) — an entry that STARTED BEFORE the main turn (late
+    // arrival, completion order ≠ start order) stays in main; the batch
+    // rebuild's sorted sweep is the authoritative resolver for that case.
     var mainTurns = wfState.lanes[0]?.turns || [];
     for (var mi = mainTurns.length - 1; mi >= 0 && mi >= mainTurns.length - 5; mi--) {
       var mt = mainTurns[mi];
       var mtStart = Number(mt.receivedAt) || 0;
       var mtEnd = mtStart + (parseFloat(mt.elapsed) || 0) * 1000;
-      if (ts < mtEnd && mtStart > 0) {
+      if (mtStart > 0 && ts > mtStart && ts < mtEnd) {
         needsSub = true;
         key = _wfSubLaneKey('parallel-' + wfShortModel(entry.model), entry);
         break;
@@ -495,7 +527,24 @@ function wfAddEntry(entry) {
     }
   }
   if (needsSub) {
-    var lane = wfState.lanes.find(function(l) { return l.key === key; });
+    var lane;
+    if (key.indexOf('parallel-') === 0) {
+      // Best-fit among the numbered parallel lanes of this base key (forks
+      // share model+convId, so the key alone can't separate instances):
+      // reuse the lane whose chain ends latest but at/before this start;
+      // none fits → new numbered lane. Mirrors the wfInferLanes post-pass.
+      var famLanes = wfState.lanes.filter(function(l) {
+        return l.key === key || l.key.indexOf(key + '#') === 0;
+      });
+      var bestEnd = -1;
+      for (var fi = 0; fi < famLanes.length; fi++) {
+        var lt = famLanes[fi].turns[famLanes[fi].turns.length - 1];
+        var ltEnd = lt ? (Number(lt.receivedAt) || 0) + (parseFloat(lt.elapsed) || 0) * 1000 : 0;
+        if (ltEnd <= ts && ltEnd > bestEnd) { lane = famLanes[fi]; bestEnd = ltEnd; }
+      }
+      if (!lane && famLanes.length) key = key + '#' + (famLanes.length + 1);
+    }
+    if (!lane) lane = wfState.lanes.find(function(l) { return l.key === key; });
     if (!lane) {
       lane = { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null };
       wfState.lanes.push(lane);
@@ -585,9 +634,18 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
+  // Parallel-lane instances (ADR 0008) share agentLabel AND convId (forks
+  // inherit both), so they'd all read as the same "Orchestrator 5212" —
+  // semantically wrong too: one session has one orchestrator. Label them
+  // "Fork <conv> #k" instead (owner decision, PR #232 acceptance).
+  var laneOrd = /#(\d+)$/.exec(lane.key || '');
+  var isParallelLane = (lane.key || '').indexOf('parallel-') === 0;
   var dispName = lane.childSessionId
     ? (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8)
-    : (laneIdx === 0 ? lane.name : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
+    : (laneIdx === 0 ? lane.name
+      : isParallelLane
+        ? 'Fork' + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1')
+        : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
