@@ -866,7 +866,40 @@ function wfDotSvg(shape, color, x, y, tidx) {
   return '<circle' + a + ' cx="' + (x + 2).toFixed(1) + '" cy="' + (y + 4) + '" r="2" fill="' + color + '"/>';
 }
 
-function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
+// convIds present in the main lane — computed once per render pass and
+// passed down (rendering budget: never rescan lanes[0].turns per lane).
+function _wfMainConvSet(lanes) {
+  var s = new Set();
+  var main = lanes && lanes[0];
+  if (main && main.turns) {
+    for (var i = 0; i < main.turns.length; i++) {
+      if (main.turns[i].convId) s.add(main.turns[i].convId);
+    }
+  }
+  return s;
+}
+
+// Display name for a lane. Parallel-lane instances (ADR 0008/0009) share
+// agentLabel AND often convId, so they'd all read as the same
+// "Orchestrator 5212" — semantically wrong too: one session has one
+// orchestrator. Split by conversation identity (owner decision, PR #232
+// acceptance; refined 2026-07-11 #230 visual review):
+//   convId ∈ main's conv set  → "Fork <conv> #k"     (same-conversation
+//     twin: overlap-split fork, R2-stitched continuation)
+//   convId ∉ main's conv set  → "Teammate <conv> #k" (independent
+//     conversation: agent-team teammate, workflow fan-out — R1 excursion)
+function _wfLaneDispName(lane, laneIdx, mainConvs) {
+  if (lane.childSessionId) return (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8);
+  if (laneIdx === 0) return lane.name;
+  var laneOrd = /#(\d+)$/.exec(lane.key || '');
+  if ((lane.key || '').indexOf('parallel-') === 0) {
+    var kin = lane.convId && mainConvs && mainConvs.has(lane.convId) ? 'Fork' : 'Teammate';
+    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1');
+  }
+  return (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '');
+}
+
+function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   var isSel = wfState.selectedLane?.key === lane.key;
   var laneH = isSel ? WF_LANE_H_SEL : WF_LANE_H;
   var boxH = laneH - WF_LANE_GAP;
@@ -885,18 +918,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn) {
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
-  // Parallel-lane instances (ADR 0008) share agentLabel AND convId (forks
-  // inherit both), so they'd all read as the same "Orchestrator 5212" —
-  // semantically wrong too: one session has one orchestrator. Label them
-  // "Fork <conv> #k" instead (owner decision, PR #232 acceptance).
-  var laneOrd = /#(\d+)$/.exec(lane.key || '');
-  var isParallelLane = (lane.key || '').indexOf('parallel-') === 0;
-  var dispName = lane.childSessionId
-    ? (lane.agentLabel || wfShortModel(lane.model)) + ' ' + lane.childSessionId.slice(0, 8)
-    : (laneIdx === 0 ? lane.name
-      : isParallelLane
-        ? 'Fork' + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1')
-        : (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : ''));
+  var dispName = _wfLaneDispName(lane, laneIdx, mainConvs);
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (lane.model || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
@@ -1150,8 +1172,13 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
   var focusLi = _wfFocusLaneIdx();
   var laneCls = function(li) { return 'wf-lane' + (focusLi >= 0 && focusLi !== li ? ' dim' : ''); };
 
+  // Main conv set for lane naming — once per render pass, so it can't go
+  // stale when new turns arrive (every render recomputes) and never rescans
+  // main's turns inside the per-lane loop (rendering budget).
+  var mainConvs = _wfMainConvSet(lanes);
+
   var mainLaneY = WF_PAD + WF_AXIS_H;
-  ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn) + '</g>';
+  ms += '<g class="' + laneCls(0) + '" data-lane="0" transform="translate(0,' + mainLaneY + ')">' + wfRenderLaneSvg(lanes[0], 0, W, xFn, mainConvs) + '</g>';
   mainSvg.innerHTML = ms;
 
   // Sub SVG: remaining lanes (dynamic height per lane). Lane-focus mode
@@ -1178,7 +1205,7 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
     var subY = WF_PAD;
     for (var si = 0; si < subIndices.length; si++) {
       var li = subIndices[si];
-      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn) + '</g>';
+      ss += '<g class="' + laneCls(li) + '" data-lane="' + li + '" transform="translate(0,' + subY + ')">' + wfRenderLaneSvg(lanes[li], li, W, xFn, mainConvs) + '</g>';
       subY += _wfLaneHeight(li);
     }
     subSvg.innerHTML = ss;

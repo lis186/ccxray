@@ -1366,3 +1366,44 @@ describe('#230 seq tracker arrival-order independence (codex P2)', () => {
     assert.equal(nonMainIds(batch), nonMainIds(completion));
   });
 });
+
+// ── #230 lane naming: Fork vs Teammate (owner visual review, 2026-07-11) ────
+// Display-name only — lane keys and classification are untouched. A parallel
+// lane whose convId appears in main = a same-conversation twin ("Fork");
+// a convId main never ran = an independent conversation ("Teammate").
+describe('#230 lane naming: Fork vs Teammate', () => {
+  function mkSeq(id, at, elapsed, conv, msg, opts) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed, Object.assign(
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, msgCount: msg }, opts || {}));
+  }
+
+  it('same-conv overlap fork lane reads "Fork <conv> #k"', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('m1', 1000, 5, '5212b91b', 53),
+      mkSeq('m2', 10000, 60, '5212b91b', 55),
+      mkSeq('f1', 20000, 5, '5212b91b', 51),   // overlap-split fork
+      mkSeq('f2', 71000, 5, '5212b91b', 51),   // R2-stitched continuation
+      mkSeq('m3', 80000, 5, '5212b91b', 57),
+    ], []);
+    assert.equal(lanes.length, 2);
+    var mainConvs = ctx._wfMainConvSet(lanes);
+    assert.equal(ctx._wfLaneDispName(lanes[1], 1, mainConvs), 'Fork 5212 #1');
+  });
+
+  it('foreign-conv R1 excursion lane reads "Teammate <conv> #k"', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkSeq('a1', 1000, 5, 'aaaa1111', 10),
+      mkSeq('a2', 7000, 5, 'aaaa1111', 12),
+      mkSeq('b1', 13000, 5, 'f4ef1004', 4, { model: 'claude-sonnet-5' }),
+      mkSeq('b2', 19000, 5, 'f4ef1004', 6, { model: 'claude-sonnet-5' }),
+      mkSeq('a3', 25000, 5, 'aaaa1111', 14),
+    ], []);
+    assert.equal(lanes.length, 2);
+    var mainConvs = ctx._wfMainConvSet(lanes);
+    assert.equal(ctx._wfLaneDispName(lanes[1], 1, mainConvs), 'Teammate f4ef #1');
+    // main lane name untouched
+    assert.equal(ctx._wfLaneDispName(lanes[0], 0, mainConvs), 'main');
+  });
+});
