@@ -207,6 +207,45 @@ describe('system-prompt', () => {
       assert.ok(result.envAndGit.startsWith('# Environment'));
       assert.ok(result.autoMemory.startsWith('# auto memory'));
     });
+
+    // #218: the autoMemory marker only matched the lowercase `# auto memory`
+    // heading and the comma-form `You have a persistent, file-based memory`
+    // sentence. Real memory sections vary — casing, an absent comma, or a
+    // path-style phrasing — and every miss leaked ~4k tokens of memory setup
+    // into coreInstructions, flipping coreHash and doubling version noise.
+    // Each case below FAILS on the old regex (memory text stays in
+    // coreInstructions) and PASSES once the marker is broadened.
+    //
+    // The path-style branch matches from the memory line's start via a
+    // `(?<=\n)` lookbehind (not a bare substring), so the boundary lands at the
+    // line head even when the phrase sits mid-line ("Your memory system at …") —
+    // the fixture exercises exactly that, keeping the leading words out of core.
+    const MEMORY_VARIANTS = [
+      {
+        name: 'capitalized heading',
+        memory: '# Auto Memory\nYou have a memory directory.',
+      },
+      {
+        name: 'sentence without the comma',
+        memory: 'You have a persistent file-based memory that survives sessions.',
+      },
+      {
+        name: 'path-style "memory system at" phrasing mid-line',
+        memory: 'Your memory system at ~/.claude/memory persists across sessions.',
+      },
+    ];
+
+    for (const v of MEMORY_VARIANTS) {
+      it(`isolates the memory section (${v.name})`, () => {
+        const core = 'Core instructions here that must stay in coreInstructions.\n';
+        const b2 = core + v.memory;
+        const result = splitB2IntoBlocks(b2);
+        // memory text is split out into its own block…
+        assert.equal(result.autoMemory, v.memory);
+        // …and does NOT leak into coreInstructions (the coreHash-noise bug).
+        assert.equal(result.coreInstructions, core);
+      });
+    }
   });
 
   describe('computeUnifiedDiff', () => {

@@ -85,7 +85,7 @@ var B2_MARKER_DEFS = [
   { key: 'pluginSkills',   pattern: /\*\*Available plugin skills/ },
   { key: 'settingsJson',   pattern: /\*\*User's settings\.json/ },
   { key: 'envAndGit',      pattern: /# Environment\n|<env>/ },
-  { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
+  { key: 'autoMemory',     pattern: /# [Aa]uto [Mm]emory\n|You have a persistent,? file-based memory|(?<=\n)[^\n]*memory system at/ },
 ];
 
 function splitB2IntoBlocks(b2) {

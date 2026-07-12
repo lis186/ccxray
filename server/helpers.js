@@ -27,7 +27,7 @@ function safeCountTokens(text) {
 // ── Context Breakdown Analysis ───────────────────────────────────────
 
 const B2_MARKER_DEFS = [
-  { key: 'autoMemory',     pattern: /# auto memory\n|You have a persistent, file-based memory/ },
+  { key: 'autoMemory',     pattern: /# [Aa]uto [Mm]emory\n|You have a persistent,? file-based memory|(?<=\n)[^\n]*memory system at/ },
   { key: 'customSkills',   pattern: /# User'?s Current Configuration/ },
   { key: 'customAgents',   pattern: /\*\*Available custom agents/ },
   { key: 'mcpServersList', pattern: /\*\*Configured MCP servers/ },
