@@ -1,13 +1,12 @@
 'use strict';
 
-const crypto = require('crypto');
 const store = require('../store');
 const helpers = require('../helpers');
 const { normalizeUsageForProvider } = require('../providers');
 const config = require('../config');
 const { calculateCost } = require('../pricing');
 const { agentForProvider } = require('../providers');
-const { extractPromptAgentType } = require('../system-prompt');
+const { extractPromptAgentType, rawCoreHash } = require('../system-prompt');
 const {
   getOpenAIResponseFromEvents, getOpenAIInputSummary,
   getOpenAIOutputSummary, buildResponseMetadata,
@@ -187,7 +186,7 @@ function registerPromptVersion(ctx) {
   const promptText = typeof parsedBody?.instructions === 'string' ? parsedBody.instructions : null;
   if (!promptText) return null;
   const { key: agentKey, label: agentLabel } = extractPromptAgentType('openai', parsedBody);
-  const coreHash = crypto.createHash('md5').update(promptText).digest('hex').slice(0, 12);
+  const coreHash = rawCoreHash(promptText);
   const idxKey = `${agentKey}::${coreHash}`;
   const existing = store.versionIndex.get(idxKey);
   if (existing) {

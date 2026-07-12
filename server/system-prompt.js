@@ -146,13 +146,20 @@ function normalizePlatform(text) {
     .replace(/\/(?:Users|home)\/[\w.-]+/g, '{{PATH}}');  // macOS/Linux home paths
 }
 
+// Raw 12-char md5 prefix — the coreHash for providers whose prompts carry no
+// platform-token split (OpenAI/Codex use the instructions verbatim). Kept here
+// so every coreHash, normalized or not, has one definition.
+function rawCoreHash(text) {
+  return crypto.createHash('md5').update(text || '').digest('hex').slice(0, 12);
+}
+
 // Single source of truth for the Anthropic coreHash. Every anthropic call site
 // (wire-parsers/anthropic.js live path, restore.js buildVersionIndex,
 // rebuild-index.js) MUST go through this so the versionIndex key
 // `agentKey::coreHash` cannot diverge across paths — an inlined
 // md5(coreText) at any one site would silently re-split platform variants.
 function computeCoreHash(coreText) {
-  return crypto.createHash('md5').update(normalizePlatform(coreText)).digest('hex').slice(0, 12);
+  return rawCoreHash(normalizePlatform(coreText));
 }
 
 function computeBlockDiff(b2A, b2B) {
@@ -246,6 +253,7 @@ module.exports = {
   extractPromptAgentType,
   splitB2IntoBlocks,
   normalizePlatform,
+  rawCoreHash,
   computeCoreHash,
   computeBlockDiff,
   computeUnifiedDiff,

@@ -1,10 +1,9 @@
 'use strict';
 
-const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
-const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, computeCoreHash } = require('./system-prompt');
+const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, rawCoreHash, computeCoreHash } = require('./system-prompt');
 const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
@@ -320,9 +319,7 @@ async function buildVersionIndex() {
         const coreLen = coreText.length;
         // INVARIANT: anthropic coreHash via computeCoreHash (platform-normalized) — see system-prompt.js (#219).
         // OpenAI/Codex keeps the raw hash (no platform-token split there).
-        const coreHash = isOpenAI
-          ? crypto.createHash('md5').update(coreText).digest('hex').slice(0, 12)
-          : computeCoreHash(coreText);
+        const coreHash = isOpenAI ? rawCoreHash(coreText) : computeCoreHash(coreText);
         const ver = isOpenAI ? coreHash : (m ? m[1] : null);
         if (!ver) continue;
         const idxKey = `${agentKey}::${coreHash}`;
