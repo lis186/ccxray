@@ -129,6 +129,32 @@ function splitB2IntoBlocks(b2) {
   return result;
 }
 
+// ── coreHash: platform-normalized version identity ───────────────────
+// Claude Code's coreInstructions carry platform-specific tokens (the shell
+// name — Bash on macOS/Linux vs PowerShell on Windows — plus os identifiers
+// and home paths). Hashing the raw text splits one semantic prompt version
+// into per-OS duplicates (#219). Normalize those tokens to placeholders
+// *before* hashing so the same cc_version yields one coreHash across
+// platforms. The stored/displayed coreInstructions text stays un-normalized —
+// only the hash sees placeholders, so the content and diff views still show
+// the real platform-specific words.
+function normalizePlatform(text) {
+  return (text || '')
+    .replace(/\b(Bash|PowerShell|cmd\.exe)\b/g, '{{SHELL}}')
+    .replace(/\b(darwin|win32|linux)\b/g, '{{PLATFORM}}')
+    .replace(/[A-Za-z]:\\[\w.\\-]+/g, '{{PATH}}')  // Windows paths (C:\Users\foo)
+    .replace(/\/(?:Users|home)\/[\w.-]+/g, '{{PATH}}');  // macOS/Linux home paths
+}
+
+// Single source of truth for the Anthropic coreHash. Every anthropic call site
+// (wire-parsers/anthropic.js live path, restore.js buildVersionIndex,
+// rebuild-index.js) MUST go through this so the versionIndex key
+// `agentKey::coreHash` cannot diverge across paths — an inlined
+// md5(coreText) at any one site would silently re-split platform variants.
+function computeCoreHash(coreText) {
+  return crypto.createHash('md5').update(normalizePlatform(coreText)).digest('hex').slice(0, 12);
+}
+
 function computeBlockDiff(b2A, b2B) {
   const blocksA = splitB2IntoBlocks(b2A);
   const blocksB = splitB2IntoBlocks(b2B);
@@ -219,6 +245,8 @@ module.exports = {
   extractAgentType,
   extractPromptAgentType,
   splitB2IntoBlocks,
+  normalizePlatform,
+  computeCoreHash,
   computeBlockDiff,
   computeUnifiedDiff,
   _resetUnknownAgentSeen: () => UNKNOWN_AGENT_SEEN.clear(),

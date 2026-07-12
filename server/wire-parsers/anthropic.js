@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { extractAgentType, splitB2IntoBlocks } = require('../system-prompt');
+const { extractAgentType, splitB2IntoBlocks, computeCoreHash } = require('../system-prompt');
 const store = require('../store');
 const helpers = require('../helpers');
 const config = require('../config');
@@ -104,7 +104,8 @@ function registerPromptVersion(ctx) {
   if (b2.length < 500) return null;
   const { key: agentKey, label: agentLabel } = extractAgentType(parsedBody.system);
   const coreText = splitB2IntoBlocks(b2).coreInstructions || '';
-  const coreHash = crypto.createHash('md5').update(coreText).digest('hex').slice(0, 12);
+  // INVARIANT: coreHash via computeCoreHash (platform-normalized) — see system-prompt.js (#219)
+  const coreHash = computeCoreHash(coreText);
   const liveM = b0.match(/cc_version=(\S+?)[; ]/);
   const liveVer = liveM ? liveM[1] : null;
   if (liveVer) {

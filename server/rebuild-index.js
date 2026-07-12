@@ -30,14 +30,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
 const hub = require('./hub');
 const helpers = require('./helpers');
 const { getParser } = require('./wire-parsers');
 const { buildIndexLine } = require('./entry');
-const { extractAgentType, splitB2IntoBlocks } = require('./system-prompt');
+const { extractAgentType, splitB2IntoBlocks, computeCoreHash } = require('./system-prompt');
 
 // Offline twin of registerPromptVersion's identity computation (no versionIndex
 // side effects): agent identity + coreHash from a rehydrated system array.
@@ -51,7 +50,8 @@ function promptIdentity(system) {
   const b2 = (system[2]?.text || '');
   if (b2.length >= 500) {
     const coreText = splitB2IntoBlocks(b2).coreInstructions || '';
-    coreHash = crypto.createHash('md5').update(coreText).digest('hex').slice(0, 12);
+    // INVARIANT: coreHash via computeCoreHash (platform-normalized) — see system-prompt.js (#219)
+    coreHash = computeCoreHash(coreText);
   }
   return { coreHash, agentKey, agentLabel };
 }
