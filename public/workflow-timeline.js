@@ -1340,7 +1340,10 @@ function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
 // zoom buttons' and toggle button's positions stable regardless of state.
 function _wfOverviewLabelHtml() {
   var focusLi = _wfFocusLaneIdx();
+  var sbText = sidebarCollapsed ? '|▷' : '◁|';
+  var sbTitle = sidebarCollapsed ? 'Show sidebar (\\\\)' : 'Hide sidebar (\\\\)';
   var row1 = '<div class="wf-ol-row">' +
+    '<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="' + sbTitle + '">' + sbText + '</button>' +
     '<span>Overview</span>' +
     '<button onclick="wfZoomBy(0.5)">+</button>' +
     '<button onclick="wfZoomBy(2)">−</button>' +

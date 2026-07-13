@@ -104,6 +104,36 @@ function updateThemeIcon() {
 }
 updateThemeIcon();
 
+// ── Sidebar Toggle (Dashboard only) ──────────────────────────────────
+const SIDEBAR_COLLAPSE_KEY = 'ccxray-sidebar-collapsed';
+let sidebarCollapsed = localStorage.getItem(SIDEBAR_COLLAPSE_KEY) === '1';
+
+function applySidebarState() {
+  document.getElementById('columns').classList.toggle('sidebar-collapsed', sidebarCollapsed);
+  // #206 P2: inert removes collapsed columns from Tab order so native
+  // controls (e.g. session-filter <select>) can't receive focus.
+  var cp = document.getElementById('col-projects');
+  var cs = document.getElementById('col-sessions');
+  if (cp) cp.inert = sidebarCollapsed;
+  if (cs) cs.inert = sidebarCollapsed;
+  const btn = document.getElementById('sidebar-toggle-btn');
+  if (!btn) return;
+  btn.textContent = sidebarCollapsed ? '|▷' : '◁|';
+  btn.title = sidebarCollapsed ? 'Show sidebar (\\)' : 'Hide sidebar (\\)';
+}
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  localStorage.setItem(SIDEBAR_COLLAPSE_KEY, sidebarCollapsed ? '1' : '0');
+  applySidebarState();
+  // Collapsed sidebar hides Projects/Sessions — move focus off them so
+  // arrow-key nav doesn't land on an invisible column.
+  if (sidebarCollapsed && (focusedCol === 'projects' || focusedCol === 'sessions')) setFocus('turns');
+  if (typeof renderCmdBar === 'function') renderCmdBar();
+}
+window.isSidebarCollapsed = () => sidebarCollapsed;
+applySidebarState();
+
 // ── Unified Escape + tab switching handler ──────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
