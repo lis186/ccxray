@@ -6,6 +6,8 @@ const {
   extractAgentType,
   extractPromptAgentType,
   splitB2IntoBlocks,
+  normalizePlatform,
+  computeCoreHash,
   computeBlockDiff,
   computeUnifiedDiff,
   _resetUnknownAgentSeen,
@@ -246,6 +248,79 @@ describe('system-prompt', () => {
         assert.equal(result.coreInstructions, core);
       });
     }
+  });
+
+  // #219 — platform-variant prompts must not create false version splits.
+  describe('normalizePlatform', () => {
+    it('replaces shell names with a stable placeholder', () => {
+      assert.equal(normalizePlatform('Prefer dedicated tools over Bash when one fits'),
+        'Prefer dedicated tools over {{SHELL}} when one fits');
+      assert.equal(normalizePlatform('Prefer dedicated tools over PowerShell when one fits'),
+        'Prefer dedicated tools over {{SHELL}} when one fits');
+      assert.equal(normalizePlatform('run via cmd.exe here'), 'run via {{SHELL}} here');
+    });
+
+    it('replaces os identifiers with a stable placeholder', () => {
+      for (const os of ['darwin', 'win32', 'linux']) {
+        assert.equal(normalizePlatform(`platform is ${os} today`), 'platform is {{PLATFORM}} today');
+      }
+    });
+
+    it('replaces windows and unix home paths with a stable placeholder', () => {
+      assert.equal(normalizePlatform('cwd C:\\Users\\alice\\proj'), 'cwd {{PATH}}');
+      assert.equal(normalizePlatform('cwd /Users/alice'), 'cwd {{PATH}}');
+      assert.equal(normalizePlatform('cwd /home/alice'), 'cwd {{PATH}}');
+    });
+
+    it('consumes the full unix path, not just the home prefix (symmetric with Windows)', () => {
+      // deep $HOME paths (skill/plugin content leaked into coreInstructions) — the
+      // forward-slash tail must collapse too, else it survives on unix but not Windows
+      // and re-splits one version across platforms (#219 residual).
+      assert.equal(normalizePlatform('see /Users/alice/src/tries/skill/data/runs here'), 'see {{PATH}} here');
+      assert.equal(normalizePlatform('cache at /home/bob/.claude/plugins/cache/x done'), 'cache at {{PATH}} done');
+    });
+
+    it('leaves platform-neutral text untouched', () => {
+      const t = 'You are an interactive agent that helps users with tasks.';
+      assert.equal(normalizePlatform(t), t);
+    });
+
+    it('handles null/undefined input', () => {
+      assert.equal(normalizePlatform(null), '');
+      assert.equal(normalizePlatform(undefined), '');
+    });
+  });
+
+  describe('computeCoreHash', () => {
+    it('yields the same hash for macOS/Windows variants of one prompt version', () => {
+      const mac = 'You are Claude Code.\nPrefer dedicated tools over Bash when one fits.\nPlatform: darwin';
+      const win = 'You are Claude Code.\nPrefer dedicated tools over PowerShell when one fits.\nPlatform: win32';
+      assert.equal(computeCoreHash(mac), computeCoreHash(win));
+    });
+
+    it('still differs when the actual instructions change', () => {
+      const v1 = 'You are Claude Code.\nPrefer dedicated tools over Bash when one fits.';
+      const v2 = 'You are Claude Code.\nAlways prefer dedicated tools; never shell out.';
+      assert.notEqual(computeCoreHash(v1), computeCoreHash(v2));
+    });
+
+    it('collapses deep $HOME paths (skill/plugin) across platforms', () => {
+      const mac = 'Skill data lives at /Users/alice/src/tries/skill/data/runs and loads on demand.';
+      const win = 'Skill data lives at C:\\Users\\alice\\src\\tries\\skill\\data\\runs and loads on demand.';
+      assert.equal(computeCoreHash(mac), computeCoreHash(win));
+    });
+
+    it('does not over-normalize: identical paths but different prose still differ', () => {
+      // guard against a too-greedy normalize washing out real content: same path span,
+      // different instruction sentence → must remain distinct versions.
+      const a = 'Base at /Users/alice/proj.\nAlways run tests before committing.';
+      const b = 'Base at /Users/alice/proj.\nNever run tests; ship immediately.';
+      assert.notEqual(computeCoreHash(a), computeCoreHash(b));
+    });
+
+    it('returns a 12-char hex prefix', () => {
+      assert.match(computeCoreHash('anything'), /^[0-9a-f]{12}$/);
+    });
   });
 
   describe('computeUnifiedDiff', () => {

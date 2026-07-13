@@ -129,6 +129,42 @@ function splitB2IntoBlocks(b2) {
   return result;
 }
 
+// ── coreHash: platform-normalized version identity ───────────────────
+// Claude Code's coreInstructions carry platform-specific tokens (the shell
+// name — Bash on macOS/Linux vs PowerShell on Windows — plus os identifiers
+// and home paths). Hashing the raw text splits one semantic prompt version
+// into per-OS duplicates (#219). Normalize those tokens to placeholders
+// *before* hashing so the same cc_version yields one coreHash across
+// platforms. The stored/displayed coreInstructions text stays un-normalized —
+// only the hash sees placeholders, so the content and diff views still show
+// the real platform-specific words.
+function normalizePlatform(text) {
+  return (text || '')
+    .replace(/\b(Bash|PowerShell|cmd\.exe)\b/g, '{{SHELL}}')
+    .replace(/\b(darwin|win32|linux)\b/g, '{{PLATFORM}}')
+    .replace(/[A-Za-z]:\\[\w.\\-]+/g, '{{PATH}}')  // Windows paths (C:\Users\foo\...)
+    .replace(/\/(?:Users|home)\/[\w./-]+/g, '{{PATH}}');  // macOS/Linux paths — consume the
+    // full path (not just the home prefix) so a deep path collapses symmetrically with the
+    // Windows branch above; else the forward-slash tail (skill/plugin paths under $HOME) would
+    // survive on unix but not on Windows and re-split one version across platforms (#219).
+}
+
+// Raw 12-char md5 prefix — the coreHash for providers whose prompts carry no
+// platform-token split (OpenAI/Codex use the instructions verbatim). Kept here
+// so every coreHash, normalized or not, has one definition.
+function rawCoreHash(text) {
+  return crypto.createHash('md5').update(text || '').digest('hex').slice(0, 12);
+}
+
+// Single source of truth for the Anthropic coreHash. Every anthropic call site
+// (wire-parsers/anthropic.js live path, restore.js buildVersionIndex,
+// rebuild-index.js) MUST go through this so the versionIndex key
+// `agentKey::coreHash` cannot diverge across paths — an inlined
+// md5(coreText) at any one site would silently re-split platform variants.
+function computeCoreHash(coreText) {
+  return rawCoreHash(normalizePlatform(coreText));
+}
+
 function computeBlockDiff(b2A, b2B) {
   const blocksA = splitB2IntoBlocks(b2A);
   const blocksB = splitB2IntoBlocks(b2B);
@@ -219,6 +255,9 @@ module.exports = {
   extractAgentType,
   extractPromptAgentType,
   splitB2IntoBlocks,
+  normalizePlatform,
+  rawCoreHash,
+  computeCoreHash,
   computeBlockDiff,
   computeUnifiedDiff,
   _resetUnknownAgentSeen: () => UNKNOWN_AGENT_SEEN.clear(),
