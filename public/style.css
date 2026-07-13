@@ -62,8 +62,8 @@
   #breadcrumb .bc-sep { color: var(--border); margin: 0 2px; cursor: default; }
   #copy-link-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
   #copy-link-btn:hover { color: var(--text); }
-  #sidebar-toggle-btn { background: none; border: 1px solid var(--border); color: var(--dim); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; font-family: inherit; }
-  #sidebar-toggle-btn:hover { background: var(--surface-hover); color: var(--text); }
+  #sidebar-toggle-btn { width: auto; padding: 0 4px; font-family: inherit; }
+  #sidebar-toggle-btn:hover { background: var(--surface-hover); }
   #quota-ticker { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
   #qt-bar-wrap { display: flex; align-items: center; gap: 5px; }
   .qt-bar-track { width: 80px; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
