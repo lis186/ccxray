@@ -375,6 +375,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
+        { key: '\\', label: 'sidebar', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -389,6 +390,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
+        { key: '\\', label: 'sidebar', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -404,6 +406,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
+        { key: '\\', label: 'sidebar', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -417,6 +420,7 @@ function getCmdBarState() {
         { key: 'Enter', label: 'focus detail', id: 'enter-sections', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
+        { key: '\\', label: 'sidebar', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -516,6 +520,9 @@ document.addEventListener('keydown', (e) => {
   // Tab switching: 1=Dashboard, 2=Usage, 3=System Prompt
   const tabMap = { '1': 'dashboard', '2': 'usage', '3': 'sysprompt' };
   if (tabMap[key]) { switchTab(tabMap[key]); e.preventDefault(); return; }
+
+  // Sidebar collapse toggle (Dashboard only)
+  if (key === '\\' && activeTab === 'dashboard') { toggleSidebar(); e.preventDefault(); return; }
 
   if (key === 'n' || key === 'N') {
     const dir = key === 'N' ? 'prev' : 'next';
@@ -650,7 +657,7 @@ document.addEventListener('keydown', (e) => {
       selectProject(projItems[next]);
     }
   } else if (focusedCol === 'sessions') {
-    if (key === 'ArrowLeft') { setFocus('projects'); return; }
+    if (key === 'ArrowLeft') { if (!isSidebarCollapsed()) setFocus('projects'); return; }
     if (key === 'ArrowRight') { setFocus('turns'); return; }
     const visibleSessEls = [...colSessions.querySelectorAll('.session-item')].filter(el => el.style.display !== 'none');
     const sessIds = visibleSessEls.map(el => el.dataset.sessionId);
@@ -659,7 +666,7 @@ document.addEventListener('keydown', (e) => {
     const next = Math.max(0, Math.min(sessIds.length - 1, cur + (key === 'ArrowDown' ? 1 : -1)));
     selectSession(sessIds[next]);
   } else if (focusedCol === 'turns') {
-    if (key === 'ArrowLeft') { setFocus('sessions'); return; }
+    if (key === 'ArrowLeft') { if (!isSidebarCollapsed()) setFocus('sessions'); return; }
     if (key === 'ArrowRight' && selectedTurnIdx >= 0) { setFocus('sections'); return; }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
       const visible = getVisibleTurnIndices();

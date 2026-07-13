@@ -1307,7 +1307,9 @@ let selectedSection = null;
 let selectedMessageIdx = -1;
 let selectedStepSub = null;
 let selectedStepSubExplicit = false;
-let focusedCol = 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
+// Start focus on the leftmost visible column — Projects/Sessions are hidden
+// when the sidebar loads collapsed (#206).
+let focusedCol = (typeof isSidebarCollapsed === 'function' && isSidebarCollapsed()) ? 'turns' : 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
 let isFocusedMode = false;
 // ponytail: "split pane active" — classic focused OR workflow timeline (P16: workflow never uses isFocusedMode)
 function inSplitView() { return isFocusedMode || (typeof wfState !== 'undefined' && !!wfState && selectedSection === 'timeline'); }
@@ -1727,6 +1729,8 @@ function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
 let _hoverTimer = null;
 
 function setFocus(col) {
+  // #206: never focus a column hidden by sidebar collapse
+  if ((col === 'projects' || col === 'sessions') && typeof isSidebarCollapsed === 'function' && isSidebarCollapsed()) col = 'turns';
   focusedCol = col;
   colProjects.classList.toggle('col-focused', col === 'projects');
   colSessions.classList.toggle('col-focused', col === 'sessions');

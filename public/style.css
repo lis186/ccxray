@@ -62,6 +62,8 @@
   #breadcrumb .bc-sep { color: var(--border); margin: 0 2px; cursor: default; }
   #copy-link-btn { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
   #copy-link-btn:hover { color: var(--text); }
+  #sidebar-toggle-btn { background: none; border: 1px solid var(--border); color: var(--dim); cursor: pointer; font-size: 11px; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; font-family: inherit; }
+  #sidebar-toggle-btn:hover { background: var(--surface-hover); color: var(--text); }
   #quota-ticker { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-shrink: 0; }
   #qt-bar-wrap { display: flex; align-items: center; gap: 5px; }
   .qt-bar-track { width: 80px; height: 7px; background: var(--border); border-radius: 4px; overflow: hidden; }
@@ -142,8 +144,14 @@
   .minimap-usage { position: absolute; bottom: 2px; left: 0; right: 0; text-align: center; font-size: 8px; color: var(--dim); pointer-events: none; }
   .tl-step-summary.mm-hover { background: var(--surface-hover); outline: 1px solid var(--border); outline-offset: -1px; }
   [data-theme="light"] .minimap-cache-bar > div { opacity: 0.8; }
-  #col-projects { width: 220px; }
-  #col-sessions { width: 220px; }
+  #col-projects { width: 220px; transition: width 0.18s ease, opacity 0.18s ease; }
+  #col-sessions { width: 220px; transition: width 0.18s ease, opacity 0.18s ease; }
+  /* Sidebar collapse (#206): animate Projects + Sessions out instead of
+     display:none, so overview/detail eases into the freed width. */
+  #columns.sidebar-collapsed #col-projects,
+  #columns.sidebar-collapsed #col-sessions {
+    width: 0; min-width: 0; opacity: 0; overflow: hidden; pointer-events: none; border-right: none;
+  }
 
   .project-item { padding: 7px 10px; cursor: pointer; border-left: 3px solid transparent; border-bottom: 1px solid var(--border); }
   .project-item:hover { background: var(--surface-hover); }
