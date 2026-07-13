@@ -233,6 +233,14 @@ describe('system-prompt', () => {
       assert.equal(normalizePlatform('cwd /home/alice'), 'cwd {{PATH}}');
     });
 
+    it('consumes the full unix path, not just the home prefix (symmetric with Windows)', () => {
+      // deep $HOME paths (skill/plugin content leaked into coreInstructions) — the
+      // forward-slash tail must collapse too, else it survives on unix but not Windows
+      // and re-splits one version across platforms (#219 residual).
+      assert.equal(normalizePlatform('see /Users/alice/src/tries/skill/data/runs here'), 'see {{PATH}} here');
+      assert.equal(normalizePlatform('cache at /home/bob/.claude/plugins/cache/x done'), 'cache at {{PATH}} done');
+    });
+
     it('leaves platform-neutral text untouched', () => {
       const t = 'You are an interactive agent that helps users with tasks.';
       assert.equal(normalizePlatform(t), t);
@@ -255,6 +263,20 @@ describe('system-prompt', () => {
       const v1 = 'You are Claude Code.\nPrefer dedicated tools over Bash when one fits.';
       const v2 = 'You are Claude Code.\nAlways prefer dedicated tools; never shell out.';
       assert.notEqual(computeCoreHash(v1), computeCoreHash(v2));
+    });
+
+    it('collapses deep $HOME paths (skill/plugin) across platforms', () => {
+      const mac = 'Skill data lives at /Users/alice/src/tries/skill/data/runs and loads on demand.';
+      const win = 'Skill data lives at C:\\Users\\alice\\src\\tries\\skill\\data\\runs and loads on demand.';
+      assert.equal(computeCoreHash(mac), computeCoreHash(win));
+    });
+
+    it('does not over-normalize: identical paths but different prose still differ', () => {
+      // guard against a too-greedy normalize washing out real content: same path span,
+      // different instruction sentence → must remain distinct versions.
+      const a = 'Base at /Users/alice/proj.\nAlways run tests before committing.';
+      const b = 'Base at /Users/alice/proj.\nNever run tests; ship immediately.';
+      assert.notEqual(computeCoreHash(a), computeCoreHash(b));
     });
 
     it('returns a 12-char hex prefix', () => {

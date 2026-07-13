@@ -142,8 +142,11 @@ function normalizePlatform(text) {
   return (text || '')
     .replace(/\b(Bash|PowerShell|cmd\.exe)\b/g, '{{SHELL}}')
     .replace(/\b(darwin|win32|linux)\b/g, '{{PLATFORM}}')
-    .replace(/[A-Za-z]:\\[\w.\\-]+/g, '{{PATH}}')  // Windows paths (C:\Users\foo)
-    .replace(/\/(?:Users|home)\/[\w.-]+/g, '{{PATH}}');  // macOS/Linux home paths
+    .replace(/[A-Za-z]:\\[\w.\\-]+/g, '{{PATH}}')  // Windows paths (C:\Users\foo\...)
+    .replace(/\/(?:Users|home)\/[\w./-]+/g, '{{PATH}}');  // macOS/Linux paths — consume the
+    // full path (not just the home prefix) so a deep path collapses symmetrically with the
+    // Windows branch above; else the forward-slash tail (skill/plugin paths under $HOME) would
+    // survive on unix but not on Windows and re-split one version across platforms (#219).
 }
 
 // Raw 12-char md5 prefix — the coreHash for providers whose prompts carry no
