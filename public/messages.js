@@ -400,6 +400,42 @@ function buildMergedSteps(messages, resEvents, provider) {
   return steps;
 }
 
+// Stream timing metrics (#195), derived purely client-side from the SSE frame
+// `_ts` sequence already carried in entry.res. Provider-neutral by construction:
+// every provider's renderer (renderers/*.js) stamps the same four scratch fields
+// — streamStartTs / firstContentTs / streamStopTs / outputTokens — from its own
+// event shapes, so this reads them without a provider branch. Anchors are
+// pinned to stream open (Anthropic message_start; OpenAI response.created) and
+// stream close (message_stop; response.completed).
+//
+// Returns null (whole result or per-field) when the anchoring frames or their
+// `_ts` are absent — Codex WS has no `_ts` today (#204). Callers render
+// structured-empty; nothing here can emit NaN/Infinity.
+function computeStreamTiming(resEvents, provider) {
+  if (!Array.isArray(resEvents) || !resEvents.length) return null;
+  const renderer = (typeof getRenderer === 'function') ? getRenderer(provider) : null;
+  if (!renderer || typeof renderer.processEvent !== 'function') return null;
+  const state = {
+    curThinking: null, curThinkingStart: null, curThinkingEnd: null,
+    curToolUses: [], openAIToolUseById: new Map(), curText: '', eventIndex: 0,
+    streamStartTs: null, firstContentTs: null, streamStopTs: null, outputTokens: null,
+  };
+  for (let i = 0; i < resEvents.length; i++) {
+    state.eventIndex = i;
+    renderer.processEvent(resEvents[i], state);
+  }
+  const { streamStartTs, firstContentTs, streamStopTs, outputTokens } = state;
+  const ttftMs = (streamStartTs != null && firstContentTs != null)
+    ? (firstContentTs - streamStartTs) : null;
+  const streamMs = (streamStartTs != null && streamStopTs != null)
+    ? (streamStopTs - streamStartTs) : null;
+  // streamMs must be > 0 before dividing — a 0-length stream (or missing stop
+  // anchor) yields null, not Infinity/NaN.
+  const outTokPerSec = (streamMs != null && streamMs > 0 && outputTokens != null)
+    ? (outputTokens / (streamMs / 1000)) : null;
+  return { ttftMs, streamMs, outTokPerSec, outputTokens: outputTokens ?? null };
+}
+
 let currentSteps = []; // cached merged steps for current turn
 let _stepsCache = { msgs: null, res: null, steps: [] };
 

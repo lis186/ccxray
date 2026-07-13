@@ -2346,6 +2346,23 @@ function renderSectionsCol(idx) {
   html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
   if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';
+  // Stream timing (#195): TTFT + output throughput derived client-side from res _ts.
+  // Each segment renders only when its metric is non-null (structured-empty otherwise).
+  const timing = (typeof computeStreamTiming === 'function')
+    ? computeStreamTiming(resEvents, e.provider || 'anthropic') : null;
+  if (timing) {
+    if (timing.ttftMs != null) {
+      const ttftLabel = timing.ttftMs < 1000
+        ? Math.round(timing.ttftMs) + 'ms'
+        : (timing.ttftMs / 1000).toFixed(1) + 's';
+      html += ' · <span style="color:var(--accent)" title="Time to first token (first content delta − message_start)">⚡ '
+        + ttftLabel + '</span>';
+    }
+    if (timing.outTokPerSec != null) {
+      html += ' · <span style="color:var(--green)" title="Output throughput (output_tokens ÷ stream duration)">'
+        + Math.round(timing.outTokPerSec) + ' tok/s</span>';
+    }
+  }
   if (turnCost != null) html += ' · <span style="color:var(--yellow)">$' + turnCost.toFixed(2) + '</span>';
   html += '</div>';
   const cacheRead = usage.cache_read_input_tokens || 0;
