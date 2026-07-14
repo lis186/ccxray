@@ -913,8 +913,8 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) 
   const blocks = buildMinimapBlocks(steps, perMessage, usage);
   if (!blocks.length) return '';
 
-  // For usedRatio consistency with session card and swimlane (ADR: in+cr+cc, no output),
-  // exclude current-turn block weights from the estimated total used for the occupied region.
+  // For usedRatio consistency with session card (ctxUsed, entry-rendering.js:540) and
+  // swimlane: in+cr+cc, no output. Exclude current-turn block weights from the occupied region.
   const estimatedInput = blocks.reduce((s, b) => {
     const step = steps[b.stepIdx];
     return s + (step && step.source === 'current' ? 0 : b.tokens);
