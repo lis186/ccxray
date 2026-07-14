@@ -2323,6 +2323,37 @@ function selectSection(name) {
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 
+// #196: cache-creation TTL split (5m vs 1h). The Anthropic ephemeral breakdown
+// (usage.cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens) is parsed
+// server-side (wire-parsers/anthropic.js:34-39) but was never surfaced — the
+// turn-detail cache row only showed the flat cache_creation_input_tokens.
+// Returns the cache-create segment(s) for the detail line's `parts` array:
+//   - object present AND 5m+1h === flat  → split into `new 5m X / 1h Y`
+//     (one <span data-cache-ttl> per non-zero tier — a single all-5m or all-1h
+//     turn yields one tagged node, which is truthful, not a fake split)
+//   - object absent, non-object, or drifted sum → flat `new X`, prefer the
+//     authoritative flat value (obs-fragile defense; wire-protocol-reference §4.3)
+// Empty array when there is no cache-creation at all (no fake `5m 0 / 1h 0`).
+function cacheCreateParts(usage) {
+  const flat = (usage && usage.cache_creation_input_tokens) || 0;
+  if (!flat) return [];
+  const cc = usage && usage.cache_creation;
+  if (cc && typeof cc === 'object') {
+    const m5 = cc.ephemeral_5m_input_tokens || 0;
+    const h1 = cc.ephemeral_1h_input_tokens || 0;
+    if ((m5 || h1) && m5 + h1 === flat) {
+      const segs = [];
+      if (m5) segs.push('<span data-cache-ttl="5m">5m ' + fmt(m5) + '</span>');
+      if (h1) segs.push('<span data-cache-ttl="1h">1h ' + fmt(h1) + '</span>');
+      return ['new ' + segs.join(' / ')];
+    }
+    if (m5 + h1 !== flat && typeof console !== 'undefined' && console.debug) {
+      console.debug('[ccxray #196] cache_creation split ' + (m5 + h1) + ' ≠ flat ' + flat + ', using flat');
+    }
+  }
+  return ['new ' + fmt(flat)];
+}
+
 function renderSectionsCol(idx) {
   const e = allEntries[idx];
   if (!e) { colSections.innerHTML = '<div class="col-empty">No data</div>'; return; }
@@ -2359,7 +2390,7 @@ function renderSectionsCol(idx) {
     html += ' <span style="color:var(--dim);font-size:10px">(';
     const parts = [];
     if (cacheRead) parts.push('cache ' + fmt(cacheRead));
-    if (cacheCreate) parts.push('new ' + fmt(cacheCreate));
+    for (const p of cacheCreateParts(usage)) parts.push(p);
     html += parts.join(' · ') + ')</span>';
   }
   html += '</div>';
