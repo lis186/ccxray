@@ -81,6 +81,30 @@ describe('dashboard timeline rendering helpers', () => {
   });
 });
 
+describe('buildMinimapBlocks — current-turn token estimate', () => {
+  const curSteps = () => ([
+    { type: 'tool-group', source: 'current', thinking: 'x'.repeat(300), calls: [], msgIndices: [] },
+    { type: 'assistant-text', source: 'current', text: 'y'.repeat(100), msgIndices: [] },
+  ]);
+
+  it('splits real output_tokens across current-turn steps by text length instead of tokens:1', () => {
+    const context = loadMessagesContext();
+    const blocks = context.buildMinimapBlocks(curSteps(), null, { output_tokens: 1000 });
+    assert.equal(blocks.length, 2);
+    // 300:100 text-length ratio → 750:250 of 1000 output_tokens.
+    assert.equal(blocks[0].tokens, 750);
+    assert.equal(blocks[1].tokens, 250);
+    // The bug: both were 1 (fabricated fallback). Guard against regression.
+    assert.ok(blocks[0].tokens > 1 && blocks[1].tokens > 1);
+  });
+
+  it('falls back to tokens:1 only when no output_tokens is available (legacy/no-usage)', () => {
+    const context = loadMessagesContext();
+    assert.equal(context.buildMinimapBlocks(curSteps(), null, undefined)[0].tokens, 1);
+    assert.equal(context.buildMinimapBlocks(curSteps(), null, { output_tokens: 0 })[1].tokens, 1);
+  });
+});
+
 describe('renderEditedBanner — intercept-edited badge (client render)', () => {
   function ctxWithStubs() {
     const context = loadMessagesContext();

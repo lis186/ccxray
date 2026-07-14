@@ -847,9 +847,32 @@ function mmBlockColor(stepType, blockType) {
 
 // Build minimap block data from currentSteps + tok.perMessage
 // Returns array of { stepIdx, color, tokens, label, isError }
-function buildMinimapBlocks(steps, perMessage) {
+function buildMinimapBlocks(steps, perMessage, usage) {
   const blocks = [];
   if (!steps || !steps.length) return blocks;
+
+  // Current-turn steps (source:'current') have empty msgIndices — their output
+  // isn't in the context window yet, so no per-message token count exists. Split
+  // the turn's real output_tokens across them by text length instead of the
+  // fabricated tokens:1 fallback, keeping the minimap proportion honest.
+  const curTokensByStep = new Map();
+  const outputTokens = (usage && usage.output_tokens) || 0;
+  if (outputTokens > 0) {
+    const curSteps = steps.filter(s => s.source === 'current');
+    if (curSteps.length) {
+      const lenOf = (s) => {
+        let n = (s.thinking ? s.thinking.length : 0) + (s.text ? s.text.length : 0);
+        if (s.calls) for (const c of s.calls) { try { n += JSON.stringify(c.input || {}).length; } catch {} }
+        return n;
+      };
+      const lens = curSteps.map(lenOf);
+      const totalLen = lens.reduce((a, b) => a + b, 0);
+      curSteps.forEach((s, i) => {
+        const share = totalLen > 0 ? lens[i] / totalLen : 1 / curSteps.length;
+        curTokensByStep.set(s, Math.max(1, Math.round(outputTokens * share)));
+      });
+    }
+  }
 
   for (let si = 0; si < steps.length; si++) {
     const step = steps[si];
@@ -878,7 +901,8 @@ function buildMinimapBlocks(steps, perMessage) {
         }
       }
     } else {
-      blocks.push({ stepIdx: si, color: mmBlockColor(step.type), tokens: 1, label: step.type, isError: hasError });
+      const estTok = curTokensByStep.get(step) || 1;
+      blocks.push({ stepIdx: si, color: mmBlockColor(step.type), tokens: estTok, label: step.type, isError: hasError });
     }
   }
   return blocks;
@@ -886,15 +910,19 @@ function buildMinimapBlocks(steps, perMessage) {
 
 // Render minimap HTML — cache bar + blocks + viewport + usage label
 function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) {
-  const blocks = buildMinimapBlocks(steps, perMessage);
+  const blocks = buildMinimapBlocks(steps, perMessage, usage);
   if (!blocks.length) return '';
 
-  const estimatedTotal = blocks.reduce((s, b) => s + b.tokens, 0) || 1;
-  // Use API usage as authoritative total when available (same logic as progress bar)
+  // For usedRatio consistency with session card and swimlane (ADR: in+cr+cc, no output),
+  // exclude current-turn block weights from the estimated total used for the occupied region.
+  const estimatedInput = blocks.reduce((s, b) => {
+    const step = steps[b.stepIdx];
+    return s + (step && step.source === 'current' ? 0 : b.tokens);
+  }, 0) || 1;
   const apiTotal = usage
     ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0)
     : 0;
-  const totalTokens = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
+  const totalTokens = apiTotal > estimatedInput ? apiTotal : estimatedInput;
   const ctxWindow = maxContext || 200000;
   const usedPct = Math.min(100, totalTokens / ctxWindow * 100).toFixed(0);
   const remaining = Math.max(0, ctxWindow - totalTokens);
