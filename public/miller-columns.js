@@ -427,14 +427,14 @@ function _ensureEntryLoadedByIndex(idx) {
     return entry._prefetchPromise.then(() => {
       const current = allEntries[idx];
       return current && current.reqLoaded ? { ok: true } : { ok: false, reason: 'load-failed' };
-    }).catch(() => ({ ok: false, reason: 'load-failed' }));
+    }).catch(() => { entry._loadFailed = true; return { ok: false, reason: 'load-failed' }; });
   }
   if (entry._prefetching) return _waitForEntryLoaded(idx, 300);
   entry._prefetching = true;
   entry._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(entry.id))
     .then(r => r.json())
     .then(data => {
-      if (!data) return { ok: false, reason: 'load-failed' };
+      if (!data) { entry._loadFailed = true; return { ok: false, reason: 'load-failed' }; }
       entry.req = data.req;
       entry.res = data.res;
       entry.reqLoaded = true;
@@ -445,6 +445,7 @@ function _ensureEntryLoadedByIndex(idx) {
     })
     .catch(() => {
       entry._prefetching = false;
+      entry._loadFailed = true;
       return { ok: false, reason: 'load-failed' };
     })
     .then(result => {
@@ -2212,7 +2213,13 @@ function prefetchEntry(idx) {
   e._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(e.id))
     .then(r => r.json())
     .then(data => {
-      if (!data) return;
+      if (!data) {
+        allEntries[idx]._loadFailed = true;
+        allEntries[idx]._prefetching = false;
+        allEntries[idx]._prefetchPromise = null;
+        if (selectedTurnIdx === idx) scheduleRender();
+        return;
+      }
       allEntries[idx].req = data.req;
       allEntries[idx].res = data.res;
       allEntries[idx].reqLoaded = true;
@@ -2229,8 +2236,10 @@ function prefetchEntry(idx) {
         });
       }
     }).catch(() => {
+      allEntries[idx]._loadFailed = true;
       allEntries[idx]._prefetching = false;
       allEntries[idx]._prefetchPromise = null;
+      if (selectedTurnIdx === idx) scheduleRender();
     });
 }
 
@@ -2486,7 +2495,9 @@ function renderSectionsCol(idx) {
   html += '<div class="section-group-title">RAW</div>';
   html += renderSectionItem({ name: 'raw-req', label: 'Request', color: null, badge: '' });
   html += renderSectionItem({ name: 'raw-res', label: 'Events', color: null, badge: resEvents.length ? resEvents.length + ' events' : '' });
-  if (!e.reqLoaded) html += '<div style="padding:8px 12px;font-size:11px;color:var(--dim)">⏳ Loading…</div>';
+  if (!e.reqLoaded) html += e._loadFailed
+    ? '<div style="padding:8px 12px;font-size:11px;color:var(--red)">turn data could not be loaded</div>'
+    : '<div style="padding:8px 12px;font-size:11px;color:var(--dim)">⏳ Loading…</div>';
   colSections.innerHTML = html;
 }
 
@@ -2667,7 +2678,9 @@ function renderDetailCol() {
 
   const req = e.req || {};
   const resEvents = Array.isArray(e.res) ? e.res : [];
-  const loading = '<div class="col-empty">⏳ Loading…</div>';
+  const loading = e._loadFailed
+    ? '<div class="col-empty">turn data could not be loaded</div>'
+    : '<div class="col-empty">⏳ Loading…</div>';
   let inner = '';
 
   const sectionLabel = selectedSection.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
