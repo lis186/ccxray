@@ -432,6 +432,19 @@ function addEntry(e) {
   let isSubagent = e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]
     ? (typeof WF_MAIN_AGENT_KEYS !== 'undefined' ? !WF_MAIN_AGENT_KEYS[e.agentKey] : !!e.isSubagent)
     : (e.isSubagent || false);
+  // INVARIANT: coreHash identity routing — teammate with a main-agent key
+  // (e.g. 'orchestrator') but a different coreHash. Must agree with
+  // workflow-timeline.js (ADR 0005/0010). Gated on wfState.sessionId === sid:
+  // wfState is the swimlane's CURRENTLY VIEWED session, which is not
+  // necessarily this entry's session while other sessions stream live —
+  // trusting a foreign session's mainCoreHash/mainConvIds here would
+  // misclassify that session's own main turns.
+  if (!isSubagent && e.agentKey && typeof WF_MAIN_AGENT_KEYS !== 'undefined' && WF_MAIN_AGENT_KEYS[e.agentKey] &&
+      typeof wfState !== 'undefined' && wfState && wfState.sessionId === sid && wfState.mainCoreHash &&
+      e.coreHash && e.coreHash !== wfState.mainCoreHash &&
+      e.convId && wfState.mainConvIds && !wfState.mainConvIds.has(e.convId)) {
+    isSubagent = true;
+  }
   const isRetry = !isSubagent && !isHttpStatusOk(e.status) && !(usage && usage.output_tokens > 0);
   // #222: temporal overlap — mirrors wfAddEntry's parallel-fork detection so
   // the turn list and swimlane agree on classification (ADR 0005 contract).

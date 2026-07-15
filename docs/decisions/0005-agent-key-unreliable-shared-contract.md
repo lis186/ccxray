@@ -43,6 +43,9 @@ before trusting it, and fall back to the raw `isSubagent` flag otherwise:
 | `isSubagent` computation | `entry-rendering.js` `addEntry()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
 | Batch lane build | `workflow-timeline.js` `wfInferLanes()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
 | Live lane update | `workflow-timeline.js` `wfAddEntry()` | `entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]` |
+| coreHash identity routing (pre-scan) | `workflow-timeline.js` `wfInferLanes()` | coreHash+convId early-exit runs before `WF_MAIN_AGENT_KEYS` — see ADR 0010 |
+| coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
+| coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
 
 ## Consequences
 

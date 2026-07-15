@@ -87,3 +87,12 @@ runs, stitched fork continuations), labeled Fork/Teammate by conversation
 identity. This section is navigation only — the mechanism, its invariants,
 and the live-path convergence rules live in
 `0009-sequential-interleave-conv-bracketing.md`.
+
+## Amended by ADR 0010 (2026-07-16)
+
+coreHash identity routing (ADR 0010, #258) diverts teammate turns to an
+identity sublane *before* they ever reach main, so the overlap sweep in this
+ADR processes fewer candidates for sessions with teammates. Fork turns
+(same coreHash as main) are unaffected — they still transit main and remain
+fully subject to the overlap invariant this ADR establishes; ADR 0010 is
+explicitly scoped to not touch fork handling.
