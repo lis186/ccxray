@@ -232,11 +232,11 @@ function isProxyLifecycleShutdown(entry) {
 }
 
 function classifySeverity(entry, ctxPct, dupesMax) {
-  if (ctxPct > 95) return 'critical';
+  if (ctxPct > 97) return 'critical';
   if (isProxyLifecycleShutdown(entry)) return 'warning';
   if (entry.status != null && !isHttpStatusOk(entry.status)) return 'critical';
   if (isAbnormalStop(entry.stopReason)) return 'critical';
-  if (ctxPct > 85) return 'warning';
+  if (ctxPct > 90) return 'warning';
   if (entry.hasCredential) return 'warning';
   if (entry.toolFail) return 'warning';
   if (dupesMax >= 2) return 'notice';
@@ -537,7 +537,7 @@ function addEntry(e) {
   const ctxCacheCreate = usage ? (usage.cache_creation_input_tokens || 0) : 0;
   const ctxCacheRead   = usage ? (usage.cache_read_input_tokens || 0) : 0;
   const ctxInput       = usage ? (usage.input_tokens || 0) : 0;
-  const ctxUsed = ctxCacheCreate + ctxCacheRead + ctxInput;
+  const ctxUsed = computeCtxUsed(usage);
 
   sess.inputTokens = (sess.inputTokens || 0) + (usage ? (usage.input_tokens || 0) : 0);
   sess.outputTokens = (sess.outputTokens || 0) + (usage ? (usage.output_tokens || 0) : 0);
@@ -729,7 +729,7 @@ function addEntry(e) {
   // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
   // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
   // red in late-session turns (pre-mortem F1).
-  const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
+  const ctxPctClass = ctxPct > 97 ? 'ctx-critical' : ctxPct > 90 ? 'ctx-warning' : '';
   const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
   const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
   const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
