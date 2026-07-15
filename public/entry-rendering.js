@@ -145,7 +145,7 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   if (!data) return '';
   const { cats, total: estimatedTotal } = data;
   // Use API usage as authoritative total when available (tokenizeRequest underestimates by 20-40%)
-  const apiTotal = usage ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
+  const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
   // Scale category segments proportionally if API total is larger
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
@@ -176,7 +176,7 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   if (!data) return '';
   const { cats, total: estimatedTotal, mcpPlugins } = data;
   // Use API usage as authoritative total when available
-  const apiTotal = usage ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
+  const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
@@ -244,7 +244,7 @@ function classifySeverity(entry, ctxPct, dupesMax) {
 }
 
 function getCriticalMarker(stopReason, httpStatus, ctxPct) {
-  // ctx > 95%: no inline marker (left bar only)
+  // ctx > 97%: no inline marker (left bar only)
   if (httpStatus === 499 && typeof stopReason === 'string' && stopReason.includes('ccxray shutdown')) return '!stop';
   if (httpStatus != null && !isHttpStatusOk(httpStatus)) return '!http';
   if (stopReason === 'max_tokens') return '!max';
@@ -546,7 +546,8 @@ function addEntry(e) {
   if (!isSubagent && ctxUsed > 0) {
     sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
     sess.latestCacheReadTokens = ctxCacheRead;
-    sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
+    const ctxInputTotal = ctxCacheRead + ctxCacheCreate + (usage ? (usage.input_tokens || 0) : 0);
+    sess.latestCacheHitRatio = ctxInputTotal > 0 ? ctxCacheRead / ctxInputTotal : 0;
     sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
