@@ -16,6 +16,7 @@ function loadMessagesContext() {
   }
   // Promote window globals into context scope (messages.js reads getRenderer as a global)
   vm.runInContext('var RENDERERS = window.RENDERERS; var getRenderer = window.getRenderer;', context);
+  vm.runInContext(fs.readFileSync(path.join(publicDir, 'format.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(path.join(publicDir, 'messages.js'), 'utf8'), context);
   return context;
 }
@@ -104,12 +105,12 @@ describe('buildMinimapBlocks — current-turn token estimate', () => {
     assert.equal(context.buildMinimapBlocks(curSteps(), null, { output_tokens: 0 })[1].tokens, 1);
   });
 
-  it('excludes current-turn output from occupancy total (usedRatio parity with ctxUsed)', () => {
+  it('includes output_tokens in occupancy total (#253 ctxUsed = in+out)', () => {
     const context = loadMessagesContext();
     const html = context.renderMinimapHtml(curSteps(), null, -1, 1000000, { input_tokens: 500, output_tokens: 1000 });
     const m = html.match(/data-total-tokens="(\d+)"/);
     assert.ok(m, 'data-total-tokens attribute should exist');
-    assert.equal(Number(m[1]), 500);
+    assert.equal(Number(m[1]), 1500);
   });
 });
 
