@@ -150,15 +150,17 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   // Scale category segments proportionally if API total is larger
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
-  const pct = (total / windowSize * 100).toFixed(0);
-  const usedPct = Math.min(100, total / windowSize * 100);
+  const rawPct = total / windowSize * 100;
+  const pct = Math.min(100, rawPct).toFixed(0);
+  const usedPct = Math.min(100, rawPct);
   const barColor = ctxZone(usedPct).cssVar;
 
+  const barDenom = Math.max(total, windowSize);
   let bar = '<div class="ctx-big-bar" style="display:flex;height:8px;border-radius:2px;overflow:visible;margin:4px 0 2px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
-    const w = (scaled / windowSize * 100).toFixed(3);
+    const w = (scaled / barDenom * 100).toFixed(3);
     bar += '<div style="width:' + w + '%;background:' + (barColor || c.color) + ';min-width:1px" title="' + escapeHtml(c.label) + ': ' + Math.round(scaled).toLocaleString() + '"></div>';
   }
   bar += '</div>';
@@ -184,11 +186,12 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   const barColor = ctxZone(usedPct).cssVar;
 
   // Each segment is a fraction of windowSize; bar total = usedPct% of full width
+  const stickyDenom = Math.max(total, windowSize);
   let bar = '<div class="ctx-big-bar" style="display:flex;height:12px;border-radius:3px;overflow:visible;margin-bottom:6px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
-    const pct = (scaled / windowSize * 100).toFixed(3);
+    const pct = (scaled / stickyDenom * 100).toFixed(3);
     const bg = barColor || c.color;
     bar += '<div style="width:' + pct + '%;background:' + bg + ';min-width:1px" title="' + escapeHtml(c.label) + ': ' + Math.round(scaled).toLocaleString() + ' (' + (c.tokens / estimatedTotal * 100).toFixed(1) + '% of used)"></div>';
   }
