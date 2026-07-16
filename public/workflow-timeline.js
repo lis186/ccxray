@@ -546,8 +546,14 @@ function wfInferLanes(entries, childEntries, seqTracker) {
       if (fam[pi].lastEnd <= oStart && (!best || fam[pi].lastEnd > best.lastEnd)) best = fam[pi];
     }
     if (!best) {
-      best = { key: fam.length ? baseKey + '#' + (fam.length + 1) : baseKey, lastEnd: 0 };
-      fam.push(best);
+      // ponytail: #261 — same convId = resource pool, not instance track.
+      // Allow intra-lane overlap rather than permanent #N lane splits.
+      if (fam.length && oTurn.convId) {
+        best = fam[0];
+      } else {
+        best = { key: fam.length ? baseKey + '#' + (fam.length + 1) : baseKey, lastEnd: 0 };
+        fam.push(best);
+      }
     }
     best.lastEnd = Math.max(best.lastEnd, oEnd);
     _wfPushToSubLane(laneMap, best.key, oTurn);
@@ -824,7 +830,11 @@ function wfAddEntry(entry) {
         var ltEnd = lt ? (Number(lt.receivedAt) || 0) + (parseFloat(lt.elapsed) || 0) * 1000 : 0;
         if (ltEnd <= ts && ltEnd > bestEnd) { lane = famLanes[fi]; bestEnd = ltEnd; }
       }
-      if (!lane && famLanes.length) key = key + '#' + (famLanes.length + 1);
+      // ponytail: #261 — same convId → single lane (resource pool)
+      if (!lane && famLanes.length) {
+        if (entry.convId) { lane = famLanes[0]; }
+        else { key = key + '#' + (famLanes.length + 1); }
+      }
     }
     if (!lane) lane = wfState.lanes.find(function(l) { return l.key === key; });
     if (!lane) {
@@ -901,9 +911,14 @@ function _wfSeqRetroMove(closedTurns) {
       if (ltEnd <= ts && ltEnd > bestEnd) { lane = famLanes[fi]; bestEnd = ltEnd; }
     }
     if (!lane) {
-      if (famLanes.length) key = key + '#' + (famLanes.length + 1);
-      lane = { name: key, key: key, turns: [], model: t.model, ctxWindow: t.maxContext || 0, spawnParent: null, agentKey: t.agentKey || null, agentLabel: t.agentLabel || null, convId: t.convId || null };
-      wfState.lanes.push(lane);
+      // ponytail: #261 — same convId → single lane (resource pool)
+      if (famLanes.length && t.convId) {
+        lane = famLanes[0];
+      } else {
+        if (famLanes.length) key = key + '#' + (famLanes.length + 1);
+        lane = { name: key, key: key, turns: [], model: t.model, ctxWindow: t.maxContext || 0, spawnParent: null, agentKey: t.agentKey || null, agentLabel: t.agentLabel || null, convId: t.convId || null };
+        wfState.lanes.push(lane);
+      }
     }
     lane.turns.push(t);
     lane._costMedian = null;
@@ -991,7 +1006,7 @@ function _wfLaneDispName(lane, laneIdx, mainConvs) {
   var laneOrd = /#(\d+)$/.exec(lane.key || '');
   if ((lane.key || '').indexOf('parallel-') === 0) {
     var kin = lane.convId && mainConvs && mainConvs.has(lane.convId) ? 'Fork' : 'Teammate';
-    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ' #' + (laneOrd ? laneOrd[1] : '1');
+    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + (laneOrd ? ' #' + laneOrd[1] : '');
   }
   return (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '');
 }
