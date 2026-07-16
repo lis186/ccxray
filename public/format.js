@@ -3,10 +3,10 @@
 // entry-rendering.js, and intercept-ui.js — every function here is consumed as a
 // bare global by those files.
 
-// #142: single source for context-usage bands (pct>85 red / >=45 yellow / else safe).
+// #142: single source for context-usage bands (pct>80 red / >=40 yellow / else safe).
 function ctxZone(pct) {
-  if (pct > 85) return { zone: 'danger', cssVar: 'var(--red)', hex: '#f85149' };
-  if (pct >= 45) return { zone: 'warn', cssVar: 'var(--yellow)', hex: '#d29922' };
+  if (pct > 80) return { zone: 'danger', cssVar: 'var(--red)', hex: '#f85149' };
+  if (pct >= 40) return { zone: 'warn', cssVar: 'var(--yellow)', hex: '#d29922' };
   return { zone: 'safe', cssVar: null, hex: '#3fb950' };
 }
 

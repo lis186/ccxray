@@ -235,11 +235,11 @@ function isProxyLifecycleShutdown(entry) {
 }
 
 function classifySeverity(entry, ctxPct, dupesMax) {
-  if (ctxPct > 97) return 'critical';
+  if (ctxPct > 95) return 'critical';
   if (isProxyLifecycleShutdown(entry)) return 'warning';
   if (entry.status != null && !isHttpStatusOk(entry.status)) return 'critical';
   if (isAbnormalStop(entry.stopReason)) return 'critical';
-  if (ctxPct > 90) return 'warning';
+  if (ctxPct > 85) return 'warning';
   if (entry.hasCredential) return 'warning';
   if (entry.toolFail) return 'warning';
   if (dupesMax >= 2) return 'notice';
@@ -247,7 +247,7 @@ function classifySeverity(entry, ctxPct, dupesMax) {
 }
 
 function getCriticalMarker(stopReason, httpStatus, ctxPct) {
-  // ctx > 97%: no inline marker (left bar only)
+  // ctx > 95%: no inline marker (left bar only)
   if (httpStatus === 499 && typeof stopReason === 'string' && stopReason.includes('ccxray shutdown')) return '!stop';
   if (httpStatus != null && !isHttpStatusOk(httpStatus)) return '!http';
   if (stopReason === 'max_tokens') return '!max';
@@ -733,7 +733,7 @@ function addEntry(e) {
   // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
   // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
   // red in late-session turns (pre-mortem F1).
-  const ctxPctClass = ctxPct > 97 ? 'ctx-critical' : ctxPct > 90 ? 'ctx-warning' : '';
+  const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
   const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
   const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
   const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';

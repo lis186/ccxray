@@ -885,24 +885,24 @@ describe('#149 wfLaneShape — per-agent identity glyph', () => {
   });
 });
 
-// ── #142/#253: workflow ctx zone color must share the >85/>=45 band contract ──
+// ── #142/#253: workflow ctx zone color must share the >80/>=40 band contract ──
 describe('#142 wfCtxZoneColor band boundaries', () => {
   const t = (pct) => ({ ctxUsed: pct / 100 * 200000, maxContext: 200000 });
-  it('85% -> yellow, not red (boundary is >85)', () => {
+  it('80% -> yellow, not red (boundary is >80)', () => {
     const ctx = loadWfModule();
-    assert.equal(ctx.wfCtxZoneColor(t(85)), '#d29922');
+    assert.equal(ctx.wfCtxZoneColor(t(80)), '#d29922');
   });
-  it('86% -> red', () => {
+  it('81% -> red', () => {
     const ctx = loadWfModule();
-    assert.equal(ctx.wfCtxZoneColor(t(86)), '#f85149');
+    assert.equal(ctx.wfCtxZoneColor(t(81)), '#f85149');
   });
-  it('45% -> yellow', () => {
+  it('40% -> yellow', () => {
     const ctx = loadWfModule();
-    assert.equal(ctx.wfCtxZoneColor(t(45)), '#d29922');
+    assert.equal(ctx.wfCtxZoneColor(t(40)), '#d29922');
   });
-  it('44% -> green', () => {
+  it('39% -> green', () => {
     const ctx = loadWfModule();
-    assert.equal(ctx.wfCtxZoneColor(t(44)), '#3fb950');
+    assert.equal(ctx.wfCtxZoneColor(t(39)), '#3fb950');
   });
 });
 
