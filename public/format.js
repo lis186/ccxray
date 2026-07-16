@@ -10,6 +10,16 @@ function ctxZone(pct) {
   return { zone: 'safe', cssVar: null, hex: '#3fb950' };
 }
 
+// #253: single source of truth for context-window usage — cache creation +
+// cache read + input + output tokens (the full request cost the next turn pays).
+function computeCtxUsed(usage) {
+  if (!usage) return 0;
+  return (usage.cache_creation_input_tokens || 0)
+    + (usage.cache_read_input_tokens || 0)
+    + (usage.input_tokens || 0)
+    + (usage.output_tokens || 0);
+}
+
 // Strip the "claude-" prefix and a trailing YYYYMMDD date suffix.
 function shortModel(m) {
   return (m || '?').replace('claude-', '').replace(/-[0-9]{8}$/, '');

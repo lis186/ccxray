@@ -145,20 +145,22 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   if (!data) return '';
   const { cats, total: estimatedTotal } = data;
   // Use API usage as authoritative total when available (tokenizeRequest underestimates by 20-40%)
-  const apiTotal = usage ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
+  const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
   // Scale category segments proportionally if API total is larger
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
-  const pct = (total / windowSize * 100).toFixed(0);
-  const usedPct = Math.min(100, total / windowSize * 100);
+  const rawPct = total / windowSize * 100;
+  const pct = Math.min(100, rawPct).toFixed(0);
+  const usedPct = Math.min(100, rawPct);
   const barColor = ctxZone(usedPct).cssVar;
 
+  const barDenom = Math.max(total, windowSize);
   let bar = '<div class="ctx-big-bar" style="display:flex;height:8px;border-radius:2px;overflow:visible;margin:4px 0 2px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
-    const w = (scaled / windowSize * 100).toFixed(3);
+    const w = (scaled / barDenom * 100).toFixed(3);
     bar += '<div style="width:' + w + '%;background:' + (barColor || c.color) + ';min-width:1px" title="' + escapeHtml(c.label) + ': ' + Math.round(scaled).toLocaleString() + '"></div>';
   }
   bar += '</div>';
@@ -176,7 +178,7 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   if (!data) return '';
   const { cats, total: estimatedTotal, mcpPlugins } = data;
   // Use API usage as authoritative total when available
-  const apiTotal = usage ? (usage.input_tokens || 0) + (usage.cache_read_input_tokens || 0) + (usage.cache_creation_input_tokens || 0) : 0;
+  const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
   const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
@@ -184,11 +186,12 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   const barColor = ctxZone(usedPct).cssVar;
 
   // Each segment is a fraction of windowSize; bar total = usedPct% of full width
+  const stickyDenom = Math.max(total, windowSize);
   let bar = '<div class="ctx-big-bar" style="display:flex;height:12px;border-radius:3px;overflow:visible;margin-bottom:6px;background:var(--border)">';
   for (const c of cats) {
     if (!c.tokens) continue;
     const scaled = c.tokens * scale;
-    const pct = (scaled / windowSize * 100).toFixed(3);
+    const pct = (scaled / stickyDenom * 100).toFixed(3);
     const bg = barColor || c.color;
     bar += '<div style="width:' + pct + '%;background:' + bg + ';min-width:1px" title="' + escapeHtml(c.label) + ': ' + Math.round(scaled).toLocaleString() + ' (' + (c.tokens / estimatedTotal * 100).toFixed(1) + '% of used)"></div>';
   }
@@ -537,7 +540,7 @@ function addEntry(e) {
   const ctxCacheCreate = usage ? (usage.cache_creation_input_tokens || 0) : 0;
   const ctxCacheRead   = usage ? (usage.cache_read_input_tokens || 0) : 0;
   const ctxInput       = usage ? (usage.input_tokens || 0) : 0;
-  const ctxUsed = ctxCacheCreate + ctxCacheRead + ctxInput;
+  const ctxUsed = computeCtxUsed(usage);
 
   sess.inputTokens = (sess.inputTokens || 0) + (usage ? (usage.input_tokens || 0) : 0);
   sess.outputTokens = (sess.outputTokens || 0) + (usage ? (usage.output_tokens || 0) : 0);
@@ -546,7 +549,8 @@ function addEntry(e) {
   if (!isSubagent && ctxUsed > 0) {
     sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
     sess.latestCacheReadTokens = ctxCacheRead;
-    sess.latestCacheHitRatio = ctxUsed > 0 ? ctxCacheRead / ctxUsed : 0;
+    const ctxInputTotal = ctxCacheRead + ctxCacheCreate + (usage ? (usage.input_tokens || 0) : 0);
+    sess.latestCacheHitRatio = ctxInputTotal > 0 ? ctxCacheRead / ctxInputTotal : 0;
     sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);

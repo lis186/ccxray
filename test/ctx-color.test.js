@@ -1,6 +1,6 @@
 'use strict';
 
-// #142/#156: unified context-usage color thresholds — pct>80 red / pct>=40 yellow / else safe.
+// #142/#156/#253: unified context-usage color thresholds — pct>80 red / pct>=40 yellow / else safe.
 // Contract test locks the band boundaries (39/40/80/81) on both sides.
 
 const { describe, it } = require('node:test');

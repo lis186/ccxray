@@ -885,7 +885,7 @@ describe('#149 wfLaneShape — per-agent identity glyph', () => {
   });
 });
 
-// ── #142: workflow ctx zone color must share the >80/>=40 band contract ──────
+// ── #142/#253: workflow ctx zone color must share the >80/>=40 band contract ──
 describe('#142 wfCtxZoneColor band boundaries', () => {
   const t = (pct) => ({ ctxUsed: pct / 100 * 200000, maxContext: 200000 });
   it('80% -> yellow, not red (boundary is >80)', () => {
