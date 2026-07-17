@@ -1174,6 +1174,31 @@ describe('#261 codex review fixes', () => {
     assert.equal(batchIds, liveIds);
   });
 
+  it('P2: equal-receivedAt pooled turns keep arrival order, matching batch (no id tie-break)', () => {
+    // codex #262 re-review: wfInferLanes sorts `exiled` by receivedAt ONLY
+    // (stable → equal timestamps keep arrival order). A secondary id tie-break
+    // in the live insert flips same-millisecond turns vs the batch rebuild,
+    // changing overlapping-bar paint/hit-test order. Both must agree.
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkFork('parent', 1000, 100)];
+    ctx.wfState = ctx.wfBuildState('s1');
+    // Same receivedAt (10000); arrival order z then a. id 'a' < 'z' lexically,
+    // so an id tie-break would wrongly place a before z.
+    ctx.wfAddEntry(mkFork('z', 10000, 10));
+    ctx.wfAddEntry(mkFork('a', 10000, 20));
+    var liveIds = ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(',');
+
+    const batchCtx = loadWfModule();
+    var batchLanes = batchCtx.wfInferLanes([
+      mkFork('parent', 1000, 100),
+      mkFork('z', 10000, 10),
+      mkFork('a', 10000, 20),
+    ], []);
+    var batchIds = batchLanes[1].turns.map(function(t) { return t.id; }).join(',');
+    assert.equal(liveIds, batchIds, 'live equal-receivedAt order must match batch');
+    assert.equal(liveIds, 'z,a', 'equal-receivedAt turns keep arrival order (no id tie-break)');
+  });
+
   it('P3: legacy null-convId families keep the first lane\'s #1 ordinal', () => {
     const ctx = loadWfModule();
     var entries = [

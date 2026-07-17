@@ -990,16 +990,18 @@ function _wfSeqRetroMove(closedTurns) {
 }
 
 // #261: pooled convId lanes can receive turns out of start order (a nested
-// turn completes before an earlier longer turn). Insert by (receivedAt, id)
-// so the live path matches wfInferLanes' sorted order (batch/live parity).
+// turn completes before an earlier longer turn). Insert by receivedAt so the
+// live path matches wfInferLanes' sorted order (batch/live parity).
+// INVARIANT: wfInferLanes sorts `exiled` by receivedAt ONLY (a stable sort, so
+// equal-receivedAt turns keep arrival/completion order). Match that exactly —
+// a secondary id tie-break here would flip same-millisecond turns relative to
+// the batch rebuild, changing overlapping-bar paint/hit-test order (ADR 0005
+// /0009 batch-live parity; codex #262 re-review) — see
+// docs/decisions/0008-temporal-overlap-overrides-agent-key.md
 function _wfInsertTurnSorted(lane, entry) {
   var es = Number(entry.receivedAt) || 0;
   var arr = lane.turns, i = arr.length;
-  while (i > 0) {
-    var p = arr[i - 1], ps = Number(p.receivedAt) || 0;
-    if (ps < es || (ps === es && String(p.id) <= String(entry.id))) break;
-    i--;
-  }
+  while (i > 0 && (Number(arr[i - 1].receivedAt) || 0) > es) i--;
   arr.splice(i, 0, entry);
 }
 
