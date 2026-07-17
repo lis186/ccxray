@@ -47,7 +47,7 @@ it did before this ADR.
 | Teammate | ≠ main | ∉ main set | → identity sublane |
 | Fork | = main | ∈ main set | → main → ADR 0008 overlap |
 | Upgrade/noise | ≠ main | ∈ main set | → stays main |
-| Compaction | = main | ∈ main set | → stays main |
+| Compaction | = main | ∉ main set (messages[0] replaced by summary — ADR 0009) | → stays main (coreHash = main dominates) |
 
 **Three-site contract (ADR 0005 shape)** — all three must apply the same
 condition, reading from the same computed main identity:
@@ -85,6 +85,27 @@ prevents a coreHash blip from misrouting a genuine main turn (the blip keeps
 main's convId, so it fails the `∉ main set` condition), but if a future
 coreHash bug ever changes convId computation itself, this safety net does
 not apply. `coreHash` is still not trusted alone anywhere in this codebase.
+
+**Known edge — blip × compaction intersection**: compaction replaces
+`messages[0]` with a summary (ADR 0009), producing a new convId not yet in
+`mainConvIds`. If a coreHash blip coincides with this compaction turn, both
+AND conditions fire (`coreHash ≠ main` AND `convId ∉ main set`) and the
+turn is misrouted to a ghost `agent-` lane. Blast radius: single turn; the
+next main turn restores coreHash and re-anchors. Low probability (blip is
+rare × must coincide with compaction). Runtime mitigation deferred — no
+instant-available signal distinguishes this from a real teammate at that
+moment.
+
+**Known divergence — turn-list background-session window (ADR 0005)**: the
+turn-list `isSubagent` classification in `entry-rendering.js` is gated on
+`wfState.sessionId === sid` — a turn arriving while a different session is
+viewed skips coreHash routing and is classified by agentKey alone. When the
+user later views that session, `wfInferLanes` correctly routes the turn to
+an identity lane, but the turn list retains its original classification. No
+retro-correction mechanism exists for this layer (unlike seq's
+`_seqRetroFlip`). Accepted as a narrow window; a coreHash retro pass is a
+potential future fix (requires ADR-level design due to three-layer
+interaction complexity — see ADR 0005 round-4/5/6 history).
 
 ## Alternatives considered
 
