@@ -695,11 +695,11 @@ function wfInferLanes(entries, childEntries, seqTracker) {
       }
     }
     // #238: a lane can legally hold multiple models (mid-session /model
-    // switches survive ADR 0008/0009 lane placement) — keep the full
-    // dominant-first breakdown so the label can show more than the winner.
-    var _models = Object.entries(mc).sort(function(a, b) { return b[1] - a[1]; });
-    lane.model = _models[0][0];
-    lane.models = _models.map(function(p) { return p[0]; });
+    // switches survive ADR 0008/0009 lane placement). Dominant model still
+    // drives color/placement; the full breakdown for the label is derived
+    // from lane.turns at render time by _wfLaneModelLabel (no maintained
+    // copy — see that function's comment).
+    lane.model = Object.entries(mc).sort(function(a, b) { return b[1] - a[1]; })[0][0];
     lane.ctxWindow = lane.turns[0].maxContext || lane.ctxWindow;
     var topA = Object.entries(ac).sort(function(a, b) { return b[1].n - a[1].n; })[0];
     if (topA) { lane.agentKey = topA[0]; lane.agentLabel = topA[1].label; }
@@ -805,14 +805,6 @@ function _wfFollowTail(oldTMax) {
   }
 }
 
-// #238: keep lane.models current on live appends (batch recomputes dominant-
-// first by count; live just ensures the model is present so a switch shows).
-function _wfLaneTrackModel(lane, model) {
-  if (!model) return;
-  if (!lane.models) lane.models = lane.model ? [lane.model] : [];
-  if (lane.models.indexOf(model) === -1) lane.models.push(model);
-}
-
 // ── Incremental Update ────────────────────────────────────────────────────
 // Caller contract: `entry` must already be pushed into allEntries before
 // this call — the reordered-arrival path (_wfSeqRebuild) recomputes the
@@ -865,7 +857,6 @@ function wfAddEntry(entry) {
       wfState.lanes.push(clane);
     }
     clane.turns.push(entry);
-    _wfLaneTrackModel(clane, entry.model);
     clane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(clane) });
     _wfFollowTail(oldTMax);
@@ -983,13 +974,11 @@ function wfAddEntry(entry) {
     // nested turn completes before an earlier longer turn) — insert sorted
     // so the live path matches wfInferLanes' order (batch/live parity).
     if (pooledReuse) _wfInsertTurnSorted(lane, entry); else lane.turns.push(entry);
-    _wfLaneTrackModel(lane, entry.model);
     lane._costMedian = null;
     if (!lane.agentKey && entry.agentKey) { lane.agentKey = entry.agentKey; lane.agentLabel = entry.agentLabel; }
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(lane) });
   } else if (wfState.lanes[0]) {
     wfState.lanes[0].turns.push(entry);
-    _wfLaneTrackModel(wfState.lanes[0], entry.model);
     wfState.lanes[0]._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
     // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
@@ -1071,7 +1060,6 @@ function _wfSeqRetroMove(closedTurns) {
     // #261: pooled convId lane can receive turns out of start order — insert
     // sorted so the live path matches wfInferLanes' order (batch/live parity).
     if (pooledReuse) _wfInsertTurnSorted(lane, t); else lane.turns.push(t);
-    _wfLaneTrackModel(lane, t.model);
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
@@ -1200,8 +1188,23 @@ function _wfLaneDispName(lane, laneIdx, mainConvs) {
 
 // #238: a lane can hold multiple models (legal /model switches). Show the
 // dominant + a "+extra" hint instead of hiding the minority model(s).
+// No maintained lane.models copy — derive the breakdown from lane.turns
+// (the source of truth) on every call, so batch and live can never drift:
+// a live append is picked up on the very next render, and a turn moved out
+// of the lane (e.g. _wfSeqRetroMove) stops contributing immediately.
 function _wfLaneModelLabel(lane) {
-  var ms = (lane.models && lane.models.length) ? lane.models : [lane.model];
+  var turns = lane.turns || [];
+  var mc = {}, order = [];
+  for (var i = 0; i < turns.length; i++) {
+    var m = turns[i].model;
+    if (!m) continue;
+    if (mc[m] === undefined) { mc[m] = 0; order.push(m); }
+    mc[m]++;
+  }
+  // dominant-first by count; stable tie-break = first-seen (order[]) so the
+  // result is deterministic and matches wfInferLanes' Object.entries+sort.
+  var ms = order.slice().sort(function(a, b) { return mc[b] - mc[a]; });
+  if (!ms.length) ms = lane.model ? [lane.model] : [];
   var head = wfShortModel(ms[0]);
   if (ms.length <= 1) return { text: head, title: head };
   var rest = ms.slice(1).map(wfShortModel);
