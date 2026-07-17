@@ -2039,6 +2039,10 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
 
     // #269: birdseye expanded mode — all drag = pending brush, never writes viewT0/T1
     if (wfState.birdseyeExpanded) {
+      // #269 codex R2: clear stale pending at drag start so a short new drag
+      // doesn't leave the old brush's Apply button committing the wrong range
+      wfState.birdseyePending = null;
+      _wfRenderBirdseyeSummary();
       var bStart = clickTime, bEnd = clickTime;
       var onMoveE = function(ev) {
         bEnd = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
