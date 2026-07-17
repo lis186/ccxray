@@ -783,6 +783,8 @@ function wfBuildState(sessionId) {
     selectedSection: 'timeline',
     laneFocusMode: false,
     laneHeightManual: false,
+    birdseyeExpanded: false,
+    birdseyePending: null,
   };
 }
 
@@ -1581,12 +1583,16 @@ function _wfOverviewLabelHtml() {
   var focusLi = _wfFocusLaneIdx();
   var sbText = sidebarCollapsed ? '|▷' : '◁|';
   var sbTitle = sidebarCollapsed ? 'Show sidebar (\\\\)' : 'Hide sidebar (\\\\)';
+  var expanded = wfState.birdseyeExpanded;
   var row1 = '<div class="wf-ol-row">' +
     '<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="' + sbTitle + '">' + sbText + '</button>' +
-    '<span>Overview</span>' +
-    '<button onclick="wfZoomBy(0.5)">+</button>' +
-    '<button onclick="wfZoomBy(2)">−</button>' +
-    '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+    '<span>Overview' + (expanded ? '（放大）' : '') + '</span>' +
+    (expanded
+      ? '<button onclick="wfBirdseyeCollapse()" title="收合 (Esc)">⤡ 收合</button>'
+      : '<button onclick="wfZoomBy(0.5)">+</button>' +
+        '<button onclick="wfZoomBy(2)">−</button>' +
+        '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+        '<button id="wf-birdseye-btn" onclick="wfBirdseyeEnter()" title="鳥瞰放大">⤢</button>') +
     '</div>';
   var pagerHtml = wfState.laneFocusMode
     ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
@@ -1622,6 +1628,71 @@ function wfToggleLaneFocus() {
   if (!wfState) return;
   wfState.laneFocusMode = !wfState.laneFocusMode;
   _wfRefreshLaneFocusUI();
+}
+
+// #269: birdseye mode — enter, collapse (discard), apply (write brush to viewT0/T1)
+function wfBirdseyeEnter() {
+  if (!wfState) return;
+  wfState.birdseyeExpanded = true;
+  wfState.birdseyePending = null;
+  _wfRefreshBirdseyeUI();
+}
+
+function wfBirdseyeCollapse() {
+  if (!wfState) return;
+  wfState.birdseyeExpanded = false;
+  wfState.birdseyePending = null;
+  _wfRefreshBirdseyeUI();
+}
+
+function wfBirdseyeApply() {
+  if (!wfState || !wfState.birdseyePending) return;
+  wfState.viewT0 = wfState.birdseyePending.t0;
+  wfState.viewT1 = wfState.birdseyePending.t1;
+  wfState.birdseyeExpanded = false;
+  wfState.birdseyePending = null;
+  _wfRefreshBirdseyeUI();
+}
+
+function _wfRefreshBirdseyeUI() {
+  var overviewLabel = document.getElementById('wf-overview-label');
+  if (overviewLabel) overviewLabel.innerHTML = _wfOverviewLabelHtml();
+  var canvas = document.getElementById('wf-minimap-canvas');
+  if (canvas && wfState) {
+    var h = wfState.birdseyeExpanded
+      ? wfBirdseyeHeight(wfState.lanes.length)
+      : wfOverviewHeight(wfState.lanes.length);
+    canvas.style.height = h + 'px';
+  }
+  // Show/hide the summary panel
+  _wfRenderBirdseyeSummary();
+  wfDeferRender();
+}
+
+function _wfRenderBirdseyeSummary() {
+  var existing = document.getElementById('wf-birdseye-summary');
+  if (existing) existing.remove();
+  if (!wfState || !wfState.birdseyeExpanded || !wfState.birdseyePending) return;
+  var p = wfState.birdseyePending;
+  var s = wfRangeSummary(p.t0, p.t1);
+  var div = document.createElement('div');
+  div.id = 'wf-birdseye-summary';
+  div.innerHTML =
+    '<span>時距 ' + wfFmtDur(s.duration) + '</span>' +
+    '<span>turns ' + s.turnCount + '</span>' +
+    '<span>agents ' + s.activeLanes + '</span>' +
+    '<span>$' + s.cost.toFixed(4) + '</span>' +
+    '<span>cache ' + s.cacheHitPct.toFixed(1) + '%</span>' +
+    '<span>in ' + _wfFmtTokensK(s.tokensIn) + ' / out ' + _wfFmtTokensK(s.tokensOut) + '</span>' +
+    '<button onclick="wfBirdseyeApply()">套用並收合</button>';
+  var overview = document.getElementById('wf-overview');
+  if (overview) overview.parentNode.insertBefore(div, overview.nextSibling);
+}
+
+function _wfFmtTokensK(n) {
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
 }
 
 // Shared by the ▲/▼ buttons and the Tab/Shift+Tab keyboard shortcut.
@@ -1794,6 +1865,51 @@ function wfOverviewHeight(laneCount) {
   return Math.min(window.innerHeight * 0.20, Math.max(28, laneCount * 7 + 6));
 }
 
+// #269: birdseye expanded height — per-lane slot ≥ 10px, capped at 80% viewport.
+// Sibling to wfOverviewHeight (normal mode); do not break #268's tests.
+function wfBirdseyeHeight(laneCount) {
+  return Math.min(window.innerHeight * 0.80, Math.max(28, laneCount * 10 + 6));
+}
+
+// #269: range summary — pure function, reusable by #256.
+// Returns { duration, turnCount, activeLanes, cost, cacheHitPct, tokensIn, tokensOut }
+// Turn inclusion: receivedAt ∈ [t0, t1]. Same cache formula as wfLaneSummary.
+function wfRangeSummary(t0, t1) {
+  if (!wfState) return { duration: 0, turnCount: 0, activeLanes: 0, cost: 0, cacheHitPct: 0, tokensIn: 0, tokensOut: 0 };
+  var lanes = wfState.lanes;
+  var turnCount = 0, cost = 0, tokensIn = 0, tokensOut = 0;
+  var totalCacheR = 0, totalCacheAll = 0, activeLanes = 0;
+  for (var li = 0; li < lanes.length; li++) {
+    var laneHit = false;
+    var turns = lanes[li].turns;
+    for (var ti = 0; ti < turns.length; ti++) {
+      var ra = Number(turns[ti].receivedAt) || 0;
+      if (ra >= t0 && ra <= t1) {
+        turnCount++;
+        cost += (turns[ti].cost || 0);
+        var u = turns[ti].usage || {};
+        var cr = (u.cache_read_input_tokens || 0);
+        var cc = (u.cache_creation_input_tokens || 0);
+        totalCacheR += cr;
+        totalCacheAll += cr + cc;
+        tokensIn += (u.input_tokens || 0) + cr + cc;
+        tokensOut += (u.output_tokens || 0);
+        laneHit = true;
+      }
+    }
+    if (laneHit) activeLanes++;
+  }
+  return {
+    duration: t1 - t0,
+    turnCount: turnCount,
+    activeLanes: activeLanes,
+    cost: cost,
+    cacheHitPct: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0,
+    tokensIn: tokensIn,
+    tokensOut: tokensOut,
+  };
+}
+
 // slot = px per lane; when tight (<3px) the 1px gap compresses away so
 // every lane stays inside the canvas instead of clipping the last rows
 function wfOverviewBarGeom(MH, laneCount) {
@@ -1804,7 +1920,8 @@ function wfOverviewBarGeom(MH, laneCount) {
 
 function wfRenderOverview(canvas) {
   if (!wfState || !canvas) return;
-  canvas.style.height = wfOverviewHeight(wfState.lanes.length) + 'px';
+  var birdseyeOn = wfState.birdseyeExpanded;
+  canvas.style.height = (birdseyeOn ? wfBirdseyeHeight(wfState.lanes.length) : wfOverviewHeight(wfState.lanes.length)) + 'px';
   var MW = canvas.clientWidth, MH = canvas.clientHeight;
   if (!MW || !MH) return;
   canvas.width = MW * 2; canvas.height = MH * 2;
@@ -1872,6 +1989,22 @@ function wfRenderOverview(canvas) {
   // Selected turn cursor on overview
   _wfDrawOverviewCursor(canvas);
 
+  // #269: draw pending birdseye brush
+  if (birdseyeOn && wfState.birdseyePending) {
+    var bp = wfState.birdseyePending;
+    var bx0 = x(bp.t0), bx1 = x(bp.t1);
+    ctx.fillStyle = accentColor;
+    ctx.globalAlpha = 0.15;
+    ctx.fillRect(bx0, 0, bx1 - bx0, MH);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = accentColor;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.moveTo(bx0, 0); ctx.lineTo(bx0, MH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(bx1, 0); ctx.lineTo(bx1, MH); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
   // Minimap interactions
   _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
 }
@@ -1894,6 +2027,28 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
     var rect = canvas.getBoundingClientRect();
     var pxToTime = function(cx) { return wfState.tMin + ((cx - rect.left) / rect.width) * totalRange; };
     var clickTime = pxToTime(e.clientX);
+
+    // #269: birdseye expanded mode — all drag = pending brush, never writes viewT0/T1
+    if (wfState.birdseyeExpanded) {
+      var bStart = clickTime, bEnd = clickTime;
+      var onMoveE = function(ev) {
+        bEnd = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
+        var bt0 = Math.min(bStart, bEnd), bt1 = Math.max(bStart, bEnd);
+        if (bt1 - bt0 >= 500) {
+          wfState.birdseyePending = { t0: bt0, t1: bt1 };
+          _wfRenderBirdseyeSummary();
+          wfDeferRender();
+        }
+      };
+      var onUpE = function() {
+        window.removeEventListener('mousemove', onMoveE);
+        window.removeEventListener('mouseup', onUpE);
+      };
+      window.addEventListener('mousemove', onMoveE);
+      window.addEventListener('mouseup', onUpE);
+      return;
+    }
+
     var zoomedNow = wfIsZoomed();
 
     if (zoomedNow) {
@@ -2675,8 +2830,12 @@ function wfKeyHandler(key, e) {
     return true;
   }
 
-  // Esc: unlock turn, then zoom reset, then back to main lane
+  // #269: Esc consumed by birdseye FIRST — must not fall through to turn/zoom/lane
   if (key === 'Escape') {
+    if (wfState.birdseyeExpanded) {
+      wfBirdseyeCollapse();
+      return true;
+    }
     if (wfState.selectedTurnId) {
       wfState.selectedTurnId = null;
       wfDeferRender();
