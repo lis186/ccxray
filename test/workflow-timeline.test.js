@@ -1951,3 +1951,112 @@ describe('#236 lane eligibility', () => {
     assert.equal(ctx._wfIsLaneEligible({ status: 404, msgCount: 12 }), true, 'errored turn that DID carry messages is eligible');
   });
 });
+
+describe('#238 mixed-model labels', () => {
+  it('mixed-model lane keeps dominant + minority model in lane.models, label shows both', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 5000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t3', 's1', 'claude-fable-5', 9000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t4', 's1', 'claude-fable-5', 13000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t5', 's1', 'claude-opus-4-6', 17000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1, 'legal /model switches stay in one main lane');
+    var lane = lanes[0];
+    assert.equal(lane.models.join(','), 'claude-opus-4-6,claude-fable-5', 'dominant-first, both present');
+    assert.equal(lane.model, 'claude-opus-4-6', 'majority-vote lane.model is unchanged');
+    var lbl = ctx._wfLaneModelLabel(lane);
+    assert.equal(lbl.text, 'opus-4-6 +fable-5');
+    assert.ok(lbl.title.indexOf('opus-4-6') !== -1 && lbl.title.indexOf('fable-5') !== -1, 'title lists both models');
+  });
+
+  it('single-model lane label is unchanged (no +)', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 6000, 3, {}),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes[0].models.join(','), 'claude-opus-4-6');
+    var lbl = ctx._wfLaneModelLabel(lanes[0]);
+    assert.equal(lbl.text, 'opus-4-6');
+    assert.equal(lbl.title, 'opus-4-6');
+    assert.ok(lbl.text.indexOf('+') === -1, 'no + hint for a single-model lane');
+  });
+
+  it('three+ models collapse to "+N" instead of listing every minority model', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t2', 's1', 'claude-opus-4-6', 5000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t3', 's1', 'claude-opus-4-6', 9000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t4', 's1', 'claude-fable-5', 13000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t5', 's1', 'claude-fable-5', 17000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+      mkEntry('t6', 's1', 'claude-sonnet-4-6', 21000, 2, { agentKey: 'orchestrator', agentLabel: 'Orchestrator' }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes.length, 1);
+    assert.equal(lanes[0].models.join(','), 'claude-opus-4-6,claude-fable-5,claude-sonnet-4-6');
+    var lbl = ctx._wfLaneModelLabel(lanes[0]);
+    assert.equal(lbl.text, 'opus-4-6 +2');
+  });
+
+  it('live path lanes never throw the label helper, even without a recomputed .models', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfAddEntry(mkEntry('t2', 's1', 'claude-fable-5', 6000, 2, { isSubagent: true }));
+    // wfAddEntry doesn't recompute .models per-lane (only the batch tally
+    // does) — the helper's [lane.model] fallback must still hold for every
+    // lane the live path can produce.
+    for (var i = 0; i < ctx.wfState.lanes.length; i++) {
+      var lbl = ctx._wfLaneModelLabel(ctx.wfState.lanes[i]);
+      assert.equal(typeof lbl.text, 'string');
+      assert.ok(lbl.text.length > 0);
+    }
+  });
+
+  it('#238 part 2: R2 seq-stitch is tagged, ADR 0008 overlap split is not (batch, fail-on-old)', () => {
+    const ctx = loadWfModule();
+    function mkSeq(id, at, elapsed, conv, msg, opts) {
+      return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed, Object.assign(
+        { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, msgCount: msg }, opts || {}));
+    }
+    var lanes = ctx.wfInferLanes([
+      mkSeq('m1', 1000, 5, 'convA', 53),
+      mkSeq('m2', 10000, 60, 'convA', 55),   // long main turn 10000..70000
+      mkSeq('f1', 20000, 5, 'convA', 51),    // starts inside m2 -> ADR 0008 overlap split, NOT seq-stitched
+      mkSeq('f2', 71000, 5, 'convA', 51),    // after m2 ends -> ADR 0009 R2 dip stitch, IS seq-stitched
+      mkSeq('m3', 80000, 5, 'convA', 57),
+    ], []);
+    assert.equal(lanes.length, 2);
+    var main = lanes[0], sub = lanes[1];
+    assert.equal(sub.turns.map(function(t) { return t.id; }).join(','), 'f1,f2');
+    assert.ok(!sub.turns[0]._wfSeqStitched, 'f1 is an overlap split, not seq-stitched');
+    assert.equal(sub.turns[1]._wfSeqStitched, true, 'f2 is the R2 dip stitch');
+    for (var mi = 0; mi < main.turns.length; mi++) {
+      assert.ok(!main.turns[mi]._wfSeqStitched, 'main turns are never seq-stitched');
+    }
+  });
+
+  it('#238 part 2: live path agrees with batch on the same seq-stitch tag', () => {
+    const ctx = loadWfModule();
+    function mkSeq(id, at, elapsed, conv, msg, opts) {
+      return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed, Object.assign(
+        { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, msgCount: msg }, opts || {}));
+    }
+    ctx.allEntries = [mkSeq('m1', 1000, 5, 'convA', 53)];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfAddEntry(mkSeq('m2', 10000, 60, 'convA', 55));
+    ctx.wfAddEntry(mkSeq('f1', 20000, 5, 'convA', 51));
+    ctx.wfAddEntry(mkSeq('f2', 71000, 5, 'convA', 51));
+    ctx.wfAddEntry(mkSeq('m3', 80000, 5, 'convA', 57));
+    var sub = ctx.wfState.lanes.find(function(l) { return l.key !== 'main' && l.turns.length; });
+    assert.ok(sub, 'a sub-lane must exist');
+    assert.equal(sub.turns.map(function(t) { return t.id; }).join(','), 'f1,f2');
+    assert.ok(!sub.turns[0]._wfSeqStitched, 'live: f1 overlap split, not seq-stitched');
+    assert.equal(sub.turns[1]._wfSeqStitched, true, 'live: f2 seq-stitched, matches batch');
+  });
+});
