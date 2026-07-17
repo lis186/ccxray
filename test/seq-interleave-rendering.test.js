@@ -196,4 +196,26 @@ describe('#230 codex P2 round 6: reordered arrival recomputes the turn list seq 
         ' vs swimlane ' + (mainIds.has(en.id) ? 'main' : 'sub-lane'));
     }
   });
+
+  // #236 live retry parity: a retry arriving while the timeline is open must
+  // reach wfAddEntry (entry-rendering.js dropped its !isRetry gate on the wf
+  // dispatch), where the eligibility gate fault-marks it — matching a refresh
+  // (batch wfInferLanes). The SEPARATE seq-tracker feed stays !isRetry-gated.
+  it('#236: a retry arriving live is routed to the main fault track via addEntry', () => {
+    const ctx = loadDashboardContext();
+    ctx.addEntry(mkTurn(1000, 5, 'convA', 10));           // establishes the session
+    vm.runInContext('selectedSessionId = ' + JSON.stringify(SID), ctx);
+    ctx.wfState = ctx.wfBuildState(SID);                  // open the timeline on this session
+    // a retry: non-2xx, no output → addEntry computes isRetry=true
+    ctx.addEntry(mkTurn(6000, 3, 'convA', 10, { id: 'rLive', status: 500, usage: null }));
+    const rEntry = ctx.allEntries.find(e => e.id === 'rLive');
+    assert.equal(rEntry.isRetry, true, 'precondition: the entry classified as a retry');
+    const faults = (ctx.wfState.lanes[0].faultEntries || []).map(f => f.id);
+    assert.ok(faults.indexOf('rLive') !== -1, 'live retry fault-marked by wfAddEntry (parity with batch)');
+    const inLane = ctx.wfState.lanes.some(l => l.turns.some(t => t.id === 'rLive'));
+    assert.equal(inLane, false, 'retry is never placed in a lane');
+    // seq tracker must NOT have seen the retry (its feed stays !isRetry-gated)
+    assert.equal(ctx.sessionsMap.get(SID).retryCount, 1, 'retry counted as a retry, not a main/sub turn');
+    assert.equal(ctx.sessionsMap.get(SID).mainCount, 1, 'retry did not inflate mainCount');
+  });
 });

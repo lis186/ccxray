@@ -1875,11 +1875,79 @@ describe('#236 lane eligibility', () => {
     assert.equal(faultIds(batch[0]), 'p404,r1', 'both ineligible entries collected as faults');
   });
 
-  it('_wfIsLaneEligible: false for retry / 0-msg-no-model, true for turns + real subagents', () => {
+  it('AC2-prod — production-shape 404 probe (model sentinel "?") is excluded, rides the fault track', () => {
     const ctx = loadWfModule();
-    assert.equal(ctx._wfIsLaneEligible({ isRetry: true, model: 'claude-opus-4-6', msgCount: 40 }), false, 'retry');
-    assert.equal(ctx._wfIsLaneEligible({ model: null, msgCount: 0 }), false, '0-msg error probe');
-    assert.equal(ctx._wfIsLaneEligible(mkEntry('t', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 40 })), true, 'normal turn');
+    // entry-rendering.js normalizes a missing model to the truthy sentinel '?',
+    // so the real 0-msg 404 that reaches wfInferLanes carries model === '?'.
+    // FAILS on the old `!e.model` predicate (sentinel is truthy → not excluded).
+    var lanes = ctx.wfInferLanes([
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('p404', 's1', '?', 3000, 0, { status: 404, isSubagent: true, msgCount: 0 }),
+    ], []);
+    assert.equal(lanes.length, 1, 'sentinel-model probe mints no subagent lane');
+    assert.deepEqual(allTurnIds(lanes), ['m1'], 'probe must not be in any lane turns');
+    assert.equal(faultIds(lanes[0]), 'p404', 'probe rides the main lane fault track');
+  });
+
+  it('coreHash pre-scan ignores ineligible entries — an early retry cannot seed main identity', () => {
+    const ctx = loadWfModule();
+    // r1 (retry) arrives first with a DIFFERENT coreHash than the real turn.
+    // Without the pre-scan eligibility gate it would seed mainCoreHash and
+    // misroute m1 into an agent-orchestrator:* identity lane (coreHash routing).
+    var lanes = ctx.wfInferLanes([
+      mkEntry('r1', 's1', 'claude-opus-4-6', 1000, 5, { status: 500, isRetry: true, agentKey: 'orchestrator', coreHash: 'HASH_RETRY', convId: 'cvR' }),
+      mkEntry('m1', 's1', 'claude-opus-4-6', 2000, 5, { msgCount: 5, agentKey: 'orchestrator', coreHash: 'HASH_MAIN', convId: 'cvA' }),
+    ], []);
+    assert.equal(lanes.length, 1, 'no agent-orchestrator lane minted from the retry coreHash');
+    assert.equal(lanes[0].name, 'main');
+    assert.deepEqual(allTurnIds(lanes), ['m1'], 'real turn lands in main, not an identity lane');
+    assert.equal(faultIds(lanes[0]), 'r1', 'the retry is a fault');
+  });
+
+  it('childEntries — a child-session retry mints no child lane, rides the fault track (batch/live parity)', () => {
+    var entries = [ mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 5 }) ];
+    var childEntries = [
+      mkEntry('c1', 's2', 'claude-sonnet-5', 2000, 3, { msgCount: 8 }),
+      mkEntry('cRetry', 's2', 'claude-sonnet-5', 3000, 2, { status: 500, isRetry: true }),
+    ];
+    const batchCtx = loadWfModule();
+    var batch = batchCtx.wfInferLanes(entries.slice(), childEntries.slice());
+    var childLane = batch.filter(function(l) { return l.childSessionId === 's2'; })[0];
+    assert.ok(childLane, 'eligible child turn still forms a child lane');
+    assert.equal(childLane.turns.map(function(t) { return t.id; }).join(','), 'c1', 'child lane excludes the retry');
+    assert.equal(faultIds(batch[0]), 'cRetry', 'child retry rides the MAIN lane fault track');
+
+    const liveCtx = loadWfModule();
+    liveCtx.sessionsMap.set('s2', { parentSessionId: 's1' });
+    liveCtx.allEntries = entries.slice();
+    liveCtx.wfState = liveCtx.wfBuildState('s1');
+    liveCtx.allEntries.push(childEntries[0]); liveCtx.wfAddEntry(childEntries[0]);
+    liveCtx.allEntries.push(childEntries[1]); liveCtx.wfAddEntry(childEntries[1]);
+    var live = liveCtx.wfState.lanes;
+    var liveChild = live.filter(function(l) { return l.childSessionId === 's2'; })[0];
+    assert.ok(liveChild, 'live: eligible child turn forms a child lane');
+    assert.equal(liveChild.turns.map(function(t) { return t.id; }).join(','), 'c1', 'live: child lane excludes the retry');
+    assert.equal(faultIds(live[0]), 'cRetry', 'live: child retry on main fault track — parity with batch');
+  });
+
+  it('live: a retry reaching wfAddEntry is fault-marked, never laned (parity with batch)', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [ mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 5 }) ];
+    ctx.wfState = ctx.wfBuildState('s1');
+    var r = ctx.wfAddEntry(mkEntry('rLive', 's1', 'claude-opus-4-6', 6000, 2, { status: 500, isRetry: true }));
+    assert.equal(r.lanesChanged, false, 'retry never changes lane structure');
+    assert.deepEqual(allTurnIds(ctx.wfState.lanes), ['m1'], 'retry not placed in any lane');
+    assert.equal(faultIds(ctx.wfState.lanes[0]), 'rLive', 'retry on the main fault track');
+  });
+
+  it('_wfIsLaneEligible: keys on status+msgCount (not the model sentinel)', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx._wfIsLaneEligible({ isRetry: true, status: 500, model: 'claude-opus-4-6', msgCount: 40 }), false, 'retry');
+    assert.equal(ctx._wfIsLaneEligible({ status: 404, model: '?', msgCount: 0 }), false, 'prod 0-msg 404 probe (sentinel model)');
+    assert.equal(ctx._wfIsLaneEligible({ status: 404, model: null, msgCount: 0 }), false, '0-msg 404 probe (null model)');
+    assert.equal(ctx._wfIsLaneEligible(mkEntry('t', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 40 })), true, 'normal 200 turn');
     assert.equal(ctx._wfIsLaneEligible(mkEntry('s', 's1', 'claude-sonnet-5', 1000, 5, { isSubagent: true, msgCount: 20 })), true, 'real subagent');
+    assert.equal(ctx._wfIsLaneEligible({ status: 200 }), true, 'legacy 200 entry with no msgCount stays eligible');
+    assert.equal(ctx._wfIsLaneEligible({ status: 404, msgCount: 12 }), true, 'errored turn that DID carry messages is eligible');
   });
 });

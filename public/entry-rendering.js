@@ -637,8 +637,13 @@ function addEntry(e) {
     cwd: e.cwd || null,
   });
 
-  // Workflow timeline: incremental update for live entries (direct or child session)
-  if (typeof wfState !== 'undefined' && wfState && !isRetry) {
+  // Workflow timeline: incremental update for live entries (direct or child session).
+  // Retries reach wfAddEntry too (no !isRetry gate here): its eligibility gate
+  // (#236) fault-marks them, matching the batch wfInferLanes path — otherwise a
+  // live retry would never get a fault marker while a refresh would (parity break).
+  // NOTE: the SEPARATE seq-tracker feed above stays gated on !isRetry — retries
+  // must never feed the tracker; only this render dispatch admits them.
+  if (typeof wfState !== 'undefined' && wfState) {
     var isDirectSession = sid === selectedSessionId;
     var isChildSession = !isDirectSession && sessionsMap.get(sid)?.parentSessionId === selectedSessionId;
     if (isDirectSession || isChildSession) {

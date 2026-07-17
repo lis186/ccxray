@@ -234,13 +234,19 @@ function _wfSubLaneKey(base, entry) {
 // INVARIANT: lane eligibility (#236) — a lane asserts "an agent exists here",
 // so only real conversation turns (a request that carried messages) may
 // mint/join a lane. Retries and 0-msg error probes are diagnostic signals,
-// routed to the main lane's fault track instead. Do NOT broaden: legit turns
-// always have a model; codex/legacy entries have a model and stay eligible;
-// isSubagent alone must not exclude (real subagents are conversation turns).
-// Gated at wfInferLanes (batch) and wfAddEntry (live).
+// routed to the main lane's fault track instead. Do NOT broaden: a legit turn
+// has an OK status (first clause false); a codex/legacy entry with status 200
+// and no msgCount stays eligible; isSubagent alone must not exclude (real
+// subagents are conversation turns). Gated at wfInferLanes (batch) and
+// wfAddEntry (live).
 function _wfIsLaneEligible(e) {
   if (e.isRetry) return false;                                   // non-2xx, no output — a retry, not a turn
-  if (!e.model && (Number(e.msgCount) || 0) === 0) return false; // 0-msg error probe (404 etc.)
+  // 0-msg error probe (404 not_found etc.): errored AND carried no messages.
+  // Keys on status+msgCount, NOT model — entry-rendering.js normalizes a
+  // missing model to the truthy sentinel '?', so a `!e.model` check silently
+  // no-ops (the real 0-msg 404 arrives with model === '?'). Do NOT exclude on
+  // msgCount===0 alone: legacy/codex entries may lack msgCount but are OK (200).
+  if ((typeof isHttpStatusOk === 'function' ? !isHttpStatusOk(e.status) : false) && (Number(e.msgCount) || 0) === 0) return false;
   return true;
 }
 
@@ -441,6 +447,10 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   var _mchEarliest = Infinity;
   for (var _mci = 0; _mci < entries.length; _mci++) {
     var _mce = entries[_mci];
+    // INVARIANT: lane eligibility (#236) — diagnostic entries (retries, 0-msg
+    // probes) must never establish main identity: a retry's coreHash landing
+    // here first would misroute the real turn to agent-orchestrator:*.
+    if (!_wfIsLaneEligible(_mce)) continue;
     if (_mce.agentKey && WF_MAIN_AGENT_KEYS[_mce.agentKey] && _mce.coreHash) {
       var _mct = Number(_mce.receivedAt) || Infinity;
       if (_mct < _mchEarliest) { mainCoreHash = _mce.coreHash; _mchEarliest = _mct; }
@@ -627,6 +637,11 @@ function wfInferLanes(entries, childEntries, seqTracker) {
     var childBySid = new Map();
     for (var ci = 0; ci < childEntries.length; ci++) {
       var ce = childEntries[ci];
+      // INVARIANT: lane eligibility (#236) — a child session's retry/probe is
+      // diagnostic too. Route it to the same main fault track (mirrors the
+      // live path, where the wfAddEntry gate fires before child-lane routing)
+      // so it never mints/populates a child-* lane. See _wfIsLaneEligible.
+      if (!_wfIsLaneEligible(ce)) { faultEntries.push(ce); continue; }
       var sid = ce.sessionId;
       if (!childBySid.has(sid)) childBySid.set(sid, []);
       childBySid.get(sid).push(ce);
@@ -796,6 +811,10 @@ function wfAddEntry(entry) {
     if (wfState.lanes[0]) {
       (wfState.lanes[0].faultEntries || (wfState.lanes[0].faultEntries = [])).push(entry);
     }
+    // tMax advanced above; keep the tail in view like the normal path, else the
+    // new fault marker exceeds viewT1 (filtered out) and later turns misread the
+    // advanced tMax as a user scroll-back.
+    _wfFollowTail(oldTMax);
     return { lanesChanged: false };
   }
 
