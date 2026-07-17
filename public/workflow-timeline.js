@@ -1788,10 +1788,10 @@ function wfDeferRender() {
 // readable slot. The uncapped formula gives wfOverviewBarGeom's slot =
 // (MH-4)/laneCount = 7 + 2/laneCount, always ≥7px. #268: the old 48px hard
 // cap made 10+ lane sessions smear into ~1px slivers; the cap now scales
-// with viewport height (35% of window.innerHeight) instead. Beyond that cap
+// with viewport height (20% of window.innerHeight) instead. Beyond that cap
 // bars still compress toward 1px — per-lane analysis is the swimlane's job.
 function wfOverviewHeight(laneCount) {
-  return Math.min(window.innerHeight * 0.35, Math.max(28, laneCount * 7 + 6));
+  return Math.min(window.innerHeight * 0.20, Math.max(28, laneCount * 7 + 6));
 }
 
 // slot = px per lane; when tight (<3px) the 1px gap compresses away so

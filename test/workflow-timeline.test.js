@@ -276,25 +276,26 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfLaneCostMedian(lane), 0.09);
   });
 
-  it('wfOverviewHeight scales with lane count, floors at 28, caps at 35% viewport (#268)', () => {
+  it('wfOverviewHeight scales with lane count, floors at 28, caps at 20% viewport (#268)', () => {
     const ctx = loadWfModule();
-    ctx.window.innerHeight = 900; // cap = 315
+    ctx.window.innerHeight = 900; // cap = 180
     assert.equal(ctx.wfOverviewHeight(1), 28);   // floor: single lane
     assert.equal(ctx.wfOverviewHeight(3), 28);   // 3*7+6=27 → floor
     assert.equal(ctx.wfOverviewHeight(4), 34);
     assert.equal(ctx.wfOverviewHeight(6), 48);   // 6*7+6=48, well under cap
+    assert.equal(ctx.wfOverviewHeight(15), 111); // 15*7+6=111, still under cap
     assert.equal(ctx.wfOverviewHeight(18), 132); // 18*7+6=132, still under cap
-    assert.equal(ctx.wfOverviewHeight(60), 315); // 60*7+6=426 > cap → clamped to cap
+    assert.equal(ctx.wfOverviewHeight(60), 180); // 60*7+6=426 > cap → clamped to cap
   });
 
   it('#268 old-fail/new-pass: slot never shrinks below 6px until the viewport cap is hit', () => {
     // Old formula hard-capped at 48px regardless of viewport, so 10+ lane
     // sessions smeared into ~1-2px slivers. This sweep fails against the
     // old `Math.min(48, ...)` formula (e.g. laneCount=20 → height=48 →
-    // slot=2.2px, height=48 < cap=315) and passes against the new one.
+    // slot=2.2px, height=48 < cap=180) and passes against the new one.
     const ctx = loadWfModule();
     ctx.window.innerHeight = 900;
-    const cap = 0.35 * 900;
+    const cap = 0.20 * 900;
     for (let laneCount = 4; laneCount <= 40; laneCount++) {
       const h = ctx.wfOverviewHeight(laneCount);
       const slot = (h - 4) / laneCount;
@@ -312,12 +313,12 @@ describe('workflow-timeline data layer', () => {
     }
   });
 
-  it('#268 guard: height never exceeds 35% of viewport height', () => {
+  it('#268 guard: height never exceeds 20% of viewport height', () => {
     const ctx = loadWfModule();
     ctx.window.innerHeight = 900;
     for (let laneCount = 1; laneCount <= 60; laneCount++) {
       const h = ctx.wfOverviewHeight(laneCount);
-      assert.ok(h <= 0.35 * 900, `laneCount=${laneCount} height=${h} exceeds 35% viewport cap`);
+      assert.ok(h <= 0.20 * 900, `laneCount=${laneCount} height=${h} exceeds 20% viewport cap`);
     }
   });
 
