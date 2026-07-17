@@ -2187,11 +2187,9 @@ describe('#269 birdseye overview mode', () => {
     ctx.wfState = ctx.wfBuildState('s1');
     assert.equal(typeof ctx.wfBirdseyeEnter, 'function');
     assert.equal(typeof ctx.wfBirdseyeCollapse, 'function');
-    assert.equal(typeof ctx.wfBirdseyeApply, 'function');
     assert.equal(typeof ctx.wfBirdseyeHeight, 'function');
     assert.equal(typeof ctx.wfRangeSummary, 'function');
     assert.equal(ctx.wfState.birdseyeExpanded, false);
-    assert.equal(ctx.wfState.birdseyePending, null);
   });
 
   it('wfBirdseyeHeight: 20 lanes → slot >= 10px, cap 80% innerHeight', () => {
@@ -2200,10 +2198,8 @@ describe('#269 birdseye overview mode', () => {
     var h20 = ctx.wfBirdseyeHeight(20);
     var slot20 = (h20 - 4) / 20;
     assert.ok(slot20 >= 10, 'slot for 20 lanes = ' + slot20 + ', expected >= 10');
-    // Cap at 80% viewport
     var h100 = ctx.wfBirdseyeHeight(100);
     assert.ok(h100 <= 900 * 0.80, 'height ' + h100 + ' exceeds 80% of 900');
-    // Floor at 28
     assert.equal(ctx.wfBirdseyeHeight(1), 28);
   });
 
@@ -2215,7 +2211,7 @@ describe('#269 birdseye overview mode', () => {
     assert.ok(ctx.wfBirdseyeHeight(100) <= 1200 * 0.80);
   });
 
-  it('brush pending semantics: pending brush does NOT write viewT0/T1', () => {
+  it('collapse: viewT0/T1 unchanged, exits expanded', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
@@ -2225,43 +2221,10 @@ describe('#269 birdseye overview mode', () => {
     var origT0 = ctx.wfState.viewT0, origT1 = ctx.wfState.viewT1;
     ctx.wfBirdseyeEnter();
     assert.equal(ctx.wfState.birdseyeExpanded, true);
-    // Set pending brush
-    ctx.wfState.birdseyePending = { t0: 2000, t1: 8000 };
-    assert.equal(ctx.wfState.viewT0, origT0, 'viewT0 unchanged while brush pending');
-    assert.equal(ctx.wfState.viewT1, origT1, 'viewT1 unchanged while brush pending');
-  });
-
-  it('brush apply: writes viewT0/T1, exits expanded, destroys pending', () => {
-    const ctx = loadWfModule();
-    ctx.allEntries = [
-      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
-      mkEntry('t2', 's1', 'claude-opus-4-6', 10000, 5, {}),
-    ];
-    ctx.wfState = ctx.wfBuildState('s1');
-    ctx.wfBirdseyeEnter();
-    ctx.wfState.birdseyePending = { t0: 3000, t1: 7000 };
-    ctx.wfBirdseyeApply();
-    assert.equal(ctx.wfState.viewT0, 3000);
-    assert.equal(ctx.wfState.viewT1, 7000);
-    assert.equal(ctx.wfState.birdseyeExpanded, false);
-    assert.equal(ctx.wfState.birdseyePending, null);
-  });
-
-  it('Esc/collapse: viewT0/T1 unchanged, exits expanded, destroys pending', () => {
-    const ctx = loadWfModule();
-    ctx.allEntries = [
-      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
-      mkEntry('t2', 's1', 'claude-opus-4-6', 10000, 5, {}),
-    ];
-    ctx.wfState = ctx.wfBuildState('s1');
-    var origT0 = ctx.wfState.viewT0, origT1 = ctx.wfState.viewT1;
-    ctx.wfBirdseyeEnter();
-    ctx.wfState.birdseyePending = { t0: 3000, t1: 7000 };
     ctx.wfBirdseyeCollapse();
     assert.equal(ctx.wfState.viewT0, origT0);
     assert.equal(ctx.wfState.viewT1, origT1);
     assert.equal(ctx.wfState.birdseyeExpanded, false);
-    assert.equal(ctx.wfState.birdseyePending, null);
   });
 
   it('wfRangeSummary: correctness on synthetic fixture', () => {
@@ -2273,7 +2236,6 @@ describe('#269 birdseye overview mode', () => {
       mkEntry('t4', 's1', 'claude-opus-4-6', 8000, 3, { cost: 0.08, usage: { input_tokens: 600, output_tokens: 300, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }),
     ];
     ctx.wfState = ctx.wfBuildState('s1');
-    // Range [2000, 6000] includes t2 (3000) and t3 (5000)
     var s = ctx.wfRangeSummary(2000, 6000);
     assert.equal(s.turnCount, 2, 'only t2 and t3 have receivedAt in [2000,6000]');
     assert.equal(s.activeLanes, 2, 't2 in main lane, t3 in haiku lane');
@@ -2281,12 +2243,11 @@ describe('#269 birdseye overview mode', () => {
     assert.equal(s.tokensIn, 800 + 300 + 200 + 400 + 100 + 50, 'sum of all input token types');
     assert.equal(s.tokensOut, 150 + 100, 'sum of output tokens');
     assert.equal(s.duration, 4000, '6000 - 2000');
-    // cache hit pct: (300+100) / (300+200+100+50) = 400/650
     var expectedCache = 400 / 650 * 100;
     assert.ok(Math.abs(s.cacheHitPct - expectedCache) < 0.01, 'cache hit % = ' + s.cacheHitPct + ', expected ' + expectedCache);
   });
 
-  it('guard: 3x expand→brush→apply→expand cycles leave clean state', () => {
+  it('guard: 3x expand→collapse cycles leave clean state', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
@@ -2296,19 +2257,12 @@ describe('#269 birdseye overview mode', () => {
     for (var cycle = 0; cycle < 3; cycle++) {
       ctx.wfBirdseyeEnter();
       assert.equal(ctx.wfState.birdseyeExpanded, true, 'cycle ' + cycle + ': expanded after enter');
-      assert.equal(ctx.wfState.birdseyePending, null, 'cycle ' + cycle + ': no stale pending after enter');
-      ctx.wfState.birdseyePending = { t0: 2000 + cycle * 100, t1: 8000 + cycle * 100 };
-      ctx.wfBirdseyeApply();
-      assert.equal(ctx.wfState.birdseyeExpanded, false, 'cycle ' + cycle + ': expanded off after apply');
-      assert.equal(ctx.wfState.birdseyePending, null, 'cycle ' + cycle + ': pending destroyed after apply');
-      assert.equal(ctx.wfState.viewT0, 2000 + cycle * 100);
-      assert.equal(ctx.wfState.viewT1, 8000 + cycle * 100);
+      ctx.wfBirdseyeCollapse();
+      assert.equal(ctx.wfState.birdseyeExpanded, false, 'cycle ' + cycle + ': expanded off after collapse');
     }
   });
 
-  it('guard: non-expanded minimap brush-to-zoom still writes viewT0/viewT1', () => {
-    // Regression guard: the existing brush-to-zoom (non-expanded) must still
-    // commit directly to viewT0/viewT1, not the pending brush.
+  it('guard: minimap brush-to-zoom still writes viewT0/viewT1', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
@@ -2316,13 +2270,10 @@ describe('#269 birdseye overview mode', () => {
     ];
     ctx.wfState = ctx.wfBuildState('s1');
     assert.equal(ctx.wfState.birdseyeExpanded, false);
-    // Simulate what the non-expanded brush-to-zoom does: directly set viewT0/T1
-    var t0 = 3000, t1 = 15000;
-    ctx.wfState.viewT0 = t0;
-    ctx.wfState.viewT1 = t1;
+    ctx.wfState.viewT0 = 3000;
+    ctx.wfState.viewT1 = 15000;
     assert.equal(ctx.wfState.viewT0, 3000);
     assert.equal(ctx.wfState.viewT1, 15000);
-    assert.equal(ctx.wfState.birdseyePending, null, 'no pending brush in normal mode');
   });
 
   it('Esc in wfKeyHandler: birdseye consumed first, does not fall through', () => {
@@ -2332,7 +2283,6 @@ describe('#269 birdseye overview mode', () => {
       mkEntry('t2', 's1', 'claude-opus-4-6', 10000, 5, {}),
     ];
     ctx.wfState = ctx.wfBuildState('s1');
-    // Lock a turn so the next Esc in chain would unlock it
     ctx.wfState.selectedTurnId = 't1';
     ctx.wfBirdseyeEnter();
     var result = ctx.wfKeyHandler('Escape', { preventDefault() {} });
@@ -2349,7 +2299,7 @@ describe('#269 birdseye overview mode', () => {
     assert.equal(ctx.wfOverviewHeight(60), 180);
   });
 
-  it('expanded label shows 收合, normal shows ⤢', () => {
+  it('expanded label shows ⤡, normal shows ⤢', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
     ctx.wfState = ctx.wfBuildState('s1');
@@ -2359,13 +2309,10 @@ describe('#269 birdseye overview mode', () => {
     ctx.wfState.birdseyeExpanded = true;
     var expanded = ctx._wfOverviewLabelHtml();
     assert.ok(expanded.includes('⤡'), 'expanded mode has ⤡');
-    assert.ok(expanded.includes('收合'), 'expanded mode has 收合');
     assert.ok(!expanded.includes('wf-birdseye-btn'), 'expanded mode hides the ⤢ button');
   });
-});
 
-describe('#269 codex round fixes', () => {
-  it('F1: birdseye state survives _wfSeqRebuild (real migration path)', () => {
+  it('birdseyeExpanded survives _wfSeqRebuild (real migration path)', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
@@ -2373,53 +2320,14 @@ describe('#269 codex round fixes', () => {
     ];
     ctx.wfState = ctx.wfBuildState('s1');
     ctx.wfState.birdseyeExpanded = true;
-    ctx.wfState.birdseyePending = { t0: 2000, t1: 6000 };
-    var oldTMax = ctx.wfState.tMax;
-    // Exercise the REAL _wfSeqRebuild migration path — it calls wfBuildState
-    // internally and migrates user-facing fields from old to fresh state.
-    ctx._wfSeqRebuild(oldTMax);
+    ctx._wfSeqRebuild(ctx.wfState.tMax);
     assert.equal(ctx.wfState.birdseyeExpanded, true, 'birdseyeExpanded survived rebuild');
-    assert.deepEqual(ctx.wfState.birdseyePending, { t0: 2000, t1: 6000 }, 'birdseyePending survived rebuild');
   });
 
-  it('F1 regression: fresh wfBuildState defaults birdseye to off/null', () => {
+  it('fresh wfBuildState defaults birdseyeExpanded to false', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
     var state = ctx.wfBuildState('s1');
     assert.equal(state.birdseyeExpanded, false);
-    assert.equal(state.birdseyePending, null);
-  });
-
-  it('F3: 收合 button has wf-btn-wide class for auto width', () => {
-    const ctx = loadWfModule();
-    ctx.allEntries = [mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {})];
-    ctx.wfState = ctx.wfBuildState('s1');
-    ctx.wfState.birdseyeExpanded = true;
-    var html = ctx._wfOverviewLabelHtml();
-    assert.ok(html.includes('wf-btn-wide'), '收合 button has wf-btn-wide class');
-  });
-
-  it('F2 stale-brush: new short drag clears old pending (no stale Apply)', () => {
-    // The mousedown handler clears birdseyePending at drag start, so a
-    // too-short new drag leaves no pending. Test the state-level contract:
-    // the only way pending can survive is if the drag exceeds the min-width
-    // threshold — below that, pending must be null after drag end.
-    const ctx = loadWfModule();
-    ctx.allEntries = [
-      mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {}),
-      mkEntry('t2', 's1', 'claude-opus-4-6', 20000, 5, {}),
-    ];
-    ctx.wfState = ctx.wfBuildState('s1');
-    ctx.wfBirdseyeEnter();
-    // Simulate a valid brush that sets pending
-    ctx.wfState.birdseyePending = { t0: 3000, t1: 15000 };
-    assert.deepEqual(ctx.wfState.birdseyePending, { t0: 3000, t1: 15000 });
-    // Simulate what the mousedown handler does at drag start: clear pending
-    ctx.wfState.birdseyePending = null;
-    // A short drag (below 500ms threshold) does not set a new pending
-    assert.equal(ctx.wfState.birdseyePending, null,
-      'stale pending cleared at drag start; short drag leaves null');
-    // Verify Apply button would not exist (no pending = no summary)
-    assert.equal(ctx.wfState.birdseyeExpanded, true, 'still expanded');
   });
 });

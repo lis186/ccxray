@@ -699,17 +699,11 @@
 #wf-overview-label button { background: transparent; border: 1px solid var(--border); color: var(--dim); width: 18px; height: 18px; font-size: 12px; cursor: pointer; border-radius: 2px; display: flex; align-items: center; justify-content: center; padding: 0; }
 #wf-overview-label button:hover { color: var(--text); border-color: var(--dim); }
 #wf-overview-label button.active { color: var(--accent); border-color: var(--accent); }
-/* #269 codex R1: multi-char labels (收合) need auto width instead of fixed 18px */
-#wf-overview-label button.wf-btn-wide { width: auto; padding: 0 6px; white-space: nowrap; }
 #wf-overview-label .wf-lane-pos { font-size: 10px; color: var(--dim); white-space: nowrap; }
 /* height set by JS: wfOverviewHeight(laneCount), 28-48px; birdseye mode grows to 80% viewport.
    No height transition — canvas backing store sizes from clientHeight mid-transition, producing
    a CSS-stretched/distorted frame until the next redraw (#269 codex R2). */
 #wf-minimap-canvas { flex: 1; min-width: 0; height: 28px; cursor: pointer; display: block; margin: 2px 8px 2px 0; }
-/* #269: birdseye summary bar */
-#wf-birdseye-summary { display: flex; align-items: center; gap: 12px; padding: 4px 12px; font-size: 11px; color: var(--dim); background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-#wf-birdseye-summary button { background: var(--accent); color: var(--bg); border: none; border-radius: 3px; padding: 3px 10px; font-size: 11px; cursor: pointer; margin-left: auto; }
-#wf-birdseye-summary button:hover { opacity: 0.85; }
 #wf-lanes-section { position: relative; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; transition: max-height 200ms ease; }
 #wf-cursor { position: absolute; top: 0; bottom: 0; min-width: 3px; background: var(--accent); opacity: 0.35; pointer-events: none; z-index: 10; }
 #wf-main-svg { display: block; position: sticky; top: 0; z-index: 5; background: var(--bg); }

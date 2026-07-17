@@ -784,7 +784,6 @@ function wfBuildState(sessionId) {
     laneFocusMode: false,
     laneHeightManual: false,
     birdseyeExpanded: false,
-    birdseyePending: null,
   };
 }
 
@@ -1019,7 +1018,6 @@ function _wfSeqRebuild(oldTMax) {
   fresh.laneFocusMode = old.laneFocusMode;
   fresh.laneHeightManual = old.laneHeightManual;
   fresh.birdseyeExpanded = old.birdseyeExpanded;
-  fresh.birdseyePending = old.birdseyePending;
   if (old.selectedLane) {
     fresh.selectedLane = fresh.lanes.find(function(l) { return l.key === old.selectedLane.key; }) || fresh.lanes[0];
   }
@@ -1472,11 +1470,6 @@ function wfRenderTimeline() {
   wfRenderAgentCard(wfState.selectedLane);
   // ponytail: charts now inline in selected lane SVG, no separate header
   wfRenderCurrentSection();
-
-  // #269 codex R1: full rebuild must re-render birdseye summary if pending
-  if (wfState.birdseyeExpanded && wfState.birdseyePending) {
-    _wfRenderBirdseyeSummary();
-  }
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
@@ -1593,9 +1586,9 @@ function _wfOverviewLabelHtml() {
   var expanded = wfState.birdseyeExpanded;
   var row1 = '<div class="wf-ol-row">' +
     '<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="' + sbTitle + '">' + sbText + '</button>' +
-    '<span>Overview' + (expanded ? '（放大）' : '') + '</span>' +
+    '<span>Overview</span>' +
     (expanded
-      ? '<button class="wf-btn-wide" onclick="wfBirdseyeCollapse()" title="收合 (Esc)">⤡ 收合</button>'
+      ? '<button onclick="wfBirdseyeCollapse()" title="收合 (Esc)">⤡</button>'
       : '<button onclick="wfZoomBy(0.5)">+</button>' +
         '<button onclick="wfZoomBy(2)">−</button>' +
         '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
@@ -1637,27 +1630,16 @@ function wfToggleLaneFocus() {
   _wfRefreshLaneFocusUI();
 }
 
-// #269: birdseye mode — enter, collapse (discard), apply (write brush to viewT0/T1)
+// #269: birdseye mode — enter/collapse toggle height only; brush uses normal minimap paths
 function wfBirdseyeEnter() {
   if (!wfState) return;
   wfState.birdseyeExpanded = true;
-  wfState.birdseyePending = null;
   _wfRefreshBirdseyeUI();
 }
 
 function wfBirdseyeCollapse() {
   if (!wfState) return;
   wfState.birdseyeExpanded = false;
-  wfState.birdseyePending = null;
-  _wfRefreshBirdseyeUI();
-}
-
-function wfBirdseyeApply() {
-  if (!wfState || !wfState.birdseyePending) return;
-  wfState.viewT0 = wfState.birdseyePending.t0;
-  wfState.viewT1 = wfState.birdseyePending.t1;
-  wfState.birdseyeExpanded = false;
-  wfState.birdseyePending = null;
   _wfRefreshBirdseyeUI();
 }
 
@@ -1671,35 +1653,7 @@ function _wfRefreshBirdseyeUI() {
       : wfOverviewHeight(wfState.lanes.length);
     canvas.style.height = h + 'px';
   }
-  // Show/hide the summary panel
-  _wfRenderBirdseyeSummary();
   wfDeferRender();
-}
-
-function _wfRenderBirdseyeSummary() {
-  var existing = document.getElementById('wf-birdseye-summary');
-  if (existing) existing.remove();
-  if (!wfState || !wfState.birdseyeExpanded || !wfState.birdseyePending) return;
-  var p = wfState.birdseyePending;
-  var s = wfRangeSummary(p.t0, p.t1);
-  var div = document.createElement('div');
-  div.id = 'wf-birdseye-summary';
-  div.innerHTML =
-    '<span>時距 ' + wfFmtDur(s.duration) + '</span>' +
-    '<span>turns ' + s.turnCount + '</span>' +
-    '<span>agents ' + s.activeLanes + '</span>' +
-    '<span>$' + s.cost.toFixed(4) + '</span>' +
-    '<span>cache ' + s.cacheHitPct.toFixed(1) + '%</span>' +
-    '<span>in ' + _wfFmtTokensK(s.tokensIn) + ' / out ' + _wfFmtTokensK(s.tokensOut) + '</span>' +
-    '<button onclick="wfBirdseyeApply()">套用並收合</button>';
-  var overview = document.getElementById('wf-overview');
-  if (overview) overview.parentNode.insertBefore(div, overview.nextSibling);
-}
-
-function _wfFmtTokensK(n) {
-  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-  return String(n);
 }
 
 // Shared by the ▲/▼ buttons and the Tab/Shift+Tab keyboard shortcut.
@@ -1996,33 +1950,15 @@ function wfRenderOverview(canvas) {
   // Selected turn cursor on overview
   _wfDrawOverviewCursor(canvas);
 
-  // #269: draw pending birdseye brush
-  if (birdseyeOn && wfState.birdseyePending) {
-    var bp = wfState.birdseyePending;
-    var bx0 = x(bp.t0), bx1 = x(bp.t1);
-    ctx.fillStyle = accentColor;
-    ctx.globalAlpha = 0.15;
-    ctx.fillRect(bx0, 0, bx1 - bx0, MH);
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = accentColor;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath(); ctx.moveTo(bx0, 0); ctx.lineTo(bx0, MH); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(bx1, 0); ctx.lineTo(bx1, MH); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-
   // Minimap interactions
   _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed);
 }
 
 function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
   var EDGE_PX = 6;
-  // #269 codex R1: birdseye expanded → always crosshair, skip viewport-edge hover
-  var birdseyeOn = wfState && wfState.birdseyeExpanded;
-  canvas.style.cursor = birdseyeOn ? 'crosshair' : (isZoomed ? 'grab' : 'crosshair');
+  canvas.style.cursor = isZoomed ? 'grab' : 'crosshair';
 
-  canvas.onmousemove = (!birdseyeOn && isZoomed) ? function(e) {
+  canvas.onmousemove = isZoomed ? function(e) {
     var rect = canvas.getBoundingClientRect();
     var vx = x(wfState.viewT0), vw = x(wfState.viewT1) - vx;
     var mx = (e.clientX - rect.left) / rect.width * MW;
@@ -2036,32 +1972,6 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
     var rect = canvas.getBoundingClientRect();
     var pxToTime = function(cx) { return wfState.tMin + ((cx - rect.left) / rect.width) * totalRange; };
     var clickTime = pxToTime(e.clientX);
-
-    // #269: birdseye expanded mode — all drag = pending brush, never writes viewT0/T1
-    if (wfState.birdseyeExpanded) {
-      // #269 codex R2: clear stale pending at drag start so a short new drag
-      // doesn't leave the old brush's Apply button committing the wrong range
-      wfState.birdseyePending = null;
-      _wfRenderBirdseyeSummary();
-      var bStart = clickTime, bEnd = clickTime;
-      var onMoveE = function(ev) {
-        bEnd = Math.max(wfState.tMin, Math.min(wfState.tMax, pxToTime(ev.clientX)));
-        var bt0 = Math.min(bStart, bEnd), bt1 = Math.max(bStart, bEnd);
-        if (bt1 - bt0 >= 500) {
-          wfState.birdseyePending = { t0: bt0, t1: bt1 };
-          _wfRenderBirdseyeSummary();
-          wfDeferRender();
-        }
-      };
-      var onUpE = function() {
-        window.removeEventListener('mousemove', onMoveE);
-        window.removeEventListener('mouseup', onUpE);
-      };
-      window.addEventListener('mousemove', onMoveE);
-      window.addEventListener('mouseup', onUpE);
-      return;
-    }
-
     var zoomedNow = wfIsZoomed();
 
     if (zoomedNow) {
