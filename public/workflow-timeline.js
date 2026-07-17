@@ -868,6 +868,7 @@ function wfAddEntry(entry) {
   }
   if (needsSub) {
     var lane;
+    var pooledReuse = false;
     if (key.indexOf('parallel-') === 0) {
       // Best-fit among the numbered parallel lanes of this base key (forks
       // share model+convId, so the key alone can't separate instances):
@@ -884,7 +885,7 @@ function wfAddEntry(entry) {
       }
       // ponytail: #261 — same convId → single lane (resource pool)
       if (!lane && famLanes.length) {
-        if (entry.convId) { lane = famLanes[0]; }
+        if (entry.convId) { lane = famLanes[0]; pooledReuse = true; }
         else { key = key + '#' + (famLanes.length + 1); }
       }
     }
@@ -893,7 +894,10 @@ function wfAddEntry(entry) {
       lane = { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null };
       wfState.lanes.push(lane);
     }
-    lane.turns.push(entry);
+    // #261: a pooled convId lane can receive turns out of start order (a
+    // nested turn completes before an earlier longer turn) — insert sorted
+    // so the live path matches wfInferLanes' order (batch/live parity).
+    if (pooledReuse) _wfInsertTurnSorted(lane, entry); else lane.turns.push(entry);
     lane._costMedian = null;
     if (!lane.agentKey && entry.agentKey) { lane.agentKey = entry.agentKey; lane.agentLabel = entry.agentLabel; }
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(lane) });
@@ -960,7 +964,7 @@ function _wfSeqRetroMove(closedTurns) {
     var famLanes = wfState.lanes.filter(function(l) {
       return l.key === key || l.key.indexOf(key + '#') === 0;
     });
-    var lane = null, bestEnd = -1;
+    var lane = null, bestEnd = -1, pooledReuse = false;
     for (var fi = 0; fi < famLanes.length; fi++) {
       var lt = famLanes[fi].turns[famLanes[fi].turns.length - 1];
       var ltEnd = lt ? (Number(lt.receivedAt) || 0) + (parseFloat(lt.elapsed) || 0) * 1000 : 0;
@@ -970,16 +974,33 @@ function _wfSeqRetroMove(closedTurns) {
       // ponytail: #261 — same convId → single lane (resource pool)
       if (famLanes.length && t.convId) {
         lane = famLanes[0];
+        pooledReuse = true;
       } else {
         if (famLanes.length) key = key + '#' + (famLanes.length + 1);
         lane = { name: key, key: key, turns: [], model: t.model, ctxWindow: t.maxContext || 0, spawnParent: null, agentKey: t.agentKey || null, agentLabel: t.agentLabel || null, convId: t.convId || null };
         wfState.lanes.push(lane);
       }
     }
-    lane.turns.push(t);
+    // #261: pooled convId lane can receive turns out of start order — insert
+    // sorted so the live path matches wfInferLanes' order (batch/live parity).
+    if (pooledReuse) _wfInsertTurnSorted(lane, t); else lane.turns.push(t);
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
+}
+
+// #261: pooled convId lanes can receive turns out of start order (a nested
+// turn completes before an earlier longer turn). Insert by (receivedAt, id)
+// so the live path matches wfInferLanes' sorted order (batch/live parity).
+function _wfInsertTurnSorted(lane, entry) {
+  var es = Number(entry.receivedAt) || 0;
+  var arr = lane.turns, i = arr.length;
+  while (i > 0) {
+    var p = arr[i - 1], ps = Number(p.receivedAt) || 0;
+    if (ps < es || (ps === es && String(p.id) <= String(entry.id))) break;
+    i--;
+  }
+  arr.splice(i, 0, entry);
 }
 
 // ── Lane Summary ──────────────────────────────────────────────────────────
@@ -998,7 +1019,17 @@ function wfLaneSummary(lane) {
     totalIn += (t.usage?.input_tokens || 0) + cr + cc;
     totalOut += (t.usage?.output_tokens || 0);
   }
-  var dur = turns[turns.length - 1].receivedAt + (parseFloat(turns[turns.length - 1].elapsed) || 0) * 1000 - turns[0].receivedAt;
+  // #261: pooled convId lanes can hold overlapping turns, so the last turn
+  // by array order isn't necessarily the one that ends last — use min-start
+  // / max-end over all turns (identical to the old result for serial lanes).
+  var minStart = Infinity, maxEnd = -Infinity;
+  for (var di = 0; di < turns.length; di++) {
+    var ds = Number(turns[di].receivedAt) || 0;
+    var de = ds + (parseFloat(turns[di].elapsed) || 0) * 1000;
+    if (ds < minStart) minStart = ds;
+    if (de > maxEnd) maxEnd = de;
+  }
+  var dur = maxEnd - minStart;
   return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
 
@@ -1062,7 +1093,11 @@ function _wfLaneDispName(lane, laneIdx, mainConvs) {
   var laneOrd = /#(\d+)$/.exec(lane.key || '');
   if ((lane.key || '').indexOf('parallel-') === 0) {
     var kin = lane.convId && mainConvs && mainConvs.has(lane.convId) ? 'Fork' : 'Teammate';
-    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + (laneOrd ? ' #' + laneOrd[1] : '');
+    // #261: convId pooled lanes are a single resource pool, so "#1" is
+    // meaningless and dropped; legacy null-convId families that split into
+    // multiple lanes still need their first ordinal (#1) to disambiguate.
+    var ordSfx = laneOrd ? ' #' + laneOrd[1] : (lane.convId ? '' : ' #1');
+    return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + ordSfx;
   }
   // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
   // Identity-routed teammate: a main-agent key (e.g. 'orchestrator') placed

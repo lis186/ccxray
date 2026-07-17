@@ -1127,6 +1127,70 @@ describe('#221/#222 redo: overlap overrides authoritative agentKey (ADR 0008)', 
   });
 });
 
+// ── #261 codex review fixes: pooled-lane duration, live/batch insert-order
+// parity, legacy #1 label ───────────────────────────────────────────────────
+describe('#261 codex review fixes', () => {
+  function mkFork(id, at, elapsed) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed,
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: 'c0ffee' });
+  }
+
+  it('P2: pooled-lane duration uses min-start/max-end, not last-turn-by-array-order', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkFork('parent', 1000, 60),     // 1000..61000 (anchors main)
+      mkFork('flong', 11000, 50),     // 11000..61000 (long overlapping fork)
+      mkFork('fnested', 13000, 5),    // 13000..18000 (nested, ends BEFORE flong)
+    ], []);
+    assert.equal(lanes.length, 2); // main + 1 pooled parallel lane
+    var pooled = lanes[1];
+    assert.equal(pooled.turns.map(function(t) { return t.id; }).join(','), 'flong,fnested');
+    var summary = ctx.wfLaneSummary(pooled);
+    // old bug: last-by-array-order (fnested, ends 18000) - first (11000) = 7000
+    assert.equal(summary.duration, 50000, 'duration must span max-end(61000) - min-start(11000)');
+  });
+
+  it('P2: live path (wfAddEntry) inserts pooled turns sorted by receivedAt regardless of arrival order', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkFork('parent', 1000, 60)];
+    ctx.wfState = ctx.wfBuildState('s1');
+    // Arrival order = completion order: the nested (later-start, earlier-end)
+    // turn completes and arrives BEFORE the longer, earlier-starting turn.
+    ctx.wfAddEntry(mkFork('fnested', 13000, 5));
+    ctx.wfAddEntry(mkFork('flong', 11000, 50));
+    assert.equal(ctx.wfState.lanes.length, 2);
+    var liveIds = ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(',');
+    assert.equal(liveIds, 'flong,fnested', 'live insert must sort by receivedAt, not arrival order');
+
+    // Batch/live parity: wfInferLanes on the same set (fed in start order,
+    // since batch always sorts internally) must produce the same pooled order.
+    const batchCtx = loadWfModule();
+    var batchLanes = batchCtx.wfInferLanes([
+      mkFork('parent', 1000, 60),
+      mkFork('fnested', 13000, 5),
+      mkFork('flong', 11000, 50),
+    ], []);
+    var batchIds = batchLanes[1].turns.map(function(t) { return t.id; }).join(',');
+    assert.equal(batchIds, liveIds);
+  });
+
+  it('P3: legacy null-convId families keep the first lane\'s #1 ordinal', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkEntry('parent', 's1', 'claude-opus-4-6', 1000, 60, { agentKey: 'orchestrator' }),
+      mkEntry('f1', 's1', 'claude-opus-4-6', 5000, 40, {}),
+      mkEntry('f2', 's1', 'claude-opus-4-6', 7000, 40, {}),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.ok(lanes.length >= 3);
+    var mainConvs = ctx._wfMainConvSet(lanes);
+    var name1 = ctx._wfLaneDispName(lanes[1], 1, mainConvs);
+    var name2 = ctx._wfLaneDispName(lanes[2], 2, mainConvs);
+    assert.ok(name1.indexOf('#1') !== -1, 'first legacy lane must keep #1, got: ' + name1);
+    assert.ok(name2.indexOf('#2') !== -1, 'second legacy lane must show #2, got: ' + name2);
+  });
+});
+
 // ── #230: sequential interleave — convId bracketing + msgCount dip (ADR 0009) ─
 // Overlap (ADR 0008) only catches PARALLEL agents. These fixtures mirror the
 // two real residue shapes it cannot see:
