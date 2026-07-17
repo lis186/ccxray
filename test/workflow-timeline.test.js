@@ -1806,3 +1806,80 @@ describe('#258 coreHash identity routing', () => {
     assert.ok(name.indexOf('56a5') !== -1, 'expected convId prefix in label, got: ' + name);
   });
 });
+
+// ── #236 lane eligibility: non-conversation entries never mint a lane ────────
+// A lane asserts "an agent exists here" — only real conversation turns may
+// mint/join one. Retries and 0-msg error probes are diagnostic signals routed
+// to the main lane's fault track. (fail-on-old style)
+describe('#236 lane eligibility', () => {
+  function allTurnIds(lanes) {
+    var s = [];
+    for (var i = 0; i < lanes.length; i++)
+      for (var j = 0; j < lanes[i].turns.length; j++) s.push(lanes[i].turns[j].id);
+    return s;
+  }
+  function faultIds(lane) {
+    return (lane.faultEntries || []).map(function(f) { return f.id; }).sort().join(',');
+  }
+  function laneSig(lanes) {
+    return lanes.filter(function(l) { return l.turns.length; })
+      .map(function(l) { return l.turns.map(function(t) { return t.id; }).sort().join(','); })
+      .sort().join('|');
+  }
+
+  it('AC1 — retry overlapping a hung main turn mints no lane, rides the fault track', () => {
+    const ctx = loadWfModule();
+    // m1 is a long/hung turn (span 1000..61000); the retry starts strictly inside it.
+    var lanes = ctx.wfInferLanes([
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 60, {}),
+      mkEntry('r1', 's1', 'claude-opus-4-6', 20000, 5, { status: 500, isRetry: true }),
+    ], []);
+    assert.equal(lanes.length, 1, 'no parallel lane — the retry is not a turn');
+    assert.deepEqual(allTurnIds(lanes), ['m1'], 'retry must not be in any lane turns');
+    assert.equal(faultIds(lanes[0]), 'r1', 'retry rides the main lane fault track');
+  });
+
+  it('AC2 — 0-msg 404 error probe is not a lane, rides the fault track', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('p404', 's1', null, 3000, 0, { status: 404, isSubagent: true, msgCount: 0 }),
+    ], []);
+    assert.equal(lanes.length, 1, 'probe mints no subagent lane');
+    assert.deepEqual(allTurnIds(lanes), ['m1'], 'probe must not be in any lane turns');
+    assert.equal(faultIds(lanes[0]), 'p404', 'probe rides the main lane fault track');
+  });
+
+  it('AC3 — batch/live parity for lane structure AND fault entries', () => {
+    var entries = [
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 5, {}),
+      mkEntry('p404', 's1', null, 3000, 0, { status: 404, isSubagent: true, msgCount: 0 }),
+      mkEntry('r1', 's1', 'claude-opus-4-6', 4000, 3, { status: 500, isRetry: true }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', 8000, 5, {}),
+      mkEntry('sub1', 's1', 'claude-sonnet-5', 12000, 3, { isSubagent: true, msgCount: 20 }),
+    ];
+    const batchCtx = loadWfModule();
+    var batch = batchCtx.wfInferLanes(entries.slice(), []);
+
+    const liveCtx = loadWfModule();
+    liveCtx.allEntries = entries.slice(0, 1);
+    liveCtx.wfState = liveCtx.wfBuildState('s1');
+    for (var i = 1; i < entries.length; i++) {
+      liveCtx.allEntries.push(entries[i]);
+      liveCtx.wfAddEntry(entries[i]);
+    }
+    var live = liveCtx.wfState.lanes;
+
+    assert.equal(laneSig(live), laneSig(batch), 'lane count + per-lane turn ids match');
+    assert.equal(faultIds(live[0]), faultIds(batch[0]), 'main lane fault entries match');
+    assert.equal(faultIds(batch[0]), 'p404,r1', 'both ineligible entries collected as faults');
+  });
+
+  it('_wfIsLaneEligible: false for retry / 0-msg-no-model, true for turns + real subagents', () => {
+    const ctx = loadWfModule();
+    assert.equal(ctx._wfIsLaneEligible({ isRetry: true, model: 'claude-opus-4-6', msgCount: 40 }), false, 'retry');
+    assert.equal(ctx._wfIsLaneEligible({ model: null, msgCount: 0 }), false, '0-msg error probe');
+    assert.equal(ctx._wfIsLaneEligible(mkEntry('t', 's1', 'claude-opus-4-6', 1000, 5, { msgCount: 40 })), true, 'normal turn');
+    assert.equal(ctx._wfIsLaneEligible(mkEntry('s', 's1', 'claude-sonnet-5', 1000, 5, { isSubagent: true, msgCount: 20 })), true, 'real subagent');
+  });
+});
