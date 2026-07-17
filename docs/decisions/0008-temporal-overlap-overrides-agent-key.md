@@ -119,6 +119,10 @@ identity from timing artifacts. A single 75s overlap creating permanent
 abstraction level (Munzner); and violates case-notion requirements
 (van der Aalst).
 
+Identity sublanes (`agent-<agentKey>:<convId>`, ADR 0010) are also
+convId-keyed pools — the same resource-pool principle applies; see the
+ADR 0010 amendment above and ADR 0010's Consequences.
+
 Turns **without** `convId` (legacy data, no identity signal) retain the
 strict no-overlap split — the old behavior is the correct fallback when
 identity is unknown.
