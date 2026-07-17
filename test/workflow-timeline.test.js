@@ -276,13 +276,50 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfLaneCostMedian(lane), 0.09);
   });
 
-  it('wfOverviewHeight scales with lane count, clamped 28-48', () => {
+  it('wfOverviewHeight scales with lane count, floors at 28, caps at 20% viewport (#268)', () => {
     const ctx = loadWfModule();
+    ctx.window.innerHeight = 900; // cap = 180
     assert.equal(ctx.wfOverviewHeight(1), 28);   // floor: single lane
     assert.equal(ctx.wfOverviewHeight(3), 28);   // 3*7+6=27 → floor
     assert.equal(ctx.wfOverviewHeight(4), 34);
-    assert.equal(ctx.wfOverviewHeight(6), 48);   // 6*7+6=48 → exactly cap
-    assert.equal(ctx.wfOverviewHeight(18), 48);  // cap: many lanes
+    assert.equal(ctx.wfOverviewHeight(6), 48);   // 6*7+6=48, well under cap
+    assert.equal(ctx.wfOverviewHeight(15), 111); // 15*7+6=111, still under cap
+    assert.equal(ctx.wfOverviewHeight(18), 132); // 18*7+6=132, still under cap
+    assert.equal(ctx.wfOverviewHeight(60), 180); // 60*7+6=426 > cap → clamped to cap
+  });
+
+  it('#268 old-fail/new-pass: slot never shrinks below 6px until the viewport cap is hit', () => {
+    // Old formula hard-capped at 48px regardless of viewport, so 10+ lane
+    // sessions smeared into ~1-2px slivers. This sweep fails against the
+    // old `Math.min(48, ...)` formula (e.g. laneCount=20 → height=48 →
+    // slot=2.2px, height=48 < cap=180) and passes against the new one.
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    const cap = 0.20 * 900;
+    for (let laneCount = 4; laneCount <= 40; laneCount++) {
+      const h = ctx.wfOverviewHeight(laneCount);
+      const slot = (h - 4) / laneCount;
+      assert.ok(slot >= 6 || h >= cap, `laneCount=${laneCount} slot=${slot} height=${h}`);
+    }
+  });
+
+  it('#268 low-lane regression: laneCount <= 4 stays within old value + 8px', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    const oldValues = { 1: 28, 2: 28, 3: 28, 4: 34 }; // old Math.min(48, Math.max(28, n*7+6))
+    for (const [n, oldV] of Object.entries(oldValues)) {
+      const h = ctx.wfOverviewHeight(Number(n));
+      assert.ok(h <= oldV + 8, `laneCount=${n} height=${h} exceeds old=${oldV}+8`);
+    }
+  });
+
+  it('#268 guard: height never exceeds 20% of viewport height', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    for (let laneCount = 1; laneCount <= 60; laneCount++) {
+      const h = ctx.wfOverviewHeight(laneCount);
+      assert.ok(h <= 0.20 * 900, `laneCount=${laneCount} height=${h} exceeds 20% viewport cap`);
+    }
   });
 
   it('wfOverviewBarGeom keeps every lane inside the canvas (no clipping)', () => {

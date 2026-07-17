@@ -686,7 +686,7 @@
 #columns.wf-active #col-turns .turn-item { display: none !important; }
 #columns.wf-active #col-turns .col-sticky-header { display: none; }
 #wf-timeline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
-#wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: center; }
+#wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: flex-start; }
 #wf-overview-label { width: 240px; flex-shrink: 0; padding: 4px 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; flex-direction: column; gap: 3px; }
 #wf-overview-label .wf-ol-row { display: flex; align-items: center; gap: 4px; }
 /* Row 2 always renders (toggle button never disappears) so the label's
