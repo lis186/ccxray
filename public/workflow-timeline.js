@@ -432,6 +432,15 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   if (!entries.length && !childEntries.length) return [];
   if (!seqTracker) seqTracker = wfCreateSeqTracker();
 
+  // #238 part 2: reset across ALL input turns before lane partitioning — a
+  // turn tagged _wfSeqStitched on a prior build can route straight into an
+  // identity sublane (coreHash change) on this build and never enter
+  // mainLane.turns, so a reset scoped to mainLane.turns alone would miss it
+  // and leave a stale tag on its tooltip. Display-only — never read by the
+  // routing logic below.
+  for (var _ri = 0; _ri < entries.length; _ri++) entries[_ri]._wfSeqStitched = false;
+  for (var _rj = 0; _rj < childEntries.length; _rj++) childEntries[_rj]._wfSeqStitched = false;
+
   var laneMap = new Map();
   var mainLane = { name: 'main', key: 'main', turns: [], model: null, ctxWindow: 0, spawnParent: null };
   laneMap.set('main', mainLane);
@@ -544,11 +553,6 @@ function wfInferLanes(entries, childEntries, seqTracker) {
     if (lk === 'main') return;
     for (var si = 0; si < lane.turns.length; si++) fixedEvidence.push(lane.turns[si]);
   });
-  // #238 part 2: reset before the fixpoint loop so a turn that stops being an
-  // R2 excursion on rebuild (more entries arrived, verdict flipped) never
-  // carries a stale tag from an earlier wfInferLanes call. Display-only —
-  // never read by the routing logic above or below.
-  for (var _si = 0; _si < mainLane.turns.length; _si++) mainLane.turns[_si]._wfSeqStitched = false;
   var candidates = mainLane.turns;
   var exiled = [];
   for (;;) {
@@ -801,6 +805,14 @@ function _wfFollowTail(oldTMax) {
   }
 }
 
+// #238: keep lane.models current on live appends (batch recomputes dominant-
+// first by count; live just ensures the model is present so a switch shows).
+function _wfLaneTrackModel(lane, model) {
+  if (!model) return;
+  if (!lane.models) lane.models = lane.model ? [lane.model] : [];
+  if (lane.models.indexOf(model) === -1) lane.models.push(model);
+}
+
 // ── Incremental Update ────────────────────────────────────────────────────
 // Caller contract: `entry` must already be pushed into allEntries before
 // this call — the reordered-arrival path (_wfSeqRebuild) recomputes the
@@ -853,6 +865,7 @@ function wfAddEntry(entry) {
       wfState.lanes.push(clane);
     }
     clane.turns.push(entry);
+    _wfLaneTrackModel(clane, entry.model);
     clane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(clane) });
     _wfFollowTail(oldTMax);
@@ -970,11 +983,13 @@ function wfAddEntry(entry) {
     // nested turn completes before an earlier longer turn) — insert sorted
     // so the live path matches wfInferLanes' order (batch/live parity).
     if (pooledReuse) _wfInsertTurnSorted(lane, entry); else lane.turns.push(entry);
+    _wfLaneTrackModel(lane, entry.model);
     lane._costMedian = null;
     if (!lane.agentKey && entry.agentKey) { lane.agentKey = entry.agentKey; lane.agentLabel = entry.agentLabel; }
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: wfState.lanes.indexOf(lane) });
   } else if (wfState.lanes[0]) {
     wfState.lanes[0].turns.push(entry);
+    _wfLaneTrackModel(wfState.lanes[0], entry.model);
     wfState.lanes[0]._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
     // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
@@ -1056,6 +1071,7 @@ function _wfSeqRetroMove(closedTurns) {
     // #261: pooled convId lane can receive turns out of start order — insert
     // sorted so the live path matches wfInferLanes' order (batch/live parity).
     if (pooledReuse) _wfInsertTurnSorted(lane, t); else lane.turns.push(t);
+    _wfLaneTrackModel(lane, t.model);
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
@@ -1219,7 +1235,10 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (modelLbl.title || '?') + ' · ' + ctxK + 'K');
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
-  svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  // #238 P3: <title> on the model text itself — hovering the abbreviated
+  // "opus-4-6 +2" form must reveal the full model list, same as the name
+  // text above; the fullTitle <title> only covers the name row's box.
+  svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
