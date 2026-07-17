@@ -1026,8 +1026,8 @@ function _wfSeqRebuild(oldTMax) {
 
 // Retro-move a closed R1 bracket (#230) out of the live main lane, using the
 // same best-fit-by-family placement as the batch pass (latest-ending lane of
-// key/key#N that still ends at/before the turn's start — keeps every lane
-// serial, preserving the ADR 0008 no-intra-lane-overlap invariant).
+// key/key#N that still ends at/before the turn's start). Same-convId turns
+// reuse fam[0] as a resource pool (#261); null-convId turns split to #N lanes.
 function _wfSeqRetroMove(closedTurns) {
   if (!wfState.lanes[0] || !closedTurns.length) return;
   var closedSet = new Set(closedTurns);

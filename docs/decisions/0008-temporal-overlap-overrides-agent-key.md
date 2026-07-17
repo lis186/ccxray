@@ -49,17 +49,23 @@ that the overlap check sits **above** that signal and is never gated by it.
 
 ## Consequences
 
-**Good**: no lane can contain two temporally-overlapping turns — a
-machine-checkable invariant (asserted in `test/workflow-timeline.test.js`)
-that cannot green-light the Batch 11 failure mode again. Real-data
-re-audit: 547 → 0 overlap findings.
+**Good**: the main lane is strictly serial — no two temporally-overlapping
+turns can coexist in it. This is machine-checkable (asserted in
+`test/workflow-timeline.test.js`) and cannot green-light the Batch 11
+failure mode again. Real-data re-audit: 547 → 0 overlap findings.
+
+For non-main lanes, the overlap rule depends on identity signal:
+- **convId-keyed lanes** (`parallel-<model>:<convId>` and
+  `agent-<agentKey>:<convId>`): intra-lane overlap IS allowed — the lane
+  is a resource pool (identity channel), not a concurrency track (#261).
+- **null-convId lanes**: strict no-overlap split — the old behavior is the
+  correct fallback when identity is unknown.
 
 **Bad — identity remains inferred**: without a wire-level identity signal
 (#222's upstream ask), numbered parallel lanes are *concurrency tracks*,
 not verified per-instance identities. Interleaved fork/parent turns that
 never overlap are indistinguishable and stay in main; best-fit can in
-principle interleave two forks' turns across lanes. The invariant we
-guarantee is "no intra-lane overlap," not "one lane per fork."
+principle interleave two forks' turns across lanes.
 
 **Bad — hung-stream edge**: a stalled stream held open past its client's
 retry produces genuine socket concurrency for one logical agent; such a
@@ -91,11 +97,13 @@ and the live-path convergence rules live in
 ## Amended by ADR 0010 (2026-07-16)
 
 coreHash identity routing (ADR 0010, #258) diverts teammate turns to an
-identity sublane *before* they ever reach main, so the overlap sweep in this
-ADR processes fewer candidates for sessions with teammates. Fork turns
-(same coreHash as main) are unaffected — they still transit main and remain
-fully subject to the overlap invariant this ADR establishes; ADR 0010 is
-explicitly scoped to not touch fork handling.
+identity sublane (`agent-<agentKey>:<convId>`) *before* they ever reach
+main, so the overlap sweep in this ADR processes fewer candidates for
+sessions with teammates. Identity sublanes are convId-keyed and follow the
+#261 resource-pool rule (intra-lane overlap allowed). Fork turns (same
+coreHash as main) are unaffected — they still transit main and remain fully
+subject to the main-lane serial invariant; ADR 0010 is explicitly scoped to
+not touch fork handling.
 
 ## Amended by #261 (2026-07-17)
 
