@@ -1784,11 +1784,14 @@ function wfDeferRender() {
 }
 
 // ── Overview Bar (Canvas) ─────────────────────────────────────────────────
-// Multi-agent legibility: canvas grows with lane count so 4-6 lanes get
-// ~6px bars instead of 2-3px slivers. Capped at 48px (#114) — beyond ~10
-// lanes bars shrink toward 1px; per-lane analysis is the swimlane's job.
+// Multi-agent legibility: canvas grows with lane count so every lane keeps a
+// readable slot. The uncapped formula gives wfOverviewBarGeom's slot =
+// (MH-4)/laneCount = 7 + 2/laneCount, always ≥7px. #268: the old 48px hard
+// cap made 10+ lane sessions smear into ~1px slivers; the cap now scales
+// with viewport height (35% of window.innerHeight) instead. Beyond that cap
+// bars still compress toward 1px — per-lane analysis is the swimlane's job.
 function wfOverviewHeight(laneCount) {
-  return Math.min(48, Math.max(28, laneCount * 7 + 6));
+  return Math.min(window.innerHeight * 0.35, Math.max(28, laneCount * 7 + 6));
 }
 
 // slot = px per lane; when tight (<3px) the 1px gap compresses away so
