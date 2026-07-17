@@ -1018,6 +1018,8 @@ function _wfSeqRebuild(oldTMax) {
   fresh.selectedSection = old.selectedSection;
   fresh.laneFocusMode = old.laneFocusMode;
   fresh.laneHeightManual = old.laneHeightManual;
+  fresh.birdseyeExpanded = old.birdseyeExpanded;
+  fresh.birdseyePending = old.birdseyePending;
   if (old.selectedLane) {
     fresh.selectedLane = fresh.lanes.find(function(l) { return l.key === old.selectedLane.key; }) || fresh.lanes[0];
   }
@@ -1470,6 +1472,11 @@ function wfRenderTimeline() {
   wfRenderAgentCard(wfState.selectedLane);
   // ponytail: charts now inline in selected lane SVG, no separate header
   wfRenderCurrentSection();
+
+  // #269 codex R1: full rebuild must re-render birdseye summary if pending
+  if (wfState.birdseyeExpanded && wfState.birdseyePending) {
+    _wfRenderBirdseyeSummary();
+  }
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
@@ -1588,7 +1595,7 @@ function _wfOverviewLabelHtml() {
     '<button id="sidebar-toggle-btn" onclick="toggleSidebar()" title="' + sbTitle + '">' + sbText + '</button>' +
     '<span>Overview' + (expanded ? '（放大）' : '') + '</span>' +
     (expanded
-      ? '<button onclick="wfBirdseyeCollapse()" title="收合 (Esc)">⤡ 收合</button>'
+      ? '<button class="wf-btn-wide" onclick="wfBirdseyeCollapse()" title="收合 (Esc)">⤡ 收合</button>'
       : '<button onclick="wfZoomBy(0.5)">+</button>' +
         '<button onclick="wfZoomBy(2)">−</button>' +
         '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
@@ -2011,9 +2018,11 @@ function wfRenderOverview(canvas) {
 
 function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
   var EDGE_PX = 6;
-  canvas.style.cursor = isZoomed ? 'grab' : 'crosshair';
+  // #269 codex R1: birdseye expanded → always crosshair, skip viewport-edge hover
+  var birdseyeOn = wfState && wfState.birdseyeExpanded;
+  canvas.style.cursor = birdseyeOn ? 'crosshair' : (isZoomed ? 'grab' : 'crosshair');
 
-  canvas.onmousemove = isZoomed ? function(e) {
+  canvas.onmousemove = (!birdseyeOn && isZoomed) ? function(e) {
     var rect = canvas.getBoundingClientRect();
     var vx = x(wfState.viewT0), vw = x(wfState.viewT1) - vx;
     var mx = (e.clientX - rect.left) / rect.width * MW;
