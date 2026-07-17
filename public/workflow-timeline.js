@@ -783,7 +783,32 @@ function wfBuildState(sessionId) {
     selectedSection: 'timeline',
     laneFocusMode: false,
     laneHeightManual: false,
+    birdsEyeMode: false,
   };
+}
+
+// Pure data summary for a time range — no UI. For #256 (brush-range detail
+// panel) to consume; not wired into any render path yet.
+function wfRangeSummary(t0, t1) {
+  if (!wfState) return null;
+  var turns = [], cost = 0, models = {}, tools = {}, lanes = {};
+  for (var li = 0; li < wfState.lanes.length; li++) {
+    var lane = wfState.lanes[li];
+    for (var ti = 0; ti < lane.turns.length; ti++) {
+      var turn = lane.turns[ti];
+      var ts = Number(turn.receivedAt) || 0;
+      if (ts >= t0 && ts <= t1) {
+        turns.push(turn);
+        cost += (turn.cost || 0);
+        models[turn.model] = (models[turn.model] || 0) + 1;
+        lanes[lane.key] = (lanes[lane.key] || 0) + 1;
+        if (turn.toolCalls) {
+          for (var tk in turn.toolCalls) tools[tk] = (tools[tk] || 0) + turn.toolCalls[tk];
+        }
+      }
+    }
+  }
+  return { turns: turns.length, cost: cost, models: models, tools: tools, lanes: lanes, duration: t1 - t0 };
 }
 
 // tail-follow slop, aligned with wfIsZoomed's 100ms so a following-but-unzoomed
@@ -1016,6 +1041,7 @@ function _wfSeqRebuild(oldTMax) {
   fresh.selectedSection = old.selectedSection;
   fresh.laneFocusMode = old.laneFocusMode;
   fresh.laneHeightManual = old.laneHeightManual;
+  fresh.birdsEyeMode = old.birdsEyeMode;
   if (old.selectedLane) {
     fresh.selectedLane = fresh.lanes.find(function(l) { return l.key === old.selectedLane.key; }) || fresh.lanes[0];
   }
@@ -1587,6 +1613,8 @@ function _wfOverviewLabelHtml() {
     '<button onclick="wfZoomBy(0.5)">+</button>' +
     '<button onclick="wfZoomBy(2)">−</button>' +
     '<button onclick="wfState.viewT0=wfState.tMin;wfState.viewT1=wfState.tMax;wfDeferRender()">⟲</button>' +
+    '<button onclick="wfToggleBirdsEye()" title="' + (wfState.birdsEyeMode ? 'Exit birdseye' : 'Birdseye') +
+      '" class="' + (wfState.birdsEyeMode ? 'active' : '') + '">' + (wfState.birdsEyeMode ? '⤡' : '⤢') + '</button>' +
     '</div>';
   var pagerHtml = wfState.laneFocusMode
     ? '<button onclick="wfCycleLane(-1)" title="Previous agent">▲</button>' +
@@ -1622,6 +1650,23 @@ function wfToggleLaneFocus() {
   if (!wfState) return;
   wfState.laneFocusMode = !wfState.laneFocusMode;
   _wfRefreshLaneFocusUI();
+}
+
+// ── Birdseye overview mode (#269) ──────────────────────────────────────────
+// In-place expands the overview minimap so each lane gets a readable ≥10px
+// slot (vs. the #268 compact 20%-viewport cap), capped at 80% viewport height.
+function wfToggleBirdsEye() {
+  if (!wfState) return;
+  wfState.birdsEyeMode = !wfState.birdsEyeMode;
+  _wfRefreshBirdsEye();
+}
+
+function _wfRefreshBirdsEye() {
+  var canvas = document.getElementById('wf-minimap-canvas');
+  if (canvas && wfState) canvas.style.height = wfOverviewHeight(wfState.lanes.length) + 'px';
+  var overviewLabel = document.getElementById('wf-overview-label');
+  if (overviewLabel) overviewLabel.innerHTML = _wfOverviewLabelHtml();
+  wfDeferRender();
 }
 
 // Shared by the ▲/▼ buttons and the Tab/Shift+Tab keyboard shortcut.
@@ -1791,7 +1836,9 @@ function wfDeferRender() {
 // with viewport height (20% of window.innerHeight) instead. Beyond that cap
 // bars still compress toward 1px — per-lane analysis is the swimlane's job.
 function wfOverviewHeight(laneCount) {
-  return Math.min(window.innerHeight * 0.20, Math.max(28, laneCount * 7 + 6));
+  var normal = Math.min(window.innerHeight * 0.20, Math.max(28, laneCount * 7 + 6));
+  if (!(wfState && wfState.birdsEyeMode)) return normal;
+  return Math.min(window.innerHeight * 0.80, Math.max(normal, laneCount * 10 + 6));
 }
 
 // slot = px per lane; when tight (<3px) the 1px gap compresses away so
@@ -2675,8 +2722,13 @@ function wfKeyHandler(key, e) {
     return true;
   }
 
-  // Esc: unlock turn, then zoom reset, then back to main lane
+  // Esc: exit birdseye, then unlock turn, then zoom reset, then back to main lane
   if (key === 'Escape') {
+    if (wfState.birdsEyeMode) {
+      wfState.birdsEyeMode = false;
+      _wfRefreshBirdsEye();
+      return true;
+    }
     if (wfState.selectedTurnId) {
       wfState.selectedTurnId = null;
       wfDeferRender();

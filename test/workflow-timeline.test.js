@@ -322,6 +322,72 @@ describe('workflow-timeline data layer', () => {
     }
   });
 
+  it('wfOverviewHeight birdseye mode: ≥10px/lane slot, capped at 80% viewport (#269)', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900; // 80% cap = 720
+    ctx.wfState = { birdsEyeMode: true };
+    assert.equal(ctx.wfOverviewHeight(20), 206); // 20*10+6=206, under cap
+    assert.equal(ctx.wfOverviewHeight(4), 46);   // normal(4)=34, floor to 46
+    assert.equal(ctx.wfOverviewHeight(80), 720); // 80*10+6=806 > cap → clamped to 720
+  });
+
+  it('birdseye mode: slot ≥ 10px for laneCount 4-40 (old-fail/new-pass)', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    ctx.wfState = { birdsEyeMode: true };
+    for (let n = 4; n <= 40; n++) {
+      const h = ctx.wfOverviewHeight(n);
+      const slot = (h - 4) / n;
+      const atCap = h >= 900 * 0.80 - 1;
+      assert.ok(slot >= 10 || atCap, `laneCount=${n}: slot=${slot.toFixed(1)}, h=${h}, atCap=${atCap}`);
+    }
+  });
+
+  it('birdseye mode: low-lane count never shorter than normal height', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    ctx.wfState = { birdsEyeMode: false };
+    for (let n = 1; n <= 4; n++) {
+      const normal = ctx.wfOverviewHeight(n);
+      ctx.wfState.birdsEyeMode = true;
+      const birdseye = ctx.wfOverviewHeight(n);
+      ctx.wfState.birdsEyeMode = false;
+      assert.ok(birdseye >= normal, `laneCount=${n}: birdseye=${birdseye} < normal=${normal}`);
+    }
+  });
+
+  it('birdseye mode guard: height never exceeds 80% of viewport height', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    ctx.wfState = { birdsEyeMode: true };
+    for (let laneCount = 1; laneCount <= 100; laneCount++) {
+      const h = ctx.wfOverviewHeight(laneCount);
+      assert.ok(h <= 0.80 * 900, `laneCount=${laneCount} height=${h} exceeds 80% viewport cap`);
+    }
+  });
+
+  it('wfRangeSummary aggregates turns, cost, models, tools, lanes within a range', () => {
+    const ctx = loadWfModule();
+    const t1 = mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 10, { cost: 0.1, toolCalls: { Bash: 2 } });
+    const t2 = mkEntry('t2', 's1', 'claude-opus-4-6', 2000, 10, { cost: 0.2, toolCalls: { Read: 1 } });
+    const t3 = mkEntry('t3', 's1', 'claude-sonnet-5', 3000, 10, { cost: 0.3, toolCalls: { Bash: 1 } });
+    const t4 = mkEntry('t4', 's1', 'claude-sonnet-5', 9000, 10, { cost: 0.4, toolCalls: {} }); // outside range
+    ctx.wfState = {
+      lanes: [
+        { key: 'main', turns: [t1, t2] },
+        { key: 'agent-x:c1', turns: [t3, t4] },
+      ],
+    };
+    const summary = ctx.wfRangeSummary(500, 3500);
+    assert.equal(summary.turns, 3);
+    assert.ok(Math.abs(summary.cost - 0.6) < 1e-9);
+    // vm realm objects fail deepStrictEqual prototype check → compare via JSON
+    assert.equal(JSON.stringify(summary.models), JSON.stringify({ 'claude-opus-4-6': 2, 'claude-sonnet-5': 1 }));
+    assert.equal(JSON.stringify(summary.tools), JSON.stringify({ Bash: 3, Read: 1 }));
+    assert.equal(JSON.stringify(summary.lanes), JSON.stringify({ main: 2, 'agent-x:c1': 1 }));
+    assert.equal(summary.duration, 3000);
+  });
+
   it('wfOverviewBarGeom keeps every lane inside the canvas (no clipping)', () => {
     const ctx = loadWfModule();
     // codex R1: old formula (barH floor 2 + fixed 1px gap) clipped trailing
