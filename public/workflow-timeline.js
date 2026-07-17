@@ -418,15 +418,42 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   laneMap.set('main', mainLane);
   var orchCtx = 0;
 
+  // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+  // Teammate agents (Agent-tool dispatch) share agentKey='orchestrator' with
+  // main because their system prompt matches the same KNOWN_AGENTS entry,
+  // but their coreHash (normalized system-prompt hash) differs — main and
+  // teammate genuinely run different prompts. Pre-scan: mainCoreHash = the
+  // coreHash of the earliest-starting WF_MAIN_AGENT_KEYS entry.
+  var mainCoreHash = null;
+  var _mchEarliest = Infinity;
+  for (var _mci = 0; _mci < entries.length; _mci++) {
+    var _mce = entries[_mci];
+    if (_mce.agentKey && WF_MAIN_AGENT_KEYS[_mce.agentKey] && _mce.coreHash) {
+      var _mct = Number(_mce.receivedAt) || Infinity;
+      if (_mct < _mchEarliest) { mainCoreHash = _mce.coreHash; _mchEarliest = _mct; }
+    }
+  }
+  var mainConvIds = new Set();
+
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
     var sub = false;
 
     // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
     if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
-      // Agent-identity classification (server-detected, authoritative):
-      // main-agent keys → main lane regardless of model or isSubagent flag
-      if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
+      // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+      // Teammate agents share agentKey='orchestrator' but a different
+      // coreHash. Route to an identity lane before WF_MAIN_AGENT_KEYS would
+      // absorb them into main. convId AND-guard: coreHash has had past
+      // instability (#218/#219), so a mid-session coreHash divergence that
+      // keeps the same convId as main is NOT a teammate — it stays main.
+      if (WF_MAIN_AGENT_KEYS[e.agentKey] && mainCoreHash && e.coreHash &&
+          e.coreHash !== mainCoreHash && e.convId && !mainConvIds.has(e.convId)) {
+        _wfPushToSubLane(laneMap, _wfSubLaneKey('agent-' + e.agentKey, e), e);
+        sub = true;
+      } else if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
+        // Agent-identity classification (server-detected, authoritative):
+        // main-agent keys → main lane regardless of model or isSubagent flag
         _wfPushToSubLane(laneMap, _wfSubLaneKey('agent-' + e.agentKey, e), e);
         sub = true;
       }
@@ -449,6 +476,7 @@ function wfInferLanes(entries, childEntries, seqTracker) {
       mainLane.ctxWindow = e.maxContext || mainLane.ctxWindow;
       var p = wfCtxPct(e);
       if (p > orchCtx * 0.8) orchCtx = Math.max(orchCtx, p);
+      if (e.convId) mainConvIds.add(e.convId);
     }
   }
 
@@ -670,12 +698,27 @@ function wfBuildState(sessionId) {
     for (var ti = 0; ti < lanes[li].turns.length; ti++)
       turnIndex.set(lanes[li].turns[ti].id, { turn: lanes[li].turns[ti], laneIdx: li });
 
+  // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+  // mainCoreHash/mainConvIds are derived from the FINAL main lane (post
+  // overlap + seq post-passes) so wfAddEntry's live routing agrees with what
+  // the batch pass actually settled on as main.
+  var mainCoreHash = null;
+  var mainConvIds = new Set();
+  if (lanes[0]) {
+    for (var mci = 0; mci < lanes[0].turns.length; mci++) {
+      if (!mainCoreHash && lanes[0].turns[mci].coreHash) mainCoreHash = lanes[0].turns[mci].coreHash;
+      if (lanes[0].turns[mci].convId) mainConvIds.add(lanes[0].turns[mci].convId);
+    }
+  }
+
   return {
     lanes: lanes,
     sessionId: sessionId,
     childSids: childSids,
     turnIndex: turnIndex,
     _seqTracker: seqTracker,
+    mainCoreHash: mainCoreHash,
+    mainConvIds: mainConvIds,
     tMin: tMin, tMax: tMax,
     viewT0: tMin, viewT1: tMax,
     selectedLane: lanes[0] || null,
@@ -748,6 +791,15 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
+  // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+  // Mirrors wfInferLanes' pre-scan check, using the mainCoreHash/mainConvIds
+  // wfBuildState computed for this session. convId AND-guard: see ADR 0010.
+  if (entry.agentKey && WF_MAIN_AGENT_KEYS[entry.agentKey] &&
+      wfState.mainCoreHash && entry.coreHash && entry.coreHash !== wfState.mainCoreHash &&
+      entry.convId && wfState.mainConvIds && !wfState.mainConvIds.has(entry.convId)) {
+    needsSub = true;
+    key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
+  } else
   // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
   if (entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]) {
     needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
@@ -849,6 +901,10 @@ function wfAddEntry(entry) {
     wfState.lanes[0].turns.push(entry);
     wfState.lanes[0]._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(entry.id, { turn: entry, laneIdx: 0 });
+    // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+    // Keep mainCoreHash/mainConvIds current so later live entries route correctly.
+    if (!wfState.mainCoreHash && entry.coreHash) wfState.mainCoreHash = entry.coreHash;
+    if (entry.convId && wfState.mainConvIds) wfState.mainConvIds.add(entry.convId);
   }
 
   // #230 R1: the trunk conv just returned — turns of the closed bracket were
@@ -1007,6 +1063,12 @@ function _wfLaneDispName(lane, laneIdx, mainConvs) {
   if ((lane.key || '').indexOf('parallel-') === 0) {
     var kin = lane.convId && mainConvs && mainConvs.has(lane.convId) ? 'Fork' : 'Teammate';
     return kin + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '') + (laneOrd ? ' #' + laneOrd[1] : '');
+  }
+  // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
+  // Identity-routed teammate: a main-agent key (e.g. 'orchestrator') placed
+  // in a sublane by the coreHash+convId early-exit, not the parallel- family.
+  if (lane.agentKey && WF_MAIN_AGENT_KEYS[lane.agentKey] && laneIdx > 0) {
+    return 'Teammate' + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '');
   }
   return (lane.agentLabel || lane.name) + (lane.convId ? ' ' + lane.convId.slice(0, 4) : '');
 }

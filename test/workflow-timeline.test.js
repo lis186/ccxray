@@ -1575,3 +1575,145 @@ describe('#230 late-arrival overturns closed excursion (codex P2 round 5)', () =
     assert.equal(ctx.wfState.viewT1, 140000);
   });
 });
+
+// ── #258 coreHash identity routing ────────────────────────────────────────
+describe('#258 coreHash identity routing', () => {
+  function mkMain(id, at, elapsed, opts) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed, Object.assign(
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', coreHash: '85771', convId: 'ebffe2' }, opts || {}));
+  }
+  function mkTeammate(id, at, elapsed, convId, opts) {
+    return mkEntry(id, 's1', 'claude-sonnet-5', at, elapsed, Object.assign(
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', coreHash: 'e6aa4', convId: convId || '56a5def0' }, opts || {}));
+  }
+
+  it('teammates with same agentKey but different coreHash get identity lanes', () => {
+    const ctx = loadWfModule();
+    var m1 = mkMain('m1', 1000, 5);
+    var m2 = mkMain('m2', 6000, 5);
+    var m3 = mkMain('m3', 11000, 5);
+    var t1 = mkTeammate('t1', 2000, 3, '56a5def0');
+    var t2 = mkTeammate('t2', 6000, 3, '56a5def0');
+    var t3 = mkTeammate('t3', 9000, 3, '56a5def0');
+    var lanes = ctx.wfInferLanes([m1, m2, m3, t1, t2, t3], []);
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2,m3');
+    var teamLane = lanes.find(function(l) { return l.key === 'agent-orchestrator:56a5def0'; });
+    assert.ok(teamLane, 'expected an agent-orchestrator:56a5def0 lane');
+    assert.equal(teamLane.turns.map(function(t) { return t.id; }).join(','), 't1,t2,t3');
+  });
+
+  it('multiple teammate convIds get separate lanes', () => {
+    const ctx = loadWfModule();
+    var m1 = mkMain('m1', 1000, 5);
+    var t1 = mkTeammate('t1', 2000, 3, '56a5def0');
+    var t2 = mkTeammate('t2', 6000, 3, '56a5def0');
+    var t3 = mkTeammate('t3', 3000, 3, '16f4abcd');
+    var t4 = mkTeammate('t4', 7000, 3, '16f4abcd');
+    var lanes = ctx.wfInferLanes([m1, t1, t2, t3, t4], []);
+    var lane56a5 = lanes.find(function(l) { return l.key === 'agent-orchestrator:56a5def0'; });
+    var lane16f4 = lanes.find(function(l) { return l.key === 'agent-orchestrator:16f4abcd'; });
+    assert.ok(lane56a5, 'expected 56a5def0 lane');
+    assert.ok(lane16f4, 'expected 16f4abcd lane');
+    assert.equal(lane56a5.turns.map(function(t) { return t.id; }).join(','), 't1,t2');
+    assert.equal(lane16f4.turns.map(function(t) { return t.id; }).join(','), 't3,t4');
+  });
+
+  it('forks (same coreHash) still use overlap detection', () => {
+    const ctx = loadWfModule();
+    var m1 = mkMain('m1', 1000, 30);   // 1000..31000
+    var f1 = mkMain('f1', 10000, 5);   // nested inside m1's span, same coreHash+convId
+    var m2 = mkMain('m2', 31000, 5);
+    var lanes = ctx.wfInferLanes([m1, f1, m2], []);
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2',
+      'fork must not be absorbed by identity routing — same coreHash as main');
+    var forkLane = lanes.find(function(l) { return (l.key || '').indexOf('parallel-') === 0; });
+    assert.ok(forkLane, 'expected the fork to land in a parallel- lane via ADR 0008 overlap');
+    assert.equal(forkLane.turns.map(function(t) { return t.id; }).join(','), 'f1');
+  });
+
+  it('null coreHash falls through (backward compat)', () => {
+    const ctx = loadWfModule();
+    var m1 = mkMain('m1', 1000, 5);
+    var m2 = mkMain('m2', 6000, 5);
+    // legacy entry: main-agent key, but no coreHash/convId captured
+    var legacy = mkEntry('legacy1', 's1', 'claude-sonnet-5', 11000, 3,
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator' });
+    var lanes = ctx.wfInferLanes([m1, m2, legacy], []);
+    assert.equal(lanes.length, 1, 'no identity lane should be created without coreHash/convId');
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2,legacy1');
+  });
+
+  it('ADR-0005: wfBuildState computes mainCoreHash/mainConvIds for entry-rendering to share', () => {
+    const ctx = loadWfModule();
+    var m1 = mkMain('m1', 1000, 5);
+    var m2 = mkMain('m2', 6000, 5);
+    var t1 = mkTeammate('t1', 2000, 3, '56a5def0');
+    ctx.allEntries = [m1, m2, t1];
+    ctx.sessionsMap.set('s1', { entries: [] });
+    var state = ctx.wfBuildState('s1');
+    assert.equal(state.mainCoreHash, '85771');
+    assert.ok(state.mainConvIds.has('ebffe2'));
+    assert.ok(!state.mainConvIds.has('56a5def0'));
+  });
+
+  it('upgrade/noise: ≠coreHash but same convId stays main (convId AND-guard)', () => {
+    const ctx = loadWfModule();
+    // Mid-session coreHash divergence (e.g. #218/#219 bugs) but SAME convId as main
+    // → convId ∈ mainConvIds → AND-guard blocks early-exit → stays main
+    var entries = [
+      mkMain('m1', 1000, 5),
+      mkMain('m2', 6000, 5),
+      mkEntry('noise', 's1', 'claude-opus-4-6', 11000, 3,
+        { agentKey: 'orchestrator', coreHash: 'fffff', convId: 'ebffe2' }), // ≠coreHash, same convId
+      mkMain('m3', 14000, 5),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.equal(lanes[0].turns.length, 4, 'noise entry must stay main — convId matches');
+    assert.ok(lanes[0].turns.some(function(t) { return t.id === 'noise'; }));
+  });
+
+  it('null convId with non-null coreHash falls through (backward compat)', () => {
+    const ctx = loadWfModule();
+    var entries = [
+      mkMain('m1', 1000, 5),
+      // Different coreHash but no convId → early-exit cannot fire
+      mkEntry('t1', 's1', 'claude-sonnet-5', 6000, 3,
+        { agentKey: 'orchestrator', coreHash: 'e6aa4', convId: null }),
+      mkMain('m2', 9000, 5),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.ok(lanes[0].turns.some(function(t) { return t.id === 't1'; }),
+      'entry without convId falls through to main');
+  });
+
+  it('live wfAddEntry routes teammate to identity lane', () => {
+    const ctx = loadWfModule();
+    // Build initial state with main entries
+    ctx.allEntries = [
+      mkMain('m1', 1000, 5),
+      mkMain('m2', 6000, 5),
+    ];
+    ctx.sessionsMap.set('s1', { entries: [] });
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.mainCoreHash, '85771');
+
+    // Live: add a teammate entry
+    var t1 = mkTeammate('t1', 8000, 3, '56a5def0');
+    ctx.allEntries.push(t1);
+    var result = ctx.wfAddEntry(t1);
+    assert.ok(result.lanesChanged, 'new lane created');
+    var tmLane = ctx.wfState.lanes.find(function(l) { return l.key === 'agent-orchestrator:56a5def0'; });
+    assert.ok(tmLane, 'teammate routed to identity lane via wfAddEntry');
+    assert.equal(tmLane.turns.length, 1);
+    assert.equal(tmLane.turns[0].id, 't1');
+  });
+
+  it('_wfLaneDispName: identity-routed teammate shows Teammate label', () => {
+    const ctx = loadWfModule();
+    var lane = { key: 'agent-orchestrator:56a5def0', agentKey: 'orchestrator', name: 'orchestrator', convId: '56a5def0', turns: [] };
+    var mainConvs = new Set(['ebffe2']);
+    var name = ctx._wfLaneDispName(lane, 1, mainConvs);
+    assert.ok(name.indexOf('Teammate') === 0, 'expected label to start with Teammate, got: ' + name);
+    assert.ok(name.indexOf('56a5') !== -1, 'expected convId prefix in label, got: ' + name);
+  });
+});
