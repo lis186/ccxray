@@ -1695,6 +1695,24 @@ describe('#258 coreHash identity routing', () => {
     assert.equal(tmLane.turns[0].id, 't1');
   });
 
+  it('array-order: noise entry processed before main entries still blocked by pre-scanned mainConvIds (codex P2-2)', () => {
+    const ctx = loadWfModule();
+    // Array order differs from receivedAt order (e.g. restore from disk).
+    // Noise appears first but has later receivedAt — pre-scan still picks
+    // m1's coreHash as mainCoreHash and collects m1/m2's convId.
+    // Without pre-scan, mainConvIds would be empty when noise is processed
+    // and the AND-guard would fail to block, misrouting noise to a teammate lane.
+    var entries = [
+      mkEntry('noise', 's1', 'claude-opus-4-6', 12000, 1,
+        { agentKey: 'orchestrator', coreHash: 'fffff', convId: 'ebffe2' }),
+      mkMain('m1', 1000, 5),
+      mkMain('m2', 7000, 5),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    assert.ok(lanes[0].turns.some(function(t) { return t.id === 'noise'; }),
+      'noise entry must stay main — convId pre-scanned from mainCoreHash entries');
+  });
+
   it('_wfLaneDispName: identity-routed teammate shows Teammate label', () => {
     const ctx = loadWfModule();
     var lane = { key: 'agent-orchestrator:56a5def0', agentKey: 'orchestrator', name: 'orchestrator', convId: '56a5def0', turns: [] };

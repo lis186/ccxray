@@ -423,7 +423,9 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // main because their system prompt matches the same KNOWN_AGENTS entry,
   // but their coreHash (normalized system-prompt hash) differs — main and
   // teammate genuinely run different prompts. Pre-scan: mainCoreHash = the
-  // coreHash of the earliest-starting WF_MAIN_AGENT_KEYS entry.
+  // coreHash of the earliest-starting WF_MAIN_AGENT_KEYS entry; mainConvIds
+  // collects ALL convIds from entries that share that coreHash, so the
+  // AND-guard works regardless of processing order (codex P2-2 fix).
   var mainCoreHash = null;
   var _mchEarliest = Infinity;
   for (var _mci = 0; _mci < entries.length; _mci++) {
@@ -434,6 +436,15 @@ function wfInferLanes(entries, childEntries, seqTracker) {
     }
   }
   var mainConvIds = new Set();
+  if (mainCoreHash) {
+    for (var _mci2 = 0; _mci2 < entries.length; _mci2++) {
+      var _mce2 = entries[_mci2];
+      if (_mce2.convId && _mce2.agentKey && WF_MAIN_AGENT_KEYS[_mce2.agentKey] &&
+          _mce2.coreHash === mainCoreHash) {
+        mainConvIds.add(_mce2.convId);
+      }
+    }
+  }
 
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
