@@ -8,7 +8,7 @@ const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
 
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
-const SESSION_ENTRY_CAP = parseInt(process.env.CCXRAY_SESSION_ENTRY_CAP || '500', 10);
+const SESSION_ENTRY_CAP = Math.max(1, parseInt(process.env.CCXRAY_SESSION_ENTRY_CAP || '500', 10) || 1);
 const entries = [];
 // INVARIANT: entryIndex must mirror entries[] — see docs/decisions/0003-entry-index-map.md
 const entryIndex = new Map();
