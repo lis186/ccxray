@@ -2551,7 +2551,7 @@ function wfRenderTurnCard(turnEntry) {
   var lane = wfState.selectedLane;
   var color = lane ? wfLaneColor(lane) : 'var(--accent)';
   var turnIdx = lane ? lane.turns.indexOf(turnEntry) : -1;
-  var displayNum = turnIdx >= 0 ? turnIdx + 1 : '?';
+  var displayNum = turnEntry.displayNum || (turnIdx >= 0 ? turnIdx + 1 : '?');
 
   var u = turnEntry.usage || {};
   var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
@@ -2564,7 +2564,7 @@ function wfRenderTurnCard(turnEntry) {
   var dur = parseFloat(turnEntry.elapsed) || 0;
   var thinkDur = turnEntry.thinkingDuration || 0;
 
-  var html = '<div class="wf-turn-card" style="border-left:2px solid ' + color + '">';
+  var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
   html += '<div class="wf-tc-title">#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
@@ -2649,8 +2649,8 @@ function wfBackToLane() {
 function _wfHoverPreviewEnter(turn, lane) {
   if (!wfState) return;
   clearTimeout(wfState.hoverTimers.leave);
-  if (wfState.hoverTurnId === turn.id) return;
   clearTimeout(wfState.hoverTimers.enter);
+  if (wfState.hoverTurnId === turn.id) return;
   wfState.hoverTimers.enter = setTimeout(function() {
     if (!wfState || wfState.selectionLevel === 'L2') return;
     wfState.hoverTurnId = turn.id;
@@ -2667,6 +2667,8 @@ function _wfHoverPreviewLeave() {
     wfState.hoverTurnId = null;
     if (wfState.selectionLevel === 'L1') {
       wfRenderAgentCard(wfState.selectedLane);
+      var panel = document.getElementById('wf-agent-card-panel');
+      if (panel && wfState._hoverSavedScroll) panel.scrollTop = wfState._hoverSavedScroll;
     }
   }, 150);
 }
@@ -2674,9 +2676,10 @@ function _wfHoverPreviewLeave() {
 function _wfRenderHoverPreview(turn, lane) {
   var agentPanel = document.getElementById('wf-agent-card-panel');
   if (!agentPanel) return;
+  wfState._hoverSavedScroll = agentPanel.scrollTop;
   var color = wfLaneColor(lane);
   var turnIdx = lane ? lane.turns.indexOf(turn) : -1;
-  var displayNum = turnIdx >= 0 ? turnIdx + 1 : '?';
+  var displayNum = turn.displayNum || (turnIdx >= 0 ? turnIdx + 1 : '?');
   var u = turn.usage || {};
   var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
   var outTok = u.output_tokens || 0;
