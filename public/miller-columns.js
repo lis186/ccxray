@@ -285,7 +285,9 @@ function _decodeStepStarId(stepId) {
 }
 
 function targetFromCurrentSelection() {
-  if (selectedTurnIdx >= 0) {
+  // Workflow L1: no turn locked — serialize at session level
+  var wfL1 = typeof wfState !== 'undefined' && wfState && wfState.selectionLevel === 'L1';
+  if (selectedTurnIdx >= 0 && !wfL1) {
     const entry = allEntries[selectedTurnIdx];
     if (entry && entry.id) {
       if (selectedSection === 'timeline' && selectedMessageIdx >= 0) {
@@ -2062,9 +2064,16 @@ function selectSessionAndLatestTurn(sid) {
     if (wfState) { wfRenderTimeline(); columnsEl.classList.add('wf-active'); }
     else { columnsEl.classList.remove('wf-active'); }
   }
-  // Auto-select latest turn in this session
-  const visible = getVisibleTurnIndices();
-  if (visible.length) selectTurn(visible[visible.length - 1]);
+  // Auto-select latest turn — but in workflow mode the timeline already
+  // defaults to L1 (whole main lane), so skip the selectTurn that would
+  // override it to L2 on the last turn.
+  if (!(wfState && columnsEl.classList.contains('wf-active'))) {
+    const visible = getVisibleTurnIndices();
+    if (visible.length) selectTurn(visible[visible.length - 1]);
+  } else {
+    // Reset stale index so follow-live's edge check starts clean
+    selectedTurnIdx = -1;
+  }
   updateRetryEmptyState(sid);
   renderSessionToolBar(sid);
   renderSessionSparkline(sid);
@@ -2127,7 +2136,10 @@ function syncUrlFromState() {
   const projName = selectedProjectName || (selectedSessionId && sessionsMap.get(selectedSessionId) && getProjectName(sessionsMap.get(selectedSessionId).cwd));
   if (projName) params.set('p', projName);
   if (selectedSessionId) params.set('s', formatSessionUrlToken(selectedSessionId));
-  if (selectedTurnIdx >= 0) {
+  // In workflow L1 (lane overview), selectedTurnIdx is set internally for
+  // the agent card but no turn is visually locked — don't serialize it.
+  var wfL1 = typeof wfState !== 'undefined' && wfState && wfState.selectionLevel === 'L1';
+  if (selectedTurnIdx >= 0 && !wfL1) {
     const e = allEntries[selectedTurnIdx];
     const turnEl = e ? colTurns.querySelector('.turn-item[data-entry-idx="' + selectedTurnIdx + '"]') : null;
     const num = turnEl ? turnEl.dataset.sessNum : String(selectedTurnIdx + 1);
@@ -2191,9 +2203,12 @@ function selectSession(id) {
     columnsEl.classList.remove('wf-active');
   }
 
-  // Auto-select latest turn so agent card + steps panel populate
-  var visible = getVisibleTurnIndices();
-  if (visible.length) selectTurn(visible[visible.length - 1]);
+  // Auto-select latest turn so agent card + steps panel populate —
+  // but in workflow mode, timeline defaults to L1 (main lane overview).
+  if (!(wfState && columnsEl.classList.contains('wf-active'))) {
+    var visible = getVisibleTurnIndices();
+    if (visible.length) selectTurn(visible[visible.length - 1]);
+  }
 
   renderBreadcrumb();
 }

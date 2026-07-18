@@ -2966,11 +2966,22 @@ function wfKeyHandler(key, e) {
   return false;
 }
 
-// ── Window Resize ─────────────────────────────────────────────────────────
-var _wfResizeTimer = 0;
-window.addEventListener('resize', function() {
-  if (!wfState) return;
-  clearTimeout(_wfResizeTimer);
-  _wfCssCache = null;
-  _wfResizeTimer = setTimeout(wfDeferRender, 200);
-});
+// ── Container Resize (covers window resize + sidebar toggle transition) ───
+// ponytail: ResizeObserver fires continuously during CSS transitions so
+// sidebar collapse/expand animates smoothly. Falls back to debounced
+// window resize for test harnesses without ResizeObserver.
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(function() {
+    if (!wfState) return;
+    _wfCssCache = null;
+    wfDeferRender();
+  }).observe(document.getElementById('col-turns'));
+} else {
+  var _wfResizeTimer = 0;
+  window.addEventListener('resize', function() {
+    if (!wfState) return;
+    clearTimeout(_wfResizeTimer);
+    _wfCssCache = null;
+    _wfResizeTimer = setTimeout(wfDeferRender, 200);
+  });
+}

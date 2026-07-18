@@ -845,7 +845,15 @@ function addEntry(e) {
       const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
         (selectedTurnIdx === -1 || selectedTurnIdx === prevMainIdx);
       if (wasOnLiveEdge) {
-        selectTurn(idx);
+        // In workflow L1 mode, use the suppressed-highlight path so all
+        // selectTurn side-effects fire (prefetch, breadcrumb, step clear)
+        // but wfHighlightTurn is suppressed — L1 is preserved.
+        if (typeof wfState !== 'undefined' && wfState && wfState.selectionLevel === 'L1') {
+          if (typeof _wfShowTurnDetail === 'function') _wfShowTurnDetail(allEntries[idx]);
+          if (typeof wfDeferRender === 'function') wfDeferRender();
+        } else {
+          selectTurn(idx);
+        }
         scrollTurnsToBottom();
         sess.subPillCount = 0;
         sess.subPillErrCount = 0;
