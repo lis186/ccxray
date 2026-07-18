@@ -349,6 +349,7 @@
 
   .si-tools { font-size: 10px; color: var(--dim); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .si-preview { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+  .si-truncated { font-size: 10px; color: var(--yellow); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .turn-elapsed-secondary { color: var(--dim); font-size: 10px; }
   .col-sticky-header { position: sticky; top: 0; z-index: 2; background: var(--surface); }
   #scroll-toggle { user-select: none; }

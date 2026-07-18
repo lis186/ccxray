@@ -407,6 +407,7 @@ function addEntry(e) {
     }
   }
   const sess = sessionsMap.get(sid);
+  if (e.truncated) { sess.truncated = true; sess.totalEntryCount = e.totalEntryCount; }
   // Resume command is computed server-side (single source of truth). Sticky:
   // once any turn reports a command, keep it even if later turns lack usage.
   if (e.resumeCommand) sess.resumeCommand = e.resumeCommand;

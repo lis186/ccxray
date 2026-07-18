@@ -159,12 +159,37 @@ async function restoreFromLogs() {
     retentionSets = computeRetentionSets(lightweight, stars);
   }
 
+  // Pre-count entries per session to identify oversized sessions
+  const sessionTotals = new Map();
+  for (const line of lines) {
+    try {
+      const m = JSON.parse(line);
+      if (cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr) {
+        if (!retentionSets || !isProtectedByStar(m, retentionSets)) continue;
+      }
+      if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
+    } catch { continue; }
+  }
+  const oversizedSessions = new Map();
+  for (const [sid, count] of sessionTotals) {
+    if (count > store.SESSION_ENTRY_CAP) oversizedSessions.set(sid, count);
+  }
+  const sessionLoadedFirst = new Set();
+
   for (const line of lines) {
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
 
     if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) {
       if (!retentionSets || !isProtectedByStar(meta, retentionSets)) continue;
+    }
+
+    // Per-session cap: oversized sessions load only the first entry
+    if (meta.sessionId && oversizedSessions.has(meta.sessionId)) {
+      if (sessionLoadedFirst.has(meta.sessionId)) continue;
+      sessionLoadedFirst.add(meta.sessionId);
+      meta.truncated = true;
+      meta.totalEntryCount = oversizedSessions.get(meta.sessionId);
     }
 
     if (meta.provider === 'openai' && (!meta.model || !meta.stopReason || !meta.usage || !meta.isSSE)) {
@@ -279,10 +304,12 @@ async function restoreFromLogs() {
 
   console.timeEnd('restore:total');
   if (restored) {
+    const truncated = oversizedSessions.size;
     const msg = config.RESTORE_DAYS > 0
       ? `Restored ${restored} entries from last ${config.RESTORE_DAYS} days`
       : `Restored ${restored} entries from index`;
-    console.log(`\x1b[90m   ${msg}\x1b[0m`);
+    const extra = truncated ? ` (${truncated} oversized sessions capped at 1 entry)` : '';
+    console.log(`\x1b[90m   ${msg}${extra}\x1b[0m`);
   }
 }
 
