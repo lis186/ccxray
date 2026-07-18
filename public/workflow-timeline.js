@@ -1845,7 +1845,9 @@ function wfOverviewHeight(laneCount) {
 // every lane stays inside the canvas instead of clipping the last rows
 function wfOverviewBarGeom(MH, laneCount) {
   var slot = (MH - 4) / laneCount;
-  var barH = Math.max(1, Math.min(8, slot - 1));
+  // ponytail: birdseye needs fatter bars (≥10px slot); normal caps at 8px
+  var maxBarH = (wfState && wfState.birdsEyeMode) ? 20 : 8;
+  var barH = Math.max(1, Math.min(maxBarH, slot - 1));
   return { barH: barH, laneStep: Math.min(slot, barH + 1) };
 }
 

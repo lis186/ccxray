@@ -356,6 +356,18 @@ describe('workflow-timeline data layer', () => {
     }
   });
 
+  it('birdseye mode: rendered laneStep ≥ 10px (codex P2 — barH cap fix)', () => {
+    const ctx = loadWfModule();
+    ctx.window.innerHeight = 900;
+    ctx.wfState = { birdsEyeMode: true };
+    for (let n = 4; n <= 40; n++) {
+      const h = ctx.wfOverviewHeight(n);
+      const g = ctx.wfOverviewBarGeom(h, n);
+      const atCap = h >= 900 * 0.80 - 1;
+      assert.ok(g.laneStep >= 10 || atCap, `laneCount=${n}: laneStep=${g.laneStep.toFixed(1)}, h=${h}`);
+    }
+  });
+
   it('birdseye mode guard: height never exceeds 80% of viewport height', () => {
     const ctx = loadWfModule();
     ctx.window.innerHeight = 900;
