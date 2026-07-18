@@ -412,7 +412,12 @@ function addEntry(e) {
   // once any turn reports a command, keep it even if later turns lack usage.
   if (e.resumeCommand) sess.resumeCommand = e.resumeCommand;
   // Update cwd if not yet known or was only a quota-check
-  if (entryCwd && (!sess.cwd || sess.cwd === '(quota-check)')) sess.cwd = entryCwd;
+  const prevProjectName = getProjectName(sess.cwd);
+  let migratedProjectCost = 0;
+  if (entryCwd && (!sess.cwd || sess.cwd === '(quota-check)') && sess.cwd !== entryCwd) {
+    migratedProjectCost = sess.totalCost || 0;
+    sess.cwd = entryCwd;
+  }
   if (model && model !== '?') sess.model = model;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
@@ -516,7 +521,16 @@ function addEntry(e) {
     window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null, displayNum });
   }
   if (turnCost != null) sess.totalCost += turnCost;
-  if (!isSubagent && e.title) { const t = cleanTitle(e.title); if (t) sess.lastAssistantText = t; }
+  if (!isSubagent && e.title) {
+    const t = cleanTitle(e.title);
+    if (t) {
+      sess.lastAssistantText = t;
+      if (e.provider === 'openai' && !sess.title) {
+        sess.title = t;
+        sess.titleReqTs = e.receivedAt || 0;
+      }
+    }
+  }
   if (!sess.toolCalls) sess.toolCalls = {};
   Object.entries(e.toolCalls || {}).forEach(([name, cnt]) => {
     sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
@@ -537,6 +551,16 @@ function addEntry(e) {
 
   // Project tracking
   const projName = getProjectName(sess.cwd);
+  // sess.cwd only changes in the migration block above and getProjectName is
+  // pure, so a differing project name is exactly "the cwd was migrated".
+  if (prevProjectName && prevProjectName !== projName) {
+    const prevProj = projectsMap.get(prevProjectName);
+    if (prevProj) {
+      prevProj.sessionIds.delete(sid);
+      if (migratedProjectCost) prevProj.totalCost = Math.max(0, prevProj.totalCost - migratedProjectCost);
+      if (prevProj.sessionIds.size === 0 && prevProjectName !== selectedProjectName) projectsMap.delete(prevProjectName);
+    }
+  }
   if (!projectsMap.has(projName)) {
     projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: entryId, lastId: entryId, lastSeenAt: Date.now() });
   }
@@ -544,6 +568,7 @@ function addEntry(e) {
   proj.sessionIds.add(sid);
   proj.lastId = entryId;
   proj.lastSeenAt = Date.now();
+  if (migratedProjectCost) proj.totalCost += migratedProjectCost;
   if (turnCost != null) proj.totalCost += turnCost;
   if (!_loading) renderProjectsCol();
 

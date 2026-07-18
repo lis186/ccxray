@@ -28,6 +28,7 @@
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
 | 2026-07-10 | Claude Code | 2.1.206 | Discovered via loopback wire capture (fable-5 era, #211): per-model `[1m]` selection changes the wire signals per mode. `/model claude-fable-5` (bare, 200K session): no `context-1m-*` in `anthropic-beta`, marker says `...is claude-fable-5.` — even on an account with 1M available. `/model claude-fable-5[1m]` (1M session): `context-1m-2025-08-07` present + marker says `...is claude-fable-5[1m].`; request `model` field stays bare in both modes. Refines the 2026-06-09 observation: header presence follows the **selected model mode**, not bare account capability. Also: LiteLLM `max_input_tokens` records API max capability (fable-5 → 1M, the API default) which is NOT the Claude Code session window — ccxray now clamps LiteLLM data to 200K for `claude-*` and relies on the wire signals for 1M. |
+| 2026-07-07 | ccxray | 1.10.x | Codex parity fix: ccxray now treats Codex/OpenAI `thread_id` as a session-id fallback when `session_id` is absent, normalizes `metadata.workspaces` / `x-codex-turn-metadata.workspaces` into `metadata.cwd`, and promotes WS sessions from the synthetic `codex-raw` bucket once `response.create.metadata` arrives. `codex-raw` remains only for OpenAI traffic with no session/thread signal. |
 | 2026-07-06 | Claude Code | 2.1.x | Discovered: `POST /v1/messages/count_tokens` calls (token pre-counting for large content). Body is bare `{model, messages}` — no `system`, no `metadata`, no `tools`, no `max_tokens`; response is exactly `{"input_tokens": N}` (non-SSE). Satisfied every subagent heuristic and polluted sessions with fake single-turn subagent entries (#146). ccxray now classifies the path as noise (`skipEntry`), matching quota-check / codex-platform-ping handling. |
 | 2026-06-09 | Claude Code | 2.1.x | Confirmed via loopback wire capture: `anthropic-beta` carries `context-1m-2025-08-07` on **every** request when the account's 1M context is enabled — including haiku title-gen turns (it is a client/account-level capability flag, not a per-turn window declaration). ccxray now uses it as the non-lagging 1M-window signal, gated by model capability (`SUPPORTS_1M`), replacing sole reliance on the lagging system-prompt `[1m]` marker (#58). |
 | 2026-06-05 | ccxray | 1.11.x | Usage normalization: OpenAI `input_tokens` includes `cached_tokens` (subset), unlike Anthropic's disjoint fields. `normalizeUsageForProvider` now subtracts the overlap so canonical `input_tokens + cache_read + cache_creation = total context` holds for both providers. Normalized entries carry `_ccxrayUsageNormalized: true`. Historical entries normalized on restore (in-memory, index unchanged). Cache display: Codex sessions show `cache N% hit` instead of TTL countdown; topbar adapts per provider (`ephemeral-ttl` vs `server-managed`). `UPSTREAM_PROFILES` registry added to `providers.js`. |
@@ -87,7 +88,7 @@
 | Max output | `max_tokens: 16384` | `max_output_tokens: 4000` | `obs-stable` (typical observed values; vary by model and plan) |
 | Streaming | `stream: true` | Implicit (SSE mode) or WS mode (no `stream` field) | `contractual` |
 | Turn chaining | N/A (full history in `messages`) | `previous_response_id: "resp_..."` (WS mode) | `contractual` |
-| Session metadata | `metadata: {session_id: "..."}` (in body) | `metadata: {session_id, turn_id, ...}` (in body) + `x-codex-turn-metadata` header. Note: `turn_id` is present on the wire but not consumed by ccxray | `contractual` (body) / `obs-stable` (header) |
+| Session metadata | `metadata: {session_id: "..."}` (in body) | `metadata: {session_id, thread_id, turn_id, workspaces, ...}` (in body) + `x-codex-turn-metadata` header. ccxray consumes `session_id`, `thread_id`, and `workspaces`; `turn_id` is present on the wire but not consumed | `contractual` (body) / `obs-stable` (header) |
 | Tool choice | `tool_choice: {type:"auto"}` | `tool_choice: "auto"` (string; OpenAI also accepts object form) | `obs-stable` |
 | Model rewriting | ccxray supports `CCXRAY_MODEL_PREFIX`/`REWRITE_MODEL_PREFIX` to rewrite model names in-flight | Same | `obs-stable` (ccxray feature) |
 
@@ -107,7 +108,7 @@
 
 | Frame type | Payload | Confidence |
 |------------|---------|------------|
-| `response.create` | Full request body: `{model, instructions, input, tools, tool_choice, previous_response_id, generate?}`. `generate: false` sends a warm-up frame (see Section 6.3) | `contractual` |
+| `response.create` | Full request body: `{model, instructions, input, tools, tool_choice, previous_response_id, metadata?, generate?}`. `metadata` may carry `thread_id` and `workspaces`. `generate: false` sends a warm-up frame (see Section 6.3) | `contractual` / `obs-stable` (`metadata` shape) |
 | `session.update` | `{session: {instructions: "..."}}` — updates system prompt mid-session | `obs-stable` codex ≥0.131 |
 
 ---
@@ -161,14 +162,14 @@
 
 | Aspect | Claude Code | Codex | Confidence |
 |--------|-------------|-------|------------|
-| Session ID source | `body.metadata.session_id` | Header `session_id` or `x-openai-session-id`, or `x-codex-turn-metadata` JSON → `.session_id`, or `body.metadata.session_id`. Falls back to literal `codex-raw` sentinel when no source yields an ID | `contractual` (body) / `obs-stable` (headers) |
+| Session ID source | `body.metadata.session_id` | Header `session_id` or `x-openai-session-id`, or `x-codex-turn-metadata` JSON → `.session_id`, or `body.metadata.session_id`, then `x-codex-turn-metadata.thread_id` / `body.metadata.thread_id` as fallback. Falls back to literal `codex-raw` sentinel when no session/thread source yields an ID | `contractual` (body) / `obs-stable` (headers, `thread_id`) |
 | Session ID format | UUID v4 (e.g. `06e8a0f7-...`) | UUID v7 (e.g. `019e809a-...`) | `obs-stable` |
 | Turn ID | Not explicit; each HTTP request = one turn | `x-codex-turn-metadata` → `turn_id` (present on wire but not consumed by ccxray) | `obs-stable` codex ≥0.131 |
 | Agent type (Codex) | N/A | Priority: `x-openai-agent-type` / `x-codex-agent-type` header, then `x-codex-turn-metadata` JSON → `.agent_type`, then `x-openai-subagent` as fallback. Values: `explorer`, `worker`, `default` | `obs-stable` |
 | Subagent flag (Claude) | Heuristic: absence of `cwd` in system prompt metadata. Also: stricter `isLikelySubagent()` heuristic in store.js for session inference (multi-condition: inflight + temporal) | N/A | `obs-stable` |
 | Subagent flag (Codex) | N/A | Header `x-openai-subagent` (truthy, checked first) or `body.metadata.is_subagent`/`isSubagent` (fallback). WS path derives from `agentType === 'explorer' \|\| agentType === 'worker'` | `obs-stable` codex ≥0.131 |
-| CWD detection (WS) | Extracted from system prompt content (regex on `cwd` path) | `x-codex-turn-metadata` → `.workspaces` with 5-strategy fallback: (1) `workspaces.cwd`, (2) `workspaces.current`, (3) first string value, (4) nested object with `.cwd`, (5) first key starting with `/` | `obs-fragile` (format varies across Codex versions) |
-| CWD detection (HTTP) | (same as WS) | `parsedBody?.metadata?.cwd`, falling back to hub client CWD or `process.cwd()` | `obs-stable` |
+| CWD detection (WS) | Extracted from system prompt content (regex on `cwd` path) | `response.create.metadata.cwd` / `.workspaces`, `x-codex-turn-metadata.cwd` / `.workspaces`, then `instructions` `CWD:` line. Workspace extraction uses 5 strategies: (1) `workspaces.cwd`, (2) `workspaces.current`, (3) first string value, (4) nested object with `.cwd`, (5) first key starting with `/` | `obs-fragile` (format varies across Codex versions) |
+| CWD detection (HTTP) | (same as WS) | `parsedBody.metadata.cwd`, `parsedBody.metadata.workspaces`, `x-codex-turn-metadata.cwd/workspaces`, `instructions` `CWD:` line, then hub client CWD or `process.cwd()` | `obs-stable` / `obs-fragile` (`workspaces`) |
 | Multi-turn | Full `messages[]` history in every request | WS: `previous_response_id` + incremental `input`. HTTP: full `input[]` history | `contractual` |
 
 ---
@@ -202,4 +203,4 @@
 | `response.completed` stripped fields | `output: null`, `input: null` — large fields omitted from WS event despite being present in HTTP response. ccxray extracts only `usage` and `model` before discarding; null fields are unverified wire observation | `obs-fragile` codex 0.133 |
 | Meta-tools without `.name` | At minimum `tool_search`, `web_search`, `image_generation` — these tool definitions have no `name` field. Any `t.name.startsWith(...)` crashes. Current code has guards (historical bug, now fixed) | `obs-stable` codex ≥0.131 |
 | Startup platform pings | Codex 0.133+ sends ~10 requests on startup to `/v1/plugins/*`, `/v1/ps/plugins/*`, `/v1/connectors/*`, `/v1/api/codex/*`, `/v1/codex/*`, and `/v1/models`. All are noise-filtered (`skipEntry: true`). Analytics events (`/v1/codex/analytics-events/events`) are also filtered — they 404 for API-key users and pollute the dashboard with garbage entries | `obs-fragile` codex 0.133-0.136 |
-| `codex-raw` session | Any OpenAI request lacking a session_id (WS or HTTP) is grouped under the synthetic `codex-raw` session ID | `obs-stable` (ccxray convention) |
+| `codex-raw` session | Any OpenAI request lacking both `session_id` and `thread_id` (WS or HTTP) is grouped under the synthetic `codex-raw` session ID. WS sessions can be promoted out of `codex-raw` once `response.create.metadata` provides a thread/session id | `obs-stable` (ccxray convention) |

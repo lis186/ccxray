@@ -75,6 +75,15 @@ describe('wire-parsers/openai', () => {
       assert.notEqual(result.sessionId, 'codex-raw');
     });
 
+    it('uses thread_id as a Codex session fallback', () => {
+      const result = openai.detectSession(null, {}, {
+        model: 'gpt-5.5',
+        metadata: { thread_id: 'thread-session-123' },
+      });
+      assert.equal(result.sessionId, 'thread-session-123');
+      assert.equal(result.inferred, false);
+    });
+
     it('falls back to codex-raw when no session info', () => {
       const result = openai.detectSession(null, {}, null);
       assert.equal(result.sessionId, 'codex-raw');
@@ -102,6 +111,30 @@ describe('wire-parsers/openai', () => {
       const result = openai.preprocessBody(body, {});
       assert.deepEqual(result, body);
     });
+
+    it('injects session_id from thread_id and cwd from workspaces', () => {
+      const body = {
+        model: 'gpt-5.5',
+        metadata: {
+          thread_id: 'thread-from-body',
+          workspaces: {
+            '/Users/test/project': { latest_git_commit_hash: 'abc123' },
+          },
+        },
+      };
+      const result = openai.preprocessBody(body, {});
+      assert.equal(result.metadata.session_id, 'thread-from-body');
+      assert.equal(result.metadata.cwd, '/Users/test/project');
+    });
+
+    it('extracts cwd from Codex instructions when metadata is absent', () => {
+      const body = {
+        model: 'gpt-5.5',
+        instructions: 'You are Codex.\n\n# Environment\nOS: macOS\nShell: zsh\nCWD: /Users/test/from-instructions',
+      };
+      const result = openai.preprocessBody(body, {});
+      assert.equal(result.metadata.cwd, '/Users/test/from-instructions');
+    });
   });
 
   describe('low-level exports for ws-proxy compat', () => {
@@ -110,6 +143,8 @@ describe('wire-parsers/openai', () => {
       assert.equal(typeof openai.firstHeader, 'function');
       assert.equal(typeof openai.parseCodexTurnMetadata, 'function');
       assert.equal(typeof openai.getCodexSessionId, 'function');
+      assert.equal(typeof openai.getCodexCwd, 'function');
+      assert.equal(typeof openai.getCodexWorkspaceCwd, 'function');
       assert.equal(typeof openai.getOpenAIAgentTypeFromHeaders, 'function');
       assert.equal(typeof openai.isOpenAISubagent, 'function');
       assert.equal(typeof openai.detectOpenAISession, 'function');

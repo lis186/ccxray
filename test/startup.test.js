@@ -965,6 +965,40 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(resLog.output[0].content[0].text, 'codex ok');
   });
 
+  it('uses Codex thread_id/workspaces metadata for session and project grouping', async () => {
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      instructions: 'You are Codex.\n\n# Environment\nOS: macOS\nShell: zsh\nCWD: /Users/test/codex-project',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'inspect this repo' }] }],
+      metadata: {
+        thread_id: 'codex-thread-parity-001',
+        turn_id: 'codex-turn-parity-001',
+        workspaces: {
+          '/Users/test/codex-project': {
+            latest_git_commit_hash: 'abc123',
+            has_changes: false,
+          },
+        },
+      },
+    });
+
+    const response = await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?trace=metadata-parity');
+    assert.equal(response.status, 200);
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.sessionId === 'codex-thread-parity-001'));
+    assert.equal(entry.provider, 'openai');
+    assert.equal(entry.agent, 'codex');
+    assert.equal(entry.sessionId, 'codex-thread-parity-001');
+    assert.equal(entry.sessionInferred, false);
+    assert.equal(entry.cwd, '/Users/test/codex-project');
+    assert.equal(entry.title, 'inspect this repo');
+
+    const reqLog = JSON.parse(fs.readFileSync(path.join(logsDir, `${entry.id}_req.json`), 'utf8'));
+    assert.equal(reqLog.metadata.session_id, 'codex-thread-parity-001');
+    assert.equal(reqLog.metadata.cwd, '/Users/test/codex-project');
+  });
+
   it('normalizes OpenAI SSE-shaped responses even without event-stream headers', async () => {
     const requestBody = JSON.stringify({
       model: 'gpt-5.5',

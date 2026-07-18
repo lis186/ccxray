@@ -53,10 +53,12 @@ Priority chain (`wire-parsers/openai.js:getCodexSessionId`):
 1. header "session_id" or "x-openai-session-id"
 2. header "x-codex-turn-metadata" → JSON parse → .session_id
 3. body.metadata.session_id
-4. fallback → "codex-raw" (synthetic bucket)
+4. header "x-codex-turn-metadata" → JSON parse → .thread_id
+5. body.metadata.thread_id
+6. fallback → "codex-raw" (synthetic bucket)
 ```
 
-`preprocessBody` (`withCodexMetadata`) merges header-derived `session_id` + `agent_type` into `body.metadata` so downstream code treats both providers uniformly.
+`preprocessBody` (`withCodexMetadata`) merges derived `session_id`, `agent_type`, and `cwd` into `body.metadata` so downstream code treats both providers uniformly. When only `thread_id` is present, ccxray copies it into `metadata.session_id` for internal grouping.
 
 ### Subagent detection
 
@@ -74,16 +76,20 @@ Priority chain (`wire-parsers/openai.js:getCodexSessionId`):
 
 Regex extraction from system prompt content (`store.extractCwd`).
 
-### OpenAI — HTTP
+### OpenAI — shared extraction
 
-`parsedBody.metadata.cwd`, falling back to hub client CWD or `process.cwd()`.
+`wire-parsers/openai.js:getCodexCwd(headers, parsedBody, fallback)` checks:
 
-### OpenAI — WebSocket
+```
+1. parsedBody.metadata.cwd
+2. parsedBody.metadata.workspaces
+3. x-codex-turn-metadata.cwd
+4. x-codex-turn-metadata.workspaces
+5. parsedBody.instructions CWD: line
+6. caller fallback (HTTP: hub client CWD or process.cwd)
+```
 
-`x-codex-turn-metadata` header → `workspaces` object (`ws-proxy.js:getWorkspaceCwd`).
-
-5-strategy fallback:
-
+Workspace extraction uses this 5-strategy fallback:
 ```
 1. workspaces.cwd        (string)
 2. workspaces.current    (string)
@@ -93,6 +99,14 @@ Regex extraction from system prompt content (`store.extractCwd`).
 ```
 
 Step 5 is the workaround for Codex's `{ "/path/to/project": { metadata } }` where the key itself is the cwd.
+
+### OpenAI — HTTP
+
+`server/index.js` calls `getCodexCwd(headers, parsedBody, hub/process fallback)` after `preprocessBody`, so HTTP/SSE entries persist the same normalized cwd as WebSocket entries.
+
+### OpenAI — WebSocket
+
+`server/ws-proxy.js` first tries `x-codex-turn-metadata` at upgrade time. If the socket initially has no session/cwd metadata, the first real `response.create` frame can promote the session out of the `codex-raw` bucket using `response.create.metadata.thread_id/session_id` and `.workspaces`.
 
 ---
 

@@ -19,15 +19,27 @@ function firstHeader(headers, name) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+// x-codex-turn-metadata is a JSON header string that stays constant for a
+// request/connection but is read by several helpers per turn (session id, cwd,
+// agent type). Cache the parse per headers object so those callers share one
+// JSON.parse. The WeakMap key is the request-scoped headers object, so entries
+// are collected once the request ends.
+const turnMetadataCache = new WeakMap();
 function parseCodexTurnMetadata(headers) {
+  const cacheable = headers && typeof headers === 'object';
+  if (cacheable && turnMetadataCache.has(headers)) return turnMetadataCache.get(headers);
   const raw = firstHeader(headers, 'x-codex-turn-metadata');
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(String(raw));
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
+  let parsed = null;
+  if (raw) {
+    try {
+      const value = JSON.parse(String(raw));
+      if (value && typeof value === 'object') parsed = value;
+    } catch {
+      parsed = null;
+    }
   }
+  if (cacheable) turnMetadataCache.set(headers, parsed);
+  return parsed;
 }
 
 function getCodexSessionId(headers, parsedBody) {
@@ -35,11 +47,56 @@ function getCodexSessionId(headers, parsedBody) {
   if (direct) return String(direct);
   const turnMetadata = parseCodexTurnMetadata(headers);
   if (typeof turnMetadata?.session_id === 'string') return turnMetadata.session_id;
-  return parsedBody?.metadata?.session_id || null;
+  if (typeof parsedBody?.metadata?.session_id === 'string') return parsedBody.metadata.session_id;
+  if (typeof turnMetadata?.thread_id === 'string') return turnMetadata.thread_id;
+  if (typeof parsedBody?.metadata?.thread_id === 'string') return parsedBody.metadata.thread_id;
+  return null;
 }
 
 function getCodexRawSessionId() {
   return 'codex-raw';
+}
+
+function getCodexWorkspaceCwd(workspaces) {
+  if (!workspaces || typeof workspaces !== 'object') return null;
+  if (typeof workspaces.cwd === 'string') return workspaces.cwd;
+  if (typeof workspaces.current === 'string') return workspaces.current;
+  const first = Object.values(workspaces).find(v => typeof v === 'string');
+  if (first) return first;
+  const nested = Object.values(workspaces).find(v => v && typeof v === 'object' && typeof v.cwd === 'string');
+  if (nested?.cwd) return nested.cwd;
+  // Codex format: keys are paths, values are metadata objects.
+  const pathKey = Object.keys(workspaces).find(k => k.startsWith('/'));
+  return pathKey || null;
+}
+
+function getCodexInstructionsCwd(instructions) {
+  if (typeof instructions !== 'string') return null;
+  const cwdMatch = instructions.match(/(?:^|\n)CWD:\s*([^\n]+)/);
+  if (cwdMatch) return cwdMatch[1].trim();
+  const primaryMatch = instructions.match(/Primary working directory:\s*([^\n]+)/);
+  return primaryMatch ? primaryMatch[1].trim() : null;
+}
+
+function getCodexCwd(headers, parsedBody, fallback = null) {
+  const turnMetadata = parseCodexTurnMetadata(headers);
+  return parsedBody?.metadata?.cwd
+    || getCodexWorkspaceCwd(parsedBody?.metadata?.workspaces)
+    || turnMetadata?.cwd
+    || getCodexWorkspaceCwd(turnMetadata?.workspaces)
+    || getCodexInstructionsCwd(parsedBody?.instructions)
+    || fallback;
+}
+
+// Merge Codex-derived identity into a metadata object without overwriting values
+// the body already set (explicit body metadata wins over header-derived). Shared
+// by withCodexMetadata (HTTP) and ws-proxy's per-turn session promotion.
+function fillCodexMetadata(metadata, { sessionId, agentType, cwd }) {
+  const merged = metadata && typeof metadata === 'object' ? { ...metadata } : {};
+  if (sessionId && !merged.session_id) merged.session_id = sessionId;
+  if (agentType && !merged.agent_type) merged.agent_type = agentType;
+  if (cwd && !merged.cwd) merged.cwd = cwd;
+  return merged;
 }
 
 function getOpenAIAgentTypeFromHeaders(headers) {
@@ -66,12 +123,9 @@ function withCodexMetadata(parsedBody, headers) {
   if (!parsedBody || typeof parsedBody !== 'object') return parsedBody;
   const sessionId = getCodexSessionId(headers, parsedBody);
   const agentType = getOpenAIAgentTypeFromHeaders(headers);
-  if (!sessionId && !agentType) return parsedBody;
-  const metadata = parsedBody.metadata && typeof parsedBody.metadata === 'object'
-    ? { ...parsedBody.metadata }
-    : {};
-  if (sessionId && !metadata.session_id) metadata.session_id = sessionId;
-  if (agentType && !metadata.agent_type) metadata.agent_type = agentType;
+  const cwd = getCodexCwd(headers, parsedBody);
+  if (!sessionId && !agentType && !cwd) return parsedBody;
+  const metadata = fillCodexMetadata(parsedBody.metadata, { sessionId, agentType, cwd });
   return { ...parsedBody, metadata };
 }
 
@@ -118,7 +172,9 @@ function detectSession(_req, headers, parsedBody) {
   if (!sessionId) {
     return { sessionId: getCodexRawSessionId(), isNewSession: false, inferred: true };
   }
-  const bodyForDetection = parsedBody || { metadata: { session_id: sessionId } };
+  const bodyForDetection = parsedBody
+    ? { ...parsedBody, metadata: { ...(parsedBody.metadata || {}), session_id: sessionId } }
+    : { metadata: { session_id: sessionId } };
   const detected = store.detectSession(bodyForDetection);
   return {
     sessionId: detected.sessionId || sessionId || getCodexRawSessionId(),
@@ -215,6 +271,9 @@ module.exports = {
   registerPromptVersion,
   // Low-level exports for ws-proxy.js compatibility
   getCodexRawSessionId,
+  getCodexCwd,
+  getCodexWorkspaceCwd,
+  fillCodexMetadata,
   firstHeader,
   parseCodexTurnMetadata,
   getCodexSessionId,

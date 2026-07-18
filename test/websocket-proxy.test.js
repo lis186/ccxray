@@ -261,6 +261,59 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.title, 'Say hello');
   });
 
+  it('promotes Codex WS turns from raw socket to metadata thread/cwd', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            model: 'gpt-5.5',
+            usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+          },
+        }));
+      });
+    });
+    await startProxy();
+
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06' },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const done = waitForCompleted(ws);
+    ws.send(JSON.stringify({
+      type: 'response.create',
+      generate: true,
+      model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Inspect websocket project' }] }],
+      metadata: {
+        thread_id: 'ws-thread-parity-001',
+        turn_id: 'ws-turn-parity-001',
+        workspaces: {
+          '/tmp/ccxray-ws-project': { has_changes: false },
+        },
+      },
+    }));
+    await done;
+    ws.close(1000, 'done');
+    await new Promise(resolve => ws.on('close', resolve));
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === 'ws-thread-parity-001');
+    assert.equal(entry.provider, 'openai');
+    assert.equal(entry.agent, 'codex');
+    assert.equal(entry.sessionId, 'ws-thread-parity-001');
+    assert.equal(entry.cwd, '/tmp/ccxray-ws-project');
+    assert.equal(entry.sessionInferred, false);
+    assert.equal(entry.title, 'Inspect websocket project');
+
+    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    assert.equal(reqLog.headers.sessionId, 'ws-thread-parity-001');
+    assert.equal(reqLog.metadata.thread_id, 'ws-thread-parity-001');
+  });
+
   it('closes the client and records an error entry when upstream rejects the handshake', async () => {
     upstreamServer.on('upgrade', (_req, socket) => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');

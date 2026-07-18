@@ -12,6 +12,7 @@ const puppeteer = require('puppeteer');
 const SERVER_SCRIPT = path.join(__dirname, '..', 'server', 'index.js');
 const PROJECT_CWD = path.resolve(__dirname, '..');
 const PROJECT_NAME = path.basename(PROJECT_CWD);
+const SYSTEM_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const tmpDirs = [];
 
 // Mirror of the dashboard's project-label truncation (public/miller-columns.js
@@ -85,6 +86,43 @@ function writeFixtureHome() {
   return home;
 }
 
+function writeParityFixtureHome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-dashboard-codex-parity-'));
+  tmpDirs.push(home);
+  const logsDir = path.join(home, 'logs');
+  fs.mkdirSync(path.join(logsDir, 'shared'), { recursive: true });
+  const id = '2026-05-03T23-39-05-284';
+  const sessionId = 'codex-thread-dashboard-001';
+  fs.writeFileSync(path.join(logsDir, `${id}_res.json`), makeOpenAISSE());
+  fs.writeFileSync(path.join(logsDir, 'index.ndjson'), JSON.stringify({
+    id,
+    ts: '23:39:05',
+    sessionId,
+    provider: 'openai',
+    agent: 'codex',
+    method: 'POST',
+    url: '/v1/responses',
+    elapsed: '1.1',
+    status: 200,
+    isSSE: false,
+    receivedAt: 1777822745284,
+    usage: { input_tokens: 1200, output_tokens: 24, total_tokens: 1224 },
+    cost: { cost: 0.01 },
+    maxContext: 400000,
+    cwd: PROJECT_CWD,
+    model: 'gpt-5.5',
+    msgCount: 1,
+    toolCount: 0,
+    toolCalls: {},
+    isSubagent: false,
+    sessionInferred: false,
+    title: 'Inspect dashboard project',
+    stopReason: 'completed',
+    responseMetadata: { provider: 'openai', status: 200, transport: 'websocket' },
+  }) + '\n');
+  return { home, sessionId };
+}
+
 async function findFreePort() {
   return new Promise(resolve => {
     const server = http.createServer();
@@ -129,6 +167,14 @@ function killAndWait(child) {
   });
 }
 
+function launchBrowser() {
+  return puppeteer.launch({
+    headless: true,
+    executablePath: fs.existsSync(SYSTEM_CHROME) ? SYSTEM_CHROME : undefined,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+}
+
 describe('Codex dashboard status E2E', () => {
   after(() => {
     for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
@@ -144,10 +190,7 @@ describe('Codex dashboard status E2E', () => {
     let browser;
     try {
       await waitForPort(port);
-      browser = await puppeteer.launch({
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      });
+      browser = await launchBrowser();
       const page = await browser.newPage();
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=codex-raw`, { waitUntil: 'domcontentloaded' });
@@ -182,6 +225,47 @@ describe('Codex dashboard status E2E', () => {
       assert.match(state.modelText, /gpt-5\.5/);
       assert.match(state.sectionText, /200/);
       assert.match(state.sectionText, /completed/);
+    } finally {
+      if (browser) await browser.close();
+      await killAndWait(child);
+    }
+  });
+
+  it('renders Codex metadata sessions under the real project with a normal title', async () => {
+    const { home, sessionId } = writeParityFixtureHome();
+    const port = await findFreePort();
+    const child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(port), '--no-browser'], {
+      env: { ...process.env, CCXRAY_HOME: home, BROWSER: 'none', RESTORE_DAYS: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let browser;
+    try {
+      await waitForPort(port);
+      browser = await launchBrowser();
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
+      await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=${encodeURIComponent(sessionId)}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForFunction((sid) => {
+        const turn = document.querySelector(`.turn-item[data-session-id="${sid}"]`);
+        const session = document.querySelector(`.session-item[data-session-id="${sid}"]`);
+        return !!turn && !!session;
+      }, {}, sessionId);
+
+      const state = await page.evaluate(() => ({
+        projectText: document.querySelector('.project-item.selected .pi-label')?.textContent || '',
+        sessionSidText: document.querySelector('.session-item.selected .sid')?.textContent || '',
+        sessionTitleText: document.querySelector('.session-item.selected .si-title')?.textContent || '',
+        selectedProjectCount: document.querySelectorAll('.project-item.selected').length,
+        unknownSelected: [...document.querySelectorAll('.project-item.selected .pi-label')].some(el => el.textContent.includes('(unknown)')),
+        url: location.search,
+      }));
+
+      assert.equal(state.projectText, truncateMiddle(PROJECT_NAME, 20));
+      assert.equal(state.sessionSidText, sessionId.slice(0, 8));
+      assert.equal(state.sessionTitleText, 'Inspect dashboard project');
+      assert.equal(state.selectedProjectCount, 1);
+      assert.equal(state.unknownSelected, false);
+      assert.match(state.url, new RegExp(`s=${sessionId.slice(0, 8)}`));
     } finally {
       if (browser) await browser.close();
       await killAndWait(child);

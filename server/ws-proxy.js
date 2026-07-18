@@ -14,6 +14,9 @@ const { buildIndexLine } = require('./entry');
 const {
   detectSession: _detectOpenAISession3,
   getCodexSessionId,
+  getCodexCwd,
+  getCodexWorkspaceCwd,
+  fillCodexMetadata,
   getOpenAIAgentTypeFromHeaders,
   parseCodexTurnMetadata,
   extractUsage: extractOpenAIUsage,
@@ -137,20 +140,6 @@ function getWebSocketUrl(upstream, requestUrl) {
   return `${protocol}://${upstream.host}:${upstream.port}${path}`;
 }
 
-function getWorkspaceCwd(turnMetadata) {
-  const workspaces = turnMetadata?.workspaces;
-  if (!workspaces || typeof workspaces !== 'object') return null;
-  if (typeof workspaces.cwd === 'string') return workspaces.cwd;
-  if (typeof workspaces.current === 'string') return workspaces.current;
-  const first = Object.values(workspaces).find(v => typeof v === 'string');
-  if (first) return first;
-  const nested = Object.values(workspaces).find(v => v && typeof v === 'object' && typeof v.cwd === 'string');
-  if (nested?.cwd) return nested.cwd;
-  // Codex format: keys are paths, values are metadata objects
-  const pathKey = Object.keys(workspaces).find(k => k.startsWith('/'));
-  return pathKey || null;
-}
-
 function safeSend(target, data, isBinary) {
   if (target.readyState === WebSocket.OPEN) {
     target.send(data, { binary: isBinary }, () => {});
@@ -225,10 +214,15 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   const lastUsage = t.lastUsage ?? ctx.lastUsage;
   const lastModel = t.lastModel ?? ctx.lastModel;
   const lastResponseStatus = t.lastResponseStatus ?? ctx.lastResponseStatus;
+  const sessionId = t.sessionId || ctx.sessionId;
+  const agentType = t.agentType || ctx.agentType;
+  const turnMetadata = t.turnMetadata || ctx.turnMetadata;
+  const cwd = t.cwd || store.sessionMeta[sessionId]?.cwd || null;
+  const sessionInferred = t.sessionInferred ?? ctx.sessionInferred;
   const baseHeaders = {
     openaiBeta: ctx.req.headers['openai-beta'] || null,
-    sessionId: ctx.sessionId,
-    agentType: ctx.agentType,
+    sessionId,
+    agentType,
   };
   const reqLog = cr
     ? {
@@ -244,7 +238,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       url: stripAuthParams(ctx.req.url),
       endpoint: ctx.endpoint,
       headers: baseHeaders,
-      metadata: ctx.turnMetadata || null,
+      metadata: cr.metadata || turnMetadata || null,
     }
     : {
       transport: 'websocket',
@@ -253,7 +247,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       url: stripAuthParams(ctx.req.url),
       endpoint: ctx.endpoint,
       headers: baseHeaders,
-      metadata: ctx.turnMetadata || null,
+      metadata: turnMetadata || null,
     };
   const hasEvents = events.length > 0;
   const resLog = hasEvents
@@ -281,8 +275,8 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   // instructions-text matching.
   let sysHash = null, toolsHash = null, coreHash = null, agentKey = null, agentLabel = null;
   // Fill-if-absent like withCodexMetadata: explicit body metadata wins over header
-  const detectBody = cr && ctx.agentType && !(cr.metadata && cr.metadata.agent_type)
-    ? { ...cr, metadata: { ...(cr.metadata || {}), agent_type: ctx.agentType } }
+  const detectBody = cr && agentType && !(cr.metadata && cr.metadata.agent_type)
+    ? { ...cr, metadata: fillCodexMetadata(cr.metadata, { agentType }) }
     : cr;
   if (cr && cr.instructions != null) {
     sysHash = crypto.createHash('sha256').update(JSON.stringify(cr.instructions)).digest('hex').slice(0, 12);
@@ -342,9 +336,9 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       responseMetadata, lastUsage, lastModel, lastResponseStatus,
       proxyRes: { statusCode: result.status },
       sysHash, toolsHash, coreHash, agentKey, agentLabel,
-      sessionId: ctx.sessionId, sessionInferred: ctx.sessionInferred,
-      isSubagent: ctx.agentType === 'explorer' || ctx.agentType === 'worker',
-      cwd: store.sessionMeta[ctx.sessionId]?.cwd || null,
+      sessionId, sessionInferred,
+      isSubagent: agentType === 'explorer' || agentType === 'worker',
+      cwd,
       wsCloseReason: result.close?.reason || null,
       wsErrorMessage: result.error?.message || null,
     }),
@@ -384,7 +378,7 @@ function handleWebSocketUpgrade(req, socket, head) {
   const sessionId = detected.sessionId;
   const turnMetadata = parseCodexTurnMetadata(req.headers);
   const agentType = getOpenAIAgentTypeFromHeaders(req.headers);
-  const cwd = getWorkspaceCwd(turnMetadata);
+  const cwd = getCodexWorkspaceCwd(turnMetadata?.workspaces);
   const endpoint = (req.url || '').split('?')[0];
 
   if (!store.sessionMeta[sessionId]) store.sessionMeta[sessionId] = {};
@@ -429,6 +423,36 @@ function handleWebSocketUpgrade(req, socket, head) {
     const session = { forceFinalize: null };
     activeSessions.add(session);
 
+    function applyTurnIdentity(detectedTurn, request, nextAgentType) {
+      const nextSessionId = detectedTurn?.sessionId || ctx.sessionId;
+      const nextCwd = getCodexCwd(req.headers, request);
+      if (request && (nextSessionId || nextCwd || nextAgentType)) {
+        request.metadata = fillCodexMetadata(request.metadata, {
+          sessionId: nextSessionId, agentType: nextAgentType, cwd: nextCwd,
+        });
+      }
+      if (nextSessionId && nextSessionId !== ctx.sessionId) {
+        store.activeRequests[ctx.sessionId] = Math.max(0, (store.activeRequests[ctx.sessionId] || 1) - 1);
+        broadcastSessionStatus(ctx.sessionId);
+        ctx.sessionId = nextSessionId;
+        store.activeRequests[ctx.sessionId] = (store.activeRequests[ctx.sessionId] || 0) + 1;
+      }
+      if (!store.sessionMeta[ctx.sessionId]) store.sessionMeta[ctx.sessionId] = {};
+      store.sessionMeta[ctx.sessionId].provider = 'openai';
+      store.sessionMeta[ctx.sessionId].lastSeenAt = Date.now();
+      if (nextCwd) store.sessionMeta[ctx.sessionId].cwd = nextCwd;
+      if (nextAgentType) {
+        ctx.agentType = nextAgentType;
+        store.sessionMeta[ctx.sessionId].agentType = nextAgentType;
+      }
+      // detectedTurn.inferred already encodes "no session id found" (detectSession
+      // returns inferred:true whenever getCodexSessionId is null), so it fully
+      // captures the previous `|| !getCodexSessionId(...)` fallback.
+      ctx.sessionInferred = detectedTurn?.inferred || false;
+      broadcastSessionStatus(ctx.sessionId);
+      if (detectedTurn?.isNewSession) store.printSessionBanner(ctx.sessionId);
+    }
+
     function startNewTurn(request) {
       currentTurn = {
         id: helpers.timestamp(),
@@ -439,6 +463,11 @@ function handleWebSocketUpgrade(req, socket, head) {
         lastUsage: null,
         lastModel: null,
         lastResponseStatus: null,
+        sessionId: ctx.sessionId,
+        sessionInferred: ctx.sessionInferred,
+        agentType: ctx.agentType,
+        turnMetadata: request.metadata || ctx.turnMetadata || null,
+        cwd: store.sessionMeta[ctx.sessionId]?.cwd || null,
       };
     }
 
@@ -467,9 +496,9 @@ function handleWebSocketUpgrade(req, socket, head) {
       finalized = true;
       clearTimeout(idleTimer);
       activeSessions.delete(session);
-      store.activeRequests[sessionId] = Math.max(0, (store.activeRequests[sessionId] || 1) - 1);
-      if (store.sessionMeta[sessionId]) store.sessionMeta[sessionId].lastStopReason = null;
-      broadcastSessionStatus(sessionId);
+      store.activeRequests[ctx.sessionId] = Math.max(0, (store.activeRequests[ctx.sessionId] || 1) - 1);
+      if (store.sessionMeta[ctx.sessionId]) store.sessionMeta[ctx.sessionId].lastStopReason = null;
+      broadcastSessionStatus(ctx.sessionId);
       if (currentTurn) {
         finalizeTurn(result);
       } else if (!turnEmitted) {
@@ -518,7 +547,11 @@ function handleWebSocketUpgrade(req, socket, head) {
                 tools: parsed.tools || null,
                 tool_choice: parsed.tool_choice || null,
                 previous_response_id: parsed.previous_response_id || null,
+                metadata: parsed.metadata || null,
               };
+              const detectedTurn = detectOpenAISession(req.headers, request);
+              const nextAgentType = getOpenAIAgentTypeFromHeaders(req.headers) || request.metadata?.agent_type || ctx.agentType;
+              applyTurnIdentity(detectedTurn, request, nextAgentType);
               startNewTurn(request);
               if (!ctx.clientRequest) ctx.clientRequest = request;
             }

@@ -18,6 +18,7 @@ const SERVER_SCRIPT = path.join(__dirname, '..', 'server', 'index.js');
 const PROJECT_CWD = path.resolve(__dirname, '..');
 const PROJECT_NAME = path.basename(PROJECT_CWD);
 const SESSION_ID = 'rebuilt-sess';
+const SYSTEM_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const tmpDirs = [];
 
 function truncateMiddle(s, max) {
@@ -93,6 +94,14 @@ function killAndWait(child) {
   });
 }
 
+function launchBrowser() {
+  return puppeteer.launch({
+    headless: true,
+    executablePath: fs.existsSync(SYSTEM_CHROME) ? SYSTEM_CHROME : undefined,
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  });
+}
+
 describe('rebuild-index E2E — self-heal a lost index to a real browser render', () => {
   after(() => { for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -129,7 +138,7 @@ describe('rebuild-index E2E — self-heal a lost index to a real browser render'
     let browser;
     try {
       await waitForPort(port);
-      browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+      browser = await launchBrowser();
       const page = await browser.newPage();
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=${SESSION_ID}`, { waitUntil: 'domcontentloaded' });
