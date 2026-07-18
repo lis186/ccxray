@@ -1565,6 +1565,7 @@ function renderProjectsCol() {
     selectedProjectName || '',
     window._entriesLoading ? '1' : '0',
     window._entriesLoadingText || '',
+    (window.ccxraySettings?.hiddenProjects || []).join(','),
   ];
   for (const [name, proj] of projectsMap) {
     const statusClass = getProjectStatusClass(proj);
@@ -1606,8 +1607,10 @@ function _renderProjectsColInner() {
     if (sa !== sb) return sa - sb;
     return (b.lastId || '').localeCompare(a.lastId || '');
   });
+  const hiddenSet = new Set(window.ccxraySettings?.hiddenProjects || []);
   let visibleProjCount = 0;
   for (const proj of sorted) {
+    if (hiddenSet.has(proj.name)) continue;
     const isStarred = isStarredOrDerived('project', proj.name);
     const statusClass = getProjectStatusClass(proj);
     // Filter by activity (unless star-protected or selected)
@@ -1643,7 +1646,8 @@ function _renderProjectsColInner() {
 
 // Returns the first project in sorted order (starred → streaming → active → lastId)
 function getFirstProject() {
-  return [...projectsMap.values()].sort((a, b) => {
+  const hidden = new Set(window.ccxraySettings?.hiddenProjects || []);
+  return [...projectsMap.values()].filter(p => !hidden.has(p.name)).sort((a, b) => {
     const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
     const pb = isStarredOrDerived('project', b.name) ? 0 : 1;
     if (pa !== pb) return pa - pb;
@@ -1934,6 +1938,8 @@ if (document.readyState === 'loading') {
   initScorecardHover();
   _applyStatsToggleUI();
 }
+
+document.addEventListener('ccxray:settings-loaded', () => { _lastProjectsSignature = ''; renderProjectsCol(); });
 
 function renderStackedAreaChart(el, turns) {
   const W = 400, H = 56, PAD = 4;

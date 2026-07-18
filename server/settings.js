@@ -13,6 +13,7 @@ const DEFAULTS = {
   starredSessions: [],
   starredTurns: [],
   starredSteps: [],
+  hiddenProjects: [],
 };
 
 // Coerce a settings field to a string array, dropping non-strings. Returns a
@@ -34,6 +35,7 @@ function cloneSettings(s) {
     starredSessions: [...(s.starredSessions || [])],
     starredTurns: [...(s.starredTurns || [])],
     starredSteps: [...(s.starredSteps || [])],
+    hiddenProjects: [...(s.hiddenProjects || [])],
   };
 }
 
@@ -59,6 +61,7 @@ function readSettings() {
         starredSessions: coerceStringArray(parsed.starredSessions),
         starredTurns: coerceStringArray(parsed.starredTurns),
         starredSteps: coerceStringArray(parsed.starredSteps),
+        hiddenProjects: coerceStringArray(parsed.hiddenProjects),
       };
     } else {
       console.error(`[ccxray] settings.json at ${SETTINGS_PATH} did not parse to an object — using defaults.`);

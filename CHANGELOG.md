@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.10.0
+## 2.0.0
 
-The two-domain auth migration lands as one release. The work was planned as a `2.0.0` breaking bump, but the branch never reached a published `latest` tag during its deprecation window, so the migration ships as a single 1.10.0 minor instead — the deprecation period had no audience to honor. The behavior differences from 1.9.3 are listed below; under strict SemVer they would be breaking, and direct callers of the `/v1/*` proxy or `?token=`-style dashboard URLs may notice. Interactive `ccxray claude` / `ccxray codex` users see no friction — the launcher pre-authenticates the dashboard it opens.
+Two domain shifts in one release: enforced auth on all endpoints (breaking for direct `/v1/*` callers), and a full workflow-timeline view that visualizes agent concurrency, sequential interleaving, and multi-model sessions. Interactive `ccxray claude` / `ccxray codex` users see no friction — the launcher pre-authenticates the dashboard it opens.
 
 ### Notable behavior changes (from 1.9.3)
 
@@ -33,6 +33,47 @@ The two-domain auth migration lands as one release. The work was planned as a `2
 - **Hub IPC moved to a Unix domain socket.** `~/.ccxray/hub.sock` (mode `0600`) replaces the HTTP-over-TCP `/_api/hub/*` routes for multi-project client registration, bootstrap-token minting, status, and discovery. Filesystem permissions are the access gate — other-UID processes get `EACCES` from `connect(2)` before reaching Node. The legacy `/_api/hub/*` HTTP routes return `410 Gone`. macOS/Linux only; on Windows, hub mode falls back to standalone (no multi-project sharing).
 
 - **`/_auth/bootstrap-token` is auth-gated.** Minting a browser bootstrap token now requires the same credential as the dashboard, closing a same-host (incl. other-UID) loopback mint→redeem path that could obtain a session without the local secret. `ccxray open` sends the credential automatically.
+
+### Workflow Timeline
+
+- **Sequential-interleave tracker.** Automatic detection of interleaved turns within a single conversation — the timeline now shows which turns ran sequentially vs concurrently, with R1/R2 pre-numbering for visual clarity.
+- **Parallel-lane inference.** Multi-agent sessions automatically split into lanes: orchestrator on the main lane, subagents on parallel lanes labeled "Fork (conv #N)" or "Teammate (foreign conv)".
+- **Lane identity routing.** `coreHash` + `convId` routing places turns onto the correct lane. Teammate lane splits, retries, and 0-msg probes are handled gracefully.
+- **Lane color pool.** Each lane gets a distinct hue from a WCAG ≥3:1 contrast pool, correct on both light and dark themes.
+- **Birdseye overview mode.** Toggle expands the overview strip to ~80% viewport with a magnified minimap and range summary.
+- **Adaptive overview height.** Overview scales as `min(innerHeight × 0.20, max(28, laneCount × 7 + 6))` — replaces the old 48px hard cap.
+- **L1/L2 dual-state selection.** Tab/▲▼ selects lanes (L1), j/k selects turns within a lane (L2), Esc walks back. Replaces the flat click-commit model.
+- **Mixed-model lane labels.** Lane headers show model composition when a lane contains turns from multiple models, with seq-stitched markers.
+
+### Dashboard
+
+- **Collapsible sidebar toggle** for the overview panel.
+- **Cache-creation TTL split** — turn detail now shows whether the cache used a 5m or 1h TTL.
+- **Current-turn minimap estimation** from `output_tokens` during streaming.
+- **`output_tokens` in `ctxUsed`** across all views (was previously missing).
+- **`hiddenProjects`** — `settings.json` setting to hide specific projects from the dashboard; hidden projects don't leak when sharing.
+- **Error state on entry fetch failure** — shows an error message instead of an infinite spinner.
+
+### Server
+
+- **Per-session entry cap** (`SESSION_ENTRY_CAP`) — prevents a single giant session from evicting all other sessions during `trimEntries` FIFO pruning.
+
+### System Prompt
+
+- **Broadened autoMemory marker** to reduce version noise in coreHash.
+- **Platform token normalization** before coreHash computation.
+
+### Fixed
+
+- Step list numbering aligned with breadcrumb.
+- Timeline detail header step count matches breadcrumb and badge.
+- Turn list recomputes seq layer on reordered arrivals.
+- Late-arriving earlier-start turn triggers full workflow rebuild.
+- R2 frontiers retire after 15 minutes (stale branch points).
+- Tail points are append-only (merging no longer erases historical branch points).
+- Seq tracker frontiers are per-conv and unbounded (no FIFO eviction).
+- Collapse same-convId fork lanes into a single parallel lane.
+- Overview-label height and button positions stay fixed across focus toggle.
 
 ## 1.9.3
 

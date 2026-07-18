@@ -159,7 +159,8 @@ async function restoreFromLogs() {
     retentionSets = computeRetentionSets(lightweight, stars);
   }
 
-  // Pre-count entries per session to identify oversized sessions
+  // Pre-count entries per session to identify oversized sessions.
+  // Separate loop because it needs retentionSets (built above) for the cutoff filter.
   const sessionTotals = new Map();
   for (const line of lines) {
     try {

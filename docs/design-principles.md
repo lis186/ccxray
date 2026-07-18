@@ -45,7 +45,8 @@ One visual channel carries one semantic dimension. Don't overload.
 
 | Channel | Semantic | Example |
 |---------|----------|---------|
-| Color | Risk level (zone) | Green = safe, yellow = degrading, red = danger |
+| Color (zone fill) | Risk level | Green = safe, yellow = degrading, red = danger |
+| Color (lane hue) | Agent identity | Each lane gets a distinct color from the WCAG-contrast pool |
 | Form | Element identity | Overview = micro blocks + indicator line, swimlane = bars + cursor, minimap = vertical fill + threshold lines |
 | Horizontal position | Time | Turn bar X position = wall-clock time |
 | Vertical height | Quantity | Minimap step height = token count |
@@ -60,7 +61,8 @@ Containers don't change size on state transitions. Content inside containers may
 
 - Minimap pixel height stays fixed when switching agents (P11)
 - Swimlane lane height stays fixed per selection state (v8: 64px unselected, 88px selected)
-- Overview bar height is fixed for a given session (28-48px by lane count — a session-level property; selecting agents/turns never resizes it)
+- Overview bar height scales adaptively: `min(innerHeight × 0.20, max(28, laneCount × 7 + 6))`. Selecting agents/turns never resizes it.
+- **Exception — mode switch:** Birdseye overview (user-initiated toggle) expands the overview to ~80% viewport. This is a deliberate mode transition, not a state-change side effect, so it is allowed.
 
 **Test:** "If the user clicks rapidly between agents/turns, does any container resize?" If yes, the layout is unstable.
 
@@ -84,7 +86,12 @@ Display state reflects what the user selected, not some default. If the user sel
 
 Constrained by rendering budget: if following attention requires expensive redraws on every selection change, use debounce, transition animations, or caching to stay within frame budget.
 
-Hover is preview (no global sync). Click is commit (full sync across all views).
+Interaction follows a two-level drill-down with explicit exit:
+
+- **L1 (lane selected):** Tab / ▲▼ cycles lanes. All dependent views show the selected lane's aggregate state.
+- **L2 (turn selected):** j/k cycles turns within the lane. All views drill into that specific turn.
+- **Esc** walks back L2 → L1 → deselect.
+- **Hover** is still preview only (no global sync).
 
 **Test:** "The user selected turn #20. Does every view answer questions about turn #20, or is something showing turn #54?" If mismatched, the view isn't following attention.
 
