@@ -415,6 +415,11 @@ function getCachedSteps(messages, resEvents, provider) {
 
 function prepareTimelineSteps(messages, resEvents, provider) {
   if ((!messages || !messages.length) && (!resEvents || !resEvents.length)) {
+    const entry = typeof selectedTurnIdx !== 'undefined' && selectedTurnIdx >= 0 ? allEntries[selectedTurnIdx] : null;
+    if (entry && entry.imported) {
+      currentSteps = [{ type: 'assistant-text', text: 'Wire capture unavailable — imported from local transcript (' + (entry.importSource || 'unknown') + ').\nTurn list, cost, and context data are available. System Prompt, Request, TTFT, and streaming timeline are not recorded in local transcripts.' }];
+      return;
+    }
     currentSteps = [];
     return;
   }

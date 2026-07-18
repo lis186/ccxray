@@ -720,11 +720,13 @@ function addEntry(e) {
     e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
   ].filter(Boolean).join(' · ');
   const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
+  const importBadge = e.imported ? '<span class="turn-imported-badge" title="Imported from local transcript">⇐</span>' : '';
   const identityLine =
     '<div class="turn-identity"' + identityAttr + '>' +
       '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
       '<span class="turn-num">' + prefix + '</span>' +
       modelHtml +
+      importBadge +
       waitMark +
       critMarkerHtml +
       starHtml +

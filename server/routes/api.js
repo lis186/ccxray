@@ -285,6 +285,18 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
+  if (clientReq.method === 'POST' && pathname === '/api/import/rescan') {
+    const { scanAndImport } = require('../importer');
+    scanAndImport().then(result => {
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify(result));
+    }).catch(err => {
+      clientRes.writeHead(500, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: err.message }));
+    });
+    return true;
+  }
+
   return false;
 }
 

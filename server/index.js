@@ -1006,6 +1006,12 @@ async function runPostListenStartupTasks() {
     await pruneLogs();
     warmUpCosts();
   }
+
+  // Import local Claude Code transcripts (non-blocking, after restore)
+  if (restoreOk && process.env.CCXRAY_IMPORT_DISABLE !== '1') {
+    const { scanAndImport } = require('./importer');
+    scanAndImport().catch(err => console.error('[importer] Scan failed:', err.message));
+  }
 }
 
 async function startServer() {
