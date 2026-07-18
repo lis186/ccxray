@@ -261,6 +261,40 @@ function registerPromptVersion(ctx) {
   return { coreHash, agentKey, agentLabel };
 }
 
+// ── Phase 1: new interface methods ─────────────────────────
+
+const crypto = require('crypto');
+
+function isSubagent(parsedBody, headers) {
+  return isOpenAISubagent(headers, parsedBody);
+}
+
+function rawSessionId(headers, parsedBody) {
+  return getCodexSessionId(headers, parsedBody);
+}
+
+function systemPromptHash(parsedBody) {
+  if (parsedBody?.instructions == null) return { hash: null, filePrefix: 'openai_instructions_', content: null };
+  const content = parsedBody.instructions;
+  const hash = crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex').slice(0, 12);
+  return { hash, filePrefix: 'openai_instructions_', content };
+}
+
+function toolsHash(parsedBody) {
+  if (!parsedBody?.tools) return null;
+  return crypto.createHash('sha256').update(JSON.stringify(parsedBody.tools)).digest('hex').slice(0, 12);
+}
+
+function getCwd(parsedBody, headers) {
+  return getCodexCwd(headers, parsedBody);
+}
+
+function turnStepCount(parsedBody) {
+  const input = parsedBody?.input;
+  if (!Array.isArray(input)) return 0;
+  return input.filter(item => item.type === 'function_call' || item.type === 'function_call_output').length;
+}
+
 module.exports = {
   // WIRE_PARSERS interface
   isNoiseRequest,
@@ -269,6 +303,13 @@ module.exports = {
   preprocessBody,
   buildEntryFields,
   registerPromptVersion,
+  // Phase 1: new interface
+  isSubagent,
+  rawSessionId,
+  systemPromptHash,
+  toolsHash,
+  getCwd,
+  turnStepCount,
   // Low-level exports for ws-proxy.js compatibility
   getCodexRawSessionId,
   getCodexCwd,

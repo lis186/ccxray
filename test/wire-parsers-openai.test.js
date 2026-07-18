@@ -157,4 +157,121 @@ describe('wire-parsers/openai', () => {
       assert.equal(openai.isOpenAISubagent({}, {}), false);
     });
   });
+
+  describe('isSubagent', () => {
+    it('returns true when x-openai-subagent header is truthy', () => {
+      assert.equal(openai.isSubagent({}, { 'x-openai-subagent': 'true' }), true);
+      assert.equal(openai.isSubagent({}, { 'x-openai-subagent': '1' }), true);
+    });
+
+    it('returns false when header is falsy', () => {
+      assert.equal(openai.isSubagent({}, { 'x-openai-subagent': '0' }), false);
+      assert.equal(openai.isSubagent({}, { 'x-openai-subagent': 'false' }), false);
+    });
+
+    it('returns false when no header and no body hint', () => {
+      assert.equal(openai.isSubagent({}, {}), false);
+    });
+
+    it('detects from body metadata', () => {
+      assert.equal(openai.isSubagent({ metadata: { is_subagent: true } }, {}), true);
+    });
+  });
+
+  describe('rawSessionId', () => {
+    it('extracts from session_id header', () => {
+      assert.equal(openai.rawSessionId({ 'session_id': 'sess-abc' }, {}), 'sess-abc');
+    });
+
+    it('extracts from x-codex-turn-metadata header', () => {
+      const headers = { 'x-codex-turn-metadata': JSON.stringify({ session_id: 'meta-sess' }) };
+      assert.equal(openai.rawSessionId(headers, {}), 'meta-sess');
+    });
+
+    it('extracts from body metadata', () => {
+      assert.equal(openai.rawSessionId({}, { metadata: { session_id: 'body-sess' } }), 'body-sess');
+    });
+
+    it('returns null when no session info', () => {
+      assert.equal(openai.rawSessionId({}, {}), null);
+      assert.equal(openai.rawSessionId({}, null), null);
+    });
+  });
+
+  describe('systemPromptHash', () => {
+    it('computes hash from instructions string', () => {
+      const body = loadFixture('turn1_req.json');
+      const result = openai.systemPromptHash(body);
+      assert.equal(result.filePrefix, 'openai_instructions_');
+      assert.equal(typeof result.hash, 'string');
+      assert.equal(result.hash.length, 12);
+      assert.equal(result.content, body.instructions);
+    });
+
+    it('returns null hash when no instructions', () => {
+      const result = openai.systemPromptHash({ input: [] });
+      assert.equal(result.hash, null);
+      assert.equal(result.filePrefix, 'openai_instructions_');
+      assert.equal(result.content, null);
+    });
+  });
+
+  describe('toolsHash', () => {
+    it('computes 12-char hex hash from tools array', () => {
+      const body = loadFixture('turn1_req.json');
+      const hash = openai.toolsHash(body);
+      assert.equal(typeof hash, 'string');
+      assert.equal(hash.length, 12);
+    });
+
+    it('returns null when no tools', () => {
+      assert.equal(openai.toolsHash({}), null);
+      assert.equal(openai.toolsHash({ tools: null }), null);
+    });
+  });
+
+  describe('getCwd', () => {
+    it('extracts cwd from body metadata workspaces', () => {
+      const body = loadFixture('turn1_req.json');
+      const cwd = openai.getCwd(body, {});
+      assert.equal(cwd, '/Users/test/project');
+    });
+
+    it('extracts cwd from instructions CWD line', () => {
+      const body = { instructions: 'Config\nCWD: /Users/demo/app\nShell: zsh' };
+      assert.equal(openai.getCwd(body, {}), '/Users/demo/app');
+    });
+
+    it('extracts from x-codex-turn-metadata cwd', () => {
+      const headers = { 'x-codex-turn-metadata': JSON.stringify({ cwd: '/from/header' }) };
+      assert.equal(openai.getCwd({}, headers), '/from/header');
+    });
+
+    it('returns null when no cwd info', () => {
+      assert.equal(openai.getCwd({}, {}), null);
+    });
+  });
+
+  describe('turnStepCount', () => {
+    it('counts function_call and function_call_output items in input', () => {
+      const body = {
+        input: [
+          { role: 'user', content: 'hi' },
+          { type: 'function_call', name: 'shell', arguments: '{}' },
+          { type: 'function_call_output', output: 'done' },
+          { role: 'assistant', content: 'ok' },
+        ],
+      };
+      assert.equal(openai.turnStepCount(body), 2);
+    });
+
+    it('returns 0 for empty input', () => {
+      assert.equal(openai.turnStepCount({}), 0);
+      assert.equal(openai.turnStepCount({ input: [] }), 0);
+    });
+
+    it('returns 0 when input is not an array', () => {
+      assert.equal(openai.turnStepCount({ input: 'hello' }), 0);
+    });
+  });
 });

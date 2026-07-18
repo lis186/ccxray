@@ -128,10 +128,56 @@ function registerPromptVersion(ctx) {
   return { coreHash, agentKey, agentLabel };
 }
 
+// ── Phase 1: new interface methods ─────────────────────────
+
+function isSubagent(parsedBody, _headers) {
+  return store.isAnthropicSubagent(parsedBody);
+}
+
+function rawSessionId(headers, _parsedBody) {
+  const sid = headers?.['x-session-id'];
+  return sid ? String(sid) : null;
+}
+
+function systemPromptHash(parsedBody) {
+  if (!parsedBody?.system) return { hash: null, filePrefix: 'sys_', content: null };
+  const content = parsedBody.system;
+  const hash = crypto.createHash('sha256').update(JSON.stringify(content)).digest('hex').slice(0, 12);
+  return { hash, filePrefix: 'sys_', content };
+}
+
+function toolsHash(parsedBody) {
+  if (!parsedBody?.tools) return null;
+  return crypto.createHash('sha256').update(JSON.stringify(parsedBody.tools)).digest('hex').slice(0, 12);
+}
+
+function getCwd(parsedBody, _headers) {
+  return store.extractCwd(parsedBody) || null;
+}
+
+function turnStepCount(parsedBody) {
+  const msgs = parsedBody?.messages;
+  if (!Array.isArray(msgs)) return 0;
+  let count = 0;
+  for (const msg of msgs) {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      count += msg.content.filter(b => b.type === 'tool_use').length;
+    }
+  }
+  return count;
+}
+
 module.exports = {
   isNoiseRequest,
   extractUsage,
   detectSession,
   buildEntryFields,
   registerPromptVersion,
+  // Phase 1: new interface
+  isSubagent,
+  rawSessionId,
+  systemPromptHash,
+  toolsHash,
+  getCwd,
+  turnStepCount,
 };

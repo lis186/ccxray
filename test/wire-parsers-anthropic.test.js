@@ -69,4 +69,104 @@ describe('wire-parsers/anthropic', () => {
       // tested via integration tests in Phase 6
     });
   });
+
+  describe('isSubagent', () => {
+    it('returns true for bare subagent (no cwd, no session_id)', () => {
+      const body = { messages: [{ role: 'user', content: 'hi' }] };
+      assert.equal(anthropic.isSubagent(body, {}), true);
+    });
+
+    it('returns false when system prompt has cwd', () => {
+      const body = loadFixture('turn1_req.json');
+      assert.equal(anthropic.isSubagent(body, {}), false);
+    });
+  });
+
+  describe('rawSessionId', () => {
+    it('extracts x-session-id header', () => {
+      assert.equal(anthropic.rawSessionId({ 'x-session-id': 'sess-abc' }, {}), 'sess-abc');
+    });
+
+    it('returns null when header absent', () => {
+      assert.equal(anthropic.rawSessionId({}, {}), null);
+      assert.equal(anthropic.rawSessionId(null, {}), null);
+    });
+  });
+
+  describe('systemPromptHash', () => {
+    it('computes hash from system array', () => {
+      const body = loadFixture('turn1_req.json');
+      const result = anthropic.systemPromptHash(body);
+      assert.equal(result.filePrefix, 'sys_');
+      assert.equal(typeof result.hash, 'string');
+      assert.equal(result.hash.length, 12);
+      assert.deepEqual(result.content, body.system);
+    });
+
+    it('returns null hash when no system', () => {
+      const result = anthropic.systemPromptHash({ messages: [] });
+      assert.equal(result.hash, null);
+      assert.equal(result.filePrefix, 'sys_');
+      assert.equal(result.content, null);
+    });
+  });
+
+  describe('toolsHash', () => {
+    it('computes 12-char hex hash from tools array', () => {
+      const body = loadFixture('turn1_req.json');
+      const hash = anthropic.toolsHash(body);
+      assert.equal(typeof hash, 'string');
+      assert.equal(hash.length, 12);
+    });
+
+    it('returns null when no tools', () => {
+      assert.equal(anthropic.toolsHash({}), null);
+      assert.equal(anthropic.toolsHash({ tools: null }), null);
+    });
+  });
+
+  describe('getCwd', () => {
+    it('extracts cwd from system prompt (Primary working directory)', () => {
+      const body = {
+        system: [{ type: 'text', text: 'Config' }, { type: 'text', text: 'You are assistant' }, { type: 'text', text: '# Environment\nPrimary working directory: /Users/test/project\nShell: zsh' }],
+      };
+      assert.equal(anthropic.getCwd(body, {}), '/Users/test/project');
+    });
+
+    it('returns null when no system prompt', () => {
+      assert.equal(anthropic.getCwd({}, {}), null);
+      assert.equal(anthropic.getCwd({ messages: [] }, {}), null);
+    });
+  });
+
+  describe('turnStepCount', () => {
+    it('counts tool_use blocks in assistant messages', () => {
+      const body = loadFixture('turn1_req.json');
+      const count = anthropic.turnStepCount(body);
+      assert.equal(count, 1);
+    });
+
+    it('returns 0 for empty messages', () => {
+      assert.equal(anthropic.turnStepCount({}), 0);
+      assert.equal(anthropic.turnStepCount({ messages: [] }), 0);
+    });
+
+    it('counts multiple tool_use blocks across messages', () => {
+      const body = {
+        messages: [
+          { role: 'user', content: 'hi' },
+          { role: 'assistant', content: [
+            { type: 'text', text: 'ok' },
+            { type: 'tool_use', id: 't1', name: 'Bash', input: {} },
+            { type: 'tool_use', id: 't2', name: 'Read', input: {} },
+          ]},
+          { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'x' }] },
+          { role: 'assistant', content: [
+            { type: 'tool_use', id: 't3', name: 'Bash', input: {} },
+          ]},
+        ],
+      };
+      assert.equal(anthropic.turnStepCount(body), 3);
+    });
+  });
 });
