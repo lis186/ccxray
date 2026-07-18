@@ -1454,6 +1454,9 @@ function renderSessionItem(sess, sid, sessEl) {
     ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
     : null;
   const previewRow = previewText ? '<div class="si-preview">' + escapeHtml(previewText) + '</div>' : '';
+  const truncatedRow = sess.truncated
+    ? '<div class="si-truncated" title="Session too large — only the first turn is loaded into memory">Session too large — ' + sess.totalEntryCount + ' total turns, showing 1</div>'
+    : '';
   const ctxPct = sess.latestMainCtxPct || 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
@@ -1539,6 +1542,7 @@ function renderSessionItem(sess, sid, sessEl) {
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +
+    truncatedRow +
     '<div class="si-meta-row">' +
       '<span class="si-time" title="' + escapeHtml(sess.lastId ? formatEntryDate(sess.lastId) : '') + '">' + dateStr + '</span>' +
       cacheRowHtml +

@@ -8,6 +8,7 @@ const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
 
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
+const SESSION_ENTRY_CAP = parseInt(process.env.CCXRAY_SESSION_ENTRY_CAP || '500', 10);
 const entries = [];
 // INVARIANT: entryIndex must mirror entries[] — see docs/decisions/0003-entry-index-map.md
 const entryIndex = new Map();
@@ -380,6 +381,7 @@ function computeSessionResume(sessionId, provider) {
 
 module.exports = {
   MAX_ENTRIES,
+  SESSION_ENTRY_CAP,
   entries,
   entryIndex,
   trimEntries,
