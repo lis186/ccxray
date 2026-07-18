@@ -2246,3 +2246,112 @@ describe('#238 mixed-model labels', () => {
       't1 never enters mainLane.turns, so a mainLane-scoped reset would miss it (fails on old code)');
   });
 });
+
+describe('#251 L1/L2 selection state machine', () => {
+  it('wfBuildState initializes selectionLevel to L1', () => {
+    const ctx = loadWfModule();
+    ctx.allEntries = [mkEntry('a', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' })];
+    const state = ctx.wfBuildState('s1');
+    assert.equal(state.selectionLevel, 'L1');
+    assert.equal(state.hoverTurnId, null);
+    assert.ok(state.hoverTimers);
+    assert.equal(state.selectedTurnId, null);
+  });
+
+  it('wfBackToLane resets from L2 to L1', () => {
+    const ctx = loadWfModule();
+    var agentPanelHtml = '';
+    ctx.document.getElementById = function(id) {
+      if (id === 'wf-agent-card-panel') return { innerHTML: '', set innerHTML(v) { agentPanelHtml = v; } };
+      if (id === 'wf-steps-content') return { innerHTML: '', querySelectorAll: () => [] };
+      return null;
+    };
+    var e1 = mkEntry('e1', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries = [e1];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectedTurnId = 'e1';
+    ctx.wfState.selectionLevel = 'L2';
+    ctx.wfBackToLane();
+    assert.equal(ctx.wfState.selectionLevel, 'L1');
+    assert.equal(ctx.wfState.selectedTurnId, null);
+  });
+
+  it('Esc from L2 returns to L1 (not full exit)', () => {
+    const ctx = loadWfModule();
+    ctx.document.getElementById = function(id) {
+      if (id === 'wf-agent-card-panel') return { innerHTML: '', set innerHTML(v) {} };
+      if (id === 'wf-steps-content') return { innerHTML: '', querySelectorAll: () => [] };
+      if (id === 'wf-overview-label') return { innerHTML: '', set innerHTML(v) {} };
+      if (id === 'wf-lanes-section') return { style: {} };
+      if (id === 'wf-resize') return { classList: { toggle() {} } };
+      return null;
+    };
+    var e1 = mkEntry('e1', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries = [e1];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectedTurnId = 'e1';
+    ctx.wfState.selectionLevel = 'L2';
+    var handled = ctx.wfKeyHandler('Escape', {});
+    assert.equal(handled, true);
+    assert.equal(ctx.wfState.selectionLevel, 'L1');
+    assert.equal(ctx.wfState.selectedTurnId, null);
+  });
+
+  it('j from L1 enters L2 at first turn', () => {
+    const ctx = loadWfModule();
+    var selectCalled = false;
+    ctx.selectTurn = function() { selectCalled = true; };
+    ctx.document.getElementById = function(id) {
+      if (id === 'wf-agent-card-panel') return { innerHTML: '', set innerHTML(v) {} };
+      return null;
+    };
+    var e1 = mkEntry('e1', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    var e2 = mkEntry('e2', 's1', 'opus', 5000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries = [e1, e2];
+    ctx.wfState = ctx.wfBuildState('s1');
+    assert.equal(ctx.wfState.selectionLevel, 'L1');
+    var handled = ctx.wfKeyHandler('j', {});
+    assert.equal(handled, true);
+    assert.equal(ctx.wfState.selectionLevel, 'L2');
+    assert.equal(ctx.wfState.selectedTurnId, 'e1');
+    assert.ok(selectCalled);
+  });
+
+  it('j/k in L2 cycles without wrap at endpoints', () => {
+    const ctx = loadWfModule();
+    ctx.selectTurn = function() {};
+    ctx.document.getElementById = function(id) {
+      if (id === 'wf-agent-card-panel') return { innerHTML: '', set innerHTML(v) {} };
+      return null;
+    };
+    var e1 = mkEntry('e1', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    var e2 = mkEntry('e2', 's1', 'opus', 5000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries = [e1, e2];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectionLevel = 'L2';
+    ctx.wfState.selectedTurnId = 'e2';
+    // k from last → e1
+    ctx.wfKeyHandler('k', {});
+    assert.equal(ctx.wfState.selectedTurnId, 'e1');
+    // k again at first → no-op (no wrap)
+    ctx.wfKeyHandler('k', {});
+    assert.equal(ctx.wfState.selectedTurnId, 'e1');
+  });
+
+  it('_wfSeqRebuild preserves L2 state', () => {
+    const ctx = loadWfModule();
+    var e1 = mkEntry('e1', 's1', 'opus', 1000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries = [e1];
+    ctx.wfState = ctx.wfBuildState('s1');
+    ctx.wfState.selectionLevel = 'L2';
+    ctx.wfState.selectedTurnId = 'e1';
+    ctx.wfState.hoverTurnId = 'e1';
+    // Force rebuild
+    var e2 = mkEntry('e2', 's1', 'opus', 5000, 3, { agentKey: 'orchestrator', convId: 'c1' });
+    ctx.allEntries.push(e2);
+    ctx._wfSeqRebuild(ctx.wfState.tMax);
+    assert.equal(ctx.wfState.selectionLevel, 'L2');
+    assert.equal(ctx.wfState.selectedTurnId, 'e1');
+    assert.equal(ctx.wfState.hoverTurnId, 'e1');
+  });
+});

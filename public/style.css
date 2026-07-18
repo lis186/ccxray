@@ -782,3 +782,18 @@
 }
 .skeleton-text { display: inline-block; height: 12px; width: 80px; vertical-align: middle; }
 .skeleton-block { display: block; width: 100%; height: 14px; margin-bottom: 4px; }
+
+/* ── Turn Card (L2 left panel, #251) ─────────────────────────── */
+.wf-turn-card { padding: 12px; font-size: 12px; }
+.wf-tc-back { cursor: pointer; color: var(--accent); font-size: 11px; margin-bottom: 6px; }
+.wf-tc-back:hover { text-decoration: underline; }
+.wf-tc-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.wf-tc-crumb { font-size: 11px; color: var(--dim); margin-bottom: 10px; }
+.wf-tc-ctx-bar { height: 4px; background: var(--surface); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+
+/* ── Hover Preview (#251) ─────────────────────────────────────── */
+.wf-hover-preview { padding: 12px; font-size: 12px; }
+.wf-hp-title { padding: 4px 8px; border-radius: 3px; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.wf-hp-row { display: flex; justify-content: space-between; padding: 2px 0; }
+.wf-hp-row span:last-child { font-family: 'SF Mono','Cascadia Code','Fira Code',monospace; font-size: 11px; }
+.wf-hp-lane-ctx { margin-top: 8px; font-size: 10px; color: var(--dim); }

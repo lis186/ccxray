@@ -780,6 +780,9 @@ function wfBuildState(sessionId) {
     viewT0: tMin, viewT1: tMax,
     selectedLane: lanes[0] || null,
     selectedTurnId: null,
+    selectionLevel: 'L1',
+    hoverTurnId: null,
+    hoverTimers: { enter: 0, leave: 0 },
     selectedSection: 'timeline',
     laneFocusMode: false,
     laneHeightManual: false,
@@ -1038,6 +1041,9 @@ function _wfSeqRebuild(oldTMax) {
   fresh.viewT0 = old.viewT0;
   fresh.viewT1 = old.viewT1;
   fresh.selectedTurnId = old.selectedTurnId;
+  fresh.selectionLevel = old.selectionLevel;
+  fresh.hoverTurnId = old.hoverTurnId;
+  fresh.hoverTimers = old.hoverTimers;
   fresh.selectedSection = old.selectedSection;
   fresh.laneFocusMode = old.laneFocusMode;
   fresh.laneHeightManual = old.laneHeightManual;
@@ -1491,7 +1497,13 @@ function wfRenderTimeline() {
   wfSetupInteractions(mainSvg, subSvg);
   wfInitResize(lanesSection, resizeHandle);
   resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
-  wfRenderAgentCard(wfState.selectedLane);
+  if (wfState.selectionLevel === 'L2' && wfState.selectedTurnId) {
+    var hit = wfState.turnIndex && wfState.turnIndex.get(wfState.selectedTurnId);
+    if (hit) wfRenderTurnCard(hit.turn);
+    else wfRenderAgentCard(wfState.selectedLane);
+  } else {
+    wfRenderAgentCard(wfState.selectedLane);
+  }
   // ponytail: charts now inline in selected lane SVG, no separate header
   wfRenderCurrentSection();
 }
@@ -1677,6 +1689,7 @@ function wfCycleLane(dir) {
   var nextLi = (curLi + dir + lanes.length) % lanes.length;
   wfState.selectedLane = lanes[nextLi];
   wfState.selectedTurnId = null;
+  wfState.selectionLevel = 'L1';
   _wfRefreshLaneFocusUI();
   wfRenderAgentCard(lanes[nextLi]);
   wfRenderCurrentSection();
@@ -2003,8 +2016,10 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
       if (bestTid && bestD < totalRange * 0.02) {
         wfState.selectedLane = bestLane;
         wfState.selectedTurnId = bestTid;
+        wfState.selectionLevel = 'L2';
         wfDeferRender();
-        wfRenderAgentCard(bestLane);
+        var bestTurn = bestLane.turns.find(function(t) { return t.id === bestTid; });
+        if (bestTurn) wfRenderTurnCard(bestTurn); else wfRenderAgentCard(bestLane);
         for (var si = 0; si < allEntries.length; si++) {
           if (allEntries[si].id === bestTid) { selectTurn(si); break; }
         }
@@ -2046,8 +2061,9 @@ function wfSetupInteractions(mainSvg, subSvg) {
             if (cLane.turns[cti].coreHash !== cHash) continue;
             wfState.selectedLane = cLane;
             wfState.selectedTurnId = cLane.turns[cti].id;
+            wfState.selectionLevel = 'L2';
             wfDeferRender();
-            wfRenderAgentCard(cLane);
+            wfRenderTurnCard(cLane.turns[cti]);
             for (var cak = 0; cak < allEntries.length; cak++) {
               if (allEntries[cak].id === wfState.selectedTurnId) { selectTurn(cak); break; }
             }
@@ -2090,6 +2106,7 @@ function wfSetupInteractions(mainSvg, subSvg) {
         if (li >= 0 && li < wfState.lanes.length) {
           wfState.selectedLane = wfState.lanes[li];
           wfState.selectedTurnId = null;
+          wfState.selectionLevel = 'L1';
           _wfRefreshLaneFocusUI();
           wfRenderAgentCard(wfState.lanes[li]);
           wfRenderCurrentSection();
@@ -2123,23 +2140,30 @@ function wfSetupInteractions(mainSvg, subSvg) {
         var near = lane.turns.length ? _wfNearestTurn(lane, mx2) : { idx: -1, dist: Infinity };
         if (near.idx >= 0 && near.dist < 40) {
           var tid = lane.turns[near.idx].id;
-          if (wfState.selectedTurnId === tid) {
-            wfState.selectedTurnId = null; // click same turn = unlock
+          if (wfState.selectedTurnId === tid && wfState.selectionLevel === 'L2') {
+            // R26: re-click locked turn = toggle back to L1
+            wfState.selectedTurnId = null;
+            wfState.selectionLevel = 'L1';
             wfDeferRender();
+            wfRenderAgentCard(lane);
+            wfRenderCurrentSection();
             return;
           }
-          wfState.selectedLane = lane; // lock: auto-expand lane
+          wfState.selectedLane = lane;
           wfState.selectedTurnId = tid;
+          wfState.selectionLevel = 'L2';
           wfDeferRender();
-          wfRenderAgentCard(lane);
-          // Bridge to existing detail rendering
+          wfRenderTurnCard(lane.turns[near.idx]);
           for (var k = 0; k < allEntries.length; k++) {
             if (allEntries[k].id === tid) { selectTurn(k); break; }
           }
         } else {
+          // R27: click empty space = no-op if L2
+          if (wfState.selectionLevel === 'L2') return;
           // Empty chart area: select lane without locking a turn
           wfState.selectedLane = lane;
           wfState.selectedTurnId = null;
+          wfState.selectionLevel = 'L1';
           wfDeferRender();
           wfRenderAgentCard(lane);
           wfRenderCurrentSection();
@@ -2156,12 +2180,14 @@ function wfSetupInteractions(mainSvg, subSvg) {
       if (hit) {
         _wfShowTooltip(e, hit.turn, hit.lane);
         svgEl.style.cursor = 'pointer';
+        _wfHoverPreviewEnter(hit.turn, hit.lane);
       } else {
         _wfHideTooltip();
         svgEl.style.cursor = hmx >= WF_LABEL_W ? 'grab' : 'pointer';
+        _wfHoverPreviewLeave();
       }
     };
-    svgEl.onmouseleave = function() { _wfHideTooltip(); _wfHoverClear(); };
+    svgEl.onmouseleave = function() { _wfHideTooltip(); _wfHoverClear(); _wfHoverPreviewLeave(); };
 
     // Double-click reset zoom
     svgEl.ondblclick = function() {
@@ -2297,16 +2323,20 @@ function wfHighlightTurn(turnId) {
   if (!wfState) return;
   if (_wfSuppressHighlight) return;
   wfState.selectedTurnId = turnId;
-  // Update lane selection based on turn
   if (turnId) {
+    wfState.selectionLevel = 'L2';
     for (var i = 0; i < wfState.lanes.length; i++) {
       for (var j = 0; j < wfState.lanes[i].turns.length; j++) {
         if (wfState.lanes[i].turns[j].id === turnId) {
           wfState.selectedLane = wfState.lanes[i];
+          wfRenderTurnCard(wfState.lanes[i].turns[j]);
           break;
         }
       }
     }
+  } else {
+    wfState.selectionLevel = 'L1';
+    wfRenderAgentCard(wfState.selectedLane);
   }
   wfDeferRender();
   _wfUpdateCursor(turnId);
@@ -2514,6 +2544,158 @@ function wfRenderAgentCard(lane) {
   agentPanel.innerHTML = html;
 }
 
+// ── Turn Card (L2 left panel) ─────────────────────────────────────────────
+function wfRenderTurnCard(turnEntry) {
+  var agentPanel = document.getElementById('wf-agent-card-panel');
+  if (!turnEntry || !agentPanel) return;
+  var lane = wfState.selectedLane;
+  var color = lane ? wfLaneColor(lane) : 'var(--accent)';
+  var turnIdx = lane ? lane.turns.indexOf(turnEntry) : -1;
+  var displayNum = turnIdx >= 0 ? turnIdx + 1 : '?';
+
+  var u = turnEntry.usage || {};
+  var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  var outTok = u.output_tokens || 0;
+  var cacheRead = u.cache_read_input_tokens || 0;
+  var cacheCreate = u.cache_creation_input_tokens || 0;
+  var cachePct = inTok > 0 ? (cacheRead / inTok * 100).toFixed(1) : '0.0';
+  var pct = wfCtxPct(turnEntry);
+  var cz = ctxZone(pct);
+  var dur = parseFloat(turnEntry.elapsed) || 0;
+  var thinkDur = turnEntry.thinkingDuration || 0;
+
+  var html = '<div class="wf-turn-card" style="border-left:2px solid ' + color + '">';
+  html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
+  html += '<div class="wf-tc-title">#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+
+  // Breadcrumb
+  var laneName = lane ? lane.name : '?';
+  var statusBadge = turnEntry.status ? turnEntry.status : '';
+  var inferBadge = turnEntry.sessionInferred ? ' [inferred]' : '';
+  html += '<div class="wf-tc-crumb">' + wfEsc(laneName) + ' > #' + displayNum + '  ' + statusBadge + inferBadge + '</div>';
+
+  // Context
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
+  html += '<div class="wf-ac-row"><span>Usage</span><span class="wf-ac-val" style="color:' + cz.hex + '">' + pct.toFixed(1) + '%</span></div>';
+  html += '<div class="wf-tc-ctx-bar"><div style="width:' + Math.min(100, pct) + '%;background:' + cz.hex + ';height:4px;border-radius:2px"></div></div>';
+  html += '</div>';
+
+  // Cache
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cache</div>';
+  html += '<div class="wf-ac-row"><span>Hit</span><span class="wf-ac-val">' + cachePct + '%</span></div>';
+  if (cacheCreate) html += '<div class="wf-ac-row"><span>New</span><span class="wf-ac-val">' + _wfFmtSessTok(cacheCreate) + '</span></div>';
+  html += '</div>';
+
+  // Cost
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cost</div>';
+  html += '<div class="wf-ac-row"><span>Turn</span><span class="wf-ac-val">$' + (turnEntry.cost || 0).toFixed(4) + '</span></div>';
+  if (turnEntry.stopReason) html += '<div class="wf-ac-row"><span>Stop</span><span class="wf-ac-val">' + wfEsc(turnEntry.stopReason) + '</span></div>';
+  html += '</div>';
+
+  // Tokens
+  html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tokens</div>';
+  html += '<div class="wf-ac-row"><span>In</span><span class="wf-ac-val">' + _wfFmtSessTok(inTok) + '</span></div>';
+  html += '<div class="wf-ac-row"><span>Out</span><span class="wf-ac-val">' + _wfFmtSessTok(outTok) + '</span></div>';
+  if (thinkDur > 0) html += '<div class="wf-ac-row"><span>Thinking</span><span class="wf-ac-val">' + thinkDur.toFixed(1) + 's</span></div>';
+  html += '</div>';
+
+  // Tools
+  var tc = turnEntry.toolCalls || {};
+  var toolEntries = Object.entries(tc).sort(function(a, b) { return b[1] - a[1]; });
+  if (toolEntries.length) {
+    var totalCalls = toolEntries.reduce(function(s, e) { return s + e[1]; }, 0);
+    html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Tools</div>';
+    for (var ti = 0; ti < Math.min(toolEntries.length, 6); ti++) {
+      html += '<div class="wf-ac-row"><span class="wf-ac-tool">' + wfEsc(toolEntries[ti][0]) + '</span><span class="wf-ac-tool-count">' + toolEntries[ti][1] + '</span></div>';
+    }
+    if (turnEntry.toolFail) html += '<div class="wf-ac-row"><span style="color:var(--red)">Has failures</span></div>';
+    html += '</div>';
+  }
+
+  // Section navigation (same as agent card)
+  var secs = [
+    { name: 'timeline', label: 'Timeline' },
+    { name: 'system', label: 'System' },
+    { name: 'core-tools', label: 'Core' },
+    { name: 'mcp-tools', label: 'MCP' },
+    { name: 'skills', label: 'Skills' },
+    { name: 'cost-efficiency', label: 'Cost' },
+    { name: 'raw-req', label: 'Request' },
+    { name: 'raw-res', label: 'Events' },
+  ];
+  var curSec = wfState.selectedSection || 'timeline';
+  html += '<div class="wf-ac-nav">';
+  for (var si = 0; si < secs.length; si++) {
+    var s = secs[si];
+    var sel = curSec === s.name ? ' wf-ac-nav-active' : '';
+    html += '<span class="wf-ac-nav-item' + sel + '" data-section="' + s.name + '" onclick="wfSelectSection(\'' + s.name + '\')">' + wfEsc(s.label) + '</span>';
+  }
+  html += '</div>';
+
+  html += '</div>';
+  agentPanel.innerHTML = html;
+}
+
+function wfBackToLane() {
+  if (!wfState) return;
+  wfState.selectedTurnId = null;
+  wfState.selectionLevel = 'L1';
+  wfDeferRender();
+  wfRenderAgentCard(wfState.selectedLane);
+  wfRenderCurrentSection();
+}
+
+// ── Hover Preview (debounced, left panel only) ───────────────────────────
+function _wfHoverPreviewEnter(turn, lane) {
+  if (!wfState) return;
+  clearTimeout(wfState.hoverTimers.leave);
+  if (wfState.hoverTurnId === turn.id) return;
+  clearTimeout(wfState.hoverTimers.enter);
+  wfState.hoverTimers.enter = setTimeout(function() {
+    if (!wfState || wfState.selectionLevel === 'L2') return;
+    wfState.hoverTurnId = turn.id;
+    _wfRenderHoverPreview(turn, lane);
+  }, 300);
+}
+
+function _wfHoverPreviewLeave() {
+  if (!wfState) return;
+  clearTimeout(wfState.hoverTimers.enter);
+  if (!wfState.hoverTurnId) return;
+  wfState.hoverTimers.leave = setTimeout(function() {
+    if (!wfState) return;
+    wfState.hoverTurnId = null;
+    if (wfState.selectionLevel === 'L1') {
+      wfRenderAgentCard(wfState.selectedLane);
+    }
+  }, 150);
+}
+
+function _wfRenderHoverPreview(turn, lane) {
+  var agentPanel = document.getElementById('wf-agent-card-panel');
+  if (!agentPanel) return;
+  var color = wfLaneColor(lane);
+  var turnIdx = lane ? lane.turns.indexOf(turn) : -1;
+  var displayNum = turnIdx >= 0 ? turnIdx + 1 : '?';
+  var u = turn.usage || {};
+  var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  var outTok = u.output_tokens || 0;
+  var pct = wfCtxPct(turn);
+  var cz = ctxZone(pct);
+  var dur = parseFloat(turn.elapsed) || 0;
+  var laneSummary = wfLaneSummary(lane);
+  var turnShare = laneSummary.totalCost > 0 ? ((turn.cost || 0) / laneSummary.totalCost * 100).toFixed(1) : '0.0';
+
+  var html = '<div class="wf-hover-preview" style="border-left:2px dashed ' + color + '">';
+  html += '<div class="wf-hp-title" style="background:' + color + '08">#' + displayNum + '  ' + wfEsc(wfShortModel(turn.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+  html += '<div class="wf-hp-row"><span>Context</span><span style="color:' + cz.hex + '">' + pct.toFixed(1) + '%</span></div>';
+  html += '<div class="wf-hp-row"><span>Cost</span><span>$' + (turn.cost || 0).toFixed(4) + '</span></div>';
+  html += '<div class="wf-hp-row"><span>Tokens</span><span>' + _wfFmtSessTok(inTok) + ' in / ' + _wfFmtSessTok(outTok) + ' out</span></div>';
+  html += '<div class="wf-hp-lane-ctx">lane $' + laneSummary.totalCost.toFixed(2) + ' · this turn ' + turnShare + '%</div>';
+  html += '</div>';
+  agentPanel.innerHTML = html;
+}
+
 // ── Lane-level summary (no turn selected) ────────────────────────────────
 function _wfRenderLaneSummary(lane, section) {
   var el = document.getElementById('wf-steps-content');
@@ -2554,10 +2736,12 @@ function _wfRenderLaneSummary(lane, section) {
 function wfLockTurn(turnId) {
   if (!wfState || !turnId) return;
   var hit = wfState.turnIndex && wfState.turnIndex.get(turnId);
-  if (!hit) return; // unknown turn → no phantom lock (leave selection untouched)
+  if (!hit) return;
   wfState.selectedTurnId = turnId;
+  wfState.selectionLevel = 'L2';
   wfState.selectedLane = wfState.lanes[hit.laneIdx];
   _wfRefreshLaneFocusUI();
+  wfRenderTurnCard(hit.turn);
   for (var k = 0; k < allEntries.length; k++) {
     if (allEntries[k].id === turnId) { selectTurn(k); break; }
   }
@@ -2698,7 +2882,7 @@ function wfKeyHandler(key, e) {
   if (!wfState || !wfState.selectedLane) return false;
   var lane = wfState.selectedLane;
 
-  // j/k: next/prev turn within selected lane (arrows use normal turn-list nav)
+  // j/k: next/prev turn within selected lane
   if (key === 'j' || key === 'k') {
     if (!lane.turns.length) return false;
     var curIdx = -1;
@@ -2707,12 +2891,28 @@ function wfKeyHandler(key, e) {
         if (lane.turns[i].id === wfState.selectedTurnId) { curIdx = i; break; }
       }
     }
-    var next = key === 'j' ? curIdx + 1 : curIdx - 1;
-    next = Math.max(0, Math.min(lane.turns.length - 1, next));
-    var turn = lane.turns[next];
-    wfState.selectedTurnId = turn.id;
-    for (var k2 = 0; k2 < allEntries.length; k2++) {
-      if (allEntries[k2].id === turn.id) { selectTurn(k2); break; }
+    if (wfState.selectionLevel === 'L1') {
+      // L1: j = first turn enters L2, k = last turn enters L2
+      var next = key === 'j' ? 0 : lane.turns.length - 1;
+      var turn = lane.turns[next];
+      wfState.selectedTurnId = turn.id;
+      wfState.selectionLevel = 'L2';
+      wfDeferRender();
+      wfRenderTurnCard(turn);
+      for (var k2 = 0; k2 < allEntries.length; k2++) {
+        if (allEntries[k2].id === turn.id) { selectTurn(k2); break; }
+      }
+      return true;
+    }
+    // L2: cycle within lane, no wrap at endpoints
+    var next2 = key === 'j' ? curIdx + 1 : curIdx - 1;
+    if (next2 < 0 || next2 >= lane.turns.length) return true; // no-op at ends
+    var turn2 = lane.turns[next2];
+    wfState.selectedTurnId = turn2.id;
+    wfDeferRender();
+    wfRenderTurnCard(turn2);
+    for (var k3 = 0; k3 < allEntries.length; k3++) {
+      if (allEntries[k3].id === turn2.id) { selectTurn(k3); break; }
     }
     return true;
   }
@@ -2724,11 +2924,19 @@ function wfKeyHandler(key, e) {
     return true;
   }
 
-  // Esc: exit birdseye, then unlock turn, then zoom reset, then back to main lane
+  // Esc: exit birdseye, then L2→L1, then unlock turn, then zoom reset, then back to main lane
   if (key === 'Escape') {
     if (wfState.birdsEyeMode) {
       wfState.birdsEyeMode = false;
       _wfRefreshBirdsEye();
+      return true;
+    }
+    if (wfState.selectionLevel === 'L2') {
+      wfState.selectedTurnId = null;
+      wfState.selectionLevel = 'L1';
+      wfDeferRender();
+      wfRenderAgentCard(lane);
+      wfRenderCurrentSection();
       return true;
     }
     if (wfState.selectedTurnId) {
