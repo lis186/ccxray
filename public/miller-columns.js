@@ -1561,6 +1561,7 @@ function renderProjectsCol() {
     selectedProjectName || '',
     window._entriesLoading ? '1' : '0',
     window._entriesLoadingText || '',
+    (window.ccxraySettings?.hiddenProjects || []).join(','),
   ];
   for (const [name, proj] of projectsMap) {
     const statusClass = getProjectStatusClass(proj);
@@ -1602,8 +1603,10 @@ function _renderProjectsColInner() {
     if (sa !== sb) return sa - sb;
     return (b.lastId || '').localeCompare(a.lastId || '');
   });
+  const hiddenSet = new Set(window.ccxraySettings?.hiddenProjects || []);
   let visibleProjCount = 0;
   for (const proj of sorted) {
+    if (hiddenSet.has(proj.name)) continue;
     const isStarred = isStarredOrDerived('project', proj.name);
     const statusClass = getProjectStatusClass(proj);
     // Filter by activity (unless star-protected or selected)
