@@ -6,6 +6,7 @@ const INDEX_FIELDS = [
   'stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt',
   'sysHash','toolsHash','coreHash','agentKey','agentLabel','convId','thinkingStripped','hasCredential','toolSources',
   'edited','editSummary',
+  'imported','importSource',
 ];
 
 function buildIndexLine(entry) {
