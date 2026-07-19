@@ -10,6 +10,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      # Don't cancel the sibling Node version when one flakes: a single-job flake
+      # otherwise fails the whole run and renders the cancelled job's in-flight
+      # tests as false failures (CI reliability analysis, 2026-07-19).
+      fail-fast: false
       matrix:
         node-version: [20, 22]
     steps:
