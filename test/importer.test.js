@@ -13,7 +13,7 @@ fs.mkdirSync(path.join(tmpHome, 'logs'), { recursive: true });
 fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 
 const store = require('../server/store');
-const { scanAndImport, parseSessionFile, slugToProject, tsToId } = require('../server/importer');
+const { scanAndImport, parseSessionFile, parseCodexSessionFile, slugToProject, tsToId } = require('../server/importer');
 
 function makeLine(type, extra = {}) {
   const base = {
@@ -56,17 +56,24 @@ function makeUser(text = 'Hello world') {
 
 describe('importer', () => {
   let importDir;
+  let codexImportDir;
 
   beforeEach(() => {
     store.entries.length = 0;
     store.entryIndex.clear();
     importDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-'));
     process.env.CCXRAY_IMPORT_HOMES = importDir;
+    // scanAndImport() also scans Codex homes — isolate it here too, or it
+    // falls back to the real ~/.codex*/sessions and imports actual data.
+    codexImportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-codex-'));
+    process.env.CCXRAY_IMPORT_CODEX_HOMES = codexImportDir;
   });
 
   afterEach(() => {
     delete process.env.CCXRAY_IMPORT_HOMES;
+    delete process.env.CCXRAY_IMPORT_CODEX_HOMES;
     fs.rmSync(importDir, { recursive: true, force: true });
+    fs.rmSync(codexImportDir, { recursive: true, force: true });
   });
 
   describe('tsToId', () => {
@@ -182,6 +189,165 @@ describe('importer', () => {
       assert.strictEqual(result.imported, 0);
       assert.strictEqual(store.entries.length, 0);
       delete process.env.CCXRAY_IMPORT_DISABLE;
+    });
+  });
+});
+
+// Codex JSONL lines: {timestamp, type, payload}. session_meta carries
+// session_id/cwd directly on payload; token_count is nested inside an
+// event_msg line as payload.type === 'token_count'. Verified against real
+// ~/.codex*/sessions/**/*.jsonl data — see server/cost-worker.js's
+// processCodexFile, the reference implementation this mirrors.
+function makeCodexSessionMeta(opts = {}) {
+  return JSON.stringify({
+    timestamp: opts.timestamp || '2026-07-15T10:30:00.000Z',
+    type: 'session_meta',
+    payload: {
+      session_id: opts.sessionId || 'codex-sess-1',
+      cwd: opts.cwd || '/tmp/codex-project',
+      originator: 'codex_exec',
+    },
+  });
+}
+
+function makeCodexTurnContext(opts = {}) {
+  return JSON.stringify({
+    timestamp: opts.timestamp || '2026-07-15T10:30:01.000Z',
+    type: 'turn_context',
+    payload: {
+      turn_id: opts.turnId || 'turn-1',
+      cwd: opts.cwd || '/tmp/codex-project',
+      model: opts.model || 'gpt-5.5',
+    },
+  });
+}
+
+function makeCodexTokenCount(opts = {}) {
+  return JSON.stringify({
+    timestamp: opts.timestamp || '2026-07-15T10:30:05.000Z',
+    type: 'event_msg',
+    payload: {
+      type: 'token_count',
+      info: {
+        model_context_window: opts.contextWindow ?? 258400,
+        last_token_usage: {
+          input_tokens: opts.input ?? 17172,
+          cached_input_tokens: opts.cachedInput ?? 4992,
+          output_tokens: opts.output ?? 35,
+          reasoning_output_tokens: opts.reasoningOutput ?? 28,
+          total_tokens: opts.total ?? 17207,
+        },
+      },
+    },
+  });
+}
+
+describe('codex importer', () => {
+  let codexDir;
+  let claudeHomeDir;
+
+  beforeEach(() => {
+    store.entries.length = 0;
+    store.entryIndex.clear();
+    codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-import-'));
+    claudeHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-empty-claude-'));
+    process.env.CCXRAY_IMPORT_CODEX_HOMES = codexDir;
+    process.env.CCXRAY_IMPORT_HOMES = claudeHomeDir;
+  });
+
+  afterEach(() => {
+    delete process.env.CCXRAY_IMPORT_CODEX_HOMES;
+    delete process.env.CCXRAY_IMPORT_HOMES;
+    fs.rmSync(codexDir, { recursive: true, force: true });
+    fs.rmSync(claudeHomeDir, { recursive: true, force: true });
+  });
+
+  describe('parseCodexSessionFile', () => {
+    it('extracts entries from token_count events', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-2026-07-15T10-30-00-abc.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-sess-1', cwd: '/tmp/codex-project' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].imported, true);
+      assert.strictEqual(entries[0].importSource, 'codex');
+      assert.strictEqual(entries[0].provider, 'openai');
+      assert.strictEqual(entries[0].sessionId, 'codex-sess-1');
+      assert.strictEqual(entries[0].cwd, '/tmp/codex-project');
+      assert.strictEqual(entries[0].model, 'gpt-5.5');
+      assert.strictEqual(entries[0].url, '/v1/responses');
+      assert.strictEqual(entries[0].tokens.input, 17172 - 4992);
+      assert.strictEqual(entries[0].tokens.cacheRead, 4992);
+      assert.strictEqual(entries[0].tokens.output, 35 + 28);
+      assert.strictEqual(entries[0].tokens.contextWindow, 258400);
+    });
+
+    it('skips token_count events with zero usage', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-zero.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta(),
+        makeCodexTokenCount({ input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 0);
+    });
+  });
+
+  describe('scanAndImport (codex)', () => {
+    it('imports codex entries alongside claude entries', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      fs.writeFileSync(path.join(sessDir, 'rollout-1.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-sess-2' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T11:00:00.000Z' }),
+      ].join('\n'));
+
+      const claudeProjectDir = path.join(claudeHomeDir, '-tmp-myproject');
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeProjectDir, 'session-xyz.jsonl'), [
+        makeUser('Test'),
+        makeAssistant({ timestamp: '2026-07-15T11:05:00.000Z' }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      assert.strictEqual(result.imported, 2);
+      assert.strictEqual(store.entries.length, 2);
+
+      const codexEntry = store.entries.find(e => e.importSource === 'codex');
+      assert.ok(codexEntry);
+      assert.strictEqual(codexEntry.provider, 'openai');
+      const claudeEntry = store.entries.find(e => e.importSource === 'claude-code');
+      assert.ok(claudeEntry);
+      assert.strictEqual(claudeEntry.provider, 'anthropic');
+    });
+
+    it('deduplicates codex entries on second scan', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      fs.writeFileSync(path.join(sessDir, 'rollout-dedup.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-sess-3' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T12:00:00.000Z' }),
+      ].join('\n'));
+
+      const result1 = await scanAndImport();
+      assert.strictEqual(result1.imported, 1);
+      assert.strictEqual(store.entries.length, 1);
+
+      const result2 = await scanAndImport();
+      assert.strictEqual(result2.imported, 0);
+      assert.strictEqual(result2.skipped, 1);
+      assert.strictEqual(store.entries.length, 1);
     });
   });
 });

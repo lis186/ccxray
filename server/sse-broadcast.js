@@ -39,6 +39,8 @@ function summarizeEntry(entry) {
     convId: entry.convId || null,
     toolsHash: entry.toolsHash || null,
     thinkingStripped: entry.thinkingStripped || false,
+    imported: entry.imported || undefined,
+    importSource: entry.importSource || undefined,
     parentSessionId: store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
