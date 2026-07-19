@@ -197,7 +197,12 @@ describe('Codex dashboard status E2E', () => {
       await page.waitForFunction(() => {
         const turn = document.querySelector('.turn-item[data-session-id="codex-raw"]');
         const header = document.querySelector('#col-sections .ch-line2');
-        return !!turn && !!header && header.textContent.includes('completed');
+        // Also wait for the selected project label to be painted: it renders via the
+        // rAF-coalesced dirty-check (ADR 0002), so page.evaluate can otherwise read it
+        // empty before the frame lands under CPU contention (the CI flake, #294 CI red).
+        const projLabel = document.querySelector('.project-item.selected .pi-label');
+        return !!turn && !!header && header.textContent.includes('completed')
+          && !!projLabel && projLabel.textContent.trim().length > 0;
       });
 
       const state = await page.evaluate(() => {
@@ -248,7 +253,10 @@ describe('Codex dashboard status E2E', () => {
       await page.waitForFunction((sid) => {
         const turn = document.querySelector(`.turn-item[data-session-id="${sid}"]`);
         const session = document.querySelector(`.session-item[data-session-id="${sid}"]`);
-        return !!turn && !!session;
+        // Wait for the rAF-coalesced selected project label too (ADR 0002) — same race
+        // as the first test: this subtest also asserts projectText.
+        const projLabel = document.querySelector('.project-item.selected .pi-label');
+        return !!turn && !!session && !!projLabel && projLabel.textContent.trim().length > 0;
       }, {}, sessionId);
 
       const state = await page.evaluate(() => ({
