@@ -118,9 +118,15 @@ function _resetTitleDebounce() {
   titleDebounceTimers.clear();
 }
 
+function broadcastRaw(obj) {
+  const data = JSON.stringify(obj);
+  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+}
+
 module.exports = {
   summarizeEntry,
   broadcast,
+  broadcastRaw,
   broadcastSessionStatus,
   broadcastPendingRequest,
   broadcastInterceptToggle,

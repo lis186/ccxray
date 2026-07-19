@@ -6,7 +6,7 @@ const readline = require('readline');
 const os = require('os');
 const store = require('./store');
 const config = require('./config');
-const { broadcast } = require('./sse-broadcast');
+const { broadcastRaw } = require('./sse-broadcast');
 const { buildIndexLine } = require('./entry');
 const sessionIdx = require('./session-index');
 
@@ -288,11 +288,12 @@ async function parseCodexSessionFile(filePath) {
 function pushImportedEntry(entry, existingIds) {
   if (existingIds.has(entry.id)) return false;
   existingIds.add(entry.id);
-  // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-  store.entries.push(entry);
-  store.entryIndex.set(entry.id, entry);
+  // Write to index.ndjson + session index only — skip store.entries and SSE
+  // broadcast to avoid 158K memory spike + client SSE flood. Imported sessions
+  // are cold; their entries load on-demand via /_api/session/:sid/entries.
+  const indexLine = buildIndexLine(entry);
+  config.storage.appendIndex(indexLine + '\n').catch(() => {});
   sessionIdx.updateFromEntry(entry);
-  broadcast(entry);
   return true;
 }
 
@@ -302,7 +303,22 @@ async function scanAndImport() {
   const homes = discoverHomes();
   let imported = 0;
   let skipped = 0;
+  // Durable dedup: imported entries never enter store.entries, so rescans and
+  // restarts must dedup against index.ndjson itself — memory alone re-imports
+  // everything (unbounded index growth + doubled session-index counts).
+  // "id" is the first INDEX_FIELDS key, so the first match is the entry id.
   const existingIds = new Set(store.entries.map(e => e.id));
+  try {
+    const indexContent = await config.storage.readIndex();
+    if (indexContent) {
+      const re = /"id":"([^"]+)"/;
+      for (const line of indexContent.split('\n')) {
+        if (!line) continue;
+        const m = re.exec(line);
+        if (m) existingIds.add(m[1]);
+      }
+    }
+  } catch {}
 
   for (const { dir } of homes) {
     let projectDirs;
@@ -336,7 +352,8 @@ async function scanAndImport() {
   }
 
   if (imported > 0) {
-    store.trimEntries();
+    await sessionIdx.flush();
+    broadcastRaw({ _type: 'sessions_updated' });
     console.log(`[importer] Imported ${imported} turns from local transcripts (${skipped} duplicates skipped)`);
   }
   return { imported, skipped };
