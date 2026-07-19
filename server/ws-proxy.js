@@ -23,13 +23,25 @@ const {
 } = require('./wire-parsers/openai');
 const detectOpenAISession = (headers, body) => _detectOpenAISession3(null, headers, body);
 
-// Large envelope events skipped from responseEvents capture (~35KB each).
-// usage and model are extracted before this filter (lines below), so skipping
-// these loses no data. Tool-call extraction uses response.output_item.done events.
+// Large envelope events skipped from responseEvents capture (~35KB each,
+// full instructions+tools). usage/model/status are extracted before this
+// filter (lines below), so skipping these loses no consumed data.
+// Tool-call extraction uses response.output_item.done events.
+// response.created/response.completed/response.done are additionally recorded
+// as compact { type, _ts } markers (see WS_TS_ANCHORS/wsRecordValue below) so a
+// downstream consumer can still derive Codex TTFT from their timestamps
+// without paying for the full envelope.
 const WS_SKIP_EVENTS = new Set([
   'response.created', 'response.in_progress', 'response.completed', 'response.done',
   'codex.rate_limits',
 ]);
+
+// TTFT anchors: large envelopes we skip from full capture, but still record as a
+// compact { type, _ts } marker so a downstream consumer can derive Codex TTFT
+// (response.created -> first output_text.delta -> response.completed/response.done).
+// response.done is a terminal-event variant some Codex versions emit instead of
+// response.completed (docs/wire-protocol-reference.md) — see #293.
+const WS_TS_ANCHORS = new Set(['response.created', 'response.completed', 'response.done']);
 
 const WS_TERMINAL_STATUSES = new Set(['completed', 'incomplete', 'failed', 'cancelled']);
 
@@ -361,6 +373,15 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   if (!turn) ctx.clientRequest = null;
 }
 
+// Value to record for a WS response event, or null to record nothing.
+// Non-skipped events keep their full body + a receive _ts; anchor events keep
+// only a compact { type, _ts } marker (their ~35KB envelope is intentionally dropped).
+function wsRecordValue(parsed) {
+  if (!WS_SKIP_EVENTS.has(parsed.type)) return { ...parsed, _ts: Date.now() };
+  if (WS_TS_ANCHORS.has(parsed.type)) return { type: parsed.type, _ts: Date.now() };
+  return null;
+}
+
 function handleWebSocketUpgrade(req, socket, head) {
   const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers);
   if (!isOpenAIWebSocket(req, upstream)) {
@@ -585,13 +606,17 @@ function handleWebSocketUpgrade(req, socket, head) {
               if (usage) currentTurn.lastUsage = usage;
               if (model) currentTurn.lastModel = model;
               if (isTerminal) currentTurn.lastResponseStatus = r.status;
-              if (!WS_SKIP_EVENTS.has(parsed.type)) currentTurn.responseEvents.push(parsed);
+              const rec = wsRecordValue(parsed);
+              if (rec) currentTurn.responseEvents.push(rec);
             }
 
             if (usage) ctx.lastUsage = usage;
             if (model) ctx.lastModel = model;
             if (isTerminal) ctx.lastResponseStatus = r.status;
-            if (!turnEmitted && !WS_SKIP_EVENTS.has(parsed.type)) ctx.responseEvents.push(parsed);
+            if (!turnEmitted) {
+              const rec = wsRecordValue(parsed);
+              if (rec) ctx.responseEvents.push(rec);
+            }
 
             if (parsed.type === 'response.completed' && currentTurn) {
               finalizeTurn({ status: 101 });

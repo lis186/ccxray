@@ -869,4 +869,150 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.title, 'Interrupted turn');
     assert.equal(entry.status, 101);
   });
+
+  it('stamps _ts on recorded response events, keeping anchors compact but never on frames relayed to the client (#293)', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.created',
+          instructions: 'x'.repeat(500),
+          response: { status: 'in_progress', model: 'gpt-5.5' },
+        }));
+        ws.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }));
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          instructions: 'x'.repeat(500),
+          response: { status: 'completed', model: 'gpt-5.5', usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } },
+        }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = 'ws-ts-stamp-test-001';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    const forwarded = [];
+    ws.on('message', data => forwarded.push(data.toString()));
+    const done = waitForCompleted(ws);
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'TTFT check' }] }],
+    }));
+    await done;
+    ws.close(1000, 'done');
+    await new Promise(r => ws.on('close', r));
+
+    // Forwarded frames must stay byte-identical to what upstream sent — no _ts leak into the relay.
+    assert.ok(forwarded.length >= 3, 'expected at least 3 relayed frames');
+    for (const raw of forwarded) {
+      const parsed = JSON.parse(raw);
+      assert.equal(parsed._ts, undefined, `relayed frame ${parsed.type} must not carry _ts`);
+    }
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title);
+    const resLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_res.json`), 'utf8'));
+    assert.ok(Array.isArray(resLog), 'recorded res.json should be the responseEvents array');
+
+    const recordedTypes = resLog.map(ev => ev.type);
+    assert.ok(recordedTypes.includes('response.created'), 'response.created should now be recorded, not skipped');
+    assert.ok(recordedTypes.includes('response.completed'), 'response.completed should now be recorded, not skipped');
+
+    for (const ev of resLog) {
+      assert.equal(typeof ev._ts, 'number', `recorded event ${ev.type} should carry a numeric _ts`);
+    }
+
+    // P1 regression guard (codex review): response.created/response.completed must be
+    // recorded as COMPACT { type, _ts } markers, not the full ~35KB envelope.
+    for (const anchorType of ['response.created', 'response.completed']) {
+      const marker = resLog.find(ev => ev.type === anchorType);
+      assert.ok(marker, `expected a recorded ${anchorType} marker`);
+      assert.deepEqual(Object.keys(marker).sort(), ['_ts', 'type'], `${anchorType} marker must be compact ({type,_ts} only)`);
+      assert.equal(marker.response, undefined, `${anchorType} marker must not carry the full response envelope`);
+      assert.equal(marker.instructions, undefined, `${anchorType} marker must not carry instructions`);
+    }
+
+    // Non-anchor events keep their full body alongside _ts.
+    const delta = resLog.find(ev => ev.type === 'response.output_text.delta');
+    assert.ok(delta, 'expected the recorded response.output_text.delta event');
+    assert.equal(delta.delta, 'hi', 'non-anchor event should retain its full content (delta field)');
+    assert.equal(typeof delta._ts, 'number', 'non-anchor event should still carry a numeric _ts');
+  });
+
+  it('records response.done as a compact terminal _ts anchor when upstream emits it instead of response.completed (#293)', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        const parsed = JSON.parse(data.toString());
+        if (parsed.type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.created',
+          response: { status: 'in_progress', model: 'gpt-5.5' },
+        }));
+        ws.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }));
+        // Some Codex versions emit response.done instead of response.completed as
+        // the terminal event (docs/wire-protocol-reference.md:144) — large envelope,
+        // same shape as response.completed.
+        ws.send(JSON.stringify({
+          type: 'response.done',
+          instructions: 'x'.repeat(500),
+          response: { status: 'completed', model: 'gpt-5.5', usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 } },
+        }));
+      });
+    });
+    await startProxy();
+
+    const sessionId = 'ws-ts-stamp-test-002';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+
+    const forwarded = [];
+    ws.on('message', data => forwarded.push(data.toString()));
+    // Event-driven barrier: resolve once the proxy relays response.done to the client.
+    // safeSend() runs AFTER wsRecordValue() pushes the marker, so observing the frame
+    // here guarantees the compact marker is already recorded. No fixed sleep — that
+    // would be a load-dependent "green" and an unreliable old-fail/new-pass anchor.
+    const sawDone = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('barrier timeout: no response.done relayed')), 4000);
+      const onMsg = d => {
+        if (JSON.parse(d.toString()).type === 'response.done') { clearTimeout(timer); ws.off('message', onMsg); resolve(); }
+      };
+      ws.on('message', onMsg);
+    });
+    ws.send(JSON.stringify({
+      type: 'response.create', model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Done-variant TTFT check' }] }],
+    }));
+    await sawDone;
+
+    // response.done alone does not finalize the turn — only response.completed triggers
+    // finalizeTurn() inline (see ws-proxy.js upstreamWs 'message' handler). Close the
+    // socket to finalize via the close-path finalize() call.
+    ws.close(1000, 'done');
+    await new Promise(resolve => ws.on('close', resolve));
+
+    // Forwarded frames must stay byte-identical to what upstream sent — no _ts leak into the relay.
+    for (const raw of forwarded) {
+      const parsed = JSON.parse(raw);
+      assert.equal(parsed._ts, undefined, `relayed frame ${parsed.type} must not carry _ts`);
+    }
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title);
+    const resLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_res.json`), 'utf8'));
+    assert.ok(Array.isArray(resLog), 'recorded res.json should be the responseEvents array');
+
+    const marker = resLog.find(ev => ev.type === 'response.done');
+    assert.ok(marker, 'expected a recorded response.done marker');
+    assert.deepEqual(Object.keys(marker).sort(), ['_ts', 'type'], 'response.done marker must be compact ({type,_ts} only)');
+    assert.equal(marker.response, undefined, 'response.done marker must not carry the full response envelope');
+    assert.equal(marker.instructions, undefined, 'response.done marker must not carry instructions');
+    assert.equal(typeof marker._ts, 'number', 'response.done marker should carry a numeric _ts');
+  });
 });
