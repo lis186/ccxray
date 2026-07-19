@@ -12,6 +12,7 @@ const { UPSTREAM_PROFILES } = require('../providers');
 const forward = require('../forward');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
+const sessionIdx = require('../session-index');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -56,6 +57,12 @@ function handleApiRoutes(clientReq, clientRes) {
     const restore = { ...store.restoreState, entryCount: store.entries.length };
     clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     clientRes.end(JSON.stringify({ entries, sessionTitles, restore }));
+    return true;
+  }
+
+  if (pathname === '/_api/sessions') {
+    clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    clientRes.end(JSON.stringify({ sessions: sessionIdx.getAll() }));
     return true;
   }
 

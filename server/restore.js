@@ -8,6 +8,7 @@ const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
+const sessionIdx = require('./session-index');
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
 // prompt for this sysHash, or null (unreadable / no marker line). Cached per
@@ -121,6 +122,14 @@ function loadEntryReqRes(entry) {
 
 async function restoreFromLogs() {
   console.time('restore:total');
+
+  // 0. Load session index (materialized view, <1MB, <100ms)
+  console.time('restore:session-index');
+  const sessionIndexLoaded = await sessionIdx.loadSessionIndex();
+  console.timeEnd('restore:session-index');
+  if (sessionIndexLoaded) {
+    console.log(`\x1b[90m   Session index: ${sessionIdx.size()} sessions\x1b[0m`);
+  }
 
   // 1. Read the lightweight index (one file read for all metadata)
   console.time('restore:index');
@@ -306,6 +315,19 @@ async function restoreFromLogs() {
     }
   }
   console.timeEnd('restore:titles');
+
+  // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
+  //    then replay titles into the session index.
+  if (!sessionIndexLoaded && indexContent) {
+    console.time('restore:session-index-rebuild');
+    sessionIdx.rebuildFromIndexContent(indexContent);
+    console.timeEnd('restore:session-index-rebuild');
+    console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
+  }
+  for (const [sid, meta] of Object.entries(store.sessionMeta)) {
+    if (meta.title) sessionIdx.setTitle(sid, meta.title);
+  }
+  await sessionIdx.flush();
 
   console.timeEnd('restore:total');
   if (restored) {

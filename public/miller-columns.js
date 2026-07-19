@@ -2181,6 +2181,26 @@ function selectSession(id) {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === id);
   });
+  // Cold session: entries not loaded, show placeholder (#303 Phase 1)
+  const sess = sessionsMap.get(id);
+  if (sess && sess._cold) {
+    colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
+    colSections.innerHTML = '';
+    colDetail.innerHTML = '';
+    const turnsColHeader = colTurns.querySelector('.col-sticky-header');
+    if (!turnsColHeader) {
+      colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title">Turns</div></div>';
+    }
+    const coldMsg = document.createElement('div');
+    coldMsg.className = 'col-empty';
+    coldMsg.innerHTML = '<div style="opacity:0.7">' + (sess.count || 0) + ' turns recorded · ' + escapeHtml(sess.model || '?') + '</div><div style="opacity:0.5;font-size:12px;margin-top:8px">Entries not yet loaded (Phase 2)</div>';
+    colTurns.appendChild(coldMsg);
+    renderSessionToolBar(id);
+    document.getElementById('columns').classList.remove('wf-active');
+    renderBreadcrumb();
+    return;
+  }
+
   // Show turns for this session
   colTurns.querySelectorAll('.turn-item').forEach(el => {
     el.style.display = (id && el.dataset.sessionId === id) ? '' : 'none';

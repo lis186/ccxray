@@ -11,6 +11,7 @@ const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
 const { agentForProvider } = require('./providers');
 const { buildIndexLine } = require('./entry');
+const sessionIdx = require('./session-index');
 const {
   detectSession: _detectOpenAISession3,
   getCodexSessionId,
@@ -367,6 +368,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
 
   const indexLine = buildIndexLine(entry);
   config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write ws index failed:', e.message));
+  sessionIdx.updateFromEntry(entry);
   entry.req = null;
   entry.res = null;
   entry._loaded = false;

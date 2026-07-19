@@ -8,6 +8,7 @@ const store = require('./store');
 const config = require('./config');
 const { broadcast } = require('./sse-broadcast');
 const { buildIndexLine } = require('./entry');
+const sessionIdx = require('./session-index');
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const CODEX_CONTEXT_WINDOW = 400000;
@@ -290,6 +291,7 @@ function pushImportedEntry(entry, existingIds) {
   // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
   store.entries.push(entry);
   store.entryIndex.set(entry.id, entry);
+  sessionIdx.updateFromEntry(entry);
   broadcast(entry);
   return true;
 }
