@@ -937,6 +937,21 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     let entry;
     // EXCEPTION(#158): entry assembly differs by provider (ctx shape + pre-computation); both delegate to parser.buildEntryFields
     if (provider === 'openai') {
+      // Grok session_title tool + Claude-style title JSON on OpenAI wire
+      const titleGenTitle = resolveTitleGenTitle(
+        parsedBody,
+        openAIEvents || openAIResponse || resData,
+        startTime,
+      );
+      const fields = getParser('openai').buildEntryFields({
+        provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
+        parsedBody, events: openAIEvents || [], response: openAIResponse || resData, proxyRes,
+        sessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
+        sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+        agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
+        cwd: store.sessionMeta[sessionId]?.cwd || null,
+      });
+      if (titleGenTitle) fields.title = titleGenTitle;
       entry = {
         id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
@@ -944,14 +959,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         receivedAt: startTime,
         tokens: null,
         duplicateToolCalls: null,
-        ...getParser('openai').buildEntryFields({
-          provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
-          parsedBody, events: openAIEvents || [], response: openAIResponse || resData, proxyRes,
-          sessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
-          sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
-        agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
-          cwd: store.sessionMeta[sessionId]?.cwd || null,
-        }),
+        ...fields,
       };
     } else {
       const isSubagent = store.isAnthropicSubagent(parsedBody);

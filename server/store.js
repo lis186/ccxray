@@ -144,25 +144,97 @@ function inferParentSession() {
   return best;
 }
 
-// Extract the first user message text from a parsed request body.
-// Used as content-match anchor for title-gen attribution.
-function extractFirstUserMsgText(req) {
-  const first = req?.messages?.[0];
-  if (!first || first.role !== 'user') return null;
-  const c = first.content;
+// <user_query>…</user_query> is Grok's (and sometimes Claude's) user turn wrapper.
+// Title-gen attribution matches on the inner body so main turns (user_info first)
+// still align with title-gen turns (user_query only).
+const USER_QUERY_RE = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/i;
+const TITLE_ANCHOR_SKIP_RE = /^\s*<(user_info|system-reminder|user-prompt-submit-hook|context)\b/i;
+const TITLE_GEN_RAW_BUCKETS = listRawSessionBuckets();
+
+function flattenUserContent(c) {
   if (typeof c === 'string') return c;
   if (Array.isArray(c)) {
-    const tb = c.find(b => b?.type === 'text' && typeof b.text === 'string');
-    return tb ? tb.text : null;
+    return c.map(b => {
+      if (typeof b === 'string') return b;
+      return b?.text || b?.input_text || '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
+function normalizeTitleAnchor(text) {
+  if (text == null) return null;
+  const raw = String(text);
+  const m = raw.match(USER_QUERY_RE);
+  const body = (m ? m[1] : raw).replace(/\s+/g, ' ').trim();
+  return body || null;
+}
+
+function collectUserContents(req) {
+  const out = [];
+  if (Array.isArray(req?.messages)) {
+    for (const m of req.messages) {
+      if (m?.role !== 'user') continue;
+      const flat = flattenUserContent(m.content);
+      if (flat) out.push(flat);
+    }
+  }
+  // OpenAI Responses / Grok CLI: input[role=user]
+  if (Array.isArray(req?.input)) {
+    for (const item of req.input) {
+      if (item?.role !== 'user') continue;
+      const flat = flattenUserContent(item.content);
+      if (flat) out.push(flat);
+    }
+  }
+  return out;
+}
+
+// Prefer <user_query> body (Grok); else first non-scaffolding user text; else Claude first msg.
+function extractTitleGenAnchor(req) {
+  const contents = collectUserContents(req);
+  for (const c of contents) {
+    const m = c.match(USER_QUERY_RE);
+    if (m) {
+      const body = m[1].replace(/\s+/g, ' ').trim();
+      if (body) return body;
+    }
+  }
+  for (const c of contents) {
+    if (TITLE_ANCHOR_SKIP_RE.test(c)) continue;
+    const n = normalizeTitleAnchor(c);
+    if (n) return n;
+  }
+  return extractFirstUserMsgText(req);
+}
+
+// Extract the first user message text from a parsed request body.
+// Used as content-match anchor for title-gen attribution (Claude messages[] + Grok input[]).
+function extractFirstUserMsgText(req) {
+  const first = req?.messages?.[0];
+  if (first && first.role === 'user') {
+    const c = first.content;
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c)) {
+      const tb = c.find(b => b?.type === 'text' && typeof b.text === 'string');
+      if (tb) return tb.text;
+    }
+  }
+  if (Array.isArray(req?.input)) {
+    for (const item of req.input) {
+      if (item?.role !== 'user') continue;
+      const flat = flattenUserContent(item.content);
+      if (flat) return flat;
+    }
   }
   return null;
 }
 
 function recordFirstUserMsg(sid, req) {
-  if (!sid || sid === 'direct-api') return;
+  if (!sid || TITLE_GEN_RAW_BUCKETS.has(sid)) return;
   const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
   if (meta.firstUserMsg == null) {
-    const txt = extractFirstUserMsgText(req);
+    const txt = extractTitleGenAnchor(req);
     if (txt != null) meta.firstUserMsg = txt;
   }
 }
@@ -183,19 +255,24 @@ function getSessionTitle(sid) {
 }
 
 // Attribute a title-gen request to a parent session. Requires both temporal
-// (inflight session seen within last windowMs) AND content (first user msg
-// equals the title-gen request body) signals to agree. Returns null when
+// (inflight session; lastSeenAt within windowMs) AND content (title anchor
+// match — Grok uses normalized <user_query> body). Returns null when
 // zero or more than one candidate matches.
-function attributeTitleGen(parsedBody, receivedAt, windowMs = 1000) {
-  const target = extractFirstUserMsgText(parsedBody);
+// Default window 60s: Grok session_title tool calls often take several seconds
+// while the main turn is still streaming (obs-stable 2026-07-19).
+function attributeTitleGen(parsedBody, receivedAt, windowMs = 60_000) {
+  const target = extractTitleGenAnchor(parsedBody);
   if (target == null) return null;
   const cutoff = (receivedAt || Date.now()) - windowMs;
   const matches = [];
   for (const [sid, meta] of Object.entries(sessionMeta)) {
-    if (sid === 'direct-api') continue;
+    if (TITLE_GEN_RAW_BUCKETS.has(sid)) continue;
     if ((meta.lastSeenAt || 0) < cutoff) continue;
     if ((activeRequests[sid] || 0) <= 0) continue;
-    if (meta.firstUserMsg !== target) continue;
+    const stored = meta.firstUserMsg;
+    if (stored == null) continue;
+    // Exact match (Claude) or normalized user_query body match (Grok)
+    if (stored !== target && normalizeTitleAnchor(stored) !== normalizeTitleAnchor(target)) continue;
     matches.push(sid);
   }
   return matches.length === 1 ? matches[0] : null;
@@ -429,6 +506,8 @@ module.exports = {
   detectSession,
   printSessionBanner,
   extractFirstUserMsgText,
+  extractTitleGenAnchor,
+  normalizeTitleAnchor,
   recordFirstUserMsg,
   setSessionTitle,
   getSessionTitle,

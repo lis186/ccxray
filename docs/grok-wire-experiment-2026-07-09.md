@@ -13,7 +13,8 @@
 | Env-only intercept (OPENAI_BASE_URL override) | ✅ PASS |
 | Productization (`ccxray grok` + header routing) | ✅ implemented in this worktree |
 | Live re-verify (no OPENAI_BASE_URL) | ✅ PASS — `agent=grok`, real session UUID, `sysHash` set, `maxContext=500000` |
-| Cost pricing for `grok-4.5` | ⚠️ still `Unknown model` (LiteLLM alias follow-up) |
+| Cost pricing for `grok-4.5` / `grok-4.5-build` | ✅ DEFAULT_PRICING + LiteLLM; `grok-build` lag override |
+| Title-gen → parent session title | ✅ `session_title` function_call + `<user_query>` anchor (2026-07-19) |
 
 ### One-command usage (this branch)
 
@@ -94,12 +95,13 @@ Control-plane settings/feedback no longer create anthropic 404 entries (noise + 
 
 ## Remaining follow-ups
 
-1. **Pricing**: map `grok-4.5` / `grok-build` to LiteLLM rates (or local rates table)
-2. **Title-gen session**: title turn often has empty `x-grok-session-id` — may still land as separate/orphan; consider correlating via timing or shared `x-grok-req-id`
+1. ~~**Pricing**~~ — `grok-4.5*` offline defaults + LiteLLM; only `grok-build` lag override remains
+2. ~~**Title-gen session**~~ — attributed via inflight + normalized `<user_query>` (title still also logged under `grok-raw` for the raw turn)
 3. **Multi-turn TUI** capture (tool loop, compaction, `x-compaction-at`)
-4. **BYOK** path via `XAI_BASE_URL=https://api.x.ai/v1`
-5. Promote durable rows into `docs/wire-protocol-reference.md` third column
+4. **BYOK** path live verify via `XAI_BASE_URL=https://api.x.ai/v1` (routing already implemented)
+5. ~~Promote durable rows into `docs/wire-protocol-reference.md`~~ — transport + title-gen changelog rows added 2026-07-19
 6. `printSessionBanner` uses sessionMeta.agent — confirm title-gen-first race doesn’t flash wrong CLI name
+7. Optionally hide or nest `grok-raw` title-gen rows when parent attribution succeeds
 
 ---
 

@@ -32,9 +32,11 @@ const DEFAULT_PRICING = {
   'o3':                { input: 2,    output: 8,    cache_create: 0, cache_read: 0.50 },
   'o3-mini':           { input: 1.10, output: 4.40, cache_create: 0, cache_read: 0.55 },
   'o4-mini':           { input: 1.10, output: 4.40, cache_create: 0, cache_read: 0.55 },
-  // xAI Grok (wire bare names; LiteLLM also lists xai/… — offline safety net)
+  // xAI Grok (wire bare names; LiteLLM also lists xai/… — offline safety net).
+  // Prefix match covers grok-4.5-build / grok-4.5-latest variants.
   'grok-4.5':          { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.5-latest':   { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
+  'grok-4.5-build':    { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.3':          { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
   'grok-4.3-latest':   { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
 };
