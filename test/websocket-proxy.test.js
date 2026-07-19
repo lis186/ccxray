@@ -975,16 +975,26 @@ describe('OpenAI Responses WebSocket proxy', () => {
 
     const forwarded = [];
     ws.on('message', data => forwarded.push(data.toString()));
+    // Event-driven barrier: resolve once the proxy relays response.done to the client.
+    // safeSend() runs AFTER wsRecordValue() pushes the marker, so observing the frame
+    // here guarantees the compact marker is already recorded. No fixed sleep — that
+    // would be a load-dependent "green" and an unreliable old-fail/new-pass anchor.
+    const sawDone = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('barrier timeout: no response.done relayed')), 4000);
+      const onMsg = d => {
+        if (JSON.parse(d.toString()).type === 'response.done') { clearTimeout(timer); ws.off('message', onMsg); resolve(); }
+      };
+      ws.on('message', onMsg);
+    });
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Done-variant TTFT check' }] }],
     }));
+    await sawDone;
 
-    // response.done alone does not finalize the turn — only response.completed
-    // triggers finalizeTurn() inline (see ws-proxy.js upstreamWs 'message' handler).
-    // Close the socket to finalize via the close-path finalize() call instead of
-    // waitForCompleted(), which only resolves on response.completed.
-    await new Promise(resolve => setTimeout(resolve, 300));
+    // response.done alone does not finalize the turn — only response.completed triggers
+    // finalizeTurn() inline (see ws-proxy.js upstreamWs 'message' handler). Close the
+    // socket to finalize via the close-path finalize() call.
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 

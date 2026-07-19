@@ -104,7 +104,49 @@ recorded-events serialized size back down to ~1.8KB (vs. the ~143KB
 full-envelope regression), with `response.created`/`response.completed`
 still present as `{type,_ts}` markers.
 
+## Revision: codex P2 — `response.done` terminal variant
+
+Codex review round 2 flagged that `response.done` — a documented terminal-event
+variant some Codex versions emit instead of `response.completed`
+(`docs/wire-protocol-reference.md`, treated as completion in
+`public/renderers/openai.js`) — was missing from `WS_TS_ANCHORS`, so those
+sessions got no terminal `_ts`. Fix: add it as a third compact anchor.
+
+```js
+const WS_TS_ANCHORS = new Set(['response.created', 'response.completed', 'response.done']);
+```
+
+Note: `finalizeTurn()` still fires only on `response.completed`; a
+`response.done`-terminal turn finalizes via the next `response.create` or the
+socket-close path. The `_ts` marker is recorded at receive time regardless, so
+duration is derivable; changing turn-splitting on `response.done` is a separate
+concern, out of scope here.
+
+## Scope (TTFT-only — owner-defined, explicit)
+
+Captured: success-path timestamps only — `response.created` (t0) → first
+`output_text.delta` → `response.completed`/`response.done` (end). Deliberately
+**not** captured (accepted, TTFT needs none of it):
+
+- **Failure/interrupt terminals** (`response.failed` / `response.incomplete`, or
+  close-without-terminal): no `stop_ts` anchor; any such non-anchor terminal
+  envelope that reaches the recorder is stored in full, not compacted. Future
+  pure addition (extend `WS_TS_ANCHORS`).
+- **Terminal `output_tokens`**: kept in `ctx.lastUsage` for cost, but dropped
+  from the compact `{type,_ts}` markers, so a throughput consumer (#195) can't
+  read per-event tokens from a marker. Future pure addition.
+
+## Test barrier (round-2 review)
+
+The `response.done` regression test drives finalization by an **event-driven
+barrier** — it waits until the proxy relays the `response.done` frame (which
+happens *after* `wsRecordValue()` records the marker, since `safeSend` is last),
+then closes. It does **not** use a fixed `setTimeout` sleep: a fixed-sleep pass
+is a load-dependent (possibly false) green and an unreliable old-fail/new-pass
+anchor.
+
 ## Status
 
-Implemented (#293), P1 fixed. `test/websocket-proxy.test.js` locks in both
-the `_ts` stamping and the compact-marker shape as a regression guard.
+Implemented (#293), P1 + P2 fixed. `test/websocket-proxy.test.js` locks in the
+`_ts` stamping, the compact-marker shape (incl. `response.done`), and the
+relay-integrity contract as regression guards.
