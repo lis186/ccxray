@@ -70,8 +70,15 @@ async function loadSessionEntriesFromIndex(targetSids) {
   const indexContent = await config.storage.readIndex();
   const entries = [];
   if (!indexContent) return entries;
+  // String pre-filter before JSON.parse: parsing all ~150K lines costs
+  // seconds per cold click; substring containment skips 99.9% of them.
+  // The exact targetSids check after parse stays authoritative.
+  const needles = [...targetSids].map(s => '"sessionId":"' + s + '"');
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
+    let hit = false;
+    for (const n of needles) { if (line.includes(n)) { hit = true; break; } }
+    if (!hit) continue;
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
     if (!meta.sessionId || !targetSids.has(meta.sessionId)) continue;
