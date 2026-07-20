@@ -2215,11 +2215,14 @@ function selectSession(id) {
         // Track all sessions touched during replay (child sessions, migrations)
         const replaySids = new Set([id]);
         window._coldActivating = true;
-        for (const e of entries) {
-          if (e.sessionId) replaySids.add(e.sessionId);
-          addEntry(e);
+        try {
+          for (const e of entries) {
+            if (e.sessionId) replaySids.add(e.sessionId);
+            addEntry(e);
+          }
+        } finally {
+          window._coldActivating = false;
         }
-        window._coldActivating = false;
         // Clear _cold for all replayed sessions (parent + children)
         for (const sid of replaySids) {
           const s = sessionsMap.get(sid);
@@ -2237,6 +2240,13 @@ function selectSession(id) {
             const s = sessionsMap.get(sid);
             if (s && !s.title) s.title = title;
           }
+        }
+        // Re-render child session cards to reflect recomputed stats
+        for (const sid of replaySids) {
+          if (sid === id) continue;
+          const childEl = document.getElementById('sess-' + sid.slice(0, 8));
+          const childSess = sessionsMap.get(sid);
+          if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
         }
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
         if (spinner.parentNode) spinner.remove();
