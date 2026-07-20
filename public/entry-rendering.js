@@ -919,9 +919,7 @@ function addEntry(e) {
 function recomputeSessionStats(sid) {
   const sess = sessionsMap.get(sid);
   if (!sess) return;
-  sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
-  sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
-  sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+  zeroSessionStats(sess);
   for (var i = 0; i < allEntries.length; i++) {
     var en = allEntries[i];
     if (en.sessionId !== sid) continue;
