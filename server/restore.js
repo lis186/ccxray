@@ -293,9 +293,12 @@ async function restoreFromLogs() {
   store.trimEntries();
   console.timeEnd('restore:parse');
 
-  // 3. Build version index from shared/ system prompts (scans a handful of small files)
+  // 3. Build version index from shared/ system prompts — driven by hashes seen
+  //    during parse, NOT by scanning shared/ (which may have 100K+ files).
   console.time('restore:versions');
-  const sysHashToAgentKey = await buildVersionIndex();
+  const knownHashes = store._sysHashDates ? [...store._sysHashDates.keys()] : [];
+  console.log(`   buildVersionIndex: ${knownHashes.length} distinct sysHash from parsed entries`);
+  const sysHashToAgentKey = await buildVersionIndex(knownHashes);
   console.timeEnd('restore:versions');
 
   // Backfill agent identity for index lines written before agentKey landed —
@@ -347,22 +350,21 @@ async function restoreFromLogs() {
   }
 }
 
-async function buildVersionIndex() {
-  let sharedFiles;
-  try { sharedFiles = await config.storage.listShared(); } catch { return null; }
+async function buildVersionIndex(knownHashes) {
+  if (!knownHashes || knownHashes.length === 0) return null;
   const sysHashToAgentKey = new Map();
 
-  // EXCEPTION(#158): data-layer — stored filename prefix (sys_ vs openai_instructions_) determines parse format
-  for (const filename of sharedFiles) {
-    if (!filename.startsWith('sys_') && !filename.startsWith('openai_instructions_')) continue;
-    try {
-      const sys = JSON.parse(await config.storage.readShared(filename));
-      const isOpenAI = filename.startsWith('openai_instructions_');
+  for (const sysHash of knownHashes) {
+    // Try both prefixes — anthropic (sys_) and openai (openai_instructions_)
+    for (const prefix of ['sys_', 'openai_instructions_']) {
+      const filename = `${prefix}${sysHash}.json`;
+      const isOpenAI = prefix === 'openai_instructions_';
+      let sys;
+      try { sys = JSON.parse(await config.storage.readShared(filename)); } catch { continue; }
       if (!isOpenAI && (!Array.isArray(sys) || sys.length < 3)) continue;
       const b0 = isOpenAI ? '' : (sys[0]?.text || '');
       const b2 = isOpenAI ? (typeof sys === 'string' ? sys : JSON.stringify(sys, null, 2)) : (sys[2]?.text || '');
       const m = b0.match(/cc_version=(\S+?)[; ]/);
-      const sysHash = filename.replace(/^sys_/, '').replace(/^openai_instructions_/, '').replace(/\.json$/, '');
       let agentInfo = null;
       if (isOpenAI) {
         const meta = await config.storage.readShared(`openai_prompt_meta_${sysHash}.json`)
@@ -379,15 +381,12 @@ async function buildVersionIndex() {
       if (b2.length >= (isOpenAI ? 1 : 500)) {
         const coreText = isOpenAI ? b2 : (splitB2IntoBlocks(b2).coreInstructions || '');
         const coreLen = coreText.length;
-        // INVARIANT: anthropic coreHash via computeCoreHash (platform-normalized) — see system-prompt.js (#219).
-        // OpenAI/Codex keeps the raw hash (no platform-token split there).
         const coreHash = isOpenAI ? rawCoreHash(coreText) : computeCoreHash(coreText);
         const ver = isOpenAI ? coreHash : (m ? m[1] : null);
         if (!ver) continue;
         const idxKey = `${agentKey}::${coreHash}`;
         const existing = store.versionIndex.get(idxKey);
         if (!existing || b2.length > existing.b2Len) {
-          // Get file mtime as firstSeen date
           const stat = config.storage.statShared ? await config.storage.statShared(filename) : null;
           const firstSeen = stat?.mtime ? stat.mtime.toISOString().slice(0, 10) : null;
           store.versionIndex.set(idxKey, {
@@ -399,7 +398,8 @@ async function buildVersionIndex() {
           if (ver > existing.version) existing.version = ver;
         }
       }
-    } catch {}
+      break; // found for this hash, skip other prefix
+    }
   }
   return sysHashToAgentKey;
 }
