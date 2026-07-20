@@ -658,7 +658,7 @@ function addEntry(e) {
         sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
         if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
       }
-      if (!_loading) {
+      if (!_loading && !window._coldActivating) {
         recomputeProjectCost(projName);
         if (prevProjectName && prevProjectName !== projName) recomputeProjectCost(prevProjectName);
       }
@@ -1345,7 +1345,11 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   window._entriesLoadingText = '';
   // #308: batch-deferred recompute — one pass per dirty session, O(n) total
   if (_dirtySessions) {
-    for (const sid of _dirtySessions) recomputeSessionStats(sid);
+    for (const sid of _dirtySessions) {
+      const s = sessionsMap.get(sid);
+      if (s && s._cold) continue; // entries not in allEntries — keep sessions.json values
+      recomputeSessionStats(sid);
+    }
     _dirtySessions = null;
     for (const [name] of projectsMap) recomputeProjectCost(name);
   }

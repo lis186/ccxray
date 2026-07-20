@@ -2212,7 +2212,9 @@ function selectSession(id) {
         sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
         sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
         const entries = data.entries || [];
+        window._coldActivating = true;
         for (const e of entries) addEntry(e);
+        window._coldActivating = false;
         sess._cold = false;
         if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
         const projName = getProjectName(sess.cwd);
