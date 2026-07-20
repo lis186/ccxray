@@ -2206,7 +2206,9 @@ function selectSession(id) {
     spinner.innerHTML = '<div class="loading-spinner"></div><div>Loading ' + (sess.count || '') + ' turns…</div>';
     colTurns.appendChild(spinner);
     renderSessionToolBar(id);
-    document.getElementById('columns').classList.remove('wf-active');
+    const columnsEl = document.getElementById('columns');
+    columnsEl.classList.remove('wf-active');
+    columnsEl.classList.add('cold-loading');
     renderBreadcrumb();
     if (_coldFetchController) _coldFetchController.abort();
     _coldFetchController = new AbortController();
@@ -2263,10 +2265,12 @@ function selectSession(id) {
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
         _coldFetchController = null;
         if (spinner.parentNode) spinner.remove();
+        columnsEl.classList.remove('cold-loading');
         _renderSelectedSession(id);
       })
       .catch(err => {
         if (err && err.name === 'AbortError') return;
+        columnsEl.classList.remove('cold-loading');
         if (spinner.parentNode) spinner.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
       });
     return;
