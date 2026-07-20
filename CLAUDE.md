@@ -11,6 +11,8 @@ A transparent HTTP proxy that sits between Claude Code and the Anthropic API. It
 ```bash
 npx ccxray claude                                # One command: proxy + Claude Code
 ccxray claude                                    # Multiple terminals auto-share one hub
+ccxray codex                                     # Proxy + Codex CLI
+ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
 ccxray status                                    # Show hub info and connected clients
 ccxray                                           # Proxy + dashboard only
@@ -134,12 +136,15 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 - Crash recovery: clients monitor hub pid every 5s, auto-fork new hub using port as mutex
 - Version check: semver major mismatch → reject, minor → warn, patch → silent
 
-### Agent Launching
+### Agent Launching (provider modules)
 
-- Launchers are registered in `server/providers.js`. Add future providers there with one entry for command name, display name, upstream family, launch args/env, and install hint; avoid adding new `if provider` branches in `server/index.js`.
-- Claude mode sets `ANTHROPIC_BASE_URL=http://localhost:<port>` in the spawned Claude process.
-- Codex mode spawns `codex -c 'openai_base_url="http://localhost:<port>/v1"' -c 'chatgpt_base_url="http://localhost:<port>/v1"' ...args`, covering both API-key and ChatGPT-auth Codex transports.
-- Extra user args pass through unchanged after ccxray's injected launcher config.
+Launchers are **modules** in `server/providers.js` — not product forks. Full contract + how-to-add: **`docs/provider-modules.md`**.
+
+1. **`AGENT_PROVIDERS.<id>`** — command name, install hint, `createLaunch({ port, args, env })`, optional `cwdFallback`
+2. If it speaks Anthropic Messages → wire family is already `anthropic` via path routing
+3. If it speaks OpenAI Responses (`POST /v1/responses`) but is **not** Codex → also add an **`OPENAI_WIRE_CLIENTS`** entry: `matchHeaders`, `upstreamKey` (host profile), `rawSessionId`, optional `sessionHeaderNames` / `controlPlaneIsNoise` / `modelPattern`. Reuse `wire-parsers/openai.js`; do not fork a new parser per agent.
+
+Current modules: `claude` (anthropic), `codex` (openai → api.openai.com / ChatGPT), `grok` (openai client → `UPSTREAMS.xai`). Helpers: `describeAgentModule`, `listRawSessionBuckets`, `agentUsesCwdFallback`. Multi-agent acceptance: `test/multi-agent-proxy.e2e.test.js`. Avoid new `if (provider === …)` branches in `server/index.js`.
 - `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
 - Codex's main session traffic upgrades to a WebSocket on `POST /v1/responses` (with `openai-beta: responses_websockets=*`), not `/v1/realtime`. `/v1/realtime` exists for the older Realtime API but is not what current codex uses for normal `/goal` / chat turns. When ChatGPT auth is active, codex also sends `chatgpt-account-id`, which `getUpstreamForRequestAndHeaders` (see `server/config.js`) uses to route to `CHATGPT_BASE_URL` instead of `OPENAI_BASE_URL`.
 - Codex 0.133+ pings platform endpoints on startup. All ChatGPT-platform paths (`/v1/plugins/*`, `/v1/ps/plugins/*`, `/v1/connectors/*`, `/v1/api/codex/*`, `/v1/codex/*`) and `/v1/models` are classified as noise by `isNoiseRequest` in `server/wire-parsers/openai.js`; `server/index.js` forwards them with `skipEntry: true` so they don't pollute the dashboard.
@@ -155,6 +160,16 @@ Claude Code → proxy receives request → detect session (explicit or inferred)
 ```
 
 Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` env var.
+
+### Pricing lag overrides
+
+`server/pricing.js` has `LITELLM_LAG_OVERRIDES` for models LiteLLM has not listed yet (e.g. new Grok wire ids). These are **temporary**:
+
+1. On every `fetchPricing()`, if LiteLLM already has any watched `litellmKeys`, the override is **not applied** (LiteLLM wins) and startup prints a yellow `pricing lag override obsolete: … Delete the row…` reminder.
+2. Search `LITELLM_LAG_OVERRIDES` or `pricing lag override` to find rows to delete.
+3. Lifecycle tests live in `test/pricing.test.js` (`LITELLM_LAG_OVERRIDES lifecycle`).
+
+Do not dump temporary rates into permanent `DEFAULT_PRICING` — that table is the offline safety net for Claude/OpenAI only.
 
 ### Delta Log Storage
 

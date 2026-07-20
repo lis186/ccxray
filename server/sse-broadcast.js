@@ -33,7 +33,9 @@ function summarizeEntry(entry) {
   // (Deliberate side-effect in a serialize function: this is the single funnel
   // both SSE broadcast and the /api/entries restore batch pass through.)
   store.markSessionUsage(entry);
-  const { resumable, resumeCommand } = store.computeSessionResume(entry.sessionId, entry.provider);
+  const { resumable, resumeCommand } = store.computeSessionResume(
+    entry.sessionId, entry.provider, entry.agent || agentForProvider(entry.provider),
+  );
   return {
     id: entry.id, ts: entry.ts, sessionId: entry.sessionId,
     provider: entry.provider || 'anthropic',

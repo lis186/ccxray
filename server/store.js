@@ -1,10 +1,11 @@
 'use strict';
 
-const { agentForProvider, getUpstreamProfile } = require('./providers');
+const { agentForProvider, getUpstreamProfile, listRawSessionBuckets } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
 
-// Synthetic session buckets that have no resumable rollout/session file.
-const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
+// Synthetic session buckets that have no resumable rollout/session file
+// (direct-api, codex-raw, OPENAI_WIRE_CLIENTS raw buckets, …).
+const NON_RESUMABLE_SESSIONS = listRawSessionBuckets();
 
 // ── In-memory store & SSE clients ───────────────────────────────────
 const MAX_ENTRIES = parseInt(process.env.CCXRAY_MAX_ENTRIES || '5000', 10);
@@ -303,7 +304,15 @@ function printSessionBanner(sessionId) {
   console.log();
   console.log('\x1b[1;35m' + line + '\x1b[0m');
   if (sessionId !== 'direct-api') {
-    console.log(`\x1b[35m   claude --resume ${sessionId}\x1b[0m`);
+    // Banner is best-effort at session open (may not have usage yet). Prefer the
+    // agent-aware template without enforcing has-usage.
+    const meta = sessionMeta[sessionId] || {};
+    const agent = meta.agent || agentForProvider(meta.provider);
+    // Resume hint from UPSTREAM_PROFILES (same source as dashboard resume button).
+    const { resumeCommand } = computeSessionResume(sessionId, meta.provider, agent);
+    const hint = resumeCommand
+      || (agent === 'codex' ? `codex resume ${sessionId}` : `${agent || 'claude'} --resume ${sessionId}`);
+    console.log(`\x1b[35m   ${hint}\x1b[0m`);
   }
   console.log();
 }
@@ -359,14 +368,25 @@ function markSessionUsage(entry) {
 // declarative resume profile from UPSTREAM_PROFILES ({template, condition}):
 // 'always' resumes unconditionally, 'has-usage' requires a completed turn.
 // Returns the resume command string (null when the session can't be resumed).
-function computeSessionResume(sessionId, provider) {
+function computeSessionResume(sessionId, provider, agent) {
   if (!sessionId || NON_RESUMABLE_SESSIONS.has(sessionId)) {
     return { resumable: false, resumeCommand: null };
   }
   // Entries without a provider predate provider tagging — they are anthropic.
   // An unknown provider, however, fails closed: better no button than a
   // command we can't vouch for.
-  const profile = provider == null ? getUpstreamProfile('anthropic') : getUpstreamProfile(provider);
+  // OPENAI_WIRE_CLIENTS modules may use a non-openai host profile (e.g. xai).
+  const agentId = agent || sessionMeta[sessionId]?.agent || null;
+  let profileKey = null;
+  try {
+    const { getOpenAIWireClient } = require('./providers');
+    const client = agentId ? getOpenAIWireClient(agentId) : null;
+    profileKey = client?.upstreamKey || null;
+  } catch { /* ignore */ }
+  if (!profileKey) {
+    profileKey = provider == null ? 'anthropic' : provider;
+  }
+  const profile = getUpstreamProfile(profileKey);
   if (!profile) return { resumable: false, resumeCommand: null };
   const resume = profile.resume;
   if (!resume) return { resumable: false, resumeCommand: null };
@@ -374,7 +394,7 @@ function computeSessionResume(sessionId, provider) {
     return { resumable: false, resumeCommand: null };
   }
   const resumeCommand = resume.template
-    .replace('{agent}', agentForProvider(provider))
+    .replace('{agent}', agentId || agentForProvider(provider))
     .replace('{sid}', sessionId);
   return { resumable: true, resumeCommand };
 }

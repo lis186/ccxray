@@ -107,6 +107,49 @@ function resolveProviderUpstream(provider, env, proxyPort, opts) {
   };
 }
 
+// Secondary OpenAI-wire host for OPENAI_WIRE_CLIENTS modules (currently Grok CLI).
+// provider stays 'openai' so wire-parsers/openai.js handles the body.
+// Override: XAI_BASE_URL or GROK_BASE_URL (e.g. https://api.x.ai/v1 for BYOK).
+function resolveXaiUpstream(env, proxyPort) {
+  const raw = env.XAI_BASE_URL || env.GROK_BASE_URL || '';
+  if (raw) {
+    const parsed = parseBaseUrl(raw);
+    if (parsed) {
+      const { hostname: host, port, protocol, basePath } = parsed;
+      if (isLoopbackHost(host) && port === proxyPort) {
+        warnSelfLoop('xai', protocol, host, port);
+      }
+      return {
+        provider: 'openai',
+        host,
+        port,
+        protocol,
+        basePath,
+        source: env.XAI_BASE_URL ? 'XAI_BASE_URL' : 'GROK_BASE_URL',
+      };
+    }
+    warnInvalidBaseUrl(env.XAI_BASE_URL ? 'XAI_BASE_URL' : 'GROK_BASE_URL', raw, 'cli-chat-proxy.grok.com');
+  }
+  return {
+    provider: 'openai',
+    host: 'cli-chat-proxy.grok.com',
+    port: 443,
+    protocol: 'https',
+    basePath: '/v1',
+    source: 'xai-default',
+  };
+}
+
+// Thin wrapper over providers.OPENAI_WIRE_CLIENTS for tests / call sites.
+function isGrokClient(headers = {}) {
+  try {
+    const { matchOpenAIWireClient } = require('./providers');
+    return matchOpenAIWireClient(headers)?.id === 'grok';
+  } catch {
+    return false;
+  }
+}
+
 const UPSTREAMS = {
   anthropic: resolveProviderUpstream('anthropic', process.env, PORT, {
     defaultHost: 'api.anthropic.com',
@@ -121,6 +164,7 @@ const UPSTREAMS = {
     defaultBasePath: '/v1',
   }),
   openaiChatGPT: resolveChatGPTUpstream(process.env, PORT),
+  xai: resolveXaiUpstream(process.env, PORT),
 };
 
 const { host: ANTHROPIC_HOST, port: ANTHROPIC_PORT, protocol: ANTHROPIC_PROTOCOL, basePath: ANTHROPIC_BASE_PATH, source: ANTHROPIC_BASE_URL_SOURCE } =
@@ -135,6 +179,7 @@ function getUpstream(provider) {
 function getProviderForRequest(urlPath) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
+  // ponytail: chat/completions classification deferred until wire parser handles the shape
   if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
   if (isChatGPTCodexPath(pathname)) return 'openai';
@@ -158,12 +203,27 @@ function isChatGPTCodexPath(pathname) {
     || pathname.startsWith('/v1/connectors/');
 }
 
-// Codex 0.133+ hits a flurry of platform endpoints on startup (plugin lists,
-// connector directory, app metadata, usage). They're not conversation data —
+// Anthropic Messages must never be re-routed to xAI even if a Grok UA is present.
+function isAnthropicMessagesPath(pathname) {
+  return pathname === '/v1/messages' || pathname.startsWith('/v1/messages/');
+}
+
+// Codex platform paths + OpenAI-wire client modules (OPENAI_WIRE_CLIENTS) that
+// need a host other than api.openai.com. Hub can serve multiple agent CLIs
+// without swapping OPENAI_BASE_URL.
 function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
   const pathname = (urlPath || '').split('?')[0];
   if (isChatGPTCodexPath(pathname)) {
     return UPSTREAMS.openaiChatGPT;
+  }
+  if (pathname.startsWith('/v1/') && !isAnthropicMessagesPath(pathname)) {
+    try {
+      const { matchOpenAIWireClient } = require('./providers');
+      const client = matchOpenAIWireClient(headers);
+      if (client?.upstreamKey && UPSTREAMS[client.upstreamKey]) {
+        return UPSTREAMS[client.upstreamKey];
+      }
+    } catch { /* providers unavailable in minimal test stubs */ }
   }
   const upstream = getUpstreamForRequest(urlPath);
   // EXCEPTION(#158): infrastructure — upstream routing for ChatGPT OAuth before parser dispatch
@@ -225,6 +285,13 @@ const MODEL_CONTEXT_FALLBACK = {
   'gpt-5':               400_000,
   'gpt-4.1':             1_000_000,
   'gpt-4o':              128_000,
+  // Grok CLI / xAI (from cli-chat-proxy models_cache, obs-stable 0.2.93)
+  'grok-4.5':            500_000,
+  'grok-4':              256_000,
+  'grok-3':              131_072,
+  'grok-code-fast':      256_000,
+  'grok-build':          2_000_000,
+  'grok-composer':       200_000,
 };
 const DEFAULT_CONTEXT = 200_000;
 
@@ -359,4 +426,6 @@ module.exports = {
   getUpstreamForRequest,
   getUpstreamForRequestAndHeaders,
   joinUpstreamPath,
+  isGrokClient,
+  resolveXaiUpstream,
 };
