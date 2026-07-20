@@ -297,7 +297,6 @@ async function restoreFromLogs() {
   //    during parse, NOT by scanning shared/ (which may have 100K+ files).
   console.time('restore:versions');
   const knownHashes = store._sysHashDates ? [...store._sysHashDates.keys()] : [];
-  console.log(`   buildVersionIndex: ${knownHashes.length} distinct sysHash from parsed entries`);
   const sysHashToAgentKey = await buildVersionIndex(knownHashes);
   console.timeEnd('restore:versions');
 
@@ -354,8 +353,7 @@ async function buildVersionIndex(knownHashes) {
   if (!knownHashes || knownHashes.length === 0) return null;
   const sysHashToAgentKey = new Map();
 
-  for (const sysHash of knownHashes) {
-    // Try both prefixes — anthropic (sys_) and openai (openai_instructions_)
+  async function processHash(sysHash) {
     for (const prefix of ['sys_', 'openai_instructions_']) {
       const filename = `${prefix}${sysHash}.json`;
       const isOpenAI = prefix === 'openai_instructions_';
@@ -377,6 +375,19 @@ async function buildVersionIndex(knownHashes) {
       const { key: agentKey, label: agentLabel } = agentInfo || (isOpenAI
         ? extractPromptAgentType('openai', { instructions: b2 })
         : extractAgentType(sys));
+      return { sysHash, filename, isOpenAI, b0, b2, m, agentKey, agentLabel };
+    }
+    return null;
+  }
+
+  // Parallel read in batches of 50 to limit open file descriptors
+  const BATCH = 50;
+  for (let i = 0; i < knownHashes.length; i += BATCH) {
+    const batch = knownHashes.slice(i, i + BATCH);
+    const results = await Promise.all(batch.map(h => processHash(h).catch(() => null)));
+    for (const r of results) {
+      if (!r) continue;
+      const { sysHash, filename, isOpenAI, b2, m, agentKey, agentLabel } = r;
       if (sysHash && agentKey) sysHashToAgentKey.set(sysHash, { key: agentKey, label: agentLabel });
       if (b2.length >= (isOpenAI ? 1 : 500)) {
         const coreText = isOpenAI ? b2 : (splitB2IntoBlocks(b2).coreInstructions || '');
@@ -398,7 +409,6 @@ async function buildVersionIndex(knownHashes) {
           if (ver > existing.version) existing.version = ver;
         }
       }
-      break; // found for this hash, skip other prefix
     }
   }
   return sysHashToAgentKey;
