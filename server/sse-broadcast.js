@@ -3,6 +3,28 @@
 const store = require('./store');
 const { agentForProvider } = require('./providers');
 
+// ── Broadcast sequence + ring buffer for reconnect replay ──────────
+// Monotonic seq (not entry.id — entry.id is request-start time, broadcast
+// happens at completion; long turns would have id < watermark). Epoch
+// distinguishes hub restarts; ring buffer holds recent events for replay.
+let _broadcastSeq = 0;
+const _epoch = Date.now();
+const RING_SIZE = parseInt(process.env.CCXRAY_SSE_RING_SIZE || '2000', 10);
+const _ring = [];
+
+function _broadcastAll(data) {
+  const seq = ++_broadcastSeq;
+  const sseId = `${_epoch}:${seq}`;
+  _ring.push({ seq, data });
+  if (_ring.length > RING_SIZE) _ring.shift();
+  for (const res of store.sseClients) {
+    res.write(`id: ${sseId}\ndata: ${data}\n\n`);
+  }
+}
+
+function getEpoch() { return _epoch; }
+function getRing() { return _ring; }
+
 // Strip req/res from broadcast — browser only needs summary for the turn list
 function summarizeEntry(entry) {
   const tok = entry.tokens;
@@ -51,37 +73,25 @@ function summarizeEntry(entry) {
 }
 
 function broadcast(entry) {
-  const data = JSON.stringify(summarizeEntry(entry));
-  for (const res of store.sseClients) {
-    res.write(`data: ${data}\n\n`);
-  }
+  _broadcastAll(JSON.stringify(summarizeEntry(entry)));
 }
 
 function broadcastSessionStatus(sessionId) {
   const active = (store.activeRequests[sessionId] || 0) > 0;
   const lastSeenAt = store.sessionMeta[sessionId]?.lastSeenAt || null;
-  const data = JSON.stringify({ _type: 'session_status', sessionId, active, lastSeenAt });
-  for (const res of store.sseClients) {
-    res.write(`data: ${data}\n\n`);
-  }
+  _broadcastAll(JSON.stringify({ _type: 'session_status', sessionId, active, lastSeenAt }));
 }
 
 function broadcastPendingRequest(requestId, parsedBody, sessionId) {
-  const data = JSON.stringify({
-    _type: 'pending_request', requestId, sessionId,
-    body: parsedBody,
-  });
-  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+  _broadcastAll(JSON.stringify({ _type: 'pending_request', requestId, sessionId, body: parsedBody }));
 }
 
 function broadcastInterceptToggle(sessionId, enabled) {
-  const data = JSON.stringify({ _type: 'intercept_toggled', sessionId, enabled });
-  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+  _broadcastAll(JSON.stringify({ _type: 'intercept_toggled', sessionId, enabled }));
 }
 
 function broadcastInterceptRemoved(requestId) {
-  const data = JSON.stringify({ _type: 'intercept_removed', requestId });
-  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+  _broadcastAll(JSON.stringify({ _type: 'intercept_removed', requestId }));
 }
 
 // Per-session debounced title-update broadcast. Bursts within the window
@@ -95,8 +105,7 @@ function flushSessionTitleUpdate(sessionId) {
   const title = store.getSessionTitle(sessionId);
   if (!title) return;
   const titleReqTs = store.sessionMeta[sessionId]?.titleReqTs || null;
-  const data = JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs });
-  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+  _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs }));
 }
 
 function broadcastSessionTitleUpdate(sessionId, { immediate = false } = {}) {
@@ -119,8 +128,7 @@ function _resetTitleDebounce() {
 }
 
 function broadcastRaw(obj) {
-  const data = JSON.stringify(obj);
-  for (const res of store.sseClients) res.write(`data: ${data}\n\n`);
+  _broadcastAll(JSON.stringify(obj));
 }
 
 module.exports = {
@@ -134,4 +142,6 @@ module.exports = {
   broadcastSessionTitleUpdate,
   TITLE_DEBOUNCE_MS,
   _resetTitleDebounce,
+  getEpoch,
+  getRing,
 };

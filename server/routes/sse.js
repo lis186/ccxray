@@ -2,6 +2,7 @@
 
 const store = require('../store');
 const { MAX_SSE_PER_IP } = require('../config');
+const { getEpoch, getRing } = require('../sse-broadcast');
 
 function normalizeIp(raw) {
   if (!raw) return '';
@@ -28,6 +29,26 @@ function handleSSERoute(clientReq, clientRes) {
     'Connection': 'keep-alive',
   });
   clientRes.write(':\n\n');
+
+  // ── Reconnect replay via Last-Event-ID ──
+  // Format: "<epoch>:<seq>". Epoch matches + seq in ring → replay after seq.
+  // Epoch mismatch or seq evicted → stale signal → client full re-fetch.
+  const lastId = clientReq.headers && clientReq.headers['last-event-id'];
+  if (lastId) {
+    const sep = lastId.indexOf(':');
+    const reqEpoch = sep > 0 ? Number(lastId.slice(0, sep)) : 0;
+    const reqSeq = sep > 0 ? Number(lastId.slice(sep + 1)) : 0;
+    const ring = getRing();
+    if (reqEpoch === getEpoch() && ring.length > 0 && reqSeq >= ring[0].seq) {
+      for (const item of ring) {
+        if (item.seq > reqSeq) {
+          clientRes.write(`id: ${getEpoch()}:${item.seq}\ndata: ${item.data}\n\n`);
+        }
+      }
+    } else {
+      clientRes.write(`data: ${JSON.stringify({ _type: 'stale' })}\n\n`);
+    }
+  }
 
   // Send current session statuses
   for (const [sid, meta] of Object.entries(store.sessionMeta)) {
