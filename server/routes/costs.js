@@ -102,11 +102,19 @@ function sendLoadingOrData(clientRes, dataFn) {
     clientRes.end(JSON.stringify({ loading: true }));
     return;
   }
-  dataFn(data);
+  // Provider hook: fold live Grok proxy turns into byAccount without touching
+  // shared cost-budget worker/cache for Claude/Codex.
+  let out = data;
+  try {
+    const { withGrokLiveCosts } = require('../adapters/grok-adapter');
+    out = withGrokLiveCosts(data);
+  } catch { /* optional */ }
+  dataFn(out);
 }
 
 function getAccountsPayload() {
-  // ponytail: reads from in-memory cache; background timer refreshes it
+  // Always re-read usage-status so a just-written Grok /v1/billing snap appears.
+  _accountsCache = _buildAccountsPayload();
   return _accountsCache || { accounts: [], claudeStatuslineConfigured: null };
 }
 

@@ -14,8 +14,10 @@ const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
 const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
-const { agentForProvider } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient } = require('./providers');
 const { buildIndexLine } = require('./entry');
+const path = require('path');
+const { resolveCcxrayHome } = require('./paths');
 const sessionIdx = require('./session-index');
 const {
   isOpenAIResponseObject, extractOpenAIResponse, getOpenAIResponseFromEvents,
@@ -491,6 +493,7 @@ function forwardRequest(ctx) {
       const isSSE = (proxyRes.headers['content-type'] || '').includes('text/event-stream');
 
       // Capture rate limit headers once, share with state + sample log.
+      // Anthropic-only parser (shared). Grok weekly quota is provider-local.
       const parsedRL = collectRatelimitHeaders(proxyRes.headers);
       if (parsedRL && parsedRL.tokensLimit != null) {
         store.setRateLimitState({ ...parsedRL, updatedAt: Date.now() });
@@ -502,6 +505,19 @@ function forwardRequest(ctx) {
           planHint: process.env.CCXRAY_PLAN || null,
         });
       }
+      // Provider hook: refresh Grok CLI billing snap (/v1/billing) using this
+      // request's auth — no token stored. Only for Grok wire clients.
+      try {
+        const wireClient = matchOpenAIWireClient(clientReq.headers || {});
+        if (wireClient?.id === 'grok' || /^grok/i.test(parsedBody?.model || '')) {
+          const { refreshGrokBillingFromAuth } = require('./adapters/grok-adapter');
+          refreshGrokBillingFromAuth(
+            clientReq.headers,
+            path.join(resolveCcxrayHome(), 'usage-status'),
+            'default',
+          );
+        }
+      } catch { /* never block proxy */ }
       clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
 
       if (isSSE) {
@@ -905,8 +921,24 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
   proxyRes.on('end', () => {
     clientRes.end();
 
-    // Quota-check: no logging, no entry
-    if (ctx.skipEntry) return;
+    const raw = Buffer.concat(resChunks).toString();
+
+    // Provider hook: capture Grok CLI /v1/billing even when skipEntry (noise).
+    // This is the same payload the CLI /usage screen uses.
+    if (ctx.skipEntry) {
+      try {
+        const { isGrokBillingPath, refreshGrokFromBillingBody } = require('./adapters/grok-adapter');
+        const url = stripAuthParams(ctx.clientReq.url || '');
+        if (isGrokBillingPath(url) && proxyRes.statusCode === 200) {
+          refreshGrokFromBillingBody(
+            raw,
+            path.join(resolveCcxrayHome(), 'usage-status'),
+            'default',
+          );
+        }
+      } catch { /* never block */ }
+      return;
+    }
 
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = Math.max(0, (store.activeRequests[reqSessionId] || 1) - 1);
@@ -915,7 +947,6 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const raw = Buffer.concat(resChunks).toString();
     let resData;
     try { resData = JSON.parse(raw); } catch { resData = raw; }
 

@@ -3,12 +3,63 @@ function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').
 
 let _costActiveFilter = null; // null = All
 let _costPageCache = null;
+let _costLiveTimer = null;
+let _costLiveRefreshing = false;
 
 function showCostPage() {
   switchTab('usage');
 }
 function hideCostPage() {
   switchTab('dashboard');
+}
+
+function startCostLiveRefresh() {
+  stopCostLiveRefresh();
+  // Soft-refresh while the Usage tab is open so account % left / reset
+  // labels stay current without a full skeleton reload.
+  _costLiveTimer = setInterval(() => {
+    if (typeof activeTab !== 'undefined' && activeTab === 'usage') {
+      softRefreshCostPage();
+    }
+  }, 8000);
+}
+function stopCostLiveRefresh() {
+  if (_costLiveTimer) {
+    clearInterval(_costLiveTimer);
+    _costLiveTimer = null;
+  }
+}
+
+/** Re-fetch cost APIs without skeleton flash; no-op if a refresh is in flight. */
+async function softRefreshCostPage() {
+  if (_costLiveRefreshing) return;
+  if (typeof activeTab !== 'undefined' && activeTab !== 'usage') return;
+  _costLiveRefreshing = true;
+  try {
+    const [blockData, dailyData, monthlyResp] = await Promise.all([
+      fetch('/_api/costs/current-block').then(r => r.json()).catch(() => null),
+      fetch('/_api/costs/daily').then(r => r.json()).catch(() => null),
+      fetch('/_api/costs/monthly').then(r => r.json()).catch(() => null),
+    ]);
+    if (!dailyData || dailyData.loading || !monthlyResp || monthlyResp.loading) return;
+    const block = (blockData && !blockData.loading) ? blockData : (_costPageCache?.blockData || { active: false });
+    _costPageCache = { blockData: block, dailyData, monthlyResp };
+    renderMonthlySummary(monthlyResp);
+    renderDailyHeatmap(dailyData);
+    renderAccounts(block, dailyData, monthlyResp);
+  } catch {
+    // ambient refresh — ignore
+  } finally {
+    _costLiveRefreshing = false;
+  }
+}
+
+/** Called from the dashboard SSE path when a new turn lands. */
+function onCostRelevantEntry(entry) {
+  if (!entry || !entry.usage) return;
+  if (typeof activeTab === 'undefined' || activeTab !== 'usage') return;
+  // Debounce via soft refresh; live overlay on the server makes this pick up fast.
+  softRefreshCostPage();
 }
 
 // INVARIANT: skeleton IDs must match render function lookups — see docs/decisions/0004-skeleton-lifecycle.md
@@ -75,6 +126,7 @@ function renderCostSkeletons() {
 
 async function loadCostPage() {
   renderCostSkeletons();
+  startCostLiveRefresh();
 
   async function fetchWithRetry(url, fallback, maxRetries = 20) {
     for (let i = 0; i < maxRetries; i++) {
@@ -100,23 +152,32 @@ async function loadCostPage() {
   _costPageCache = { blockData, dailyData, monthlyResp };
   renderMonthlySummary(monthlyResp);
   renderDailyHeatmap(dailyData);
-  renderAccounts(blockData);
+  renderAccounts(blockData, dailyData, monthlyResp);
 }
 
 // ── Account brand colors ──────────────────────────────────────────────
+// Match UPSTREAM_PROFILES brandColor (anthropic / openai / xai→grok).
 const _acctColors = {
   anthropic: '#e8956a',
   openai: '#74aa9c',
+  grok: '#a78bfa',
 };
+function providerDisplayName(provider) {
+  if (provider === 'codex') return 'Codex';
+  if (provider === 'grok') return 'Grok';
+  return 'Claude';
+}
 function acctColor(accountId) {
   if (!accountId) return 'var(--dim)';
-  return accountId.startsWith('codex') ? _acctColors.openai : _acctColors.anthropic;
+  if (accountId.startsWith('codex')) return _acctColors.openai;
+  if (accountId.startsWith('grok')) return _acctColors.grok;
+  return _acctColors.anthropic;
 }
 function acctLabel(accountId, allAccounts) {
   if (!accountId) return 'Unknown';
   const [provider, ...rest] = accountId.split('-');
   const alias = rest.join('-');
-  const name = provider === 'codex' ? 'Codex' : 'Claude';
+  const name = providerDisplayName(provider);
   if (alias !== 'default') return `${name} · ${alias}`;
   // ponytail: show "default" when other accounts of same provider exist
   if (allAccounts && allAccounts.some(a => a !== accountId && a.startsWith(provider + '-'))) return `${name} · default`;
@@ -124,16 +185,38 @@ function acctLabel(accountId, allAccounts) {
 }
 
 // ── Accounts card ─────────────────────────────────────────────────────
-function renderAccounts(blockData) {
+// Union of (1) rate-limit status snaps (Claude/Codex 5h windows) and
+// (2) cost accounts from daily byAccount (Grok has cost, no rate-limit snap).
+// Active provider filter applies here too — selecting Grok must not leave a
+// lone "Codex plus" rate-limit card as if that were Grok usage.
+function _accountCostSummary(accountId, dailyData, monthlyResp) {
+  const todayStr = new Date().toLocaleDateString('sv-SE');
+  const today = (dailyData || []).find(d => d.date === todayStr);
+  const todayCost = today?.byAccount?.[accountId]?.costUSD || 0;
+  const monthCost = monthlyResp?.currentMonth?.byAccount?.[accountId]?.costUSD || 0;
+  // Last-30 fallback when "today" is empty (timezone edge / no spend yet today).
+  let last30 = 0;
+  for (const d of (dailyData || []).slice(-30)) {
+    last30 += d.byAccount?.[accountId]?.costUSD || 0;
+  }
+  return { todayCost, monthCost, last30 };
+}
+
+function renderAccounts(blockData, dailyData, monthlyResp) {
   const card = document.getElementById('cp-accounts');
   const el = document.getElementById('cp-accounts-content');
   if (!card || !el) return;
 
-  const accounts = blockData.accounts || [];
-  const configured = blockData.claudeStatuslineConfigured;
+  const rateAccounts = (blockData && blockData.accounts) || [];
+  const configured = blockData && blockData.claudeStatuslineConfigured;
+  const rateById = new Map(rateAccounts.map(a => [a.id, a]));
+  const costIds = collectAccounts(dailyData || []);
+  const allIds = [...new Set([...rateById.keys(), ...costIds])].sort();
+  const f = _costActiveFilter;
+  const visibleIds = allIds.filter(id => filterMatchesAccount(f, id));
 
   // INVARIANT: early-return must clear innerHTML — see docs/decisions/0004-skeleton-lifecycle.md
-  if (accounts.length === 0 && configured !== false) {
+  if (visibleIds.length === 0 && configured !== false) {
     el.innerHTML = '';
     card.style.display = 'none';
     return;
@@ -141,37 +224,79 @@ function renderAccounts(blockData) {
   card.style.display = '';
 
   let html = '';
-
-  const brandColor = acct => acct.brandColor || 'var(--text)';
+  const brandColor = acct => acct.brandColor || acctColor(acct.id) || 'var(--text)';
   const copyIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
 
-  for (let idx = 0; idx < accounts.length; idx++) {
-    const acct = accounts[idx];
-    const nameStr = acct.label || (acct.provider === 'openai' ? 'Codex' : 'Claude');
-    const freshDot = acct.fresh
-      ? '<span style="color:var(--green)">●</span> live'
-      : '<span style="color:var(--dim)">○</span> cached';
+  for (let idx = 0; idx < visibleIds.length; idx++) {
+    const id = visibleIds[idx];
+    const rate = rateById.get(id);
+    const costs = _accountCostSummary(id, dailyData, monthlyResp);
     const sep = idx > 0 ? 'border-top:1px solid var(--border);padding-top:12px;margin-top:4px;' : '';
+    const color = rate ? brandColor(rate) : acctColor(id);
+    const nameStr = rate
+      ? (rate.label
+        || (rate.provider === 'openai' ? 'Codex'
+          : (rate.provider === 'xai' || rate.provider === 'grok') ? 'Grok'
+            : 'Claude'))
+      : acctLabel(id, allIds);
+    const plan = rate?.planType
+      ? ` <span style="font-weight:400;color:var(--dim);font-size:10px">${esc(rate.planType)}</span>`
+      : '';
 
     html += `<div style="${sep}">`;
     html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:8px">`;
-    html += `<span style="font-weight:600;color:${brandColor(acct)}">${esc(nameStr)}${acct.planType ? ` <span style="font-weight:400;color:var(--dim);font-size:10px">${esc(acct.planType)}</span>` : ''}</span>`;
-    html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
-    html += `</div>`;
-
-    html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
-    if (acct.unlimited) {
-      html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--green)">∞ Unlimited</div>`;
+    html += `<span style="font-weight:600;color:${color}">${esc(nameStr)}${plan}</span>`;
+    if (rate) {
+      const freshDot = rate.fresh
+        ? '<span style="color:var(--green)">●</span> live'
+        : '<span style="color:var(--dim)">○</span> cached';
+      html += `<span style="font-size:10px;color:var(--dim)">${freshDot}</span>`;
     } else {
-      html += renderAccountCard('5-Hour', acct.fiveHour);
-      if (acct.sevenDay) html += renderAccountCard('Weekly', acct.sevenDay);
+      html += `<span style="font-size:10px;color:var(--dim)">proxy cost</span>`;
     }
     html += `</div>`;
+
+    if (rate) {
+      html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
+      if (rate.unlimited) {
+        html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--green)">∞ Unlimited</div>`;
+      } else {
+        // Claude/Codex: 5-Hour (+ optional Weekly). Grok: weekly only (fiveHour null).
+        if (rate.fiveHour) html += renderAccountCard('5-Hour', rate.fiveHour);
+        if (rate.sevenDay) html += renderAccountCard('Weekly', rate.sevenDay);
+        if (!rate.fiveHour && !rate.sevenDay) {
+          html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px;font-size:11px;color:var(--dim)">No quota window</div>`;
+        }
+      }
+      html += `</div>`;
+    }
+    // Cost summary only for cost-only accounts (no rate-limit snap).
+    // Grok has weekly SuperGrok limit from billing — no Today/Month $ row.
+    const showCost = !rate;
+    if (showCost) {
+      html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
+      html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:4px">Today</div>
+        <div style="font-size:18px;font-weight:700">$${costs.todayCost.toFixed(2)}</div>
+      </div>`;
+      html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
+        <div style="font-size:10px;color:var(--dim);margin-bottom:4px">Month</div>
+        <div style="font-size:18px;font-weight:700">$${costs.monthCost.toFixed(2)}</div>
+      </div>`;
+      html += `</div>`;
+      if (!rate && costs.todayCost === 0 && costs.monthCost === 0 && costs.last30 > 0) {
+        html += `<div style="font-size:10px;color:var(--dim)">Last 30d: $${costs.last30.toFixed(2)}</div>`;
+      }
+    }
 
     html += `</div>`;
   }
 
-  if (configured === false && !accounts.find(a => a.provider === 'anthropic')) {
+  // Claude setup hint only when Claude is in the visible set (or All with no Claude rate snap).
+  const showClaudeHint = configured === false
+    && !visibleIds.some(id => id.startsWith('claude-') && rateById.has(id))
+    && (!f || f === 'claude:*' || (typeof f === 'string' && f.startsWith('claude-')));
+  if (showClaudeHint) {
     html += `<div style="font-size:11px;color:var(--dim);border-top:1px solid var(--border);padding-top:8px;margin-top:8px;display:flex;align-items:center;justify-content:space-between">
       <span>Track Claude rate limits</span>
       <span style="display:flex;align-items:center;gap:4px;font-size:10px"><code style="background:var(--surface);padding:1px 4px;border-radius:3px">ccxray setup-statusline</code>
@@ -190,18 +315,49 @@ function renderAccounts(blockData) {
   }
 }
 
+function _fmtQuotaCount(n) {
+  if (n == null || !Number.isFinite(n)) return '?';
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + 'K';
+  return String(Math.round(n));
+}
+
 function renderAccountCard(label, win) {
   if (!win) return '';
-  const leftPct = Math.round(win.leftPct ?? (100 - win.usedPct));
+  // Prefer one-decimal left% when provided (Grok weekly can be <<1% used).
+  const leftRaw = win.leftPct != null ? win.leftPct : (100 - (win.usedPct || 0));
+  const leftPct = Math.round(leftRaw * 10) / 10;
   const barColor = leftPct > 30 ? 'var(--green)' : leftPct > 10 ? 'var(--yellow)' : 'var(--red)';
+  // Real resetsAt → "Resets in …". Else optional windowLabel (e.g. period name).
   const resetStr = win.resetLabel ? `Resets in ${esc(win.resetLabel)}` : '';
+  let periodStr = '';
+  if (win.periodStart && win.periodEnd) {
+    const fmt = (iso) => {
+      try {
+        const d = new Date(iso);
+        return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      } catch { return ''; }
+    };
+    const a = fmt(win.periodStart), b = fmt(win.periodEnd);
+    if (a && b) periodStr = `${a} → ${b}`;
+  } else if (!win.resetLabel && win.windowLabel) {
+    periodStr = win.windowLabel;
+  }
+  const unit = win.unit === 'credits' ? '' : (win.unit === 'tok' ? ' tok' : '');
+  const usageStr = (win.used != null && win.limit != null)
+    ? `${esc(_fmtQuotaCount(win.used))} / ${esc(_fmtQuotaCount(win.limit))}${esc(unit)}`
+    : '';
+  // Prefer provider window label for the card title when present (Monthly/Weekly).
+  const title = win.windowLabel || label;
   return `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
-    <div style="font-size:10px;color:var(--dim);margin-bottom:4px">${label}</div>
+    <div style="font-size:10px;color:var(--dim);margin-bottom:4px">${esc(title)}</div>
     <div style="font-size:18px;font-weight:700;margin-bottom:6px">${leftPct}% <span style="font-size:11px;font-weight:400;color:var(--dim)">left</span></div>
     <div style="height:5px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:6px">
       <div style="height:100%;width:${Math.min(leftPct,100)}%;background:${barColor};border-radius:3px"></div>
     </div>
+    ${usageStr ? `<div style="font-size:10px;color:var(--dim);margin-bottom:2px">${usageStr}</div>` : ''}
     ${resetStr ? `<div style="font-size:10px;color:var(--dim)">${resetStr}</div>` : ''}
+    ${periodStr ? `<div style="font-size:10px;color:var(--dim)">${esc(periodStr)}</div>` : ''}
   </div>`;
 }
 
@@ -237,14 +393,14 @@ function _applyFilter(filter) {
   if (_costPageCache) {
     renderMonthlySummary(_costPageCache.monthlyResp);
     renderDailyHeatmap(_costPageCache.dailyData);
-    renderAccounts(_costPageCache.blockData);
+    renderAccounts(_costPageCache.blockData, _costPageCache.dailyData, _costPageCache.monthlyResp);
   } else {
     loadCostPage();
   }
 }
 
 function _providerBtnLabel(provider, filter) {
-  const name = provider === 'codex' ? 'Codex' : 'Claude';
+  const name = providerDisplayName(provider);
   if (!filter || !filter.startsWith(provider)) return name;
   if (filter === provider + ':*') return name;
   const alias = filter.slice(provider.length + 1);
@@ -282,7 +438,7 @@ function renderFilterBar(container, accounts) {
     html += `<button class="cp-arrow-btn" data-provider="${esc(p)}" style="${arrowStyle(active, color)};border-radius:0 10px 10px 0">▾</button>`;
 
     html += `<div class="cp-dropdown" data-provider="${esc(p)}" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:100;background:var(--surface);border:1px solid var(--border);border-radius:6px;min-width:140px;padding:4px 0;box-shadow:0 4px 12px rgba(0,0,0,0.3)">`;
-    const providerName = p === 'codex' ? 'Codex' : 'Claude';
+    const providerName = providerDisplayName(p);
     html += `<div class="cp-dropdown-item" data-filter="${esc(p + ':*')}" style="padding:4px 10px;font-size:10px;cursor:pointer;color:${color}">All ${esc(providerName)}</div>`;
     for (const id of pAccounts) {
       const alias = id.slice(p.length + 1);
