@@ -2261,6 +2261,7 @@ function selectSession(id) {
           if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
         }
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
+        _coldFetchController = null;
         if (spinner.parentNode) spinner.remove();
         _renderSelectedSession(id);
       })
