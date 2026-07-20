@@ -2166,6 +2166,12 @@ function formatCurrentStepBreadcrumb() {
   return 'step #' + (step.stepIdx + 1) + subLabel;
 }
 
+function zeroSessionStats(s) {
+  s.count = 0; s.mainCount = 0; s.subCount = 0; s.retryCount = 0;
+  s.totalCost = 0; s.inputTokens = 0; s.outputTokens = 0;
+  s.toolCalls = {}; s.toolCallTurns = 0; s.toolFailTurns = 0;
+}
+
 function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
@@ -2208,9 +2214,7 @@ function selectSession(id) {
         // #308: zero stats before replay — sessions.json seeded them; addEntry
         // increments on top (cold path), so without zeroing = double-count.
         // Replay with _cold still true → incremental counts, not O(n²) recompute.
-        sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
-        sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
-        sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+        zeroSessionStats(sess);
         const entries = data.entries || [];
         // Track all sessions touched during replay (child sessions, migrations)
         const replaySids = new Set([id]);
@@ -2219,13 +2223,9 @@ function selectSession(id) {
           for (const e of entries) {
             if (e.sessionId && !replaySids.has(e.sessionId)) {
               replaySids.add(e.sessionId);
-              // Zero child session stats seeded by mergeColdSessions (same reason as parent above)
+              // Zero child session stats seeded by mergeColdSessions (same reason as parent)
               const cs = sessionsMap.get(e.sessionId);
-              if (cs && cs._cold) {
-                cs.count = 0; cs.mainCount = 0; cs.subCount = 0; cs.retryCount = 0;
-                cs.totalCost = 0; cs.inputTokens = 0; cs.outputTokens = 0;
-                cs.toolCalls = {}; cs.toolCallTurns = 0; cs.toolFailTurns = 0;
-              }
+              if (cs && cs._cold) zeroSessionStats(cs);
             }
             addEntry(e);
           }
