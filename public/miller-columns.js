@@ -1305,7 +1305,14 @@ function _applyStatsToggleUI() {
 
 let selectedProjectName = null; // null = (all)
 let selectedSessionId = null;
-let _coldFetchController = null; // AbortController for in-flight cold session fetch (#317)
+let _coldLoad = null; // { id, controller, spinner, columnsEl }
+function cancelColdLoad() {
+  if (!_coldLoad) return;
+  _coldLoad.controller.abort();
+  if (_coldLoad.spinner.parentNode) _coldLoad.spinner.remove();
+  _coldLoad.columnsEl.classList.remove('cold-loading');
+  _coldLoad = null;
+}
 let selectedTurnIdx = -1;
 let selectedSection = null;
 let selectedMessageIdx = -1;
@@ -2176,6 +2183,7 @@ function zeroSessionStats(s) {
 function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
+  cancelColdLoad();
   const prevSessionId = selectedSessionId;
   selectedSessionId = id;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
@@ -2197,6 +2205,7 @@ function selectSession(id) {
     colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
     colSections.innerHTML = '';
     colDetail.innerHTML = '';
+    colTurns.querySelectorAll('.col-empty').forEach(el => el.remove());
     const turnsColHeader = colTurns.querySelector('.col-sticky-header');
     if (!turnsColHeader) {
       colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title">Turns</div></div>';
@@ -2210,68 +2219,74 @@ function selectSession(id) {
     columnsEl.classList.remove('wf-active');
     columnsEl.classList.add('cold-loading');
     renderBreadcrumb();
-    if (_coldFetchController) _coldFetchController.abort();
-    _coldFetchController = new AbortController();
-    fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: _coldFetchController.signal })
+    const token = _coldLoad = { id, controller: new AbortController(), spinner, columnsEl };
+    fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: token.controller.signal })
       .then(r => r.json())
       .then(data => {
-        if (selectedSessionId !== id) return;
+        if (_coldLoad !== token) return;
         // #308: zero stats before replay — sessions.json seeded them; addEntry
         // increments on top (cold path), so without zeroing = double-count.
         // Replay with _cold still true → incremental counts, not O(n²) recompute.
         zeroSessionStats(sess);
         const entries = data.entries || [];
-        // Track all sessions touched during replay (child sessions, migrations)
         const replaySids = new Set([id]);
-        window._coldActivating = true;
-        try {
-          for (const e of entries) {
-            if (e.sessionId && !replaySids.has(e.sessionId)) {
-              replaySids.add(e.sessionId);
-              // Zero child session stats seeded by mergeColdSessions (same reason as parent)
-              const cs = sessionsMap.get(e.sessionId);
-              if (cs && cs._cold) zeroSessionStats(cs);
+        // Chunked async replay — yield to event loop every CHUNK entries so UI stays responsive
+        const CHUNK = 50;
+        let i = 0;
+        const replayChunk = () => {
+          if (_coldLoad !== token) return;
+          window._coldActivating = true;
+          try {
+            const end = Math.min(i + CHUNK, entries.length);
+            for (; i < end; i++) {
+              const e = entries[i];
+              if (e.id && window.entryById && window.entryById.has(e.id)) continue;
+              if (e.sessionId && !replaySids.has(e.sessionId)) {
+                replaySids.add(e.sessionId);
+                const cs = sessionsMap.get(e.sessionId);
+                if (cs && cs._cold) zeroSessionStats(cs);
+              }
+              addEntry(e);
             }
-            addEntry(e);
+          } finally {
+            window._coldActivating = false;
           }
-        } finally {
-          window._coldActivating = false;
-        }
-        // Clear _cold for all replayed sessions (parent + children)
-        for (const sid of replaySids) {
-          const s = sessionsMap.get(sid);
-          if (s) s._cold = false;
-        }
-        if (typeof recomputeSessionStats === 'function') {
-          for (const sid of replaySids) recomputeSessionStats(sid);
-        }
-        // Recompute all projects — cwd migration means old project needs update too
-        if (typeof recomputeProjectCost === 'function') {
-          for (const [name] of projectsMap) recomputeProjectCost(name);
-        }
-        if (data.sessionTitles) {
-          for (const [sid, title] of Object.entries(data.sessionTitles)) {
+          if (i < entries.length) { setTimeout(replayChunk, 0); return; }
+          for (const sid of replaySids) {
             const s = sessionsMap.get(sid);
-            if (s && !s.title) s.title = title;
+            if (s) s._cold = false;
           }
-        }
-        // Re-render child session cards to reflect recomputed stats
-        for (const sid of replaySids) {
-          if (sid === id) continue;
-          const childEl = document.getElementById('sess-' + sid.slice(0, 8));
-          const childSess = sessionsMap.get(sid);
-          if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
-        }
-        // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
-        _coldFetchController = null;
-        if (spinner.parentNode) spinner.remove();
-        columnsEl.classList.remove('cold-loading');
-        _renderSelectedSession(id);
+          if (typeof recomputeSessionStats === 'function') {
+            for (const sid of replaySids) recomputeSessionStats(sid);
+          }
+          if (typeof recomputeProjectCost === 'function') {
+            for (const [name] of projectsMap) recomputeProjectCost(name);
+          }
+          if (data.sessionTitles) {
+            for (const [sid, title] of Object.entries(data.sessionTitles)) {
+              const s = sessionsMap.get(sid);
+              if (s && !s.title) s.title = title;
+            }
+          }
+          for (const sid of replaySids) {
+            if (sid === id) continue;
+            const childEl = document.getElementById('sess-' + sid.slice(0, 8));
+            const childSess = sessionsMap.get(sid);
+            if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
+          }
+          cancelColdLoad();
+          _renderSelectedSession(id);
+        };
+        replayChunk();
       })
       .catch(err => {
-        if (err && err.name === 'AbortError') return;
-        columnsEl.classList.remove('cold-loading');
-        if (spinner.parentNode) spinner.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
+        if (_coldLoad !== token) return;
+        console.error('[cold-load]', err);
+        cancelColdLoad();
+        const errEl = document.createElement('div');
+        errEl.className = 'col-empty';
+        errEl.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
+        colTurns.appendChild(errEl);
       });
     return;
   }
@@ -2280,6 +2295,7 @@ function selectSession(id) {
 }
 
 function _renderSelectedSession(id) {
+  colTurns.querySelectorAll('.col-empty').forEach(el => el.remove());
   // Show turns for this session
   colTurns.querySelectorAll('.turn-item').forEach(el => {
     el.style.display = (id && el.dataset.sessionId === id) ? '' : 'none';
