@@ -157,37 +157,32 @@ async function restoreFromLogs() {
     cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
   }
 
-  const lines = indexContent.split('\n').filter(Boolean);
+  // ponytail: parse JSON once instead of three times per line
+  const parsed = [];
+  for (const line of indexContent.split('\n')) {
+    if (!line) continue;
+    try { parsed.push(JSON.parse(line)); } catch {}
+  }
   let restored = 0;
 
-  // Pre-pass: parse minimal fields once and build star-protection sets so
-  // entries older than RESTORE_DAYS that are protected by stars are still
-  // restored. Single allocation; reused below in the main loop.
+  // Star-protection + session pre-count in one pass over pre-parsed data.
   const stars = readStarsSafe();
   const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
   let retentionSets = null;
   if (hasAnyStar && cutoffStr) {
     const lightweight = [];
-    for (const line of lines) {
-      try {
-        const m = JSON.parse(line);
-        if (m && m.id) lightweight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
-      } catch {}
+    for (const m of parsed) {
+      if (m && m.id) lightweight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
     }
     retentionSets = computeRetentionSets(lightweight, stars);
   }
 
-  // Pre-count entries per session to identify oversized sessions.
-  // Separate loop because it needs retentionSets (built above) for the cutoff filter.
   const sessionTotals = new Map();
-  for (const line of lines) {
-    try {
-      const m = JSON.parse(line);
-      if (cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr) {
-        if (!retentionSets || !isProtectedByStar(m, retentionSets)) continue;
-      }
-      if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
-    } catch { continue; }
+  for (const m of parsed) {
+    if (cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr) {
+      if (!retentionSets || !isProtectedByStar(m, retentionSets)) continue;
+    }
+    if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
   }
   const oversizedSessions = new Map();
   for (const [sid, count] of sessionTotals) {
@@ -195,9 +190,7 @@ async function restoreFromLogs() {
   }
   const sessionLoadedFirst = new Set();
 
-  for (const line of lines) {
-    let meta;
-    try { meta = JSON.parse(line); } catch { continue; }
+  for (let meta of parsed) {
 
     if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) {
       if (!retentionSets || !isProtectedByStar(meta, retentionSets)) continue;
