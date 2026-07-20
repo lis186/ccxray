@@ -763,8 +763,10 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
 
     // Persist to index (fire-and-forget after broadcast)
     const indexLine = buildIndexLine(entry);
-    config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
-    sessionIdx.updateFromEntry(entry);
+    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    config.storage.appendIndex(indexLine + '\n').then(() => {
+      sessionIdx.updateFromEntry(entry);
+    }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
     entry.req = null;
@@ -862,8 +864,10 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     broadcast(entry);
 
     const indexLine = buildIndexLine(entry);
-    config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
-    sessionIdx.updateFromEntry(entry);
+    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    config.storage.appendIndex(indexLine + '\n').then(() => {
+      sessionIdx.updateFromEntry(entry);
+    }).catch(e => console.error('Write index failed:', e.message));
 
     entry.req = null;
     entry.res = null;
@@ -994,8 +998,10 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     broadcast(entry);
 
     const indexLine = buildIndexLine(entry);
-    config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
-    sessionIdx.updateFromEntry(entry);
+    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    config.storage.appendIndex(indexLine + '\n').then(() => {
+      sessionIdx.updateFromEntry(entry);
+    }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
     entry.req = null;

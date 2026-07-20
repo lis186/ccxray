@@ -62,6 +62,30 @@ function rebuildFromIndexContent(indexContent) {
   dirty = true;
 }
 
+// Compare loaded sessions.json against index.ndjson content. Returns true if
+// drift detected (and rebuilds). Checks both unique session count and total
+// entry count — the latter catches appendIndex failures for existing sessions
+// where session count stays the same but per-session counts diverge. (#309)
+function reconcile(indexContent) {
+  if (!indexContent || !sessionIndex.size) return false;
+  let indexSessions = 0, indexEntries = 0;
+  const seen = new Set();
+  const re = /"sessionId":"([^"]+)"/;
+  for (const line of indexContent.split('\n')) {
+    if (!line) continue;
+    const m = re.exec(line);
+    if (!m) continue;
+    indexEntries++;
+    if (!seen.has(m[1])) { seen.add(m[1]); indexSessions++; }
+  }
+  let totalEntries = 0;
+  for (const s of sessionIndex.values()) totalEntries += s.count;
+  if (indexSessions === sessionIndex.size && indexEntries === totalEntries) return false;
+  console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${indexSessions} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
+  rebuildFromIndexContent(indexContent);
+  return true;
+}
+
 // Upsert a session summary from an entry's index fields.
 function updateFromEntry(entry) {
   if (!entry || !entry.sessionId) return;
@@ -125,4 +149,4 @@ function size() {
   return sessionIndex.size;
 }
 
-module.exports = { loadSessionIndex, rebuildFromIndexContent, updateFromEntry, setTitle, flush, getAll, size };
+module.exports = { loadSessionIndex, rebuildFromIndexContent, reconcile, updateFromEntry, setTitle, flush, getAll, size };

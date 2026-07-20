@@ -294,8 +294,10 @@ function pushImportedEntry(entry, existingIds) {
   // broadcast to avoid 158K memory spike + client SSE flood. Imported sessions
   // are cold; their entries load on-demand via /_api/session/:sid/entries.
   const indexLine = buildIndexLine(entry);
-  _pendingIndexWrites.push(config.storage.appendIndex(indexLine + '\n').catch(() => {}));
-  sessionIdx.updateFromEntry(entry);
+  // Log-first: only update session index after index.ndjson write succeeds (#309)
+  _pendingIndexWrites.push(config.storage.appendIndex(indexLine + '\n').then(() => {
+    sessionIdx.updateFromEntry(entry);
+  }).catch(e => console.error('Write import index failed:', e.message)));
   return true;
 }
 
