@@ -2217,7 +2217,16 @@ function selectSession(id) {
         window._coldActivating = true;
         try {
           for (const e of entries) {
-            if (e.sessionId) replaySids.add(e.sessionId);
+            if (e.sessionId && !replaySids.has(e.sessionId)) {
+              replaySids.add(e.sessionId);
+              // Zero child session stats seeded by mergeColdSessions (same reason as parent above)
+              const cs = sessionsMap.get(e.sessionId);
+              if (cs && cs._cold) {
+                cs.count = 0; cs.mainCount = 0; cs.subCount = 0; cs.retryCount = 0;
+                cs.totalCost = 0; cs.inputTokens = 0; cs.outputTokens = 0;
+                cs.toolCalls = {}; cs.toolCallTurns = 0; cs.toolFailTurns = 0;
+              }
+            }
             addEntry(e);
           }
         } finally {
