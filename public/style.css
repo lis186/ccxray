@@ -679,6 +679,11 @@
 .sysprompt-breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
 .sysprompt-breadcrumb a:hover { text-decoration: underline; }
 
+/* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
+#columns.cold-loading #col-sections,
+#columns.cold-loading #col-detail { display: none; }
+#columns.cold-loading #col-turns { flex: 1; }
+
 /* ── Workflow Swimlane Timeline (#91) ── */
 /* When workflow is active, col-turns becomes the full-width right area;
    col-sections and col-detail are hidden (agent card + steps live inside col-turns) */
