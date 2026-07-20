@@ -1305,6 +1305,7 @@ function _applyStatsToggleUI() {
 
 let selectedProjectName = null; // null = (all)
 let selectedSessionId = null;
+let _coldFetchController = null; // AbortController for in-flight cold session fetch (#317)
 let selectedTurnIdx = -1;
 let selectedSection = null;
 let selectedMessageIdx = -1;
@@ -2207,7 +2208,9 @@ function selectSession(id) {
     renderSessionToolBar(id);
     document.getElementById('columns').classList.remove('wf-active');
     renderBreadcrumb();
-    fetch('/_api/session/' + encodeURIComponent(id) + '/entries')
+    if (_coldFetchController) _coldFetchController.abort();
+    _coldFetchController = new AbortController();
+    fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: _coldFetchController.signal })
       .then(r => r.json())
       .then(data => {
         if (selectedSessionId !== id) return;
@@ -2261,7 +2264,8 @@ function selectSession(id) {
         if (spinner.parentNode) spinner.remove();
         _renderSelectedSession(id);
       })
-      .catch(() => {
+      .catch(err => {
+        if (err && err.name === 'AbortError') return;
         if (spinner.parentNode) spinner.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
       });
     return;
