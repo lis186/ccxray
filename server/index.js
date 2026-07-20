@@ -27,6 +27,7 @@ const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
+const sessionIdx = require('./session-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
@@ -629,6 +630,7 @@ async function gracefulExit(code) {
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
   const drain = (async () => {
     try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
+    try { await sessionIdx.flush(); } catch (e) { console.error('Session index flush failed:', e.message); }
     try { await config.storage.drain(); } catch (e) { console.error('Storage drain failed:', e.message); }
   })();
   await Promise.race([drain, deadline]);

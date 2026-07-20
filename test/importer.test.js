@@ -13,7 +13,23 @@ fs.mkdirSync(path.join(tmpHome, 'logs'), { recursive: true });
 fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 
 const store = require('../server/store');
+const config = require('../server/config');
+const sessionIdx = require('../server/session-index');
 const { scanAndImport, parseSessionFile, parseCodexSessionFile, slugToProject, tsToId } = require('../server/importer');
+
+const INDEX_PATH = path.join(tmpHome, 'logs', 'index.ndjson');
+
+// Imports bypass store.entries (#6): they land in index.ndjson + session
+// index only. Tests assert against those, and each test resets both because
+// scanAndImport dedups durably against index.ndjson ids.
+function readIndexLines() {
+  return fs.readFileSync(INDEX_PATH, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+}
+
+function resetDurableState() {
+  fs.writeFileSync(INDEX_PATH, '');
+  sessionIdx.rebuildFromIndexContent('');
+}
 
 function makeLine(type, extra = {}) {
   const base = {
@@ -61,6 +77,7 @@ describe('importer', () => {
   beforeEach(() => {
     store.entries.length = 0;
     store.entryIndex.clear();
+    resetDurableState();
     importDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-'));
     process.env.CCXRAY_IMPORT_HOMES = importDir;
     // scanAndImport() also scans Codex homes — isolate it here too, or it
@@ -154,11 +171,18 @@ describe('importer', () => {
       ].join('\n'));
 
       const result = await scanAndImport();
+      await config.storage.drain();
       assert.strictEqual(result.imported, 1);
-      assert.strictEqual(store.entries.length, 1);
-      assert.strictEqual(store.entryIndex.size, 1);
-      assert.strictEqual(store.entries[0].imported, true);
-      assert.strictEqual(store.entries[0].sessionId, 'session-abc');
+      // Imports bypass store.entries — they land in index.ndjson + session index
+      assert.strictEqual(store.entries.length, 0);
+      assert.strictEqual(store.entryIndex.size, 0);
+      const lines = readIndexLines();
+      assert.strictEqual(lines.length, 1);
+      assert.strictEqual(lines[0].imported, true);
+      assert.strictEqual(lines[0].sessionId, 'session-abc');
+      const sess = sessionIdx.getAll().find(s => s.sid === 'session-abc');
+      assert.ok(sess, 'session appears in session index');
+      assert.strictEqual(sess.count, 1);
     });
 
     it('deduplicates on second scan', async () => {
@@ -170,13 +194,15 @@ describe('importer', () => {
         makeAssistant({ timestamp: '2026-07-15T10:32:00.000Z' }),
       ].join('\n'));
 
-      await scanAndImport();
-      assert.strictEqual(store.entries.length, 1);
+      const result1 = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result1.imported, 1);
 
       const result2 = await scanAndImport();
+      await config.storage.drain();
       assert.strictEqual(result2.imported, 0);
       assert.strictEqual(result2.skipped, 1);
-      assert.strictEqual(store.entries.length, 1);
+      assert.strictEqual(readIndexLines().length, 1);
     });
 
     it('respects CCXRAY_IMPORT_DISABLE', async () => {
@@ -249,6 +275,7 @@ describe('codex importer', () => {
   beforeEach(() => {
     store.entries.length = 0;
     store.entryIndex.clear();
+    resetDurableState();
     codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-import-'));
     claudeHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-empty-claude-'));
     process.env.CCXRAY_IMPORT_CODEX_HOMES = codexDir;
@@ -320,13 +347,16 @@ describe('codex importer', () => {
       ].join('\n'));
 
       const result = await scanAndImport();
+      await config.storage.drain();
       assert.strictEqual(result.imported, 2);
-      assert.strictEqual(store.entries.length, 2);
+      assert.strictEqual(store.entries.length, 0);
 
-      const codexEntry = store.entries.find(e => e.importSource === 'codex');
+      const lines = readIndexLines();
+      assert.strictEqual(lines.length, 2);
+      const codexEntry = lines.find(e => e.importSource === 'codex');
       assert.ok(codexEntry);
       assert.strictEqual(codexEntry.provider, 'openai');
-      const claudeEntry = store.entries.find(e => e.importSource === 'claude-code');
+      const claudeEntry = lines.find(e => e.importSource === 'claude-code');
       assert.ok(claudeEntry);
       assert.strictEqual(claudeEntry.provider, 'anthropic');
     });
@@ -341,13 +371,14 @@ describe('codex importer', () => {
       ].join('\n'));
 
       const result1 = await scanAndImport();
+      await config.storage.drain();
       assert.strictEqual(result1.imported, 1);
-      assert.strictEqual(store.entries.length, 1);
 
       const result2 = await scanAndImport();
+      await config.storage.drain();
       assert.strictEqual(result2.imported, 0);
       assert.strictEqual(result2.skipped, 1);
-      assert.strictEqual(store.entries.length, 1);
+      assert.strictEqual(readIndexLines().length, 1);
     });
   });
 });

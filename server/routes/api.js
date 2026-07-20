@@ -8,10 +8,12 @@ const { tokenizeRequest } = require('../helpers');
 const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
-const { UPSTREAM_PROFILES } = require('../providers');
+const { UPSTREAM_PROFILES, normalizeUsageForProvider } = require('../providers');
 const forward = require('../forward');
+const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
+const sessionIdx = require('../session-index');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -45,17 +47,151 @@ function computeSettings() {
   };
 }
 
+// Normalize a raw index.ndjson line into a summarized entry (simplified
+// restore.js pipeline: anthropic maxContext re-inference + openai usage
+// normalization; skips the async sysModelMarker pass).
+function normalizeIndexEntry(meta) {
+  if (meta.provider === 'anthropic') {
+    meta.maxContext = Math.max(meta.maxContext || 0, config.inferMaxContext(meta.model, null, meta.usage));
+  }
+  if (meta.usage) {
+    const before = meta.usage;
+    meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
+    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+      meta.cost = calculateCost(meta.usage, meta.model);
+    }
+  }
+  return summarizeEntry({ ...meta, req: null, res: null, _loaded: false });
+}
+
+// Scan index.ndjson for entries of the given session ids (cold sessions have
+// no store.entries presence — index.ndjson is their durable source).
+async function loadSessionEntriesFromIndex(targetSids) {
+  const indexContent = await config.storage.readIndex();
+  const entries = [];
+  if (!indexContent) return entries;
+  // String pre-filter before JSON.parse: parsing all ~150K lines costs
+  // seconds per cold click; substring containment skips 99.9% of them.
+  // The exact targetSids check after parse stays authoritative.
+  const needles = [...targetSids].map(s => '"sessionId":"' + s + '"');
+  for (const line of indexContent.split('\n')) {
+    if (!line) continue;
+    let hit = false;
+    for (const n of needles) { if (line.includes(n)) { hit = true; break; } }
+    if (!hit) continue;
+    let meta;
+    try { meta = JSON.parse(line); } catch { continue; }
+    if (!meta.sessionId || !targetSids.has(meta.sessionId)) continue;
+    entries.push(normalizeIndexEntry(meta));
+  }
+  return entries;
+}
+
+// Add child sessions (workflow lanes render them alongside the parent)
+function addChildSessions(scopeSids) {
+  for (const [s, meta] of Object.entries(store.sessionMeta)) {
+    if (meta.parentSessionId && scopeSids.has(meta.parentSessionId)) scopeSids.add(s);
+  }
+  return scopeSids;
+}
+
+// Resolve a session id or unique prefix (deep links carry 8-char prefixes)
+function resolveSidPrefix(prefix) {
+  const all = new Set(Object.keys(store.sessionMeta));
+  for (const s of sessionIdx.getAll()) all.add(s.sid);
+  if (all.has(prefix)) return prefix;
+  let found = null;
+  for (const sid of all) {
+    if (sid.startsWith(prefix)) {
+      if (found) return null; // ambiguous
+      found = sid;
+    }
+  }
+  return found;
+}
+
+const RECENT_SESSIONS_N = parseInt(process.env.CCXRAY_RECENT_SESSIONS || '10', 10);
+
 function handleApiRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/entries') {
-    const entries = store.entries.map(summarizeEntry);
-    const sessionTitles = Object.fromEntries(
-      Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
-    );
-    const restore = { ...store.restoreState, entryCount: store.entries.length };
+    const params = new URLSearchParams(clientReq.url.split('?')[1] || '');
+    const sidParam = params.get('sid');
+    const entryParam = params.get('e');
+    // Scope resolution: ?sid= (id or prefix) > ?e= (entry id → its session)
+    // > default (N most recently active sessions). Sessions outside the scope
+    // arrive cold via /_api/sessions and load on demand.
+    let scopeSids = null;
+    let coldSid = null;
+    if (sidParam) {
+      // Unresolvable ids fall through as literal — the session may exist only
+      // in index.ndjson (cold, sessions.json rebuilt/lost). A wrong literal
+      // yields an empty batch, which the deep-link UI reports cleanly.
+      const full = resolveSidPrefix(sidParam) || sidParam;
+      scopeSids = new Set([full]);
+      if (!store.sessionMeta[full]) coldSid = full;
+    } else if (entryParam) {
+      const target = store.getEntryById(entryParam);
+      if (target && target.sessionId) scopeSids = new Set([target.sessionId]);
+    }
+    if (!scopeSids) {
+      const latest = new Map();
+      for (const e of store.entries) {
+        if (!e.sessionId) continue;
+        const t = Number(e.receivedAt) || 0;
+        if (t > (latest.get(e.sessionId) || 0)) latest.set(e.sessionId, t);
+      }
+      scopeSids = new Set(
+        [...latest.entries()].sort((a, b) => b[1] - a[1]).slice(0, RECENT_SESSIONS_N).map(([sid]) => sid)
+      );
+    }
+    addChildSessions(scopeSids);
+    (async () => {
+      let scoped = store.entries.filter(e => e.sessionId && scopeSids.has(e.sessionId));
+      let entries = scoped.map(summarizeEntry);
+      // Cold fallback: scoped session not in store.entries (trimmed or imported) — serve from index.ndjson
+      if (!entries.length && sidParam) {
+        entries = await loadSessionEntriesFromIndex(scopeSids);
+      }
+      const sessionTitles = Object.fromEntries(
+        Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
+      );
+      const restore = { ...store.restoreState, entryCount: store.entries.length };
+      clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      clientRes.end(JSON.stringify({ entries, sessionTitles, restore }));
+    })().catch(e => {
+      if (!clientRes.headersSent) clientRes.writeHead(500);
+      clientRes.end(JSON.stringify({ error: e.message }));
+    });
+    return true;
+  }
+
+  if (pathname === '/_api/sessions') {
+    const restore = store.restoreState;
     clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    clientRes.end(JSON.stringify({ entries, sessionTitles, restore }));
+    clientRes.end(JSON.stringify({ sessions: sessionIdx.getAll(), restore: { restoring: restore.restoring, complete: restore.complete } }));
+    return true;
+  }
+
+  // On-demand entry loading for a specific session (cold sessions, Phase 2)
+  const sessionEntriesMatch = pathname.match(/^\/\_api\/session\/([^/]+)\/entries$/);
+  if (sessionEntriesMatch) {
+    const sid = decodeURIComponent(sessionEntriesMatch[1]);
+    (async () => {
+      const targetSids = addChildSessions(new Set([sid]));
+      const entries = await loadSessionEntriesFromIndex(targetSids);
+      const sessionTitles = {};
+      for (const s of targetSids) {
+        const title = store.sessionMeta[s]?.title || sessionIdx.getAll().find(x => x.sid === s)?.title;
+        if (title) sessionTitles[s] = title;
+      }
+      clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      clientRes.end(JSON.stringify({ entries, sessionTitles }));
+    })().catch(e => {
+      if (!clientRes.headersSent) clientRes.writeHead(500);
+      clientRes.end(JSON.stringify({ error: e.message }));
+    });
     return true;
   }
 

@@ -16,6 +16,7 @@ const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
 const { agentForProvider } = require('./providers');
 const { buildIndexLine } = require('./entry');
+const sessionIdx = require('./session-index');
 const {
   isOpenAIResponseObject, extractOpenAIResponse, getOpenAIResponseFromEvents,
   getOpenAIOutputSummary, getOpenAIInputSummary, buildResponseMetadata,
@@ -32,6 +33,7 @@ function resolveTitleGenTitle(parsedBody, resPayload, receivedAt) {
   if (store.extractCwd(parsedBody)) return null; // main orchestrator, not a subagent
   const parentSid = store.attributeTitleGen(parsedBody, receivedAt);
   if (parentSid && store.setSessionTitle(parentSid, clean, receivedAt)) {
+    sessionIdx.setTitle(parentSid, clean);
     broadcastSessionTitleUpdate(parentSid);
   }
   return clean;
@@ -762,6 +764,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     // Persist to index (fire-and-forget after broadcast)
     const indexLine = buildIndexLine(entry);
     config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
+    sessionIdx.updateFromEntry(entry);
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
     entry.req = null;
@@ -860,6 +863,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
 
     const indexLine = buildIndexLine(entry);
     config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
+    sessionIdx.updateFromEntry(entry);
 
     entry.req = null;
     entry.res = null;
@@ -991,6 +995,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
 
     const indexLine = buildIndexLine(entry);
     config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write index failed:', e.message));
+    sessionIdx.updateFromEntry(entry);
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
     entry.req = null;

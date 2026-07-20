@@ -2050,6 +2050,9 @@ function renderStackedAreaChart(el, turns) {
 }
 
 function selectSessionAndLatestTurn(sid) {
+  // Cold session: delegate to selectSession which handles the on-demand fetch
+  const _sess = sessionsMap.get(sid);
+  if (_sess && _sess._cold) { selectSession(sid); return; }
   selectedSessionId = sid;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === sid);
@@ -2181,6 +2184,62 @@ function selectSession(id) {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === id);
   });
+  // Cold session: fetch entries on demand, then render
+  const sess = sessionsMap.get(id);
+  if (sess && sess._cold) {
+    colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
+    colSections.innerHTML = '';
+    colDetail.innerHTML = '';
+    const turnsColHeader = colTurns.querySelector('.col-sticky-header');
+    if (!turnsColHeader) {
+      colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title">Turns</div></div>';
+    }
+    const spinner = document.createElement('div');
+    spinner.className = 'col-empty loading-state';
+    spinner.innerHTML = '<div class="loading-spinner"></div><div>Loading ' + (sess.count || '') + ' turns…</div>';
+    colTurns.appendChild(spinner);
+    renderSessionToolBar(id);
+    document.getElementById('columns').classList.remove('wf-active');
+    renderBreadcrumb();
+    fetch('/_api/session/' + encodeURIComponent(id) + '/entries')
+      .then(r => r.json())
+      .then(data => {
+        if (selectedSessionId !== id) return;
+        // Zero accumulators before replay — sessions.json seeded them; addEntry re-derives
+        const projName = getProjectName(sess.cwd);
+        const proj = projectsMap.get(projName);
+        if (proj) proj.totalCost = Math.max(0, proj.totalCost - (sess.totalCost || 0));
+        sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
+        sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
+        sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+        sess._cold = false;
+        // Process entries via addEntry (classification + DOM creation)
+        const entries = data.entries || [];
+        for (const e of entries) addEntry(e);
+        // Titles
+        if (data.sessionTitles) {
+          for (const [sid, title] of Object.entries(data.sessionTitles)) {
+            const s = sessionsMap.get(sid);
+            if (s && !s.title) s.title = title;
+          }
+        }
+        // Recompute to ensure consistency (pure function rebuild)
+        if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
+        if (proj && typeof recomputeProjectCost === 'function') recomputeProjectCost(projName);
+        // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
+        if (spinner.parentNode) spinner.remove();
+        _renderSelectedSession(id);
+      })
+      .catch(() => {
+        if (spinner.parentNode) spinner.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
+      });
+    return;
+  }
+
+  _renderSelectedSession(id);
+}
+
+function _renderSelectedSession(id) {
   // Show turns for this session
   colTurns.querySelectorAll('.turn-item').forEach(el => {
     el.style.display = (id && el.dataset.sessionId === id) ? '' : 'none';
@@ -2192,6 +2251,11 @@ function selectSession(id) {
   updateRetryEmptyState(id);
   renderSessionToolBar(id);
   renderSessionSparkline(id);
+
+  // Re-render session card to reflect recomputed stats
+  const sessEl = document.getElementById('sess-' + id.slice(0, 8));
+  const sess = sessionsMap.get(id);
+  if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, id, sessEl);
 
   // Workflow swimlane view: col-turns becomes full-width right area
   var columnsEl = document.getElementById('columns');
@@ -2211,6 +2275,7 @@ function selectSession(id) {
   }
 
   renderBreadcrumb();
+  renderProjectsCol();
 }
 
 // Coalesced render scheduler — merges multiple async render requests into one rAF.

@@ -358,6 +358,8 @@ function _seqRecomputeSession(sid, sess, currentSeqTurn) {
 }
 
 function addEntry(e) {
+  // Dedup: SSE + on-demand fetch race can deliver the same entry twice
+  if (e.id && window.entryById && window.entryById.has(e.id)) return;
   if (entryCount === 0) colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div>';
   const idx = entryCount++;
 
@@ -893,6 +895,48 @@ function addEntry(e) {
   }
 }
 
+// ── Recompute session/project stats from entries (pure function) ──
+// Called after cold session activation to rebuild accumulators from entries
+// instead of accumulating on top of sessions.json seed values.
+function recomputeSessionStats(sid) {
+  const sess = sessionsMap.get(sid);
+  if (!sess) return;
+  sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
+  sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
+  sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+  for (var i = 0; i < allEntries.length; i++) {
+    var en = allEntries[i];
+    if (en.sessionId !== sid) continue;
+    sess.count++;
+    var cost = typeof en.cost === 'number' ? en.cost : (en.cost?.cost != null ? en.cost.cost : null);
+    if (en.isRetry) sess.retryCount++;
+    else if (en.isSubagent) sess.subCount++;
+    else sess.mainCount++;
+    if (cost != null) sess.totalCost += cost;
+    if (en.usage) {
+      sess.inputTokens += en.usage.input_tokens || 0;
+      sess.outputTokens += en.usage.output_tokens || 0;
+    }
+    if (en.toolCalls && Object.keys(en.toolCalls).length > 0) {
+      sess.toolCallTurns++;
+      Object.entries(en.toolCalls).forEach(function(kv) { sess.toolCalls[kv[0]] = (sess.toolCalls[kv[0]] || 0) + kv[1]; });
+      if (en.toolFail) sess.toolFailTurns++;
+    }
+  }
+}
+
+function recomputeProjectCost(projName) {
+  var proj = projectsMap.get(projName);
+  if (!proj) return;
+  proj.totalCost = 0;
+  proj.sessionIds.forEach(function(sid) {
+    var s = sessionsMap.get(sid);
+    if (s) proj.totalCost += s.totalCost || 0;
+  });
+}
+window.recomputeSessionStats = recomputeSessionStats;
+window.recomputeProjectCost = recomputeProjectCost;
+
 // Initialize badge on load
 setTimeout(() => updateSysPromptBadge('orchestrator'), 500);
 startQuotaTicker();
@@ -912,6 +956,39 @@ evtSource.onmessage = (ev) => {
       renderProjectsCol();
       applySessionFilter();
       updateTopbarStatus();
+    } else if (data._type === 'sessions_updated') {
+      // Importer finished — re-fetch session index to pick up new cold sessions
+      fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).then(sd => {
+        const cold = (sd && sd.sessions) || [];
+        for (const s of cold) {
+          if (!s || !s.sid || sessionsMap.has(s.sid)) continue;
+          sessionsMap.set(s.sid, {
+            id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
+            count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
+            model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
+            title: s.title || null, titleReqTs: 0, lastAssistantText: null,
+            agent: s.agent || 'claude', provider: s.provider || 'anthropic',
+            latestCacheHitRatio: 0, latestCacheReadTokens: 0,
+            resumeCommand: null, parentSessionId: null,
+            lastReceivedAt: s.lastReceivedAt || 0, _cold: true,
+          });
+          const shortSid = s.sid.slice(0, 8);
+          const sessEl = document.createElement('div');
+          sessEl.className = 'session-item';
+          sessEl.dataset.sessionId = s.sid;
+          sessEl.id = 'sess-' + shortSid;
+          sessEl.onclick = () => selectSession(s.sid);
+          sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
+          colSessions.appendChild(sessEl);
+          const projName = getProjectName(s.cwd);
+          if (!projectsMap.has(projName)) projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
+          const proj = projectsMap.get(projName);
+          proj.sessionIds.add(s.sid);
+          if (s.totalCost) proj.totalCost += s.totalCost;
+        }
+        renderProjectsCol();
+        applySessionFilter();
+      }).catch(() => {});
     } else if (data._type === 'session_title_update') {
       const sid = data.sessionId;
       const sess = sessionsMap.get(sid);
@@ -1062,13 +1139,28 @@ window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
 window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
+const _sessionsReady = (async function _fetchSessionsWhenReady() {
+  for (;;) {
+    const r = await fetch('/_api/sessions', { cache: 'no-store' }).catch(() => null);
+    if (!r) return { sessions: [] };
+    const d = await r.json();
+    if (!d.restore || !d.restore.restoring) return d;
+    await new Promise(r => setTimeout(r, 500));
+  }
+})();
 _markLoad('entries-start');
 const _entriesReady = _fetchEntriesWhenReady();
 
 async function _fetchEntriesWhenReady() {
   let firstResponse = true;
+  // Scoped initial load: deep links narrow the batch to the target session;
+  // otherwise the server returns the N most recently active sessions and
+  // everything else arrives cold via /_api/sessions (#303 Phase 2).
+  let qs = '';
+  if (_pendingDeepLink.s) qs = '?sid=' + encodeURIComponent(_pendingDeepLink.s);
+  else if (_pendingDeepLink.e) qs = '?e=' + encodeURIComponent(_pendingDeepLink.e);
   for (;;) {
-    const r = await fetch('/_api/entries', { cache: 'no-store' });
+    const r = await fetch('/_api/entries' + qs, { cache: 'no-store' });
     if (firstResponse) {
       _markLoad('entries-response');
       _measureLoad('entries-fetch', 'entries-start', 'entries-response');
@@ -1146,7 +1238,7 @@ async function _restoreEntryBatch(entries, opts) {
   }
 }
 
-Promise.all([_entriesReady, _starsReady]).then(async ([data]) => {
+Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , sessionsData]) => {
   const { entries = [], sessionTitles = {} } = data;
 
   if (entries.length) {
@@ -1192,6 +1284,45 @@ Promise.all([_entriesReady, _starsReady]).then(async ([data]) => {
   for (const [sid, title] of Object.entries(sessionTitles)) {
     const sess = sessionsMap.get(sid);
     if (sess) sess.title = title;
+  }
+
+  // Merge cold sessions from the full session index (#303).
+  const coldSessions = (sessionsData && sessionsData.sessions) || [];
+  for (const s of coldSessions) {
+    if (!s || !s.sid) continue;
+    if (sessionsMap.has(s.sid)) {
+      const existing = sessionsMap.get(s.sid);
+      if (!existing.title && s.title) existing.title = s.title;
+      continue;
+    }
+    sessionsMap.set(s.sid, {
+      id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
+      count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
+      model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
+      title: s.title || null, titleReqTs: 0, lastAssistantText: null,
+      agent: s.agent || 'claude', provider: s.provider || 'anthropic',
+      latestCacheHitRatio: 0, latestCacheReadTokens: 0,
+      resumeCommand: null, parentSessionId: null,
+      lastReceivedAt: s.lastReceivedAt || 0,
+      _cold: true,
+    });
+    const shortSid = s.sid.slice(0, 8);
+    const sessEl = document.createElement('div');
+    sessEl.className = 'session-item';
+    sessEl.dataset.sessionId = s.sid;
+    sessEl.id = 'sess-' + shortSid;
+    sessEl.onclick = () => selectSession(s.sid);
+    sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
+    colSessions.appendChild(sessEl);
+    const projName = getProjectName(s.cwd);
+    if (!projectsMap.has(projName)) {
+      projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
+    }
+    const proj = projectsMap.get(projName);
+    proj.sessionIds.add(s.sid);
+    if (s.totalCost) proj.totalCost += s.totalCost;
+    if (s.lastId && s.lastId > (proj.lastId || '')) proj.lastId = s.lastId;
+    if (s.lastReceivedAt && s.lastReceivedAt > (proj.lastSeenAt || 0)) proj.lastSeenAt = s.lastReceivedAt;
   }
 
   // Post-batch: one final render pass — sort sessions by most-recently-active then
