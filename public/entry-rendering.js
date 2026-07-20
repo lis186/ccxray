@@ -658,7 +658,10 @@ function addEntry(e) {
         sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
         if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
       }
-      if (!_loading) recomputeProjectCost(projName);
+      if (!_loading) {
+        recomputeProjectCost(projName);
+        if (prevProjectName && prevProjectName !== projName) recomputeProjectCost(prevProjectName);
+      }
     }
     if (_loading) {
       if (!_dirtySessions) _dirtySessions = new Set();

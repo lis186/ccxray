@@ -2205,8 +2205,12 @@ function selectSession(id) {
       .then(r => r.json())
       .then(data => {
         if (selectedSessionId !== id) return;
-        // #308: replay with _cold still true so addEntry uses incremental
-        // counts (not per-entry recompute → O(n²)). One recompute after.
+        // #308: zero stats before replay — sessions.json seeded them; addEntry
+        // increments on top (cold path), so without zeroing = double-count.
+        // Replay with _cold still true → incremental counts, not O(n²) recompute.
+        sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
+        sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
+        sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
         const entries = data.entries || [];
         for (const e of entries) addEntry(e);
         sess._cold = false;
