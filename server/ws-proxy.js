@@ -367,8 +367,10 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   broadcast(entry);
 
   const indexLine = buildIndexLine(entry);
-  config.storage.appendIndex(indexLine + '\n').catch(e => console.error('Write ws index failed:', e.message));
-  sessionIdx.updateFromEntry(entry);
+  // Log-first: only update session index after index.ndjson write succeeds (#309)
+  config.storage.appendIndex(indexLine + '\n').then(() => {
+    sessionIdx.updateFromEntry(entry);
+  }).catch(e => console.error('Write ws index failed:', e.message));
   entry.req = null;
   entry.res = null;
   entry._loaded = false;

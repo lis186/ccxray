@@ -141,6 +141,13 @@ async function restoreFromLogs() {
     return;
   }
 
+  // 1b. Reconcile sessions.json against index.ndjson if loaded (#309)
+  if (sessionIndexLoaded && indexContent) {
+    if (sessionIdx.reconcile(indexContent)) {
+      console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
+    }
+  }
+
   // 2. Parse index lines and filter by RESTORE_DAYS
   console.time('restore:parse');
   let cutoffStr = null;

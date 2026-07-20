@@ -101,4 +101,57 @@ describe('session-index', () => {
     }
     assert.equal(si.size(), 5);
   });
+
+  it('reconcile detects session-count drift and rebuilds', async () => {
+    const si = require('../server/session-index');
+    // Seed sessions.json with 2 sessions
+    si.updateFromEntry({ sessionId: 'sa', id: 't1', model: 'x', cost: { cost: 1 }, receivedAt: 1 });
+    si.updateFromEntry({ sessionId: 'sb', id: 't2', model: 'x', cost: { cost: 2 }, receivedAt: 2 });
+    await si.flush();
+    assert.equal(si.size(), 2);
+
+    // index.ndjson has 3 sessions
+    const indexContent = [
+      JSON.stringify({ id: 't1', sessionId: 'sa', model: 'x', cost: { cost: 1 }, receivedAt: 1 }),
+      JSON.stringify({ id: 't2', sessionId: 'sb', model: 'x', cost: { cost: 2 }, receivedAt: 2 }),
+      JSON.stringify({ id: 't3', sessionId: 'sc', model: 'x', cost: { cost: 3 }, receivedAt: 3 }),
+    ].join('\n');
+
+    const drifted = si.reconcile(indexContent);
+    assert.ok(drifted, 'should detect session-count drift');
+    assert.equal(si.size(), 3, 'should rebuild with 3 sessions');
+  });
+
+  it('reconcile detects entry-count drift and rebuilds', async () => {
+    const si = require('../server/session-index');
+    // Seed with 1 session / 1 entry
+    si.updateFromEntry({ sessionId: 'sa', id: 't1', model: 'x', cost: { cost: 1 }, receivedAt: 1 });
+    await si.flush();
+    assert.equal(si.getAll()[0].count, 1);
+
+    // index.ndjson has same 1 session but 2 entries
+    const indexContent = [
+      JSON.stringify({ id: 't1', sessionId: 'sa', model: 'x', cost: { cost: 1 }, receivedAt: 1 }),
+      JSON.stringify({ id: 't2', sessionId: 'sa', model: 'x', cost: { cost: 2 }, receivedAt: 2 }),
+    ].join('\n');
+
+    const drifted = si.reconcile(indexContent);
+    assert.ok(drifted, 'should detect entry-count drift');
+    assert.equal(si.getAll()[0].count, 2, 'should rebuild with correct count');
+  });
+
+  it('reconcile passes when counts match', () => {
+    const si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 'sa', id: 't1', model: 'x', cost: { cost: 1 }, receivedAt: 1 });
+    si.updateFromEntry({ sessionId: 'sb', id: 't2', model: 'x', cost: { cost: 2 }, receivedAt: 2 });
+
+    const indexContent = [
+      JSON.stringify({ id: 't1', sessionId: 'sa', model: 'x', cost: { cost: 1 }, receivedAt: 1 }),
+      JSON.stringify({ id: 't2', sessionId: 'sb', model: 'x', cost: { cost: 2 }, receivedAt: 2 }),
+    ].join('\n');
+
+    const drifted = si.reconcile(indexContent);
+    assert.equal(drifted, false, 'should not detect drift');
+    assert.equal(si.size(), 2, 'should keep existing sessions');
+  });
 });
