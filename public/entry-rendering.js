@@ -522,16 +522,6 @@ function addEntry(e) {
       }
     }
   }
-  // During batch load, suppress per-entry DOM rerenders (post-batch does one final pass).
-  if (!_loading) {
-    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessEl) {
-      sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
-      const firstSession = colSessions.querySelector('.session-item');
-      if (firstSession && firstSession !== sessEl) colSessions.insertBefore(sessEl, firstSession);
-    }
-  }
-
   // Project tracking
   const projName = getProjectName(sess.cwd);
   // sess.cwd only changes in the migration block above and getProjectName is
@@ -640,15 +630,54 @@ function addEntry(e) {
     cwd: e.cwd || null,
   });
 
-  // #308: derive all session/project stats from entries (idempotent by construction)
-  recomputeSessionStats(sid);
+  // #308: derive session/project stats from entries
+  // #308: three stat-update paths, all producing correct displayNum counts.
+  // Live (hot): full recompute from allEntries (idempotent, O(n) per entry).
+  // Batch: increment counts for displayNum; defer full recompute to post-batch.
+  // Cold: increment all stats (entries not in allEntries; full recompute on activation).
+  if (!_loading && !sess._cold) {
+    recomputeSessionStats(sid);
+    recomputeProjectCost(projName);
+    if (prevProjectName && prevProjectName !== projName) recomputeProjectCost(prevProjectName);
+  } else {
+    // Incremental counts — needed for displayNum during batch/cold
+    sess.count++;
+    if (isRetry) sess.retryCount = (sess.retryCount || 0) + 1;
+    else if (isSubagent) sess.subCount++;
+    else sess.mainCount++;
+    if (sess._cold) {
+      // ponytail: cold session — full stats increment; recompute on activation
+      if (turnCost != null) sess.totalCost += turnCost;
+      if (usage) {
+        sess.inputTokens = (sess.inputTokens || 0) + (usage.input_tokens || 0);
+        sess.outputTokens = (sess.outputTokens || 0) + (usage.output_tokens || 0);
+      }
+      if (e.toolCalls && Object.keys(e.toolCalls).length > 0) {
+        if (!sess.toolCalls) sess.toolCalls = {};
+        for (const [name, cnt] of Object.entries(e.toolCalls)) sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
+        sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
+        if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+      }
+    }
+    if (_loading) {
+      if (!_dirtySessions) _dirtySessions = new Set();
+      _dirtySessions.add(sid);
+    }
+  }
   const displayNum = isRetry ? ('r' + sess.retryCount) : isSubagent ? ('s' + sess.subCount) : String(sess.mainCount);
   allEntries[allEntries.length - 1].displayNum = displayNum;
   if (entryId && window.entryById) {
     window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null, displayNum });
   }
-  recomputeProjectCost(projName);
-  if (prevProjectName && prevProjectName !== projName) recomputeProjectCost(prevProjectName);
+  // Re-render session card after stats are fresh (suppressed during batch)
+  if (!_loading) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    if (sessEl) {
+      sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
+      const firstSession = colSessions.querySelector('.session-item');
+      if (firstSession && firstSession !== sessEl) colSessions.insertBefore(sessEl, firstSession);
+    }
+  }
 
   // Workflow timeline: incremental update for live entries (direct or child session).
   // Retries reach wfAddEntry too (no !isRetry gate here): its eligibility gate
@@ -1143,6 +1172,7 @@ function _formatDeepLinkFailure(reason) {
 // Stars load in parallel with entries; rerender after both resolve so the
 // initial column paint already shows the correct star/derived badges.
 var _loading = true;
+var _dirtySessions = null; // #308: batch-deferred recompute
 window._entriesLoading = true;
 window._entriesLoadingProjectName = _pendingDeepLink.p || null;
 window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
@@ -1309,6 +1339,12 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   window._entriesLoadingProjectName = null;
   window._entriesLoadingSessionPrefix = null;
   window._entriesLoadingText = '';
+  // #308: batch-deferred recompute — one pass per dirty session, O(n) total
+  if (_dirtySessions) {
+    for (const sid of _dirtySessions) recomputeSessionStats(sid);
+    _dirtySessions = null;
+    for (const [name] of projectsMap) recomputeProjectCost(name);
+  }
   const colSessEl = document.getElementById('col-sessions');
   if (colSessEl) {
     const sortedSids = [...sessionsMap.entries()]
