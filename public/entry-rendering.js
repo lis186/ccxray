@@ -937,6 +937,45 @@ function recomputeProjectCost(projName) {
 window.recomputeSessionStats = recomputeSessionStats;
 window.recomputeProjectCost = recomputeProjectCost;
 
+// ── Merge cold sessions from session index into sessionsMap + DOM + projectsMap ──
+function mergeColdSessions(sessions) {
+  for (const s of sessions) {
+    if (!s || !s.sid) continue;
+    if (sessionsMap.has(s.sid)) {
+      var existing = sessionsMap.get(s.sid);
+      if (!existing.title && s.title) existing.title = s.title;
+      continue;
+    }
+    sessionsMap.set(s.sid, {
+      id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
+      count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
+      model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
+      title: s.title || null, titleReqTs: 0, lastAssistantText: null,
+      agent: s.agent || 'claude', provider: s.provider || 'anthropic',
+      latestCacheHitRatio: 0, latestCacheReadTokens: 0,
+      resumeCommand: null, parentSessionId: null,
+      lastReceivedAt: s.lastReceivedAt || 0, _cold: true,
+    });
+    var shortSid = s.sid.slice(0, 8);
+    var sessEl = document.createElement('div');
+    sessEl.className = 'session-item';
+    sessEl.dataset.sessionId = s.sid;
+    sessEl.id = 'sess-' + shortSid;
+    sessEl.onclick = (function(sid) { return function() { selectSession(sid); }; })(s.sid);
+    sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
+    colSessions.appendChild(sessEl);
+    var projName = getProjectName(s.cwd);
+    if (!projectsMap.has(projName)) {
+      projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
+    }
+    var proj = projectsMap.get(projName);
+    proj.sessionIds.add(s.sid);
+    if (s.totalCost) proj.totalCost += s.totalCost;
+    if (s.lastId && s.lastId > (proj.lastId || '')) proj.lastId = s.lastId;
+    if (s.lastReceivedAt && s.lastReceivedAt > (proj.lastSeenAt || 0)) proj.lastSeenAt = s.lastReceivedAt;
+  }
+}
+
 // Initialize badge on load
 setTimeout(() => updateSysPromptBadge('orchestrator'), 500);
 startQuotaTicker();
@@ -947,7 +986,18 @@ const evtSource = new EventSource('/_events');
 evtSource.onmessage = (ev) => {
   try {
     const data = JSON.parse(ev.data);
-    if (data._type === 'session_status') {
+    if (data._type === 'stale') {
+      // Server ring buffer evicted or hub restarted — full re-fetch
+      console.log('[ccxray] SSE stale — re-fetching entries + sessions');
+      Promise.all([
+        fetch('/_api/entries', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ entries: [] })),
+        fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ sessions: [] })),
+      ]).then(([entriesData, sessionsData]) => {
+        for (const e of (entriesData.entries || [])) addEntry(e);
+        mergeColdSessions(sessionsData.sessions || []);
+        renderProjectsCol();
+      });
+    } else if (data._type === 'session_status') {
       sessionStatusMap.set(data.sessionId, { active: data.active, lastSeenAt: data.lastSeenAt });
       const sid = data.sessionId;
       const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
@@ -959,33 +1009,7 @@ evtSource.onmessage = (ev) => {
     } else if (data._type === 'sessions_updated') {
       // Importer finished — re-fetch session index to pick up new cold sessions
       fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).then(sd => {
-        const cold = (sd && sd.sessions) || [];
-        for (const s of cold) {
-          if (!s || !s.sid || sessionsMap.has(s.sid)) continue;
-          sessionsMap.set(s.sid, {
-            id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
-            count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
-            model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
-            title: s.title || null, titleReqTs: 0, lastAssistantText: null,
-            agent: s.agent || 'claude', provider: s.provider || 'anthropic',
-            latestCacheHitRatio: 0, latestCacheReadTokens: 0,
-            resumeCommand: null, parentSessionId: null,
-            lastReceivedAt: s.lastReceivedAt || 0, _cold: true,
-          });
-          const shortSid = s.sid.slice(0, 8);
-          const sessEl = document.createElement('div');
-          sessEl.className = 'session-item';
-          sessEl.dataset.sessionId = s.sid;
-          sessEl.id = 'sess-' + shortSid;
-          sessEl.onclick = () => selectSession(s.sid);
-          sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
-          colSessions.appendChild(sessEl);
-          const projName = getProjectName(s.cwd);
-          if (!projectsMap.has(projName)) projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
-          const proj = projectsMap.get(projName);
-          proj.sessionIds.add(s.sid);
-          if (s.totalCost) proj.totalCost += s.totalCost;
-        }
+        mergeColdSessions((sd && sd.sessions) || []);
         renderProjectsCol();
         applySessionFilter();
       }).catch(() => {});
@@ -1290,43 +1314,7 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   }
 
   // Merge cold sessions from the full session index (#303).
-  const coldSessions = (sessionsData && sessionsData.sessions) || [];
-  for (const s of coldSessions) {
-    if (!s || !s.sid) continue;
-    if (sessionsMap.has(s.sid)) {
-      const existing = sessionsMap.get(s.sid);
-      if (!existing.title && s.title) existing.title = s.title;
-      continue;
-    }
-    sessionsMap.set(s.sid, {
-      id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
-      count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
-      model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
-      title: s.title || null, titleReqTs: 0, lastAssistantText: null,
-      agent: s.agent || 'claude', provider: s.provider || 'anthropic',
-      latestCacheHitRatio: 0, latestCacheReadTokens: 0,
-      resumeCommand: null, parentSessionId: null,
-      lastReceivedAt: s.lastReceivedAt || 0,
-      _cold: true,
-    });
-    const shortSid = s.sid.slice(0, 8);
-    const sessEl = document.createElement('div');
-    sessEl.className = 'session-item';
-    sessEl.dataset.sessionId = s.sid;
-    sessEl.id = 'sess-' + shortSid;
-    sessEl.onclick = () => selectSession(s.sid);
-    sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
-    colSessions.appendChild(sessEl);
-    const projName = getProjectName(s.cwd);
-    if (!projectsMap.has(projName)) {
-      projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
-    }
-    const proj = projectsMap.get(projName);
-    proj.sessionIds.add(s.sid);
-    if (s.totalCost) proj.totalCost += s.totalCost;
-    if (s.lastId && s.lastId > (proj.lastId || '')) proj.lastId = s.lastId;
-    if (s.lastReceivedAt && s.lastReceivedAt > (proj.lastSeenAt || 0)) proj.lastSeenAt = s.lastReceivedAt;
-  }
+  mergeColdSessions((sessionsData && sessionsData.sessions) || []);
 
   // Post-batch: one final render pass — sort sessions by most-recently-active then
   // rerender each item with accumulated data. colSessions + renderSessionItem are

@@ -26,7 +26,7 @@ describe('broadcastSessionTitleUpdate', () => {
     store.sseClients.push(client);
     sse.broadcastSessionTitleUpdate('sA', { immediate: true });
     assert.equal(client.written.length, 1);
-    const parsed = JSON.parse(client.written[0].replace(/^data: /, '').trim());
+    const parsed = JSON.parse(client.written[0].split('\n').find(l => l.startsWith('data: ')).replace(/^data: /, ''));
     assert.equal(parsed._type, 'session_title_update');
     assert.equal(parsed.sessionId, 'sA');
     assert.equal(parsed.title, 'first');
@@ -47,7 +47,7 @@ describe('broadcastSessionTitleUpdate', () => {
 
     setTimeout(() => {
       assert.equal(client.written.length, 1, 'exactly one event after debounce window');
-      const parsed = JSON.parse(client.written[0].replace(/^data: /, '').trim());
+      const parsed = JSON.parse(client.written[0].split('\n').find(l => l.startsWith('data: ')).replace(/^data: /, ''));
       assert.equal(parsed.title, 'third');
       done();
     }, sse.TITLE_DEBOUNCE_MS + 100);
