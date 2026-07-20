@@ -2205,27 +2205,17 @@ function selectSession(id) {
       .then(r => r.json())
       .then(data => {
         if (selectedSessionId !== id) return;
-        // Zero accumulators before replay — sessions.json seeded them; addEntry re-derives
-        const projName = getProjectName(sess.cwd);
-        const proj = projectsMap.get(projName);
-        if (proj) proj.totalCost = Math.max(0, proj.totalCost - (sess.totalCost || 0));
-        sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
-        sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
-        sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+        // #308: addEntry recomputes stats from entries on every call — no
+        // zero-then-replay needed; the last addEntry's recompute is final.
         sess._cold = false;
-        // Process entries via addEntry (classification + DOM creation)
         const entries = data.entries || [];
         for (const e of entries) addEntry(e);
-        // Titles
         if (data.sessionTitles) {
           for (const [sid, title] of Object.entries(data.sessionTitles)) {
             const s = sessionsMap.get(sid);
             if (s && !s.title) s.title = title;
           }
         }
-        // Recompute to ensure consistency (pure function rebuild)
-        if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
-        if (proj && typeof recomputeProjectCost === 'function') recomputeProjectCost(projName);
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
         if (spinner.parentNode) spinner.remove();
         _renderSelectedSession(id);
