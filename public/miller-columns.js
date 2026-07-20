@@ -2205,11 +2205,14 @@ function selectSession(id) {
       .then(r => r.json())
       .then(data => {
         if (selectedSessionId !== id) return;
-        // #308: addEntry recomputes stats from entries on every call — no
-        // zero-then-replay needed; the last addEntry's recompute is final.
-        sess._cold = false;
+        // #308: replay with _cold still true so addEntry uses incremental
+        // counts (not per-entry recompute → O(n²)). One recompute after.
         const entries = data.entries || [];
         for (const e of entries) addEntry(e);
+        sess._cold = false;
+        if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
+        const projName = getProjectName(sess.cwd);
+        if (typeof recomputeProjectCost === 'function') recomputeProjectCost(projName);
         if (data.sessionTitles) {
           for (const [sid, title] of Object.entries(data.sessionTitles)) {
             const s = sessionsMap.get(sid);
