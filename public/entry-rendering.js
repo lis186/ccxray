@@ -1385,6 +1385,13 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   } else if (sessionsMap.size) {
     initAutoSelect();
   }
+  // #308: re-render selected session card after recompute (deep link may have
+  // selected a session whose stats were recomputed but card not yet refreshed)
+  if (selectedSessionId) {
+    const sessEl = document.getElementById('sess-' + selectedSessionId.slice(0, 8));
+    const sess = sessionsMap.get(selectedSessionId);
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, selectedSessionId, sessEl);
+  }
   applySessionFilter();
   setFocus(focusedCol);
   if (typeof restoreTabFromUrl === 'function') restoreTabFromUrl();
