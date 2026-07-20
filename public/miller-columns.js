@@ -2050,6 +2050,9 @@ function renderStackedAreaChart(el, turns) {
 }
 
 function selectSessionAndLatestTurn(sid) {
+  // Cold session: delegate to selectSession which handles the on-demand fetch
+  const _sess = sessionsMap.get(sid);
+  if (_sess && _sess._cold) { selectSession(sid); return; }
   selectedSessionId = sid;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === sid);

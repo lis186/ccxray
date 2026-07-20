@@ -150,8 +150,8 @@ function handleApiRoutes(clientReq, clientRes) {
     (async () => {
       let scoped = store.entries.filter(e => e.sessionId && scopeSids.has(e.sessionId));
       let entries = scoped.map(summarizeEntry);
-      // Deep-linked cold session: not in store.entries — serve from index.ndjson
-      if (!entries.length && coldSid) {
+      // Cold fallback: scoped session not in store.entries (trimmed or imported) — serve from index.ndjson
+      if (!entries.length && sidParam) {
         entries = await loadSessionEntriesFromIndex(scopeSids);
       }
       const sessionTitles = Object.fromEntries(
@@ -168,8 +168,9 @@ function handleApiRoutes(clientReq, clientRes) {
   }
 
   if (pathname === '/_api/sessions') {
+    const restore = store.restoreState;
     clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    clientRes.end(JSON.stringify({ sessions: sessionIdx.getAll() }));
+    clientRes.end(JSON.stringify({ sessions: sessionIdx.getAll(), restore: { restoring: restore.restoring, complete: restore.complete } }));
     return true;
   }
 

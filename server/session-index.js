@@ -18,10 +18,20 @@ function tmpPath() {
   return sessionsPath() + '.tmp';
 }
 
-// Read sessions.json (NDJSON). Returns true on success, false on missing/corrupt.
+// Read sessions.json (NDJSON). Returns true on success, false on missing/corrupt/stale.
 async function loadSessionIndex() {
   try {
-    const raw = await fsp.readFile(sessionsPath(), 'utf8');
+    const sp = sessionsPath();
+    const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    // Stale check: if index.ndjson is newer than sessions.json, rebuild
+    try {
+      const [sStat, iStat] = await Promise.all([fsp.stat(sp), fsp.stat(indexPath)]);
+      if (iStat.mtimeMs > sStat.mtimeMs) {
+        console.log('\x1b[33m[session-index] sessions.json stale (index.ndjson newer) — will rebuild\x1b[0m');
+        return false;
+      }
+    } catch { /* either file missing → load attempt will handle it */ }
+    const raw = await fsp.readFile(sp, 'utf8');
     sessionIndex.clear();
     for (const line of raw.split('\n')) {
       if (!line) continue;

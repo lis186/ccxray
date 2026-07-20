@@ -285,6 +285,8 @@ async function parseCodexSessionFile(filePath) {
   return entries;
 }
 
+const _pendingIndexWrites = [];
+
 function pushImportedEntry(entry, existingIds) {
   if (existingIds.has(entry.id)) return false;
   existingIds.add(entry.id);
@@ -292,7 +294,7 @@ function pushImportedEntry(entry, existingIds) {
   // broadcast to avoid 158K memory spike + client SSE flood. Imported sessions
   // are cold; their entries load on-demand via /_api/session/:sid/entries.
   const indexLine = buildIndexLine(entry);
-  config.storage.appendIndex(indexLine + '\n').catch(() => {});
+  _pendingIndexWrites.push(config.storage.appendIndex(indexLine + '\n').catch(() => {}));
   sessionIdx.updateFromEntry(entry);
   return true;
 }
@@ -352,6 +354,8 @@ async function scanAndImport() {
   }
 
   if (imported > 0) {
+    await Promise.all(_pendingIndexWrites);
+    _pendingIndexWrites.length = 0;
     await sessionIdx.flush();
     broadcastRaw({ _type: 'sessions_updated' });
     console.log(`[importer] Imported ${imported} turns from local transcripts (${skipped} duplicates skipped)`);

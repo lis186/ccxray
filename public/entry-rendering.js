@@ -1139,7 +1139,15 @@ window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
 window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
-const _sessionsReady = fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ sessions: [] }));
+const _sessionsReady = (async function _fetchSessionsWhenReady() {
+  for (;;) {
+    const r = await fetch('/_api/sessions', { cache: 'no-store' }).catch(() => null);
+    if (!r) return { sessions: [] };
+    const d = await r.json();
+    if (!d.restore || !d.restore.restoring) return d;
+    await new Promise(r => setTimeout(r, 500));
+  }
+})();
 _markLoad('entries-start');
 const _entriesReady = _fetchEntriesWhenReady();
 
