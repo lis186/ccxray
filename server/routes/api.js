@@ -169,8 +169,12 @@ function handleApiRoutes(clientReq, clientRes) {
 
   if (pathname === '/_api/sessions') {
     const restore = store.restoreState;
+    let sessions = sessionIdx.getAll();
+    if (!config.COLD_SESSIONS_ENABLED) {
+      sessions = sessions.filter(s => store.sessionMeta[s.sid]);
+    }
     clientRes.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-    clientRes.end(JSON.stringify({ sessions: sessionIdx.getAll(), restore: { restoring: restore.restoring, complete: restore.complete } }));
+    clientRes.end(JSON.stringify({ sessions, restore: { restoring: restore.restoring, complete: restore.complete } }));
     return true;
   }
 

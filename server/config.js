@@ -193,6 +193,7 @@ const MAX_SSE_PER_IP = parseInt(process.env.CCXRAY_SSE_MAX_PER_IP || '20', 10);
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS), 10);
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
 const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
+const COLD_SESSIONS_ENABLED = process.env.CCXRAY_COLD_SESSIONS === '1';
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';
 const MAX_BODY_BYTES = parseInt(process.env.CCXRAY_MAX_BODY_MB || '50', 10) * 1024 * 1024;
 
@@ -340,6 +341,7 @@ module.exports = {
   UPSTREAMS,
   LOGS_DIR,
   RESTORE_DAYS,
+  COLD_SESSIONS_ENABLED,
   LOG_RETENTION_DAYS,
   DELTA_SNAPSHOT_N,
   MAX_SSE_PER_IP,
