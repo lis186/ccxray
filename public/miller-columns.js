@@ -2166,6 +2166,12 @@ function formatCurrentStepBreadcrumb() {
   return 'step #' + (step.stepIdx + 1) + subLabel;
 }
 
+function zeroSessionStats(s) {
+  s.count = 0; s.mainCount = 0; s.subCount = 0; s.retryCount = 0;
+  s.totalCost = 0; s.inputTokens = 0; s.outputTokens = 0;
+  s.toolCalls = {}; s.toolCallTurns = 0; s.toolFailTurns = 0;
+}
+
 function selectSession(id) {
   setFocus('sessions');
   if (id === selectedSessionId) return;
@@ -2208,22 +2214,48 @@ function selectSession(id) {
         // #308: zero stats before replay — sessions.json seeded them; addEntry
         // increments on top (cold path), so without zeroing = double-count.
         // Replay with _cold still true → incremental counts, not O(n²) recompute.
-        sess.count = 0; sess.mainCount = 0; sess.subCount = 0; sess.retryCount = 0;
-        sess.totalCost = 0; sess.inputTokens = 0; sess.outputTokens = 0;
-        sess.toolCalls = {}; sess.toolCallTurns = 0; sess.toolFailTurns = 0;
+        zeroSessionStats(sess);
         const entries = data.entries || [];
+        // Track all sessions touched during replay (child sessions, migrations)
+        const replaySids = new Set([id]);
         window._coldActivating = true;
-        for (const e of entries) addEntry(e);
-        window._coldActivating = false;
-        sess._cold = false;
-        if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
-        const projName = getProjectName(sess.cwd);
-        if (typeof recomputeProjectCost === 'function') recomputeProjectCost(projName);
+        try {
+          for (const e of entries) {
+            if (e.sessionId && !replaySids.has(e.sessionId)) {
+              replaySids.add(e.sessionId);
+              // Zero child session stats seeded by mergeColdSessions (same reason as parent)
+              const cs = sessionsMap.get(e.sessionId);
+              if (cs && cs._cold) zeroSessionStats(cs);
+            }
+            addEntry(e);
+          }
+        } finally {
+          window._coldActivating = false;
+        }
+        // Clear _cold for all replayed sessions (parent + children)
+        for (const sid of replaySids) {
+          const s = sessionsMap.get(sid);
+          if (s) s._cold = false;
+        }
+        if (typeof recomputeSessionStats === 'function') {
+          for (const sid of replaySids) recomputeSessionStats(sid);
+        }
+        // Recompute all projects — cwd migration means old project needs update too
+        if (typeof recomputeProjectCost === 'function') {
+          for (const [name] of projectsMap) recomputeProjectCost(name);
+        }
         if (data.sessionTitles) {
           for (const [sid, title] of Object.entries(data.sessionTitles)) {
             const s = sessionsMap.get(sid);
             if (s && !s.title) s.title = title;
           }
+        }
+        // Re-render child session cards to reflect recomputed stats
+        for (const sid of replaySids) {
+          if (sid === id) continue;
+          const childEl = document.getElementById('sess-' + sid.slice(0, 8));
+          const childSess = sessionsMap.get(sid);
+          if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
         }
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
         if (spinner.parentNode) spinner.remove();
