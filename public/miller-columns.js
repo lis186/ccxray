@@ -1305,6 +1305,7 @@ function _applyStatsToggleUI() {
 
 let selectedProjectName = null; // null = (all)
 let selectedSessionId = null;
+let _coldFetchController = null; // AbortController for in-flight cold session fetch (#317)
 let selectedTurnIdx = -1;
 let selectedSection = null;
 let selectedMessageIdx = -1;
@@ -2209,7 +2210,9 @@ function selectSession(id) {
     columnsEl.classList.remove('wf-active');
     columnsEl.classList.add('cold-loading');
     renderBreadcrumb();
-    fetch('/_api/session/' + encodeURIComponent(id) + '/entries')
+    if (_coldFetchController) _coldFetchController.abort();
+    _coldFetchController = new AbortController();
+    fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: _coldFetchController.signal })
       .then(r => r.json())
       .then(data => {
         if (selectedSessionId !== id) return;
@@ -2260,11 +2263,13 @@ function selectSession(id) {
           if (childEl && childSess) childEl.innerHTML = renderSessionItem(childSess, sid, childEl);
         }
         // Render — use _renderSelectedSession to avoid selectSession's id===selected guard
+        _coldFetchController = null;
         if (spinner.parentNode) spinner.remove();
         columnsEl.classList.remove('cold-loading');
         _renderSelectedSession(id);
       })
-      .catch(() => {
+      .catch(err => {
+        if (err && err.name === 'AbortError') return;
         columnsEl.classList.remove('cold-loading');
         if (spinner.parentNode) spinner.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
       });
