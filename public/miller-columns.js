@@ -2216,9 +2216,17 @@ function selectSession(id) {
         for (const e of entries) addEntry(e);
         window._coldActivating = false;
         sess._cold = false;
-        if (typeof recomputeSessionStats === 'function') recomputeSessionStats(id);
-        const projName = getProjectName(sess.cwd);
-        if (typeof recomputeProjectCost === 'function') recomputeProjectCost(projName);
+        if (typeof recomputeSessionStats === 'function') {
+          recomputeSessionStats(id);
+          // Child sessions created during cold replay also need full recompute
+          for (const [childId, childSess] of sessionsMap) {
+            if (childSess.parentSessionId === id) recomputeSessionStats(childId);
+          }
+        }
+        // Recompute all projects — cwd migration means old project needs update too
+        if (typeof recomputeProjectCost === 'function') {
+          for (const [name] of projectsMap) recomputeProjectCost(name);
+        }
         if (data.sessionTitles) {
           for (const [sid, title] of Object.entries(data.sessionTitles)) {
             const s = sessionsMap.get(sid);

@@ -635,7 +635,7 @@ function addEntry(e) {
   // Live (hot): full recompute from allEntries (idempotent, O(n) per entry).
   // Batch: increment counts for displayNum; defer full recompute to post-batch.
   // Cold: increment all stats (entries not in allEntries; full recompute on activation).
-  if (!_loading && !sess._cold) {
+  if (!_loading && !sess._cold && !window._coldActivating) {
     recomputeSessionStats(sid);
     recomputeProjectCost(projName);
     if (prevProjectName && prevProjectName !== projName) recomputeProjectCost(prevProjectName);
