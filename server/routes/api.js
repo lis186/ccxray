@@ -17,6 +17,35 @@ const sessionIdx = require('../session-index');
 
 const AUTO_COMPACT_PCT = 0.835;
 
+// ── Bounded LRU for cold-session entries (disk fallback) ────────────
+const COLD_LRU_CAP = 200;
+const coldEntryCache = new Map(); // Map preserves insertion order → LRU via delete+re-set
+
+async function loadColdEntry(id) {
+  if (coldEntryCache.has(id)) {
+    const e = coldEntryCache.get(id);
+    coldEntryCache.delete(id); coldEntryCache.set(id, e); // touch
+    return e;
+  }
+  const indexContent = await config.storage.readIndex();
+  if (!indexContent) return null;
+  const needle = '"id":"' + id + '"';
+  for (const line of indexContent.split('\n')) {
+    if (!line || !line.includes(needle)) continue;
+    let meta;
+    try { meta = JSON.parse(line); } catch { continue; }
+    if (meta.id !== id) continue;
+    const entry = normalizeIndexEntry(meta);
+    // Evict oldest if at capacity
+    if (coldEntryCache.size >= COLD_LRU_CAP) {
+      coldEntryCache.delete(coldEntryCache.keys().next().value);
+    }
+    coldEntryCache.set(id, entry);
+    return entry;
+  }
+  return null;
+}
+
 function computeSettings() {
   const recentUsages = store.entries
     .filter(e => e && e.usage)
@@ -303,13 +332,13 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  // Full entry data (req + res) — lazy loaded
+  // Full entry data (req + res) — lazy loaded; cold-session disk fallback
   const entryMatch = pathname.match(/^\/_api\/entry\/(.+)$/);
   if (entryMatch) {
     const id = decodeURIComponent(entryMatch[1]);
-    const entry = store.getEntryById(id);
-    if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
+      const entry = store.getEntryById(id) || await loadColdEntry(id);
+      if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return; }
       await loadEntryReqRes(entry);
       const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };
       if (entry.elapsed === '?') { entry.req = null; entry.res = null; entry._loaded = false; }
@@ -322,13 +351,13 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
-  // Lazy tokenization endpoint
+  // Lazy tokenization endpoint; cold-session disk fallback
   const tokMatch = pathname.match(/^\/_api\/tokens\/(.+)$/);
   if (tokMatch) {
     const id = decodeURIComponent(tokMatch[1]);
-    const entry = store.getEntryById(id);
-    if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
     (async () => {
+      const entry = store.getEntryById(id) || await loadColdEntry(id);
+      if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return; }
       if (!entry.tokens) {
         await loadEntryReqRes(entry);
         if (entry.req) entry.tokens = tokenizeRequest(entry.req);
