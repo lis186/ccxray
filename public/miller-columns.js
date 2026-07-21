@@ -1228,11 +1228,17 @@ function applySessionFilter() {
   }
 }
 
+var RECENT_MS = 24 * 60 * 60 * 1000; // 24h rolling window for "Recent" filter
 function getStatusClass(sid) {
   const s = sessionStatusMap.get(sid);
-  if (!s) return 'sdot-off';
-  if (s.active) return 'sdot-stream';
-  if (s.lastSeenAt && Date.now() - s.lastSeenAt < 5 * 60 * 1000) return 'sdot-idle';
+  if (s) {
+    if (s.active) return 'sdot-stream';
+    if (s.lastSeenAt && Date.now() - s.lastSeenAt < RECENT_MS) return 'sdot-idle';
+    return 'sdot-off';
+  }
+  // ponytail: fallback to sessionsMap for restored sessions without SSE events (#292)
+  const sess = sessionsMap.get(sid);
+  if (sess && sess.lastReceivedAt && Date.now() - sess.lastReceivedAt < RECENT_MS) return 'sdot-idle';
   return 'sdot-off';
 }
 function getProjectStatusClass(proj) {
@@ -1249,7 +1255,7 @@ function getStatusPriority(statusClass) {
 function updateTopbarStatus() {
   const streaming = [...sessionStatusMap.values()].filter(s => s.active).length;
   const idle = [...sessionStatusMap.values()].filter(s =>
-    !s.active && s.lastSeenAt && Date.now() - s.lastSeenAt < 5 * 60 * 1000
+    !s.active && s.lastSeenAt && Date.now() - s.lastSeenAt < RECENT_MS
   ).length;
   let txt = '';
   if (streaming) txt += '<span style="color:var(--green)">●' + streaming + ' streaming</span>  ';

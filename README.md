@@ -116,7 +116,7 @@ Automatic version detection with diff viewer. Browse prompts across multiple rec
 
 ### Keyboard-first Navigation
 
-Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → turns → sections → timeline → individual diff hunks without touching the mouse.
+Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → timeline → individual diff hunks without touching the mouse.
 
 **Workflow navigation**: Tab / ▲▼ switches between lanes (L1 selection), j/k switches between turns within a lane (L2 selection), Esc walks back one level at a time.
 
@@ -226,7 +226,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
 | `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
-| `RESTORE_DAYS` | `3` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
+| `RESTORE_DAYS` | `14` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
