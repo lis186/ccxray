@@ -4,7 +4,7 @@
 
 AI 代理工作階段的透視鏡。零設定的 HTTP 代理，記錄 Claude Code、Codex 與上游 API 之間的每一次呼叫，搭配即時儀表板與工作流程時間軸，讓你看清代理內部到底在做什麼。
 
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
 ![ccxray 儀表板](docs/dashboard-v2.png)
@@ -237,4 +237,4 @@ docker run -p 5577:5577 ccxray
 
 ## 授權
 
-MIT
+PolyForm Noncommercial 1.0.0 — 見 [LICENSE](LICENSE)

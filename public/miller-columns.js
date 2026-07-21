@@ -1590,7 +1590,7 @@ function _renderProjectsColInner() {
   let html = '<div class="col-title" style="display:flex;align-items:center;gap:6px">Projects' +
     '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
     '<option value="streaming"' + (projectFilterMode === 'streaming' ? ' selected' : '') + ' title="Only projects with in-flight API calls">Streaming</option>' +
-    '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 5 minutes">Recent</option>' +
+    '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 24 hours">Recent</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
     '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 

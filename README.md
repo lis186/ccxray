@@ -4,7 +4,7 @@
 
 X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every API call between Claude Code, Codex, and their upstream APIs, with a real-time dashboard and workflow timeline to inspect what's actually happening inside your agent.
 
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
 ![ccxray dashboard](docs/dashboard-v2.png)
@@ -256,4 +256,4 @@ docker run -p 5577:5577 ccxray
 
 ## License
 
-MIT
+PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE)

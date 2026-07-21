@@ -4,7 +4,7 @@
 
 AIエージェントセッションのX線ビュー。ゼロ設定のHTTPプロキシで、Claude Code・Codexと上流API間のすべての呼び出しを記録し、ワークフロータイムラインとリアルタイムダッシュボードでエージェント内部の動きを可視化します。
 
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
 ![ccxrayダッシュボード](docs/dashboard-v2.png)
@@ -232,4 +232,4 @@ docker run -p 5577:5577 ccxray
 
 ## ライセンス
 
-MIT
+PolyForm Noncommercial 1.0.0 — [LICENSE](LICENSE) を参照
