@@ -34,7 +34,7 @@ function showNewTurnPill(count) {
     selectTurn(targetIdx);
     scrollTurnsToBottom();
   };
-  colTurns.appendChild(pill);
+  // colTurns.appendChild(pill);  // ponytail: turn column removed
 }
 
 function hideNewTurnPill() {
@@ -67,7 +67,7 @@ function showSubagentPill(count, errCount, sinceNum) {
     scrollTurnsToBottom();
     hideSubagentPill();
   };
-  colTurns.appendChild(pill);
+  // colTurns.appendChild(pill);  // ponytail: turn column removed
 }
 
 // sid defaults to selectedSessionId, but callers leaving a session (e.g.
@@ -286,15 +286,6 @@ function _seqApplyFlips(sid, sess, flipIds, unflipIds) {
     if (en.displayNum === num) continue;
     en.displayNum = num;
     if (window.entryById && window.entryById.has(en.id)) window.entryById.get(en.id).displayNum = num;
-    if (!_loading) {
-      const card = colTurns.querySelector('.turn-item[data-entry-idx="' + i + '"]');
-      if (card) {
-        card.classList.toggle('turn-sub', !!en.isSubagent);
-        card.dataset.sessNum = num;
-        const numEl = card.querySelector('.turn-num');
-        if (numEl) numEl.textContent = en.isSubagent ? '↳' + num : '#' + num;
-      }
-    }
   }
   sess.mainCount = mainN; sess.subCount = subN; sess.retryCount = retryN;
 }
@@ -360,7 +351,6 @@ function _seqRecomputeSession(sid, sess, currentSeqTurn) {
 function addEntry(e) {
   // Dedup: SSE + on-demand fetch race can deliver the same entry twice
   if (e.id && window.entryById && window.entryById.has(e.id)) return;
-  if (entryCount === 0) colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div>';
   const idx = entryCount++;
 
   const sid = e.sessionId || 'unknown';
@@ -704,164 +694,9 @@ function addEntry(e) {
 
   if (isRetry) return;
 
-  // ── V3 turn card: five-line layout ──
-  const toolFail = e.toolFail || false;
-  const hasCred = e.hasCredential || false;
-  const dupes = e.duplicateToolCalls || null;
-  const dupesMax = dupes ? Math.max(...Object.values(dupes)) : 0;
-
-  const ctxMax = e.maxContext || DEFAULT_MAX_CTX;
-  const ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / ctxMax * 100) : 0;
-  const severity = classifySeverity({ status: e.status, stopReason, hasCredential: hasCred, toolFail }, ctxPct, dupesMax);
-
-  const el = document.createElement('div');
-  el.className = 'turn-item' + (isSubagent ? ' turn-sub' : '') + (severity ? ' risk-' + severity : '');
-  el.dataset.entryIdx = idx;
-  el.dataset.sessionId = sid;
-  el.dataset.sessNum = displayNum;
-  el.onclick = (event) => {
-    const starEl = event && event.target && event.target.closest && event.target.closest('.turn-star');
-    if (starEl && el.contains(starEl)) {
-      event.stopPropagation();
-      const isChipClick = event.target.classList.contains('pin-btn-count');
-      if (isChipClick && typeof openDerivedPopover === 'function') {
-        openDerivedPopover('turn', starEl.dataset.id, starEl);
-        return;
-      }
-      if (typeof window.toggleStar === 'function') {
-        window.toggleStar('turn', starEl.dataset.id, !starEl.classList.contains('starred'));
-      }
-      return;
-    }
-    setFocus('turns');
-    selectTurn(idx);
-  };
-  el.onmouseenter = () => { clearTimeout(_hoverTimer); _hoverTimer = setTimeout(() => prefetchEntry(idx), 150); };
-  el.onmouseleave = () => clearTimeout(_hoverTimer);
-
-  // Line 1: identity + critical marker + star toggle
-  const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
-  const modelHtml = '<span class="turn-model">' + escapeHtml(shortModelStr) + '</span>';
-  const dotClass = (isHttpStatusOk(e.status) || isProxyLifecycleShutdown(e)) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
-  const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
-  const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
-  const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
-  const isTurnStarred = !!(window.xrayStars && window.xrayStars.turns && window.xrayStars.turns.has(entryId));
-  const derivedStepStars = (typeof countDescendantStars === 'function') ? countDescendantStars('turn', entryId) : 0;
-  const starClass = isTurnStarred ? ' starred' : (derivedStepStars > 0 ? ' derived' : '');
-  const starTitle = isTurnStarred && derivedStepStars > 0
-    ? 'Starred — click ★ to unstar, click [' + derivedStepStars + '] to view starred items inside'
-    : isTurnStarred
-      ? 'Starred — click to unstar'
-      : (derivedStepStars > 0 ? 'Retained because ' + derivedStepStars + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
-  const starGlyph = isTurnStarred && derivedStepStars > 0
-    ? '★<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>'
-    : isTurnStarred
-      ? '★'
-      : (derivedStepStars > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>' : '☆');
-  const starHtml = '<span class="turn-star' + starClass + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + escapeHtml(starTitle) + '">' + starGlyph + '</span>';
-  const identityTooltip = [
-    isCompacted ? 'Context compacted' : null,
-    e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
-  ].filter(Boolean).join(' · ');
-  const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
-  const importBadge = e.imported ? '<span class="turn-imported-badge" title="Imported from local transcript">⇐</span>' : '';
-  const identityLine =
-    '<div class="turn-identity"' + identityAttr + '>' +
-      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
-      '<span class="turn-num">' + prefix + '</span>' +
-      modelHtml +
-      importBadge +
-      waitMark +
-      critMarkerHtml +
-      starHtml +
-    '</div>';
-
-  // Line 2: title (omit if null or noise)
-  const cleanedTitle = cleanTitle(e.title);
-  const titleLine = cleanedTitle ? '<div class="turn-title">' + escapeHtml(cleanedTitle) + '</div>' : '';
-
-  // Line 2.5: cost (own line; right-aligned dim 11px). Omitted when null OR
-  // when the rounded display would read $0.00 (cache-hit turns are the
-  // ~80% case and a column of "$0.00" lines is just noise — session cards
-  // still aggregate the cost, so the information is not lost).
-  const costFmt = turnCost != null ? turnCost.toFixed(2) : null;
-  const costLine = (costFmt != null && costFmt !== '0.00')
-    ? '<div class="turn-cost-line">$' + costFmt + '</div>'
-    : '';
-
-  // Line 3: ctx bar (original segment proportions) + ctx:/hit: labels
-  const seg = (tokens, color) => tokens > 0
-    ? '<div style="width:' + (tokens / ctxMax * 100).toFixed(2) + '%;background:' + color + ';min-width:1px"></div>'
-    : '';
-  const totalUsed = ctxCacheRead + ctxCacheCreate + ctxInput;
-  // Per-turn anomaly-detection thresholds — see Decision D11. Do NOT unify
-  // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
-  // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
-  // red in late-session turns (pre-mortem F1).
-  const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
-  const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
-  const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
-  const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
-  const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">cache:' + hitPct + '%</span>' : '';
-  const ctxBarHtml = ctxUsed > 0
-    ? '<div class="turn-ctx turn-ctx-bar" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' +
-        '<div class="turn-ctx-bar-bg">' +
-          seg(ctxCacheRead,   'var(--color-cache-read)') +
-          seg(ctxCacheCreate, 'var(--color-cache-write)') +
-          seg(ctxInput,       'var(--color-input)') +
-        '</div>' +
-        '<div class="turn-ctx-labels">' + hitLabel + ctxPctLabel + '</div>' +
-      '</div>'
-    : '';
-
-  // Line 4: [time-info] [tools]
-  // time-info: elapsed [wait:gap] [think:N] — flex:1, can clip; tools: flex-shrink:0, always visible
-  const elapsedMs = parseFloat(e.elapsed || 0) * 1000;
-  const thinkPart = (e.thinkingDuration && e.thinkingDuration >= 0.05)
-    ? 'think:' + e.thinkingDuration.toFixed(1) + 's'
-    : '';
-  const waitPart = (gapMs != null && gapMs >= 500) ? 'wait:' + formatGap(gapMs) : '';
-  const secondaryParts = [waitPart, thinkPart].filter(Boolean).join(' · ');
-  const secondaryHtml = secondaryParts
-    ? ' <span class="turn-elapsed-secondary" title="' + escapeHtml(gapTitle) + '">(' + secondaryParts + ')</span>'
-    : '';
-  const timeHtml = elapsedMs > 0
-    ? '<span class="turn-elapsed">dur:' + formatGap(elapsedMs) + '</span>' + secondaryHtml
-    : '';
-  let chipsHtml = '';
-  for (const n of Object.keys(e.toolCalls || {})) {
-    chipsHtml += '<span class="tool-chip">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '</span>';
-  }
-  const secondaryLine = '<div class="turn-secondary">' +
-    (chipsHtml ? '<div class="turn-tools-row">' + chipsHtml + '</div>' : '') +
-    '<div class="turn-time-row">' + timeHtml + '</div>' +
-    '</div>';
-
-  // Line 5: warning/notice risk (no emoji, plain text)
-  const riskMarkers = [];
-  if (hasCred) riskMarkers.push('cred');
-  if (toolFail) riskMarkers.push('tool-fail');
-  if (dupesMax >= 2) riskMarkers.push('dupes\xD7' + dupesMax);
-  if (e.thinkingStripped === true) riskMarkers.push('thinking-stripped');
-  if (e.coreHash || e.toolsHash) {
-    for (let i = allEntries.length - 2; i >= 0; i--) {
-      const prev = allEntries[i];
-      if (prev.sessionId === sid && !prev.isSubagent) {
-        if (prev.coreHash && e.coreHash && prev.coreHash !== e.coreHash) riskMarkers.push('sys-changed');
-        if (prev.toolsHash && e.toolsHash && prev.toolsHash !== e.toolsHash) riskMarkers.push('tools-changed');
-        break;
-      }
-    }
-  }
-  const riskLine = riskMarkers.length ? '<div class="turn-risk-line">' + riskMarkers.join(' ') + '</div>' : '';
-
-  el.innerHTML = identityLine + titleLine + costLine + ctxBarHtml + secondaryLine + riskLine;
-
-  // Hide turn if no session selected, or if it belongs to a different session
-  if (!selectedSessionId || selectedSessionId !== sid) el.style.display = 'none';
-  // Append: chronological order — oldest at top, newest at bottom
-  colTurns.appendChild(el);
+  // ponytail: turn-item DOM creation removed — turn column no longer rendered
+  // Data-only variables kept above (ctxUsed, turnCost, etc.) feed session stats.
+  // ponytail: turn-item DOM removed (L707-864 original); data logic above preserved
 
   if (selectedSessionId === sid) renderSessionSparkline(sid);
   // Track unconditionally (not gated by !_loading) — codex review: this was
