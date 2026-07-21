@@ -7,7 +7,7 @@ AI 代理工作階段的透視鏡。零設定的 HTTP 代理，記錄 Claude Cod
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
-![ccxray 儀表板](docs/dashboard-v2.png)
+![ccxray 儀表板](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/dashboard-v2.png)
 
 ## 為什麼需要
 
@@ -83,19 +83,19 @@ Connected clients (2):
 
 **L1/L2 雙層選取**：Tab / ▲▼ 選取 lane（L1），j/k 在 lane 內選取 turn（L2），Esc 逐層退出。取代舊的單層 click 模型。
 
-![工作流程時間軸](docs/timeline-v2.png)
+![工作流程時間軸](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/timeline-v2.png)
 
 ### 用量與成本
 
 追蹤你的實際花費。消耗速率、各帳號 Claude 及 Codex 速率限制卡片 — 精確掌握 token 流向。
 
-![用量分析](docs/usage.png)
+![用量分析](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.png)
 
 ### System Prompt 追蹤
 
 自動偵測版本變更，內建 diff 檢視器。瀏覽多種已辨識的 agent 類型，精確掌握每次更新的差異。不確定的項目會誠實標為 `unknown`。
 
-![System Prompt 追蹤](docs/system-prompt-v2.png)
+![System Prompt 追蹤](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
 
 ### 鍵盤導航
 
@@ -107,13 +107,13 @@ Connected clients (2):
 
 `n`/`N` 可在整個儀表板中跳到下/上一個加星項目——跨越 projects、sessions、turns 及 timeline 的個別步驟。快捷鍵列只在目前畫面有可到達的加星項目時才顯示此按鍵。
 
-![鍵盤導航](docs/keyboard-v2.png)
+![鍵盤導航](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/keyboard-v2.png)
 
 ### Session 標題與 Cache 提醒
 
 Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login button on mobile`），並附有即時 cache TTL 倒數（`cache 4m left`），不到 1 分鐘時變紅閃爍。任何 session 接近到期時，瀏覽器分頁標題會在 `ccxray` 和 `⚠ ccxray` 之間交替。可選的瀏覽器通知會在計畫感知的提前時間觸發 — Max 提前 5 分鐘、Pro/API key 提前 60 秒。直接 API 呼叫或標題生成仍在進行中的 session 退回顯示短雜湊。
 
-![Session 標題與 Cache 到期提醒](docs/cache-expiry.png)
+![Session 標題與 Cache 到期提醒](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
 ### 計畫自動偵測
 
@@ -141,7 +141,7 @@ Timeline 的個別步驟也可以加星（每個步驟 row 上有 `★`/`☆` to
 
 當父層因為下方有 starred 子項目而被間接保留,badge 會顯示 `☆ [N]` 而非 `★`。點 chip 數字會展開 popover,列出究竟是哪些子項目在保它。每筆的星號是獨立 toggle;點 row 主體則直接跳到該 turn / session。
 
-![星號保留與子項目 popover](docs/stars.png)
+![星號保留與子項目 popover](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/stars.png)
 
 ### 使用量分析 CLI
 

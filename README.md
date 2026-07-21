@@ -7,7 +7,7 @@ X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every 
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
-![ccxray dashboard](docs/dashboard-v2.png)
+![ccxray dashboard](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/dashboard-v2.png)
 
 ## Why
 
@@ -100,19 +100,19 @@ Watch your agent think in real-time and see its concurrency structure.
 
 **L1/L2 dual-state selection**: Tab / ▲▼ selects lanes (L1), j/k selects turns within a lane (L2), Esc walks back level by level. Replaces the old single-level click model.
 
-![Workflow timeline](docs/timeline-v2.png)
+![Workflow timeline](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/timeline-v2.png)
 
 ### Usage & Cost
 
 Track your real spending. Burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
 
-![Usage analytics](docs/usage.png)
+![Usage analytics](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.png)
 
 ### System Prompt Tracking
 
 Automatic version detection with diff viewer. Browse prompts across multiple recognized agent types and see exactly what changed between updates. Uncertain prompts are honestly marked `unknown`.
 
-![System prompt tracking](docs/system-prompt-v2.png)
+![System prompt tracking](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
 
 ### Keyboard-first Navigation
 
@@ -124,13 +124,13 @@ Drive the whole dashboard with your keyboard. Every screen shows a context-sensi
 
 `n`/`N` jumps to the next/previous starred item anywhere in the dashboard — across projects, sessions, turns, and individual timeline steps. The command bar shows the shortcut only when starred items are reachable from the current view.
 
-![Keyboard navigation](docs/keyboard-v2.png)
+![Keyboard navigation](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/keyboard-v2.png)
 
 ### Session Titles & Cache Alerts
 
 Session cards show Claude Code's generated titles (e.g. `Fix login button on mobile`) instead of raw hashes, with a live cache TTL countdown (`cache 4m left`) that pulses red under 1 minute. When any session nears expiry, the browser tab alternates between `ccxray` and `⚠ ccxray`. Opt-in browser notification fires at a plan-aware lead time — 5 minutes for Max, 60 seconds for Pro/API key. Titles fall back to the short hash for direct-API traffic or sessions still in flight.
 
-![Session titles and cache expiry alerts](docs/cache-expiry.png)
+![Session titles and cache expiry alerts](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
 ### Plan Detection
 
@@ -158,7 +158,7 @@ Individual timeline steps can also be starred (`★`/`☆` toggle on each step r
 
 When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
 
-![Star retention and descendant popover](docs/stars.png)
+![Star retention and descendant popover](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/stars.png)
 
 ### Usage Analytics CLI
 
@@ -179,7 +179,7 @@ ccxray usage --tools                  # Full tool breakdown
 
 Automated usage analysis in 0.6 seconds — know where your tokens and dollars go without manual log diving. Reads `index.ndjson` directly, no server needed. Shows model cost breakdown, tool & skill usage, prompt hash stability (how often system/tools/core prompts change between turns), cache hit rates by inter-turn gap, and the 10 costliest sessions with titles.
 
-The `--json` output is an agent-facing contract — see [`docs/usage.md`](docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
+The `--json` output is an agent-facing contract — see [`docs/usage.md`](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
 
 ### More
 
