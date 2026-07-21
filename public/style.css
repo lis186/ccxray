@@ -85,11 +85,13 @@
   .col.col-focused { border-top-color: var(--accent); }
   .col:last-child { border-right: none; flex: 1; }
 
+  /* col-turns/sections/detail hidden until a session is selected */
+  #col-turns, #col-sections, #col-detail { display: none; }
+  #columns.wf-active #col-turns { display: flex; flex: 1; }
   /* Focused mode: collapse all columns except detail */
   #columns.focused #col-projects,
   #columns.focused #col-sessions,
   #columns.focused #col-sections { display: none; }
-  #columns.focused #col-turns { display: none; }
   #columns.focused #col-detail { flex: 1; }
   /* Workflow focused: col-turns hosts the swimlane, keep it visible */
   #columns.focused.wf-active #col-turns { display: flex; flex: 1; }

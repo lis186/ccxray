@@ -1865,7 +1865,11 @@ function selectSessionAndLatestTurn(sid) {
   if (typeof wfBuildState === 'function' && sid) {
     wfState = wfBuildState(sid);
     if (wfState) { wfRenderTimeline(); columnsEl.classList.add('wf-active'); }
-    else { columnsEl.classList.remove('wf-active'); }
+    else {
+      columnsEl.classList.remove('wf-active');
+      colSections.style.display = '';
+      colDetail.style.display = '';
+    }
   }
   // Auto-select latest turn in this session
   const visible = getVisibleTurnIndices();
@@ -1978,9 +1982,15 @@ function selectSession(id) {
   if (typeof wfBuildState === 'function' && id) {
     wfState = wfBuildState(id);
     if (wfState) { wfRenderTimeline(); columnsEl.classList.add('wf-active'); }
-    else { columnsEl.classList.remove('wf-active'); }
+    else {
+      columnsEl.classList.remove('wf-active');
+      colSections.style.display = '';
+      colDetail.style.display = '';
+    }
   } else {
     columnsEl.classList.remove('wf-active');
+    colSections.style.display = '';
+    colDetail.style.display = '';
   }
 
   // Auto-select latest turn so agent card + steps panel populate

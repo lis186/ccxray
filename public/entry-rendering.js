@@ -811,9 +811,7 @@ function _renderDeepLinkLoading(text) {
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb && _loading) breadcrumb.textContent = 'Loading link · ' + text;
   if (selectedTurnIdx >= 0) return;
-  const html = '<div class="col-empty loading-state"><div class="loading-spinner"></div><div>' + safeText + '</div></div>';
-  if (colSections && !selectedSection) colSections.innerHTML = html;
-  if (colDetail && !selectedSection) colDetail.innerHTML = html;
+  // ponytail: col-sections/col-detail hidden until session selected; loading status only in breadcrumb
 }
 
 function _clearDeepLinkProgress() {
