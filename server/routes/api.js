@@ -344,7 +344,7 @@ function handleApiRoutes(clientReq, clientRes) {
     const id = decodeURIComponent(entryMatch[1]);
     (async () => {
       const entry = store.getEntryById(id) || await loadColdEntry(id);
-      if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return; }
+      if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return; }
       await loadEntryReqRes(entry);
       const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };
       if (entry.elapsed === '?') { entry.req = null; entry.res = null; entry._loaded = false; }
@@ -363,7 +363,7 @@ function handleApiRoutes(clientReq, clientRes) {
     const id = decodeURIComponent(tokMatch[1]);
     (async () => {
       const entry = store.getEntryById(id) || await loadColdEntry(id);
-      if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return; }
+      if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return; }
       if (!entry.tokens) {
         await loadEntryReqRes(entry);
         if (entry.req) entry.tokens = tokenizeRequest(entry.req);
