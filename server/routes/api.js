@@ -308,7 +308,7 @@ function handleApiRoutes(clientReq, clientRes) {
   if (entryMatch) {
     const id = decodeURIComponent(entryMatch[1]);
     const entry = store.getEntryById(id);
-    if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
+    if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return true; }
     (async () => {
       await loadEntryReqRes(entry);
       const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };
@@ -327,7 +327,7 @@ function handleApiRoutes(clientReq, clientRes) {
   if (tokMatch) {
     const id = decodeURIComponent(tokMatch[1]);
     const entry = store.getEntryById(id);
-    if (!entry) { clientRes.writeHead(404); clientRes.end('Not found'); return true; }
+    if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return true; }
     (async () => {
       if (!entry.tokens) {
         await loadEntryReqRes(entry);

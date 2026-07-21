@@ -434,7 +434,7 @@ function _ensureEntryLoadedByIndex(idx) {
   if (entry._prefetching) return _waitForEntryLoaded(idx, 300);
   entry._prefetching = true;
   entry._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(entry.id))
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(data => {
       if (!data) { entry._loadFailed = true; return { ok: false, reason: 'load-failed' }; }
       entry.req = data.req;
@@ -2297,7 +2297,7 @@ function prefetchEntry(idx) {
   if (!e || e.reqLoaded || e._prefetching || e._prefetchPromise) return;
   e._prefetching = true;
   e._prefetchPromise = fetch('/_api/entry/' + encodeURIComponent(e.id))
-    .then(r => r.json())
+    .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(data => {
       if (!data) {
         allEntries[idx]._loadFailed = true;
