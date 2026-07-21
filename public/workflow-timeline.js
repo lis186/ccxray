@@ -1486,26 +1486,30 @@ function wfRenderTimeline() {
   container.appendChild(detailArea);
 
   colTurns.appendChild(container);
-  _wfLoadVersions();
 
-  // P1: content-driven height (selected lane is taller)
-  var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
-  var maxH = window.innerHeight * 0.45;
-  lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+  // ponytail: defer render to next frame — flex layout must settle before
+  // reading colTurns.clientWidth, otherwise SVG gets wrong dimensions
+  requestAnimationFrame(function() {
+    _wfLoadVersions();
 
-  _wfRenderSvgContent(mainSvg, subSvg, canvas);
-  wfSetupInteractions(mainSvg, subSvg);
-  wfInitResize(lanesSection, resizeHandle);
-  resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
-  if (wfState.selectionLevel === 'L2' && wfState.selectedTurnId) {
-    var hit = wfState.turnIndex && wfState.turnIndex.get(wfState.selectedTurnId);
-    if (hit) wfRenderTurnCard(hit.turn);
-    else wfRenderAgentCard(wfState.selectedLane);
-  } else {
-    wfRenderAgentCard(wfState.selectedLane);
-  }
-  // ponytail: charts now inline in selected lane SVG, no separate header
-  wfRenderCurrentSection();
+    // P1: content-driven height (selected lane is taller)
+    var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
+    var maxH = window.innerHeight * 0.45;
+    lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+
+    _wfRenderSvgContent(mainSvg, subSvg, canvas);
+    wfSetupInteractions(mainSvg, subSvg);
+    wfInitResize(lanesSection, resizeHandle);
+    resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
+    if (wfState.selectionLevel === 'L2' && wfState.selectedTurnId) {
+      var hit = wfState.turnIndex && wfState.turnIndex.get(wfState.selectedTurnId);
+      if (hit) wfRenderTurnCard(hit.turn);
+      else wfRenderAgentCard(wfState.selectedLane);
+    } else {
+      wfRenderAgentCard(wfState.selectedLane);
+    }
+    wfRenderCurrentSection();
+  });
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {

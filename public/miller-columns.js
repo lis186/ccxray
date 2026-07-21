@@ -1019,24 +1019,6 @@ function rerenderColumnsAfterStar() {
     if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
   }
   applySessionFilter();
-  // Turn cards: only the directly affected turn changes glyph; cheap to redraw all
-  // visible turn star buttons in current selection.
-  document.querySelectorAll('.turn-item .turn-star').forEach(btn => {
-    const id = btn.dataset.id;
-    const starred = id && xrayStars.turns.has(id);
-    const derived = id ? countDescendantStars('turn', id) : 0;
-    btn.classList.toggle('starred', !!starred);
-    btn.classList.toggle('derived', !starred && derived > 0);
-    if (starred && derived > 0) {
-      btn.innerHTML = '★<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>';
-      btn.title = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
-    } else {
-      btn.innerHTML = starred ? '★' : (derived > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derived + '</span>' : '☆');
-      btn.title = starred
-        ? 'Starred — click to unstar'
-        : (derived > 0 ? 'Retained because ' + derived + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
-    }
-  });
   document.querySelectorAll('.tl-step-star').forEach(btn => {
     const id = btn.dataset.id;
     const starred = id && xrayStars.steps.has(id);
@@ -1230,11 +1212,17 @@ function applySessionFilter() {
   }
 }
 
+var RECENT_MS = 24 * 60 * 60 * 1000; // 24h rolling window for "Recent" filter
 function getStatusClass(sid) {
   const s = sessionStatusMap.get(sid);
-  if (!s) return 'sdot-off';
-  if (s.active) return 'sdot-stream';
-  if (s.lastSeenAt && Date.now() - s.lastSeenAt < 5 * 60 * 1000) return 'sdot-idle';
+  if (s) {
+    if (s.active) return 'sdot-stream';
+    if (s.lastSeenAt && Date.now() - s.lastSeenAt < RECENT_MS) return 'sdot-idle';
+    return 'sdot-off';
+  }
+  // ponytail: fallback to sessionsMap for restored sessions without SSE events (#292)
+  const sess = sessionsMap.get(sid);
+  if (sess && sess.lastReceivedAt && Date.now() - sess.lastReceivedAt < RECENT_MS) return 'sdot-idle';
   return 'sdot-off';
 }
 function getProjectStatusClass(proj) {
@@ -1251,7 +1239,7 @@ function getStatusPriority(statusClass) {
 function updateTopbarStatus() {
   const streaming = [...sessionStatusMap.values()].filter(s => s.active).length;
   const idle = [...sessionStatusMap.values()].filter(s =>
-    !s.active && s.lastSeenAt && Date.now() - s.lastSeenAt < 5 * 60 * 1000
+    !s.active && s.lastSeenAt && Date.now() - s.lastSeenAt < RECENT_MS
   ).length;
   let txt = '';
   if (streaming) txt += '<span style="color:var(--green)">●' + streaming + ' streaming</span>  ';
@@ -1267,17 +1255,8 @@ let countdownInterval = null;
 
 // ── Follow live turn state ──
 let followLiveTurn = true;
-function toggleFollowLive() {
-  followLiveTurn = !followLiveTurn;
-  const btn = document.getElementById('scroll-toggle');
-  if (btn) {
-    btn.querySelector('.scroll-on').classList.toggle('active', followLiveTurn);
-    btn.querySelector('.scroll-off').classList.toggle('active', !followLiveTurn);
-  }
-}
-function scrollTurnsToBottom() {
-  if (followLiveTurn) colTurns.scrollTop = colTurns.scrollHeight;
-}
+function toggleFollowLive() { followLiveTurn = !followLiveTurn; }
+function scrollTurnsToBottom() {}
 
 // ── Status line injection state ──
 // eslint-disable-next-line no-undef
@@ -1320,7 +1299,7 @@ let selectedStepSub = null;
 let selectedStepSubExplicit = false;
 // Start focus on the leftmost visible column — Projects/Sessions are hidden
 // when the sidebar loads collapsed (#206).
-let focusedCol = (typeof isSidebarCollapsed === 'function' && isSidebarCollapsed()) ? 'turns' : 'projects'; // 'projects' | 'sessions' | 'turns' | 'sections' | 'messages'
+let focusedCol = (typeof isSidebarCollapsed === 'function' && isSidebarCollapsed()) ? 'sessions' : 'projects'; // 'projects' | 'sessions' | 'sections' | 'messages'
 let isFocusedMode = false;
 // ponytail: "split pane active" — classic focused OR workflow timeline (P16: workflow never uses isFocusedMode)
 function inSplitView() { return isFocusedMode || (typeof wfState !== 'undefined' && !!wfState && selectedSection === 'timeline'); }
@@ -1391,7 +1370,7 @@ function copyCurrentUrl(btn) {
 function clearAll() { // kept for console use if needed
   colProjects.innerHTML = '<div class="col-title">Projects</div>';
   colSessions.innerHTML = '<div class="col-title">Sessions</div>';
-  colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div>';
+  colTurns.innerHTML = '';
   colSections.innerHTML = '<div class="col-empty">←</div>';
   colDetail.innerHTML = '<div class="col-empty">←</div>';
   allEntries.length = 0;
@@ -1603,7 +1582,7 @@ function _renderProjectsColInner() {
   let html = '<div class="col-title" style="display:flex;align-items:center;gap:6px">Projects' +
     '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
     '<option value="streaming"' + (projectFilterMode === 'streaming' ? ' selected' : '') + ' title="Only projects with in-flight API calls">Streaming</option>' +
-    '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 5 minutes">Recent</option>' +
+    '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 24 hours">Recent</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
     '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
@@ -1730,7 +1709,6 @@ function selectProject(name) {
   selectedTurnIdx = -1;
   selectedSection = null;
   clearSelectedStepSelection();
-  colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
   // Clear workflow timeline
@@ -1753,7 +1731,6 @@ function setFocus(col) {
   focusedCol = col;
   colProjects.classList.toggle('col-focused', col === 'projects');
   colSessions.classList.toggle('col-focused', col === 'sessions');
-  colTurns.classList.toggle('col-focused', col === 'turns');
   colSections.classList.toggle('col-focused', col === 'sections');
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
@@ -1764,23 +1741,7 @@ function getVisibleTurnIndices() {
     .filter(i => selectedSessionId && allEntries[i].sessionId === selectedSessionId && !allEntries[i].isRetry);
 }
 
-function updateRetryEmptyState(sid) {
-  let el = colTurns.querySelector('.retry-empty-state');
-  if (!sid) { if (el) el.remove(); return; }
-  const sess = sessionsMap.get(sid);
-  const hasVisibleTurns = colTurns.querySelector('.turn-item[style=""]') || colTurns.querySelector('.turn-item:not([style*="display: none"])');
-  if (!hasVisibleTurns && sess && sess.retryCount > 0) {
-    if (!el) { el = document.createElement('div'); el.className = 'retry-empty-state col-empty'; colTurns.appendChild(el); }
-    const rc = sess.retryCount;
-    const codes = [];
-    for (let i = 0; i < allEntries.length; i++) {
-      if (allEntries[i].sessionId === sid && allEntries[i].isRetry) codes.push(allEntries[i].status);
-    }
-    const summary = Object.entries(codes.reduce((a, c) => { a[c] = (a[c] || 0) + 1; return a; }, {})).map(([k, v]) => v > 1 ? v + '× ' + k : k).join(', ');
-    el.textContent = 'No turns — ' + rc + ' failed request' + (rc > 1 ? 's' : '') + ' (' + summary + ')';
-    el.style.display = '';
-  } else { if (el) el.remove(); }
-}
+function updateRetryEmptyState() {}
 
 function renderSessionToolBar(sid) {
   const bar = document.getElementById('session-tool-bar');
@@ -2065,9 +2026,6 @@ function selectSessionAndLatestTurn(sid) {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === sid);
   });
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.style.display = (sid && el.dataset.sessionId === sid) ? '' : 'none';
-  });
   // Workflow view
   var columnsEl = document.getElementById('columns');
   if (typeof wfBuildState === 'function' && sid) {
@@ -2202,18 +2160,9 @@ function selectSession(id) {
   // Cold session: fetch entries on demand, then render
   const sess = sessionsMap.get(id);
   if (sess && sess._cold) {
-    colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
     colSections.innerHTML = '';
     colDetail.innerHTML = '';
-    colTurns.querySelectorAll('.col-empty').forEach(el => el.remove());
-    const turnsColHeader = colTurns.querySelector('.col-sticky-header');
-    if (!turnsColHeader) {
-      colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title">Turns</div></div>';
-    }
-    const spinner = document.createElement('div');
-    spinner.className = 'col-empty loading-state';
-    spinner.innerHTML = '<div class="loading-spinner"></div><div>Loading ' + (sess.count || '') + ' turns…</div>';
-    colTurns.appendChild(spinner);
+    const spinner = document.createElement('div'); // ponytail: kept for cancelColdLoad token identity, not rendered
     renderSessionToolBar(id);
     const columnsEl = document.getElementById('columns');
     columnsEl.classList.remove('wf-active');
@@ -2283,10 +2232,6 @@ function selectSession(id) {
         if (_coldLoad !== token) return;
         console.error('[cold-load]', err);
         cancelColdLoad();
-        const errEl = document.createElement('div');
-        errEl.className = 'col-empty';
-        errEl.innerHTML = '<div style="opacity:0.5">Failed to load entries</div>';
-        colTurns.appendChild(errEl);
       });
     return;
   }
@@ -2295,11 +2240,6 @@ function selectSession(id) {
 }
 
 function _renderSelectedSession(id) {
-  colTurns.querySelectorAll('.col-empty').forEach(el => el.remove());
-  // Show turns for this session
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.style.display = (id && el.dataset.sessionId === id) ? '' : 'none';
-  });
   // Clear downstream — Miller column rule: N+2 onwards must clear
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
@@ -2417,32 +2357,6 @@ function selectTurn(idx, opts) {
   selectedTurnIdx = idx;
   clearSelectedStepSelection();
   if (typeof wfHighlightTurn === 'function' && wfState) wfHighlightTurn(allEntries[idx]?.id);
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.classList.toggle('selected', parseInt(el.dataset.entryIdx) === idx);
-  });
-  const selEl = colTurns.querySelector('.turn-item[data-entry-idx="' + idx + '"]');
-  if (selEl) {
-    // scrollIntoView({block:'nearest'}) aligns to the column's scroll
-    // container top, but col-sticky-header overlays that area — the turn
-    // ends up tucked behind the header. Compute the header's height and
-    // nudge the column scroll so the selected card sits clear of it.
-    const stickyHeader = colTurns.querySelector('.col-sticky-header');
-    const headerH = stickyHeader ? stickyHeader.getBoundingClientRect().height : 0;
-    const colRect = colTurns.getBoundingClientRect();
-    const elRect = selEl.getBoundingClientRect();
-    const elTopInCol = elRect.top - colRect.top;
-    const elBottomInCol = elRect.bottom - colRect.top;
-    let delta = 0;
-    if (elTopInCol < headerH + 4) {
-      delta = elTopInCol - headerH - 8;
-    } else if (elBottomInCol > colRect.height - 4) {
-      delta = elBottomInCol - colRect.height + 8;
-    }
-    if (delta !== 0) {
-      if (opts && opts.smooth) _smoothScrollBy(colTurns, delta, 300);
-      else colTurns.scrollBy({ top: delta, behavior: 'auto' });
-    }
-  }
   // Auto-highlight the session this turn belongs to (read-only indicator, not a gate)
   const sid = allEntries[idx]?.sessionId;
   colSessions.querySelectorAll('.session-item').forEach(el => {
