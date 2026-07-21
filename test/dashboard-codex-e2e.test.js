@@ -152,23 +152,19 @@ describe('Codex dashboard status E2E', () => {
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=codex-raw`, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => {
-        const turn = document.querySelector('.turn-item[data-session-id="codex-raw"]');
         const header = document.querySelector('#col-sections .ch-line2');
-        return !!turn && !!header && header.textContent.includes('completed');
+        return !!header && header.textContent.includes('completed');
       });
 
       const state = await page.evaluate(() => {
-        const turn = document.querySelector('.turn-item[data-session-id="codex-raw"]');
         const header = document.querySelector('#col-sections .ch-line2');
-        const model = turn?.querySelector('.turn-model');
+        const sess = typeof sessionsMap !== 'undefined' && sessionsMap.get('codex-raw');
         return {
           projectText: document.querySelector('.project-item.selected .pi-label')?.textContent || '',
           sessionText: document.querySelector('.session-item.selected .sid')?.textContent || '',
           url: location.search,
-          hasOkDot: !!turn?.querySelector('.status-dot-ok'),
-          hasErrDot: !!turn?.querySelector('.status-dot-err'),
-          isCritical: turn?.classList.contains('risk-critical') || false,
-          modelText: model?.textContent || '',
+          entryCount: sess ? sess.count : 0,
+          model: sess ? sess.model : '',
           sectionText: header?.textContent || '',
         };
       });
@@ -176,10 +172,8 @@ describe('Codex dashboard status E2E', () => {
       assert.equal(state.projectText, truncateMiddle(PROJECT_NAME, 20));
       assert.equal(state.sessionText, 'Codex Raw');
       assert.match(state.url, /s=codex-raw/);
-      assert.equal(state.hasOkDot, true);
-      assert.equal(state.hasErrDot, false);
-      assert.equal(state.isCritical, false);
-      assert.match(state.modelText, /gpt-5\.5/);
+      assert.ok(state.entryCount > 0, 'session has entries');
+      assert.match(state.model, /gpt-5\.5/);
       assert.match(state.sectionText, /200/);
       assert.match(state.sectionText, /completed/);
     } finally {

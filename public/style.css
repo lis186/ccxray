@@ -162,7 +162,6 @@
   .project-item .pi-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .project-item .pi-cost { color: var(--yellow); }
   .project-item .pi-range { font-size: 10px; color: var(--dim); margin-top: 1px; }
-  #col-turns { width: 220px; position: relative; }
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
@@ -298,88 +297,22 @@
   .star-popover-time { margin-left: auto; flex: 0 0 auto; color: var(--dim); text-align: right; white-space: nowrap; font-family: 'SF Mono', 'Cascadia Code', monospace; font-size: 11px; }
 
 
-  /* ── Turn items ── */
-  .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
-  .turn-item:hover { background: var(--surface-hover); }
-  .turn-item.selected { border-left-color: var(--accent); background: var(--surface-hover); }
-  .turn-item.risk-critical { border-left-color: var(--red); }
-  .turn-item.risk-warning { border-left-color: var(--orange); }
-  .turn-item.risk-notice { border-left-color: var(--yellow); }
-  /* Line 1: identity */
-  .turn-item .turn-identity { display: flex; gap: 6px; align-items: center; font-size: 12px; flex-wrap: nowrap; }
-  .turn-item .turn-num { color: var(--dim); flex-shrink: 0; }
   .turn-model { color: var(--purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .turn-item .status-dot { font-size: 10px; line-height: 1; flex-shrink: 0; }
-  .turn-item .status-dot-ok { color: var(--green); }
-  .turn-item .status-dot-err { color: var(--red); }
-  .turn-item .turn-wait { color: var(--dim); font-size: 11px; flex-shrink: 0; }
-  .turn-item .turn-critical-marker { font-size: 10px; color: var(--red); font-weight: bold; flex-shrink: 0; }
-  .turn-item .turn-star { margin-left: auto; flex-shrink: 0; cursor: pointer; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 15px; line-height: 1; padding: 0 2px; user-select: none; opacity: 0.6; }
-  .turn-item .turn-star:hover { opacity: 1; }
-  .turn-item .turn-star.starred { color: var(--yellow); opacity: 1; }
-  .turn-item .turn-star.derived { color: var(--dim); opacity: 0.85; }
-  .turn-item .turn-star.derived:hover { color: var(--yellow); opacity: 1; }
-  .turn-item .turn-star.disabled { opacity: 0.25; cursor: not-allowed; }
-  .turn-item .turn-cost-line { font-size: 11px; color: var(--dim); text-align: right; margin-top: 2px; }
-  /* Line 2: title */
-  .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-  /* Line 3: ctx bar */
-  .turn-item .turn-ctx { margin-top: 4px; }
-  /* Line 4: secondary — time + tools */
-  .turn-item .turn-secondary { display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: var(--dim); margin-top: 3px; }
-  .turn-item .turn-time-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-  .turn-item .turn-tools-row { display: flex; flex-wrap: wrap; gap: 3px; }
-  .turn-item .turn-elapsed { white-space: nowrap; }
-  .turn-item .turn-wait-gap { white-space: nowrap; }
-  .turn-item .turn-think { color: var(--purple); white-space: nowrap; }
-  /* Line 5: warning/notice risk */
-  .turn-item .turn-risk-line { font-size: 9px; color: var(--dim); margin-top: 2px; }
-  /* Legacy — still used by detail views */
-  .turn-item .status-ok { color: var(--green); }
-  .turn-item .status-err { color: var(--red); }
   .tool-chip { font-size: 9px; color: var(--dim); background: var(--bg2, var(--surface-hover)); border-radius: 3px; padding: 0 3px; }
   .cred-highlight { background: rgba(240, 136, 62, 0.25); color: var(--orange); border-radius: 2px; padding: 0 1px; }
   .source-badge { font-size: 9px; border-radius: 2px; padding: 0 3px; margin-left: 4px; opacity: 0.75; flex-shrink: 0; }
   .source-local { color: #666; border: 1px solid #666; }
   .source-local-sensitive { color: var(--orange); border: 1px solid var(--orange); opacity: 0.9; }
   .source-network { color: #5b9bd5; border: 1px solid #5b9bd5; }
-  .turn-sub { opacity: 0.7; }
-  .turn-sub:hover { opacity: 1; }
-  .turn-sub.selected { opacity: 1; border-left-color: var(--orange) !important; }
 
   .si-tools { font-size: 10px; color: var(--dim); margin: 2px 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .si-preview { font-size: 11px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
   .si-truncated { font-size: 10px; color: var(--yellow); margin-top: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .turn-elapsed-secondary { color: var(--dim); font-size: 10px; }
-  .col-sticky-header { position: sticky; top: 0; z-index: 2; background: var(--surface); }
-  #scroll-toggle { user-select: none; }
-  #scroll-toggle .scroll-on, #scroll-toggle .scroll-off { padding: 1px 4px; border-radius: 3px; color: var(--dim); }
-  #scroll-toggle .scroll-on.active { color: var(--green); background: rgba(63,185,80,0.15); }
-  #scroll-toggle .scroll-off.active { color: var(--red); background: rgba(248,81,73,0.15); }
   #stats-toggle { user-select: none; }
   #stats-toggle .stats-on, #stats-toggle .stats-off { padding: 1px 4px; border-radius: 3px; color: var(--dim); }
   #stats-toggle .stats-on.active { color: var(--green); background: rgba(63,185,80,0.15); }
   #stats-toggle .stats-off.active { color: var(--red); background: rgba(248,81,73,0.15); }
-  #session-tool-bar { padding: 4px 10px; font-size: 10px; color: var(--dim); border-bottom: 1px solid var(--border); display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; overflow: hidden; white-space: nowrap; }
-  .turn-ctx-bar { margin-top: 5px; margin-bottom: 4px; }
-  .turn-ctx-bar-bg { height: 3px; border-radius: 1.5px; background: var(--border); overflow: visible; display: flex; position: relative; }
-  /* Cross-level auto-compact landmark (see design D10). Tick sits on the 3px
-     bar itself — not on the wrapper — so it doesn't extend across the
-     hit:/ctx: label row below. L2 keeps its own per-turn color thresholds
-     (D11). Tick height 5px (1 above + 3 bar + 1 below). */
-  .turn-ctx-bar-bg::after {
-    content: '';
-    position: absolute;
-    left: var(--compact-threshold);
-    top: -1px; bottom: -1px;
-    width: 1px;
-    background: var(--dim);
-    opacity: 0.7;
-    pointer-events: none;
-  }
-  /* L3 big context-breakdown bar (turn detail header + sticky) — shares the
-     same landmark tick as L1/L2. Bar uses overflow:visible so tick extends
-     slightly above/below for visibility. */
+  /* L3 big context-breakdown bar (turn detail header + sticky) */
   .ctx-big-bar { position: relative; }
   .ctx-big-bar::after {
     content: '';
@@ -391,16 +324,6 @@
     opacity: 0.45;
     pointer-events: none;
   }
-  .turn-ctx-labels { display: flex; font-size: 9px; margin-top: 1px; line-height: 1; }
-  .turn-ctx-pct { color: var(--dim); margin-left: auto; }
-  .turn-ctx-pct.ctx-critical { color: var(--red); }
-  .turn-ctx-pct.ctx-warning { color: var(--yellow); }
-  .turn-hit-pct { color: var(--color-cache-read); }
-  .turn-hit-pct.hit-cold { color: var(--red); }
-  #ctx-legend { padding: 3px 10px 4px; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; font-size: 9px; color: var(--dim); }
-  .ctx-legend-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 2px; vertical-align: middle; }
-  #session-sparkline { padding: 6px 10px; border-bottom: 1px solid var(--border); display: none; }
-  #session-sparkline svg { width: 100%; height: 56px; }
 
   /* ── Scorecard hover card ── */
   .scorecard-tooltip { position: absolute; right: 100%; top: 0; margin-right: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 10px; z-index: 10; width: 180px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); pointer-events: none; }
@@ -425,39 +348,6 @@
 
   /* ── Detail column ── */
   #col-detail { display: flex; flex-direction: column; overflow: hidden; transition: opacity 0.15s ease; }
-  .new-turn-pill, .sub-pill {
-    position: sticky;
-    bottom: 12px;
-    align-self: center;
-    margin: 0 auto;
-    display: block;
-    width: fit-content;
-    padding: 3px 12px;
-    border-radius: 12px;
-    font-size: 11px;
-    cursor: pointer;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    z-index: 10;
-  }
-  .new-turn-pill {
-    background: var(--accent);
-    color: var(--bg);
-    animation: slideUp 0.3s ease;
-  }
-  @keyframes slideUp {
-    from { transform: translateX(-50%) translateY(10px); opacity: 0; }
-    to { transform: translateX(-50%) translateY(0); opacity: 1; }
-  }
-  /* Peek-only pill for subagent turns — no animation (HELD badge retains
-     animation monopoly, see docs/designs/follow-live-turn-subagent.md SP3) */
-  .sub-pill {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--dim);
-  }
-  .sub-pill.has-errors {
-    color: var(--red);
-  }
   .ctx-sticky { position: sticky; top: 0; background: var(--surface); border-bottom: 2px solid var(--border); padding: 10px 12px; z-index: 2; flex-shrink: 0; }
   .ctx-sticky-title { font-size: 11px; color: var(--dim); margin-bottom: 6px; }
   .detail-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
@@ -684,8 +574,6 @@
 #columns.wf-active #col-sections,
 #columns.wf-active #col-detail { display: none; }
 #columns.wf-active #col-turns { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
-#columns.wf-active #col-turns .turn-item { display: none !important; }
-#columns.wf-active #col-turns .col-sticky-header { display: none; }
 #wf-timeline { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 #wf-overview { flex-shrink: 0; border-bottom: 1px solid var(--border); position: relative; display: flex; align-items: flex-start; }
 #wf-overview-label { width: 240px; flex-shrink: 0; padding: 4px 10px; font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; display: flex; flex-direction: column; gap: 3px; }

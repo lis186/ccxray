@@ -13,73 +13,11 @@ function cleanTitle(raw) {
   return t.length >= 4 ? t : null;
 }
 
-function showNewTurnPill(count) {
-  const existing = document.getElementById('new-turn-pill');
-  if (existing) {
-    existing.textContent = '+' + count + ' main';
-    return;
-  }
+function showNewTurnPill() {}
+function hideNewTurnPill() { newTurnCount = 0; }
 
-  const pill = document.createElement('div');
-  pill.id = 'new-turn-pill';
-  pill.className = 'new-turn-pill';
-  pill.textContent = '+' + count + ' main';
-  pill.onclick = function() {
-    // Go to the latest MAIN turn, not literally the last entry — a subagent
-    // turn can append after the last main turn while off-edge (codex review:
-    // allEntries.length - 1 would silently select that subagent turn instead
-    // of what this "+N main" pill advertises).
-    const s = sessionsMap.get(selectedSessionId);
-    const targetIdx = (s && s.latestMainTurnIdx != null) ? s.latestMainTurnIdx : allEntries.length - 1;
-    selectTurn(targetIdx);
-    scrollTurnsToBottom();
-  };
-  colTurns.appendChild(pill);
-}
-
-function hideNewTurnPill() {
-  const pill = document.getElementById('new-turn-pill');
-  if (pill) pill.remove();
-  newTurnCount = 0;
-}
-
-// Peek-only pill for subagent turns arriving while the user is on the main
-// live edge (docs/designs/follow-live-turn-subagent.md Problem 1). Never
-// calls selectTurn — clicking it only scrolls to reveal the subagent cards.
-function showSubagentPill(count, errCount, sinceNum) {
-  const hasErrors = errCount > 0;
-  const text = '+' + count + ' sub' + (hasErrors ? ' · ' + errCount + ' err' : '');
-  const title = count + ' subagent turns (' + errCount + ' errors)' + (sinceNum != null ? ' since main #' + sinceNum : '');
-  const existing = document.getElementById('sub-turn-pill');
-  if (existing) {
-    existing.textContent = text;
-    existing.title = title;
-    existing.classList.toggle('has-errors', hasErrors);
-    return;
-  }
-
-  const pill = document.createElement('div');
-  pill.id = 'sub-turn-pill';
-  pill.className = 'sub-pill' + (hasErrors ? ' has-errors' : '');
-  pill.textContent = text;
-  pill.title = title;
-  pill.onclick = function() {
-    scrollTurnsToBottom();
-    hideSubagentPill();
-  };
-  colTurns.appendChild(pill);
-}
-
-// sid defaults to selectedSessionId, but callers leaving a session (e.g.
-// selectSession switching to a different one) must pass the OLD id
-// explicitly — by the time they call this, selectedSessionId may already
-// point at the new session. Without resetting the counters (not just
-// removing the DOM node), the next qualifying subagent arrival on the
-// abandoned session recreates the pill with the stale prior count/errors
-// (codex review round 3).
+function showSubagentPill() {}
 function hideSubagentPill(sid) {
-  const pill = document.getElementById('sub-turn-pill');
-  if (pill) pill.remove();
   const s = sessionsMap.get(sid || selectedSessionId);
   if (s) { s.subPillCount = 0; s.subPillErrCount = 0; }
 }
@@ -286,15 +224,6 @@ function _seqApplyFlips(sid, sess, flipIds, unflipIds) {
     if (en.displayNum === num) continue;
     en.displayNum = num;
     if (window.entryById && window.entryById.has(en.id)) window.entryById.get(en.id).displayNum = num;
-    if (!_loading) {
-      const card = colTurns.querySelector('.turn-item[data-entry-idx="' + i + '"]');
-      if (card) {
-        card.classList.toggle('turn-sub', !!en.isSubagent);
-        card.dataset.sessNum = num;
-        const numEl = card.querySelector('.turn-num');
-        if (numEl) numEl.textContent = en.isSubagent ? '↳' + num : '#' + num;
-      }
-    }
   }
   sess.mainCount = mainN; sess.subCount = subN; sess.retryCount = retryN;
 }
@@ -358,7 +287,6 @@ function _seqRecomputeSession(sid, sess, currentSeqTurn) {
 }
 
 function addEntry(e) {
-  if (entryCount === 0) colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div>';
   const idx = entryCount++;
 
   const sid = e.sessionId || 'unknown';
@@ -659,200 +587,14 @@ function addEntry(e) {
 
   if (isRetry) return;
 
-  // ── V3 turn card: five-line layout ──
-  const toolFail = e.toolFail || false;
-  const hasCred = e.hasCredential || false;
-  const dupes = e.duplicateToolCalls || null;
-  const dupesMax = dupes ? Math.max(...Object.values(dupes)) : 0;
-
-  const ctxMax = e.maxContext || DEFAULT_MAX_CTX;
-  const ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / ctxMax * 100) : 0;
-  const severity = classifySeverity({ status: e.status, stopReason, hasCredential: hasCred, toolFail }, ctxPct, dupesMax);
-
-  const el = document.createElement('div');
-  el.className = 'turn-item' + (isSubagent ? ' turn-sub' : '') + (severity ? ' risk-' + severity : '');
-  el.dataset.entryIdx = idx;
-  el.dataset.sessionId = sid;
-  el.dataset.sessNum = displayNum;
-  el.onclick = (event) => {
-    const starEl = event && event.target && event.target.closest && event.target.closest('.turn-star');
-    if (starEl && el.contains(starEl)) {
-      event.stopPropagation();
-      const isChipClick = event.target.classList.contains('pin-btn-count');
-      if (isChipClick && typeof openDerivedPopover === 'function') {
-        openDerivedPopover('turn', starEl.dataset.id, starEl);
-        return;
-      }
-      if (typeof window.toggleStar === 'function') {
-        window.toggleStar('turn', starEl.dataset.id, !starEl.classList.contains('starred'));
-      }
-      return;
-    }
-    setFocus('turns');
-    selectTurn(idx);
-  };
-  el.onmouseenter = () => { clearTimeout(_hoverTimer); _hoverTimer = setTimeout(() => prefetchEntry(idx), 150); };
-  el.onmouseleave = () => clearTimeout(_hoverTimer);
-
-  // Line 1: identity + critical marker + star toggle
-  const prefix = isSubagent ? '↳s' + sess.subCount : '#' + displayNum;
-  const modelHtml = '<span class="turn-model">' + escapeHtml(shortModelStr) + '</span>';
-  const dotClass = (isHttpStatusOk(e.status) || isProxyLifecycleShutdown(e)) ? 'status-dot status-dot-ok' : 'status-dot status-dot-err';
-  const waitMark = stopReason === 'end_turn' ? '<span class="turn-wait" title="Waiting for user">↵</span>' : '';
-  const critMarker = getCriticalMarker(stopReason, e.status, ctxPct);
-  const critMarkerHtml = critMarker ? '<span class="turn-critical-marker">' + critMarker + '</span>' : '';
-  const isTurnStarred = !!(window.xrayStars && window.xrayStars.turns && window.xrayStars.turns.has(entryId));
-  const derivedStepStars = (typeof countDescendantStars === 'function') ? countDescendantStars('turn', entryId) : 0;
-  const starClass = isTurnStarred ? ' starred' : (derivedStepStars > 0 ? ' derived' : '');
-  const starTitle = isTurnStarred && derivedStepStars > 0
-    ? 'Starred — click ★ to unstar, click [' + derivedStepStars + '] to view starred items inside'
-    : isTurnStarred
-      ? 'Starred — click to unstar'
-      : (derivedStepStars > 0 ? 'Retained because ' + derivedStepStars + ' starred steps below — click to view' : 'Star this turn (keeps log forever)');
-  const starGlyph = isTurnStarred && derivedStepStars > 0
-    ? '★<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>'
-    : isTurnStarred
-      ? '★'
-      : (derivedStepStars > 0 ? '☆<span class="pin-btn-count" aria-hidden="true">' + derivedStepStars + '</span>' : '☆');
-  const starHtml = '<span class="turn-star' + starClass + '" data-kind="turn" data-id="' + escapeHtml(entryId) + '" title="' + escapeHtml(starTitle) + '">' + starGlyph + '</span>';
-  const identityTooltip = [
-    isCompacted ? 'Context compacted' : null,
-    e.sessionInferred ? 'Session inferred (no explicit session ID)' : null,
-  ].filter(Boolean).join(' · ');
-  const identityAttr = identityTooltip ? ' title="' + escapeHtml(identityTooltip) + '"' : '';
-  const identityLine =
-    '<div class="turn-identity"' + identityAttr + '>' +
-      '<span class="' + dotClass + '" title="HTTP ' + e.status + '">●</span>' +
-      '<span class="turn-num">' + prefix + '</span>' +
-      modelHtml +
-      waitMark +
-      critMarkerHtml +
-      starHtml +
-    '</div>';
-
-  // Line 2: title (omit if null or noise)
-  const cleanedTitle = cleanTitle(e.title);
-  const titleLine = cleanedTitle ? '<div class="turn-title">' + escapeHtml(cleanedTitle) + '</div>' : '';
-
-  // Line 2.5: cost (own line; right-aligned dim 11px). Omitted when null OR
-  // when the rounded display would read $0.00 (cache-hit turns are the
-  // ~80% case and a column of "$0.00" lines is just noise — session cards
-  // still aggregate the cost, so the information is not lost).
-  const costFmt = turnCost != null ? turnCost.toFixed(2) : null;
-  const costLine = (costFmt != null && costFmt !== '0.00')
-    ? '<div class="turn-cost-line">$' + costFmt + '</div>'
-    : '';
-
-  // Line 3: ctx bar (original segment proportions) + ctx:/hit: labels
-  const seg = (tokens, color) => tokens > 0
-    ? '<div style="width:' + (tokens / ctxMax * 100).toFixed(2) + '%;background:' + color + ';min-width:1px"></div>'
-    : '';
-  const totalUsed = ctxCacheRead + ctxCacheCreate + ctxInput;
-  // Per-turn anomaly-detection thresholds — see Decision D11. Do NOT unify
-  // with L1/L3's 83.5/75 thresholds; L2 scans turns for spikes, not absolute
-  // proximity to auto-compact. Changing these to 83.5/75 produces a wall of
-  // red in late-session turns (pre-mortem F1).
-  const ctxPctClass = ctxPct > 95 ? 'ctx-critical' : ctxPct > 85 ? 'ctx-warning' : '';
-  const ctxPctLabel = '<span class="turn-ctx-pct' + (ctxPctClass ? ' ' + ctxPctClass : '') + '">ctx:' + ctxPct.toFixed(0) + '%</span>';
-  const hitPct = totalUsed > 0 ? Math.round(ctxCacheRead / totalUsed * 100) : null;
-  const hitPctClass = hitPct !== null && hitPct < 10 ? ' hit-cold' : '';
-  const hitLabel = hitPct !== null ? '<span class="turn-hit-pct' + hitPctClass + '">cache:' + hitPct + '%</span>' : '';
-  const ctxBarHtml = ctxUsed > 0
-    ? '<div class="turn-ctx turn-ctx-bar" title="auto-compact at ~' + (((window.ccxraySettings?.autoCompactPct) || 0.835) * 100).toFixed(1) + '%">' +
-        '<div class="turn-ctx-bar-bg">' +
-          seg(ctxCacheRead,   'var(--color-cache-read)') +
-          seg(ctxCacheCreate, 'var(--color-cache-write)') +
-          seg(ctxInput,       'var(--color-input)') +
-        '</div>' +
-        '<div class="turn-ctx-labels">' + hitLabel + ctxPctLabel + '</div>' +
-      '</div>'
-    : '';
-
-  // Line 4: [time-info] [tools]
-  // time-info: elapsed [wait:gap] [think:N] — flex:1, can clip; tools: flex-shrink:0, always visible
-  const elapsedMs = parseFloat(e.elapsed || 0) * 1000;
-  const thinkPart = (e.thinkingDuration && e.thinkingDuration >= 0.05)
-    ? 'think:' + e.thinkingDuration.toFixed(1) + 's'
-    : '';
-  const waitPart = (gapMs != null && gapMs >= 500) ? 'wait:' + formatGap(gapMs) : '';
-  const secondaryParts = [waitPart, thinkPart].filter(Boolean).join(' · ');
-  const secondaryHtml = secondaryParts
-    ? ' <span class="turn-elapsed-secondary" title="' + escapeHtml(gapTitle) + '">(' + secondaryParts + ')</span>'
-    : '';
-  const timeHtml = elapsedMs > 0
-    ? '<span class="turn-elapsed">dur:' + formatGap(elapsedMs) + '</span>' + secondaryHtml
-    : '';
-  let chipsHtml = '';
-  for (const n of Object.keys(e.toolCalls || {})) {
-    chipsHtml += '<span class="tool-chip">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '</span>';
-  }
-  const secondaryLine = '<div class="turn-secondary">' +
-    (chipsHtml ? '<div class="turn-tools-row">' + chipsHtml + '</div>' : '') +
-    '<div class="turn-time-row">' + timeHtml + '</div>' +
-    '</div>';
-
-  // Line 5: warning/notice risk (no emoji, plain text)
-  const riskMarkers = [];
-  if (hasCred) riskMarkers.push('cred');
-  if (toolFail) riskMarkers.push('tool-fail');
-  if (dupesMax >= 2) riskMarkers.push('dupes\xD7' + dupesMax);
-  if (e.thinkingStripped === true) riskMarkers.push('thinking-stripped');
-  if (e.coreHash || e.toolsHash) {
-    for (let i = allEntries.length - 2; i >= 0; i--) {
-      const prev = allEntries[i];
-      if (prev.sessionId === sid && !prev.isSubagent) {
-        if (prev.coreHash && e.coreHash && prev.coreHash !== e.coreHash) riskMarkers.push('sys-changed');
-        if (prev.toolsHash && e.toolsHash && prev.toolsHash !== e.toolsHash) riskMarkers.push('tools-changed');
-        break;
-      }
-    }
-  }
-  const riskLine = riskMarkers.length ? '<div class="turn-risk-line">' + riskMarkers.join(' ') + '</div>' : '';
-
-  el.innerHTML = identityLine + titleLine + costLine + ctxBarHtml + secondaryLine + riskLine;
-
-  // Hide turn if no session selected, or if it belongs to a different session
-  if (!selectedSessionId || selectedSessionId !== sid) el.style.display = 'none';
-  // Append: chronological order — oldest at top, newest at bottom
-  colTurns.appendChild(el);
-
-  if (selectedSessionId === sid) renderSessionSparkline(sid);
-  // Track unconditionally (not gated by !_loading) — codex review: this was
-  // previously only set while live, so a session restored from history had
-  // it unset until the first live main turn, meaning that very first live
-  // turn was never recognized as "on the live edge" even though a user
-  // viewing the just-loaded latest turn genuinely is on it.
   const prevMainIdx = sess.latestMainTurnIdx;
   if (!isSubagent) sess.latestMainTurnIdx = idx;
   if (!_loading && selectedSessionId === sid) {
-    // Only auto-follow if toggle is on AND user is currently on the live edge
-    // Never interrupt focused mode (drill-down); workflow split view is the default
-    // state and must keep following live turns.
-    // Subagent turns never auto-select (docs/designs/follow-live-turn-subagent.md
-    // Problem 1) — heavy subagent activity would otherwise yank the detail panel
-    // away from the main thread on every turn. They bump a peek-only "+N sub"
-    // pill instead, tracked on sess so switching sessions needs no manual reset.
-    if (isSubagent) {
-      const wasOnMainLiveEdge = followLiveTurn && !isFocusedMode &&
-        (selectedTurnIdx === -1 || selectedTurnIdx === sess.latestMainTurnIdx);
-      if (wasOnMainLiveEdge) {
-        sess.subPillCount = (sess.subPillCount || 0) + 1;
-        if (!isHttpStatusOk(e.status)) sess.subPillErrCount = (sess.subPillErrCount || 0) + 1;
-        showSubagentPill(sess.subPillCount, sess.subPillErrCount || 0, allEntries[sess.latestMainTurnIdx]?.displayNum);
-      }
-      // Off the main live edge: subagent turns append silently, no pill bump.
-    } else {
+    if (!isSubagent) {
       const wasOnLiveEdge = followLiveTurn && !isFocusedMode &&
         (selectedTurnIdx === -1 || selectedTurnIdx === prevMainIdx);
       if (wasOnLiveEdge) {
         selectTurn(idx);
-        scrollTurnsToBottom();
-        sess.subPillCount = 0;
-        sess.subPillErrCount = 0;
-        hideSubagentPill();
-      } else if (followLiveTurn) {
-        newTurnCount++;
-        showNewTurnPill(newTurnCount);
       }
     }
   }

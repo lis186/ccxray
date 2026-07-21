@@ -567,7 +567,7 @@ function _navigateTargetInner(target, opts) {
     const proj = _projectNameForEntry(entry);
     if (proj && selectedProjectName !== proj) selectProject(proj);
     if (selectedSessionId !== entry.sessionId) selectSession(entry.sessionId);
-    selectTurn(idx, { smooth: opts.smooth !== false });
+    selectTurn(idx);
     setFocus('turns');
 
     if (target.kind === 'turn') {
@@ -1265,17 +1265,8 @@ let countdownInterval = null;
 
 // ── Follow live turn state ──
 let followLiveTurn = true;
-function toggleFollowLive() {
-  followLiveTurn = !followLiveTurn;
-  const btn = document.getElementById('scroll-toggle');
-  if (btn) {
-    btn.querySelector('.scroll-on').classList.toggle('active', followLiveTurn);
-    btn.querySelector('.scroll-off').classList.toggle('active', !followLiveTurn);
-  }
-}
-function scrollTurnsToBottom() {
-  if (followLiveTurn) colTurns.scrollTop = colTurns.scrollHeight;
-}
+function toggleFollowLive() { followLiveTurn = !followLiveTurn; }
+function scrollTurnsToBottom() {}
 
 // ── Status line injection state ──
 // eslint-disable-next-line no-undef
@@ -1381,7 +1372,7 @@ function copyCurrentUrl(btn) {
 function clearAll() { // kept for console use if needed
   colProjects.innerHTML = '<div class="col-title">Projects</div>';
   colSessions.innerHTML = '<div class="col-title">Sessions</div>';
-  colTurns.innerHTML = '<div class="col-sticky-header"><div class="col-title" style="display:flex;align-items:center">Turns<span id="scroll-toggle" onclick="toggleFollowLive()" style="cursor:pointer;font-size:10px;margin-left:auto"><span class="scroll-on active">ON</span> <span class="scroll-off">OFF</span></span></div><div id="session-tool-bar" style="display:none"></div><div id="ctx-legend"><span><span class="ctx-legend-dot" style="background:var(--color-cache-read)"></span>cache read</span><span><span class="ctx-legend-dot" style="background:var(--color-cache-write)"></span>cache write</span><span><span class="ctx-legend-dot" style="background:var(--color-input)"></span>input</span></div><div id="session-sparkline"></div></div>';
+  colTurns.innerHTML = '';
   colSections.innerHTML = '<div class="col-empty">←</div>';
   colDetail.innerHTML = '<div class="col-empty">←</div>';
   allEntries.length = 0;
@@ -1720,7 +1711,6 @@ function selectProject(name) {
   selectedTurnIdx = -1;
   selectedSection = null;
   clearSelectedStepSelection();
-  colTurns.querySelectorAll('.turn-item').forEach(el => { el.style.display = 'none'; });
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
   // Clear workflow timeline
@@ -1743,7 +1733,6 @@ function setFocus(col) {
   focusedCol = col;
   colProjects.classList.toggle('col-focused', col === 'projects');
   colSessions.classList.toggle('col-focused', col === 'sessions');
-  colTurns.classList.toggle('col-focused', col === 'turns');
   colSections.classList.toggle('col-focused', col === 'sections');
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
@@ -1754,85 +1743,10 @@ function getVisibleTurnIndices() {
     .filter(i => selectedSessionId && allEntries[i].sessionId === selectedSessionId && !allEntries[i].isRetry);
 }
 
-function updateRetryEmptyState(sid) {
-  let el = colTurns.querySelector('.retry-empty-state');
-  if (!sid) { if (el) el.remove(); return; }
-  const sess = sessionsMap.get(sid);
-  const hasVisibleTurns = colTurns.querySelector('.turn-item[style=""]') || colTurns.querySelector('.turn-item:not([style*="display: none"])');
-  if (!hasVisibleTurns && sess && sess.retryCount > 0) {
-    if (!el) { el = document.createElement('div'); el.className = 'retry-empty-state col-empty'; colTurns.appendChild(el); }
-    const rc = sess.retryCount;
-    const codes = [];
-    for (let i = 0; i < allEntries.length; i++) {
-      if (allEntries[i].sessionId === sid && allEntries[i].isRetry) codes.push(allEntries[i].status);
-    }
-    const summary = Object.entries(codes.reduce((a, c) => { a[c] = (a[c] || 0) + 1; return a; }, {})).map(([k, v]) => v > 1 ? v + '× ' + k : k).join(', ');
-    el.textContent = 'No turns — ' + rc + ' failed request' + (rc > 1 ? 's' : '') + ' (' + summary + ')';
-    el.style.display = '';
-  } else { if (el) el.remove(); }
-}
+function updateRetryEmptyState() {}
 
-function renderSessionToolBar(sid) {
-  const bar = document.getElementById('session-tool-bar');
-  if (!bar) return;
-  const sess = sid ? sessionsMap.get(sid) : null;
-  if (!sess || !sess.toolCalls) { bar.style.display = 'none'; return; }
-  const total = Object.values(sess.toolCalls).reduce((s, n) => s + n, 0);
-  if (!total) { bar.style.display = 'none'; return; }
-  const sorted = Object.entries(sess.toolCalls).sort((a, b) => b[1] - a[1]);
-  const chips = sorted.slice(0, 6).map(([n, c]) =>
-    '<span class="tool-chip">' + escapeHtml(n.replace(/^mcp__[^_]+__/, '')) + '·' + c + '</span>'
-  ).join('');
-  bar.innerHTML = total + ' calls &nbsp;' + chips;
-  bar.style.display = '';
-}
-
-function renderSessionSparkline(sid) {
-  const el = document.getElementById('session-sparkline');
-  if (!el) return;
-  if (!sid) { el.style.display = 'none'; return; }
-
-  const turns = allEntries.filter(e =>
-    e.sessionId === sid &&
-    !e.isSubagent &&
-    e.usage && (e.usage.input_tokens || 0) > 0
-  );
-  if (turns.length < 1) { el.style.display = 'none'; return; }
-
-  // Use stacked area chart for ≥ 3 turns, fallback to bar chart for < 3
-  if (turns.length >= 3) {
-    renderStackedAreaChart(el, turns);
-  } else {
-    renderBarChart(el, turns);
-  }
-  el.style.display = '';
-}
-
-function renderBarChart(el, turns) {
-  const W = 400, H = 40, PAD = 4;
-  const maxCtx = turns.reduce((m, e) => Math.max(m, e.maxContext || DEFAULT_MAX_CTX), 0) || DEFAULT_MAX_CTX;
-  const barW = Math.max(2, (W - 2 * PAD) / turns.length);
-  const gap = Math.min(1, barW * 0.15);
-
-  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">';
-  const threshY = (H - PAD - (0.8 * (H - 2 * PAD))).toFixed(1);
-  svg += '<line x1="' + PAD + '" y1="' + threshY + '" x2="' + (W - PAD) + '" y2="' + threshY + '" stroke="var(--dim)" stroke-width="0.5" stroke-dasharray="4 2"/>';
-
-  turns.forEach((e, i) => {
-    const ctx = e.ctxUsed || 0;
-    const pct = Math.min(100, ctx / maxCtx * 100);
-    const color = ctxZone(pct).cssVar || 'var(--accent)';
-    const x = PAD + i * barW;
-    const barH = pct / 100 * (H - 2 * PAD);
-    const y = H - PAD - barH;
-    svg += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (barW - gap).toFixed(1) + '" height="' + barH.toFixed(1) + '" fill="' + color + '"/>';
-    if (e.isCompacted) {
-      svg += '<rect x="' + x.toFixed(1) + '" y="' + PAD + '" width="' + (barW - gap).toFixed(1) + '" height="3" fill="var(--red)" opacity="0.9"/>';
-    }
-  });
-  svg += '</svg>';
-  el.innerHTML = svg;
-}
+function renderSessionToolBar() {}
+function renderSessionSparkline() {}
 
 function computeSessionScorecard(sid) {
   const turns = allEntries.filter(e =>
@@ -1941,119 +1855,10 @@ if (document.readyState === 'loading') {
 
 document.addEventListener('ccxray:settings-loaded', () => { _lastProjectsSignature = ''; renderProjectsCol(); });
 
-function renderStackedAreaChart(el, turns) {
-  const W = 400, H = 56, PAD = 4;
-  const maxCtx = turns.reduce((m, e) => Math.max(m, e.maxContext || DEFAULT_MAX_CTX), 0) || DEFAULT_MAX_CTX;
-  const drawW = W - 2 * PAD;
-  const drawH = H - 2 * PAD;
-  const n = turns.length;
-
-  // Extract stacked values per turn: [system, tools, messages]
-  const layers = [
-    { key: 'system',   color: 'var(--color-system-deep)', label: 'System' },
-    { key: 'tools',    color: 'var(--color-tools)', label: 'Tools' },
-    { key: 'messages', color: 'var(--color-messages)', label: 'Messages' },
-  ];
-
-  // Build cumulative Y values for each turn
-  const stacks = turns.map(e => {
-    const tok = e.tokens || {};
-    return [tok.system || 0, tok.tools || 0, tok.messages || 0];
-  });
-
-  function yPos(val) {
-    return H - PAD - Math.min(1, val / maxCtx) * drawH;
-  }
-  function xPos(i) {
-    return PAD + (i / (n - 1)) * drawW;
-  }
-
-  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" style="cursor:crosshair">';
-
-  // 80% threshold dashed line
-  const threshY = yPos(maxCtx * 0.8).toFixed(1);
-  svg += '<line x1="' + PAD + '" y1="' + threshY + '" x2="' + (W - PAD) + '" y2="' + threshY + '" stroke="var(--dim)" stroke-width="0.5" stroke-dasharray="4 2"/>';
-
-  // Draw stacked areas (bottom to top: system, tools, messages)
-  for (let layerIdx = layers.length - 1; layerIdx >= 0; layerIdx--) {
-    // Cumulative top for this layer = sum of layers 0..layerIdx
-    const topPoints = [];
-    const botPoints = [];
-    for (let i = 0; i < n; i++) {
-      let cumTop = 0;
-      for (let j = 0; j <= layerIdx; j++) cumTop += stacks[i][j];
-      let cumBot = 0;
-      for (let j = 0; j < layerIdx; j++) cumBot += stacks[i][j];
-      topPoints.push(xPos(i).toFixed(1) + ',' + yPos(cumTop).toFixed(1));
-      botPoints.push(xPos(i).toFixed(1) + ',' + yPos(cumBot).toFixed(1));
-    }
-    const d = 'M' + topPoints.join(' L') + ' L' + botPoints.reverse().join(' L') + ' Z';
-    svg += '<path d="' + d + '" fill="' + layers[layerIdx].color + '" opacity="0.8"/>';
-  }
-
-  // Compression markers: red vertical dashed lines
-  turns.forEach((e, i) => {
-    if (e.isCompacted) {
-      const x = xPos(i).toFixed(1);
-      svg += '<line x1="' + x + '" y1="' + PAD + '" x2="' + x + '" y2="' + (H - PAD) + '" stroke="var(--red)" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.9"/>';
-    }
-  });
-
-  // Prediction extension line: dashed line from last turn projecting to maxContext
-  if (n >= 3) {
-    const lastStk = stacks[n - 1];
-    const lastTotal = lastStk[0] + lastStk[1] + lastStk[2];
-    const lastPct = lastTotal / maxCtx;
-    if (lastPct < 0.95) {
-      // Compute avg messages delta from last 5 turns
-      const windowSize = Math.min(5, n);
-      let sumDelta = 0, count = 0;
-      for (let i = n - windowSize; i < n - 1; i++) {
-        const d = stacks[i + 1][2] - stacks[i][2]; // messages delta
-        if (d > 0) { sumDelta += d; count++; }
-      }
-      if (count > 0) {
-        const avgDelta = sumDelta / count;
-        const turnsToFull = (maxCtx - lastTotal) / avgDelta;
-        const projX = xPos(n - 1 + turnsToFull);
-        // Clamp to chart width
-        const clampX = Math.min(W - PAD, projX).toFixed(1);
-        svg += '<line x1="' + xPos(n - 1).toFixed(1) + '" y1="' + yPos(lastTotal).toFixed(1) + '" x2="' + clampX + '" y2="' + yPos(maxCtx).toFixed(1) + '" stroke="var(--dim)" stroke-width="1" stroke-dasharray="4 2" opacity="0.6"/>';
-      }
-    }
-  }
-
-  // Invisible hover rects for tooltip interaction
-  const sliceW = drawW / n;
-  turns.forEach((e, i) => {
-    const tok = e.tokens || {};
-    const sys = tok.system || 0, tools = tok.tools || 0, msgs = tok.messages || 0;
-    const total = sys + tools + msgs;
-    const pctS = total ? (sys / total * 100).toFixed(0) : '0';
-    const pctT = total ? (tools / total * 100).toFixed(0) : '0';
-    const pctM = total ? (msgs / total * 100).toFixed(0) : '0';
-    const num = e.displayNum || (i + 1);
-    const compactNote = e.isCompacted ? ' ⚠ compressed' : '';
-    const title = '#' + num + compactNote
-      + '\\nSystem: ' + (sys).toLocaleString() + ' (' + pctS + '%)'
-      + '\\nTools: ' + (tools).toLocaleString() + ' (' + pctT + '%)'
-      + '\\nMsgs: ' + (msgs).toLocaleString() + ' (' + pctM + '%)'
-      + '\\nTotal: ' + (total).toLocaleString() + ' / ' + maxCtx.toLocaleString();
-    const rx = PAD + i * sliceW;
-    svg += '<rect x="' + rx.toFixed(1) + '" y="0" width="' + sliceW.toFixed(1) + '" height="' + H + '" fill="transparent"><title>' + title + '</title></rect>';
-  });
-
-  svg += '</svg>';
-  el.innerHTML = svg;
-}
-
 function selectSessionAndLatestTurn(sid) {
   selectedSessionId = sid;
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === sid);
-  });
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.style.display = (sid && el.dataset.sessionId === sid) ? '' : 'none';
   });
   // Workflow view
   var columnsEl = document.getElementById('columns');
@@ -2065,9 +1870,6 @@ function selectSessionAndLatestTurn(sid) {
   // Auto-select latest turn in this session
   const visible = getVisibleTurnIndices();
   if (visible.length) selectTurn(visible[visible.length - 1]);
-  updateRetryEmptyState(sid);
-  renderSessionToolBar(sid);
-  renderSessionSparkline(sid);
   renderBreadcrumb();
 }
 
@@ -2083,8 +1885,7 @@ function renderBreadcrumb() {
   }
   if (selectedTurnIdx >= 0) {
     const e = allEntries[selectedTurnIdx];
-    const sessEl = e ? colTurns.querySelector('.turn-item[data-entry-idx="' + selectedTurnIdx + '"]') : null;
-    const sessNum = sessEl ? sessEl.dataset.sessNum : (selectedTurnIdx + 1);
+    const sessNum = e ? (e.displayNum || (selectedTurnIdx + 1)) : (selectedTurnIdx + 1);
     const idx = selectedTurnIdx;
     segments.push({ label: '#' + sessNum, action: () => { selectTurn(idx); } });
   }
@@ -2129,8 +1930,7 @@ function syncUrlFromState() {
   if (selectedSessionId) params.set('s', formatSessionUrlToken(selectedSessionId));
   if (selectedTurnIdx >= 0) {
     const e = allEntries[selectedTurnIdx];
-    const turnEl = e ? colTurns.querySelector('.turn-item[data-entry-idx="' + selectedTurnIdx + '"]') : null;
-    const num = turnEl ? turnEl.dataset.sessNum : String(selectedTurnIdx + 1);
+    const num = e ? (e.displayNum || String(selectedTurnIdx + 1)) : String(selectedTurnIdx + 1);
     params.set('t', num);
   }
   if (selectedSection) params.set('sec', selectedSection);
@@ -2169,17 +1969,9 @@ function selectSession(id) {
   colSessions.querySelectorAll('.session-item').forEach(el => {
     el.classList.toggle('selected', el.dataset.sessionId === id);
   });
-  // Show turns for this session
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.style.display = (id && el.dataset.sessionId === id) ? '' : 'none';
-  });
   // Clear downstream — Miller column rule: N+2 onwards must clear
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
-
-  updateRetryEmptyState(id);
-  renderSessionToolBar(id);
-  renderSessionSparkline(id);
 
   // Workflow swimlane view: col-turns becomes full-width right area
   var columnsEl = document.getElementById('columns');
@@ -2253,22 +2045,7 @@ function prefetchEntry(idx) {
     });
 }
 
-// Animate `el.scrollTop` by `deltaY` over `durationMs` using easeInOutQuad.
-// Plain `scrollBy({behavior:'smooth'})` uses the browser's default duration
-// (~500-700ms in Chrome/Safari) which feels sluggish; this gives us 300ms.
-function _smoothScrollBy(el, deltaY, durationMs) {
-  const startTop = el.scrollTop;
-  const startTime = performance.now();
-  function step(now) {
-    const t = Math.min(1, (now - startTime) / durationMs);
-    const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-    el.scrollTop = startTop + deltaY * eased;
-    if (t < 1) requestAnimationFrame(step);
-  }
-  requestAnimationFrame(step);
-}
-
-function selectTurn(idx, opts) {
+function selectTurn(idx) {
   if (idx < 0 || idx >= allEntries.length) return;
   if (typeof hideNewTurnPill === 'function') hideNewTurnPill();
   if (typeof hideSubagentPill === 'function') hideSubagentPill();
@@ -2281,32 +2058,6 @@ function selectTurn(idx, opts) {
   selectedTurnIdx = idx;
   clearSelectedStepSelection();
   if (typeof wfHighlightTurn === 'function' && wfState) wfHighlightTurn(allEntries[idx]?.id);
-  colTurns.querySelectorAll('.turn-item').forEach(el => {
-    el.classList.toggle('selected', parseInt(el.dataset.entryIdx) === idx);
-  });
-  const selEl = colTurns.querySelector('.turn-item[data-entry-idx="' + idx + '"]');
-  if (selEl) {
-    // scrollIntoView({block:'nearest'}) aligns to the column's scroll
-    // container top, but col-sticky-header overlays that area — the turn
-    // ends up tucked behind the header. Compute the header's height and
-    // nudge the column scroll so the selected card sits clear of it.
-    const stickyHeader = colTurns.querySelector('.col-sticky-header');
-    const headerH = stickyHeader ? stickyHeader.getBoundingClientRect().height : 0;
-    const colRect = colTurns.getBoundingClientRect();
-    const elRect = selEl.getBoundingClientRect();
-    const elTopInCol = elRect.top - colRect.top;
-    const elBottomInCol = elRect.bottom - colRect.top;
-    let delta = 0;
-    if (elTopInCol < headerH + 4) {
-      delta = elTopInCol - headerH - 8;
-    } else if (elBottomInCol > colRect.height - 4) {
-      delta = elBottomInCol - colRect.height + 8;
-    }
-    if (delta !== 0) {
-      if (opts && opts.smooth) _smoothScrollBy(colTurns, delta, 300);
-      else colTurns.scrollBy({ top: delta, behavior: 'auto' });
-    }
-  }
   // Auto-highlight the session this turn belongs to (read-only indicator, not a gate)
   const sid = allEntries[idx]?.sessionId;
   colSessions.querySelectorAll('.session-item').forEach(el => {

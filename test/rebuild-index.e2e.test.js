@@ -134,27 +134,30 @@ describe('rebuild-index E2E — self-heal a lost index to a real browser render'
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=${SESSION_ID}`, { waitUntil: 'domcontentloaded' });
 
-      // The recovered turn must render under its session — proves the rebuilt
-      // index flows through restore → SSE → render, not just sits on disk.
+      // The recovered session must appear — proves the rebuilt index flows
+      // through restore → SSE → render, not just sits on disk.
       // Projects column render is rAF-coalesced (docs/decisions/0002-dirty-check-signature.md),
-      // so wait for it too — the turn-item can commit a frame before it does.
+      // so wait for it too.
       await page.waitForFunction(
-        (sid) => !!document.querySelector(`.turn-item[data-session-id="${sid}"]`) &&
-                 !!document.querySelector('.project-item.selected .pi-label')?.textContent,
+        (sid) => {
+          const sess = typeof sessionsMap !== 'undefined' && sessionsMap.get(sid);
+          return !!sess && sess.count > 0 &&
+                 !!document.querySelector('.project-item.selected .pi-label')?.textContent;
+        },
         { timeout: 8000 }, SESSION_ID,
       );
 
       const state = await page.evaluate((sid) => {
-        const turn = document.querySelector(`.turn-item[data-session-id="${sid}"]`);
+        const sess = typeof sessionsMap !== 'undefined' && sessionsMap.get(sid);
         return {
           projectText: document.querySelector('.project-item.selected .pi-label')?.textContent || '',
           sessionVisible: !!document.querySelector('.session-item.selected'),
-          turnVisible: !!turn,
-          model: turn?.querySelector('.turn-model')?.textContent || '',
+          entryCount: sess ? sess.count : 0,
+          model: sess ? sess.model : '',
         };
       }, SESSION_ID);
 
-      assert.equal(state.turnVisible, true, 'recovered turn renders in the dashboard');
+      assert.ok(state.entryCount > 0, 'recovered turn loaded into sessionsMap');
       assert.equal(state.sessionVisible, true, 'recovered session column populated');
       assert.equal(state.projectText, truncateMiddle(PROJECT_NAME, 20), 'recovered project (cwd) renders');
       assert.match(state.model, /sonnet-4-6/); // dashboard strips the claude- prefix for display
