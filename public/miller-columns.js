@@ -1211,7 +1211,7 @@ function applySessionFilter() {
       placeholder.className = 'sessions-empty col-empty';
       colSessions.appendChild(placeholder);
     }
-    placeholder.textContent = window._entriesLoading ? (window._entriesLoadingText || 'Loading…') : 'No sessions yet';
+    placeholder.textContent = 'No sessions yet';
     placeholder.style.display = '';
   } else if (placeholder) {
     placeholder.style.display = 'none';
@@ -1630,9 +1630,6 @@ function _renderProjectsColInner() {
       '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(2) + '</div>' +
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
-  }
-  if (visibleProjCount === 0 && window._entriesLoading) {
-    html += '<div id="entries-loading-status" class="col-empty loading-state" style="padding-top:16px;opacity:0.75"><div class="loading-spinner"></div><div>' + escapeHtml(window._entriesLoadingText || 'Loading…') + '</div></div>';
   }
   colProjects.innerHTML = html;
   const projCountEl = document.getElementById('proj-filter-count');

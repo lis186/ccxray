@@ -1133,6 +1133,9 @@ function _setLoadingStatus(text) {
   window._entriesLoadingText = text;
   const el = document.getElementById('entries-loading-status');
   if (el) el.textContent = text;
+  // ponytail: always show restore progress in breadcrumb, not just deep-link (#332)
+  const breadcrumb = document.getElementById('breadcrumb');
+  if (breadcrumb && _loading) breadcrumb.textContent = text;
   if (_deepLinkLoadingActive) _renderDeepLinkLoading(text);
 }
 
