@@ -191,6 +191,11 @@ async function parseSessionFile(filePath, projectSlug) {
       status: 200,
       isSSE: false,
       receivedAt,
+      // #329/#333: the transcript carries the same upstream msg_01… id the proxy
+      // logged, so the read-time merge collapses this imported copy with the proxy
+      // copy. Canonical selection prefers the proxy copy (it has on-disk _req/_res),
+      // so the import enriches rather than shadows. See docs/decisions/0012.
+      responseId: msg.id || null,
       tokens,
       cost: { cost },
       model,

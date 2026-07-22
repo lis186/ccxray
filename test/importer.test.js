@@ -47,6 +47,7 @@ function makeAssistant(opts = {}) {
   return makeLine('assistant', {
     timestamp: opts.timestamp || '2026-07-15T10:30:00.000Z',
     message: {
+      id: opts.msgId,
       model: opts.model || 'claude-sonnet-4-5-20250514',
       role: 'assistant',
       content: [{ type: 'text', text: opts.text || 'Hello' }],
@@ -129,6 +130,31 @@ describe('importer', () => {
       assert.strictEqual(entries[0].tokens.output, 200);
       assert.strictEqual(entries[0].model, 'claude-sonnet-4-5-20250514');
       assert.strictEqual(entries[0].stopReason, 'end_turn');
+    });
+
+    it('carries the upstream message id as responseId for #329/#333 merge', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-rid.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z', msgId: 'msg_01IMPORT' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].responseId, 'msg_01IMPORT');
+    });
+
+    it('sets responseId null when the transcript line has no message id', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-norid.jsonl');
+      fs.writeFileSync(file, [makeUser('hi'), makeAssistant({ timestamp: '2026-07-15T10:31:05.000Z' })].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].responseId, null);
     });
 
     it('skips entries with zero usage', async () => {
