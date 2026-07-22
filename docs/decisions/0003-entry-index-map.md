@@ -45,3 +45,14 @@ the fallback path ever fires in production, a push site was missed.
 order matters (the array is the timeline), and many consumers iterate
 sequentially. A Map preserves insertion order but loses array methods
 (`slice`, `splice`, index access) used throughout the codebase.
+
+## Amended by ADR 0012 (2026-07-23)
+
+The push/trim contract is extended by `docs/decisions/0012-response-id-read-time-merge.md`
+(#333): a second parallel map `responseIndex` (responseId → canonical entry)
+must be kept in sync alongside `entryIndex`, and merged-away duplicate ids live
+in `entryIndex` as **aliases** pointing at their canonical. `trimEntries` must
+drop a canonical's aliases and its `responseIndex` slot too. Cold-load and
+restore dedup through `store.mergeByResponseId`; the live forward.js sites use
+`store.registerOrMerge`. ADR 0012's site table is authoritative for the merged
+world.
