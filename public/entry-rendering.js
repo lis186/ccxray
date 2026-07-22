@@ -999,6 +999,32 @@ startQuotaTicker();
 // Tab restoration happens after deep-link resolution (see _loading=false path)
 
 // SSE live connection
+// #333: a live cross-process merge folded a duplicate into an already-known
+// canonical entry. Patch the entry's data in place so the corrected (richest)
+// metadata is what any subsequent render reads, then rebuild the workflow view
+// if that session is on screen — wfBuildState → wfInferLanes is the authoritative
+// batch pass, so lane placement is correct (not ad-hoc surgery). A turn we have
+// never seen is rendered fresh. See docs/decisions/0012-response-id-read-time-merge.md.
+function _patchEntryInPlace(u) {
+  if (!u || !u.id) return;
+  if (!window.entryById || !window.entryById.has(u.id)) { addEntry(u); return; }
+  const full = allEntries.find(e => e.id === u.id);
+  if (full) {
+    // Enriched fields only — never touch id/ts/receivedAt/displayNum or lane
+    // bookkeeping the timeline computed on first arrival.
+    for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
+      'cost', 'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
+      'toolCount', 'toolCalls', 'isSubagent', 'sessionInferred', 'thinkingDuration',
+      'resumeCommand']) {
+      if (u[k] != null) full[k] = u[k];
+    }
+  }
+  if (selectedSessionId === u.sessionId && typeof wfBuildState === 'function') {
+    const rebuilt = wfBuildState(u.sessionId);
+    if (rebuilt) { wfState = rebuilt; if (typeof wfRenderTimeline === 'function') wfRenderTimeline(); }
+  }
+}
+
 const evtSource = new EventSource('/_events');
 evtSource.onmessage = (ev) => {
   try {
@@ -1041,6 +1067,8 @@ evtSource.onmessage = (ev) => {
         if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
         if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
       }
+    } else if (data._type === 'entry_update') {
+      _patchEntryInPlace(data);
     } else {
       addEntry(data);
     }

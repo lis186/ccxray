@@ -7,7 +7,8 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { mergeByResponseId } = require('../server/store');
+const store = require('../server/store');
+const { mergeByResponseId } = store;
 
 describe('store.mergeByResponseId (#333)', () => {
   it('folds complementary partial copies into one richest record', () => {
@@ -113,5 +114,33 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.equal(out[0].req, null, 'released req stays null — not resurrected from another copy');
     assert.equal(out[0].res, null);
     assert.equal(out[0]._loaded, false);
+  });
+});
+
+describe('store.registerOrMerge (#333 live path)', () => {
+  it('registers a first copy, then folds a duplicate and aliases its id', () => {
+    store.responseIndex.clear();
+    store.entryIndex.clear();
+    const first = { id: 'a1', responseId: 'R', receivedAt: 1, agentKey: 'orchestrator',
+      usage: null, cost: null, sessionId: 's', sessionInferred: false, isSubagent: false };
+    const r1 = store.registerOrMerge(first);
+    assert.equal(r1.merged, false, 'first copy is not a merge');
+    assert.equal(r1.canonical, first);
+
+    const dup = { id: 'a2', responseId: 'R', receivedAt: 2, agentKey: null,
+      usage: { input_tokens: 100, output_tokens: 9 }, cost: { cost: 0.02 } };
+    const r2 = store.registerOrMerge(dup);
+    assert.equal(r2.merged, true, 'a known responseId folds in');
+    assert.equal(r2.canonical, first, 'the first-registered stays canonical (no swap)');
+    assert.equal(first.usage.output_tokens, 9, 'duplicate usage folded into canonical');
+    assert.equal(first.agentKey, 'orchestrator', 'canonical keeps its identity');
+    assert.equal(store.getEntryById('a2'), first, 'the duplicate id aliases to canonical');
+    assert.deepEqual(first._mergedIds, ['a2']);
+  });
+
+  it('never merges when responseId is absent (OpenAI/WS exemption path)', () => {
+    store.responseIndex.clear();
+    assert.equal(store.registerOrMerge({ id: 'x', responseId: null }).merged, false);
+    assert.equal(store.registerOrMerge({ id: 'y' }).merged, false);
   });
 });

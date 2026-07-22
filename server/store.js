@@ -171,6 +171,43 @@ function mergeByResponseId(list) {
   return slots.map(s => (s.e ? s.e : merged.get(s.rid)));
 }
 
+// Live-path incremental dedup. A freshly-captured entry whose responseId is
+// already canonical (loaded by restore, or an earlier live turn) folds INTO that
+// canonical and its id becomes an alias; otherwise it registers as canonical.
+// Returns { merged, canonical }:
+//   merged=false → new/first copy; caller pushes it as usual (broadcast `entry`).
+//   merged=true  → folded into `canonical`; caller must NOT push a new row, must
+//                  broadcast `entry_update` (not a second `entry`), and must NOT
+//                  re-count its cost (the canonical's cost was counted already).
+// No canonical swap: an existing imported canonical stays canonical even when a
+// live proxy copy arrives — swapping would mean splicing an already-broadcast row
+// out of store.entries with no client removal event. The rare cost is degraded
+// lazy-load for that one turn (imported id has no _req/_res); accepted, bounded.
+// See docs/decisions/0012-response-id-read-time-merge.md.
+function registerOrMerge(entry) {
+  const rid = entry && entry.responseId;
+  if (!rid) return { merged: false, canonical: entry };
+  const canonical = responseIndex.get(rid);
+  if (!canonical) {
+    responseIndex.set(rid, entry);
+    return { merged: false, canonical: entry };
+  }
+  _foldEntry(canonical, entry);
+  // Adopt a real explicit session if the incoming has one the canonical lacked
+  // (mirror _mergeGroup's group-level session rule).
+  if ((canonical.sessionInferred !== false || !canonical.sessionId || canonical.sessionId === 'direct-api')
+      && entry.sessionInferred === false && entry.sessionId && entry.sessionId !== 'direct-api') {
+    canonical.sessionId = entry.sessionId;
+    canonical.isSubagent = entry.isSubagent;
+    canonical.sessionInferred = entry.sessionInferred;
+  }
+  if (entry.id && entry.id !== canonical.id) {
+    (canonical._mergedIds || (canonical._mergedIds = [])).push(entry.id);
+    entryIndex.set(entry.id, canonical); // alias the live id → canonical
+  }
+  return { merged: true, canonical };
+}
+
 // ── Rate limit state (from Anthropic response headers) ──────────────
 let rateLimitState = null;
 
@@ -522,6 +559,7 @@ module.exports = {
   entryIndex,
   responseIndex,
   mergeByResponseId,
+  registerOrMerge,
   trimEntries,
   getEntryById,
   sseClients,

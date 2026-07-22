@@ -2,7 +2,8 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { summarizeEntry } = require('../server/sse-broadcast');
+const { summarizeEntry, broadcastEntryUpdate } = require('../server/sse-broadcast');
+const store = require('../server/store');
 
 describe('sse-broadcast', () => {
   describe('summarizeEntry – resume fields', () => {
@@ -105,6 +106,30 @@ describe('sse-broadcast', () => {
       assert.equal(summary.msgCount, 10, 'should use pre-computed msgCount, not req.messages.length');
       assert.equal(summary.toolCount, 5, 'should use pre-computed toolCount, not req.tools.length');
       assert.equal(summary.stopReason, 'tool_use', 'should use pre-computed stopReason, not res delta');
+    });
+  });
+
+  describe('broadcastEntryUpdate (#333)', () => {
+    it('emits a summarizeEntry payload tagged _type:entry_update (not a second entry)', () => {
+      const captured = [];
+      const fakeClient = { write: (s) => captured.push(s) };
+      store.sseClients.push(fakeClient);
+      try {
+        broadcastEntryUpdate({
+          id: 'u1', sessionId: 'sess-eu', provider: 'anthropic',
+          usage: { input_tokens: 1 }, isSubagent: false, agentKey: 'orchestrator',
+        });
+      } finally {
+        const i = store.sseClients.indexOf(fakeClient);
+        if (i >= 0) store.sseClients.splice(i, 1);
+      }
+      assert.equal(captured.length, 1, 'one frame written');
+      const m = captured[0].match(/data: (\{.*\})\n\n$/s);
+      assert.ok(m, 'frame carries a data payload');
+      const payload = JSON.parse(m[1]);
+      assert.equal(payload._type, 'entry_update', 'tagged as an update, not a plain entry');
+      assert.equal(payload.id, 'u1');
+      assert.equal(payload.agentKey, 'orchestrator', 'carries the merged canonical fields');
     });
   });
 });
