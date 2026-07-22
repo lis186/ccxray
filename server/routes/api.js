@@ -308,7 +308,21 @@ function handleApiRoutes(clientReq, clientRes) {
   if (entryMatch) {
     const id = decodeURIComponent(entryMatch[1]);
     const entry = store.getEntryById(id);
-    if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return true; }
+    if (!entry) {
+      // Disk fallback: entry may be on disk but evicted from memory (cold/trim)
+      (async () => {
+        try {
+          const req = JSON.parse(await config.storage.read(id, '_req.json'));
+          const res = JSON.parse(await config.storage.read(id, '_res.json'));
+          clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+          clientRes.end(JSON.stringify({ req, res, receivedAt: null, toolSources: null }));
+        } catch {
+          clientRes.writeHead(404, { 'Content-Type': 'application/json' });
+          clientRes.end(JSON.stringify({ error: 'not found' }));
+        }
+      })();
+      return true;
+    }
     (async () => {
       await loadEntryReqRes(entry);
       const snapshot = { req: entry.req, res: entry.res, receivedAt: entry.receivedAt || null, toolSources: entry.toolSources || null };

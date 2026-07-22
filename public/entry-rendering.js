@@ -530,7 +530,7 @@ function addEntry(e) {
   proj.sessionIds.add(sid);
   proj.lastId = entryId;
   proj.lastSeenAt = Date.now();
-  if (!_loading) renderProjectsCol();
+  if (!_loading && !window._coldActivating) renderProjectsCol();
 
   const statusClass = isHttpStatusOk(e.status) ? 'status-ok' : 'status-err';
   const displayModel = (model && model !== '?') ? model : (sess.model || '?');
@@ -548,8 +548,10 @@ function addEntry(e) {
     const ctxInputTotal = ctxCacheRead + ctxCacheCreate + (usage ? (usage.input_tokens || 0) : 0);
     sess.latestCacheHitRatio = ctxInputTotal > 0 ? ctxCacheRead / ctxInputTotal : 0;
     sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
-    const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
-    if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
+    if (!window._coldActivating) {
+      const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
+      if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
+    }
   }
 
   // Gap timing: idle time from end of previous turn to start of this turn
@@ -664,7 +666,7 @@ function addEntry(e) {
     window.entryById.set(entryId, { id: entryId, sessionId: sid, cwd: entryCwd, receivedAt: e.receivedAt || null, displayNum });
   }
   // Re-render session card after stats are fresh (suppressed during batch)
-  if (!_loading) {
+  if (!_loading && !window._coldActivating) {
     const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
     if (sessEl) {
       sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
@@ -706,7 +708,7 @@ function addEntry(e) {
   // viewing the just-loaded latest turn genuinely is on it.
   const prevMainIdx = sess.latestMainTurnIdx;
   if (!isSubagent) sess.latestMainTurnIdx = idx;
-  if (!_loading && selectedSessionId === sid) {
+  if (!_loading && !window._coldActivating && selectedSessionId === sid) {
     // Only auto-follow if toggle is on AND user is currently on the live edge
     // Never interrupt focused mode (drill-down); workflow split view is the default
     // state and must keep following live turns.

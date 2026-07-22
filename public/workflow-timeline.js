@@ -1492,9 +1492,13 @@ function wfRenderTimeline() {
   requestAnimationFrame(function() {
     _wfLoadVersions();
 
-    // P1: content-driven height (selected lane is taller)
+    // P1: content-driven height — budget from actual column, not viewport
+    var DETAIL_MIN = 180;
     var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
-    var maxH = window.innerHeight * 0.45;
+    var overviewH = overviewDiv.offsetHeight || 48;
+    var resizeH = 8;
+    var availForLanes = (colTurns.clientHeight || window.innerHeight) - overviewH - resizeH - DETAIL_MIN;
+    var maxH = Math.max(60, availForLanes);
     lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
 
     _wfRenderSvgContent(mainSvg, subSvg, canvas);
@@ -1653,8 +1657,12 @@ function _wfRefreshLaneFocusUI() {
   // broken (ux-heuristic-analysis: drags that don't stick read as a bug).
   var lanesSection = document.getElementById('wf-lanes-section');
   if (lanesSection && !(wfState && wfState.laneHeightManual)) {
+    var DETAIL_MIN = 180;
     var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
-    var maxH = window.innerHeight * 0.45;
+    var ov = document.getElementById('wf-overview');
+    var overviewH = ov ? ov.offsetHeight : 48;
+    var availForLanes = (colTurns.clientHeight || window.innerHeight) - overviewH - 8 - DETAIL_MIN;
+    var maxH = Math.max(60, availForLanes);
     lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
   }
   var resizeHandle = document.getElementById('wf-resize');
@@ -2290,9 +2298,11 @@ function wfInitResize(subScroll, handle) {
     // (_wfRefreshLaneFocusUI) — otherwise the next toggle/cycle/click
     // silently overwrites their resize with no feedback (ux-heuristic-analysis).
     if (wfState) wfState.laneHeightManual = true;
+    var ov = document.getElementById('wf-overview');
+    var maxDrag = (colTurns.clientHeight || 600) - (ov ? ov.offsetHeight : 48) - 8 - 180;
     var onMove = function(ev) {
       var delta = ev.clientY - startY;
-      var newH = Math.max(60, startH + delta);
+      var newH = Math.max(60, Math.min(startH + delta, maxDrag));
       subScroll.style.maxHeight = newH + 'px';
     };
     var onUp = function() {

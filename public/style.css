@@ -166,7 +166,7 @@
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
-  .loading-state { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .loading-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; flex: 1; }
   .loading-spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: ccxray-spin 0.8s linear infinite; }
   @keyframes ccxray-spin { to { transform: rotate(360deg); } }
   .col-title { padding: 10px 12px; font-size: 10px; font-weight: 600; color: var(--dim); letter-spacing: 0.08em; text-transform: uppercase; border-bottom: 2px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
@@ -682,7 +682,7 @@
 /* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
 #columns.cold-loading #col-sections,
 #columns.cold-loading #col-detail { display: none; }
-#columns.cold-loading #col-turns { flex: 1; }
+#columns.cold-loading #col-turns { flex: 1; overflow: hidden; }
 
 /* ── Workflow Swimlane Timeline (#91) ── */
 /* When workflow is active, col-turns becomes the full-width right area;
@@ -726,7 +726,7 @@
 #wf-resize.wf-resize-expand { height: 15px; cursor: pointer; }
 #wf-resize.wf-resize-expand::after { content: '▾ show all agents'; width: auto; height: auto; border-radius: 0; background: none; color: var(--dim); font-size: 10px; letter-spacing: 0.2px; }
 #wf-resize.wf-resize-expand:hover::after { color: var(--text); }
-#wf-detail-area { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+#wf-detail-area { flex: 1; display: flex; min-height: 180px; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }
 .wf-tooltip { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--text); z-index: 100; pointer-events: none; max-width: 300px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1.6; }
