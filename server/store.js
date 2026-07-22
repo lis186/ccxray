@@ -74,9 +74,21 @@ function _usageRichness(u) {
 function _foldEntry(canonical, other) {
   // Identity + context + labels: a non-empty value fills a canonical gap.
   for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
-    'title', 'thinkingDuration', 'thinkingStripped', 'duplicateToolCalls', 'toolSources']) {
+    'title', 'thinkingDuration', 'duplicateToolCalls']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
       canonical[k] = other[k];
+    }
+  }
+  // thinkingStripped is boolean evidence — OR, so a canonical false never blocks a
+  // later copy's true (codex round-3 m1).
+  if (other.thinkingStripped) canonical.thinkingStripped = true;
+  // toolSources is a map — fill when canonical is null/undefined OR an EMPTY object
+  // ({} must not read as "already populated" and block a real map; round-3 m1).
+  {
+    const cs = canonical.toolSources;
+    const canonicalEmpty = cs == null || (typeof cs === 'object' && !Array.isArray(cs) && Object.keys(cs).length === 0);
+    if (canonicalEmpty && other.toolSources && typeof other.toolSources === 'object' && Object.keys(other.toolSources).length) {
+      canonical.toolSources = other.toolSources;
     }
   }
   // Numeric counts: prefer non-null, take max on conflict (same response ⇒ equal
@@ -233,12 +245,16 @@ function registerOrMerge(entry) {
     responseIndex.set(rid, entry);
     return { merged: false, canonical: entry };
   }
+  // Rank identities BEFORE folding — _foldEntry copies the incoming agentKey into
+  // a canonical that lacked it, which would inflate the canonical's score and
+  // suppress the adoption the batch pass would make (codex round-3 M1).
+  const entryMoreAuthoritative = _identityScore(entry) > _identityScore(canonical);
   _foldEntry(canonical, entry);
-  // If the incoming copy is a more authoritative identity, adopt its whole triple
+  // If the incoming copy is the more authoritative identity, adopt its whole triple
   // (sessionId + sessionInferred + isSubagent) atomically — same ranking the batch
   // pass uses, so live and a later reload classify the turn identically (codex
   // round-2 M2). Never split sessionId from its inferred flag or classification.
-  if (_identityScore(entry) > _identityScore(canonical)) {
+  if (entryMoreAuthoritative) {
     if (entry.sessionId != null) canonical.sessionId = entry.sessionId;
     canonical.sessionInferred = entry.sessionInferred;
     canonical.isSubagent = entry.isSubagent;

@@ -6,6 +6,10 @@ const path = require('path');
 const config = require('./config');
 
 const sessionIndex = new Map();
+// #333: responseId → { cost, sid } of the max cost already counted for that
+// response, so cost is counted once (at its richest) across duplicate copies
+// seen live, via the importer, or during a rebuild. Cleared on rebuild.
+const _costByRid = new Map();
 let dirty = false;
 let flushTimer = null;
 const FLUSH_DELAY_MS = 2000;
@@ -50,19 +54,19 @@ async function loadSessionIndex() {
 // Build session index from raw index.ndjson content string.
 function rebuildFromIndexContent(indexContent) {
   sessionIndex.clear();
+  _costByRid.clear();
   if (!indexContent) return;
   // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
-  // COST must be counted once (ADR 0012 mandatory) — dedup it by responseId here.
-  // COUNT is deliberately NOT deduped: it stays raw so reconcile()'s raw-line
-  // count comparison matches (deduping it would trigger perpetual rebuilds), and
-  // the ADR classes count reconciliation as best-effort.
-  const costedRids = new Set();
+  // COST must be counted once (ADR 0012 mandatory) — _upsert dedups by responseId
+  // via _costByRid. COUNT is deliberately NOT deduped: it stays raw so reconcile()'s
+  // raw-line count comparison matches (deduping it would trigger perpetual
+  // rebuilds), and the ADR classes count reconciliation as best-effort.
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     try {
       const m = JSON.parse(line);
       if (!m || !m.sessionId) continue;
-      _upsert(m.sessionId, m, costedRids);
+      _upsert(m.sessionId, m);
     } catch {}
   }
   dirty = true;
@@ -99,7 +103,7 @@ function updateFromEntry(entry) {
   _scheduleDirtyFlush();
 }
 
-function _upsert(sid, entry, costedRids) {
+function _upsert(sid, entry) {
   let s = sessionIndex.get(sid);
   if (!s) {
     s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, lastReceivedAt: 0, provider: null, agent: null };
@@ -110,14 +114,27 @@ function _upsert(sid, entry, costedRids) {
   if (!s.lastId || entry.id > s.lastId) s.lastId = entry.id;
   if (entry.model) s.model = entry.model;
   if (entry.cwd && entry.cwd !== '(quota-check)') s.cwd = entry.cwd;
-  // #333: count cost once per responseId when a dedup set is supplied (rebuild
-  // over the shared log). Live updateFromEntry passes none — it already sees one
-  // copy per responseId (a live duplicate is skipped by the caller on merge).
+  // #333: count cost ONCE per responseId, keeping the MAX across duplicate copies
+  // (a partial capture can log cost 0 before the complete copy — codex round-3 M3).
+  // Persistent _costByRid makes this race-free across live + importer + rebuild
+  // (no destructive mid-flight rebuild — codex round-3 M2). Cost stays in the
+  // first-seen session's bucket so a cross-session duplicate isn't double-counted.
+  // A line without responseId (legacy/exempt) is always counted (no dedup key).
   if (entry.cost?.cost != null) {
     const rid = entry.responseId;
-    if (!rid || !costedRids || !costedRids.has(rid)) {
-      s.totalCost = (s.totalCost || 0) + entry.cost.cost;
-      if (rid && costedRids) costedRids.add(rid);
+    const c = entry.cost.cost;
+    if (!rid) {
+      s.totalCost = (s.totalCost || 0) + c;
+    } else {
+      const prev = _costByRid.get(rid);
+      if (prev === undefined) {
+        s.totalCost = (s.totalCost || 0) + c;
+        _costByRid.set(rid, { cost: c, sid });
+      } else if (c > prev.cost) {
+        const ps = sessionIndex.get(prev.sid);
+        if (ps) ps.totalCost = (ps.totalCost || 0) + (c - prev.cost);
+        prev.cost = c;
+      }
     }
   }
   if (entry.title && !s.title) s.title = entry.title;

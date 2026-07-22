@@ -98,6 +98,19 @@ describe('session-index', () => {
     assert.equal(s.count, 4, 'count stays raw (best-effort) so reconcile does not thrash');
   });
 
+  it('#333: cost dedup keeps the MAX per responseId (poor copy logged first)', () => {
+    const si = require('../server/session-index');
+    // A partial copy (output 0, cost ~0) logged before the complete copy must not
+    // pin the session total to the cheap value (codex round-3 M3).
+    const lines = [
+      JSON.stringify({ id: 'p1', sessionId: 'sess-z', responseId: 'msg_01A', cost: { cost: 0.001 }, receivedAt: 1 }),
+      JSON.stringify({ id: 'p2', sessionId: 'sess-z', responseId: 'msg_01A', cost: { cost: 0.01 }, receivedAt: 2 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    const s = si.getAll().find(x => x.sid === 'sess-z');
+    assert.ok(Math.abs(s.totalCost - 0.01) < 1e-9, `expected max 0.01, got ${s.totalCost}`);
+  });
+
   it('#333: a line without responseId still counts its cost (legacy/exempt)', () => {
     const si = require('../server/session-index');
     const lines = [

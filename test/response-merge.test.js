@@ -133,6 +133,17 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.equal(out[0].edited, true, 'differing hash flags edited');
   });
 
+  it('ORs boolean evidence and fills empty maps (thinkingStripped/toolSources) (R3-m1)', () => {
+    // canonical=false/{} must not read as authoritative and block the other copy's
+    // real values.
+    const canonical = { id: 'a', responseId: 'R', receivedAt: 1, thinkingStripped: false, toolSources: {} };
+    const other = { id: 'b', responseId: 'R', receivedAt: 2, thinkingStripped: true, toolSources: { mcp: 2 } };
+    const out = mergeByResponseId([canonical, other]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].thinkingStripped, true, 'false ORs up to true');
+    assert.deepEqual(out[0].toolSources, { mcp: 2 }, 'empty {} is filled by a real map');
+  });
+
   it('does not resurrect req/res or load state across copies', () => {
     const canonical = { id: 'a', responseId: 'R', receivedAt: 1, req: null, res: null, _loaded: false };
     const other = { id: 'b', responseId: 'R', receivedAt: 2, req: { big: 1 }, res: [1, 2], _loaded: true };

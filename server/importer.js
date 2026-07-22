@@ -367,16 +367,11 @@ async function scanAndImport() {
   if (imported > 0) {
     await Promise.all(_pendingIndexWrites);
     _pendingIndexWrites.length = 0;
-    // #333/#329: the per-entry updateFromEntry above cannot dedup cost against a
-    // proxy line that already logged the same responseId (different entry id,
-    // different session), so an imported+proxy duplicate would double a cold
-    // session's cost. Rebuild the session index from the now-updated log — its
-    // per-responseId cost dedup (session-index.rebuildFromIndexContent) counts
-    // each response's cost once. Count stays raw. Mirrors reconcile's heal path.
-    try {
-      const content = await config.storage.readIndex();
-      if (content) sessionIdx.rebuildFromIndexContent(content);
-    } catch (e) { console.error('[importer] session-index rebuild failed:', e.message); }
+    // #333/#329: an imported line sharing a proxy line's responseId does not
+    // double a cold session's cost — session-index._upsert counts cost once per
+    // responseId (its persistent _costByRid), so the per-entry updateFromEntry
+    // above is already deduped. No destructive rebuild here (avoids the mid-flight
+    // race with concurrent live updates — codex round-3 M2).
     await sessionIdx.flush();
     broadcastRaw({ _type: 'sessions_updated' });
     console.log(`[importer] Imported ${imported} turns from local transcripts (${skipped} duplicates skipped)`);

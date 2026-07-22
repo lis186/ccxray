@@ -1016,9 +1016,14 @@ function _patchEntryInPlace(u) {
     // that would split allEntries from the rendered column (codex round-1 M4).
     // isSubagent/agentKey/convId ARE patched — they only move the turn between
     // LANES within this session, which the wfBuildState rebuild below recomputes.
+    // Each field carries the server's already-merged canonical value, so a plain
+    // copy is correct. hasCredential/toolFail arrive as `|| undefined`/`|| false`
+    // from summarizeEntry, so the != null guard patches them when truthy and never
+    // downgrades a real true to a stale false (codex round-3 M4).
     for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
       'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
-      'toolCount', 'isSubagent', 'thinkingDuration']) {
+      'toolCount', 'isSubagent', 'thinkingDuration', 'thinkingStripped',
+      'duplicateToolCalls', 'toolsHash', 'hasCredential']) {
       if (u[k] != null) full[k] = u[k];
     }
     // cost arrives as {cost:number} from summarizeEntry; allEntries stores a bare
