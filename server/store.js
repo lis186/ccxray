@@ -28,11 +28,19 @@ const restoreState = {
   entryCount: 0,
 };
 
-// INVARIANT: trim must delete from entryIndex — see docs/decisions/0003-entry-index-map.md
+// INVARIANT: trim must delete from entryIndex AND responseIndex, including a
+// canonical entry's merged-away aliases — see docs/decisions/0003-entry-index-map.md
+// + 0012-response-id-read-time-merge.md (#333).
 function trimEntries() {
   if (entries.length > MAX_ENTRIES) {
     const removed = entries.splice(0, entries.length - MAX_ENTRIES);
-    for (const e of removed) entryIndex.delete(e.id);
+    for (const e of removed) {
+      entryIndex.delete(e.id);
+      if (e._mergedIds) for (const aliasId of e._mergedIds) entryIndex.delete(aliasId);
+      // Only drop the responseIndex slot if it still points at this entry (a
+      // newer canonical for the same responseId must not be evicted).
+      if (e.responseId && responseIndex.get(e.responseId) === e) responseIndex.delete(e.responseId);
+    }
   }
 }
 

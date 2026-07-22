@@ -189,6 +189,9 @@ async function restoreFromLogs() {
     if (count > store.SESSION_ENTRY_CAP) oversizedSessions.set(sid, count);
   }
   const sessionLoadedFirst = new Set();
+  // #333: collect built entries, then fold duplicate copies by responseId in one
+  // batch before they enter the store (see the merge block after this loop).
+  const restoredList = [];
 
   for (let meta of parsed) {
 
@@ -255,9 +258,8 @@ async function restoreFromLogs() {
     }
 
     const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
-    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-    store.entries.push(restoredEntry);
-    store.entryIndex.set(meta.id, restoredEntry);
+    // Deferred: pushed after the loop, once duplicate copies are merged (#333).
+    restoredList.push(restoredEntry);
 
     // Track earliest timestamp per sysHash for version dating
     if (meta.sysHash && meta.id) {
@@ -278,11 +280,31 @@ async function restoreFromLogs() {
       // as of its position in the index.
       store.markSessionUsage(meta);
     }
-    if (meta.cost?.cost != null && meta.sessionId) {
-      store.sessionCosts.set(meta.sessionId, (store.sessionCosts.get(meta.sessionId) || 0) + meta.cost.cost);
-    }
-    restored++;
   }
+
+  // #333: fold multi-instance duplicate copies into one canonical BEFORE they
+  // enter the store, so a non-oversized session doesn't render 2–8× rows and
+  // its cost is counted once. Merged-away copy ids stay in entryIndex as ALIASES
+  // pointing at the canonical, so a later delta turn whose prevId names a dropped
+  // copy still resolves via getEntryById (restore.js:64). Oversized sessions
+  // contributed only their first entry to restoredList, so they pass through
+  // unmerged here and stay served by cold-load (which merges independently).
+  // See docs/decisions/0012-response-id-read-time-merge.md.
+  const canonicalEntries = store.mergeByResponseId(restoredList);
+  for (const entry of canonicalEntries) {
+    // INVARIANT: push pairs with entryIndex.set AND responseIndex upkeep + alias
+    // registration — see docs/decisions/0003-entry-index-map.md + 0012.
+    store.entries.push(entry);
+    store.entryIndex.set(entry.id, entry);
+    if (entry.responseId) store.responseIndex.set(entry.responseId, entry);
+    if (entry._mergedIds) {
+      for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, entry);
+    }
+    if (entry.cost?.cost != null && entry.sessionId) {
+      store.sessionCosts.set(entry.sessionId, (store.sessionCosts.get(entry.sessionId) || 0) + entry.cost.cost);
+    }
+  }
+  restored = canonicalEntries.length;
   store.trimEntries();
   console.timeEnd('restore:parse');
 
