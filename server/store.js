@@ -12,6 +12,11 @@ const SESSION_ENTRY_CAP = Math.max(1, parseInt(process.env.CCXRAY_SESSION_ENTRY_
 const entries = [];
 // INVARIANT: entryIndex must mirror entries[] — see docs/decisions/0003-entry-index-map.md
 const entryIndex = new Map();
+// INVARIANT: responseIndex mirrors the merged canonical set; merged-away copy ids
+// stay in entryIndex as ALIASES pointing at their canonical. Push/trim sites keep
+// both maps in sync — see docs/decisions/0012-response-id-read-time-merge.md (#333,
+// extends ADR 0003).
+const responseIndex = new Map(); // responseId → canonical entry
 const sseClients = [];
 const restoreState = {
   phase: 'idle',
@@ -33,6 +38,129 @@ function trimEntries() {
 
 function getEntryById(id) {
   return entryIndex.get(id) || entries.find(e => e.id === id) || null;
+}
+
+// ── Read-time merge by responseId (#333) ────────────────────────────
+// When several ccxray processes observe the same traffic and write a shared
+// ~/.ccxray, each logs the same logical response, so a dashboard reading the
+// shared log sees 2–8 partial copies per turn — each carrying complementary
+// metadata (one has agentKey, another a real usage, another convId). The
+// upstream Anthropic message id (msg_01…) is assigned by Anthropic, not minted
+// by any writer, so grouping by it and folding the copies into the single
+// most-informative record is coordination-free and deterministic (a set union,
+// not a uniqueness constraint). See docs/decisions/0012-response-id-read-time-merge.md.
+//
+// By construction the fold only reads an explicit field list — req/res/_loaded/
+// _loadingPromise/_writePromise are NEVER folded across copies, so a released
+// body can't be resurrected and load state stays with the kept object.
+
+function _usageRichness(u) {
+  if (!u || typeof u !== 'object') return -1;
+  return (u.output_tokens || 0) + (u.input_tokens || 0)
+    + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+}
+
+// Fold `other` into `canonical` in place. `canonical` keeps its id/ts/receivedAt/
+// elapsed as a unit (the log timestamp lazy-load and date logic depend on) and
+// its own req/res references; only complementary fields are pulled from `other`.
+function _foldEntry(canonical, other) {
+  // Identity + context + labels: a non-empty value fills a canonical gap.
+  for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
+    'title', 'thinkingDuration', 'thinkingStripped', 'duplicateToolCalls', 'toolSources']) {
+    if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
+      canonical[k] = other[k];
+    }
+  }
+  // Numeric counts: prefer non-null, take max on conflict (same response ⇒ equal
+  // in practice; rewind/compaction is a different responseId, never in one group).
+  for (const k of ['msgCount', 'toolCount']) {
+    if (other[k] != null) canonical[k] = canonical[k] != null ? Math.max(canonical[k], other[k]) : other[k];
+  }
+  // Tool/skill maps: fill only when canonical's is missing/empty.
+  for (const k of ['toolCalls', 'skillCalls']) {
+    const empty = canonical[k] == null || (typeof canonical[k] === 'object' && Object.keys(canonical[k]).length === 0);
+    if (empty && other[k] != null) canonical[k] = other[k];
+  }
+  // usage/cost/maxContext/responseMetadata move as a unit to the richest usage —
+  // cost is thereby counted once, never summed across copies.
+  if (_usageRichness(other.usage) > _usageRichness(canonical.usage)) {
+    canonical.usage = other.usage;
+    canonical.cost = other.cost;
+    canonical.maxContext = other.maxContext;
+    canonical.responseMetadata = other.responseMetadata;
+  }
+  // Terminal signals: a set value beats null/empty.
+  if (canonical.status == null && other.status != null) canonical.status = other.status;
+  if (!canonical.stopReason && other.stopReason) canonical.stopReason = other.stopReason;
+  // Prompt-identity hashes: keep canonical; a differing hash means an intercept
+  // hop changed the bytes → flag edited rather than silently pick one.
+  for (const k of ['sysHash', 'toolsHash']) {
+    if (canonical[k] == null && other[k] != null) canonical[k] = other[k];
+    else if (canonical[k] != null && other[k] != null && canonical[k] !== other[k]) canonical.edited = true;
+  }
+  // OR semantics — true if any copy saw it.
+  if (other.toolFail) canonical.toolFail = true;
+  if (other.hasCredential) canonical.hasCredential = true;
+  if (other.edited) {
+    canonical.edited = true;
+    if (!canonical.editSummary && other.editSummary) canonical.editSummary = other.editSummary;
+  }
+  return canonical;
+}
+
+function _mergeGroup(copies) {
+  if (copies.length === 1) return copies[0];
+  const byStart = (a, b) =>
+    (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0) ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  // Canonical: a proxy observation (has on-disk _req/_res) over an imported copy
+  // (no files — making it canonical would break lazy-load forever); among those,
+  // the earliest-receivedAt copy (closest to the real turn start).
+  const proxy = copies.filter(c => !c.imported);
+  const canonical = [...(proxy.length ? proxy : copies)].sort(byStart)[0];
+  // Session identity comes from a real explicit session; the same copy supplies
+  // isSubagent/sessionInferred so they stay mutually consistent.
+  const sessionCopy = copies.find(c => c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
+    || copies.find(c => c.agentKey) || canonical;
+  const mergedIds = [];
+  for (const other of copies) {
+    if (other === canonical) continue;
+    _foldEntry(canonical, other);
+    if (other.id && other.id !== canonical.id) mergedIds.push(other.id);
+  }
+  if (sessionCopy !== canonical) {
+    canonical.sessionId = sessionCopy.sessionId;
+    canonical.isSubagent = sessionCopy.isSubagent;
+    canonical.sessionInferred = sessionCopy.sessionInferred;
+  }
+  // A real observation supersedes an import reconstruction.
+  if (!canonical.imported) { delete canonical.imported; delete canonical.importSource; }
+  // Recomputed from post-merge counts downstream, never carried.
+  delete canonical.truncated;
+  delete canonical.totalEntryCount;
+  if (mergedIds.length) canonical._mergedIds = mergedIds;
+  return canonical;
+}
+
+// Fold a flat list of entry-shaped objects so copies sharing a responseId become
+// one canonical entry. Entries with a null/absent responseId are passed through
+// untouched (no key ⇒ no group). Output order = first-encounter order; a group's
+// canonical takes its first slot. The canonical carries `_mergedIds` (the dropped
+// copy ids) so push sites can register aliases; `_mergedIds` is not an INDEX_FIELD
+// and not in the summarizeEntry whitelist, so it never persists or broadcasts.
+function mergeByResponseId(list) {
+  const groups = new Map();
+  const slots = [];
+  for (const e of list) {
+    const rid = e && e.responseId;
+    if (!rid) { slots.push({ e }); continue; }
+    if (!groups.has(rid)) { groups.set(rid, []); slots.push({ rid }); }
+    groups.get(rid).push(e);
+  }
+  if (groups.size === 0) return list; // no dedup key anywhere — nothing to do
+  const merged = new Map();
+  for (const [rid, copies] of groups) merged.set(rid, _mergeGroup(copies));
+  return slots.map(s => (s.e ? s.e : merged.get(s.rid)));
 }
 
 // ── Rate limit state (from Anthropic response headers) ──────────────
@@ -384,6 +512,8 @@ module.exports = {
   SESSION_ENTRY_CAP,
   entries,
   entryIndex,
+  responseIndex,
+  mergeByResponseId,
   trimEntries,
   getEntryById,
   sseClients,
