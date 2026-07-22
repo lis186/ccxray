@@ -40,6 +40,23 @@ function extractUsage(resData) {
   return result;
 }
 
+// ── extractResponseId ───────────────────────────────────────
+// The upstream Anthropic message id (msg_01…) — assigned by Anthropic, not
+// minted by any writer — is the dedup key for the read-time merge that
+// collapses multi-instance duplicate logs (#333). SSE: message_start.message.id
+// (same node extractUsage reads). Non-SSE: top-level response.id. Null when
+// absent (legacy/partial captures) — the merge treats a null key as "no group".
+// See docs/decisions/0012-response-id-read-time-merge.md.
+function extractResponseId(resData) {
+  if (!resData) return null;
+  if (Array.isArray(resData)) {
+    const msgStart = resData.find(e => e && e.type === 'message_start');
+    return msgStart?.message?.id || null;
+  }
+  if (typeof resData === 'object') return resData.id || null;
+  return null;
+}
+
 // ── detectSession ───────────────────────────────────────────
 // Anthropic path: session_id from parsedBody.metadata, delegate to
 // store.detectSession. The client socket rides along for orphan
@@ -175,6 +192,7 @@ function attributionTurnStep(parsedBody) {
 module.exports = {
   isNoiseRequest,
   extractUsage,
+  extractResponseId,
   detectSession,
   buildEntryFields,
   registerPromptVersion,

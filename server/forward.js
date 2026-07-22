@@ -738,6 +738,8 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
+      // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
+      responseId: getParser('anthropic').extractResponseId(events),
       edited: ctx.edited, editSummary: ctx.editSummary,
       tokens: null,
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
@@ -972,6 +974,8 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
+        // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
+        responseId: getParser('anthropic').extractResponseId(resData),
         edited: ctx.edited, editSummary: ctx.editSummary,
         tokens: null,
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),

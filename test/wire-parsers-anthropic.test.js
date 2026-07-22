@@ -62,6 +62,25 @@ describe('wire-parsers/anthropic', () => {
     });
   });
 
+  describe('extractResponseId (#333 dedup key)', () => {
+    it('extracts message_start.message.id from SSE events', () => {
+      const events = loadFixture('turn1_res.json');
+      assert.equal(anthropic.extractResponseId(events), 'msg_01A');
+    });
+
+    it('extracts top-level id from a non-SSE response object', () => {
+      assert.equal(anthropic.extractResponseId({ id: 'msg_01XYZ', type: 'message' }), 'msg_01XYZ');
+    });
+
+    it('returns null when the id is absent or input is empty', () => {
+      assert.equal(anthropic.extractResponseId(null), null);
+      assert.equal(anthropic.extractResponseId([]), null);
+      assert.equal(anthropic.extractResponseId([{ type: 'message_start', message: {} }]), null);
+      assert.equal(anthropic.extractResponseId({}), null);
+      assert.equal(anthropic.extractResponseId('raw text'), null);
+    });
+  });
+
   describe('detectSession', () => {
     it('is a function that delegates to store', () => {
       assert.equal(typeof anthropic.detectSession, 'function');

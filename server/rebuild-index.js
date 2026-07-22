@@ -311,6 +311,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       status: stopReason ? 200 : null,
       receivedAt: null,
       elapsed: null,
+      // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
+      responseId: getParser('anthropic').extractResponseId(events),
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
