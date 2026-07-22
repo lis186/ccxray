@@ -883,11 +883,11 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     broadcast(entry);
 
     const indexLine = buildIndexLine(entry);
-    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    // Log-first: only update session index after index.ndjson write succeeds (#309).
+    // OpenAI SSE is exempt from responseId merge (no responseId), so the update is
+    // unconditional here — there is no `merged` on this path (codex round-2).
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      // Skip the session-index update on a merge — the canonical was already
-      // counted; counting the duplicate would inflate the session card cost (#333).
-      if (!merged) sessionIdx.updateFromEntry(entry);
+      sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     entry.req = null;

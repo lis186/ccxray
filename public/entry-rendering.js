@@ -1027,6 +1027,15 @@ function _patchEntryInPlace(u) {
     if (u.cost != null) {
       full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
     }
+    // ctxUsed is derived from usage at add time; recompute it when usage is
+    // enriched or the context bar keeps rendering the poor copy's value (codex
+    // round-2 M5 — this is the sawtooth symptom the merge exists to fix).
+    if (u.usage != null && typeof computeCtxUsed === 'function') full.ctxUsed = computeCtxUsed(full.usage);
+    // toolCalls: patch only a non-empty map/array so summarizeEntry's empty default
+    // never clobbers a good map (codex round-2 M5).
+    if (u.toolCalls != null && (Array.isArray(u.toolCalls) ? u.toolCalls.length : Object.keys(u.toolCalls).length)) {
+      full.toolCalls = u.toolCalls;
+    }
     // Keep the lightweight entryById record consistent for the mutable field it
     // holds (codex round-1 M4).
     const rec = window.entryById.get(u.id);

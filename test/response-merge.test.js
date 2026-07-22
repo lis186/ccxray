@@ -169,4 +169,36 @@ describe('store.registerOrMerge (#333 live path)', () => {
     assert.equal(store.registerOrMerge({ id: 'x', responseId: null }).merged, false);
     assert.equal(store.registerOrMerge({ id: 'y' }).merged, false);
   });
+
+  it('adopts the incoming identity triple atomically when it outranks canonical (R2-M2)', () => {
+    store.responseIndex.clear();
+    store.entryIndex.clear();
+    // Canonical registered first: inferred/direct-api but WITH an agentKey, marked
+    // subagent. Then an explicit-session copy arrives — it outranks (real session),
+    // so sessionId + sessionInferred + isSubagent must ALL flip together, matching
+    // what the batch pass would decide on reload.
+    const first = { id: 'c1', responseId: 'R', receivedAt: 1, sessionId: 'direct-api', sessionInferred: true, isSubagent: true, agentKey: 'general-purpose' };
+    store.registerOrMerge(first);
+    const explicit = { id: 'c2', responseId: 'R', receivedAt: 2, sessionId: 's-real', sessionInferred: false, isSubagent: false };
+    const { merged, canonical } = store.registerOrMerge(explicit);
+    assert.equal(merged, true);
+    assert.equal(canonical.sessionId, 's-real');
+    assert.equal(canonical.sessionInferred, false);
+    assert.equal(canonical.isSubagent, false, 'classification flips with the session as one unit — no subagent+main desync');
+  });
+
+  it('absorbs an incoming batch group\'s aliases so trim can clean them (R2-M4)', () => {
+    store.responseIndex.clear();
+    store.entryIndex.clear();
+    const live = { id: 'live1', responseId: 'R', receivedAt: 1 };
+    store.registerOrMerge(live);
+    // A restored batch canonical carrying its own merged-away ids folds into live.
+    const restoredCanonical = { id: 'r1', responseId: 'R', receivedAt: 2, _mergedIds: ['r2', 'r3'] };
+    const { canonical } = store.registerOrMerge(restoredCanonical);
+    assert.equal(canonical, live);
+    for (const aid of ['r1', 'r2', 'r3']) {
+      assert.equal(store.getEntryById(aid), live, `${aid} aliases to the live canonical`);
+      assert.ok(canonical._mergedIds.includes(aid), `${aid} tracked in _mergedIds for trim`);
+    }
+  });
 });

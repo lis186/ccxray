@@ -140,6 +140,19 @@ function _startKey(e) {
   return Number.isFinite(n) ? n : Infinity;
 }
 
+// Authority of a copy's identity (sessionId + sessionInferred + isSubagent),
+// which travel together as one unit. A copy with BOTH a real agentKey and an
+// explicit (non-inferred, non-direct-api) session is most authoritative. Batch
+// (_mergeGroup) and live (registerOrMerge) both rank by this so they can never
+// disagree on the merged turn's classification (codex round-1 M8 / round-2).
+function _identityScore(c) {
+  const realSession = c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api';
+  if (c.agentKey && realSession) return 3;
+  if (realSession) return 2;
+  if (c.agentKey) return 1;
+  return 0;
+}
+
 function _mergeGroup(copies) {
   if (copies.length === 1) return copies[0];
   const byStart = (a, b) => (_startKey(a) - _startKey(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -149,15 +162,15 @@ function _mergeGroup(copies) {
   const proxy = copies.filter(c => !c.imported);
   const canonical = [...(proxy.length ? proxy : copies)].sort(byStart)[0];
   // Identity (sessionId + sessionInferred + isSubagent) is adopted as ONE unit
-  // from the most authoritative copy — preferring one that has BOTH a real
-  // agentKey AND an explicit (non-inferred, non-direct-api) session. Taking the
-  // triple together avoids desyncing sessionId from its own inferred flag or
-  // main/subagent classification (codex round-1 M8).
-  const identityCopy =
-    copies.find(c => c.agentKey && c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
-    || copies.find(c => c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
-    || copies.find(c => c.agentKey)
-    || canonical;
+  // from the highest-scoring copy (see _identityScore), preferring canonical on a
+  // tie. Taking the triple together avoids desyncing sessionId from its own
+  // inferred flag or main/subagent classification (codex round-1 M8).
+  let identityCopy = canonical;
+  let bestIdentity = _identityScore(canonical);
+  for (const c of copies) {
+    const s = _identityScore(c);
+    if (s > bestIdentity) { identityCopy = c; bestIdentity = s; }
+  }
   const mergedIds = [];
   for (const other of copies) {
     if (other === canonical) continue;
@@ -220,23 +233,27 @@ function registerOrMerge(entry) {
     responseIndex.set(rid, entry);
     return { merged: false, canonical: entry };
   }
-  const canonicalHadAgentKey = !!canonical.agentKey;
-  const canonicalLacksRealSession = canonical.sessionInferred !== false || !canonical.sessionId || canonical.sessionId === 'direct-api';
   _foldEntry(canonical, entry);
-  // Adopt the incoming's real explicit session (with its inferred flag as a unit)
-  // when the canonical only had an inferred/direct-api one — mirror _mergeGroup.
-  if (canonicalLacksRealSession && entry.sessionInferred === false && entry.sessionId && entry.sessionId !== 'direct-api') {
-    canonical.sessionId = entry.sessionId;
-    canonical.sessionInferred = false;
+  // If the incoming copy is a more authoritative identity, adopt its whole triple
+  // (sessionId + sessionInferred + isSubagent) atomically — same ranking the batch
+  // pass uses, so live and a later reload classify the turn identically (codex
+  // round-2 M2). Never split sessionId from its inferred flag or classification.
+  if (_identityScore(entry) > _identityScore(canonical)) {
+    if (entry.sessionId != null) canonical.sessionId = entry.sessionId;
+    canonical.sessionInferred = entry.sessionInferred;
+    canonical.isSubagent = entry.isSubagent;
   }
-  // Main/subagent classification travels with the agentKey: if the incoming
-  // supplied the agentKey the canonical lacked, take its isSubagent too so the
-  // two never disagree (codex round-1 M8).
-  if (!canonicalHadAgentKey && entry.agentKey) canonical.isSubagent = entry.isSubagent;
-  if (entry.id && entry.id !== canonical.id) {
-    (canonical._mergedIds || (canonical._mergedIds = [])).push(entry.id);
-    entryIndex.set(entry.id, canonical); // alias the live id → canonical
-  }
+  // Alias the incoming id → canonical, and ABSORB any aliases the incoming already
+  // carried (e.g. a restored batch group merging into a live canonical) so trim
+  // cleans them all off the surviving canonical (codex round-2 M4).
+  const addAlias = aid => {
+    if (!aid || aid === canonical.id) return;
+    canonical._mergedIds = canonical._mergedIds || [];
+    if (!canonical._mergedIds.includes(aid)) canonical._mergedIds.push(aid);
+    entryIndex.set(aid, canonical);
+  };
+  addAlias(entry.id);
+  if (entry._mergedIds) for (const aid of entry._mergedIds) addAlias(aid);
   return { merged: true, canonical };
 }
 

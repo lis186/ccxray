@@ -8,6 +8,7 @@ const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
+const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -303,8 +304,12 @@ async function restoreFromLogs() {
     // via registerOrMerge — see docs/decisions/0003-entry-index-map.md + 0012.
     const { merged, canonical } = store.registerOrMerge(entry);
     if (merged) {
-      // Re-point this batch group's aliases at the live canonical too.
-      if (entry._mergedIds) for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, canonical);
+      // A merge here means a LIVE turn (completed during this post-listen restore)
+      // already owns the responseId — registerOrMerge folded the restored copy in
+      // and absorbed its aliases. That live entry was already broadcast, so push
+      // the enriched canonical to any connected client (codex round-2 M6). Harmless
+      // no-op when no client is connected yet (the common startup case).
+      broadcastEntryUpdate(canonical);
       continue;
     }
     store.entries.push(entry);

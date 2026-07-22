@@ -223,7 +223,10 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // additive key". Pruned _res (the ~85% aged out by retention) ⇒ untouched.
     // OpenAI lines are exempt (different id scheme) — skip the read.
     let outLine = line;
-    if (m.responseId === undefined && m.provider !== 'openai') {
+    // == null catches both missing (legacy) and a persisted null (an earlier
+    // non-SSE orphan that couldn't extract before the raw-object fallback landed);
+    // only rewrite when extraction actually succeeds (codex round-2 m1).
+    if (m.responseId == null && m.provider !== 'openai') {
       let rid = null;
       try { rid = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (rid) { m.responseId = rid; outLine = JSON.stringify(m); enrichedResponseIds++; }
