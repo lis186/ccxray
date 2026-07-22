@@ -144,6 +144,18 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.deepEqual(out[0].toolSources, { mcp: 2 }, 'empty {} is filled by a real map');
   });
 
+  it('an identity copy lacking isSubagent does not wipe a real value (R4 minor)', () => {
+    // Proxy copy: inferred session, no agentKey, but classified isSubagent=true.
+    // Importer copy: real explicit session (scores higher) but never sets isSubagent.
+    // The importer wins sessionId, but its undefined isSubagent must NOT overwrite true.
+    const proxy = { id: 'p', responseId: 'R', receivedAt: 1, sessionId: 'direct-api', sessionInferred: true, isSubagent: true };
+    const imp = { id: 'i', responseId: 'R', receivedAt: 2, sessionId: 's-real', sessionInferred: false, imported: true };
+    const out = mergeByResponseId([proxy, imp]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].sessionId, 's-real', 'real session adopted from importer copy');
+    assert.equal(out[0].isSubagent, true, 'undefined importer isSubagent did not wipe the proxy true');
+  });
+
   it('does not resurrect req/res or load state across copies', () => {
     const canonical = { id: 'a', responseId: 'R', receivedAt: 1, req: null, res: null, _loaded: false };
     const other = { id: 'b', responseId: 'R', receivedAt: 2, req: { big: 1 }, res: [1, 2], _loaded: true };

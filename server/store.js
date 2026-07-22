@@ -191,8 +191,11 @@ function _mergeGroup(copies) {
   }
   if (identityCopy !== canonical) {
     if (identityCopy.sessionId != null) canonical.sessionId = identityCopy.sessionId;
-    canonical.isSubagent = identityCopy.isSubagent;
-    canonical.sessionInferred = identityCopy.sessionInferred;
+    // Don't let an identity copy that lacks these (e.g. an importer copy, which
+    // never sets isSubagent) WIPE a real value the canonical already had — a
+    // metadata-poor `undefined` must not overwrite `true` (fable round-4 minor).
+    if (identityCopy.isSubagent != null) canonical.isSubagent = identityCopy.isSubagent;
+    if (identityCopy.sessionInferred != null) canonical.sessionInferred = identityCopy.sessionInferred;
   }
   // A real observation supersedes an import reconstruction.
   if (!canonical.imported) { delete canonical.imported; delete canonical.importSource; }
@@ -256,8 +259,9 @@ function registerOrMerge(entry) {
   // round-2 M2). Never split sessionId from its inferred flag or classification.
   if (entryMoreAuthoritative) {
     if (entry.sessionId != null) canonical.sessionId = entry.sessionId;
-    canonical.sessionInferred = entry.sessionInferred;
-    canonical.isSubagent = entry.isSubagent;
+    // Guard against wiping a real value with undefined (fable round-4 minor).
+    if (entry.sessionInferred != null) canonical.sessionInferred = entry.sessionInferred;
+    if (entry.isSubagent != null) canonical.isSubagent = entry.isSubagent;
   }
   // Alias the incoming id → canonical, and ABSORB any aliases the incoming already
   // carried (e.g. a restored batch group merging into a live canonical) so trim

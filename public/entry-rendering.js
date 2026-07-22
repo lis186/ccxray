@@ -1020,9 +1020,15 @@ function _patchEntryInPlace(u) {
     // copy is correct. hasCredential/toolFail arrive as `|| undefined`/`|| false`
     // from summarizeEntry, so the != null guard patches them when truthy and never
     // downgrades a real true to a stale false (codex round-3 M4).
+    // NB: isSubagent is deliberately NOT patched — allEntries stores the CLIENT's
+    // DERIVED classification (agentKey gate + overlap split + seq tracker), not the
+    // raw wire flag summarizeEntry sends. Overwriting it with the raw flag desyncs
+    // the seq tracker / ctx-chain from the swimlane (ADR 0005 divergence, fable
+    // round-4 M2). The wfBuildState rebuild below re-derives lanes from the patched
+    // agentKey; the turn-list row's classification converges on reload.
     for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
       'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
-      'toolCount', 'isSubagent', 'thinkingDuration', 'thinkingStripped',
+      'toolCount', 'thinkingDuration', 'thinkingStripped',
       'duplicateToolCalls', 'toolsHash', 'hasCredential']) {
       if (u[k] != null) full[k] = u[k];
     }
