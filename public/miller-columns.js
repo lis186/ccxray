@@ -437,12 +437,18 @@ function _ensureEntryLoadedByIndex(idx) {
     .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
     .then(data => {
       if (!data) { entry._loadFailed = true; return { ok: false, reason: 'load-failed' }; }
-      entry.req = data.req;
-      entry.res = data.res;
-      entry.reqLoaded = true;
-      entry.toolSources = data.toolSources || null;
+      if (data.req || data.res) {
+        entry.req = data.req;
+        entry.res = data.res;
+        entry.reqLoaded = true;
+        entry.toolSources = data.toolSources || null;
+        if (data.receivedAt) entry.receivedAt = data.receivedAt;
+      } else {
+        entry._loadFailed = true;
+        entry._prefetching = false;
+        return { ok: false, reason: 'load-failed' };
+      }
       entry._prefetching = false;
-      if (data.receivedAt) entry.receivedAt = data.receivedAt;
       return { ok: true };
     })
     .catch(() => {
@@ -2160,9 +2166,15 @@ function selectSession(id) {
   // Cold session: fetch entries on demand, then render
   const sess = sessionsMap.get(id);
   if (sess && sess._cold) {
+    if (typeof wfState !== 'undefined') wfState = null;
+    var oldTimeline = document.getElementById('wf-timeline');
+    if (oldTimeline) oldTimeline.remove();
     colSections.innerHTML = '';
     colDetail.innerHTML = '';
-    const spinner = document.createElement('div'); // ponytail: kept for cancelColdLoad token identity, not rendered
+    const spinner = document.createElement('div');
+    spinner.className = 'loading-state';
+    spinner.innerHTML = '<div class="loading-spinner"></div><div>Loading ' + (sess.count || '') + ' turns…</div>';
+    colTurns.appendChild(spinner);
     renderSessionToolBar(id);
     const columnsEl = document.getElementById('columns');
     columnsEl.classList.remove('wf-active');
@@ -2306,13 +2318,17 @@ function prefetchEntry(idx) {
         if (selectedTurnIdx === idx) scheduleRender();
         return;
       }
-      allEntries[idx].req = data.req;
-      allEntries[idx].res = data.res;
-      allEntries[idx].reqLoaded = true;
-      allEntries[idx].toolSources = data.toolSources || null;
+      if (data.req || data.res) {
+        allEntries[idx].req = data.req;
+        allEntries[idx].res = data.res;
+        allEntries[idx].reqLoaded = true;
+        allEntries[idx].toolSources = data.toolSources || null;
+        if (data.receivedAt) allEntries[idx].receivedAt = data.receivedAt;
+      } else {
+        allEntries[idx]._loadFailed = true;
+      }
       allEntries[idx]._prefetching = false;
       allEntries[idx]._prefetchPromise = null;
-      if (data.receivedAt) allEntries[idx].receivedAt = data.receivedAt;
       if (selectedTurnIdx === idx) {
         scheduleRender(() => {
           // Apply deferred deep link sec/msg after lazy-load completes
