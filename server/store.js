@@ -84,10 +84,24 @@ function _foldEntry(canonical, other) {
   for (const k of ['msgCount', 'toolCount']) {
     if (other[k] != null) canonical[k] = canonical[k] != null ? Math.max(canonical[k], other[k]) : other[k];
   }
-  // Tool/skill maps: fill only when canonical's is missing/empty.
+  // Tool/skill maps: per-key max union so a partial capture on one copy never
+  // drops the other's keys (same response ⇒ equal in practice, but be robust).
+  // Object maps only — a non-object shape (legacy array) falls back to fill-if-empty.
   for (const k of ['toolCalls', 'skillCalls']) {
-    const empty = canonical[k] == null || (typeof canonical[k] === 'object' && Object.keys(canonical[k]).length === 0);
-    if (empty && other[k] != null) canonical[k] = other[k];
+    const oc = other[k];
+    if (oc == null) continue;
+    const isMap = v => v && typeof v === 'object' && !Array.isArray(v);
+    if (isMap(canonical[k]) && isMap(oc)) {
+      for (const name of Object.keys(oc)) {
+        const a = canonical[k][name] || 0, b = oc[name] || 0;
+        if (b > a) canonical[k][name] = b;
+        else if (canonical[k][name] === undefined) canonical[k][name] = oc[name];
+      }
+    } else {
+      const empty = canonical[k] == null || (isMap(canonical[k]) && Object.keys(canonical[k]).length === 0)
+        || (Array.isArray(canonical[k]) && canonical[k].length === 0);
+      if (empty) canonical[k] = oc;
+    }
   }
   // usage/cost/maxContext/responseMetadata move as a unit to the richest usage —
   // cost is thereby counted once, never summed across copies.
@@ -116,30 +130,44 @@ function _foldEntry(canonical, other) {
   return canonical;
 }
 
+// Rank by earliest KNOWN receivedAt; a missing/NaN receivedAt sorts LAST so a
+// rebuild-generated orphan (receivedAt=null) never displaces a fully-timed proxy
+// copy as canonical (which would erase the turn's timeline placement).
+function _startKey(e) {
+  const r = e.receivedAt;
+  if (r == null || r === '') return Infinity; // Number(null) is 0, not NaN — guard explicitly
+  const n = Number(r);
+  return Number.isFinite(n) ? n : Infinity;
+}
+
 function _mergeGroup(copies) {
   if (copies.length === 1) return copies[0];
-  const byStart = (a, b) =>
-    (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0) ||
-    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const byStart = (a, b) => (_startKey(a) - _startKey(b)) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   // Canonical: a proxy observation (has on-disk _req/_res) over an imported copy
   // (no files — making it canonical would break lazy-load forever); among those,
   // the earliest-receivedAt copy (closest to the real turn start).
   const proxy = copies.filter(c => !c.imported);
   const canonical = [...(proxy.length ? proxy : copies)].sort(byStart)[0];
-  // Session identity comes from a real explicit session; the same copy supplies
-  // isSubagent/sessionInferred so they stay mutually consistent.
-  const sessionCopy = copies.find(c => c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
-    || copies.find(c => c.agentKey) || canonical;
+  // Identity (sessionId + sessionInferred + isSubagent) is adopted as ONE unit
+  // from the most authoritative copy — preferring one that has BOTH a real
+  // agentKey AND an explicit (non-inferred, non-direct-api) session. Taking the
+  // triple together avoids desyncing sessionId from its own inferred flag or
+  // main/subagent classification (codex round-1 M8).
+  const identityCopy =
+    copies.find(c => c.agentKey && c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
+    || copies.find(c => c.sessionInferred === false && c.sessionId && c.sessionId !== 'direct-api')
+    || copies.find(c => c.agentKey)
+    || canonical;
   const mergedIds = [];
   for (const other of copies) {
     if (other === canonical) continue;
     _foldEntry(canonical, other);
     if (other.id && other.id !== canonical.id) mergedIds.push(other.id);
   }
-  if (sessionCopy !== canonical) {
-    canonical.sessionId = sessionCopy.sessionId;
-    canonical.isSubagent = sessionCopy.isSubagent;
-    canonical.sessionInferred = sessionCopy.sessionInferred;
+  if (identityCopy !== canonical) {
+    if (identityCopy.sessionId != null) canonical.sessionId = identityCopy.sessionId;
+    canonical.isSubagent = identityCopy.isSubagent;
+    canonical.sessionInferred = identityCopy.sessionInferred;
   }
   // A real observation supersedes an import reconstruction.
   if (!canonical.imported) { delete canonical.imported; delete canonical.importSource; }
@@ -192,15 +220,19 @@ function registerOrMerge(entry) {
     responseIndex.set(rid, entry);
     return { merged: false, canonical: entry };
   }
+  const canonicalHadAgentKey = !!canonical.agentKey;
+  const canonicalLacksRealSession = canonical.sessionInferred !== false || !canonical.sessionId || canonical.sessionId === 'direct-api';
   _foldEntry(canonical, entry);
-  // Adopt a real explicit session if the incoming has one the canonical lacked
-  // (mirror _mergeGroup's group-level session rule).
-  if ((canonical.sessionInferred !== false || !canonical.sessionId || canonical.sessionId === 'direct-api')
-      && entry.sessionInferred === false && entry.sessionId && entry.sessionId !== 'direct-api') {
+  // Adopt the incoming's real explicit session (with its inferred flag as a unit)
+  // when the canonical only had an inferred/direct-api one — mirror _mergeGroup.
+  if (canonicalLacksRealSession && entry.sessionInferred === false && entry.sessionId && entry.sessionId !== 'direct-api') {
     canonical.sessionId = entry.sessionId;
-    canonical.isSubagent = entry.isSubagent;
-    canonical.sessionInferred = entry.sessionInferred;
+    canonical.sessionInferred = false;
   }
+  // Main/subagent classification travels with the agentKey: if the incoming
+  // supplied the agentKey the canonical lacked, take its isSubagent too so the
+  // two never disagree (codex round-1 M8).
+  if (!canonicalHadAgentKey && entry.agentKey) canonical.isSubagent = entry.isSubagent;
   if (entry.id && entry.id !== canonical.id) {
     (canonical._mergedIds || (canonical._mergedIds = [])).push(entry.id);
     entryIndex.set(entry.id, canonical); // alias the live id → canonical

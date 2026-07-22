@@ -51,12 +51,18 @@ async function loadSessionIndex() {
 function rebuildFromIndexContent(indexContent) {
   sessionIndex.clear();
   if (!indexContent) return;
+  // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
+  // COST must be counted once (ADR 0012 mandatory) — dedup it by responseId here.
+  // COUNT is deliberately NOT deduped: it stays raw so reconcile()'s raw-line
+  // count comparison matches (deduping it would trigger perpetual rebuilds), and
+  // the ADR classes count reconciliation as best-effort.
+  const costedRids = new Set();
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     try {
       const m = JSON.parse(line);
       if (!m || !m.sessionId) continue;
-      _upsert(m.sessionId, m);
+      _upsert(m.sessionId, m, costedRids);
     } catch {}
   }
   dirty = true;
@@ -93,7 +99,7 @@ function updateFromEntry(entry) {
   _scheduleDirtyFlush();
 }
 
-function _upsert(sid, entry) {
+function _upsert(sid, entry, costedRids) {
   let s = sessionIndex.get(sid);
   if (!s) {
     s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, lastReceivedAt: 0, provider: null, agent: null };
@@ -104,7 +110,16 @@ function _upsert(sid, entry) {
   if (!s.lastId || entry.id > s.lastId) s.lastId = entry.id;
   if (entry.model) s.model = entry.model;
   if (entry.cwd && entry.cwd !== '(quota-check)') s.cwd = entry.cwd;
-  if (entry.cost?.cost != null) s.totalCost = (s.totalCost || 0) + entry.cost.cost;
+  // #333: count cost once per responseId when a dedup set is supplied (rebuild
+  // over the shared log). Live updateFromEntry passes none — it already sees one
+  // copy per responseId (a live duplicate is skipped by the caller on merge).
+  if (entry.cost?.cost != null) {
+    const rid = entry.responseId;
+    if (!rid || !costedRids || !costedRids.has(rid)) {
+      s.totalCost = (s.totalCost || 0) + entry.cost.cost;
+      if (rid && costedRids) costedRids.add(rid);
+    }
+  }
   if (entry.title && !s.title) s.title = entry.title;
   const recvAt = entry.receivedAt || 0;
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;

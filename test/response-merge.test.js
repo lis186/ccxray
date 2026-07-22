@@ -97,6 +97,32 @@ describe('store.mergeByResponseId (#333)', () => {
       'R1 canonical keeps its first slot; second R1 copy folded away');
   });
 
+  it('a copy with unknown receivedAt never wins canonical over a timed copy (m2)', () => {
+    // A rebuild-generated orphan (receivedAt=null) must not displace a fully-timed
+    // proxy copy as canonical — that would erase the turn's timeline placement.
+    const orphan = { id: '2026-07-20T09-00-00-000', responseId: 'R', receivedAt: null, agentKey: 'orchestrator' };
+    const timed = { id: '2026-07-20T10-00-00-000', responseId: 'R', receivedAt: 5000, usage: { output_tokens: 5 } };
+    const out = mergeByResponseId([orphan, timed]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].id, timed.id, 'timed copy is canonical, not the untimed orphan');
+    assert.equal(out[0].receivedAt, 5000);
+    assert.equal(out[0].agentKey, 'orchestrator', 'orphan metadata still folds in');
+  });
+
+  it('adopts sessionId + isSubagent + sessionInferred as one consistent unit (M8)', () => {
+    // Copy A: real explicit session but no agentKey. Copy B: agentKey + real
+    // session + isSubagent=true. The identity triple must come from B (agentKey +
+    // real session), not be split so sessionId says one thing and isSubagent another.
+    const a = { id: 'a', responseId: 'R', receivedAt: 1, sessionId: 's-real', sessionInferred: false, isSubagent: false };
+    const b = { id: 'b', responseId: 'R', receivedAt: 2, sessionId: 's-real', sessionInferred: false, isSubagent: true, agentKey: 'general-purpose' };
+    const out = mergeByResponseId([a, b]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].sessionId, 's-real');
+    assert.equal(out[0].sessionInferred, false);
+    assert.equal(out[0].isSubagent, true, 'isSubagent travels with the agentKey copy, consistent with its session');
+    assert.equal(out[0].agentKey, 'general-purpose');
+  });
+
   it('flags edited when a hash conflict indicates an intercept-edit hop', () => {
     const out = mergeByResponseId([
       { id: 'a', responseId: 'R', receivedAt: 1, sysHash: 'h1' },

@@ -81,6 +81,34 @@ describe('session-index', () => {
     assert.equal(b.count, 1);
   });
 
+  it('#333: rebuild counts cost once per responseId, keeps raw entry count', () => {
+    const si = require('../server/session-index');
+    // 3 duplicate copies of ONE turn (same responseId) + 1 distinct turn — the
+    // shared-log shape. Cost must be counted once per responseId (ADR mandatory);
+    // count stays raw so reconcile's raw-line comparison doesn't perpetually drift.
+    const lines = [
+      JSON.stringify({ id: 't1a', sessionId: 'sess-x', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 1 }),
+      JSON.stringify({ id: 't1b', sessionId: 'sess-x', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 2 }),
+      JSON.stringify({ id: 't1c', sessionId: 'sess-x', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 3 }),
+      JSON.stringify({ id: 't2', sessionId: 'sess-x', responseId: 'msg_01B', cost: { cost: 0.01 }, receivedAt: 4 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    const s = si.getAll().find(x => x.sid === 'sess-x');
+    assert.ok(Math.abs(s.totalCost - 0.06) < 1e-9, `cost once per responseId: expected 0.06, got ${s.totalCost}`);
+    assert.equal(s.count, 4, 'count stays raw (best-effort) so reconcile does not thrash');
+  });
+
+  it('#333: a line without responseId still counts its cost (legacy/exempt)', () => {
+    const si = require('../server/session-index');
+    const lines = [
+      JSON.stringify({ id: 'l1', sessionId: 'sess-y', cost: { cost: 0.1 }, receivedAt: 1 }),
+      JSON.stringify({ id: 'l2', sessionId: 'sess-y', cost: { cost: 0.2 }, receivedAt: 2 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    const s = si.getAll().find(x => x.sid === 'sess-y');
+    assert.ok(Math.abs(s.totalCost - 0.3) < 1e-9, 'no responseId ⇒ no dedup, both cost counted');
+  });
+
   it('loadSessionIndex returns false when file missing', async () => {
     const si = require('../server/session-index');
     const loaded = await si.loadSessionIndex();

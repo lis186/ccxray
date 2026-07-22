@@ -780,7 +780,9 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const indexLine = buildIndexLine(entry);
     // Log-first: only update session index after index.ndjson write succeeds (#309)
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      sessionIdx.updateFromEntry(entry);
+      // Skip the session-index update on a merge — the canonical was already
+      // counted; counting the duplicate would inflate the session card cost (#333).
+      if (!merged) sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
@@ -883,7 +885,9 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     const indexLine = buildIndexLine(entry);
     // Log-first: only update session index after index.ndjson write succeeds (#309)
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      sessionIdx.updateFromEntry(entry);
+      // Skip the session-index update on a merge — the canonical was already
+      // counted; counting the duplicate would inflate the session card cost (#333).
+      if (!merged) sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     entry.req = null;
@@ -1030,7 +1034,9 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     // Log-first: only update session index after index.ndjson write succeeds (#309).
     // Raw line written even on a merge — restore/cold-load re-merge from disk (#333).
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      sessionIdx.updateFromEntry(entry);
+      // Skip the session-index update on a merge — the canonical was already
+      // counted; counting the duplicate would inflate the session card cost (#333).
+      if (!merged) sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand

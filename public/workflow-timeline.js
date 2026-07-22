@@ -1034,10 +1034,12 @@ function wfAddEntry(entry) {
 // lane height) must evolve together with wfBuildState's returned fields —
 // a new user-facing wfState field that isn't migrated here silently resets
 // on every reordered arrival.
-function _wfSeqRebuild(oldTMax) {
-  var old = wfState;
-  var fresh = wfBuildState(old.sessionId);
-  if (!fresh) return { lanesChanged: false };
+// GUARD (view-state migration): the single list of user-facing wfState fields
+// carried across a full rebuild. A new such field not migrated here silently
+// resets on rebuild. Shared by _wfSeqRebuild (#230) and the #333 entry_update
+// in-place patch — keep it the one place this list lives.
+function _wfMigrateViewState(old, fresh) {
+  if (!old || !fresh) return fresh;
   fresh.viewT0 = old.viewT0;
   fresh.viewT1 = old.viewT1;
   fresh.selectedTurnId = old.selectedTurnId;
@@ -1051,6 +1053,14 @@ function _wfSeqRebuild(oldTMax) {
   if (old.selectedLane) {
     fresh.selectedLane = fresh.lanes.find(function(l) { return l.key === old.selectedLane.key; }) || fresh.lanes[0];
   }
+  return fresh;
+}
+
+function _wfSeqRebuild(oldTMax) {
+  var old = wfState;
+  var fresh = wfBuildState(old.sessionId);
+  if (!fresh) return { lanesChanged: false };
+  _wfMigrateViewState(old, fresh);
   wfState = fresh;
   _wfFollowTail(oldTMax);
   return { lanesChanged: true };

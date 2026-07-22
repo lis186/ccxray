@@ -1010,18 +1010,38 @@ function _patchEntryInPlace(u) {
   if (!window.entryById || !window.entryById.has(u.id)) { addEntry(u); return; }
   const full = allEntries.find(e => e.id === u.id);
   if (full) {
-    // Enriched fields only — never touch id/ts/receivedAt/displayNum or lane
-    // bookkeeping the timeline computed on first arrival.
+    // Enriched fields only — never touch id/ts/receivedAt/displayNum. sessionId is
+    // deliberately NOT patched in place: a session change needs a cross-session
+    // re-bucket (DOM + aggregates) that converges on the next load, not an edit
+    // that would split allEntries from the rendered column (codex round-1 M4).
+    // isSubagent/agentKey/convId ARE patched — they only move the turn between
+    // LANES within this session, which the wfBuildState rebuild below recomputes.
     for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
-      'cost', 'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
-      'toolCount', 'toolCalls', 'isSubagent', 'sessionInferred', 'thinkingDuration',
-      'resumeCommand']) {
+      'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
+      'toolCount', 'isSubagent', 'thinkingDuration']) {
       if (u[k] != null) full[k] = u[k];
     }
+    // cost arrives as {cost:number} from summarizeEntry; allEntries stores a bare
+    // number — normalize exactly as addEntry does or the workflow cost math (.toFixed)
+    // throws (codex round-1 M3).
+    if (u.cost != null) {
+      full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
+    }
+    // Keep the lightweight entryById record consistent for the mutable field it
+    // holds (codex round-1 M4).
+    const rec = window.entryById.get(u.id);
+    if (rec && u.cwd != null) rec.cwd = u.cwd;
   }
+  // Rebuild the workflow view from the patched allEntries when this session is on
+  // screen — wfBuildState → wfInferLanes is the authoritative batch pass, and the
+  // shared migration preserves the user's zoom/selection/focus (m4).
   if (selectedSessionId === u.sessionId && typeof wfBuildState === 'function') {
     const rebuilt = wfBuildState(u.sessionId);
-    if (rebuilt) { wfState = rebuilt; if (typeof wfRenderTimeline === 'function') wfRenderTimeline(); }
+    if (rebuilt) {
+      if (typeof _wfMigrateViewState === 'function') _wfMigrateViewState(wfState, rebuilt);
+      wfState = rebuilt;
+      if (typeof wfRenderTimeline === 'function') wfRenderTimeline();
+    }
   }
 }
 

@@ -204,6 +204,10 @@ async function parseSessionFile(filePath, projectSlug) {
       stopReason: msg.stop_reason || null,
       imported: true,
       importSource: 'claude-code',
+      // The transcript's own sessionId is authoritative (not inferred), so an
+      // importer copy can supply the real session when it merges with a proxy
+      // copy that fell back to direct-api/inferred (#333 M8/M9).
+      sessionInferred: false,
       provider: 'anthropic',
       cwd: obj.cwd || cwd || slugToProject(projectSlug),
       usage: {

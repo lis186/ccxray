@@ -276,6 +276,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const recovered = []; // [{ id, line }]
   for (const { id, parsedBody, explicitSid, prevId, sysHash, toolsHash } of recon) {
     const events = await readResEvents(storage, id);
+    // responseId: SSE streams carry it in message_start (events, an array); a
+    // non-SSE anthropic turn's _res.json is a bare object readResEvents returns
+    // null for, so fall back to the raw parse there (codex round-1 m3) — else the
+    // orphan persists responseId:null and the undefined-only backfill never fixes it.
+    let orphanResponseId = getParser('anthropic').extractResponseId(events);
+    if (orphanResponseId == null) {
+      try { orphanResponseId = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(id, '_res.json'))); } catch {}
+    }
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
     // delta and main-session turn carries it). Otherwise the turn is a subagent /
@@ -331,7 +339,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       receivedAt: null,
       elapsed: null,
       // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
-      responseId: getParser('anthropic').extractResponseId(events),
+      responseId: orphanResponseId,
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });

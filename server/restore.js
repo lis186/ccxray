@@ -292,19 +292,31 @@ async function restoreFromLogs() {
   // See docs/decisions/0012-response-id-read-time-merge.md.
   const canonicalEntries = store.mergeByResponseId(restoredList);
   for (const entry of canonicalEntries) {
-    // INVARIANT: push pairs with entryIndex.set AND responseIndex upkeep + alias
-    // registration — see docs/decisions/0003-entry-index-map.md + 0012.
+    // restoreFromLogs runs post-listen (server/index.js runPostListenStartupTasks),
+    // so a live turn can complete and register its responseId while restore is
+    // still replaying the log. Route each restored canonical through the SAME
+    // live-merge helper: if a live entry already owns this responseId, the
+    // restored copy folds into it (no duplicate row, no double cost); otherwise
+    // registerOrMerge registers it as canonical (setting responseIndex) and we
+    // push (codex round-1 M1).
+    // INVARIANT: a first-copy push pairs with entryIndex.set; a merged copy aliases
+    // via registerOrMerge — see docs/decisions/0003-entry-index-map.md + 0012.
+    const { merged, canonical } = store.registerOrMerge(entry);
+    if (merged) {
+      // Re-point this batch group's aliases at the live canonical too.
+      if (entry._mergedIds) for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, canonical);
+      continue;
+    }
     store.entries.push(entry);
     store.entryIndex.set(entry.id, entry);
-    if (entry.responseId) store.responseIndex.set(entry.responseId, entry);
     if (entry._mergedIds) {
       for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, entry);
     }
     if (entry.cost?.cost != null && entry.sessionId) {
       store.sessionCosts.set(entry.sessionId, (store.sessionCosts.get(entry.sessionId) || 0) + entry.cost.cost);
     }
+    restored++;
   }
-  restored = canonicalEntries.length;
   store.trimEntries();
   console.timeEnd('restore:parse');
 
