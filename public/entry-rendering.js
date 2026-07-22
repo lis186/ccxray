@@ -348,6 +348,24 @@ function _seqRecomputeSession(sid, sess, currentSeqTurn) {
   return currentPlace;
 }
 
+// ponytail: hover-prefetch cold session entries (#332)
+var _coldPrefetchTimer = null;
+function _attachColdPrefetch(el, sid) {
+  el.onmouseenter = function() {
+    clearTimeout(_coldPrefetchTimer);
+    _coldPrefetchTimer = setTimeout(function() {
+      var sess = sessionsMap.get(sid);
+      if (!sess || !sess._cold || sess._prefetching || sess._prefetchedEntries) return;
+      sess._prefetching = true;
+      fetch('/_api/session/' + encodeURIComponent(sid) + '/entries')
+        .then(function(r) { return r.json(); })
+        .then(function(data) { sess._prefetchedEntries = data; sess._prefetching = false; })
+        .catch(function() { sess._prefetching = false; });
+    }, 150);
+  };
+  el.onmouseleave = function() { clearTimeout(_coldPrefetchTimer); };
+}
+
 function addEntry(e) {
   // Dedup: SSE + on-demand fetch race can deliver the same entry twice
   if (e.id && window.entryById && window.entryById.has(e.id)) return;
@@ -381,6 +399,7 @@ function addEntry(e) {
     sessEl.dataset.sessionId = sid;
     sessEl.id = 'sess-' + shortSid;
     sessEl.onclick = () => selectSession(sid);
+    _attachColdPrefetch(sessEl, sid);
     if (_loading) {
       // ponytail: defer rendering to post-batch pass (#332) — just create the
       // DOM node so getElementById finds it; post-batch overwrites innerHTML
@@ -811,6 +830,7 @@ function mergeColdSessions(sessions) {
     sessEl.dataset.sessionId = s.sid;
     sessEl.id = 'sess-' + shortSid;
     sessEl.onclick = (function(sid) { return function() { selectSession(sid); }; })(s.sid);
+    _attachColdPrefetch(sessEl, s.sid);
     sessEl.innerHTML = renderSessionItem(sessionsMap.get(s.sid), s.sid, sessEl);
     colSessions.appendChild(sessEl);
     var projName = getProjectName(s.cwd);
@@ -1209,6 +1229,7 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
       if (!el) continue;
       el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, el);
       el.style.display = '';
+      _attachColdPrefetch(el, sid);
       colSessEl.appendChild(el); // appendChild in desc order → most-recent rises to top
     }
   }

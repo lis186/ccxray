@@ -2178,9 +2178,11 @@ function selectSession(id) {
     columnsEl.classList.add('cold-loading');
     renderBreadcrumb();
     const token = _coldLoad = { id, controller: new AbortController(), spinner, columnsEl };
-    fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: token.controller.signal })
-      .then(r => r.json())
-      .then(data => {
+    // ponytail: use hover-prefetched data if available, otherwise fetch (#332)
+    var dataPromise = sess._prefetchedEntries
+      ? Promise.resolve(sess._prefetchedEntries).then(d => { delete sess._prefetchedEntries; return d; })
+      : fetch('/_api/session/' + encodeURIComponent(id) + '/entries', { signal: token.controller.signal }).then(r => r.json());
+    dataPromise.then(data => {
         if (_coldLoad !== token) return;
         // #308: zero stats before replay — sessions.json seeded them; addEntry
         // increments on top (cold path), so without zeroing = double-count.
