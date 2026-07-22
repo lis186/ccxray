@@ -212,6 +212,20 @@
   .si-meta-row .si-cache { margin-top: 0; }
   .si-time { font-size: 10px; color: var(--fg); white-space: nowrap; }
   .session-item .si-cost { color: var(--yellow); }
+  /* Restore scaffold — static placeholder rows during entry restore (#332) */
+  .scaffold-row { border-bottom: 1px solid var(--border); padding: 10px; }
+  .scaffold-row > div { background: var(--border); border-radius: 3px; }
+  .scaffold-proj { height: 68px; }
+  .scaffold-proj > div:nth-child(1) { width: 60%; height: 12px; margin-bottom: 6px; }
+  .scaffold-proj > div:nth-child(2) { width: 40%; height: 10px; margin-bottom: 4px; }
+  .scaffold-proj > div:nth-child(3) { width: 30%; height: 10px; }
+  .scaffold-sess { height: 120px; }
+  .scaffold-sess > div:nth-child(1) { width: 50%; height: 12px; margin-bottom: 6px; }
+  .scaffold-sess > div:nth-child(2) { width: 80%; height: 10px; margin-bottom: 4px; }
+  .scaffold-sess > div:nth-child(3) { width: 45%; height: 10px; margin-bottom: 6px; }
+  .scaffold-sess > div:nth-child(4) { width: 100%; height: 6px; margin-bottom: 6px; }
+  .scaffold-sess > div:nth-child(5) { width: 35%; height: 10px; }
+
   .ctx-alert { font-size: 10px; font-weight: bold; }
   .ctx-alert-yellow { color: var(--yellow); }
   .ctx-alert-red { color: var(--red); }
@@ -678,6 +692,11 @@
 .sysprompt-breadcrumb { padding: 6px 12px; font-size: 11px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .sysprompt-breadcrumb a { color: var(--accent); text-decoration: none; cursor: pointer; }
 .sysprompt-breadcrumb a:hover { text-decoration: underline; }
+
+/* Restore: hide empty right-side columns (#332) */
+#columns.restoring #col-turns,
+#columns.restoring #col-sections,
+#columns.restoring #col-detail { display: none; }
 
 /* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
 #columns.cold-loading #col-sections,

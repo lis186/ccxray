@@ -381,21 +381,17 @@ function addEntry(e) {
     sessEl.dataset.sessionId = sid;
     sessEl.id = 'sess-' + shortSid;
     sessEl.onclick = () => selectSession(sid);
-    sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, sessEl);
-    // Insert at top (after col-title) — newest sessions first
-    const firstSession = colSessions.querySelector('.session-item');
-    if (firstSession) colSessions.insertBefore(sessEl, firstSession);
-    else colSessions.appendChild(sessEl);
-    // Apply visibility to this element immediately to prevent flash-in during batch load.
-    // During non-deeplink loading: O(1) inline check instead of O(N) applySessionFilter call.
-    // sessionStatusMap is populated by SSE session_status events which arrive before the
-    // batch payload resolves, so getStatusClass is already accurate for most sessions.
-    if (!_loading || window._entriesLoadingProjectName || window._entriesLoadingSessionPrefix) {
+    if (_loading) {
+      // ponytail: defer rendering to post-batch pass (#332) — just create the
+      // DOM node so getElementById finds it; post-batch overwrites innerHTML
+      sessEl.style.display = 'none';
+      colSessions.appendChild(sessEl);
+    } else {
+      sessEl.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, sessEl);
+      const firstSession = colSessions.querySelector('.session-item');
+      if (firstSession) colSessions.insertBefore(sessEl, firstSession);
+      else colSessions.appendChild(sessEl);
       applySessionFilter();
-    } else if (sessionFilterMode !== 'all') {
-      const status = getStatusClass(sid);
-      const hidden = sessionFilterMode === 'streaming' ? status !== 'sdot-stream' : status === 'sdot-off';
-      if (hidden) sessEl.style.display = 'none';
     }
   }
   const sess = sessionsMap.get(sid);
@@ -1017,6 +1013,18 @@ window._entriesLoadingProjectName = _pendingDeepLink.p || null;
 window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
 window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
+// ponytail: scaffold rows during restore (#332) — replaced by post-batch render
+(function _insertScaffold() {
+  var projCol = document.getElementById('col-projects');
+  var sessCol = document.getElementById('col-sessions');
+  var projHtml = '', sessHtml = '';
+  for (var i = 0; i < 8; i++) projHtml += '<div class="scaffold-row scaffold-proj"><div></div><div></div><div></div></div>';
+  for (var j = 0; j < 5; j++) sessHtml += '<div class="scaffold-row scaffold-sess"><div></div><div></div><div></div><div></div><div></div></div>';
+  if (projCol) projCol.insertAdjacentHTML('beforeend', projHtml);
+  if (sessCol) sessCol.insertAdjacentHTML('beforeend', sessHtml);
+  var cols = document.getElementById('columns');
+  if (cols) cols.classList.add('restoring');
+})();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
 const _sessionsReady = (async function _fetchSessionsWhenReady() {
   for (;;) {
@@ -1077,13 +1085,9 @@ function _setDeepLinkProgress(text) {
 }
 
 function _renderDeepLinkLoading(text) {
-  const safeText = typeof escapeHtml === 'function' ? escapeHtml(text) : String(text || '');
+  // ponytail: restore progress shown in breadcrumb only (#332) — no column spinners
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb && _loading) breadcrumb.textContent = 'Loading link · ' + text;
-  if (selectedTurnIdx >= 0) return;
-  const html = '<div class="col-empty loading-state"><div class="loading-spinner"></div><div>' + safeText + '</div></div>';
-  if (colSections && !selectedSection) colSections.innerHTML = html;
-  if (colDetail && !selectedSection) colDetail.innerHTML = html;
 }
 
 function _clearDeepLinkProgress() {
@@ -1191,6 +1195,10 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
     _dirtySessions = null;
     for (const [name] of projectsMap) recomputeProjectCost(name);
   }
+  // ponytail: remove scaffold rows + restoring state before real render (#332)
+  document.querySelectorAll('.scaffold-row').forEach(el => el.remove());
+  var colsEl = document.getElementById('columns');
+  if (colsEl) colsEl.classList.remove('restoring');
   const colSessEl = document.getElementById('col-sessions');
   if (colSessEl) {
     const sortedSids = [...sessionsMap.entries()]
@@ -1200,6 +1208,7 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
       const el = document.getElementById('sess-' + sid.slice(0, 8));
       if (!el) continue;
       el.innerHTML = renderSessionItem(sessionsMap.get(sid), sid, el);
+      el.style.display = '';
       colSessEl.appendChild(el); // appendChild in desc order → most-recent rises to top
     }
   }

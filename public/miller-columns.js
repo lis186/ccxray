@@ -1205,7 +1205,7 @@ function applySessionFilter() {
 
   // Placeholder when a project is selected but no sessions are visible
   let placeholder = colSessions.querySelector('.sessions-empty');
-  if (!anyVisible && projectBoundary) {
+  if (!anyVisible && projectBoundary && !window._entriesLoading) {
     if (!placeholder) {
       placeholder = document.createElement('div');
       placeholder.className = 'sessions-empty col-empty';
