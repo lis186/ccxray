@@ -246,4 +246,28 @@ describe('session-index', () => {
     assert.equal(drifted, false, 'merged count must reconcile against its own raw log without false drift');
     assert.equal(si.getAll()[0].count, 2, 'count unchanged — no thrash rebuild');
   });
+
+  it('#333: cross-session dup credits COUNT+COST to the first-seen session (known limitation)', () => {
+    const si = require('../server/session-index');
+    // KNOWN LIMITATION (ADR 0012, codex review 2026-07-23): when the SAME
+    // responseId appears under two different sessionIds — e.g. a proxy copy
+    // logged 'direct-api' and the importer's copy carrying the real session
+    // (#329 path) — dedup credits the FIRST-seen session, matching the
+    // pre-existing _costByRid behavior. The read-time merge (store._identityScore)
+    // instead renders the turn under the higher-identity session, so the two
+    // cards disagree with their Turns columns. reconcile compares only global
+    // totals, so it neither detects nor heals this. This test PINS that behavior
+    // (not an endorsement) so nobody assumes cross-session cards stay consistent.
+    const lines = [
+      JSON.stringify({ id: 'p1', sessionId: 'direct-api', sessionInferred: true, responseId: 'msg_01X', cost: { cost: 0.20 }, receivedAt: 1 }),
+      JSON.stringify({ id: 'i1', sessionId: 's-real', sessionInferred: false, responseId: 'msg_01X', cost: { cost: 0.20 }, receivedAt: 2 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    const first = si.getAll().find(s => s.sid === 'direct-api');
+    const real = si.getAll().find(s => s.sid === 's-real');
+    assert.equal(first.count, 1, 'first-seen session keeps the count');
+    assert.equal(real.count, 0, 'later cross-session copy is suppressed (credited to first-seen, not moved)');
+    assert.ok(Math.abs(first.totalCost - 0.20) < 1e-9, 'cost also credited to first-seen session');
+    assert.ok(Math.abs((real.totalCost || 0)) < 1e-9, 'cross-session copy adds no cost to its own session');
+  });
 });

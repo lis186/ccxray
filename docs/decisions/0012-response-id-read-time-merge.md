@@ -242,6 +242,24 @@ line total (45). This needs three **paired** changes, none safe alone:
 
 Cost remains mandatory-once; count now matches it rather than lagging.
 
+**Scope — same-session dups only (cross-session credited to first-seen,
+matching cost).** The card-matches-Turns-column guarantee above holds for
+duplicates that share a `sessionId` — the common case and the ADR's stated
+premise (cross-session copies are #222 territory). Both `_countedRids` and
+`_costByRid` credit the **first-seen copy's session**; the read-time merge
+(`store._identityScore`) instead assigns the rendered turn to the
+highest-identity copy's session. When a response id appears under two
+different sessions — e.g. a proxy copy logged `direct-api`/inferred while the
+importer supplies the real `session_id` for the same `msg_01…` (#329 path) —
+the count/cost land on the first-seen session while the turn renders under the
+merge-chosen one, so those two cards disagree with their Turns columns.
+`reconcile` compares only global totals (not per-session identity), so it does
+not detect or heal this. Aligning session-index attribution with the merge's
+`_identityScore` would require `reconcile` to compute identity per response id
+too — defeating its intentional cheap single-regex pass — so this is left as a
+known limitation, **consistent with the pre-existing cost behavior** and rare
+under the shared-sessionId premise (codex review of the count fix, 2026-07-23).
+
 **Live cross-process enrich reflects immediately (option a).** A new
 `entry_update` SSE event + client in-place patch handler carries the post-merge
 canonical state to open dashboards without a reload. Cost: one new event type,
