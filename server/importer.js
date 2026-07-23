@@ -330,11 +330,12 @@ async function scanAndImport() {
         const m = re.exec(line);
         if (m) existingIds.add(m[1]);
       }
-      // #333 M1: mark responseIds already logged (by a proxy) as counted, so an
-      // imported duplicate of the same turn doesn't re-add its cost — the fix for
+      // #333: seed dedup state (cost + count) from responseIds already logged by a
+      // proxy, so an imported duplicate of the same turn re-adds neither its cost
+      // (fable round-4 M1) nor its turn count (the count-side twin) — the fix for
       // the cross-restart double count on the fast-load-sessions.json path. Must
-      // run BEFORE the import loops below so their updateFromEntry cost is deduped.
-      sessionIdx.seedCostRids(indexContent);
+      // run BEFORE the import loops below so their updateFromEntry is deduped.
+      sessionIdx.seedDedupState(indexContent);
     }
   } catch {}
 

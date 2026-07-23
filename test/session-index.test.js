@@ -81,11 +81,12 @@ describe('session-index', () => {
     assert.equal(b.count, 1);
   });
 
-  it('#333: rebuild counts cost once per responseId, keeps raw entry count', () => {
+  it('#333: rebuild dedups BOTH cost and turn count per responseId', () => {
     const si = require('../server/session-index');
     // 3 duplicate copies of ONE turn (same responseId) + 1 distinct turn — the
-    // shared-log shape. Cost must be counted once per responseId (ADR mandatory);
-    // count stays raw so reconcile's raw-line comparison doesn't perpetually drift.
+    // shared-log shape. Cost counted once per responseId (ADR mandatory) AND the
+    // turn count deduped (owner decision 2026-07-23) so the card shows 2 merged
+    // turns, not the 4 raw lines. reconcile() dedups its tally the same way.
     const lines = [
       JSON.stringify({ id: 't1a', sessionId: 'sess-x', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 1 }),
       JSON.stringify({ id: 't1b', sessionId: 'sess-x', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 2 }),
@@ -95,7 +96,7 @@ describe('session-index', () => {
     si.rebuildFromIndexContent(lines);
     const s = si.getAll().find(x => x.sid === 'sess-x');
     assert.ok(Math.abs(s.totalCost - 0.06) < 1e-9, `cost once per responseId: expected 0.06, got ${s.totalCost}`);
-    assert.equal(s.count, 4, 'count stays raw (best-effort) so reconcile does not thrash');
+    assert.equal(s.count, 2, 'count deduped per responseId: 2 merged turns, not 4 raw lines');
   });
 
   it('#333: cost dedup keeps the MAX per responseId (poor copy logged first)', () => {
@@ -120,22 +121,37 @@ describe('session-index', () => {
     si.rebuildFromIndexContent(lines);
     const s = si.getAll().find(x => x.sid === 'sess-y');
     assert.ok(Math.abs(s.totalCost - 0.3) < 1e-9, 'no responseId ⇒ no dedup, both cost counted');
+    assert.equal(s.count, 2, 'no responseId ⇒ no dedup key ⇒ every line counts');
   });
 
-  it('#333 M1: seedCostRids marks proxy responseIds so an imported duplicate adds no cost', () => {
-    const si = require('../server/session-index');
-    // The cross-restart scenario: sessions.json already holds this turn's cost
-    // (counted by the proxy in a prior process) and the proxy line is in the index.
-    // seedCostRids marks the responseId as counted WITHOUT touching any total.
+  it('#333: seedDedupState prevents cross-restart double COUNT and double COST', async () => {
+    // Full cross-restart flow. Prior process: a proxy logged one turn
+    // (msg_01A, cost 0.30) → count 1, cost 0.30, flushed to sessions.json.
+    let si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 's', id: 'proxy1', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 1 });
+    assert.equal(si.getAll()[0].count, 1);
+    await si.flush();
+
+    // Restart: fresh module (empty _countedRids/_costByRid). Fast-load reads
+    // count/cost straight from sessions.json — the path that used to re-inflate.
+    delete require.cache[require.resolve('../server/session-index')];
+    si = require('../server/session-index');
+    assert.ok(await si.loadSessionIndex());
+    assert.equal(si.getAll()[0].count, 1, 'reloaded merged count');
+    assert.ok(Math.abs(si.getAll()[0].totalCost - 0.30) < 1e-9, 'reloaded cost');
+
+    // Importer seeds dedup state from the proxy line still in the index, THEN
+    // imports the SAME turn from the transcript (different id, same responseId).
     const indexContent = JSON.stringify({ id: 'proxy1', sessionId: 's', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 1 });
-    si.seedCostRids(indexContent);
-    assert.equal(si.size(), 0, 'seeding creates no sessions and adds no cost');
-    // The importer then imports the SAME turn from the transcript (different id):
+    si.seedDedupState(indexContent);
     si.updateFromEntry({ sessionId: 's', id: 'import1', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 2 });
-    assert.ok(Math.abs(si.getAll()[0].totalCost) < 1e-9, 'imported duplicate cost is skipped — no cross-restart double count');
-    // A DIFFERENT responseId is still counted normally.
+    assert.equal(si.getAll()[0].count, 1, 'imported duplicate adds no COUNT — no cross-restart double count');
+    assert.ok(Math.abs(si.getAll()[0].totalCost - 0.30) < 1e-9, 'imported duplicate adds no COST');
+
+    // A genuinely new turn (different responseId) increments both.
     si.updateFromEntry({ sessionId: 's', id: 'import2', responseId: 'msg_01B', cost: { cost: 0.05 }, receivedAt: 3 });
-    assert.ok(Math.abs(si.getAll()[0].totalCost - 0.05) < 1e-9, 'a non-duplicate turn still counts');
+    assert.equal(si.getAll()[0].count, 2, 'a new turn still counts');
+    assert.ok(Math.abs(si.getAll()[0].totalCost - 0.35) < 1e-9, 'a new turn still adds cost');
   });
 
   it('loadSessionIndex returns false when file missing', async () => {
@@ -210,5 +226,24 @@ describe('session-index', () => {
     const drifted = si.reconcile(indexContent);
     assert.equal(drifted, false, 'should not detect drift');
     assert.equal(si.size(), 2, 'should keep existing sessions');
+  });
+
+  it('#333: reconcile does not thrash on a duplicate-heavy shared log', () => {
+    const si = require('../server/session-index');
+    // 3 copies of msg_01A + 1 msg_01B ⇒ merged count 2. index.ndjson holds the
+    // same 4 raw lines. reconcile must dedup its tally by responseId to match the
+    // merged s.count — a raw-line tally (4) vs merged count (2) would rebuild on
+    // EVERY reconcile (the perpetual-drift trap the paired dedup exists to avoid).
+    const lines = [
+      JSON.stringify({ id: 't1a', sessionId: 'sx', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 1 }),
+      JSON.stringify({ id: 't1b', sessionId: 'sx', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 2 }),
+      JSON.stringify({ id: 't1c', sessionId: 'sx', responseId: 'msg_01A', cost: { cost: 0.05 }, receivedAt: 3 }),
+      JSON.stringify({ id: 't2', sessionId: 'sx', responseId: 'msg_01B', cost: { cost: 0.01 }, receivedAt: 4 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    assert.equal(si.getAll()[0].count, 2, 'merged count after rebuild');
+    const drifted = si.reconcile(lines);
+    assert.equal(drifted, false, 'merged count must reconcile against its own raw log without false drift');
+    assert.equal(si.getAll()[0].count, 2, 'count unchanged — no thrash rebuild');
   });
 });

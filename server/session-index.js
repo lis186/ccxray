@@ -10,6 +10,12 @@ const sessionIndex = new Map();
 // response, so cost is counted once (at its richest) across duplicate copies
 // seen live, via the importer, or during a rebuild. Cleared on rebuild.
 const _costByRid = new Map();
+// #333: responseIds whose turn COUNT has already been tallied, so a response's
+// 2–8 duplicate copies bump s.count only once (the session card then shows merged
+// turns, not raw lines). Parallels _costByRid but is a plain Set: a cost-null
+// partial copy is still a real duplicate that must occupy a count slot, so it
+// can't reuse _costByRid (which only holds cost-bearing lines). Cleared on rebuild.
+const _countedRids = new Set();
 let dirty = false;
 let flushTimer = null;
 const FLUSH_DELAY_MS = 2000;
@@ -55,12 +61,14 @@ async function loadSessionIndex() {
 function rebuildFromIndexContent(indexContent) {
   sessionIndex.clear();
   _costByRid.clear();
+  _countedRids.clear();
   if (!indexContent) return;
   // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
-  // COST must be counted once (ADR 0012 mandatory) — _upsert dedups by responseId
-  // via _costByRid. COUNT is deliberately NOT deduped: it stays raw so reconcile()'s
-  // raw-line count comparison matches (deduping it would trigger perpetual
-  // rebuilds), and the ADR classes count reconciliation as best-effort.
+  // Both COST and COUNT are deduped by responseId here (_upsert via _costByRid /
+  // _countedRids), so the session card shows merged turns and cost is counted once.
+  // reconcile() dedups its index-side comparison the SAME way — the two must stay
+  // paired: deduping count without deduping reconcile's tally would make merged
+  // s.count (e.g. 15) never equal the raw line total (45) and thrash rebuilds.
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     try {
@@ -72,22 +80,30 @@ function rebuildFromIndexContent(indexContent) {
   dirty = true;
 }
 
-// #333: mark the responseIds already present in the log as counted, WITHOUT
-// touching any session total. Called before the importer runs so that an
-// imported transcript line whose responseId a proxy already logged (and whose
-// cost is already in the loaded/reconciled sessions.json total) is recognised as
-// a duplicate and its cost skipped by _upsert — closing the cross-restart double
-// count that the in-memory _costByRid alone missed on the fast-load path (fable
-// round-4 M1). Idempotent: re-seeding an already-known responseId only lifts its
-// tracked max. Never adds to totalCost.
-function seedCostRids(indexContent) {
+// #333: seed the dedup state (cost + count) from the responseIds already present
+// in the log, WITHOUT touching any session total or count. Called before the
+// importer runs so that an imported transcript line whose responseId a proxy
+// already logged (and whose cost/count are already in the loaded/reconciled
+// sessions.json totals) is recognised as a duplicate and skipped by _upsert.
+// This closes the cross-restart double count on the fast-load path: loadSessionIndex
+// reads s.count/totalCost straight from sessions.json without repopulating the
+// in-memory _costByRid/_countedRids, so without this seed an imported duplicate
+// would re-add both (cost = fable round-4 M1; count = its count-side twin).
+// Idempotent: re-seeding a known responseId only lifts its tracked cost max and is
+// a no-op on the count Set. Never adds to totalCost or s.count.
+function seedDedupState(indexContent) {
   if (!indexContent) return;
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     let m;
     try { m = JSON.parse(line); } catch { continue; }
     const rid = m && m.responseId;
-    if (!rid || m.cost?.cost == null) continue;
+    if (!rid) continue;
+    // COUNT: any responseId already in the log is counted — even a cost-null
+    // partial (it is still a real duplicate line for count purposes).
+    _countedRids.add(rid);
+    // COST: only cost-bearing lines seed the tracked max.
+    if (m.cost?.cost == null) continue;
     const c = m.cost.cost;
     const prev = _costByRid.get(rid);
     if (prev === undefined) _costByRid.set(rid, { cost: c, sid: m.sessionId });
@@ -99,16 +115,28 @@ function seedCostRids(indexContent) {
 // drift detected (and rebuilds). Checks both unique session count and total
 // entry count — the latter catches appendIndex failures for existing sessions
 // where session count stays the same but per-session counts diverge. (#309)
+// #333: the entry tally is deduped by responseId so it matches the merged s.count
+// _upsert now keeps; a raw-line tally here would always exceed merged s.count on a
+// duplicate-heavy shared log and rebuild on every reconcile.
 function reconcile(indexContent) {
   if (!indexContent || !sessionIndex.size) return false;
   let indexSessions = 0, indexEntries = 0;
   const seen = new Set();
+  const seenRid = new Set();
   const re = /"sessionId":"([^"]+)"/;
+  const reRid = /"responseId":"([^"]+)"/;
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     const m = re.exec(line);
     if (!m) continue;
-    indexEntries++;
+    // Count once per responseId (merged turns); a line without responseId
+    // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
+    const rm = reRid.exec(line);
+    const rid = rm ? rm[1] : null;
+    if (!rid || !seenRid.has(rid)) {
+      indexEntries++;
+      if (rid) seenRid.add(rid);
+    }
     if (!seen.has(m[1])) { seen.add(m[1]); indexSessions++; }
   }
   let totalEntries = 0;
@@ -132,7 +160,17 @@ function _upsert(sid, entry) {
     s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
-  s.count++;
+  // #333: bump COUNT once per responseId so the session card shows merged turns,
+  // not the 2–8 raw duplicate lines a shared log holds. A line without responseId
+  // (legacy/exempt) has no dedup key ⇒ always counts. Kept paired with reconcile's
+  // matching dedup so a merged s.count never thrashes against the raw line total.
+  {
+    const crid = entry.responseId;
+    if (!crid || !_countedRids.has(crid)) {
+      s.count++;
+      if (crid) _countedRids.add(crid);
+    }
+  }
   if (!s.firstId || entry.id < s.firstId) s.firstId = entry.id;
   if (!s.lastId || entry.id > s.lastId) s.lastId = entry.id;
   if (entry.model) s.model = entry.model;
@@ -204,4 +242,4 @@ function size() {
   return sessionIndex.size;
 }
 
-module.exports = { loadSessionIndex, rebuildFromIndexContent, seedCostRids, reconcile, updateFromEntry, setTitle, flush, getAll, size };
+module.exports = { loadSessionIndex, rebuildFromIndexContent, seedDedupState, reconcile, updateFromEntry, setTitle, flush, getAll, size };

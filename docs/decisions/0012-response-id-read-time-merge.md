@@ -147,7 +147,7 @@ body). The old `_dedupId` is removed with the superseded mechanism.
 | `sysHash`, `toolsHash` | canonical copy's value; on conflict (an intercept-edit hop changed the bytes) keep canonical and set `edited` |
 | `msgCount`, `toolCount`, `toolCalls`, `skillCalls` | prefer non-null; on conflict take max (same response ⇒ equal in practice; rewind/compaction is a *different* responseId so it never lands in one group) |
 | `receivedAt`, `elapsed` (+ the `ts` pairing above) | take the earliest-`receivedAt` copy's `(receivedAt, elapsed)` **as a unit** — never mix one copy's start with another's duration |
-| `usage`, `cost`, `maxContext`, `responseMetadata` | prefer the copy with `usage.output_tokens > 0` / richest usage tuple; **cost counted once** — dedup `sessionCosts` (`restore.js:281`) and note `sessionIdx` count reconciliation below |
+| `usage`, `cost`, `maxContext`, `responseMetadata` | prefer the copy with `usage.output_tokens > 0` / richest usage tuple; **cost counted once** — dedup `sessionCosts` (`restore.js:281`); `sessionIdx` turn count is deduped the same way (see the count section in Consequences) |
 | `isSubagent`, `sessionInferred` | value from the supplied-`agentKey` copy |
 | `status`, `stopReason` | prefer a terminal/success value over null |
 | `title`, `thinkingDuration`, `thinkingStripped`, `duplicateToolCalls`, `toolFail`, `hasCredential`, `toolSources` | prefer non-null / non-empty; on conflict canonical |
@@ -222,11 +222,25 @@ automatically."
 **Accepted — disk amplification.** Layer A does not save disk; duplicate
 `_req/_res` files still land on disk until Layer B.
 
-**Accepted — count reconciliation lag.** `session-index.js` per-session counts
-(`s.count++`) and `sessionCosts` are computed from raw lines; the merge dedups
-the rendered view and `sessionCosts`, but the sidebar session count may still
-reflect pre-merge line counts until reconciled. Cost is deduped (mandatory);
-count reconciliation is best-effort.
+**Session-card turn count is deduped by responseId (owner decision 2026-07-23,
+fixed before merge — supersedes the earlier "count reconciliation lag: best-effort"
+stance).** `session-index.js` `_upsert` bumps `s.count` once per responseId via a
+persistent `_countedRids` set that parallels `_costByRid`, so the sidebar card
+shows merged turns (e.g. 15), matching the Turns column — not the raw duplicate
+line total (45). This needs three **paired** changes, none safe alone:
+1. `_upsert` dedups `s.count` by responseId (a line without responseId — legacy/
+   exempt — has no dedup key and always counts).
+2. `reconcile`'s index-side tally is deduped the SAME way: a merged `s.count` (15)
+   would otherwise never equal a raw line tally (45), so every reconcile would
+   detect false drift and rebuild.
+3. `seedDedupState` (renamed from `seedCostRids`) seeds `_countedRids` alongside
+   `_costByRid` before the importer runs, so an imported duplicate of an already-
+   logged turn re-adds neither cost nor count across a restart — the count-side
+   twin of the cost fix (fable round-4 M1). The fast-load path reads `s.count`
+   straight from `sessions.json` with an empty in-memory set, so without the seed
+   the importer would re-inflate count on every restart.
+
+Cost remains mandatory-once; count now matches it rather than lagging.
 
 **Live cross-process enrich reflects immediately (option a).** A new
 `entry_update` SSE event + client in-place patch handler carries the post-merge
@@ -302,3 +316,11 @@ Deltas from the proposal, discovered during implementation:
   reused a constant message id across logically-distinct turns; the merge
   correctly collapsed them, so the mock now assigns unique ids (real Anthropic
   behaviour).
+- **Session-card count deduped before merge (owner decision 2026-07-23)**: the
+  first implementation left `s.count` raw (best-effort lag). Owner judged the
+  raw card number (45 for 15 merged turns) more visible than "lag" implied and
+  chose to fix it before shipping. `seedCostRids` was renamed `seedDedupState`
+  and now seeds `_countedRids` (the count-side of the persistent dedup state)
+  alongside `_costByRid`; `_upsert` and `reconcile` dedup count by responseId in
+  lockstep. See the "Session-card turn count is deduped" consequence for why all
+  three sites must change together.
