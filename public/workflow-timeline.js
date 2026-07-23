@@ -2337,6 +2337,18 @@ function wfInitResize(subScroll, handle) {
 }
 
 // ── Highlight Turn (without full re-render) ───────────────────────────────
+function _wfLastProxyTurn(lane) {
+  // Find the proxy turn with the highest msgCount — that one holds the most
+  // complete conversation history for the "full range" timeline view.
+  // Compaction/resume turns have low msgCount despite being recent.
+  var best = null;
+  for (var i = 0; i < lane.turns.length; i++) {
+    if (lane.turns[i].imported) continue;
+    if (!best || (lane.turns[i].msgCount || 0) > (best.msgCount || 0)) best = lane.turns[i];
+  }
+  return best || lane.turns[lane.turns.length - 1];
+}
+
 // Render a turn's detail into the steps panel without locking it in the
 // swimlane (used by lane selection: last turn = full conversation range).
 // selectTurn feeds back into wfHighlightTurn, so suppress that echo.
@@ -2799,7 +2811,7 @@ function wfSelectSection(name) {
   if (!lane || !lane.turns.length) return;
   // No turn selected: timeline = last turn's detail (full range), no lock
   if (!wfState.selectedTurnId) {
-    if (name === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (name === 'timeline') { _wfShowTurnDetail(_wfLastProxyTurn(lane)); return; }
     _wfRenderLaneSummary(lane, name); return;
   }
   for (var i = 0; i < allEntries.length; i++) {
@@ -2817,7 +2829,7 @@ function wfRenderCurrentSection() {
   if (!wfState.selectedTurnId) {
     // Timeline with no lock = last turn's detail (its request holds the whole
     // conversation = full range) without lock visuals; other sections keep summary
-    if (sec === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (sec === 'timeline') { _wfShowTurnDetail(_wfLastProxyTurn(lane)); return; }
     _wfRenderLaneSummary(lane, sec); return;
   }
   for (var i = 0; i < allEntries.length; i++) {
