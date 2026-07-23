@@ -446,6 +446,71 @@ async function buildVersionIndex(knownHashes) {
   return sysHashToAgentKey;
 }
 
+// ── Prune index.ndjson lines whose _req/_res files are gone (#344) ───
+// Pure decision function: given the raw index content plus which req files
+// still survive on disk and which ids are star/in-memory protected, return the
+// lines to keep and the drop count. No I/O — the caller owns read/write so this
+// is unit-testable in isolation.
+//
+// Rules (see #344):
+//   • Protected (starred cascade / in-memory) line → always kept.
+//   • Proxy (non-imported) line → kept iff its _req.json survives on disk. This
+//     also cleans PRE-EXISTING ghosts left by prunes from before this fix, not
+//     just files deleted in the current pass.
+//   • Imported line (never had _req/_res, by design) → kept, UNLESS it is the
+//     orphaned duplicate of a pruned proxy turn: it carries a responseId that
+//     some proxy line also carried (a read-time merge twin, #333/#329) and NO
+//     surviving proxy copy carries that responseId anymore. Standalone imported
+//     lines (no proxy twin, or no responseId key) are always kept — they are the
+//     importer's durable domain, re-imported from ~/.claude while the source
+//     transcript exists.
+//   • Unparseable / id-less lines → kept verbatim (never lose data we can't
+//     classify; mirrors restore's ignore-and-keep handling).
+//
+// NOTE (delta chains): a delta line whose OWN _req.json survives is kept even
+// when its pruned anchor makes reconstruction partial — the delta is within the
+// retention window and loadEntryReqRes degrades gracefully, so dropping it would
+// delete a within-retention turn (a retention-contract violation). This diverges
+// from the issue's literal "prune the delta line too" for the anchor-gone case.
+function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
+  const parsed = [];
+  for (const line of (indexContent || '').split('\n')) {
+    if (!line) continue;
+    let m = null;
+    try { m = JSON.parse(line); } catch {}
+    parsed.push({ line, m });
+  }
+
+  // Pre-scan: responseIds carried by any proxy line, and the subset that still
+  // has a surviving (loadable) proxy copy.
+  const proxyResponseIds = new Set();
+  const survivingProxyResponseIds = new Set();
+  for (const { m } of parsed) {
+    if (!m || !m.id || m.imported || !m.responseId) continue;
+    proxyResponseIds.add(m.responseId);
+    if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+  }
+
+  const keptLines = [];
+  let dropped = 0;
+  for (const { line, m } of parsed) {
+    let keep;
+    if (!m || !m.id) {
+      keep = true; // unclassifiable — keep verbatim
+    } else if (protectedIds.has(m.id)) {
+      keep = true;
+    } else if (m.imported) {
+      const rid = m.responseId;
+      const orphanDup = rid && proxyResponseIds.has(rid) && !survivingProxyResponseIds.has(rid);
+      keep = !orphanDup;
+    } else {
+      keep = survivingReqIds.has(m.id); // proxy line: keep iff its _req.json is on disk
+    }
+    if (keep) keptLines.push(line); else dropped++;
+  }
+  return { keptLines, dropped };
+}
+
 // ── Prune log files older than LOG_RETENTION_DAYS ───────────────────
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
@@ -499,6 +564,7 @@ async function pruneLogs() {
   try { files = await config.storage.list(); } catch { return; }
 
   let deleted = 0, kept = 0;
+  const deletedIds = new Set();
   for (const filename of files) {
     const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req\.received|req|res)\.json$/);
     if (!m) continue;
@@ -507,6 +573,7 @@ async function pruneLogs() {
     try {
       await config.storage.deleteFile(filename);
       deleted++;
+      deletedIds.add(m[1]);
     } catch {}
   }
 
@@ -514,6 +581,35 @@ async function pruneLogs() {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
     console.log(`\x1b[90m   Pruned ${deleted} log files older than ${config.LOG_RETENTION_DAYS} days${keptMsg}\x1b[0m`);
   }
+
+  // #344: sync index.ndjson + sessions.json with the files that survived. The
+  // scan runs every prune (not just when files were deleted this pass) so that
+  // ghost lines from prunes predating this fix are cleaned up too; the atomic
+  // rewrite only fires when a line is actually dropped.
+  if (typeof config.storage.writeIndex !== 'function') return; // non-local backend
+  try {
+    const survivingReqIds = new Set();
+    for (const filename of files) {
+      if (filename.endsWith('_req.json') && !filename.endsWith('_req.received.json')) {
+        const id = filename.slice(0, -'_req.json'.length);
+        if (!deletedIds.has(id)) survivingReqIds.add(id);
+      }
+    }
+    const indexContent = await config.storage.readIndex();
+    const { keptLines, dropped } = pruneIndexLines(indexContent, { survivingReqIds, protectedIds });
+    if (dropped > 0) {
+      const newContent = keptLines.length ? keptLines.join('\n') + '\n' : '';
+      await config.storage.writeIndex(newContent);
+      // INVARIANT: index.ndjson is the source of truth for sessions.json — after
+      // dropping lines, rebuild the session index so card counts/costs match the
+      // pruned index (dedup-by-responseId preserved) — @docs/decisions/0012-response-id-read-time-merge.md
+      sessionIdx.rebuildFromIndexContent(keptLines.join('\n'));
+      await sessionIdx.flush();
+      console.log(`\x1b[90m   Pruned ${dropped} orphaned index line(s); session index rebuilt (${sessionIdx.size()} sessions)\x1b[0m`);
+    }
+  } catch (err) {
+    console.error('[ccxray] index prune failed:', err.message);
+  }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines };

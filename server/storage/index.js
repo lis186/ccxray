@@ -25,6 +25,7 @@ function withWriteTracking(adapter) {
     ...adapter,
     write: (id, suffix, data) => track(adapter.write(id, suffix, data)),
     appendIndex: (line) => track(adapter.appendIndex(line)),
+    writeIndex: (content) => track(adapter.writeIndex(content)),
     writeSharedIfAbsent: (filename, data) => track(adapter.writeSharedIfAbsent(filename, data)),
     deleteFile: (filename) => track(adapter.deleteFile(filename)),
     drain: async () => {
