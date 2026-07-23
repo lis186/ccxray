@@ -2,12 +2,12 @@
 
 **English** | [正體中文](README.zh-TW.md) | [日本語](README.ja.md)
 
-X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every API call between Claude Code and Anthropic, with a real-time dashboard to inspect what's actually happening inside your agent.
+X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every API call between Claude Code, Codex, and their upstream APIs, with a real-time dashboard and workflow timeline to inspect what's actually happening inside your agent.
 
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
-![ccxray dashboard](docs/dashboard.png)
+![ccxray dashboard](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/dashboard-v2.png)
 
 ## Why
 
@@ -88,39 +88,49 @@ File issues on [GitHub](https://github.com/lis186/ccxray/issues) — Beta means 
 
 ## Features
 
-### Timeline
+### Workflow Timeline
 
-Watch your agent think in real-time. Every turn renders as a five-line card: cost on line 1, cache warmth (with inter-turn gap timing to catch cache misses), tool-fail risk, `hit:0%` red warnings, and tools surfaced above the title. Scan a whole session's health without expanding a single card.
+Watch your agent think in real-time and see its concurrency structure.
 
-![Timeline view](docs/timeline.png)
+**Turn cards**: Every turn renders as a five-line card — cost, cache warmth (with inter-turn gap timing to catch cache misses), tool-fail risk, `hit:0%` red warnings, and tools surfaced above the title. Scan a whole session's health without expanding a single card.
+
+**Lane visualization**: Multi-agent sessions automatically split into parallel lanes — orchestrator on the main lane, subagents on separate Fork / Teammate lanes. Each lane gets a distinct color from a WCAG ≥3:1 contrast pool, with mixed-model labels. The sequential-interleave tracker marks which turns within a conversation ran sequentially vs concurrently.
+
+**Birdseye mode**: Toggle the birdseye overview to expand the overview strip to ~80% viewport, with a magnified minimap and range summary for navigating long sessions.
+
+**L1/L2 dual-state selection**: Tab / ▲▼ selects lanes (L1), j/k selects turns within a lane (L2), Esc walks back level by level. Replaces the old single-level click model.
+
+![Workflow timeline](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/timeline-v2.png)
 
 ### Usage & Cost
 
 Track your real spending. Burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
 
-![Usage analytics](docs/usage.png)
+![Usage analytics](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.png)
 
 ### System Prompt Tracking
 
 Automatic version detection with diff viewer. Browse prompts across multiple recognized agent types and see exactly what changed between updates. Uncertain prompts are honestly marked `unknown`.
 
-![System prompt tracking](docs/system-prompt.png)
+![System prompt tracking](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
 
 ### Keyboard-first Navigation
 
-Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → turns → sections → timeline → individual diff hunks without touching the mouse.
+Drive the whole dashboard with your keyboard. Every screen shows a context-sensitive hint bar at the bottom — the currently valid shortcuts, live-updated as you move. Press `?` for the full cheatsheet. Navigate projects → sessions → timeline → individual diff hunks without touching the mouse.
 
-Inside the timeline, step-type jump shortcuts let you scan sessions instantly: `e`/`E` jumps to the next/previous error, `s`/`S` to Skill calls, `a`/`A` to subagent (Agent/Task) calls, `m`/`M` to MCP tool calls. Each jump is position-aware — it finds the nearest match forward or backward from wherever you are, and updates the address bar URL.
+**Workflow navigation**: Tab / ▲▼ switches between lanes (L1 selection), j/k switches between turns within a lane (L2 selection), Esc walks back one level at a time.
+
+**Step-type jumps**: `e`/`E` jumps to the next/previous error, `s`/`S` to Skill calls, `a`/`A` to subagent (Agent/Task) calls, `m`/`M` to MCP tool calls. Each jump is position-aware — it finds the nearest match forward or backward from wherever you are, and updates the address bar URL.
 
 `n`/`N` jumps to the next/previous starred item anywhere in the dashboard — across projects, sessions, turns, and individual timeline steps. The command bar shows the shortcut only when starred items are reachable from the current view.
 
-![Keyboard navigation](docs/keyboard.png)
+![Keyboard navigation](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/keyboard-v2.png)
 
 ### Session Titles & Cache Alerts
 
 Session cards show Claude Code's generated titles (e.g. `Fix login button on mobile`) instead of raw hashes, with a live cache TTL countdown (`cache 4m left`) that pulses red under 1 minute. When any session nears expiry, the browser tab alternates between `ccxray` and `⚠ ccxray`. Opt-in browser notification fires at a plan-aware lead time — 5 minutes for Max, 60 seconds for Pro/API key. Titles fall back to the short hash for direct-API traffic or sessions still in flight.
 
-![Session titles and cache expiry alerts](docs/cache-expiry.png)
+![Session titles and cache expiry alerts](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
 ### Plan Detection
 
@@ -148,7 +158,7 @@ Individual timeline steps can also be starred (`★`/`☆` toggle on each step r
 
 When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
 
-![Star retention and descendant popover](docs/stars.png)
+![Star retention and descendant popover](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/stars.png)
 
 ### Usage Analytics CLI
 
@@ -169,11 +179,15 @@ ccxray usage --tools                  # Full tool breakdown
 
 Automated usage analysis in 0.6 seconds — know where your tokens and dollars go without manual log diving. Reads `index.ndjson` directly, no server needed. Shows model cost breakdown, tool & skill usage, prompt hash stability (how often system/tools/core prompts change between turns), cache hit rates by inter-turn gap, and the 10 costliest sessions with titles.
 
-The `--json` output is an agent-facing contract — see [`docs/usage.md`](docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
+The `--json` output is an agent-facing contract — see [`docs/usage.md`](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
 
 ### More
 
 - **Deep Link Navigation** — Every selection (project / session / turn / step) is reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view.
+- **Collapsible sidebar** — The overview panel can be collapsed to give the timeline more room.
+- **Cache TTL split** — Turn detail shows whether the cache used a 5-minute or 1-hour TTL.
+- **Hidden projects** — Set `hiddenProjects` in `settings.json` to hide specific projects from the dashboard; hidden projects don't leak when sharing.
+- **Per-session restore cap** — `CCXRAY_SESSION_ENTRY_CAP` limits entries loaded per session at startup, preventing a single giant session from crowding out others.
 - **Session Detection** — Automatically groups turns by Claude Code session, with project/cwd extraction
 - **Token Accounting** — Per-turn breakdown: input/output/cache-read/cache-create tokens, cost in USD, context window usage bar
 
@@ -189,7 +203,7 @@ Claude Code  ──►  ccxray (:5577)  ──►  api.anthropic.com (or ANTHROP
                   Dashboard (same port)
 ```
 
-ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records both request and response as JSON files, and serves a web dashboard on the same port. No API key needed — it passes through whatever Claude Code sends.
+ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (Anthropic or OpenAI), records both request and response as JSON files, and serves a web dashboard on the same port. All endpoints enforce authentication: launcher-started CLIs inject the `X-Ccxray-Auth` header automatically — no friction for users; scripts calling `/v1/*` directly must add the header (see CHANGELOG). Hub IPC uses a Unix domain socket (`~/.ccxray/hub.sock`) rather than HTTP.
 
 ## Configuration
 
@@ -206,11 +220,13 @@ ccxray is a transparent HTTP proxy. It forwards requests to Anthropic, records b
 |---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard (overridden by `--port`) |
 | `BROWSER` | — | Set to `none` to disable auto-open |
-| `AUTH_TOKEN` | _(none)_ | API key for access control (disabled when unset) |
+| `AUTH_TOKEN` | _(auto)_ | Access-control key. Auto-derived from `<CCXRAY_HOME>/local-secret` when unset (default `~/.ccxray/local-secret`). All endpoints enforce auth regardless. |
+| `CCXRAY_SESSION_ENTRY_CAP` | `500` | Max entries loaded per session at startup restore. Sessions exceeding this keep only the latest entry (no runtime limit). |
+| `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _(unset)_ | Loopback is auth-free by default; set to `1` to enforce auth on loopback too. |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
 | `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
-| `RESTORE_DAYS` | `3` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
+| `RESTORE_DAYS` | `14` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
@@ -240,4 +256,4 @@ docker run -p 5577:5577 ccxray
 
 ## License
 
-MIT
+PolyForm Noncommercial 1.0.0 — see [LICENSE](LICENSE)
