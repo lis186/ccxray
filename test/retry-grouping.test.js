@@ -374,3 +374,4 @@ describe('#332 per-turn severity (data layer → swimlane data-severity)', () =>
     assert.equal(ctx.allEntries[0].severity, null);
   });
 });
+

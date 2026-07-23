@@ -230,7 +230,7 @@ describe('Codex dashboard status E2E', () => {
       assert.match(state.url, /s=codex-raw/);
       assert.equal(state.hasOkDot, true);
       assert.equal(state.hasErrDot, false);
-      assert.notEqual(state.severity, 'critical');
+      assert.equal(state.severity, null); // 200/completed → no severity marker at all
       assert.match(state.modelText, /gpt-5\.5/);
       assert.match(state.sectionText, /200/);
       assert.match(state.sectionText, /completed/);

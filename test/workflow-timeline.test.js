@@ -2355,3 +2355,82 @@ describe('#251 L1/L2 selection state machine', () => {
     assert.equal(ctx.wfState.hoverTurnId, 'e1');
   });
 });
+
+describe('#332 severity marker geometry (SVG output)', () => {
+  function renderSvgForTurn(ctxPct, severity, cacheRatio) {
+    var ctx = loadWfModule();
+    var cr = cacheRatio || 0;
+    var inTokens = 100000;
+    var entry = mkEntry('sev1', 's1', 'opus', 1000, 10, {
+      severity: severity,
+      maxContext: 200000,
+      ctxUsed: Math.round(ctxPct / 100 * 200000),
+      usage: {
+        input_tokens: Math.round(inTokens * (1 - cr)),
+        output_tokens: 5000,
+        cache_read_input_tokens: Math.round(inTokens * cr),
+        cache_creation_input_tokens: 0,
+      },
+    });
+    var lane = { key: 'main', name: 'main', turns: [entry], spawnParent: null };
+    ctx.wfState = { viewT0: 0, viewT1: 20000, selectedLane: null, selectionLevel: 'L1', lanes: [lane] };
+    var xFn = function(t) { return t * 0.1; };
+    return ctx.wfRenderLaneSvg(lane, 0, 600, xFn, new Set());
+  }
+
+  function extractTurnBarRects(svg) {
+    var group = svg.match(/<g class="wf-b[^"]*"[^>]*>([\s\S]*?)<\/g>/);
+    if (!group) return [];
+    var rects = [];
+    var re = /<rect\s+([^>]+)>/g, m;
+    while ((m = re.exec(group[1])) !== null) {
+      var attrs = {};
+      m[1].replace(/([\w-]+)="([^"]*)"/g, function(_, k, v) { attrs[k] = v; });
+      rects.push({ y: parseFloat(attrs.y), h: parseFloat(attrs.height), fill: attrs.fill });
+    }
+    return rects;
+  }
+
+  it('severity marker sits above ctx bar at 100% context', () => {
+    var svg = renderSvgForTurn(100, 'critical', 0);
+    var rects = extractTurnBarRects(svg);
+    var marker = rects.find(r => r.fill === '#f85149');
+    var ctxRects = rects.filter(r => r.fill !== '#f85149');
+    assert.ok(marker, 'should have a red severity marker');
+    assert.ok(ctxRects.length > 0, 'should have ctx bar rects');
+    var barTop = Math.min(...ctxRects.map(r => r.y));
+    assert.ok(marker.y + marker.h <= barTop,
+      'marker bottom (' + (marker.y + marker.h) + ') must not exceed bar top (' + barTop + ')');
+  });
+
+  it('severity marker sits above ctx bar at 95% context', () => {
+    var svg = renderSvgForTurn(95, 'warning', 0);
+    var rects = extractTurnBarRects(svg);
+    var marker = rects.find(r => r.fill === '#d29922');
+    var ctxRects = rects.filter(r => r.fill !== '#d29922');
+    assert.ok(marker, 'should have an orange severity marker');
+    var barTop = Math.min(...ctxRects.map(r => r.y));
+    assert.ok(marker.y + marker.h <= barTop,
+      'marker bottom (' + (marker.y + marker.h) + ') must not exceed bar top (' + barTop + ')');
+  });
+
+  it('no marker rect for healthy turns', () => {
+    var svg = renderSvgForTurn(50, null, 0);
+    var rects = extractTurnBarRects(svg);
+    var marker = rects.find(r => r.fill === '#f85149' || r.fill === '#d29922');
+    assert.equal(marker, undefined, 'healthy turn should have no severity marker');
+  });
+
+  it('rounding overflow: stacked sub-bars never exceed h even with high cache ratio', () => {
+    var svg = renderSvgForTurn(98, 'critical', 0.99);
+    var rects = extractTurnBarRects(svg);
+    var marker = rects.find(r => r.fill === '#f85149');
+    var ctxRects = rects.filter(r => r.fill !== '#f85149');
+    assert.ok(marker, 'should have a red severity marker');
+    if (ctxRects.length > 0) {
+      var barTop = Math.min(...ctxRects.map(r => r.y));
+      assert.ok(marker.y + marker.h <= barTop,
+        'marker bottom (' + (marker.y + marker.h) + ') must not exceed bar top (' + barTop + ') with 99% cache');
+    }
+  });
+});

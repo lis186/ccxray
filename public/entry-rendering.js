@@ -619,7 +619,10 @@ function addEntry(e) {
   const _dupes = e.duplicateToolCalls || null;
   const _dupesMax = _dupes ? Math.max(...Object.values(_dupes)) : 0;
   const _ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100) : 0;
-  const severity = classifySeverity({ status: e.status, stopReason, hasCredential: e.hasCredential || false, toolFail: e.toolFail || false }, _ctxPct, _dupesMax);
+  // Pass the whole entry (with the normalized stopReason) so every field
+  // classifySeverity/isProxyLifecycleShutdown reads is present — a synthetic
+  // subset would silently drop a field a future severity rule starts using.
+  const severity = classifySeverity({ ...e, stopReason }, _ctxPct, _dupesMax);
 
   allEntries.push({
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, sessionId: sid,
