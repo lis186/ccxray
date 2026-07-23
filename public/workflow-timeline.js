@@ -1359,17 +1359,26 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
     var tx = Math.max(WF_LABEL_W, xFn(ts));
     var tw = Math.max(WF_MIN_TURN_PX, xFn(tend) - tx);
     var h = Math.max(2, Math.round(wfCtxPct(t) / 100 * WF_BAR_H));
+    // Reserve 2px at top for severity marker so it never overlaps the ctx bar
+    var hasSev = t.severity === 'critical' || t.severity === 'warning';
+    if (hasSev) h = Math.min(h, WF_BAR_H - 2);
     var u = t.usage || {};
     var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
     var inT = (u.input_tokens || 0) + cr + cc;
     var crH = inT > 0 ? Math.round(h * cr / inT) : 0;
     var cwH = inT > 0 ? Math.round(h * cc / inT) : 0;
     if (cc > 0 && cwH < 1) cwH = 1;
+    if (crH + cwH > h) cwH = Math.max(0, h - crH);
     var riH = Math.max(0, h - crH - cwH);
-    svg += '<g class="wf-b" data-i="' + i + '" data-turn-id="' + t.id + '">';
+    svg += '<g class="wf-b' + (t.severity ? ' wf-b-' + t.severity : '') + '" data-i="' + i + '" data-turn-id="' + t.id + '"' + (t.severity ? ' data-severity="' + t.severity + '"' : '') + '>';
     if (riH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - h) + '" width="' + tw.toFixed(1) + '" height="' + riH + '" fill="' + WF_V8_INPUT + '"/>';
     if (cwH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - crH - cwH) + '" width="' + tw.toFixed(1) + '" height="' + cwH + '" fill="' + WF_V8_CACHE_WRITE + '"/>';
     if (crH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - crH) + '" width="' + tw.toFixed(1) + '" height="' + crH + '" fill="' + WF_V8_CACHE_READ + '"/>';
+    // #332 severity marker: 2px cap above the ctx bar; h was capped to WF_BAR_H-2
+    // so sevY is always ≥ 0 and never overlaps the encoding.
+    if (hasSev) {
+      svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - h - 2) + '" width="' + tw.toFixed(1) + '" height="2" fill="' + (t.severity === 'critical' ? '#f85149' : '#d29922') + '"/>';
+    }
     svg += '</g>';
   }
 
@@ -1496,26 +1505,34 @@ function wfRenderTimeline() {
   container.appendChild(detailArea);
 
   colTurns.appendChild(container);
-  _wfLoadVersions();
 
-  // P1: content-driven height (selected lane is taller)
-  var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
-  var maxH = window.innerHeight * 0.45;
-  lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+  // ponytail: defer render to next frame — flex layout must settle before
+  // reading colTurns.clientWidth, otherwise SVG gets wrong dimensions
+  requestAnimationFrame(function() {
+    _wfLoadVersions();
 
-  _wfRenderSvgContent(mainSvg, subSvg, canvas);
-  wfSetupInteractions(mainSvg, subSvg);
-  wfInitResize(lanesSection, resizeHandle);
-  resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
-  if (wfState.selectionLevel === 'L2' && wfState.selectedTurnId) {
-    var hit = wfState.turnIndex && wfState.turnIndex.get(wfState.selectedTurnId);
-    if (hit) wfRenderTurnCard(hit.turn);
-    else wfRenderAgentCard(wfState.selectedLane);
-  } else {
-    wfRenderAgentCard(wfState.selectedLane);
-  }
-  // ponytail: charts now inline in selected lane SVG, no separate header
-  wfRenderCurrentSection();
+    // P1: content-driven height — budget from actual column, not viewport
+    var DETAIL_MIN = 180;
+    var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
+    var overviewH = overviewDiv.offsetHeight || 48;
+    var resizeH = 8;
+    var availForLanes = (colTurns.clientHeight || window.innerHeight) - overviewH - resizeH - DETAIL_MIN;
+    var maxH = Math.max(60, availForLanes);
+    lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
+
+    _wfRenderSvgContent(mainSvg, subSvg, canvas);
+    wfSetupInteractions(mainSvg, subSvg);
+    wfInitResize(lanesSection, resizeHandle);
+    resizeHandle.classList.toggle('wf-resize-expand', !!wfState.laneFocusMode);
+    if (wfState.selectionLevel === 'L2' && wfState.selectedTurnId) {
+      var hit = wfState.turnIndex && wfState.turnIndex.get(wfState.selectedTurnId);
+      if (hit) wfRenderTurnCard(hit.turn);
+      else wfRenderAgentCard(wfState.selectedLane);
+    } else {
+      wfRenderAgentCard(wfState.selectedLane);
+    }
+    wfRenderCurrentSection();
+  });
 }
 
 function _wfRenderSvgContent(mainSvg, subSvg, canvas) {
@@ -1659,8 +1676,12 @@ function _wfRefreshLaneFocusUI() {
   // broken (ux-heuristic-analysis: drags that don't stick read as a bug).
   var lanesSection = document.getElementById('wf-lanes-section');
   if (lanesSection && !(wfState && wfState.laneHeightManual)) {
+    var DETAIL_MIN = 180;
     var contentH = WF_PAD + WF_AXIS_H + _wfTotalLanesHeight() + WF_PAD;
-    var maxH = window.innerHeight * 0.45;
+    var ov = document.getElementById('wf-overview');
+    var overviewH = ov ? ov.offsetHeight : 48;
+    var availForLanes = (colTurns.clientHeight || window.innerHeight) - overviewH - 8 - DETAIL_MIN;
+    var maxH = Math.max(60, availForLanes);
     lanesSection.style.maxHeight = Math.min(contentH, maxH) + 'px';
   }
   var resizeHandle = document.getElementById('wf-resize');
@@ -2296,9 +2317,11 @@ function wfInitResize(subScroll, handle) {
     // (_wfRefreshLaneFocusUI) — otherwise the next toggle/cycle/click
     // silently overwrites their resize with no feedback (ux-heuristic-analysis).
     if (wfState) wfState.laneHeightManual = true;
+    var ov = document.getElementById('wf-overview');
+    var maxDrag = (colTurns.clientHeight || 600) - (ov ? ov.offsetHeight : 48) - 8 - 180;
     var onMove = function(ev) {
       var delta = ev.clientY - startY;
-      var newH = Math.max(60, startH + delta);
+      var newH = Math.max(60, Math.min(startH + delta, maxDrag));
       subScroll.style.maxHeight = newH + 'px';
     };
     var onUp = function() {
@@ -2314,6 +2337,18 @@ function wfInitResize(subScroll, handle) {
 }
 
 // ── Highlight Turn (without full re-render) ───────────────────────────────
+function _wfLastProxyTurn(lane) {
+  // Find the proxy turn with the highest msgCount — that one holds the most
+  // complete conversation history for the "full range" timeline view.
+  // Compaction/resume turns have low msgCount despite being recent.
+  var best = null;
+  for (var i = 0; i < lane.turns.length; i++) {
+    if (lane.turns[i].imported) continue;
+    if (!best || (lane.turns[i].msgCount || 0) > (best.msgCount || 0)) best = lane.turns[i];
+  }
+  return best || lane.turns[lane.turns.length - 1];
+}
+
 // Render a turn's detail into the steps panel without locking it in the
 // swimlane (used by lane selection: last turn = full conversation range).
 // selectTurn feeds back into wfHighlightTurn, so suppress that echo.
@@ -2776,7 +2811,7 @@ function wfSelectSection(name) {
   if (!lane || !lane.turns.length) return;
   // No turn selected: timeline = last turn's detail (full range), no lock
   if (!wfState.selectedTurnId) {
-    if (name === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (name === 'timeline') { _wfShowTurnDetail(_wfLastProxyTurn(lane)); return; }
     _wfRenderLaneSummary(lane, name); return;
   }
   for (var i = 0; i < allEntries.length; i++) {
@@ -2794,7 +2829,7 @@ function wfRenderCurrentSection() {
   if (!wfState.selectedTurnId) {
     // Timeline with no lock = last turn's detail (its request holds the whole
     // conversation = full range) without lock visuals; other sections keep summary
-    if (sec === 'timeline') { _wfShowTurnDetail(lane.turns[lane.turns.length - 1]); return; }
+    if (sec === 'timeline') { _wfShowTurnDetail(_wfLastProxyTurn(lane)); return; }
     _wfRenderLaneSummary(lane, sec); return;
   }
   for (var i = 0; i < allEntries.length; i++) {

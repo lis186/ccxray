@@ -12,7 +12,7 @@ function loadImageHelpers() {
       style: {}, dataset: {}, innerHTML: '', textContent: '',
       classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
       addEventListener() {}, appendChild(c) { this._children = this._children || []; this._children.push(c); return c; },
-      insertBefore() {}, querySelector: () => el(), querySelectorAll: () => [],
+      insertBefore() {}, insertAdjacentHTML() {}, querySelector: () => el(), querySelectorAll: () => [],
       remove() {},
     };
   }

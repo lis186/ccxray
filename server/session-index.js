@@ -203,6 +203,9 @@ function _upsert(sid, entry) {
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
+  // Track whether session has any non-imported entries
+  if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
+  else s.importedOnly = false;
 }
 
 function setTitle(sid, title) {
