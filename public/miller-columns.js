@@ -1592,6 +1592,18 @@ function _renderProjectsColInner() {
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
     '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
+  if (window._entriesLoading && projectsMap.size === 0) {
+    var skel = '';
+    for (var si = 0; si < 6; si++) {
+      skel += '<div class="project-item" style="pointer-events:none;opacity:0.5">' +
+        '<div class="skeleton skeleton-text" style="width:' + (50 + si * 12 % 40) + 'px;margin-bottom:6px"></div>' +
+        '<div class="skeleton skeleton-text" style="width:90px;height:10px;margin-bottom:4px"></div>' +
+        '<div class="skeleton skeleton-text" style="width:60px;height:10px"></div></div>';
+    }
+    colProjects.innerHTML = html + skel;
+    return;
+  }
+
   const sorted = [...projectsMap.values()].sort((a, b) => {
     // Sort by: starred (or star-protected) first, then status, then last activity.
     const pa = isStarredOrDerived('project', a.name) ? 0 : 1;
