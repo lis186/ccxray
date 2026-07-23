@@ -357,7 +357,7 @@ function _attachColdPrefetch(el, sid) {
       var sess = sessionsMap.get(sid);
       if (!sess || !sess._cold || sess._prefetching || sess._prefetchedEntries) return;
       sess._prefetching = true;
-      fetch('/_api/session/' + encodeURIComponent(sid) + '/entries')
+      fetch(_apiQ('/_api/session/' + encodeURIComponent(sid) + '/entries'))
         .then(function(r) { return r.json(); })
         .then(function(data) { sess._prefetchedEntries = data; sess._prefetching = false; })
         .catch(function() { sess._prefetching = false; });
@@ -941,7 +941,7 @@ evtSource.onmessage = (ev) => {
       // Server ring buffer evicted or hub restarted — full re-fetch
       console.log('[ccxray] SSE stale — re-fetching entries + sessions');
       Promise.all([
-        fetch('/_api/entries', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ entries: [] })),
+        fetch(_apiQ('/_api/entries'), { cache: 'no-store' }).then(r => r.json()).catch(() => ({ entries: [] })),
         fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).catch(() => ({ sessions: [] })),
       ]).then(([entriesData, sessionsData]) => {
         for (const e of (entriesData.entries || [])) addEntry(e);
@@ -1153,7 +1153,7 @@ async function _fetchEntriesWhenReady() {
   if (_pendingDeepLink.s) qs = '?sid=' + encodeURIComponent(_pendingDeepLink.s);
   else if (_pendingDeepLink.e) qs = '?e=' + encodeURIComponent(_pendingDeepLink.e);
   for (;;) {
-    const r = await fetch('/_api/entries' + qs, { cache: 'no-store' });
+    const r = await fetch(_apiQ('/_api/entries' + qs), { cache: 'no-store' });
     if (firstResponse) {
       _markLoad('entries-response');
       _measureLoad('entries-fetch', 'entries-start', 'entries-response');

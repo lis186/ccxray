@@ -95,7 +95,7 @@ function normalizeIndexEntry(meta) {
 
 // Scan index.ndjson for entries of the given session ids (cold sessions have
 // no store.entries presence — index.ndjson is their durable source).
-async function loadSessionEntriesFromIndex(targetSids) {
+async function loadSessionEntriesFromIndex(targetSids, opts) {
   const indexContent = await config.storage.readIndex();
   if (!indexContent) return [];
   // String pre-filter before JSON.parse: parsing all ~150K lines costs
@@ -111,6 +111,7 @@ async function loadSessionEntriesFromIndex(targetSids) {
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
     if (!meta.sessionId || !targetSids.has(meta.sessionId)) continue;
+    if (meta.imported && opts?.hideImported) continue;
     metas.push(meta);
   }
   // #333 (load-bearing): a shared ~/.ccxray written by chained proxies holds
@@ -154,6 +155,7 @@ function handleApiRoutes(clientReq, clientRes) {
     const params = new URLSearchParams(clientReq.url.split('?')[1] || '');
     const sidParam = params.get('sid');
     const entryParam = params.get('e');
+    const hideImported = params.has('hideImported');
     // Scope resolution: ?sid= (id or prefix) > ?e= (entry id → its session)
     // > default (N most recently active sessions). Sessions outside the scope
     // arrive cold via /_api/sessions and load on demand.
@@ -184,10 +186,11 @@ function handleApiRoutes(clientReq, clientRes) {
     addChildSessions(scopeSids);
     (async () => {
       let scoped = store.entries.filter(e => e.sessionId && scopeSids.has(e.sessionId));
+      if (hideImported) scoped = scoped.filter(e => !e.imported);
       let entries = scoped.map(summarizeEntry);
       // Cold fallback: scoped session not in store.entries (trimmed or imported) — serve from index.ndjson
       if (!entries.length && sidParam) {
-        entries = await loadSessionEntriesFromIndex(scopeSids);
+        entries = await loadSessionEntriesFromIndex(scopeSids, { hideImported });
       }
       const sessionTitles = Object.fromEntries(
         Object.entries(store.sessionMeta).filter(([, m]) => m.title).map(([sid, m]) => [sid, m.title])
@@ -213,9 +216,11 @@ function handleApiRoutes(clientReq, clientRes) {
   const sessionEntriesMatch = pathname.match(/^\/\_api\/session\/([^/]+)\/entries$/);
   if (sessionEntriesMatch) {
     const sid = decodeURIComponent(sessionEntriesMatch[1]);
+    const sesParams = new URLSearchParams(clientReq.url.split('?')[1] || '');
+    const sesHideImported = sesParams.has('hideImported');
     (async () => {
       const targetSids = addChildSessions(new Set([sid]));
-      const entries = await loadSessionEntriesFromIndex(targetSids);
+      const entries = await loadSessionEntriesFromIndex(targetSids, { hideImported: sesHideImported });
       const sessionTitles = {};
       for (const s of targetSids) {
         const title = store.sessionMeta[s]?.title || sessionIdx.getAll().find(x => x.sid === s)?.title;

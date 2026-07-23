@@ -20,6 +20,11 @@ window.ccxraySettings = {
   hideImported: !new URLSearchParams(window.location.search).has('imported'),
 };
 
+function _apiQ(url) {
+  if (!window.ccxraySettings?.hideImported) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'hideImported';
+}
+
 function getCacheMode(provider) {
   return window.ccxraySettings?.providerProfiles?.[provider]?.cache
       || window.ccxraySettings?.providerProfiles?.anthropic?.cache
