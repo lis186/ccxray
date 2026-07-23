@@ -1366,10 +1366,15 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
     var cwH = inT > 0 ? Math.round(h * cc / inT) : 0;
     if (cc > 0 && cwH < 1) cwH = 1;
     var riH = Math.max(0, h - crH - cwH);
-    svg += '<g class="wf-b" data-i="' + i + '" data-turn-id="' + t.id + '">';
+    svg += '<g class="wf-b' + (t.severity ? ' wf-b-' + t.severity : '') + '" data-i="' + i + '" data-turn-id="' + t.id + '"' + (t.severity ? ' data-severity="' + t.severity + '"' : '') + '>';
     if (riH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - h) + '" width="' + tw.toFixed(1) + '" height="' + riH + '" fill="' + WF_V8_INPUT + '"/>';
     if (cwH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - crH - cwH) + '" width="' + tw.toFixed(1) + '" height="' + cwH + '" fill="' + WF_V8_CACHE_WRITE + '"/>';
     if (crH > 0) svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - crH) + '" width="' + tw.toFixed(1) + '" height="' + crH + '" fill="' + WF_V8_CACHE_READ + '"/>';
+    // #332 severity marker: 2px baseline in risk colour (mirrors the pre-#332
+    // turn-item left border). data-severity above is the machine-readable source.
+    if (t.severity === 'critical' || t.severity === 'warning') {
+      svg += '<rect x="' + tx.toFixed(1) + '" y="' + (WF_BAR_H - 2) + '" width="' + tw.toFixed(1) + '" height="2" fill="' + (t.severity === 'critical' ? '#f85149' : '#d29922') + '"/>';
+    }
     svg += '</g>';
   }
 

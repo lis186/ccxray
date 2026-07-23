@@ -612,8 +612,18 @@ function addEntry(e) {
   }
   if (isCompacted) sess.compactCount = (sess.compactCount || 0) + 1;
 
+  // Per-turn severity (context / HTTP status / abnormal stop). #332 removed the
+  // turn-column DOM that used to carry `.risk-*`, so severity now lives on the
+  // entry (data-layer single source) and is surfaced on the swimlane turn bar
+  // (data-severity + wf-b-<sev>) — critical turns stay visible without the column.
+  const _dupes = e.duplicateToolCalls || null;
+  const _dupesMax = _dupes ? Math.max(...Object.values(_dupes)) : 0;
+  const _ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100) : 0;
+  const severity = classifySeverity({ status: e.status, stopReason, hasCredential: e.hasCredential || false, toolFail: e.toolFail || false }, _ctxPct, _dupesMax);
+
   allEntries.push({
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, sessionId: sid,
+    severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
     msgCount, toolCount, toolCalls: e.toolCalls || {}, stopReason,
     status: e.status, elapsed: e.elapsed, method: e.method, id: e.id,

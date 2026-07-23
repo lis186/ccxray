@@ -15,6 +15,7 @@ function loadDashboardContext() {
       style: {}, dataset: {}, innerHTML: '', textContent: '',
       classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
       addEventListener() {}, appendChild() {}, insertBefore() {},
+      insertAdjacentHTML() {},
       querySelector: () => el(), querySelectorAll: () => [],
       remove() {},
     };
@@ -340,5 +341,36 @@ describe('Issue #222: entry-rendering temporal overlap classifies parallel fork 
     const sess = ctx.sessionsMap.get('seq-sess');
     assert.equal(sess.mainCount, 2, 'both sequential turns are main');
     assert.equal(sess.subCount || 0, 0, 'no subagent classification');
+  });
+});
+
+// #332 removed the turn-column DOM that used to carry `.risk-*`. Severity is now
+// a data-layer property on the entry, surfaced on the swimlane turn bar as
+// data-severity (see workflow-timeline.js). These lock the classifier + the
+// addEntry hand-off so a future refactor can't silently drop critical marking.
+describe('#332 per-turn severity (data layer → swimlane data-severity)', () => {
+  it('classifySeverity flags the three critical triggers, warnings, and healthy turns', () => {
+    const ctx = loadDashboardContext();
+    assert.equal(ctx.classifySeverity({ status: 500 }, 0, 0), 'critical', 'HTTP non-ok → critical');
+    assert.equal(ctx.classifySeverity({ status: 200, stopReason: 'max_tokens' }, 0, 0), 'critical', 'abnormal stop → critical');
+    assert.equal(ctx.classifySeverity({ status: 200, stopReason: 'end_turn' }, 96, 0), 'critical', 'context > 95% → critical');
+    assert.equal(ctx.classifySeverity({ status: 200, stopReason: 'end_turn', toolFail: true }, 0, 0), 'warning', 'tool failure → warning');
+    assert.equal(ctx.classifySeverity({ status: 200, stopReason: 'end_turn' }, 10, 0), null, 'healthy turn → no severity');
+  });
+
+  it('addEntry stamps severity onto the entry the swimlane reads', () => {
+    const ctx = loadDashboardContext();
+    // HTTP 500 WITH output tokens → a real (non-retry) turn that must still show critical.
+    ctx.addEntry(makeEntry({ id: 'sev-crit', sessionId: SID, status: 500, stopReason: 'error',
+      usage: { input_tokens: 5000, output_tokens: 200 } }));
+    const e = ctx.allEntries[0];
+    assert.equal(e.isRetry, false, 'a 500 with output tokens is a real turn, not a retry');
+    assert.equal(e.severity, 'critical', 'entry.severity is what workflow-timeline renders as data-severity');
+  });
+
+  it('healthy 200/end_turn turn carries no severity (no false critical marker)', () => {
+    const ctx = loadDashboardContext();
+    ctx.addEntry(makeEntry({ id: 'sev-ok', sessionId: SID, status: 200, stopReason: 'end_turn' }));
+    assert.equal(ctx.allEntries[0].severity, null);
   });
 });
