@@ -2142,6 +2142,7 @@ function zeroSessionStats(s) {
 }
 
 function selectSession(id) {
+  if (sidebarCollapsed) toggleSidebar();
   setFocus('sessions');
   if (id === selectedSessionId) return;
   cancelColdLoad();
