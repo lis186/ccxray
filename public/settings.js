@@ -15,6 +15,9 @@ window.ccxraySettings = {
   visibleProviders: [],
   providerProfiles: {},
   loaded: false,
+  // ponytail: hide imported entries by default (no req/res, missing identity
+  // fields → sawtooth + load-failed). ?imported=1 in URL to show them.
+  hideImported: !new URLSearchParams(window.location.search).has('imported'),
 };
 
 function getCacheMode(provider) {

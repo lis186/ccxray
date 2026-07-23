@@ -369,6 +369,7 @@ function _attachColdPrefetch(el, sid) {
 function addEntry(e) {
   // Dedup: SSE + on-demand fetch race can deliver the same entry twice
   if (e.id && window.entryById && window.entryById.has(e.id)) return;
+  if (e.imported && window.ccxraySettings?.hideImported) return;
   const idx = entryCount++;
 
   const sid = e.sessionId || 'unknown';
@@ -822,6 +823,7 @@ window.recomputeProjectCost = recomputeProjectCost;
 function mergeColdSessions(sessions) {
   for (const s of sessions) {
     if (!s || !s.sid) continue;
+    if (s.importedOnly && window.ccxraySettings?.hideImported) continue;
     if (sessionsMap.has(s.sid)) {
       var existing = sessionsMap.get(s.sid);
       if (!existing.title && s.title) existing.title = s.title;
