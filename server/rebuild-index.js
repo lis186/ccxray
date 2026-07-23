@@ -11,11 +11,14 @@
 // production field layout (that drift was the old recovery script's core bug).
 //
 // Hard guarantees (issue #48,做法 1):
-//   • merge-only — only ADD lines for ids that have a _req.json on disk but are
-//     missing from the index (the "orphan set"). Existing lines, including the
-//     ~85% whose _req/_res were pruned (LOG_RETENTION_DAYS) while the index kept
-//     the line forever, are copied through verbatim. The index never shrinks and
-//     a present line is never overwritten.
+//   • merge-only, add-only — ADD lines for ids that have a _req.json on disk but
+//     are missing from the index (the "orphan set"). Existing lines, including
+//     the ~85% whose _req/_res were pruned (LOG_RETENTION_DAYS) while the index
+//     kept the line forever, are copied through verbatim. The index never shrinks
+//     and a present line is never DEGRADED. The one sanctioned overwrite is the
+//     #333 add-only responseId backfill: a legacy line missing the dedup key gets
+//     it appended (all other fields byte-identical) when its _res.json survives —
+//     strictly non-degrading, so #48's intent holds. See ADR 0012.
 //   • never degrade — a delta turn whose ancestor _req.json was pruned cannot be
 //     fully reconstructed; we SKIP it and count it unrecoverable rather than emit
 //     a truncated line. Rebuild must never produce a worse line than doing nothing.
@@ -196,20 +199,39 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   await storage.init();
 
   // ── 1. Existing index → merge base + explicit-session timeline + cwd hints. ──
-  // Keep every parseable existing line verbatim (merge-only); unparseable lines
+  // Keep every parseable existing line verbatim (merge-only), with ONE add-only
+  // exception: a legacy line that predates the #333 responseId key is enriched
+  // with it when its _res.json survives on disk (see below). Unparseable lines
   // are dropped exactly as restoreFromLogs already ignores them.
   const existingContent = await storage.readIndex();
   const existingIds = new Set();
   const existingLineObjs = []; // [{ id, line }] — preserved verbatim, re-sorted by id on write
   const explicitTimeline = []; // [{ id, sid, cwd }] — explicit, non-inferred sessions
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
+  let enrichedResponseIds = 0;  // #333 legacy backfill count
   for (const line of (existingContent || '').split('\n')) {
     if (!line.trim()) continue;
     let m;
     try { m = JSON.parse(line); } catch { continue; } // one bad line must not abort
     if (!m || !m.id) continue;
     existingIds.add(m.id);
-    existingLineObjs.push({ id: m.id, line });
+    // #333 add-only enrichment: a line with no responseId (legacy, pre-key) is
+    // the reason a shared-log duplicate can't be merged at read time. When its
+    // _res.json is still on disk, add the key and keep every other field
+    // verbatim — strictly non-degrading, so it honours #48's "never degrade"
+    // intent while extending "never overwrite" to "never overwrite EXCEPT this
+    // additive key". Pruned _res (the ~85% aged out by retention) ⇒ untouched.
+    // OpenAI lines are exempt (different id scheme) — skip the read.
+    let outLine = line;
+    // == null catches both missing (legacy) and a persisted null (an earlier
+    // non-SSE orphan that couldn't extract before the raw-object fallback landed);
+    // only rewrite when extraction actually succeeds (codex round-2 m1).
+    if (m.responseId == null && m.provider !== 'openai') {
+      let rid = null;
+      try { rid = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
+      if (rid) { m.responseId = rid; outLine = JSON.stringify(m); enrichedResponseIds++; }
+    }
+    existingLineObjs.push({ id: m.id, line: outLine });
     if (m.sessionId && !m.sessionInferred && m.sessionId !== 'direct-api') {
       explicitTimeline.push({ id: m.id, sid: m.sessionId, cwd: m.cwd || null });
     }
@@ -257,6 +279,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const recovered = []; // [{ id, line }]
   for (const { id, parsedBody, explicitSid, prevId, sysHash, toolsHash } of recon) {
     const events = await readResEvents(storage, id);
+    // responseId: SSE streams carry it in message_start (events, an array); a
+    // non-SSE anthropic turn's _res.json is a bare object readResEvents returns
+    // null for, so fall back to the raw parse there (codex round-1 m3) — else the
+    // orphan persists responseId:null and the undefined-only backfill never fixes it.
+    let orphanResponseId = getParser('anthropic').extractResponseId(events);
+    if (orphanResponseId == null) {
+      try { orphanResponseId = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(id, '_res.json'))); } catch {}
+    }
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
     // delta and main-session turn carries it). Otherwise the turn is a subagent /
@@ -311,6 +341,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       status: stopReason ? 200 : null,
       receivedAt: null,
       elapsed: null,
+      // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
+      responseId: orphanResponseId,
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
@@ -330,34 +362,38 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const N = recovered.length;
   log(`recovered ${N} / ${M} turns; ${unrecoverable} unrecoverable (source pruned)`);
   log(`  index: ${existingIds.size} existing lines${N ? ` + ${N} recovered` : ''}`);
+  if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
 
-  if (N === 0) {
+  // A run with no orphans to add can still have enriched existing lines — those
+  // rewritten lines must be flushed, so the write is gated on either change.
+  const hasChanges = N > 0 || enrichedResponseIds > 0;
+  if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
-    return { refused: false, recovered: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
+    return { refused: false, recovered: 0, enriched: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
   if (!apply) {
     log(`  dry run — pass --apply to write ${storage.location || 'index.ndjson'}.`);
-    return { refused: false, recovered: N, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
+    return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
 
   // ── 6. Atomic merge-write (local filesystem only). ──
   if (!storage.supportsDelta || !storage.location) {
     log('  --apply needs the local filesystem backend; aborting without writing.');
-    return { refused: false, recovered: N, total: M, unrecoverable, applied: false };
+    return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: false };
   }
   const indexPath = path.join(storage.location, 'index.ndjson');
   const tmpPath = `${indexPath}.rebuild-${process.pid}.tmp`;
-  // Merge existing (verbatim) + recovered, ordered by id so recovered turns land
-  // in chronological position instead of all at the end. Existing lines are never
-  // dropped or rewritten — only re-ordered into their canonical id order (the
-  // index is chronological already, so this is a no-op for the common case).
+  // Merge existing (verbatim, or add-only responseId-enriched) + recovered,
+  // ordered by id so recovered turns land in chronological position instead of
+  // all at the end. Existing lines are never dropped and never degraded — at
+  // most the additive responseId key is appended to a legacy line (#333).
   const merged = [...existingLineObjs, ...recovered]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
     .map(o => o.line);
   fs.writeFileSync(tmpPath, merged.join('\n') + '\n');
   fs.renameSync(tmpPath, indexPath);
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
-  return { refused: false, recovered: N, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
+  return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
 }
 
 module.exports = { rebuildIndex, reconstructReq, tsFromId, nearestPrecedingSession };

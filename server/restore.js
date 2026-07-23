@@ -8,6 +8,7 @@ const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
+const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -189,6 +190,9 @@ async function restoreFromLogs() {
     if (count > store.SESSION_ENTRY_CAP) oversizedSessions.set(sid, count);
   }
   const sessionLoadedFirst = new Set();
+  // #333: collect built entries, then fold duplicate copies by responseId in one
+  // batch before they enter the store (see the merge block after this loop).
+  const restoredList = [];
 
   for (let meta of parsed) {
 
@@ -255,9 +259,8 @@ async function restoreFromLogs() {
     }
 
     const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
-    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-    store.entries.push(restoredEntry);
-    store.entryIndex.set(meta.id, restoredEntry);
+    // Deferred: pushed after the loop, once duplicate copies are merged (#333).
+    restoredList.push(restoredEntry);
 
     // Track earliest timestamp per sysHash for version dating
     if (meta.sysHash && meta.id) {
@@ -278,8 +281,44 @@ async function restoreFromLogs() {
       // as of its position in the index.
       store.markSessionUsage(meta);
     }
-    if (meta.cost?.cost != null && meta.sessionId) {
-      store.sessionCosts.set(meta.sessionId, (store.sessionCosts.get(meta.sessionId) || 0) + meta.cost.cost);
+  }
+
+  // #333: fold multi-instance duplicate copies into one canonical BEFORE they
+  // enter the store, so a non-oversized session doesn't render 2–8× rows and
+  // its cost is counted once. Merged-away copy ids stay in entryIndex as ALIASES
+  // pointing at the canonical, so a later delta turn whose prevId names a dropped
+  // copy still resolves via getEntryById (restore.js:64). Oversized sessions
+  // contributed only their first entry to restoredList, so they pass through
+  // unmerged here and stay served by cold-load (which merges independently).
+  // See docs/decisions/0012-response-id-read-time-merge.md.
+  const canonicalEntries = store.mergeByResponseId(restoredList);
+  for (const entry of canonicalEntries) {
+    // restoreFromLogs runs post-listen (server/index.js runPostListenStartupTasks),
+    // so a live turn can complete and register its responseId while restore is
+    // still replaying the log. Route each restored canonical through the SAME
+    // live-merge helper: if a live entry already owns this responseId, the
+    // restored copy folds into it (no duplicate row, no double cost); otherwise
+    // registerOrMerge registers it as canonical (setting responseIndex) and we
+    // push (codex round-1 M1).
+    // INVARIANT: a first-copy push pairs with entryIndex.set; a merged copy aliases
+    // via registerOrMerge — see docs/decisions/0003-entry-index-map.md + 0012.
+    const { merged, canonical } = store.registerOrMerge(entry);
+    if (merged) {
+      // A merge here means a LIVE turn (completed during this post-listen restore)
+      // already owns the responseId — registerOrMerge folded the restored copy in
+      // and absorbed its aliases. That live entry was already broadcast, so push
+      // the enriched canonical to any connected client (codex round-2 M6). Harmless
+      // no-op when no client is connected yet (the common startup case).
+      broadcastEntryUpdate(canonical);
+      continue;
+    }
+    store.entries.push(entry);
+    store.entryIndex.set(entry.id, entry);
+    if (entry._mergedIds) {
+      for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, entry);
+    }
+    if (entry.cost?.cost != null && entry.sessionId) {
+      store.sessionCosts.set(entry.sessionId, (store.sessionCosts.get(entry.sessionId) || 0) + entry.cost.cost);
     }
     restored++;
   }

@@ -305,6 +305,79 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
   });
 });
 
+// ── #333 responseId merge on restore ────────────────────────────────
+
+// A shared ~/.ccxray written by chained proxies holds 2–8 partial copies per
+// turn (same upstream responseId, complementary metadata). A non-oversized
+// session's copies all enter the store, so restore must fold them into one
+// canonical, count cost once, and keep the dropped ids resolvable as aliases.
+describe('restoreFromLogs — #333 responseId merge', () => {
+  const config = require('../server/config');
+  const store = require('../server/store');
+  const { restoreFromLogs } = require('../server/restore');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-restore-merge-' + Date.now());
+  let realStorage, realRestoreDays;
+
+  before(async () => {
+    realStorage = config.storage;
+    realRestoreDays = config.RESTORE_DAYS;
+    config.RESTORE_DAYS = 0;
+    const tmpStorage = require('../server/storage/local').createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    config.RESTORE_DAYS = realRestoreDays;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('folds duplicate copies into one canonical, counts cost once, aliases dropped ids', async () => {
+    store.entries.length = 0;
+    store.entryIndex.clear();
+    store.responseIndex.clear();
+    store.sessionCosts.clear();
+    const sid = 'sess-dup333';
+    const base = { ts: '10:00:00', sessionId: sid, provider: 'anthropic', agent: 'claude',
+      model: 'claude-opus-4-7', isSSE: true, status: 200 };
+    // Three copies of the SAME logical response (msg_01DUP), metadata split:
+    const id1 = '2026-05-14T10-00-00-000';
+    const id2 = '2026-05-14T10-00-01-000';
+    const id3 = '2026-05-14T10-00-02-000';
+    await config.storage.appendIndex(JSON.stringify({ ...base, id: id1, responseId: 'msg_01DUP',
+      receivedAt: 1000, agentKey: 'orchestrator', coreHash: 'core9', usage: null, cost: null }) + '\n');
+    await config.storage.appendIndex(JSON.stringify({ ...base, id: id2, responseId: 'msg_01DUP',
+      receivedAt: 2000, usage: { input_tokens: 1200, output_tokens: 42 }, cost: { cost: 0.05 } }) + '\n');
+    await config.storage.appendIndex(JSON.stringify({ ...base, id: id3, responseId: 'msg_01DUP',
+      receivedAt: 3000, convId: 'c9', usage: { input_tokens: 1200, output_tokens: 42 }, cost: { cost: 0.05 } }) + '\n');
+    // A distinct turn in the same session must remain its own entry.
+    await config.storage.appendIndex(JSON.stringify({ ...base, id: '2026-05-14T10-00-03-000',
+      responseId: 'msg_01OTHER', receivedAt: 4000, agentKey: 'orchestrator', usage: { input_tokens: 5, output_tokens: 1 }, cost: { cost: 0.01 } }) + '\n');
+
+    await restoreFromLogs();
+
+    const dupRows = store.entries.filter(e => e.responseId === 'msg_01DUP');
+    assert.equal(dupRows.length, 1, 'three copies collapse to one row in the store');
+    const m = dupRows[0];
+    assert.equal(m.id, id1, 'canonical id = earliest copy');
+    assert.equal(m.agentKey, 'orchestrator', 'agentKey reconstructed from the copy that had it');
+    assert.equal(m.convId, 'c9', 'convId reconstructed from the copy that had it');
+    assert.equal(m.usage.output_tokens, 42, 'usage reconstructed from the copy with real tokens');
+
+    // Dropped copy ids resolve to the canonical (delta prevId safety).
+    assert.equal(store.getEntryById(id2), m, 'dropped id2 aliases to canonical');
+    assert.equal(store.getEntryById(id3), m, 'dropped id3 aliases to canonical');
+
+    // Cost counted once for the merged turn (0.05), plus the distinct turn (0.01).
+    assert.ok(Math.abs(store.sessionCosts.get(sid) - 0.06) < 1e-9,
+      `expected session cost 0.06, got ${store.sessionCosts.get(sid)}`);
+
+    // The whole session is two rows, not four.
+    assert.equal(store.entries.filter(e => e.sessionId === sid).length, 2);
+  });
+});
+
 // ── codex resume eligibility ────────────────────────────────────────
 
 // Resume-eligibility must survive a restart: it is rebuilt purely from the

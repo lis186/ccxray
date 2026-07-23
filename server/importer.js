@@ -191,6 +191,11 @@ async function parseSessionFile(filePath, projectSlug) {
       status: 200,
       isSSE: false,
       receivedAt,
+      // #329/#333: the transcript carries the same upstream msg_01… id the proxy
+      // logged, so the read-time merge collapses this imported copy with the proxy
+      // copy. Canonical selection prefers the proxy copy (it has on-disk _req/_res),
+      // so the import enriches rather than shadows. See docs/decisions/0012.
+      responseId: msg.id || null,
       tokens,
       cost: { cost },
       model,
@@ -199,6 +204,10 @@ async function parseSessionFile(filePath, projectSlug) {
       stopReason: msg.stop_reason || null,
       imported: true,
       importSource: 'claude-code',
+      // The transcript's own sessionId is authoritative (not inferred), so an
+      // importer copy can supply the real session when it merges with a proxy
+      // copy that fell back to direct-api/inferred (#333 M8/M9).
+      sessionInferred: false,
       provider: 'anthropic',
       cwd: obj.cwd || cwd || slugToProject(projectSlug),
       usage: {
@@ -321,6 +330,12 @@ async function scanAndImport() {
         const m = re.exec(line);
         if (m) existingIds.add(m[1]);
       }
+      // #333: seed dedup state (cost + count) from responseIds already logged by a
+      // proxy, so an imported duplicate of the same turn re-adds neither its cost
+      // (fable round-4 M1) nor its turn count (the count-side twin) — the fix for
+      // the cross-restart double count on the fast-load-sessions.json path. Must
+      // run BEFORE the import loops below so their updateFromEntry is deduped.
+      sessionIdx.seedDedupState(indexContent);
     }
   } catch {}
 
@@ -358,6 +373,11 @@ async function scanAndImport() {
   if (imported > 0) {
     await Promise.all(_pendingIndexWrites);
     _pendingIndexWrites.length = 0;
+    // #333/#329: an imported line sharing a proxy line's responseId does not
+    // double a cold session's cost — session-index._upsert counts cost once per
+    // responseId (its persistent _costByRid), so the per-entry updateFromEntry
+    // above is already deduped. No destructive rebuild here (avoids the mid-flight
+    // race with concurrent live updates — codex round-3 M2).
     await sessionIdx.flush();
     broadcastRaw({ _type: 'sessions_updated' });
     console.log(`[importer] Imported ${imported} turns from local transcripts (${skipped} duplicates skipped)`);

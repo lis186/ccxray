@@ -7,6 +7,8 @@ const INDEX_FIELDS = [
   'sysHash','toolsHash','coreHash','agentKey','agentLabel','convId','thinkingStripped','hasCredential','toolSources',
   'edited','editSummary',
   'imported','importSource',
+  // Dedup key for read-time merge (#333) — see docs/decisions/0012-response-id-read-time-merge.md
+  'responseId',
 ];
 
 function buildIndexLine(entry) {

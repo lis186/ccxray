@@ -27,6 +27,14 @@ test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', ()
   for (const k of Object.keys(obj)) assert.ok(INDEX_FIELDS.includes(k), `non-INDEX key: ${k}`);
 });
 
+test('buildIndexLine persists responseId when set, omits it when undefined (#333)', () => {
+  assert.ok(INDEX_FIELDS.includes('responseId'), 'responseId must be an index field');
+  const withId = JSON.parse(buildIndexLine({ id: 'X', responseId: 'msg_01A' }));
+  assert.equal(withId.responseId, 'msg_01A');
+  const withoutId = JSON.parse(buildIndexLine({ id: 'X' }));
+  assert.ok(!('responseId' in withoutId), 'undefined responseId must not be emitted');
+});
+
 // T1 legacy-parity: for each site, compare buildIndexLine(entry) against the GOLDEN
 // legacy line that the old hand-rolled code emitted. Four rules:
 //   (1) every legacy key present  (2) excluded keys absent

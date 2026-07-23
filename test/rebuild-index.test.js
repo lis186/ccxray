@@ -72,6 +72,27 @@ describe('rebuild-index', () => {
     return c.split('\n').filter(Boolean).map(l => JSON.parse(l));
   }
 
+  it('#333: add-only backfills responseId onto legacy lines whose _res survives', async () => {
+    // Legacy line WITH a surviving _res.json (carries a message id) → enriched.
+    const idA = '2026-07-01T10-00-00-000';
+    writeIndexLine({ id: idA, ts: '10:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7', isSSE: true, status: 200 });
+    writeRes(idA, [{ type: 'message_start', message: { id: 'msg_01LEGACY', usage: { input_tokens: 1, output_tokens: 1 } } }]);
+    // Legacy line whose _res was pruned (none on disk) → left untouched.
+    const idB = '2026-07-01T11-00-00-000';
+    writeIndexLine({ id: idB, ts: '11:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7', isSSE: true, status: 200 });
+    // OpenAI line → exempt (skip the read entirely, never enriched).
+    const idC = '2026-07-01T12-00-00-000';
+    writeIndexLine({ id: idC, ts: '12:00:00', sessionId: 's', provider: 'openai', model: 'gpt-5', isSSE: true, status: 200 });
+    writeRes(idC, [{ type: 'message_start', message: { id: 'msg_01NOPE' } }]);
+
+    const res = await rebuildIndex({ apply: true, storage, log });
+    assert.equal(res.enriched, 1, 'exactly one line enriched (anthropic + surviving res)');
+    const lines = readIndexIds();
+    assert.equal(lines.find(l => l.id === idA).responseId, 'msg_01LEGACY', 'surviving-res line gains the key');
+    assert.ok(!('responseId' in lines.find(l => l.id === idB)), 'pruned-res line untouched');
+    assert.ok(!('responseId' in lines.find(l => l.id === idC)), 'openai line exempt');
+  });
+
   it('tsFromId / nearestPrecedingSession pure helpers', () => {
     assert.equal(tsFromId('2026-05-01T11-47-17-808'), '11:47:17');
     const tl = [{ id: 'a', sid: 'S1' }, { id: 'm', sid: 'S2' }];

@@ -9,7 +9,7 @@ const store = require('./store');
 const { buildEditedReqRecord } = require('./delta-helpers');
 const { calculateCost } = require('./pricing');
 const helpers = require('./helpers');
-const { broadcast, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
+const { broadcast, broadcastEntryUpdate, broadcastSessionStatus, broadcastSessionTitleUpdate } = require('./sse-broadcast');
 const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
 const { stripAuthParams, stripControlChars } = require('./url-sanitize');
@@ -738,6 +738,8 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
+      // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
+      responseId: getParser('anthropic').extractResponseId(events),
       edited: ctx.edited, editSummary: ctx.editSummary,
       tokens: null,
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
@@ -754,18 +756,33 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
-    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-    store.entries.push(entry);
-    store.entryIndex.set(entry.id, entry);
-    store.trimEntries();
-    store.propagateLoadedSkills(entry, sessionId);
-    broadcast(entry);
+    // #333: dedup by responseId against the in-memory canonical set. A first copy
+    // pushes + broadcasts `entry`; a duplicate of an already-known responseId folds
+    // into the canonical, broadcasts `entry_update` (the plain `entry` event would
+    // be dropped client-side for a known id), and is not pushed again.
+    // INVARIANT: a first-copy push pairs with entryIndex.set + trim; a merged copy
+    // aliases via registerOrMerge — see docs/decisions/0003 + 0012.
+    const { merged, canonical } = store.registerOrMerge(entry);
+    if (merged) {
+      store.propagateLoadedSkills(canonical, sessionId);
+      broadcastEntryUpdate(canonical);
+    } else {
+      store.entries.push(entry);
+      store.entryIndex.set(entry.id, entry);
+      store.trimEntries();
+      store.propagateLoadedSkills(entry, sessionId);
+      broadcast(entry);
+    }
 
-    // Persist to index (fire-and-forget after broadcast)
+    // Persist to index (fire-and-forget after broadcast). The raw line is written
+    // even on a merge — restore/cold-load re-merge from disk, so nothing enrich-
+    // worthy is lost if a client missed the entry_update (#333).
     const indexLine = buildIndexLine(entry);
     // Log-first: only update session index after index.ndjson write succeeds (#309)
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      sessionIdx.updateFromEntry(entry);
+      // Skip the session-index update on a merge — the canonical was already
+      // counted; counting the duplicate would inflate the session card cost (#333).
+      if (!merged) sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
@@ -782,7 +799,9 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const prefix = ctx.attribPrefix || '';
     console.log(`${color}📥 [${helpers.taipeiTime()}]  ${prefix}  ${glyph} ${code}  ${elapsed}s${outTok}\x1b[0m`);
     if (usage) helpers.printContextBar(usage, parsedBody?.model, parsedBody?.system, ctx.beta1m);
-    if (entry.cost?.cost != null) {
+    // Skip cost accounting on a merge — the canonical's cost was counted when it
+    // was first registered; re-adding here would double-count (#333).
+    if (entry.cost?.cost != null && !merged) {
       store.sessionCosts.set(sessionId, (store.sessionCosts.get(sessionId) || 0) + entry.cost.cost);
       console.log(`  💰 $${entry.cost.cost.toFixed(4)} this turn | $${store.sessionCosts.get(sessionId).toFixed(4)} session`);
     }
@@ -864,7 +883,9 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     broadcast(entry);
 
     const indexLine = buildIndexLine(entry);
-    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    // Log-first: only update session index after index.ndjson write succeeds (#309).
+    // OpenAI SSE is exempt from responseId merge (no responseId), so the update is
+    // unconditional here — there is no `merged` on this path (codex round-2).
     config.storage.appendIndex(indexLine + '\n').then(() => {
       sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
@@ -972,6 +993,8 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
+        // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
+        responseId: getParser('anthropic').extractResponseId(resData),
         edited: ctx.edited, editSummary: ctx.editSummary,
         tokens: null,
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
@@ -990,17 +1013,30 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
-    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-    store.entries.push(entry);
-    store.entryIndex.set(entry.id, entry);
-    store.trimEntries();
-    store.propagateLoadedSkills(entry, sessionId);
-    broadcast(entry);
+    // #333: same responseId dedup as the SSE path. OpenAI entries carry no
+    // responseId (different id scheme — exempt), so registerOrMerge no-ops for
+    // them and this shared non-SSE push behaves exactly as before for OpenAI.
+    // INVARIANT: first-copy push pairs with entryIndex.set + trim; a merged copy
+    // aliases via registerOrMerge — see docs/decisions/0003 + 0012.
+    const { merged, canonical } = store.registerOrMerge(entry);
+    if (merged) {
+      store.propagateLoadedSkills(canonical, sessionId);
+      broadcastEntryUpdate(canonical);
+    } else {
+      store.entries.push(entry);
+      store.entryIndex.set(entry.id, entry);
+      store.trimEntries();
+      store.propagateLoadedSkills(entry, sessionId);
+      broadcast(entry);
+    }
 
     const indexLine = buildIndexLine(entry);
-    // Log-first: only update session index after index.ndjson write succeeds (#309)
+    // Log-first: only update session index after index.ndjson write succeeds (#309).
+    // Raw line written even on a merge — restore/cold-load re-merge from disk (#333).
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      sessionIdx.updateFromEntry(entry);
+      // Skip the session-index update on a merge — the canonical was already
+      // counted; counting the duplicate would inflate the session card cost (#333).
+      if (!merged) sessionIdx.updateFromEntry(entry);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand

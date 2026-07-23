@@ -999,6 +999,72 @@ startQuotaTicker();
 // Tab restoration happens after deep-link resolution (see _loading=false path)
 
 // SSE live connection
+// #333: a live cross-process merge folded a duplicate into an already-known
+// canonical entry. Patch the entry's data in place so the corrected (richest)
+// metadata is what any subsequent render reads, then rebuild the workflow view
+// if that session is on screen — wfBuildState → wfInferLanes is the authoritative
+// batch pass, so lane placement is correct (not ad-hoc surgery). A turn we have
+// never seen is rendered fresh. See docs/decisions/0012-response-id-read-time-merge.md.
+function _patchEntryInPlace(u) {
+  if (!u || !u.id) return;
+  if (!window.entryById || !window.entryById.has(u.id)) { addEntry(u); return; }
+  const full = allEntries.find(e => e.id === u.id);
+  if (full) {
+    // Enriched fields only — never touch id/ts/receivedAt/displayNum. sessionId is
+    // deliberately NOT patched in place: a session change needs a cross-session
+    // re-bucket (DOM + aggregates) that converges on the next load, not an edit
+    // that would split allEntries from the rendered column (codex round-1 M4).
+    // isSubagent/agentKey/convId ARE patched — they only move the turn between
+    // LANES within this session, which the wfBuildState rebuild below recomputes.
+    // Each field carries the server's already-merged canonical value, so a plain
+    // copy is correct. hasCredential/toolFail arrive as `|| undefined`/`|| false`
+    // from summarizeEntry, so the != null guard patches them when truthy and never
+    // downgrades a real true to a stale false (codex round-3 M4).
+    // NB: isSubagent is deliberately NOT patched — allEntries stores the CLIENT's
+    // DERIVED classification (agentKey gate + overlap split + seq tracker), not the
+    // raw wire flag summarizeEntry sends. Overwriting it with the raw flag desyncs
+    // the seq tracker / ctx-chain from the swimlane (ADR 0005 divergence, fable
+    // round-4 M2). The wfBuildState rebuild below re-derives lanes from the patched
+    // agentKey; the turn-list row's classification converges on reload.
+    for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
+      'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
+      'toolCount', 'thinkingDuration', 'thinkingStripped',
+      'duplicateToolCalls', 'toolsHash', 'hasCredential']) {
+      if (u[k] != null) full[k] = u[k];
+    }
+    // cost arrives as {cost:number} from summarizeEntry; allEntries stores a bare
+    // number — normalize exactly as addEntry does or the workflow cost math (.toFixed)
+    // throws (codex round-1 M3).
+    if (u.cost != null) {
+      full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
+    }
+    // ctxUsed is derived from usage at add time; recompute it when usage is
+    // enriched or the context bar keeps rendering the poor copy's value (codex
+    // round-2 M5 — this is the sawtooth symptom the merge exists to fix).
+    if (u.usage != null && typeof computeCtxUsed === 'function') full.ctxUsed = computeCtxUsed(full.usage);
+    // toolCalls: patch only a non-empty map/array so summarizeEntry's empty default
+    // never clobbers a good map (codex round-2 M5).
+    if (u.toolCalls != null && (Array.isArray(u.toolCalls) ? u.toolCalls.length : Object.keys(u.toolCalls).length)) {
+      full.toolCalls = u.toolCalls;
+    }
+    // Keep the lightweight entryById record consistent for the mutable field it
+    // holds (codex round-1 M4).
+    const rec = window.entryById.get(u.id);
+    if (rec && u.cwd != null) rec.cwd = u.cwd;
+  }
+  // Rebuild the workflow view from the patched allEntries when this session is on
+  // screen — wfBuildState → wfInferLanes is the authoritative batch pass, and the
+  // shared migration preserves the user's zoom/selection/focus (m4).
+  if (selectedSessionId === u.sessionId && typeof wfBuildState === 'function') {
+    const rebuilt = wfBuildState(u.sessionId);
+    if (rebuilt) {
+      if (typeof _wfMigrateViewState === 'function') _wfMigrateViewState(wfState, rebuilt);
+      wfState = rebuilt;
+      if (typeof wfRenderTimeline === 'function') wfRenderTimeline();
+    }
+  }
+}
+
 const evtSource = new EventSource('/_events');
 evtSource.onmessage = (ev) => {
   try {
@@ -1041,6 +1107,8 @@ evtSource.onmessage = (ev) => {
         if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
         if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
       }
+    } else if (data._type === 'entry_update') {
+      _patchEntryInPlace(data);
     } else {
       addEntry(data);
     }

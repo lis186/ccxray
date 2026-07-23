@@ -76,6 +76,17 @@ function broadcast(entry) {
   _broadcastAll(JSON.stringify(summarizeEntry(entry)));
 }
 
+// #333: a live cross-process merge folded a duplicate into an already-broadcast
+// canonical entry. The plain `entry` event is dropped client-side for a known id
+// (entry-rendering.js dedup), so carry the post-merge state under a distinct
+// `entry_update` type the client patches in place. Same payload shape as `entry`
+// (a summarizeEntry object) plus the _type marker. The raw line is still
+// appendIndex'd by the caller, so a client that misses this converges on reload.
+// See docs/decisions/0012-response-id-read-time-merge.md.
+function broadcastEntryUpdate(entry) {
+  _broadcastAll(JSON.stringify({ ...summarizeEntry(entry), _type: 'entry_update' }));
+}
+
 function broadcastSessionStatus(sessionId) {
   const active = (store.activeRequests[sessionId] || 0) > 0;
   const lastSeenAt = store.sessionMeta[sessionId]?.lastSeenAt || null;
@@ -134,6 +145,7 @@ function broadcastRaw(obj) {
 module.exports = {
   summarizeEntry,
   broadcast,
+  broadcastEntryUpdate,
   broadcastRaw,
   broadcastSessionStatus,
   broadcastPendingRequest,

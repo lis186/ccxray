@@ -97,12 +97,12 @@ function normalizeIndexEntry(meta) {
 // no store.entries presence — index.ndjson is their durable source).
 async function loadSessionEntriesFromIndex(targetSids) {
   const indexContent = await config.storage.readIndex();
-  const entries = [];
-  if (!indexContent) return entries;
+  if (!indexContent) return [];
   // String pre-filter before JSON.parse: parsing all ~150K lines costs
   // seconds per cold click; substring containment skips 99.9% of them.
   // The exact targetSids check after parse stays authoritative.
   const needles = [...targetSids].map(s => '"sessionId":"' + s + '"');
+  const metas = [];
   for (const line of indexContent.split('\n')) {
     if (!line) continue;
     let hit = false;
@@ -111,9 +111,15 @@ async function loadSessionEntriesFromIndex(targetSids) {
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
     if (!meta.sessionId || !targetSids.has(meta.sessionId)) continue;
-    entries.push(normalizeIndexEntry(meta));
+    metas.push(meta);
   }
-  return entries;
+  // #333 (load-bearing): a shared ~/.ccxray written by chained proxies holds
+  // 2–8 partial copies per turn; merge them by responseId into one canonical
+  // record BEFORE summarizeEntry (a whitelist that would drop responseId and
+  // the fields the merge reconstructs). Cold-load serves straight to the client
+  // and these entries never enter store.entries, so no index/alias upkeep here.
+  // See docs/decisions/0012-response-id-read-time-merge.md.
+  return store.mergeByResponseId(metas).map(normalizeIndexEntry);
 }
 
 // Add child sessions (workflow lanes render them alongside the parent)

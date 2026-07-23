@@ -65,6 +65,12 @@ function killAndWait(child) {
   });
 }
 
+// Each mock response gets a UNIQUE message id, as real Anthropic does — a
+// constant id would make the #333 responseId merge (correctly) collapse these
+// logically-distinct turns into one, breaking the per-entry attribution asserted
+// below. Merge behavior itself is covered by test/response-merge.test.js.
+let _mockMsgSeq = 0;
+
 // Mock Anthropic upstream. Requests whose body contains HOLD_OPEN are parked
 // (response withheld) so the proxy sees that session as inflight; everything
 // else gets an immediate minimal messages response.
@@ -77,7 +83,7 @@ function makeMockUpstream(held) {
       if (body.includes('HOLD_OPEN')) { held.push(res); return; }
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
-        id: 'msg_mock', type: 'message', role: 'assistant',
+        id: 'msg_mock_' + (++_mockMsgSeq), type: 'message', role: 'assistant',
         content: [{ type: 'text', text: 'ok' }],
         usage: { input_tokens: 1, output_tokens: 1 },
       }));
@@ -90,7 +96,7 @@ function releaseHeld(held) {
     try {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
-        id: 'msg_mock_held', type: 'message', role: 'assistant',
+        id: 'msg_mock_held_' + (++_mockMsgSeq), type: 'message', role: 'assistant',
         content: [{ type: 'text', text: 'ok' }],
         usage: { input_tokens: 1, output_tokens: 1 },
       }));
