@@ -72,6 +72,29 @@ function rebuildFromIndexContent(indexContent) {
   dirty = true;
 }
 
+// #333: mark the responseIds already present in the log as counted, WITHOUT
+// touching any session total. Called before the importer runs so that an
+// imported transcript line whose responseId a proxy already logged (and whose
+// cost is already in the loaded/reconciled sessions.json total) is recognised as
+// a duplicate and its cost skipped by _upsert — closing the cross-restart double
+// count that the in-memory _costByRid alone missed on the fast-load path (fable
+// round-4 M1). Idempotent: re-seeding an already-known responseId only lifts its
+// tracked max. Never adds to totalCost.
+function seedCostRids(indexContent) {
+  if (!indexContent) return;
+  for (const line of indexContent.split('\n')) {
+    if (!line) continue;
+    let m;
+    try { m = JSON.parse(line); } catch { continue; }
+    const rid = m && m.responseId;
+    if (!rid || m.cost?.cost == null) continue;
+    const c = m.cost.cost;
+    const prev = _costByRid.get(rid);
+    if (prev === undefined) _costByRid.set(rid, { cost: c, sid: m.sessionId });
+    else if (c > prev.cost) prev.cost = c;
+  }
+}
+
 // Compare loaded sessions.json against index.ndjson content. Returns true if
 // drift detected (and rebuilds). Checks both unique session count and total
 // entry count — the latter catches appendIndex failures for existing sessions
@@ -181,4 +204,4 @@ function size() {
   return sessionIndex.size;
 }
 
-module.exports = { loadSessionIndex, rebuildFromIndexContent, reconcile, updateFromEntry, setTitle, flush, getAll, size };
+module.exports = { loadSessionIndex, rebuildFromIndexContent, seedCostRids, reconcile, updateFromEntry, setTitle, flush, getAll, size };

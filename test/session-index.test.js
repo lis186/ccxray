@@ -122,6 +122,22 @@ describe('session-index', () => {
     assert.ok(Math.abs(s.totalCost - 0.3) < 1e-9, 'no responseId ⇒ no dedup, both cost counted');
   });
 
+  it('#333 M1: seedCostRids marks proxy responseIds so an imported duplicate adds no cost', () => {
+    const si = require('../server/session-index');
+    // The cross-restart scenario: sessions.json already holds this turn's cost
+    // (counted by the proxy in a prior process) and the proxy line is in the index.
+    // seedCostRids marks the responseId as counted WITHOUT touching any total.
+    const indexContent = JSON.stringify({ id: 'proxy1', sessionId: 's', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 1 });
+    si.seedCostRids(indexContent);
+    assert.equal(si.size(), 0, 'seeding creates no sessions and adds no cost');
+    // The importer then imports the SAME turn from the transcript (different id):
+    si.updateFromEntry({ sessionId: 's', id: 'import1', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 2 });
+    assert.ok(Math.abs(si.getAll()[0].totalCost) < 1e-9, 'imported duplicate cost is skipped — no cross-restart double count');
+    // A DIFFERENT responseId is still counted normally.
+    si.updateFromEntry({ sessionId: 's', id: 'import2', responseId: 'msg_01B', cost: { cost: 0.05 }, receivedAt: 3 });
+    assert.ok(Math.abs(si.getAll()[0].totalCost - 0.05) < 1e-9, 'a non-duplicate turn still counts');
+  });
+
   it('loadSessionIndex returns false when file missing', async () => {
     const si = require('../server/session-index');
     const loaded = await si.loadSessionIndex();
