@@ -1559,7 +1559,6 @@ function renderProjectsCol() {
     projectFilterMode,
     selectedProjectName || '',
     window._entriesLoading ? '1' : '0',
-    window._entriesLoadingText || '',
     (window.ccxraySettings?.hiddenProjects || []).join(','),
   ];
   for (const [name, proj] of projectsMap) {
@@ -1594,8 +1593,6 @@ function _renderProjectsColInner() {
     filterHtml + '<span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
   if (window._entriesLoading && projectsMap.size === 0) {
-    var loadText = window._entriesLoadingText || 'Loading…';
-    html += '<div style="padding:8px 12px;font-size:11px;color:var(--dim)">' + loadText + '</div>';
     for (var si = 0; si < 6; si++) {
       html += '<div class="project-item" style="pointer-events:none">' +
         '<div class="pi-name"><span class="skeleton skeleton-text" style="width:' + (60 + si * 15 % 40) + 'px"></span></div>' +
@@ -1741,7 +1738,6 @@ function selectProject(name) {
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
 
 // ── Miller Columns: Selection ──
-let _hoverTimer = null;
 
 function setFocus(col) {
   // #206: never focus a column hidden by sidebar collapse

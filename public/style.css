@@ -212,19 +212,7 @@
   .si-meta-row .si-cache { margin-top: 0; }
   .si-time { font-size: 10px; color: var(--fg); white-space: nowrap; }
   .session-item .si-cost { color: var(--yellow); }
-  /* Restore scaffold — static placeholder rows during entry restore (#332) */
-  .scaffold-row { border-bottom: 1px solid var(--border); padding: 10px; }
-  .scaffold-row > div { background: var(--border); border-radius: 3px; }
-  .scaffold-proj { height: 68px; }
-  .scaffold-proj > div:nth-child(1) { width: 60%; height: 12px; margin-bottom: 6px; }
-  .scaffold-proj > div:nth-child(2) { width: 40%; height: 10px; margin-bottom: 4px; }
-  .scaffold-proj > div:nth-child(3) { width: 30%; height: 10px; }
-  .scaffold-sess { height: 120px; }
-  .scaffold-sess > div:nth-child(1) { width: 50%; height: 12px; margin-bottom: 6px; }
-  .scaffold-sess > div:nth-child(2) { width: 80%; height: 10px; margin-bottom: 4px; }
-  .scaffold-sess > div:nth-child(3) { width: 45%; height: 10px; margin-bottom: 6px; }
-  .scaffold-sess > div:nth-child(4) { width: 100%; height: 6px; margin-bottom: 6px; }
-  .scaffold-sess > div:nth-child(5) { width: 35%; height: 10px; }
+
 
   .ctx-alert { font-size: 10px; font-weight: bold; }
   .ctx-alert-yellow { color: var(--yellow); }
@@ -316,12 +304,8 @@
   .turn-item { padding: 7px 10px; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid var(--border); }
   .turn-item:hover { background: var(--surface-hover); }
   .turn-item.selected { border-left-color: var(--accent); background: var(--surface-hover); }
-  .turn-item.risk-critical { border-left-color: var(--red); }
-  .turn-item.risk-warning { border-left-color: var(--orange); }
-  .turn-item.risk-notice { border-left-color: var(--yellow); }
   /* Line 1: identity */
   .turn-item .turn-identity { display: flex; gap: 6px; align-items: center; font-size: 12px; flex-wrap: nowrap; }
-  .turn-item .turn-num { color: var(--dim); flex-shrink: 0; }
   .turn-model { color: var(--purple); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .turn-item .status-dot { font-size: 10px; line-height: 1; flex-shrink: 0; }
   .turn-item .status-dot-ok { color: var(--green); }
@@ -339,7 +323,6 @@
   /* Line 2: title */
   .turn-item .turn-title { font-size: 11px; color: var(--text); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
   /* Line 3: ctx bar */
-  .turn-item .turn-ctx { margin-top: 4px; }
   /* Line 4: secondary — time + tools */
   .turn-item .turn-secondary { display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: var(--dim); margin-top: 3px; }
   .turn-item .turn-time-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -694,9 +677,6 @@
 .sysprompt-breadcrumb a:hover { text-decoration: underline; }
 
 /* Restore: hide empty right-side columns (#332) */
-#columns.restoring #col-turns,
-#columns.restoring #col-sections,
-#columns.restoring #col-detail { display: none; }
 
 /* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
 #columns.cold-loading #col-sections,

@@ -34,7 +34,6 @@ function showNewTurnPill(count) {
     selectTurn(targetIdx);
     scrollTurnsToBottom();
   };
-  // colTurns.appendChild(pill);  // ponytail: turn column removed
 }
 
 function hideNewTurnPill() {
@@ -67,7 +66,6 @@ function showSubagentPill(count, errCount, sinceNum) {
     scrollTurnsToBottom();
     hideSubagentPill();
   };
-  // colTurns.appendChild(pill);  // ponytail: turn column removed
 }
 
 // sid defaults to selectedSessionId, but callers leaving a session (e.g.
@@ -620,9 +618,7 @@ function addEntry(e) {
   const _dupes = e.duplicateToolCalls || null;
   const _dupesMax = _dupes ? Math.max(...Object.values(_dupes)) : 0;
   const _ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100) : 0;
-  // Pass the whole entry (with the normalized stopReason) so every field
-  // classifySeverity/isProxyLifecycleShutdown reads is present — a synthetic
-  // subset would silently drop a field a future severity rule starts using.
+  // INVARIANT: severity field consumed by workflow-timeline.js wfRenderLaneSvg
   const severity = classifySeverity({ ...e, stopReason }, _ctxPct, _dupesMax);
 
   allEntries.push({
@@ -724,10 +720,6 @@ function addEntry(e) {
   }
 
   if (isRetry) return;
-
-  // ponytail: turn-item DOM creation removed — turn column no longer rendered
-  // Data-only variables kept above (ctxUsed, turnCost, etc.) feed session stats.
-  // ponytail: turn-item DOM removed (L707-864 original); data logic above preserved
 
   if (selectedSessionId === sid) renderSessionSparkline(sid);
   // Track unconditionally (not gated by !_loading) — codex review: this was
@@ -1116,18 +1108,6 @@ window._entriesLoadingProjectName = _pendingDeepLink.p || null;
 window._entriesLoadingSessionPrefix = _pendingDeepLink.s || null;
 window._entriesLoadingText = _hasDeepLink ? 'Resolving link…' : 'Loading…';
 if (typeof renderProjectsCol === 'function') renderProjectsCol();
-// ponytail: scaffold rows during restore (#332) — replaced by post-batch render
-(function _insertScaffold() {
-  var projCol = document.getElementById('col-projects');
-  var sessCol = document.getElementById('col-sessions');
-  var projHtml = '', sessHtml = '';
-  for (var i = 0; i < 8; i++) projHtml += '<div class="scaffold-row scaffold-proj"><div></div><div></div><div></div></div>';
-  for (var j = 0; j < 5; j++) sessHtml += '<div class="scaffold-row scaffold-sess"><div></div><div></div><div></div><div></div><div></div></div>';
-  if (projCol) projCol.insertAdjacentHTML('beforeend', projHtml);
-  if (sessCol) sessCol.insertAdjacentHTML('beforeend', sessHtml);
-  var cols = document.getElementById('columns');
-  if (cols) cols.classList.add('restoring');
-})();
 const _starsReady = (typeof loadStars === 'function') ? loadStars() : Promise.resolve();
 const _sessionsReady = (async function _fetchSessionsWhenReady() {
   for (;;) {
@@ -1174,9 +1154,6 @@ async function _fetchEntriesWhenReady() {
 
 function _setLoadingStatus(text) {
   window._entriesLoadingText = text;
-  const el = document.getElementById('entries-loading-status');
-  if (el) el.textContent = text;
-  // ponytail: always show restore progress in breadcrumb, not just deep-link (#332)
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb && _loading) breadcrumb.textContent = text;
   if (_deepLinkLoadingActive) _renderDeepLinkLoading(text);
@@ -1299,10 +1276,6 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
     _dirtySessions = null;
     for (const [name] of projectsMap) recomputeProjectCost(name);
   }
-  // ponytail: remove scaffold rows + restoring state before real render (#332)
-  document.querySelectorAll('.scaffold-row').forEach(el => el.remove());
-  var colsEl = document.getElementById('columns');
-  if (colsEl) colsEl.classList.remove('restoring');
   const colSessEl = document.getElementById('col-sessions');
   if (colSessEl) {
     const sortedSids = [...sessionsMap.entries()]

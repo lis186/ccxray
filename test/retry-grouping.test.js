@@ -41,6 +41,7 @@ function loadDashboardContext() {
     function setInterval() { return 0; }
     function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
+    function _apiQ(url) { return url; }
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
   for (const f of ['format.js', 'session-label.js', 'miller-columns.js', 'entry-rendering.js']) {
