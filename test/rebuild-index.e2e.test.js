@@ -148,22 +148,28 @@ describe('rebuild-index E2E — self-heal a lost index to a real browser render'
       // Projects column render is rAF-coalesced (docs/decisions/0002-dirty-check-signature.md),
       // so wait for it too — the turn-item can commit a frame before it does.
       await page.waitForFunction(
-        (sid) => !!document.querySelector(`.turn-item[data-session-id="${sid}"]`) &&
-                 !!document.querySelector('.project-item.selected .pi-label')?.textContent,
-        { timeout: 8000 }, SESSION_ID,
+        (sid, tid) => !!document.querySelector(`.session-item[data-session-id="${sid}"]`) &&
+                 !!document.querySelector('.project-item.selected .pi-label')?.textContent &&
+                 !!document.querySelector(`#wf-main-svg .wf-b[data-turn-id="${tid}"]`),
+        { timeout: 8000 }, SESSION_ID, id,
       );
 
-      const state = await page.evaluate((sid) => {
-        const turn = document.querySelector(`.turn-item[data-session-id="${sid}"]`);
+      const state = await page.evaluate((sid, tid) => {
+        // #332: turn column removed. The recovered turn proves it flowed through
+        // restore → SSE → render by appearing as its own swimlane bar (exact
+        // data-turn-id, not a bare rect the legend/lane background could satisfy);
+        // model shows in the sections header for the deep-link-selected turn.
+        const bar = document.querySelector(`#wf-main-svg .wf-b[data-turn-id="${tid}"]`);
+        const line1 = document.querySelector('#col-sections .ch-line1');
         return {
           projectText: document.querySelector('.project-item.selected .pi-label')?.textContent || '',
           sessionVisible: !!document.querySelector('.session-item.selected'),
-          turnVisible: !!turn,
-          model: turn?.querySelector('.turn-model')?.textContent || '',
+          turnVisible: !!bar,
+          model: line1?.textContent || '',
         };
-      }, SESSION_ID);
+      }, SESSION_ID, id);
 
-      assert.equal(state.turnVisible, true, 'recovered turn renders in the dashboard');
+      assert.equal(state.turnVisible, true, 'recovered turn renders in the dashboard (swimlane bar)');
       assert.equal(state.sessionVisible, true, 'recovered session column populated');
       assert.equal(state.projectText, truncateMiddle(PROJECT_NAME, 20), 'recovered project (cwd) renders');
       assert.match(state.model, /sonnet-4-6/); // dashboard strips the claude- prefix for display

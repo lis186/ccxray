@@ -195,28 +195,32 @@ describe('Codex dashboard status E2E', () => {
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=codex-raw`, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => {
-        const turn = document.querySelector('.turn-item[data-session-id="codex-raw"]');
+        // #332: turn column removed — the selected session card, the sections
+        // header, and the swimlane turn bar carry what the old .turn-item did.
+        // Wait on all three (header + projLabel are rAF-coalesced, ADR 0002; the
+        // swimlane SVG paints on the next frame, so wait for its bar too).
+        const session = document.querySelector('.session-item[data-session-id="codex-raw"]');
         const header = document.querySelector('#col-sections .ch-line2');
-        // Also wait for the selected project label to be painted: it renders via the
-        // rAF-coalesced dirty-check (ADR 0002), so page.evaluate can otherwise read it
-        // empty before the frame lands under CPU contention (the CI flake, #294 CI red).
         const projLabel = document.querySelector('.project-item.selected .pi-label');
-        return !!turn && !!header && header.textContent.includes('completed')
-          && !!projLabel && projLabel.textContent.trim().length > 0;
+        const bar = document.querySelector('#wf-main-svg .wf-b[data-turn-id="2026-05-03T23-38-05-284"]');
+        return !!session && !!header && header.textContent.includes('completed')
+          && !!projLabel && projLabel.textContent.trim().length > 0 && !!bar;
       });
 
       const state = await page.evaluate(() => {
-        const turn = document.querySelector('.turn-item[data-session-id="codex-raw"]');
+        // sections header (ch-line1/ch-line2) reflects the deep-link-selected turn #1;
+        // severity now lives on that turn's swimlane bar (data-severity), not a turn card.
         const header = document.querySelector('#col-sections .ch-line2');
-        const model = turn?.querySelector('.turn-model');
+        const line1 = document.querySelector('#col-sections .ch-line1');
+        const bar = document.querySelector('#wf-main-svg .wf-b[data-turn-id="2026-05-03T23-38-05-284"]');
         return {
           projectText: document.querySelector('.project-item.selected .pi-label')?.textContent || '',
           sessionText: document.querySelector('.session-item.selected .sid')?.textContent || '',
           url: location.search,
-          hasOkDot: !!turn?.querySelector('.status-dot-ok'),
-          hasErrDot: !!turn?.querySelector('.status-dot-err'),
-          isCritical: turn?.classList.contains('risk-critical') || false,
-          modelText: model?.textContent || '',
+          hasOkDot: !!header?.querySelector('.status-ok'),
+          hasErrDot: !!header?.querySelector('.status-err'),
+          severity: bar?.getAttribute('data-severity') || null,
+          modelText: line1?.textContent || '',
           sectionText: header?.textContent || '',
         };
       });
@@ -226,7 +230,7 @@ describe('Codex dashboard status E2E', () => {
       assert.match(state.url, /s=codex-raw/);
       assert.equal(state.hasOkDot, true);
       assert.equal(state.hasErrDot, false);
-      assert.equal(state.isCritical, false);
+      assert.notEqual(state.severity, 'critical');
       assert.match(state.modelText, /gpt-5\.5/);
       assert.match(state.sectionText, /200/);
       assert.match(state.sectionText, /completed/);
@@ -251,12 +255,12 @@ describe('Codex dashboard status E2E', () => {
       await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
       await page.goto(`http://localhost:${port}/?p=${encodeURIComponent(PROJECT_NAME)}&s=${encodeURIComponent(sessionId)}`, { waitUntil: 'domcontentloaded' });
       await page.waitForFunction((sid) => {
-        const turn = document.querySelector(`.turn-item[data-session-id="${sid}"]`);
+        // #332: turn column removed — assert on the selected session card instead.
         const session = document.querySelector(`.session-item[data-session-id="${sid}"]`);
         // Wait for the rAF-coalesced selected project label too (ADR 0002) — same race
         // as the first test: this subtest also asserts projectText.
         const projLabel = document.querySelector('.project-item.selected .pi-label');
-        return !!turn && !!session && !!projLabel && projLabel.textContent.trim().length > 0;
+        return !!session && !!projLabel && projLabel.textContent.trim().length > 0;
       }, {}, sessionId);
 
       const state = await page.evaluate(() => ({

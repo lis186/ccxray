@@ -19,6 +19,7 @@ function loadDashboardContext() {
       style: {}, dataset: {}, innerHTML: '', textContent: '',
       classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
       addEventListener() {}, appendChild() {}, insertBefore() {},
+      insertAdjacentHTML() {},
       querySelector: () => el(), querySelectorAll: () => [],
       remove() {},
     };
