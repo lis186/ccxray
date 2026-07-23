@@ -1585,22 +1585,25 @@ function renderProjectsCol() {
 }
 
 function _renderProjectsColInner() {
-  let html = '<div class="col-title" style="display:flex;align-items:center;gap:6px">Projects' +
-    '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
+  var filterHtml = '<select id="proj-filter-select" onchange="setProjectFilter(this.value)" style="background:var(--surface);color:var(--dim);border:1px solid var(--border);border-radius:3px;font-size:10px;padding:1px 4px;cursor:pointer">' +
     '<option value="streaming"' + (projectFilterMode === 'streaming' ? ' selected' : '') + ' title="Only projects with in-flight API calls">Streaming</option>' +
     '<option value="recent"' + (projectFilterMode === 'recent' ? ' selected' : '') + ' title="Projects active within the last 24 hours">Recent</option>' +
     '<option value="all"' + (projectFilterMode === 'all' ? ' selected' : '') + '>All</option>' +
-    '</select><span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
+    '</select>';
+  let html = '<div class="col-title" style="display:flex;align-items:center;gap:6px">Projects' +
+    filterHtml + '<span id="proj-filter-count" style="color:var(--dim);font-size:10px"></span></div>';
 
   if (window._entriesLoading && projectsMap.size === 0) {
-    var skel = '';
+    var loadText = window._entriesLoadingText || 'Loading…';
+    html += '<div style="padding:8px 12px;font-size:11px;color:var(--dim)">' + loadText + '</div>';
     for (var si = 0; si < 6; si++) {
-      skel += '<div class="project-item" style="pointer-events:none;opacity:0.5">' +
-        '<div class="skeleton skeleton-text" style="width:' + (50 + si * 12 % 40) + 'px;margin-bottom:6px"></div>' +
-        '<div class="skeleton skeleton-text" style="width:90px;height:10px;margin-bottom:4px"></div>' +
-        '<div class="skeleton skeleton-text" style="width:60px;height:10px"></div></div>';
+      html += '<div class="project-item" style="pointer-events:none">' +
+        '<div class="pi-name"><span class="skeleton skeleton-text" style="width:' + (60 + si * 15 % 40) + 'px"></span></div>' +
+        '<div class="pi-meta"><span class="skeleton skeleton-text" style="width:80px"></span></div>' +
+        '<div class="pi-meta pi-cost"><span class="skeleton skeleton-text" style="width:50px"></span></div>' +
+        '</div>';
     }
-    colProjects.innerHTML = html + skel;
+    colProjects.innerHTML = html;
     return;
   }
 

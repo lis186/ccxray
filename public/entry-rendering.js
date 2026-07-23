@@ -1180,6 +1180,7 @@ function _setLoadingStatus(text) {
   const breadcrumb = document.getElementById('breadcrumb');
   if (breadcrumb && _loading) breadcrumb.textContent = text;
   if (_deepLinkLoadingActive) _renderDeepLinkLoading(text);
+  if (typeof renderProjectsCol === 'function') renderProjectsCol();
 }
 
 function _setDeepLinkProgress(text) {
