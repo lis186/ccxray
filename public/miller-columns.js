@@ -2874,7 +2874,7 @@ function renderDetailCol() {
       const stepsHtml = renderStepListHtml(currentSteps, activeKey, e.toolSources);
 
       const minimapHtml = (typeof renderMinimapHtml === 'function')
-        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, e.maxContext, e.usage)
+        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, (e.isSubagent ? e.maxContext : sessionCtxWindow(e.sessionId)), e.usage)
         : '';
 
       // Split pane: left minimap + list + right detail

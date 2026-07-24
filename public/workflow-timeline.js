@@ -183,23 +183,28 @@ function wfCtxPct(e) {
 // with a 1M one over-scales the 200K turns to 1M, so their ctx% is under-reported
 // and a `ctx80` badge could be suppressed. Under-warning is the safe failure;
 // there is no per-turn wire signal to do better client-side.
+// #339: beta1m-aware context window for a lane — 1M if any turn authoritatively ran 1M
+// (beta1m, server-gated on SUPPORTS_1M), else the largest maxContext fossil. This is the
+// ONE fold both the swimlane % (via _wfWinByTurn) AND the lane / agent-card window LABELS
+// read, so a lane can never render "20%" next to a "200K" window label. Falls back to the
+// lane's stored ctxWindow only when the lane has no turns yet.
+function _wfLaneWindow(lane) {
+  var turns = (lane && lane.turns) || [];
+  var win = 0, has1m = false;
+  for (var i = 0; i < turns.length; i++) {
+    if (turns[i].beta1m === true) has1m = true;
+    if ((turns[i].maxContext || 0) > win) win = turns[i].maxContext;
+  }
+  return has1m ? 1000000 : (win || (lane && lane.ctxWindow) || 0);
+}
 function _wfWinByTurn() {
   if (!wfState) return null;
   if (wfState._winByTurn) return wfState._winByTurn;
   var map = new Map();
   var lanes = wfState.lanes || [];
   for (var i = 0; i < lanes.length; i++) {
+    var laneWin = _wfLaneWindow(lanes[i]);
     var turns = lanes[i].turns || [];
-    // #339: prefer the authoritative 1M signal (beta1m, server-gated on SUPPORTS_1M) over the
-    // maxContext fossil. A lane where any turn ran 1M is a 1M lane even if no single turn's
-    // usage crossed 200K to bump its own maxContext — closing the last window of sawtooth the
-    // fossil-only fold (#342) still left. Fossil is the fallback for legacy turns with no beta1m.
-    var laneWin = 0, has1m = false;
-    for (var j = 0; j < turns.length; j++) {
-      if (turns[j].beta1m === true) has1m = true;
-      if ((turns[j].maxContext || 0) > laneWin) laneWin = turns[j].maxContext;
-    }
-    if (has1m) laneWin = 1000000;
     for (var k = 0; k < turns.length; k++) map.set(turns[k].id, laneWin);
   }
   wfState._winByTurn = map;
@@ -1436,7 +1441,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
 
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
-  var ctxK = Math.round((lane.ctxWindow || 0) / 1000);
+  var ctxK = Math.round(_wfLaneWindow(lane) / 1000); // #339: beta1m-aware, matches the swimlane %
   var dispName = _wfLaneDispName(lane, laneIdx, mainConvs);
   var modelLbl = _wfLaneModelLabel(lane);
   var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (modelLbl.title || '?') + ' · ' + ctxK + 'K');
@@ -2666,7 +2671,7 @@ function wfRenderAgentCard(lane) {
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
-  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round((lane.ctxWindow || 0) / 1000) + 'K</span></div>';
+  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round(_wfLaneWindow(lane) / 1000) + 'K</span></div>';
   if (sess) html += '<div class="wf-ac-row"><span>Compacts</span><span class="wf-ac-val">' + (sess.compactCount || 0) + '</span></div>';
   html += '</div>';
 

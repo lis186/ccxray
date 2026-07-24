@@ -97,6 +97,21 @@ describe('store.mergeByResponseId (#333)', () => {
       'R1 canonical keeps its first slot; second R1 copy folded away');
   });
 
+  it('#339: ORs the monotone beta1m fact so a copy that saw 1M heals one that did not', () => {
+    // beta1m is add-only + monotone. The canonical (earliest copy) may lack it while a
+    // later copy saw the 1M header; the fold must carry it over so sessionCtxWindow reads
+    // 1M. Never fabricates it, never downgrades true→false.
+    const canonNoB = { id: 'p1', responseId: 'R1', receivedAt: 1, usage: { output_tokens: 5 } };
+    const laterB = { id: 'p2', responseId: 'R1', receivedAt: 2, beta1m: true };
+    const out = mergeByResponseId([canonNoB, laterB]);
+    assert.equal(out[0].id, 'p1', 'canonical is the earliest copy (which had no beta1m of its own)');
+    assert.equal(out[0].beta1m, true, 'beta1m OR-ed in from the later copy (fail-on-old: was dropped)');
+    // No 1M signal in any copy → the fact stays absent.
+    const n1 = { id: 'q1', responseId: 'R2', receivedAt: 1 };
+    const n2 = { id: 'q2', responseId: 'R2', receivedAt: 2 };
+    assert.ok(!mergeByResponseId([n1, n2])[0].beta1m, 'no beta1m anywhere → none fabricated');
+  });
+
   it('a copy with unknown receivedAt never wins canonical over a timed copy (m2)', () => {
     // A rebuild-generated orphan (receivedAt=null) must not displace a fully-timed
     // proxy copy as canonical — that would erase the turn's timeline placement.

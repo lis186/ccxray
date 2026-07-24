@@ -104,7 +104,7 @@ function buildEntryFields(ctx) {
     // unconditionally, and a stray 1M header on a non-1M model never over-claims. Written
     // only when true (absent = no positive signal; monotone OR-fold). Classification keeps
     // raw per-turn maxContext — never derived from this. See docs/decisions/0013-*.
-    beta1m: (ctx.beta1m === true && config.SUPPORTS_1M.test((model || '').replace(/\[.*\]/, ''))) ? true : undefined,
+    beta1m: config.beta1mIndicates1M(model, parsedBody?.system, ctx.beta1m) ? true : undefined,
     responseMetadata: undefined,
     stopReason: ctx.stopReason || '',
     title: ctx.title || null,

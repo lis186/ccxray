@@ -254,6 +254,16 @@ function extractModelFromSystem(system) {
   return null;
 }
 
+// #339: does the beta1m header authoritatively make this turn a 1M window? The single
+// source of truth for the beta1m→1M gate, so the persisted `beta1m` fact
+// (wire-parsers/anthropic.js) can never disagree with getMaxContext's own beta1m branch
+// below. Identity resolves model || system-marker, exactly like getMaxContext.
+function beta1mIndicates1M(model, system, beta1m) {
+  if (beta1m !== true) return false;
+  const stripped = (model || extractModelFromSystem(system) || '').replace(/\[.*\]/, '');
+  return SUPPORTS_1M.test(stripped);
+}
+
 function getMaxContext(model, system, opts = {}) {
   // Model IDENTITY comes from the request `model` field — it updates immediately
   // on a mid-session model switch. The system marker is only a fallback for
@@ -350,6 +360,7 @@ module.exports = {
   DEFAULT_CONTEXT,
   SUPPORTS_1M,
   extractModelFromSystem,
+  beta1mIndicates1M,
   getMaxContext,
   inferMaxContext,
   parseBaseUrl,

@@ -898,6 +898,10 @@ function _patchEntryInPlace(u) {
     for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'usage',
       'maxContext', 'model', 'title', 'stopReason', 'toolFail', 'msgCount',
       'toolCount', 'thinkingDuration', 'thinkingStripped',
+      // #339: beta1m — summarizeEntry sends it as `true || undefined` (never false), so the
+      // != null guard is monotone (only ever sets true). The wfBuildState rebuild below
+      // re-derives the swimlane fold from it; the session card converges on next render.
+      'beta1m',
       'duplicateToolCalls', 'toolsHash', 'hasCredential']) {
       if (u[k] != null) full[k] = u[k];
     }

@@ -83,6 +83,10 @@ function _foldEntry(canonical, other) {
   // thinkingStripped is boolean evidence — OR, so a canonical false never blocks a
   // later copy's true (codex round-3 m1).
   if (other.thinkingStripped) canonical.thinkingStripped = true;
+  // #339: beta1m is the authoritative 1M fact — OR it, so a canonical copy missing the
+  // header (e.g. an imported copy, #329) inherits it from a proxy copy that saw it. Never
+  // downgrades (monotone), matching the sessionCtxWindow fold that consumes it.
+  if (other.beta1m === true) canonical.beta1m = true;
   // toolSources is a map — fill when canonical is null/undefined OR an EMPTY object
   // ({} must not read as "already populated" and block a real map; round-3 m1).
   {
