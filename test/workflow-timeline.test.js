@@ -1893,10 +1893,12 @@ describe('#258 coreHash identity routing', () => {
     assert.ok(!state.mainConvIds.has('56a5def0'));
   });
 
-  it('upgrade/noise: ≠coreHash but same convId stays main (convId AND-guard)', () => {
+  it('upgrade/noise: ≠coreHash but same convId stays main (#350 majority vote)', () => {
     const ctx = loadWfModule();
-    // Mid-session coreHash divergence (e.g. #218/#219 bugs) but SAME convId as main
-    // → convId ∈ mainConvIds → AND-guard blocks early-exit → stays main
+    // Mid-session coreHash divergence (e.g. #218/#219 bugs) but SAME convId as
+    // main → the blip is a minority within its conversation, so the per-conv
+    // dominant vote (#350) keeps the whole conversation, blip included, in main.
+    // (Pre-#350 this was the ADR 0010 convId AND-guard; the majority rule subsumes it.)
     var entries = [
       mkMain('m1', 1000, 5),
       mkMain('m2', 6000, 5),
@@ -1952,6 +1954,226 @@ describe('#258 coreHash identity routing', () => {
     var name = ctx._wfLaneDispName(lane, 1, mainConvs);
     assert.ok(name.indexOf('Teammate') === 0, 'expected label to start with Teammate, got: ' + name);
     assert.ok(name.indexOf('56a5') !== -1, 'expected convId prefix in label, got: ' + name);
+  });
+});
+
+// ── #350 coreHash-authoritative per-conversation ownership ──────────────────
+// A conversation's identity = its PLURALITY non-null coreHash, not any single
+// turn. The old per-turn early-exit (ADR 0010) let a seed turn that carried the
+// parent orchestrator's coreHash across a spawn/fork boundary poison a whole
+// subagent conversation into main. Real session 4b15c248: convId add88512 is a
+// 74-turn Fable-5 subagent whose FIRST turn (msg 461) carried main's coreHash
+// (85771b) while the other 47 carried the subagent's (86e2ea) — the old code
+// scattered it across main(48) + agent-orchestrator(25) + parallel(1). The new
+// rule owns the conversation by its majority coreHash → one identity lane.
+describe('#350 coreHash-authoritative per-conversation ownership', () => {
+  // Main conversation: convId 'mainC', coreHash 'AAAAAA' (opus).
+  function mkMain(id, at, msg) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, 3, {
+      agentKey: 'orchestrator', agentLabel: 'Orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: msg,
+    });
+  }
+  // Subagent conversation 'subC': one SEED turn carrying main's coreHash
+  // (the spawn-boundary poison), then turns carrying the subagent's own hash.
+  function mkSeed(id, at, msg) {
+    return mkEntry(id, 's1', 'claude-fable-5', at, 3, {
+      agentKey: 'orchestrator', agentLabel: 'Orchestrator', coreHash: 'AAAAAA', convId: 'subC', msgCount: msg,
+    });
+  }
+  function mkSub(id, at, msg) {
+    return mkEntry(id, 's1', 'claude-fable-5', at, 3, {
+      agentKey: 'orchestrator', agentLabel: 'Orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: msg,
+    });
+  }
+
+  it('seed turn carrying main coreHash does NOT poison its conversation into main (fail-on-old)', () => {
+    const ctx = loadWfModule();
+    // subC runs at the tail (main never returns after it) — exactly the
+    // 4b15c248 shape where the seq post-pass cannot rescue the leak, so the
+    // routing decision is load-bearing.
+    var entries = [
+      mkMain('m1', 1000, 1), mkMain('m2', 11000, 2), mkMain('m3', 21000, 3),
+      mkSeed('s0', 31000, 100),   // coreHash AAAAAA == main → old code keeps in main + registers subC
+      mkSub('f1', 41000, 101), mkSub('f2', 51000, 102), mkSub('f3', 61000, 103),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var main = lanes.find(function(l) { return l.key === 'main'; });
+    // NEW: main holds only the real main conversation.
+    assert.equal(main.turns.map(function(t) { return t.id; }).join(','), 'm1,m2,m3',
+      'main must not absorb the subagent conversation (old code leaks s0,f1,f2,f3)');
+    // NEW: the whole subagent conversation lands in ONE identity lane, seed included.
+    var sub = lanes.find(function(l) { return l.key === 'agent-orchestrator:subC'; });
+    assert.ok(sub, 'expected one agent-orchestrator:subC identity lane');
+    assert.equal(sub.turns.map(function(t) { return t.id; }).join(','), 's0,f1,f2,f3',
+      'the seed turn (main coreHash) must ride with its conversation by majority vote');
+    // NEW: no BBBBBB (subagent) turn survives in main.
+    assert.ok(!main.turns.some(function(t) { return t.coreHash === 'BBBBBB'; }),
+      'no subagent-coreHash turn may remain in main');
+  });
+
+  it('conversation owned by main coreHash stays whole in main even with a blip turn (#218/#219 immunity)', () => {
+    const ctx = loadWfModule();
+    // main conv with a single mid-conversation coreHash blip → majority is main.
+    var entries = [
+      mkMain('m1', 1000, 1), mkMain('m2', 11000, 2),
+      mkEntry('blip', 's1', 'claude-opus-4-6', 21000, 3,
+        { agentKey: 'orchestrator', coreHash: 'ZZZZZZ', convId: 'mainC', msgCount: 3 }),
+      mkMain('m3', 31000, 4), mkMain('m4', 41000, 5),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var main = lanes.find(function(l) { return l.key === 'main'; });
+    assert.equal(main.turns.length, 5, 'blip turn stays main — its conversation is majority-main');
+    assert.ok(main.turns.some(function(t) { return t.id === 'blip'; }));
+  });
+
+  it('per-conversation routing: /model switch inside main keeps the whole conversation main', () => {
+    const ctx = loadWfModule();
+    // Same convId, mixed coreHash (opus-4-6 → opus-4-8 via /model). Because
+    // ownership is per-conversation, the whole conversation rides main by its
+    // dominant — no multi-valued set needed for the within-conversation case.
+    var entries = [
+      mkMain('m1', 1000, 1), mkMain('m2', 11000, 2),
+      mkEntry('u1', 's1', 'claude-opus-4-8', 21000, 3,
+        { agentKey: 'orchestrator', coreHash: 'CCCCCC', convId: 'mainC', msgCount: 3 }),
+      mkEntry('u2', 's1', 'claude-opus-4-8', 31000, 3,
+        { agentKey: 'orchestrator', coreHash: 'CCCCCC', convId: 'mainC', msgCount: 4 }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var main = lanes.find(function(l) { return l.key === 'main'; });
+    assert.equal(main.turns.length, 4, 'both models of the same main conversation stay main');
+  });
+
+  // ── codex round-1 regressions (edge cases codex found by running the code) ──
+  it('codex R1 M1: a null-receivedAt turn must NOT hijack the seed (Number(null)===0 trap)', () => {
+    const ctx = loadWfModule();
+    // main conv starts at t=1000; a later subagent turn logs a null receivedAt.
+    // Number(null) === 0 would sort it FIRST and make the subagent the seed,
+    // inverting ownership. Null must sort LAST instead.
+    // Space starts > elapsed apart so the main turns don't temporally overlap
+    // (that's the ADR 0008 sweep, orthogonal to this seed test).
+    var entries = [
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 1 }),
+      mkEntry('subnull', 's1', 'claude-fable-5', null, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 50 }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', 11000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 2 }),
+      mkEntry('sub2', 's1', 'claude-fable-5', 21000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 51 }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var main = lanes.find(function(l) { return l.key === 'main'; });
+    assert.equal(main.turns.map(function(t) { return t.id; }).join(','), 'm1,m2',
+      'the real main conversation stays main; the null-stamped subagent must not seize the seed');
+    var subLane = lanes.find(function(l) { return l.key === 'agent-orchestrator:subC'; });
+    assert.ok(subLane && subLane.turns.length === 2, 'the null-stamped subagent rides its own identity lane');
+  });
+
+  it('codex R1 M2: classification is deterministic, independent of input order', () => {
+    const ctx = loadWfModule();
+    // Subagent whose FIRST turn carries main's coreHash (the spawn seed) and the
+    // rest its own (majority — the real add88512 shape, 1 inherited + N own). It
+    // must land in its own identity lane, and the SAME regardless of array order
+    // (the round-1 bug: Map insertion order flipped the plurality winner).
+    function shape() {
+      return [
+        mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 1 }),
+        mkEntry('m2', 's1', 'claude-opus-4-6', 11000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 2 }),
+        mkEntry('seed', 's1', 'claude-fable-5', 21000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'subC', msgCount: 50 }),
+        mkEntry('own1', 's1', 'claude-fable-5', 31000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 51 }),
+        mkEntry('own2', 's1', 'claude-fable-5', 41000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 52 }),
+      ];
+    }
+    function subLaneIds(entries) {
+      var l = ctx.wfInferLanes(entries, []).find(function(x) { return x.key === 'agent-orchestrator:subC'; });
+      return l ? l.turns.map(function(t) { return t.id; }).sort().join(',') : null;
+    }
+    var forward = subLaneIds(shape());
+    var reversed = subLaneIds(shape().reverse());
+    assert.equal(forward, 'own1,own2,seed', 'the whole subagent (seed + majority own) lands in its own identity lane');
+    assert.equal(forward, reversed, 'classification must not depend on input order (deterministic plurality)');
+  });
+
+  it('codex R2: a /model switch at a compaction boundary keeps the successor in main', () => {
+    const ctx = loadWfModule();
+    // Seed conv c1 = pure A. A compaction successor c2 continues with A then
+    // /model-switches to B (an A/B plurality tie). Because A is a max-count hash
+    // in main\'s set, c2 stays main — a tiebreak that picked B would eject a
+    // genuine main continuation.
+    var entries = [
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c1', msgCount: 1 }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', 11000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c1', msgCount: 2 }),
+      mkEntry('a1', 's1', 'claude-opus-4-6', 21000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c2', msgCount: 3 }),
+      mkEntry('a2', 's1', 'claude-opus-4-6', 31000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c2', msgCount: 4 }),
+      mkEntry('b1', 's1', 'claude-opus-4-8', 41000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'c2', msgCount: 5 }),
+      mkEntry('b2', 's1', 'claude-opus-4-8', 51000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'c2', msgCount: 6 }),
+    ];
+    var main = ctx.wfInferLanes(entries, []).find(function(l) { return l.key === 'main'; });
+    assert.equal(main.turns.length, 6, 'the compaction successor (A/B tie sharing main hash A) stays whole in main');
+  });
+
+  it('codex R2: a subagent must not seize the seed when main opens with null coreHashes', () => {
+    const ctx = loadWfModule();
+    // main conv c1 opens with a coreHash-less turn; a subagent (hash B) records a
+    // coreHash first; main later gets its hash A. The seed must be main\'s
+    // CONVERSATION (earliest main turn), not the earliest coreHash-bearing turn,
+    // so mainCoreHashSet = {A} and the subagent is routed to identity.
+    var entries = [
+      mkEntry('m0', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', convId: 'c1', msgCount: 1 }),
+      mkEntry('s1t', 's1', 'claude-fable-5', 11000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'cS', msgCount: 1 }),
+      mkEntry('s2t', 's1', 'claude-fable-5', 21000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'cS', msgCount: 2 }),
+      mkEntry('m1', 's1', 'claude-opus-4-6', 31000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c1', msgCount: 2 }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', 41000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'c1', msgCount: 3 }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var main = lanes.find(function(l) { return l.key === 'main'; });
+    var subLane = lanes.find(function(l) { return l.key === 'agent-orchestrator:cS'; });
+    assert.ok(main.turns.some(function(t) { return t.id === 'm1'; }) && main.turns.some(function(t) { return t.id === 'm2'; }),
+      'the genuine main conversation stays main — a subagent must not seize the seed');
+    assert.ok(subLane && subLane.turns.length === 2, 'the subagent rides its own identity lane');
+  });
+
+  it('codex R1 M4: a coreHash-less seed conversation must not disable identity routing', () => {
+    const ctx = loadWfModule();
+    // The earliest main-agentKey turns (conv c0) carry NO coreHash. A later main
+    // conversation does. The seed must skip the coreHash-less turns so the set is
+    // non-empty and a genuine subagent still gets an identity lane.
+    var entries = [
+      mkEntry('n1', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', convId: 'c0', msgCount: 1 }),
+      mkEntry('m1', 's1', 'claude-opus-4-6', 5000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 1 }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', 9000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 2 }),
+      mkEntry('sub', 's1', 'claude-fable-5', 13000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 1 }),
+    ];
+    var lanes = ctx.wfInferLanes(entries, []);
+    var subLane = lanes.find(function(l) { return l.key === 'agent-orchestrator:subC'; });
+    assert.ok(subLane, 'identity routing must stay enabled — the subagent gets its own lane');
+    assert.equal(subLane.turns.map(function(t) { return t.id; }).join(','), 'sub');
+  });
+
+  it('codex R3: identity routing survives an all-null-receivedAt session', () => {
+    const ctx = loadWfModule();
+    // Every turn has a null receivedAt (legacy/degraded data). A conversation is
+    // recorded on first sight even at Infinity, so the seed is still established
+    // and the subagent is routed out (not a disabled-routing no-op).
+    var entries = [
+      mkEntry('m1', 's1', 'claude-opus-4-6', null, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 1 }),
+      mkEntry('m2', 's1', 'claude-opus-4-6', null, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'mainC', msgCount: 2 }),
+      mkEntry('s1t', 's1', 'claude-fable-5', null, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 1 }),
+      mkEntry('s2t', 's1', 'claude-fable-5', null, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'subC', msgCount: 2 }),
+    ];
+    var subLane = ctx.wfInferLanes(entries, []).find(function(l) { return l.key === 'agent-orchestrator:subC'; });
+    assert.ok(subLane && subLane.turns.length === 2, 'identity routing stays enabled even when all timestamps are null');
+  });
+
+  it('codex R3: a tied seed conversation seeds ALL its plurality hashes (no successor eviction)', () => {
+    const ctx = loadWfModule();
+    // The seed conversation itself /model-switches (A×1 + B×1 tie). A later
+    // pure-A compaction successor must stay main — so the set must carry BOTH
+    // tied seed hashes, not just the lexicographically largest.
+    var entries = [
+      mkEntry('m1', 's1', 'claude-opus-4-6', 1000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'seedC', msgCount: 1 }),
+      mkEntry('m2', 's1', 'claude-opus-4-8', 11000, 3, { agentKey: 'orchestrator', coreHash: 'BBBBBB', convId: 'seedC', msgCount: 2 }),
+      mkEntry('c1', 's1', 'claude-opus-4-6', 21000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'succC', msgCount: 3 }),
+      mkEntry('c2', 's1', 'claude-opus-4-6', 31000, 3, { agentKey: 'orchestrator', coreHash: 'AAAAAA', convId: 'succC', msgCount: 4 }),
+    ];
+    var main = ctx.wfInferLanes(entries, []).find(function(l) { return l.key === 'main'; });
+    assert.equal(main.turns.length, 4, 'the pure-A successor stays main because A is in the seed set');
   });
 });
 

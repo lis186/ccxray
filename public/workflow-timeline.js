@@ -469,6 +469,116 @@ function _wfSeqCloseBrackets(tracker) {
   return turns;
 }
 
+// ── #350 coreHash-authoritative per-conversation ownership ──────────────────
+// A conversation's identity is its PLURALITY non-null coreHash, not any single
+// turn: a subagent's first turn can carry the parent orchestrator's coreHash
+// across a spawn/fork boundary (real session 4b15c248, convId add88512: one seed
+// turn @85771b + 47 @86e2ea). The old ADR 0010 early-exit routed per-turn on the
+// seed's coreHash, so that one turn anchored the whole subagent conversation into
+// main and poisoned mainConvIds. Deciding per-CONVERSATION by majority makes the
+// seed a minority that cannot flip ownership.
+//
+// mainCoreHashSet holds the main trunk's single identity coreHash: the dominant
+// coreHash of the SEED conversation (earliest lane-eligible main-agentKey turn
+// that carries a coreHash). It is NOT grown with the secondary coreHashes a main
+// conversation happens to contain — because routing is per-CONVERSATION, a mixed
+// conversation (main that /model-switches, keeping messages[0] hence its convId)
+// already rides main as one unit by its dominant, so growth is unnecessary; and a
+// coreHash appearing inside main is NOT proof that a SEPARATE conversation
+// carrying it is main (real session c6e1ddaa: main contains 72 turns @7852d4, a
+// separate 94-turn conv is also @7852d4 but a subagent — growing the set would
+// wrongly absorb it). Compaction keeps the successor's dominant coreHash
+// unchanged (same system prompt), so it stays main with no growth. Known bounded
+// limitation: a /model switch EXACTLY at a compaction boundary (mixed main conv
+// A,A,A,B then a pure-B successor) ejects the B successor — accepted, since a
+// growth rule that keeps it would reintroduce the c6e1ddaa over-merge; same class
+// as ADR 0009's rewind-across-compaction. Continuity via coreHash (NOT the ADR
+// 0009 seq trunk) is deliberate: a subagent conversation at the session tail is
+// indistinguishable from a compaction to the seq bracketing (4b15c248: add88512
+// is the final run, so a seq-trunk-derived set wrongly re-absorbs it), whereas a
+// novel dominant coreHash is never main. See
+// docs/solutions/same-convid-lane-classification.md.
+// INVARIANT: this REWRITES ADR 0010's per-turn early-exit — the batch site here
+// decides ownership per-conversation, never per-turn — see
+// docs/decisions/0010-corehash-identity-routing.md
+function _wfComputeConvIdentity(entries) {
+  var convCores = new Map();       // convId → Map(coreHash → count) over lane-eligible turns
+  var convFirstMainAt = new Map(); // convId → earliest receivedAt of a lane-eligible main-agentKey turn
+  for (var i = 0; i < entries.length; i++) {
+    var e = entries[i];
+    if (!_wfIsLaneEligible(e)) continue;
+    if (e.convId && e.coreHash) {
+      var cc = convCores.get(e.convId);
+      if (!cc) convCores.set(e.convId, cc = new Map());
+      cc.set(e.coreHash, (cc.get(e.coreHash) || 0) + 1);
+    }
+    if (e.convId && e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey] && WF_MAIN_AGENT_KEYS[e.agentKey]) {
+      // receivedAt is primary; a null/undefined receivedAt (~0.7% of turns) is
+      // NOT Number()-coerced to 0 (which would sort it FIRST and let a late
+      // null-stamped subagent hijack the seed — codex R1 M1) but mapped to
+      // Infinity so it sorts LAST.
+      var at = e.receivedAt == null ? Infinity : Number(e.receivedAt); if (!(at >= 0)) at = Infinity;
+      // Record on FIRST sight (even when at === Infinity) so an all-null-
+      // receivedAt conversation still enters the map — otherwise an all-null
+      // session would leave convFirstMainAt empty and disable identity routing
+      // (codex R3). Later turns only lower the recorded start.
+      if (!convFirstMainAt.has(e.convId) || at < convFirstMainAt.get(e.convId)) convFirstMainAt.set(e.convId, at);
+    }
+  }
+  // Plurality-tied coreHashes per conversation: the set of hashes sharing the
+  // maximum count (usually one). Ownership keys on this SET, not a single
+  // dominant, so a genuine tie resolves toward main-membership (codex R2):
+  //   • add88512 = 73×86e2ea + 1×85771b → max-count = {86e2ea}; the lone
+  //     inherited-main seed turn is NOT max-count, so it never pulls the
+  //     conversation into main.
+  //   • a compaction successor that /model-switches (A×n + B×n tie) → max-count
+  //     = {A, B}; A ∈ set keeps the whole conversation main (a maxMsg tiebreak
+  //     that picked B would have ejected this genuine main continuation).
+  // Deterministic (sorted), so array/arrival order never flips the result.
+  var convMaxHashes = new Map();   // convId → [coreHash, …] sharing the max count
+  var dominantCore = new Map();    // convId → representative (largest hash string among the plurality)
+  convCores.forEach(function(counts, cid) {
+    var maxN = 0;
+    counts.forEach(function(n) { if (n > maxN) maxN = n; });
+    var top = [];
+    counts.forEach(function(n, h) { if (n === maxN) top.push(h); });
+    top.sort();
+    convMaxHashes.set(cid, top);
+    dominantCore.set(cid, top.length ? top[top.length - 1] : null);
+  });
+  // Seed = the earliest-STARTING main-agentKey CONVERSATION that has a coreHash
+  // identity. Keying on the conversation's earliest main turn — not the earliest
+  // coreHash-bearing turn — prevents a later subagent from seizing the seed when
+  // main's opening turns lack a coreHash (codex R2). convId breaks any exact tie
+  // (e.g. an all-null-receivedAt session) so the seed is deterministic.
+  var seedConv = null, seedAt = Infinity;
+  convFirstMainAt.forEach(function(at, cid) {
+    if (!dominantCore.get(cid)) return; // no coreHash identity → can't seed the set
+    if (at < seedAt || (at === seedAt && (seedConv === null || cid < seedConv))) { seedAt = at; seedConv = cid; }
+  });
+  // mainCoreHashSet holds the main trunk's identity coreHash(es): ALL of the
+  // seed conversation's plurality-tied hashes (usually one; both when the seed
+  // itself /model-switches at a tie — seeding only the largest-string hash would
+  // drop the other and eject a later successor that carries it, codex R3). NOT
+  // grown with the secondary coreHashes a main conversation happens to contain —
+  // a coreHash appearing inside main is not proof that a SEPARATE conversation
+  // carrying it is main (real session c6e1ddaa: main conv 9f15483a contains 72
+  // turns @7852d4; a separate 94-turn conv is ALSO @7852d4 but a subagent —
+  // growing the set would absorb it). Compaction keeps the successor's plurality
+  // coreHash unchanged (same system prompt), so it stays main with no growth.
+  // Known bounded limitation: a compaction successor whose only shared-with-main
+  // hash is a MINORITY (not plurality-tied) is ejected — structurally identical
+  // to add88512 (minority inherited hash + majority own hash), which we
+  // deliberately eject, so no rule can keep one without re-absorbing the other;
+  // same class as ADR 0009's rewind-across-compaction.
+  var mainCoreHashSet = new Set();
+  if (seedConv) {
+    var seedHashes = convMaxHashes.get(seedConv) || [];
+    for (var sh = 0; sh < seedHashes.length; sh++) mainCoreHashSet.add(seedHashes[sh]);
+  }
+  return { convMaxHashes: convMaxHashes, dominantCore: dominantCore, mainCoreHashSet: mainCoreHashSet };
+}
+
 function wfInferLanes(entries, childEntries, seqTracker) {
   if (!entries.length && !childEntries.length) return [];
   if (!seqTracker) seqTracker = wfCreateSeqTracker();
@@ -487,26 +597,16 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   laneMap.set('main', mainLane);
   var orchCtx = 0;
 
-  // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
-  // Teammate agents (Agent-tool dispatch) share agentKey='orchestrator' with
-  // main because their system prompt matches the same KNOWN_AGENTS entry,
-  // but their coreHash (normalized system-prompt hash) differs — main and
-  // teammate genuinely run different prompts. Pre-scan: mainCoreHash = the
-  // coreHash of the earliest-starting WF_MAIN_AGENT_KEYS entry.
-  var mainCoreHash = null;
-  var _mchEarliest = Infinity;
-  for (var _mci = 0; _mci < entries.length; _mci++) {
-    var _mce = entries[_mci];
-    // INVARIANT: lane eligibility (#236) — diagnostic entries (retries, 0-msg
-    // probes) must never establish main identity: a retry's coreHash landing
-    // here first would misroute the real turn to agent-orchestrator:*.
-    if (!_wfIsLaneEligible(_mce)) continue;
-    if (_mce.agentKey && WF_MAIN_AGENT_KEYS[_mce.agentKey] && _mce.coreHash) {
-      var _mct = Number(_mce.receivedAt) || Infinity;
-      if (_mct < _mchEarliest) { mainCoreHash = _mce.coreHash; _mchEarliest = _mct; }
-    }
-  }
-  var mainConvIds = new Set();
+  // INVARIANT: coreHash-authoritative per-conversation ownership (#350) —
+  // REWRITES ADR 0010's per-turn early-exit. convMaxHashes(convId) = the
+  // conversation's plurality-tied coreHashes; mainCoreHashSet = the main trunk's
+  // identity coreHash (seed conversation's dominant). Ownership is decided per
+  // conversation below, so a single seed turn carrying main's coreHash can no
+  // longer poison a subagent conversation into main. See _wfComputeConvIdentity
+  // and docs/decisions/0010-corehash-identity-routing.md.
+  var _ident = _wfComputeConvIdentity(entries);
+  var convMaxHashes = _ident.convMaxHashes;
+  var mainCoreHashSet = _ident.mainCoreHashSet;
   var faultEntries = [];
 
   for (var i = 0; i < entries.length; i++) {
@@ -520,21 +620,29 @@ function wfInferLanes(entries, childEntries, seqTracker) {
 
     // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
     if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
-      // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
-      // Teammate agents share agentKey='orchestrator' but a different
-      // coreHash. Route to an identity lane before WF_MAIN_AGENT_KEYS would
-      // absorb them into main. convId AND-guard: coreHash has had past
-      // instability (#218/#219), so a mid-session coreHash divergence that
-      // keeps the same convId as main is NOT a teammate — it stays main.
-      if (WF_MAIN_AGENT_KEYS[e.agentKey] && mainCoreHash && e.coreHash &&
-          e.coreHash !== mainCoreHash && e.convId && !mainConvIds.has(e.convId)) {
+      if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
+        // Non-main agent identity (server-detected, authoritative) → its own
+        // sublane regardless of model or isSubagent flag.
         _wfPushToSubLane(laneMap, _wfSubLaneKey('agent-' + e.agentKey, e), e);
         sub = true;
-      } else if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
-        // Agent-identity classification (server-detected, authoritative):
-        // main-agent keys → main lane regardless of model or isSubagent flag
-        _wfPushToSubLane(laneMap, _wfSubLaneKey('agent-' + e.agentKey, e), e);
-        sub = true;
+      } else {
+        // INVARIANT: coreHash-authoritative per-conversation ownership (#350) —
+        // REWRITES ADR 0010's per-turn early-exit. A main-agent-keyed turn is a
+        // teammate/subagent iff NONE of its CONVERSATION's plurality-tied
+        // coreHashes is a main coreHash — the whole conversation (seed turn
+        // included) then rides ONE identity lane. A conversation that shares a
+        // plurality coreHash with main (fork, /model switch, compaction,
+        // #218/#219 blip, or a tie one of whose hashes is main's) stays main and
+        // is left to the ADR 0008 overlap sweep. Falls through to main when the
+        // conversation has no coreHash signal (mh empty: legacy/no-convId) or no
+        // main identity was established (empty set). See _wfComputeConvIdentity
+        // and docs/decisions/0010-corehash-identity-routing.md.
+        var mh = e.convId ? convMaxHashes.get(e.convId) : null;
+        if (mh && mh.length && mainCoreHashSet.size &&
+            !mh.some(function(h) { return mainCoreHashSet.has(h); })) {
+          _wfPushToSubLane(laneMap, _wfSubLaneKey('agent-' + e.agentKey, e), e);
+          sub = true;
+        }
       }
     } else {
       // Fallback heuristics for entries without agent identity (old data,
@@ -555,7 +663,6 @@ function wfInferLanes(entries, childEntries, seqTracker) {
       mainLane.ctxWindow = e.maxContext || mainLane.ctxWindow;
       var p = wfCtxPct(e);
       if (p > orchCtx * 0.8) orchCtx = Math.max(orchCtx, p);
-      if (e.convId) mainConvIds.add(e.convId);
     }
   }
 
@@ -935,8 +1042,13 @@ function wfAddEntry(entry) {
 
   var needsSub, key;
   // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
-  // Mirrors wfInferLanes' pre-scan check, using the mainCoreHash/mainConvIds
-  // wfBuildState computed for this session. convId AND-guard: see ADR 0010.
+  // A1/A2 boundary (#350): the BATCH path (wfInferLanes) now decides ownership
+  // PER-CONVERSATION by dominant coreHash. This live path still uses the ADR
+  // 0010 per-turn early-exit against the mainCoreHash/mainConvIds wfBuildState
+  // derived from the (now correctly composed) final main lane — so a fresh
+  // cold-load/rebuild of a completed session is already correct, and the only
+  // residual divergence is a *live* seed turn on an actively-viewed session.
+  // A2 mirrors the per-conversation rule + dominant-coreHash flip/rebuild here.
   if (entry.agentKey && WF_MAIN_AGENT_KEYS[entry.agentKey] &&
       wfState.mainCoreHash && entry.coreHash && entry.coreHash !== wfState.mainCoreHash &&
       entry.convId && wfState.mainConvIds && !wfState.mainConvIds.has(entry.convId)) {

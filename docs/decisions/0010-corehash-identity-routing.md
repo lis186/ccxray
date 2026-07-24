@@ -1,8 +1,10 @@
 # 0010 — coreHash + convId identity routing for teammate lanes
 
-- Status: Accepted
+- Status: Accepted — **batch routing rule REWRITTEN by #350 (2026-07-24), see
+  "## Rewritten by #350" below**; the live path (`wfAddEntry`) + turn-list
+  (`entry-rendering.js`) still use the original per-turn early-exit pending A2.
 - Date: 2026-07-16
-- Related: #258 / #257 / ADR 0005 / ADR 0008
+- Related: #258 / #257 / #350 / ADR 0005 / ADR 0008
 
 ## Context
 
@@ -115,3 +117,118 @@ content, not identity, and ADR 0009 already rejected routing on it alone)
 and Option C (pure jitter-tolerance epsilon, rejected: leaves teammates
 transiting main with provisional-window pollution, and the same epsilon
 would weaken the fork overlap invariant).
+
+## Rewritten by #350 (2026-07-24) — per-conversation ownership (batch path)
+
+### What broke
+
+The Decision above routes **per turn**: a turn is a teammate iff *its own*
+`coreHash` differs from a single scanned `mainCoreHash` AND *its own* `convId`
+is not yet in the incrementally-accumulated `mainConvIds`. Both halves are
+fooled by one anomalous turn. Real session `4b15c248`, convId `add88512`: a
+74-turn Fable-5 subagent whose **first** turn (msg 461) carries the parent
+orchestrator's `coreHash` (`85771b`, == main) across the spawn/fork boundary,
+while the other 47 carry the subagent's own (`86e2ea`). That seed turn fails
+`coreHash !== mainCoreHash` → lands in main → registers `add88512` into
+`mainConvIds` → every later `86e2ea` turn then fails `!mainConvIds.has(convId)`
+→ also stays main. Result: the one conversation scattered across three lanes
+(main 48 + `agent-orchestrator:add88512` 25 + `parallel-fable-5:add88512` 1),
+and ~16% of the "main" lane was actually a Fable subagent (verified via
+`wfInferLanes` on the real session: main coreHashes `85771b`×193 + `86e2ea`×47).
+
+### The rewrite (batch — `wfInferLanes` / `_wfComputeConvIdentity`)
+
+Ownership is decided **per conversation**, not per turn. A conversation's
+identity is its **plurality-tied coreHashes** (`convMaxHashes` = the hashes
+sharing the maximum count, usually one), so the minority seed/blip turn cannot
+flip it:
+
+| conversation vs `mainCoreHashSet` | lane |
+|---|---|
+| a plurality-tied coreHash ∈ set | main candidate (whole conversation) → ADR 0008 overlap sweep |
+| plurality non-null, none ∈ set | ONE identity lane `agent-<agentKey>:<convId>` (seed turn included) |
+| no coreHash (legacy/no-convId) | pre-existing agentKey/fallback path, unchanged |
+
+Keying on the plurality-tied **set** (not a single dominant) is a codex-R2
+hardening: a genuine A/B tie resolves toward main-membership, so a compaction
+successor that `/model`-switches (`A×n + B×n`, A shared with main) is **not**
+ejected — while a clear-majority foreign conversation (add88512: max-count
+`{86e2ea}`, the lone inherited `85771b` seed turn is not max-count) stays a
+subagent.
+
+`mainCoreHashSet` is seeded from the earliest-**starting** lane-eligible
+main-agentKey **conversation** that carries a coreHash (keyed on the
+conversation's earliest main turn — not the earliest coreHash-bearing turn, or a
+subagent could seize the seed when main opens coreHash-less; codex R2). null
+`receivedAt` sorts last (never `Number(null)===0` → first; codex R1), convId
+breaks exact ties. It is a `Set` for API/parity stability but in practice holds
+the trunk's single identity hash: because routing is **per-conversation**, a
+mixed conversation (main that `/model`-switches, keeping `messages[0]` hence its
+convId) already rides main as one unit, so the set does **not** carry the
+secondary coreHashes a main conversation happens to contain. That is
+load-bearing — a coreHash appearing inside main is not proof that a *separate*
+conversation carrying it is main (real session `c6e1ddaa`: main conv contains 72
+turns @`7852d4`; a separate 94-turn conv is also @`7852d4` but a subagent).
+Compaction (`messages[0]`→summary changes convId but not the prompt) keeps the
+successor's plurality coreHash unchanged, so it stays main with no set growth.
+
+**Bounded limitations (accepted; zero real-corpus harm, codex R1–R3):**
+- A compaction successor whose only shared-with-main hash is a **minority** (not
+  plurality-tied) is ejected. It is structurally identical to add88512 (minority
+  inherited hash + majority own hash), which we deliberately eject, so no rule
+  can keep one without re-absorbing the other. Same class as ADR 0009's
+  rewind-across-compaction.
+- A **two-turn** conversation split exactly 1 inherited-main hash + 1 own hash is
+  a genuine `{A,B}` tie and resolves toward main. A real subagent carries many
+  own-hash turns (add88512: 73), so its own hash is the clear plurality; the
+  1-1 case is a synthetic tail edge with no overlap/bracket signal either way,
+  and leaning main avoids ejecting genuine `/model` continuations.
+- A genuine-main turn with a **null convId** (legacy/imported data) carries no
+  conversation identity and cannot seed or be identity-routed — the whole
+  #350 mechanism is convId-keyed, so null-convId turns fall to the pre-existing
+  agentKey/fallback path.
+
+This **subsumes** the AND-guard (the `#218/#219` blip is a single minority turn,
+overruled by the dominant vote) and **rewrites** — does not merely gate — the
+per-turn early-exit.
+
+### Why NOT the ADR 0009 seq trunk (the option #350's issue proposed)
+
+The issue proposed deriving `mainCoreHashSet` by feeding main-agentKey turns to
+the ADR 0009 seq tracker and taking the trunk convs' coreHashes. Rejected on
+evidence: a subagent conversation that runs at the **session tail** (trunk never
+returns) is indistinguishable from a compaction to the seq bracketing, so it
+stays in the trunk and its coreHash enters the set. `add88512` is exactly the
+final run of `4b15c248`, so a seq-trunk-derived set re-absorbs it into main —
+failing the acceptance. coreHash continuity has no tail blind spot: `add88512`'s
+dominant `86e2ea` is novel, so it is never main regardless of position.
+
+### Verification (docs/verification-principles.md)
+
+- fail-on-old / pass-on-new unit test (`test/workflow-timeline.test.js`, `#350`
+  suite): a seed turn carrying main's coreHash at the session tail — old code
+  leaks the whole conversation into main, new code routes it to one identity
+  lane.
+- Full-corpus real-JS replay (426 multi-coreHash sessions, `~/.ccxray`):
+  coreHash-leak residual (main turns whose conversation's dominant coreHash is
+  foreign) **784 → 61 (92% reduction)**; **0** sessions where the leak
+  increased (no over-merge regression); null-convId non-main lanes **delta 0**;
+  distinct non-main convIds **2196 → 2192** (the −4 are single-turn null-coreHash
+  `sdk-agent` lanes whose *spurious* overlap-split disappears once the leaked
+  foreign turns leave main — a positive side effect).
+- `4b15c248` acceptance: `add88512` 3 lanes → **1** (`agent-orchestrator:add88512`,
+  74 turns); main `86e2ea` 47 → **0**. Browser render smoke: `wfBuildState` +
+  `wfRenderTimeline` run without throwing on the consolidated lane.
+
+### A1/A2 boundary (scope)
+
+This ADR's rewrite covers the **batch** path only (`wfInferLanes`) — enough to
+fix any *completed* session on cold-load+rebuild, which is how the dashboard
+renders `4b15c248`. `wfBuildState` re-derives `mainCoreHash`/`mainConvIds` from
+the now-correctly-composed final main lane, so the live `wfAddEntry` and
+turn-list `entry-rendering.js` paths inherit a correct main identity for new
+turns; their per-turn early-exit is left in place. A2 (#350) mirrors the
+per-conversation rule + dominant-coreHash flip/trunk rebuild into those two
+sites. Until A2, the only residual divergence is a *live* seed turn arriving on
+an actively-viewed session — bounded and self-correcting on the next full
+rebuild. See `docs/solutions/same-convid-lane-classification.md`.
