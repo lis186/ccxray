@@ -322,21 +322,23 @@ async function scanAndImport() {
   // "id" is the first INDEX_FIELDS key, so the first match is the entry id.
   const existingIds = new Set(store.entries.map(e => e.id));
   try {
-    const indexContent = await config.storage.readIndex();
-    if (indexContent) {
-      const re = /"id":"([^"]+)"/;
-      for (const line of indexContent.split('\n')) {
-        if (!line) continue;
-        const m = re.exec(line);
-        if (m) existingIds.add(m[1]);
-      }
-      // #333: seed dedup state (cost + count) from responseIds already logged by a
-      // proxy, so an imported duplicate of the same turn re-adds neither its cost
-      // (fable round-4 M1) nor its turn count (the count-side twin) — the fix for
-      // the cross-restart double count on the fast-load-sessions.json path. Must
-      // run BEFORE the import loops below so their updateFromEntry is deduped.
-      sessionIdx.seedDedupState(indexContent);
+    // #345: stream — the index can exceed Node's ~512MB single-string limit,
+    // where readIndex() throws ERR_STRING_TOO_LONG and the import dedup breaks
+    // (re-importing everything, unbounded index growth + doubled counts). One
+    // parse per line builds existingIds and the metas for dedup seeding.
+    const metas = [];
+    for await (const line of config.storage.readIndexLines()) {
+      let m;
+      try { m = JSON.parse(line); } catch { continue; }
+      if (m && m.id) existingIds.add(m.id);
+      metas.push(m);
     }
+    // #333: seed dedup state (cost + count) from responseIds already logged by a
+    // proxy, so an imported duplicate of the same turn re-adds neither its cost
+    // (fable round-4 M1) nor its turn count (the count-side twin) — the fix for
+    // the cross-restart double count on the fast-load-sessions.json path. Must
+    // run BEFORE the import loops below so their updateFromEntry is deduped.
+    sessionIdx.seedDedupFromMetas(metas);
   } catch {}
 
   for (const { dir } of homes) {

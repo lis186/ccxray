@@ -555,13 +555,27 @@ function addEntry(e) {
   const ctxInput       = usage ? (usage.input_tokens || 0) : 0;
   const ctxUsed = computeCtxUsed(usage);
 
+  // #342: session-level context-window consensus. inferMaxContext gives a turn
+  // whose usage stayed ≤200K the 200K base while a >200K turn in the SAME session
+  // gets the stored 1M, so dividing each turn by its own value makes adjacent
+  // same-usage main turns sawtooth 100%↔20%. Divide main turns by the session's
+  // widest main window instead (mirrors the swimlane wfCtxPctRender lane rescope).
+  // Eventually consistent on this incremental path: the latest-turn card value is
+  // correct once the session is loaded; subagents keep their own window. The
+  // isCompacted heuristic below deliberately keeps prev.maxContext (classification
+  // wants the raw per-turn value) — only these render fields use the consensus.
+  if (!isSubagent && e.maxContext) sess.maxWindow = Math.max(sess.maxWindow || 0, e.maxContext);
+  const _ctxWin = (!isSubagent && (sess.maxWindow || 0) > (e.maxContext || 0))
+    ? sess.maxWindow
+    : (e.maxContext || DEFAULT_MAX_CTX);
+
   // Update session context alert badge + cache stats for main turns
   if (!isSubagent && ctxUsed > 0) {
-    sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
+    sess.latestMainCtxPct = Math.min(100, ctxUsed / _ctxWin * 100);
     sess.latestCacheReadTokens = ctxCacheRead;
     const ctxInputTotal = ctxCacheRead + ctxCacheCreate + (usage ? (usage.input_tokens || 0) : 0);
     sess.latestCacheHitRatio = ctxInputTotal > 0 ? ctxCacheRead / ctxInputTotal : 0;
-    sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
+    sess.latestMaxContext = _ctxWin;
     if (!window._coldActivating) {
       const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
       if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
@@ -617,7 +631,7 @@ function addEntry(e) {
   // (data-severity + wf-b-<sev>) — critical turns stay visible without the column.
   const _dupes = e.duplicateToolCalls || null;
   const _dupesMax = _dupes ? Math.max(...Object.values(_dupes)) : 0;
-  const _ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100) : 0;
+  const _ctxPct = ctxUsed > 0 ? Math.min(100, ctxUsed / _ctxWin * 100) : 0;
   // INVARIANT: severity field consumed by workflow-timeline.js wfRenderLaneSvg
   const severity = classifySeverity({ ...e, stopReason }, _ctxPct, _dupesMax);
 

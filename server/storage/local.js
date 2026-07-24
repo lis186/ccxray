@@ -3,6 +3,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const readline = require('readline');
 
 /**
  * Local filesystem storage adapter.
@@ -98,6 +99,31 @@ function createLocalStorage(logsDir, opts = {}) {
         if (e.code === 'ENOENT') return '';
         throw e;
       }
+    },
+
+    // Streaming line iterator over index.ndjson. Blank lines are skipped. Safe
+    // for indexes past Node's ~512MB single-string limit (#345) — readIndex()
+    // throws ERR_STRING_TOO_LONG there; this never materializes the whole file.
+    // Missing file → empty iteration.
+    readIndexLines() {
+      const p = indexPath;
+      return (async function* () {
+        // Open directly (no existsSync → no TOCTOU): a missing file surfaces as
+        // an ENOENT 'error' on the stream, which we swallow to honor the
+        // "missing index → empty iteration" contract. Other read errors propagate.
+        const input = fs.createReadStream(p, { encoding: 'utf8' });
+        const rl = readline.createInterface({ input, crlfDelay: Infinity });
+        try {
+          for await (const line of rl) if (line) yield line;
+        } catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
+        } finally {
+          // Close BOTH: rl.close() alone leaves the underlying fd open when a
+          // consumer breaks early (cold-load returns mid-iteration) → fd leak.
+          rl.close();
+          input.destroy();
+        }
+      })();
     },
 
     // ── Shared content-addressed storage (shared/) ───────────────────
