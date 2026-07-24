@@ -57,27 +57,43 @@ async function loadSessionIndex() {
   }
 }
 
-// Build session index from raw index.ndjson content string.
-function rebuildFromIndexContent(indexContent) {
+// Parse index.ndjson content into an array of metas. #345: only used by the
+// string-accepting back-compat wrappers below (tests, small indexes). Throws
+// ERR_STRING_TOO_LONG if `indexContent` came from readIndex() on a >512MB file —
+// production callers stream via storage.readIndexLines() and call the *FromMetas
+// variants directly, never building that string.
+function _parseLines(indexContent) {
+  const out = [];
+  if (!indexContent) return out;
+  for (const line of indexContent.split('\n')) {
+    if (!line) continue;
+    try { out.push(JSON.parse(line)); } catch {}
+  }
+  return out;
+}
+
+// Build session index from an array of parsed index metas.
+function rebuildFromMetas(metas) {
   sessionIndex.clear();
   _costByRid.clear();
   _countedRids.clear();
-  if (!indexContent) return;
+  if (!Array.isArray(metas)) return;
   // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
   // Both COST and COUNT are deduped by responseId here (_upsert via _costByRid /
   // _countedRids), so the session card shows merged turns and cost is counted once.
   // reconcile() dedups its index-side comparison the SAME way — the two must stay
   // paired: deduping count without deduping reconcile's tally would make merged
   // s.count (e.g. 15) never equal the raw line total (45) and thrash rebuilds.
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
-    try {
-      const m = JSON.parse(line);
-      if (!m || !m.sessionId) continue;
-      _upsert(m.sessionId, m);
-    } catch {}
+  for (const m of metas) {
+    if (!m || !m.sessionId) continue;
+    _upsert(m.sessionId, m);
   }
   dirty = true;
+}
+
+// Back-compat string entry point (tests / small indexes).
+function rebuildFromIndexContent(indexContent) {
+  rebuildFromMetas(_parseLines(indexContent));
 }
 
 // #333: seed the dedup state (cost + count) from the responseIds already present
@@ -91,12 +107,9 @@ function rebuildFromIndexContent(indexContent) {
 // would re-add both (cost = fable round-4 M1; count = its count-side twin).
 // Idempotent: re-seeding a known responseId only lifts its tracked cost max and is
 // a no-op on the count Set. Never adds to totalCost or s.count.
-function seedDedupState(indexContent) {
-  if (!indexContent) return;
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
-    let m;
-    try { m = JSON.parse(line); } catch { continue; }
+function seedDedupFromMetas(metas) {
+  if (!Array.isArray(metas)) return;
+  for (const m of metas) {
     const rid = m && m.responseId;
     if (!rid) continue;
     // COUNT: any responseId already in the log is counted — even a cost-null
@@ -111,6 +124,11 @@ function seedDedupState(indexContent) {
   }
 }
 
+// Back-compat string entry point (tests / small indexes).
+function seedDedupState(indexContent) {
+  seedDedupFromMetas(_parseLines(indexContent));
+}
+
 // Compare loaded sessions.json against index.ndjson content. Returns true if
 // drift detected (and rebuilds). Checks both unique session count and total
 // entry count — the latter catches appendIndex failures for existing sessions
@@ -118,33 +136,33 @@ function seedDedupState(indexContent) {
 // #333: the entry tally is deduped by responseId so it matches the merged s.count
 // _upsert now keeps; a raw-line tally here would always exceed merged s.count on a
 // duplicate-heavy shared log and rebuild on every reconcile.
-function reconcile(indexContent) {
-  if (!indexContent || !sessionIndex.size) return false;
+function reconcileMetas(metas) {
+  if (!Array.isArray(metas) || !metas.length || !sessionIndex.size) return false;
   let indexSessions = 0, indexEntries = 0;
   const seen = new Set();
   const seenRid = new Set();
-  const re = /"sessionId":"([^"]+)"/;
-  const reRid = /"responseId":"([^"]+)"/;
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
-    const m = re.exec(line);
-    if (!m) continue;
+  for (const m of metas) {
+    if (!m || !m.sessionId) continue;
     // Count once per responseId (merged turns); a line without responseId
     // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
-    const rm = reRid.exec(line);
-    const rid = rm ? rm[1] : null;
+    const rid = m.responseId || null;
     if (!rid || !seenRid.has(rid)) {
       indexEntries++;
       if (rid) seenRid.add(rid);
     }
-    if (!seen.has(m[1])) { seen.add(m[1]); indexSessions++; }
+    if (!seen.has(m.sessionId)) { seen.add(m.sessionId); indexSessions++; }
   }
   let totalEntries = 0;
   for (const s of sessionIndex.values()) totalEntries += s.count;
   if (indexSessions === sessionIndex.size && indexEntries === totalEntries) return false;
   console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${indexSessions} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
-  rebuildFromIndexContent(indexContent);
+  rebuildFromMetas(metas);
   return true;
+}
+
+// Back-compat string entry point (tests / small indexes).
+function reconcile(indexContent) {
+  return reconcileMetas(_parseLines(indexContent));
 }
 
 // Upsert a session summary from an entry's index fields.
@@ -245,4 +263,10 @@ function size() {
   return sessionIndex.size;
 }
 
-module.exports = { loadSessionIndex, rebuildFromIndexContent, seedDedupState, reconcile, updateFromEntry, setTitle, flush, getAll, size };
+module.exports = {
+  loadSessionIndex,
+  rebuildFromIndexContent, rebuildFromMetas,
+  seedDedupState, seedDedupFromMetas,
+  reconcile, reconcileMetas,
+  updateFromEntry, setTitle, flush, getAll, size,
+};

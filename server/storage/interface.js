@@ -19,6 +19,11 @@
  * @property {() => Promise<string[]>} list
  *   List all filenames in the log store (e.g. ['2025-03-17T12-00-00-000_req.json', ...]).
  *
+ * @property {() => AsyncIterable<string>} readIndexLines
+ *   Stream index.ndjson line-by-line (blank lines skipped). Unlike readIndex(),
+ *   never materializes the whole file into one string, so it is safe past Node's
+ *   ~512MB single-string limit (#345). Missing index → empty iteration.
+ *
  * @property {(id: string, suffix: string) => Promise<{mtimeMs: number}>} stat
  *   Get metadata (at minimum mtimeMs) for a log artifact. Throws if not found.
  *

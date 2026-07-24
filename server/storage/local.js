@@ -3,6 +3,7 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const readline = require('readline');
 
 /**
  * Local filesystem storage adapter.
@@ -107,6 +108,26 @@ function createLocalStorage(logsDir, opts = {}) {
         if (e.code === 'ENOENT') return '';
         throw e;
       }
+    },
+
+    // Streaming line iterator over index.ndjson. Blank lines are skipped. Safe
+    // for indexes past Node's ~512MB single-string limit (#345) — readIndex()
+    // throws ERR_STRING_TOO_LONG there; this never materializes the whole file.
+    // Missing file → empty iteration.
+    readIndexLines() {
+      const p = indexPath;
+      return (async function* () {
+        if (!fs.existsSync(p)) return;
+        const rl = readline.createInterface({
+          input: fs.createReadStream(p, { encoding: 'utf8' }),
+          crlfDelay: Infinity,
+        });
+        try {
+          for await (const line of rl) if (line) yield line;
+        } finally {
+          rl.close();
+        }
+      })();
     },
 
     // ── Shared content-addressed storage (shared/) ───────────────────
