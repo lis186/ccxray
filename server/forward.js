@@ -40,7 +40,9 @@ function resolveTitleGenTitle(parsedBody, resPayload, receivedAt) {
   } else if (parentSid && store.getSessionFirstPrompt(parentSid)) {
     broadcastSessionTitleUpdate(parentSid, { immediate: true });
   }
-  return clean;
+  // Return sanitized title (or null if rejected) so callers don't propagate
+  // injected content via entry.title → _upsert → sessions.json
+  return store.stripInjectedTags(clean);
 }
 
 // ── thinkingStripped: true when prev non-subagent turn had thinking but current messages lost it ──

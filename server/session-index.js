@@ -216,7 +216,10 @@ function _upsert(sid, entry) {
       }
     }
   }
-  if (entry.title && !s.title) s.title = entry.title;
+  if (entry.title && !s.title) {
+    const { stripInjectedTags } = require('./store');
+    s.title = stripInjectedTags(entry.title) || null;
+  }
   const recvAt = entry.receivedAt || 0;
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
