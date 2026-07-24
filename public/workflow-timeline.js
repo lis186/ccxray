@@ -165,6 +165,37 @@ function wfCtxPct(e) {
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
 
+// #342: RENDER-time context%. A turn with no maxContext (imported turns never
+// carry one) is divided by its LANE's context window instead of the hardcoded
+// 200000 above — otherwise an imported main turn shows ctxUsed/200K while the
+// proxy main turns around it show ctxUsed/1M, i.e. the context% sawtooth.
+// INVARIANT: classification (wfInferLanes ~L505/L515) deliberately keeps the
+// plain wfCtxPct 200K default so lane decisions never shift with this render
+// fallback — only rendering reads the lane window. The turnId→laneWindow map is
+// memoized on wfState and invalidated on lane change (wfAddEntry) / rebuild
+// (fresh wfState). laneWindow = max maxContext among the lane's turns (the proxy
+// turns supply it); 0 when a lane is purely imported → falls back to 200000.
+function _wfWinByTurn() {
+  if (!wfState) return null;
+  if (wfState._winByTurn) return wfState._winByTurn;
+  var map = new Map();
+  var lanes = wfState.lanes || [];
+  for (var i = 0; i < lanes.length; i++) {
+    var turns = lanes[i].turns || [];
+    var laneWin = 0;
+    for (var j = 0; j < turns.length; j++) if ((turns[j].maxContext || 0) > laneWin) laneWin = turns[j].maxContext;
+    for (var k = 0; k < turns.length; k++) map.set(turns[k].id, laneWin);
+  }
+  wfState._winByTurn = map;
+  return map;
+}
+function wfCtxPctRender(e) {
+  var win = e.maxContext;
+  if (!win) { var m = _wfWinByTurn(); win = (m && m.get(e.id)) || 0; }
+  if (!win) win = 200000;
+  return Math.min(100, (e.ctxUsed || 0) / win * 100);
+}
+
 // #156: moved to format.js — kept as a thin wrapper (old signature took the turn, not pct).
 function wfCtxZoneColor(t) {
   return ctxZone(wfCtxPct(t)).hex;
@@ -180,7 +211,7 @@ function wfDetectEvents(t, prev) {
   else if ((t.status && !isHttpStatusOk(t.status)) || t.toolFail) evts.push('error');
   if (t.isCompacted) evts.push('compaction');
   if (inT > 1000 && (u.cache_read_input_tokens || 0) / inT < 0.5) evts.push('cache-miss');
-  if (wfCtxPct(t) >= 80 && (!prev || wfCtxPct(prev) < 80)) evts.push('ctx80');
+  if (wfCtxPctRender(t) >= 80 && (!prev || wfCtxPctRender(prev) < 80)) evts.push('ctx80');
   var tc = t.toolCalls || {};
   if (tc.Write || tc.Edit || tc.MultiEdit || tc.NotebookEdit) evts.push('file-write');
   if (t.hasCredential) evts.push('credential');
@@ -840,6 +871,7 @@ function _wfFollowTail(oldTMax) {
 // (entry-rendering.js pushes at its allEntries.push site, then calls here).
 function wfAddEntry(entry) {
   if (!wfState) return { lanesChanged: false };
+  wfState._winByTurn = null; // #342: lanes about to change — invalidate the render ctx-window memo
   var prevCount = wfState.lanes.length;
 
   var ts = Number(entry.receivedAt) || 0;
@@ -1130,7 +1162,7 @@ function wfLaneSummary(lane) {
   var peakCtx = 0, totalCacheR = 0, totalCacheAll = 0, totalCost = 0, totalIn = 0, totalOut = 0;
   for (var i = 0; i < turns.length; i++) {
     var t = turns[i];
-    var pct = wfCtxPct(t);
+    var pct = wfCtxPctRender(t);
     if (pct > peakCtx) peakCtx = pct;
     var cr = (t.usage?.cache_read_input_tokens || 0);
     var cc = (t.usage?.cache_creation_input_tokens || 0);
@@ -1358,7 +1390,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
     if (tend < wfState.viewT0 || ts > wfState.viewT1) continue;
     var tx = Math.max(WF_LABEL_W, xFn(ts));
     var tw = Math.max(WF_MIN_TURN_PX, xFn(tend) - tx);
-    var h = Math.max(2, Math.round(wfCtxPct(t) / 100 * WF_BAR_H));
+    var h = Math.max(2, Math.round(wfCtxPctRender(t) / 100 * WF_BAR_H));
     // Reserve 2px at top for severity marker so it never overlaps the ctx bar
     var hasSev = t.severity === 'critical' || t.severity === 'warning';
     if (hasSev) h = Math.min(h, WF_BAR_H - 2);
@@ -1925,7 +1957,7 @@ function wfRenderOverview(canvas) {
       var t = lanes[li].turns[ti];
       var ts = Number(t.receivedAt) || 0;
       var dur = (parseFloat(t.elapsed) || 0) * 1000;
-      ctx.fillStyle = ctxZone(wfCtxPct(t)).hex;
+      ctx.fillStyle = ctxZone(wfCtxPctRender(t)).hex;
       // 0.5 alpha sank into the dark bg (lesson: low-luminance signals drown)
       ctx.globalAlpha = isSel ? 0.9 : 0.65;
       ctx.fillRect(x(ts), ly, Math.max(1, (dur / totalRange) * MW), barH);
@@ -2272,7 +2304,7 @@ function _wfShowTooltip(e, t, lane) {
   var u = t.usage || {};
   var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
   var inT = (u.input_tokens || 0) + cr + cc;
-  var pct = wfCtxPct(t);
+  var pct = wfCtxPctRender(t);
   var cz = ctxZone(pct);
   var zone = cz.zone;
   var zoneCls = 'wf-tt-' + (zone === 'safe' ? 'good' : zone);
@@ -2604,7 +2636,7 @@ function wfRenderTurnCard(turnEntry) {
   var cacheRead = u.cache_read_input_tokens || 0;
   var cacheCreate = u.cache_creation_input_tokens || 0;
   var cachePct = inTok > 0 ? (cacheRead / inTok * 100).toFixed(1) : '0.0';
-  var pct = wfCtxPct(turnEntry);
+  var pct = wfCtxPctRender(turnEntry);
   var cz = ctxZone(pct);
   var dur = parseFloat(turnEntry.elapsed) || 0;
   var thinkDur = turnEntry.thinkingDuration || 0;
@@ -2728,7 +2760,7 @@ function _wfRenderHoverPreview(turn, lane) {
   var u = turn.usage || {};
   var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
   var outTok = u.output_tokens || 0;
-  var pct = wfCtxPct(turn);
+  var pct = wfCtxPctRender(turn);
   var cz = ctxZone(pct);
   var dur = parseFloat(turn.elapsed) || 0;
   var laneSummary = wfLaneSummary(lane);
@@ -2862,7 +2894,7 @@ function wfRenderSteps(scrollToId) {
     var isSel = wfState.selectedTurnId === t.id;
     var tools = Object.entries(t.toolCalls || {});
     var mc = wfModelColor(t.model);
-    var pct = wfCtxPct(t);
+    var pct = wfCtxPctRender(t);
     var u = t.usage || {};
     var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
     var cacheRate = (cr + cc) > 0 ? cr / (cr + cc) * 100 : 0;

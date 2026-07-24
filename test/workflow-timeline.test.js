@@ -150,6 +150,29 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfState.lanes[1].name, 'agent-explore');
   });
 
+  it('#342: wfCtxPctRender uses the lane window for imported turns lacking maxContext', () => {
+    const ctx = loadWfModule();
+    // Main lane: a 1M proxy turn + an imported turn with NO maxContext (importer
+    // never sets one). Both used 500K tokens.
+    const proxy = { id: 'p1', maxContext: 1000000, ctxUsed: 500000 };
+    const imported = { id: 'i1', ctxUsed: 500000 }; // imported: maxContext absent
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [proxy, imported] }] };
+
+    // Proxy turn: divided by its own 1M window → 50%.
+    assert.equal(Math.round(ctx.wfCtxPctRender(proxy)), 50);
+    // Imported turn: inherits the lane's 1M window → 50% (NOT 100% capped from
+    // the 200K default). This is the sawtooth fix.
+    assert.equal(Math.round(ctx.wfCtxPctRender(imported)), 50);
+
+    // Classification stays on the plain wfCtxPct 200K default (unchanged), so
+    // lane-inference decisions never shift with the render fallback.
+    assert.equal(Math.round(ctx.wfCtxPct(imported)), 100); // 500K/200K → capped 100
+
+    // A purely-imported lane (no proxy window signal) falls back to 200K.
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'x1', ctxUsed: 100000 }] }] };
+    assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', ctxUsed: 100000 })), 50); // 100K/200K
+  });
+
   it('convId splits parallel same-agent instances into separate lanes (#117)', () => {
     const ctx = loadWfModule();
     var entries = [
