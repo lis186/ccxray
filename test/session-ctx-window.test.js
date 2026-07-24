@@ -1,0 +1,114 @@
+'use strict';
+
+// #339: sessionCtxWindow folds a per-session context% denominator so all turns of one
+// session render against ONE window (no 1M/200K sawtooth). Classification keeps raw
+// per-turn maxContext — this fold is display-only. See
+// docs/decisions/0013-beta1m-persist-session-window-derive.md
+
+const { describe, it, beforeEach } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+const publicDir = path.join(__dirname, '..', 'public');
+
+function loadCtx() {
+  function el() {
+    return {
+      style: {}, dataset: {}, innerHTML: '', textContent: '',
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+      addEventListener() {}, appendChild() {}, insertBefore() {},
+      insertAdjacentHTML() {},
+      querySelector: () => el(), querySelectorAll: () => [],
+      remove() {},
+    };
+  }
+  const context = {
+    console, window: {},
+    document: {
+      getElementById: () => el(), createElement: () => el(),
+      querySelector: () => el(), querySelectorAll: () => [],
+      addEventListener() {}, body: el(),
+    },
+    localStorage: { getItem: () => null, setItem() {} },
+    sessionStorage: { getItem: () => null, setItem() {} },
+    navigator: {}, location: { search: '', hash: '' }, history: { replaceState() {} },
+    URLSearchParams, setTimeout, clearTimeout,
+  };
+  vm.createContext(context);
+  // Deliberately DO NOT define DEFAULT_MAX_CTX (app.js is not loaded) — this harness also
+  // proves sessionCtxWindow's guard: the win===0 fallback must not throw a ReferenceError.
+  vm.runInContext(`
+    function updateSysPromptBadge() {}
+    function startQuotaTicker() {}
+    function EventSource() { this.onmessage = null; }
+    window.ccxraySettings = { visibleProviders: [] };
+    function _apiQ(url) { return url; }
+    function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
+  `, context);
+  for (const f of ['format.js', 'session-label.js', 'miller-columns.js']) {
+    vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
+  }
+  // Bridge the const/let declarations (they don't attach to the context global) for test access.
+  vm.runInContext('this.allEntries = allEntries; this.sessionCtxWindow = sessionCtxWindow;', context);
+  return context;
+}
+
+function seed(ctx, turns) {
+  ctx.allEntries.length = 0;
+  for (const t of turns) ctx.allEntries.push(t);
+}
+
+describe('#339 sessionCtxWindow — per-session context% denominator fold', () => {
+  let ctx;
+  beforeEach(() => { ctx = loadCtx(); });
+
+  it('mixed-signal session: turn0 beta1m/1M, turns1-3 200K → all fold to ONE window (1M)', () => {
+    // The exact #339 bug shape: the beta1m header is not echoed on every turn, so raw
+    // per-turn maxContext is [1M, 200K, 200K, 200K] — the sawtooth. The fold collapses it.
+    seed(ctx, [
+      { sessionId: 's1', isSubagent: false, beta1m: true,  maxContext: 1000000 },
+      { sessionId: 's1', isSubagent: false, beta1m: false, maxContext: 200000 },
+      { sessionId: 's1', isSubagent: false, beta1m: false, maxContext: 200000 },
+      { sessionId: 's1', isSubagent: false, beta1m: false, maxContext: 200000 },
+    ]);
+    // Raw per-turn windows are mixed (the bug): 2 distinct values.
+    const rawWindows = new Set(ctx.allEntries.map(e => e.maxContext));
+    assert.equal(rawWindows.size, 2, 'raw per-turn maxContext is mixed (bug present in the data)');
+    // The fold returns one consistent window for every turn of the session.
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+  });
+
+  it('legacy heal (no beta1m persisted): a lone 1M fossil promotes the whole session', () => {
+    // Legacy turns predate beta1m persistence. One turn whose usage crossed 200K carries a
+    // 1M maxContext fossil; the fold uses it so the session still reads 1M.
+    seed(ctx, [
+      { sessionId: 's2', isSubagent: false, maxContext: 200000 },
+      { sessionId: 's2', isSubagent: false, maxContext: 1000000 },
+      { sessionId: 's2', isSubagent: false, maxContext: 200000 },
+    ]);
+    assert.equal(ctx.sessionCtxWindow('s2'), 1000000);
+  });
+
+  it('#211 over-latch guard: a true 200K session with no 1M signal stays 200K', () => {
+    seed(ctx, [
+      { sessionId: 's3', isSubagent: false, beta1m: false, maxContext: 200000 },
+      { sessionId: 's3', isSubagent: false, beta1m: false, maxContext: 200000 },
+    ]);
+    assert.equal(ctx.sessionCtxWindow('s3'), 200000);
+  });
+
+  it('subagents are excluded: a subagent beta1m turn does not promote the main window', () => {
+    seed(ctx, [
+      { sessionId: 's4', isSubagent: false, beta1m: false, maxContext: 200000 },
+      { sessionId: 's4', isSubagent: true,  beta1m: true,  maxContext: 1000000 },
+    ]);
+    assert.equal(ctx.sessionCtxWindow('s4'), 200000);
+  });
+
+  it('guard does not throw when DEFAULT_MAX_CTX is absent and there is no main turn (win===0)', () => {
+    seed(ctx, [{ sessionId: 's5', isSubagent: true, maxContext: 1000000 }]);
+    assert.equal(ctx.sessionCtxWindow('s5'), 200000); // typeof guard → literal 200000 fallback
+  });
+});

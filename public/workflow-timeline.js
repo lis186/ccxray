@@ -190,8 +190,16 @@ function _wfWinByTurn() {
   var lanes = wfState.lanes || [];
   for (var i = 0; i < lanes.length; i++) {
     var turns = lanes[i].turns || [];
-    var laneWin = 0;
-    for (var j = 0; j < turns.length; j++) if ((turns[j].maxContext || 0) > laneWin) laneWin = turns[j].maxContext;
+    // #339: prefer the authoritative 1M signal (beta1m, server-gated on SUPPORTS_1M) over the
+    // maxContext fossil. A lane where any turn ran 1M is a 1M lane even if no single turn's
+    // usage crossed 200K to bump its own maxContext — closing the last window of sawtooth the
+    // fossil-only fold (#342) still left. Fossil is the fallback for legacy turns with no beta1m.
+    var laneWin = 0, has1m = false;
+    for (var j = 0; j < turns.length; j++) {
+      if (turns[j].beta1m === true) has1m = true;
+      if ((turns[j].maxContext || 0) > laneWin) laneWin = turns[j].maxContext;
+    }
+    if (has1m) laneWin = 1000000;
     for (var k = 0; k < turns.length; k++) map.set(turns[k].id, laneWin);
   }
   wfState._winByTurn = map;

@@ -558,11 +558,15 @@ function addEntry(e) {
 
   // Update session context alert badge + cache stats for main turns
   if (!isSubagent && ctxUsed > 0) {
-    sess.latestMainCtxPct = Math.min(100, ctxUsed / (e.maxContext || DEFAULT_MAX_CTX) * 100);
+    // #339: store the RAW numerator (ctxUsed) only. The per-session context% denominator
+    // (sessionCtxWindow) is folded at RENDER time in renderSessionItem, never baked here —
+    // so it cannot go stale when a later turn's beta1m grows the session window (the
+    // reverted sess.maxWindow staleness, 8b6789f). Classification/severity keeps raw
+    // per-turn maxContext (below), unchanged.
+    sess.latestMainCtxUsed = ctxUsed;
     sess.latestCacheReadTokens = ctxCacheRead;
     const ctxInputTotal = ctxCacheRead + ctxCacheCreate + (usage ? (usage.input_tokens || 0) : 0);
     sess.latestCacheHitRatio = ctxInputTotal > 0 ? ctxCacheRead / ctxInputTotal : 0;
-    sess.latestMaxContext = e.maxContext || DEFAULT_MAX_CTX;
     if (!window._coldActivating) {
       const sessElCtx = document.getElementById('sess-' + sid.slice(0, 8));
       if (sessElCtx) sessElCtx.innerHTML = renderSessionItem(sess, sid, sessElCtx);
@@ -623,6 +627,9 @@ function addEntry(e) {
   const severity = classifySeverity({ ...e, stopReason }, _ctxPct, _dupesMax);
 
   allEntries.push({
+    // #339: beta1m rides the client entry so sessionCtxWindow() + the swimlane lane fold
+    // can derive a per-session 1M denominator. Only true carries meaning (monotone OR).
+    beta1m: e.beta1m === true,
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, sessionId: sid,
     severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
