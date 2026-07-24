@@ -9,6 +9,13 @@ const INDEX_FIELDS = [
   'imported','importSource',
   // Dedup key for read-time merge (#333) — see docs/decisions/0012-response-id-read-time-merge.md
   'responseId',
+  // INVARIANT: authoritative 1M-window signal — the non-lagging anthropic-beta
+  // `context-1m-*` request header (#339). Persisted so restore/cold-load can
+  // derive a per-session consistent context% denominator (sessionWindow) instead
+  // of re-inferring from incomplete facts. Written only when true (absent = no
+  // positive signal; monotone OR-fold). Classification keeps raw per-turn
+  // maxContext — never derived from this. See docs/decisions/0013-beta1m-persist-session-window-derive.md
+  'beta1m',
 ];
 
 function buildIndexLine(entry) {

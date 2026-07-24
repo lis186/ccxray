@@ -97,6 +97,10 @@ function buildEntryFields(ctx) {
     usage,
     cost: calculateCost(usage, model),
     maxContext: config.inferMaxContext(model, parsedBody?.system, usage, { beta1m: ctx.beta1m }),
+    // #339: persist the authoritative 1M signal (not just its effect on maxContext) so
+    // restore/cold-load can derive a per-session context% denominator. Only when true —
+    // absent = no positive signal (monotone OR-fold). See docs/decisions/0013-*.
+    beta1m: ctx.beta1m === true ? true : undefined,
     responseMetadata: undefined,
     stopReason: ctx.stopReason || '',
     title: ctx.title || null,

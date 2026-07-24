@@ -110,6 +110,31 @@ test('anthropic Skill message → buildEntryFields → buildIndexLine persists c
   assert.deepEqual(back.skillCalls, { 'code-review': 1 });
 });
 
+test('#339: anthropic beta1m persists to index line only when true (add-only, monotone signal)', () => {
+  // The authoritative 1M-window header must survive to disk so restore/cold-load can
+  // derive a per-session context% denominator instead of re-inferring from incomplete
+  // facts. Fail-on-old: before #339, buildEntryFields consumed ctx.beta1m (fed
+  // inferMaxContext) but never returned it, so back.beta1m was undefined here.
+  assert.ok(INDEX_FIELDS.includes('beta1m'), 'beta1m is an index field');
+  const base = {
+    provider: 'anthropic', transport: 'sse',
+    parsedBody: { model: 'claude-opus-4-6', system: [{ type: 'text', text: 'x' }], messages: [{ role: 'user', content: 'go' }] },
+    proxyRes: { statusCode: 200 }, usage: { input_tokens: 79000, output_tokens: 10 },
+    sessionId: 's1', sessionInferred: false, stopReason: 'end_turn',
+  };
+  const withHeader = getParser('anthropic').buildEntryFields({ ...base, beta1m: true });
+  assert.equal(withHeader.beta1m, true, 'beta1m returned on the entry when the header was present');
+  const backTrue = JSON.parse(buildIndexLine({ id: 'A', ts: 't', status: 200, isSSE: true, receivedAt: 1, ...withHeader }));
+  assert.equal(backTrue.beta1m, true, 'beta1m persisted to the index line');
+
+  // Absent header → no beta1m key on the line (monotone OR-fold treats absent as no signal;
+  // avoids a false:… field on every 200K turn).
+  const noHeader = getParser('anthropic').buildEntryFields({ ...base, beta1m: false });
+  assert.equal(noHeader.beta1m, undefined, 'no beta1m field when header absent/false');
+  const backNone = JSON.parse(buildIndexLine({ id: 'B', ts: 't', status: 200, isSSE: true, receivedAt: 1, ...noHeader }));
+  assert.ok(!('beta1m' in backNone), 'index line carries no beta1m key when the header was absent');
+});
+
 test('anthropic convId: stable across turns of one conversation, distinct across instances, null for no text', () => {
   const base = { provider: 'anthropic', transport: 'sse', proxyRes: { statusCode: 200 }, usage: { input_tokens: 1, output_tokens: 1 }, sessionId: 's1' };
   const mk = (messages) => getParser('anthropic').buildEntryFields({ ...base, parsedBody: { model: 'claude-sonnet-4-6', messages } });
