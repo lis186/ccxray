@@ -175,6 +175,10 @@ function wfCtxPct(e) {
 // memoized on wfState and invalidated on lane change (wfAddEntry) / rebuild
 // (fresh wfState). laneWindow = max maxContext among the lane's turns (the proxy
 // turns supply it); 0 when a lane is purely imported → falls back to 200000.
+// Known limit (accepted): in a rare mixed-window lane an imported turn inherits
+// the lane MAX, so its ctx% is under-reported and a `ctx80` badge could be
+// suppressed. There is no per-imported-turn window to do better client-side, and
+// under-warning is the safe failure — not worth per-model inference here.
 function _wfWinByTurn() {
   if (!wfState) return null;
   if (wfState._winByTurn) return wfState._winByTurn;

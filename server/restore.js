@@ -533,7 +533,10 @@ async function pruneLogs() {
   // Skip prune entirely so files survive for `ccxray rebuild-index`.
   // #345: stream — the index can exceed Node's 512MB single-string limit.
   let hasAnyIndexLine = false;
-  for await (const _line of config.storage.readIndexLines()) { hasAnyIndexLine = true; break; }
+  // Require a non-whitespace line (matches the old `idx.trim()` guard):
+  // readIndexLines only skips empty strings, so a whitespace-only index would
+  // otherwise pass here and let prune delete logs with no usable metadata.
+  for await (const line of config.storage.readIndexLines()) { if (line.trim()) { hasAnyIndexLine = true; break; } }
   if (!hasAnyIndexLine) {
     console.log('\x1b[33m[ccxray] Skipping prune: index.ndjson empty/missing — star protection cannot be computed.\x1b[0m');
     return;
@@ -573,7 +576,6 @@ async function pruneLogs() {
   try { files = await config.storage.list(); } catch { return; }
 
   let deleted = 0, kept = 0;
-  const deletedIds = new Set();
   for (const filename of files) {
     const m = filename.match(/^(\d{4}-\d{2}-\d{2}T.*?)_(req\.received|req|res)\.json$/);
     if (!m) continue;
@@ -582,7 +584,6 @@ async function pruneLogs() {
     try {
       await config.storage.deleteFile(filename);
       deleted++;
-      deletedIds.add(m[1]);
     } catch {}
   }
 
@@ -599,12 +600,40 @@ async function pruneLogs() {
   // drops — early-exit with NO rewrite (and no index-mtime bump) when nothing is
   // droppable, (3) stream survivors to a temp file, then rename + rebuild.
   if (!config.storage.location) return; // non-local backend: no atomic index rewrite
+  const indexPath = path.join(config.storage.location, 'index.ndjson');
+
+  // #344 concurrency (codex): pruneLogs runs after the server is listening, so a
+  // live turn can appendIndex() while we read + rewrite; fs.appendFile writes on
+  // the libuv threadpool, so a stat-based CAS alone cannot close the race. Hold
+  // the storage exclusive lock across the whole read+rewrite: beginExclusive()
+  // first (new appends queue on the gate), THEN drain() (flush appends already
+  // dispatched before the gate). After that no append is in flight and none can
+  // start until release() → the intra-process race is closed. (Raw test adapter
+  // has neither method → guarded.)
+  const releaseExclusive = config.storage.beginExclusive ? config.storage.beginExclusive() : null;
   try {
+    if (config.storage.drain) await config.storage.drain();
+
+    // Belt-and-suspenders for a SECOND ccxray writing the same shared index (the
+    // #333 multi-instance case, which the in-process lock can't cover): snapshot
+    // size/mtime before the read and re-check right before the sync rename; abort
+    // if it changed (next startup retries; the line's files survive on disk and
+    // are recoverable via `ccxray rebuild-index`).
+    let statBefore;
+    try { statBefore = fs.statSync(indexPath); } catch { statBefore = null; }
+
+    // Re-list AFTER deletion so survivingReqIds reflects the _req.json files
+    // actually on disk. deletedIds would be keyed on ANY artifact, so a _res
+    // delete that succeeded while its _req delete FAILED must not drop a
+    // still-loadable line — the authoritative signal is the file itself (M6). If
+    // the re-list fails we can't compute survivors safely → skip the rewrite
+    // rather than risk dropping loadable lines or retaining ghosts.
+    let filesNow;
+    try { filesNow = await config.storage.list(); } catch { return; }
     const survivingReqIds = new Set();
-    for (const filename of files) {
+    for (const filename of filesNow) {
       if (filename.endsWith('_req.json') && !filename.endsWith('_req.received.json')) {
-        const id = filename.slice(0, -'_req.json'.length);
-        if (!deletedIds.has(id)) survivingReqIds.add(id);
+        survivingReqIds.add(filename.slice(0, -'_req.json'.length));
       }
     }
 
@@ -629,8 +658,8 @@ async function pruneLogs() {
     if (dropped === 0) return;
 
     // Pass 3: stream survivors to a temp file (verbatim lines), collecting metas
-    // for the session rebuild. Atomic rename commits.
-    const indexPath = path.join(config.storage.location, 'index.ndjson');
+    // for the session rebuild. mode 0600 so the rename doesn't downgrade the
+    // index from 0600 to 0644 (log metadata is sensitive).
     const tmpPath = `${indexPath}.prune-${process.pid}.tmp`;
     const survivorMetas = [];
     async function* survivorLines() {
@@ -641,17 +670,42 @@ async function pruneLogs() {
         yield line + '\n';
       }
     }
-    await pipeline(survivorLines(), fs.createWriteStream(tmpPath));
+    await pipeline(survivorLines(), fs.createWriteStream(tmpPath, { mode: 0o600 }));
+
+    // CAS commit: statSync then renameSync, both synchronous, no await between.
+    let statNow;
+    try { statNow = fs.statSync(indexPath); } catch { statNow = null; }
+    if (!statBefore || !statNow || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      console.log('\x1b[33m[ccxray] index changed during prune — skipping rewrite (will retry next startup)\x1b[0m');
+      return;
+    }
+    try { fs.chmodSync(tmpPath, 0o600); } catch {} // guarantee 0600 even if a stale tmp pre-existed
     fs.renameSync(tmpPath, indexPath);
 
     // INVARIANT: index.ndjson is the source of truth for sessions.json — rebuild
     // from the surviving metas so card counts/costs match the pruned index
     // (dedup-by-responseId preserved) — @docs/decisions/0012-response-id-read-time-merge.md
     sessionIdx.rebuildFromMetas(survivorMetas);
+    // Replay in-memory session titles the same way restoreFromLogs does — the
+    // rebuild only carries titles present on surviving index lines, so a
+    // generated title held only in store.sessionMeta would otherwise be lost (M4).
+    for (const [sid, meta] of Object.entries(store.sessionMeta)) {
+      if (meta.title) sessionIdx.setTitle(sid, meta.title);
+    }
+    if (sessionIdx.size() === 0) {
+      // Everything pruned: the map is empty and flush() no-ops on an empty map,
+      // which would leave a stale sessions.json contradicting the emptied index.
+      // Remove it so the next load rebuilds from the (empty) index (M5).
+      try { fs.unlinkSync(path.join(config.LOGS_DIR, 'sessions.json')); } catch {}
+    }
     await sessionIdx.flush();
     console.log(`\x1b[90m   Pruned ${dropped} orphaned index line(s); session index rebuilt (${sessionIdx.size()} sessions)\x1b[0m`);
   } catch (err) {
     console.error('[ccxray] index prune failed:', err.message);
+  } finally {
+    // Always release — otherwise every subsequent appendIndex() deadlocks on the gate.
+    if (releaseExclusive) releaseExclusive();
   }
 }
 

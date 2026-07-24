@@ -21,12 +21,44 @@ function withWriteTracking(adapter) {
     promise.then(cleanup, cleanup);
     return promise;
   };
+  // #344: exclusive index lock. While pruneLogs rewrites index.ndjson it holds
+  // exclusivity; appendIndex() awaits it so a concurrent append can never land
+  // between the rewrite's read and its atomic rename (which would drop the line).
+  // Order at the prune site: beginExclusive() (new appends start queuing) →
+  // drain() (flush appends already dispatched to the fs threadpool) → rewrite →
+  // release(). This closes the intra-process race that a stat-based CAS cannot
+  // (fs.appendFile writes on the libuv threadpool, truly concurrent with a
+  // synchronous rename). Cross-process writers to a shared index are out of
+  // scope (the #333 multi-instance case), same as the file-delete pass.
+  let exclusive = null;
+  const awaitExclusive = async () => { while (exclusive) await exclusive; };
   return {
     ...adapter,
     write: (id, suffix, data) => track(adapter.write(id, suffix, data)),
-    appendIndex: (line) => track(adapter.appendIndex(line)),
+    // Fast path (no lock held — the overwhelming common case): dispatch AND
+    // track synchronously, so `appendIndex(); await drain()` sees the write in
+    // `pending` (an unconditional async await would delay track() past a drain).
+    // Locked path (only while pruneLogs rewrites): park until release, THEN
+    // track the write. track() is never on the gate-wait itself — otherwise
+    // prune's own drain() (right after beginExclusive) would await an append
+    // parked on the gate it holds → deadlock. The trade: a parked append isn't
+    // in `pending`, so a shutdown landing inside the brief startup-prune window
+    // won't drain it — rare, and the turn's _req/_res are still on disk
+    // (recoverable via `ccxray rebuild-index`).
+    appendIndex: (line) => {
+      if (!exclusive) return track(adapter.appendIndex(line));
+      return (async () => { await awaitExclusive(); return track(adapter.appendIndex(line)); })();
+    },
     writeSharedIfAbsent: (filename, data) => track(adapter.writeSharedIfAbsent(filename, data)),
     deleteFile: (filename) => track(adapter.deleteFile(filename)),
+    // Acquire exclusive index access; returns a release fn. Caller MUST release
+    // (finally) or appends deadlock. Single-holder by contract (only pruneLogs).
+    beginExclusive: () => {
+      let release;
+      const p = new Promise((res) => { release = res; });
+      exclusive = p;
+      return () => { if (exclusive === p) exclusive = null; release(); };
+    },
     drain: async () => {
       while (pending.size > 0) {
         await Promise.allSettled([...pending]);

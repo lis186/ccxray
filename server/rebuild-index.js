@@ -63,8 +63,14 @@ function promptIdentity(system) {
 // aware), never building a single >512MB string via Array.join.
 function writeLinesToFile(filePath, objs) {
   return new Promise((resolve, reject) => {
-    const ws = fs.createWriteStream(filePath);
+    // mode 0600: the rebuilt index replaces a 0600 file; default 0666&~umask
+    // would downgrade it to 0644 and expose log metadata (codex m10).
+    const ws = fs.createWriteStream(filePath, { mode: 0o600 });
     ws.on('error', reject);
+    // Resolve only on 'close' — the fd is closed by then, so a close-time error
+    // (which emits 'error' first → reject wins) can't arrive after we settle and
+    // the caller renames (codex B1 + round-2 minor).
+    ws.on('close', resolve);
     let i = 0;
     (function pump() {
       while (i < objs.length) {
@@ -72,7 +78,7 @@ function writeLinesToFile(filePath, objs) {
         i++;
         if (!ok) { ws.once('drain', pump); return; }
       }
-      ws.end(resolve);
+      ws.end();
     })();
   });
 }
@@ -227,9 +233,6 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
   let enrichedResponseIds = 0;  // #333 legacy backfill count
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
-  // Reconstruction cache shared by the existing-line identity backfill (#342)
-  // and the orphan reconstruction pass below (delta ancestors are reused).
-  const cache = new Map();
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -266,15 +269,24 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // SAME function the live pipeline uses, so the recovered key matches exactly.
     if (m.convId === undefined && m.provider !== 'openai') {
       try {
-        const r = await reconstructReq(m.id, storage, cache);
+        // Fresh cache per line: reconstructReq stores a messages-only entry per
+        // id, so any shared cache can hand THIS leaf a messages-only ancestor
+        // entry (losing system → null coreHash/agentKey) when index lines are
+        // physically out of id order (codex round-3). Per-line isolation keeps
+        // every backfill leaf a full reconstruction; legacy lines are few.
+        const r = await reconstructReq(m.id, storage, new Map());
         const pb = r && r.parsedBody;
         if (pb && Array.isArray(pb.messages)) {
           const identity = promptIdentity(pb.system);
-          m.convId = getParser('anthropic').computeConvId(pb); // may be null
-          if (m.coreHash == null && identity.coreHash) m.coreHash = identity.coreHash;
-          if (m.agentKey == null && identity.agentKey) { m.agentKey = identity.agentKey; m.agentLabel = identity.agentLabel; }
-          if (m.msgCount == null) m.msgCount = pb.messages.length;
-          if (m.isSubagent == null) m.isSubagent = store.isAnthropicSubagent(pb);
+          // Strict add-only: `=== undefined` (key ABSENT) only — never overwrite
+          // a persisted null (a legitimately-computed empty value) with a fresh
+          // computation (#48 never-degrade). Each field gated independently.
+          if (m.convId === undefined) m.convId = getParser('anthropic').computeConvId(pb); // may be null
+          if (m.coreHash === undefined && identity.coreHash) m.coreHash = identity.coreHash;
+          if (m.agentKey === undefined && identity.agentKey) m.agentKey = identity.agentKey;
+          if (m.agentLabel === undefined && identity.agentLabel) m.agentLabel = identity.agentLabel;
+          if (m.msgCount === undefined) m.msgCount = pb.messages.length;
+          if (m.isSubagent === undefined) m.isSubagent = store.isAnthropicSubagent(pb);
           outLine = JSON.stringify(m);
           enrichedIdentity++;
         }
@@ -297,6 +309,9 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
 
   // ── 3. Pass 1: reconstruct every orphan body; extend the explicit timeline. ──
   // (Only Anthropic turns survive reconstructReq; non-Anthropic/WS are skipped.)
+  // Own cache (not the #342 backfillCache) so orphan leaves are always projected
+  // from a full reconstruction, never a messages-only ancestor entry.
+  const cache = new Map();
   const recon = []; // { id, parsedBody, explicitSid, prevId }
   let unrecoverable = 0;
   for (const id of orphanIds) {
@@ -443,6 +458,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   // ERR_STRING_TOO_LONG once the combined index passes ~512MB. (The lines are
   // still held in memory to sort; a manual recovery CLI can afford that.)
   await writeLinesToFile(tmpPath, merged);
+  try { fs.chmodSync(tmpPath, 0o600); } catch {} // guarantee 0600 even if a stale tmp pre-existed
   fs.renameSync(tmpPath, indexPath);
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
   return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };

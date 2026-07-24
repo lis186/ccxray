@@ -108,15 +108,20 @@ function createLocalStorage(logsDir, opts = {}) {
     readIndexLines() {
       const p = indexPath;
       return (async function* () {
-        if (!fs.existsSync(p)) return;
-        const rl = readline.createInterface({
-          input: fs.createReadStream(p, { encoding: 'utf8' }),
-          crlfDelay: Infinity,
-        });
+        // Open directly (no existsSync → no TOCTOU): a missing file surfaces as
+        // an ENOENT 'error' on the stream, which we swallow to honor the
+        // "missing index → empty iteration" contract. Other read errors propagate.
+        const input = fs.createReadStream(p, { encoding: 'utf8' });
+        const rl = readline.createInterface({ input, crlfDelay: Infinity });
         try {
           for await (const line of rl) if (line) yield line;
+        } catch (e) {
+          if (!e || e.code !== 'ENOENT') throw e;
         } finally {
+          // Close BOTH: rl.close() alone leaves the underlying fd open when a
+          // consumer breaks early (cold-load returns mid-iteration) → fd leak.
           rl.close();
+          input.destroy();
         }
       })();
     },
