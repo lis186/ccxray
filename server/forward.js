@@ -540,7 +540,7 @@ function forwardRequest(ctx) {
     // Late socket errors (EPIPE / ECONNRESET after response received) may not
     // re-emit on the ClientRequest. Listener prevents uncaught-exception crash.
     // Deferred check avoids duplicate logging when proxyReq 'error' already fired.
-    // ponytail: WeakSet guards against stacking listeners on keep-alive sockets
+    // Keep-alive sockets are reused across requests; guard prevents stacking listeners
     proxyReq.on('socket', (socket) => {
       if (_socketErrorGuard.has(socket)) return;
       _socketErrorGuard.add(socket);

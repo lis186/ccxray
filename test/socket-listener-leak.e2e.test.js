@@ -80,6 +80,7 @@ describe('keep-alive socket listener leak', () => {
 
     await waitForPort(proxyPort);
 
+    // 15 > Node's default maxListeners (10) — triggers the warning on unfixed code
     const agent = new http.Agent({ keepAlive: true });
     for (let i = 0; i < 15; i++) {
       await new Promise((resolve, reject) => {
