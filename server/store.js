@@ -2,6 +2,7 @@
 
 const { agentForProvider, getUpstreamProfile } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
+const sessionIdx = require('./session-index');
 
 // Synthetic session buckets that have no resumable rollout/session file.
 const NON_RESUMABLE_SESSIONS = new Set(['direct-api', 'codex-raw', 'unknown']);
@@ -293,6 +294,20 @@ let sessionCounter = 0;
 // and a hub restart clears map and sockets together — no staleness path.
 const socketSessions = new WeakMap();
 
+// ── Strip injected XML tags from user-facing text ──────────────────
+// Covers canonical tags from shared/injected-tags.js + command envelope tags.
+// antm?l: handles both the wire-protocol "antml:" and the common "antl:" typo.
+const _INJ_TAGS = 'system-reminder|command-message|command-name|command-args|user-prompt-submit-hook|context|antm?l:function_calls|antm?l:thinking';
+const _INJECTED_PAIR_RE = new RegExp('<(' + _INJ_TAGS + ')[^>]*>[\\s\\S]*?<\\/\\1>', 'g');
+// ponytail: unclosed tag → strip from opening tag to end of string
+const _INJECTED_OPEN_RE = new RegExp('<(?:' + _INJ_TAGS + ')[^>]*>[\\s\\S]*$', 'g');
+const _INJECTED_BARE_RE = new RegExp('</?(?:' + _INJ_TAGS + ')[^>]*>', 'g');
+function stripInjectedTags(text) {
+  if (text == null || typeof text !== 'string') return null;
+  const cleaned = text.replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_OPEN_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
+  return cleaned || null;
+}
+
 // ── Session metadata (cwd per session) ──────────────────────────────
 const sessionMeta = {}; // { sessionId: { cwd, lastSeenAt } }
 const activeRequests = {}; // sessionId → in-flight count
@@ -406,21 +421,36 @@ function recordFirstUserMsg(sid, req) {
     const txt = extractFirstUserMsgText(req);
     if (txt != null) meta.firstUserMsg = txt;
   }
+  if (meta.firstPrompt == null) {
+    const clean = stripInjectedTags(meta.firstUserMsg);
+    if (clean) {
+      meta.firstPrompt = clean.slice(0, 200);
+      sessionIdx.setFirstPrompt(sid, meta.firstPrompt);
+    }
+  }
 }
 
 // Monotonic session-title setter. Returns true when the stored value changed.
 function setSessionTitle(sid, title, reqTs) {
   if (!sid || !title || typeof title !== 'string') return false;
+  const cleaned = stripInjectedTags(title);
+  if (!cleaned) return false;
+  title = cleaned;
   const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
   if (meta.titleReqTs && reqTs != null && reqTs <= meta.titleReqTs) return false;
   if (meta.title === title) { meta.titleReqTs = reqTs || meta.titleReqTs; return false; }
   meta.title = title;
   meta.titleReqTs = reqTs || Date.now();
+  if (meta.firstPrompt) sessionIdx.setFirstPrompt(sid, meta.firstPrompt);
   return true;
 }
 
 function getSessionTitle(sid) {
   return sid ? (sessionMeta[sid]?.title || null) : null;
+}
+
+function getSessionFirstPrompt(sid) {
+  return sid ? (sessionMeta[sid]?.firstPrompt || null) : null;
 }
 
 // Attribute a title-gen request to a parent session. Requires both temporal
@@ -655,8 +685,10 @@ module.exports = {
   printSessionBanner,
   extractFirstUserMsgText,
   recordFirstUserMsg,
+  stripInjectedTags,
   setSessionTitle,
   getSessionTitle,
+  getSessionFirstPrompt,
   attributeTitleGen,
   propagateLoadedSkills,
   markSessionUsage,

@@ -63,6 +63,7 @@ function summarizeEntry(entry) {
     thinkingStripped: entry.thinkingStripped || false,
     imported: entry.imported || undefined,
     importSource: entry.importSource || undefined,
+    firstPrompt: store.getSessionFirstPrompt(entry.sessionId) || null,
     parentSessionId: store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,
@@ -114,9 +115,10 @@ const titleDebounceTimers = new Map();
 function flushSessionTitleUpdate(sessionId) {
   titleDebounceTimers.delete(sessionId);
   const title = store.getSessionTitle(sessionId);
-  if (!title) return;
+  const firstPrompt = store.getSessionFirstPrompt(sessionId);
+  if (!title && !firstPrompt) return;
   const titleReqTs = store.sessionMeta[sessionId]?.titleReqTs || null;
-  _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs }));
+  _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs, firstPrompt }));
 }
 
 function broadcastSessionTitleUpdate(sessionId, { immediate = false } = {}) {

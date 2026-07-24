@@ -175,7 +175,7 @@ function updateFromEntry(entry) {
 function _upsert(sid, entry) {
   let s = sessionIndex.get(sid);
   if (!s) {
-    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, lastReceivedAt: 0, provider: null, agent: null };
+    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, firstPrompt: null, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
   // #333: bump COUNT once per responseId so the session card shows merged turns,
@@ -216,7 +216,10 @@ function _upsert(sid, entry) {
       }
     }
   }
-  if (entry.title && !s.title) s.title = entry.title;
+  if (entry.title && !s.title) {
+    const { stripInjectedTags } = require('./store');
+    s.title = stripInjectedTags(entry.title) || null;
+  }
   const recvAt = entry.receivedAt || 0;
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
@@ -229,6 +232,11 @@ function _upsert(sid, entry) {
 function setTitle(sid, title) {
   const s = sessionIndex.get(sid);
   if (s && title) { s.title = title; _scheduleDirtyFlush(); }
+}
+
+function setFirstPrompt(sid, text) {
+  const s = sessionIndex.get(sid);
+  if (s && text && !s.firstPrompt) { s.firstPrompt = text; _scheduleDirtyFlush(); }
 }
 
 function _scheduleDirtyFlush() {
@@ -268,5 +276,5 @@ module.exports = {
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas,
-  updateFromEntry, setTitle, flush, getAll, size,
+  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, size,
 };

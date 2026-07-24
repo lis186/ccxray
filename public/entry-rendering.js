@@ -423,6 +423,7 @@ function addEntry(e) {
     sess.cwd = entryCwd;
   }
   if (model && model !== '?') sess.model = model;
+  if (e.firstPrompt && !sess.firstPrompt) sess.firstPrompt = e.firstPrompt;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
   // Prefer the server-detected agent identity (from system-prompt content,
@@ -819,13 +820,14 @@ function mergeColdSessions(sessions) {
     if (sessionsMap.has(s.sid)) {
       var existing = sessionsMap.get(s.sid);
       if (!existing.title && s.title) existing.title = s.title;
+      if (!existing.firstPrompt && s.firstPrompt) existing.firstPrompt = s.firstPrompt;
       continue;
     }
     sessionsMap.set(s.sid, {
       id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
       count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
       model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
-      title: s.title || null, titleReqTs: 0, lastAssistantText: null,
+      title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
       latestCacheHitRatio: 0, latestCacheReadTokens: 0,
       resumeCommand: null, parentSessionId: null,
@@ -959,13 +961,23 @@ evtSource.onmessage = (ev) => {
     } else if (data._type === 'session_title_update') {
       const sid = data.sessionId;
       const sess = sessionsMap.get(sid);
-      const nextTs = data.titleReqTs || 0;
-      if (sess && data.title && nextTs >= (sess.titleReqTs || 0)) {
-        sess.title = data.title;
-        sess.titleReqTs = nextTs;
-        const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
-        if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
+      if (sess) {
+        const nextTs = data.titleReqTs || 0;
+        let changed = false;
+        if (data.title && nextTs >= (sess.titleReqTs || 0)) {
+          sess.title = data.title;
+          sess.titleReqTs = nextTs;
+          changed = true;
+        }
+        if (data.firstPrompt && !sess.firstPrompt) {
+          sess.firstPrompt = data.firstPrompt;
+          changed = true;
+        }
+        if (changed) {
+          const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+          if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
+          if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
+        }
       }
     } else if (data._type === 'entry_update') {
       _patchEntryInPlace(data);
