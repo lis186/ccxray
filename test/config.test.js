@@ -688,6 +688,22 @@ describe('getMaxContext / inferMaxContext — context-1m beta header (#58)', () 
     assert.equal(getMaxContext('claude-3-opus', null, { beta1m: true }), 200_000);
   });
 
+  it('#339: beta1mIndicates1M is the single source of the beta1m→1M gate (parity with getMaxContext)', () => {
+    const { beta1mIndicates1M } = require('../server/config');
+    const sysOpus48 = [{ type: 'text', text: 'The exact model ID is claude-opus-4-8.' }];
+    // The persisted `beta1m` fact (wire-parsers/anthropic.js) must agree with getMaxContext's
+    // own beta1m branch — including the edge codex flagged: model ABSENT but system identity
+    // is 1M-capable (getMaxContext resolves it via extractModelFromSystem; the old model-only
+    // gate dropped beta1m there).
+    for (const [model, sys] of [['claude-opus-4-8', null], ['claude-haiku-4-5', null], ['', sysOpus48], ['', null]]) {
+      const gate = beta1mIndicates1M(model, sys, true);
+      const gmc = getMaxContext(model, sys, { beta1m: true }) === 1_000_000;
+      assert.equal(gate, gmc, `beta1m gate parity for model="${model}" sys=${!!sys}`);
+    }
+    assert.equal(beta1mIndicates1M('claude-opus-4-8', null, false), false, 'beta1m=false is never a 1M signal');
+    assert.equal(beta1mIndicates1M('', sysOpus48, true), true, 'absent model + 1M system identity resolves 1M (gap closed)');
+  });
+
   it('GUARD: no signal at all stays at base (no false 1M)', () => {
     assert.equal(getMaxContext('claude-opus-4-8', null), 200_000);
     assert.equal(getMaxContext('claude-opus-4-8', null, {}), 200_000);

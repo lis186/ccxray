@@ -254,6 +254,16 @@ function extractModelFromSystem(system) {
   return null;
 }
 
+// #339: does the beta1m header authoritatively make this turn a 1M window? The single
+// source of truth for the beta1m→1M gate, so the persisted `beta1m` fact
+// (wire-parsers/anthropic.js) can never disagree with getMaxContext's own beta1m branch
+// below. Identity resolves model || system-marker, exactly like getMaxContext.
+function beta1mIndicates1M(model, system, beta1m) {
+  if (beta1m !== true) return false;
+  const stripped = (model || extractModelFromSystem(system) || '').replace(/\[.*\]/, '');
+  return SUPPORTS_1M.test(stripped);
+}
+
 function getMaxContext(model, system, opts = {}) {
   // Model IDENTITY comes from the request `model` field — it updates immediately
   // on a mid-session model switch. The system marker is only a fallback for
@@ -273,11 +283,13 @@ function getMaxContext(model, system, opts = {}) {
   //      switched-to sonnet-5 leg (#212 review).
   //    Either signal counts, but only for a 1M-capable model (SUPPORTS_1M) so a
   //    client-level flag riding on a haiku request does not over-claim 1M.
+  // beta1m branch delegates to the shared helper so the persisted `beta1m` fact
+  // (wire-parsers/anthropic.js) can never diverge from this gate (#339 / codex round 2).
+  if (beta1mIndicates1M(model, system, opts.beta1m)) return 1_000_000;
+  // [1m] system-marker branch (lagging legacy signal), same SUPPORTS_1M gate.
   const markerMatchesIdentity = !!sysModel && sysModel.replace(/\[.*\]/, '') === stripped;
-  const has1mSignal = opts.beta1m === true
-    || (markerMatchesIdentity && /\[1m\]/i.test(sysModel))
-    || /\[1m\]/i.test(model || '');
-  if (has1mSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
+  const markerSignal = (markerMatchesIdentity && /\[1m\]/i.test(sysModel)) || /\[1m\]/i.test(model || '');
+  if (markerSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
   // 2) Known Claude Code / Codex defaults (200K / 400K)
   const keys = Object.keys(MODEL_CONTEXT_FALLBACK).sort((a, b) => b.length - a.length);
   for (const key of keys) {
@@ -350,6 +362,7 @@ module.exports = {
   DEFAULT_CONTEXT,
   SUPPORTS_1M,
   extractModelFromSystem,
+  beta1mIndicates1M,
   getMaxContext,
   inferMaxContext,
   parseBaseUrl,

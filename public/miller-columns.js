@@ -1,6 +1,50 @@
 
 const allEntries = [];
 let entryCount = 0;
+
+// #339: the per-session context% DENOMINATOR, derived (never stored) at render time so it
+// can't go stale (cf. the reverted sess.maxWindow, 8b6789f). Monotone OR-fold over the
+// session's main turns: 1M if any turn authoritatively ran 1M (beta1m, server-gated on
+// SUPPORTS_1M), else the largest observed maxContext fossil (heals legacy 1M sessions whose
+// usage crossed 200K — beta1m was never persisted for those), else the 200K default. A
+// session that never showed a 1M signal stays 200K (#211 over-latch guard). Classification
+// (severity / isCompacted / lane placement) deliberately keeps raw per-turn maxContext —
+// this is display only. See docs/decisions/0013-beta1m-persist-session-window-derive.md
+function sessionCtxWindow(sid) {
+  let win = 0, has1m = false;
+  for (let i = 0; i < allEntries.length; i++) {
+    const e = allEntries[i];
+    if (e.sessionId !== sid || e.isSubagent) continue;
+    if (e.beta1m === true) has1m = true;
+    if ((e.maxContext || 0) > win) win = e.maxContext;
+  }
+  // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
+  // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
+  return has1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));
+}
+
+// #339: the context% denominator for ONE turn's timeline minimap. A main turn uses the
+// session window; a SUBAGENT uses its OWN conversation's window (fold over same-convId
+// subagent turns) — a 200K haiku subagent inside a 1M session must stay 200K, never borrow
+// the session's 1M (the #211 over-latch guard, one level down). Both beta1m-aware. Falls
+// back to the turn's own maxContext when it has no convId (legacy). See ADR 0013.
+function turnCtxWindow(e) {
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  if (!e) return DEF;
+  if (!e.isSubagent) return sessionCtxWindow(e.sessionId);
+  if (!e.convId) return e.maxContext || DEF;
+  let win = 0, has1m = false;
+  for (let i = 0; i < allEntries.length; i++) {
+    const x = allEntries[i];
+    // Match sessionId too: an 8-char convId hash can collide across unrelated sessions
+    // that opened with the same subagent prompt — without this a 1M subagent could promote
+    // another session's 200K subagent (codex round 3).
+    if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
+    if (x.beta1m === true) has1m = true;
+    if ((x.maxContext || 0) > win) win = x.maxContext;
+  }
+  return has1m ? 1000000 : (win || e.maxContext || DEF);
+}
 const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, cwd }
 const projectsMap = new Map(); // projectName → { name, totalCost, sessionIds, firstId, lastId }
 const sessionStatusMap = new Map(); // sid → { active: bool, lastSeenAt: number|null }
@@ -1415,10 +1459,11 @@ function renderSessionItem(sess, sid, sessEl) {
     }
   }
 
-  // Context window size formatting (e.g., "1M", "200K")
+  // Context window size formatting (e.g., "1M", "200K"). #339: fold the per-session
+  // window at render time (not the stale incremental value) so all turns show one denominator.
   let windowSizeStr = '';
-  if (sess.latestMaxContext) {
-    const w = sess.latestMaxContext;
+  if (sess.latestMainCtxUsed) {
+    const w = sessionCtxWindow(sid);
     if (w >= 1000000) {
       windowSizeStr = Math.round(w / 1000000) + 'M';
     } else if (w >= 1000) {
@@ -1452,7 +1497,8 @@ function renderSessionItem(sess, sid, sessEl) {
   const truncatedRow = sess.truncated
     ? '<div class="si-truncated" title="Session too large — only the first turn is loaded into memory">Session too large — ' + sess.totalEntryCount + ' total turns, showing 1</div>'
     : '';
-  const ctxPct = sess.latestMainCtxPct || 0;
+  // #339: divide the latest main turn's raw ctxUsed by the render-time session window.
+  const ctxPct = sess.latestMainCtxUsed ? Math.min(100, sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100) : 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
   // light up red/yellow — prevents sea-of-red when scanning the session list.
@@ -2818,7 +2864,7 @@ function renderDetailCol() {
           + '</div>';
         const previewStepsHtml = renderStepListHtml(currentSteps, getActiveStepKey(), e.toolSources);
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
-          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, e.maxContext, e.usage)
+          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
@@ -2851,7 +2897,7 @@ function renderDetailCol() {
       const stepsHtml = renderStepListHtml(currentSteps, activeKey, e.toolSources);
 
       const minimapHtml = (typeof renderMinimapHtml === 'function')
-        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, e.maxContext, e.usage)
+        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
         : '';
 
       // Split pane: left minimap + list + right detail

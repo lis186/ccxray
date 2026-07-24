@@ -43,6 +43,9 @@ function summarizeEntry(entry) {
     elapsed: entry.elapsed, status: entry.status, isSSE: entry.isSSE,
     receivedAt: entry.receivedAt || null,
     usage: entry.usage, cost: entry.cost, maxContext: entry.maxContext, cwd: entry.cwd,
+    // #339: carry the authoritative 1M fact to the client + cold-load so the render-time
+    // per-session context% denominator (sessionWindow) can fold it. Only when true.
+    beta1m: entry.beta1m || undefined,
     model: entry.model || null,
     msgCount: entry.msgCount || 0,
     toolCount: entry.toolCount || 0,
