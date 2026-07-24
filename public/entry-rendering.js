@@ -819,6 +819,7 @@ function mergeColdSessions(sessions) {
     if (sessionsMap.has(s.sid)) {
       var existing = sessionsMap.get(s.sid);
       if (!existing.title && s.title) existing.title = s.title;
+      if (!existing.firstPrompt && s.firstPrompt) existing.firstPrompt = s.firstPrompt;
       continue;
     }
     sessionsMap.set(s.sid, {
@@ -959,14 +960,23 @@ evtSource.onmessage = (ev) => {
     } else if (data._type === 'session_title_update') {
       const sid = data.sessionId;
       const sess = sessionsMap.get(sid);
-      const nextTs = data.titleReqTs || 0;
-      if (sess && data.title && nextTs >= (sess.titleReqTs || 0)) {
-        sess.title = data.title;
-        sess.titleReqTs = nextTs;
-        if (data.firstPrompt && !sess.firstPrompt) sess.firstPrompt = data.firstPrompt;
-        const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
-        if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
-        if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
+      if (sess) {
+        const nextTs = data.titleReqTs || 0;
+        let changed = false;
+        if (data.title && nextTs >= (sess.titleReqTs || 0)) {
+          sess.title = data.title;
+          sess.titleReqTs = nextTs;
+          changed = true;
+        }
+        if (data.firstPrompt && !sess.firstPrompt) {
+          sess.firstPrompt = data.firstPrompt;
+          changed = true;
+        }
+        if (changed) {
+          const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+          if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
+          if (typeof renderBreadcrumb === 'function') renderBreadcrumb();
+        }
       }
     } else if (data._type === 'entry_update') {
       _patchEntryInPlace(data);

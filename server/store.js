@@ -295,10 +295,14 @@ let sessionCounter = 0;
 const socketSessions = new WeakMap();
 
 // ── Strip injected XML tags from user-facing text ──────────────────
-const _INJECTED_TAG_RE = /<(system-reminder|command-message|command-name|command-args|antl:function_calls|antl:thinking)[^>]*>[\s\S]*?<\/\1>/g;
+// Covers canonical tags from shared/injected-tags.js + command envelope tags.
+// antm?l: handles both the wire-protocol "antml:" and the common "antl:" typo.
+const _INJ_TAGS = 'system-reminder|command-message|command-name|command-args|user-prompt-submit-hook|context|antm?l:function_calls|antm?l:thinking';
+const _INJECTED_PAIR_RE = new RegExp('<(' + _INJ_TAGS + ')[^>]*>[\\s\\S]*?<\\/\\1>', 'g');
+const _INJECTED_BARE_RE = new RegExp('</?(?:' + _INJ_TAGS + ')[^>]*>', 'g');
 function stripInjectedTags(text) {
   if (text == null || typeof text !== 'string') return null;
-  const cleaned = text.replace(_INJECTED_TAG_RE, '').replace(/\s+/g, ' ').trim();
+  const cleaned = text.replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
   return cleaned || null;
 }
 
@@ -435,6 +439,7 @@ function setSessionTitle(sid, title, reqTs) {
   if (meta.title === title) { meta.titleReqTs = reqTs || meta.titleReqTs; return false; }
   meta.title = title;
   meta.titleReqTs = reqTs || Date.now();
+  if (meta.firstPrompt) sessionIdx.setFirstPrompt(sid, meta.firstPrompt);
   return true;
 }
 

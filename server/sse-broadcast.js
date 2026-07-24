@@ -114,9 +114,9 @@ const titleDebounceTimers = new Map();
 function flushSessionTitleUpdate(sessionId) {
   titleDebounceTimers.delete(sessionId);
   const title = store.getSessionTitle(sessionId);
-  if (!title) return;
-  const titleReqTs = store.sessionMeta[sessionId]?.titleReqTs || null;
   const firstPrompt = store.getSessionFirstPrompt(sessionId);
+  if (!title && !firstPrompt) return;
+  const titleReqTs = store.sessionMeta[sessionId]?.titleReqTs || null;
   _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs, firstPrompt }));
 }
 
