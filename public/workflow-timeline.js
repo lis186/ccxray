@@ -165,20 +165,24 @@ function wfCtxPct(e) {
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
 
-// #342: RENDER-time context%. A turn with no maxContext (imported turns never
-// carry one) is divided by its LANE's context window instead of the hardcoded
-// 200000 above — otherwise an imported main turn shows ctxUsed/200K while the
-// proxy main turns around it show ctxUsed/1M, i.e. the context% sawtooth.
-// INVARIANT: classification (wfInferLanes ~L505/L515) deliberately keeps the
+// #342: RENDER-time context%. Turns in one session can carry DIFFERENT
+// maxContext values though they share one real context window: the server
+// infers maxContext per-turn (config.inferMaxContext) and returns the 200K base
+// for a turn whose usage stayed under 200K, but the stored 1M for a turn that
+// exceeded it. So two adjacent main turns with the same ~199K ctxUsed render
+// 100% (÷200K) next to 20% (÷1M) — the context% sawtooth. Fix: divide by the
+// LANE's context window (the max maxContext among the lane's turns — the >200K
+// turns supply the real 1M) whenever it EXCEEDS the turn's own inferred value.
+// A lane whose turns are all ≤200K keeps 200K.
+// INVARIANT: classification (wfInferLanes ~L540/L550) deliberately keeps the
 // plain wfCtxPct 200K default so lane decisions never shift with this render
-// fallback — only rendering reads the lane window. The turnId→laneWindow map is
+// rescope — only rendering reads the lane window. The turnId→laneWindow map is
 // memoized on wfState and invalidated on lane change (wfAddEntry) / rebuild
-// (fresh wfState). laneWindow = max maxContext among the lane's turns (the proxy
-// turns supply it); 0 when a lane is purely imported → falls back to 200000.
-// Known limit (accepted): in a rare mixed-window lane an imported turn inherits
-// the lane MAX, so its ctx% is under-reported and a `ctx80` badge could be
-// suppressed. There is no per-imported-turn window to do better client-side, and
-// under-warning is the safe failure — not worth per-model inference here.
+// (fresh wfState).
+// Known limit (accepted): a lane that genuinely mixed a real 200K-window model
+// with a 1M one over-scales the 200K turns to 1M, so their ctx% is under-reported
+// and a `ctx80` badge could be suppressed. Under-warning is the safe failure;
+// there is no per-turn wire signal to do better client-side.
 function _wfWinByTurn() {
   if (!wfState) return null;
   if (wfState._winByTurn) return wfState._winByTurn;
@@ -194,8 +198,10 @@ function _wfWinByTurn() {
   return map;
 }
 function wfCtxPctRender(e) {
-  var win = e.maxContext;
-  if (!win) { var m = _wfWinByTurn(); win = (m && m.get(e.id)) || 0; }
+  var win = e.maxContext || 0;
+  var m = _wfWinByTurn();
+  var laneWin = (m && m.get(e.id)) || 0;
+  if (laneWin > win) win = laneWin; // turn's own maxContext under-inferred vs the lane's real window
   if (!win) win = 200000;
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
