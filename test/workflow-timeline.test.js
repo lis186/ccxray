@@ -150,6 +150,39 @@ describe('workflow-timeline data layer', () => {
     assert.equal(ctx.wfState.lanes[1].name, 'agent-explore');
   });
 
+  it('#342: wfCtxPctRender rescopes a turn to the lane window when the lane window exceeds its own maxContext', () => {
+    const ctx = loadWfModule();
+
+    // REAL PATH (the case the shipped fix missed): since #303 cold-load,
+    // server normalizeIndexEntry/inferMaxContext gives a turn whose usage stayed
+    // ≤200K the 200K base window — NOT an absent maxContext. A high-usage proxy
+    // turn in the same session carries the stored 1M. Both used ~199K tokens.
+    // OLD code (rescope only when `!maxContext`) left the 200K turn at 199K/200K
+    // ≈ 100% next to the proxy's 199K/1M ≈ 20% — the sawtooth. The 200K turn must
+    // rescope to the lane's 1M window because 1M > its own inferred 200K.
+    const proxy = { id: 'p1', maxContext: 1000000, ctxUsed: 199000 };
+    const inferred200k = { id: 'i1', maxContext: 200000, ctxUsed: 199000 };
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [proxy, inferred200k] }] };
+
+    assert.equal(Math.round(ctx.wfCtxPctRender(proxy)), 20);       // 199K/1M
+    // FAIL-ON-OLD: old `!win` gate → 199K/200K ≈ 100%; new `laneWin>win` → 199K/1M ≈ 20%.
+    assert.equal(Math.round(ctx.wfCtxPctRender(inferred200k)), 20);
+
+    // Classification stays on the plain wfCtxPct raw per-turn value (unchanged),
+    // so lane-inference decisions never shift with the render rescope.
+    assert.equal(Math.round(ctx.wfCtxPct(inferred200k)), 100);     // 199K/200K → capped 100
+
+    // Legacy path still covered: a turn with maxContext ABSENT also inherits the
+    // lane's 1M window (laneWin > 0).
+    const importedAbsent = { id: 'i2', ctxUsed: 500000 };
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'p2', maxContext: 1000000, ctxUsed: 500000 }, importedAbsent] }] };
+    assert.equal(Math.round(ctx.wfCtxPctRender(importedAbsent)), 50); // 500K/1M
+
+    // A lane whose turns are all ≤200K keeps 200K (no wider signal to rescope to).
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'x1', maxContext: 200000, ctxUsed: 100000 }] }] };
+    assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', maxContext: 200000, ctxUsed: 100000 })), 50); // 100K/200K
+  });
+
   it('convId splits parallel same-agent instances into separate lanes (#117)', () => {
     const ctx = loadWfModule();
     var entries = [

@@ -6,6 +6,49 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { createLocalStorage } = require('../server/storage/local');
+const { createStorage } = require('../server/storage');
+
+// #344: the write-tracking wrapper serializes appendIndex against an exclusive
+// index rewrite (pruneLogs), so a concurrent append can't be dropped by the
+// rewrite's rename.
+describe('storage exclusive index lock (#344)', () => {
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-lock-' + process.pid);
+  let storage, origHome;
+
+  before(async () => {
+    origHome = process.env.CCXRAY_HOME;
+    process.env.CCXRAY_HOME = tmpDir;
+    storage = createStorage();
+    await storage.init();
+  });
+  after(() => {
+    if (origHome === undefined) delete process.env.CCXRAY_HOME; else process.env.CCXRAY_HOME = origHome;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('appendIndex dispatched while exclusive is held completes only after release', async () => {
+    const order = [];
+    const release = storage.beginExclusive();
+    const appendDone = storage.appendIndex('LOCKED\n').then(() => order.push('append'));
+    await new Promise(r => setTimeout(r, 30));
+    order.push('still-held'); // the append must not have run yet
+    release();
+    await appendDone;
+    assert.deepEqual(order, ['still-held', 'append'], 'append is parked until release');
+  });
+
+  it('drain() does not wait on appends parked behind the exclusive gate (no deadlock)', async () => {
+    const release = storage.beginExclusive();
+    let done = false;
+    const parked = storage.appendIndex('PARKED\n').then(() => { done = true; });
+    // drain must resolve even though a parked append is outstanding.
+    await storage.drain();
+    assert.equal(done, false, 'parked append has not run; drain returned anyway');
+    release();
+    await parked;
+    assert.equal(done, true);
+  });
+});
 
 describe('storage/local', () => {
   const tmpDir = path.join(os.tmpdir(), 'ccxray-test-' + Date.now());

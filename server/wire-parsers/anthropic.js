@@ -193,6 +193,7 @@ module.exports = {
   isNoiseRequest,
   extractUsage,
   extractResponseId,
+  computeConvId,
   detectSession,
   buildEntryFields,
   registerPromptVersion,

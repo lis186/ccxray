@@ -3,7 +3,12 @@
 
 // ── "usage" — fast-path, no server deps ──
 if (process.argv[2] === 'usage') {
-  require('./usage').run(process.argv.slice(3));
+  // run() is async (#345: streams the index). Handle rejection so a read error
+  // exits non-zero instead of becoming an unhandled promise rejection.
+  require('./usage').run(process.argv.slice(3)).catch(err => {
+    console.error(err && err.message ? err.message : String(err));
+    process.exit(1);
+  });
   return;
 }
 

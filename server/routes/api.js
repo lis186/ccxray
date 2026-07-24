@@ -27,11 +27,11 @@ async function loadColdEntry(id) {
     coldEntryCache.delete(id); coldEntryCache.set(id, e); // touch
     return e;
   }
-  const indexContent = await config.storage.readIndex();
-  if (!indexContent) return null;
   const needle = '"id":"' + id + '"';
-  for (const line of indexContent.split('\n')) {
-    if (!line || !line.includes(needle)) continue;
+  // #345: stream lines — the index can exceed Node's ~512MB single-string limit,
+  // where readIndex() throws ERR_STRING_TOO_LONG and cold-load returns nothing.
+  for await (const line of config.storage.readIndexLines()) {
+    if (!line.includes(needle)) continue;
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
     if (meta.id !== id) continue;
@@ -96,15 +96,14 @@ function normalizeIndexEntry(meta) {
 // Scan index.ndjson for entries of the given session ids (cold sessions have
 // no store.entries presence — index.ndjson is their durable source).
 async function loadSessionEntriesFromIndex(targetSids, opts) {
-  const indexContent = await config.storage.readIndex();
-  if (!indexContent) return [];
   // String pre-filter before JSON.parse: parsing all ~150K lines costs
   // seconds per cold click; substring containment skips 99.9% of them.
   // The exact targetSids check after parse stays authoritative.
   const needles = [...targetSids].map(s => '"sessionId":"' + s + '"');
   const metas = [];
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
+  // #345: stream lines — the index can exceed Node's ~512MB single-string limit,
+  // where readIndex() throws ERR_STRING_TOO_LONG and cold sessions never load.
+  for await (const line of config.storage.readIndexLines()) {
     let hit = false;
     for (const n of needles) { if (line.includes(n)) { hit = true; break; } }
     if (!hit) continue;

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 
 const HELP = `Usage: ccxray usage [options]
@@ -51,7 +52,7 @@ function parseArgs(argv) {
   return args;
 }
 
-function run(argv) {
+async function run(argv) {
   const args = parseArgs(argv);
   const home = resolveCcxrayHome();
   const indexPath = path.join(home, 'logs', 'index.ndjson');
@@ -63,13 +64,16 @@ function run(argv) {
     process.exit(1);
   }
 
-  // ponytail: whole-file read + split holds the full index in memory (~tens of
-  // MB in practice). Fine for this one-shot CLI; if index.ndjson grows into the
-  // hundreds of MB or this ever runs long-lived, switch to a streaming
-  // readline pass (which would make run() async).
-  const raw = fs.readFileSync(indexPath, 'utf8');
+  // #345: stream the index line-by-line. readFileSync(indexPath, 'utf8') throws
+  // "Invalid string length" once index.ndjson passes Node's ~512MB single-string
+  // limit (real indexes already do). readline never materializes the whole file
+  // as one string; entries[] is still built (one-shot CLI), but no giant string.
   let entries = [];
-  for (const line of raw.split('\n')) {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(indexPath, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  });
+  for await (const line of rl) {
     if (!line) continue;
     try { entries.push(JSON.parse(line)); } catch {}
   }

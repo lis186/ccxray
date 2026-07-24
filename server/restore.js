@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+const { pipeline } = require('stream/promises');
 const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
@@ -132,24 +135,30 @@ async function restoreFromLogs() {
     console.log(`\x1b[90m   Session index: ${sessionIdx.size()} sessions\x1b[0m`);
   }
 
-  // 1. Read the lightweight index (one file read for all metadata)
+  // 1. Read the lightweight index by STREAMING lines into parsed metas. #345:
+  // the index can exceed Node's ~512MB single-string limit, so we must not call
+  // readIndex() (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and
+  // fail restore. readIndexLines() streams without materializing the whole file.
   console.time('restore:index');
-  const indexContent = await config.storage.readIndex();
+  const parsed = [];
+  for await (const line of config.storage.readIndexLines()) {
+    try { parsed.push(JSON.parse(line)); } catch {}
+  }
   console.timeEnd('restore:index');
 
-  if (!indexContent) {
+  if (!parsed.length) {
     console.timeEnd('restore:total');
     return;
   }
 
   // 1b. Reconcile sessions.json against index.ndjson if loaded (#309)
-  if (sessionIndexLoaded && indexContent) {
-    if (sessionIdx.reconcile(indexContent)) {
+  if (sessionIndexLoaded) {
+    if (sessionIdx.reconcileMetas(parsed)) {
       console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
     }
   }
 
-  // 2. Parse index lines and filter by RESTORE_DAYS
+  // 2. Filter by RESTORE_DAYS
   console.time('restore:parse');
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
@@ -158,12 +167,6 @@ async function restoreFromLogs() {
     cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
   }
 
-  // ponytail: parse JSON once instead of three times per line
-  const parsed = [];
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
-    try { parsed.push(JSON.parse(line)); } catch {}
-  }
   let restored = 0;
 
   // Star-protection + session pre-count in one pass over pre-parsed data.
@@ -359,9 +362,9 @@ async function restoreFromLogs() {
 
   // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
   //    then replay titles into the session index.
-  if (!sessionIndexLoaded && indexContent) {
+  if (!sessionIndexLoaded && parsed.length) {
     console.time('restore:session-index-rebuild');
-    sessionIdx.rebuildFromIndexContent(indexContent);
+    sessionIdx.rebuildFromMetas(parsed);
     console.timeEnd('restore:session-index-rebuild');
     console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
   }
@@ -446,6 +449,78 @@ async function buildVersionIndex(knownHashes) {
   return sysHashToAgentKey;
 }
 
+// ── Prune index.ndjson lines whose _req/_res files are gone (#344) ───
+// Pure decision function: given the raw index content plus which req files
+// still survive on disk and which ids are star/in-memory protected, return the
+// lines to keep and the drop count. No I/O — the caller owns read/write so this
+// is unit-testable in isolation.
+//
+// Rules (see #344):
+//   • Protected (starred cascade / in-memory) line → always kept.
+//   • Proxy (non-imported) line → kept iff its _req.json survives on disk. This
+//     also cleans PRE-EXISTING ghosts left by prunes from before this fix, not
+//     just files deleted in the current pass.
+//   • Imported line (never had _req/_res, by design) → kept, UNLESS it is the
+//     orphaned duplicate of a pruned proxy turn: it carries a responseId that
+//     some proxy line also carried (a read-time merge twin, #333/#329) and NO
+//     surviving proxy copy carries that responseId anymore. Standalone imported
+//     lines (no proxy twin, or no responseId key) are always kept — they are the
+//     importer's durable domain, re-imported from ~/.claude while the source
+//     transcript exists.
+//   • Unparseable / id-less lines → kept verbatim (never lose data we can't
+//     classify; mirrors restore's ignore-and-keep handling).
+//
+// NOTE (delta chains): a delta line whose OWN _req.json survives is kept even
+// when its pruned anchor makes reconstruction partial — the delta is within the
+// retention window and loadEntryReqRes degrades gracefully, so dropping it would
+// delete a within-retention turn (a retention-contract violation). This diverges
+// from the issue's literal "prune the delta line too" for the anchor-gone case.
+// Per-line keep decision, shared by the in-memory pruneIndexLines (tests) and
+// the streaming prune passes in pruneLogs. `ctx` carries the survivor/protection
+// sets plus the responseId pre-scan.
+function _shouldKeepIndexLine(m, ctx) {
+  if (!m || !m.id) return true;                     // unclassifiable — keep verbatim
+  if (ctx.protectedIds.has(m.id)) return true;
+  if (m.imported) {
+    const rid = m.responseId;
+    const orphanDup = rid && ctx.proxyResponseIds.has(rid) && !ctx.survivingProxyResponseIds.has(rid);
+    return !orphanDup;
+  }
+  return ctx.survivingReqIds.has(m.id);             // proxy line: keep iff its _req.json is on disk
+}
+
+// Pre-scan a list of parsed metas: responseIds carried by any proxy line, and
+// the subset that still has a surviving (loadable) proxy copy.
+function _buildResponseIdSets(metas, { survivingReqIds, protectedIds }) {
+  const proxyResponseIds = new Set();
+  const survivingProxyResponseIds = new Set();
+  for (const m of metas) {
+    if (!m || !m.id || m.imported || !m.responseId) continue;
+    proxyResponseIds.add(m.responseId);
+    if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+  }
+  return { proxyResponseIds, survivingProxyResponseIds };
+}
+
+// In-memory variant (tests / small indexes). pruneLogs uses the streaming passes.
+function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
+  const parsed = [];
+  for (const line of (indexContent || '').split('\n')) {
+    if (!line) continue;
+    let m = null;
+    try { m = JSON.parse(line); } catch {}
+    parsed.push({ line, m });
+  }
+  const sets = _buildResponseIdSets(parsed.map(p => p.m), { survivingReqIds, protectedIds });
+  const ctx = { survivingReqIds, protectedIds, ...sets };
+  const keptLines = [];
+  let dropped = 0;
+  for (const { line, m } of parsed) {
+    if (_shouldKeepIndexLine(m, ctx)) keptLines.push(line); else dropped++;
+  }
+  return { keptLines, dropped };
+}
+
 // ── Prune log files older than LOG_RETENTION_DAYS ───────────────────
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
@@ -456,8 +531,13 @@ async function pruneLogs() {
   // ponytail: if index is empty/missing, star-protection cascade can't map
   // turn→session→project — starred old entries would be silently deleted.
   // Skip prune entirely so files survive for `ccxray rebuild-index`.
-  const idx = await config.storage.readIndex();
-  if (!idx || !idx.trim()) {
+  // #345: stream — the index can exceed Node's 512MB single-string limit.
+  let hasAnyIndexLine = false;
+  // Require a non-whitespace line (matches the old `idx.trim()` guard):
+  // readIndexLines only skips empty strings, so a whitespace-only index would
+  // otherwise pass here and let prune delete logs with no usable metadata.
+  for await (const line of config.storage.readIndexLines()) { if (line.trim()) { hasAnyIndexLine = true; break; } }
+  if (!hasAnyIndexLine) {
     console.log('\x1b[33m[ccxray] Skipping prune: index.ndjson empty/missing — star protection cannot be computed.\x1b[0m');
     return;
   }
@@ -475,20 +555,17 @@ async function pruneLogs() {
   try {
     const stars = readStarsSafe();
     if (stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length) {
-      const idx = await config.storage.readIndex();
-      if (idx) {
-        const indexEntries = [];
-        for (const line of idx.split('\n')) {
-          if (!line) continue;
-          try {
-            const m = JSON.parse(line);
-            if (m && m.id) indexEntries.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
-          } catch {}
-        }
-        const sets = computeRetentionSets(indexEntries, stars);
-        for (const e of indexEntries) {
-          if (isProtectedByStar(e, sets)) protectedIds.add(e.id);
-        }
+      const indexEntries = [];
+      // #345: stream — the index can exceed Node's 512MB single-string limit.
+      for await (const line of config.storage.readIndexLines()) {
+        try {
+          const m = JSON.parse(line);
+          if (m && m.id) indexEntries.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+        } catch {}
+      }
+      const sets = computeRetentionSets(indexEntries, stars);
+      for (const e of indexEntries) {
+        if (isProtectedByStar(e, sets)) protectedIds.add(e.id);
       }
     }
   } catch (err) {
@@ -514,6 +591,122 @@ async function pruneLogs() {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
     console.log(`\x1b[90m   Pruned ${deleted} log files older than ${config.LOG_RETENTION_DAYS} days${keptMsg}\x1b[0m`);
   }
+
+  // #344 + #345: sync index.ndjson + sessions.json with the files that survived,
+  // by STREAMING (the index can exceed Node's 512MB single-string limit). The
+  // scan runs every prune (not just when files were deleted this pass) so ghost
+  // lines from prunes predating this fix are cleaned up too. Three passes keep
+  // memory O(responseIds + survivor metas): (1) build responseId sets, (2) count
+  // drops — early-exit with NO rewrite (and no index-mtime bump) when nothing is
+  // droppable, (3) stream survivors to a temp file, then rename + rebuild.
+  if (!config.storage.location) return; // non-local backend: no atomic index rewrite
+  const indexPath = path.join(config.storage.location, 'index.ndjson');
+
+  // #344 concurrency (codex): pruneLogs runs after the server is listening, so a
+  // live turn can appendIndex() while we read + rewrite; fs.appendFile writes on
+  // the libuv threadpool, so a stat-based CAS alone cannot close the race. Hold
+  // the storage exclusive lock across the whole read+rewrite: beginExclusive()
+  // first (new appends queue on the gate), THEN drain() (flush appends already
+  // dispatched before the gate). After that no append is in flight and none can
+  // start until release() → the intra-process race is closed. (Raw test adapter
+  // has neither method → guarded.)
+  const releaseExclusive = config.storage.beginExclusive ? config.storage.beginExclusive() : null;
+  try {
+    if (config.storage.drain) await config.storage.drain();
+
+    // Belt-and-suspenders for a SECOND ccxray writing the same shared index (the
+    // #333 multi-instance case, which the in-process lock can't cover): snapshot
+    // size/mtime before the read and re-check right before the sync rename; abort
+    // if it changed (next startup retries; the line's files survive on disk and
+    // are recoverable via `ccxray rebuild-index`).
+    let statBefore;
+    try { statBefore = fs.statSync(indexPath); } catch { statBefore = null; }
+
+    // Re-list AFTER deletion so survivingReqIds reflects the _req.json files
+    // actually on disk. deletedIds would be keyed on ANY artifact, so a _res
+    // delete that succeeded while its _req delete FAILED must not drop a
+    // still-loadable line — the authoritative signal is the file itself (M6). If
+    // the re-list fails we can't compute survivors safely → skip the rewrite
+    // rather than risk dropping loadable lines or retaining ghosts.
+    let filesNow;
+    try { filesNow = await config.storage.list(); } catch { return; }
+    const survivingReqIds = new Set();
+    for (const filename of filesNow) {
+      if (filename.endsWith('_req.json') && !filename.endsWith('_req.received.json')) {
+        survivingReqIds.add(filename.slice(0, -'_req.json'.length));
+      }
+    }
+
+    // Pass 1: responseId sets (for the imported-orphan-dup rule). Built inline
+    // to avoid holding every meta in memory — mirrors _buildResponseIdSets.
+    const proxyResponseIds = new Set();
+    const survivingProxyResponseIds = new Set();
+    for await (const line of config.storage.readIndexLines()) {
+      let m; try { m = JSON.parse(line); } catch { continue; }
+      if (!m || !m.id || m.imported || !m.responseId) continue;
+      proxyResponseIds.add(m.responseId);
+      if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+    }
+    const ctx = { survivingReqIds, protectedIds, proxyResponseIds, survivingProxyResponseIds };
+
+    // Pass 2: count drops; bail without rewriting when nothing is droppable.
+    let dropped = 0;
+    for await (const line of config.storage.readIndexLines()) {
+      let m; try { m = JSON.parse(line); } catch { m = null; }
+      if (!_shouldKeepIndexLine(m, ctx)) dropped++;
+    }
+    if (dropped === 0) return;
+
+    // Pass 3: stream survivors to a temp file (verbatim lines), collecting metas
+    // for the session rebuild. mode 0600 so the rename doesn't downgrade the
+    // index from 0600 to 0644 (log metadata is sensitive).
+    const tmpPath = `${indexPath}.prune-${process.pid}.tmp`;
+    const survivorMetas = [];
+    async function* survivorLines() {
+      for await (const line of config.storage.readIndexLines()) {
+        let m; try { m = JSON.parse(line); } catch { m = null; }
+        if (!_shouldKeepIndexLine(m, ctx)) continue;
+        if (m) survivorMetas.push(m);
+        yield line + '\n';
+      }
+    }
+    await pipeline(survivorLines(), fs.createWriteStream(tmpPath, { mode: 0o600 }));
+
+    // CAS commit: statSync then renameSync, both synchronous, no await between.
+    let statNow;
+    try { statNow = fs.statSync(indexPath); } catch { statNow = null; }
+    if (!statBefore || !statNow || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      console.log('\x1b[33m[ccxray] index changed during prune — skipping rewrite (will retry next startup)\x1b[0m');
+      return;
+    }
+    try { fs.chmodSync(tmpPath, 0o600); } catch {} // guarantee 0600 even if a stale tmp pre-existed
+    fs.renameSync(tmpPath, indexPath);
+
+    // INVARIANT: index.ndjson is the source of truth for sessions.json — rebuild
+    // from the surviving metas so card counts/costs match the pruned index
+    // (dedup-by-responseId preserved) — @docs/decisions/0012-response-id-read-time-merge.md
+    sessionIdx.rebuildFromMetas(survivorMetas);
+    // Replay in-memory session titles the same way restoreFromLogs does — the
+    // rebuild only carries titles present on surviving index lines, so a
+    // generated title held only in store.sessionMeta would otherwise be lost (M4).
+    for (const [sid, meta] of Object.entries(store.sessionMeta)) {
+      if (meta.title) sessionIdx.setTitle(sid, meta.title);
+    }
+    if (sessionIdx.size() === 0) {
+      // Everything pruned: the map is empty and flush() no-ops on an empty map,
+      // which would leave a stale sessions.json contradicting the emptied index.
+      // Remove it so the next load rebuilds from the (empty) index (M5).
+      try { fs.unlinkSync(path.join(config.LOGS_DIR, 'sessions.json')); } catch {}
+    }
+    await sessionIdx.flush();
+    console.log(`\x1b[90m   Pruned ${dropped} orphaned index line(s); session index rebuilt (${sessionIdx.size()} sessions)\x1b[0m`);
+  } catch (err) {
+    console.error('[ccxray] index prune failed:', err.message);
+  } finally {
+    // Always release — otherwise every subsequent appendIndex() deadlocks on the gate.
+    if (releaseExclusive) releaseExclusive();
+  }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines };
