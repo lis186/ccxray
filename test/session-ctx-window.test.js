@@ -150,4 +150,14 @@ describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, sub
     seed(ctx, [{ sessionId: 's', isSubagent: true, maxContext: 200000 }]);
     assert.equal(ctx.turnCtxWindow(ctx.allEntries[0]), 200000);
   });
+
+  it('does NOT promote across sessions that share an 8-char convId hash (codex round 3)', () => {
+    // Two unrelated sessions opened with the same subagent prompt → identical convId hash.
+    // The 1M subagent in session X must not promote session Y's 200K subagent.
+    seed(ctx, [
+      { sessionId: 'sX', isSubagent: true, convId: 'dup8', beta1m: true, maxContext: 1000000 },
+      { sessionId: 'sY', isSubagent: true, convId: 'dup8', maxContext: 200000 },
+    ]);
+    assert.equal(ctx.turnCtxWindow(ctx.allEntries[1]), 200000, "session Y's subagent stays 200K, not promoted by session X");
+  });
 });

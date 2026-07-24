@@ -36,7 +36,10 @@ function turnCtxWindow(e) {
   let win = 0, has1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const x = allEntries[i];
-    if (!x.isSubagent || x.convId !== e.convId) continue;
+    // Match sessionId too: an 8-char convId hash can collide across unrelated sessions
+    // that opened with the same subagent prompt — without this a 1M subagent could promote
+    // another session's 200K subagent (codex round 3).
+    if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
     if (x.beta1m === true) has1m = true;
     if ((x.maxContext || 0) > win) win = x.maxContext;
   }
@@ -2894,7 +2897,7 @@ function renderDetailCol() {
       const stepsHtml = renderStepListHtml(currentSteps, activeKey, e.toolSources);
 
       const minimapHtml = (typeof renderMinimapHtml === 'function')
-        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, (e.isSubagent ? e.maxContext : sessionCtxWindow(e.sessionId)), e.usage)
+        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
         : '';
 
       // Split pane: left minimap + list + right detail
