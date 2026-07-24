@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+const { pipeline } = require('stream/promises');
 const config = require('./config');
 const store = require('./store');
 const { calculateCost } = require('./pricing');
@@ -472,6 +475,34 @@ async function buildVersionIndex(knownHashes) {
 // retention window and loadEntryReqRes degrades gracefully, so dropping it would
 // delete a within-retention turn (a retention-contract violation). This diverges
 // from the issue's literal "prune the delta line too" for the anchor-gone case.
+// Per-line keep decision, shared by the in-memory pruneIndexLines (tests) and
+// the streaming prune passes in pruneLogs. `ctx` carries the survivor/protection
+// sets plus the responseId pre-scan.
+function _shouldKeepIndexLine(m, ctx) {
+  if (!m || !m.id) return true;                     // unclassifiable — keep verbatim
+  if (ctx.protectedIds.has(m.id)) return true;
+  if (m.imported) {
+    const rid = m.responseId;
+    const orphanDup = rid && ctx.proxyResponseIds.has(rid) && !ctx.survivingProxyResponseIds.has(rid);
+    return !orphanDup;
+  }
+  return ctx.survivingReqIds.has(m.id);             // proxy line: keep iff its _req.json is on disk
+}
+
+// Pre-scan a list of parsed metas: responseIds carried by any proxy line, and
+// the subset that still has a surviving (loadable) proxy copy.
+function _buildResponseIdSets(metas, { survivingReqIds, protectedIds }) {
+  const proxyResponseIds = new Set();
+  const survivingProxyResponseIds = new Set();
+  for (const m of metas) {
+    if (!m || !m.id || m.imported || !m.responseId) continue;
+    proxyResponseIds.add(m.responseId);
+    if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
+  }
+  return { proxyResponseIds, survivingProxyResponseIds };
+}
+
+// In-memory variant (tests / small indexes). pruneLogs uses the streaming passes.
 function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
   const parsed = [];
   for (const line of (indexContent || '').split('\n')) {
@@ -480,33 +511,12 @@ function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
     try { m = JSON.parse(line); } catch {}
     parsed.push({ line, m });
   }
-
-  // Pre-scan: responseIds carried by any proxy line, and the subset that still
-  // has a surviving (loadable) proxy copy.
-  const proxyResponseIds = new Set();
-  const survivingProxyResponseIds = new Set();
-  for (const { m } of parsed) {
-    if (!m || !m.id || m.imported || !m.responseId) continue;
-    proxyResponseIds.add(m.responseId);
-    if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
-  }
-
+  const sets = _buildResponseIdSets(parsed.map(p => p.m), { survivingReqIds, protectedIds });
+  const ctx = { survivingReqIds, protectedIds, ...sets };
   const keptLines = [];
   let dropped = 0;
   for (const { line, m } of parsed) {
-    let keep;
-    if (!m || !m.id) {
-      keep = true; // unclassifiable — keep verbatim
-    } else if (protectedIds.has(m.id)) {
-      keep = true;
-    } else if (m.imported) {
-      const rid = m.responseId;
-      const orphanDup = rid && proxyResponseIds.has(rid) && !survivingProxyResponseIds.has(rid);
-      keep = !orphanDup;
-    } else {
-      keep = survivingReqIds.has(m.id); // proxy line: keep iff its _req.json is on disk
-    }
-    if (keep) keptLines.push(line); else dropped++;
+    if (_shouldKeepIndexLine(m, ctx)) keptLines.push(line); else dropped++;
   }
   return { keptLines, dropped };
 }
@@ -521,8 +531,10 @@ async function pruneLogs() {
   // ponytail: if index is empty/missing, star-protection cascade can't map
   // turn→session→project — starred old entries would be silently deleted.
   // Skip prune entirely so files survive for `ccxray rebuild-index`.
-  const idx = await config.storage.readIndex();
-  if (!idx || !idx.trim()) {
+  // #345: stream — the index can exceed Node's 512MB single-string limit.
+  let hasAnyIndexLine = false;
+  for await (const _line of config.storage.readIndexLines()) { hasAnyIndexLine = true; break; }
+  if (!hasAnyIndexLine) {
     console.log('\x1b[33m[ccxray] Skipping prune: index.ndjson empty/missing — star protection cannot be computed.\x1b[0m');
     return;
   }
@@ -540,20 +552,17 @@ async function pruneLogs() {
   try {
     const stars = readStarsSafe();
     if (stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length) {
-      const idx = await config.storage.readIndex();
-      if (idx) {
-        const indexEntries = [];
-        for (const line of idx.split('\n')) {
-          if (!line) continue;
-          try {
-            const m = JSON.parse(line);
-            if (m && m.id) indexEntries.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
-          } catch {}
-        }
-        const sets = computeRetentionSets(indexEntries, stars);
-        for (const e of indexEntries) {
-          if (isProtectedByStar(e, sets)) protectedIds.add(e.id);
-        }
+      const indexEntries = [];
+      // #345: stream — the index can exceed Node's 512MB single-string limit.
+      for await (const line of config.storage.readIndexLines()) {
+        try {
+          const m = JSON.parse(line);
+          if (m && m.id) indexEntries.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+        } catch {}
+      }
+      const sets = computeRetentionSets(indexEntries, stars);
+      for (const e of indexEntries) {
+        if (isProtectedByStar(e, sets)) protectedIds.add(e.id);
       }
     }
   } catch (err) {
@@ -582,11 +591,14 @@ async function pruneLogs() {
     console.log(`\x1b[90m   Pruned ${deleted} log files older than ${config.LOG_RETENTION_DAYS} days${keptMsg}\x1b[0m`);
   }
 
-  // #344: sync index.ndjson + sessions.json with the files that survived. The
-  // scan runs every prune (not just when files were deleted this pass) so that
-  // ghost lines from prunes predating this fix are cleaned up too; the atomic
-  // rewrite only fires when a line is actually dropped.
-  if (typeof config.storage.writeIndex !== 'function') return; // non-local backend
+  // #344 + #345: sync index.ndjson + sessions.json with the files that survived,
+  // by STREAMING (the index can exceed Node's 512MB single-string limit). The
+  // scan runs every prune (not just when files were deleted this pass) so ghost
+  // lines from prunes predating this fix are cleaned up too. Three passes keep
+  // memory O(responseIds + survivor metas): (1) build responseId sets, (2) count
+  // drops — early-exit with NO rewrite (and no index-mtime bump) when nothing is
+  // droppable, (3) stream survivors to a temp file, then rename + rebuild.
+  if (!config.storage.location) return; // non-local backend: no atomic index rewrite
   try {
     const survivingReqIds = new Set();
     for (const filename of files) {
@@ -595,18 +607,49 @@ async function pruneLogs() {
         if (!deletedIds.has(id)) survivingReqIds.add(id);
       }
     }
-    const indexContent = await config.storage.readIndex();
-    const { keptLines, dropped } = pruneIndexLines(indexContent, { survivingReqIds, protectedIds });
-    if (dropped > 0) {
-      const newContent = keptLines.length ? keptLines.join('\n') + '\n' : '';
-      await config.storage.writeIndex(newContent);
-      // INVARIANT: index.ndjson is the source of truth for sessions.json — after
-      // dropping lines, rebuild the session index so card counts/costs match the
-      // pruned index (dedup-by-responseId preserved) — @docs/decisions/0012-response-id-read-time-merge.md
-      sessionIdx.rebuildFromIndexContent(keptLines.join('\n'));
-      await sessionIdx.flush();
-      console.log(`\x1b[90m   Pruned ${dropped} orphaned index line(s); session index rebuilt (${sessionIdx.size()} sessions)\x1b[0m`);
+
+    // Pass 1: responseId sets (for the imported-orphan-dup rule). Built inline
+    // to avoid holding every meta in memory — mirrors _buildResponseIdSets.
+    const proxyResponseIds = new Set();
+    const survivingProxyResponseIds = new Set();
+    for await (const line of config.storage.readIndexLines()) {
+      let m; try { m = JSON.parse(line); } catch { continue; }
+      if (!m || !m.id || m.imported || !m.responseId) continue;
+      proxyResponseIds.add(m.responseId);
+      if (protectedIds.has(m.id) || survivingReqIds.has(m.id)) survivingProxyResponseIds.add(m.responseId);
     }
+    const ctx = { survivingReqIds, protectedIds, proxyResponseIds, survivingProxyResponseIds };
+
+    // Pass 2: count drops; bail without rewriting when nothing is droppable.
+    let dropped = 0;
+    for await (const line of config.storage.readIndexLines()) {
+      let m; try { m = JSON.parse(line); } catch { m = null; }
+      if (!_shouldKeepIndexLine(m, ctx)) dropped++;
+    }
+    if (dropped === 0) return;
+
+    // Pass 3: stream survivors to a temp file (verbatim lines), collecting metas
+    // for the session rebuild. Atomic rename commits.
+    const indexPath = path.join(config.storage.location, 'index.ndjson');
+    const tmpPath = `${indexPath}.prune-${process.pid}.tmp`;
+    const survivorMetas = [];
+    async function* survivorLines() {
+      for await (const line of config.storage.readIndexLines()) {
+        let m; try { m = JSON.parse(line); } catch { m = null; }
+        if (!_shouldKeepIndexLine(m, ctx)) continue;
+        if (m) survivorMetas.push(m);
+        yield line + '\n';
+      }
+    }
+    await pipeline(survivorLines(), fs.createWriteStream(tmpPath));
+    fs.renameSync(tmpPath, indexPath);
+
+    // INVARIANT: index.ndjson is the source of truth for sessions.json — rebuild
+    // from the surviving metas so card counts/costs match the pruned index
+    // (dedup-by-responseId preserved) — @docs/decisions/0012-response-id-read-time-merge.md
+    sessionIdx.rebuildFromMetas(survivorMetas);
+    await sessionIdx.flush();
+    console.log(`\x1b[90m   Pruned ${dropped} orphaned index line(s); session index rebuilt (${sessionIdx.size()} sessions)\x1b[0m`);
   } catch (err) {
     console.error('[ccxray] index prune failed:', err.message);
   }

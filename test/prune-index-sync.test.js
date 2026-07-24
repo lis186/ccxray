@@ -178,10 +178,41 @@ describe('pruneLogs: index + sessions.json sync (#344)', () => {
     writeFiles(recentId);
     writeIndex([{ id: recentId, sessionId: 'sOnly' }]);
     const before = fs.readFileSync(path.join(tmpDir, 'index.ndjson'), 'utf8');
+    const mtimeBefore = fs.statSync(path.join(tmpDir, 'index.ndjson')).mtimeMs;
 
     await pruneLogs();
 
     const afterRaw = fs.readFileSync(path.join(tmpDir, 'index.ndjson'), 'utf8');
     assert.equal(afterRaw, before, 'no ghost → index unchanged');
+    assert.equal(fs.statSync(path.join(tmpDir, 'index.ndjson')).mtimeMs, mtimeBefore,
+      'no rewrite → mtime unchanged (avoids spurious session-index staleness rebuild)');
+  });
+
+  it('streams a many-line index through pipeline: drops ghosts, keeps imported filler', async () => {
+    // Enough lines to exercise write backpressure (default highWaterMark 16KB)
+    // and the 3-pass streaming path, without approaching the 512MB ceiling.
+    const N = 20000;
+    const lines = [];
+    for (let i = 0; i < N; i++) {
+      lines.push({ id: `2020-02-01T00-00-00-${String(i).padStart(6, '0')}`, sessionId: 'sFill', imported: true, pad: 'x'.repeat(80) });
+    }
+    // Interleave a handful of old proxy GHOST lines (no _req.json) that must drop.
+    const ghosts = [];
+    for (let i = 0; i < 5; i++) {
+      const gid = `2020-01-05T00-00-00-${String(i).padStart(6, '0')}`;
+      ghosts.push(gid);
+      lines.splice(i * 3000, 0, { id: gid, sessionId: 'sGhost' });
+    }
+    writeIndex(lines);
+
+    await pruneLogs();
+
+    const kept = new Set(readIndexIds());
+    for (const g of ghosts) assert.ok(!kept.has(g), `ghost ${g} dropped`);
+    // All imported filler survives (standalone imported, no proxy twin).
+    assert.equal(kept.size, N, `all ${N} imported filler lines retained`);
+    // Result is still stream-readable and parseable.
+    const raw = fs.readFileSync(path.join(tmpDir, 'index.ndjson'), 'utf8');
+    for (const line of raw.split('\n').filter(Boolean)) JSON.parse(line);
   });
 });

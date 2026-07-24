@@ -31,11 +31,6 @@
  *   Delete a log artifact by full filename (e.g. '2025-03-17T12-00-00-000_req.json').
  *   Must silently succeed if the file does not exist.
  *
- * @property {(content: string) => Promise<void>} writeIndex
- *   Atomically replace the entire index.ndjson with `content`. Used by pruneLogs
- *   (#344) to drop index lines whose _req/_res files were pruned. Must be atomic
- *   (tmp + rename) so a concurrent reader never sees a half-written index.
- *
  * @property {boolean} supportsDelta
  *   When true, the proxy may write _req.json in delta format (prevId + partial messages)
  *   instead of storing the full messages array every turn. Set false for high-latency or

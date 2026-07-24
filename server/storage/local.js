@@ -92,15 +92,6 @@ function createLocalStorage(logsDir, opts = {}) {
       await fsp.appendFile(indexPath, line, { mode: 0o600 });
     },
 
-    // Atomically replace the whole index (tmp + rename). Used by pruneLogs (#344)
-    // to drop ghost lines whose _req/_res files were pruned. Callers pass the
-    // full new content; an empty string writes an empty index.
-    async writeIndex(content) {
-      const tmp = `${indexPath}.prune-${process.pid}.tmp`;
-      await fsp.writeFile(tmp, content, { mode: 0o600 });
-      await fsp.rename(tmp, indexPath);
-    },
-
     async readIndex() {
       try {
         return await fsp.readFile(indexPath, 'utf8');
