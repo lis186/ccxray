@@ -1,0 +1,63 @@
+[
+  {
+    "event": "response.created",
+    "type": "response.created",
+    "data": {
+      "type": "response.created",
+      "sequence_number": 0,
+      "response": {
+        "id": "resp_grok_main_test",
+        "object": "response",
+        "model": "grok-4.5",
+        "status": "in_progress",
+        "output": []
+      }
+    }
+  },
+  {
+    "event": "response.output_text.done",
+    "type": "response.output_text.done",
+    "data": {
+      "type": "response.output_text.done",
+      "text": "pong",
+      "item_id": "msg_grok_main_test",
+      "output_index": 1
+    }
+  },
+  {
+    "event": "response.completed",
+    "type": "response.completed",
+    "data": {
+      "type": "response.completed",
+      "sequence_number": 2,
+      "response": {
+        "id": "resp_grok_main_test",
+        "object": "response",
+        "model": "grok-4.5",
+        "status": "completed",
+        "output": [
+          {
+            "type": "reasoning",
+            "id": "rs_grok_main_test",
+            "status": "completed",
+            "summary": [{ "type": "summary_text", "text": "User wants a one-word reply: pong." }]
+          },
+          {
+            "type": "message",
+            "id": "msg_grok_main_test",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{ "type": "output_text", "text": "pong" }]
+          }
+        ],
+        "usage": {
+          "input_tokens": 30570,
+          "output_tokens": 22,
+          "total_tokens": 30592,
+          "input_tokens_details": { "cached_tokens": 5504 },
+          "output_tokens_details": { "reasoning_tokens": 17 }
+        }
+      }
+    }
+  }
+]

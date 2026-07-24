@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Provider module: Grok** — third agent module beside `claude` / `codex` (`AGENT_PROVIDERS` + `OPENAI_WIRE_CLIENTS`). Shared OpenAI Responses parser; client-header routing to `UPSTREAMS.xai` (`cli-chat-proxy.grok.com`, override `XAI_BASE_URL` / `GROK_BASE_URL`); launcher `ccxray grok`. Module contract: `docs/provider-modules.md`. Multi-agent hub acceptance: `test/multi-agent-proxy.e2e.test.js`.
+
 ## 2.0.0
 
 Two domain shifts in one release: enforced auth on all endpoints (breaking for direct `/v1/*` callers), and a full workflow-timeline view that visualizes agent concurrency, sequential interleaving, and multi-model sessions. Interactive `ccxray claude` / `ccxray codex` users see no friction — the launcher pre-authenticates the dashboard it opens.

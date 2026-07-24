@@ -113,4 +113,57 @@ describe('extractTitleGenPayload', () => {
     assert.ok(!title.startsWith('{'), 'should strip JSON envelope');
     assert.ok(!title.includes('"title"'), 'should not contain raw JSON key');
   });
+
+  it('extracts Grok session_title from Responses function_call SSE events', () => {
+    const events = [
+      {
+        type: 'response.function_call_arguments.delta',
+        data: {
+          type: 'response.function_call_arguments.delta',
+          delta: '{"session_title":"User Query Requiring Exact Ok Reply"}',
+        },
+      },
+      {
+        type: 'response.function_call_arguments.done',
+        data: {
+          type: 'response.function_call_arguments.done',
+          arguments: '{"session_title":"User Query Requiring Exact Ok Reply"}',
+        },
+      },
+      {
+        type: 'response.completed',
+        data: {
+          type: 'response.completed',
+          response: {
+            model: 'grok-build',
+            status: 'completed',
+            output: [
+              {
+                type: 'function_call',
+                name: 'session_title',
+                arguments: '{"session_title":"User Query Requiring Exact Ok Reply"}',
+                status: 'completed',
+              },
+            ],
+          },
+        },
+      },
+    ];
+    assert.equal(extractTitleGenPayload(events), 'User Query Requiring Exact Ok Reply');
+  });
+
+  it('extracts Grok session_title from completed response object', () => {
+    const res = {
+      model: 'grok-build',
+      status: 'completed',
+      output: [
+        {
+          type: 'function_call',
+          name: 'session_title',
+          arguments: '{"session_title":"Fix login button"}',
+        },
+      ],
+    };
+    assert.equal(extractTitleGenPayload(res), 'Fix login button');
+  });
 });

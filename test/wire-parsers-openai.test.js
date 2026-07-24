@@ -89,6 +89,22 @@ describe('wire-parsers/openai', () => {
       assert.equal(result.sessionId, 'codex-raw');
       assert.equal(result.inferred, true);
     });
+
+    it('extracts sessionId from x-grok-session-id header', () => {
+      const headers = { 'x-grok-session-id': '019f451f-3c47-76c0-9f6c-a46b8be17bc3' };
+      const result = openai.detectSession(null, headers, null);
+      assert.equal(result.sessionId, '019f451f-3c47-76c0-9f6c-a46b8be17bc3');
+      assert.equal(result.inferred, false);
+    });
+
+    it('falls back to x-grok-conv-id when session-id empty', () => {
+      const headers = {
+        'x-grok-session-id': '',
+        'x-grok-conv-id': 'conv-uuid-abc',
+      };
+      const result = openai.detectSession(null, headers, null);
+      assert.equal(result.sessionId, 'conv-uuid-abc');
+    });
   });
 
   describe('preprocessBody (withCodexMetadata)', () => {
@@ -134,6 +150,74 @@ describe('wire-parsers/openai', () => {
       };
       const result = openai.preprocessBody(body, {});
       assert.equal(result.metadata.cwd, '/Users/test/from-instructions');
+    });
+
+    it('tags Grok client metadata from headers', () => {
+      const body = { model: 'grok-4.5', input: [] };
+      const headers = {
+        'x-grok-client-identifier': 'grok-shell',
+        'x-grok-session-id': 'sess-1',
+      };
+      const result = openai.preprocessBody(body, headers);
+      assert.equal(result.metadata.client, 'grok');
+      assert.equal(result.metadata.session_id, 'sess-1');
+    });
+  });
+
+  describe('Grok wire helpers', () => {
+    it('resolveOpenAIAgent labels Grok clients and models', () => {
+      assert.equal(openai.resolveOpenAIAgent({ 'x-grok-client-version': '0.2.93' }, {}), 'grok');
+      assert.equal(openai.resolveOpenAIAgent({}, { model: 'grok-4.5' }), 'grok');
+      assert.equal(openai.resolveOpenAIAgent({}, { model: 'gpt-5.5' }), 'codex');
+    });
+
+    it('getOpenAIInstructionsText reads Grok system input', () => {
+      const text = openai.getOpenAIInstructionsText({
+        model: 'grok-4.5',
+        input: [
+          { type: 'message', role: 'system', content: 'You are Grok' },
+          { type: 'message', role: 'user', content: 'hi' },
+        ],
+      });
+      assert.equal(text, 'You are Grok');
+    });
+
+    it('getOpenAIInstructionsText prefers instructions when present', () => {
+      const text = openai.getOpenAIInstructionsText({
+        instructions: 'Codex instructions',
+        input: [{ type: 'message', role: 'system', content: 'ignored' }],
+      });
+      assert.equal(text, 'Codex instructions');
+    });
+
+    it('isNoiseRequest filters Grok control-plane paths', () => {
+      const grokHeaders = { 'x-grok-client-identifier': 'grok-shell' };
+      assert.equal(openai.isNoiseRequest('/v1/settings', grokHeaders, null), true);
+      assert.equal(openai.isNoiseRequest('/v1/feedback/config', grokHeaders, null), true);
+      assert.equal(openai.isNoiseRequest('/v1/responses', grokHeaders, null), false);
+      assert.equal(openai.isNoiseRequest('/v1/chat/completions', grokHeaders, null), false);
+      // Non-Grok clients must not lose conversation paths via this rule
+      assert.equal(openai.isNoiseRequest('/v1/settings', {}, null), false);
+    });
+
+    it('buildEntryFields labels agent as grok for grok models', () => {
+      const fields = openai.buildEntryFields({
+        provider: 'openai',
+        transport: 'sse',
+        parsedBody: {
+          model: 'grok-4.5',
+          metadata: { client: 'grok', session_id: 's1' },
+          input: [{ type: 'message', role: 'user', content: 'pong' }],
+          tools: [],
+        },
+        events: [],
+        response: { model: 'grok-4.5', status: 'completed', usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+        proxyRes: { statusCode: 200 },
+        sessionId: 's1',
+      });
+      assert.equal(fields.agent, 'grok');
+      assert.equal(fields.model, 'grok-4.5');
+      assert.equal(fields.maxContext, 500_000);
     });
   });
 

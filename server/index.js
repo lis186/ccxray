@@ -205,9 +205,14 @@ function buildForwardHeaders(clientHeaders, upstream) {
   return fwdHeaders;
 }
 
-function getCodexCwdFallback() {
-  return hub.lookupClientCwd() || (agentCommand === 'codex' ? process.cwd() : null);
+// Cwd when the wire body has none: hub client cwd, else launcher process cwd
+// for modules that declare cwdFallback (codex, grok, …).
+function getAgentCwdFallback() {
+  return hub.lookupClientCwd()
+    || (providers.agentUsesCwdFallback(agentCommand) ? process.cwd() : null);
 }
+// Back-compat alias for call sites / tests
+const getCodexCwdFallback = getAgentCwdFallback;
 
 
 // ── Server ──────────────────────────────────────────────────────────
@@ -405,14 +410,16 @@ const server = http.createServer((clientReq, clientRes) => {
     // Extract and store cwd (after linkParentSession — see #223)
     // openai getCwd has a runtime fallback (hub client cwd / process.cwd) that
     // depends on index.js state — applied after the adapter's wire-level extraction.
+    // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
       const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getCodexCwdFallback() : null);
-      if (cwd) {
-        if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
-        store.sessionMeta[reqSessionId].provider = provider;
-        store.sessionMeta[reqSessionId].cwd = cwd;
+        || (provider === 'openai' ? getAgentCwdFallback() : null);
+      if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
+      store.sessionMeta[reqSessionId].provider = provider;
+      if (provider === 'openai' && typeof parser.resolveOpenAIAgent === 'function') {
+        store.sessionMeta[reqSessionId].agent = parser.resolveOpenAIAgent(clientReq.headers, parsedBody);
       }
+      if (cwd) store.sessionMeta[reqSessionId].cwd = cwd;
     }
 
     // Detect new cc_version for live requests; compute coreHash for all qualifying requests
@@ -1026,6 +1033,14 @@ async function startServer() {
     if (chatgpt && chatgpt.source !== 'chatgpt-default') {
       candidates.push({ key: 'openaiChatGPT', upstream: chatgpt, envVar: chatgpt.source || 'CHATGPT_BASE_URL' });
     }
+    // Grok/xAI upstream is independent of OPENAI_BASE_URL so hub multi-agent
+    // routing can keep Codex on api.openai.com. Only guard user-configured
+    // XAI_BASE_URL/GROK_BASE_URL — default cli-chat-proxy.grok.com can never
+    // self-loop (review fix from experiment/grok-wire-capture).
+    const xai = config.UPSTREAMS.xai;
+    if (xai && xai.source !== 'xai-default') {
+      candidates.push({ key: 'xai', upstream: xai, envVar: xai.source || 'XAI_BASE_URL' });
+    }
     for (const { upstream, envVar } of candidates) {
       if (upstream && localHosts.has(upstream.host) && upstream.port === config.PORT) {
         const url = `${upstream.protocol}://${upstream.host}:${upstream.port}`;
@@ -1110,9 +1125,16 @@ async function startServer() {
     const openaiUrl = `${config.OPENAI_PROTOCOL}://${config.OPENAI_HOST}:${config.OPENAI_PORT}${config.OPENAI_BASE_PATH}`;
     const openaiNote = config.OPENAI_BASE_URL_SOURCE === 'OPENAI_BASE_URL' ? ' (from OPENAI_BASE_URL)' : '';
     console.log(`   OpenAI Upstream → ${openaiUrl}${openaiNote}`);
+    const xai = config.UPSTREAMS.xai;
+    if (xai) {
+      const xaiUrl = `${xai.protocol}://${xai.host}:${xai.port}${xai.basePath || ''}`;
+      const xaiNote = xai.source && xai.source !== 'xai-default' ? ` (from ${xai.source})` : '';
+      console.log(`   xAI Upstream → ${xaiUrl}${xaiNote}`);
+    }
     console.log(`   Logs → ${config.storage.location || config.LOGS_DIR}`);
     console.log();
-    console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude\x1b[0m`);
+    console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude`);
+    console.log(`          ccxray codex | ccxray grok\x1b[0m`);
     console.log('\x1b[0m');
   }
 

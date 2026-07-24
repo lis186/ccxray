@@ -42,6 +42,8 @@ const AGENT_PROVIDERS = Object.freeze({
     label: 'Codex CLI',
     displayName: 'ccxray',
     upstream: 'openai',
+    // When session id is known but cwd missing on the wire, use process.cwd() of the launcher.
+    cwdFallback: true,
     installHint: '  npm install -g @openai/codex',
     createLaunch({ port, args, env }) {
       const proxyBaseUrl = `http://localhost:${port}/v1`;
@@ -75,10 +77,96 @@ const AGENT_PROVIDERS = Object.freeze({
       };
     },
   }),
+
+  // Module on the OpenAI Responses wire family (see OPENAI_WIRE_CLIENTS).
+  // Host routing is client-header based so a shared hub keeps Codex on
+  // api.openai.com without OPENAI_BASE_URL swap.
+  grok: Object.freeze({
+    id: 'grok',
+    label: 'Grok CLI',
+    displayName: 'ccxray',
+    // Wire parser family (path → openai.js). Host profile is UPSTREAMS.xai via OPENAI_WIRE_CLIENTS.
+    upstream: 'openai',
+    wire: 'openai',
+    cwdFallback: true,
+    installHint: '  curl -fsSL https://x.ai/cli/install.sh | bash',
+    createLaunch({ port, args, env }) {
+      const proxyBaseUrl = `http://localhost:${port}/v1`;
+      return {
+        bin: 'grok',
+        args: [...args],
+        env: { ...env, GROK_CLI_CHAT_PROXY_BASE_URL: proxyBaseUrl },
+      };
+    },
+  }),
 });
 
+// Upstream wire family → default agent label when no OPENAI_WIRE_CLIENTS match.
 const PROVIDER_AGENT = Object.freeze({ anthropic: 'claude', openai: 'codex' });
 function agentForProvider(provider) { return PROVIDER_AGENT[provider] || 'claude'; }
+
+/**
+ * OpenAI-wire client modules: same Responses parser, different host / agent id /
+ * raw-session bucket. Adding another CLI that speaks POST /v1/responses is:
+ *   1) AGENT_PROVIDERS.<id> launcher
+ *   2) one OPENAI_WIRE_CLIENTS entry (matchHeaders + upstreamKey + rawSessionId)
+ * Do not fork wire-parsers/openai.js for each new agent.
+ */
+const OPENAI_WIRE_CLIENTS = Object.freeze([
+  Object.freeze({
+    id: 'grok',
+    upstreamKey: 'xai',
+    rawSessionId: 'grok-raw',
+    modelPattern: /^grok/i,
+    sessionHeaderNames: Object.freeze(['x-grok-session-id', 'x-grok-conv-id']),
+    // Non-conversation /v1/* probes (settings, feedback, …) are noise for this client.
+    controlPlaneIsNoise: true,
+    matchHeaders(headers) {
+      const h = headers || {};
+      const first = (name) => {
+        const v = h[name] ?? h[String(name).toLowerCase()];
+        return Array.isArray(v) ? v[0] : v;
+      };
+      if (first('x-grok-client-identifier') || first('x-grok-client-version') || first('x-grok-model-override')) {
+        return true;
+      }
+      return /grok-shell/i.test(String(first('user-agent') || ''));
+    },
+  }),
+]);
+
+function firstHeaderValue(headers, name) {
+  if (!headers) return undefined;
+  const v = headers[name] ?? headers[String(name).toLowerCase()];
+  return Array.isArray(v) ? v[0] : v;
+}
+
+function matchOpenAIWireClient(headers, model) {
+  if (headers) {
+    for (const client of OPENAI_WIRE_CLIENTS) {
+      if (client.matchHeaders(headers)) return client;
+    }
+  }
+  if (typeof model === 'string') {
+    for (const client of OPENAI_WIRE_CLIENTS) {
+      if (client.modelPattern && client.modelPattern.test(model)) return client;
+    }
+  }
+  return null;
+}
+
+function getOpenAIWireClient(id) {
+  return OPENAI_WIRE_CLIENTS.find(c => c.id === id) || null;
+}
+
+/** Agent label for an OpenAI-wire request (client module id or default codex). */
+function resolveOpenAIWireAgent(headers, parsedBody) {
+  const byMeta = parsedBody?.metadata?.client
+    ? getOpenAIWireClient(parsedBody.metadata.client)
+    : null;
+  const client = matchOpenAIWireClient(headers, parsedBody?.model) || byMeta;
+  return client?.id || agentForProvider('openai');
+}
 
 // Upstream wire-protocol profiles. Agent launchers describe "how to start";
 // upstream profiles describe "how the wire format differs".
@@ -98,6 +186,14 @@ const UPSTREAM_PROFILES = Object.freeze({
     // Codex only writes a rollout file (resumable session) after a successful
     // API turn — sessions with only startup errors can't be resumed.
     resume: Object.freeze({ template: 'codex resume {sid}', condition: 'has-usage' }),
+  }),
+  // Same wire semantics as openai; used when OPENAI_WIRE_CLIENTS route to UPSTREAMS.xai.
+  xai: Object.freeze({
+    cache: 'server-managed',
+    inputIncludesCached: true,
+    label: 'xAI',
+    brandColor: '#a78bfa',
+    resume: Object.freeze({ template: 'grok --resume {sid}', condition: 'has-usage' }),
   }),
 });
 
@@ -155,21 +251,65 @@ function getAgentLaunch(id, port, args = [], env = process.env) {
     displayName: provider.displayName,
     upstream: provider.upstream,
     installHint: provider.installHint,
+    cwdFallback: Boolean(provider.cwdFallback),
+    wire: provider.wire || null,
     ...launch,
+  };
+}
+
+/** Whether the launched agent should fall back to process.cwd() for session cwd. */
+function agentUsesCwdFallback(id) {
+  return Boolean(getAgentProvider(id)?.cwdFallback);
+}
+
+/** Synthetic session buckets that never get a resume button (raw / orphan). */
+function listRawSessionBuckets() {
+  const buckets = new Set(['direct-api', 'codex-raw', 'unknown']);
+  for (const c of OPENAI_WIRE_CLIENTS) {
+    if (c.rawSessionId) buckets.add(c.rawSessionId);
+  }
+  return buckets;
+}
+
+/**
+ * Contract checklist for a complete agent module (docs + tests use this shape).
+ * @returns {{ id, hasLauncher, wire, openAIWireClient, upstreamKey }}
+ */
+function describeAgentModule(id) {
+  const p = getAgentProvider(id);
+  if (!p) return null;
+  const client = getOpenAIWireClient(id);
+  return {
+    id: p.id,
+    label: p.label,
+    hasLauncher: typeof p.createLaunch === 'function',
+    wire: p.wire || (p.upstream === 'anthropic' ? 'anthropic' : 'openai'),
+    cwdFallback: Boolean(p.cwdFallback),
+    openAIWireClient: Boolean(client),
+    upstreamKey: client?.upstreamKey || p.upstream,
+    rawSessionId: client?.rawSessionId || null,
   };
 }
 
 module.exports = {
   AGENT_PROVIDERS,
+  OPENAI_WIRE_CLIENTS,
   PROVIDER_AGENT,
   UPSTREAM_PROFILES,
   agentForProvider,
+  agentUsesCwdFallback,
+  describeAgentModule,
+  firstHeaderValue,
   getAgentLaunch,
   getAgentProvider,
   getDisplayName,
+  getOpenAIWireClient,
   getUpstreamProfile,
   isAgentProvider,
   listAgentProviderIds,
+  listRawSessionBuckets,
+  matchOpenAIWireClient,
   normalizeUsageForProvider,
+  resolveOpenAIWireAgent,
   supportedProviderList,
 };

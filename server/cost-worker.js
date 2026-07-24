@@ -9,6 +9,7 @@ const readline = require('readline');
 const os = require('os');
 
 function calculateCostSimple(usage, model) {
+  // Per-token rates (USD). Grok rows mirror server/pricing.js DEFAULT_PRICING / MTok.
   const rates = {
     'claude-sonnet-4-5-20250514': { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6 },
     'claude-opus-4-5-20250514': { input: 15e-6, output: 75e-6, cache_read: 1.5e-6, cache_create: 18.75e-6 },
@@ -18,10 +19,18 @@ function calculateCostSimple(usage, model) {
     'gpt-4o': { input: 2.5e-6, output: 10e-6, cache_read: 1.25e-6, cache_create: 0 },
     'o3': { input: 2e-6, output: 8e-6, cache_read: 0.5e-6, cache_create: 0 },
     'o4-mini': { input: 1.1e-6, output: 4.4e-6, cache_read: 0.55e-6, cache_create: 0 },
+    'grok-4.5': { input: 2e-6, output: 6e-6, cache_read: 0.5e-6, cache_create: 0 },
+    'grok-4.3': { input: 1.25e-6, output: 2.5e-6, cache_read: 0.2e-6, cache_create: 0 },
+    'grok-build': { input: 1e-6, output: 2e-6, cache_read: 0.2e-6, cache_create: 0 },
   };
   let r = null;
-  for (const [k, v] of Object.entries(rates)) {
-    if (model && model.startsWith(k.split('-202')[0])) { r = v; break; }
+  // Longest key first so grok-4.5-build → grok-4.5 (not grok-build).
+  // Prefix strip `-202…` keeps the historical Claude dated-id match.
+  const keys = Object.keys(rates).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    if (!model) break;
+    const prefix = k.split('-202')[0];
+    if (model === k || model.startsWith(k) || model.startsWith(prefix)) { r = rates[k]; break; }
   }
   if (!r) r = { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6 };
   return (usage.input_tokens || 0) * r.input
@@ -166,6 +175,89 @@ async function scanHomes(homes, processFn, seen, entries) {
   }
 }
 
+// Grok CLI does not persist per-turn usage in ~/.grok/sessions (events are
+// phase markers only). The Usage tab therefore reads proxy index lines for
+// agent=grok — the same cost already computed at capture time.
+function entryCostUSD(obj) {
+  if (obj.cost == null) return null;
+  if (typeof obj.cost === 'number' && Number.isFinite(obj.cost)) return obj.cost;
+  if (typeof obj.cost === 'object' && typeof obj.cost.cost === 'number' && Number.isFinite(obj.cost.cost)) {
+    return obj.cost.cost;
+  }
+  return null;
+}
+
+function entryTimestampMs(obj) {
+  if (typeof obj.receivedAt === 'number' && Number.isFinite(obj.receivedAt)) return obj.receivedAt;
+  if (typeof obj.id === 'string' && obj.id.length >= 19) {
+    // id form: 2026-07-19T08-55-50-786
+    const iso = obj.id.slice(0, 10) + 'T' + obj.id.slice(11, 19).replace(/-/g, ':') + 'Z';
+    const ms = Date.parse(iso);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
+}
+
+function processGrokIndexEntry(obj, accountId = 'grok-default') {
+  if (!obj || obj.agent !== 'grok') return null;
+  const usage = obj.usage;
+  if (!usage || typeof usage !== 'object') return null;
+  const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0)
+    + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+  if (totalTokens === 0) return null;
+  const timestamp = entryTimestampMs(obj);
+  if (timestamp == null) return null;
+  const model = obj.model || 'unknown';
+  let costUSD = entryCostUSD(obj);
+  if (costUSD == null) costUSD = calculateCostSimple(usage, model);
+  const messageId = obj.id ? `grok::${obj.id}` : null;
+  return {
+    timestamp,
+    usage,
+    costUSD,
+    model,
+    sessionId: obj.sessionId || null,
+    messageId,
+    accountId,
+  };
+}
+
+function processGrokIndexFile(filePath, accountId = 'grok-default') {
+  return new Promise((resolve) => {
+    const localEntries = [];
+    let rl;
+    try {
+      const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+      rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    } catch { resolve(localEntries); return; }
+
+    rl.on('line', (line) => {
+      if (!line || !line.includes('"agent":"grok"') && !line.includes('"agent": "grok"')) return;
+      let obj;
+      try { obj = JSON.parse(line); } catch { return; }
+      const e = processGrokIndexEntry(obj, accountId);
+      if (e) localEntries.push(e);
+    });
+    rl.on('close', () => resolve(localEntries));
+    rl.on('error', () => resolve(localEntries));
+  });
+}
+
+async function scanGrokFromCcxrayIndex(seen, entries, env = process.env) {
+  // Prefer LOGS_DIR / CCXRAY_HOME so smoke + multi-home tests stay isolated.
+  // Inline path resolution avoids requiring the full server graph in the worker.
+  const home = env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+  const logsDir = env.LOGS_DIR || path.join(home, 'logs');
+  const indexPath = path.join(logsDir, 'index.ndjson');
+  try { await fs.promises.access(indexPath); } catch { return; }
+  const local = await processGrokIndexFile(indexPath, 'grok-default');
+  for (const e of local) {
+    if (e.messageId && seen.has(e.messageId)) continue;
+    if (e.messageId) seen.add(e.messageId);
+    entries.push(e);
+  }
+}
+
 async function run() {
   const seen = new Set();
   const entries = [];
@@ -181,12 +273,22 @@ async function run() {
 
   await scanHomes(claudeHomes, processFile, seen, entries);
   await scanHomes(codexHomes, processCodexFile, seen, entries);
+  await scanGrokFromCcxrayIndex(seen, entries);
 
   entries.sort((a, b) => a.timestamp - b.timestamp);
   process.stdout.write(JSON.stringify(entries));
 }
 
-run().catch(err => {
-  process.stderr.write(err.message);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  run().catch(err => {
+    process.stderr.write(err.message);
+    process.exitCode = 1;
+  });
+} else {
+  module.exports = {
+    calculateCostSimple,
+    processGrokIndexEntry,
+    processGrokIndexFile,
+    scanGrokFromCcxrayIndex,
+  };
+}

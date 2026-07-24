@@ -17,9 +17,16 @@ function formatDuration(seconds) {
 
 function enrichWindow(win, nowS) {
   if (!win) return null;
-  const leftPct = Math.max(0, 100 - win.usedPct);
-  const remaining = win.resetsAt - nowS;
-  const resetLabel = remaining > 0 ? formatDuration(remaining) : '';
+  const usedPct = win.usedPct || 0;
+  // One-decimal left% (weekly quotas can be <<1% used). Null-safe resetsAt.
+  const leftPct = Math.round(Math.max(0, 100 - usedPct) * 10) / 10;
+  // Only emit resetLabel when upstream/provider supplied a real resetsAt.
+  // (Grok leaves resetsAt null — do not invent a countdown.)
+  let resetLabel = '';
+  if (win.resetsAt != null) {
+    const remaining = win.resetsAt - nowS;
+    if (remaining > 0) resetLabel = formatDuration(remaining);
+  }
   return { ...win, leftPct, resetLabel };
 }
 
@@ -38,7 +45,8 @@ function readAllAccounts(statusDir) {
     try {
       const raw = fs.readFileSync(filePath, 'utf8');
       const snap = JSON.parse(raw);
-      if (!snap.id || !snap.fiveHour) continue;
+      // Allow weekly-only snaps (Grok); Claude/Codex always set fiveHour.
+      if (!snap.id || (!snap.fiveHour && !snap.sevenDay && !snap.unlimited)) continue;
 
       accounts.push({
         ...snap,

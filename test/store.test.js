@@ -122,7 +122,7 @@ describe('store', () => {
     });
 
     it('sentinel sessions are never resumable regardless of provider', () => {
-      for (const sid of ['direct-api', 'codex-raw', 'unknown']) {
+      for (const sid of ['direct-api', 'codex-raw', 'grok-raw', 'unknown']) {
         store.markSessionUsage({ sessionId: sid, isSubagent: false, usage: { input_tokens: 5, output_tokens: 3 } });
         assert.deepEqual(store.computeSessionResume(sid, 'openai'), { resumable: false, resumeCommand: null });
         assert.deepEqual(store.computeSessionResume(sid, 'anthropic'), { resumable: false, resumeCommand: null });

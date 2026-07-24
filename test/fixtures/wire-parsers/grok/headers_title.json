@@ -1,0 +1,13 @@
+{
+  "content-type": "application/json",
+  "authorization": "Bearer test-token",
+  "accept": "text/event-stream",
+  "user-agent": "grok-shell/0.2.93 (macos; aarch64)",
+  "x-grok-client-version": "0.2.93",
+  "x-grok-client-identifier": "grok-shell",
+  "x-grok-model-override": "grok-build",
+  "x-grok-session-id": "",
+  "x-grok-conv-id": "",
+  "x-grok-req-id": "",
+  "x-grok-agent-id": ""
+}

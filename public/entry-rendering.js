@@ -971,6 +971,7 @@ evtSource.onmessage = (ev) => {
       _patchEntryInPlace(data);
     } else {
       addEntry(data);
+      if (typeof onCostRelevantEntry === 'function') onCostRelevantEntry(data);
     }
   } catch(err) { console.error(err); }
 };
