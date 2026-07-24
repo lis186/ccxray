@@ -93,6 +93,52 @@ describe('rebuild-index', () => {
     assert.ok(!('responseId' in lines.find(l => l.id === idC)), 'openai line exempt');
   });
 
+  it('#342: add-only backfills identity onto legacy lines whose _req is reconstructable', async () => {
+    writeShared();
+    const { getParser } = require('../server/wire-parsers');
+    const computeConvId = getParser('anthropic').computeConvId;
+
+    // Legacy line: no convId/msgCount/isSubagent keys, _req.json survives.
+    const idL = '2026-07-02T10-00-00-000';
+    const reqBody = {
+      model: 'claude-opus-4-7', max_tokens: 100, sysHash: SYS_HASH,
+      messages: [{ role: 'user', content: 'legacy hello' }, { role: 'assistant', content: 'hi' }],
+      metadata: { session_id: 'S1' },
+    };
+    writeReq(idL, reqBody);
+    writeIndexLine({ id: idL, ts: '10:00:00', sessionId: 'S1', sessionInferred: false, provider: 'anthropic', model: 'claude-opus-4-7', isSSE: true, status: 200 });
+
+    // Legacy line whose _req was pruned → unreconstructable → untouched.
+    const idPruned = '2026-07-02T11-00-00-000';
+    writeIndexLine({ id: idPruned, ts: '11:00:00', sessionId: 'S1', provider: 'anthropic', model: 'claude-opus-4-7' });
+
+    // Already-populated line (convId present) → gate skips it, left verbatim.
+    const idHave = '2026-07-02T12-00-00-000';
+    writeReq(idHave, { ...reqBody, messages: [{ role: 'user', content: 'other' }] });
+    writeIndexLine({ id: idHave, ts: '12:00:00', sessionId: 'S1', provider: 'anthropic', model: 'claude-opus-4-7', convId: 'deadbeef', msgCount: 99 });
+
+    // OpenAI legacy line → exempt.
+    const idO = '2026-07-02T13-00-00-000';
+    writeIndexLine({ id: idO, ts: '13:00:00', sessionId: 'S1', provider: 'openai', model: 'gpt-5' });
+
+    const res = await rebuildIndex({ apply: true, storage, log });
+    assert.equal(res.enrichedIdentity, 1, 'exactly the reconstructable legacy line is identity-enriched');
+
+    const lines = readIndexIds();
+    const L = lines.find(l => l.id === idL);
+    assert.equal(L.convId, computeConvId(reqBody), 'convId matches the live computeConvId of the same body');
+    assert.equal(L.msgCount, 2, 'msgCount backfilled from reconstructed messages');
+    assert.equal(typeof L.isSubagent, 'boolean', 'isSubagent backfilled');
+
+    const P = lines.find(l => l.id === idPruned);
+    assert.ok(!('convId' in P), 'pruned-_req line untouched');
+    const H = lines.find(l => l.id === idHave);
+    assert.equal(H.convId, 'deadbeef', 'already-populated convId not overwritten');
+    assert.equal(H.msgCount, 99, 'already-populated msgCount not overwritten');
+    const O = lines.find(l => l.id === idO);
+    assert.ok(!('convId' in O), 'openai line exempt');
+  });
+
   it('tsFromId / nearestPrecedingSession pure helpers', () => {
     assert.equal(tsFromId('2026-05-01T11-47-17-808'), '11:47:17');
     const tl = [{ id: 'a', sid: 'S1' }, { id: 'm', sid: 'S2' }];

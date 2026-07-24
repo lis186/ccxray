@@ -226,6 +226,10 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const explicitTimeline = []; // [{ id, sid, cwd }] — explicit, non-inferred sessions
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
   let enrichedResponseIds = 0;  // #333 legacy backfill count
+  let enrichedIdentity = 0;     // #342 legacy identity backfill count
+  // Reconstruction cache shared by the existing-line identity backfill (#342)
+  // and the orphan reconstruction pass below (delta ancestors are reused).
+  const cache = new Map();
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -250,6 +254,32 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       try { rid = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (rid) { m.responseId = rid; outLine = JSON.stringify(m); enrichedResponseIds++; }
     }
+    // #342 add-only identity backfill: a legacy line predating identity-field
+    // extraction lacks convId/coreHash/agentKey/msgCount/isSubagent, so lane
+    // inference (ADR 0005/0009/0010) defaults it into the main lane — the
+    // context% sawtooth. When its _req.json is reconstructable, recompute those
+    // fields from the on-disk request and ADD only the ones currently absent —
+    // never overwrite an existing value (#48 never-degrade). Imported lines and
+    // lines whose _req was pruned have no reconstructable body ⇒ untouched.
+    // `convId === undefined` (the key is absent, not a persisted null) is the
+    // legacy-line marker; a value/null convId is added via computeConvId — the
+    // SAME function the live pipeline uses, so the recovered key matches exactly.
+    if (m.convId === undefined && m.provider !== 'openai') {
+      try {
+        const r = await reconstructReq(m.id, storage, cache);
+        const pb = r && r.parsedBody;
+        if (pb && Array.isArray(pb.messages)) {
+          const identity = promptIdentity(pb.system);
+          m.convId = getParser('anthropic').computeConvId(pb); // may be null
+          if (m.coreHash == null && identity.coreHash) m.coreHash = identity.coreHash;
+          if (m.agentKey == null && identity.agentKey) { m.agentKey = identity.agentKey; m.agentLabel = identity.agentLabel; }
+          if (m.msgCount == null) m.msgCount = pb.messages.length;
+          if (m.isSubagent == null) m.isSubagent = store.isAnthropicSubagent(pb);
+          outLine = JSON.stringify(m);
+          enrichedIdentity++;
+        }
+      } catch { /* unreconstructable (_req pruned / delta broken) → leave verbatim */ }
+    }
     existingLineObjs.push({ id: m.id, line: outLine });
     if (m.sessionId && !m.sessionInferred && m.sessionId !== 'direct-api') {
       explicitTimeline.push({ id: m.id, sid: m.sessionId, cwd: m.cwd || null });
@@ -267,7 +297,6 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
 
   // ── 3. Pass 1: reconstruct every orphan body; extend the explicit timeline. ──
   // (Only Anthropic turns survive reconstructReq; non-Anthropic/WS are skipped.)
-  const cache = new Map();
   const recon = []; // { id, parsedBody, explicitSid, prevId }
   let unrecoverable = 0;
   for (const id of orphanIds) {
@@ -382,30 +411,32 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   log(`recovered ${N} / ${M} turns; ${unrecoverable} unrecoverable (source pruned)`);
   log(`  index: ${existingIds.size} existing lines${N ? ` + ${N} recovered` : ''}`);
   if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
+  if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
-  // rewritten lines must be flushed, so the write is gated on either change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0;
+  // rewritten lines must be flushed, so the write is gated on any change.
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
-    return { refused: false, recovered: 0, enriched: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
+    return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
   if (!apply) {
     log(`  dry run — pass --apply to write ${storage.location || 'index.ndjson'}.`);
-    return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
+    return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
   }
 
   // ── 6. Atomic merge-write (local filesystem only). ──
   if (!storage.supportsDelta || !storage.location) {
     log('  --apply needs the local filesystem backend; aborting without writing.');
-    return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: false };
+    return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: false };
   }
   const indexPath = path.join(storage.location, 'index.ndjson');
   const tmpPath = `${indexPath}.rebuild-${process.pid}.tmp`;
-  // Merge existing (verbatim, or add-only responseId-enriched) + recovered,
-  // ordered by id so recovered turns land in chronological position instead of
-  // all at the end. Existing lines are never dropped and never degraded — at
-  // most the additive responseId key is appended to a legacy line (#333).
+  // Merge existing (verbatim, or add-only enriched with responseId #333 /
+  // identity #342) + recovered, ordered by id so recovered turns land in
+  // chronological position instead of all at the end. Existing lines are never
+  // dropped and never degraded — at most additive keys are appended to a legacy
+  // line (#333 responseId, #342 convId/coreHash/agentKey/msgCount/isSubagent).
   const merged = [...existingLineObjs, ...recovered]
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   // #345: stream lines to the temp file — merged.join('\n') would throw
@@ -414,7 +445,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   await writeLinesToFile(tmpPath, merged);
   fs.renameSync(tmpPath, indexPath);
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
-  return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
+  return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
 }
 
 module.exports = { rebuildIndex, reconstructReq, tsFromId, nearestPrecedingSession };
