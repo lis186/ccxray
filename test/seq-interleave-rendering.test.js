@@ -49,6 +49,7 @@ function loadDashboardContext() {
     function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
+    function _apiQ(u) { return u; } // settings.js helper; stub so addEntry's async prefetch/pill fetches don't ReferenceError post-test
   `, context);
   for (const f of ['format.js', 'session-label.js', 'workflow-timeline.js', 'miller-columns.js', 'entry-rendering.js']) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
