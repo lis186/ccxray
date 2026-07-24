@@ -132,24 +132,30 @@ async function restoreFromLogs() {
     console.log(`\x1b[90m   Session index: ${sessionIdx.size()} sessions\x1b[0m`);
   }
 
-  // 1. Read the lightweight index (one file read for all metadata)
+  // 1. Read the lightweight index by STREAMING lines into parsed metas. #345:
+  // the index can exceed Node's ~512MB single-string limit, so we must not call
+  // readIndex() (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and
+  // fail restore. readIndexLines() streams without materializing the whole file.
   console.time('restore:index');
-  const indexContent = await config.storage.readIndex();
+  const parsed = [];
+  for await (const line of config.storage.readIndexLines()) {
+    try { parsed.push(JSON.parse(line)); } catch {}
+  }
   console.timeEnd('restore:index');
 
-  if (!indexContent) {
+  if (!parsed.length) {
     console.timeEnd('restore:total');
     return;
   }
 
   // 1b. Reconcile sessions.json against index.ndjson if loaded (#309)
-  if (sessionIndexLoaded && indexContent) {
-    if (sessionIdx.reconcile(indexContent)) {
+  if (sessionIndexLoaded) {
+    if (sessionIdx.reconcileMetas(parsed)) {
       console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
     }
   }
 
-  // 2. Parse index lines and filter by RESTORE_DAYS
+  // 2. Filter by RESTORE_DAYS
   console.time('restore:parse');
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
@@ -158,12 +164,6 @@ async function restoreFromLogs() {
     cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
   }
 
-  // ponytail: parse JSON once instead of three times per line
-  const parsed = [];
-  for (const line of indexContent.split('\n')) {
-    if (!line) continue;
-    try { parsed.push(JSON.parse(line)); } catch {}
-  }
   let restored = 0;
 
   // Star-protection + session pre-count in one pass over pre-parsed data.
@@ -359,9 +359,9 @@ async function restoreFromLogs() {
 
   // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
   //    then replay titles into the session index.
-  if (!sessionIndexLoaded && indexContent) {
+  if (!sessionIndexLoaded && parsed.length) {
     console.time('restore:session-index-rebuild');
-    sessionIdx.rebuildFromIndexContent(indexContent);
+    sessionIdx.rebuildFromMetas(parsed);
     console.timeEnd('restore:session-index-rebuild');
     console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
   }
