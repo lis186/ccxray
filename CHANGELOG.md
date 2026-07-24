@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.2.0
+
+57 commits since the 2.1.1 patch. The headline is reliability at scale — ccxray now handles 500MB+ index files and multi-thousand-turn sessions without crashing, and the dashboard loads faster with skeleton placeholders and batched rendering.
+
+### Fixed
+
+- **512MB index ceiling (#347/#344).** `index.ndjson` files exceeding Node's single-string limit crashed restore, cold-load, and import. All index reads now stream line-by-line; `ccxray usage` streams too. Index prune rewrites streaming instead of loading the whole file.
+- **Context% sawtooth (#339).** The 1M-window signal (`anthropic-beta: context-1m-*`) was consumed then discarded — never persisted. Turns of the same 1M session rendered 8% beside 40% for the same token count. Now the signal is persisted per-turn (`beta1m`) and a per-session `sessionCtxWindow` fold derives one consistent denominator. Classification (compaction detection, lane placement) keeps raw per-turn `maxContext` untouched.
+- **Swimlane lane scatter + subagent leak (#350 A1).** A subagent conversation was scattered across 3 lanes (main + identity + parallel) and leaked 47 fable turns into main — because `coreHash` lane routing was per-turn, so one anomalous spawn-boundary turn poisoned the whole conversation. Rewritten as per-conversation plurality ownership (`_wfComputeConvIdentity`). Full-corpus leak 784 → 61 (92% down), 0 over-merge.
+- **Context% imported-turn sawtooth (#342).** Imported turns without `maxContext` divided by the 200K default while proxy turns divided by 1M. The swimlane now rescopes to the lane's context window when it exceeds the turn's own.
+- **Session title injection (#353).** Injected `<system-reminder>` XML tags in session titles are stripped.
+- **TLSSocket listener leak (#346).** `MaxListenersExceeded` warning on keep-alive sockets.
+- **Index prune orphans (#344).** `index.ndjson` and `sessions.json` now stay in sync with pruned `_req/_res` files.
+
+### Added
+
+- **Dashboard skeleton loading (#332).** Projects and sessions columns show skeleton placeholders during restore instead of a blank panel.
+- **Per-turn severity on swimlane (#332).** Critical/warning context-pressure and error badges are back on the swimlane turn bars (data-layer, not the removed column).
+- **Hover prefetch for cold sessions (#332).** Hovering a session card pre-fetches its entries so the click feels instant.
+- **Imported entries hidden by default (#332).** Toggle with `?imported` URL param.
+- **rebuild-index backfill.** `ccxray rebuild-index` now backfills `convId`, `coreHash`, `agentKey`, and `responseId` onto legacy lines from surviving `_req/_res` files.
+
+### Architecture
+
+- **ADR 0013** — persist the `beta1m` fact, derive the session window (expert-panel design: Kleppmann/Hickey/Helland/Bailis).
+- **ADR 0010 rewritten by #350** — per-conversation coreHash ownership replaces per-turn early-exit.
+
 ## 2.0.0
 
 Two domain shifts in one release: enforced auth on all endpoints (breaking for direct `/v1/*` callers), and a full workflow-timeline view that visualizes agent concurrency, sequential interleaving, and multi-model sessions. Interactive `ccxray claude` / `ccxray codex` users see no friction — the launcher pre-authenticates the dashboard it opens.
