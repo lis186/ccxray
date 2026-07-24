@@ -825,7 +825,7 @@ function mergeColdSessions(sessions) {
       id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
       count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
       model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
-      title: s.title || null, titleReqTs: 0, lastAssistantText: null,
+      title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
       latestCacheHitRatio: 0, latestCacheReadTokens: 0,
       resumeCommand: null, parentSessionId: null,
@@ -963,6 +963,7 @@ evtSource.onmessage = (ev) => {
       if (sess && data.title && nextTs >= (sess.titleReqTs || 0)) {
         sess.title = data.title;
         sess.titleReqTs = nextTs;
+        if (data.firstPrompt && !sess.firstPrompt) sess.firstPrompt = data.firstPrompt;
         const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
         if (sessEl) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
         if (typeof renderBreadcrumb === 'function') renderBreadcrumb();

@@ -175,7 +175,7 @@ function updateFromEntry(entry) {
 function _upsert(sid, entry) {
   let s = sessionIndex.get(sid);
   if (!s) {
-    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, lastReceivedAt: 0, provider: null, agent: null };
+    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, firstPrompt: null, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
   // #333: bump COUNT once per responseId so the session card shows merged turns,
@@ -231,6 +231,11 @@ function setTitle(sid, title) {
   if (s && title) { s.title = title; _scheduleDirtyFlush(); }
 }
 
+function setFirstPrompt(sid, text) {
+  const s = sessionIndex.get(sid);
+  if (s && text && !s.firstPrompt) { s.firstPrompt = text; _scheduleDirtyFlush(); }
+}
+
 function _scheduleDirtyFlush() {
   dirty = true;
   if (flushTimer) return;
@@ -268,5 +273,5 @@ module.exports = {
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas,
-  updateFromEntry, setTitle, flush, getAll, size,
+  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, size,
 };

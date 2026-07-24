@@ -116,7 +116,8 @@ function flushSessionTitleUpdate(sessionId) {
   const title = store.getSessionTitle(sessionId);
   if (!title) return;
   const titleReqTs = store.sessionMeta[sessionId]?.titleReqTs || null;
-  _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs }));
+  const firstPrompt = store.getSessionFirstPrompt(sessionId);
+  _broadcastAll(JSON.stringify({ _type: 'session_title_update', sessionId, title, titleReqTs, firstPrompt }));
 }
 
 function broadcastSessionTitleUpdate(sessionId, { immediate = false } = {}) {

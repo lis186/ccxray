@@ -1515,8 +1515,9 @@ function renderSessionItem(sess, sid, sessEl) {
   const sdotDataSid = isOnline ? ' data-sid="' + escapeHtml(sid) + '"' : '';
   const heldHtml = isHeld ? '<span class="held-badge" onclick="event.stopPropagation();showInterceptOverlay()">HELD</span>' : '';
   const pinBtn = renderStarBadge('session', sid);
-  const titleRow = sess.title
-    ? '<div class="si-title">' + escapeHtml(sess.title) + '</div>'
+  const displayTitle = sess.title || sess.firstPrompt || null;
+  const titleRow = displayTitle
+    ? '<div class="si-title">' + escapeHtml(displayTitle.slice(0, 100)) + '</div>'
     : '';
   // Resume command is computed server-side; null means this session can't be
   // resumed (e.g. a codex session that only errored before any turn completed).
