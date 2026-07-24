@@ -22,6 +22,8 @@ const {
   getOpenAIOutputSummary, getOpenAIInputSummary, buildResponseMetadata,
 } = require('./openai-response');
 
+const _socketErrorGuard = new WeakSet();
+
 // For title-generator subagent responses, extract the clean title from the
 // JSON payload and (when attribution succeeds) stamp it onto the parent
 // session. Returns the clean title string or null.
@@ -538,7 +540,10 @@ function forwardRequest(ctx) {
     // Late socket errors (EPIPE / ECONNRESET after response received) may not
     // re-emit on the ClientRequest. Listener prevents uncaught-exception crash.
     // Deferred check avoids duplicate logging when proxyReq 'error' already fired.
+    // Keep-alive sockets are reused across requests; guard prevents stacking listeners
     proxyReq.on('socket', (socket) => {
+      if (_socketErrorGuard.has(socket)) return;
+      _socketErrorGuard.add(socket);
       socket.on('error', (err) => {
         setImmediate(() => {
           if (!reqErrorHandled) {
