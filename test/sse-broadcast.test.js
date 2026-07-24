@@ -38,6 +38,13 @@ describe('sse-broadcast', () => {
       assert.equal(summary.resumable, false);
       assert.equal(summary.resumeCommand, null);
     });
+
+    it('#339: carries beta1m through to the client only when true', () => {
+      const withB = summarizeEntry({ id: 'b1', sessionId: 'b1m-sid', provider: 'anthropic', usage: { input_tokens: 1 }, isSubagent: false, beta1m: true });
+      assert.equal(withB.beta1m, true, 'beta1m surfaced so the client fold can derive sessionWindow');
+      const noB = summarizeEntry({ id: 'b2', sessionId: 'b1m-sid', provider: 'anthropic', usage: { input_tokens: 1 }, isSubagent: false });
+      assert.equal(noB.beta1m, undefined, 'no beta1m key when the turn had no 1M signal');
+    });
   });
 
   describe('summarizeEntry', () => {

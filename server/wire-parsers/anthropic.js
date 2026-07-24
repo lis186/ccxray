@@ -98,9 +98,13 @@ function buildEntryFields(ctx) {
     cost: calculateCost(usage, model),
     maxContext: config.inferMaxContext(model, parsedBody?.system, usage, { beta1m: ctx.beta1m }),
     // #339: persist the authoritative 1M signal (not just its effect on maxContext) so
-    // restore/cold-load can derive a per-session context% denominator. Only when true —
-    // absent = no positive signal (monotone OR-fold). See docs/decisions/0013-*.
-    beta1m: ctx.beta1m === true ? true : undefined,
+    // restore/cold-load can derive a per-session context% denominator. Gated exactly like
+    // getMaxContext's beta1m branch (config.js has1mSignal && SUPPORTS_1M) so beta1m on the
+    // log ⟺ "this turn authoritatively ran a 1M window" — the derived fold can trust it
+    // unconditionally, and a stray 1M header on a non-1M model never over-claims. Written
+    // only when true (absent = no positive signal; monotone OR-fold). Classification keeps
+    // raw per-turn maxContext — never derived from this. See docs/decisions/0013-*.
+    beta1m: (ctx.beta1m === true && config.SUPPORTS_1M.test((model || '').replace(/\[.*\]/, ''))) ? true : undefined,
     responseMetadata: undefined,
     stopReason: ctx.stopReason || '',
     title: ctx.title || null,

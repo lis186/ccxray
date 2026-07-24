@@ -133,6 +133,15 @@ test('#339: anthropic beta1m persists to index line only when true (add-only, mo
   assert.equal(noHeader.beta1m, undefined, 'no beta1m field when header absent/false');
   const backNone = JSON.parse(buildIndexLine({ id: 'B', ts: 't', status: 200, isSSE: true, receivedAt: 1, ...noHeader }));
   assert.ok(!('beta1m' in backNone), 'index line carries no beta1m key when the header was absent');
+
+  // Guard (#211 over-claim): a 1M header riding on a non-1M-capable model must NOT persist —
+  // the gate mirrors getMaxContext's `beta1m && SUPPORTS_1M`, so beta1m on the log always
+  // means a genuine 1M window, never a stray client flag on a haiku turn.
+  const nonCapable = getParser('anthropic').buildEntryFields({
+    ...base, beta1m: true,
+    parsedBody: { model: 'claude-haiku-4-5', system: [{ type: 'text', text: 'x' }], messages: [{ role: 'user', content: 'go' }] },
+  });
+  assert.equal(nonCapable.beta1m, undefined, 'beta1m not persisted for a non-1M-capable model even with the header');
 });
 
 test('anthropic convId: stable across turns of one conversation, distinct across instances, null for no text', () => {
