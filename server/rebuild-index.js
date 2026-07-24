@@ -59,6 +59,24 @@ function promptIdentity(system) {
   return { coreHash, agentKey, agentLabel };
 }
 
+// #345: write [{ line }] objects to a file one line at a time (backpressure-
+// aware), never building a single >512MB string via Array.join.
+function writeLinesToFile(filePath, objs) {
+  return new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(filePath);
+    ws.on('error', reject);
+    let i = 0;
+    (function pump() {
+      while (i < objs.length) {
+        const ok = ws.write(objs[i].line + '\n');
+        i++;
+        if (!ok) { ws.once('drain', pump); return; }
+      }
+      ws.end(resolve);
+    })();
+  });
+}
+
 // "2026-05-01T11-47-17-808" → "11:47:17". The id IS a Taipei-local timestamp, so
 // ts (the live pipeline's wall-clock time-of-day) is exact, not a guess.
 function tsFromId(id) {
@@ -203,13 +221,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   // exception: a legacy line that predates the #333 responseId key is enriched
   // with it when its _res.json survives on disk (see below). Unparseable lines
   // are dropped exactly as restoreFromLogs already ignores them.
-  const existingContent = await storage.readIndex();
   const existingIds = new Set();
   const existingLineObjs = []; // [{ id, line }] — preserved verbatim, re-sorted by id on write
   const explicitTimeline = []; // [{ id, sid, cwd }] — explicit, non-inferred sessions
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
   let enrichedResponseIds = 0;  // #333 legacy backfill count
-  for (const line of (existingContent || '').split('\n')) {
+  // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
+  // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
+  for await (const line of storage.readIndexLines()) {
     if (!line.trim()) continue;
     let m;
     try { m = JSON.parse(line); } catch { continue; } // one bad line must not abort
@@ -388,9 +407,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   // all at the end. Existing lines are never dropped and never degraded — at
   // most the additive responseId key is appended to a legacy line (#333).
   const merged = [...existingLineObjs, ...recovered]
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    .map(o => o.line);
-  fs.writeFileSync(tmpPath, merged.join('\n') + '\n');
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // #345: stream lines to the temp file — merged.join('\n') would throw
+  // ERR_STRING_TOO_LONG once the combined index passes ~512MB. (The lines are
+  // still held in memory to sort; a manual recovery CLI can afford that.)
+  await writeLinesToFile(tmpPath, merged);
   fs.renameSync(tmpPath, indexPath);
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
   return { refused: false, recovered: N, enriched: enrichedResponseIds, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
