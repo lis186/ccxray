@@ -423,6 +423,7 @@ function addEntry(e) {
     sess.cwd = entryCwd;
   }
   if (model && model !== '?') sess.model = model;
+  if (e.firstPrompt && !sess.firstPrompt) sess.firstPrompt = e.firstPrompt;
   sess.lastId = entryId;
   if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
   // Prefer the server-detected agent identity (from system-prompt content,

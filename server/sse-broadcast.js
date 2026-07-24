@@ -63,6 +63,7 @@ function summarizeEntry(entry) {
     thinkingStripped: entry.thinkingStripped || false,
     imported: entry.imported || undefined,
     importSource: entry.importSource || undefined,
+    firstPrompt: store.getSessionFirstPrompt(entry.sessionId) || null,
     parentSessionId: store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {
       system: tok.system, tools: tok.tools, messages: tok.messages, total: tok.total,

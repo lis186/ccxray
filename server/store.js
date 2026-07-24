@@ -299,10 +299,12 @@ const socketSessions = new WeakMap();
 // antm?l: handles both the wire-protocol "antml:" and the common "antl:" typo.
 const _INJ_TAGS = 'system-reminder|command-message|command-name|command-args|user-prompt-submit-hook|context|antm?l:function_calls|antm?l:thinking';
 const _INJECTED_PAIR_RE = new RegExp('<(' + _INJ_TAGS + ')[^>]*>[\\s\\S]*?<\\/\\1>', 'g');
+// ponytail: unclosed tag → strip from opening tag to end of string
+const _INJECTED_OPEN_RE = new RegExp('<(?:' + _INJ_TAGS + ')[^>]*>[\\s\\S]*$', 'g');
 const _INJECTED_BARE_RE = new RegExp('</?(?:' + _INJ_TAGS + ')[^>]*>', 'g');
 function stripInjectedTags(text) {
   if (text == null || typeof text !== 'string') return null;
-  const cleaned = text.replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
+  const cleaned = text.replace(_INJECTED_PAIR_RE, '').replace(_INJECTED_OPEN_RE, '').replace(_INJECTED_BARE_RE, '').replace(/\s+/g, ' ').trim();
   return cleaned || null;
 }
 

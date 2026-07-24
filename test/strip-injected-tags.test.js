@@ -36,12 +36,19 @@ describe("stripInjectedTags", () => {
 
   it("strips bare opening tag (no closing pair)", () => {
     assert.strictEqual(stripInjectedTags("<system-reminder>"), null);
-    assert.strictEqual(stripInjectedTags("<system-reminder> real text"), "real text");
+    assert.strictEqual(stripInjectedTags("<system-reminder> real text"), null);
+    assert.strictEqual(stripInjectedTags("real text <system-reminder>injected"), "real text");
   });
 
   it("strips user-prompt-submit-hook tags", () => {
     const input = "<user-prompt-submit-hook>hook output</user-prompt-submit-hook> real text";
     assert.strictEqual(stripInjectedTags(input), "real text");
+  });
+
+
+  it("rejects text with residual unclosed tag content", () => {
+    const input = "<system-reminder>lots of injected content without closing tag";
+    assert.strictEqual(stripInjectedTags(input), null);
   });
 
   it("strips context tags", () => {
