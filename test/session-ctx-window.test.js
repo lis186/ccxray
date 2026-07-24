@@ -51,7 +51,7 @@ function loadCtx() {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
   }
   // Bridge the const/let declarations (they don't attach to the context global) for test access.
-  vm.runInContext('this.allEntries = allEntries; this.sessionCtxWindow = sessionCtxWindow;', context);
+  vm.runInContext('this.allEntries = allEntries; this.sessionCtxWindow = sessionCtxWindow; this.turnCtxWindow = turnCtxWindow;', context);
   return context;
 }
 
@@ -110,5 +110,44 @@ describe('#339 sessionCtxWindow — per-session context% denominator fold', () =
   it('guard does not throw when DEFAULT_MAX_CTX is absent and there is no main turn (win===0)', () => {
     seed(ctx, [{ sessionId: 's5', isSubagent: true, maxContext: 1000000 }]);
     assert.equal(ctx.sessionCtxWindow('s5'), 200000); // typeof guard → literal 200000 fallback
+  });
+});
+
+describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, subagent=own conv)', () => {
+  let ctx;
+  beforeEach(() => { ctx = loadCtx(); });
+
+  it('a main turn delegates to the session window (folds to 1M)', () => {
+    seed(ctx, [
+      { sessionId: 'm1', isSubagent: false, beta1m: true, maxContext: 1000000 },
+      { sessionId: 'm1', isSubagent: false, maxContext: 200000, convId: 'cA' },
+    ]);
+    const mainTurn = ctx.allEntries[1];
+    assert.equal(ctx.turnCtxWindow(mainTurn), 1000000, 'main turn uses the 1M session fold, not its own 200K');
+  });
+
+  it('a subagent uses its OWN conversation window, not the session 1M (#211 guard, one level down)', () => {
+    // A 200K haiku subagent inside a 1M-capable session must stay 200K.
+    seed(ctx, [
+      { sessionId: 's', isSubagent: false, beta1m: true, maxContext: 1000000 },      // main is 1M
+      { sessionId: 's', isSubagent: true, convId: 'sub1', maxContext: 200000 },        // subagent turn A
+      { sessionId: 's', isSubagent: true, convId: 'sub1', maxContext: 200000 },        // subagent turn B (same conv)
+    ]);
+    const subTurn = ctx.allEntries[1];
+    assert.equal(ctx.turnCtxWindow(subTurn), 200000, 'subagent stays 200K despite the 1M main session');
+  });
+
+  it('a subagent conversation that itself ran 1M folds to 1M across its turns', () => {
+    seed(ctx, [
+      { sessionId: 's', isSubagent: true, convId: 'sub2', beta1m: true, maxContext: 1000000 },
+      { sessionId: 's', isSubagent: true, convId: 'sub2', maxContext: 200000 }, // no beta1m, but same conv ran 1M
+    ]);
+    const later = ctx.allEntries[1];
+    assert.equal(ctx.turnCtxWindow(later), 1000000, 'the 200K turn folds up to the conv 1M window');
+  });
+
+  it('a subagent with no convId falls back to its own maxContext', () => {
+    seed(ctx, [{ sessionId: 's', isSubagent: true, maxContext: 200000 }]);
+    assert.equal(ctx.turnCtxWindow(ctx.allEntries[0]), 200000);
   });
 });

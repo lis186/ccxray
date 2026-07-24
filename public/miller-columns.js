@@ -22,6 +22,26 @@ function sessionCtxWindow(sid) {
   // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
   return has1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));
 }
+
+// #339: the context% denominator for ONE turn's timeline minimap. A main turn uses the
+// session window; a SUBAGENT uses its OWN conversation's window (fold over same-convId
+// subagent turns) — a 200K haiku subagent inside a 1M session must stay 200K, never borrow
+// the session's 1M (the #211 over-latch guard, one level down). Both beta1m-aware. Falls
+// back to the turn's own maxContext when it has no convId (legacy). See ADR 0013.
+function turnCtxWindow(e) {
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  if (!e) return DEF;
+  if (!e.isSubagent) return sessionCtxWindow(e.sessionId);
+  if (!e.convId) return e.maxContext || DEF;
+  let win = 0, has1m = false;
+  for (let i = 0; i < allEntries.length; i++) {
+    const x = allEntries[i];
+    if (!x.isSubagent || x.convId !== e.convId) continue;
+    if (x.beta1m === true) has1m = true;
+    if ((x.maxContext || 0) > win) win = x.maxContext;
+  }
+  return has1m ? 1000000 : (win || e.maxContext || DEF);
+}
 const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, cwd }
 const projectsMap = new Map(); // projectName → { name, totalCost, sessionIds, firstId, lastId }
 const sessionStatusMap = new Map(); // sid → { active: bool, lastSeenAt: number|null }
@@ -2841,7 +2861,7 @@ function renderDetailCol() {
           + '</div>';
         const previewStepsHtml = renderStepListHtml(currentSteps, getActiveStepKey(), e.toolSources);
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
-          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, (e.isSubagent ? e.maxContext : sessionCtxWindow(e.sessionId)), e.usage)
+          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
