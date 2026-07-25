@@ -67,11 +67,13 @@ function loadDashboardContext() {
     this.sessionsMap = sessionsMap;
     this.selectedSessionId = null;
     _loading = true;
+    _batchRestoring = true;
   `, context);
   return context;
 }
 
 function setLoading(ctx, v) { vm.runInContext('_loading = ' + (v ? 'true' : 'false') + ';', ctx); }
+function setBatchRestoring(ctx, v) { vm.runInContext('_batchRestoring = ' + (v ? 'true' : 'false') + ';', ctx); }
 
 // A session index row as /_api/sessions serves it (what mergeColdSessions eats).
 function coldRow(sid, over) {
@@ -140,9 +142,30 @@ describe('#330 cold→hot session promotion (mergeColdSessions race)', () => {
     ctx.mergeColdSessions([coldRow(SID)]);
     assert.equal(ctx.sessionsMap.get(SID)._cold, true, 'setup: cold');
 
+    setBatchRestoring(ctx, false);
     setLoading(ctx, false);
     try { ctx.addEntry(mkTurn(SID)); } catch (_) { /* live render path unstubbed; gate already decided */ }
 
     assert.equal(ctx.sessionsMap.get(SID)._cold, true, 'post-load live entry must keep _cold (G2)');
+  });
+
+  // Codex review P2: SSE live entry arriving during _loading (but outside
+  // _batchRestoring) must NOT promote a cold session. This catches the case
+  // where a genuine cold session gets a live turn while the initial batch is
+  // still loading — _loading is true but _batchRestoring is false between
+  // requestAnimationFrame yields or before/after _restoreEntryBatch.
+  it('does NOT promote a cold session on an SSE entry during _loading (G2, codex P2)', () => {
+    const ctx = loadDashboardContext();
+    const SID = 'sse_during_load';
+    ctx.mergeColdSessions([coldRow(SID)]);
+    assert.equal(ctx.sessionsMap.get(SID)._cold, true, 'setup: cold');
+
+    // _loading=true but _batchRestoring=false simulates an SSE entry arriving
+    // between batch chunks or before _restoreEntryBatch starts.
+    setBatchRestoring(ctx, false);
+    // _loading stays true (default from loadDashboardContext)
+    try { ctx.addEntry(mkTurn(SID)); } catch (_) { /* live render path unstubbed */ }
+
+    assert.equal(ctx.sessionsMap.get(SID)._cold, true, 'SSE during _loading must keep _cold (codex P2)');
   });
 });
