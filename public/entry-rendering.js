@@ -413,6 +413,24 @@ function addEntry(e) {
     }
   }
   const sess = sessionsMap.get(sid);
+  // #330: a mergeColdSessions race (the sessions API resolving before the
+  // entries batch) can mark a hot session `_cold` while `_loading`, before its
+  // own batch entries reach addEntry. Those entries then arrive here, find the
+  // session already in sessionsMap, skip the creation block above, and leave
+  // `_cold` set — so the session shows a permanent "Loading N turns" spinner and
+  // the post-batch recompute (which skips `_cold` sessions) keeps its stub stats.
+  // Promote it: reaching this addEntry during the batch means the session's full
+  // history is flowing into allEntries, so clearing `_cold` lets the post-batch
+  // recompute rebuild real stats from allEntries. Scoped to `_loading` on purpose
+  // (the race only exists during the batch load): a post-load live entry to a
+  // genuine cold session is a normal resume whose history is still on disk, and
+  // must stay `_cold` so a click lazy-loads that history instead of rendering the
+  // lone live tail. See issue #330 (G1: batch-loaded ⇒ not cold; G2: keep genuine
+  // cold sessions cold).
+  if (_loading && sess._cold) {
+    sess._cold = false;
+    if (sess.firstTs == null) sess.firstTs = e.ts;
+  }
   if (e.truncated) { sess.truncated = true; sess.totalEntryCount = e.totalEntryCount; }
   // Resume command is computed server-side (single source of truth). Sticky:
   // once any turn reports a command, keep it even if later turns lack usage.
