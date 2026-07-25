@@ -1239,15 +1239,15 @@ async function _restoreEntryBatch(entries, opts) {
   const total = opts.total || entries.length;
   const base = opts.base || 0;
   const label = opts.label || 'Restoring';
-  _batchRestoring = true; // #330: only promote cold→hot during batch restore
   for (let i = 0; i < entries.length; i += chunk) {
+    _batchRestoring = true; // #330: only promote cold→hot during synchronous batch chunk
     entries.slice(i, i + chunk).forEach(addEntry);
+    _batchRestoring = false;
     if (i + chunk < entries.length) {
       _setLoadingStatus(label + '… ' + (base + i + chunk) + ' / ' + total);
       await new Promise(r => requestAnimationFrame(r));
     }
   }
-  _batchRestoring = false;
 }
 
 Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , sessionsData]) => {
