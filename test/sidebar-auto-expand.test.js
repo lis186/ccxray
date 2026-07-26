@@ -83,6 +83,7 @@ describe('#358 maybeAutoExpandSidebar', () => {
 
   it('collapsed + session selected (?s= deep link, #206) → stays collapsed', () => {
     const { ctx, store } = loadAppJs({ collapsed: true });
+    ctx._entriesLoading = false;
     ctx.selectedSessionId = 'abc123';
     assert.equal(ctx.maybeAutoExpandSidebar(), false);
     assert.equal(ctx.isSidebarCollapsed(), true);
@@ -109,6 +110,14 @@ describe('#358 maybeAutoExpandSidebar', () => {
     ctx.selectedProjectName = 'my-project';
     ctx.maybeAutoExpandSidebar();
     assert.equal(focusCalls.at(-1), 'sessions');
+  });
+
+  it('selectProject wiring: maybeAutoExpandSidebar called after clearing session (r7)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'miller-columns.js'), 'utf8');
+    const clearIdx = src.indexOf('selectedSessionId = null', src.indexOf('function selectProject'));
+    const expandIdx = src.indexOf('maybeAutoExpandSidebar()', clearIdx);
+    assert.ok(clearIdx > 0, 'selectProject clears selectedSessionId');
+    assert.ok(expandIdx > clearIdx, 'maybeAutoExpandSidebar called after clearing session');
   });
 
   it('boot chain wiring: entry-rendering.js calls it after restoreTabFromUrl (view gate, codex r1)', () => {
@@ -142,6 +151,7 @@ describe('#358 maybeAutoExpandSidebar', () => {
 
   it('switch back to dashboard with a session selected → stays collapsed', () => {
     const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx._entriesLoading = false;
     ctx.restoreTabFromUrl();
     ctx.selectedSessionId = 'abc123';
     ctx.switchTab('dashboard');

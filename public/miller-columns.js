@@ -1773,13 +1773,16 @@ function selectProject(name) {
   clearSelectedStepSelection();
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
-  // Clear workflow timeline
+  // Clear workflow timeline + split-view state
   if (typeof wfState !== 'undefined') wfState = null;
-  document.getElementById('columns').classList.remove('wf-active');
+  isFocusedMode = false;
+  document.getElementById('columns').classList.remove('wf-active', 'focused');
   var wfEl = document.getElementById('wf-timeline');
   if (wfEl) wfEl.remove();
   renderBreadcrumb();
   setFocus('projects');
+  // #358 r7: clearing the session while collapsed → dead-end blank; expand.
+  if (typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
 }
 
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }
