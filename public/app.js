@@ -126,6 +126,9 @@ function applySidebarState() {
 }
 
 function toggleSidebar() {
+  // #358 prevention: collapsing with no session selected → dead-end blank page.
+  // Expand direction always allowed (boot rescue / manual expand).
+  if (!sidebarCollapsed && !(typeof selectedSessionId !== 'undefined' && selectedSessionId)) return;
   sidebarCollapsed = !sidebarCollapsed;
   localStorage.setItem(SIDEBAR_COLLAPSE_KEY, sidebarCollapsed ? '1' : '0');
   applySidebarState();

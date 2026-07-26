@@ -56,7 +56,9 @@ function loadAppJs({ collapsed, search = '' }) {
     loadCostPage() {},
     openSystemPromptPanel() {},
     selectedProjectName: null,
+    focusedCol: 'projects',
     setFocus(col) { focusCalls.push(col); },
+    renderCmdBar() {},
   };
   context.window = context;
   vm.createContext(context);
@@ -166,6 +168,30 @@ describe('#358 maybeAutoExpandSidebar', () => {
     ctx._entriesLoading = false; // boot settled, still nothing selected
     ctx.switchTab('usage');
     ctx.switchTab('dashboard'); // same path now expands
+    assert.equal(ctx.isSidebarCollapsed(), false);
+    assert.equal(store['ccxray-sidebar-collapsed'], '0');
+  });
+
+  // ── R6: source prevention — toggleSidebar gate ──
+
+  it('expanded + no session → toggleSidebar refuses to collapse (r6 prevention)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: false });
+    ctx.toggleSidebar(); // attempt collapse with no selectedSessionId
+    assert.equal(ctx.isSidebarCollapsed(), false, 'must stay expanded');
+    assert.equal(store['ccxray-sidebar-collapsed'], '0', 'localStorage must not flip');
+  });
+
+  it('expanded + session selected → toggleSidebar collapses normally (#206 compat)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: false });
+    ctx.selectedSessionId = 'abc123';
+    ctx.toggleSidebar();
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    assert.equal(store['ccxray-sidebar-collapsed'], '1');
+  });
+
+  it('collapsed + no session → toggleSidebar still expands (rescue direction always allowed)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true });
+    ctx.toggleSidebar(); // expand direction — always permitted
     assert.equal(ctx.isSidebarCollapsed(), false);
     assert.equal(store['ccxray-sidebar-collapsed'], '0');
   });
