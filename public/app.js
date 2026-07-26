@@ -148,7 +148,8 @@ function maybeAutoExpandSidebar() {
   // codex r3: while boot is still restoring (entry-rendering.js sets this
   // false right before auto-select/deep-link settle), a tab-return sees a
   // transiently-null selection — don't rewrite the preference until settled.
-  if (window._entriesLoading) return false;
+  // ponytail: undefined = entry-rendering.js hasn't loaded yet → still booting
+  if (window._entriesLoading !== false) return false;
   if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
   toggleSidebar();
   return true;

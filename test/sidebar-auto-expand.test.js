@@ -69,6 +69,7 @@ describe('#358 maybeAutoExpandSidebar', () => {
 
   it('collapsed + no session selected → expands and persists to localStorage', () => {
     const { ctx, store } = loadAppJs({ collapsed: true });
+    ctx._entriesLoading = false; // boot settled
     assert.equal(ctx.isSidebarCollapsed(), true);
     assert.equal(ctx.maybeAutoExpandSidebar(), true);
     assert.equal(ctx.isSidebarCollapsed(), false);
@@ -110,6 +111,7 @@ describe('#358 maybeAutoExpandSidebar', () => {
 
   it('switch back to dashboard, still nothing selected → expands at that moment', () => {
     const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx._entriesLoading = false; // boot settled
     ctx.restoreTabFromUrl();
     ctx.maybeAutoExpandSidebar(); // boot-end check: no-op off-dashboard
     assert.equal(ctx.isSidebarCollapsed(), true);
@@ -123,6 +125,15 @@ describe('#358 maybeAutoExpandSidebar', () => {
     ctx.restoreTabFromUrl();
     ctx.selectedSessionId = 'abc123';
     ctx.switchTab('dashboard');
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    assert.equal(store['ccxray-sidebar-collapsed'], '1');
+  });
+
+  it('_entriesLoading undefined (entry-rendering.js not yet loaded) → no expand, localStorage stays 1 (codex r4)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true });
+    // window._entriesLoading is undefined — app.js loaded, entry-rendering.js hasn't
+    assert.equal(ctx._entriesLoading, undefined);
+    assert.equal(ctx.maybeAutoExpandSidebar(), false);
     assert.equal(ctx.isSidebarCollapsed(), true);
     assert.equal(store['ccxray-sidebar-collapsed'], '1');
   });
