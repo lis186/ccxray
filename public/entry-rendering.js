@@ -1337,6 +1337,9 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   } else if (sessionsMap.size) {
     initAutoSelect();
   }
+  // #358: nothing ended up selected → auto-expand a collapsed sidebar so the
+  // dashboard isn't a blank page with no expand affordance.
+  if (typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
   // #308: re-render selected session card after recompute (deep link may have
   // selected a session whose stats were recomputed but card not yet refreshed)
   if (selectedSessionId) {

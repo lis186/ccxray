@@ -132,6 +132,18 @@ function toggleSidebar() {
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 window.isSidebarCollapsed = () => sidebarCollapsed;
+
+// #358: boot ended with no session selected while the sidebar is collapsed —
+// all visible columns are empty and the |▷ expand button only renders in the
+// timeline header (needs a selected session), so the page is a dead-end blank.
+// Called once at the end of the boot chain (entry-rendering.js).
+function maybeAutoExpandSidebar() {
+  if (!sidebarCollapsed) return false;
+  if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
+  toggleSidebar();
+  return true;
+}
+
 applySidebarState();
 
 // ── Unified Escape + tab switching handler ──────────────────────────
