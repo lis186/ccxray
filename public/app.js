@@ -23,6 +23,9 @@ function switchTab(tab, forceDiff) {
   if (tab === 'dashboard' && typeof exitFocusedMode === 'function' && typeof isFocusedMode !== 'undefined' && isFocusedMode) {
     exitFocusedMode();
   }
+  // #358 codex r1: returning to dashboard with nothing selected + collapsed
+  // sidebar is the same blank dead-end — expand now (idempotent no-op otherwise).
+  if (tab === 'dashboard') maybeAutoExpandSidebar();
   const costPage = document.getElementById('cost-page');
   const diffOverlay = document.getElementById('diff-overlay');
   if (tab === 'usage') {
@@ -139,6 +142,9 @@ window.isSidebarCollapsed = () => sidebarCollapsed;
 // Called once at the end of the boot chain (entry-rendering.js).
 function maybeAutoExpandSidebar() {
   if (!sidebarCollapsed) return false;
+  // codex r1: only the dashboard view shows the sidebar — a ?view=usage/
+  // sysprompt boot must not silently rewrite the collapse preference.
+  if (activeTab !== 'dashboard') return false;
   if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
   toggleSidebar();
   return true;

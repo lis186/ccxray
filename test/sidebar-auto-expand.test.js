@@ -22,12 +22,14 @@ function makeElement() {
         const on = force === undefined ? !classes.has(name) : !!force;
         if (on) classes.add(name); else classes.delete(name);
       },
+      add: (n) => classes.add(n),
+      remove: (n) => classes.delete(n),
       contains: (n) => classes.has(n),
     },
   };
 }
 
-function loadAppJs({ collapsed }) {
+function loadAppJs({ collapsed, search = '' }) {
   const store = { 'ccxray-sidebar-collapsed': collapsed ? '1' : '0' };
   const elements = new Map();
   const context = {
@@ -47,9 +49,11 @@ function loadAppJs({ collapsed }) {
       addEventListener() {},
     },
     history: { pushState() {}, replaceState() {} },
-    location: { search: '', pathname: '/' },
+    location: { search, pathname: '/' },
     addEventListener() {},
     URLSearchParams,
+    loadCostPage() {},
+    openSystemPromptPanel() {},
   };
   context.window = context;
   vm.createContext(context);
@@ -86,11 +90,40 @@ describe('#358 maybeAutoExpandSidebar', () => {
     assert.equal(store['ccxray-sidebar-collapsed'], '0');
   });
 
-  it('boot chain wiring: entry-rendering.js calls it after deep-link/auto-select', () => {
+  it('boot chain wiring: entry-rendering.js calls it after restoreTabFromUrl (view gate, codex r1)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'entry-rendering.js'), 'utf8');
     const autoSelectIdx = src.indexOf('initAutoSelect()');
+    const restoreTabIdx = src.indexOf('restoreTabFromUrl()');
     const callIdx = src.indexOf('maybeAutoExpandSidebar()');
     assert.ok(autoSelectIdx > 0, 'initAutoSelect call present');
-    assert.ok(callIdx > autoSelectIdx, 'maybeAutoExpandSidebar called after the auto-select block');
+    assert.ok(restoreTabIdx > autoSelectIdx, 'restoreTabFromUrl after auto-select block');
+    assert.ok(callIdx > restoreTabIdx, 'maybeAutoExpandSidebar called after restoreTabFromUrl');
+  });
+
+  it('?view=usage boot → gated off, localStorage stays 1 (codex r1)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx.restoreTabFromUrl(); // boot chain switches tab before the expand check
+    assert.equal(ctx.maybeAutoExpandSidebar(), false);
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    assert.equal(store['ccxray-sidebar-collapsed'], '1');
+  });
+
+  it('switch back to dashboard, still nothing selected → expands at that moment', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx.restoreTabFromUrl();
+    ctx.maybeAutoExpandSidebar(); // boot-end check: no-op off-dashboard
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    ctx.switchTab('dashboard'); // dashboard branch calls maybeAutoExpandSidebar
+    assert.equal(ctx.isSidebarCollapsed(), false);
+    assert.equal(store['ccxray-sidebar-collapsed'], '0');
+  });
+
+  it('switch back to dashboard with a session selected → stays collapsed', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx.restoreTabFromUrl();
+    ctx.selectedSessionId = 'abc123';
+    ctx.switchTab('dashboard');
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    assert.equal(store['ccxray-sidebar-collapsed'], '1');
   });
 });
