@@ -152,6 +152,7 @@ function maybeAutoExpandSidebar() {
   if (window._entriesLoading !== false) return false;
   if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
   toggleSidebar();
+  setFocus(selectedProjectName ? 'sessions' : 'projects');
   return true;
 }
 

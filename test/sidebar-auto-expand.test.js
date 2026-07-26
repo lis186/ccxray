@@ -32,6 +32,7 @@ function makeElement() {
 function loadAppJs({ collapsed, search = '' }) {
   const store = { 'ccxray-sidebar-collapsed': collapsed ? '1' : '0' };
   const elements = new Map();
+  const focusCalls = [];
   const context = {
     console,
     localStorage: {
@@ -54,11 +55,13 @@ function loadAppJs({ collapsed, search = '' }) {
     URLSearchParams,
     loadCostPage() {},
     openSystemPromptPanel() {},
+    selectedProjectName: null,
+    setFocus(col) { focusCalls.push(col); },
   };
   context.window = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8'), context);
-  return { ctx: context, store };
+  return { ctx: context, store, focusCalls };
 }
 
 describe('#358 maybeAutoExpandSidebar', () => {
@@ -89,6 +92,21 @@ describe('#358 maybeAutoExpandSidebar', () => {
     assert.equal(ctx.maybeAutoExpandSidebar(), false);
     assert.equal(ctx.isSidebarCollapsed(), false);
     assert.equal(store['ccxray-sidebar-collapsed'], '0');
+  });
+
+  it('auto-expand refocuses to projects when no project selected (codex r5)', () => {
+    const { ctx, focusCalls } = loadAppJs({ collapsed: true });
+    ctx._entriesLoading = false;
+    ctx.maybeAutoExpandSidebar();
+    assert.equal(focusCalls.at(-1), 'projects');
+  });
+
+  it('auto-expand refocuses to sessions when a project is selected (codex r5)', () => {
+    const { ctx, focusCalls } = loadAppJs({ collapsed: true });
+    ctx._entriesLoading = false;
+    ctx.selectedProjectName = 'my-project';
+    ctx.maybeAutoExpandSidebar();
+    assert.equal(focusCalls.at(-1), 'sessions');
   });
 
   it('boot chain wiring: entry-rendering.js calls it after restoreTabFromUrl (view gate, codex r1)', () => {
