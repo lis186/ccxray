@@ -1781,8 +1781,10 @@ function selectProject(name) {
   if (wfEl) wfEl.remove();
   renderBreadcrumb();
   setFocus('projects');
-  // #358 r7: clearing the session while collapsed → dead-end blank; expand.
-  if (typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
+  // #358 r7/r8: breadcrumb root (name===null) clears session while collapsed →
+  // dead-end blank; expand. Gated on null so initAutoSelect / deep-link
+  // (which pass a real name, then selectSession) don't mis-expand mid-nav.
+  if (name === null && typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
 }
 
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }

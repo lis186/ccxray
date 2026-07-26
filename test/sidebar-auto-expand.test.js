@@ -112,12 +112,16 @@ describe('#358 maybeAutoExpandSidebar', () => {
     assert.equal(focusCalls.at(-1), 'sessions');
   });
 
-  it('selectProject wiring: maybeAutoExpandSidebar called after clearing session (r7)', () => {
+  it('selectProject wiring: maybeAutoExpandSidebar gated on name===null (r7/r8)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', 'public', 'miller-columns.js'), 'utf8');
-    const clearIdx = src.indexOf('selectedSessionId = null', src.indexOf('function selectProject'));
+    const fnStart = src.indexOf('function selectProject');
+    const clearIdx = src.indexOf('selectedSessionId = null', fnStart);
     const expandIdx = src.indexOf('maybeAutoExpandSidebar()', clearIdx);
     assert.ok(clearIdx > 0, 'selectProject clears selectedSessionId');
     assert.ok(expandIdx > clearIdx, 'maybeAutoExpandSidebar called after clearing session');
+    // r8: gated on name===null so initAutoSelect/deep-link don't mis-expand
+    const gateIdx = src.lastIndexOf('name === null', expandIdx);
+    assert.ok(gateIdx > fnStart && gateIdx < expandIdx, 'gated on name===null');
   });
 
   it('boot chain wiring: entry-rendering.js calls it after restoreTabFromUrl (view gate, codex r1)', () => {
