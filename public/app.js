@@ -145,6 +145,10 @@ function maybeAutoExpandSidebar() {
   // codex r1: only the dashboard view shows the sidebar — a ?view=usage/
   // sysprompt boot must not silently rewrite the collapse preference.
   if (activeTab !== 'dashboard') return false;
+  // codex r3: while boot is still restoring (entry-rendering.js sets this
+  // false right before auto-select/deep-link settle), a tab-return sees a
+  // transiently-null selection — don't rewrite the preference until settled.
+  if (window._entriesLoading) return false;
   if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
   toggleSidebar();
   return true;

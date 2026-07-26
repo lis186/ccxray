@@ -126,4 +126,18 @@ describe('#358 maybeAutoExpandSidebar', () => {
     assert.equal(ctx.isSidebarCollapsed(), true);
     assert.equal(store['ccxray-sidebar-collapsed'], '1');
   });
+
+  it('tab-return during boot (_entriesLoading) → deferred; after boot settles → expands (codex r3)', () => {
+    const { ctx, store } = loadAppJs({ collapsed: true, search: '?view=usage' });
+    ctx.restoreTabFromUrl();
+    ctx._entriesLoading = true; // window === context: boot restore in flight
+    ctx.switchTab('dashboard'); // selection transiently null — must NOT rewrite
+    assert.equal(ctx.isSidebarCollapsed(), true);
+    assert.equal(store['ccxray-sidebar-collapsed'], '1');
+    ctx._entriesLoading = false; // boot settled, still nothing selected
+    ctx.switchTab('usage');
+    ctx.switchTab('dashboard'); // same path now expands
+    assert.equal(ctx.isSidebarCollapsed(), false);
+    assert.equal(store['ccxray-sidebar-collapsed'], '0');
+  });
 });
