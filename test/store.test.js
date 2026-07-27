@@ -618,4 +618,171 @@ describe('store', () => {
       assert.equal(result, null);
     });
   });
+
+  // ── context_management + fail-closed heuristic ───────────────────────
+  // P0 bug: context_management format (no req.system) caused extractCwd to
+  // return null → looksSubagent true → cross-project false link.
+
+  describe('extractCwd – context_management format', () => {
+    it('extracts cwd from "Primary working directory" in messages[0].content', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'Primary working directory: /home/user/project\nOther info' },
+        ] }],
+      };
+      assert.equal(store.extractCwd(req), '/home/user/project');
+    });
+
+    it('falls back to CLAUDE.md path', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'Contents of /home/user/project/CLAUDE.md (project instructions):\n# Docs' },
+        ] }],
+      };
+      assert.equal(store.extractCwd(req), '/home/user/project');
+    });
+
+    it('returns null when neither pattern matches', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'Just some text with no path info.' },
+        ] }],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
+
+    it('still works for traditional system blocks', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ text: 'Primary working directory: /trad/project' }],
+        messages: [{ role: 'user', content: 'hi' }],
+      };
+      assert.equal(store.extractCwd(req), '/trad/project');
+    });
+
+    it('prefers traditional system block over messages content', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ text: 'Primary working directory: /from/system' }],
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: 'Primary working directory: /from/messages' },
+        ] }],
+      };
+      assert.equal(store.extractCwd(req), '/from/system');
+    });
+  });
+
+  describe('isAnthropicSubagent – context_management guard', () => {
+    it('returns false for context_management requests', () => {
+      const store = require('../server/store');
+      const req = { context_management: { edits: [] }, messages: [{ role: 'user', content: 'hi' }] };
+      assert.equal(store.isAnthropicSubagent(req), false);
+    });
+  });
+
+  describe('isLikelySubagent – context_management guard', () => {
+    it('returns false for context_management requests', () => {
+      const store = require('../server/store');
+      const req = { context_management: { edits: [] }, messages: [{ role: 'user', content: 'hi' }] };
+      assert.equal(store.isLikelySubagent(req), false);
+    });
+  });
+
+  describe('linkParentSession – fail-closed heuristic', () => {
+    it('does NOT link context_management session (hasMainSignal)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.detectSession(mainReq('parent-fc1', 3));
+      store.activeRequests['parent-fc1'] = 1;
+      store.sessionMeta['parent-fc1'] = { cwd: '/proj-a', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const ctxBody = {
+        context_management: { edits: [] },
+        metadata: { session_id: 'child-fc1' },
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      };
+      store.detectSession(ctxBody);
+      store.sessionMeta['child-fc1'] = store.sessionMeta['child-fc1'] || {};
+      store.sessionMeta['child-fc1'].lastSeenAt = Date.now();
+
+      assert.equal(store.linkParentSession('child-fc1', ctxBody, false), null);
+    });
+
+    it('does NOT link session with system blocks (hasMainSignal)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.detectSession(mainReq('parent-fc2', 3));
+      store.activeRequests['parent-fc2'] = 1;
+      store.sessionMeta['parent-fc2'] = { cwd: '/proj-a', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const sysBody = {
+        system: [{ text: 'You are helpful.' }],
+        metadata: { session_id: 'child-fc2' },
+        messages: [{ role: 'user', content: 'hi' }],
+      };
+      store.detectSession(sysBody);
+      store.sessionMeta['child-fc2'] = store.sessionMeta['child-fc2'] || {};
+      store.sessionMeta['child-fc2'].lastSeenAt = Date.now();
+
+      assert.equal(store.linkParentSession('child-fc2', sysBody, false), null);
+    });
+
+    it('does NOT link session with tools (hasMainSignal)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.detectSession(mainReq('parent-fc3', 3));
+      store.activeRequests['parent-fc3'] = 1;
+      store.sessionMeta['parent-fc3'] = { cwd: '/proj-a', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const toolBody = {
+        metadata: { session_id: 'child-fc3' },
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [{ name: 'Read' }, { name: 'Write' }],
+      };
+      store.detectSession(toolBody);
+      store.sessionMeta['child-fc3'] = store.sessionMeta['child-fc3'] || {};
+      store.sessionMeta['child-fc3'].lastSeenAt = Date.now();
+
+      assert.equal(store.linkParentSession('child-fc3', toolBody, false), null);
+    });
+
+    it('still links bare request (no main signal, ≤2 msgs)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.detectSession(mainReq('parent-fc4', 3));
+      store.activeRequests['parent-fc4'] = 1;
+      store.sessionMeta['parent-fc4'] = { cwd: '/proj-a', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const bareBody = {
+        metadata: { session_id: 'child-fc4' },
+        messages: [{ role: 'user', content: 'research this' }],
+      };
+      store.detectSession(bareBody);
+      store.sessionMeta['child-fc4'] = store.sessionMeta['child-fc4'] || {};
+      store.sessionMeta['child-fc4'].lastSeenAt = Date.now();
+
+      assert.equal(store.linkParentSession('child-fc4', bareBody, false), 'parent-fc4');
+    });
+
+    it('still links when isSubagentHint is true (Codex header)', () => {
+      const store = require('../server/store');
+      resetSessionState(store);
+      store.detectSession(mainReq('parent-fc5', 3));
+      store.activeRequests['parent-fc5'] = 1;
+      store.sessionMeta['parent-fc5'] = { cwd: '/proj-a', lastSeenAt: Date.now(), bannerPrinted: true };
+
+      const codexBody = mainReq('child-fc5', 2);
+      store.detectSession(codexBody);
+      store.sessionMeta['child-fc5'] = store.sessionMeta['child-fc5'] || {};
+      store.sessionMeta['child-fc5'].lastSeenAt = Date.now();
+
+      assert.equal(store.linkParentSession('child-fc5', codexBody, true), 'parent-fc5');
+    });
+  });
 });

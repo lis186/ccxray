@@ -332,10 +332,29 @@ function isQuotaCheck(req) {
 
 function extractCwd(req) {
   if (isQuotaCheck(req)) return '(quota-check)';
-  if (!req?.system) return null;
-  const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
-  const m = txt.match(/Primary working directory: (.+)/);
-  return m ? m[1].trim() : null;
+  if (req?.system) {
+    const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
+    const m = txt.match(/Primary working directory: (.+)/);
+    if (m) return m[1].trim();
+    return null;
+  }
+  // context_management format: system content in messages[0].content[] blocks.
+  // Defense-in-depth for project attribution (sessionMeta.cwd).
+  if (req?.context_management && Array.isArray(req?.messages?.[0]?.content)) {
+    for (const block of req.messages[0].content) {
+      if (block?.type === 'text' && typeof block.text === 'string') {
+        const m = block.text.match(/Primary working directory: (.+)/);
+        if (m) return m[1].trim();
+      }
+    }
+    for (const block of req.messages[0].content) {
+      if (block?.type === 'text' && typeof block.text === 'string') {
+        const cm = block.text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
+        if (cm) return cm[1].trim();
+      }
+    }
+  }
+  return null;
 }
 
 function extractSessionId(req) {
@@ -356,6 +375,7 @@ function extractSessionId(req) {
 // is absent but session_id is present, fall back to agentKey — a known
 // non-main key (e.g. 'general-purpose') still means subagent.
 function isAnthropicSubagent(parsedBody) {
+  if (parsedBody?.context_management) return false;
   const noCwd = !extractCwd(parsedBody);
   const noSid = !extractSessionId(parsedBody);
   if (noCwd && noSid) return true;
@@ -371,6 +391,7 @@ function isAnthropicSubagent(parsedBody) {
 // These are Claude Code's Agent tool kickoff calls that lack any identifying metadata.
 function isLikelySubagent(req) {
   if (extractSessionId(req)) return false;      // has explicit session → not orphan
+  if (req?.context_management) return false;     // context_management = main session
   if (extractCwd(req)) return false;             // has system prompt with cwd → not bare
   if (req?.tools?.length) return false;           // has tool definitions → not bare
   if ((req?.messages?.length || 0) > 2) return false;
@@ -492,10 +513,13 @@ function linkParentSession(sessionId, parsedBody, isSubagentHint) {
   // wire-level hint (Codex subagent header) still overrides — those child
   // sessions never carry a cwd of their own.
   if (!isSubagentHint && meta.cwd) return null;
-  // Unlike isLikelySubagent (which screens orphan requests without session_id),
-  // this handles sessions WITH their own session_id. Tools and metadata guards
-  // are intentionally absent because Codex subagents may carry both.
-  const looksSubagent = isSubagentHint || (!extractCwd(parsedBody) && (parsedBody?.messages?.length || 0) <= 2);
+  // Fail-closed: require POSITIVE subagent evidence, not absence of main evidence.
+  // isSubagentHint (Codex header) is authoritative. For Anthropic: any main signal
+  // (system blocks, tools, context_management) → independent session. Only a truly
+  // bare request (no system, no tools, no context_management, ≤2 msgs) can be a
+  // subagent. This prevents new request formats from tripping the heuristic.
+  const hasMainSignal = extractCwd(parsedBody) || parsedBody?.system || parsedBody?.tools?.length || parsedBody?.context_management;
+  const looksSubagent = isSubagentHint || (!hasMainSignal && (parsedBody?.messages?.length || 0) <= 2);
   if (!looksSubagent) return null;
   const parent = inferParentSession();
   if (parent && parent !== sessionId) {
@@ -683,6 +707,7 @@ module.exports = {
   extractCwd,
   extractSessionId,
   isAnthropicSubagent,
+  isLikelySubagent,
   inferParentSession,
   linkParentSession,
   detectSession,
