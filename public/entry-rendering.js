@@ -1347,6 +1347,11 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
   applySessionFilter();
   setFocus(focusedCol);
   if (typeof restoreTabFromUrl === 'function') restoreTabFromUrl();
+  // #358: nothing ended up selected → auto-expand a collapsed sidebar so the
+  // dashboard isn't a blank page with no expand affordance. Runs after
+  // restoreTabFromUrl so a ?view=usage/sysprompt boot is gated off (codex r1);
+  // switchTab back to dashboard re-runs the check.
+  if (typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
   _flushLoadTimings();
 });
 

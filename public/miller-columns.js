@@ -1773,13 +1773,18 @@ function selectProject(name) {
   clearSelectedStepSelection();
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
-  // Clear workflow timeline
+  // Clear workflow timeline + split-view state
   if (typeof wfState !== 'undefined') wfState = null;
-  document.getElementById('columns').classList.remove('wf-active');
+  isFocusedMode = false;
+  document.getElementById('columns').classList.remove('wf-active', 'focused');
   var wfEl = document.getElementById('wf-timeline');
   if (wfEl) wfEl.remove();
   renderBreadcrumb();
   setFocus('projects');
+  // #358 r7/r8: breadcrumb root (name===null) clears session while collapsed →
+  // dead-end blank; expand. Gated on null so initAutoSelect / deep-link
+  // (which pass a real name, then selectSession) don't mis-expand mid-nav.
+  if (name === null && typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
 }
 
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }

@@ -310,6 +310,7 @@ function isEnabled(keyId) {
     case 'enter-sections': return selectedSection != null;
     case 'f-star':         return getStarTargetFromSelection() !== null;
     case 'p-popover':      return _hasBadgeDescendants() && !window._openPopover;
+    case 'sidebar-toggle': return isSidebarCollapsed() || !!(typeof selectedSessionId !== 'undefined' && selectedSessionId);
     case 'tab-switch':     return !window._openPopover;
     case 'star-nav':       return !window._openPopover && _hasStarNavTargets();
     case 'timeline-star-nav': return !window._openPopover && _hasTimelineStarNavTargets();
@@ -375,7 +376,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
-        { key: '\\', label: 'sidebar', clickKey: '\\' },
+        { key: '\\', label: 'sidebar', id: 'sidebar-toggle', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -390,7 +391,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
-        { key: '\\', label: 'sidebar', clickKey: '\\' },
+        { key: '\\', label: 'sidebar', id: 'sidebar-toggle', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -406,7 +407,7 @@ function getCmdBarState() {
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
         ..._starNavItems(),
-        { key: '\\', label: 'sidebar', clickKey: '\\' },
+        { key: '\\', label: 'sidebar', id: 'sidebar-toggle', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
@@ -420,7 +421,7 @@ function getCmdBarState() {
         { key: 'Enter', label: 'focus detail', id: 'enter-sections', clickKey: 'Enter' },
         { key: 'f', label: _fStarLabel(), id: 'f-star', clickKey: 'f' },
         pPopoverItem,
-        { key: '\\', label: 'sidebar', clickKey: '\\' },
+        { key: '\\', label: 'sidebar', id: 'sidebar-toggle', clickKey: '\\' },
         ...tabKeys,
       ],
       row2: null, row2Visible: false,
