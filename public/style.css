@@ -162,7 +162,8 @@
   .project-item .pi-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .project-item .pi-cost { color: var(--yellow); }
   .project-item .pi-range { font-size: 10px; color: var(--dim); margin-top: 1px; }
-  #col-turns { width: 220px; position: relative; }
+  /* #324: hidden by default; shown by .wf-active or .cold-loading on #columns */
+  #col-turns { width: 220px; position: relative; display: none; }
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
@@ -681,7 +682,7 @@
 /* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
 #columns.cold-loading #col-sections,
 #columns.cold-loading #col-detail { display: none; }
-#columns.cold-loading #col-turns { flex: 1; overflow: hidden; }
+#columns.cold-loading #col-turns { display: block; flex: 1; overflow: hidden; }
 
 /* ── Workflow Swimlane Timeline (#91) ── */
 /* When workflow is active, col-turns becomes the full-width right area;
