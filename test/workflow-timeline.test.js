@@ -1203,13 +1203,17 @@ describe('#221/#222 redo: overlap overrides authoritative agentKey (ADR 0008)', 
       mkFork('parent', 1000, 60),  // 1000..61000
       mkFork('fork1', 11000, 55),  // starts strictly inside parent's span
     ], []);
-    assert.equal(lanes.length, 2);
+    // #364 (Option B): fork1 shares main's convId (c0ffee) — a same-convId
+    // overlap is a false-positive "fork" (jitter/re-send/rewind), so it rides
+    // the main lane's overlap event track, NOT a parallel lane. ADR 0008 essence
+    // preserved: fork1 still leaves main's serial chain (not in lanes[0].turns).
+    assert.equal(lanes.length, 1);
     assert.equal(lanes[0].name, 'main');
-    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), ['parent'].join(','));
-    assert.equal(lanes[1].turns[0].id, 'fork1');
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'parent');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'fork1');
   });
 
-  it('fan-out: same-convId forks collapse into one parallel lane (#261)', () => {
+  it('fan-out: same-convId forks become overlap markers on main (#364, was #261 pooled lane)', () => {
     const ctx = loadWfModule();
     var lanes = ctx.wfInferLanes([
       mkFork('parent', 1000, 60),
@@ -1217,33 +1221,38 @@ describe('#221/#222 redo: overlap overrides authoritative agentKey (ADR 0008)', 
       mkFork('f2', 13000, 55),
       mkFork('f3', 15000, 52),
     ], []);
-    assert.equal(lanes.length, 2); // main + 1 parallel (resource pool)
+    // #364 (Option B): all three forks share main's convId and overlap parent →
+    // main-lane overlap markers, no parallel "Fork" lane (was a #261 resource pool).
+    assert.equal(lanes.length, 1);
     assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'parent');
-    assert.equal(lanes[1].turns.length, 3);
-    assert.equal(lanes[1].turns.map(function(t) { return t.id; }).join(','), 'f1,f2,f3');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2,f3');
   });
 
-  it("a fork's own serial turns reconstruct into one parallel lane (best-fit)", () => {
+  it("a fork's own serial turns become overlap markers (#364, was best-fit parallel lane)", () => {
     const ctx = loadWfModule();
     var lanes = ctx.wfInferLanes([
       mkFork('parent', 1000, 60),
       mkFork('f1a', 11000, 10),  // 11000..21000
       mkFork('f1b', 22000, 10),  // starts after f1a ends, still inside parent's span
     ], []);
-    assert.equal(lanes.length, 2);
-    assert.equal(lanes[1].turns.map(function(t) { return t.id; }).join(','), ['f1a', 'f1b'].join(','));
+    // #364 (Option B): both fall inside parent's span and share main's convId →
+    // overlap markers, no parallel lane.
+    assert.equal(lanes.length, 1);
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1a,f1b');
   });
 
-  it('live path (wfAddEntry) collapses same-convId forks into one lane (#261)', () => {
+  it('live path (wfAddEntry) folds same-convId forks into main overlap markers (#364)', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [mkFork('parent', 1000, 60)];
     ctx.wfState = ctx.wfBuildState('s1');
     ctx.wfAddEntry(mkFork('f1', 11000, 10));
     ctx.wfAddEntry(mkFork('f2', 13000, 10));
     ctx.wfAddEntry(mkFork('f1b', 22000, 10));
-    assert.equal(ctx.wfState.lanes.length, 2); // main + 1 parallel (was 3)
+    // #364 (Option B): same-convId overlaps become main-lane overlap markers,
+    // not a parallel lane.
+    assert.equal(ctx.wfState.lanes.length, 1);
     assert.equal(ctx.wfState.lanes[0].turns.map(function(t) { return t.id; }).join(','), 'parent');
-    assert.equal(ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(','), 'f1,f2,f1b');
+    assert.equal((ctx.wfState.lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2,f1b');
   });
 
   it('equal receivedAt stays sequential in main (entry-rendering predicate alignment)', () => {
@@ -1282,15 +1291,24 @@ describe('#261 codex review fixes', () => {
     return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed,
       { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: 'c0ffee' });
   }
+  // #364 (Option B): same-convId overlaps now fold to main-lane markers, so the
+  // #261 pooled-lane mechanic (min-start/max-end duration, sorted-insert parity)
+  // is exercised via a FOREIGN-conv (Teammate) pool — turns of one foreign conv
+  // that overlap parent share a pooled parallel lane. Distinct convId from
+  // mkFork's 'c0ffee' anchor so they are NOT folded to markers.
+  function mkTeam(id, at, elapsed) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed,
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: 'feed1234' });
+  }
 
   it('P2: pooled-lane duration uses min-start/max-end, not last-turn-by-array-order', () => {
     const ctx = loadWfModule();
     var lanes = ctx.wfInferLanes([
-      mkFork('parent', 1000, 60),     // 1000..61000 (anchors main)
-      mkFork('flong', 11000, 50),     // 11000..61000 (long overlapping fork)
-      mkFork('fnested', 13000, 5),    // 13000..18000 (nested, ends BEFORE flong)
+      mkFork('parent', 1000, 60),     // 1000..61000 (c0ffee, anchors main)
+      mkTeam('flong', 11000, 50),     // 11000..61000 (long overlapping foreign-conv turn)
+      mkTeam('fnested', 13000, 5),    // 13000..18000 (nested, ends BEFORE flong)
     ], []);
-    assert.equal(lanes.length, 2); // main + 1 pooled parallel lane
+    assert.equal(lanes.length, 2); // main + 1 pooled Teammate lane (foreign conv)
     var pooled = lanes[1];
     assert.equal(pooled.turns.map(function(t) { return t.id; }).join(','), 'flong,fnested');
     var summary = ctx.wfLaneSummary(pooled);
@@ -1304,8 +1322,8 @@ describe('#261 codex review fixes', () => {
     ctx.wfState = ctx.wfBuildState('s1');
     // Arrival order = completion order: the nested (later-start, earlier-end)
     // turn completes and arrives BEFORE the longer, earlier-starting turn.
-    ctx.wfAddEntry(mkFork('fnested', 13000, 5));
-    ctx.wfAddEntry(mkFork('flong', 11000, 50));
+    ctx.wfAddEntry(mkTeam('fnested', 13000, 5));
+    ctx.wfAddEntry(mkTeam('flong', 11000, 50));
     assert.equal(ctx.wfState.lanes.length, 2);
     var liveIds = ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(',');
     assert.equal(liveIds, 'flong,fnested', 'live insert must sort by receivedAt, not arrival order');
@@ -1315,8 +1333,8 @@ describe('#261 codex review fixes', () => {
     const batchCtx = loadWfModule();
     var batchLanes = batchCtx.wfInferLanes([
       mkFork('parent', 1000, 60),
-      mkFork('fnested', 13000, 5),
-      mkFork('flong', 11000, 50),
+      mkTeam('fnested', 13000, 5),
+      mkTeam('flong', 11000, 50),
     ], []);
     var batchIds = batchLanes[1].turns.map(function(t) { return t.id; }).join(',');
     assert.equal(batchIds, liveIds);
@@ -1332,15 +1350,15 @@ describe('#261 codex review fixes', () => {
     ctx.wfState = ctx.wfBuildState('s1');
     // Same receivedAt (10000); arrival order z then a. id 'a' < 'z' lexically,
     // so an id tie-break would wrongly place a before z.
-    ctx.wfAddEntry(mkFork('z', 10000, 10));
-    ctx.wfAddEntry(mkFork('a', 10000, 20));
+    ctx.wfAddEntry(mkTeam('z', 10000, 10));
+    ctx.wfAddEntry(mkTeam('a', 10000, 20));
     var liveIds = ctx.wfState.lanes[1].turns.map(function(t) { return t.id; }).join(',');
 
     const batchCtx = loadWfModule();
     var batchLanes = batchCtx.wfInferLanes([
       mkFork('parent', 1000, 100),
-      mkFork('z', 10000, 10),
-      mkFork('a', 10000, 20),
+      mkTeam('z', 10000, 10),
+      mkTeam('a', 10000, 20),
     ], []);
     var batchIds = batchLanes[1].turns.map(function(t) { return t.id; }).join(',');
     assert.equal(liveIds, batchIds, 'live equal-receivedAt order must match batch');
@@ -1406,18 +1424,23 @@ describe('#230 sequential interleave (ADR 0009)', () => {
     assertSerialLanes(lanes);
   });
 
-  it('R2: sequential fork dip stitches onto its overlap-split frontier lane (fail-on-old)', () => {
+  it('R2: same-convId dip + its overlap frontier both fold to main overlap markers (#364)', () => {
     const ctx = loadWfModule();
     var lanes = ctx.wfInferLanes([
       mkSeq('m1', 1000, 5, 'convA', 53),
       mkSeq('m2', 10000, 60, 'convA', 55),   // long main turn 10000..70000
-      mkSeq('f1', 20000, 5, 'convA', 51),    // starts inside m2 → overlap split
-      mkSeq('f2', 71000, 5, 'convA', 51),    // after m2 ends — overlap-blind
+      mkSeq('f1', 20000, 5, 'convA', 51),    // starts inside m2 → overlap frontier
+      mkSeq('f2', 71000, 5, 'convA', 51),    // after m2 ends → R2 dip continuation
       mkSeq('m3', 80000, 5, 'convA', 57),
     ], []);
-    assert.equal(lanes.length, 2);
+    // #364 (Option B): f1 (temporal-overlap fork) AND f2 (the R2 dip that
+    // continues it) share main's convId → both become main-lane overlap markers,
+    // no parallel "Fork" lane. ADR 0009 essence preserved: the seq tracker still
+    // EXCURSES f2 (it leaves main's serial chain) — only its placement changed
+    // from lane to marker. fail-on-old had them in a parallel lane [f1,f2].
+    assert.equal(lanes.length, 1);
     assert.equal(ids(lanes[0]), 'm1,m2,m3');
-    assert.equal(ids(lanes[1]), 'f1,f2', 'dip must land in the same fork lane as its frontier');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2');
     assertSerialLanes(lanes);
   });
 
@@ -1494,7 +1517,7 @@ describe('#230 sequential interleave (ADR 0009)', () => {
     assertSerialLanes(ctx.wfState.lanes);
   });
 
-  it('live path: R2 dip routes to the frontier lane immediately (no retro needed)', () => {
+  it('live path: R2 dip folds to a main overlap marker immediately (#364)', () => {
     const ctx = loadWfModule();
     ctx.allEntries = [
       mkSeq('m1', 1000, 5, 'convA', 53),
@@ -1502,9 +1525,12 @@ describe('#230 sequential interleave (ADR 0009)', () => {
       mkSeq('f1', 20000, 5, 'convA', 51),
     ];
     ctx.wfState = ctx.wfBuildState('s1');
-    assert.equal(ctx.wfState.lanes.length, 2, 'overlap already split f1');
+    // #364 (Option B): f1 (same-convId overlap) folds to a marker, no lane.
+    assert.equal(ctx.wfState.lanes.length, 1, 'overlap f1 folded to a marker, no lane');
+    assert.equal((ctx.wfState.lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1');
     ctx.wfAddEntry(mkSeq('f2', 71000, 5, 'convA', 51));
-    assert.equal(ids(ctx.wfState.lanes[1]), 'f1,f2');
+    // f2 (R2 dip, same convId) folds onto the same overlap track immediately.
+    assert.equal((ctx.wfState.lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2');
     ctx.wfAddEntry(mkSeq('m3', 80000, 5, 'convA', 57));
     assert.equal(ids(ctx.wfState.lanes[0]), 'm1,m2,m3');
     assertSerialLanes(ctx.wfState.lanes);
@@ -1629,18 +1655,21 @@ describe('#230 lane naming: Fork vs Teammate', () => {
       { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, msgCount: msg }, opts || {}));
   }
 
-  it('same-conv overlap fork lane reads "Fork <conv> #k"', () => {
+  it('same-conv overlaps no longer create a "Fork" lane — they fold to markers (#364)', () => {
     const ctx = loadWfModule();
     var lanes = ctx.wfInferLanes([
       mkSeq('m1', 1000, 5, '5212b91b', 53),
       mkSeq('m2', 10000, 60, '5212b91b', 55),
-      mkSeq('f1', 20000, 5, '5212b91b', 51),   // overlap-split fork
+      mkSeq('f1', 20000, 5, '5212b91b', 51),   // overlap-split fork (same conv)
       mkSeq('f2', 71000, 5, '5212b91b', 51),   // R2-stitched continuation
       mkSeq('m3', 80000, 5, '5212b91b', 57),
     ], []);
-    assert.equal(lanes.length, 2);
-    var mainConvs = ctx._wfMainConvSet(lanes);
-    assert.equal(ctx._wfLaneDispName(lanes[1], 1, mainConvs), 'Fork 5212');
+    // #364 (Option B): same-convId excursions fold to main-lane overlap markers,
+    // so no parallel "Fork" lane is created. Only main remains. (The 'Fork'
+    // branch of _wfLaneDispName is now unreachable for same-conv lanes — dead
+    // code flagged for a follow-up cleanup, not touched here.)
+    assert.equal(lanes.length, 1);
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2');
   });
 
   it('foreign-conv R1 excursion lane reads "Teammate <conv> #k"', () => {
@@ -1686,9 +1715,14 @@ describe('#230 seq tracker per-conv frontiers (codex P2 round 3)', () => {
     entries.push(mkSeq('f2', 71000, 5, 'convA', 51));  // sequential fork continuation
     entries.push(mkSeq('m3', 80000, 5, 'convA', 57));
     var lanes = ctx.wfInferLanes(entries, []);
-    var forkLane = lanes.find(function(l) { return (l.key || '').indexOf('parallel-') === 0; });
-    assert.equal(forkLane.turns.map(function(t) { return t.id; }).join(','), 'f1,f2',
-      'the dip must still stitch onto its frontier after 17 unrelated split turns');
+    // #364 (Option B): f1 (overlap frontier) and f2 (its R2 continuation) share
+    // main's convId → both fold to main-lane overlap markers. The #230 per-conv
+    // frontier essence still holds: the frontier SURVIVES the 17 unrelated split
+    // turns, so f2 is still EXCURSED (leaves main's serial chain → lands in
+    // overlapEntries). fail-on-old: the old FIFO cap evicted the frontier, so f2
+    // never stitched and stayed in main.turns.
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1,f2',
+      'the dip must still stitch (excurse) onto its frontier after 17 unrelated split turns');
     assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2,m3');
   });
 
@@ -1731,10 +1765,14 @@ describe('#230 append-only tail points (re-audit regression)', () => {
       mkSeq('d1', 71000, 5, 'convA', 51),    // other track's sequential continuation
       mkSeq('m3', 80000, 5, 'convA', 57),
     ], []);
+    // #364 (Option B): all same-convId excursions fold to main-lane overlap
+    // markers. The #230 append-only-tail-point essence still holds: d1 (dip 51)
+    // still stitches onto the PRESERVED branch point (it EXCURSES → leaves main),
+    // so it lands in overlapEntries — not main.turns. fail-on-old (merge variant):
+    // the branch point was erased, d1 never stitched, and stayed in main.turns.
     assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2,m3',
-      'dip 51 must stitch onto the preserved branch point, not stay in main');
-    var forkLane = lanes.find(function(l) { return (l.key || '').indexOf('parallel-') === 0; });
-    assert.equal(forkLane.turns.map(function(t) { return t.id; }).join(','), 's1,s2,d1');
+      'dip 51 must stitch (excurse) onto the preserved branch point, not stay in main');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 's1,s2,d1');
   });
 });
 
@@ -1757,10 +1795,13 @@ describe('#230 frontier TTL (codex P2 round 4)', () => {
       mkSeq('d1', 25000 + 16 * 60 * 1000, 5, 'convA', 51), // 16min later: rewind-shaped
       mkSeq('m3', 25000 + 17 * 60 * 1000, 5, 'convA', 57),
     ], []);
+    // #364 (Option B): s1 (same-convId overlap) folds to a main-lane overlap
+    // marker. The #230 TTL essence still holds: d1 is 16min past the frontier →
+    // does NOT stitch → stays in main.turns (fail-on-old: without TTL it would
+    // stitch out). Only s1 leaves main, as a marker.
     assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2,d1,m3',
       'a 16-minute-later dip is an edit/rewind, not a fork continuation');
-    var forkLane = lanes.find(function(l) { return (l.key || '').indexOf('parallel-') === 0; });
-    assert.equal(forkLane.turns.map(function(t) { return t.id; }).join(','), 's1');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 's1');
   });
 });
 
@@ -1863,9 +1904,12 @@ describe('#258 coreHash identity routing', () => {
     var lanes = ctx.wfInferLanes([m1, f1, m2], []);
     assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'm1,m2',
       'fork must not be absorbed by identity routing — same coreHash as main');
-    var forkLane = lanes.find(function(l) { return (l.key || '').indexOf('parallel-') === 0; });
-    assert.ok(forkLane, 'expected the fork to land in a parallel- lane via ADR 0008 overlap');
-    assert.equal(forkLane.turns.map(function(t) { return t.id; }).join(','), 'f1');
+    // #364 (Option B): the fork shares main's convId, so ADR 0008 overlap
+    // detection folds it to a main-lane overlap marker (not a parallel lane). It
+    // still leaves main's serial chain — identity routing did NOT absorb it into
+    // main.turns.
+    assert.equal(lanes.length, 1);
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1');
   });
 
   it('null coreHash falls through (backward compat)', () => {
@@ -2398,11 +2442,15 @@ describe('#238 mixed-model labels', () => {
       mkSeq('f2', 71000, 5, 'convA', 51),    // after m2 ends -> ADR 0009 R2 dip stitch, IS seq-stitched
       mkSeq('m3', 80000, 5, 'convA', 57),
     ], []);
-    assert.equal(lanes.length, 2);
-    var main = lanes[0], sub = lanes[1];
-    assert.equal(sub.turns.map(function(t) { return t.id; }).join(','), 'f1,f2');
-    assert.ok(!sub.turns[0]._wfSeqStitched, 'f1 is an overlap split, not seq-stitched');
-    assert.equal(sub.turns[1]._wfSeqStitched, true, 'f2 is the R2 dip stitch');
+    // #364 (Option B): f1 and f2 fold to main-lane overlap markers. The #238
+    // _wfSeqStitched tag still distinguishes them: f1 (overlap split) is NOT
+    // seq-stitched; f2 (R2 dip) IS.
+    assert.equal(lanes.length, 1);
+    var main = lanes[0];
+    var markers = main.overlapEntries || [];
+    assert.equal(markers.map(function(t) { return t.id; }).join(','), 'f1,f2');
+    assert.ok(!markers[0]._wfSeqStitched, 'f1 is an overlap split, not seq-stitched');
+    assert.equal(markers[1]._wfSeqStitched, true, 'f2 is the R2 dip stitch');
     for (var mi = 0; mi < main.turns.length; mi++) {
       assert.ok(!main.turns[mi]._wfSeqStitched, 'main turns are never seq-stitched');
     }
@@ -2420,11 +2468,11 @@ describe('#238 mixed-model labels', () => {
     ctx.wfAddEntry(mkSeq('f1', 20000, 5, 'convA', 51));
     ctx.wfAddEntry(mkSeq('f2', 71000, 5, 'convA', 51));
     ctx.wfAddEntry(mkSeq('m3', 80000, 5, 'convA', 57));
-    var sub = ctx.wfState.lanes.find(function(l) { return l.key !== 'main' && l.turns.length; });
-    assert.ok(sub, 'a sub-lane must exist');
-    assert.equal(sub.turns.map(function(t) { return t.id; }).join(','), 'f1,f2');
-    assert.ok(!sub.turns[0]._wfSeqStitched, 'live: f1 overlap split, not seq-stitched');
-    assert.equal(sub.turns[1]._wfSeqStitched, true, 'live: f2 seq-stitched, matches batch');
+    // #364 (Option B): f1, f2 fold to main-lane overlap markers, matching batch.
+    var markers = ctx.wfState.lanes[0].overlapEntries || [];
+    assert.equal(markers.map(function(t) { return t.id; }).join(','), 'f1,f2');
+    assert.ok(!markers[0]._wfSeqStitched, 'live: f1 overlap split, not seq-stitched');
+    assert.equal(markers[1]._wfSeqStitched, true, 'live: f2 seq-stitched, matches batch');
   });
 
   it('#238 P1: live-appended new model on main lane updates the label with no rebuild', () => {
@@ -2687,5 +2735,68 @@ describe('#332 severity marker geometry (SVG output)', () => {
       assert.ok(marker.y + marker.h <= barTop,
         'marker bottom (' + (marker.y + marker.h) + ') must not exceed bar top (' + barTop + ') with 99% cache');
     }
+  });
+});
+
+// ── #364: same-convId overlap turns fold to main-lane markers (Option B) ─────
+// A same-convId temporal-overlap fork (or its ADR 0009 R2 dip continuation) is
+// a false-positive "Fork" (jitter/re-send/rewind). Instead of a misleading
+// parallel lane it rides the main lane's overlap event track as a diamond
+// marker (reusing the #236 faultEntries pattern). Different-convId overlaps
+// (real fork/teammate) are unaffected.
+describe('#364 same-convId overlap → main-lane markers', () => {
+  function mkE(id, at, elapsed, conv, cost) {
+    return mkEntry(id, 's1', 'claude-opus-4-6', at, elapsed,
+      { agentKey: 'orchestrator', agentLabel: 'Orchestrator', convId: conv, cost: cost == null ? 0.01 : cost });
+  }
+
+  it('same-convId temporal overlap folds to a main-lane marker, not a parallel lane (fail-on-old)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkE('parent', 1000, 60, 'cA'),   // 1000..61000, anchors main
+      mkE('f1', 11000, 5, 'cA'),       // starts inside parent, SAME conv → marker
+    ], []);
+    assert.equal(lanes.length, 1, 'no parallel lane is created (fail-on-old made one)');
+    assert.equal(lanes[0].turns.map(function(t) { return t.id; }).join(','), 'parent');
+    assert.equal((lanes[0].overlapEntries || []).map(function(t) { return t.id; }).join(','), 'f1');
+    // main stays strictly serial — the marker is NOT in lane.turns (ADR 0008)
+    assert.equal(lanes[0].turns.length, 1);
+  });
+
+  it('different-convId overlap still creates a parallel lane (real fork/teammate unaffected)', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkE('parent', 1000, 60, 'cA'),   // main conv cA
+      mkE('team', 11000, 5, 'cB'),     // FOREIGN conv cB, overlaps parent → lane
+    ], []);
+    assert.equal(lanes.length, 2, 'a foreign-conv overlap is a real parallel agent');
+    assert.equal(lanes[1].turns.map(function(t) { return t.id; }).join(','), 'team');
+    assert.equal((lanes[0].overlapEntries || []).length, 0, 'no marker for a foreign-conv overlap');
+  });
+
+  it("overlap markers' cost is folded into the main lane total", () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkE('parent', 1000, 60, 'cA', 0.02),
+      mkE('f1', 11000, 5, 'cA', 0.05),   // marker, cost 0.05
+    ], []);
+    var main = lanes[0];
+    assert.equal((main.overlapEntries || []).length, 1);
+    var summary = ctx.wfLaneSummary(main);
+    // parent (0.02) + overlap marker f1 (0.05) — the marker's cost still counts
+    assert.ok(Math.abs(summary.totalCost - 0.07) < 1e-9,
+      'expected main total 0.07, got ' + summary.totalCost);
+  });
+
+  it('wfRenderLaneSvg draws a diamond overlap marker on the main lane', () => {
+    const ctx = loadWfModule();
+    var lanes = ctx.wfInferLanes([
+      mkE('parent', 1000, 60, 'cA'),
+      mkE('f1', 11000, 5, 'cA'),
+    ], []);
+    ctx.wfState = { viewT0: 0, viewT1: 100000, selectedLane: null, selectionLevel: 'L1', lanes: lanes };
+    var svg = ctx.wfRenderLaneSvg(lanes[0], 0, 600, function(t) { return t * 0.001; }, new Set());
+    assert.ok(svg.indexOf('overlap · ') !== -1, 'overlap marker tooltip present');
+    assert.ok(/<path[^>]*fill="#666"/.test(svg), 'diamond marker rendered with the overlap color');
   });
 });
