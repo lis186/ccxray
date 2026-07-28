@@ -1336,6 +1336,27 @@ function _wfSeqRetroMove(closedTurns) {
     for (var rci = 0; rci < wfState.lanes[0].turns.length; rci++) {
       if (wfState.lanes[0].turns[rci].convId) wfState.mainConvIds.add(wfState.lanes[0].turns[rci].convId);
     }
+    // #364 codex-R2-P1: also migrate any overlapEntries whose convId is no
+    // longer in the settled mainConvIds — they were provisionally folded as
+    // "same-conv" markers before the retro-move revealed they belong to a
+    // foreign conv. Move them to the same lane their regular turns went to.
+    var mainOE = wfState.lanes[0].overlapEntries;
+    if (mainOE && mainOE.length) {
+      var kept = [], moved = [];
+      for (var oi = 0; oi < mainOE.length; oi++) {
+        if (mainOE[oi].convId && !wfState.mainConvIds.has(mainOE[oi].convId)) moved.push(mainOE[oi]);
+        else kept.push(mainOE[oi]);
+      }
+      if (moved.length) {
+        wfState.lanes[0].overlapEntries = kept;
+        for (var mi = 0; mi < moved.length; mi++) {
+          var mt = moved[mi];
+          var mk = _wfSubLaneKey('parallel-' + wfShortModel(mt.model), mt);
+          var tgtLane = wfState.lanes.find(function(l) { return l.key === mk || l.key.indexOf(mk + '#') === 0; });
+          if (tgtLane) { _wfInsertTurnSorted(tgtLane, mt); tgtLane._costMedian = null; }
+        }
+      }
+    }
   }
 }
 
