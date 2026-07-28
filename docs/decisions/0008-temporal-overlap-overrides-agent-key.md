@@ -130,3 +130,42 @@ identity is unknown.
 The three mutation sites (`wfInferLanes`, `wfAddEntry`,
 `_wfSeqRetroMove`) now check `turn.convId` before creating `#N` lanes:
 present → reuse `fam[0]`; absent → old split behavior.
+
+## Amended by #364 (2026-07-28)
+
+Same-convId overlap turns no longer create `parallel-*` lanes. Instead they
+ride the main lane's `overlapEntries` as diamond event markers on the faults
+track, reusing the `faultEntries` pattern (#236). This includes both
+temporal-overlap turns (ADR 0008's sweep output) and ADR 0009 R2 dip
+continuations that stitch onto an overlap-split frontier — the entire
+same-convId excursion family.
+
+**Evidence**: session `dace1194` convId `714cd2f4` — 45 overlapping pairs,
+0 confirmed forks, 100% false positives (12 jitter, 13 re-send, 11 rewind,
+9 ambiguous). Wire-level experiment (session `521d910a`) confirmed forks are
+indistinguishable from parents on every field (sessionId, agentKey, convId,
+coreHash, isSubagent). Expert panel (Lamport, Munzner, van der Aalst, Tufte,
+avg 4.25/10) unanimously judged temporal overlap as a valid rendering
+constraint but invalid semantic inference (Lie Factor 2.0).
+
+**What changed**: the overlap sweep and seq excursion pass now check
+`convId ∈ mainConvs` before creating a parallel lane. Same-convId → push to
+`mainLane.overlapEntries[]` (batch) or `wfState.lanes[0].overlapEntries`
+(live). Different-convId overlaps are unaffected — they still create
+`parallel-*` or `agent-*` lanes labeled "Teammate."
+
+**Consistency contract extension**: `_wfSeqRetroMove` must rebuild
+`mainConvIds` from settled main turns and migrate any `overlapEntries` whose
+convId is no longer in the set (a foreign-conv marker provisionally folded
+during the provisional-main window). `wfLaneSummary` folds overlapEntries'
+cost, tokens, cache, and peakCtx into the main lane total; `turnCount`
+excludes them (markers are events, not rendered turns).
+
+**Known limitations** (accepted, self-healing on reload):
+- Live mainConvIds growth-without-revisit: a convId first seen as an overlap
+  goes to a parallel lane; a later serial main turn adds it to mainConvIds
+  but never revisits the existing lane. Same class as ADR 0009's
+  provisional-main window.
+- Legacy/no-agentKey entries bypass the fold (fallback classification in
+  `entry-rendering.js` routes them before the exiled-turn fold runs).
+  Documented as follow-up (#364 scope boundary).

@@ -46,6 +46,11 @@ const WF_EV_INFO = {
   'ctx80':      { ti: 1, shape: 'square',   color: '#8957e5' },
   'file-write': { ti: 2, shape: 'circle',   color: '#2ea043' },
   'credential': { ti: 3, shape: 'square',   color: '#b87800' },
+  // #364: same-convId excursions (temporal-overlap forks + ADR 0009 R2 dip
+  // continuations — jitter/re-send/rewind) ride the main lane's fault track as
+  // diamond markers instead of minting a misleading parallel "Fork" lane. Fed
+  // from lane.overlapEntries, not wfDetectEvents.
+  'overlap':    { ti: 0, shape: 'diamond',  color: '#666'    },
 };
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -621,6 +626,11 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   var convMaxHashes = _ident.convMaxHashes;
   var mainCoreHashSet = _ident.mainCoreHashSet;
   var faultEntries = [];
+  // #364: same-convId exiled turns (temporal-overlap forks AND ADR 0009
+  // sequential excursions) diverted here instead of a parallel "Fork" lane —
+  // collected during the exile pass, assigned to mainLane below (mirrors
+  // faultEntries).
+  var overlapEntries = [];
 
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
@@ -764,9 +774,24 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // for overlap overflow AND seq excursions, so a stitched dip lands in the
   // same lane as its overlap-split siblings.
   var pFamilies = new Map(); // baseKey → [{ key, lastEnd }]
+  // #364: main's conv set is finalized now (mainLane.turns settled above).
+  var mainConvs = _wfMainConvSet([mainLane]);
   exiled.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
   for (var ex = 0; ex < exiled.length; ex++) {
     var oTurn = exiled[ex];
+    // #364 (Option B): any same-convId exiled turn — a temporal-overlap fork OR
+    // an ADR 0009 sequential excursion (R2 dip continuation) — is a
+    // false-positive "fork" of the main conversation (HTTP jitter, re-send,
+    // rewind, dip continuation). Render it as a main-lane overlap marker instead
+    // of a misleading parallel lane. Different-convId excursions (real fork /
+    // R1 teammate, convId ∉ mainConvs) fall through unchanged. Marker only: NOT
+    // pushed to any lane.turns, so the main lane stays strictly serial (ADR
+    // 0008); the ADR 0009 tracker/classification logic is untouched — only the
+    // rendered placement of same-convId excursions changes (lane → marker).
+    if (oTurn.convId && mainConvs.has(oTurn.convId)) {
+      overlapEntries.push(oTurn);
+      continue;
+    }
     var oStart = Number(oTurn.receivedAt) || 0;
     var oEnd = oStart + (parseFloat(oTurn.elapsed) || 0) * 1000;
     var baseKey = _wfSubLaneKey('parallel-' + wfShortModel(oTurn.model), oTurn);
@@ -870,6 +895,9 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // the fault track can render them. Authoritative rebuild — overwrite any
   // pre-existing list.
   mainLane.faultEntries = faultEntries;
+  // #364: same-convId temporal-overlap markers travel with the main lane, like
+  // faultEntries. Authoritative rebuild — overwrite any pre-existing list.
+  mainLane.overlapEntries = overlapEntries;
 
   return result;
 }
@@ -1054,6 +1082,10 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
+  // #364 (Option B): set when this entry is a same-convId excursion — a
+  // temporal-overlap fork OR an ADR 0009 R2 dip continuation — so it rides the
+  // main lane's overlap event track instead of a parallel "Fork" lane.
+  var isOverlapMarker = false;
   // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
   // A1/A2 boundary (#350): the BATCH path (wfInferLanes) now decides ownership
   // PER-CONVERSATION by dominant coreHash. This live path still uses the ADR
@@ -1099,6 +1131,12 @@ function wfAddEntry(entry) {
       if (mtStart > 0 && ts > mtStart && ts < mtEnd) {
         needsSub = true;
         key = _wfSubLaneKey('parallel-' + wfShortModel(entry.model), entry);
+        // #364: a same-convId overlap is a false-positive "fork" — mark it to
+        // render as a main-lane marker, mirroring wfInferLanes' batch fold.
+        // Different-convId overlaps still split to a parallel lane below.
+        if (entry.convId && wfState.mainConvIds && wfState.mainConvIds.has(entry.convId)) {
+          isOverlapMarker = true;
+        }
         break;
       }
     }
@@ -1134,10 +1172,26 @@ function wfAddEntry(entry) {
         // #238 part 2: same R2-stitch signal as wfInferLanes' post-pass —
         // display-only, doesn't affect placement (already decided above).
         entry._wfSeqStitched = true;
+        // #364 (Option B): a same-convId R2 dip continuation is part of the
+        // false-positive fork family — fold it into a main-lane overlap marker
+        // too, mirroring wfInferLanes. Foreign-conv R1 excursions (convId ∉
+        // mainConvIds) keep their Teammate lane.
+        if (entry.convId && wfState.mainConvIds && wfState.mainConvIds.has(entry.convId)) {
+          isOverlapMarker = true;
+        }
       }
     }
   }
-  if (needsSub) {
+  if (isOverlapMarker && wfState.lanes[0]) {
+    // #364: marker only — NOT pushed to lane.turns / turnIndex (mirrors
+    // faultEntries, #236), so the main lane stays strictly serial (ADR 0008).
+    // Cost is still counted in main via wfLaneSummary's overlapEntries fold.
+    // The seq tracker already processed it above (fed as a split for a temporal
+    // overlap, or returned an excursion verdict for an R2 dip — batch/live
+    // parity). No lane is created so lanesChanged stays false — the caller
+    // re-renders via wfDeferRender, so the marker still paints.
+    (wfState.lanes[0].overlapEntries || (wfState.lanes[0].overlapEntries = [])).push(entry);
+  } else if (needsSub) {
     var lane;
     var pooledReuse = false;
     if (key.indexOf('parallel-') === 0) {
@@ -1272,6 +1326,40 @@ function _wfSeqRetroMove(closedTurns) {
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
+  // #364 codex-P1: mainConvIds was grown by live main-lane placements (line
+  // ~1236) but never shrunk on retro-move. A foreign-conv turn provisionally
+  // placed in main leaves its convId behind after retro-move, so a later
+  // same-conv overlap would be incorrectly folded into overlapEntries instead
+  // of a Teammate lane. Rebuild from the settled main turns after every retro.
+  if (wfState.mainConvIds && wfState.lanes[0]) {
+    wfState.mainConvIds = new Set();
+    for (var rci = 0; rci < wfState.lanes[0].turns.length; rci++) {
+      if (wfState.lanes[0].turns[rci].convId) wfState.mainConvIds.add(wfState.lanes[0].turns[rci].convId);
+    }
+    // #364 codex-R2-P1: also migrate any overlapEntries whose convId is no
+    // longer in the settled mainConvIds — they were provisionally folded as
+    // "same-conv" markers before the retro-move revealed they belong to a
+    // foreign conv. Move them to the same lane their regular turns went to.
+    var mainOE = wfState.lanes[0].overlapEntries;
+    if (mainOE && mainOE.length) {
+      var kept = [], moved = [];
+      for (var oi = 0; oi < mainOE.length; oi++) {
+        if (mainOE[oi].convId && !wfState.mainConvIds.has(mainOE[oi].convId)) moved.push(mainOE[oi]);
+        else kept.push(mainOE[oi]);
+      }
+      if (moved.length) {
+        wfState.lanes[0].overlapEntries = kept;
+        for (var mi = 0; mi < moved.length; mi++) {
+          var mt = moved[mi];
+          var mk = _wfSubLaneKey('parallel-' + wfShortModel(mt.model), mt);
+          var tgtLane = wfState.lanes.find(function(l) { return l.key === mk || l.key.indexOf(mk + '#') === 0; });
+          if (!tgtLane) { kept.push(mt); continue; } // codex-R3-P1b: no target (model mismatch) → leave on main, heals on rebuild
+          _wfInsertTurnSorted(tgtLane, mt); tgtLane._costMedian = null;
+          if (wfState.turnIndex) wfState.turnIndex.set(mt.id, { turn: mt, laneIdx: wfState.lanes.indexOf(tgtLane) }); // codex-R3-P2a
+        }
+      }
+    }
+  }
 }
 
 // #261: pooled convId lanes can receive turns out of start order (a nested
@@ -1317,6 +1405,22 @@ function wfLaneSummary(lane) {
     if (de > maxEnd) maxEnd = de;
   }
   var dur = maxEnd - minStart;
+  // #364: overlap markers are same-convId turns exiled from the serial chain —
+  // their cost belongs to the main lane (they were part of this conversation),
+  // so fold it into the lane total even though they aren't drawn as turns.
+  if (lane.overlapEntries && lane.overlapEntries.length) {
+    for (var oi = 0; oi < lane.overlapEntries.length; oi++) {
+      var ot = lane.overlapEntries[oi];
+      var opct = wfCtxPctRender(ot);
+      if (opct > peakCtx) peakCtx = opct;
+      var ocr = (ot.usage?.cache_read_input_tokens || 0);
+      var occ = (ot.usage?.cache_creation_input_tokens || 0);
+      totalCacheR += ocr; totalCacheAll += ocr + occ;
+      totalCost += (ot.cost || 0);
+      totalIn += (ot.usage?.input_tokens || 0) + ocr + occ;
+      totalOut += (ot.usage?.output_tokens || 0);
+    }
+  }
   return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
 
@@ -1349,6 +1453,7 @@ function wfDotSvg(shape, color, x, y, tidx) {
   var a = ' class="wf-e" data-i="' + tidx + '"';
   if (shape === 'square') return '<rect' + a + ' x="' + x.toFixed(1) + '" y="' + (y + 2) + '" width="4" height="4" fill="' + color + '"/>';
   if (shape === 'triangle') return '<path' + a + ' d="M' + (x + 2).toFixed(1) + ' ' + (y + 2) + ' L' + (x + 4.5).toFixed(1) + ' ' + (y + 6) + ' L' + (x - 0.5).toFixed(1) + ' ' + (y + 6) + ' Z" fill="' + color + '"/>';
+  if (shape === 'diamond') return '<path' + a + ' d="M' + (x + 2).toFixed(1) + ' ' + (y + 1.5) + ' L' + (x + 4.5).toFixed(1) + ' ' + (y + 4) + ' L' + (x + 2).toFixed(1) + ' ' + (y + 6.5) + ' L' + (x - 0.5).toFixed(1) + ' ' + (y + 4) + ' Z" fill="' + color + '"/>';
   return '<circle' + a + ' cx="' + (x + 2).toFixed(1) + '" cy="' + (y + 4) + '" r="2" fill="' + color + '"/>';
 }
 
@@ -1598,6 +1703,22 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
       var fInfo = fe.isRetry ? WF_EV_INFO['retry'] : WF_EV_INFO['error'];
       var fDetail = String(fe.status || '') + ' · ' + (fe.id || '');
       svg += '<g><title>' + wfEsc(fDetail) + '</title>' + wfDotSvg(fInfo.shape, fInfo.color, fx, evY, -1) + '</g>';
+    }
+  }
+
+  // #364: same-convId excursions (temporal-overlap forks + ADR 0009 R2 dip
+  // continuations — jitter/re-send/rewind) ride the main lane's fault track as
+  // diamond markers — never mint a parallel "Fork" lane. Same faults track row
+  // (ti 0), same non-interactive tidx -1 as #236.
+  if (lane.overlapEntries && lane.overlapEntries.length) {
+    for (var oj = 0; oj < lane.overlapEntries.length; oj++) {
+      var oe = lane.overlapEntries[oj];
+      var ots = Number(oe.receivedAt) || 0;
+      if (ots < wfState.viewT0 || ots > wfState.viewT1) continue;
+      var ox = Math.max(WF_LABEL_W, xFn(ots));
+      var oInfo = WF_EV_INFO['overlap'];
+      var oDetail = 'overlap · msg' + (oe.msgCount || '?') + ' · ' + (oe.id || '');
+      svg += '<g><title>' + wfEsc(oDetail) + '</title>' + wfDotSvg(oInfo.shape, oInfo.color, ox, evY, -1) + '</g>';
     }
   }
 
