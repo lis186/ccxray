@@ -227,6 +227,8 @@ function _upsert(sid, entry) {
   // Track whether session has any non-imported entries
   if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
   else s.importedOnly = false;
+  if ((entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
+  if (entry.beta1m === true) s.beta1m = true;
 }
 
 function setTitle(sid, title) {
