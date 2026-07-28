@@ -805,6 +805,13 @@ function recomputeSessionStats(sid) {
       if (en.toolFail) sess.toolFailTurns++;
     }
   }
+  if (typeof assessWeather === 'function') {
+    var weatherTurns = [];
+    for (var wi = 0; wi < allEntries.length; wi++) {
+      if (allEntries[wi].sessionId === sid && !allEntries[wi].isSubagent && !allEntries[wi].isRetry) weatherTurns.push(allEntries[wi]);
+    }
+    sess.weather = assessWeather(weatherTurns);
+  }
 }
 
 function recomputeProjectCost(projName) {
@@ -828,6 +835,10 @@ function mergeColdSessions(sessions) {
       var existing = sessionsMap.get(s.sid);
       if (!existing.title && s.title) existing.title = s.title;
       if (!existing.firstPrompt && s.firstPrompt) existing.firstPrompt = s.firstPrompt;
+      if (s.weather && !existing.weather) existing.weather = s.weather;
+      // #367: merge cold derived fields ONLY when the hot session truly lacks them.
+      // Hot sessions compute these from entries — never overwrite with cold fallbacks.
+      if (!existing._cold) continue;
       continue;
     }
     sessionsMap.set(s.sid, {
@@ -836,9 +847,15 @@ function mergeColdSessions(sessions) {
       model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
       title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
-      latestCacheHitRatio: 0, latestCacheReadTokens: 0,
+      // #367: derived fields from session index for cold card rendering
+      latestMainCtxUsed: s.latestCtxPct != null ? Math.round(s.latestCtxPct / 100 * (s.maxContext || 200000)) : 0,
+      maxWindow: s.maxContext || 200000,
+      latestCacheHitRatio: s.latestCacheHitRatio || 0,
+      latestCacheReadTokens: s.latestCacheReadTokens || 0,
+      cacheBreaks: s.cacheBreaks || 0,
       resumeCommand: null, parentSessionId: null,
       lastReceivedAt: s.lastReceivedAt || 0, _cold: true,
+      weather: s.weather || null,
     });
     var shortSid = s.sid.slice(0, 8);
     var sessEl = document.createElement('div');

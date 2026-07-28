@@ -1580,7 +1580,7 @@ function renderSessionItem(sess, sid, sessEl) {
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + '</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + (sess.weather ? '<span class="si-weather" style="float:right;cursor:default" data-weather=\'' + escapeHtml(JSON.stringify(sess.weather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + sess.weather.emoji + '</span>' : '') + '</div>' +
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +

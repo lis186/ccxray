@@ -169,7 +169,19 @@ function reconcile(indexContent) {
 function updateFromEntry(entry) {
   if (!entry || !entry.sessionId) return;
   _upsert(entry.sessionId, entry);
+  _recomputeWeather(entry.sessionId);
   _scheduleDirtyFlush();
+}
+
+function _recomputeWeather(sid) {
+  const store = require('./store');
+  const { assessWeather } = require('../public/weather');
+  const turns = [];
+  for (const e of store.entries) {
+    if (e.sessionId === sid && !e.isSubagent) turns.push(e);
+  }
+  const s = sessionIndex.get(sid);
+  if (s) s.weather = assessWeather(turns);
 }
 
 function _upsert(sid, entry) {
@@ -224,6 +236,27 @@ function _upsert(sid, entry) {
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
+  // #367: derived fields for cold session cards (context bar, cache stats, cache breaks)
+  if (!entry.isSubagent && entry.usage) {
+    var u = entry.usage;
+    var cacheRead = u.cache_read_input_tokens || 0;
+    var cacheCreate = u.cache_creation_input_tokens || 0;
+    var input = u.input_tokens || 0;
+    var ctxUsed = input + cacheRead + cacheCreate;
+    var ctxInputTotal = cacheRead + cacheCreate + input;
+    if (ctxUsed > 0) {
+      s.maxContext = Math.max(s.maxContext || 0, entry.maxContext || 0) || null;
+      s.latestCtxPct = s.maxContext ? Math.round(ctxUsed / s.maxContext * 1000) / 10 : null;
+      s.latestCacheHitRatio = ctxInputTotal > 0 ? Math.round(cacheRead / ctxInputTotal * 1000) / 1000 : 0;
+      s.latestCacheReadTokens = cacheRead;
+    }
+  }
+  // #367: cache breaks — gap exceeding cache TTL between non-subagent turns
+  if (!entry.isSubagent && recvAt > 0 && s._lastMainRecvAt > 0) {
+    var gapMs = recvAt - s._lastMainRecvAt;
+    if (gapMs > 300000) s.cacheBreaks = (s.cacheBreaks || 0) + 1;
+  }
+  if (!entry.isSubagent && recvAt > 0) s._lastMainRecvAt = recvAt;
   // Track whether session has any non-imported entries
   if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
   else s.importedOnly = false;
@@ -252,7 +285,11 @@ async function flush() {
   dirty = false;
   if (!sessionIndex.size) return;
   const lines = [];
-  for (const s of sessionIndex.values()) lines.push(JSON.stringify(s));
+  for (const s of sessionIndex.values()) {
+    var obj = {};
+    for (var k in s) { if (k[0] !== '_') obj[k] = s[k]; }
+    lines.push(JSON.stringify(obj));
+  }
   const tmp = tmpPath();
   try {
     await fsp.mkdir(path.dirname(tmp), { recursive: true });
@@ -263,6 +300,10 @@ async function flush() {
   }
 }
 
+function get(sid) {
+  return sessionIndex.get(sid) || null;
+}
+
 function getAll() {
   return [...sessionIndex.values()];
 }
@@ -271,10 +312,15 @@ function size() {
   return sessionIndex.size;
 }
 
+function setWeather(sid, weather) {
+  const s = sessionIndex.get(sid);
+  if (s && weather) { s.weather = weather; _scheduleDirtyFlush(); }
+}
+
 module.exports = {
   loadSessionIndex,
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas,
-  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, size,
+  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather,
 };
