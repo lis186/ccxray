@@ -50,6 +50,17 @@ async function loadSessionIndex() {
         if (s && s.sid) sessionIndex.set(s.sid, s);
       } catch {}
     }
+    // #368: force rebuild when sessions.json predates maxContext tracking.
+    // After rebuild, _upsert populates maxContext from index.ndjson entries.
+    let needsMigration = false;
+    for (const s of sessionIndex.values()) {
+      if (s.count > 0 && s.maxContext === undefined) { needsMigration = true; break; }
+    }
+    if (needsMigration) {
+      console.log('\x1b[33m[session-index] schema migration (maxContext) — will rebuild\x1b[0m');
+      sessionIndex.clear();
+      return false;
+    }
     return sessionIndex.size > 0;
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[session-index] load failed:', e.message);
@@ -227,8 +238,8 @@ function _upsert(sid, entry) {
   // Track whether session has any non-imported entries
   if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
   else s.importedOnly = false;
-  if ((entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
-  if (entry.beta1m === true) s.beta1m = true;
+  if (!entry.isSubagent && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
+  if (!entry.isSubagent && entry.beta1m === true) s.beta1m = true;
 }
 
 function setTitle(sid, title) {

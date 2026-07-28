@@ -32,7 +32,7 @@ describe('session-index', () => {
     si.updateFromEntry({
       sessionId: 'abc-123', id: '2026-07-15T09-00-00-000', model: 'claude-opus-4-6',
       cwd: '/home/user/project', cost: { cost: 1.5 }, receivedAt: 1000000,
-      provider: 'anthropic', agent: 'claude', title: 'Test session',
+      provider: 'anthropic', agent: 'claude', title: 'Test session', maxContext: 200000,
     });
     si.updateFromEntry({
       sessionId: 'abc-123', id: '2026-07-15T09-10-00-000', model: 'claude-opus-4-6',
@@ -128,7 +128,7 @@ describe('session-index', () => {
     // Full cross-restart flow. Prior process: a proxy logged one turn
     // (msg_01A, cost 0.30) → count 1, cost 0.30, flushed to sessions.json.
     let si = require('../server/session-index');
-    si.updateFromEntry({ sessionId: 's', id: 'proxy1', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 1 });
+    si.updateFromEntry({ sessionId: 's', id: 'proxy1', responseId: 'msg_01A', cost: { cost: 0.30 }, receivedAt: 1, maxContext: 200000 });
     assert.equal(si.getAll()[0].count, 1);
     await si.flush();
 
