@@ -1409,7 +1409,17 @@ function wfLaneSummary(lane) {
   // their cost belongs to the main lane (they were part of this conversation),
   // so fold it into the lane total even though they aren't drawn as turns.
   if (lane.overlapEntries && lane.overlapEntries.length) {
-    for (var oi = 0; oi < lane.overlapEntries.length; oi++) totalCost += (lane.overlapEntries[oi].cost || 0);
+    for (var oi = 0; oi < lane.overlapEntries.length; oi++) {
+      var ot = lane.overlapEntries[oi];
+      var opct = wfCtxPctRender(ot);
+      if (opct > peakCtx) peakCtx = opct;
+      var ocr = (ot.usage?.cache_read_input_tokens || 0);
+      var occ = (ot.usage?.cache_creation_input_tokens || 0);
+      totalCacheR += ocr; totalCacheAll += ocr + occ;
+      totalCost += (ot.cost || 0);
+      totalIn += (ot.usage?.input_tokens || 0) + ocr + occ;
+      totalOut += (ot.usage?.output_tokens || 0);
+    }
   }
   return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
