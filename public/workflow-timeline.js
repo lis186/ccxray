@@ -1326,6 +1326,17 @@ function _wfSeqRetroMove(closedTurns) {
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
+  // #364 codex-P1: mainConvIds was grown by live main-lane placements (line
+  // ~1236) but never shrunk on retro-move. A foreign-conv turn provisionally
+  // placed in main leaves its convId behind after retro-move, so a later
+  // same-conv overlap would be incorrectly folded into overlapEntries instead
+  // of a Teammate lane. Rebuild from the settled main turns after every retro.
+  if (wfState.mainConvIds && wfState.lanes[0]) {
+    wfState.mainConvIds = new Set();
+    for (var rci = 0; rci < wfState.lanes[0].turns.length; rci++) {
+      if (wfState.lanes[0].turns[rci].convId) wfState.mainConvIds.add(wfState.lanes[0].turns[rci].convId);
+    }
+  }
 }
 
 // #261: pooled convId lanes can receive turns out of start order (a nested
