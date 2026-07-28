@@ -1353,7 +1353,9 @@ function _wfSeqRetroMove(closedTurns) {
           var mt = moved[mi];
           var mk = _wfSubLaneKey('parallel-' + wfShortModel(mt.model), mt);
           var tgtLane = wfState.lanes.find(function(l) { return l.key === mk || l.key.indexOf(mk + '#') === 0; });
-          if (tgtLane) { _wfInsertTurnSorted(tgtLane, mt); tgtLane._costMedian = null; }
+          if (!tgtLane) { kept.push(mt); continue; } // codex-R3-P1b: no target (model mismatch) → leave on main, heals on rebuild
+          _wfInsertTurnSorted(tgtLane, mt); tgtLane._costMedian = null;
+          if (wfState.turnIndex) wfState.turnIndex.set(mt.id, { turn: mt, laneIdx: wfState.lanes.indexOf(tgtLane) }); // codex-R3-P2a
         }
       }
     }
