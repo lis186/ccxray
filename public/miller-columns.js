@@ -1497,8 +1497,9 @@ function renderSessionItem(sess, sid, sessEl) {
   // keep taking precedence per normal HTML tooltip nesting.
   if (sessEl) sessEl.title = sessionCardTooltip;
 
-  const previewText = sess.lastAssistantText
-    ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
+  const rawPreview = sess.lastAssistantText || sess.firstPrompt || null;
+  const previewText = rawPreview
+    ? rawPreview.slice(0, 60) + (rawPreview.length > 60 ? '…' : '')
     : null;
   const previewRow = previewText ? '<div class="si-preview">' + escapeHtml(previewText) + '</div>' : '';
   const truncatedRow = sess.truncated

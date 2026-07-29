@@ -99,6 +99,22 @@ function rebuildFromMetas(metas) {
     if (!m || !m.sessionId) continue;
     _upsert(m.sessionId, m);
   }
+  // #367: compute weather for all sessions from index metas.
+  // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
+  // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
+  // conservative (no false compaction signal).
+  const { assessWeather } = require('../public/weather');
+  const bySid = new Map();
+  for (const m of metas) {
+    if (!m || !m.sessionId || m.isSubagent) continue;
+    let arr = bySid.get(m.sessionId);
+    if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
+    arr.push(m);
+  }
+  for (const [sid, turns] of bySid) {
+    const s = sessionIndex.get(sid);
+    if (s) s.weather = assessWeather(turns);
+  }
   dirty = true;
 }
 
