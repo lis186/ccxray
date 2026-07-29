@@ -13,6 +13,7 @@ const { computeRetentionSets, isProtectedByStar } = require('./helpers');
 const { normalizeUsageForProvider } = require('./providers');
 const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
+const { assessWeather } = require('../public/weather');
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
 // prompt for this sysHash, or null (unreadable / no marker line). Cached per
@@ -371,6 +372,21 @@ async function restoreFromLogs() {
   for (const [sid, meta] of Object.entries(store.sessionMeta)) {
     if (meta.title) sessionIdx.setTitle(sid, meta.title);
   }
+
+  // 6. Compute per-session weather from restored entries.
+  console.time('restore:weather');
+  const bySid = new Map();
+  for (const e of store.entries) {
+    if (!e.sessionId || e.isSubagent) continue;
+    let arr = bySid.get(e.sessionId);
+    if (!arr) { arr = []; bySid.set(e.sessionId, arr); }
+    arr.push(e);
+  }
+  for (const [sid, turns] of bySid) {
+    sessionIdx.setWeather(sid, assessWeather(turns));
+  }
+  console.timeEnd('restore:weather');
+
   await sessionIdx.flush();
 
   console.timeEnd('restore:total');

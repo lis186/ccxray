@@ -1555,7 +1555,9 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   // #238 P3: <title> on the model text itself — hovering the abbreviated
   // "opus-4-6 +2" form must reveal the full model list, same as the name
   // text above; the fullTitle <title> only covers the name row's box.
+  var _lw = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
   svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  if (_lw) svg += '<foreignObject x="' + (WF_LABEL_W - 22) + '" y="16" width="20" height="14"><span xmlns="http://www.w3.org/1999/xhtml" style="font-size:11px;cursor:default" data-weather=\'' + wfEsc(JSON.stringify(_lw)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + _lw.emoji + '</span></foreignObject>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -2350,6 +2352,7 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
 }
 
 // ── Zoom ──────────────────────────────────────────────────────────────────
+
 function wfZoomBy(factor) {
   if (!wfState) return;
   var mid = (wfState.viewT0 + wfState.viewT1) / 2;
@@ -2551,10 +2554,14 @@ function wfSetupInteractions(mainSvg, subSvg) {
 
 // ── Tooltip ───────────────────────────────────────────────────────────────
 function _wfFmtTok(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+var _wfTtHideTimer = null;
 function _wfShowTooltip(e, t, lane) {
+  if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; }
   if (!_wfTooltipEl) {
     _wfTooltipEl = document.createElement('div');
     _wfTooltipEl.className = 'wf-tooltip';
+    _wfTooltipEl.onmouseenter = function() { if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; } };
+    _wfTooltipEl.onmouseleave = function() { _wfDismissTooltip(); };
     document.body.appendChild(_wfTooltipEl);
   }
   var u = t.usage || {};
@@ -2567,13 +2574,14 @@ function _wfShowTooltip(e, t, lane) {
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
-  // Locked lane, hovering a different turn → remind where the lock is
   var lock = _wfLockInfo();
   var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
     ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
   var row = function(l, v) { return '<div class="r"><span class="l">' + l + '</span><span class="v">' + v + '</span></div>'; };
+  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t]) : null;
   _wfTooltipEl.innerHTML =
     row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + (t._wfSeqStitched ? ' · seq-stitched' : '') + lockLbl)
+    + (ttWeather ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
     + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
     + row('Cost', '$' + (t.cost || 0).toFixed(4) + outlier)
@@ -2581,6 +2589,7 @@ function _wfShowTooltip(e, t, lane) {
     + row('Tokens', _wfFmtTok(inT) + ' in / ' + _wfFmtTok(u.output_tokens || 0) + ' out')
     + (tools ? row('Tools', wfEsc(tools)) : '');
   _wfTooltipEl.style.display = 'block';
+  _wfTooltipEl.style.pointerEvents = 'auto';
   var tx = e.clientX + 12, ty = e.clientY + 12;
   if (tx + _wfTooltipEl.offsetWidth > window.innerWidth) tx = e.clientX - _wfTooltipEl.offsetWidth - 12;
   if (ty + _wfTooltipEl.offsetHeight > window.innerHeight) ty = e.clientY - _wfTooltipEl.offsetHeight - 12;
@@ -2588,6 +2597,11 @@ function _wfShowTooltip(e, t, lane) {
   _wfTooltipEl.style.top = ty + 'px';
 }
 function _wfHideTooltip() {
+  if (_wfTtHideTimer) clearTimeout(_wfTtHideTimer);
+  _wfTtHideTimer = setTimeout(_wfDismissTooltip, 150);
+}
+function _wfDismissTooltip() {
+  if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; }
   if (_wfTooltipEl) _wfTooltipEl.style.display = 'none';
 }
 
@@ -2783,12 +2797,13 @@ function wfRenderAgentCard(lane) {
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
+  var laneWeather = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   var acModelLbl = _wfLaneModelLabel(lane);
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" title="' + wfEsc(acModelLbl.title) + '" style="background:' + color + '22;color:' + color + '">' + wfEsc(acModelLbl.text) + '</span></div>';
   // INVARIANT: main/subagent label must use _wfIsMainLane, not lane.spawnParent
   // — see docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
-  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + '</div>';
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + (laneWeather ? ' · <span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(laneWeather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + laneWeather.emoji + '</span>' : '') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
@@ -2899,7 +2914,8 @@ function wfRenderTurnCard(turnEntry) {
 
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
-  html += '<div class="wf-tc-title">#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry]) : null;
+  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
   var laneName = lane ? lane.name : '?';
