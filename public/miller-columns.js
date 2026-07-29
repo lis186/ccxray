@@ -18,6 +18,13 @@ function sessionCtxWindow(sid) {
     if (e.beta1m === true) has1m = true;
     if ((e.maxContext || 0) > win) win = e.maxContext;
   }
+  if (!has1m && win === 0) {
+    const sess = sessionsMap.get(sid);
+    if (sess) {
+      if (sess.beta1m === true) has1m = true;
+      if ((sess.maxContext || 0) > win) win = sess.maxContext;
+    }
+  }
   // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
   // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
   return has1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));

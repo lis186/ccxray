@@ -846,6 +846,7 @@ function mergeColdSessions(sessions) {
       count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
       model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
       title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
+      maxContext: s.maxContext || 0, beta1m: s.beta1m || false,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
       // #367: derived fields from session index for cold card rendering
       latestMainCtxUsed: s.latestCtxPct != null ? Math.round(s.latestCtxPct / 100 * (s.maxContext || 200000)) : 0,
