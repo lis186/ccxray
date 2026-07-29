@@ -44,11 +44,11 @@ function sigCtxPressure(turns) {
   var last = turns[turns.length - 1];
   var u = last.usage || {};
   var mx = last.maxContext;
-  if (!mx || mx < 1000) return { severity: 0, detail: { ctxPct: 0, turnIndex: turns.length - 1 } };
+  if (!mx || mx < 1000) return { severity: 0, detail: { ctxPct: 0, turnIndex: turns.length - 1, entryId: last && last.id || null } };
   var used = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
   var pct = used / mx;
   var sev = clamp01((pct - CTX_FLOOR) / (1 - CTX_FLOOR));
-  return { severity: sev, detail: { ctxPct: Math.round(pct * 1000) / 10, turnIndex: turns.length - 1 } };
+  return { severity: sev, detail: { ctxPct: Math.round(pct * 1000) / 10, turnIndex: turns.length - 1, entryId: last && last.id || null } };
 }
 
 function sigCompaction(turns) {
@@ -62,7 +62,7 @@ function sigTruncation(turns) {
   for (var i = 0; i < turns.length; i++) {
     var u = turns[i].usage || {};
     if (turns[i].stopReason === 'max_tokens' && (u.output_tokens || 0) >= 16000) {
-      return { severity: 0.5, detail: { turnIndex: i } };
+      return { severity: 0.5, detail: { turnIndex: i, entryId: turns[i] && turns[i].id || null } };
     }
   }
   return { severity: 0, detail: {} };
@@ -79,7 +79,7 @@ function sigStuck(turns) {
     }
   }
   var startIdx = maxStreak > 0 ? maxStreakEnd - maxStreak + 1 : 0;
-  return { severity: maxStreak >= 10 ? 0.9 : 0, detail: { maxStreak: maxStreak, turnStart: startIdx, turnEnd: maxStreakEnd } };
+  return { severity: maxStreak >= 10 ? 0.9 : 0, detail: { maxStreak: maxStreak, turnStart: startIdx, turnEnd: maxStreakEnd, entryIdStart: turns[startIdx] && turns[startIdx].id || null, entryIdEnd: turns[maxStreakEnd] && turns[maxStreakEnd].id || null } };
 }
 
 function sigLatencyDrift(turns) {
@@ -114,7 +114,7 @@ function sigErrorCluster(turns) {
   }
   // ponytail: denom=2.0 — window needs 100% error rate to reach severity 0.5. Exp2: 0.6 flagged 247/346 sessions.
   var sev = clamp01(maxRate / 2.0);
-  return { severity: sev, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100 } };
+  return { severity: sev, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100, entryIdStart: turns[bestStart] && turns[bestStart].id || null, entryIdEnd: turns[bestEnd] && turns[bestEnd].id || null } };
 }
 
 // ponytail: catches chronic tool errors spread across long sessions that error_cluster misses (exp9: ~30 false negatives).
@@ -179,13 +179,24 @@ function assessWeather(turns) {
   return { level: pick.level, emoji: pick.emoji, score: Math.round(score * 1000) / 1000, factors: factors, stats: stats, tooltip: tooltip };
 }
 
+function _turnLink(label, entryId) {
+  if (!entryId || typeof document === 'undefined') return label;
+  return '<span class="wo-turn-link" onclick="event.stopPropagation();wfLockTurn(\'' + entryId + '\')">' + label + '</span>';
+}
+
+function _rangeLink(start, end, startId, endId) {
+  var label = 'turn ' + start + '-' + end;
+  if ((!startId && !endId) || typeof document === 'undefined') return label;
+  return '<span class="wo-turn-link" onclick="event.stopPropagation();wfLockTurn(\'' + (startId || endId) + '\')">' + label + '</span>';
+}
+
 var _FACTOR_FMT = {
   ctx_pressure: function(d) { return 'context ' + (d.ctxPct || 0) + '%'; },
   compaction_scar: function(d) { return 'compaction ×' + (d.compactionCount || 1) + ' (info lost)'; },
-  truncation: function(d) { return 'output truncated (turn ' + (d.turnIndex || '?') + ')'; },
-  stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (turn ' + (d.turnStart || 0) + '-' + (d.turnEnd || 0) + ')'; },
+  truncation: function(d) { return 'output truncated (' + _turnLink('turn ' + (d.turnIndex || '?'), d.entryId) + ')'; },
+  stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
-  error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (turn ' + (d.windowStart || 0) + '-' + (d.windowEnd || 0) + ')'; },
+  error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
   error_cumulative: function(d) { return d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; },
 };
 
@@ -205,9 +216,9 @@ var _ACTION_TABLE = {
   },
   compaction_scar: function() { return 'Save decisions to CLAUDE.md, or start fresh with --resume'; },
   truncation: function() { return 'Break into smaller steps'; },
-  stuck: function(d) { return 'Check turn ' + (d.turnStart || 0) + '-' + (d.turnEnd || 0) + ' — usually permissions or paths'; },
+  stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
   latency_drift: function() { return 'Use subagent to reduce context load'; },
-  error_cluster: function(d) { return 'Check turn ' + (d.windowStart || 0) + '-' + (d.windowEnd || 0); },
+  error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
   error_cumulative: function() { return 'Check tool errors — common: permissions, paths, settings'; },
 };
 

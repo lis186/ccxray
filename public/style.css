@@ -733,6 +733,8 @@
 .weather-overlay .wo-header { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #fff; }
 .weather-overlay .wo-factors { color: #aaa; font-size: 13px; margin-bottom: 8px; }
 .weather-overlay .wo-action { color: #e0e0e0; font-size: 13px; }
+.wo-turn-link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.wo-turn-link:hover { color: #58a6ff; }
 .wf-tooltip { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--text); z-index: 100; pointer-events: none; max-width: 300px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1.6; }
 .wf-tooltip .r { display: flex; justify-content: space-between; gap: 16px; }
 .wf-tooltip .l { color: var(--dim); }
