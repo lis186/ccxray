@@ -119,18 +119,18 @@ function sigErrorCluster(turns) {
 
 // ponytail: catches chronic tool errors spread across long sessions that error_cluster misses (exp9: ~30 false negatives).
 function sigErrorCumulative(turns) {
-  var toolTurns = 0, errTurns = 0;
+  var toolTurns = 0, errTurns = 0, firstErrId = null;
   for (var i = 0; i < turns.length; i++) {
     if (turns[i].stopReason === 'tool_use') {
       toolTurns++;
-      if (turns[i].toolFail) errTurns++;
+      if (turns[i].toolFail) { errTurns++; if (!firstErrId) firstErrId = turns[i].id || null; }
     }
   }
   if (toolTurns < 10) return { severity: 0, detail: {} };
   var rate = errTurns / toolTurns;
   // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥10 tool turns to avoid noise.
   var sev = clamp01(rate / 0.4);
-  return { severity: sev, detail: { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100 } };
+  return { severity: sev, detail: { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100, firstErrId: firstErrId } };
 }
 
 function assessWeather(turns) {
@@ -198,7 +198,7 @@ var _FACTOR_FMT = {
   stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
   error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
-  error_cumulative: function(d) { return d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; },
+  error_cumulative: function(d) { var label = d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; return d.firstErrId ? _turnLink(label, d.firstErrId) : label; },
 };
 
 var _LEVEL_SUMMARY = {
@@ -220,7 +220,7 @@ var _ACTION_TABLE = {
   stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
   latency_drift: function() { return 'Use subagent to reduce context load'; },
   error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
-  error_cumulative: function() { return 'Check tool errors — common: permissions, paths, settings'; },
+  error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : 'Check tool errors — common: permissions, paths, settings'; },
 };
 
 function _buildTooltip(level, factors, stats) {
