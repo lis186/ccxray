@@ -3099,6 +3099,21 @@ function wfLockTurn(turnId) {
   }
 }
 
+function wfZoomToTurnRange(startId, endId) {
+  if (!wfState) return;
+  var s = wfState.turnIndex && wfState.turnIndex.get(startId);
+  var e = endId ? wfState.turnIndex && wfState.turnIndex.get(endId) : s;
+  if (!s) return;
+  var t0 = Number(s.turn.receivedAt) || 0;
+  var t1 = e ? (Number(e.turn.receivedAt) || 0) + (parseFloat(e.turn.elapsed) || 0) * 1000 : t0 + 60000;
+  if (t1 <= t0) t1 = t0 + 60000;
+  var pad = (t1 - t0) * 0.15;
+  wfState.viewT0 = Math.max(wfState.tMin, t0 - pad);
+  wfState.viewT1 = Math.min(wfState.tMax, t1 + pad);
+  wfLockTurn(startId);
+  wfDeferRender();
+}
+
 // ── Section Navigation ───────────────────────────────────────────────────
 function wfSelectSection(name) {
   if (!wfState) return;

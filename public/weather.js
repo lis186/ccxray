@@ -181,13 +181,14 @@ function assessWeather(turns) {
 
 function _turnLink(label, entryId) {
   if (!entryId || typeof document === 'undefined') return label;
-  return '<span class="wo-turn-link" onclick="event.stopPropagation();wfLockTurn(\'' + entryId + '\');if(typeof wfState!==\'undefined\'&&wfState&&!wfState.laneFocusMode)wfToggleLaneFocus()">' + label + '</span>';
+  return '<span class="wo-turn-link" onclick="event.stopPropagation();if(typeof wfZoomToTurnRange===\'function\')wfZoomToTurnRange(\'' + entryId + '\')">' + label + '</span>';
 }
 
 function _rangeLink(start, end, startId, endId) {
   var label = 'turn ' + start + '-' + end;
   if ((!startId && !endId) || typeof document === 'undefined') return label;
-  return '<span class="wo-turn-link" onclick="event.stopPropagation();wfLockTurn(\'' + (startId || endId) + '\');if(typeof wfState!==\'undefined\'&&wfState&&!wfState.laneFocusMode)wfToggleLaneFocus()">' + label + '</span>';
+  var sid = startId || endId, eid = endId || startId;
+  return '<span class="wo-turn-link" onclick="event.stopPropagation();if(typeof wfZoomToTurnRange===\'function\')wfZoomToTurnRange(\'' + sid + '\',\'' + eid + '\')">' + label + '</span>';
 }
 
 var _FACTOR_FMT = {
