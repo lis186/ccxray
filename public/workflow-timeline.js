@@ -3112,6 +3112,16 @@ function wfZoomToTurnRange(startId, endId) {
   wfState.viewT1 = Math.min(wfState.tMax, t1 + pad);
   wfLockTurn(startId);
   wfDeferRender();
+  // Scroll the turn list to the selected turn after render
+  setTimeout(function() {
+    for (var i = 0; i < allEntries.length; i++) {
+      if (allEntries[i].id === startId) {
+        var el = colTurns && colTurns.querySelector('.turn-item[data-entry-idx="' + i + '"]');
+        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        break;
+      }
+    }
+  }, 100);
 }
 
 // ── Section Navigation ───────────────────────────────────────────────────
