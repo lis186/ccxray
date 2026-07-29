@@ -729,10 +729,12 @@
 #wf-detail-area { flex: 1; display: flex; min-height: 180px; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }
-.weather-overlay { position: fixed; display: none; background: #1a1f2b; border: 1px solid #333; border-radius: 6px; padding: 12px 16px; font-size: 13px; color: #e0e0e0; z-index: 200; pointer-events: none; max-width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); line-height: 1.8; }
-.weather-overlay .wo-header { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #fff; }
-.weather-overlay .wo-factors { color: #aaa; font-size: 13px; margin-bottom: 8px; }
-.weather-overlay .wo-action { color: #e0e0e0; font-size: 13px; }
+.weather-overlay { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; font-size: 13px; color: var(--text); z-index: 200; pointer-events: none; max-width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); line-height: 1.8; }
+.weather-overlay .wo-header { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.weather-overlay .wo-factors { color: var(--dim); font-size: 13px; margin-bottom: 8px; }
+.weather-overlay .wo-action { color: var(--text); font-size: 13px; }
+.wo-turn-link { color: var(--link, #58a6ff); cursor: pointer; text-decoration: underline; }
+.wo-turn-link:hover { color: var(--link-hover, #79c0ff); }
 .wf-tooltip { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--text); z-index: 100; pointer-events: none; max-width: 300px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1.6; }
 .wf-tooltip .r { display: flex; justify-content: space-between; gap: 16px; }
 .wf-tooltip .l { color: var(--dim); }
