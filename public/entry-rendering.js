@@ -413,6 +413,22 @@ function addEntry(e) {
     }
   }
   const sess = sessionsMap.get(sid);
+  // #330: a mergeColdSessions race (the sessions API resolving before the
+  // entries batch) can mark a hot session `_cold` while `_loading`, before its
+  // own batch entries reach addEntry. Those entries then arrive here, find the
+  // session already in sessionsMap, skip the creation block above, and leave
+  // `_cold` set — so the session shows a permanent "Loading N turns" spinner and
+  // the post-batch recompute (which skips `_cold` sessions) keeps its stub stats.
+  // Promote it: reaching this addEntry during the batch means the session's full
+  // history is flowing into allEntries, so clearing `_cold` lets the post-batch
+  // recompute rebuild real stats from allEntries. Scoped to `_batchRestoring`
+  // (not `_loading` — SSE live entries also arrive during `_loading`; promoting
+  // on those would break a genuine cold session that happens to receive a live
+  // turn during startup). See issue #330 (G1 + G2).
+  if (_batchRestoring && sess._cold) {
+    sess._cold = false;
+    if (sess.firstTs == null) sess.firstTs = e.ts;
+  }
   if (e.truncated) { sess.truncated = true; sess.totalEntryCount = e.totalEntryCount; }
   // Resume command is computed server-side (single source of truth). Sticky:
   // once any turn reports a command, keep it even if later turns lack usage.
@@ -1143,6 +1159,7 @@ function _formatDeepLinkFailure(reason) {
 // Stars load in parallel with entries; rerender after both resolve so the
 // initial column paint already shows the correct star/derived badges.
 var _loading = true;
+var _batchRestoring = false; // #330: true only during _restoreEntryBatch
 var _dirtySessions = null; // #308: batch-deferred recompute
 window._entriesLoading = true;
 window._entriesLoadingProjectName = _pendingDeepLink.p || null;
@@ -1241,7 +1258,9 @@ async function _restoreEntryBatch(entries, opts) {
   const base = opts.base || 0;
   const label = opts.label || 'Restoring';
   for (let i = 0; i < entries.length; i += chunk) {
+    _batchRestoring = true; // #330: only promote cold→hot during synchronous batch chunk
     entries.slice(i, i + chunk).forEach(addEntry);
+    _batchRestoring = false;
     if (i + chunk < entries.length) {
       _setLoadingStatus(label + '… ' + (base + i + chunk) + ' / ' + total);
       await new Promise(r => requestAnimationFrame(r));
