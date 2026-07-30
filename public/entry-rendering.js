@@ -852,6 +852,15 @@ function mergeColdSessions(sessions) {
       if (!existing.title && s.title) existing.title = s.title;
       if (!existing.firstPrompt && s.firstPrompt) existing.firstPrompt = s.firstPrompt;
       if (s.weather && !existing.weather) existing.weather = s.weather;
+      // #377: beta1m/maxContext are exempt from the #367 rule below. That rule guards
+      // against cold *approximations* (e.g. latestCtxPct-derived values) overwriting
+      // accurate hot computations. These two are facts folded server-side across the
+      // whole session (gated on !isSubagent), and the merge is monotone max/OR — it can
+      // only widen the window, never narrow it, so it cannot degrade a hot value. A hot
+      // session truncated by RESTORE_DAYS / SESSION_ENTRY_CAP has strictly less evidence
+      // than the server fold. See ADR 0013 + #377.
+      if (s.beta1m === true) existing.beta1m = true;
+      if ((s.maxContext || 0) > (existing.maxContext || 0)) existing.maxContext = s.maxContext;
       // #367: merge cold derived fields ONLY when the hot session truly lacks them.
       // Hot sessions compute these from entries — never overwrite with cold fallbacks.
       if (!existing._cold) continue;
