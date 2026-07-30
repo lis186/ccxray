@@ -13,13 +13,19 @@ const {
 } = require('../server/adapters/grok-adapter');
 const { readAllAccounts } = require('../server/local-usage-reader');
 
+// Period computed from wall clock so resetLabel stays future-dated (local-usage-reader
+// only sets resetLabel when resetsAt > now; no clock seam in production reader).
+const _nowMs = Date.now();
+const _periodStartIso = new Date(_nowMs - 4 * 86400000).toISOString();
+const _periodEndIso = new Date(_nowMs + 3 * 86400000).toISOString();
+
 /** CLI /usage weekly SuperGrok pool: GET /v1/billing?format=credits */
 const SAMPLE_CREDITS = {
   config: {
     currentPeriod: {
       type: 'USAGE_PERIOD_TYPE_WEEKLY',
-      start: '2026-07-18T11:42:32.223711+00:00',
-      end: '2026-07-25T11:42:32.223711+00:00',
+      start: _periodStartIso,
+      end: _periodEndIso,
     },
     creditUsagePercent: 44,
     onDemandCap: { val: 0 },
@@ -30,8 +36,8 @@ const SAMPLE_CREDITS = {
     ],
     isUnifiedBillingUser: true,
     prepaidBalance: { val: 0 },
-    billingPeriodStart: '2026-07-18T11:42:32.223711+00:00',
-    billingPeriodEnd: '2026-07-25T11:42:32.223711+00:00',
+    billingPeriodStart: _periodStartIso,
+    billingPeriodEnd: _periodEndIso,
   },
 };
 
@@ -56,7 +62,7 @@ describe('Grok CLI /v1/billing → account snap', () => {
   });
 
   it('buildGrokSnapFromBilling maps format=credits to Weekly SuperGrok Limit', () => {
-    const snap = buildGrokSnapFromBilling(SAMPLE_CREDITS, { nowMs: Date.UTC(2026, 6, 19, 12) });
+    const snap = buildGrokSnapFromBilling(SAMPLE_CREDITS, { nowMs: _nowMs });
     assert.ok(snap);
     assert.equal(snap.id, 'grok-default');
     assert.equal(snap.provider, 'xai');
@@ -65,11 +71,11 @@ describe('Grok CLI /v1/billing → account snap', () => {
     assert.equal(snap.sevenDay.usedPct, 44);
     assert.equal(snap.sevenDay.unit, 'pct');
     assert.equal(snap.sevenDay.windowLabel, 'Weekly SuperGrok Limit');
-    assert.equal(snap.sevenDay.periodStart, '2026-07-18T11:42:32.223711+00:00');
-    assert.equal(snap.sevenDay.periodEnd, '2026-07-25T11:42:32.223711+00:00');
+    assert.equal(snap.sevenDay.periodStart, _periodStartIso);
+    assert.equal(snap.sevenDay.periodEnd, _periodEndIso);
     assert.equal(
       snap.sevenDay.resetsAt,
-      Math.floor(Date.parse('2026-07-25T11:42:32.223711+00:00') / 1000),
+      Math.floor(Date.parse(_periodEndIso) / 1000),
     );
     assert.equal(snap.sevenDay.periodType, 'USAGE_PERIOD_TYPE_WEEKLY');
   });
@@ -91,7 +97,7 @@ describe('Grok CLI /v1/billing → account snap', () => {
       assert.equal(a.sevenDay.usedPct, 44);
       assert.equal(a.sevenDay.leftPct, 56);
       assert.ok(a.sevenDay.resetLabel, 'should have Resets in … from period end');
-      assert.equal(a.sevenDay.periodEnd, '2026-07-25T11:42:32.223711+00:00');
+      assert.equal(a.sevenDay.periodEnd, _periodEndIso);
       assert.equal(a.sevenDay.windowLabel, 'Weekly SuperGrok Limit');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });

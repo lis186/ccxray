@@ -103,10 +103,17 @@ describe('store.attributeTitleGen', () => {
     assert.equal(store.attributeTitleGen(titleGenReq('hello'), now), null);
   });
 
-  it('inflight but lastSeenAt older than 60s window → discard', () => {
+  it('inflight but lastSeenAt older than default 1s window → discard', () => {
     const now = Date.now();
-    seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 120_000, inflight: true });
+    seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 5_000, inflight: true });
     assert.equal(store.attributeTitleGen(titleGenReq('hello'), now), null);
+  });
+
+  it('30s-old candidate: discarded at anthropic 1s window, kept at grok 60s window', () => {
+    const now = Date.now();
+    seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 30_000, inflight: true });
+    assert.equal(store.attributeTitleGen(titleGenReq('hello'), now, 1000), null, 'anthropic 1s');
+    assert.equal(store.attributeTitleGen(titleGenReq('hello'), now, 60_000), 'sA', 'grok 60s');
   });
 
   it('session within window but not inflight → discard', () => {
@@ -137,7 +144,7 @@ describe('store.attributeTitleGen', () => {
         { role: 'user', content: '<user_query>\nReply with exactly: ok\n</user_query>' },
       ],
     };
-    assert.equal(store.attributeTitleGen(titleReq, now), mainSid);
+    assert.equal(store.attributeTitleGen(titleReq, now, 60_000), mainSid);
   });
 });
 

@@ -41,6 +41,9 @@ const AGENT_PROVIDERS = Object.freeze({
     id: 'codex',
     label: 'Codex CLI',
     displayName: 'ccxray',
+    // Capitalized agent name for prose titles (e.g. "Codex WebSocket session").
+    // Not displayName (process title "ccxray") or label ("Codex CLI").
+    wireDisplayName: 'Codex',
     upstream: 'openai',
     // When session id is known but cwd missing on the wire, use process.cwd() of the launcher.
     cwdFallback: true,
@@ -85,6 +88,7 @@ const AGENT_PROVIDERS = Object.freeze({
     id: 'grok',
     label: 'Grok CLI',
     displayName: 'ccxray',
+    wireDisplayName: 'Grok',
     // Wire parser family (path → openai.js). Host profile is UPSTREAMS.xai via OPENAI_WIRE_CLIENTS.
     upstream: 'openai',
     wire: 'openai',
@@ -118,6 +122,8 @@ const OPENAI_WIRE_CLIENTS = Object.freeze([
     upstreamKey: 'xai',
     rawSessionId: 'grok-raw',
     modelPattern: /^grok/i,
+    // Title-gen often finishes several seconds after main turn starts streaming.
+    titleGenWindowMs: 60_000,
     sessionHeaderNames: Object.freeze(['x-grok-session-id', 'x-grok-conv-id']),
     // Non-conversation /v1/* probes (settings, feedback, …) are noise for this client.
     controlPlaneIsNoise: true,
@@ -241,6 +247,17 @@ function getDisplayName(id, env = process.env) {
   return getAgentProvider(id)?.displayName || 'ccxray';
 }
 
+/**
+ * Capitalized agent name for user-facing prose (WS titles, etc.).
+ * Falls back to 'Codex' for the openai wire family when the agent is unknown.
+ * Do not use displayName (process title) or label ("… CLI").
+ */
+function displayNameForAgent(agent) {
+  const p = getAgentProvider(agent);
+  if (p?.wireDisplayName) return p.wireDisplayName;
+  return 'Codex';
+}
+
 function getAgentLaunch(id, port, args = [], env = process.env) {
   const provider = getAgentProvider(id);
   if (!provider) return null;
@@ -299,6 +316,7 @@ module.exports = {
   agentForProvider,
   agentUsesCwdFallback,
   describeAgentModule,
+  displayNameForAgent,
   firstHeaderValue,
   getAgentLaunch,
   getAgentProvider,

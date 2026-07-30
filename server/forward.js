@@ -31,11 +31,14 @@ const _socketErrorGuard = new WeakSet();
 // session. Returns the clean title string or null.
 // Gate on response shape, not request agent type: title-gen requests can arrive
 // without a system prompt so system-based detection is unreliable.
-function resolveTitleGenTitle(parsedBody, resPayload, receivedAt) {
+// windowMs: anthropic callers pass 1000; openai/Grok pass wire-client
+// titleGenWindowMs (default 60_000). attributeTitleGen itself defaults to 1000
+// so an un-passed call never silently widens Claude.
+function resolveTitleGenTitle(parsedBody, resPayload, receivedAt, windowMs) {
   const clean = helpers.extractTitleGenPayload(resPayload);
   if (!clean) return null;
   if (store.extractCwd(parsedBody)) return null; // main orchestrator, not a subagent
-  const parentSid = store.attributeTitleGen(parsedBody, receivedAt);
+  const parentSid = store.attributeTitleGen(parsedBody, receivedAt, windowMs);
   if (parentSid && store.setSessionTitle(parentSid, clean, receivedAt)) {
     sessionIdx.setTitle(parentSid, store.getSessionTitle(parentSid));
     broadcastSessionTitleUpdate(parentSid);
@@ -512,10 +515,12 @@ function forwardRequest(ctx) {
         });
       }
       // Provider hook: refresh Grok CLI billing snap (/v1/billing) using this
-      // request's auth — no token stored. Only for Grok wire clients.
+      // request's auth — no token stored. Gate on headers only (same signal as
+      // upstream routing) — never model-name regex, which would forward a
+      // non-grok credential to cli-chat-proxy.grok.com.
       try {
         const wireClient = matchOpenAIWireClient(clientReq.headers || {});
-        if (wireClient?.id === 'grok' || /^grok/i.test(parsedBody?.model || '')) {
+        if (wireClient?.id === 'grok') {
           const { refreshGrokBillingFromAuth } = require('./adapters/grok-adapter');
           refreshGrokBillingFromAuth(
             clientReq.headers,
@@ -747,7 +752,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
 
     const sessionId = reqSessionId;
     const isSubagent = store.isAnthropicSubagent(parsedBody);
-    const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime);
+    const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime, 1000);
     const title = titleGenTitle
       || (isSubagent
         ? helpers.extractFirstUserText(parsedBody)
@@ -998,11 +1003,17 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     let entry;
     // EXCEPTION(#158): entry assembly differs by provider (ctx shape + pre-computation); both delegate to parser.buildEntryFields
     if (provider === 'openai') {
-      // Grok session_title tool + Claude-style title JSON on OpenAI wire
+      // Grok session_title tool + Claude-style title JSON on OpenAI wire.
+      // Wider attribution window only for wire clients that declare it (Grok).
+      const wireClient = matchOpenAIWireClient(ctx.clientReq?.headers || {}, parsedBody?.model);
+      // Non-declaring openai-wire clients (Codex) keep main's 1s window — only a
+      // module that opts in via titleGenWindowMs gets the wider one.
+      const titleGenWindowMs = wireClient?.titleGenWindowMs ?? 1000;
       const titleGenTitle = resolveTitleGenTitle(
         parsedBody,
         openAIEvents || openAIResponse || resData,
         startTime,
+        titleGenWindowMs,
       );
       const fields = getParser('openai').buildEntryFields({
         provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
@@ -1024,7 +1035,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       };
     } else {
       const isSubagent = store.isAnthropicSubagent(parsedBody);
-      const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime);
+      const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime, 1000);
       const title = titleGenTitle
         || (isSubagent
           ? helpers.extractFirstUserText(parsedBody)

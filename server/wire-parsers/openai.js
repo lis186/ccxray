@@ -6,6 +6,7 @@ const {
   normalizeUsageForProvider,
   matchOpenAIWireClient,
   resolveOpenAIWireAgent,
+  displayNameForAgent,
   OPENAI_WIRE_CLIENTS,
 } = require('../providers');
 const config = require('../config');
@@ -327,7 +328,7 @@ function buildEntryFields(ctx) {
       ? (ctx.lastResponseStatus || ctx.wsCloseReason || ctx.wsErrorMessage || null)
       : (response?.status || ''),
     title: isWS
-      ? (getOpenAIInputSummary(parsedBody?.input) || `${agent} WebSocket session`)
+      ? (getOpenAIInputSummary(parsedBody?.input) || `${displayNameForAgent(agent)} WebSocket session`)
       : (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response)),
     thinkingDuration: null,
     toolFail: false,

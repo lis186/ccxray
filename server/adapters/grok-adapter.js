@@ -27,9 +27,24 @@ const path = require('node:path');
 const https = require('node:https');
 const http = require('node:http');
 
-const BILLING_HOST = 'cli-chat-proxy.grok.com';
 /** CLI /usage weekly pool — must include format=credits. */
 const BILLING_PATH = '/v1/billing?format=credits';
+
+/** Per-alias last successful (HTTP 200) billing refresh time (ms). Hub = one process. */
+const _billingOkAtByAlias = new Map();
+
+const DEFAULT_BILLING_TTL_MS = 60_000;
+
+function billingTtlMs(opts = {}) {
+  if (opts.ttlMs != null && Number.isFinite(opts.ttlMs)) return opts.ttlMs;
+  const envN = Number(process.env.CCXRAY_GROK_BILLING_TTL_MS);
+  return Number.isFinite(envN) && envN >= 0 ? envN : DEFAULT_BILLING_TTL_MS;
+}
+
+/** Test seam: clear throttle state between cases. */
+function _resetBillingThrottleForTests() {
+  _billingOkAtByAlias.clear();
+}
 
 // ── Billing parse ─────────────────────────────────────────────────────
 
@@ -185,11 +200,33 @@ function refreshGrokFromBillingBody(raw, outDir, alias = 'default') {
 /**
  * Active fetch of /v1/billing?format=credits using the client's auth headers.
  * Fire-and-forget safe: never throws.
+ *
+ * @param {object} reqHeaders  client request headers (auth forwarded, not stored)
+ * @param {string} outDir      usage-status directory
+ * @param {string} [alias='default']
+ * @param {object} [opts]
+ * @param {object} [opts.upstream]  host profile (default config.UPSTREAMS.xai)
+ * @param {number} [opts.ttlMs]     override CCXRAY_GROK_BILLING_TTL_MS (default 60s)
+ * @param {number} [opts.nowMs]     clock for throttle check
+ * @param {Function} [opts.request] injectable http(s).request (tests)
+ * @param {Function} [opts.joinUpstreamPath] injectable path joiner (tests)
  */
-function refreshGrokBillingFromAuth(reqHeaders, outDir, alias = 'default') {
+function refreshGrokBillingFromAuth(reqHeaders, outDir, alias = 'default', opts = {}) {
   try {
     const auth = reqHeaders?.authorization || reqHeaders?.Authorization;
     if (!auth) return;
+
+    const now = opts.nowMs != null ? opts.nowMs : Date.now();
+    const ttl = billingTtlMs(opts);
+    const lastOk = _billingOkAtByAlias.get(alias) || 0;
+    if (ttl > 0 && lastOk > 0 && (now - lastOk) < ttl) return;
+
+    const config = require('../config');
+    const upstream = opts.upstream || config.UPSTREAMS.xai;
+    if (!upstream?.host) return;
+    const joinPath = opts.joinUpstreamPath || config.joinUpstreamPath;
+    const reqPath = joinPath(upstream, BILLING_PATH);
+
     const headers = {
       authorization: auth,
       accept: 'application/json',
@@ -197,23 +234,32 @@ function refreshGrokBillingFromAuth(reqHeaders, outDir, alias = 'default') {
       'x-xai-token-auth': reqHeaders['x-xai-token-auth'] || 'xai-grok-cli',
       'x-grok-client-version': reqHeaders['x-grok-client-version'] || '0.2.103',
     };
-    const req = https.request({
-      hostname: BILLING_HOST,
-      path: BILLING_PATH,
+
+    const transport = upstream.protocol === 'http' ? http : https;
+    const requestFn = opts.request || ((options, cb) => transport.request(options, cb));
+    const req = requestFn({
+      hostname: upstream.host,
+      port: upstream.port,
+      path: reqPath,
       method: 'GET',
       headers,
     }, (res) => {
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
+        // Record throttle timestamp only on 200 — a failing request must not
+        // blank the Usage card for a whole TTL.
         if (res.statusCode !== 200) return;
+        _billingOkAtByAlias.set(alias, Date.now());
         try {
           refreshGrokFromBillingBody(Buffer.concat(chunks).toString('utf8'), outDir, alias);
         } catch { /* ignore */ }
       });
     });
     req.on('error', () => {});
-    req.setTimeout(8000, () => { try { req.destroy(); } catch {} });
+    if (typeof req.setTimeout === 'function') {
+      req.setTimeout(8000, () => { try { req.destroy(); } catch {} });
+    }
     req.end();
   } catch { /* ignore */ }
 }
@@ -325,6 +371,7 @@ module.exports = {
   isGrokBillingPath,
   writeGrokSnap,
   withGrokLiveCosts,
+  _resetBillingThrottleForTests,
   // legacy exports kept so old tests fail cleanly / callers no-op
   parseGrokRatelimitHeaders,
   buildGrokSnap,

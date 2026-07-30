@@ -95,7 +95,28 @@ function makeMultiMock() {
   const hits = [];
   const server = http.createServer((req, res) => {
     const pathname = (req.url || '/').split('?')[0];
-    hits.push({ host: req.headers.host, path: pathname, method: req.method });
+    hits.push({
+      host: req.headers.host,
+      path: pathname,
+      method: req.method,
+      url: req.url || '/',
+    });
+
+    // Grok billing refresh (format=credits) — keep offline; never 404 the Usage path.
+    if (pathname === '/v1/billing' || pathname.endsWith('/billing')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        config: {
+          currentPeriod: {
+            type: 'USAGE_PERIOD_TYPE_WEEKLY',
+            start: new Date(Date.now() - 4 * 86400000).toISOString(),
+            end: new Date(Date.now() + 3 * 86400000).toISOString(),
+          },
+          creditUsagePercent: 1,
+        },
+      }));
+      return;
+    }
 
     if (pathname === '/v1/messages' || pathname.endsWith('/messages')) {
       const chunks = [];
@@ -292,6 +313,19 @@ describe('multi-agent provider modules', () => {
       // Host routing: all hit mock port; grok path still recorded as /v1/responses
       assert.ok(hits.some(h => h.path.includes('messages')), 'anthropic path hit mock');
       assert.ok(hits.filter(h => h.path.includes('responses')).length >= 2, 'two responses wire clients');
+
+      // Offline pin: Grok billing refresh must land on the mock (XAI_BASE_URL),
+      // never escape to cli-chat-proxy.grok.com. No unexpected hosts.
+      const billingHits = hits.filter(h => h.path.includes('billing'));
+      assert.ok(billingHits.length >= 1, `expected grok billing on mock, hits=${JSON.stringify(hits)}`);
+      assert.ok(
+        billingHits.every(h => String(h.host || '').includes('127.0.0.1')),
+        'billing must stay on loopback mock',
+      );
+      assert.ok(
+        hits.every(h => String(h.host || '').includes('127.0.0.1')),
+        `no traffic escaped mock hosts: ${JSON.stringify(hits)}`,
+      );
     } finally {
       await killAndWait(child);
       await new Promise(r => mock.close(r));

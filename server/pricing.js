@@ -36,6 +36,9 @@ const DEFAULT_PRICING = {
   // Prefix match covers grok-4.5-build / grok-4.5-latest variants.
   'grok-4.5':          { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.5-latest':   { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
+  // Permanently shadows LiteLLM (buildPricingTable spreads DEFAULT after
+  // mirrored live data). Remove once LiteLLM lists xai/grok-4.5-build
+  // (same lifecycle as #202 lag overrides — not a temporary lag row).
   'grok-4.5-build':    { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.3':          { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
   'grok-4.3-latest':   { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },

@@ -62,8 +62,10 @@ function killAndWait(child) {
 }
 
 function makeMockXaiUpstream() {
-  return http.createServer((req, res) => {
+  const hits = [];
+  const server = http.createServer((req, res) => {
     const pathname = (req.url || '/').split('?')[0];
+    hits.push({ method: req.method, path: pathname, url: req.url || '/' });
 
     if (pathname === '/v1/models' || pathname.endsWith('/models')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -123,6 +125,8 @@ function makeMockXaiUpstream() {
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ type: 'error', error: { type: 'not_found_error', message: 'Not found' } }));
   });
+  server.hits = hits;
+  return server;
 }
 
 function request(port, { method = 'GET', path: urlPath, headers = {}, body = null }) {
@@ -279,6 +283,21 @@ describe('Grok proxy e2e', () => {
       const lines = fs.readFileSync(indexPath, 'utf8').trim().split('\n').map(l => JSON.parse(l));
       assert.ok(lines.some(l => l.agent === 'grok' && l.model === 'grok-4.5'));
       assert.ok(lines.every(l => l.sessionId !== 'codex-raw'), 'no codex-raw sessions for Grok traffic');
+
+      // Billing refresh (gated on grok headers) hits the mock via XAI_BASE_URL —
+      // never cli-chat-proxy.grok.com. Throttle may collapse multiple turns to one.
+      await new Promise(r => setTimeout(r, 400));
+      const billingHits = upstream.hits.filter(h =>
+        h.path === '/v1/billing' || (h.url || '').includes('/v1/billing'),
+      );
+      assert.ok(
+        billingHits.length >= 1,
+        `expected ≥1 /v1/billing on mock (XAI_BASE_URL), got ${billingHits.length}; hits=${JSON.stringify(upstream.hits)}`,
+      );
+      assert.ok(
+        billingHits.every(h => !String(h.url || '').includes('/v1/v1/')),
+        'billing path must not double /v1',
+      );
     } finally {
       await killAndWait(child);
       upstream.close();

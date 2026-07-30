@@ -555,9 +555,9 @@ function getSessionFirstPrompt(sid) {
 // (inflight session; lastSeenAt within windowMs) AND content (title anchor
 // match — Grok uses normalized <user_query> body). Returns null when
 // zero or more than one candidate matches.
-// Default window 60s: Grok session_title tool calls often take several seconds
-// while the main turn is still streaming (obs-stable 2026-07-19).
-function attributeTitleGen(parsedBody, receivedAt, windowMs = 60_000) {
+// Default window 1000ms (Claude). OpenAI-wire clients that need a wider
+// window (Grok titleGenWindowMs=60s) pass it explicitly via resolveTitleGenTitle.
+function attributeTitleGen(parsedBody, receivedAt, windowMs = 1000) {
   const target = extractTitleGenAnchor(parsedBody);
   if (target == null) return null;
   const cutoff = (receivedAt || Date.now()) - windowMs;
