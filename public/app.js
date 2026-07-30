@@ -34,6 +34,7 @@ function switchTab(tab, forceDiff) {
     loadCostPage();
   } else {
     costPage.classList.remove('open');
+    if (typeof stopCostLiveRefresh === 'function') stopCostLiveRefresh();
   }
   if (tab === 'sysprompt') {
     diffOverlay.classList.add('open');

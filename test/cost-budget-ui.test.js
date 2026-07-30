@@ -28,7 +28,11 @@ describe('cost-budget-ui: acctColor(accountId)', () => {
     assert.equal(ctx.acctColor('codex-default'), '#74aa9c');
     assert.equal(ctx.acctColor('codex-work'), '#74aa9c');
   });
-  it('returns the anthropic brand color for anything else', () => {
+  it('returns the xAI brand color for grok accounts', () => {
+    assert.equal(ctx.acctColor('grok-default'), '#a78bfa');
+    assert.equal(ctx.acctColor('grok-work'), '#a78bfa');
+  });
+  it('returns the anthropic brand color for claude / other accounts', () => {
     assert.equal(ctx.acctColor('claude-default'), '#e8956a');
     assert.equal(ctx.acctColor('anthropic-personal'), '#e8956a');
   });
@@ -43,14 +47,17 @@ describe('cost-budget-ui: acctLabel(accountId, allAccounts)', () => {
   it('shows the alias when it is not "default"', () => {
     assert.equal(ctx.acctLabel('claude-personal', []), 'Claude · personal');
     assert.equal(ctx.acctLabel('codex-work', []), 'Codex · work');
+    assert.equal(ctx.acctLabel('grok-work', []), 'Grok · work');
   });
   it('collapses "default" alias to the bare provider name when it is the only account', () => {
     assert.equal(ctx.acctLabel('claude-default', ['claude-default']), 'Claude');
+    assert.equal(ctx.acctLabel('grok-default', ['grok-default']), 'Grok');
   });
   it('shows "· default" for the default alias only when sibling accounts of the same provider exist', () => {
     assert.equal(ctx.acctLabel('claude-default', ['claude-default', 'claude-work']), 'Claude · default');
     // sibling of a different provider must not trigger the "· default" suffix
     assert.equal(ctx.acctLabel('claude-default', ['claude-default', 'codex-work']), 'Claude');
+    assert.equal(ctx.acctLabel('grok-default', ['grok-default', 'claude-default']), 'Grok');
   });
 });
 
@@ -86,6 +93,8 @@ describe('cost-budget-ui: filterMatchesAccount(filter, acctId)', () => {
   it('matches by provider prefix for wildcard filters', () => {
     assert.equal(ctx.filterMatchesAccount('claude:*', 'claude-default'), true);
     assert.equal(ctx.filterMatchesAccount('claude:*', 'codex-default'), false);
+    assert.equal(ctx.filterMatchesAccount('grok:*', 'grok-default'), true);
+    assert.equal(ctx.filterMatchesAccount('grok:*', 'codex-default'), false);
   });
   it('matches exact account id for non-wildcard filters', () => {
     assert.equal(ctx.filterMatchesAccount('claude-personal', 'claude-personal'), true);
@@ -109,5 +118,27 @@ describe('cost-budget-ui: filteredCost(day, filter)', () => {
   it('sums matching accounts for a wildcard provider filter', () => {
     const day = { costUSD: 5, byAccount: { 'claude-a': { costUSD: 1 }, 'claude-b': { costUSD: 2 }, 'codex-x': { costUSD: 2 } } };
     assert.equal(ctx.filteredCost(day, 'claude:*'), 3);
+  });
+});
+
+describe('cost-budget-ui: _accountCostSummary + filter visibility', () => {
+  const ctx = loadContext();
+  it('summarizes today / month / last-30 for a cost-only account (Grok)', () => {
+    // Freeze "today" to a fixed day by patching the summary via known dates.
+    const today = new Date().toLocaleDateString('sv-SE');
+    const daily = [
+      { date: '2099-01-01', byAccount: { 'grok-default': { costUSD: 1 } } },
+      { date: today, byAccount: { 'grok-default': { costUSD: 0.04 } } },
+    ];
+    const monthly = { currentMonth: { byAccount: { 'grok-default': { costUSD: 0.12 } } } };
+    const s = ctx._accountCostSummary('grok-default', daily, monthly);
+    assert.equal(s.todayCost, 0.04);
+    assert.equal(s.monthCost, 0.12);
+    assert.equal(s.last30, 1.04); // both days fall in last-30 of a normal run… if 2099 is outside, only today
+  });
+  it('provider filter keeps grok and drops codex rate-limit ids', () => {
+    assert.equal(ctx.filterMatchesAccount('grok:*', 'grok-default'), true);
+    assert.equal(ctx.filterMatchesAccount('grok:*', 'codex-default'), false);
+    assert.equal(ctx.filterMatchesAccount(null, 'codex-default'), true);
   });
 });

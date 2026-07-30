@@ -100,6 +100,8 @@ open "http://127.0.0.1:$PORT"
 | Model | `grok-4.5` · 500K |
 | Cost | ~$0.05 range, not Unknown model |
 | Timeline | `pong` (+ reasoning) |
+| **Usage tab** | filter **Grok** present; daily/monthly `byAccount['grok-default']` includes proxy cost (from `index.ndjson`, not `~/.grok` — Grok sessions do not store token usage) |
+| **Usage Accounts** | Grok card mirrors CLI `/usage`: **Weekly SuperGrok Limit** from `GET /v1/billing?format=credits` (`creditUsagePercent`, `currentPeriod.end`). No 5h window; no Today/Month $ on the Grok rate card. Soft-refresh while Usage tab is open. |
 
 ### One-shot launcher
 

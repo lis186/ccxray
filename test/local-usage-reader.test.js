@@ -128,4 +128,27 @@ describe('local-usage-reader', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('accepts weekly-only snaps (Grok has no 5h window)', () => {
+    const dir = makeTmpDir();
+    try {
+      fs.writeFileSync(path.join(dir, 'grok-default.json'), JSON.stringify({
+        id: 'grok-default',
+        label: 'Grok',
+        provider: 'xai',
+        planType: null,
+        fiveHour: null,
+        sevenDay: { usedPct: 12, resetsAt: Math.floor(Date.now() / 1000) + 86400 },
+        updatedAt: Math.floor(Date.now() / 1000),
+      }));
+      const accounts = readAllAccounts(dir);
+      assert.equal(accounts.length, 1);
+      assert.equal(accounts[0].id, 'grok-default');
+      assert.equal(accounts[0].fiveHour, null);
+      assert.equal(accounts[0].sevenDay.usedPct, 12);
+      assert.equal(accounts[0].sevenDay.leftPct, 88);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
