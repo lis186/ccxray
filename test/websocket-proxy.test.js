@@ -365,7 +365,11 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('error', reject);
     });
     ws.send('hello realtime');
-    await new Promise(resolve => setTimeout(resolve, 200));
+    // Wait for the echo instead of a fixed sleep — 200ms flakes under full-suite load.
+    const echoDeadline = Date.now() + 5000;
+    while (!messages.includes('realtime-ok') && Date.now() < echoDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 

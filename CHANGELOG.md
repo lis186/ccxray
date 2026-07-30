@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Provider module: Grok** — third agent module beside `claude` / `codex` (`AGENT_PROVIDERS` + `OPENAI_WIRE_CLIENTS`). Shared OpenAI Responses parser; client-header routing to `UPSTREAMS.xai` (`cli-chat-proxy.grok.com`, override `XAI_BASE_URL` / `GROK_BASE_URL`); launcher `ccxray grok`. Module contract: `docs/provider-modules.md`. Multi-agent hub acceptance: `test/multi-agent-proxy.e2e.test.js`.
+
 ## 2.2.0
 
 57 commits since the 2.1.1 patch. The headline is reliability at scale — ccxray now handles 500MB+ index files and multi-thousand-turn sessions without crashing, and the dashboard loads faster with skeleton placeholders and batched rendering.

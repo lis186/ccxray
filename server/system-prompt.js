@@ -92,6 +92,25 @@ function extractAgentType(sys) {
 // EXCEPTION(#158): shared dispatch — provider arg routes to format-specific agent type extraction logic
 function extractPromptAgentType(provider, req) {
   if (provider === 'openai') {
+    // OPENAI_WIRE_CLIENTS modules (e.g. Grok) share Responses wire with Codex but
+    // have their own agent identity via metadata.client / model pattern.
+    const {
+      resolveOpenAIWireAgent, getAgentProvider, getOpenAIWireClient,
+    } = require('./providers');
+    const agentId = resolveOpenAIWireAgent(null, req);
+    const wireClient = getOpenAIWireClient(agentId);
+    if (wireClient) {
+      const systemMsg = Array.isArray(req?.input)
+        ? req.input.find(i => i && i.role === 'system')
+        : null;
+      const sysText = typeof systemMsg?.content === 'string'
+        ? systemMsg.content
+        : (typeof req?.instructions === 'string' ? req.instructions : '');
+      const base = (getAgentProvider(agentId)?.label || agentId).replace(/\s+CLI$/i, '');
+      if (/session title/i.test(sysText)) return { key: 'title', label: `${base} Title` };
+      return { key: 'default', label: base };
+    }
+
     const explicit = req?.metadata?.agent_type || req?.metadata?.agentType || req?.metadata?.agent;
     if (explicit === 'explorer') return { key: 'explorer', label: 'Codex Explorer' };
     if (explicit === 'worker') return { key: 'worker', label: 'Codex Worker' };
