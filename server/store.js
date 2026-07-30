@@ -557,6 +557,19 @@ function getSessionFirstPrompt(sid) {
 // zero or more than one candidate matches.
 // Default window 1000ms (Claude). OpenAI-wire clients that need a wider
 // window (Grok titleGenWindowMs=60s) pass it explicitly via resolveTitleGenTitle.
+//
+// KNOWN LIMITATION (#313): this is a point-in-time lookup, so it is
+// ordering-dependent. For the FIRST turn of a session the two gates below are
+// mutually exclusive: a parent still inflight has not yet been written to the
+// session index (log-first, #309), and a parent already in the index is no
+// longer inflight. Grok exercises this every time — it fires the title request
+// ~2ms after the main turn, so which one completes first is upstream latency.
+// Measured: parent 2.1s vs title 3.0s (parent first → this returns null);
+// title 1.7s vs parent slower (title first → resolves, and session-index.js
+// then prefers the stored session title over the entry's raw text).
+// The root fix is a read-time join on the content anchor rather than a
+// write-time lookup — the ADR 0012 argument, applied to attribution. Relaxing
+// the inflight gate here would widen a mechanism that should be replaced.
 function attributeTitleGen(parsedBody, receivedAt, windowMs = 1000) {
   const target = extractTitleGenAnchor(parsedBody);
   if (target == null) return null;

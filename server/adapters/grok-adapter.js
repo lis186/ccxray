@@ -26,14 +26,37 @@ const fs = require('node:fs');
 const path = require('node:path');
 const https = require('node:https');
 const http = require('node:http');
+const crypto = require('node:crypto');
 
 /** CLI /usage weekly pool — must include format=credits. */
 const BILLING_PATH = '/v1/billing?format=credits';
 
-/** Per-alias last successful (HTTP 200) billing refresh time (ms). Hub = one process. */
+/**
+ * Per-credential throttle of last successful billing refresh (ms).
+ * Key = `${alias}:${sha256(auth).slice(0,16)}` — raw token never stored.
+ * Hub = one process. Bound to MAX_BILLING_THROTTLE_KEYS (evict oldest).
+ */
 const _billingOkAtByAlias = new Map();
+const MAX_BILLING_THROTTLE_KEYS = 32;
 
 const DEFAULT_BILLING_TTL_MS = 60_000;
+
+function billingThrottleKey(alias, authHeaderValue) {
+  const digest = crypto.createHash('sha256').update(String(authHeaderValue)).digest('hex').slice(0, 16);
+  return `${alias || 'default'}:${digest}`;
+}
+
+function markBillingOk(key, atMs) {
+  if (_billingOkAtByAlias.has(key)) {
+    _billingOkAtByAlias.delete(key); // re-insert as newest
+  } else {
+    while (_billingOkAtByAlias.size >= MAX_BILLING_THROTTLE_KEYS) {
+      const oldest = _billingOkAtByAlias.keys().next().value;
+      _billingOkAtByAlias.delete(oldest);
+    }
+  }
+  _billingOkAtByAlias.set(key, atMs);
+}
 
 function billingTtlMs(opts = {}) {
   if (opts.ttlMs != null && Number.isFinite(opts.ttlMs)) return opts.ttlMs;
@@ -218,7 +241,8 @@ function refreshGrokBillingFromAuth(reqHeaders, outDir, alias = 'default', opts 
 
     const now = opts.nowMs != null ? opts.nowMs : Date.now();
     const ttl = billingTtlMs(opts);
-    const lastOk = _billingOkAtByAlias.get(alias) || 0;
+    const key = billingThrottleKey(alias, auth);
+    const lastOk = _billingOkAtByAlias.get(key) || 0;
     if (ttl > 0 && lastOk > 0 && (now - lastOk) < ttl) return;
 
     const config = require('../config');
@@ -247,12 +271,16 @@ function refreshGrokBillingFromAuth(reqHeaders, outDir, alias = 'default', opts 
       const chunks = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
-        // Record throttle timestamp only on 200 — a failing request must not
-        // blank the Usage card for a whole TTL.
+        // Record throttle timestamp only when a usable snap was produced —
+        // HTTP 200 with an unusable body must not blank the Usage card for a TTL.
         if (res.statusCode !== 200) return;
-        _billingOkAtByAlias.set(alias, Date.now());
         try {
-          refreshGrokFromBillingBody(Buffer.concat(chunks).toString('utf8'), outDir, alias);
+          const snap = refreshGrokFromBillingBody(
+            Buffer.concat(chunks).toString('utf8'),
+            outDir,
+            alias,
+          );
+          if (snap) markBillingOk(key, Date.now());
         } catch { /* ignore */ }
       });
     });

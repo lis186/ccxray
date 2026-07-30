@@ -143,7 +143,75 @@ describe('T1: forward.js does not refresh billing on model name alone', () => {
     assert.equal(calls, 0, `billing refresh must not run for model-only match; calls=${calls}`);
   });
 
-  it('grok headers → billing refresh is invoked', async () => {
+  it('grok headers + xai upstream → billing refresh is invoked', async () => {
+    let calls = 0;
+    adapter.refreshGrokBillingFromAuth = () => { calls += 1; };
+
+    const body = {
+      model: 'grok-4.5',
+      input: [{ type: 'message', role: 'user', content: 'hi' }],
+    };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const headers = {
+      authorization: 'Bearer tok',
+      'user-agent': 'grok-shell/0.2.93',
+      'x-grok-client-identifier': 'grok-shell',
+      'x-grok-client-version': '0.2.93',
+      'content-type': 'application/json',
+      'content-length': String(rawBody.length),
+    };
+
+    // Gate uses UPSTREAMS.xai identity — point xai at the loopback mock for this case.
+    const config = require('../server/config');
+    const mockUpstream = {
+      provider: 'openai',
+      host: '127.0.0.1',
+      port: mockPort,
+      protocol: 'http',
+      basePath: '/v1',
+    };
+    const origXai = config.UPSTREAMS.xai;
+    config.UPSTREAMS.xai = mockUpstream;
+
+    try {
+      await new Promise((resolve, reject) => {
+        const clientRes = {
+          destroyed: false,
+          writableEnded: false,
+          writeHead() {},
+          write() {},
+          end() {
+            clientRes.writableEnded = true;
+            setTimeout(resolve, 50);
+          },
+        };
+        try {
+          forwardRequest({
+            id: 't1-grok',
+            ts: 'test',
+            startTime: Date.now(),
+            parsedBody: body,
+            rawBody,
+            clientReq: { method: 'POST', url: '/v1/responses', headers },
+            clientRes,
+            fwdHeaders: { ...headers },
+            reqSessionId: 'direct-api',
+            skipEntry: true,
+            upstream: mockUpstream,
+          });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    } finally {
+      config.UPSTREAMS.xai = origXai;
+    }
+
+    assert.equal(calls, 1, `grok headers + xai upstream must trigger billing; calls=${calls}`);
+  });
+
+  // T2a: grok-looking headers routed to a non-xai upstream must not fire billing.
+  it('T2a: grok headers on non-xai upstream → no billing call', async () => {
     let calls = 0;
     adapter.refreshGrokBillingFromAuth = () => { calls += 1; };
 
@@ -174,7 +242,7 @@ describe('T1: forward.js does not refresh billing on model name alone', () => {
       };
       try {
         forwardRequest({
-          id: 't1-grok',
+          id: 't2a-non-xai',
           ts: 'test',
           startTime: Date.now(),
           parsedBody: body,
@@ -184,6 +252,7 @@ describe('T1: forward.js does not refresh billing on model name alone', () => {
           fwdHeaders: { ...headers },
           reqSessionId: 'direct-api',
           skipEntry: true,
+          // Deliberately NOT config.UPSTREAMS.xai — e.g. ChatGPT/openai host profile
           upstream: {
             provider: 'openai',
             host: '127.0.0.1',
@@ -197,7 +266,7 @@ describe('T1: forward.js does not refresh billing on model name alone', () => {
       }
     });
 
-    assert.equal(calls, 1, `grok headers must trigger billing refresh; calls=${calls}`);
+    assert.equal(calls, 0, `non-xai upstream must not refresh billing; calls=${calls}`);
   });
 });
 
@@ -285,5 +354,72 @@ describe('T2: billing throttle + injectable upstream + single /v1 path', () => {
     assert.ok(!opts.path.includes('/v1/v1'), `double /v1: ${opts.path}`);
     // Sanity: joinUpstreamPath itself
     assert.equal(joinUpstreamPath(upstream, '/v1/billing?format=credits'), '/v1/billing?format=credits');
+  });
+});
+
+describe('T2b: throttle keyed on credential digest', () => {
+  let dir;
+
+  beforeEach(() => {
+    _resetBillingThrottleForTests();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bill-t2b-'));
+  });
+
+  afterEach(() => {
+    _resetBillingThrottleForTests();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+
+  it('two different Authorization values inside TTL each get a refresh; same value throttled', async () => {
+    const stub = makeRequestStub();
+    const upstream = resolveXaiUpstream({ XAI_BASE_URL: 'http://127.0.0.1:9/v1' }, 0);
+    const now = 5_000_000;
+
+    refreshGrokBillingFromAuth({ authorization: 'Bearer alpha' }, dir, 'default', {
+      request: stub.request, upstream, ttlMs: 60_000, nowMs: now,
+    });
+    await wait(30);
+    refreshGrokBillingFromAuth({ authorization: 'Bearer beta' }, dir, 'default', {
+      request: stub.request, upstream, ttlMs: 60_000, nowMs: now + 1_000,
+    });
+    await wait(30);
+    refreshGrokBillingFromAuth({ authorization: 'Bearer alpha' }, dir, 'default', {
+      request: stub.request, upstream, ttlMs: 60_000, nowMs: now + 2_000,
+    });
+    await wait(30);
+
+    assert.equal(stub.calls.length, 2, `expected 2 (alpha+beta), got ${stub.calls.length}`);
+  });
+});
+
+describe('T2c: 200 with unusable body does not start TTL', () => {
+  let dir;
+
+  beforeEach(() => {
+    _resetBillingThrottleForTests();
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bill-t2c-'));
+  });
+
+  afterEach(() => {
+    _resetBillingThrottleForTests();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  });
+
+  it('200 without usable snap → next request inside TTL still issues a billing call', async () => {
+    const stub = makeRequestStub({ statusCode: 200, body: JSON.stringify({ ok: true }) }); // no config
+    const upstream = resolveXaiUpstream({ XAI_BASE_URL: 'http://127.0.0.1:9/v1' }, 0);
+    const headers = { authorization: 'Bearer t' };
+    const now = 6_000_000;
+
+    refreshGrokBillingFromAuth(headers, dir, 'default', {
+      request: stub.request, upstream, ttlMs: 60_000, nowMs: now,
+    });
+    await wait(30);
+    refreshGrokBillingFromAuth(headers, dir, 'default', {
+      request: stub.request, upstream, ttlMs: 60_000, nowMs: now + 1_000,
+    });
+    await wait(30);
+
+    assert.equal(stub.calls.length, 2, `unusable 200 must not throttle; got ${stub.calls.length}`);
   });
 });

@@ -53,9 +53,14 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
   modelPattern: /^mycli/i,     // optional
   sessionHeaderNames: ['x-mycli-session-id'],
   controlPlaneIsNoise: true,   // hide /v1/settings-style probes
-  titleGenWindowMs: 60_000,    // optional: opt in to a wider title-gen
-                               // attribution window. Omit and the client keeps
-                               // the 1s default — never widen it for everyone.
+  titleGenWindowMs: 60_000,    // optional, TRANSITIONAL — opt in to a wider
+                               // title-gen attribution window. Omit and the
+                               // client keeps the 1s default; never widen it
+                               // for everyone. The field only exists because
+                               // attribution is a write-time lookup that needs
+                               // a recency bound (see server/store.js
+                               // attributeTitleGen); a read-time join on the
+                               // content anchor removes the need for it.
   matchHeaders(headers) { /* detect this CLI */ },
 }
 ```

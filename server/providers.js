@@ -122,7 +122,12 @@ const OPENAI_WIRE_CLIENTS = Object.freeze([
     upstreamKey: 'xai',
     rawSessionId: 'grok-raw',
     modelPattern: /^grok/i,
-    // Title-gen often finishes several seconds after main turn starts streaming.
+    // Title-gen often finishes several seconds after the main turn starts streaming.
+    // TRANSITIONAL (#313): this window exists only because attributeTitleGen is a
+    // point-in-time lookup against transient state and needs a recency bound. A
+    // read-time join on the content anchor — the ADR 0012 argument applied to
+    // attribution instead of dedup — needs no window, and this field disappears
+    // with it. Do not tune it; replacing the mechanism is the fix.
     titleGenWindowMs: 60_000,
     sessionHeaderNames: Object.freeze(['x-grok-session-id', 'x-grok-conv-id']),
     // Non-conversation /v1/* probes (settings, feedback, …) are noise for this client.
