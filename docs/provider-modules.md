@@ -39,7 +39,10 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
 
 ### B. OpenAI Responses CLI (not Codex)
 
-1. Add `AGENT_PROVIDERS.<id>` with `upstream: 'openai'`, `wire: 'openai'`, optional `cwdFallback: true`.
+1. Add `AGENT_PROVIDERS.<id>` with `upstream: 'openai'`, `wire: 'openai'`, optional
+   `cwdFallback: true`, and `wireDisplayName` — the capitalized name used in prose
+   titles (`"Grok WebSocket session"`). It is neither `displayName` (the process
+   title, `ccxray`) nor `label` (`"Grok CLI"`); omitting it falls back to `Codex`.
 2. Add **one** `OPENAI_WIRE_CLIENTS` entry:
 
 ```js
@@ -50,9 +53,15 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
   modelPattern: /^mycli/i,     // optional
   sessionHeaderNames: ['x-mycli-session-id'],
   controlPlaneIsNoise: true,   // hide /v1/settings-style probes
+  titleGenWindowMs: 60_000,    // optional: opt in to a wider title-gen
+                               // attribution window. Omit and the client keeps
+                               // the 1s default — never widen it for everyone.
   matchHeaders(headers) { /* detect this CLI */ },
 }
 ```
+
+Declarative fields describe **capability**, never inferred identity: per
+ADR 0014 a client may not declare its session topology or subagent relation.
 
 3. Register the host in `server/config.js` `UPSTREAMS` (and env overrides if needed).
 4. Add pricing/context fallbacks for model ids if LiteLLM lags.
