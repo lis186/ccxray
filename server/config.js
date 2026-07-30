@@ -287,6 +287,7 @@ const MODEL_CONTEXT_FALLBACK = {
   'gpt-4o':              128_000,
   // Grok CLI / xAI (from cli-chat-proxy models_cache, obs-stable 0.2.93)
   'grok-4.5':            500_000,
+  'grok-4.5-build':      500_000,
   'grok-4':              256_000,
   'grok-3':              131_072,
   'grok-code-fast':      256_000,

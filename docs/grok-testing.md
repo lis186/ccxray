@@ -22,7 +22,7 @@ export CCXRAY_HOME=$(mktemp -d)
 From worktree:
 
 ```bash
-cd .claude/worktrees/grok-wire-experiment   # or repo root on this branch
+# repo root of feat/grok-cli-support (or worktree)
 
 CCXRAY_HOME=$(mktemp -d) node --test \
   test/grok-wire.test.js \
@@ -109,11 +109,12 @@ CCXRAY_HOME=$(mktemp -d) node server/index.js --port 5613 grok
 
 ## 3. Acceptance criteria (product)
 
-- [ ] Automated unit + e2e green under empty `CCXRAY_HOME`
-- [ ] Live main turn: `agent=grok`, UUID session, cost non-null
-- [ ] Title-gen never creates `codex-raw` / "Codex Raw"
-- [ ] Control-plane settings/feedback do not flood index
-- [ ] `LITELLM_LAG_OVERRIDES` still temporary (see issue #202)
+- [x] Automated unit + e2e green under empty `CCXRAY_HOME`
+- [x] Live main turn: `agent=grok`, UUID session, cost non-null
+- [x] Title-gen never creates `codex-raw` / "Codex Raw" (uses `grok-raw`)
+- [x] Control-plane settings/feedback do not flood index
+- [x] Title-gen stamps parent session card title via `session_title` tool
+- [x] `LITELLM_LAG_OVERRIDES` only for models still missing from LiteLLM (`grok-build`; see issue #202)
 
 ## 4. Related
 

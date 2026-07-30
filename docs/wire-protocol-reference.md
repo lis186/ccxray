@@ -27,6 +27,7 @@
 
 | Date | Agent | Version | Change |
 |------|-------|---------|--------|
+| 2026-07-19 | Grok CLI / ccxray | 0.2.93+ | Title-gen attribution: parallel `model=grok-build` + forced `session_title` tool; empty `x-grok-session-id` → `grok-raw` bucket. Generated title is `function_call` args `{"session_title":"…"}` on Responses SSE (`response.function_call_arguments.done` / `response.completed.output`). Anchor match uses normalized `<user_query>` body so main turns (user_info first) link to title-gen. Attribution window 60s while parent is inflight. Wire model id `grok-4.5-build` seen on main turns. |
 | 2026-07-10 | Claude Code | 2.1.206 | Discovered via loopback wire capture (fable-5 era, #211): per-model `[1m]` selection changes the wire signals per mode. `/model claude-fable-5` (bare, 200K session): no `context-1m-*` in `anthropic-beta`, marker says `...is claude-fable-5.` — even on an account with 1M available. `/model claude-fable-5[1m]` (1M session): `context-1m-2025-08-07` present + marker says `...is claude-fable-5[1m].`; request `model` field stays bare in both modes. Refines the 2026-06-09 observation: header presence follows the **selected model mode**, not bare account capability. Also: LiteLLM `max_input_tokens` records API max capability (fable-5 → 1M, the API default) which is NOT the Claude Code session window — ccxray now clamps LiteLLM data to 200K for `claude-*` and relies on the wire signals for 1M. |
 | 2026-07-09 | Grok CLI | 0.2.93 | First wire capture + integration: `POST /v1/responses` SSE (no WS) via `cli-chat-proxy.grok.com`; client redirect `GROK_CLI_CHAT_PROXY_BASE_URL`. System prompt in `input[role=system]` (string content), not `instructions`. Session via `x-grok-session-id` / `x-grok-conv-id`. Header-based upstream routing to `UPSTREAMS.xai` keeps Codex on `api.openai.com` in a shared hub. Control-plane `/v1/*` (settings/feedback) classified as noise for Grok clients. Full notes: `docs/grok-wire-experiment-2026-07-09.md`. |
 | 2026-07-07 | ccxray | 1.10.x | Codex parity fix: ccxray now treats Codex/OpenAI `thread_id` as a session-id fallback when `session_id` is absent, normalizes `metadata.workspaces` / `x-codex-turn-metadata.workspaces` into `metadata.cwd`, and promotes WS sessions from the synthetic `codex-raw` bucket once `response.create.metadata` arrives. `codex-raw` remains only for OpenAI traffic with no session/thread signal. |
@@ -43,10 +44,10 @@
 
 ## 1. Transport
 
-| Aspect | Claude Code | Codex | Confidence |
-|--------|-------------|-------|------------|
-| Protocol | HTTP POST + SSE streaming | HTTP POST (SSE) + WebSocket upgrade | `contractual` |
-| Primary path | `POST /v1/messages` | `POST /v1/responses` (HTTP) or WS upgrade on `/v1/responses` | `contractual` |
+| Aspect | Claude Code | Codex | Grok CLI | Confidence |
+|--------|-------------|-------|----------|------------|
+| Protocol | HTTP POST + SSE streaming | HTTP POST (SSE) + WebSocket upgrade | HTTP POST + SSE streaming (no WS on normal turns) | `contractual` / `obs-stable` |
+| Primary path | `POST /v1/messages` | `POST /v1/responses` (HTTP) or WS upgrade on `/v1/responses` | `POST /v1/responses` (SSE) via `cli-chat-proxy.grok.com` | `contractual` / `obs-stable` Grok ≥0.2.93 |
 | Alternative paths | `POST /v1/messages/count_tokens` (token pre-counting; bare `{model, messages}` body, non-SSE `{"input_tokens": N}` response; classified as noise by ccxray, #146) | `/v1/realtime` (Realtime API, not used by Codex CLI for chat) | `contractual` |
 | WS upgrade detection | N/A | `upgrade: websocket` header on `/v1/responses` or `/v1/realtime`; ccxray also requires `upstream.provider === 'openai'` | `contractual` |
 | WS handshake header | N/A | `openai-beta: responses_websockets=2026-02-06` (observed value from Codex wire traffic; ccxray passes through without validation) | `obs-stable` codex ≥0.131 |
