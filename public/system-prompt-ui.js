@@ -23,24 +23,31 @@ function spRelativeTime(dateStr) {
   return Math.floor(diff / 86400000) + 'd ago';
 }
 
+// Grok (OPENAI_WIRE_CLIENTS) reuses wire provider=openai; product label is already "Grok"/"Grok Title".
+// Display-only remap so the agent list does not put Grok under the Codex group. No server change.
+function spDisplayProvider(provider, label) {
+  if ((provider || 'anthropic') === 'openai' && /^Grok\b/i.test(label || '')) return 'grok';
+  return provider || 'anthropic';
+}
+
 function buildAgentList(allVersions, apiAgents) {
   const agentMap = {};
   for (const v of allVersions) {
     const k = v.agentKey;
-    if (!agentMap[k]) agentMap[k] = { key: k, label: v.agentLabel || k, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: v.provider || 'anthropic' };
+    if (!agentMap[k]) agentMap[k] = { key: k, label: v.agentLabel || k, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: spDisplayProvider(v.provider, v.agentLabel) };
     agentMap[k].count++;
     if (v.coreHash) agentMap[k].uniqueHashes.add(v.coreHash);
     if (!agentMap[k].latestCoreHash) agentMap[k].latestCoreHash = v.coreHash || '';
   }
   for (const a of (apiAgents || [])) {
-    if (!agentMap[a.key]) agentMap[a.key] = { key: a.key, label: a.label, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: a.provider || 'anthropic' };
-    else if (a.provider) agentMap[a.key].provider = a.provider;
+    if (!agentMap[a.key]) agentMap[a.key] = { key: a.key, label: a.label, count: 0, latestCoreHash: '', uniqueHashes: new Set(), provider: spDisplayProvider(a.provider, a.label) };
+    else if (a.provider) agentMap[a.key].provider = spDisplayProvider(a.provider, a.label || agentMap[a.key].label);
   }
   const agents = Object.values(agentMap);
   // ponytail: sort by provider group (anthropic first), then version count desc, then alpha
-  const providerOrder = { anthropic: 0, openai: 1 };
+  const providerOrder = { anthropic: 0, openai: 1, grok: 2 };
   agents.sort((a, b) => {
-    const pa = providerOrder[a.provider] ?? 2, pb = providerOrder[b.provider] ?? 2;
+    const pa = providerOrder[a.provider] ?? 3, pb = providerOrder[b.provider] ?? 3;
     if (pa !== pb) return pa - pb;
     if (b.count !== a.count) return b.count - a.count;
     return a.key.localeCompare(b.key);
@@ -52,8 +59,12 @@ function renderAgentList() {
   const container = document.getElementById('sp-agent-list');
   if (!container) return;
   let html = '<div class="sp-version-list-title">Agents</div>';
-  const providerLabels = { anthropic: 'Claude Code', openai: 'Codex' };
-  const providerDots = { anthropic: '<span class="provider-dot provider-anthropic">●</span>', openai: '<span class="provider-dot provider-openai">◆</span>' };
+  const providerLabels = { anthropic: 'Claude Code', openai: 'Codex', grok: 'Grok' };
+  const providerDots = {
+    anthropic: '<span class="provider-dot provider-anthropic">●</span>',
+    openai: '<span class="provider-dot provider-openai">◆</span>',
+    grok: '<span class="provider-dot provider-grok">◆</span>',
+  };
   let lastProvider = null;
   for (const a of spAgents) {
     const p = a.provider || 'anthropic';
@@ -170,8 +181,11 @@ async function openSystemPromptPanel(forceDiff) {
   const data = await fetch('/_api/sysprompt/versions').then(r => r.json());
   spAllVersions = data.versions || [];
   spAgents = buildAgentList(spAllVersions, data.agents);
-  // Keep badge agent map in sync
+  // Keep badge agent map in sync. messages.js seeds _hashAgentMap = null; typeof null
+  // is "object", so a bare typeof-check still crashes here when System Prompt is
+  // opened before any turn has called _seedHashAgentMap().
   if (typeof _hashAgentMap !== 'undefined') {
+    if (!_hashAgentMap) _hashAgentMap = {};
     (data.versions || []).forEach(v => { if (v.coreHash) _hashAgentMap[v.coreHash] = { label: v.agentLabel || v.agentKey, key: v.agentKey }; });
   }
 
