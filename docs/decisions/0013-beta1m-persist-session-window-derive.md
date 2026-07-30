@@ -143,6 +143,16 @@ evidence may let weather fold those turns itself. The context-window contract
 above is unchanged: weather was violating the contract; the contract was not
 wrong.
 
+`sessionCtxWindow` originally used the server-provided per-session fold only
+when the client had no entry for that session. When `allEntries` is truncated
+by `RESTORE_DAYS` or `SESSION_ENTRY_CAP`, a surviving turn can carry a smaller
+`maxContext` while the discarded history contained the true 1M evidence; the
+old gate then skipped the complete server fold. The client now unconditionally
+merges that fold with its surviving turns using monotone `max(maxContext)` /
+`OR(beta1m)`. This remains safe in the same direction: the window can only grow,
+so context percentages and warnings can only decrease, never create a false
+warning.
+
 On the server, deriving the injected window from `session-index`'s `s.beta1m`
 and `s.maxContext` does not violate this ADR's stateless-at-render decision and
 does not repeat `8b6789f`. That revert removed a client-side `sess.maxWindow`

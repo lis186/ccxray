@@ -826,7 +826,7 @@ function recomputeSessionStats(sid) {
     for (var wi = 0; wi < allEntries.length; wi++) {
       if (allEntries[wi].sessionId === sid && !allEntries[wi].isSubagent && !allEntries[wi].isRetry) weatherTurns.push(allEntries[wi]);
     }
-    sess.weather = assessWeather(weatherTurns);
+    sess.weather = assessWeather(weatherTurns, { sessionWindow: sessionCtxWindow(sid) });
   }
 }
 

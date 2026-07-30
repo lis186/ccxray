@@ -13,7 +13,7 @@ const vm = require('vm');
 
 const publicDir = path.join(__dirname, '..', 'public');
 
-function loadCtx() {
+function loadCtx(includeEntryRendering) {
   function el() {
     return {
       style: {}, dataset: {}, innerHTML: '', textContent: '',
@@ -43,15 +43,25 @@ function loadCtx() {
     function updateSysPromptBadge() {}
     function startQuotaTicker() {}
     function EventSource() { this.onmessage = null; }
+    function setInterval() { return 0; }
+    function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
     function _apiQ(url) { return url; }
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
-  for (const f of ['format.js', 'session-label.js', 'miller-columns.js']) {
+  const scripts = ['session-label.js', 'format.js', 'weather.js', 'miller-columns.js'];
+  if (includeEntryRendering) scripts.push('entry-rendering.js');
+  for (const f of scripts) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
   }
   // Bridge the const/let declarations (they don't attach to the context global) for test access.
-  vm.runInContext('this.allEntries = allEntries; this.sessionCtxWindow = sessionCtxWindow; this.turnCtxWindow = turnCtxWindow;', context);
+  vm.runInContext(`
+    this.allEntries = allEntries;
+    this.sessionsMap = sessionsMap;
+    this.sessionCtxWindow = sessionCtxWindow;
+    this.turnCtxWindow = turnCtxWindow;
+    ${includeEntryRendering ? 'this.recomputeSessionStats = recomputeSessionStats;' : ''}
+  `, context);
   return context;
 }
 
@@ -89,6 +99,15 @@ describe('#339 sessionCtxWindow — per-session context% denominator fold', () =
       { sessionId: 's2', isSubagent: false, maxContext: 200000 },
     ]);
     assert.equal(ctx.sessionCtxWindow('s2'), 1000000);
+  });
+
+  it('#377 truncated entries: server session fold promotes a surviving 200K turn to 1M', () => {
+    seed(ctx, [
+      { sessionId: 'trimmed', isSubagent: false, maxContext: 200000 },
+    ]);
+    ctx.sessionsMap.set('trimmed', { beta1m: true, maxContext: 1000000 });
+
+    assert.equal(ctx.sessionCtxWindow('trimmed'), 1000000);
   });
 
   it('#211 over-latch guard: a true 200K session with no 1M signal stays 200K', () => {
@@ -159,5 +178,35 @@ describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, sub
       { sessionId: 'sY', isSubagent: true, convId: 'dup8', maxContext: 200000 },
     ]);
     assert.equal(ctx.turnCtxWindow(ctx.allEntries[1]), 200000, "session Y's subagent stays 200K, not promoted by session X");
+  });
+});
+
+describe('#377 recomputeSessionStats — truncated client weather uses the server session fold', () => {
+  it('keeps a 180K surviving turn sunny when the complete session ran with a 1M window', () => {
+    const ctx = loadCtx(true);
+    const sid = 'trimmed-weather';
+    seed(ctx, [{
+      id: 'survivor',
+      sessionId: sid,
+      isSubagent: false,
+      isRetry: false,
+      model: 'claude-opus-4-6',
+      elapsed: '?',
+      stopReason: 'end_turn',
+      maxContext: 200000,
+      usage: {
+        input_tokens: 180000,
+        output_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      toolCalls: {},
+    }]);
+    const sess = { beta1m: true, maxContext: 1000000 };
+    ctx.sessionsMap.set(sid, sess);
+
+    ctx.recomputeSessionStats(sid);
+
+    assert.equal(sess.weather.level, 'sunny');
   });
 });
