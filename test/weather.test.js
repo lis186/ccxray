@@ -98,8 +98,9 @@ describe('assessWeather', function() {
       usage: { input_tokens: 1000, cache_read_input_tokens: 175000, cache_creation_input_tokens: 0 },
       maxContext: 200000,
     }));
-    var r = assessWeather(turns, { sessionWindow: 200000 });
-    assert.equal(r.level, 'rainy');
+    var r = assessWeather(turns, { sessionWindow: 400000 });
+    assert.ok(Math.abs(r.stats.ctxPct - 44) <= 0.2, 'ctxPct ' + r.stats.ctxPct + ' should be ≈ 44');
+    assert.equal(r.level, 'sunny');
   });
 
   it('ctx_unknown_window — no observed maxContext produces no signal', function() {
