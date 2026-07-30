@@ -46,6 +46,11 @@ const WF_EV_INFO = {
   'ctx80':      { ti: 1, shape: 'square',   color: '#8957e5' },
   'file-write': { ti: 2, shape: 'circle',   color: '#2ea043' },
   'credential': { ti: 3, shape: 'square',   color: '#b87800' },
+  // #364: same-convId excursions (temporal-overlap forks + ADR 0009 R2 dip
+  // continuations — jitter/re-send/rewind) ride the main lane's fault track as
+  // diamond markers instead of minting a misleading parallel "Fork" lane. Fed
+  // from lane.overlapEntries, not wfDetectEvents.
+  'overlap':    { ti: 0, shape: 'diamond',  color: '#666'    },
 };
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -621,6 +626,11 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   var convMaxHashes = _ident.convMaxHashes;
   var mainCoreHashSet = _ident.mainCoreHashSet;
   var faultEntries = [];
+  // #364: same-convId exiled turns (temporal-overlap forks AND ADR 0009
+  // sequential excursions) diverted here instead of a parallel "Fork" lane —
+  // collected during the exile pass, assigned to mainLane below (mirrors
+  // faultEntries).
+  var overlapEntries = [];
 
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i];
@@ -764,9 +774,24 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // for overlap overflow AND seq excursions, so a stitched dip lands in the
   // same lane as its overlap-split siblings.
   var pFamilies = new Map(); // baseKey → [{ key, lastEnd }]
+  // #364: main's conv set is finalized now (mainLane.turns settled above).
+  var mainConvs = _wfMainConvSet([mainLane]);
   exiled.sort(function(a, b) { return (Number(a.receivedAt) || 0) - (Number(b.receivedAt) || 0); });
   for (var ex = 0; ex < exiled.length; ex++) {
     var oTurn = exiled[ex];
+    // #364 (Option B): any same-convId exiled turn — a temporal-overlap fork OR
+    // an ADR 0009 sequential excursion (R2 dip continuation) — is a
+    // false-positive "fork" of the main conversation (HTTP jitter, re-send,
+    // rewind, dip continuation). Render it as a main-lane overlap marker instead
+    // of a misleading parallel lane. Different-convId excursions (real fork /
+    // R1 teammate, convId ∉ mainConvs) fall through unchanged. Marker only: NOT
+    // pushed to any lane.turns, so the main lane stays strictly serial (ADR
+    // 0008); the ADR 0009 tracker/classification logic is untouched — only the
+    // rendered placement of same-convId excursions changes (lane → marker).
+    if (oTurn.convId && mainConvs.has(oTurn.convId)) {
+      overlapEntries.push(oTurn);
+      continue;
+    }
     var oStart = Number(oTurn.receivedAt) || 0;
     var oEnd = oStart + (parseFloat(oTurn.elapsed) || 0) * 1000;
     var baseKey = _wfSubLaneKey('parallel-' + wfShortModel(oTurn.model), oTurn);
@@ -870,6 +895,9 @@ function wfInferLanes(entries, childEntries, seqTracker) {
   // the fault track can render them. Authoritative rebuild — overwrite any
   // pre-existing list.
   mainLane.faultEntries = faultEntries;
+  // #364: same-convId temporal-overlap markers travel with the main lane, like
+  // faultEntries. Authoritative rebuild — overwrite any pre-existing list.
+  mainLane.overlapEntries = overlapEntries;
 
   return result;
 }
@@ -1054,6 +1082,10 @@ function wfAddEntry(entry) {
   }
 
   var needsSub, key;
+  // #364 (Option B): set when this entry is a same-convId excursion — a
+  // temporal-overlap fork OR an ADR 0009 R2 dip continuation — so it rides the
+  // main lane's overlap event track instead of a parallel "Fork" lane.
+  var isOverlapMarker = false;
   // INVARIANT: coreHash identity routing — see docs/decisions/0010-corehash-identity-routing.md
   // A1/A2 boundary (#350): the BATCH path (wfInferLanes) now decides ownership
   // PER-CONVERSATION by dominant coreHash. This live path still uses the ADR
@@ -1099,6 +1131,12 @@ function wfAddEntry(entry) {
       if (mtStart > 0 && ts > mtStart && ts < mtEnd) {
         needsSub = true;
         key = _wfSubLaneKey('parallel-' + wfShortModel(entry.model), entry);
+        // #364: a same-convId overlap is a false-positive "fork" — mark it to
+        // render as a main-lane marker, mirroring wfInferLanes' batch fold.
+        // Different-convId overlaps still split to a parallel lane below.
+        if (entry.convId && wfState.mainConvIds && wfState.mainConvIds.has(entry.convId)) {
+          isOverlapMarker = true;
+        }
         break;
       }
     }
@@ -1134,10 +1172,26 @@ function wfAddEntry(entry) {
         // #238 part 2: same R2-stitch signal as wfInferLanes' post-pass —
         // display-only, doesn't affect placement (already decided above).
         entry._wfSeqStitched = true;
+        // #364 (Option B): a same-convId R2 dip continuation is part of the
+        // false-positive fork family — fold it into a main-lane overlap marker
+        // too, mirroring wfInferLanes. Foreign-conv R1 excursions (convId ∉
+        // mainConvIds) keep their Teammate lane.
+        if (entry.convId && wfState.mainConvIds && wfState.mainConvIds.has(entry.convId)) {
+          isOverlapMarker = true;
+        }
       }
     }
   }
-  if (needsSub) {
+  if (isOverlapMarker && wfState.lanes[0]) {
+    // #364: marker only — NOT pushed to lane.turns / turnIndex (mirrors
+    // faultEntries, #236), so the main lane stays strictly serial (ADR 0008).
+    // Cost is still counted in main via wfLaneSummary's overlapEntries fold.
+    // The seq tracker already processed it above (fed as a split for a temporal
+    // overlap, or returned an excursion verdict for an R2 dip — batch/live
+    // parity). No lane is created so lanesChanged stays false — the caller
+    // re-renders via wfDeferRender, so the marker still paints.
+    (wfState.lanes[0].overlapEntries || (wfState.lanes[0].overlapEntries = [])).push(entry);
+  } else if (needsSub) {
     var lane;
     var pooledReuse = false;
     if (key.indexOf('parallel-') === 0) {
@@ -1272,6 +1326,40 @@ function _wfSeqRetroMove(closedTurns) {
     lane._costMedian = null;
     if (wfState.turnIndex) wfState.turnIndex.set(t.id, { turn: t, laneIdx: wfState.lanes.indexOf(lane) });
   }
+  // #364 codex-P1: mainConvIds was grown by live main-lane placements (line
+  // ~1236) but never shrunk on retro-move. A foreign-conv turn provisionally
+  // placed in main leaves its convId behind after retro-move, so a later
+  // same-conv overlap would be incorrectly folded into overlapEntries instead
+  // of a Teammate lane. Rebuild from the settled main turns after every retro.
+  if (wfState.mainConvIds && wfState.lanes[0]) {
+    wfState.mainConvIds = new Set();
+    for (var rci = 0; rci < wfState.lanes[0].turns.length; rci++) {
+      if (wfState.lanes[0].turns[rci].convId) wfState.mainConvIds.add(wfState.lanes[0].turns[rci].convId);
+    }
+    // #364 codex-R2-P1: also migrate any overlapEntries whose convId is no
+    // longer in the settled mainConvIds — they were provisionally folded as
+    // "same-conv" markers before the retro-move revealed they belong to a
+    // foreign conv. Move them to the same lane their regular turns went to.
+    var mainOE = wfState.lanes[0].overlapEntries;
+    if (mainOE && mainOE.length) {
+      var kept = [], moved = [];
+      for (var oi = 0; oi < mainOE.length; oi++) {
+        if (mainOE[oi].convId && !wfState.mainConvIds.has(mainOE[oi].convId)) moved.push(mainOE[oi]);
+        else kept.push(mainOE[oi]);
+      }
+      if (moved.length) {
+        wfState.lanes[0].overlapEntries = kept;
+        for (var mi = 0; mi < moved.length; mi++) {
+          var mt = moved[mi];
+          var mk = _wfSubLaneKey('parallel-' + wfShortModel(mt.model), mt);
+          var tgtLane = wfState.lanes.find(function(l) { return l.key === mk || l.key.indexOf(mk + '#') === 0; });
+          if (!tgtLane) { kept.push(mt); continue; } // codex-R3-P1b: no target (model mismatch) → leave on main, heals on rebuild
+          _wfInsertTurnSorted(tgtLane, mt); tgtLane._costMedian = null;
+          if (wfState.turnIndex) wfState.turnIndex.set(mt.id, { turn: mt, laneIdx: wfState.lanes.indexOf(tgtLane) }); // codex-R3-P2a
+        }
+      }
+    }
+  }
 }
 
 // #261: pooled convId lanes can receive turns out of start order (a nested
@@ -1317,6 +1405,22 @@ function wfLaneSummary(lane) {
     if (de > maxEnd) maxEnd = de;
   }
   var dur = maxEnd - minStart;
+  // #364: overlap markers are same-convId turns exiled from the serial chain —
+  // their cost belongs to the main lane (they were part of this conversation),
+  // so fold it into the lane total even though they aren't drawn as turns.
+  if (lane.overlapEntries && lane.overlapEntries.length) {
+    for (var oi = 0; oi < lane.overlapEntries.length; oi++) {
+      var ot = lane.overlapEntries[oi];
+      var opct = wfCtxPctRender(ot);
+      if (opct > peakCtx) peakCtx = opct;
+      var ocr = (ot.usage?.cache_read_input_tokens || 0);
+      var occ = (ot.usage?.cache_creation_input_tokens || 0);
+      totalCacheR += ocr; totalCacheAll += ocr + occ;
+      totalCost += (ot.cost || 0);
+      totalIn += (ot.usage?.input_tokens || 0) + ocr + occ;
+      totalOut += (ot.usage?.output_tokens || 0);
+    }
+  }
   return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
 
@@ -1349,6 +1453,7 @@ function wfDotSvg(shape, color, x, y, tidx) {
   var a = ' class="wf-e" data-i="' + tidx + '"';
   if (shape === 'square') return '<rect' + a + ' x="' + x.toFixed(1) + '" y="' + (y + 2) + '" width="4" height="4" fill="' + color + '"/>';
   if (shape === 'triangle') return '<path' + a + ' d="M' + (x + 2).toFixed(1) + ' ' + (y + 2) + ' L' + (x + 4.5).toFixed(1) + ' ' + (y + 6) + ' L' + (x - 0.5).toFixed(1) + ' ' + (y + 6) + ' Z" fill="' + color + '"/>';
+  if (shape === 'diamond') return '<path' + a + ' d="M' + (x + 2).toFixed(1) + ' ' + (y + 1.5) + ' L' + (x + 4.5).toFixed(1) + ' ' + (y + 4) + ' L' + (x + 2).toFixed(1) + ' ' + (y + 6.5) + ' L' + (x - 0.5).toFixed(1) + ' ' + (y + 4) + ' Z" fill="' + color + '"/>';
   return '<circle' + a + ' cx="' + (x + 2).toFixed(1) + '" cy="' + (y + 4) + '" r="2" fill="' + color + '"/>';
 }
 
@@ -1450,7 +1555,9 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   // #238 P3: <title> on the model text itself — hovering the abbreviated
   // "opus-4-6 +2" form must reveal the full model list, same as the name
   // text above; the fullTitle <title> only covers the name row's box.
+  var _lw = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
   svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  if (_lw) svg += '<foreignObject x="' + (WF_LABEL_W - 22) + '" y="16" width="20" height="14"><span xmlns="http://www.w3.org/1999/xhtml" style="font-size:11px;cursor:default" data-weather=\'' + wfEsc(JSON.stringify(_lw)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + _lw.emoji + '</span></foreignObject>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -1598,6 +1705,22 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
       var fInfo = fe.isRetry ? WF_EV_INFO['retry'] : WF_EV_INFO['error'];
       var fDetail = String(fe.status || '') + ' · ' + (fe.id || '');
       svg += '<g><title>' + wfEsc(fDetail) + '</title>' + wfDotSvg(fInfo.shape, fInfo.color, fx, evY, -1) + '</g>';
+    }
+  }
+
+  // #364: same-convId excursions (temporal-overlap forks + ADR 0009 R2 dip
+  // continuations — jitter/re-send/rewind) ride the main lane's fault track as
+  // diamond markers — never mint a parallel "Fork" lane. Same faults track row
+  // (ti 0), same non-interactive tidx -1 as #236.
+  if (lane.overlapEntries && lane.overlapEntries.length) {
+    for (var oj = 0; oj < lane.overlapEntries.length; oj++) {
+      var oe = lane.overlapEntries[oj];
+      var ots = Number(oe.receivedAt) || 0;
+      if (ots < wfState.viewT0 || ots > wfState.viewT1) continue;
+      var ox = Math.max(WF_LABEL_W, xFn(ots));
+      var oInfo = WF_EV_INFO['overlap'];
+      var oDetail = 'overlap · msg' + (oe.msgCount || '?') + ' · ' + (oe.id || '');
+      svg += '<g><title>' + wfEsc(oDetail) + '</title>' + wfDotSvg(oInfo.shape, oInfo.color, ox, evY, -1) + '</g>';
     }
   }
 
@@ -2229,6 +2352,7 @@ function _wfSetupMinimapInteractions(canvas, MW, MH, totalRange, x, isZoomed) {
 }
 
 // ── Zoom ──────────────────────────────────────────────────────────────────
+
 function wfZoomBy(factor) {
   if (!wfState) return;
   var mid = (wfState.viewT0 + wfState.viewT1) / 2;
@@ -2430,10 +2554,14 @@ function wfSetupInteractions(mainSvg, subSvg) {
 
 // ── Tooltip ───────────────────────────────────────────────────────────────
 function _wfFmtTok(n) { return n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n); }
+var _wfTtHideTimer = null;
 function _wfShowTooltip(e, t, lane) {
+  if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; }
   if (!_wfTooltipEl) {
     _wfTooltipEl = document.createElement('div');
     _wfTooltipEl.className = 'wf-tooltip';
+    _wfTooltipEl.onmouseenter = function() { if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; } };
+    _wfTooltipEl.onmouseleave = function() { _wfDismissTooltip(); };
     document.body.appendChild(_wfTooltipEl);
   }
   var u = t.usage || {};
@@ -2446,13 +2574,14 @@ function _wfShowTooltip(e, t, lane) {
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
   var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
-  // Locked lane, hovering a different turn → remind where the lock is
   var lock = _wfLockInfo();
   var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
     ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
   var row = function(l, v) { return '<div class="r"><span class="l">' + l + '</span><span class="v">' + v + '</span></div>'; };
+  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t]) : null;
   _wfTooltipEl.innerHTML =
     row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + (t._wfSeqStitched ? ' · seq-stitched' : '') + lockLbl)
+    + (ttWeather ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
     + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
     + row('Cost', '$' + (t.cost || 0).toFixed(4) + outlier)
@@ -2460,6 +2589,7 @@ function _wfShowTooltip(e, t, lane) {
     + row('Tokens', _wfFmtTok(inT) + ' in / ' + _wfFmtTok(u.output_tokens || 0) + ' out')
     + (tools ? row('Tools', wfEsc(tools)) : '');
   _wfTooltipEl.style.display = 'block';
+  _wfTooltipEl.style.pointerEvents = 'auto';
   var tx = e.clientX + 12, ty = e.clientY + 12;
   if (tx + _wfTooltipEl.offsetWidth > window.innerWidth) tx = e.clientX - _wfTooltipEl.offsetWidth - 12;
   if (ty + _wfTooltipEl.offsetHeight > window.innerHeight) ty = e.clientY - _wfTooltipEl.offsetHeight - 12;
@@ -2467,6 +2597,11 @@ function _wfShowTooltip(e, t, lane) {
   _wfTooltipEl.style.top = ty + 'px';
 }
 function _wfHideTooltip() {
+  if (_wfTtHideTimer) clearTimeout(_wfTtHideTimer);
+  _wfTtHideTimer = setTimeout(_wfDismissTooltip, 150);
+}
+function _wfDismissTooltip() {
+  if (_wfTtHideTimer) { clearTimeout(_wfTtHideTimer); _wfTtHideTimer = null; }
   if (_wfTooltipEl) _wfTooltipEl.style.display = 'none';
 }
 
@@ -2662,12 +2797,13 @@ function wfRenderAgentCard(lane) {
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
+  var laneWeather = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   var acModelLbl = _wfLaneModelLabel(lane);
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" title="' + wfEsc(acModelLbl.title) + '" style="background:' + color + '22;color:' + color + '">' + wfEsc(acModelLbl.text) + '</span></div>';
   // INVARIANT: main/subagent label must use _wfIsMainLane, not lane.spawnParent
   // — see docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
-  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + '</div>';
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + (laneWeather ? ' · <span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(laneWeather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + laneWeather.emoji + '</span>' : '') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
@@ -2778,7 +2914,8 @@ function wfRenderTurnCard(turnEntry) {
 
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
-  html += '<div class="wf-tc-title">#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry]) : null;
+  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
   var laneName = lane ? lane.name : '?';
@@ -2960,6 +3097,31 @@ function wfLockTurn(turnId) {
   for (var k = 0; k < allEntries.length; k++) {
     if (allEntries[k].id === turnId) { selectTurn(k); break; }
   }
+}
+
+function wfZoomToTurnRange(startId, endId) {
+  if (!wfState) return;
+  var s = wfState.turnIndex && wfState.turnIndex.get(startId);
+  var e = endId ? wfState.turnIndex && wfState.turnIndex.get(endId) : s;
+  if (!s) return;
+  var t0 = Number(s.turn.receivedAt) || 0;
+  var t1 = e ? (Number(e.turn.receivedAt) || 0) + (parseFloat(e.turn.elapsed) || 0) * 1000 : t0 + 60000;
+  if (t1 <= t0) t1 = t0 + 60000;
+  var pad = (t1 - t0) * 0.15;
+  wfState.viewT0 = Math.max(wfState.tMin, t0 - pad);
+  wfState.viewT1 = Math.min(wfState.tMax, t1 + pad);
+  wfLockTurn(startId);
+  wfDeferRender();
+  // Scroll the turn list to the selected turn after render
+  setTimeout(function() {
+    for (var i = 0; i < allEntries.length; i++) {
+      if (allEntries[i].id === startId) {
+        var el = colTurns && colTurns.querySelector('.turn-item[data-entry-idx="' + i + '"]');
+        if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        break;
+      }
+    }
+  }, 100);
 }
 
 // ── Section Navigation ───────────────────────────────────────────────────

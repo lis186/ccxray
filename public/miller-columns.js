@@ -18,6 +18,13 @@ function sessionCtxWindow(sid) {
     if (e.beta1m === true) has1m = true;
     if ((e.maxContext || 0) > win) win = e.maxContext;
   }
+  if (!has1m && win === 0) {
+    const sess = sessionsMap.get(sid);
+    if (sess) {
+      if (sess.beta1m === true) has1m = true;
+      if ((sess.maxContext || 0) > win) win = sess.maxContext;
+    }
+  }
   // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
   // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
   return has1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));
@@ -1490,8 +1497,9 @@ function renderSessionItem(sess, sid, sessEl) {
   // keep taking precedence per normal HTML tooltip nesting.
   if (sessEl) sessEl.title = sessionCardTooltip;
 
-  const previewText = sess.lastAssistantText
-    ? sess.lastAssistantText.slice(0, 60) + (sess.lastAssistantText.length > 60 ? '…' : '')
+  const rawPreview = sess.lastAssistantText || sess.firstPrompt || null;
+  const previewText = rawPreview
+    ? rawPreview.slice(0, 60) + (rawPreview.length > 60 ? '…' : '')
     : null;
   const previewRow = previewText ? '<div class="si-preview">' + escapeHtml(previewText) + '</div>' : '';
   const truncatedRow = sess.truncated
@@ -1580,7 +1588,7 @@ function renderSessionItem(sess, sid, sessEl) {
     pinBtn +
     '</div>' +
   titleRow +
-    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + '</div>' +
+    '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + (sess.weather ? '<span class="si-weather" style="float:right;cursor:default" data-weather=\'' + escapeHtml(JSON.stringify(sess.weather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + sess.weather.emoji + '</span>' : '') + '</div>' +
     '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
     ctxBarHtml +
     previewRow +
@@ -1773,13 +1781,18 @@ function selectProject(name) {
   clearSelectedStepSelection();
   colSections.innerHTML = '';
   colDetail.innerHTML = '';
-  // Clear workflow timeline
+  // Clear workflow timeline + split-view state
   if (typeof wfState !== 'undefined') wfState = null;
-  document.getElementById('columns').classList.remove('wf-active');
+  isFocusedMode = false;
+  document.getElementById('columns').classList.remove('wf-active', 'focused');
   var wfEl = document.getElementById('wf-timeline');
   if (wfEl) wfEl.remove();
   renderBreadcrumb();
   setFocus('projects');
+  // #358 r7/r8: breadcrumb root (name===null) clears session while collapsed →
+  // dead-end blank; expand. Gated on null so initAutoSelect / deep-link
+  // (which pass a real name, then selectSession) don't mis-expand mid-nav.
+  if (name === null && typeof maybeAutoExpandSidebar === 'function') maybeAutoExpandSidebar();
 }
 
 function fmt(n) { return n != null ? n.toLocaleString() : '—'; }

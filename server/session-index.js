@@ -50,6 +50,17 @@ async function loadSessionIndex() {
         if (s && s.sid) sessionIndex.set(s.sid, s);
       } catch {}
     }
+    // #368: force rebuild when sessions.json predates maxContext tracking.
+    // After rebuild, _upsert populates maxContext from index.ndjson entries.
+    let needsMigration = false;
+    for (const s of sessionIndex.values()) {
+      if (s.count > 0 && s.maxContext === undefined) { needsMigration = true; break; }
+    }
+    if (needsMigration) {
+      console.log('\x1b[33m[session-index] schema migration (maxContext) — will rebuild\x1b[0m');
+      sessionIndex.clear();
+      return false;
+    }
     return sessionIndex.size > 0;
   } catch (e) {
     if (e.code !== 'ENOENT') console.error('[session-index] load failed:', e.message);
@@ -87,6 +98,22 @@ function rebuildFromMetas(metas) {
   for (const m of metas) {
     if (!m || !m.sessionId) continue;
     _upsert(m.sessionId, m);
+  }
+  // #367: compute weather for all sessions from index metas.
+  // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
+  // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
+  // conservative (no false compaction signal).
+  const { assessWeather } = require('../public/weather');
+  const bySid = new Map();
+  for (const m of metas) {
+    if (!m || !m.sessionId || m.isSubagent) continue;
+    let arr = bySid.get(m.sessionId);
+    if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
+    arr.push(m);
+  }
+  for (const [sid, turns] of bySid) {
+    const s = sessionIndex.get(sid);
+    if (s) s.weather = assessWeather(turns);
   }
   dirty = true;
 }
@@ -169,7 +196,19 @@ function reconcile(indexContent) {
 function updateFromEntry(entry) {
   if (!entry || !entry.sessionId) return;
   _upsert(entry.sessionId, entry);
+  _recomputeWeather(entry.sessionId);
   _scheduleDirtyFlush();
+}
+
+function _recomputeWeather(sid) {
+  const store = require('./store');
+  const { assessWeather } = require('../public/weather');
+  const turns = [];
+  for (const e of store.entries) {
+    if (e.sessionId === sid && !e.isSubagent) turns.push(e);
+  }
+  const s = sessionIndex.get(sid);
+  if (s) s.weather = assessWeather(turns);
 }
 
 function _upsert(sid, entry) {
@@ -224,9 +263,32 @@ function _upsert(sid, entry) {
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
+  // #367: derived fields for cold session cards (context bar, cache stats, cache breaks)
+  if (!entry.isSubagent && entry.usage) {
+    var u = entry.usage;
+    var cacheRead = u.cache_read_input_tokens || 0;
+    var cacheCreate = u.cache_creation_input_tokens || 0;
+    var input = u.input_tokens || 0;
+    var ctxUsed = input + cacheRead + cacheCreate;
+    var ctxInputTotal = cacheRead + cacheCreate + input;
+    if (ctxUsed > 0) {
+      s.maxContext = Math.max(s.maxContext || 0, entry.maxContext || 0) || null;
+      s.latestCtxPct = s.maxContext ? Math.round(ctxUsed / s.maxContext * 1000) / 10 : null;
+      s.latestCacheHitRatio = ctxInputTotal > 0 ? Math.round(cacheRead / ctxInputTotal * 1000) / 1000 : 0;
+      s.latestCacheReadTokens = cacheRead;
+    }
+  }
+  // #367: cache breaks — gap exceeding cache TTL between non-subagent turns
+  if (!entry.isSubagent && recvAt > 0 && s._lastMainRecvAt > 0) {
+    var gapMs = recvAt - s._lastMainRecvAt;
+    if (gapMs > 300000) s.cacheBreaks = (s.cacheBreaks || 0) + 1;
+  }
+  if (!entry.isSubagent && recvAt > 0) s._lastMainRecvAt = recvAt;
   // Track whether session has any non-imported entries
   if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
   else s.importedOnly = false;
+  if (!entry.isSubagent && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
+  if (!entry.isSubagent && entry.beta1m === true) s.beta1m = true;
 }
 
 function setTitle(sid, title) {
@@ -252,7 +314,11 @@ async function flush() {
   dirty = false;
   if (!sessionIndex.size) return;
   const lines = [];
-  for (const s of sessionIndex.values()) lines.push(JSON.stringify(s));
+  for (const s of sessionIndex.values()) {
+    var obj = {};
+    for (var k in s) { if (k[0] !== '_') obj[k] = s[k]; }
+    lines.push(JSON.stringify(obj));
+  }
   const tmp = tmpPath();
   try {
     await fsp.mkdir(path.dirname(tmp), { recursive: true });
@@ -263,6 +329,10 @@ async function flush() {
   }
 }
 
+function get(sid) {
+  return sessionIndex.get(sid) || null;
+}
+
 function getAll() {
   return [...sessionIndex.values()];
 }
@@ -271,10 +341,15 @@ function size() {
   return sessionIndex.size;
 }
 
+function setWeather(sid, weather) {
+  const s = sessionIndex.get(sid);
+  if (s && weather) { s.weather = weather; _scheduleDirtyFlush(); }
+}
+
 module.exports = {
   loadSessionIndex,
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas,
-  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, size,
+  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather,
 };

@@ -23,6 +23,9 @@ function switchTab(tab, forceDiff) {
   if (tab === 'dashboard' && typeof exitFocusedMode === 'function' && typeof isFocusedMode !== 'undefined' && isFocusedMode) {
     exitFocusedMode();
   }
+  // #358 codex r1: returning to dashboard with nothing selected + collapsed
+  // sidebar is the same blank dead-end — expand now (idempotent no-op otherwise).
+  if (tab === 'dashboard') maybeAutoExpandSidebar();
   const costPage = document.getElementById('cost-page');
   const diffOverlay = document.getElementById('diff-overlay');
   if (tab === 'usage') {
@@ -123,6 +126,9 @@ function applySidebarState() {
 }
 
 function toggleSidebar() {
+  // #358 prevention: collapsing with no session selected → dead-end blank page.
+  // Expand direction always allowed (boot rescue / manual expand).
+  if (!sidebarCollapsed && !(typeof selectedSessionId !== 'undefined' && selectedSessionId)) return;
   sidebarCollapsed = !sidebarCollapsed;
   localStorage.setItem(SIDEBAR_COLLAPSE_KEY, sidebarCollapsed ? '1' : '0');
   applySidebarState();
@@ -132,6 +138,27 @@ function toggleSidebar() {
   if (typeof renderCmdBar === 'function') renderCmdBar();
 }
 window.isSidebarCollapsed = () => sidebarCollapsed;
+
+// #358: boot ended with no session selected while the sidebar is collapsed —
+// all visible columns are empty and the |▷ expand button only renders in the
+// timeline header (needs a selected session), so the page is a dead-end blank.
+// Called once at the end of the boot chain (entry-rendering.js).
+function maybeAutoExpandSidebar() {
+  if (!sidebarCollapsed) return false;
+  // codex r1: only the dashboard view shows the sidebar — a ?view=usage/
+  // sysprompt boot must not silently rewrite the collapse preference.
+  if (activeTab !== 'dashboard') return false;
+  // codex r3: while boot is still restoring (entry-rendering.js sets this
+  // false right before auto-select/deep-link settle), a tab-return sees a
+  // transiently-null selection — don't rewrite the preference until settled.
+  // ponytail: undefined = entry-rendering.js hasn't loaded yet → still booting
+  if (window._entriesLoading !== false) return false;
+  if (typeof selectedSessionId !== 'undefined' && selectedSessionId) return false;
+  toggleSidebar();
+  setFocus(selectedProjectName ? 'sessions' : 'projects');
+  return true;
+}
+
 applySidebarState();
 
 // ── Unified Escape + tab switching handler ──────────────────────────

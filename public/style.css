@@ -162,7 +162,8 @@
   .project-item .pi-meta { font-size: 11px; color: var(--dim); margin-top: 2px; }
   .project-item .pi-cost { color: var(--yellow); }
   .project-item .pi-range { font-size: 10px; color: var(--dim); margin-top: 1px; }
-  #col-turns { width: 220px; position: relative; }
+  /* #324: hidden by default; shown by .wf-active or .cold-loading on #columns */
+  #col-turns { width: 220px; position: relative; display: none; }
   #col-sections { width: 220px; }
 
   .col-empty { color: var(--dim); text-align: center; padding: 40px 12px; font-size: 12px; }
@@ -681,7 +682,7 @@
 /* Cold-loading: hide empty sections/detail, let turns fill the space (#316) */
 #columns.cold-loading #col-sections,
 #columns.cold-loading #col-detail { display: none; }
-#columns.cold-loading #col-turns { flex: 1; overflow: hidden; }
+#columns.cold-loading #col-turns { display: block; flex: 1; overflow: hidden; }
 
 /* ── Workflow Swimlane Timeline (#91) ── */
 /* When workflow is active, col-turns becomes the full-width right area;
@@ -728,6 +729,12 @@
 #wf-detail-area { flex: 1; display: flex; min-height: 180px; overflow: hidden; }
 #wf-agent-card-panel { width: 240px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--surface); }
 #wf-steps-panel { flex: 1; overflow-y: auto; min-width: 0; }
+.weather-overlay { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 12px 16px; font-size: 13px; color: var(--text); z-index: 200; pointer-events: none; max-width: 380px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); line-height: 1.8; }
+.weather-overlay .wo-header { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: var(--text); }
+.weather-overlay .wo-factors { color: var(--dim); font-size: 13px; margin-bottom: 8px; }
+.weather-overlay .wo-action { color: var(--text); font-size: 13px; }
+.wo-turn-link { color: var(--link, #58a6ff); cursor: pointer; text-decoration: underline; }
+.wo-turn-link:hover { color: var(--link-hover, #79c0ff); }
 .wf-tooltip { position: fixed; display: none; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 10px; font-size: 11px; color: var(--text); z-index: 100; pointer-events: none; max-width: 300px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); line-height: 1.6; }
 .wf-tooltip .r { display: flex; justify-content: space-between; gap: 16px; }
 .wf-tooltip .l { color: var(--dim); }
