@@ -844,6 +844,7 @@ window.recomputeProjectCost = recomputeProjectCost;
 
 // ── Merge cold sessions from session index into sessionsMap + DOM + projectsMap ──
 function mergeColdSessions(sessions) {
+  const widenedSessionIds = new Set();
   for (const s of sessions) {
     if (!s || !s.sid) continue;
     if (s.importedOnly && window.ccxraySettings?.hideImported) continue;
@@ -859,8 +860,16 @@ function mergeColdSessions(sessions) {
       // only widen the window, never narrow it, so it cannot degrade a hot value. A hot
       // session truncated by RESTORE_DAYS / SESSION_ENTRY_CAP has strictly less evidence
       // than the server fold. See ADR 0013 + #377.
-      if (s.beta1m === true) existing.beta1m = true;
-      if ((s.maxContext || 0) > (existing.maxContext || 0)) existing.maxContext = s.maxContext;
+      var windowWidened = false;
+      if (s.beta1m === true && existing.beta1m !== true) {
+        existing.beta1m = true;
+        windowWidened = true;
+      }
+      if ((s.maxContext || 0) > (existing.maxContext || 0)) {
+        existing.maxContext = s.maxContext;
+        windowWidened = true;
+      }
+      if (windowWidened) widenedSessionIds.add(s.sid);
       // #367: merge cold derived fields ONLY when the hot session truly lacks them.
       // Hot sessions compute these from entries — never overwrite with cold fallbacks.
       if (!existing._cold) continue;
@@ -900,6 +909,14 @@ function mergeColdSessions(sessions) {
     proj.sessionIds.add(s.sid);
     if (s.lastId && s.lastId > (proj.lastId || '')) proj.lastId = s.lastId;
     if (s.lastReceivedAt && s.lastReceivedAt > (proj.lastSeenAt || 0)) proj.lastSeenAt = s.lastReceivedAt;
+  }
+  // #377 / ADR 0013: widening a stored hot-session window changes weather's
+  // denominator, so rebuild dependent stats in the same merge. Cold sessions
+  // have no entries in allEntries; recomputing them would erase server stats.
+  for (const sid of widenedSessionIds) {
+    const s = sessionsMap.get(sid);
+    if (!s || s._cold) continue;
+    recomputeSessionStats(sid);
   }
   // #308: derive project costs from session costs (idempotent)
   for (const [name] of projectsMap) recomputeProjectCost(name);

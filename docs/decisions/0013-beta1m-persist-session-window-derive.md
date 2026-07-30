@@ -149,9 +149,26 @@ by `RESTORE_DAYS` or `SESSION_ENTRY_CAP`, a surviving turn can carry a smaller
 `maxContext` while the discarded history contained the true 1M evidence; the
 old gate then skipped the complete server fold. The client now unconditionally
 merges that fold with its surviving turns using monotone `max(maxContext)` /
-`OR(beta1m)`. This remains safe in the same direction: the window can only grow,
-so context percentages and warnings can only decrease, never create a false
-warning.
+`OR(beta1m)`. The operator can only grow the window, so it cannot create a false
+warning. That is only half of the safety argument, however: a wrongly enlarged
+window can hide a true warning.
+
+**F5 known limitation — server/client classification disagreement can hide a
+true warning.** The server fold is gated by the server-side `entry.isSubagent`,
+while the client uses the ADR 0005 / 0008 / 0009 / 0010 classification
+pipeline. If the server classifies a turn as main but the client classifies it
+as subagent, and that turn is the session's only 1M evidence, the server fold
+can enlarge an actually-200K main session to 1M and suppress real context
+pressure. On 2026-07-30 we replayed L1 (the `agentKey` rule) and L2 (#350's
+per-conversation `coreHash` plurality) over 84 sessions carrying 1M evidence:
+all 44 `beta1m` sessions plus the 40 most recent `maxContext`-fossil sessions.
+F5 hit **0/84**, with **0 observed harmful signal suppressions**. This
+measurement is bounded: 631 other fossil candidates were not tested, and the
+turn-level flips from ADR 0008 overlap and ADR 0009 sequencing were not run
+through a complete `wfInferLanes` replay. The empirical shape explains the zero:
+the main conversation almost always enables its own 1M window; “a subagent
+exclusively owns the 1M evidence while main is truly 200K” did not occur in the
+measured corpus.
 
 On the server, deriving the injected window from `session-index`'s `s.beta1m`
 and `s.maxContext` does not violate this ADR's stateless-at-render decision and
@@ -166,6 +183,20 @@ rebuilt when reconcile detects drift, and forcibly rebuilt on schema
 migration. There is already a precedent: `463bf61` (2026-07-28, four days
 after this ADR) added these two aggregate fields specifically to feed
 `sessionCtxWindow`'s cold-session fallback.
+
+Although the computed `sessionWindow` remains stateless-at-render,
+`sessionsMap.beta1m` and `sessionsMap.maxContext` are stored client state. This
+client latch is admissible only while all three premises hold: (i) it is a
+monotone merge of facts (`OR` / `max`), not a classification conclusion; (ii)
+it mirrors a server-derived view that reload can reconstruct; and (iii) it
+never feeds classification — `isCompacted`, per-turn `severity`, and lane
+placement do not read it. If any premise stops holding, the latch must be
+re-evaluated.
+
+**New consistency contract:** any monotone merge into a hot session's window
+fields (`mergeColdSessions`) must trigger weather/stats recomputation for every
+affected session; otherwise it repeats `8b6789f` blocker 2's stale stored
+severity failure.
 
 One known seam remains in the live merge path. In `server/forward.js`,
 `if (!merged) sessionIdx.updateFromEntry(entry)` means `beta1m` enrichment

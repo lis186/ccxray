@@ -202,36 +202,40 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     seed(ctx, [weatherTurn(sid)]);
 
     assert.equal(ctx.sessionsMap.has(sid), false, 'exercise the cold-session creation branch');
-    ctx.mergeColdSessions([{ sid, beta1m: true, maxContext: 1000000 }]);
+    ctx.mergeColdSessions([{ sid, beta1m: true, maxContext: 1000000, weather: { level: 'rainy' } }]);
 
     assert.equal(ctx.sessionCtxWindow(sid), 1000000);
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy', 'cold sessions keep server stats');
     ctx.recomputeSessionStats(sid);
 
     assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
   });
 
-  it('hot truncated session: mergeColdSessions widens the local 200K fold and keeps a 180K turn sunny', () => {
+  it('hot truncated session: widening the server fold immediately recomputes rainy weather', () => {
     const ctx = loadCtx(true);
     const sid = 'hot-weather';
     seed(ctx, [weatherTurn(sid)]);
     ctx.sessionsMap.set(sid, { _cold: false, beta1m: false, maxContext: 200000 });
+    ctx.recomputeSessionStats(sid);
 
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy');
     ctx.mergeColdSessions([{ sid, beta1m: true, maxContext: 1000000 }]);
 
     assert.equal(ctx.sessionCtxWindow(sid), 1000000);
-    ctx.recomputeSessionStats(sid);
     assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
   });
 
   it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
     const ctx = loadCtx(true);
     const sid = 'hot-monotone';
-    const sess = { _cold: false, beta1m: true, maxContext: 1000000 };
+    const weather = { level: 'rainy' };
+    const sess = { _cold: false, beta1m: true, maxContext: 1000000, weather };
     ctx.sessionsMap.set(sid, sess);
 
     ctx.mergeColdSessions([{ sid, beta1m: false, maxContext: 200000 }]);
 
     assert.equal(sess.beta1m, true);
     assert.equal(sess.maxContext, 1000000);
+    assert.equal(sess.weather, weather, 'an unchanged window does not trigger recomputation');
   });
 });
