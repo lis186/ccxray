@@ -208,7 +208,7 @@ function _recomputeWeather(sid) {
     if (e.sessionId === sid && !e.isSubagent) turns.push(e);
   }
   const s = sessionIndex.get(sid);
-  if (s) s.weather = assessWeather(turns);
+  if (s) s.weather = assessWeather(turns, { sessionWindow: sessionWindow(sid) });
 }
 
 function _upsert(sid, entry) {
@@ -333,6 +333,12 @@ function get(sid) {
   return sessionIndex.get(sid) || null;
 }
 
+function sessionWindow(sid) {
+  const s = sessionIndex.get(sid);
+  if (!s) return 0;
+  return s.beta1m === true ? 1000000 : (s.maxContext || 0);
+}
+
 function getAll() {
   return [...sessionIndex.values()];
 }
@@ -351,5 +357,5 @@ module.exports = {
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas,
-  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather,
+  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
 };

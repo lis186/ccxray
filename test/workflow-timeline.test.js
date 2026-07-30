@@ -6,8 +6,9 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 
 // Load workflow-timeline.js in a browser-like global context
-function loadWfModule() {
+function loadWfModule(opts) {
   const formatSrc = fs.readFileSync(require('path').join(__dirname, '../public/format.js'), 'utf8');
+  const weatherSrc = fs.readFileSync(require('path').join(__dirname, '../public/weather.js'), 'utf8');
   const src = fs.readFileSync(require('path').join(__dirname, '../public/workflow-timeline.js'), 'utf8');
   const ctx = {
     document: { createElement: () => ({ appendChild() {}, style: {}, id: '' }), createElementNS: () => ({ setAttribute() {}, innerHTML: '' }), getElementById: () => null, body: { appendChild() {} }, documentElement: {} },
@@ -31,6 +32,7 @@ function loadWfModule() {
   };
   vm.createContext(ctx);
   vm.runInContext(formatSrc, ctx);
+  if (opts && opts.weather) vm.runInContext(weatherSrc, ctx);
   vm.runInContext(src, ctx);
   return ctx;
 }
@@ -181,6 +183,41 @@ describe('workflow-timeline data layer', () => {
     // A lane whose turns are all ≤200K keeps 200K (no wider signal to rescope to).
     ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'x1', maxContext: 200000, ctxUsed: 100000 }] }] };
     assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', maxContext: 200000, ctxUsed: 100000 })), 50); // 100K/200K
+  });
+
+  it('#377 slice 2: single-turn weather matches the lane-fold context window in tooltip and turn card', () => {
+    const ctx = loadWfModule({ weather: true });
+    const turn = mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {
+      maxContext: 200000,
+      ctxUsed: 176000,
+      usage: {
+        input_tokens: 176000,
+        output_tokens: 1000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      toolCalls: {},
+    });
+    const laneEvidence = mkEntry('t2', 's1', 'claude-opus-4-6', 7000, 5, {
+      maxContext: 1000000,
+      ctxUsed: 10000,
+    });
+    const lane = { key: 'main', name: 'main', turns: [turn, laneEvidence] };
+    ctx.wfState = { lanes: [lane], selectedLane: lane, selectedSection: 'timeline' };
+
+    const localOnly = ctx.assessWeather([turn]);
+    assert.equal(localOnly.level, 'rainy');
+    assert.equal(localOnly.stats.ctxPct, 88);
+
+    ctx._wfShowTooltip({ clientX: 0, clientY: 0 }, turn, lane);
+    assert.match(ctx._wfTooltipEl.innerHTML, /Operating normally/);
+    assert.match(ctx._wfTooltipEl.innerHTML, /17\.6%/);
+
+    const panel = { innerHTML: '' };
+    ctx.document.getElementById = (id) => id === 'wf-agent-card-panel' ? panel : null;
+    ctx.wfRenderTurnCard(turn);
+    assert.match(panel.innerHTML, /17\.6%/);
+    assert.doesNotMatch(panel.innerHTML, /🌧️/);
   });
 
   it('convId splits parallel same-agent instances into separate lanes (#117)', () => {

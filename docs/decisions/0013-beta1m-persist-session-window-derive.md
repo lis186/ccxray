@@ -132,3 +132,52 @@ stay 200K".
   no-backfill decision.
 - Classification zero-change by construction (no severity/isCompacted/lane code
   touched) + 296 affected tests green (incl. #44/#222/#332/#230 classifiers).
+
+## Amended by #377 (2026-07-30)
+
+Weather is an isomorphic pure function: the same `public/weather.js` is loaded
+by a browser script tag and by Node via `require`. It therefore cannot call the
+client-only `sessionCtxWindow`. Callers with a partial view must inject the
+per-session or per-lane window, while callers whose turns contain the complete
+evidence may let weather fold those turns itself. The context-window contract
+above is unchanged: weather was violating the contract; the contract was not
+wrong.
+
+On the server, deriving the injected window from `session-index`'s `s.beta1m`
+and `s.maxContext` does not violate this ADR's stateless-at-render decision and
+does not repeat `8b6789f`. That revert removed a client-side `sess.maxWindow`
+attached to incremental `addEntry`; its commit touched only
+`entry-rendering.js`, and all three blockers were incremental-render state
+failures (failure to retract after reclassification, stale stored severity,
+and live-merge enrichment not updating the latch). In contrast,
+`session-index` is a rebuildable derived view whose monotone
+`OR(beta1m)`/`max(maxContext)` aggregation is checked for mtime staleness,
+rebuilt when reconcile detects drift, and forcibly rebuilt on schema
+migration. There is already a precedent: `463bf61` (2026-07-28, four days
+after this ADR) added these two aggregate fields specifically to feed
+`sessionCtxWindow`'s cold-session fallback.
+
+One known seam remains in the live merge path. In `server/forward.js`,
+`if (!merged) sessionIdx.updateFromEntry(entry)` means `beta1m` enrichment
+carried only by a merged duplicate copy does not enter the session-index fold.
+
+**It is not self-healing.** `reconcileMetas` (`server/session-index.js:184`)
+compares only session count and responseId-deduped entry count; an enrichment
+on an already-counted responseId changes neither, so no drift is detected and
+no rebuild fires. The mtime staleness check in `loadSessionIndex` (`:37-41`)
+does not cover it either: the live path still appends the raw line to
+`index.ndjson`, but `sessions.json` is flushed afterwards by subsequent
+entries, so at the next startup `sessions.json` is typically the newer file
+and the check passes. Only an explicit rebuild (`ccxray rebuild-index`, a
+schema migration, or a startup that happens to find `index.ndjson` newer)
+re-derives the fold from the raw lines — where the evidence has been all
+along, since the merge path never stops persisting it.
+
+The seam's direction is safe: the window can only be under-reported, producing
+over-warning rather than hiding pressure. It is bounded and recoverable, but
+recovery is manual — this ADR does not claim it heals on its own.
+
+Classification remains separate and unchanged. `isCompacted`, per-turn
+`severity`, and lane placement still read raw per-turn `maxContext`; this
+amendment changes only weather's display/health denominator and preserves the
+ADR's display/classification boundary.

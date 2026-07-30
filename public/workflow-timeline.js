@@ -215,11 +215,18 @@ function _wfWinByTurn() {
   wfState._winByTurn = map;
   return map;
 }
-function wfCtxPctRender(e) {
+// #377 slice 2: the window a single turn should be measured against —
+// its own maxContext, widened by the lane fold. Returns 0 when nothing is
+// known, so callers decide their own fallback.
+function _wfTurnWindow(e) {
   var win = e.maxContext || 0;
   var m = _wfWinByTurn();
   var laneWin = (m && m.get(e.id)) || 0;
-  if (laneWin > win) win = laneWin; // turn's own maxContext under-inferred vs the lane's real window
+  if (laneWin > win) win = laneWin;
+  return win;
+}
+function wfCtxPctRender(e) {
+  var win = _wfTurnWindow(e);
   if (!win) win = 200000;
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
@@ -2578,7 +2585,7 @@ function _wfShowTooltip(e, t, lane) {
   var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
     ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
   var row = function(l, v) { return '<div class="r"><span class="l">' + l + '</span><span class="v">' + v + '</span></div>'; };
-  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t]) : null;
+  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t], { sessionWindow: _wfTurnWindow(t) }) : null;
   _wfTooltipEl.innerHTML =
     row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + (t._wfSeqStitched ? ' · seq-stitched' : '') + lockLbl)
     + (ttWeather ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
@@ -2914,7 +2921,7 @@ function wfRenderTurnCard(turnEntry) {
 
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
-  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry]) : null;
+  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry], { sessionWindow: _wfTurnWindow(turnEntry) }) : null;
   html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
