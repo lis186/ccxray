@@ -13,7 +13,7 @@ const vm = require('vm');
 
 const publicDir = path.join(__dirname, '..', 'public');
 
-function loadCtx() {
+function loadCtx(includeEntryRendering) {
   function el() {
     return {
       style: {}, dataset: {}, innerHTML: '', textContent: '',
@@ -43,21 +43,54 @@ function loadCtx() {
     function updateSysPromptBadge() {}
     function startQuotaTicker() {}
     function EventSource() { this.onmessage = null; }
+    function setInterval() { return 0; }
+    function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
     function _apiQ(url) { return url; }
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
-  for (const f of ['format.js', 'session-label.js', 'miller-columns.js']) {
+  const scripts = ['session-label.js', 'format.js', 'weather.js', 'miller-columns.js'];
+  if (includeEntryRendering) scripts.push('entry-rendering.js');
+  for (const f of scripts) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
   }
   // Bridge the const/let declarations (they don't attach to the context global) for test access.
-  vm.runInContext('this.allEntries = allEntries; this.sessionCtxWindow = sessionCtxWindow; this.turnCtxWindow = turnCtxWindow;', context);
+  vm.runInContext(`
+    this.allEntries = allEntries;
+    this.sessionsMap = sessionsMap;
+    this.sessionCtxWindow = sessionCtxWindow;
+    this.turnCtxWindow = turnCtxWindow;
+    ${includeEntryRendering ? `
+      this.mergeColdSessions = mergeColdSessions;
+      this.recomputeSessionStats = recomputeSessionStats;
+    ` : ''}
+  `, context);
   return context;
 }
 
 function seed(ctx, turns) {
   ctx.allEntries.length = 0;
   for (const t of turns) ctx.allEntries.push(t);
+}
+
+function weatherTurn(sid) {
+  return {
+    id: 'survivor',
+    sessionId: sid,
+    isSubagent: false,
+    isRetry: false,
+    model: 'claude-opus-4-6',
+    elapsed: '?',
+    stopReason: 'end_turn',
+    maxContext: 200000,
+    usage: {
+      input_tokens: 180000,
+      output_tokens: 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    },
+    toolCalls: {},
+  };
 }
 
 describe('#339 sessionCtxWindow — per-session context% denominator fold', () => {
@@ -159,5 +192,50 @@ describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, sub
       { sessionId: 'sY', isSubagent: true, convId: 'dup8', maxContext: 200000 },
     ]);
     assert.equal(ctx.turnCtxWindow(ctx.allEntries[1]), 200000, "session Y's subagent stays 200K, not promoted by session X");
+  });
+});
+
+describe('#377 recomputeSessionStats — truncated client weather uses the server session fold', () => {
+  it('cold session: mergeColdSessions creates the 1M server fold and keeps a 180K turn sunny', () => {
+    const ctx = loadCtx(true);
+    const sid = 'cold-weather';
+    seed(ctx, [weatherTurn(sid)]);
+
+    assert.equal(ctx.sessionsMap.has(sid), false, 'exercise the cold-session creation branch');
+    ctx.mergeColdSessions([{ sid, beta1m: true, maxContext: 1000000, weather: { level: 'rainy' } }]);
+
+    assert.equal(ctx.sessionCtxWindow(sid), 1000000);
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy', 'cold sessions keep server stats');
+    ctx.recomputeSessionStats(sid);
+
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
+  });
+
+  it('hot truncated session: widening the server fold immediately recomputes rainy weather', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-weather';
+    seed(ctx, [weatherTurn(sid)]);
+    ctx.sessionsMap.set(sid, { _cold: false, beta1m: false, maxContext: 200000 });
+    ctx.recomputeSessionStats(sid);
+
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy');
+    ctx.mergeColdSessions([{ sid, beta1m: true, maxContext: 1000000 }]);
+
+    assert.equal(ctx.sessionCtxWindow(sid), 1000000);
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
+  });
+
+  it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-monotone';
+    const weather = { level: 'rainy' };
+    const sess = { _cold: false, beta1m: true, maxContext: 1000000, weather };
+    ctx.sessionsMap.set(sid, sess);
+
+    ctx.mergeColdSessions([{ sid, beta1m: false, maxContext: 200000 }]);
+
+    assert.equal(sess.beta1m, true);
+    assert.equal(sess.maxContext, 1000000);
+    assert.equal(sess.weather, weather, 'an unchanged window does not trigger recomputation');
   });
 });

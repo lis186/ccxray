@@ -132,3 +132,93 @@ stay 200K".
   no-backfill decision.
 - Classification zero-change by construction (no severity/isCompacted/lane code
   touched) + 296 affected tests green (incl. #44/#222/#332/#230 classifiers).
+
+## Amended by #377 (2026-07-30)
+
+Weather is an isomorphic pure function: the same `public/weather.js` is loaded
+by a browser script tag and by Node via `require`. It therefore cannot call the
+client-only `sessionCtxWindow`. Callers with a partial view must inject the
+per-session or per-lane window, while callers whose turns contain the complete
+evidence may let weather fold those turns itself. The context-window contract
+above is unchanged: weather was violating the contract; the contract was not
+wrong.
+
+`sessionCtxWindow` originally used the server-provided per-session fold only
+when the client had no entry for that session. When `allEntries` is truncated
+by `RESTORE_DAYS` or `SESSION_ENTRY_CAP`, a surviving turn can carry a smaller
+`maxContext` while the discarded history contained the true 1M evidence; the
+old gate then skipped the complete server fold. The client now unconditionally
+merges that fold with its surviving turns using monotone `max(maxContext)` /
+`OR(beta1m)`. The operator can only grow the window, so it cannot create a false
+warning. That is only half of the safety argument, however: a wrongly enlarged
+window can hide a true warning.
+
+**F5 known limitation — server/client classification disagreement can hide a
+true warning.** The server fold is gated by the server-side `entry.isSubagent`,
+while the client uses the ADR 0005 / 0008 / 0009 / 0010 classification
+pipeline. If the server classifies a turn as main but the client classifies it
+as subagent, and that turn is the session's only 1M evidence, the server fold
+can enlarge an actually-200K main session to 1M and suppress real context
+pressure. On 2026-07-30 we replayed L1 (the `agentKey` rule) and L2 (#350's
+per-conversation `coreHash` plurality) over 84 sessions carrying 1M evidence:
+all 44 `beta1m` sessions plus the 40 most recent `maxContext`-fossil sessions.
+F5 hit **0/84**, with **0 observed harmful signal suppressions**. This
+measurement is bounded: 631 other fossil candidates were not tested, and the
+turn-level flips from ADR 0008 overlap and ADR 0009 sequencing were not run
+through a complete `wfInferLanes` replay. The empirical shape explains the zero:
+the main conversation almost always enables its own 1M window; “a subagent
+exclusively owns the 1M evidence while main is truly 200K” did not occur in the
+measured corpus.
+
+On the server, deriving the injected window from `session-index`'s `s.beta1m`
+and `s.maxContext` does not violate this ADR's stateless-at-render decision and
+does not repeat `8b6789f`. That revert removed a client-side `sess.maxWindow`
+attached to incremental `addEntry`; its commit touched only
+`entry-rendering.js`, and all three blockers were incremental-render state
+failures (failure to retract after reclassification, stale stored severity,
+and live-merge enrichment not updating the latch). In contrast,
+`session-index` is a rebuildable derived view whose monotone
+`OR(beta1m)`/`max(maxContext)` aggregation is checked for mtime staleness,
+rebuilt when reconcile detects drift, and forcibly rebuilt on schema
+migration. There is already a precedent: `463bf61` (2026-07-28, four days
+after this ADR) added these two aggregate fields specifically to feed
+`sessionCtxWindow`'s cold-session fallback.
+
+Although the computed `sessionWindow` remains stateless-at-render,
+`sessionsMap.beta1m` and `sessionsMap.maxContext` are stored client state. This
+client latch is admissible only while all three premises hold: (i) it is a
+monotone merge of facts (`OR` / `max`), not a classification conclusion; (ii)
+it mirrors a server-derived view that reload can reconstruct; and (iii) it
+never feeds classification — `isCompacted`, per-turn `severity`, and lane
+placement do not read it. If any premise stops holding, the latch must be
+re-evaluated.
+
+**New consistency contract:** any monotone merge into a hot session's window
+fields (`mergeColdSessions`) must trigger weather/stats recomputation for every
+affected session; otherwise it repeats `8b6789f` blocker 2's stale stored
+severity failure.
+
+One known seam remains in the live merge path. In `server/forward.js`,
+`if (!merged) sessionIdx.updateFromEntry(entry)` means `beta1m` enrichment
+carried only by a merged duplicate copy does not enter the session-index fold.
+
+**It is not self-healing.** `reconcileMetas` (`server/session-index.js:184`)
+compares only session count and responseId-deduped entry count; an enrichment
+on an already-counted responseId changes neither, so no drift is detected and
+no rebuild fires. The mtime staleness check in `loadSessionIndex` (`:37-41`)
+does not cover it either: the live path still appends the raw line to
+`index.ndjson`, but `sessions.json` is flushed afterwards by subsequent
+entries, so at the next startup `sessions.json` is typically the newer file
+and the check passes. Only an explicit rebuild (`ccxray rebuild-index`, a
+schema migration, or a startup that happens to find `index.ndjson` newer)
+re-derives the fold from the raw lines — where the evidence has been all
+along, since the merge path never stops persisting it.
+
+The seam's direction is safe: the window can only be under-reported, producing
+over-warning rather than hiding pressure. It is bounded and recoverable, but
+recovery is manual — this ADR does not claim it heals on its own.
+
+Classification remains separate and unchanged. `isCompacted`, per-turn
+`severity`, and lane placement still read raw per-turn `maxContext`; this
+amendment changes only weather's display/health denominator and preserves the
+ADR's display/classification boundary.

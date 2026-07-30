@@ -39,11 +39,23 @@ function _wDurMs(entry) {
 // ponytail: ctxFloor=0.4 — below 40% no signal, ramps to 1.0 at 100%. Lost in the Middle (Liu 2023): quality degrades well before max context.
 var CTX_FLOOR = 0.4;
 
-function sigCtxPressure(turns) {
+// #377: derive the window from the turns we were given — mirrors _wfLaneWindow
+// (workflow-timeline.js:196) and sessionCtxWindow (miller-columns.js:13) so the
+// weather denominator matches what the rest of the dashboard shows.
+function _foldWindow(turns) {
+  var win = 0, has1m = false;
+  for (var i = 0; i < turns.length; i++) {
+    if (turns[i].beta1m === true) has1m = true;
+    if ((turns[i].maxContext || 0) > win) win = turns[i].maxContext;
+  }
+  return has1m ? 1000000 : win;
+}
+
+function sigCtxPressure(turns, opts) {
   if (!turns.length) return { severity: 0, detail: {} };
   var last = turns[turns.length - 1];
   var u = last.usage || {};
-  var mx = last.maxContext;
+  var mx = (opts && opts.sessionWindow) || _foldWindow(turns);
   if (!mx || mx < 1000) return { severity: 0, detail: { ctxPct: 0, turnIndex: turns.length - 1, entryId: last && last.id || null } };
   var used = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
   var pct = used / mx;
@@ -133,13 +145,13 @@ function sigErrorCumulative(turns) {
   return { severity: sev, detail: { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100, firstErrId: firstErrId } };
 }
 
-function assessWeather(turns) {
+function assessWeather(turns, opts) {
   if (!turns || !turns.length) {
     return { level: 'sunny', emoji: LEVELS[0].emoji, score: 0, factors: [], stats: { ctxPct: 0, errRate: 0, errTurns: 0, latencyRatio: null, compactions: 0 }, tooltip: 'Operating normally' };
   }
 
   var signals = [
-    { type: 'ctx_pressure', result: sigCtxPressure(turns) },
+    { type: 'ctx_pressure', result: sigCtxPressure(turns, opts) },
     { type: 'compaction_scar', result: sigCompaction(turns) },
     { type: 'truncation', result: sigTruncation(turns) },
     { type: 'stuck', result: sigStuck(turns) },

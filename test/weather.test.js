@@ -73,6 +73,47 @@ describe('assessWeather', function() {
     assert.ok(r.level === 'rainy' || r.level === 'stormy', 'level=' + r.level);
   });
 
+  it('ctx_mixed_window — session fold prevents a false context alarm', function() {
+    var turns = repeat(19, {
+      usage: { input_tokens: 500, cache_read_input_tokens: 20000 },
+      maxContext: 1000000,
+      beta1m: true,
+    });
+    turns.push(makeTurn({
+      usage: { input_tokens: 1000, cache_read_input_tokens: 175000, cache_creation_input_tokens: 0 },
+      maxContext: 200000,
+    }));
+    var r = assessWeather(turns);
+    assert.equal(r.level, 'sunny');
+    assert.ok(r.stats.ctxPct < 20, 'ctxPct ' + r.stats.ctxPct + ' should be < 20');
+  });
+
+  it('ctx_session_window_override — explicit window takes priority over the fold', function() {
+    var turns = repeat(19, {
+      usage: { input_tokens: 500, cache_read_input_tokens: 20000 },
+      maxContext: 1000000,
+      beta1m: true,
+    });
+    turns.push(makeTurn({
+      usage: { input_tokens: 1000, cache_read_input_tokens: 175000, cache_creation_input_tokens: 0 },
+      maxContext: 200000,
+    }));
+    var r = assessWeather(turns, { sessionWindow: 400000 });
+    assert.ok(Math.abs(r.stats.ctxPct - 44) <= 0.2, 'ctxPct ' + r.stats.ctxPct + ' should be ≈ 44');
+    assert.equal(r.level, 'sunny');
+  });
+
+  it('ctx_unknown_window — no observed maxContext produces no signal', function() {
+    var turns = repeat(20, {
+      usage: { input_tokens: 1000, cache_read_input_tokens: 175000, cache_creation_input_tokens: 0 },
+      maxContext: undefined,
+    });
+    var r = assessWeather(turns);
+    assert.equal(r.level, 'sunny');
+    assert.equal(r.stats.ctxPct, 0);
+    assert.ok(!hasFactor(r, 'ctx_pressure'));
+  });
+
   it('compaction_single — one compaction, otherwise healthy', function() {
     var turns = repeat(20);
     turns[10] = makeTurn({ isCompacted: true });

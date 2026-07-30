@@ -27,6 +27,64 @@ describe('session-index', () => {
     delete require.cache[require.resolve('../server/session-index')];
   });
 
+  it('#377 slice 2: unknown session window stays zero and creates no weather signal', () => {
+    const si = require('../server/session-index');
+    const { assessWeather } = require('../public/weather');
+    const turnWithoutFacts = {
+      id: 'no-facts',
+      maxContext: 0,
+      usage: {
+        input_tokens: 176000,
+        output_tokens: 1000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    };
+
+    const win = si.sessionWindow('missing-session');
+    assert.equal(win, 0);
+    const weather = assessWeather([turnWithoutFacts], { sessionWindow: win });
+    assert.equal(weather.level, 'sunny');
+    assert.equal(weather.stats.ctxPct, 0);
+    assert.equal(weather.score, 0);
+  });
+
+  it('#377 slice 2: partial store weather uses the session-index 1M fold', async () => {
+    const si = require('../server/session-index');
+    const store = require('../server/store');
+    const savedEntries = store.entries.splice(0);
+    const sid = 'partial-1m';
+    store.entries.push({
+      id: 'surviving-200k-copy',
+      sessionId: sid,
+      maxContext: 200000,
+      usage: {
+        input_tokens: 176000,
+        output_tokens: 1000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+    });
+
+    try {
+      si.updateFromEntry({
+        id: 'trimmed-1m-evidence',
+        sessionId: sid,
+        maxContext: 200000,
+        beta1m: true,
+      });
+
+      assert.equal(si.sessionWindow(sid), 1000000);
+      const weather = si.get(sid).weather;
+      assert.equal(weather.level, 'sunny');
+      assert.equal(weather.stats.ctxPct, 17.6);
+      assert.equal(weather.score, 0);
+    } finally {
+      store.entries.splice(0, store.entries.length, ...savedEntries);
+      await si.flush();
+    }
+  });
+
   it('updateFromEntry + flush + load round-trip', async () => {
     const si = require('../server/session-index');
     si.updateFromEntry({

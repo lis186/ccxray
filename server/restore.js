@@ -383,7 +383,7 @@ async function restoreFromLogs() {
     arr.push(e);
   }
   for (const [sid, turns] of bySid) {
-    sessionIdx.setWeather(sid, assessWeather(turns));
+    sessionIdx.setWeather(sid, assessWeather(turns, { sessionWindow: sessionIdx.sessionWindow(sid) }));
   }
   console.timeEnd('restore:weather');
 
