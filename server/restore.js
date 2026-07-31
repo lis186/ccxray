@@ -15,6 +15,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 
+
 // #211: model marker ("The exact model ID is ...") from the persisted system
 // prompt for this sysHash, or null (unreadable / no marker line). Cached per
 // hash — restore sees the same few sysHashes across many entries.

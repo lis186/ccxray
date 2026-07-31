@@ -154,9 +154,11 @@ warning. That is only half of the safety argument, however: a wrongly enlarged
 window can hide a true warning.
 
 **F5 known limitation — server/client classification disagreement can hide a
-true warning.** The server fold is gated by the server-side `entry.isSubagent`,
-while the client uses the ADR 0005 / 0008 / 0009 / 0010 classification
-pipeline. If the server classifies a turn as main but the client classifies it
+true warning.** The server fold is now gated by `isMainTurnByAgentKey` (the
+shared L1 agentKey classification, #381) — narrowing the original gap from
+"raw `isSubagent` heuristic vs. full 5-layer pipeline" to "L1 only vs.
+L1+L2+L3+L4". The remaining divergence is L2–L4 (coreHash/overlap/seq),
+which the client applies but the server does not. If the server classifies a turn as main but the client classifies it
 as subagent, and that turn is the session's only 1M evidence, the server fold
 can enlarge an actually-200K main session to 1M and suppress real context
 pressure. On 2026-07-30 we replayed L1 (the `agentKey` rule) and L2 (#350's
