@@ -228,6 +228,12 @@ async function restoreFromLogs() {
     // this, the dashboard would show "600K / 200K (clamped to 100%)" for
     // entries that predate the inferMaxContext fix. Math.max keeps previously
     // correct 1M values when current usage happens to fit inside 200K.
+    // #384: heal legacy openai lines that were imported without maxContext.
+    // Fill-only (never overwrite), recognized models only (unknown stays silent).
+    if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
+      const ctx = config.getMaxContext(meta.model, null);
+      if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
+    }
     // EXCEPTION(#158): data-layer — anthropic-specific maxContext inference from persisted usage
     if (meta.provider === 'anthropic') {
       const inferred = config.inferMaxContext(meta.model, null, meta.usage);
