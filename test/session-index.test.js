@@ -329,4 +329,114 @@ describe('session-index', () => {
     assert.ok(Math.abs(first.totalCost - 0.20) < 1e-9, 'cost also credited to first-seen session');
     assert.ok(Math.abs((real.totalCost || 0)) < 1e-9, 'cross-session copy adds no cost to its own session');
   });
+
+  // #385: weather assessment must receive deduped metas (ADR 0012 invariant)
+  it('#385: duplicate metas by responseId do not inflate weather signals', () => {
+    const si = require('../server/session-index');
+    // 10 logical turns: 9 end_turn turns + 1 toolFail turn duplicated 5×.
+    // Old code: 14 raw entries — the 5 dups are consecutive tool_use+toolFail at the
+    //           end, forming a 5-turn window with errorRate=1.0 → error_cluster fires.
+    // New code: 10 deduped entries — only 1 tool_use turn → no 5-turn window has ≥3
+    //           tool_use turns → error_cluster cannot fire.
+    const metas = [];
+    for (let i = 0; i < 9; i++) {
+      metas.push({
+        id: `t${i}`, sessionId: 'weather-dup', responseId: `rid_${i}`,
+        model: 'claude-sonnet-4-6', stopReason: 'end_turn', toolFail: false,
+        cost: { cost: 0.01 }, receivedAt: (i + 1) * 1000, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    // The toolFail turn — duplicated 5× (same responseId, chained proxy shape)
+    for (let k = 0; k < 5; k++) {
+      metas.push({
+        id: `t9_dup${k}`, sessionId: 'weather-dup', responseId: 'rid_fail',
+        model: 'claude-sonnet-4-6', stopReason: 'tool_use', toolFail: true,
+        cost: { cost: 0.01 }, receivedAt: 10000 + k, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    si.rebuildFromMetas(metas);
+    const s = si.get('weather-dup');
+    assert.ok(s, 'session exists');
+    assert.ok(s.weather, 'weather computed');
+    // error_cluster must NOT fire — only 1 tool_use turn in 10 deduped entries,
+    // no 5-turn window has ≥3 tool_use turns (sigErrorCluster threshold).
+    const ecFactor = s.weather.factors.find(f => f.type === 'error_cluster');
+    assert.equal(ecFactor, undefined, 'error_cluster must not fire on deduped metas');
+  });
+
+  it('#385 Guard 1: legacy metas without responseId pass through to weather', () => {
+    const si = require('../server/session-index');
+    // 5 distinct legacy lines (no responseId) — all must count in weather.
+    // sigErrorCluster checks: 5-turn window has 5 tool_use, 5 errors → errorRate=1.0.
+    // If the dedup wrongly dropped legacy lines, errorRate would be lower or the
+    // window wouldn't have ≥3 tool_use turns.
+    const metas = [];
+    for (let i = 0; i < 5; i++) {
+      metas.push({
+        id: `legacy${i}`, sessionId: 'weather-legacy',
+        model: 'claude-sonnet-4-6', stopReason: 'tool_use', toolFail: true,
+        cost: { cost: 0.01 }, receivedAt: (i + 1) * 1000, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    si.rebuildFromMetas(metas);
+    const s = si.get('weather-legacy');
+    assert.ok(s.weather, 'weather computed');
+    // error_cluster must fire with errorRate=1.0 — proves all 5 lines counted
+    const ecFactor = s.weather.factors.find(f => f.type === 'error_cluster');
+    assert.ok(ecFactor, 'error_cluster fires — proves all 5 legacy lines reached weather');
+    assert.equal(ecFactor.detail.errorRate, 1.0, 'all 5 turns are errors (no dedup applied)');
+    assert.equal(s.count, 5, 'count also 5 (no responseId = no dedup)');
+  });
+
+  it('#385 Guard 2: cost/count unchanged by weather dedup', () => {
+    const si = require('../server/session-index');
+    // Same fixture as the main #385 test — cost/count must be identical pre/post fix
+    const metas = [];
+    for (let i = 0; i < 9; i++) {
+      metas.push({
+        id: `t${i}`, sessionId: 'guard2', responseId: `rid_${i}`,
+        cost: { cost: 0.01 }, receivedAt: (i + 1) * 1000, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    for (let k = 0; k < 5; k++) {
+      metas.push({
+        id: `t9_dup${k}`, sessionId: 'guard2', responseId: 'rid_fail',
+        cost: { cost: 0.01 }, receivedAt: 10000 + k, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    si.rebuildFromMetas(metas);
+    const s = si.get('guard2');
+    // 10 unique responseIds ⇒ count=10, cost=0.10 (already correct pre-fix)
+    assert.equal(s.count, 10, 'count deduped by responseId: 10 logical turns');
+    assert.ok(Math.abs(s.totalCost - 0.10) < 1e-9, `cost deduped: expected 0.10, got ${s.totalCost}`);
+  });
+
+  it('#385 Guard 3: clean fixture (all unique responseIds) produces identical weather', () => {
+    const si = require('../server/session-index');
+    const { assessWeather } = require('../public/weather');
+    // 10 clean turns — no duplicates. Dedup is an identity transform.
+    const metas = [];
+    for (let i = 0; i < 10; i++) {
+      metas.push({
+        id: `c${i}`, sessionId: 'clean', responseId: `uniq_${i}`,
+        model: 'claude-sonnet-4-6', stopReason: 'tool_use', toolFail: i === 5,
+        cost: { cost: 0.01 }, receivedAt: (i + 1) * 1000, maxContext: 200000,
+        usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      });
+    }
+    // Compute expected weather directly from the metas (no dedup effect)
+    const expected = assessWeather(metas);
+    si.rebuildFromMetas(metas);
+    const s = si.get('clean');
+    assert.ok(s.weather, 'weather computed');
+    assert.equal(s.weather.level, expected.level, 'level matches direct assessment');
+    assert.equal(s.weather.score, expected.score, 'score matches direct assessment');
+    assert.equal(s.weather.stats.errTurns, expected.stats.errTurns, 'errTurns matches');
+    assert.equal(s.weather.stats.errRate, expected.stats.errRate, 'errRate matches');
+  });
 });
