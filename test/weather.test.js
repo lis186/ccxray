@@ -99,7 +99,8 @@ describe('assessWeather', function() {
       maxContext: 200000,
     }));
     var r = assessWeather(turns, { sessionWindow: 400000 });
-    assert.ok(Math.abs(r.stats.ctxPct - 44) <= 0.2, 'ctxPct ' + r.stats.ctxPct + ' should be ≈ 44');
+    // #387: shift = output_tokens(800) / window(400000) = 0.2pp → 44.0 → 44.2
+    assert.ok(Math.abs(r.stats.ctxPct - 44.2) <= 0.2, 'ctxPct ' + r.stats.ctxPct + ' should be ≈ 44.2');
     assert.equal(r.level, 'sunny');
   });
 
@@ -347,5 +348,45 @@ describe('assessWeather', function() {
     for (var i = 0; i < 15; i++) turns.push(makeTurn({ stopReason: 'tool_use', toolFail: true }));
     var r = assessWeather(turns);
     assert.ok(r.tooltip.includes('permissions'), 'stuck action should mention permissions');
+  });
+
+  // ── #387: ctx numerator includes output_tokens (match computeCtxUsed) ──
+
+  it('#387 — ctx numerator includes output_tokens (fail-on-old)', function() {
+    var turns = repeat(19);
+    turns.push(makeTurn({
+      usage: { input_tokens: 60000, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0, output_tokens: 20000 },
+      maxContext: 200000,
+    }));
+    var r = assessWeather(turns);
+    // Old code: used = 60000+40000+0 = 100000, pct = 50.0
+    // New code: used = 60000+40000+0+20000 = 120000, pct = 60.0
+    assert.equal(r.stats.ctxPct, 60.0, 'ctxPct should include output_tokens');
+  });
+
+  it('#387 — output_tokens=0 produces same result as before (no drift)', function() {
+    var turns = repeat(19);
+    turns.push(makeTurn({
+      usage: { input_tokens: 60000, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0, output_tokens: 0 },
+      maxContext: 200000,
+    }));
+    var r = assessWeather(turns);
+    assert.equal(r.stats.ctxPct, 50.0, 'ctxPct unchanged when output_tokens=0');
+  });
+
+  it('#387 — output_tokens crosses CTX_FLOOR threshold (fail-on-old)', function() {
+    var turns = repeat(19);
+    // input-only pct = 79000/200000 = 39.5% (below CTX_FLOOR=0.4)
+    // with output: (79000+8000)/200000 = 43.5% (above CTX_FLOOR)
+    turns.push(makeTurn({
+      usage: { input_tokens: 79000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 8000 },
+      maxContext: 200000,
+    }));
+    var r = assessWeather(turns);
+    assert.ok(hasFactor(r, 'ctx_pressure'), 'should detect ctx_pressure when output pushes past floor');
+    assert.equal(r.stats.ctxPct, 43.5, 'ctxPct should be 43.5 with output_tokens');
+    // Verify other factors are not affected by the ctx numerator change
+    var otherFactors = r.factors.filter(function(f) { return f.type !== 'ctx_pressure'; });
+    assert.equal(otherFactors.length, 0, 'no other factors should fire on this fixture');
   });
 });

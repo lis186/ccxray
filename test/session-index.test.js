@@ -77,7 +77,8 @@ describe('session-index', () => {
       assert.equal(si.sessionWindow(sid), 1000000);
       const weather = si.get(sid).weather;
       assert.equal(weather.level, 'sunny');
-      assert.equal(weather.stats.ctxPct, 17.6);
+      // #387: +output_tokens(1000) shifts 17.6 → 17.7
+      assert.equal(weather.stats.ctxPct, 17.7);
       assert.equal(weather.score, 0);
     } finally {
       store.entries.splice(0, store.entries.length, ...savedEntries);

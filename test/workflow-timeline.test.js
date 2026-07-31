@@ -207,15 +207,17 @@ describe('workflow-timeline data layer', () => {
 
     const localOnly = ctx.assessWeather([turn]);
     assert.equal(localOnly.level, 'rainy');
-    assert.equal(localOnly.stats.ctxPct, 88);
+    // #387: +output_tokens(1000) shifts 88 → 88.5
+    assert.equal(localOnly.stats.ctxPct, 88.5);
 
     ctx._wfShowTooltip({ clientX: 0, clientY: 0 }, turn, lane);
     assert.match(ctx._wfTooltipEl.innerHTML, /Operating normally/);
-    assert.match(ctx._wfTooltipEl.innerHTML, /17\.6%/);
+    assert.match(ctx._wfTooltipEl.innerHTML, /17\.7%/);
 
     const panel = { innerHTML: '' };
     ctx.document.getElementById = (id) => id === 'wf-agent-card-panel' ? panel : null;
     ctx.wfRenderTurnCard(turn);
+    // turn card uses entry.ctxUsed (input-only), not weather's four-term sum
     assert.match(panel.innerHTML, /17\.6%/);
     assert.doesNotMatch(panel.innerHTML, /🌧️/);
   });
