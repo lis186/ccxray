@@ -314,6 +314,10 @@ async function restoreFromLogs() {
       // the enriched canonical to any connected client (codex round-2 M6). Harmless
       // no-op when no client is connected yet (the common startup case).
       broadcastEntryUpdate(canonical);
+      // #388: feed canonical to session-index so enrichment fields (beta1m, maxContext)
+      // from the restored copy propagate to the window fold. Safe: count/cost are
+      // rid-deduped; window fields are monotone max/OR.
+      sessionIdx.updateFromEntry(canonical);
       continue;
     }
     store.entries.push(entry);
