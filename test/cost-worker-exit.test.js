@@ -10,8 +10,10 @@ const path = require('node:path');
 // Regression guards for server/cost-worker.js's process lifecycle.
 //
 // server/cost-budget.js resolves ONLY inside worker.on('exit'), else rejects
-// after 120s. Three regressions are guarded; mutation testing (2026-08-01)
-// showed each test is the ONLY one that catches its mutation:
+// after 120s. Three regressions are guarded. Mutation testing (2026-08-01)
+// showed all three mutations turn this file red, and that X is the only guard
+// against deleting the disconnect handler. The other two mutations trip more
+// than one test, so do not read the list below as one-test-per-mutation:
 //   Y  — the worker exits on its own after writing output. Restoring #396's
 //        worker (disconnect listener without channel unref) fails this,
 //        bounded at ~15s.
