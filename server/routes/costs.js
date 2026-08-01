@@ -5,7 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 const store = require('../store');
 const { getCostsCacheOrNull, calculateBurnRate, getEffectiveTokenLimit } = require('../cost-budget');
-const { pricingTable } = require('../pricing');
+const pricing = require('../pricing');
 const { readAllAccounts } = require('../local-usage-reader');
 const { refreshCodex, refreshCodexAsync } = require('../adapters/codex-adapter');
 const { resolveCcxrayHome } = require('../paths');
@@ -213,7 +213,7 @@ function handleCostRoutes(clientReq, clientRes) {
 
   if (pathname === '/_api/pricing') {
     const result = {};
-    for (const [model, rates] of Object.entries(pricingTable)) {
+    for (const [model, rates] of Object.entries(pricing.pricingTable)) {
       result[model] = {
         input_cost_per_mtok: rates.input,
         output_cost_per_mtok: rates.output,

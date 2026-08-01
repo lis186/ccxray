@@ -84,6 +84,8 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 
 非 Codex 的 OpenAI-wire 客戶端列在 `OPENAI_WIRE_CLIENTS`：共用 parser、各自 host/agent/raw-session。多 agent hub 可並存，不必改 `OPENAI_BASE_URL`。驗收備註：[`docs/grok-testing.md`](docs/grok-testing.md)。
 
+**Grok 帳單揭露：** 代理 Grok CLI 流量時，ccxray 會呼叫 `cli-chat-proxy.grok.com/v1/billing`（使用 CLI 已經透過 proxy 傳送的同一組 auth token）來填充 Usage 分頁的帳戶卡片。成功回應後的 60 秒內會抑制重複呼叫（per alias+credential）。設定 `XAI_BASE_URL` 可將呼叫導向其他主機。
+
 ## 功能
 
 ### 工作流程時間軸

@@ -116,6 +116,36 @@ describe('pricing', () => {
     });
   });
 
+  describe('buildPricingTable precedence (#397)', () => {
+    it('LiteLLM wins over DEFAULT_PRICING for models present in both', () => {
+      // DEFAULT_PRICING has gpt-5.5 as 2/10/0/1.
+      // LiteLLM has it as 5/30/5/0.5. LiteLLM must win.
+      const table = buildPricingTable({
+        'gpt-5.5': { input: 5, output: 30, cache_create: 5, cache_read: 0.5 },
+      });
+      assert.equal(table['gpt-5.5'].input, 5, 'LiteLLM input rate must win');
+      assert.equal(table['gpt-5.5'].output, 30, 'LiteLLM output rate must win');
+      assert.equal(table['gpt-5.5'].cache_create, 5, 'LiteLLM cache_create rate must win');
+      assert.equal(table['gpt-5.5'].cache_read, 0.5, 'LiteLLM cache_read rate must win');
+    });
+
+    it('DEFAULT_PRICING applies when LiteLLM lacks the model', () => {
+      const table = buildPricingTable({});
+      assert.ok(table['gpt-5.5'], 'DEFAULT_PRICING floor must still provide gpt-5.5');
+      assert.equal(table['gpt-5.5'].input, 2);
+    });
+
+    it('only xai/ keys are mirrored to bare names, not azure_ai/ (#397 defect 4)', () => {
+      const table = buildPricingTable({
+        'azure_ai/grok-code-fast-1': { input: 0.2, output: 1.5, cache_create: 0, cache_read: 0.2 },
+        'xai/grok-code-fast-1':     { input: 0.2, output: 1.5, cache_create: 0, cache_read: 0.02 },
+      });
+      assert.ok(table['grok-code-fast-1'], 'bare key must exist from xai/ mirror');
+      assert.equal(table['grok-code-fast-1'].cache_read, 0.02,
+        'bare key must have xai/ rate, not azure_ai/ rate');
+    });
+  });
+
   describe('calculateCost', () => {
     it('returns null for null usage', () => {
       assert.equal(calculateCost(null, 'claude-sonnet-4'), null);
