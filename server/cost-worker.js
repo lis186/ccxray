@@ -4,7 +4,23 @@
 // to avoid blocking the main event loop during heavy I/O + JSON.parse.
 // #395: exit when parent dies (SIGKILL/OOM-kill) — the IPC channel closes
 // and 'disconnect' fires; without this, the worker becomes an orphan (PPID=1).
+// Lifecycle contract (#396 regression): that listener refs the IPC channel, so
+// the event loop can NEVER drain naturally. The worker therefore owns its
+// termination explicitly: every terminal path goes through exitAfterFlush(),
+// which orders process.exit() strictly AFTER the final stdio write has
+// flushed. Do not add writes after an exitAfterFlush() call, and never replace
+// it with a bare process.exit() — that truncates piped stdout.
 process.on('disconnect', () => process.exit(0));
+
+// stream.write(chunk, cb) calls cb only once the chunk has been fully handled
+// by the underlying resource; for piped stdio that means libuv's write request
+// completed, i.e. every byte was accepted by the kernel pipe (libuv retries
+// partial writes internally). Node's docs warn that process.exit() force-exits
+// with pending async stdout writes still queued, so sequencing the exit inside
+// the write callback is the documented-safe ordering.
+function exitAfterFlush(stream, data, code) {
+  stream.write(data, () => process.exit(code));
+}
 
 const fs = require('fs');
 const path = require('path');
@@ -186,10 +202,9 @@ async function run() {
   await scanHomes(codexHomes, processCodexFile, seen, entries);
 
   entries.sort((a, b) => a.timestamp - b.timestamp);
-  process.stdout.write(JSON.stringify(entries));
+  exitAfterFlush(process.stdout, JSON.stringify(entries), 0);
 }
 
 run().catch(err => {
-  process.stderr.write(err.message);
-  process.exitCode = 1;
+  exitAfterFlush(process.stderr, String((err && err.stack) || err), 1);
 });
