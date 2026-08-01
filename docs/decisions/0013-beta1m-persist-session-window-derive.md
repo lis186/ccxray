@@ -218,6 +218,11 @@ The seam's direction is safe: the window can only be under-reported, producing
 over-warning rather than hiding pressure. It is bounded and recoverable, but
 recovery is manual — this ADR does not claim it heals on its own.
 
+**Resolved by #388 (2026-07-31).** `forward.js` and `restore.js` now call
+`updateFromEntry(canonical)` unconditionally after merge. The `!merged` guard
+is removed; enrichment fields propagate on every path. The "not self-healing"
+analysis above is no longer applicable — the seam is closed.
+
 Classification remains separate and unchanged. `isCompacted`, per-turn
 `severity`, and lane placement still read raw per-turn `maxContext`; this
 amendment changes only weather's display/health denominator and preserves the
