@@ -192,12 +192,10 @@ async function restoreFromLogs() {
     return;
   }
 
-  // 1b. Reconcile sessions.json against index.ndjson if loaded (#309). Drift
-  // is rare — only then re-stream the full metas the rebuild needs (#348).
-  if (tally && tally.drift()) {
-    await sessionIdx.rebuildFromMetasAsync(streamAllMetas());
-    console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
-  }
+  // 1b. Detect drift but DON'T rebuild yet — the rebuild is deferred to after
+  // the restore loop so working[] can be released first (codex R1c: rebuilding
+  // here while working[] is live doubles residency → OOM at 400MB).
+  const driftDetected = !!(tally && tally.drift());
 
   // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
   console.time('restore:parse');
@@ -399,14 +397,18 @@ async function restoreFromLogs() {
   }
   console.timeEnd('restore:titles');
 
-  // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
-  //    then replay titles into the session index. #348: re-stream on demand
-  //    rather than keeping 314k parsed metas resident for a rare fallback path.
-  if (!sessionIndexLoaded && parsedCount) {
+  // 5. Session index: rebuild if sessions.json was missing OR drift was detected.
+  // Deferred to here (after the restore loop) so working[] is released first —
+  // streaming rebuild + bySid weather grouping then peaks at ~1× index, not ~2×.
+  // Safe: rebuild re-derives from the full index (superset); updateFromEntry calls
+  // during the loop are overwritten; titles replay stays after this site.
+  if ((!sessionIndexLoaded && parsedCount) || driftDetected) {
+    working.length = 0; // release window-set objects before streaming the full index
     console.time('restore:session-index-rebuild');
     await sessionIdx.rebuildFromMetasAsync(streamAllMetas());
     console.timeEnd('restore:session-index-rebuild');
-    console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
+    const reason = driftDetected ? 'reconciled' : 'rebuilt';
+    console.log(`\x1b[90m   Session index ${reason}: ${sessionIdx.size()} sessions\x1b[0m`);
   }
   for (const [sid, meta] of Object.entries(store.sessionMeta)) {
     if (meta.title) sessionIdx.setTitle(sid, meta.title);
