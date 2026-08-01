@@ -124,6 +124,39 @@ function loadEntryReqRes(entry) {
   return entry._loadingPromise;
 }
 
+// INVARIANT (codex R3): restore loop AND streamAllMetas MUST share this function.
+// Any new pure-computation healing rule goes HERE — otherwise the rebuild's
+// persisted session-index values diverge from the restore presentation values.
+// Async: the #211 trustStored sysModelMarker lookup reads a shared file.
+// Boundary: openai _res.json re-parse is I/O-heavy and stays in the loop only.
+async function healMetaInPlace(meta) {
+  // #384: heal legacy openai lines imported without maxContext.
+  if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
+    const ctx = config.getMaxContext(meta.model, null);
+    if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
+  }
+  // anthropic: re-apply usage-aware context inference (#211 trustStored logic)
+  if (meta.provider === 'anthropic') {
+    const inferred = config.inferMaxContext(meta.model, null, meta.usage);
+    const stripped = (meta.model || '').replace(/\[.*\]/, '');
+    let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
+    if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
+      const marker = await sysModelMarker(meta.sysHash);
+      const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
+      if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
+    }
+    meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
+  }
+  // usage normalization + cost recalc
+  if (meta.usage) {
+    const before = meta.usage;
+    meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
+    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+      meta.cost = calculateCost(meta.usage, meta.model);
+    }
+  }
+}
+
 // #348 codex R2: snapshot byte bound — mid-restore appends must not leak into
 // any streaming pass. Pass A accumulates `snapshotBytes`; all subsequent passes
 // (star pass B, streamAllMetas) stop at that byte offset. Direction of error is
@@ -141,10 +174,12 @@ async function* boundedIndexLines(limitBytes) {
 // Used by the rare session-index rebuild/drift fallback paths — never
 // materializes the full array (codex R1: readAllMetas doubled residency).
 // Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+// Each meta is healed in-stream (codex R3) so rebuild persists corrected values.
 async function* streamAllMetas(snapshotBytes) {
   const lines = snapshotBytes != null ? boundedIndexLines(snapshotBytes) : config.storage.readIndexLines();
   for await (const line of lines) {
-    try { yield JSON.parse(line); } catch {}
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m) { await healMetaInPlace(m); yield m; }
   }
 }
 
@@ -213,6 +248,10 @@ async function restoreFromLogs() {
   // the restore loop so working[] can be released first (codex R1c: rebuilding
   // here while working[] is live doubles residency → OOM at 400MB).
   const driftDetected = !!(tally && tally.drift());
+  const rebuildPending = (!sessionIndexLoaded && parsedCount) || driftDetected;
+  // codex R3: buffer live updateFromEntry calls during the restore+rebuild window
+  // so they survive the rebuild's clear. Replay into rebuilt state afterwards.
+  if (rebuildPending) sessionIdx.beginRestoreBuffer();
 
   // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
   console.time('restore:parse');
@@ -271,51 +310,9 @@ async function restoreFromLogs() {
       } catch {}
     }
 
-    // Re-apply usage-aware context inference. Historical index lines may
-    // carry maxContext=200000 for Claude 1M-plan turns whose original request
-    // had no system prompt (e.g. title-gen, some subagent paths) — without
-    // this, the dashboard would show "600K / 200K (clamped to 100%)" for
-    // entries that predate the inferMaxContext fix. Math.max keeps previously
-    // correct 1M values when current usage happens to fit inside 200K.
-    // #384: heal legacy openai lines that were imported without maxContext.
-    // Fill-only (never overwrite), recognized models only (unknown stays silent).
-    if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
-      const ctx = config.getMaxContext(meta.model, null);
-      if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
-    }
-    // EXCEPTION(#158): data-layer — anthropic-specific maxContext inference from persisted usage
-    if (meta.provider === 'anthropic') {
-      const inferred = config.inferMaxContext(meta.model, null, meta.usage);
-      // #211: a stored value is only trusted over the re-inference for
-      // SUPPORTS_1M models, where it can encode a beta-header signal that is
-      // not re-derivable here (headers are not persisted). For non-capable
-      // models a stored 1M can only be pre-clamp LiteLLM pollution (or the
-      // usage hatch, which re-inference reproduces) — re-derive instead.
-      const stripped = (meta.model || '').replace(/\[.*\]/, '');
-      let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
-      // Even for SUPPORTS_1M models, a stored value above the re-inference can
-      // be pre-clamp LiteLLM pollution (the #211 fable-5 lines). The persisted
-      // system prompt carries the ground-truth [1m] marker — when it names
-      // THIS entry's model and provably lacks [1m], the stored value is bogus.
-      // A marker naming another model (post-switch lag window) is not evidence
-      // about this entry. Unverifiable cases (no sysHash: title-gen/subagent
-      // legs; pruned shared file; foreign marker) keep the stored value, so
-      // genuine 1M turns never downgrade.
-      if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
-        const marker = await sysModelMarker(meta.sysHash);
-        const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
-        if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
-      }
-      meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
-    }
-
-    if (meta.usage) {
-      const before = meta.usage;
-      meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-      if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
-        meta.cost = calculateCost(meta.usage, meta.model);
-      }
-    }
+    // INVARIANT (codex R3): shared healMetaInPlace — loop and streamAllMetas
+    // must apply identical healing so rebuild persists the same values.
+    await healMetaInPlace(meta);
 
     const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
     // Deferred: pushed after the loop, once duplicate copies are merged (#333).
@@ -423,13 +420,16 @@ async function restoreFromLogs() {
   // 5. Session index: rebuild if sessions.json was missing OR drift was detected.
   // Deferred to here (after the restore loop) so working[] is released first —
   // streaming rebuild + bySid weather grouping then peaks at ~1× index, not ~2×.
-  // Safe: rebuild re-derives from the full index (superset); updateFromEntry calls
-  // during the loop are overwritten; titles replay stays after this site.
-  if ((!sessionIndexLoaded && parsedCount) || driftDetected) {
+  // Safe: rebuild re-derives from the full index via healMetaInPlace (codex R3);
+  // live updates buffered since beginRestoreBuffer are replayed after rebuild so
+  // they survive the clear (codex R3 P1-B). responseId dedup makes replay
+  // idempotent for entries whose line was inside the snapshot byte bound.
+  if (rebuildPending) {
     working.length = 0; // release window-set objects before streaming the full index
     console.time('restore:session-index-rebuild');
     await sessionIdx.rebuildFromMetasAsync(streamAllMetas(snapshotBytes));
     console.timeEnd('restore:session-index-rebuild');
+    sessionIdx.endRestoreBuffer(true);
     const reason = driftDetected ? 'reconciled' : 'rebuilt';
     console.log(`\x1b[90m   Session index ${reason}: ${sessionIdx.size()} sessions\x1b[0m`);
   }

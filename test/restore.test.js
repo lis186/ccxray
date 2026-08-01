@@ -655,3 +655,82 @@ describe('restoreFromLogs — id guard prevents duplicate push (codex R2)', () =
     assert.strictEqual(matches[0], liveEntry, 'original live entry must survive');
   });
 });
+
+// ── #348 codex R3: healMetaInPlace propagates to rebuild ─────────────
+
+describe('restoreFromLogs — healMetaInPlace propagates to session-index rebuild (codex R3)', () => {
+  const { spawnSync } = require('child_process');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-heal-r3-'));
+  const logsDir = path.join(tmpHome, 'logs');
+
+  before(() => {
+    fs.mkdirSync(logsDir, { recursive: true });
+    // A single anthropic entry with maxContext=200000 but usage clearly > 200K
+    // (inferMaxContext should heal to 1M). No sessions.json → triggers rebuild.
+    fs.writeFileSync(path.join(logsDir, 'index.ndjson'), JSON.stringify({
+      id: '2026-07-01T10-00-00-000', ts: '10:00:00', sessionId: 'heal-sess',
+      provider: 'anthropic', model: 'claude-opus-4-7',
+      usage: { input_tokens: 632129, output_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      maxContext: 200000, isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+  });
+
+  after(() => { fs.rmSync(tmpHome, { recursive: true, force: true }); });
+
+  it('rebuild persists healed maxContext (1M) in sessions.json', () => {
+    const driver = `
+      console.time = console.timeEnd = console.log = console.warn = () => {};
+      const { restoreFromLogs } = require('./server/restore');
+      const si = require('./server/session-index');
+      restoreFromLogs().then(async () => {
+        await si.flush();
+        process.stdout.write(JSON.stringify(si.get('heal-sess')));
+      }).catch(e => { process.stderr.write(e.stack); process.exit(1); });
+    `;
+    const result = spawnSync(process.execPath, ['-e', driver], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, CCXRAY_HOME: tmpHome, RESTORE_DAYS: '0', CCXRAY_DISABLE_TITLES: '1' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(result.status, 0, `child failed: ${result.stderr}`);
+    const sess = JSON.parse(result.stdout);
+    assert.equal(sess.maxContext, 1_000_000, 'rebuild must persist healed maxContext (1M)');
+  });
+});
+
+// ── #348 codex R3: beginRestoreBuffer / endRestoreBuffer ─────────────
+
+describe('session-index beginRestoreBuffer / endRestoreBuffer (codex R3)', () => {
+  const si = require('../server/session-index');
+
+  it('replays buffered updates after rebuild', async () => {
+    // Initial state: one session from a prior rebuild
+    si.rebuildFromMetas([{ sessionId: 'prior', model: 'x', cost: { cost: 0.1 }, receivedAt: 1 }]);
+    assert.equal(si.get('prior').count, 1);
+
+    si.beginRestoreBuffer();
+
+    // Simulate live updates during restore
+    si.updateFromEntry({ sessionId: 'live-a', model: 'y', cost: { cost: 0.5 }, responseId: 'rid-a', receivedAt: 2 });
+    si.updateFromEntry({ sessionId: 'live-b', model: 'z', cost: { cost: 0.3 }, receivedAt: 3 });
+
+    // Rebuild clears everything (simulates streamAllMetas with different data)
+    await si.rebuildFromMetasAsync((async function*() {
+      yield { sessionId: 'rebuilt', model: 'w', cost: { cost: 0.2 }, receivedAt: 4 };
+    })());
+
+    // At this point live-a and live-b are gone (cleared by rebuild)
+    assert.equal(si.get('live-a'), null);
+    assert.equal(si.get('live-b'), null);
+    assert.equal(si.get('rebuilt').count, 1);
+
+    // Replay restores them
+    si.endRestoreBuffer(true);
+
+    assert.equal(si.get('live-a').count, 1);
+    assert.equal(si.get('live-a').totalCost, 0.5);
+    assert.equal(si.get('live-b').count, 1);
+    assert.equal(si.get('live-b').totalCost, 0.3);
+    assert.equal(si.get('rebuilt').count, 1); // unchanged
+  });
+});

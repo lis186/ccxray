@@ -226,10 +226,27 @@ function reconcile(indexContent) {
   return reconcileMetas(_parseLines(indexContent));
 }
 
+// #348 codex R3: buffer live updates during async rebuild so they survive the
+// clear. beginRestoreBuffer → updateFromEntry still applies live (dashboard stays
+// current) AND pushes to a side buffer. endRestoreBuffer(true) replays the buffer
+// into the rebuilt state; responseId dedup (_countedRids/_costByRid) makes replay
+// idempotent for entries whose line was also inside the snapshot byte bound.
+let _restoreBuffer = null;
+function beginRestoreBuffer() { _restoreBuffer = []; }
+function endRestoreBuffer(replay) {
+  const buf = _restoreBuffer;
+  _restoreBuffer = null;
+  if (replay && buf && buf.length) {
+    for (const entry of buf) _upsert(entry.sessionId, entry);
+    _scheduleDirtyFlush();
+  }
+}
+
 // Upsert a session summary from an entry's index fields.
 function updateFromEntry(entry) {
   if (!entry || !entry.sessionId) return;
   _upsert(entry.sessionId, entry);
+  if (_restoreBuffer) _restoreBuffer.push(entry);
   _recomputeWeather(entry.sessionId);
   _scheduleDirtyFlush();
 }
@@ -398,5 +415,6 @@ module.exports = {
   rebuildFromIndexContent, rebuildFromMetas, rebuildFromMetasAsync,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas, createReconcileTally,
-  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
+  updateFromEntry, beginRestoreBuffer, endRestoreBuffer,
+  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
 };
