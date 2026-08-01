@@ -124,6 +124,17 @@ function loadEntryReqRes(entry) {
   return entry._loadingPromise;
 }
 
+// #348: on-demand full re-stream of index.ndjson into an array of parsed metas.
+// Used only by the rare session-index rebuild/reconcile fallback paths — the
+// normal restore path never materializes the full array.
+async function readAllMetas() {
+  const metas = [];
+  for await (const line of config.storage.readIndexLines()) {
+    try { metas.push(JSON.parse(line)); } catch {}
+  }
+  return metas;
+}
+
 // ── Restore entries from index.ndjson on startup ─────────────────────
 
 async function restoreFromLogs() {
@@ -137,57 +148,77 @@ async function restoreFromLogs() {
     console.log(`\x1b[90m   Session index: ${sessionIdx.size()} sessions\x1b[0m`);
   }
 
-  // 1. Read the lightweight index by STREAMING lines into parsed metas. #345:
-  // the index can exceed Node's ~512MB single-string limit, so we must not call
-  // readIndex() (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and
-  // fail restore. readIndexLines() streams without materializing the whole file.
-  console.time('restore:index');
-  const parsed = [];
-  for await (const line of config.storage.readIndexLines()) {
-    try { parsed.push(JSON.parse(line)); } catch {}
-  }
-  console.timeEnd('restore:index');
-
-  if (!parsed.length) {
-    console.timeEnd('restore:total');
-    return;
-  }
-
-  // 1b. Reconcile sessions.json against index.ndjson if loaded (#309)
-  if (sessionIndexLoaded) {
-    if (sessionIdx.reconcileMetas(parsed)) {
-      console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
-    }
-  }
-
-  // 2. Filter by RESTORE_DAYS
-  console.time('restore:parse');
+  // 1. Read the lightweight index by STREAMING lines. #345: the index can
+  // exceed Node's ~512MB single-string limit, so we must not call readIndex()
+  // (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and fail restore.
+  // #348: nor may we hold EVERY parsed meta resident — on a ~314k-line index
+  // that peaks ~3.7GB against Node's default old-space. Out-of-window lines
+  // never enter the working set: the reconcile tally is fed incrementally and
+  // the star pre-pass keeps only a lightweight {id, sessionId, cwd} per line.
+  // The rare full-meta consumers (session-index rebuild on drift / missing
+  // sessions.json) re-stream via readAllMetas() instead.
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - config.RESTORE_DAYS);
     cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
   }
-
-  let restored = 0;
-
-  // Star-protection + session pre-count in one pass over pre-parsed data.
   const stars = readStarsSafe();
   const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
-  let retentionSets = null;
-  if (hasAnyStar && cutoffStr) {
-    const lightweight = [];
-    for (const m of parsed) {
-      if (m && m.id) lightweight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+  // Star-protection can retain out-of-window lines, so with stars + a cutoff
+  // the working set is rebuilt by a second streaming pass once the retention
+  // sets are known (pass B below); without either, one pass suffices.
+  const needStarPass = !!(hasAnyStar && cutoffStr);
+  const inWindow = (m) => !(cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr);
+
+  console.time('restore:index');
+  const tally = sessionIndexLoaded ? sessionIdx.createReconcileTally() : null;
+  const starLight = [];
+  const working = [];
+  let parsedCount = 0;
+  for await (const line of config.storage.readIndexLines()) {
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (!m) continue;
+    parsedCount++;
+    if (tally) tally.feed(m);
+    if (needStarPass) {
+      if (m.id) starLight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+    } else if (inWindow(m)) {
+      working.push(m);
     }
-    retentionSets = computeRetentionSets(lightweight, stars);
+  }
+  console.timeEnd('restore:index');
+
+  if (!parsedCount) {
+    console.timeEnd('restore:total');
+    return;
+  }
+
+  // 1b. Reconcile sessions.json against index.ndjson if loaded (#309). Drift
+  // is rare — only then re-stream the full metas the rebuild needs (#348).
+  if (tally && tally.drift()) {
+    sessionIdx.rebuildFromMetas(await readAllMetas());
+    console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
+  }
+
+  // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
+  console.time('restore:parse');
+  let restored = 0;
+
+  if (needStarPass) {
+    const retentionSets = computeRetentionSets(starLight, stars);
+    starLight.length = 0;
+    // #348 pass B: re-stream in FILE ORDER now that protection is known —
+    // star-protected out-of-window lines re-enter the working set here.
+    for await (const line of config.storage.readIndexLines()) {
+      let m; try { m = JSON.parse(line); } catch { continue; }
+      if (!m) continue;
+      if (inWindow(m) || isProtectedByStar(m, retentionSets)) working.push(m);
+    }
   }
 
   const sessionTotals = new Map();
-  for (const m of parsed) {
-    if (cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr) {
-      if (!retentionSets || !isProtectedByStar(m, retentionSets)) continue;
-    }
+  for (const m of working) {
     if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
   }
   const oversizedSessions = new Map();
@@ -199,11 +230,9 @@ async function restoreFromLogs() {
   // batch before they enter the store (see the merge block after this loop).
   const restoredList = [];
 
-  for (let meta of parsed) {
-
-    if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) {
-      if (!retentionSets || !isProtectedByStar(meta, retentionSets)) continue;
-    }
+  // The cutoff/star filter already ran during the streaming read — `working`
+  // is the pre-filtered set, in file order (#348).
+  for (let meta of working) {
 
     // Per-session cap: oversized sessions load only the first entry
     if (meta.sessionId && oversizedSessions.has(meta.sessionId)) {
@@ -373,10 +402,11 @@ async function restoreFromLogs() {
   console.timeEnd('restore:titles');
 
   // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
-  //    then replay titles into the session index.
-  if (!sessionIndexLoaded && parsed.length) {
+  //    then replay titles into the session index. #348: re-stream on demand
+  //    rather than keeping 314k parsed metas resident for a rare fallback path.
+  if (!sessionIndexLoaded && parsedCount) {
     console.time('restore:session-index-rebuild');
-    sessionIdx.rebuildFromMetas(parsed);
+    sessionIdx.rebuildFromMetas(await readAllMetas());
     console.timeEnd('restore:session-index-rebuild');
     console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
   }

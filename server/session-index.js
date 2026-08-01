@@ -178,26 +178,43 @@ function seedDedupState(indexContent) {
 // #333: the entry tally is deduped by responseId so it matches the merged s.count
 // _upsert now keeps; a raw-line tally here would always exceed merged s.count on a
 // duplicate-heavy shared log and rebuild on every reconcile.
+// #348: the tally is incremental (createReconcileTally) so restore's streaming
+// read can feed it line by line without holding every parsed meta resident;
+// only sessionId + responseId are read per meta.
+function createReconcileTally() {
+  const seenSessions = new Set();
+  const seenRid = new Set();
+  let indexEntries = 0;
+  return {
+    feed(m) {
+      if (!m || !m.sessionId) return;
+      // Count once per responseId (merged turns); a line without responseId
+      // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
+      const rid = m.responseId || null;
+      if (!rid || !seenRid.has(rid)) {
+        indexEntries++;
+        if (rid) seenRid.add(rid);
+      }
+      seenSessions.add(m.sessionId);
+    },
+    // True iff the fed tally disagrees with the loaded sessions.json totals.
+    // Logs the drift warning; the caller owns the rebuild.
+    drift() {
+      if (!sessionIndex.size) return false;
+      let totalEntries = 0;
+      for (const s of sessionIndex.values()) totalEntries += s.count;
+      if (seenSessions.size === sessionIndex.size && indexEntries === totalEntries) return false;
+      console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${seenSessions.size} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
+      return true;
+    },
+  };
+}
+
 function reconcileMetas(metas) {
   if (!Array.isArray(metas) || !metas.length || !sessionIndex.size) return false;
-  let indexSessions = 0, indexEntries = 0;
-  const seen = new Set();
-  const seenRid = new Set();
-  for (const m of metas) {
-    if (!m || !m.sessionId) continue;
-    // Count once per responseId (merged turns); a line without responseId
-    // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
-    const rid = m.responseId || null;
-    if (!rid || !seenRid.has(rid)) {
-      indexEntries++;
-      if (rid) seenRid.add(rid);
-    }
-    if (!seen.has(m.sessionId)) { seen.add(m.sessionId); indexSessions++; }
-  }
-  let totalEntries = 0;
-  for (const s of sessionIndex.values()) totalEntries += s.count;
-  if (indexSessions === sessionIndex.size && indexEntries === totalEntries) return false;
-  console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${indexSessions} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
+  const tally = createReconcileTally();
+  for (const m of metas) tally.feed(m);
+  if (!tally.drift()) return false;
   rebuildFromMetas(metas);
   return true;
 }
@@ -378,6 +395,6 @@ module.exports = {
   loadSessionIndex,
   rebuildFromIndexContent, rebuildFromMetas,
   seedDedupState, seedDedupFromMetas,
-  reconcile, reconcileMetas,
+  reconcile, reconcileMetas, createReconcileTally,
   updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
 };
