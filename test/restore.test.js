@@ -506,8 +506,7 @@ describe('restoreFromLogs — star-protection + cutoff integration (#348)', () =
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-star-348-'));
   const logsDir = path.join(tmpHome, 'logs');
 
-  // Fixed ids — todayId is always within any RESTORE_DAYS window
-  const todayId = '2026-08-01T12-00-00-000';
+  const todayId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -1);
   const oldProtected = '2020-01-15T10-00-00-000';
   const oldUnprotected = '2020-01-15T11-00-00-000';
   const protectedSid = 'starred-sess';
