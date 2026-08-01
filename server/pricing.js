@@ -36,9 +36,6 @@ const DEFAULT_PRICING = {
   // Prefix match covers grok-4.5-build / grok-4.5-latest variants.
   'grok-4.5':          { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.5-latest':   { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
-  // Permanently shadows LiteLLM (buildPricingTable spreads DEFAULT after
-  // mirrored live data). Remove once LiteLLM lists xai/grok-4.5-build
-  // (same lifecycle as #202 lag overrides — not a temporary lag row).
   'grok-4.5-build':    { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
   'grok-4.3':          { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
   'grok-4.3-latest':   { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
@@ -87,12 +84,17 @@ function ratesFromLiteLLMEntry(val) {
   };
 }
 
-/** Mirror `provider/model` → bare `model` so wire IDs match LiteLLM rows. */
-function mirrorProviderPrefixedKeys(table) {
+/**
+ * Mirror `provider/model` → bare `model` so wire IDs match LiteLLM rows.
+ * @param {string[]} [onlyProviders] — restrict to these prefixes (e.g. ['xai']).
+ *   Omit to mirror all providers (safe for context windows, not for pricing).
+ */
+function mirrorProviderPrefixedKeys(table, onlyProviders) {
   const out = { ...table };
   for (const [key, val] of Object.entries(table)) {
     const slash = key.indexOf('/');
     if (slash === -1) continue;
+    if (onlyProviders && !onlyProviders.includes(key.slice(0, slash))) continue;
     const bare = key.slice(slash + 1);
     if (bare && out[bare] == null) out[bare] = val;
   }
@@ -153,11 +155,13 @@ function logLagOverrideStatus(status) {
 }
 
 function buildPricingTable(litellmPricing) {
-  // Order: LiteLLM (+ bare mirrors) → stable DEFAULT → lag overrides only if missing.
-  // Lag overrides intentionally run AFTER DEFAULT so temporary rates apply only
-  // when LiteLLM lacks the model; when LiteLLM catches up they no-op.
-  const mirrored = mirrorProviderPrefixedKeys(litellmPricing || {});
-  const withDefaults = { ...mirrored, ...DEFAULT_PRICING };
+  // INVARIANT(#397 defect 1): LiteLLM wins over DEFAULT_PRICING.
+  // DEFAULT is the offline floor — safety nets when LiteLLM lacks a key.
+  // Lag overrides run last, only when LiteLLM still lacks the model.
+  // INVARIANT(#397 defect 4): only xai/ keys are mirrored for pricing.
+  // Other providers (azure_ai/, oci/) can have different rates for the same model.
+  const mirrored = mirrorProviderPrefixedKeys(litellmPricing || {}, ['xai']);
+  const withDefaults = { ...DEFAULT_PRICING, ...mirrored };
   return applyLagOverrides(withDefaults);
 }
 

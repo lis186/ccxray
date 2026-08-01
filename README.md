@@ -84,6 +84,8 @@ Launchers are registered in `server/providers.js` (same hub + dashboard for all)
 
 OpenAI-wire clients that are not Codex (today: Grok) are listed in `OPENAI_WIRE_CLIENTS` — shared parser, distinct host/agent/raw-session bucket. Multi-agent hubs mix them without swapping `OPENAI_BASE_URL`. Acceptance notes: [`docs/grok-testing.md`](docs/grok-testing.md).
 
+**Grok billing disclosure:** When proxying Grok CLI traffic, ccxray calls `cli-chat-proxy.grok.com/v1/billing` (using the same auth token the CLI already sends through the proxy) to populate the Usage tab's account card. This call is throttled to at most once per alias+credential per 60 seconds. Set `XAI_BASE_URL` to point the call at a different host, or `CCXRAY_GROK_BILLING_TTL_MS=0` to disable throttle-gating (the call still runs only on proxied traffic).
+
 ## Codex support (Beta)
 
 ```bash
