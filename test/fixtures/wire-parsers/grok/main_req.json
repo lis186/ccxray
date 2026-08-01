@@ -1,0 +1,37 @@
+{
+  "model": "grok-4.5",
+  "stream": true,
+  "store": false,
+  "include": ["reasoning.encrypted_content"],
+  "reasoning": { "effort": "high", "summary": "concise" },
+  "input": [
+    {
+      "type": "message",
+      "role": "system",
+      "content": "You are Grok 4.5 released by xAI. You are an autonomous agent that completes software engineering tasks."
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_info> OS Version: macos Shell: /bin/zsh Workspace Path: /tmp/grok-ccxray-smoke Today: 2026-07-09 </user_info>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<user_query> Reply with exactly one word: pong </user_query>"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "run_terminal_command",
+      "description": "Run a bash command",
+      "parameters": {
+        "type": "object",
+        "properties": { "command": { "type": "string" } },
+        "required": ["command"]
+      }
+    },
+    { "type": "x_search" }
+  ]
+}

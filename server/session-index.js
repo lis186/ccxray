@@ -270,9 +270,11 @@ function _upsert(sid, entry) {
       }
     }
   }
-  if (entry.title && !s.title) {
-    const { stripInjectedTags } = require('./store');
-    s.title = stripInjectedTags(entry.title) || null;
+  // Attribution can resolve before the parent's first entry is indexed, so the
+  // store's session title is authoritative; entry.title is only a fallback.
+  if (!s.title) {
+    const { stripInjectedTags, getSessionTitle } = require('./store');
+    s.title = getSessionTitle(sid) || (entry.title ? stripInjectedTags(entry.title) : null) || null;
   }
   const recvAt = entry.receivedAt || 0;
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;

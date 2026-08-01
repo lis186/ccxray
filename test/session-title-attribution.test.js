@@ -96,10 +96,24 @@ describe('store.attributeTitleGen', () => {
     assert.equal(store.attributeTitleGen(titleGenReq('beta'), now), null);
   });
 
-  it('session outside 1s window → discard', () => {
+  it('session outside window → discard', () => {
     const now = Date.now();
+    // Not inflight; even a recent lastSeenAt is ignored
     seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 5000 });
     assert.equal(store.attributeTitleGen(titleGenReq('hello'), now), null);
+  });
+
+  it('inflight but lastSeenAt older than default 1s window → discard', () => {
+    const now = Date.now();
+    seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 5_000, inflight: true });
+    assert.equal(store.attributeTitleGen(titleGenReq('hello'), now), null);
+  });
+
+  it('30s-old candidate: discarded at anthropic 1s window, kept at grok 60s window', () => {
+    const now = Date.now();
+    seedSession('sA', { firstUserMsg: 'hello', lastSeenAt: now - 30_000, inflight: true });
+    assert.equal(store.attributeTitleGen(titleGenReq('hello'), now, 1000), null, 'anthropic 1s');
+    assert.equal(store.attributeTitleGen(titleGenReq('hello'), now, 60_000), 'sA', 'grok 60s');
   });
 
   it('session within window but not inflight → discard', () => {
@@ -113,6 +127,25 @@ describe('store.attributeTitleGen', () => {
     seedSession('sA', { firstUserMsg: 'x', lastSeenAt: now, inflight: true });
     assert.equal(store.attributeTitleGen({ messages: [] }, now), null);
   });
+
+  it('Grok user_query anchor matches main turn despite user_info scaffolding', () => {
+    const now = Date.now();
+    const mainSid = '019f-main';
+    store.sessionMeta[mainSid] = {
+      firstUserMsg: 'Reply with exactly: ok',
+      lastSeenAt: now - 5_000, // title-gen often finishes several seconds later
+    };
+    store.activeRequests[mainSid] = 1;
+    const titleReq = {
+      model: 'grok-build',
+      tool_choice: { type: 'function', name: 'session_title' },
+      input: [
+        { role: 'system', content: 'Generate session title' },
+        { role: 'user', content: '<user_query>\nReply with exactly: ok\n</user_query>' },
+      ],
+    };
+    assert.equal(store.attributeTitleGen(titleReq, now, 60_000), mainSid);
+  });
 });
 
 describe('store.recordFirstUserMsg', () => {
@@ -122,6 +155,17 @@ describe('store.recordFirstUserMsg', () => {
     store.recordFirstUserMsg('sA', { messages: [{ role: 'user', content: 'original' }] });
     store.recordFirstUserMsg('sA', { messages: [{ role: 'user', content: 'later' }] });
     assert.equal(store.sessionMeta.sA.firstUserMsg, 'original');
+  });
+
+  it('Grok main turn stores user_query body not user_info', () => {
+    store.recordFirstUserMsg('sGrok', {
+      input: [
+        { role: 'system', content: 'You are Grok' },
+        { role: 'user', content: '<user_info> Workspace Path: /tmp/x </user_info>' },
+        { role: 'user', content: '<user_query> Reply with exactly: ok </user_query>' },
+      ],
+    });
+    assert.equal(store.sessionMeta.sGrok.firstUserMsg, 'Reply with exactly: ok');
   });
 
   it('skips direct-api sessions', () => {

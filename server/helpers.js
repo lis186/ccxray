@@ -456,20 +456,105 @@ function extractResponseTitle(res) {
   return (firstSentence || text).slice(0, 80) || null;
 }
 
+// Parse Claude {"title":"..."} or Grok/OpenAI {"session_title":"..."} args.
+function parseTitleJsonObject(parsed) {
+  if (!parsed || typeof parsed !== 'object') return null;
+  const raw = typeof parsed.title === 'string' ? parsed.title
+    : (typeof parsed.session_title === 'string' ? parsed.session_title : null);
+  if (raw == null) return null;
+  const t = raw.trim();
+  return t ? t.slice(0, TITLE_MAX_LEN) : null;
+}
+
+function parseTitleArgsString(args) {
+  if (typeof args !== 'string' || !args.trim()) return null;
+  try {
+    return parseTitleJsonObject(JSON.parse(args));
+  } catch {
+    // Partial stream / regex for {"session_title":"..."} or {"title":"..."}
+    const m = args.match(/"(?:session_)?title"\s*:\s*"((?:[^"\\]|\\.)*?)(?:"|$)/);
+    if (!m || !m[1]) return null;
+    const unescaped = m[1]
+      .replace(/\\"/g, '"')
+      .replace(/\\\\/g, '\\')
+      .replace(/\\n/g, ' ')
+      .trim();
+    return unescaped ? unescaped.slice(0, TITLE_MAX_LEN) : null;
+  }
+}
+
+// Grok CLI title-gen: Responses API function_call name=session_title with
+// arguments {"session_title":"…"}. Claude: text/JSON {"title":"…"}.
+// Accepts SSE event arrays (ccxray log shape) or completed response objects.
+function extractOpenAISessionTitle(res) {
+  if (!res) return null;
+
+  const tryItem = (item) => {
+    if (!item || typeof item !== 'object') return null;
+    if (item.type === 'function_call' || item.name === 'session_title') {
+      if (item.name && item.name !== 'session_title' && item.name !== 'title') return null;
+      return parseTitleArgsString(item.arguments) || parseTitleJsonObject(item);
+    }
+    return null;
+  };
+
+  const tryResponse = (response) => {
+    if (!response || typeof response !== 'object') return null;
+    const output = Array.isArray(response.output) ? response.output : [];
+    for (let i = output.length - 1; i >= 0; i--) {
+      const t = tryItem(output[i]);
+      if (t) return t;
+    }
+    return null;
+  };
+
+  if (Array.isArray(res)) {
+    for (let i = res.length - 1; i >= 0; i--) {
+      const ev = res[i] || {};
+      const type = ev.type || ev.event;
+      const data = ev.data && typeof ev.data === 'object' ? ev.data : ev;
+      if (type === 'response.function_call_arguments.done'
+          || data.type === 'response.function_call_arguments.done') {
+        const t = parseTitleArgsString(data.arguments || ev.arguments);
+        if (t) return t;
+      }
+      if (type === 'response.output_item.done' || data.type === 'response.output_item.done') {
+        const t = tryItem(data.item || ev.item);
+        if (t) return t;
+      }
+      if (type === 'response.completed' || data.type === 'response.completed') {
+        const t = tryResponse(data.response || ev.response);
+        if (t) return t;
+      }
+      // Bare completed response object in the array
+      const t = tryResponse(data.response) || tryResponse(data);
+      if (t) return t;
+    }
+    return null;
+  }
+
+  if (typeof res === 'object') {
+    return tryResponse(res.response || res) || tryItem(res);
+  }
+  return null;
+}
+
 // Claude Code's title-generator subagent wraps its output as {"title": "..."}.
-// Parse defensively: JSON first, regex second, nothing else.
+// Grok uses Responses function_call session_title. Parse defensively.
 function extractTitleGenPayload(res) {
   if (process.env.CCXRAY_DISABLE_TITLES === '1') return null;
+
+  const openAITitle = extractOpenAISessionTitle(res);
+  if (openAITitle) return openAITitle;
+
   const text = collectResponseText(res).trim();
   if (!text) return null;
 
   if (text[0] === '{') {
     try {
       const parsed = JSON.parse(text);
-      if (parsed && typeof parsed.title === 'string') {
-        const t = parsed.title.trim();
-        return t ? t.slice(0, TITLE_MAX_LEN) : null;
-      }
+      const fromObj = parseTitleJsonObject(parsed);
+      if (fromObj) return fromObj;
     } catch { /* fall through to regex for truncated / malformed streams */ }
   }
 
@@ -867,6 +952,7 @@ module.exports = {
   parseSSEEvents,
   extractResponseTitle,
   extractTitleGenPayload,
+  extractOpenAISessionTitle,
   extractLastUserText,
   extractToolResultSummary,
   extractFirstUserText,

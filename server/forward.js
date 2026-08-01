@@ -14,8 +14,10 @@ const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
 const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
-const { agentForProvider } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient } = require('./providers');
 const { buildIndexLine } = require('./entry');
+const path = require('path');
+const { resolveCcxrayHome } = require('./paths');
 const sessionIdx = require('./session-index');
 const {
   isOpenAIResponseObject, extractOpenAIResponse, getOpenAIResponseFromEvents,
@@ -29,11 +31,14 @@ const _socketErrorGuard = new WeakSet();
 // session. Returns the clean title string or null.
 // Gate on response shape, not request agent type: title-gen requests can arrive
 // without a system prompt so system-based detection is unreliable.
-function resolveTitleGenTitle(parsedBody, resPayload, receivedAt) {
+// windowMs: anthropic callers pass 1000; openai/Grok pass wire-client
+// titleGenWindowMs (default 60_000). attributeTitleGen itself defaults to 1000
+// so an un-passed call never silently widens Claude.
+function resolveTitleGenTitle(parsedBody, resPayload, receivedAt, windowMs) {
   const clean = helpers.extractTitleGenPayload(resPayload);
   if (!clean) return null;
   if (store.extractCwd(parsedBody)) return null; // main orchestrator, not a subagent
-  const parentSid = store.attributeTitleGen(parsedBody, receivedAt);
+  const parentSid = store.attributeTitleGen(parsedBody, receivedAt, windowMs);
   if (parentSid && store.setSessionTitle(parentSid, clean, receivedAt)) {
     sessionIdx.setTitle(parentSid, store.getSessionTitle(parentSid));
     broadcastSessionTitleUpdate(parentSid);
@@ -497,6 +502,7 @@ function forwardRequest(ctx) {
       const isSSE = (proxyRes.headers['content-type'] || '').includes('text/event-stream');
 
       // Capture rate limit headers once, share with state + sample log.
+      // Anthropic-only parser (shared). Grok weekly quota is provider-local.
       const parsedRL = collectRatelimitHeaders(proxyRes.headers);
       if (parsedRL && parsedRL.tokensLimit != null) {
         store.setRateLimitState({ ...parsedRL, updatedAt: Date.now() });
@@ -508,6 +514,22 @@ function forwardRequest(ctx) {
           planHint: process.env.CCXRAY_PLAN || null,
         });
       }
+      // Provider hook: refresh Grok CLI billing snap (/v1/billing) using this
+      // request's auth — no token stored. Gate on matched client AND this
+      // request's actual upstream being xai (headers alone are client-controlled;
+      // path-sensitive routing may send grok-looking headers to anthropic/ChatGPT).
+      // UPSTREAMS.xai is a stable module-level object — identity compare is safe.
+      try {
+        const wireClient = matchOpenAIWireClient(clientReq.headers || {});
+        if (wireClient?.id === 'grok' && upstream === config.UPSTREAMS.xai) {
+          const { refreshGrokBillingFromAuth } = require('./adapters/grok-adapter');
+          refreshGrokBillingFromAuth(
+            clientReq.headers,
+            path.join(resolveCcxrayHome(), 'usage-status'),
+            'default',
+          );
+        }
+      } catch { /* never block proxy */ }
       clientRes.writeHead(proxyRes.statusCode, proxyRes.headers);
 
       if (isSSE) {
@@ -731,7 +753,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
 
     const sessionId = reqSessionId;
     const isSubagent = store.isAnthropicSubagent(parsedBody);
-    const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime);
+    const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime, 1000);
     const title = titleGenTitle
       || (isSubagent
         ? helpers.extractFirstUserText(parsedBody)
@@ -831,7 +853,17 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     sseBuf = parts.pop();
     for (const part of parts) {
       if (!part.trim()) continue;
-      events.push(parseSSEFrame(part, Date.now()));
+      const frame = parseSSEFrame(part, Date.now());
+      events.push(frame);
+      // Refresh mid-stream so long turns (>titleGenWindowMs) don't fall outside
+      // attributeTitleGen's lastSeenAt window before a concurrent title-gen
+      // finishes. Sparse item-boundary events only — not per-token deltas.
+      // Mirrors anthropic message_start/content_block_start (#223).
+      const evtType = frame.type || frame.data?.type;
+      if (reqSessionId && (evtType === 'response.created' || evtType === 'response.output_item.added')
+          && store.sessionMeta[reqSessionId]) {
+        store.sessionMeta[reqSessionId].lastSeenAt = Date.now();
+      }
     }
     if (flush && sseBuf.trim()) {
       events.push(parseSSEFrame(sseBuf, Date.now()));
@@ -861,13 +893,29 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
 
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = Math.max(0, (store.activeRequests[reqSessionId] || 1) - 1);
+      // Refresh at stream END too (mirror anthropic SSE): lastSeenAt is otherwise
+      // stamped at request arrival only; long streams miss the title-gen window.
+      if (store.sessionMeta[reqSessionId]) {
+        store.sessionMeta[reqSessionId].lastStopReason = null;
+        store.sessionMeta[reqSessionId].lastSeenAt = Date.now();
+      }
       broadcastSessionStatus(reqSessionId);
-      if (store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId].lastStopReason = null;
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     const resWritePromise = config.storage.write(id, '_res.json', JSON.stringify(events))
       .catch(e => console.error('Write res.json failed:', e.message));
+    const wireClient = matchOpenAIWireClient(ctx.clientReq?.headers || {}, parsedBody?.model);
+    const titleGenWindowMs = wireClient?.titleGenWindowMs ?? 1000;
+    const titleGenTitle = resolveTitleGenTitle(parsedBody, events, startTime, titleGenWindowMs);
+    const fields = getParser('openai').buildEntryFields({
+      provider: 'openai', transport: 'sse', parsedBody, events, proxyRes,
+      sessionId: reqSessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
+      sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+      agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
+      cwd: store.sessionMeta[reqSessionId]?.cwd || null,
+    });
+    if (titleGenTitle) fields.title = titleGenTitle;
     const entry = {
       id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
@@ -875,13 +923,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       receivedAt: startTime,
       tokens: null,
       duplicateToolCalls: null,
-      ...getParser('openai').buildEntryFields({
-        provider: 'openai', transport: 'sse', parsedBody, events, proxyRes,
-        sessionId: reqSessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
-        sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
-        agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
-        cwd: store.sessionMeta[reqSessionId]?.cwd || null,
-      }),
+      ...fields,
     };
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
@@ -936,8 +978,24 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
   proxyRes.on('end', () => {
     clientRes.end();
 
-    // Quota-check: no logging, no entry
-    if (ctx.skipEntry) return;
+    const raw = Buffer.concat(resChunks).toString();
+
+    // Provider hook: capture Grok CLI /v1/billing even when skipEntry (noise).
+    // This is the same payload the CLI /usage screen uses.
+    if (ctx.skipEntry) {
+      try {
+        const { isGrokBillingPath, refreshGrokFromBillingBody } = require('./adapters/grok-adapter');
+        const url = stripAuthParams(ctx.clientReq.url || '');
+        if (isGrokBillingPath(url) && proxyRes.statusCode === 200) {
+          refreshGrokFromBillingBody(
+            raw,
+            path.join(resolveCcxrayHome(), 'usage-status'),
+            'default',
+          );
+        }
+      } catch { /* never block */ }
+      return;
+    }
 
     if (reqSessionId) {
       store.activeRequests[reqSessionId] = Math.max(0, (store.activeRequests[reqSessionId] || 1) - 1);
@@ -946,7 +1004,6 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    const raw = Buffer.concat(resChunks).toString();
     let resData;
     try { resData = JSON.parse(raw); } catch { resData = raw; }
 
@@ -968,6 +1025,27 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     let entry;
     // EXCEPTION(#158): entry assembly differs by provider (ctx shape + pre-computation); both delegate to parser.buildEntryFields
     if (provider === 'openai') {
+      // Grok session_title tool + Claude-style title JSON on OpenAI wire.
+      // Wider attribution window only for wire clients that declare it (Grok).
+      const wireClient = matchOpenAIWireClient(ctx.clientReq?.headers || {}, parsedBody?.model);
+      // Non-declaring openai-wire clients (Codex) keep main's 1s window — only a
+      // module that opts in via titleGenWindowMs gets the wider one.
+      const titleGenWindowMs = wireClient?.titleGenWindowMs ?? 1000;
+      const titleGenTitle = resolveTitleGenTitle(
+        parsedBody,
+        openAIEvents || openAIResponse || resData,
+        startTime,
+        titleGenWindowMs,
+      );
+      const fields = getParser('openai').buildEntryFields({
+        provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
+        parsedBody, events: openAIEvents || [], response: openAIResponse || resData, proxyRes,
+        sessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
+        sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
+        agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
+        cwd: store.sessionMeta[sessionId]?.cwd || null,
+      });
+      if (titleGenTitle) fields.title = titleGenTitle;
       entry = {
         id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
@@ -975,18 +1053,11 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         receivedAt: startTime,
         tokens: null,
         duplicateToolCalls: null,
-        ...getParser('openai').buildEntryFields({
-          provider: 'openai', transport: openAIEvents ? 'sse' : 'http',
-          parsedBody, events: openAIEvents || [], response: openAIResponse || resData, proxyRes,
-          sessionId, sessionInferred: ctx.sessionInferred, isSubagent: ctx.isSubagent,
-          sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
-        agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
-          cwd: store.sessionMeta[sessionId]?.cwd || null,
-        }),
+        ...fields,
       };
     } else {
       const isSubagent = store.isAnthropicSubagent(parsedBody);
-      const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime);
+      const titleGenTitle = resolveTitleGenTitle(parsedBody, resData, startTime, 1000);
       const title = titleGenTitle
         || (isSubagent
           ? helpers.extractFirstUserText(parsedBody)

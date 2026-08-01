@@ -96,6 +96,17 @@ describe('system-prompt-ui: buildAgentList(allVersions, apiAgents)', () => {
     const agents = ctx.buildAgentList(versions, [{ key: 'shared', provider: 'openai' }]);
     assert.equal(agents[0].provider, 'openai');
   });
+  it('display-remaps Grok labels off the Codex (openai) group without server changes', () => {
+    assert.equal(ctx.spDisplayProvider('openai', 'Grok'), 'grok');
+    assert.equal(ctx.spDisplayProvider('openai', 'Grok Title'), 'grok');
+    assert.equal(ctx.spDisplayProvider('openai', 'Codex Default'), 'openai');
+    const agents = ctx.buildAgentList(
+      [{ agentKey: 'default', agentLabel: 'Grok', coreHash: 'g', provider: 'openai' }],
+      [],
+    );
+    assert.equal(agents[0].provider, 'grok');
+    assert.equal(agents[0].label, 'Grok');
+  });
 });
 
 describe('system-prompt-ui: parseHunks(unifiedDiff)', () => {

@@ -226,6 +226,24 @@ describe('session-index', () => {
     assert.equal(si.getAll()[0].title, 'My Title');
   });
 
+  it('attributed store title wins over entry.title when session not yet indexed', () => {
+    const si = require('../server/session-index');
+    const store = require('../server/store');
+    const sid = 'attr-before-index';
+    delete store.sessionMeta[sid];
+    try {
+      assert.equal(si.get(sid), null, 'session must not be in index yet');
+      store.setSessionTitle(sid, 'Attributed Title', 1000);
+      si.updateFromEntry({
+        sessionId: sid, id: 'parent-turn-1', model: 'grok-4', receivedAt: 2000,
+        title: 'raw user text',
+      });
+      assert.equal(si.get(sid).title, 'Attributed Title');
+    } finally {
+      delete store.sessionMeta[sid];
+    }
+  });
+
   it('multiple sessions', () => {
     const si = require('../server/session-index');
     for (let i = 0; i < 5; i++) {

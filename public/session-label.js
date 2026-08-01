@@ -3,6 +3,7 @@
 const NAMED_SESSION_LABELS = Object.freeze({
   'direct-api': 'direct API',
   'codex-raw': 'Codex Raw',
+  'grok-raw': 'Grok Raw',
 });
 
 function formatSessionIdLabel(sid) {

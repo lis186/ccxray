@@ -25,11 +25,13 @@ ccxray makes it a glass box.
 npx ccxray claude
 # or
 npx ccxray codex
+# or
+npx ccxray grok
 ```
 
 That's it. Proxy starts, the selected CLI launches through it, and the dashboard opens automatically in your browser. Run it in multiple terminals — they automatically share one dashboard.
 
-The launcher argument is provider-backed. Today `claude` and `codex` are supported; unknown provider commands fail fast instead of silently starting an unconfigured proxy.
+The launcher argument is provider-backed. Today `claude`, `codex`, and `grok` are supported; unknown provider commands fail fast instead of silently starting an unconfigured proxy.
 
 ### Other ways to run
 
@@ -37,6 +39,7 @@ The launcher argument is provider-backed. Today `claude` and `codex` are support
 ccxray                           # Proxy + dashboard only
 ccxray claude --continue         # All claude args pass through
 ccxray codex exec "hello"        # All codex args pass through
+ccxray grok -p "hello"           # All grok args pass through
 ccxray --port 8080 claude        # Custom port (independent, no hub sharing)
 ccxray claude --no-browser       # Skip auto-open browser
 ccxray status                    # Show hub info and connected clients
@@ -68,6 +71,18 @@ Connected clients (2):
 ```
 
 Use `--port` to opt out and run an independent server instead.
+
+## Supported agent modules
+
+Launchers are registered in `server/providers.js` (same hub + dashboard for all):
+
+| Command | Wire family | Upstream (default) |
+|---------|-------------|--------------------|
+| `ccxray claude` | Anthropic Messages | `api.anthropic.com` |
+| `ccxray codex` | OpenAI Responses | `api.openai.com` / ChatGPT |
+| `ccxray grok` | OpenAI Responses (client module) | `cli-chat-proxy.grok.com` (`XAI_BASE_URL` override) |
+
+OpenAI-wire clients that are not Codex (today: Grok) are listed in `OPENAI_WIRE_CLIENTS` — shared parser, distinct host/agent/raw-session bucket. Multi-agent hubs mix them without swapping `OPENAI_BASE_URL`. Acceptance notes: [`docs/grok-testing.md`](docs/grok-testing.md).
 
 ## Codex support (Beta)
 

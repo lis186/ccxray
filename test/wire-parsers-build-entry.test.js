@@ -283,6 +283,18 @@ test('WS title: fallback when no input', () => {
   assert.equal(f.title, 'Codex WebSocket session');
 });
 
+test('WS title: Grok fallback uses wireDisplayName', () => {
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'websocket',
+    parsedBody: { model: 'grok-4.5' },
+    responseEvents: [],
+    proxyRes: { statusCode: 101 },
+    lastModel: 'grok-4.5', lastResponseStatus: 'completed',
+    sessionId: 'ws-grok', wsCloseReason: '', wsErrorMessage: null,
+  });
+  assert.equal(f.title, 'Grok WebSocket session');
+});
+
 test('anthropic: goal verifier (session_id, no cwd) is NOT marked subagent', () => {
   const parsedBody = {
     model: 'claude-haiku-4-5-20251001',
