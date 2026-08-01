@@ -286,7 +286,7 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     assert.equal(entry.maxContext, 1_000_000);
   });
 
-  it('leaves OpenAI entries untouched (no Claude bump)', async () => {
+  it('heals legacy OpenAI entries with fill-only maxContext (#384)', async () => {
     store.entries.length = 0;
     const id = '2026-05-14T15-00-00-000';
     await config.storage.appendIndex(JSON.stringify({
@@ -301,7 +301,8 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
     await restoreFromLogs();
     const entry = store.entries.find(e => e.id === id);
     assert.ok(entry);
-    assert.equal(entry.maxContext, null);
+    // #384: recognized openai model gets fill-only healing (null → 400K)
+    assert.equal(entry.maxContext, 400000);
   });
 });
 

@@ -83,6 +83,12 @@ function normalizeIndexEntry(meta) {
   if (meta.provider === 'anthropic') {
     meta.maxContext = Math.max(meta.maxContext || 0, config.inferMaxContext(meta.model, null, meta.usage));
   }
+  // #384: heal legacy openai lines that were imported without maxContext.
+  // Fill-only (never overwrite), recognized models only (unknown stays silent).
+  if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
+    const ctx = config.getMaxContext(meta.model, null);
+    if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
+  }
   if (meta.usage) {
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
@@ -475,4 +481,4 @@ function handleApiRoutes(clientReq, clientRes) {
   return false;
 }
 
-module.exports = { handleApiRoutes, computeSettings };
+module.exports = { handleApiRoutes, computeSettings, normalizeIndexEntry };
