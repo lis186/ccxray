@@ -1,7 +1,7 @@
 // ── Entry rendering ──
 let newTurnCount = 0;
-// AGENT_KEY_UNRELIABLE lives in workflow-timeline.js (loaded before this
-// file) so both files agree on which agentKey values are untrustworthy.
+// AGENT_KEY_UNRELIABLE and WF_MAIN_AGENT_KEYS live in agent-classification.js
+// (loaded before this file) so all classification sites agree (#381).
 
 function cleanTitle(raw) {
   if (!raw) return null;

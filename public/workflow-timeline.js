@@ -273,17 +273,13 @@ function _wfBarSpan(t) {
 }
 
 // ── Lane Inference ────────────────────────────────────────────────────────
-// Agent keys whose turns belong to the main lane — model switches within the
-// main conversation stay in main (the dashed model-switch line marks them)
-var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
-// agentKey values that don't reliably mean "not main" — both are catch-all
-// defaults from extractAgentType()'s regex fallback for unrecognized prompts
-// (server/system-prompt.js), which could be a genuinely new main-agent
-// variant, not necessarily a subagent (codex review round 3).
-// INVARIANT: every agentKey-based main/subagent classification site in this
-// file AND entry-rendering.js must gate on this — see
+// WF_MAIN_AGENT_KEYS and AGENT_KEY_UNRELIABLE are defined in
+// agent-classification.js (loaded before this file, see index.html script
+// order). That isomorphic module is the single source of truth, shared by
+// this file, entry-rendering.js, AND server/session-index.js (#381).
+// INVARIANT: every agentKey-based main/subagent classification site must
+// use the shared constants — see
 // docs/decisions/0005-agent-key-unreliable-shared-contract.md
-var AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 };
 
 function _wfPushToSubLane(laneMap, key, entry) {
   if (!laneMap.has(key)) laneMap.set(key, { name: key, key: key, turns: [], model: entry.model, ctxWindow: entry.maxContext || 0, spawnParent: null, agentKey: entry.agentKey || null, agentLabel: entry.agentLabel || null, convId: entry.convId || null });

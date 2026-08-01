@@ -439,4 +439,42 @@ describe('session-index', () => {
     assert.equal(s.weather.stats.errTurns, expected.stats.errTurns, 'errTurns matches');
     assert.equal(s.weather.stats.errRate, expected.stats.errRate, 'errRate matches');
   });
+
+  // ── #381: agentKey-based subagent gate must exclude subagent turns from window fold ──
+  // Old code uses `!entry.isSubagent` → a turn with agentKey='task-agent' (known subagent)
+  // but isSubagent=false would enter the fold and inflate the window.
+  // New code uses isMainTurnByAgentKey → checks WF_MAIN_AGENT_KEYS → 'task-agent' is not
+  // in the map → excluded from fold regardless of isSubagent flag.
+  it('#381 fail-on-old: subagent agentKey with isSubagent=false must not inflate session window', () => {
+    const si = require('../server/session-index');
+    const sid = 'test-381-gate';
+
+    // A main turn establishes the session at 200K
+    si.updateFromEntry({
+      id: '2026-07-31T10-00-00-000', ts: '10:00:00',
+      sessionId: sid, receivedAt: 1000, elapsed: '2.0',
+      agentKey: 'orchestrator', isSubagent: false,
+      maxContext: 200000,
+      usage: { input_tokens: 100, output_tokens: 50 },
+      cost: { cost: 0.01 },
+    });
+    assert.equal(si.sessionWindow(sid), 200000, 'window starts at 200K');
+
+    // A subagent turn: agentKey='task-agent' (NOT in WF_MAIN_AGENT_KEYS),
+    // isSubagent=false (server heuristic missed it), beta1m=true, maxContext=1M
+    // Old code: !isSubagent → true → enters fold → window inflates to 1M (WRONG)
+    // New code: isMainTurnByAgentKey → 'task-agent' not in MAIN_KEYS → excluded (CORRECT)
+    si.updateFromEntry({
+      id: '2026-07-31T10-01-00-000', ts: '10:01:00',
+      sessionId: sid, receivedAt: 2000, elapsed: '3.0',
+      agentKey: 'task-agent', isSubagent: false,
+      maxContext: 1000000, beta1m: true,
+      usage: { input_tokens: 500000, output_tokens: 200 },
+      cost: { cost: 0.05 },
+    });
+
+    // The subagent's 1M evidence must NOT enter the session window fold
+    assert.equal(si.sessionWindow(sid), 200000,
+      'subagent agentKey turn must not inflate session window — old code would give 1000000');
+  });
 });

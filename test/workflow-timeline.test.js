@@ -7,6 +7,7 @@ const fs = require('node:fs');
 
 // Load workflow-timeline.js in a browser-like global context
 function loadWfModule(opts) {
+  const agentClassSrc = fs.readFileSync(require('path').join(__dirname, '../public/agent-classification.js'), 'utf8');
   const formatSrc = fs.readFileSync(require('path').join(__dirname, '../public/format.js'), 'utf8');
   const weatherSrc = fs.readFileSync(require('path').join(__dirname, '../public/weather.js'), 'utf8');
   const src = fs.readFileSync(require('path').join(__dirname, '../public/workflow-timeline.js'), 'utf8');
@@ -31,6 +32,7 @@ function loadWfModule(opts) {
     Map,
   };
   vm.createContext(ctx);
+  vm.runInContext(agentClassSrc, ctx);
   vm.runInContext(formatSrc, ctx);
   if (opts && opts.weather) vm.runInContext(weatherSrc, ctx);
   vm.runInContext(src, ctx);
