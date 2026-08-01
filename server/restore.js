@@ -15,6 +15,7 @@ const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
 
+
 // #211: model marker ("The exact model ID is ...") from the persisted system
 // prompt for this sysHash, or null (unreadable / no marker line). Cached per
 // hash — restore sees the same few sysHashes across many entries.
@@ -228,6 +229,12 @@ async function restoreFromLogs() {
     // this, the dashboard would show "600K / 200K (clamped to 100%)" for
     // entries that predate the inferMaxContext fix. Math.max keeps previously
     // correct 1M values when current usage happens to fit inside 200K.
+    // #384: heal legacy openai lines that were imported without maxContext.
+    // Fill-only (never overwrite), recognized models only (unknown stays silent).
+    if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
+      const ctx = config.getMaxContext(meta.model, null);
+      if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
+    }
     // EXCEPTION(#158): data-layer — anthropic-specific maxContext inference from persisted usage
     if (meta.provider === 'anthropic') {
       const inferred = config.inferMaxContext(meta.model, null, meta.usage);
@@ -314,6 +321,10 @@ async function restoreFromLogs() {
       // the enriched canonical to any connected client (codex round-2 M6). Harmless
       // no-op when no client is connected yet (the common startup case).
       broadcastEntryUpdate(canonical);
+      // #388: feed canonical to session-index so enrichment fields (beta1m, maxContext)
+      // from the restored copy propagate to the window fold. Safe: count/cost are
+      // rid-deduped; window fields are monotone max/OR.
+      sessionIdx.updateFromEntry(canonical);
       continue;
     }
     store.entries.push(entry);

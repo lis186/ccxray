@@ -4,6 +4,9 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const config = require('./config');
+// #381: shared L1 agentKey classification — aligns the server window fold's
+// subagent gate with the client classification pipeline (ADR 0005 site table).
+const { isMainTurnByAgentKey } = require('../public/agent-classification');
 
 const sessionIndex = new Map();
 // #333: responseId → { cost, sid } of the max cost already counted for that
@@ -103,10 +106,22 @@ function rebuildFromMetas(metas) {
   // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
   // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
   // conservative (no false compaction signal).
+  // #385: deduplicate metas by responseId before feeding to weather assessment.
+  // Raw metas from index.ndjson contain 2–8 duplicate copies per turn in multi-writer
+  // scenarios (ADR 0012). Cost/count are already deduped via _upsert (_costByRid /
+  // _countedRids), but weather reads the list directly — duplicates inflate stuck
+  // streaks, error clusters, and cumulative error ratios. Lines without responseId
+  // (legacy/OpenAI exempt) pass through unchanged, matching _upsert's count rule.
   const { assessWeather } = require('../public/weather');
+  const _weatherSeenRid = new Set();
   const bySid = new Map();
   for (const m of metas) {
     if (!m || !m.sessionId || m.isSubagent) continue;
+    const rid = m.responseId;
+    if (rid) {
+      if (_weatherSeenRid.has(rid)) continue;
+      _weatherSeenRid.add(rid);
+    }
     let arr = bySid.get(m.sessionId);
     if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
     arr.push(m);
@@ -266,7 +281,10 @@ function _upsert(sid, entry) {
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
   // #367: derived fields for cold session cards (context bar, cache stats, cache breaks)
-  if (!entry.isSubagent && entry.usage) {
+  // #381 INVARIANT: gate on isMainTurnByAgentKey (shared L1 classification) — see
+  // docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  var _isMain = isMainTurnByAgentKey(entry);
+  if (_isMain && entry.usage) {
     var u = entry.usage;
     var cacheRead = u.cache_read_input_tokens || 0;
     var cacheCreate = u.cache_creation_input_tokens || 0;
@@ -281,16 +299,18 @@ function _upsert(sid, entry) {
     }
   }
   // #367: cache breaks — gap exceeding cache TTL between non-subagent turns
-  if (!entry.isSubagent && recvAt > 0 && s._lastMainRecvAt > 0) {
+  if (_isMain && recvAt > 0 && s._lastMainRecvAt > 0) {
     var gapMs = recvAt - s._lastMainRecvAt;
     if (gapMs > 300000) s.cacheBreaks = (s.cacheBreaks || 0) + 1;
   }
-  if (!entry.isSubagent && recvAt > 0) s._lastMainRecvAt = recvAt;
+  if (_isMain && recvAt > 0) s._lastMainRecvAt = recvAt;
   // Track whether session has any non-imported entries
   if (entry.imported) { if (s.importedOnly === undefined) s.importedOnly = true; }
   else s.importedOnly = false;
-  if (!entry.isSubagent && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
-  if (!entry.isSubagent && entry.beta1m === true) s.beta1m = true;
+  // #381 INVARIANT: gate on isMainTurnByAgentKey (shared L1 classification) — see
+  // docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  if (_isMain && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
+  if (_isMain && entry.beta1m === true) s.beta1m = true;
 }
 
 function setTitle(sid, title) {

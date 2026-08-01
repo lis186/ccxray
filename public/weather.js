@@ -57,7 +57,8 @@ function sigCtxPressure(turns, opts) {
   var u = last.usage || {};
   var mx = (opts && opts.sessionWindow) || _foldWindow(turns);
   if (!mx || mx < 1000) return { severity: 0, detail: { ctxPct: 0, turnIndex: turns.length - 1, entryId: last && last.id || null } };
-  var used = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+  // #387: match computeCtxUsed semantics (format.js:15-21) — four-term sum
+  var used = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.output_tokens || 0);
   var pct = used / mx;
   var sev = clamp01((pct - CTX_FLOOR) / (1 - CTX_FLOOR));
   return { severity: sev, detail: { ctxPct: Math.round(pct * 1000) / 10, turnIndex: turns.length - 1, entryId: last && last.id || null } };

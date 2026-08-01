@@ -281,6 +281,9 @@ async function parseCodexSessionFile(filePath) {
       tokens,
       cost: { cost },
       model: lastModel,
+      // #384: the transcript's model_context_window is authoritative — write it
+      // so weather/session-fold/cold-load all see the real denominator.
+      maxContext: contextWindow,
       sessionId,
       title: '(imported)',
       stopReason: null,

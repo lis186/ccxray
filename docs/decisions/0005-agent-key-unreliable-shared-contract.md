@@ -31,18 +31,21 @@ the turn list and as a subagent lane in the workflow view.
 
 ## Decision
 
-`AGENT_KEY_UNRELIABLE = { unknown: 1, agent: 1 }` lives in
-`workflow-timeline.js` (loaded before `entry-rendering.js`, see
-`public/index.html` script order) so both files read the same object. Every
-site in either file that branches on `entry.agentKey` to decide main vs.
-subagent must gate on `entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]`
-before trusting it, and fall back to the raw `isSubagent` flag otherwise:
+`WF_MAIN_AGENT_KEYS`, `AGENT_KEY_UNRELIABLE`, and `isMainTurnByAgentKey()`
+live in `public/agent-classification.js` — an isomorphic module loaded as a
+browser script tag (before `workflow-timeline.js`, see `public/index.html`)
+and `require()`'d by server modules (#381). All sites read the same shared
+object. Every site that branches on `entry.agentKey` to decide main vs.
+subagent must call `isMainTurnByAgentKey(entry)` (or gate on
+`entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]` with the same
+fallback) and fall back to the raw `isSubagent` flag otherwise:
 
 | Site | File | Guard |
 |------|------|-------|
 | `isSubagent` computation | `entry-rendering.js` `addEntry()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
 | Batch lane build | `workflow-timeline.js` `wfInferLanes()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
 | Live lane update | `workflow-timeline.js` `wfAddEntry()` | `entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]` |
+| Window fold + derived fields | `server/session-index.js` `_upsert()` | `isMainTurnByAgentKey(entry)` (#381) |
 | coreHash identity routing (pre-scan) | `workflow-timeline.js` `wfInferLanes()` | coreHash+convId early-exit runs before `WF_MAIN_AGENT_KEYS` — see ADR 0010 |
 | coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
 | coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
@@ -54,14 +57,15 @@ the same turn's main/subagent classification — both read the same
 `AGENT_KEY_UNRELIABLE` object and apply the same fallback rule.
 
 **Bad — consistency contract**: adding a new call site that branches on
-`agentKey` (e.g. a future view) without this guard silently reintroduces the
-round-4 bug for that view, undetectably until someone notices the same turn
-classified two different ways in two different places.
+`agentKey` (e.g. a future view or a new server module) without this guard
+silently reintroduces the round-4 bug for that view, undetectably until
+someone notices the same turn classified two different ways in two different
+places.
 
-**Mitigation**: `INVARIANT` guard comments at all three sites above name
-this ADR. If `WF_MAIN_AGENT_KEYS` or `AGENT_KEY_UNRELIABLE` ever needs a new
-entry, both files' classification logic reads from the one shared object —
-there's nothing to keep in sync by hand.
+**Mitigation**: `INVARIANT` guard comments at all ten sites above name this
+ADR. All sites — client and server — read from the one shared
+`agent-classification.js` module (#381); there's nothing to keep in sync by
+hand.
 
 ## Alternatives considered
 
@@ -72,6 +76,7 @@ matcher for yet; refusing to serve those entries or guessing wrong is worse
 than the client falling back to the raw flag.
 
 **Duplicate `AGENT_KEY_UNRELIABLE` in both files**: rejected — this is
-exactly the shape of drift that caused the round-4 bug in the first place;
-a single shared definition (like `WF_MAIN_AGENT_KEYS`, already shared the
-same way) removes the possibility.
+exactly the shape of drift that caused the round-4 bug in the first place.
+#381 extracted the constants into a shared isomorphic module
+(`public/agent-classification.js`) that both client script tags and server
+`require()` read, eliminating the duplication risk entirely.

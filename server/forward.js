@@ -811,9 +811,10 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const indexLine = buildIndexLine(entry);
     // Log-first: only update session index after index.ndjson write succeeds (#309)
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      // Skip the session-index update on a merge — the canonical was already
-      // counted; counting the duplicate would inflate the session card cost (#333).
-      if (!merged) sessionIdx.updateFromEntry(entry);
+      // #388: always feed the canonical (post-merge) entry to session-index.
+      // count/cost are rid-deduped (_countedRids/_costByRid) so re-feeding is safe;
+      // window fields (maxContext, beta1m) are monotone max/OR — idempotent on re-feed.
+      sessionIdx.updateFromEntry(canonical);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
@@ -1114,9 +1115,10 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     // Log-first: only update session index after index.ndjson write succeeds (#309).
     // Raw line written even on a merge — restore/cold-load re-merge from disk (#333).
     config.storage.appendIndex(indexLine + '\n').then(() => {
-      // Skip the session-index update on a merge — the canonical was already
-      // counted; counting the duplicate would inflate the session card cost (#333).
-      if (!merged) sessionIdx.updateFromEntry(entry);
+      // #388: always feed the canonical (post-merge) entry to session-index.
+      // count/cost are rid-deduped (_countedRids/_costByRid) so re-feeding is safe;
+      // window fields (maxContext, beta1m) are monotone max/OR — idempotent on re-feed.
+      sessionIdx.updateFromEntry(canonical);
     }).catch(e => console.error('Write index failed:', e.message));
 
     // Release req/res from memory — data is on disk (or being written), lazy-load on demand
