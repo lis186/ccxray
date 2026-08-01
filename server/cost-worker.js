@@ -16,10 +16,11 @@ process.on('disconnect', () => process.exit(0));
 // channel unref, so unref-before-listener behaves identically (measured on
 // v22.22.3). Do not rely on or "fix" the order.
 // NEVER replace the drain-exit with a bare process.exit(0) after run(): with
-// silent:true stdout is a pipe, and an explicit exit truncates the payload at
-// exactly 65,536 bytes (one pipe buffer; measured on an 11MB output — 0
-// parseable entries). That converts a loud hang into silent cost-data
-// corruption. Regression guards: test/cost-worker-exit.test.js (Y / Y2 / X).
+// silent:true stdout is a pipe, and an explicit exit abandons whatever has not
+// been flushed, so the payload is cut off at one pipe buffer (65,536 bytes as
+// measured here on macOS + Node 22 — the capacity is platform-specific, the
+// truncation is not) and parses as nothing. That converts a loud hang into
+// silent cost-data corruption. Guards: test/cost-worker-exit.test.js (Y/Y2/X).
 process.channel?.unref();
 
 const fs = require('fs');

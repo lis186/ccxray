@@ -15,9 +15,10 @@ const path = require('node:path');
 //   Y  — the worker exits on its own after writing output. Restoring #396's
 //        worker (disconnect listener without channel unref) fails this,
 //        bounded at ~15s.
-//   Y2 — a payload larger than one 64KB pipe buffer arrives complete. A bare
-//        process.exit(0) after the final stdout write truncates at exactly
-//        65,536 bytes with 0 parseable entries; Y alone stays green.
+//   Y2 — a payload larger than one pipe buffer arrives complete. A bare
+//        process.exit(0) after the final stdout write cuts it off at one
+//        buffer (65,536 bytes on this platform) with 0 parseable entries;
+//        Y alone stays green.
 //   X  — parent death still terminates the worker (#395). Deleting the
 //        'disconnect' handler leaves Y and Y2 green; only X fails.
 
@@ -72,8 +73,23 @@ function killIfAlive(proc) {
 }
 
 function pidExists(pid) {
-  try { process.kill(pid, 0); return true; }
+  try { process.kill(pid, 0); }
   catch (err) { if (err.code === 'ESRCH') return false; throw err; }
+  // A terminated process that nobody has reaped yet is a zombie, and a zombie
+  // still answers kill(pid, 0). Once the surrogate is killed the worker is
+  // reparented to PID 1, which reaps promptly on a normal VM but not
+  // necessarily inside a container whose PID 1 is an ordinary app — there the
+  // worker would look alive forever and fail this test for the wrong reason.
+  // Linux exposes the state directly, so read it and treat Z as gone.
+  if (process.platform === 'linux') {
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      // Field 3 is the state char; skip past the comm field, which may itself
+      // contain spaces or parentheses, by scanning from the last ')'.
+      return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] !== 'Z';
+    } catch { return false; }
+  }
+  return true;
 }
 
 function readPid(child, timeoutMs) {
@@ -164,7 +180,7 @@ describe('cost-worker: process lifecycle', () => {
         entries = JSON.parse(raw.toString());
       } catch (err) {
         assert.fail(`worker stdout truncated at ${raw.length} bytes ` +
-          `(a bare process.exit() after the final write truncates at exactly 65,536): ${err.message}`);
+          `(a bare process.exit() after the final write cuts the payload off at one pipe buffer): ${err.message}`);
       }
       assert.equal(entries.length, LINES);
     } finally {
