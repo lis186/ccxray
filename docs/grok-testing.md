@@ -115,8 +115,33 @@ CCXRAY_HOME=$(mktemp -d) node server/index.js --port 5613 grok
 - [x] Live main turn: `agent=grok`, UUID session, cost non-null
 - [x] Title-gen never creates `codex-raw` / "Codex Raw" (uses `grok-raw`)
 - [x] Control-plane settings/feedback do not flood index
-- [x] Title-gen stamps parent session card title via `session_title` tool
+- [~] Title-gen stamps parent session card title via `session_title` tool — **conditional**, not
+      unconditional: it resolves only while the parent turn is still in flight when the title turn
+      completes. Measured 3/4 live runs on 0.2.114; the failing one was an agentic prompt whose
+      title turn finished 7.2s before the parent's first request opened. Tracked in #399
 - [x] `LITELLM_LAG_OVERRIDES` only for models still missing from LiteLLM (`grok-build`; see issue #202)
+
+## 3b. Browser verification (2026-08-01, merged tree @ `0274cf7`)
+
+`CLAUDE.md` requires UI or server changes to be verified in a real browser, not only by unit
+tests. Done once against the merged tree, isolated `CCXRAY_HOME`, port 5615, one agentic Grok run
+(browser-harness / CDP against a real Chrome):
+
+| Surface | Observed |
+|---------|----------|
+| Sessions column | Grok session renders: `grok-4.5-build · 2t`, `$0.08`, `7% of 500K`, `cache 99% hit · 34K tok` |
+| Swimlane | main lane drawn, `grok-4.5-build · 500K`, sys hash, faults/ctx/mutate/safety tracks |
+| Detail panel | peak 6.8% · window 500K · compacts 0 · cache 100% · cost $0.0794 · 29K in / 352 out |
+| Timeline | 10 steps, `grok · f6e11`, "View in System Prompt" link live |
+| Usage tab | **Grok** filter chip present; Grok account card shows *Weekly SuperGrok Limit 99% left*, resets in 3d 22h, period 2026-07-29 → 2026-08-05; Grok segment visible in the daily-cost bars |
+| Page errors | 0 (error hook empty, no `.error` nodes) |
+
+Two honest notes from that pass:
+
+- `grok-raw` did **not** appear as its own sidebar card. Its `cwd` is `null`, so it belongs to no
+  project and the project filter hides it. Pre-existing `rawSessionId` behaviour, not a regression.
+- That same run is the one where title-gen attribution returned null (see the acceptance note
+  above) — the session card showed the raw prompt, not the generated title.
 
 ## 4. Related
 
