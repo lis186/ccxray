@@ -39,34 +39,85 @@ const WORKER_TIMEOUT_MS = 120_000;
 let lastFailureAt = 0;
 const FAILURE_BACKOFF_MS = 60_000;
 
-function streamUsageEntries() {
+function streamUsageEntries(opts = {}) {
+  const workerPath = opts.workerPath || path.join(__dirname, 'cost-worker.js');
+  const timeoutMs = opts.timeoutMs || WORKER_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const worker = fork(path.join(__dirname, 'cost-worker.js'), [], { silent: true, windowsHide: true });
+    const worker = fork(workerPath, [], { silent: true, windowsHide: true });
     const chunks = [];
     let stderrBuf = '';
+    let settled = false;
+
+    // Reap: once the result (or a fatal error) is in hand, the child must die.
+    // disconnect() triggers the worker's #395 'disconnect' -> exit(0) listener;
+    // the unref'd SIGKILL timer is the backstop for a truly wedged child, and
+    // the one place we still surface that the worker could not exit on its own.
+    const reap = () => {
+      try { if (worker.connected) worker.disconnect(); } catch {}
+      const killTimer = setTimeout(() => {
+        if (worker.exitCode === null && worker.signalCode === null) {
+          console.error('cost-worker still alive after completion; escalating to SIGKILL');
+          try { worker.kill('SIGKILL'); } catch {}
+        }
+      }, 2000);
+      killTimer.unref();
+      worker.once('exit', () => clearTimeout(killTimer));
+    };
+
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn(value);
+    };
+
+    // Backstop only — normal completion no longer depends on process death.
     const timeout = setTimeout(() => {
-      worker.kill();
-      reject(new Error(`Worker timeout (${WORKER_TIMEOUT_MS / 1000}s)`));
-    }, WORKER_TIMEOUT_MS);
+      try { worker.kill(); } catch {}
+      reap();
+      settle(reject, new Error(`Worker timeout (${timeoutMs / 1000}s)`));
+    }, timeoutMs);
+
     worker.stdout.on('data', (chunk) => chunks.push(chunk));
     worker.stderr.on('data', (chunk) => { stderrBuf += chunk; });
-    worker.on('error', (err) => { clearTimeout(timeout); reject(err); });
-    worker.on('exit', (code) => {
-      clearTimeout(timeout);
+
+    worker.on('message', (msg) => {
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'result') {
+        reap();
+        if (!Array.isArray(msg.entries)) {
+          settle(reject, new Error(`Worker returned ${typeof msg.entries}, expected array`));
+          return;
+        }
+        settle(resolve, msg.entries);
+      } else if (msg.type === 'error') {
+        reap();
+        settle(reject, new Error(msg.message || stderrBuf || 'Worker failed'));
+      }
+    });
+
+    worker.on('error', (err) => { reap(); settle(reject, err); });
+
+    // Fallback: process death without an IPC result (crash before send, or a
+    // legacy stdout-only worker). 'close', NOT 'exit' — 'exit' can fire before
+    // stdio is drained, so the old exit-based parse had a latent truncation
+    // race on large payloads.
+    worker.on('close', (code) => {
+      if (settled) return;
       if (code !== 0 && code !== null) {
-        reject(new Error(stderrBuf || `Worker exited with code ${code}`));
+        settle(reject, new Error(stderrBuf || `Worker exited with code ${code}`));
         return;
       }
       try {
         const raw = Buffer.concat(chunks).toString();
         const data = JSON.parse(raw);
         if (!Array.isArray(data)) {
-          reject(new Error(`Worker returned ${typeof data}, expected array`));
+          settle(reject, new Error(`Worker returned ${typeof data}, expected array`));
           return;
         }
-        resolve(data);
+        settle(resolve, data);
       } catch (e) {
-        reject(new Error(`Worker output parse error: ${e.message}`));
+        settle(reject, new Error(`Worker output parse error: ${e.message}`));
       }
     });
   });
@@ -267,6 +318,7 @@ function warmUp() {
 module.exports = {
   TOKEN_LIMIT,
   SUBSCRIPTION_USD,
+  streamUsageEntries,
   getEffectiveTokenLimit,
   getEffectiveMonthlyUSD,
   getOrComputeCosts,

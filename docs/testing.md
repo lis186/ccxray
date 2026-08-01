@@ -89,6 +89,13 @@ captured (issue #134: a 30s+ scan of ~100k files whose verdict drifts with the
 data). Anything in `scripts/` is a manual developer tool invoked explicitly;
 anything in `test/` must be a hygienic, self-contained test.
 
+The exception is `test/fixtures/*.js` child-process entrypoints used by a
+`*.test.js` contract test. These are executable fixtures, not tests: keep their
+data synthetic, launch them only from the owning test, and have every test kill
+the child in `finally` so a failed assertion cannot leak a process. The project
+test commands explicitly enumerate `test/*.test.js`; do not replace that glob
+with bare `node --test`, which would auto-discover executable fixtures.
+
 ## Canonical pattern
 
 `test/usage.test.js` is the reference. Copy its setup:

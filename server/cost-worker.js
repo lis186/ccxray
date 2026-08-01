@@ -186,10 +186,15 @@ async function run() {
   await scanHomes(codexHomes, processCodexFile, seen, entries);
 
   entries.sort((a, b) => a.timestamp - b.timestamp);
-  process.stdout.write(JSON.stringify(entries));
+  if (process.send) {
+    process.send({ type: 'result', entries });
+  } else {
+    process.stdout.write(JSON.stringify(entries)); // standalone `node cost-worker.js`
+  }
 }
 
 run().catch(err => {
   process.stderr.write(err.message);
   process.exitCode = 1;
+  if (process.send) { try { process.send({ type: 'error', message: err.message }); } catch {} }
 });
