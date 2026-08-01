@@ -124,11 +124,26 @@ function loadEntryReqRes(entry) {
   return entry._loadingPromise;
 }
 
+// #348 codex R2: snapshot byte bound — mid-restore appends must not leak into
+// any streaming pass. Pass A accumulates `snapshotBytes`; all subsequent passes
+// (star pass B, streamAllMetas) stop at that byte offset. Direction of error is
+// benign: we may skip one partial line at the boundary, never include a new one.
+async function* boundedIndexLines(limitBytes) {
+  let n = 0;
+  for await (const line of config.storage.readIndexLines()) {
+    n += Buffer.byteLength(line, 'utf8') + 1; // +1 for the \n separator
+    if (n > limitBytes) return;
+    yield line;
+  }
+}
+
 // #348: on-demand streaming re-read of index.ndjson as an async generator.
 // Used by the rare session-index rebuild/drift fallback paths — never
 // materializes the full array (codex R1: readAllMetas doubled residency).
-async function* streamAllMetas() {
-  for await (const line of config.storage.readIndexLines()) {
+// Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+async function* streamAllMetas(snapshotBytes) {
+  const lines = snapshotBytes != null ? boundedIndexLines(snapshotBytes) : config.storage.readIndexLines();
+  for await (const line of lines) {
     try { yield JSON.parse(line); } catch {}
   }
 }
@@ -174,7 +189,9 @@ async function restoreFromLogs() {
   const starLight = [];
   const working = [];
   let parsedCount = 0;
+  let snapshotBytes = 0; // codex R2: byte bound for subsequent passes
   for await (const line of config.storage.readIndexLines()) {
+    snapshotBytes += Buffer.byteLength(line, 'utf8') + 1;
     let m; try { m = JSON.parse(line); } catch { continue; }
     if (!m) continue;
     parsedCount++;
@@ -206,7 +223,8 @@ async function restoreFromLogs() {
     starLight.length = 0;
     // #348 pass B: re-stream in FILE ORDER now that protection is known —
     // star-protected out-of-window lines re-enter the working set here.
-    for await (const line of config.storage.readIndexLines()) {
+    // Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+    for await (const line of boundedIndexLines(snapshotBytes)) {
       let m; try { m = JSON.parse(line); } catch { continue; }
       if (!m) continue;
       if (inWindow(m) || isProtectedByStar(m, retentionSets)) working.push(m);
@@ -229,6 +247,11 @@ async function restoreFromLogs() {
   // The cutoff/star filter already ran during the streaming read — `working`
   // is the pre-filtered set, in file order (#348).
   for (let meta of working) {
+
+    // INVARIANT (codex R2 / ADR 0003+0012): a live turn that completed during
+    // post-listen restore may already own this id in entryIndex. Skip to avoid
+    // duplicate push — no-responseId entries can't be folded by mergeByResponseId.
+    if (store.entryIndex.has(meta.id)) continue;
 
     // Per-session cap: oversized sessions load only the first entry
     if (meta.sessionId && oversizedSessions.has(meta.sessionId)) {
@@ -405,7 +428,7 @@ async function restoreFromLogs() {
   if ((!sessionIndexLoaded && parsedCount) || driftDetected) {
     working.length = 0; // release window-set objects before streaming the full index
     console.time('restore:session-index-rebuild');
-    await sessionIdx.rebuildFromMetasAsync(streamAllMetas());
+    await sessionIdx.rebuildFromMetasAsync(streamAllMetas(snapshotBytes));
     console.timeEnd('restore:session-index-rebuild');
     const reason = driftDetected ? 'reconciled' : 'rebuilt';
     console.log(`\x1b[90m   Session index ${reason}: ${sessionIdx.size()} sessions\x1b[0m`);
@@ -766,4 +789,4 @@ async function pruneLogs() {
   }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines };

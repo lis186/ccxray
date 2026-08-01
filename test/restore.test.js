@@ -569,3 +569,89 @@ describe('restoreFromLogs — star-protection + cutoff integration (#348)', () =
       'file order must be preserved: star-protected before in-window');
   });
 });
+
+// ── #348 codex R2: snapshot byte bound + id guard ────────────────────
+
+describe('restoreFromLogs — snapshot byte bound (codex R2)', () => {
+  const config = require('../server/config');
+  const { boundedIndexLines } = require('../server/restore');
+  const { createLocalStorage } = require('../server/storage/local');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-bounded-348-' + Date.now());
+  let realStorage;
+
+  before(async () => {
+    realStorage = config.storage;
+    const tmpStorage = createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('boundedIndexLines stops at the byte limit', async () => {
+    const lines = [
+      JSON.stringify({ id: 'aaa', sessionId: 's1' }),
+      JSON.stringify({ id: 'bbb', sessionId: 's1' }),
+      JSON.stringify({ id: 'ccc', sessionId: 's1' }),
+    ];
+    // Write all 3 lines
+    for (const l of lines) await config.storage.appendIndex(l + '\n');
+    // Byte limit = first 2 lines (each line + \n)
+    const limit = Buffer.byteLength(lines[0], 'utf8') + 1 + Buffer.byteLength(lines[1], 'utf8') + 1;
+    const collected = [];
+    for await (const l of boundedIndexLines(limit)) collected.push(l);
+    assert.equal(collected.length, 2, 'must yield exactly 2 lines within byte bound');
+    assert.deepEqual(collected, [lines[0], lines[1]]);
+  });
+});
+
+describe('restoreFromLogs — id guard prevents duplicate push (codex R2)', () => {
+  const config = require('../server/config');
+  const store = require('../server/store');
+  const { restoreFromLogs } = require('../server/restore');
+  const { createLocalStorage } = require('../server/storage/local');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-idguard-348-' + Date.now());
+  let realStorage, realRestoreDays;
+
+  before(async () => {
+    realStorage = config.storage;
+    realRestoreDays = config.RESTORE_DAYS;
+    config.RESTORE_DAYS = 0;
+    const tmpStorage = createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    config.RESTORE_DAYS = realRestoreDays;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('skips an entry whose id is already in entryIndex (live-push race)', async () => {
+    store.entries.length = 0;
+    store.entryIndex.clear();
+
+    const id = '2026-07-30T10-00-00-000';
+    // Simulate a live turn already registered before restore runs
+    const liveEntry = { id, sessionId: 'live-sess', provider: 'anthropic', _loaded: true };
+    store.entries.push(liveEntry);
+    store.entryIndex.set(id, liveEntry);
+
+    // The same id appears in the index (the race scenario)
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '10:00:00', sessionId: 'live-sess', provider: 'anthropic',
+      model: 'claude-fable-5[1m]', usage: { input_tokens: 100 },
+      isSSE: true, status: 200, receivedAt: Date.now(),
+    }) + '\n');
+
+    await restoreFromLogs();
+    // The id must appear exactly once in entries
+    const matches = store.entries.filter(e => e.id === id);
+    assert.equal(matches.length, 1, 'id guard must prevent duplicate push');
+    assert.strictEqual(matches[0], liveEntry, 'original live entry must survive');
+  });
+});
