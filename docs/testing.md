@@ -125,6 +125,18 @@ These are different layers of isolation — don't conflate them:
   Scrubbing `$HOME` for the whole suite breaks them with "Could not find
   Chrome" — that's a missing toolchain cache, not a hygiene violation.
 
+One test injects a throwaway `$HOME` into its child processes by design:
+`test/cost-worker-exit.test.js`. `server/cost-worker.js` reads `os.homedir()`
+directly (it scans `$HOME/.claude*`, `$HOME/.codex*`, `$HOME/.config/claude` —
+not `CCXRAY_HOME`), so the override goes into the forked worker's env only; the
+test process itself keeps the real `$HOME`, leaving the puppeteer cache intact.
+Its fixture shape is a synthetic `.claude/projects/<p>/*.jsonl` of usage lines
+with unique `message.id`s (the worker dedupes by messageId). Its orphan test
+also writes two tiny child-process entrypoints (a surrogate parent and a
+`--require` hold-open pin) into the same temp dir at runtime — executable
+fixtures, not tests; generating them outside `test/` keeps them invisible to
+`node --test` auto-discovery.
+
 So: scrub `CCXRAY_HOME` for the whole suite; only set a throwaway `$HOME` for a
 specific non-browser test that needs to assert `~` expansion.
 
