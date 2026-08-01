@@ -498,103 +498,75 @@ describe('restoreFromLogs — codex resume eligibility', () => {
 // (b) out-of-window but star-protected lines → restored
 // (c) out-of-window unprotected lines → dropped
 // Also verifies file-order preservation.
+// Runs in a CHILD PROCESS with its own CCXRAY_HOME so the parent never touches
+// the real ~/.ccxray (hermetic per docs/testing.md, pattern: rebuild-index.e2e).
 
 describe('restoreFromLogs — star-protection + cutoff integration (#348)', () => {
-  const config = require('../server/config');
-  const store = require('../server/store');
-  const { restoreFromLogs } = require('../server/restore');
-  const { _resetSettingsCache } = require('../server/settings');
-  const { resolveCcxrayHome } = require('../server/paths');
-  // resolveCcxrayHome() returns the SAME path settings.js resolved SETTINGS_DIR
-  // to at module load time — so settings.json written here is found by readSettings()
-  // regardless of whether CCXRAY_HOME was set (hermetic when set, safe when not).
-  const ccxrayHome = resolveCcxrayHome();
-  const logsDir = path.join(os.tmpdir(), 'ccxray-star-348-logs-' + Date.now());
-  let realStorage, realRestoreDays;
-  let settingsExisted = false;
-  const settingsPath = path.join(ccxrayHome, 'settings.json');
+  const { spawnSync } = require('child_process');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-star-348-'));
+  const logsDir = path.join(tmpHome, 'logs');
 
-  before(async () => {
-    // Preserve any pre-existing settings.json (don't clobber real home in bare env)
-    settingsExisted = fs.existsSync(settingsPath);
-    fs.mkdirSync(ccxrayHome, { recursive: true });
-    realStorage = config.storage;
-    realRestoreDays = config.RESTORE_DAYS;
-    const tmpStorage = require('../server/storage/local').createLocalStorage(logsDir);
-    await tmpStorage.init();
-    config.storage = tmpStorage;
+  // Fixed ids — todayId is always within any RESTORE_DAYS window
+  const todayId = '2026-08-01T12-00-00-000';
+  const oldProtected = '2020-01-15T10-00-00-000';
+  const oldUnprotected = '2020-01-15T11-00-00-000';
+  const protectedSid = 'starred-sess';
 
-    // RESTORE_DAYS=3: entries older than 3 days are out-of-window
-    config.RESTORE_DAYS = 3;
+  before(() => {
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    // Write index lines in file order: (b), (c), (a)
+    // (c) uses a different cwd so the star cascade doesn't protect it.
+    const indexLines = [
+      [oldProtected, protectedSid, '/dev/starred-project'],
+      [oldUnprotected, 'unstarred-sess', '/dev/other-project'],
+      [todayId, 'today-sess', '/dev/today-project'],
+    ].map(([id, sid, cwd]) => JSON.stringify({
+      id, ts: id.slice(11).replace(/-/g, ':'),
+      sessionId: sid, provider: 'anthropic', model: 'claude-fable-5[1m]',
+      usage: { input_tokens: 1000, output_tokens: 100 },
+      isSSE: true, status: 200, receivedAt: Date.now(), cwd,
+    })).join('\n') + '\n';
+
+    fs.writeFileSync(path.join(logsDir, 'index.ndjson'), indexLines);
+
+    // settings.json with session star
+    fs.writeFileSync(path.join(tmpHome, 'settings.json'), JSON.stringify({
+      starredSessions: [protectedSid],
+    }));
   });
 
   after(() => {
-    config.storage = realStorage;
-    config.RESTORE_DAYS = realRestoreDays;
-    _resetSettingsCache();
-    // Only remove settings.json if we created it (don't destroy user's real file)
-    if (!settingsExisted) { try { fs.unlinkSync(settingsPath); } catch {} }
-    fs.rmSync(logsDir, { recursive: true, force: true });
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   });
 
-  it('restores in-window + star-protected entries, drops unprotected old entries', async () => {
-    store.entries.length = 0;
-    store.entryIndex.clear();
-    for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
-    store.sessionCosts.clear();
-
-    // (a) in-window entry (today)
-    const now = new Date();
-    const todayId = now.toISOString().replace(/[:.]/g, '-').slice(0, -1);
-
-    // (b) out-of-window, will be star-protected via session star
-    const oldProtected = '2020-01-15T10-00-00-000';
-    const protectedSid = 'starred-sess';
-
-    // (c) out-of-window, no star protection
-    const oldUnprotected = '2020-01-15T11-00-00-000';
-    const unprotectedSid = 'unstarred-sess';
-
-    // Write index lines in order: (b), (c), (a) — verify file-order preservation.
-    // (c) uses a different cwd so the star-protected session's project cascade
-    // (computeRetentionSets lifts session→project) doesn't accidentally protect it.
-    const lines = [
-      [oldProtected, protectedSid, '/dev/starred-project'],
-      [oldUnprotected, unprotectedSid, '/dev/other-project'],
-      [todayId, 'today-sess', '/dev/today-project'],
-    ];
-    for (const [id, sid, cwd] of lines) {
-      await config.storage.appendIndex(JSON.stringify({
-        id, ts: id.slice(11).replace(/-/g, ':'),
-        sessionId: sid, provider: 'anthropic', model: 'claude-fable-5[1m]',
-        usage: { input_tokens: 1000, output_tokens: 100 },
-        isSSE: true, status: 200, receivedAt: Date.now(),
-        cwd,
-      }) + '\n');
-    }
-
-    // Write settings.json with a session star on protectedSid
-    _resetSettingsCache();
-    fs.writeFileSync(settingsPath, JSON.stringify({
-      starredSessions: [protectedSid],
-    }));
-
-    await restoreFromLogs();
-
-    const ids = store.entries.map(e => e.id);
+  it('restores in-window + star-protected entries, drops unprotected old entries', () => {
+    // Child driver: suppress console output, run restoreFromLogs, print ids as JSON
+    const driver = `
+      console.time = console.timeEnd = console.log = console.warn = () => {};
+      const { restoreFromLogs } = require('./server/restore');
+      const store = require('./server/store');
+      restoreFromLogs().then(() => {
+        process.stdout.write(JSON.stringify(store.entries.map(e => e.id)));
+      }).catch(e => { process.stderr.write(e.stack); process.exit(1); });
+    `;
+    const result = spawnSync(process.execPath, ['-e', driver], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, CCXRAY_HOME: tmpHome, RESTORE_DAYS: '3', CCXRAY_DISABLE_TITLES: '1' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    assert.equal(result.status, 0, `child failed: ${result.stderr}`);
+    const ids = JSON.parse(result.stdout);
 
     // (a) in-window: restored
     assert.ok(ids.includes(todayId), 'in-window entry must be restored');
-
     // (b) out-of-window + starred session: restored
     assert.ok(ids.includes(oldProtected), 'star-protected old entry must be restored');
-
     // (c) out-of-window + unstarred: dropped
     assert.ok(!ids.includes(oldUnprotected), 'unprotected old entry must NOT be restored');
-
-    // File-order: (b) before (a) — both are in the set, (b) was written first
-    const idxProtected = ids.indexOf(oldProtected);
-    const idxToday = ids.indexOf(todayId);
-    assert.ok(idxProtected < idxToday, 'file order must be preserved: star-protected before in-window');
+    // File-order: (b) before (a)
+    assert.ok(ids.indexOf(oldProtected) < ids.indexOf(todayId),
+      'file order must be preserved: star-protected before in-window');
   });
 });
