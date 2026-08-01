@@ -491,3 +491,102 @@ describe('restoreFromLogs — codex resume eligibility', () => {
     assert.equal(summary.resumeCommand, null);
   });
 });
+
+// ── #348: star-protection + RESTORE_DAYS cutoff integration ─────────
+// Verifies that the streaming restore path correctly handles:
+// (a) in-window lines → restored
+// (b) out-of-window but star-protected lines → restored
+// (c) out-of-window unprotected lines → dropped
+// Also verifies file-order preservation.
+
+describe('restoreFromLogs — star-protection + cutoff integration (#348)', () => {
+  const config = require('../server/config');
+  const store = require('../server/store');
+  const { restoreFromLogs } = require('../server/restore');
+  const { _resetSettingsCache } = require('../server/settings');
+  // Use CCXRAY_HOME as the base so settings.json is found by readSettings()
+  const ccxrayHome = process.env.CCXRAY_HOME || path.join(os.tmpdir(), 'ccxray-restore-star-348-' + Date.now());
+  const logsDir = path.join(ccxrayHome, 'logs');
+  let realStorage, realRestoreDays;
+
+  before(async () => {
+    fs.mkdirSync(ccxrayHome, { recursive: true });
+    realStorage = config.storage;
+    realRestoreDays = config.RESTORE_DAYS;
+    const tmpStorage = require('../server/storage/local').createLocalStorage(logsDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+
+    // RESTORE_DAYS=3: entries older than 3 days are out-of-window
+    config.RESTORE_DAYS = 3;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    config.RESTORE_DAYS = realRestoreDays;
+    _resetSettingsCache();
+    try { fs.unlinkSync(path.join(ccxrayHome, 'settings.json')); } catch {}
+    fs.rmSync(logsDir, { recursive: true, force: true });
+  });
+
+  it('restores in-window + star-protected entries, drops unprotected old entries', async () => {
+    store.entries.length = 0;
+    store.entryIndex.clear();
+    for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
+    store.sessionCosts.clear();
+
+    // (a) in-window entry (today)
+    const now = new Date();
+    const todayId = now.toISOString().replace(/[:.]/g, '-').slice(0, -1);
+
+    // (b) out-of-window, will be star-protected via session star
+    const oldProtected = '2020-01-15T10-00-00-000';
+    const protectedSid = 'starred-sess';
+
+    // (c) out-of-window, no star protection
+    const oldUnprotected = '2020-01-15T11-00-00-000';
+    const unprotectedSid = 'unstarred-sess';
+
+    // Write index lines in order: (b), (c), (a) — verify file-order preservation.
+    // (c) uses a different cwd so the star-protected session's project cascade
+    // (computeRetentionSets lifts session→project) doesn't accidentally protect it.
+    const lines = [
+      [oldProtected, protectedSid, '/dev/starred-project'],
+      [oldUnprotected, unprotectedSid, '/dev/other-project'],
+      [todayId, 'today-sess', '/dev/today-project'],
+    ];
+    for (const [id, sid, cwd] of lines) {
+      await config.storage.appendIndex(JSON.stringify({
+        id, ts: id.slice(11).replace(/-/g, ':'),
+        sessionId: sid, provider: 'anthropic', model: 'claude-fable-5[1m]',
+        usage: { input_tokens: 1000, output_tokens: 100 },
+        isSSE: true, status: 200, receivedAt: Date.now(),
+        cwd,
+      }) + '\n');
+    }
+
+    // Write settings.json with a session star on protectedSid
+    _resetSettingsCache();
+    fs.writeFileSync(path.join(ccxrayHome, 'settings.json'), JSON.stringify({
+      starredSessions: [protectedSid],
+    }));
+
+    await restoreFromLogs();
+
+    const ids = store.entries.map(e => e.id);
+
+    // (a) in-window: restored
+    assert.ok(ids.includes(todayId), 'in-window entry must be restored');
+
+    // (b) out-of-window + starred session: restored
+    assert.ok(ids.includes(oldProtected), 'star-protected old entry must be restored');
+
+    // (c) out-of-window + unstarred: dropped
+    assert.ok(!ids.includes(oldUnprotected), 'unprotected old entry must NOT be restored');
+
+    // File-order: (b) before (a) — both are in the set, (b) was written first
+    const idxProtected = ids.indexOf(oldProtected);
+    const idxToday = ids.indexOf(todayId);
+    assert.ok(idxProtected < idxToday, 'file order must be preserved: star-protected before in-window');
+  });
+});

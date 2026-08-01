@@ -7,7 +7,7 @@ if (!process.env.CCXRAY_HOME) {
   console.error('Set CCXRAY_HOME to the fixture dir (e.g. /tmp/ccxray-bench-348)');
   process.exit(1);
 }
-process.env.RESTORE_DAYS = '0';
+if (!('RESTORE_DAYS' in process.env)) process.env.RESTORE_DAYS = '0';
 process.env.CCXRAY_DISABLE_TITLES = '1';
 
 const config = require('../../server/config');
