@@ -2,6 +2,9 @@
 
 // Worker process for JSONL cost parsing — runs in a child process
 // to avoid blocking the main event loop during heavy I/O + JSON.parse.
+// #395: exit when parent dies (SIGKILL/OOM-kill) — the IPC channel closes
+// and 'disconnect' fires; without this, the worker becomes an orphan (PPID=1).
+process.on('disconnect', () => process.exit(0));
 
 const fs = require('fs');
 const path = require('path');
