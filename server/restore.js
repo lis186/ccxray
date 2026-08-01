@@ -124,15 +124,13 @@ function loadEntryReqRes(entry) {
   return entry._loadingPromise;
 }
 
-// #348: on-demand full re-stream of index.ndjson into an array of parsed metas.
-// Used only by the rare session-index rebuild/reconcile fallback paths — the
-// normal restore path never materializes the full array.
-async function readAllMetas() {
-  const metas = [];
+// #348: on-demand streaming re-read of index.ndjson as an async generator.
+// Used by the rare session-index rebuild/drift fallback paths — never
+// materializes the full array (codex R1: readAllMetas doubled residency).
+async function* streamAllMetas() {
   for await (const line of config.storage.readIndexLines()) {
-    try { metas.push(JSON.parse(line)); } catch {}
+    try { yield JSON.parse(line); } catch {}
   }
-  return metas;
 }
 
 // ── Restore entries from index.ndjson on startup ─────────────────────
@@ -156,7 +154,7 @@ async function restoreFromLogs() {
   // never enter the working set: the reconcile tally is fed incrementally and
   // the star pre-pass keeps only a lightweight {id, sessionId, cwd} per line.
   // The rare full-meta consumers (session-index rebuild on drift / missing
-  // sessions.json) re-stream via readAllMetas() instead.
+  // sessions.json) re-stream via streamAllMetas() generator instead.
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
     const cutoff = new Date();
@@ -197,7 +195,7 @@ async function restoreFromLogs() {
   // 1b. Reconcile sessions.json against index.ndjson if loaded (#309). Drift
   // is rare — only then re-stream the full metas the rebuild needs (#348).
   if (tally && tally.drift()) {
-    sessionIdx.rebuildFromMetas(await readAllMetas());
+    await sessionIdx.rebuildFromMetasAsync(streamAllMetas());
     console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
   }
 
@@ -406,7 +404,7 @@ async function restoreFromLogs() {
   //    rather than keeping 314k parsed metas resident for a rare fallback path.
   if (!sessionIndexLoaded && parsedCount) {
     console.time('restore:session-index-rebuild');
-    sessionIdx.rebuildFromMetas(await readAllMetas());
+    await sessionIdx.rebuildFromMetasAsync(streamAllMetas());
     console.timeEnd('restore:session-index-rebuild');
     console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
   }

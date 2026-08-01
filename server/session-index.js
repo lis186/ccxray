@@ -86,51 +86,53 @@ function _parseLines(indexContent) {
   return out;
 }
 
-// Build session index from an array of parsed index metas.
-function rebuildFromMetas(metas) {
+// Shared rebuild logic: clear state, iterate metas (upsert + weather grouping),
+// compute weather. Called by both sync (array) and async (generator) entry points.
+function _rebuildCore(feedFn) {
   sessionIndex.clear();
   _costByRid.clear();
   _countedRids.clear();
-  if (!Array.isArray(metas)) return;
-  // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
-  // Both COST and COUNT are deduped by responseId here (_upsert via _costByRid /
-  // _countedRids), so the session card shows merged turns and cost is counted once.
-  // reconcile() dedups its index-side comparison the SAME way — the two must stay
-  // paired: deduping count without deduping reconcile's tally would make merged
-  // s.count (e.g. 15) never equal the raw line total (45) and thrash rebuilds.
-  for (const m of metas) {
-    if (!m || !m.sessionId) continue;
-    _upsert(m.sessionId, m);
-  }
-  // #367: compute weather for all sessions from index metas.
-  // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
-  // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
-  // conservative (no false compaction signal).
-  // #385: deduplicate metas by responseId before feeding to weather assessment.
-  // Raw metas from index.ndjson contain 2–8 duplicate copies per turn in multi-writer
-  // scenarios (ADR 0012). Cost/count are already deduped via _upsert (_costByRid /
-  // _countedRids), but weather reads the list directly — duplicates inflate stuck
-  // streaks, error clusters, and cumulative error ratios. Lines without responseId
-  // (legacy/OpenAI exempt) pass through unchanged, matching _upsert's count rule.
   const { assessWeather } = require('../public/weather');
   const _weatherSeenRid = new Set();
   const bySid = new Map();
-  for (const m of metas) {
-    if (!m || !m.sessionId || m.isSubagent) continue;
+  const consume = (m) => {
+    if (!m || !m.sessionId) return;
+    _upsert(m.sessionId, m);
+    if (m.isSubagent) return;
     const rid = m.responseId;
     if (rid) {
-      if (_weatherSeenRid.has(rid)) continue;
+      if (_weatherSeenRid.has(rid)) return;
       _weatherSeenRid.add(rid);
     }
     let arr = bySid.get(m.sessionId);
     if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
     arr.push(m);
-  }
-  for (const [sid, turns] of bySid) {
-    const s = sessionIndex.get(sid);
-    if (s) s.weather = assessWeather(turns);
-  }
-  dirty = true;
+  };
+  const finalize = () => {
+    for (const [sid, turns] of bySid) {
+      const s = sessionIndex.get(sid);
+      if (s) s.weather = assessWeather(turns);
+    }
+    dirty = true;
+  };
+  return { consume, finalize };
+}
+
+// #348: streaming rebuild — accepts async iterable (generator). Single pass:
+// _upsert + weather grouping happen together so the caller can feed a streaming
+// generator that never materializes the full array.
+async function rebuildFromMetasAsync(iter) {
+  const { consume, finalize } = _rebuildCore();
+  for await (const m of iter) consume(m);
+  finalize();
+}
+
+// Build session index from an array of parsed index metas (synchronous).
+function rebuildFromMetas(metas) {
+  if (!Array.isArray(metas)) return;
+  const { consume, finalize } = _rebuildCore();
+  for (const m of metas) consume(m);
+  finalize();
 }
 
 // Back-compat string entry point (tests / small indexes).
@@ -393,7 +395,7 @@ function setWeather(sid, weather) {
 
 module.exports = {
   loadSessionIndex,
-  rebuildFromIndexContent, rebuildFromMetas,
+  rebuildFromIndexContent, rebuildFromMetas, rebuildFromMetasAsync,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas, createReconcileTally,
   updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,

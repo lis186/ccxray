@@ -504,12 +504,19 @@ describe('restoreFromLogs — star-protection + cutoff integration (#348)', () =
   const store = require('../server/store');
   const { restoreFromLogs } = require('../server/restore');
   const { _resetSettingsCache } = require('../server/settings');
-  // Use CCXRAY_HOME as the base so settings.json is found by readSettings()
-  const ccxrayHome = process.env.CCXRAY_HOME || path.join(os.tmpdir(), 'ccxray-restore-star-348-' + Date.now());
-  const logsDir = path.join(ccxrayHome, 'logs');
+  const { resolveCcxrayHome } = require('../server/paths');
+  // resolveCcxrayHome() returns the SAME path settings.js resolved SETTINGS_DIR
+  // to at module load time — so settings.json written here is found by readSettings()
+  // regardless of whether CCXRAY_HOME was set (hermetic when set, safe when not).
+  const ccxrayHome = resolveCcxrayHome();
+  const logsDir = path.join(os.tmpdir(), 'ccxray-star-348-logs-' + Date.now());
   let realStorage, realRestoreDays;
+  let settingsExisted = false;
+  const settingsPath = path.join(ccxrayHome, 'settings.json');
 
   before(async () => {
+    // Preserve any pre-existing settings.json (don't clobber real home in bare env)
+    settingsExisted = fs.existsSync(settingsPath);
     fs.mkdirSync(ccxrayHome, { recursive: true });
     realStorage = config.storage;
     realRestoreDays = config.RESTORE_DAYS;
@@ -525,7 +532,8 @@ describe('restoreFromLogs — star-protection + cutoff integration (#348)', () =
     config.storage = realStorage;
     config.RESTORE_DAYS = realRestoreDays;
     _resetSettingsCache();
-    try { fs.unlinkSync(path.join(ccxrayHome, 'settings.json')); } catch {}
+    // Only remove settings.json if we created it (don't destroy user's real file)
+    if (!settingsExisted) { try { fs.unlinkSync(settingsPath); } catch {} }
     fs.rmSync(logsDir, { recursive: true, force: true });
   });
 
@@ -567,7 +575,7 @@ describe('restoreFromLogs — star-protection + cutoff integration (#348)', () =
 
     // Write settings.json with a session star on protectedSid
     _resetSettingsCache();
-    fs.writeFileSync(path.join(ccxrayHome, 'settings.json'), JSON.stringify({
+    fs.writeFileSync(settingsPath, JSON.stringify({
       starredSessions: [protectedSid],
     }));
 
