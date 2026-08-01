@@ -103,10 +103,22 @@ function rebuildFromMetas(metas) {
   // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
   // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
   // conservative (no false compaction signal).
+  // #385: deduplicate metas by responseId before feeding to weather assessment.
+  // Raw metas from index.ndjson contain 2–8 duplicate copies per turn in multi-writer
+  // scenarios (ADR 0012). Cost/count are already deduped via _upsert (_costByRid /
+  // _countedRids), but weather reads the list directly — duplicates inflate stuck
+  // streaks, error clusters, and cumulative error ratios. Lines without responseId
+  // (legacy/OpenAI exempt) pass through unchanged, matching _upsert's count rule.
   const { assessWeather } = require('../public/weather');
+  const _weatherSeenRid = new Set();
   const bySid = new Map();
   for (const m of metas) {
     if (!m || !m.sessionId || m.isSubagent) continue;
+    const rid = m.responseId;
+    if (rid) {
+      if (_weatherSeenRid.has(rid)) continue;
+      _weatherSeenRid.add(rid);
+    }
     let arr = bySid.get(m.sessionId);
     if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
     arr.push(m);
