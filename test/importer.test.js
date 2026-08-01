@@ -339,6 +339,54 @@ describe('codex importer', () => {
       assert.strictEqual(entries[0].tokens.cacheRead, 4992);
       assert.strictEqual(entries[0].tokens.output, 35 + 28);
       assert.strictEqual(entries[0].tokens.contextWindow, 258400);
+      // #384: maxContext must be written to the entry (was missing before fix)
+      assert.strictEqual(entries[0].maxContext, 258400);
+    });
+
+    it('#384: writes maxContext from model_context_window', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-ctx.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-ctx-test' }),
+        makeCodexTurnContext({ model: 'gpt-5-codex' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z', contextWindow: 400000 }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].maxContext, 400000, 'maxContext should come from model_context_window');
+    });
+
+    it('#384: uses CODEX_CONTEXT_WINDOW fallback when model_context_window absent', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-no-ctx.jsonl');
+      // Build a token_count line without model_context_window
+      const line = JSON.stringify({
+        timestamp: '2026-07-15T10:30:05.000Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: {
+              input_tokens: 5000,
+              cached_input_tokens: 1000,
+              output_tokens: 100,
+              reasoning_output_tokens: 0,
+              total_tokens: 5100,
+            },
+          },
+        },
+      });
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-no-ctx' }),
+        line,
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].maxContext, 400000, 'should fall back to CODEX_CONTEXT_WINDOW');
     });
 
     it('skips token_count events with zero usage', async () => {
