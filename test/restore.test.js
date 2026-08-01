@@ -733,4 +733,22 @@ describe('session-index beginRestoreBuffer / endRestoreBuffer (codex R3)', () =>
     assert.equal(si.get('live-b').totalCost, 0.3);
     assert.equal(si.get('rebuilt').count, 1); // unchanged
   });
+
+  it('endRestoreBuffer(false) clears buffer without replay (error path)', () => {
+    si.rebuildFromMetas([]);
+    si.beginRestoreBuffer();
+    assert.equal(si._restoreBufferActive(), true);
+
+    si.updateFromEntry({ sessionId: 'lost', model: 'x', cost: { cost: 1 }, receivedAt: 1 });
+
+    // Simulate error: clear without replay
+    si.endRestoreBuffer(false);
+
+    assert.equal(si._restoreBufferActive(), false, 'buffer must be cleared');
+    // The live upsert went through (beginRestoreBuffer doesn't block it)
+    assert.equal(si.get('lost').count, 1);
+    // But a subsequent updateFromEntry must NOT accumulate into a dead buffer
+    si.updateFromEntry({ sessionId: 'post', model: 'y', cost: { cost: 0.1 }, receivedAt: 2 });
+    assert.equal(si._restoreBufferActive(), false, 'buffer must stay inactive after end');
+  });
 });

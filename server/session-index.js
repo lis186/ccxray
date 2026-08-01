@@ -232,6 +232,7 @@ function reconcile(indexContent) {
 // into the rebuilt state; responseId dedup (_countedRids/_costByRid) makes replay
 // idempotent for entries whose line was also inside the snapshot byte bound.
 let _restoreBuffer = null;
+function _restoreBufferActive() { return _restoreBuffer !== null; }
 function beginRestoreBuffer() { _restoreBuffer = []; }
 function endRestoreBuffer(replay) {
   const buf = _restoreBuffer;
@@ -415,6 +416,6 @@ module.exports = {
   rebuildFromIndexContent, rebuildFromMetas, rebuildFromMetasAsync,
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas, createReconcileTally,
-  updateFromEntry, beginRestoreBuffer, endRestoreBuffer,
+  updateFromEntry, beginRestoreBuffer, endRestoreBuffer, _restoreBufferActive,
   setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
 };

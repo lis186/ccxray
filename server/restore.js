@@ -252,10 +252,13 @@ async function restoreFromLogs() {
   // codex R3: buffer live updateFromEntry calls during the restore+rebuild window
   // so they survive the rebuild's clear. Replay into rebuilt state afterwards.
   if (rebuildPending) sessionIdx.beginRestoreBuffer();
-
+  let rebuildRan = false;
   // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
   console.time('restore:parse');
   let restored = 0;
+  let oversizedSessions = new Map();
+
+  try { // finally → endRestoreBuffer; prevents _restoreBuffer leak on throw
 
   if (needStarPass) {
     const retentionSets = computeRetentionSets(starLight, stars);
@@ -274,7 +277,7 @@ async function restoreFromLogs() {
   for (const m of working) {
     if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
   }
-  const oversizedSessions = new Map();
+  oversizedSessions = new Map();
   for (const [sid, count] of sessionTotals) {
     if (count > store.SESSION_ENTRY_CAP) oversizedSessions.set(sid, count);
   }
@@ -429,9 +432,12 @@ async function restoreFromLogs() {
     console.time('restore:session-index-rebuild');
     await sessionIdx.rebuildFromMetasAsync(streamAllMetas(snapshotBytes));
     console.timeEnd('restore:session-index-rebuild');
-    sessionIdx.endRestoreBuffer(true);
+    rebuildRan = true;
     const reason = driftDetected ? 'reconciled' : 'rebuilt';
     console.log(`\x1b[90m   Session index ${reason}: ${sessionIdx.size()} sessions\x1b[0m`);
+  }
+  } finally { // matches try at beginRestoreBuffer
+    if (rebuildPending) sessionIdx.endRestoreBuffer(rebuildRan);
   }
   for (const [sid, meta] of Object.entries(store.sessionMeta)) {
     if (meta.title) sessionIdx.setTitle(sid, meta.title);
