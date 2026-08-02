@@ -701,9 +701,11 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         const hitRate = (usage.cache_read_input_tokens / totalCtx * 100).toFixed(0);
         text += ' | Cache ' + hitRate + '% hit';
       }
-      // INVARIANT(#420): per-turn cost uses confidence-aware prefix
+      // INVARIANT(#420): per-turn cost display. calculateCost (live path)
+      // returns exact/prefix/unknown — never 'fallback' (that's calculateCostSimple
+      // in cost-worker). Both exact and prefix show plain $ per #420 design table.
       if (costInfo?.cost != null) {
-        text += ' | ' + (costInfo.confidence === 'fallback' ? '~$' : '$') + costInfo.cost.toFixed(4);
+        text += ' | $' + costInfo.cost.toFixed(4);
       }
       // #142: align advice bands to the unified colour thresholds (80/40).
       if (Number(pct) > helpers.CTX_RED_PCT) {
