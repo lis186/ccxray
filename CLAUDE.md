@@ -168,13 +168,13 @@ Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` 
 
 ### Pricing lag overrides
 
-`server/pricing.js` has `LITELLM_LAG_OVERRIDES` for models LiteLLM has not listed yet (e.g. new Grok wire ids). These are **temporary**:
+`server/default-rates.js` has `LITELLM_LAG_OVERRIDES` for models LiteLLM has not listed yet (e.g. new Grok wire ids). These are **temporary**:
 
 1. On every `fetchPricing()`, if LiteLLM already has any watched `litellmKeys`, the override is **not applied** (LiteLLM wins) and startup prints a yellow `pricing lag override obsolete: … Delete the row…` reminder.
 2. Search `LITELLM_LAG_OVERRIDES` or `pricing lag override` to find rows to delete.
 3. Lifecycle tests live in `test/pricing.test.js` (`LITELLM_LAG_OVERRIDES lifecycle`).
 
-`DEFAULT_PRICING` is the offline safety net (Claude/OpenAI/**stable Grok** bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently `grok-build`).
+`DEFAULT_PRICING` (in `server/default-rates.js`) is the offline safety net (Claude/OpenAI/**stable Grok** bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently `grok-build`).
 
 ### Delta Log Storage
 

@@ -147,6 +147,22 @@ describe('default-rates: single source of truth (#397)', () => {
       // If prefix matching were insertion-order, grok-build could win.
       assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build'), 2);
     });
+
+    it('bare gpt-5.6 must NOT fall through to gpt-5 (codex review P1)', () => {
+      // gpt-5.6 = $5/MTok input (same as gpt-5.6-sol), not gpt-5 at $1.25
+      assert.equal(calculateCostSimple(usage1M, 'gpt-5.6'), 5);
+    });
+
+    it('getModelPricing uses date-strip parity with calculateCostSimple (codex review P2)', () => {
+      const { getModelPricing } = require('../server/pricing');
+      // claude-haiku-4-5-20251001 should resolve the same in both matchers
+      const offline = calculateCostSimple(usage1M, 'claude-haiku-4-5-20251001');
+      const live = getModelPricing('claude-haiku-4-5-20251001');
+      assert.ok(live, 'getModelPricing must resolve claude-haiku-4-5-20251001');
+      const liveCost = usage1M.input_tokens * live.input / 1e6;
+      assert.ok(Math.abs(offline - liveCost) < 0.01,
+        `offline=${offline} live=${liveCost} — matchers disagree`);
+    });
   });
 
   describe('cross-module consistency', () => {

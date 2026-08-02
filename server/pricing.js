@@ -167,9 +167,11 @@ function getModelPricing(model) {
   if (pricingTable[model]) return pricingTable[model];
   // LiteLLM provider-prefixed form (xai/grok-4.3) when wire sent bare id
   if (!model.includes('/') && pricingTable[`xai/${model}`]) return pricingTable[`xai/${model}`];
+  // #397: match logic must agree with default-rates.js calculateCostSimple
   const keys = Object.keys(pricingTable).sort((a, b) => b.length - a.length);
   for (const key of keys) {
-    if (model.startsWith(key)) return pricingTable[key];
+    const prefix = key.split('-202')[0];
+    if (model.startsWith(key) || model.startsWith(prefix)) return pricingTable[key];
   }
   return null;
 }

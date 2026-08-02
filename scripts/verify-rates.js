@@ -68,9 +68,12 @@ async function loadLiteLLM(useCached) {
 }
 
 function findPrefixCover(key, table) {
+  // A LiteLLM key is "covered" if a DEFAULT_PRICING key is a prefix of it
+  // (runtime: model.startsWith(tableKey)). NOT the reverse — a LiteLLM key
+  // being a prefix of our key doesn't mean runtime would match it.
   const sorted = Object.keys(table).sort((a, b) => b.length - a.length);
   for (const k of sorted) {
-    if (key.startsWith(k) || k.startsWith(key)) return k;
+    if (key.startsWith(k)) return k;
   }
   return null;
 }

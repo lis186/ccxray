@@ -41,8 +41,12 @@ const DEFAULT_PRICING = {
   'gpt-5.6-sol':       { input: 5,     output: 30,  cache_create: 6.25,  cache_read: 0.50 },
   'gpt-5.6-terra':     { input: 2,     output: 12,  cache_create: 2.50,  cache_read: 0.20 },
   'gpt-5.6-luna':      { input: 0.20,  output: 1.20, cache_create: 0.25, cache_read: 0.02 },
+  'gpt-5.6':           { input: 5,     output: 30,  cache_create: 6.25,  cache_read: 0.50 },
+  'gpt-5.5-pro':       { input: 30,    output: 180, cache_create: 30,    cache_read: 3 },
   'gpt-5.5':           { input: 5,     output: 30,  cache_create: 5,     cache_read: 0.50 },
+  'gpt-5.4-pro':       { input: 30,    output: 180, cache_create: 30,    cache_read: 3 },
   'gpt-5.4-mini':      { input: 0.75,  output: 4.50, cache_create: 0.75, cache_read: 0.075 },
+  'gpt-5.4':           { input: 2.50,  output: 15,  cache_create: 2.50,  cache_read: 0.25 },
   // Legacy OpenAI (prefix match for older logs)
   'gpt-5':             { input: 1.25,  output: 10,  cache_create: 1.25,  cache_read: 0.125 },
   'gpt-4.1':           { input: 2,     output: 8,   cache_create: 2,     cache_read: 0.50 },
