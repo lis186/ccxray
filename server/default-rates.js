@@ -15,38 +15,48 @@
 // Long-lived safety nets when LiteLLM fetch fails. Not temporary lag patches
 // (those go in LITELLM_LAG_OVERRIDES below).
 const DEFAULT_PRICING = {
-  // Claude models
-  'claude-opus-4-6':   { input: 5,    output: 25, cache_create: 6.25,  cache_read: 0.50 },
-  'claude-sonnet-4-6': { input: 3,    output: 15, cache_create: 3.75,  cache_read: 0.30 },
-  'claude-opus-4-5':   { input: 5,    output: 25, cache_create: 6.25,  cache_read: 0.50 },
-  'claude-opus-4-1':   { input: 5,    output: 25, cache_create: 6.25,  cache_read: 0.50 },
-  'claude-opus-4':     { input: 15,   output: 75, cache_create: 18.75, cache_read: 1.50 },
-  'claude-sonnet-4':   { input: 3,    output: 15, cache_create: 3.75,  cache_read: 0.30 },
-  'claude-haiku-4':    { input: 0.80, output: 4,  cache_create: 1,     cache_read: 0.08 },
-  'claude-fable-5':    { input: 5,    output: 25, cache_create: 6.25,  cache_read: 0.50 },
-  'claude-3-5-sonnet': { input: 3,    output: 15, cache_create: 3.75,  cache_read: 0.30 },
-  'claude-3-5-haiku':  { input: 0.80, output: 4,  cache_create: 1,     cache_read: 0.08 },
-  'claude-3-opus':     { input: 15,   output: 75, cache_create: 18.75, cache_read: 1.50 },
-  // Wire-ID aliases: dated wire IDs like claude-sonnet-4-5-20250514 prefix-match these.
-  // claude-opus-4-5 already covers claude-opus-4-5-20250514 via prefix match.
-  'claude-sonnet-4-5': { input: 3,    output: 15, cache_create: 3.75,  cache_read: 0.30 },
-  'claude-haiku-3-5':  { input: 0.80, output: 4,  cache_create: 1,     cache_read: 0.08 },
-  // OpenAI models (per 1M tokens, USD — 2026-05 rates)
-  'gpt-5.5':           { input: 2,    output: 10,   cache_create: 0, cache_read: 1 },
-  'gpt-5':             { input: 2,    output: 10,   cache_create: 0, cache_read: 1 },
-  'gpt-4.1':           { input: 2,    output: 8,    cache_create: 0, cache_read: 0.50 },
-  'gpt-4o':            { input: 2.50, output: 10,   cache_create: 0, cache_read: 1.25 },
-  'gpt-4o-mini':       { input: 0.15, output: 0.60, cache_create: 0, cache_read: 0.075 },
-  'o3':                { input: 2,    output: 8,    cache_create: 0, cache_read: 0.50 },
-  'o3-mini':           { input: 1.10, output: 4.40, cache_create: 0, cache_read: 0.55 },
-  'o4-mini':           { input: 1.10, output: 4.40, cache_create: 0, cache_read: 0.55 },
-  // xAI Grok (wire bare names; LiteLLM also lists xai/... — offline safety net).
-  // Prefix match covers grok-4.5-build / grok-4.5-latest variants.
-  'grok-4.5':          { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
-  'grok-4.5-latest':   { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
-  'grok-4.5-build':    { input: 2.00, output: 6.00, cache_create: 0, cache_read: 0.50 },
-  'grok-4.3':          { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
-  'grok-4.3-latest':   { input: 1.25, output: 2.50, cache_create: 0, cache_read: 0.20 },
+  // ── Anthropic Claude (verified against LiteLLM 2026-08-02) ──────────
+  // Active models with index traffic
+  'claude-opus-4-6':   { input: 5,     output: 25,  cache_create: 6.25,  cache_read: 0.50 },
+  'claude-opus-4-8':   { input: 5,     output: 25,  cache_create: 6.25,  cache_read: 0.50 },
+  'claude-opus-5':     { input: 5,     output: 25,  cache_create: 6.25,  cache_read: 0.50 },
+  'claude-opus-4-7':   { input: 5,     output: 25,  cache_create: 6.25,  cache_read: 0.50 },
+  'claude-fable-5':    { input: 10,    output: 50,  cache_create: 12.50, cache_read: 1.00 },
+  'claude-sonnet-4-6': { input: 3,     output: 15,  cache_create: 3.75,  cache_read: 0.30 },
+  'claude-sonnet-5':   { input: 2,     output: 10,  cache_create: 2.50,  cache_read: 0.20 },
+  'claude-haiku-4-5-20251001': { input: 1, output: 5, cache_create: 1.25, cache_read: 0.10 },
+  // Legacy/prefix-match models (no direct index traffic but cover dated wire IDs)
+  'claude-opus-4-5':   { input: 5,     output: 25,  cache_create: 6.25,  cache_read: 0.50 },
+  'claude-opus-4-1':   { input: 15,    output: 75,  cache_create: 18.75, cache_read: 1.50 },
+  'claude-opus-4':     { input: 15,    output: 75,  cache_create: 18.75, cache_read: 1.50 },
+  'claude-sonnet-4-5': { input: 3,     output: 15,  cache_create: 3.75,  cache_read: 0.30 },
+  'claude-sonnet-4':   { input: 3,     output: 15,  cache_create: 3.75,  cache_read: 0.30 },
+  'claude-haiku-4':    { input: 0.80,  output: 4,   cache_create: 1,     cache_read: 0.08 },
+  'claude-3-5-sonnet': { input: 3,     output: 15,  cache_create: 3.75,  cache_read: 0.30 },
+  'claude-3-5-haiku':  { input: 0.80,  output: 4,   cache_create: 1,     cache_read: 0.08 },
+  'claude-3-opus':     { input: 15,    output: 75,  cache_create: 18.75, cache_read: 1.50 },
+  'claude-haiku-3-5':  { input: 0.80,  output: 4,   cache_create: 1,     cache_read: 0.08 },
+  // ── OpenAI (verified against LiteLLM 2026-08-02) ───────────────────
+  // Active models with index traffic
+  'gpt-5.6-sol':       { input: 5,     output: 30,  cache_create: 6.25,  cache_read: 0.50 },
+  'gpt-5.6-terra':     { input: 2,     output: 12,  cache_create: 2.50,  cache_read: 0.20 },
+  'gpt-5.6-luna':      { input: 0.20,  output: 1.20, cache_create: 0.25, cache_read: 0.02 },
+  'gpt-5.5':           { input: 5,     output: 30,  cache_create: 5,     cache_read: 0.50 },
+  'gpt-5.4-mini':      { input: 0.75,  output: 4.50, cache_create: 0.75, cache_read: 0.075 },
+  // Legacy OpenAI (prefix match for older logs)
+  'gpt-5':             { input: 1.25,  output: 10,  cache_create: 1.25,  cache_read: 0.125 },
+  'gpt-4.1':           { input: 2,     output: 8,   cache_create: 2,     cache_read: 0.50 },
+  'gpt-4o':            { input: 2.50,  output: 10,  cache_create: 2.50,  cache_read: 1.25 },
+  'gpt-4o-mini':       { input: 0.15,  output: 0.60, cache_create: 0.15, cache_read: 0.075 },
+  'o3':                { input: 2,     output: 8,   cache_create: 2,     cache_read: 0.50 },
+  'o3-mini':           { input: 1.10,  output: 4.40, cache_create: 1.10, cache_read: 0.55 },
+  'o4-mini':           { input: 1.10,  output: 4.40, cache_create: 1.10, cache_read: 0.275 },
+  // ── xAI Grok (verified against LiteLLM 2026-08-02) ─────────────────
+  'grok-4.5':          { input: 2.00,  output: 6.00, cache_create: 2.00, cache_read: 0.50 },
+  'grok-4.5-latest':   { input: 2.00,  output: 6.00, cache_create: 2.00, cache_read: 0.50 },
+  'grok-4.5-build':    { input: 2.00,  output: 6.00, cache_create: 2.00, cache_read: 0.50 },
+  'grok-4.3':          { input: 1.25,  output: 2.50, cache_create: 1.25, cache_read: 0.20 },
+  'grok-4.3-latest':   { input: 1.25,  output: 2.50, cache_create: 1.25, cache_read: 0.20 },
 };
 
 /**

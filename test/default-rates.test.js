@@ -118,8 +118,8 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.equal(calculateCostSimple(usage1M, 'claude-haiku-3-5-20241022'), 0.8);
     });
 
-    it('matches claude-fable-5 ($5/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'claude-fable-5'), 5);
+    it('matches claude-fable-5 ($10/MTok input)', () => {
+      assert.equal(calculateCostSimple(usage1M, 'claude-fable-5'), 10);
     });
 
     it('falls back to sonnet-4 rates for unknown model', () => {

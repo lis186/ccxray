@@ -37,7 +37,7 @@ describe('pricing', () => {
     it('returns pricing for OpenAI models', () => {
       const p = getModelPricing('gpt-5.5');
       assert.ok(p);
-      assert.equal(p.input, 2);
+      assert.equal(p.input, 5);
     });
 
     it('returns pricing for Grok CLI wire model ids via LiteLLM bare mirror', () => {
@@ -132,7 +132,7 @@ describe('pricing', () => {
     it('DEFAULT_PRICING applies when LiteLLM lacks the model', () => {
       const table = buildPricingTable({});
       assert.ok(table['gpt-5.5'], 'DEFAULT_PRICING floor must still provide gpt-5.5');
-      assert.equal(table['gpt-5.5'].input, 2);
+      assert.equal(table['gpt-5.5'].input, 5);
     });
 
     it('only xai/ keys are mirrored to bare names, not azure_ai/ (#397 defect 4)', () => {
