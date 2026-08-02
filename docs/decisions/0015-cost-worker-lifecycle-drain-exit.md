@@ -111,10 +111,10 @@ Revival hazards documented in #401's Deferred section.
 ## Consequences
 
 **Good**: the two-mode contract (executed vs. imported) is explicit and
-machine-checkable — importing cost-worker.js is provably side-effect free
-(differential evidence: disconnect listener count 0→0 after require, vs.
-0→1 before this ADR). The R4 root enumeration prevents future #407-class
-test-isolation holes.
+regression-guarded — `test/cost-worker-exit.test.js` test I asserts
+`require('cost-worker')` does not install a disconnect listener
+(differential evidence: 0→0 after require, vs. 0→1 before this ADR).
+The R4 root enumeration prevents future #407-class test-isolation holes.
 
 **Bad — manual maintenance**: R4's root table must be updated when a new
 env-derived scan root is added. A missing entry silently leaks the

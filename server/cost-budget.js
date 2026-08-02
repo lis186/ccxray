@@ -55,7 +55,7 @@ function streamUsageEntries(workerPath) {
     worker.on('exit', (code, signal) => {
       clearTimeout(timeout);
       if (signal) {
-        reject(new Error(stderrBuf || `Worker killed by ${signal}`));
+        reject(new Error(`Worker killed by ${signal}${stderrBuf ? ': ' + stderrBuf : ''}`));
         return;
       }
       if (code !== 0 && code !== null) {

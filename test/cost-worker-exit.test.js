@@ -138,6 +138,13 @@ async function waitForPidExit(pid, timeoutMs) {
 }
 
 describe('cost-worker: process lifecycle', () => {
+  it('I — importing cost-worker.js is side-effect free (ADR 0015)', () => {
+    const before = process.listenerCount('disconnect');
+    require('../server/cost-worker');
+    assert.equal(process.listenerCount('disconnect'), before,
+      'require() must not install a disconnect handler on the importing process');
+  });
+
   it('Y — exits on its own after writing output', async () => {
     const home = makeHome();
     let w;
