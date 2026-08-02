@@ -142,7 +142,8 @@ describe('cost-worker Grok index source', () => {
     const rows = await new Promise((resolve, reject) => {
       const child = fork(workerPath, [], {
         silent: true,
-        env: { ...process.env, CCXRAY_HOME: home, HOME: home },
+        // ADR 0015 R4: every env-derived root must be redirected
+        env: { ...process.env, CCXRAY_HOME: home, HOME: home, LOGS_DIR: undefined },
       });
       const chunks = [];
       let err = '';
