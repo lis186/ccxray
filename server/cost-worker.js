@@ -8,36 +8,10 @@ const path = require('path');
 const readline = require('readline');
 const os = require('os');
 
-function calculateCostSimple(usage, model) {
-  // Per-token rates (USD). Grok rows mirror server/pricing.js DEFAULT_PRICING / MTok.
-  const rates = {
-    'claude-sonnet-4-5-20250514': { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6 },
-    'claude-opus-4-5-20250514': { input: 15e-6, output: 75e-6, cache_read: 1.5e-6, cache_create: 18.75e-6 },
-    'claude-haiku-3-5-20241022': { input: 0.8e-6, output: 4e-6, cache_read: 0.08e-6, cache_create: 1e-6 },
-    'gpt-5.5': { input: 2e-6, output: 10e-6, cache_read: 1e-6, cache_create: 0 },
-    'gpt-5': { input: 2e-6, output: 10e-6, cache_read: 1e-6, cache_create: 0 },
-    'gpt-4o': { input: 2.5e-6, output: 10e-6, cache_read: 1.25e-6, cache_create: 0 },
-    'o3': { input: 2e-6, output: 8e-6, cache_read: 0.5e-6, cache_create: 0 },
-    'o4-mini': { input: 1.1e-6, output: 4.4e-6, cache_read: 0.55e-6, cache_create: 0 },
-    'grok-4.5': { input: 2e-6, output: 6e-6, cache_read: 0.5e-6, cache_create: 0 },
-    'grok-4.3': { input: 1.25e-6, output: 2.5e-6, cache_read: 0.2e-6, cache_create: 0 },
-    'grok-build': { input: 1e-6, output: 2e-6, cache_read: 0.2e-6, cache_create: 0 },
-  };
-  let r = null;
-  // Longest key first so grok-4.5-build → grok-4.5 (not grok-build).
-  // Prefix strip `-202…` keeps the historical Claude dated-id match.
-  const keys = Object.keys(rates).sort((a, b) => b.length - a.length);
-  for (const k of keys) {
-    if (!model) break;
-    const prefix = k.split('-202')[0];
-    if (model === k || model.startsWith(k) || model.startsWith(prefix)) { r = rates[k]; break; }
-  }
-  if (!r) r = { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6 };
-  return (usage.input_tokens || 0) * r.input
-    + (usage.output_tokens || 0) * r.output
-    + (usage.cache_read_input_tokens || 0) * r.cache_read
-    + (usage.cache_creation_input_tokens || 0) * r.cache_create;
-}
+// #397: calculateCostSimple lives in default-rates.js — the single source of
+// truth for offline model pricing. Re-exported here so existing consumers
+// (tests, processGrokIndexEntry) keep their import path.
+const { calculateCostSimple } = require('./default-rates');
 
 async function collectJsonlFiles(dir, results = []) {
   let items;
