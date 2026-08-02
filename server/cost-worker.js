@@ -3,26 +3,6 @@
 // Worker process for JSONL cost parsing — runs in a child process
 // to avoid blocking the main event loop during heavy I/O + JSON.parse.
 
-// #395: exit when the parent dies (SIGKILL/OOM-kill) — the IPC channel closes
-// and 'disconnect' fires; without this, the worker becomes an orphan (PPID=1).
-process.on('disconnect', () => process.exit(0));
-// The 'disconnect' listener refs the child-side IPC channel handle, which keeps
-// the event loop alive forever (the #396 regression: every cost scan burned
-// cost-budget.js's 120s timeout). This worker intentionally has NO exit call on
-// the success path — it ends by letting the event loop drain after the final
-// stdout write. unref() drops the channel as a reason to stay alive without
-// removing the listener, so parent death still fires 'disconnect' (#395 intact).
-// Ordering vs. the listener above is NOT load-bearing: Node latches an explicit
-// channel unref, so unref-before-listener behaves identically (measured on
-// v22.22.3). Do not rely on or "fix" the order.
-// NEVER replace the drain-exit with a bare process.exit(0) after run(): with
-// silent:true stdout is a pipe, and an explicit exit abandons whatever has not
-// been flushed, so the payload is cut off at one pipe buffer (65,536 bytes as
-// measured here on macOS + Node 22 — the capacity is platform-specific, the
-// truncation is not) and parses as nothing. That converts a loud hang into
-// silent cost-data corruption. Guards: test/cost-worker-exit.test.js (Y/Y2/X).
-process.channel?.unref();
-
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
@@ -299,16 +279,35 @@ async function run() {
   process.stdout.write(JSON.stringify(entries));
 }
 
+// ADR 0015: exported unconditionally — imported mode is side-effect free.
+module.exports = { calculateCostSimple, processGrokIndexEntry, processGrokIndexFile, scanGrokFromCcxrayIndex };
+
 if (require.main === module) {
+  // ADR 0015 R1: lifecycle setup belongs to executed mode only — importing
+  // this file must not install handlers or unref channels on the importer.
+  //
+  // #395: exit when the parent dies (SIGKILL/OOM-kill) — the IPC channel closes
+  // and 'disconnect' fires; without this, the worker becomes an orphan (PPID=1).
+  process.on('disconnect', () => process.exit(0));
+  // The 'disconnect' listener refs the child-side IPC channel handle, which keeps
+  // the event loop alive forever (the #396 regression: every cost scan burned
+  // cost-budget.js's 120s timeout). This worker intentionally has NO exit call on
+  // the success path — it ends by letting the event loop drain after the final
+  // stdout write. unref() drops the channel as a reason to stay alive without
+  // removing the listener, so parent death still fires 'disconnect' (#395 intact).
+  // Ordering vs. the listener above is NOT load-bearing: Node latches an explicit
+  // channel unref, so unref-before-listener behaves identically (measured on
+  // v22.22.3). Do not rely on or "fix" the order.
+  // NEVER replace the drain-exit with a bare process.exit(0) after run(): with
+  // silent:true stdout is a pipe, and an explicit exit abandons whatever has not
+  // been flushed, so the payload is cut off at one pipe buffer (65,536 bytes as
+  // measured here on macOS + Node 22 — the capacity is platform-specific, the
+  // truncation is not) and parses as nothing. That converts a loud hang into
+  // silent cost-data corruption. Guards: test/cost-worker-exit.test.js (Y/Y2/X).
+  process.channel?.unref();
+
   run().catch(err => {
     process.stderr.write(err.message);
     process.exitCode = 1;
   });
-} else {
-  module.exports = {
-    calculateCostSimple,
-    processGrokIndexEntry,
-    processGrokIndexFile,
-    scanGrokFromCcxrayIndex,
-  };
 }
