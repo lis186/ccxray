@@ -101,6 +101,23 @@ function fmtMin(ms, base) {
   return h + 'h' + (m ? m + 'm' : '');
 }
 
+// #420 Phase 2: confidence-aware cost formatting.
+// fallback → ~$N.NNNN (estimated); unknown → —; null confidence (legacy) → normal.
+function formatCost(cost, confidence, decimals) {
+  if (confidence === 'unknown' || cost == null) return '—';
+  var d = decimals != null ? decimals : 4;
+  var prefix = confidence === 'fallback' ? '~$' : '$';
+  var title = confidence === 'fallback' ? ' title="使用預設費率，可能不準確"' : '';
+  return '<span' + title + '>' + prefix + cost.toFixed(d) + '</span>';
+}
+
+// Plain-text version (no HTML wrapper) for contexts that build their own markup.
+function formatCostText(cost, confidence, decimals) {
+  if (confidence === 'unknown' || cost == null) return '—';
+  var d = decimals != null ? decimals : 4;
+  return (confidence === 'fallback' ? '~$' : '$') + cost.toFixed(d);
+}
+
 function escapeHtml(s) {
   if (typeof s !== 'string') s = JSON.stringify(s, null, 2);
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');

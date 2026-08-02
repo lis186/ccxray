@@ -378,6 +378,7 @@ function addEntry(e) {
   const tok = e.tokens || {};
   const usage = e.usage || null;
   const turnCost = e.cost?.cost != null ? e.cost.cost : (typeof e.cost === 'number' ? e.cost : null);
+  const costConfidence = e.cost?.confidence || null;
 
   // Session tracking — properly deduplicated by ID
   const entryId = e.id || '';
@@ -646,7 +647,7 @@ function addEntry(e) {
     // #339: beta1m rides the client entry so sessionCtxWindow() + the swimlane lane fold
     // can derive a per-session 1M denominator. Only true carries meaning (monotone OR).
     beta1m: e.beta1m === true,
-    tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, sessionId: sid,
+    tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, costConfidence, sessionId: sid,
     severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
     msgCount, toolCount, toolCalls: e.toolCalls || {}, stopReason,
@@ -965,11 +966,11 @@ function _patchEntryInPlace(u) {
       'duplicateToolCalls', 'toolsHash', 'hasCredential']) {
       if (u[k] != null) full[k] = u[k];
     }
-    // cost arrives as {cost:number} from summarizeEntry; allEntries stores a bare
-    // number — normalize exactly as addEntry does or the workflow cost math (.toFixed)
-    // throws (codex round-1 M3).
+    // cost arrives as {cost, confidence} from summarizeEntry; allEntries stores
+    // bare number + separate costConfidence (codex round-1 M3, #420 Phase 2).
     if (u.cost != null) {
       full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
+      if (u.cost?.confidence) full.costConfidence = u.cost.confidence;
     }
     // ctxUsed is derived from usage at add time; recompute it when usage is
     // enriched or the context bar keeps rendering the poor copy's value (codex
