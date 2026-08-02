@@ -20,6 +20,25 @@ installed a `process.on('disconnect')` handler and called
 `process.channel?.unref()` on the importing process — a side effect that
 hijacked the importer's lifecycle (#407 class).
 
+### The #402 → #313 → #407 incident (R4's motivating case)
+
+`test/cost-worker-exit.test.js` (shipped in #402) carried a comment:
+*"os.homedir() reads $HOME on POSIX; the worker scans $HOME/.claude*,
+$HOME/.codex* and $HOME/.config/claude — not CCXRAY_HOME."* Accurate the
+day it was written. #313 then added `scanGrokFromCcxrayIndex`, giving the
+worker a second data root read from `CCXRAY_HOME`/`LOGS_DIR`, and the
+comment became false. Worse than merely stale: it actively told the next
+reader that the isolation was complete, so the leak went unnoticed until an
+external review pointed at it (#407).
+
+The generalisable rule: **a comment must not assert a fact about a
+collaborating module.** A negative cross-module claim ("X does not read Y")
+has an expiry date set by someone else's commit, and nothing links the two
+files so that changing one prompts revisiting the other. Cross-file
+contracts belong in an ADR plus guard comments — the repo's existing
+three-layer convention. A local comment should say why *this* code does what
+it does, not what a different module does or does not do.
+
 ## Decision
 
 cost-worker is a **pure batch process**. Its contract:
@@ -120,6 +139,14 @@ The R4 root enumeration prevents future #407-class test-isolation holes.
 env-derived scan root is added. A missing entry silently leaks the
 developer's real data into the test, which may still pass (the #407 shape:
 it passed because the real index had zero grok rows).
+
+**Bad — no compile-time enforcement for R4**: R4 is a diff-time obligation,
+same class as ADR 0002 (signature fields) and ADR 0003 (entryIndex sync) —
+adding a scan root without updating `isolatedEnv()` produces no error at
+build, test, or lint time. The #402→#313→#407 incident (see Context) is the
+existence proof: a comment asserted the input surface was `$HOME`-only; the
+next PR added `CCXRAY_HOME` and the comment became a lie that actively
+prevented discovery of the leak.
 
 **Mitigation**: guard comments at every mutation site name this ADR. The
 `isolatedEnv()` helper in `test/cost-worker-exit.test.js` is the canonical
