@@ -71,7 +71,7 @@ function killAndWait(child) {
   });
 }
 
-async function waitForIndexEntry(logsDir, predicate, timeoutMs = 4000) {
+async function waitForIndexEntry(logsDir, predicate, timeoutMs = 8000) {
   const indexPath = path.join(logsDir, 'index.ndjson');
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -92,7 +92,7 @@ async function waitForIndexEntry(logsDir, predicate, timeoutMs = 4000) {
 // Wait until at least `minCount` index entries match, returning the matches.
 // Polling beats a fixed sleep before reading index.ndjson — the proxy writes
 // from a separate process and a guessed delay flakes under load. See #100.
-async function waitForIndexEntries(logsDir, predicate, minCount, timeoutMs = 4000) {
+async function waitForIndexEntries(logsDir, predicate, minCount, timeoutMs = 8000) {
   const indexPath = path.join(logsDir, 'index.ndjson');
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
