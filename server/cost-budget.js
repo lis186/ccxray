@@ -39,9 +39,10 @@ const WORKER_TIMEOUT_MS = 120_000;
 let lastFailureAt = 0;
 const FAILURE_BACKOFF_MS = 60_000;
 
-function streamUsageEntries() {
+// ADR 0015 R3: reads the worker's single stdout JSON result — do not add a second channel without updating this and every stdout-reading test.
+function streamUsageEntries(workerPath) {
   return new Promise((resolve, reject) => {
-    const worker = fork(path.join(__dirname, 'cost-worker.js'), [], { silent: true, windowsHide: true });
+    const worker = fork(workerPath || path.join(__dirname, 'cost-worker.js'), [], { silent: true, windowsHide: true });
     const chunks = [];
     let stderrBuf = '';
     const timeout = setTimeout(() => {
@@ -51,8 +52,12 @@ function streamUsageEntries() {
     worker.stdout.on('data', (chunk) => chunks.push(chunk));
     worker.stderr.on('data', (chunk) => { stderrBuf += chunk; });
     worker.on('error', (err) => { clearTimeout(timeout); reject(err); });
-    worker.on('exit', (code) => {
+    worker.on('exit', (code, signal) => {
       clearTimeout(timeout);
+      if (signal) {
+        reject(new Error(stderrBuf || `Worker killed by ${signal}`));
+        return;
+      }
       if (code !== 0 && code !== null) {
         reject(new Error(stderrBuf || `Worker exited with code ${code}`));
         return;
@@ -273,4 +278,5 @@ module.exports = {
   getCostsCacheOrNull,
   calculateBurnRate,
   warmUp,
+  streamUsageEntries,
 };
