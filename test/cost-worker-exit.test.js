@@ -47,6 +47,7 @@ function makeHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-worker-test-'));
 }
 
+// ADR 0015 R4: every env-derived root must be redirected — see the root table in the ADR.
 function isolatedEnv(home) {
   const env = { ...process.env, HOME: home, CCXRAY_HOME: home };
   delete env.LOGS_DIR; // would override CCXRAY_HOME and point back at real logs
@@ -137,6 +138,13 @@ async function waitForPidExit(pid, timeoutMs) {
 }
 
 describe('cost-worker: process lifecycle', () => {
+  it('I — importing cost-worker.js is side-effect free (ADR 0015)', () => {
+    const before = process.listenerCount('disconnect');
+    require('../server/cost-worker');
+    assert.equal(process.listenerCount('disconnect'), before,
+      'require() must not install a disconnect handler on the importing process');
+  });
+
   it('Y — exits on its own after writing output', async () => {
     const home = makeHome();
     let w;
@@ -200,6 +208,35 @@ describe('cost-worker: process lifecycle', () => {
       assert.equal(entries.length, LINES);
     } finally {
       killIfAlive(w && w.worker);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('S — signal-killed worker rejects, not resolves (#401 item 5)', async () => {
+    const { streamUsageEntries } = require('../server/cost-budget');
+    const home = makeHome();
+    const stubPath = path.join(home, 'stub-signal.js');
+    // Stub: writes valid JSON array then hangs — an external SIGKILL arrives
+    // while it's still alive with complete, parseable output on stdout.
+    // Old handler: code===null passes the (code !== 0 && code !== null) guard,
+    // falls into JSON.parse, parses successfully → resolves as success.
+    fs.writeFileSync(stubPath, [
+      "'use strict';",
+      "process.stdout.write(JSON.stringify([{fake:'data'}]));",
+      "setTimeout(() => process.kill(process.pid, 'SIGKILL'), 200);",
+      'setInterval(() => {}, 1 << 30);',
+    ].join('\n'));
+
+    try {
+      await assert.rejects(
+        () => streamUsageEntries(stubPath),
+        (err) => {
+          assert.ok(err.message.includes('SIGKILL'), `expected SIGKILL in message, got: ${err.message}`);
+          return true;
+        },
+        'streamUsageEntries must reject when the worker is signal-killed, even if stdout contains valid JSON',
+      );
+    } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });

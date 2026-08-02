@@ -139,11 +139,11 @@ describe('cost-worker Grok index source', () => {
     ].join('\n') + '\n');
 
     const workerPath = path.join(__dirname, '..', 'server', 'cost-worker.js');
+    // ADR 0015 R4: every env-derived root must be redirected (canonical pattern: isolatedEnv in cost-worker-exit.test.js)
+    const env = { ...process.env, HOME: home, CCXRAY_HOME: home };
+    delete env.LOGS_DIR;
     const rows = await new Promise((resolve, reject) => {
-      const child = fork(workerPath, [], {
-        silent: true,
-        env: { ...process.env, CCXRAY_HOME: home, HOME: home },
-      });
+      const child = fork(workerPath, [], { silent: true, env });
       const chunks = [];
       let err = '';
       child.stdout.on('data', c => chunks.push(c));
