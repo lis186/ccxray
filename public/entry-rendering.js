@@ -968,9 +968,15 @@ function _patchEntryInPlace(u) {
     }
     // cost arrives as {cost, confidence} from summarizeEntry; allEntries stores
     // bare number + separate costConfidence (codex round-1 M3, #420 Phase 2).
+    // cost and confidence are taken as a unit: confidence only updates when the
+    // cost value is accepted (fable review MINOR-1, ADR 0012 as-a-unit rule).
     if (u.cost != null) {
-      full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
-      if (u.cost?.confidence) full.costConfidence = u.cost.confidence;
+      if (u.cost && u.cost.cost != null) {
+        full.cost = u.cost.cost;
+        if (u.cost.confidence) full.costConfidence = u.cost.confidence;
+      } else if (typeof u.cost === 'number') {
+        full.cost = u.cost;
+      }
     }
     // ctxUsed is derived from usage at add time; recompute it when usage is
     // enriched or the context bar keeps rendering the poor copy's value (codex

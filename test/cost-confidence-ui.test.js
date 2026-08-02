@@ -120,32 +120,46 @@ describe('#420 Phase 2: cost confidence UI', () => {
     });
   });
 
-  describe('_patchEntryInPlace preserves costConfidence', () => {
-    it('patches costConfidence from cost object', () => {
-      // Simulate the patch logic from entry-rendering.js L971-974
-      const full = { cost: 0.1, costConfidence: null };
-      const u = { cost: { cost: 0.2, confidence: 'fallback' } };
-
+  describe('_patchEntryInPlace preserves costConfidence (as-a-unit)', () => {
+    // Mirror the real patch logic from entry-rendering.js (fable MINOR-1 fix):
+    // confidence only updates when cost.cost is accepted.
+    function applyPatch(full, u) {
       if (u.cost != null) {
-        full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
-        if (u.cost?.confidence) full.costConfidence = u.cost.confidence;
+        if (u.cost && u.cost.cost != null) {
+          full.cost = u.cost.cost;
+          if (u.cost.confidence) full.costConfidence = u.cost.confidence;
+        } else if (typeof u.cost === 'number') {
+          full.cost = u.cost;
+        }
       }
+    }
 
+    it('patches cost and confidence together', () => {
+      const full = { cost: 0.1, costConfidence: null };
+      applyPatch(full, { cost: { cost: 0.2, confidence: 'fallback' } });
       assert.equal(full.cost, 0.2);
       assert.equal(full.costConfidence, 'fallback');
     });
 
     it('does not overwrite costConfidence when update has no confidence', () => {
       const full = { cost: 0.1, costConfidence: 'exact' };
-      const u = { cost: { cost: 0.2 } };
-
-      if (u.cost != null) {
-        full.cost = (u.cost && u.cost.cost != null) ? u.cost.cost : (typeof u.cost === 'number' ? u.cost : full.cost);
-        if (u.cost?.confidence) full.costConfidence = u.cost.confidence;
-      }
-
+      applyPatch(full, { cost: { cost: 0.2 } });
       assert.equal(full.cost, 0.2);
       assert.equal(full.costConfidence, 'exact');
+    });
+
+    it('null-cost patch does NOT poison existing confidence (fable MINOR-1)', () => {
+      const full = { cost: 0.1234, costConfidence: 'exact' };
+      applyPatch(full, { cost: { cost: null, confidence: 'unknown' } });
+      assert.equal(full.cost, 0.1234, 'cost must not change');
+      assert.equal(full.costConfidence, 'exact', 'confidence must not change');
+    });
+
+    it('bare-number patch preserves existing confidence', () => {
+      const full = { cost: 0.1, costConfidence: 'exact' };
+      applyPatch(full, { cost: 0.2 });
+      assert.equal(full.cost, 0.2);
+      assert.equal(full.costConfidence, 'exact', 'confidence preserved');
     });
   });
 });
