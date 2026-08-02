@@ -2539,7 +2539,7 @@ function renderSectionsCol(idx) {
   html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
   if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';
-  if (turnCost != null) html += ' · <span style="color:var(--yellow)">$' + turnCost.toFixed(2) + '</span>';
+  if (turnCost != null || e.costConfidence === 'unknown') html += ' · <span style="color:var(--yellow)">' + formatCostText(turnCost, e.costConfidence, 2) + '</span>';
   html += '</div>';
   const cacheRead = usage.cache_read_input_tokens || 0;
   const cacheCreate = usage.cache_creation_input_tokens || 0;
