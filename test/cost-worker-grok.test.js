@@ -64,8 +64,8 @@ describe('cost-worker Grok index source', () => {
 
   it('calculateCostSimple longest-prefix matches grok-4.5-build to grok-4.5 rates', () => {
     const usage = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-    assert.equal(calculateCostSimple(usage, 'grok-4.5-build'), 2);
-    assert.equal(calculateCostSimple(usage, 'grok-build'), 1);
+    assert.equal(calculateCostSimple(usage, 'grok-4.5-build').cost, 2);
+    assert.equal(calculateCostSimple(usage, 'grok-build').cost, 1);
   });
 
   it('processGrokIndexFile streams only grok rows', async () => {

@@ -162,6 +162,11 @@ const _defaultRate = _perTokenRates['claude-sonnet-4'] ||
  * Used by cost-worker.js (child process) and importer.js (startup import)
  * where the live LiteLLM pricing table is not available.
  *
+ * Returns { cost, confidence } where confidence is one of:
+ *   - 'exact'    — exact hit in the rate table
+ *   - 'prefix'   — matched via model.startsWith(key) or date-strip
+ *   - 'fallback' — fell back to claude-sonnet-4 default rates
+ *
  * Model matching (longest-prefix-first):
  *   1. Exact match against the rate table
  *   2. model.startsWith(key) — covers versioned wire IDs (grok-4.5-build -> grok-4.5)
@@ -171,26 +176,30 @@ const _defaultRate = _perTokenRates['claude-sonnet-4'] ||
  */
 function calculateCostSimple(usage, model) {
   let r = null;
+  let confidence = 'fallback';
   if (model) {
     // Fast path: exact match
     if (_perTokenRates[model]) {
       r = _perTokenRates[model];
+      confidence = 'exact';
     } else {
       // Longest key first so grok-4.5-build -> grok-4.5 (not grok-build).
       for (const k of _sortedKeys) {
         const prefix = k.split('-202')[0];
         if (model.startsWith(k) || model.startsWith(prefix)) {
           r = _perTokenRates[k];
+          confidence = 'prefix';
           break;
         }
       }
     }
   }
   if (!r) r = _defaultRate;
-  return (usage.input_tokens || 0) * r.input
+  const cost = (usage.input_tokens || 0) * r.input
     + (usage.output_tokens || 0) * r.output
     + (usage.cache_read_input_tokens || 0) * r.cache_read
     + (usage.cache_creation_input_tokens || 0) * r.cache_create;
+  return { cost, confidence };
 }
 
 module.exports = {

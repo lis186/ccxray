@@ -103,31 +103,31 @@ describe('default-rates: single source of truth (#397)', () => {
     };
 
     it('matches grok-4.5-build to grok-4.5-build (exact, $2/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build'), 2);
+      assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build').cost, 2);
     });
 
     it('matches grok-build to grok-build via lag override ($1/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'grok-build'), 1);
+      assert.equal(calculateCostSimple(usage1M, 'grok-build').cost, 1);
     });
 
     it('matches dated wire ID claude-sonnet-4-5-20250514 ($3/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'claude-sonnet-4-5-20250514'), 3);
+      assert.equal(calculateCostSimple(usage1M, 'claude-sonnet-4-5-20250514').cost, 3);
     });
 
     it('matches dated wire ID claude-haiku-3-5-20241022 ($0.80/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'claude-haiku-3-5-20241022'), 0.8);
+      assert.equal(calculateCostSimple(usage1M, 'claude-haiku-3-5-20241022').cost, 0.8);
     });
 
     it('matches claude-fable-5 ($10/MTok input)', () => {
-      assert.equal(calculateCostSimple(usage1M, 'claude-fable-5'), 10);
+      assert.equal(calculateCostSimple(usage1M, 'claude-fable-5').cost, 10);
     });
 
     it('falls back to sonnet-4 rates for unknown model', () => {
-      assert.equal(calculateCostSimple(usage1M, 'totally-unknown'), 3);
+      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').cost, 3);
     });
 
     it('falls back to sonnet-4 rates for null model', () => {
-      assert.equal(calculateCostSimple(usage1M, null), 3);
+      assert.equal(calculateCostSimple(usage1M, null).cost, 3);
     });
 
     it('calculates all four cost components', () => {
@@ -137,31 +137,59 @@ describe('default-rates: single source of truth (#397)', () => {
         cache_read_input_tokens: 1_000_000,
         cache_creation_input_tokens: 1_000_000,
       };
-      const cost = calculateCostSimple(usage, 'claude-sonnet-4');
+      const result = calculateCostSimple(usage, 'claude-sonnet-4');
       // $3 + $15 + $0.30 + $3.75 = $22.05
-      assert.equal(cost, 22.05);
+      assert.equal(result.cost, 22.05);
     });
 
     it('longest-prefix-first: grok-4.5-build matches grok-4.5-build not grok-build', () => {
       // grok-4.5-build has input $2/MTok, grok-build has input $1/MTok.
       // If prefix matching were insertion-order, grok-build could win.
-      assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build'), 2);
+      assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build').cost, 2);
     });
 
     it('bare gpt-5.6 must NOT fall through to gpt-5 (codex review P1)', () => {
       // gpt-5.6 = $5/MTok input (same as gpt-5.6-sol), not gpt-5 at $1.25
-      assert.equal(calculateCostSimple(usage1M, 'gpt-5.6'), 5);
+      assert.equal(calculateCostSimple(usage1M, 'gpt-5.6').cost, 5);
     });
 
     it('getModelPricing uses date-strip parity with calculateCostSimple (codex review P2)', () => {
       const { getModelPricing } = require('../server/pricing');
       // claude-haiku-4-5-20251001 should resolve the same in both matchers
-      const offline = calculateCostSimple(usage1M, 'claude-haiku-4-5-20251001');
+      const offline = calculateCostSimple(usage1M, 'claude-haiku-4-5-20251001').cost;
       const live = getModelPricing('claude-haiku-4-5-20251001');
       assert.ok(live, 'getModelPricing must resolve claude-haiku-4-5-20251001');
       const liveCost = usage1M.input_tokens * live.input / 1e6;
       assert.ok(Math.abs(offline - liveCost) < 0.01,
         `offline=${offline} live=${liveCost} — matchers disagree`);
+    });
+
+    // #420: confidence level tests
+    it('returns exact confidence for exact model match', () => {
+      assert.equal(calculateCostSimple(usage1M, 'claude-opus-4-6').confidence, 'exact');
+    });
+
+    it('returns prefix confidence for dated wire ID', () => {
+      assert.equal(calculateCostSimple(usage1M, 'claude-opus-4-6-20260115').confidence, 'prefix');
+    });
+
+    it('returns fallback confidence for unknown model', () => {
+      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').confidence, 'fallback');
+    });
+
+    it('returns fallback confidence for null model', () => {
+      assert.equal(calculateCostSimple(usage1M, null).confidence, 'fallback');
+    });
+
+    it('returns exact confidence for lag override model', () => {
+      assert.equal(calculateCostSimple(usage1M, 'grok-build').confidence, 'exact');
+    });
+
+    it('returns { cost, confidence } shape', () => {
+      const result = calculateCostSimple(usage1M, 'claude-sonnet-4');
+      assert.ok(typeof result === 'object');
+      assert.ok(typeof result.cost === 'number');
+      assert.ok(['exact', 'prefix', 'fallback'].includes(result.confidence));
     });
   });
 

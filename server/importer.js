@@ -153,7 +153,7 @@ async function parseSessionFile(filePath, projectSlug) {
     if (!id) continue;
 
     const model = msg.model || 'unknown';
-    const cost = calculateCostSimple(usage, model);
+    const costResult = calculateCostSimple(usage, model);
     const tokens = buildTokens(usage);
     const receivedAt = new Date(obj.timestamp).getTime();
 
@@ -175,7 +175,7 @@ async function parseSessionFile(filePath, projectSlug) {
       // so the import enriches rather than shadows. See docs/decisions/0012.
       responseId: msg.id || null,
       tokens,
-      cost: { cost },
+      cost: { cost: costResult.cost, confidence: costResult.confidence },
       model,
       sessionId,
       title: lastUserText || '(imported)',
@@ -240,7 +240,7 @@ async function parseCodexSessionFile(filePath) {
     if (!id) continue;
 
     const contextWindow = (payload.info && payload.info.model_context_window) || CODEX_CONTEXT_WINDOW;
-    const cost = calculateCostSimple(usage, lastModel);
+    const costResult = calculateCostSimple(usage, lastModel);
     const tokens = buildTokens(usage, contextWindow);
     const receivedAt = new Date(obj.timestamp).getTime();
 
@@ -257,7 +257,7 @@ async function parseCodexSessionFile(filePath) {
       isSSE: false,
       receivedAt,
       tokens,
-      cost: { cost },
+      cost: { cost: costResult.cost, confidence: costResult.confidence },
       model: lastModel,
       // #384: the transcript's model_context_window is authoritative — write it
       // so weather/session-fold/cold-load all see the real denominator.

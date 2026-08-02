@@ -188,5 +188,27 @@ describe('pricing', () => {
       }, 'claude-sonnet-4');
       assert.equal(result.cost, 0);
     });
+
+    // #420: confidence level tests
+    it('returns exact confidence for exact model match', () => {
+      const result = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'claude-sonnet-4');
+      assert.equal(result.confidence, 'exact');
+    });
+
+    it('returns prefix confidence for dated wire ID', () => {
+      const result = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'claude-sonnet-4-20250514');
+      assert.equal(result.confidence, 'prefix');
+    });
+
+    it('returns exact confidence for xai/ mirrored model', () => {
+      const result = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'grok-4.5');
+      assert.equal(result.confidence, 'exact');
+    });
+
+    it('returns unknown confidence for unrecognized model', () => {
+      const result = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'totally-unknown-model');
+      assert.equal(result.confidence, 'unknown');
+      assert.ok(result.warning);
+    });
   });
 });
