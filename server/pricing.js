@@ -162,30 +162,40 @@ async function fetchPricing() {
   });
 }
 
-function getModelPricing(model) {
-  if (!model) return null;
-  if (pricingTable[model]) return pricingTable[model];
+/**
+ * Look up pricing rates for a model. Returns { rates, confidence } where
+ * confidence is 'exact', 'prefix', or null (not found).
+ * The bare getModelPricing(model) call returns just the rates for backward
+ * compat; getModelPricingWithConfidence returns the full object.
+ */
+function getModelPricingWithConfidence(model) {
+  if (!model) return { rates: null, confidence: null };
+  if (pricingTable[model]) return { rates: pricingTable[model], confidence: 'exact' };
   // LiteLLM provider-prefixed form (xai/grok-4.3) when wire sent bare id
-  if (!model.includes('/') && pricingTable[`xai/${model}`]) return pricingTable[`xai/${model}`];
+  if (!model.includes('/') && pricingTable[`xai/${model}`]) return { rates: pricingTable[`xai/${model}`], confidence: 'exact' };
   // #397: match logic must agree with default-rates.js calculateCostSimple
   const keys = Object.keys(pricingTable).sort((a, b) => b.length - a.length);
   for (const key of keys) {
     const prefix = key.split('-202')[0];
-    if (model.startsWith(key) || model.startsWith(prefix)) return pricingTable[key];
+    if (model.startsWith(key) || model.startsWith(prefix)) return { rates: pricingTable[key], confidence: 'prefix' };
   }
-  return null;
+  return { rates: null, confidence: null };
+}
+
+function getModelPricing(model) {
+  return getModelPricingWithConfidence(model).rates;
 }
 
 function calculateCost(usage, model) {
   if (!usage) return null;
-  const rates = getModelPricing(model);
-  if (!rates) return { cost: null, rates: null, warning: `Unknown model: ${model}` };
+  const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model);
+  if (!rates) return { cost: null, rates: null, confidence: 'unknown', warning: `Unknown model: ${model}` };
   const cost =
     ((usage.input_tokens || 0) / 1_000_000) * rates.input +
     ((usage.output_tokens || 0) / 1_000_000) * rates.output +
     ((usage.cache_creation_input_tokens || 0) / 1_000_000) * rates.cache_create +
     ((usage.cache_read_input_tokens || 0) / 1_000_000) * rates.cache_read;
-  return { cost, rates };
+  return { cost, rates, confidence: rateConfidence };
 }
 
 function getModelContext(model) {

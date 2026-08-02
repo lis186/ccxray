@@ -60,12 +60,43 @@ describe('cost-worker Grok index source', () => {
     assert.ok(e);
     // $2 / MTok input → $2.00 for 1M tokens
     assert.equal(e.costUSD, 2);
+    // P1: costUSD must be a number (cost-budget.js:111 does += e.costUSD || 0)
+    assert.equal(typeof e.costUSD, 'number');
+    assert.equal(typeof e.costConfidence, 'string');
+  });
+
+  it('processGrokIndexEntry with stored cost but no confidence derives confidence from model (codex P2)', () => {
+    const e = processGrokIndexEntry({
+      id: '2026-07-19T09-00-00-000',
+      agent: 'grok',
+      model: 'grok-4.5-build',
+      receivedAt: 2_000,
+      cost: 2.00,
+      usage: { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    assert.ok(e);
+    assert.equal(e.costUSD, 2);
+    // Without stored confidence, derives from model lookup — grok-4.5-build is exact in the table
+    assert.equal(e.costConfidence, 'exact');
+  });
+
+  it('processGrokIndexEntry preserves stored confidence when present', () => {
+    const e = processGrokIndexEntry({
+      id: '2026-07-19T09-01-00-000',
+      agent: 'grok',
+      model: 'grok-4.5-build',
+      receivedAt: 3_000,
+      cost: { cost: 2.00, confidence: 'prefix' },
+      usage: { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    assert.ok(e);
+    assert.equal(e.costConfidence, 'prefix');
   });
 
   it('calculateCostSimple longest-prefix matches grok-4.5-build to grok-4.5 rates', () => {
     const usage = { input_tokens: 1_000_000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
-    assert.equal(calculateCostSimple(usage, 'grok-4.5-build'), 2);
-    assert.equal(calculateCostSimple(usage, 'grok-build'), 1);
+    assert.equal(calculateCostSimple(usage, 'grok-4.5-build').cost, 2);
+    assert.equal(calculateCostSimple(usage, 'grok-build').cost, 1);
   });
 
   it('processGrokIndexFile streams only grok rows', async () => {

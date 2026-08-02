@@ -73,9 +73,9 @@ function processFile(filePath, accountId) {
       const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0)
         + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
       if (totalTokens === 0) return;
-      const costUSD = calculateCostSimple(usage, model);
+      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, model);
       const sessionId = path.basename(filePath, '.jsonl');
-      localEntries.push({ timestamp: new Date(timestamp).getTime(), usage, costUSD, model, sessionId, messageId, accountId });
+      localEntries.push({ timestamp: new Date(timestamp).getTime(), usage, costUSD, costConfidence, model, sessionId, messageId, accountId });
     });
     rl.on('close', () => resolve(localEntries));
     rl.on('error', () => resolve(localEntries));
@@ -117,10 +117,10 @@ function processCodexFile(filePath, accountId) {
       if (totalTokens === 0) return;
 
       if (!obj.timestamp) return;
-      const costUSD = calculateCostSimple(usage, lastModel);
+      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, lastModel);
       const tsMs = new Date(obj.timestamp).getTime();
       const messageId = `${tsMs}::${sessionId}`;
-      localEntries.push({ timestamp: tsMs, usage, costUSD, model: lastModel, sessionId, messageId, accountId });
+      localEntries.push({ timestamp: tsMs, usage, costUSD, costConfidence, model: lastModel, sessionId, messageId, accountId });
     });
     rl.on('close', () => resolve(localEntries));
     rl.on('error', () => resolve(localEntries));
@@ -183,12 +183,23 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   if (timestamp == null) return null;
   const model = obj.model || 'unknown';
   let costUSD = entryCostUSD(obj);
-  if (costUSD == null) costUSD = calculateCostSimple(usage, model);
+  let costConfidence;
+  if (costUSD != null) {
+    // Preserve existing confidence; if absent, derive from model lookup (not 'exact' — the
+    // stored cost may have been calculated with a prefix match or fallback rate).
+    costConfidence = (obj.cost && typeof obj.cost === 'object' && obj.cost.confidence)
+      || calculateCostSimple(usage, model).confidence;
+  } else {
+    const result = calculateCostSimple(usage, model);
+    costUSD = result.cost;
+    costConfidence = result.confidence;
+  }
   const messageId = obj.id ? `grok::${obj.id}` : null;
   return {
     timestamp,
     usage,
     costUSD,
+    costConfidence,
     model,
     sessionId: obj.sessionId || null,
     messageId,
