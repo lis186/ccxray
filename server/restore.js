@@ -251,6 +251,17 @@ async function restoreFromLogs() {
   const rebuildPending = (!sessionIndexLoaded && parsedCount) || driftDetected;
   // codex R3: buffer live updateFromEntry calls during the restore+rebuild window
   // so they survive the rebuild's clear. Replay into rebuilt state afterwards.
+  //
+  // Known limitation (codex R4-P2, owner decision 2026-08-02): a live turn that
+  // completes and appends during pass A (before this point) lands OUTSIDE the
+  // snapshot byte bound AND before the buffer starts. If this startup triggers a
+  // rebuild, that turn's updateFromEntry is cleared and absent from both the
+  // bounded re-read and the replay buffer — its session count/cost are lost from
+  // sessions.json until the next restart. Self-healing: the missing update makes
+  // sessions.json entry count diverge from the index → next startup's tally
+  // detects drift → rebuild re-derives from the full index and restores the turn.
+  // The buffer is deliberately NOT moved before pass A: that would widen the
+  // no-responseId (OpenAI/WS) duplicate-count window from sub-ms to seconds.
   if (rebuildPending) sessionIdx.beginRestoreBuffer();
   let rebuildRan = false;
   // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
