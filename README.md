@@ -237,7 +237,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 |---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard (overridden by `--port`) |
 | `BROWSER` | — | Set to `none` to disable auto-open |
-| `AUTH_TOKEN` | _(auto)_ | Access-control key. Auto-derived from `<CCXRAY_HOME>/local-secret` when unset (default `~/.ccxray/local-secret`). All endpoints enforce auth regardless. |
+| `AUTH_TOKEN` | _(auto)_ | Access-control key. Auto-derived from `<CCXRAY_HOME>/local-secret` when unset (default `~/.ccxray/local-secret`). Non-loopback requests require it; loopback is trusted by default (see [SECURITY.md](SECURITY.md) and `CCXRAY_LOOPBACK_REQUIRE_AUTH`). |
 | `CCXRAY_SESSION_ENTRY_CAP` | `500` | Max entries loaded per session at startup restore. Sessions exceeding this keep only the latest entry (no runtime limit). |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _(unset)_ | Loopback is auth-free by default; set to `1` to enforce auth on loopback too. |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
