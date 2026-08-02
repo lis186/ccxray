@@ -32,12 +32,25 @@ const WORKER = path.join(__dirname, '..', 'server', 'cost-worker.js');
 const SELF_EXIT_BUDGET_MS = 15_000;
 const ORPHAN_EXIT_BUDGET_MS = 5_000;
 
-// os.homedir() reads $HOME on POSIX; the worker scans $HOME/.claude*,
-// $HOME/.codex* and $HOME/.config/claude — not CCXRAY_HOME. A throwaway HOME
-// keeps the test off the developer's real history and makes runtime
-// machine-independent.
+// The worker reads two independent roots, and BOTH have to be redirected:
+//   • $HOME — os.homedir() on POSIX; it scans $HOME/.claude*, $HOME/.codex*
+//     and $HOME/.config/claude.
+//   • CCXRAY_HOME / LOGS_DIR — since #313 the grok scan reads the ccxray index
+//     (scanGrokFromCcxrayIndex, cost-worker.js), falling back to
+//     os.homedir()/.ccxray only when those are unset.
+// Injecting HOME alone left an ambient CCXRAY_HOME leaking through, so the
+// worker read the developer's real ~587MB index on every run. It happened to
+// stay green only because that index contains zero grok rows — i.e. it passed
+// because of local data, which is the PR #94 failure class docs/testing.md
+// exists to prevent. Redirect both.
 function makeHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-worker-test-'));
+}
+
+function isolatedEnv(home) {
+  const env = { ...process.env, HOME: home, CCXRAY_HOME: home };
+  delete env.LOGS_DIR; // would override CCXRAY_HOME and point back at real logs
+  return env;
 }
 
 // Forked exactly as server/cost-budget.js does — silent:true makes stdout a
@@ -46,7 +59,7 @@ function startWorker(home) {
   const worker = fork(WORKER, [], {
     silent: true,
     windowsHide: true,
-    env: { ...process.env, HOME: home },
+    env: isolatedEnv(home),
   });
   const chunks = [];
   const errChunks = [];
@@ -205,7 +218,7 @@ describe('cost-worker: process lifecycle', () => {
       "'use strict';",
       "const { fork } = require('child_process');",
       'const worker = fork(process.argv[2], [], {',
-      '  env: { ...process.env, HOME: process.argv[3] },',
+      '  env: { ...process.env, HOME: process.argv[3], CCXRAY_HOME: process.argv[3], LOGS_DIR: undefined },',
       '  silent: true,',
       '  windowsHide: true,',
       "  execArgv: ['--require', process.argv[4]],",
