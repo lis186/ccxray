@@ -86,51 +86,53 @@ function _parseLines(indexContent) {
   return out;
 }
 
-// Build session index from an array of parsed index metas.
-function rebuildFromMetas(metas) {
+// Shared rebuild logic: clear state, iterate metas (upsert + weather grouping),
+// compute weather. Called by both sync (array) and async (generator) entry points.
+function _rebuildCore(feedFn) {
   sessionIndex.clear();
   _costByRid.clear();
   _countedRids.clear();
-  if (!Array.isArray(metas)) return;
-  // #333: a shared log holds 2–8 duplicate copies per turn (same responseId).
-  // Both COST and COUNT are deduped by responseId here (_upsert via _costByRid /
-  // _countedRids), so the session card shows merged turns and cost is counted once.
-  // reconcile() dedups its index-side comparison the SAME way — the two must stay
-  // paired: deduping count without deduping reconcile's tally would make merged
-  // s.count (e.g. 15) never equal the raw line total (45) and thrash rebuilds.
-  for (const m of metas) {
-    if (!m || !m.sessionId) continue;
-    _upsert(m.sessionId, m);
-  }
-  // #367: compute weather for all sessions from index metas.
-  // Index metas have all fields assessWeather needs (usage, maxContext, elapsed,
-  // model, toolFail, stopReason). isCompacted is unavailable (client-derived) —
-  // conservative (no false compaction signal).
-  // #385: deduplicate metas by responseId before feeding to weather assessment.
-  // Raw metas from index.ndjson contain 2–8 duplicate copies per turn in multi-writer
-  // scenarios (ADR 0012). Cost/count are already deduped via _upsert (_costByRid /
-  // _countedRids), but weather reads the list directly — duplicates inflate stuck
-  // streaks, error clusters, and cumulative error ratios. Lines without responseId
-  // (legacy/OpenAI exempt) pass through unchanged, matching _upsert's count rule.
   const { assessWeather } = require('../public/weather');
   const _weatherSeenRid = new Set();
   const bySid = new Map();
-  for (const m of metas) {
-    if (!m || !m.sessionId || m.isSubagent) continue;
+  const consume = (m) => {
+    if (!m || !m.sessionId) return;
+    _upsert(m.sessionId, m);
+    if (m.isSubagent) return;
     const rid = m.responseId;
     if (rid) {
-      if (_weatherSeenRid.has(rid)) continue;
+      if (_weatherSeenRid.has(rid)) return;
       _weatherSeenRid.add(rid);
     }
     let arr = bySid.get(m.sessionId);
     if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
     arr.push(m);
-  }
-  for (const [sid, turns] of bySid) {
-    const s = sessionIndex.get(sid);
-    if (s) s.weather = assessWeather(turns);
-  }
-  dirty = true;
+  };
+  const finalize = () => {
+    for (const [sid, turns] of bySid) {
+      const s = sessionIndex.get(sid);
+      if (s) s.weather = assessWeather(turns);
+    }
+    dirty = true;
+  };
+  return { consume, finalize };
+}
+
+// #348: streaming rebuild — accepts async iterable (generator). Single pass:
+// _upsert + weather grouping happen together so the caller can feed a streaming
+// generator that never materializes the full array.
+async function rebuildFromMetasAsync(iter) {
+  const { consume, finalize } = _rebuildCore();
+  for await (const m of iter) consume(m);
+  finalize();
+}
+
+// Build session index from an array of parsed index metas (synchronous).
+function rebuildFromMetas(metas) {
+  if (!Array.isArray(metas)) return;
+  const { consume, finalize } = _rebuildCore();
+  for (const m of metas) consume(m);
+  finalize();
 }
 
 // Back-compat string entry point (tests / small indexes).
@@ -178,26 +180,43 @@ function seedDedupState(indexContent) {
 // #333: the entry tally is deduped by responseId so it matches the merged s.count
 // _upsert now keeps; a raw-line tally here would always exceed merged s.count on a
 // duplicate-heavy shared log and rebuild on every reconcile.
+// #348: the tally is incremental (createReconcileTally) so restore's streaming
+// read can feed it line by line without holding every parsed meta resident;
+// only sessionId + responseId are read per meta.
+function createReconcileTally() {
+  const seenSessions = new Set();
+  const seenRid = new Set();
+  let indexEntries = 0;
+  return {
+    feed(m) {
+      if (!m || !m.sessionId) return;
+      // Count once per responseId (merged turns); a line without responseId
+      // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
+      const rid = m.responseId || null;
+      if (!rid || !seenRid.has(rid)) {
+        indexEntries++;
+        if (rid) seenRid.add(rid);
+      }
+      seenSessions.add(m.sessionId);
+    },
+    // True iff the fed tally disagrees with the loaded sessions.json totals.
+    // Logs the drift warning; the caller owns the rebuild.
+    drift() {
+      if (!sessionIndex.size) return false;
+      let totalEntries = 0;
+      for (const s of sessionIndex.values()) totalEntries += s.count;
+      if (seenSessions.size === sessionIndex.size && indexEntries === totalEntries) return false;
+      console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${seenSessions.size} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
+      return true;
+    },
+  };
+}
+
 function reconcileMetas(metas) {
   if (!Array.isArray(metas) || !metas.length || !sessionIndex.size) return false;
-  let indexSessions = 0, indexEntries = 0;
-  const seen = new Set();
-  const seenRid = new Set();
-  for (const m of metas) {
-    if (!m || !m.sessionId) continue;
-    // Count once per responseId (merged turns); a line without responseId
-    // (legacy/exempt) has no dedup key ⇒ always counts. Mirrors _upsert.
-    const rid = m.responseId || null;
-    if (!rid || !seenRid.has(rid)) {
-      indexEntries++;
-      if (rid) seenRid.add(rid);
-    }
-    if (!seen.has(m.sessionId)) { seen.add(m.sessionId); indexSessions++; }
-  }
-  let totalEntries = 0;
-  for (const s of sessionIndex.values()) totalEntries += s.count;
-  if (indexSessions === sessionIndex.size && indexEntries === totalEntries) return false;
-  console.warn(`\x1b[33m[session-index] drift detected: sessions.json has ${sessionIndex.size} sessions / ${totalEntries} entries, index.ndjson has ${indexSessions} sessions / ${indexEntries} entries — rebuilding\x1b[0m`);
+  const tally = createReconcileTally();
+  for (const m of metas) tally.feed(m);
+  if (!tally.drift()) return false;
   rebuildFromMetas(metas);
   return true;
 }
@@ -207,10 +226,28 @@ function reconcile(indexContent) {
   return reconcileMetas(_parseLines(indexContent));
 }
 
+// #348 codex R3: buffer live updates during async rebuild so they survive the
+// clear. beginRestoreBuffer → updateFromEntry still applies live (dashboard stays
+// current) AND pushes to a side buffer. endRestoreBuffer(true) replays the buffer
+// into the rebuilt state; responseId dedup (_countedRids/_costByRid) makes replay
+// idempotent for entries whose line was also inside the snapshot byte bound.
+let _restoreBuffer = null;
+function _restoreBufferActive() { return _restoreBuffer !== null; }
+function beginRestoreBuffer() { _restoreBuffer = []; }
+function endRestoreBuffer(replay) {
+  const buf = _restoreBuffer;
+  _restoreBuffer = null;
+  if (replay && buf && buf.length) {
+    for (const entry of buf) _upsert(entry.sessionId, entry);
+    _scheduleDirtyFlush();
+  }
+}
+
 // Upsert a session summary from an entry's index fields.
 function updateFromEntry(entry) {
   if (!entry || !entry.sessionId) return;
   _upsert(entry.sessionId, entry);
+  if (_restoreBuffer) _restoreBuffer.push(entry);
   _recomputeWeather(entry.sessionId);
   _scheduleDirtyFlush();
 }
@@ -376,8 +413,9 @@ function setWeather(sid, weather) {
 
 module.exports = {
   loadSessionIndex,
-  rebuildFromIndexContent, rebuildFromMetas,
+  rebuildFromIndexContent, rebuildFromMetas, rebuildFromMetasAsync,
   seedDedupState, seedDedupFromMetas,
-  reconcile, reconcileMetas,
-  updateFromEntry, setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
+  reconcile, reconcileMetas, createReconcileTally,
+  updateFromEntry, beginRestoreBuffer, endRestoreBuffer, _restoreBufferActive,
+  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
 };

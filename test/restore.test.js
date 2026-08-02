@@ -491,3 +491,264 @@ describe('restoreFromLogs — codex resume eligibility', () => {
     assert.equal(summary.resumeCommand, null);
   });
 });
+
+// ── #348: star-protection + RESTORE_DAYS cutoff integration ─────────
+// Verifies that the streaming restore path correctly handles:
+// (a) in-window lines → restored
+// (b) out-of-window but star-protected lines → restored
+// (c) out-of-window unprotected lines → dropped
+// Also verifies file-order preservation.
+// Runs in a CHILD PROCESS with its own CCXRAY_HOME so the parent never touches
+// the real ~/.ccxray (hermetic per docs/testing.md, pattern: rebuild-index.e2e).
+
+describe('restoreFromLogs — star-protection + cutoff integration (#348)', () => {
+  const { spawnSync } = require('child_process');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-star-348-'));
+  const logsDir = path.join(tmpHome, 'logs');
+
+  const todayId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -1);
+  const oldProtected = '2020-01-15T10-00-00-000';
+  const oldUnprotected = '2020-01-15T11-00-00-000';
+  const protectedSid = 'starred-sess';
+
+  before(() => {
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    // Write index lines in file order: (b), (c), (a)
+    // (c) uses a different cwd so the star cascade doesn't protect it.
+    const indexLines = [
+      [oldProtected, protectedSid, '/dev/starred-project'],
+      [oldUnprotected, 'unstarred-sess', '/dev/other-project'],
+      [todayId, 'today-sess', '/dev/today-project'],
+    ].map(([id, sid, cwd]) => JSON.stringify({
+      id, ts: id.slice(11).replace(/-/g, ':'),
+      sessionId: sid, provider: 'anthropic', model: 'claude-fable-5[1m]',
+      usage: { input_tokens: 1000, output_tokens: 100 },
+      isSSE: true, status: 200, receivedAt: Date.now(), cwd,
+    })).join('\n') + '\n';
+
+    fs.writeFileSync(path.join(logsDir, 'index.ndjson'), indexLines);
+
+    // settings.json with session star
+    fs.writeFileSync(path.join(tmpHome, 'settings.json'), JSON.stringify({
+      starredSessions: [protectedSid],
+    }));
+  });
+
+  after(() => {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  it('restores in-window + star-protected entries, drops unprotected old entries', () => {
+    // Child driver: suppress console output, run restoreFromLogs, print ids as JSON
+    const driver = `
+      console.time = console.timeEnd = console.log = console.warn = () => {};
+      const { restoreFromLogs } = require('./server/restore');
+      const store = require('./server/store');
+      restoreFromLogs().then(() => {
+        process.stdout.write(JSON.stringify(store.entries.map(e => e.id)));
+      }).catch(e => { process.stderr.write(e.stack); process.exit(1); });
+    `;
+    const result = spawnSync(process.execPath, ['-e', driver], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, CCXRAY_HOME: tmpHome, RESTORE_DAYS: '3', CCXRAY_DISABLE_TITLES: '1' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    assert.equal(result.status, 0, `child failed: ${result.stderr}`);
+    const ids = JSON.parse(result.stdout);
+
+    // (a) in-window: restored
+    assert.ok(ids.includes(todayId), 'in-window entry must be restored');
+    // (b) out-of-window + starred session: restored
+    assert.ok(ids.includes(oldProtected), 'star-protected old entry must be restored');
+    // (c) out-of-window + unstarred: dropped
+    assert.ok(!ids.includes(oldUnprotected), 'unprotected old entry must NOT be restored');
+    // File-order: (b) before (a)
+    assert.ok(ids.indexOf(oldProtected) < ids.indexOf(todayId),
+      'file order must be preserved: star-protected before in-window');
+  });
+});
+
+// ── #348 codex R2: snapshot byte bound + id guard ────────────────────
+
+describe('restoreFromLogs — snapshot byte bound (codex R2)', () => {
+  const config = require('../server/config');
+  const { boundedIndexLines } = require('../server/restore');
+  const { createLocalStorage } = require('../server/storage/local');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-bounded-348-' + Date.now());
+  let realStorage;
+
+  before(async () => {
+    realStorage = config.storage;
+    const tmpStorage = createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('boundedIndexLines stops at the byte limit', async () => {
+    const lines = [
+      JSON.stringify({ id: 'aaa', sessionId: 's1' }),
+      JSON.stringify({ id: 'bbb', sessionId: 's1' }),
+      JSON.stringify({ id: 'ccc', sessionId: 's1' }),
+    ];
+    // Write all 3 lines
+    for (const l of lines) await config.storage.appendIndex(l + '\n');
+    // Byte limit = first 2 lines (each line + \n)
+    const limit = Buffer.byteLength(lines[0], 'utf8') + 1 + Buffer.byteLength(lines[1], 'utf8') + 1;
+    const collected = [];
+    for await (const l of boundedIndexLines(limit)) collected.push(l);
+    assert.equal(collected.length, 2, 'must yield exactly 2 lines within byte bound');
+    assert.deepEqual(collected, [lines[0], lines[1]]);
+  });
+});
+
+describe('restoreFromLogs — id guard prevents duplicate push (codex R2)', () => {
+  const config = require('../server/config');
+  const store = require('../server/store');
+  const { restoreFromLogs } = require('../server/restore');
+  const { createLocalStorage } = require('../server/storage/local');
+  const tmpDir = path.join(os.tmpdir(), 'ccxray-idguard-348-' + Date.now());
+  let realStorage, realRestoreDays;
+
+  before(async () => {
+    realStorage = config.storage;
+    realRestoreDays = config.RESTORE_DAYS;
+    config.RESTORE_DAYS = 0;
+    const tmpStorage = createLocalStorage(tmpDir);
+    await tmpStorage.init();
+    config.storage = tmpStorage;
+  });
+
+  after(() => {
+    config.storage = realStorage;
+    config.RESTORE_DAYS = realRestoreDays;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('skips an entry whose id is already in entryIndex (live-push race)', async () => {
+    store.entries.length = 0;
+    store.entryIndex.clear();
+
+    const id = '2026-07-30T10-00-00-000';
+    // Simulate a live turn already registered before restore runs
+    const liveEntry = { id, sessionId: 'live-sess', provider: 'anthropic', _loaded: true };
+    store.entries.push(liveEntry);
+    store.entryIndex.set(id, liveEntry);
+
+    // The same id appears in the index (the race scenario)
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '10:00:00', sessionId: 'live-sess', provider: 'anthropic',
+      model: 'claude-fable-5[1m]', usage: { input_tokens: 100 },
+      isSSE: true, status: 200, receivedAt: Date.now(),
+    }) + '\n');
+
+    await restoreFromLogs();
+    // The id must appear exactly once in entries
+    const matches = store.entries.filter(e => e.id === id);
+    assert.equal(matches.length, 1, 'id guard must prevent duplicate push');
+    assert.strictEqual(matches[0], liveEntry, 'original live entry must survive');
+  });
+});
+
+// ── #348 codex R3: healMetaInPlace propagates to rebuild ─────────────
+
+describe('restoreFromLogs — healMetaInPlace propagates to session-index rebuild (codex R3)', () => {
+  const { spawnSync } = require('child_process');
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-heal-r3-'));
+  const logsDir = path.join(tmpHome, 'logs');
+
+  before(() => {
+    fs.mkdirSync(logsDir, { recursive: true });
+    // A single anthropic entry with maxContext=200000 but usage clearly > 200K
+    // (inferMaxContext should heal to 1M). No sessions.json → triggers rebuild.
+    fs.writeFileSync(path.join(logsDir, 'index.ndjson'), JSON.stringify({
+      id: '2026-07-01T10-00-00-000', ts: '10:00:00', sessionId: 'heal-sess',
+      provider: 'anthropic', model: 'claude-opus-4-7',
+      usage: { input_tokens: 632129, output_tokens: 500, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      maxContext: 200000, isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+  });
+
+  after(() => { fs.rmSync(tmpHome, { recursive: true, force: true }); });
+
+  it('rebuild persists healed maxContext (1M) in sessions.json', () => {
+    const driver = `
+      console.time = console.timeEnd = console.log = console.warn = () => {};
+      const { restoreFromLogs } = require('./server/restore');
+      const si = require('./server/session-index');
+      restoreFromLogs().then(async () => {
+        await si.flush();
+        process.stdout.write(JSON.stringify(si.get('heal-sess')));
+      }).catch(e => { process.stderr.write(e.stack); process.exit(1); });
+    `;
+    const result = spawnSync(process.execPath, ['-e', driver], {
+      cwd: path.resolve(__dirname, '..'),
+      env: { ...process.env, CCXRAY_HOME: tmpHome, RESTORE_DAYS: '0', CCXRAY_DISABLE_TITLES: '1' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(result.status, 0, `child failed: ${result.stderr}`);
+    const sess = JSON.parse(result.stdout);
+    assert.equal(sess.maxContext, 1_000_000, 'rebuild must persist healed maxContext (1M)');
+  });
+});
+
+// ── #348 codex R3: beginRestoreBuffer / endRestoreBuffer ─────────────
+
+describe('session-index beginRestoreBuffer / endRestoreBuffer (codex R3)', () => {
+  const si = require('../server/session-index');
+
+  it('replays buffered updates after rebuild', async () => {
+    // Initial state: one session from a prior rebuild
+    si.rebuildFromMetas([{ sessionId: 'prior', model: 'x', cost: { cost: 0.1 }, receivedAt: 1 }]);
+    assert.equal(si.get('prior').count, 1);
+
+    si.beginRestoreBuffer();
+
+    // Simulate live updates during restore
+    si.updateFromEntry({ sessionId: 'live-a', model: 'y', cost: { cost: 0.5 }, responseId: 'rid-a', receivedAt: 2 });
+    si.updateFromEntry({ sessionId: 'live-b', model: 'z', cost: { cost: 0.3 }, receivedAt: 3 });
+
+    // Rebuild clears everything (simulates streamAllMetas with different data)
+    await si.rebuildFromMetasAsync((async function*() {
+      yield { sessionId: 'rebuilt', model: 'w', cost: { cost: 0.2 }, receivedAt: 4 };
+    })());
+
+    // At this point live-a and live-b are gone (cleared by rebuild)
+    assert.equal(si.get('live-a'), null);
+    assert.equal(si.get('live-b'), null);
+    assert.equal(si.get('rebuilt').count, 1);
+
+    // Replay restores them
+    si.endRestoreBuffer(true);
+
+    assert.equal(si.get('live-a').count, 1);
+    assert.equal(si.get('live-a').totalCost, 0.5);
+    assert.equal(si.get('live-b').count, 1);
+    assert.equal(si.get('live-b').totalCost, 0.3);
+    assert.equal(si.get('rebuilt').count, 1); // unchanged
+  });
+
+  it('endRestoreBuffer(false) clears buffer without replay (error path)', () => {
+    si.rebuildFromMetas([]);
+    si.beginRestoreBuffer();
+    assert.equal(si._restoreBufferActive(), true);
+
+    si.updateFromEntry({ sessionId: 'lost', model: 'x', cost: { cost: 1 }, receivedAt: 1 });
+
+    // Simulate error: clear without replay
+    si.endRestoreBuffer(false);
+
+    assert.equal(si._restoreBufferActive(), false, 'buffer must be cleared');
+    // The live upsert went through (beginRestoreBuffer doesn't block it)
+    assert.equal(si.get('lost').count, 1);
+    // But a subsequent updateFromEntry must NOT accumulate into a dead buffer
+    si.updateFromEntry({ sessionId: 'post', model: 'y', cost: { cost: 0.1 }, receivedAt: 2 });
+    assert.equal(si._restoreBufferActive(), false, 'buffer must stay inactive after end');
+  });
+});

@@ -124,6 +124,65 @@ function loadEntryReqRes(entry) {
   return entry._loadingPromise;
 }
 
+// INVARIANT (codex R3): restore loop AND streamAllMetas MUST share this function.
+// Any new pure-computation healing rule goes HERE — otherwise the rebuild's
+// persisted session-index values diverge from the restore presentation values.
+// Async: the #211 trustStored sysModelMarker lookup reads a shared file.
+// Boundary: openai _res.json re-parse is I/O-heavy and stays in the loop only.
+async function healMetaInPlace(meta) {
+  // #384: heal legacy openai lines imported without maxContext.
+  if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
+    const ctx = config.getMaxContext(meta.model, null);
+    if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
+  }
+  // anthropic: re-apply usage-aware context inference (#211 trustStored logic)
+  if (meta.provider === 'anthropic') {
+    const inferred = config.inferMaxContext(meta.model, null, meta.usage);
+    const stripped = (meta.model || '').replace(/\[.*\]/, '');
+    let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
+    if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
+      const marker = await sysModelMarker(meta.sysHash);
+      const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
+      if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
+    }
+    meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
+  }
+  // usage normalization + cost recalc
+  if (meta.usage) {
+    const before = meta.usage;
+    meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
+    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+      meta.cost = calculateCost(meta.usage, meta.model);
+    }
+  }
+}
+
+// #348 codex R2: snapshot byte bound — mid-restore appends must not leak into
+// any streaming pass. Pass A accumulates `snapshotBytes`; all subsequent passes
+// (star pass B, streamAllMetas) stop at that byte offset. Direction of error is
+// benign: we may skip one partial line at the boundary, never include a new one.
+async function* boundedIndexLines(limitBytes) {
+  let n = 0;
+  for await (const line of config.storage.readIndexLines()) {
+    n += Buffer.byteLength(line, 'utf8') + 1; // +1 for the \n separator
+    if (n > limitBytes) return;
+    yield line;
+  }
+}
+
+// #348: on-demand streaming re-read of index.ndjson as an async generator.
+// Used by the rare session-index rebuild/drift fallback paths — never
+// materializes the full array (codex R1: readAllMetas doubled residency).
+// Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+// Each meta is healed in-stream (codex R3) so rebuild persists corrected values.
+async function* streamAllMetas(snapshotBytes) {
+  const lines = snapshotBytes != null ? boundedIndexLines(snapshotBytes) : config.storage.readIndexLines();
+  for await (const line of lines) {
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m) { await healMetaInPlace(m); yield m; }
+  }
+}
+
 // ── Restore entries from index.ndjson on startup ─────────────────────
 
 async function restoreFromLogs() {
@@ -137,60 +196,99 @@ async function restoreFromLogs() {
     console.log(`\x1b[90m   Session index: ${sessionIdx.size()} sessions\x1b[0m`);
   }
 
-  // 1. Read the lightweight index by STREAMING lines into parsed metas. #345:
-  // the index can exceed Node's ~512MB single-string limit, so we must not call
-  // readIndex() (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and
-  // fail restore. readIndexLines() streams without materializing the whole file.
-  console.time('restore:index');
-  const parsed = [];
-  for await (const line of config.storage.readIndexLines()) {
-    try { parsed.push(JSON.parse(line)); } catch {}
-  }
-  console.timeEnd('restore:index');
-
-  if (!parsed.length) {
-    console.timeEnd('restore:total');
-    return;
-  }
-
-  // 1b. Reconcile sessions.json against index.ndjson if loaded (#309)
-  if (sessionIndexLoaded) {
-    if (sessionIdx.reconcileMetas(parsed)) {
-      console.log(`\x1b[90m   Session index reconciled: ${sessionIdx.size()} sessions\x1b[0m`);
-    }
-  }
-
-  // 2. Filter by RESTORE_DAYS
-  console.time('restore:parse');
+  // 1. Read the lightweight index by STREAMING lines. #345: the index can
+  // exceed Node's ~512MB single-string limit, so we must not call readIndex()
+  // (readFile utf8) here — it would throw ERR_STRING_TOO_LONG and fail restore.
+  // #348: nor may we hold EVERY parsed meta resident — on a ~314k-line index
+  // that peaks ~3.7GB against Node's default old-space. Out-of-window lines
+  // never enter the working set: the reconcile tally is fed incrementally and
+  // the star pre-pass keeps only a lightweight {id, sessionId, cwd} per line.
+  // The rare full-meta consumers (session-index rebuild on drift / missing
+  // sessions.json) re-stream via streamAllMetas() generator instead.
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - config.RESTORE_DAYS);
     cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
   }
-
-  let restored = 0;
-
-  // Star-protection + session pre-count in one pass over pre-parsed data.
   const stars = readStarsSafe();
   const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
-  let retentionSets = null;
-  if (hasAnyStar && cutoffStr) {
-    const lightweight = [];
-    for (const m of parsed) {
-      if (m && m.id) lightweight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+  // Star-protection can retain out-of-window lines, so with stars + a cutoff
+  // the working set is rebuilt by a second streaming pass once the retention
+  // sets are known (pass B below); without either, one pass suffices.
+  const needStarPass = !!(hasAnyStar && cutoffStr);
+  const inWindow = (m) => !(cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr);
+
+  console.time('restore:index');
+  const tally = sessionIndexLoaded ? sessionIdx.createReconcileTally() : null;
+  const starLight = [];
+  const working = [];
+  let parsedCount = 0;
+  let snapshotBytes = 0; // codex R2: byte bound for subsequent passes
+  for await (const line of config.storage.readIndexLines()) {
+    snapshotBytes += Buffer.byteLength(line, 'utf8') + 1;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (!m) continue;
+    parsedCount++;
+    if (tally) tally.feed(m);
+    if (needStarPass) {
+      if (m.id) starLight.push({ id: m.id, sessionId: m.sessionId, cwd: m.cwd });
+    } else if (inWindow(m)) {
+      working.push(m);
     }
-    retentionSets = computeRetentionSets(lightweight, stars);
+  }
+  console.timeEnd('restore:index');
+
+  if (!parsedCount) {
+    console.timeEnd('restore:total');
+    return;
+  }
+
+  // 1b. Detect drift but DON'T rebuild yet — the rebuild is deferred to after
+  // the restore loop so working[] can be released first (codex R1c: rebuilding
+  // here while working[] is live doubles residency → OOM at 400MB).
+  const driftDetected = !!(tally && tally.drift());
+  const rebuildPending = (!sessionIndexLoaded && parsedCount) || driftDetected;
+  // codex R3: buffer live updateFromEntry calls during the restore+rebuild window
+  // so they survive the rebuild's clear. Replay into rebuilt state afterwards.
+  //
+  // Known limitation (codex R4-P2, owner decision 2026-08-02): a live turn that
+  // completes and appends during pass A (before this point) lands OUTSIDE the
+  // snapshot byte bound AND before the buffer starts. If this startup triggers a
+  // rebuild, that turn's updateFromEntry is cleared and absent from both the
+  // bounded re-read and the replay buffer — its session count/cost are lost from
+  // sessions.json until the next restart. Self-healing: the missing update makes
+  // sessions.json entry count diverge from the index → next startup's tally
+  // detects drift → rebuild re-derives from the full index and restores the turn.
+  // The buffer is deliberately NOT moved before pass A: that would widen the
+  // no-responseId (OpenAI/WS) duplicate-count window from sub-ms to seconds.
+  if (rebuildPending) sessionIdx.beginRestoreBuffer();
+  let rebuildRan = false;
+  // 2. Build the working set (RESTORE_DAYS window + star-protected lines)
+  console.time('restore:parse');
+  let restored = 0;
+  let oversizedSessions = new Map();
+
+  try { // finally → endRestoreBuffer; prevents _restoreBuffer leak on throw
+
+  if (needStarPass) {
+    const retentionSets = computeRetentionSets(starLight, stars);
+    starLight.length = 0;
+    // #348 pass B: re-stream in FILE ORDER now that protection is known —
+    // star-protected out-of-window lines re-enter the working set here.
+    // Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+    for await (const line of boundedIndexLines(snapshotBytes)) {
+      let m; try { m = JSON.parse(line); } catch { continue; }
+      if (!m) continue;
+      if (inWindow(m) || isProtectedByStar(m, retentionSets)) working.push(m);
+    }
   }
 
   const sessionTotals = new Map();
-  for (const m of parsed) {
-    if (cutoffStr && m.id && m.id.slice(0, 10) < cutoffStr) {
-      if (!retentionSets || !isProtectedByStar(m, retentionSets)) continue;
-    }
+  for (const m of working) {
     if (m.sessionId) sessionTotals.set(m.sessionId, (sessionTotals.get(m.sessionId) || 0) + 1);
   }
-  const oversizedSessions = new Map();
+  oversizedSessions = new Map();
   for (const [sid, count] of sessionTotals) {
     if (count > store.SESSION_ENTRY_CAP) oversizedSessions.set(sid, count);
   }
@@ -199,11 +297,14 @@ async function restoreFromLogs() {
   // batch before they enter the store (see the merge block after this loop).
   const restoredList = [];
 
-  for (let meta of parsed) {
+  // The cutoff/star filter already ran during the streaming read — `working`
+  // is the pre-filtered set, in file order (#348).
+  for (let meta of working) {
 
-    if (cutoffStr && meta.id.slice(0, 10) < cutoffStr) {
-      if (!retentionSets || !isProtectedByStar(meta, retentionSets)) continue;
-    }
+    // INVARIANT (codex R2 / ADR 0003+0012): a live turn that completed during
+    // post-listen restore may already own this id in entryIndex. Skip to avoid
+    // duplicate push — no-responseId entries can't be folded by mergeByResponseId.
+    if (store.entryIndex.has(meta.id)) continue;
 
     // Per-session cap: oversized sessions load only the first entry
     if (meta.sessionId && oversizedSessions.has(meta.sessionId)) {
@@ -223,51 +324,9 @@ async function restoreFromLogs() {
       } catch {}
     }
 
-    // Re-apply usage-aware context inference. Historical index lines may
-    // carry maxContext=200000 for Claude 1M-plan turns whose original request
-    // had no system prompt (e.g. title-gen, some subagent paths) — without
-    // this, the dashboard would show "600K / 200K (clamped to 100%)" for
-    // entries that predate the inferMaxContext fix. Math.max keeps previously
-    // correct 1M values when current usage happens to fit inside 200K.
-    // #384: heal legacy openai lines that were imported without maxContext.
-    // Fill-only (never overwrite), recognized models only (unknown stays silent).
-    if (!meta.maxContext && meta.provider === 'openai' && meta.model) {
-      const ctx = config.getMaxContext(meta.model, null);
-      if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
-    }
-    // EXCEPTION(#158): data-layer — anthropic-specific maxContext inference from persisted usage
-    if (meta.provider === 'anthropic') {
-      const inferred = config.inferMaxContext(meta.model, null, meta.usage);
-      // #211: a stored value is only trusted over the re-inference for
-      // SUPPORTS_1M models, where it can encode a beta-header signal that is
-      // not re-derivable here (headers are not persisted). For non-capable
-      // models a stored 1M can only be pre-clamp LiteLLM pollution (or the
-      // usage hatch, which re-inference reproduces) — re-derive instead.
-      const stripped = (meta.model || '').replace(/\[.*\]/, '');
-      let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
-      // Even for SUPPORTS_1M models, a stored value above the re-inference can
-      // be pre-clamp LiteLLM pollution (the #211 fable-5 lines). The persisted
-      // system prompt carries the ground-truth [1m] marker — when it names
-      // THIS entry's model and provably lacks [1m], the stored value is bogus.
-      // A marker naming another model (post-switch lag window) is not evidence
-      // about this entry. Unverifiable cases (no sysHash: title-gen/subagent
-      // legs; pruned shared file; foreign marker) keep the stored value, so
-      // genuine 1M turns never downgrade.
-      if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
-        const marker = await sysModelMarker(meta.sysHash);
-        const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;
-        if (markerMatches && !/\[1m\]/i.test(marker)) trustStored = false;
-      }
-      meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
-    }
-
-    if (meta.usage) {
-      const before = meta.usage;
-      meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-      if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
-        meta.cost = calculateCost(meta.usage, meta.model);
-      }
-    }
+    // INVARIANT (codex R3): shared healMetaInPlace — loop and streamAllMetas
+    // must apply identical healing so rebuild persists the same values.
+    await healMetaInPlace(meta);
 
     const restoredEntry = { ...meta, req: null, res: null, _loaded: false };
     // Deferred: pushed after the loop, once duplicate copies are merged (#333).
@@ -372,13 +431,24 @@ async function restoreFromLogs() {
   }
   console.timeEnd('restore:titles');
 
-  // 5. Session index: rebuild from index.ndjson if sessions.json was missing,
-  //    then replay titles into the session index.
-  if (!sessionIndexLoaded && parsed.length) {
+  // 5. Session index: rebuild if sessions.json was missing OR drift was detected.
+  // Deferred to here (after the restore loop) so working[] is released first —
+  // streaming rebuild + bySid weather grouping then peaks at ~1× index, not ~2×.
+  // Safe: rebuild re-derives from the full index via healMetaInPlace (codex R3);
+  // live updates buffered since beginRestoreBuffer are replayed after rebuild so
+  // they survive the clear (codex R3 P1-B). responseId dedup makes replay
+  // idempotent for entries whose line was inside the snapshot byte bound.
+  if (rebuildPending) {
+    working.length = 0; // release window-set objects before streaming the full index
     console.time('restore:session-index-rebuild');
-    sessionIdx.rebuildFromMetas(parsed);
+    await sessionIdx.rebuildFromMetasAsync(streamAllMetas(snapshotBytes));
     console.timeEnd('restore:session-index-rebuild');
-    console.log(`\x1b[90m   Session index rebuilt: ${sessionIdx.size()} sessions\x1b[0m`);
+    rebuildRan = true;
+    const reason = driftDetected ? 'reconciled' : 'rebuilt';
+    console.log(`\x1b[90m   Session index ${reason}: ${sessionIdx.size()} sessions\x1b[0m`);
+  }
+  } finally { // matches try at beginRestoreBuffer
+    if (rebuildPending) sessionIdx.endRestoreBuffer(rebuildRan);
   }
   for (const [sid, meta] of Object.entries(store.sessionMeta)) {
     if (meta.title) sessionIdx.setTitle(sid, meta.title);
@@ -736,4 +806,4 @@ async function pruneLogs() {
   }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines };
