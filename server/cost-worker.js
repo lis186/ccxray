@@ -185,8 +185,10 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   let costUSD = entryCostUSD(obj);
   let costConfidence;
   if (costUSD != null) {
-    // Preserve existing confidence from entries that already have cost (codex finding #7)
-    costConfidence = (obj.cost && typeof obj.cost === 'object' && obj.cost.confidence) || 'exact';
+    // Preserve existing confidence; if absent, derive from model lookup (not 'exact' — the
+    // stored cost may have been calculated with a prefix match or fallback rate).
+    costConfidence = (obj.cost && typeof obj.cost === 'object' && obj.cost.confidence)
+      || calculateCostSimple(usage, model).confidence;
   } else {
     const result = calculateCostSimple(usage, model);
     costUSD = result.cost;
