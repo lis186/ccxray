@@ -4,9 +4,13 @@ const store = require('../store');
 const { taipeiTime } = require('../helpers');
 const { broadcastInterceptToggle, broadcastInterceptRemoved, broadcastSessionStatus } = require('../sse-broadcast');
 const { forwardRequest } = require('../forward');
+const { verifyDashboard } = require('../auth');
 
 function handleInterceptRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
+
+  if (!pathname.startsWith('/_api/intercept/')) return false;
+  if (!verifyDashboard(clientReq, clientRes)) return true;
 
   if (pathname === '/_api/intercept/toggle' && clientReq.method === 'POST') {
     const chunks = []; clientReq.on('data', c => chunks.push(c));
