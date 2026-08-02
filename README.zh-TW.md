@@ -218,7 +218,7 @@ ccxray 是透明的 HTTP 代理。它將請求轉發到上游 API（Anthropic �
 |---|---|---|
 | `PROXY_PORT` | `5577` | 代理 + 儀表板的連接埠（`--port` 會覆蓋此值） |
 | `BROWSER` | — | 設為 `none` 可停用自動開啟 |
-| `AUTH_TOKEN` | _（自動產生）_ | 存取控制用金鑰。未設定時由 `<CCXRAY_HOME>/local-secret` 衍生（預設 `~/.ccxray/local-secret`），所有端點仍強制認證。 |
+| `AUTH_TOKEN` | _（自動產生）_ | 存取控制用金鑰。未設定時由 `<CCXRAY_HOME>/local-secret` 衍生（預設 `~/.ccxray/local-secret`）。非 loopback 請求需要它;loopback 預設信任（見 [SECURITY.md](SECURITY.md) 與 `CCXRAY_LOOPBACK_REQUIRE_AUTH`）。 |
 | `CCXRAY_SESSION_ENTRY_CAP` | `500` | 啟動還原時單一 session 最多載入的條目數。超過此值的 session 只保留最新 1 筆（runtime 不限制） |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _（未設定）_ | Loopback 預設免認證；設為 `1` 可強制 loopback 也走認證閘門 |
 | `CCXRAY_HOME` | `~/.ccxray` | 基底目錄，存放 hub lockfile、logs、hub.log |

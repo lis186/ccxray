@@ -196,7 +196,7 @@ ccxrayは透過型HTTPプロキシです。リクエストを上流API（Anthrop
 |---|---|---|
 | `PROXY_PORT` | `5577` | プロキシ + ダッシュボードのポート（`--port`で上書き） |
 | `BROWSER` | — | `none`に設定すると自動オープンを無効化 |
-| `AUTH_TOKEN` | _（自動生成）_ | アクセス制御用キー。未設定時は `<CCXRAY_HOME>/local-secret` から自動導出（デフォルト `~/.ccxray/local-secret`）。すべてのエンドポイントで認証は強制。 |
+| `AUTH_TOKEN` | _（自動生成）_ | アクセス制御用キー。未設定時は `<CCXRAY_HOME>/local-secret` から自動導出（デフォルト `~/.ccxray/local-secret`）。非ループバックのリクエストには必須。ループバックはデフォルトで信頼されます（[SECURITY.md](SECURITY.md) と `CCXRAY_LOOPBACK_REQUIRE_AUTH` を参照）。 |
 | `CCXRAY_SESSION_ENTRY_CAP` | `500` | 起動復元時に単一セッションから読み込むエントリの最大数。超過セッションは最新1件のみ保持（ランタイムでは制限なし） |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _（未設定）_ | ループバックはデフォルトで認証不要。`1` に設定するとループバックでも認証を強制 |
 | `CCXRAY_HOME` | `~/.ccxray` | hubロックファイル、ログ、hub.logの基本ディレクトリ |
