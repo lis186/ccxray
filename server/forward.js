@@ -701,6 +701,9 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         const hitRate = (usage.cache_read_input_tokens / totalCtx * 100).toFixed(0);
         text += ' | Cache ' + hitRate + '% hit';
       }
+      // INVARIANT(#420): per-turn cost display. calculateCost (live path)
+      // returns exact/prefix/unknown — never 'fallback' (that's calculateCostSimple
+      // in cost-worker). Both exact and prefix show plain $ per #420 design table.
       if (costInfo?.cost != null) {
         text += ' | $' + costInfo.cost.toFixed(4);
       }
