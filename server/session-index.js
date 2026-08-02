@@ -226,11 +226,14 @@ function reconcile(indexContent) {
   return reconcileMetas(_parseLines(indexContent));
 }
 
-// #348 codex R3: buffer live updates during async rebuild so they survive the
-// clear. beginRestoreBuffer → updateFromEntry still applies live (dashboard stays
-// current) AND pushes to a side buffer. endRestoreBuffer(true) replays the buffer
-// into the rebuilt state; responseId dedup (_countedRids/_costByRid) makes replay
-// idempotent for entries whose line was also inside the snapshot byte bound.
+// INVARIANT (ADR 0016): buffer live updates during async rebuild so they survive
+// the clear. beginRestoreBuffer → updateFromEntry still applies live (dashboard
+// stays current) AND pushes to a side buffer. endRestoreBuffer(true) replays the
+// buffer into the rebuilt state; responseId dedup (_countedRids/_costByRid) makes
+// replay idempotent for entries WITH a responseId. No-responseId entries
+// (OpenAI/WS) have no dedup key — _upsert unconditionally increments on replay,
+// producing a sub-second over-count residual (up to 3× depending on timing vs
+// clear; accepted, drift-healed on next startup; see ADR 0016 Known limitation).
 let _restoreBuffer = null;
 function _restoreBufferActive() { return _restoreBuffer !== null; }
 function beginRestoreBuffer() { _restoreBuffer = []; }

@@ -157,10 +157,11 @@ async function healMetaInPlace(meta) {
   }
 }
 
-// #348 codex R2: snapshot byte bound — mid-restore appends must not leak into
-// any streaming pass. Pass A accumulates `snapshotBytes`; all subsequent passes
-// (star pass B, streamAllMetas) stop at that byte offset. Direction of error is
-// benign: we may skip one partial line at the boundary, never include a new one.
+// INVARIANT (ADR 0016): snapshot byte bound — mid-restore appends must not leak
+// into any streaming pass. Pass A accumulates `snapshotBytes`; all subsequent
+// passes (star pass B, streamAllMetas) stop at that byte offset. Direction of
+// error is benign: we may skip one partial line at the boundary, never include
+// a new one.
 async function* boundedIndexLines(limitBytes) {
   let n = 0;
   for await (const line of config.storage.readIndexLines()) {
@@ -173,8 +174,9 @@ async function* boundedIndexLines(limitBytes) {
 // #348: on-demand streaming re-read of index.ndjson as an async generator.
 // Used by the rare session-index rebuild/drift fallback paths — never
 // materializes the full array (codex R1: readAllMetas doubled residency).
-// Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
-// Each meta is healed in-stream (codex R3) so rebuild persists corrected values.
+// INVARIANT (ADR 0016): bounded by snapshotBytes so mid-restore appends are
+// excluded. Each meta is healed in-stream (codex R3) so rebuild persists
+// corrected values.
 async function* streamAllMetas(snapshotBytes) {
   const lines = snapshotBytes != null ? boundedIndexLines(snapshotBytes) : config.storage.readIndexLines();
   for await (const line of lines) {
@@ -224,7 +226,7 @@ async function restoreFromLogs() {
   const starLight = [];
   const working = [];
   let parsedCount = 0;
-  let snapshotBytes = 0; // codex R2: byte bound for subsequent passes
+  let snapshotBytes = 0; // INVARIANT (ADR 0016): byte bound for subsequent passes
   for await (const line of config.storage.readIndexLines()) {
     snapshotBytes += Buffer.byteLength(line, 'utf8') + 1;
     let m; try { m = JSON.parse(line); } catch { continue; }
@@ -249,10 +251,11 @@ async function restoreFromLogs() {
   // here while working[] is live doubles residency → OOM at 400MB).
   const driftDetected = !!(tally && tally.drift());
   const rebuildPending = (!sessionIndexLoaded && parsedCount) || driftDetected;
-  // codex R3: buffer live updateFromEntry calls during the restore+rebuild window
-  // so they survive the rebuild's clear. Replay into rebuilt state afterwards.
+  // INVARIANT (ADR 0016): buffer live updateFromEntry calls during the
+  // restore+rebuild window so they survive the rebuild's clear. Replay into
+  // rebuilt state afterwards.
   //
-  // Known limitation (codex R4-P2, owner decision 2026-08-02): a live turn that
+  // Known limitation (ADR 0016, owner decision 2026-08-02): a live turn that
   // completes and appends during pass A (before this point) lands OUTSIDE the
   // snapshot byte bound AND before the buffer starts. If this startup triggers a
   // rebuild, that turn's updateFromEntry is cleared and absent from both the
@@ -276,7 +279,7 @@ async function restoreFromLogs() {
     starLight.length = 0;
     // #348 pass B: re-stream in FILE ORDER now that protection is known —
     // star-protected out-of-window lines re-enter the working set here.
-    // Bounded by snapshotBytes so mid-restore appends are excluded (codex R2).
+    // INVARIANT (ADR 0016): bounded by snapshotBytes so mid-restore appends are excluded.
     for await (const line of boundedIndexLines(snapshotBytes)) {
       let m; try { m = JSON.parse(line); } catch { continue; }
       if (!m) continue;
@@ -301,7 +304,7 @@ async function restoreFromLogs() {
   // is the pre-filtered set, in file order (#348).
   for (let meta of working) {
 
-    // INVARIANT (codex R2 / ADR 0003+0012): a live turn that completed during
+    // INVARIANT (ADR 0016 / ADR 0003+0012): a live turn that completed during
     // post-listen restore may already own this id in entryIndex. Skip to avoid
     // duplicate push — no-responseId entries can't be folded by mergeByResponseId.
     if (store.entryIndex.has(meta.id)) continue;
@@ -435,9 +438,10 @@ async function restoreFromLogs() {
   // Deferred to here (after the restore loop) so working[] is released first —
   // streaming rebuild + bySid weather grouping then peaks at ~1× index, not ~2×.
   // Safe: rebuild re-derives from the full index via healMetaInPlace (codex R3);
-  // live updates buffered since beginRestoreBuffer are replayed after rebuild so
-  // they survive the clear (codex R3 P1-B). responseId dedup makes replay
-  // idempotent for entries whose line was inside the snapshot byte bound.
+  // INVARIANT (ADR 0016): live updates buffered since beginRestoreBuffer are
+  // replayed after rebuild so they survive the clear. responseId dedup makes
+  // replay idempotent for entries with a responseId; no-responseId (OpenAI/WS)
+  // entries have a sub-second over-count residual (up to 3×; accepted, drift-healed).
   if (rebuildPending) {
     working.length = 0; // release window-set objects before streaming the full index
     console.time('restore:session-index-rebuild');
