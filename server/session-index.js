@@ -9,7 +9,7 @@ const config = require('./config');
 const { isMainTurnByAgentKey } = require('../public/agent-classification');
 
 const sessionIndex = new Map();
-// #333: responseId → { cost, sid } of the max cost already counted for that
+// #333: responseId → { cost, sid, confidence } of the max cost already counted for that
 // response, so cost is counted once (at its richest) across duplicate copies
 // seen live, via the importer, or during a rebuild. Cleared on rebuild.
 const _costByRid = new Map();
@@ -19,6 +19,11 @@ const _costByRid = new Map();
 // partial copy is still a real duplicate that must occupy a count slot, so it
 // can't reuse _costByRid (which only holds cost-bearing lines). Cleared on rebuild.
 const _countedRids = new Set();
+// #420/ADR 0017: responseId → sid whose unknownCount slot this rid occupies.
+// When a priced duplicate later arrives for the same rid, the unknown tally is
+// retracted from that session so the `+` under-count marker doesn't survive a
+// copy that turned out to have a price (codex R1 M2). Cleared on rebuild.
+const _unknownByRid = new Map();
 let dirty = false;
 let flushTimer = null;
 const FLUSH_DELAY_MS = 2000;
@@ -53,14 +58,15 @@ async function loadSessionIndex() {
         if (s && s.sid) sessionIndex.set(s.sid, s);
       } catch {}
     }
-    // #368: force rebuild when sessions.json predates maxContext tracking.
-    // After rebuild, _upsert populates maxContext from index.ndjson entries.
+    // #368/#420: force rebuild when sessions.json predates maxContext or the
+    // aggregate cost-confidence fold. After rebuild, _upsert repopulates both
+    // from index.ndjson entries.
     let needsMigration = false;
     for (const s of sessionIndex.values()) {
-      if (s.count > 0 && s.maxContext === undefined) { needsMigration = true; break; }
+      if (s.count > 0 && (s.maxContext === undefined || s.fallbackCount === undefined)) { needsMigration = true; break; }
     }
     if (needsMigration) {
-      console.log('\x1b[33m[session-index] schema migration (maxContext) — will rebuild\x1b[0m');
+      console.log('\x1b[33m[session-index] schema migration (maxContext/aggregate cost confidence) — will rebuild\x1b[0m');
       sessionIndex.clear();
       return false;
     }
@@ -92,6 +98,7 @@ function _rebuildCore(feedFn) {
   sessionIndex.clear();
   _costByRid.clear();
   _countedRids.clear();
+  _unknownByRid.clear();
   const { assessWeather } = require('../public/weather');
   const _weatherSeenRid = new Set();
   const bySid = new Map();
@@ -160,11 +167,23 @@ function seedDedupFromMetas(metas) {
     // partial (it is still a real duplicate line for count purposes).
     _countedRids.add(rid);
     // COST: only cost-bearing lines seed the tracked max.
-    if (m.cost?.cost == null) continue;
+    if (m.cost?.cost == null) {
+      // INVARIANT(#420/ADR 0017): an unknown-priced line whose rid never gains a
+      // priced copy keeps its slot here, so a post-restart priced duplicate can
+      // retract the persisted unknownCount (codex R1 M2). First-seen wins — the
+      // original run's count slot went to the first copy's session, so a later
+      // cross-session duplicate must not steal the retract target (codex R2 M1).
+      if (m.cost?.confidence === 'unknown' && !_costByRid.has(rid) && !_unknownByRid.has(rid)) _unknownByRid.set(rid, m.sessionId);
+      continue;
+    }
     const c = m.cost.cost;
+    _unknownByRid.delete(rid);
+    // INVARIANT(#420/ADR 0017): carry the winning copy's confidence so a
+    // post-restart max-upgrade adjusts fallbackCost correctly (codex R1 M1).
+    const conf = m.cost.confidence === 'fallback' ? 'fallback' : null;
     const prev = _costByRid.get(rid);
-    if (prev === undefined) _costByRid.set(rid, { cost: c, sid: m.sessionId });
-    else if (c > prev.cost) prev.cost = c;
+    if (prev === undefined) _costByRid.set(rid, { cost: c, sid: m.sessionId, confidence: conf });
+    else if (c > prev.cost) { prev.cost = c; prev.confidence = conf; }
   }
 }
 
@@ -269,7 +288,9 @@ function _recomputeWeather(sid) {
 function _upsert(sid, entry) {
   let s = sessionIndex.get(sid);
   if (!s) {
-    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, title: null, firstPrompt: null, lastReceivedAt: 0, provider: null, agent: null };
+    // INVARIANT(#420/ADR 0017): session aggregate confidence is folded beside
+    // totalCost/count so every persisted session can render the same view.
+    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, title: null, firstPrompt: null, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
   // #333: bump COUNT once per responseId so the session card shows merged turns,
@@ -280,6 +301,12 @@ function _upsert(sid, entry) {
     const crid = entry.responseId;
     if (!crid || !_countedRids.has(crid)) {
       s.count++;
+      // INVARIANT(#420/ADR 0017): unknown turns occupy the same count
+      // denominator as priced turns, but are excluded from totalCost.
+      if (entry.cost && entry.cost.cost == null && entry.cost.confidence === 'unknown') {
+        s.unknownCount++;
+        if (crid) _unknownByRid.set(crid, sid);
+      }
       if (crid) _countedRids.add(crid);
     }
   }
@@ -293,20 +320,52 @@ function _upsert(sid, entry) {
   // (no destructive mid-flight rebuild — codex round-3 M2). Cost stays in the
   // first-seen session's bucket so a cross-session duplicate isn't double-counted.
   // A line without responseId (legacy/exempt) is always counted (no dedup key).
+  // INVARIANT(#420/ADR 0017): fold fallback cost/count with the same responseId
+  // max-upgrade decision as totalCost; never count a duplicate copy twice.
   if (entry.cost?.cost != null) {
     const rid = entry.responseId;
     const c = entry.cost.cost;
+    const isFallback = entry.cost.confidence === 'fallback';
     if (!rid) {
       s.totalCost = (s.totalCost || 0) + c;
+      if (isFallback) {
+        s.fallbackCost = (s.fallbackCost || 0) + c;
+        s.fallbackCount = (s.fallbackCount || 0) + 1;
+      }
     } else {
       const prev = _costByRid.get(rid);
       if (prev === undefined) {
+        // INVARIANT(#420/ADR 0017): this rid's count slot may have been claimed
+        // by an unknown-priced copy — a priced duplicate retracts that unknown
+        // tally from the session that recorded it (codex R1 M2).
+        const unkSid = _unknownByRid.get(rid);
+        if (unkSid !== undefined) {
+          const us = sessionIndex.get(unkSid);
+          if (us && us.unknownCount > 0) us.unknownCount--;
+          _unknownByRid.delete(rid);
+        }
         s.totalCost = (s.totalCost || 0) + c;
-        _costByRid.set(rid, { cost: c, sid });
+        if (isFallback) {
+          s.fallbackCost = (s.fallbackCost || 0) + c;
+          s.fallbackCount = (s.fallbackCount || 0) + 1;
+        }
+        _costByRid.set(rid, { cost: c, sid, confidence: isFallback ? 'fallback' : null });
       } else if (c > prev.cost) {
         const ps = sessionIndex.get(prev.sid);
-        if (ps) ps.totalCost = (ps.totalCost || 0) + (c - prev.cost);
+        if (ps) {
+          ps.totalCost = (ps.totalCost || 0) + (c - prev.cost);
+          if (isFallback) {
+            // A fallback winner carries only the max-cost delta when the
+            // previous winning copy was already fallback.
+            ps.fallbackCost = (ps.fallbackCost || 0) + (c - (prev.confidence === 'fallback' ? prev.cost : 0));
+            if (prev.confidence !== 'fallback') ps.fallbackCount = (ps.fallbackCount || 0) + 1;
+          } else if (prev.confidence === 'fallback') {
+            ps.fallbackCost = (ps.fallbackCost || 0) - prev.cost;
+            ps.fallbackCount = Math.max(0, (ps.fallbackCount || 0) - 1);
+          }
+        }
         prev.cost = c;
+        prev.confidence = isFallback ? 'fallback' : null;
       }
     }
   }

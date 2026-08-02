@@ -118,6 +118,57 @@ function formatCostText(cost, confidence, decimals) {
   return (confidence === 'fallback' ? '~$' : '$') + cost.toFixed(d);
 }
 
+// INVARIANT(#420/ADR 0017): every aggregate cost display goes through this
+// fold-aware decision tree; missing fields keep legacy rows clean.
+const AGG_FB_MARK_SHARE = 0.10;
+const AGG_FB_DEGRADE_SHARE = 0.50;
+
+function _aggFoldNumber(agg, key) {
+  var n = Number(agg && agg[key]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function _aggCostParts(cost, agg, decimals) {
+  if (cost == null) return { text: '—', title: '' };
+  var fallbackCost = _aggFoldNumber(agg, 'fallbackCost');
+  var fallbackCount = _aggFoldNumber(agg, 'fallbackCount');
+  var unknownCount = _aggFoldNumber(agg, 'unknownCount');
+  var count = _aggFoldNumber(agg, 'count');
+  if (unknownCount > 0 && (count - unknownCount) === 0) return { text: '—', title: '' };
+
+  var d = decimals != null ? decimals : 2;
+  var costShare = cost > 0 ? fallbackCost / cost : 0;
+  var countShare = count > 0 ? fallbackCount / count : 0;
+  var text;
+  if (cost > 0 && costShare >= AGG_FB_DEGRADE_SHARE) {
+    text = '~$' + Number(cost.toPrecision(2));
+  } else if (Math.max(cost > 0 ? costShare : (fallbackCount > 0 ? 1 : 0), countShare) >= AGG_FB_MARK_SHARE) {
+    text = '~$' + cost.toFixed(d);
+  } else {
+    text = '$' + cost.toFixed(d);
+  }
+  if (unknownCount >= 1) text += '+';
+
+  var titleParts = [];
+  if (fallbackCount > 0) {
+    titleParts.push(fallbackCount + '/' + count + ' 筆使用預設費率（佔 ' + (costShare * 100).toFixed(1) + '%），可能不準確');
+  }
+  if (unknownCount > 0) titleParts.push(unknownCount + ' 筆無費率資料，未計入總額');
+  return { text: text, title: titleParts.join('；') };
+}
+
+// Aggregate cost display: HTML span plus the confidence tooltip substrate.
+function formatAggCost(cost, agg, decimals) {
+  var parts = _aggCostParts(cost, agg, decimals);
+  if (parts.text === '—') return '—';
+  return '<span' + (parts.title ? ' title="' + parts.title + '"' : '') + '>' + parts.text + '</span>';
+}
+
+// Plain-text aggregate cost display for callers that own the surrounding markup.
+function formatAggCostText(cost, agg, decimals) {
+  return _aggCostParts(cost, agg, decimals).text;
+}
+
 function escapeHtml(s) {
   if (typeof s !== 'string') s = JSON.stringify(s, null, 2);
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');

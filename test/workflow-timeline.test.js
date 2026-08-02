@@ -2817,16 +2817,29 @@ describe('#364 same-convId overlap → main-lane markers', () => {
 
   it("overlap markers' cost is folded into the main lane total", () => {
     const ctx = loadWfModule();
+    const parent = mkE('parent', 1000, 60, 'cA', 0.02);
+    parent.costConfidence = 'exact';
+    const fallback = mkE('f1', 11000, 5, 'cA', 0.05);
+    fallback.costConfidence = 'fallback';
+    const unknown = mkE('unknown', 21000, 5, 'cA', 0.01);
+    unknown.cost = null;
+    unknown.costConfidence = 'unknown';
     var lanes = ctx.wfInferLanes([
-      mkE('parent', 1000, 60, 'cA', 0.02),
-      mkE('f1', 11000, 5, 'cA', 0.05),   // marker, cost 0.05
+      parent,
+      fallback,   // marker, cost 0.05
+      unknown,    // marker, unknown cost
     ], []);
     var main = lanes[0];
-    assert.equal((main.overlapEntries || []).length, 1);
+    assert.equal((main.overlapEntries || []).length, 2);
     var summary = ctx.wfLaneSummary(main);
-    // parent (0.02) + overlap marker f1 (0.05) — the marker's cost still counts
+    // parent (0.02) + overlap marker f1 (0.05) — both markers participate in
+    // the confidence fold even though only the parent is in lane.turns.
     assert.ok(Math.abs(summary.totalCost - 0.07) < 1e-9,
       'expected main total 0.07, got ' + summary.totalCost);
+    assert.ok(Math.abs(summary.fallbackCost - 0.05) < 1e-9);
+    assert.equal(summary.fallbackCount, 1);
+    assert.equal(summary.unknownCount, 1);
+    assert.equal(summary.count, 3);
   });
 
   it('wfRenderLaneSvg draws a diamond overlap marker on the main lane', () => {

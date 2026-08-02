@@ -123,11 +123,27 @@ function _foldEntry(canonical, other) {
   }
   // usage/cost/maxContext/responseMetadata move as a unit to the richest usage —
   // cost is thereby counted once, never summed across copies.
-  if (_usageRichness(other.usage) > _usageRichness(canonical.usage)) {
+  // INVARIANT(#420/ADR 0017): on EQUAL richness a priced OBJECT cost beats an
+  // unpriced one (most-informative register, ADR 0012's own principle) —
+  // otherwise an unknown-priced canonical pins the merged turn to cost null
+  // forever and the aggregate `+` marker survives a copy that had a real price
+  // (codex R2 M2). Object shape only: a legacy numeric cost is invisible to
+  // session-index aggregation, so promoting one would desync per-turn display
+  // from the aggregate fold (codex R3 M2). The tie path moves cost alone and
+  // prefers non-null for the companions — the usages tied, so keeping
+  // canonical's tuple stays consistent, and a metadata-poor winner must not
+  // wipe a real maxContext with undefined (codex R3 M1).
+  const _priced = c => c != null && typeof c === 'object' && c.cost != null;
+  const _or = _usageRichness(other.usage), _cr = _usageRichness(canonical.usage);
+  if (_or > _cr) {
     canonical.usage = other.usage;
     canonical.cost = other.cost;
     canonical.maxContext = other.maxContext;
     canonical.responseMetadata = other.responseMetadata;
+  } else if (_or === _cr && !_priced(canonical.cost) && _priced(other.cost)) {
+    canonical.cost = other.cost;
+    if (other.maxContext != null) canonical.maxContext = other.maxContext;
+    if (other.responseMetadata != null) canonical.responseMetadata = other.responseMetadata;
   }
   // Terminal signals: a set value beats null/empty.
   if (canonical.status == null && other.status != null) canonical.status = other.status;

@@ -37,7 +37,7 @@ describe('withGrokLiveCosts', () => {
         agent: 'grok',
         receivedAt: Date.now(),
         usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
-        cost: { cost: 0.05 },
+        cost: { cost: 0.05, confidence: 'fallback' },
       }],
     };
     const out = withGrokLiveCosts(data, fakeStore);
@@ -45,5 +45,21 @@ describe('withGrokLiveCosts', () => {
     assert.equal(out.daily[0].byAccount['grok-default'].costUSD, 0.05);
     assert.equal(out.daily[0].byAccount['grok-default'].totalTokens, 110);
     assert.equal(out.monthly[0].byAccount['grok-default'].costUSD, 0.05);
+    assert.deepEqual(out.daily[0].byAccount['grok-default'], {
+      totalTokens: 110,
+      costUSD: 0.05,
+      fallbackCost: 0.05,
+      fallbackCount: 1,
+      unknownCount: 0,
+      count: 1,
+    });
+    assert.deepEqual(out.monthly[0].byAccount['grok-default'], {
+      totalTokens: 110,
+      costUSD: 0.05,
+      fallbackCost: 0.05,
+      fallbackCount: 1,
+      unknownCount: 0,
+      count: 1,
+    });
   });
 });

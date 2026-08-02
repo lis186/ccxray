@@ -364,6 +364,18 @@ function _attachColdPrefetch(el, sid) {
   el.onmouseleave = function() { clearTimeout(_coldPrefetchTimer); };
 }
 
+function _foldSessionCost(sess, turnCost, costConfidence) {
+  // INVARIANT(#420/ADR 0017): session confidence fields must mirror every
+  // totalCost mutation, including cold entries and rebuilds.
+  if (turnCost != null && costConfidence === 'fallback') {
+    sess.fallbackCost = (sess.fallbackCost || 0) + turnCost;
+    sess.fallbackCount = (sess.fallbackCount || 0) + 1;
+  }
+  if (turnCost == null && costConfidence === 'unknown') {
+    sess.unknownCount = (sess.unknownCount || 0) + 1;
+  }
+}
+
 function addEntry(e) {
   // Dedup: SSE + on-demand fetch race can deliver the same entry twice
   if (e.id && window.entryById && window.entryById.has(e.id)) return;
@@ -385,7 +397,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, retryCount: 0, model, totalCost: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null, parentSessionId: e.parentSessionId || null });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, retryCount: 0, model, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null, parentSessionId: e.parentSessionId || null });
     // Live-update visibleProviders when a new provider appears
     const settings = window.ccxraySettings;
     if (!Array.isArray(settings.visibleProviders)) settings.visibleProviders = [];
@@ -556,7 +568,7 @@ function addEntry(e) {
     }
   }
   if (!projectsMap.has(projName)) {
-    projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: entryId, lastId: entryId, lastSeenAt: Date.now() });
+    projectsMap.set(projName, { name: projName, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0, sessionIds: new Set(), firstId: entryId, lastId: entryId, lastSeenAt: Date.now() });
   }
   const proj = projectsMap.get(projName);
   proj.sessionIds.add(sid);
@@ -690,6 +702,7 @@ function addEntry(e) {
     if (sess._cold) {
       // ponytail: cold session — full stats increment; recompute on activation
       if (turnCost != null) sess.totalCost += turnCost;
+      _foldSessionCost(sess, turnCost, costConfidence);
       if (usage) {
         sess.inputTokens = (sess.inputTokens || 0) + (usage.input_tokens || 0);
         sess.outputTokens = (sess.outputTokens || 0) + (usage.output_tokens || 0);
@@ -812,6 +825,7 @@ function recomputeSessionStats(sid) {
     else if (en.isSubagent) sess.subCount++;
     else sess.mainCount++;
     if (cost != null) sess.totalCost += cost;
+    _foldSessionCost(sess, cost, en.costConfidence);
     if (en.usage) {
       sess.inputTokens += en.usage.input_tokens || 0;
       sess.outputTokens += en.usage.output_tokens || 0;
@@ -834,10 +848,22 @@ function recomputeSessionStats(sid) {
 function recomputeProjectCost(projName) {
   var proj = projectsMap.get(projName);
   if (!proj) return;
+  // INVARIANT(#420/ADR 0017): project cost is the complete fold of member
+  // sessions, including unknown turns in the count denominator.
   proj.totalCost = 0;
+  proj.fallbackCost = 0;
+  proj.fallbackCount = 0;
+  proj.unknownCount = 0;
+  proj.count = 0;
   proj.sessionIds.forEach(function(sid) {
     var s = sessionsMap.get(sid);
-    if (s) proj.totalCost += s.totalCost || 0;
+    if (s) {
+      proj.totalCost += s.totalCost || 0;
+      proj.fallbackCost += s.fallbackCost || 0;
+      proj.fallbackCount += s.fallbackCount || 0;
+      proj.unknownCount += s.unknownCount || 0;
+      proj.count += s.count || 0;
+    }
   });
 }
 window.recomputeSessionStats = recomputeSessionStats;
@@ -879,7 +905,9 @@ function mergeColdSessions(sessions) {
     sessionsMap.set(s.sid, {
       id: s.sid, firstTs: null, firstId: s.firstId || '', lastId: s.lastId || '',
       count: s.count || 0, mainCount: s.count || 0, subCount: 0, retryCount: 0,
-      model: s.model || '?', totalCost: s.totalCost || 0, cwd: s.cwd || null,
+      model: s.model || '?', totalCost: s.totalCost || 0,
+      fallbackCost: s.fallbackCost || 0, fallbackCount: s.fallbackCount || 0, unknownCount: s.unknownCount || 0,
+      cwd: s.cwd || null,
       title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       maxContext: s.maxContext || 0, beta1m: s.beta1m || false,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
@@ -904,7 +932,7 @@ function mergeColdSessions(sessions) {
     colSessions.appendChild(sessEl);
     var projName = getProjectName(s.cwd);
     if (!projectsMap.has(projName)) {
-      projectsMap.set(projName, { name: projName, totalCost: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
+      projectsMap.set(projName, { name: projName, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0, sessionIds: new Set(), firstId: s.firstId || '', lastId: s.lastId || '', lastSeenAt: 0 });
     }
     var proj = projectsMap.get(projName);
     proj.sessionIds.add(s.sid);
@@ -970,12 +998,54 @@ function _patchEntryInPlace(u) {
     // bare number + separate costConfidence (codex round-1 M3, #420 Phase 2).
     // cost and confidence are taken as a unit: confidence only updates when the
     // cost value is accepted (fable review MINOR-1, ADR 0012 as-a-unit rule).
+    let costChanged = false;
+    const prevPatchCost = full.cost != null ? full.cost : null;
+    const prevPatchConf = full.costConfidence || null;
     if (u.cost != null) {
       if (u.cost && u.cost.cost != null) {
+        const nextConfidence = u.cost.confidence || full.costConfidence;
+        costChanged = full.cost !== u.cost.cost || full.costConfidence !== nextConfidence;
         full.cost = u.cost.cost;
         if (u.cost.confidence) full.costConfidence = u.cost.confidence;
+      } else if (u.cost && Object.prototype.hasOwnProperty.call(u.cost, 'cost') && full.cost == null && u.cost.confidence) {
+        // Unknown is accepted only for an entry that has no priced canonical
+        // value; a later partial must not downgrade an existing priced copy.
+        costChanged = full.costConfidence !== u.cost.confidence;
+        full.costConfidence = u.cost.confidence;
       } else if (typeof u.cost === 'number') {
+        costChanged = full.cost !== u.cost;
         full.cost = u.cost;
+      }
+    }
+    if (costChanged) {
+      // INVARIANT(#420/ADR 0017): an entry_update cost upgrade must rebuild the
+      // session/project fold so the marker follows the canonical entry.
+      const patchedSess = sessionsMap.get(full.sessionId);
+      if (patchedSess) {
+        if (patchedSess._cold) {
+          // Cold session: allEntries holds only its live-arrived entries, so a
+          // recompute would wipe the seeded history — apply the upgrade as an
+          // incremental delta instead (codex R1 M3). Downgrade priced→unknown
+          // can't occur (unknown is only accepted when full.cost was null).
+          patchedSess.totalCost = (patchedSess.totalCost || 0) + (full.cost || 0) - (prevPatchCost || 0);
+          if (prevPatchConf === 'fallback' && prevPatchCost != null) {
+            patchedSess.fallbackCost = (patchedSess.fallbackCost || 0) - prevPatchCost;
+            patchedSess.fallbackCount = Math.max(0, (patchedSess.fallbackCount || 0) - 1);
+          }
+          if (full.costConfidence === 'fallback' && full.cost != null) {
+            patchedSess.fallbackCost = (patchedSess.fallbackCost || 0) + full.cost;
+            patchedSess.fallbackCount = (patchedSess.fallbackCount || 0) + 1;
+          }
+          if (prevPatchConf === 'unknown' && prevPatchCost == null && full.cost != null) {
+            patchedSess.unknownCount = Math.max(0, (patchedSess.unknownCount || 0) - 1);
+          }
+        } else {
+          recomputeSessionStats(full.sessionId);
+        }
+        recomputeProjectCost(getProjectName(patchedSess.cwd));
+        const patchedEl = document.getElementById('sess-' + full.sessionId.slice(0, 8));
+        if (patchedEl) patchedEl.innerHTML = renderSessionItem(patchedSess, full.sessionId, patchedEl);
+        renderProjectsCol();
       }
     }
     // ctxUsed is derived from usage at add time; recompute it when usage is
@@ -1395,7 +1465,7 @@ Promise.all([_entriesReady, _starsReady, _sessionsReady]).then(async ([data, , s
     for (const [sid, sess] of sessionsMap) {
       if (sess._cold) continue;
       recomputeSessionStats(sid);
-      const snap = { count: sess.count, mainCount: sess.mainCount, subCount: sess.subCount, retryCount: sess.retryCount, totalCost: sess.totalCost, inputTokens: sess.inputTokens, outputTokens: sess.outputTokens, toolCallTurns: sess.toolCallTurns };
+      const snap = { count: sess.count, mainCount: sess.mainCount, subCount: sess.subCount, retryCount: sess.retryCount, totalCost: sess.totalCost, fallbackCost: sess.fallbackCost, fallbackCount: sess.fallbackCount, unknownCount: sess.unknownCount, inputTokens: sess.inputTokens, outputTokens: sess.outputTokens, toolCallTurns: sess.toolCallTurns };
       recomputeSessionStats(sid);
       for (const k of Object.keys(snap)) {
         if (snap[k] !== sess[k]) console.warn('[#308 drift]', sid, k, 'snap:', snap[k], 'recomputed:', sess[k]);

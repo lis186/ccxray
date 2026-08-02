@@ -147,11 +147,26 @@ function calculateBurnRate(block) {
   };
 }
 
+function addConfidenceFold(target, entry) {
+  // INVARIANT(#420/ADR 0017): every usage group carries the complete aggregate
+  // confidence fold alongside its summed cost and turn count.
+  target.count++;
+  if (entry.costConfidence === 'fallback') {
+    target.fallbackCost += entry.costUSD || 0;
+    target.fallbackCount++;
+  }
+  if (entry.costConfidence === 'unknown') target.unknownCount++;
+}
+
+function emptyConfidenceFold() {
+  return { fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0 };
+}
+
 function groupByDay(entries) {
   const days = {};
   for (const e of entries) {
     const date = new Date(e.timestamp).toLocaleDateString('sv-SE');
-    if (!days[date]) days[date] = { date, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set(), byAccount: {} };
+    if (!days[date]) days[date] = { date, totalTokens: 0, costUSD: 0, ...emptyConfidenceFold(), models: new Set(), sessions: new Set(), byAccount: {} };
     const d = days[date];
     const tokens =
       (e.usage.input_tokens || 0) +
@@ -160,12 +175,14 @@ function groupByDay(entries) {
       (e.usage.cache_read_input_tokens || 0);
     d.totalTokens += tokens;
     d.costUSD += e.costUSD || 0;
+    addConfidenceFold(d, e);
     if (e.model) d.models.add(e.model);
     if (e.sessionId) d.sessions.add(e.sessionId);
     if (e.accountId) {
-      const a = d.byAccount[e.accountId] || (d.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0 });
+      const a = d.byAccount[e.accountId] || (d.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0, ...emptyConfidenceFold() });
       a.totalTokens += tokens;
       a.costUSD += e.costUSD || 0;
+      addConfidenceFold(a, e);
     }
   }
   const result = [];
@@ -174,12 +191,30 @@ function groupByDay(entries) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     const dateStr = d.toLocaleDateString('sv-SE');
-    const day = days[dateStr] || { date: dateStr, totalTokens: 0, costUSD: 0, models: new Set(), sessions: new Set(), byAccount: {} };
+    const day = days[dateStr] || { date: dateStr, totalTokens: 0, costUSD: 0, ...emptyConfidenceFold(), models: new Set(), sessions: new Set(), byAccount: {} };
     const byAccount = {};
     for (const [k, v] of Object.entries(day.byAccount)) {
-      byAccount[k] = { totalTokens: v.totalTokens, costUSD: Math.round(v.costUSD * 100) / 100 };
+      byAccount[k] = {
+        totalTokens: v.totalTokens,
+        costUSD: Math.round(v.costUSD * 100) / 100,
+        fallbackCost: Math.round(v.fallbackCost * 100) / 100,
+        fallbackCount: v.fallbackCount,
+        unknownCount: v.unknownCount,
+        count: v.count,
+      };
     }
-    result.push({ date: day.date, totalTokens: day.totalTokens, costUSD: Math.round(day.costUSD * 100) / 100, models: [...day.models], sessionCount: day.sessions.size, byAccount });
+    result.push({
+      date: day.date,
+      totalTokens: day.totalTokens,
+      costUSD: Math.round(day.costUSD * 100) / 100,
+      fallbackCost: Math.round(day.fallbackCost * 100) / 100,
+      fallbackCount: day.fallbackCount,
+      unknownCount: day.unknownCount,
+      count: day.count,
+      models: [...day.models],
+      sessionCount: day.sessions.size,
+      byAccount,
+    });
   }
   return result;
 }
@@ -189,7 +224,7 @@ function groupByMonth(entries) {
   for (const e of entries) {
     const d = new Date(e.timestamp);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    if (!months[key]) months[key] = { month: key, totalTokens: 0, costUSD: 0, models: new Set(), byAccount: {} };
+    if (!months[key]) months[key] = { month: key, totalTokens: 0, costUSD: 0, ...emptyConfidenceFold(), models: new Set(), byAccount: {} };
     const m = months[key];
     const tokens =
       (e.usage.input_tokens || 0) +
@@ -198,20 +233,39 @@ function groupByMonth(entries) {
       (e.usage.cache_read_input_tokens || 0);
     m.totalTokens += tokens;
     m.costUSD += e.costUSD || 0;
+    addConfidenceFold(m, e);
     if (e.model) m.models.add(e.model);
     if (e.accountId) {
-      const a = m.byAccount[e.accountId] || (m.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0 });
+      const a = m.byAccount[e.accountId] || (m.byAccount[e.accountId] = { totalTokens: 0, costUSD: 0, ...emptyConfidenceFold() });
       a.totalTokens += tokens;
       a.costUSD += e.costUSD || 0;
+      addConfidenceFold(a, e);
     }
   }
   return Object.values(months)
     .map(m => {
       const byAccount = {};
       for (const [k, v] of Object.entries(m.byAccount)) {
-        byAccount[k] = { totalTokens: v.totalTokens, costUSD: Math.round(v.costUSD * 100) / 100 };
+        byAccount[k] = {
+          totalTokens: v.totalTokens,
+          costUSD: Math.round(v.costUSD * 100) / 100,
+          fallbackCost: Math.round(v.fallbackCost * 100) / 100,
+          fallbackCount: v.fallbackCount,
+          unknownCount: v.unknownCount,
+          count: v.count,
+        };
       }
-      return { month: m.month, totalTokens: m.totalTokens, costUSD: Math.round(m.costUSD * 100) / 100, models: [...m.models], byAccount };
+      return {
+        month: m.month,
+        totalTokens: m.totalTokens,
+        costUSD: Math.round(m.costUSD * 100) / 100,
+        fallbackCost: Math.round(m.fallbackCost * 100) / 100,
+        fallbackCount: m.fallbackCount,
+        unknownCount: m.unknownCount,
+        count: m.count,
+        models: [...m.models],
+        byAccount,
+      };
     })
     .sort((a, b) => a.month.localeCompare(b.month));
 }
@@ -277,6 +331,8 @@ module.exports = {
   getOrComputeCosts,
   getCostsCacheOrNull,
   calculateBurnRate,
+  groupByDay,
+  groupByMonth,
   warmUp,
   streamUsageEntries,
 };
