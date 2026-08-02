@@ -342,3 +342,20 @@ Deltas from the proposal, discovered during implementation:
   alongside `_costByRid`; `_upsert` and `reconcile` dedup count by responseId in
   lockstep. See the "Session-card turn count is deduped" consequence for why all
   three sites must change together.
+
+## Amended by #420 Phase 3 / ADR 0017 (2026-08-03)
+
+The usage/cost unit-move rule gains a tie-break: on EQUAL usage richness, a
+priced **object** cost (`{cost != null}`) beats an unpriced one — the
+most-informative-register principle applied to the cost field, so an
+unknown-priced canonical cannot pin a merged turn to cost null forever (the
+aggregate `+` under-count marker would survive a copy that had a real price).
+The tie path moves cost alone and adopts `maxContext`/`responseMetadata` only
+when non-null (a metadata-poor winner must not wipe a real 1M window with
+undefined); the strictly-richer path still moves the full unit. Legacy numeric
+costs never win the tie — session-index aggregation reads only the object
+shape, so promoting a numeric cost would desync the per-turn display from the
+aggregate fold. Dedup state also grows a third map: `_unknownByRid`
+(rid → first-seen sid), letting a priced duplicate retract a previously-counted
+unknown slot; seeded first-seen-wins alongside `_costByRid`/`_countedRids`.
+See `docs/decisions/0017-aggregate-cost-confidence.md`.
