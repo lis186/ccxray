@@ -2587,6 +2587,7 @@ function _wfShowTooltip(e, t, lane) {
     + (ttWeather ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
     + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
+    // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
     + row('Cost', formatCostText(t.cost || 0, t.costConfidence) + outlier)
     + row('Duration', wfFmtDur((parseFloat(t.elapsed) || 0) * 1000))
     + row('Tokens', _wfFmtTok(inT) + ' in / ' + _wfFmtTok(u.output_tokens || 0) + ' out')
@@ -2938,7 +2939,7 @@ function wfRenderTurnCard(turnEntry) {
   if (cacheCreate) html += '<div class="wf-ac-row"><span>New</span><span class="wf-ac-val">' + _wfFmtSessTok(cacheCreate) + '</span></div>';
   html += '</div>';
 
-  // Cost
+  // Cost — INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cost</div>';
   html += '<div class="wf-ac-row"><span>Turn</span><span class="wf-ac-val">' + formatCost(turnEntry.cost || 0, turnEntry.costConfidence) + '</span></div>';
   if (turnEntry.stopReason) html += '<div class="wf-ac-row"><span>Stop</span><span class="wf-ac-val">' + wfEsc(turnEntry.stopReason) + '</span></div>';
@@ -3044,6 +3045,7 @@ function _wfRenderHoverPreview(turn, lane) {
   var html = '<div class="wf-hover-preview" style="border-left:2px dashed ' + color + '">';
   html += '<div class="wf-hp-title" style="background:' + color + '08">#' + displayNum + '  ' + wfEsc(wfShortModel(turn.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
   html += '<div class="wf-hp-row"><span>Context</span><span style="color:' + cz.hex + '">' + pct.toFixed(1) + '%</span></div>';
+  // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
   html += '<div class="wf-hp-row"><span>Cost</span><span>' + formatCostText(turn.cost || 0, turn.costConfidence) + '</span></div>';
   html += '<div class="wf-hp-row"><span>Tokens</span><span>' + _wfFmtSessTok(inTok) + ' in / ' + _wfFmtSessTok(outTok) + ' out</span></div>';
   html += '<div class="wf-hp-lane-ctx">lane $' + laneSummary.totalCost.toFixed(2) + ' · this turn ' + turnShare + '%</div>';
@@ -3069,6 +3071,7 @@ function _wfRenderLaneSummary(lane, section) {
       html += '<tr style="cursor:pointer;border-top:1px solid var(--border)" onclick="wfLockTurn(\'' + t.id + '\');wfSelectSection(\'cost-efficiency\')">';
       html += '<td style="padding:4px 8px;color:var(--dim)">' + (i + 1) + '</td>';
       html += '<td style="padding:4px 8px">' + wfEsc(wfShortModel(t.model)) + '</td>';
+      // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
       html += '<td style="padding:4px 8px;text-align:right">' + formatCost(t.cost || 0, t.costConfidence) + '</td>';
       html += '<td style="padding:4px 8px;text-align:right">' + (allTok / 1000).toFixed(1) + 'K</td>';
       html += '<td style="padding:4px 8px;text-align:right">' + pct + '</td></tr>';

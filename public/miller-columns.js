@@ -2539,6 +2539,7 @@ function renderSectionsCol(idx) {
   html += '<div class="ch-line2"><span class="' + statusClass + '">' + e.status + '</span> · 🤖 ' + (e.elapsed || '?') + 's';
   if (stopReason) html += ' · ' + escapeHtml(stopReason);
   if (e.thinkingDuration) html += ' · <span style="color:var(--purple)">🧠 ' + e.thinkingDuration.toFixed(1) + 's</span>';
+  // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence) — 5 sites across 3 files
   if (turnCost != null || e.costConfidence === 'unknown') html += ' · <span style="color:var(--yellow)">' + formatCostText(turnCost, e.costConfidence, 2) + '</span>';
   html += '</div>';
   const cacheRead = usage.cache_read_input_tokens || 0;
