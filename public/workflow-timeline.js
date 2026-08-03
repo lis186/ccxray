@@ -1383,19 +1383,34 @@ function _wfInsertTurnSorted(lane, entry) {
 
 // ── Lane Summary ──────────────────────────────────────────────────────────
 function wfLaneSummary(lane) {
-  var turns = lane.turns;
-  if (!turns.length) return { peakCtx: 0, avgCache: 0, totalCost: 0, turnCount: 0, duration: 0, totalIn: 0, totalOut: 0 };
+  var turns = lane.turns || [];
+  var overlapEntries = lane.overlapEntries || [];
+  if (!turns.length && !overlapEntries.length) return { peakCtx: 0, avgCache: 0, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0, turnCount: 0, duration: 0, totalIn: 0, totalOut: 0 };
   var peakCtx = 0, totalCacheR = 0, totalCacheAll = 0, totalCost = 0, totalIn = 0, totalOut = 0;
-  for (var i = 0; i < turns.length; i++) {
-    var t = turns[i];
+  var fallbackCost = 0, fallbackCount = 0, unknownCount = 0, count = 0;
+  // INVARIANT(#420/ADR 0017): fold every rendered lane component, including
+  // hidden same-conversation overlap markers, into one aggregate confidence view.
+  var foldTurn = function(t) {
+    count++;
+    if (t.cost != null) {
+      totalCost += t.cost;
+      if (t.costConfidence === 'fallback') {
+        fallbackCost += t.cost;
+        fallbackCount++;
+      }
+    } else if (t.costConfidence === 'unknown') {
+      unknownCount++;
+    }
     var pct = wfCtxPctRender(t);
     if (pct > peakCtx) peakCtx = pct;
     var cr = (t.usage?.cache_read_input_tokens || 0);
     var cc = (t.usage?.cache_creation_input_tokens || 0);
     totalCacheR += cr; totalCacheAll += cr + cc;
-    totalCost += (t.cost || 0);
     totalIn += (t.usage?.input_tokens || 0) + cr + cc;
     totalOut += (t.usage?.output_tokens || 0);
+  };
+  for (var i = 0; i < turns.length; i++) {
+    foldTurn(turns[i]);
   }
   // #261: pooled convId lanes can hold overlapping turns, so the last turn
   // by array order isn't necessarily the one that ends last — use min-start
@@ -1407,24 +1422,12 @@ function wfLaneSummary(lane) {
     if (ds < minStart) minStart = ds;
     if (de > maxEnd) maxEnd = de;
   }
-  var dur = maxEnd - minStart;
+  var dur = turns.length ? maxEnd - minStart : 0;
   // #364: overlap markers are same-convId turns exiled from the serial chain —
   // their cost belongs to the main lane (they were part of this conversation),
   // so fold it into the lane total even though they aren't drawn as turns.
-  if (lane.overlapEntries && lane.overlapEntries.length) {
-    for (var oi = 0; oi < lane.overlapEntries.length; oi++) {
-      var ot = lane.overlapEntries[oi];
-      var opct = wfCtxPctRender(ot);
-      if (opct > peakCtx) peakCtx = opct;
-      var ocr = (ot.usage?.cache_read_input_tokens || 0);
-      var occ = (ot.usage?.cache_creation_input_tokens || 0);
-      totalCacheR += ocr; totalCacheAll += ocr + occ;
-      totalCost += (ot.cost || 0);
-      totalIn += (ot.usage?.input_tokens || 0) + ocr + occ;
-      totalOut += (ot.usage?.output_tokens || 0);
-    }
-  }
-  return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
+  for (var oi = 0; oi < overlapEntries.length; oi++) foldTurn(overlapEntries[oi]);
+  return { peakCtx: peakCtx, avgCache: totalCacheAll > 0 ? (totalCacheR / totalCacheAll * 100) : 0, totalCost: totalCost, fallbackCost: fallbackCost, fallbackCount: fallbackCount, unknownCount: unknownCount, count: count, turnCount: turns.length, duration: dur, totalIn: totalIn, totalOut: totalOut };
 }
 
 // ── Lane Height Helpers ───────────────────────────────────────────────────
@@ -2821,7 +2824,8 @@ function wfRenderAgentCard(lane) {
   html += '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Cost</div>';
-  html += '<div class="wf-ac-row"><span>Total</span><span class="wf-ac-val">$' + summary.totalCost.toFixed(4) + '</span></div>';
+  // INVARIANT(#420/ADR 0017): agent-card aggregate cost uses the full lane fold.
+  html += '<div class="wf-ac-row"><span>Total</span><span class="wf-ac-val">' + formatAggCost(summary.totalCost, summary, 4) + '</span></div>';
   html += '</div>';
 
   if (sess && (sess.inputTokens || sess.outputTokens)) {
@@ -3048,7 +3052,8 @@ function _wfRenderHoverPreview(turn, lane) {
   // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
   html += '<div class="wf-hp-row"><span>Cost</span><span>' + formatCostText(turn.cost || 0, turn.costConfidence) + '</span></div>';
   html += '<div class="wf-hp-row"><span>Tokens</span><span>' + _wfFmtSessTok(inTok) + ' in / ' + _wfFmtSessTok(outTok) + ' out</span></div>';
-  html += '<div class="wf-hp-lane-ctx">lane $' + laneSummary.totalCost.toFixed(2) + ' · this turn ' + turnShare + '%</div>';
+  // INVARIANT(#420/ADR 0017): hover lane totals include the complete lane fold.
+  html += '<div class="wf-hp-lane-ctx">lane ' + formatAggCostText(laneSummary.totalCost, laneSummary, 2) + ' · this turn ' + turnShare + '%</div>';
   html += '</div>';
   agentPanel.innerHTML = html;
 }
@@ -3077,7 +3082,9 @@ function _wfRenderLaneSummary(lane, section) {
       html += '<td style="padding:4px 8px;text-align:right">' + pct + '</td></tr>';
     }
     html += '<tr style="border-top:2px solid var(--border);font-weight:bold"><td colspan="2" style="padding:4px 8px">Total</td>';
-    html += '<td style="padding:4px 8px;text-align:right">$' + s.totalCost.toFixed(4) + '</td>';
+    // INVARIANT(#420/ADR 0017): cost-table Total uses the summary fold,
+    // including overlapEntries that are not table rows.
+    html += '<td style="padding:4px 8px;text-align:right">' + formatAggCost(s.totalCost, s, 4) + '</td>';
     html += '<td style="padding:4px 8px;text-align:right">' + ((s.totalIn + s.totalOut) / 1000).toFixed(1) + 'K</td>';
     html += '<td style="padding:4px 8px;text-align:right">' + s.avgCache.toFixed(0) + '%</td></tr></table>';
   } else {

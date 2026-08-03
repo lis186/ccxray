@@ -54,8 +54,8 @@ function turnCtxWindow(e) {
   }
   return has1m ? 1000000 : (win || e.maxContext || DEF);
 }
-const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, cwd }
-const projectsMap = new Map(); // projectName → { name, totalCost, sessionIds, firstId, lastId }
+const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, fallbackCost, fallbackCount, unknownCount, cwd }
+const projectsMap = new Map(); // projectName → { name, totalCost, fallbackCost, fallbackCount, unknownCount, count, sessionIds, firstId, lastId }
 const sessionStatusMap = new Map(); // sid → { active: bool, lastSeenAt: number|null }
 
 function isHttpStatusOk(status) {
@@ -1448,7 +1448,9 @@ function renderSessionItem(sess, sid, sessEl) {
   const shortSid = formatSessionIdLabel(sid);
   const tooltip = formatSessionTooltip(null, sid);
   const shortModelStr = shortModel(sess.model);
-  const costStr = sess.totalCost > 0 ? '$' + sess.totalCost.toFixed(2) : '—';
+  // INVARIANT(#420/ADR 0017): aggregate session cost must carry its complete
+  // confidence fold; retain the >0 gate for legacy zero-cost sessions.
+  const costStr = sess.totalCost > 0 ? formatAggCost(sess.totalCost, sess, 2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
 
   // Duration: from firstId to lastReceivedAt (or now if ongoing)
@@ -1591,7 +1593,7 @@ function renderSessionItem(sess, sid, sessEl) {
     '</div>' +
   titleRow +
     '<div class="si-row2"><span class="turn-model">' + escapeHtml(shortModelStr) + '</span> · ' + (sess.count - (sess.retryCount || 0)) + 't' + (sess.retryCount ? ' <span class="retry-count" title="' + sess.retryCount + ' failed retries (hidden from turn list)">' + sess.retryCount + 'r</span>' : '') + (durationStr ? ' · ' + durationStr : '') + (sess.weather ? '<span class="si-weather" style="float:right;cursor:default" data-weather=\'' + escapeHtml(JSON.stringify(sess.weather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + sess.weather.emoji + '</span>' : '') + '</div>' +
-    '<div class="si-cost-row"><span class="si-cost">' + escapeHtml(costStr) + '</span></div>' +
+    '<div class="si-cost-row"><span class="si-cost">' + costStr + '</span></div>' +
     ctxBarHtml +
     previewRow +
     truncatedRow +
@@ -1611,7 +1613,8 @@ if (typeof window !== 'undefined') {
 }
 
 function renderProjectsCol() {
-  // INVARIANT: sigParts must include every rendered field — see docs/decisions/0002-dirty-check-signature.md
+  // INVARIANT: sigParts must include every rendered field — see ADR 0002
+  // and ADR 0017 for the aggregate cost string's confidence fold.
   const sigParts = [
     projectFilterMode,
     selectedProjectName || '',
@@ -1623,7 +1626,10 @@ function renderProjectsCol() {
     const starCount = String(countDescendantStars('project', name));
     const directStar = isStarredAt('project', name) ? '1' : '0';
     const idleBucket = proj.lastSeenAt ? String(Math.floor((Date.now() - proj.lastSeenAt) / 60000)) : '';
-    sigParts.push(name, String(proj.totalCost), String(proj.sessionIds.size),
+    // Full HTML (not the text form) so a tooltip-only confidence change with an
+    // unchanged $ figure still re-renders (ADR 0017; codex R1 m5).
+    const renderedCost = formatAggCost(proj.totalCost, proj, 2);
+    sigParts.push(name, renderedCost, String(proj.sessionIds.size),
       proj.firstId || '', proj.lastId || '', statusClass, directStar, starCount, idleBucket);
   }
   const sig = sigParts.join('\x00');
@@ -1693,10 +1699,12 @@ function _renderProjectsColInner() {
     const dotTitle = statusClass === 'sdot-stream' ? 'streaming'
       : statusClass === 'sdot-idle' ? 'idle · ' + Math.max(1, Math.round((Date.now() - (proj.lastSeenAt || Date.now())) / 60000)) + 'm ago'
       : 'offline';
+    // INVARIANT(#420/ADR 0017): aggregate project cost must render through the
+    // shared helper with the complete project fold.
     html += '<div class="project-item' + (isSel ? ' selected' : '') + '" onclick="selectProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')">' +
       '<div class="pi-name"><span class="sdot ' + statusClass + '" title="' + escapeHtml(dotTitle) + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
       '<div class="pi-meta">' + proj.sessionIds.size + ' sessions</div>' +
-      '<div class="pi-meta pi-cost">$' + proj.totalCost.toFixed(2) + '</div>' +
+      '<div class="pi-meta pi-cost">' + formatAggCost(proj.totalCost, proj, 2) + '</div>' +
       (rangeStr ? '<div class="pi-range">' + escapeHtml(rangeStr) + '</div>' : '') +
       '</div>';
   }
@@ -2210,7 +2218,8 @@ function formatCurrentStepBreadcrumb() {
 
 function zeroSessionStats(s) {
   s.count = 0; s.mainCount = 0; s.subCount = 0; s.retryCount = 0;
-  s.totalCost = 0; s.inputTokens = 0; s.outputTokens = 0;
+  s.totalCost = 0; s.fallbackCost = 0; s.fallbackCount = 0; s.unknownCount = 0;
+  s.inputTokens = 0; s.outputTokens = 0;
   s.toolCalls = {}; s.toolCallTurns = 0; s.toolFailTurns = 0;
 }
 

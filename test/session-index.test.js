@@ -8,11 +8,13 @@ const path = require('path');
 const os = require('os');
 
 describe('session-index', () => {
-  let tmpDir, origLogsDir;
+  let tmpDir, origLogsDir, origCcxrayHome;
 
   beforeEach(async () => {
     tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ccxray-si-'));
     await fsp.mkdir(path.join(tmpDir, 'logs'), { recursive: true });
+    origCcxrayHome = process.env.CCXRAY_HOME;
+    process.env.CCXRAY_HOME = tmpDir;
     const config = require('../server/config');
     origLogsDir = config.LOGS_DIR;
     // Point LOGS_DIR at our temp dir
@@ -22,6 +24,8 @@ describe('session-index', () => {
   afterEach(async () => {
     const config = require('../server/config');
     Object.defineProperty(config, 'LOGS_DIR', { value: origLogsDir, writable: true, configurable: true });
+    if (origCcxrayHome === undefined) delete process.env.CCXRAY_HOME;
+    else process.env.CCXRAY_HOME = origCcxrayHome;
     await fsp.rm(tmpDir, { recursive: true, force: true });
     // Clear module cache so each test gets fresh state
     delete require.cache[require.resolve('../server/session-index')];
@@ -169,6 +173,107 @@ describe('session-index', () => {
     si.rebuildFromIndexContent(lines);
     const s = si.getAll().find(x => x.sid === 'sess-z');
     assert.ok(Math.abs(s.totalCost - 0.01) < 1e-9, `expected max 0.01, got ${s.totalCost}`);
+  });
+
+  it('#420: duplicate fallback cost uses max upgrade without double-counting its fold', () => {
+    const si = require('../server/session-index');
+    const lines = [
+      JSON.stringify({ id: 'fb1', sessionId: 'sess-fb', responseId: 'msg_fb', cost: { cost: 0.10, confidence: 'fallback' }, receivedAt: 1 }),
+      JSON.stringify({ id: 'fb2', sessionId: 'sess-fb', responseId: 'msg_fb', cost: { cost: 0.20, confidence: 'fallback' }, receivedAt: 2 }),
+      JSON.stringify({ id: 'unk1', sessionId: 'sess-fb', responseId: 'msg_unk', cost: { cost: null, confidence: 'unknown' }, receivedAt: 3 }),
+      JSON.stringify({ id: 'unk2', sessionId: 'sess-fb', responseId: 'msg_unk', cost: { cost: null, confidence: 'unknown' }, receivedAt: 4 }),
+    ].join('\n');
+    si.rebuildFromIndexContent(lines);
+    const s = si.get('sess-fb');
+    assert.equal(s.count, 2);
+    assert.equal(s.unknownCount, 1);
+    assert.equal(s.fallbackCount, 1);
+    assert.ok(Math.abs(s.totalCost - 0.20) < 1e-9);
+    assert.ok(Math.abs(s.fallbackCost - 0.20) < 1e-9);
+  });
+
+  it('#420 codex R1 M1: seeded dedup carries fallback confidence across restart', async () => {
+    // Prior process: fallback copy 0.10 → fold {fallbackCost 0.10, fallbackCount 1}.
+    let si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 's', id: 'p1', responseId: 'msg_fbx', cost: { cost: 0.10, confidence: 'fallback' }, usage: { input_tokens: 100, output_tokens: 10 }, maxContext: 200000, receivedAt: 1 });
+    await si.flush();
+    // Restart + seed from the surviving index line, then a richer EXACT copy
+    // upgrades the max — the stale fallback fold must be retracted.
+    delete require.cache[require.resolve('../server/session-index')];
+    si = require('../server/session-index');
+    assert.ok(await si.loadSessionIndex());
+    si.seedDedupState(JSON.stringify({ id: 'p1', sessionId: 's', responseId: 'msg_fbx', cost: { cost: 0.10, confidence: 'fallback' }, receivedAt: 1 }));
+    si.updateFromEntry({ sessionId: 's', id: 'i1', responseId: 'msg_fbx', cost: { cost: 0.20, confidence: 'exact' }, receivedAt: 2 });
+    const s = si.get('s');
+    assert.ok(Math.abs(s.totalCost - 0.20) < 1e-9, 'max upgrade applied');
+    assert.equal(s.fallbackCount, 0, 'fallback loser retracted from count');
+    assert.ok(Math.abs(s.fallbackCost) < 1e-9, 'fallback loser retracted from cost');
+  });
+
+  it('#420 codex R1 M2: a priced duplicate retracts an unknown-first count slot', async () => {
+    // Live path: unknown copy claims the count slot, priced duplicate arrives later.
+    let si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 's', id: 'u1', responseId: 'msg_ux', cost: { cost: null, confidence: 'unknown' }, usage: { input_tokens: 100, output_tokens: 10 }, maxContext: 200000, receivedAt: 1 });
+    assert.equal(si.get('s').unknownCount, 1);
+    si.updateFromEntry({ sessionId: 's', id: 'u2', responseId: 'msg_ux', cost: { cost: 0.20, confidence: 'fallback' }, receivedAt: 2 });
+    let s = si.get('s');
+    assert.equal(s.unknownCount, 0, 'unknown tally retracted once priced');
+    assert.equal(s.count, 1, 'still one merged turn');
+    assert.ok(Math.abs(s.totalCost - 0.20) < 1e-9);
+    assert.equal(s.fallbackCount, 1);
+    await si.flush();
+    // Cross-restart: unknown line seeds _unknownByRid so a post-restart priced
+    // duplicate still retracts; a rid that already had a priced line must NOT
+    // seed (no double retract).
+    delete require.cache[require.resolve('../server/session-index')];
+    si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 's2', id: 'u3', responseId: 'msg_uy', cost: { cost: null, confidence: 'unknown' }, usage: { input_tokens: 100, output_tokens: 10 }, maxContext: 200000, receivedAt: 3 });
+    await si.flush();
+    delete require.cache[require.resolve('../server/session-index')];
+    si = require('../server/session-index');
+    assert.ok(await si.loadSessionIndex());
+    si.seedDedupState(JSON.stringify({ id: 'u3', sessionId: 's2', responseId: 'msg_uy', cost: { cost: null, confidence: 'unknown' }, receivedAt: 3 }));
+    si.updateFromEntry({ sessionId: 's2', id: 'i2', responseId: 'msg_uy', cost: { cost: 0.05, confidence: 'exact' }, receivedAt: 4 });
+    s = si.get('s2');
+    assert.equal(s.unknownCount, 0, 'post-restart priced duplicate retracts seeded unknown slot');
+    assert.ok(Math.abs(s.totalCost - 0.05) < 1e-9);
+  });
+
+  it('#420 codex R2 M1: cross-session unknown duplicates retract the first-seen session', async () => {
+    // Original run: unknown copy claims A's count slot; B only has an unrelated turn.
+    let si = require('../server/session-index');
+    si.updateFromEntry({ sessionId: 'A', id: 'a1', responseId: 'msg_xx', cost: { cost: null, confidence: 'unknown' }, usage: { input_tokens: 100, output_tokens: 10 }, maxContext: 200000, receivedAt: 1 });
+    si.updateFromEntry({ sessionId: 'B', id: 'b0', responseId: 'msg_b0', cost: { cost: 0.01, confidence: 'exact' }, usage: { input_tokens: 100, output_tokens: 10 }, maxContext: 200000, receivedAt: 2 });
+    await si.flush();
+    // Restart: the log now holds unknown copies of msg_xx under BOTH sessions
+    // (cross-process duplicate). First-seen (A) must stay the retract target.
+    delete require.cache[require.resolve('../server/session-index')];
+    si = require('../server/session-index');
+    assert.ok(await si.loadSessionIndex());
+    si.seedDedupState([
+      JSON.stringify({ id: 'a1', sessionId: 'A', responseId: 'msg_xx', cost: { cost: null, confidence: 'unknown' }, receivedAt: 1 }),
+      JSON.stringify({ id: 'b1', sessionId: 'B', responseId: 'msg_xx', cost: { cost: null, confidence: 'unknown' }, receivedAt: 2 }),
+    ].join('\n'));
+    si.updateFromEntry({ sessionId: 'B', id: 'i1', responseId: 'msg_xx', cost: { cost: 0.10, confidence: 'exact' }, receivedAt: 3 });
+    assert.equal(si.get('A').unknownCount, 0, 'first-seen session A retracted (not the later duplicate holder)');
+    assert.equal(si.get('B').unknownCount, 0, 'B never counted the unknown slot');
+  });
+
+  it('#420: populated sessions.json without fallbackCount requests a rebuild', async () => {
+    const si = require('../server/session-index');
+    const config = require('../server/config');
+    const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    const sessionsPath = path.join(config.LOGS_DIR, 'sessions.json');
+    await fsp.writeFile(indexPath, JSON.stringify({
+      id: 'migration-turn', sessionId: 'migration-session', responseId: 'migration-rid',
+      cost: { cost: 0.10, confidence: 'fallback' }, maxContext: 200000,
+    }) + '\n');
+    await fsp.writeFile(sessionsPath, JSON.stringify({
+      sid: 'migration-session', count: 1, totalCost: 0.10, maxContext: 200000,
+    }) + '\n');
+    const now = Date.now() / 1000;
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false);
   });
 
   it('#333: a line without responseId still counts its cost (legacy/exempt)', () => {

@@ -112,6 +112,39 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.ok(!mergeByResponseId([n1, n2])[0].beta1m, 'no beta1m anywhere → none fabricated');
   });
 
+  it('#420 codex R2 M2: on equal usage a priced cost beats an unpriced canonical', () => {
+    // Chained-proxy shape: an outdated hop has no rate (unknown, cost null),
+    // the updated hop priced the same response. Identical usage tuples tied the
+    // old strict-> richness rule, pinning the merged turn to cost null forever —
+    // the aggregate `+` marker then survived a copy that had a real price.
+    const usage = { input_tokens: 1200, output_tokens: 42 };
+    const unknownFirst = { id: 'p1', responseId: 'R', receivedAt: 1, usage: { ...usage }, cost: { cost: null, confidence: 'unknown' } };
+    const pricedLater = { id: 'p2', responseId: 'R', receivedAt: 2, usage: { ...usage }, cost: { cost: 0.25, confidence: 'fallback' } };
+    const out = mergeByResponseId([unknownFirst, pricedLater]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].id, 'p1', 'earliest copy stays canonical');
+    assert.equal(out[0].cost.cost, 0.25, 'priced unit wins the equal-richness tie');
+    assert.equal(out[0].cost.confidence, 'fallback');
+    // R3 M1: a metadata-poor priced winner must not wipe a real maxContext.
+    const unk1m = { id: 'w1', responseId: 'R3', receivedAt: 1, usage: { ...usage }, cost: { cost: null, confidence: 'unknown' }, maxContext: 1000000 };
+    const pricedNoCtx = { id: 'w2', responseId: 'R3', receivedAt: 2, usage: { ...usage }, cost: { cost: 0.25, confidence: 'exact' } };
+    const out3 = mergeByResponseId([unk1m, pricedNoCtx]);
+    assert.equal(out3[0].cost.cost, 0.25);
+    assert.equal(out3[0].maxContext, 1000000, 'canonical maxContext survives a tie-break cost adoption');
+    // R3 M2: a legacy NUMERIC cost never wins the tie — session-index cannot
+    // aggregate the numeric shape, so promoting it would desync the fold.
+    const unkFirst2 = { id: 'v1', responseId: 'R4', receivedAt: 1, usage: { ...usage }, cost: { cost: null, confidence: 'unknown' } };
+    const legacyNum = { id: 'v2', responseId: 'R4', receivedAt: 2, usage: { ...usage }, cost: 0.25 };
+    const out4 = mergeByResponseId([unkFirst2, legacyNum]);
+    assert.equal(out4[0].cost.cost, null, 'numeric legacy cost does not win the tie-break');
+    // Reverse arrival: priced canonical must NOT be downgraded by an unpriced copy.
+    const pricedFirst = { id: 'q1', responseId: 'R2', receivedAt: 1, usage: { ...usage }, cost: { cost: 0.25, confidence: 'exact' } };
+    const unknownLater = { id: 'q2', responseId: 'R2', receivedAt: 2, usage: { ...usage }, cost: { cost: null, confidence: 'unknown' } };
+    const out2 = mergeByResponseId([pricedFirst, unknownLater]);
+    assert.equal(out2[0].cost.cost, 0.25, 'priced canonical retained');
+    assert.equal(out2[0].cost.confidence, 'exact');
+  });
+
   it('a copy with unknown receivedAt never wins canonical over a timed copy (m2)', () => {
     // A rebuild-generated orphan (receivedAt=null) must not displace a fully-timed
     // proxy copy as canonical — that would erase the turn's timeline placement.

@@ -1,6 +1,44 @@
 // ── Cost Budget: Client-side ──────────────────────────────────────────
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 
+function _emptyCostFold() {
+  return { fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0 };
+}
+
+function _costFoldFromRow(row) {
+  return {
+    fallbackCost: row?.fallbackCost || 0,
+    fallbackCount: row?.fallbackCount || 0,
+    unknownCount: row?.unknownCount || 0,
+    count: row?.count || 0,
+  };
+}
+
+function _mergeCostFold(target, source) {
+  target.fallbackCost += source.fallbackCost || 0;
+  target.fallbackCount += source.fallbackCount || 0;
+  target.unknownCount += source.unknownCount || 0;
+  target.count += source.count || 0;
+  return target;
+}
+
+function _filteredCostFold(row, filter) {
+  if (!filter) return _costFoldFromRow(row);
+  if (!row?.byAccount) return _emptyCostFold();
+  if (!filter.endsWith(':*')) return _costFoldFromRow(row.byAccount[filter]);
+  const fold = _emptyCostFold();
+  for (const [accountId, accountRow] of Object.entries(row.byAccount)) {
+    if (filterMatchesAccount(filter, accountId)) _mergeCostFold(fold, _costFoldFromRow(accountRow));
+  }
+  return fold;
+}
+
+function _sumFilteredCostFolds(rows, filter) {
+  const fold = _emptyCostFold();
+  for (const row of rows || []) _mergeCostFold(fold, _filteredCostFold(row, filter));
+  return fold;
+}
+
 let _costActiveFilter = null; // null = All
 let _costPageCache = null;
 let _costLiveTimer = null;
@@ -192,14 +230,21 @@ function acctLabel(accountId, allAccounts) {
 function _accountCostSummary(accountId, dailyData, monthlyResp) {
   const todayStr = new Date().toLocaleDateString('sv-SE');
   const today = (dailyData || []).find(d => d.date === todayStr);
-  const todayCost = today?.byAccount?.[accountId]?.costUSD || 0;
-  const monthCost = monthlyResp?.currentMonth?.byAccount?.[accountId]?.costUSD || 0;
+  const todayRow = today?.byAccount?.[accountId];
+  const monthRow = monthlyResp?.currentMonth?.byAccount?.[accountId];
+  const todayAgg = _costFoldFromRow(todayRow);
+  const monthAgg = _costFoldFromRow(monthRow);
+  const todayCost = todayRow?.costUSD || 0;
+  const monthCost = monthRow?.costUSD || 0;
   // Last-30 fallback when "today" is empty (timezone edge / no spend yet today).
   let last30 = 0;
+  const last30Agg = _emptyCostFold();
   for (const d of (dailyData || []).slice(-30)) {
-    last30 += d.byAccount?.[accountId]?.costUSD || 0;
+    const row = d.byAccount?.[accountId];
+    last30 += row?.costUSD || 0;
+    _mergeCostFold(last30Agg, _costFoldFromRow(row));
   }
-  return { todayCost, monthCost, last30 };
+  return { todayCost, monthCost, last30, todayAgg, monthAgg, last30Agg };
 }
 
 function renderAccounts(blockData, dailyData, monthlyResp) {
@@ -274,18 +319,20 @@ function renderAccounts(blockData, dailyData, monthlyResp) {
     // Grok has weekly SuperGrok limit from billing — no Today/Month $ row.
     const showCost = !rate;
     if (showCost) {
+      // INVARIANT(#420/ADR 0017): account aggregate cards use each API row's
+      // complete confidence fold for Today, Month, and Last 30d.
       html += `<div style="display:flex;gap:10px;margin-bottom:6px">`;
       html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
         <div style="font-size:10px;color:var(--dim);margin-bottom:4px">Today</div>
-        <div style="font-size:18px;font-weight:700">$${costs.todayCost.toFixed(2)}</div>
+        <div style="font-size:18px;font-weight:700">${formatAggCost(costs.todayCost, costs.todayAgg, 2)}</div>
       </div>`;
       html += `<div style="flex:1;background:var(--surface);border-radius:6px;padding:10px 12px">
         <div style="font-size:10px;color:var(--dim);margin-bottom:4px">Month</div>
-        <div style="font-size:18px;font-weight:700">$${costs.monthCost.toFixed(2)}</div>
+        <div style="font-size:18px;font-weight:700">${formatAggCost(costs.monthCost, costs.monthAgg, 2)}</div>
       </div>`;
       html += `</div>`;
-      if (!rate && costs.todayCost === 0 && costs.monthCost === 0 && costs.last30 > 0) {
-        html += `<div style="font-size:10px;color:var(--dim)">Last 30d: $${costs.last30.toFixed(2)}</div>`;
+      if (!rate && costs.todayCost === 0 && costs.monthCost === 0 && (costs.last30 > 0 || costs.last30Agg.unknownCount > 0)) {
+        html += `<div style="font-size:10px;color:var(--dim)">Last 30d: ${formatAggCost(costs.last30, costs.last30Agg, 2)}</div>`;
       }
     }
 
@@ -521,6 +568,7 @@ function renderDailyHeatmap(dailyData) {
 
   for (const day of recent) {
     const cost = filteredCost(day, f);
+    const fold = _filteredCostFold(day, f);
     const pct = Math.min(100, (cost / maxCost) * 100);
     const weekday = new Date(day.date + 'T12:00:00').toLocaleDateString('en', { weekday: 'short' });
     const isWeekend = weekday === 'Sat' || weekday === 'Sun';
@@ -537,22 +585,25 @@ function renderDailyHeatmap(dailyData) {
       for (const [acctId, acctData] of sorted) {
         const aPct = Math.max(0, (acctData.costUSD / maxCost) * 100);
         if (aPct <= 0) continue;
-        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId, accounts))}: $${acctData.costUSD.toFixed(2)}"></div>`;
+        // INVARIANT(#420/ADR 0017): account segment tooltips use the row fold.
+        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId, accounts))}: ${esc(formatAggCostText(acctData.costUSD, _costFoldFromRow(acctData), 2))}"></div>`;
       }
     }
     html += `</div>`;
-    html += `<span style="width:48px;text-align:right;color:var(--dim);flex-shrink:0">$${cost.toFixed(2)}</span>`;
+    // INVARIANT(#420/ADR 0017): daily aggregate values use the complete day fold.
+    html += `<span style="width:48px;text-align:right;color:var(--dim);flex-shrink:0">${formatAggCost(cost, fold, 2)}</span>`;
     html += `</div>`;
   }
   html += '</div>';
 
   // 30-day total
   const total30 = recent.reduce((s, d) => s + filteredCost(d, f), 0);
+  const total30Fold = _sumFilteredCostFolds(recent, f);
   const activeDays = recent.filter(d => filteredCost(d, f) > 0).length;
   const avgPerDay = activeDays > 0 ? total30 / activeDays : 0;
   html += `<div style="display:flex;justify-content:space-between;font-size:11px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">`;
-  html += `<span style="color:var(--dim)">Last ${recent.length} days: <span style="color:var(--text);font-weight:600">$${total30.toFixed(2)}</span></span>`;
-  html += `<span style="color:var(--dim)">avg $${avgPerDay.toFixed(2)}/active day</span>`;
+  html += `<span style="color:var(--dim)">Last ${recent.length} days: <span style="color:var(--text);font-weight:600">${formatAggCost(total30, total30Fold, 2)}</span></span>`;
+  html += `<span style="color:var(--dim)">avg ${formatAggCostText(avgPerDay, total30Fold, 2)}/active day</span>`;
   html += `</div>`;
 
   container.innerHTML = html;
@@ -604,6 +655,7 @@ function renderMonthlySummary(monthlyResp) {
 
   for (const m of months) {
     const cost = filteredCost(m, f);
+    const fold = _filteredCostFold(m, f);
     const pct = Math.min(100, (cost / maxCost) * 100);
     html += `<div style="display:flex;align-items:center;gap:8px;font-size:11px">`;
     html += `<span style="width:36px;text-align:right;color:var(--text);flex-shrink:0">${m.month.slice(5)}</span>`;
@@ -617,11 +669,13 @@ function renderMonthlySummary(monthlyResp) {
       for (const [acctId, acctData] of sorted) {
         const aPct = Math.max(0, (acctData.costUSD / maxCost) * 100);
         if (aPct <= 0) continue;
-        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId, accounts))}: $${acctData.costUSD.toFixed(2)}"></div>`;
+        // INVARIANT(#420/ADR 0017): account segment tooltips use the row fold.
+        html += `<div style="height:100%;width:${aPct}%;background:${acctColor(acctId)};min-width:1px" title="${esc(acctLabel(acctId, accounts))}: ${esc(formatAggCostText(acctData.costUSD, _costFoldFromRow(acctData), 2))}"></div>`;
       }
     }
     html += `</div>`;
-    html += `<span style="width:56px;text-align:right;color:var(--dim);flex-shrink:0">$${cost.toFixed(2)}</span>`;
+    // INVARIANT(#420/ADR 0017): monthly aggregate values use the complete month fold.
+    html += `<span style="width:56px;text-align:right;color:var(--dim);flex-shrink:0">${formatAggCost(cost, fold, 2)}</span>`;
     html += `</div>`;
   }
   html += '</div>';

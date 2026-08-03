@@ -316,6 +316,33 @@ function entryCostUSD(entry) {
   return 0;
 }
 
+function entryCostConfidence(entry) {
+  if (entry?.costConfidence) return entry.costConfidence;
+  if (entry?.cost && typeof entry.cost === 'object') return entry.cost.confidence || null;
+  return null;
+}
+
+function emptyCostFold() {
+  return { fallbackCost: 0, fallbackCount: 0, unknownCount: 0, count: 0 };
+}
+
+function addCostFold(target, entry, cost) {
+  // INVARIANT(#420/ADR 0017): the live Grok overlay preserves the complete
+  // aggregate confidence fold when it replaces cached account rows.
+  target.count++;
+  const confidence = entryCostConfidence(entry);
+  if (confidence === 'fallback') {
+    target.fallbackCost += cost;
+    target.fallbackCount++;
+  }
+  if (confidence === 'unknown') target.unknownCount++;
+}
+
+function foldValue(row, key) {
+  const n = Number(row?.[key]);
+  return Number.isFinite(n) ? n : 0;
+}
+
 function round2(n) { return Math.round(n * 100) / 100; }
 
 function withGrokLiveCosts(data, storeMod) {
@@ -333,15 +360,17 @@ function withGrokLiveCosts(data, storeMod) {
     const cost = entryCostUSD(e);
     if (tokens === 0 && cost === 0) continue;
     const dateStr = new Date(ts).toLocaleDateString('sv-SE');
-    const d = dayMap.get(dateStr) || { totalTokens: 0, costUSD: 0 };
+    const d = dayMap.get(dateStr) || { totalTokens: 0, costUSD: 0, ...emptyCostFold() };
     d.totalTokens += tokens;
     d.costUSD += cost;
+    addCostFold(d, e, cost);
     dayMap.set(dateStr, d);
     const dt = new Date(ts);
     const mk = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
-    const m = monthMap.get(mk) || { totalTokens: 0, costUSD: 0 };
+    const m = monthMap.get(mk) || { totalTokens: 0, costUSD: 0, ...emptyCostFold() };
     m.totalTokens += tokens;
     m.costUSD += cost;
+    addCostFold(m, e, cost);
     monthMap.set(mk, m);
   }
   if (!dayMap.size && !monthMap.size) return data;
@@ -353,13 +382,24 @@ function withGrokLiveCosts(data, storeMod) {
       if (!g) return day;
       const byAccount = { ...(day.byAccount || {}) };
       const prev = byAccount['grok-default'];
-      byAccount['grok-default'] = { totalTokens: g.totalTokens, costUSD: round2(g.costUSD) };
+      byAccount['grok-default'] = {
+        totalTokens: g.totalTokens,
+        costUSD: round2(g.costUSD),
+        fallbackCost: round2(g.fallbackCost),
+        fallbackCount: g.fallbackCount,
+        unknownCount: g.unknownCount,
+        count: g.count,
+      };
       const prevTok = prev?.totalTokens || 0;
       const prevCost = prev?.costUSD || 0;
       return {
         ...day,
         totalTokens: day.totalTokens - prevTok + g.totalTokens,
         costUSD: round2((day.costUSD || 0) - prevCost + g.costUSD),
+        fallbackCost: round2(foldValue(day, 'fallbackCost') - foldValue(prev, 'fallbackCost') + g.fallbackCost),
+        fallbackCount: foldValue(day, 'fallbackCount') - foldValue(prev, 'fallbackCount') + g.fallbackCount,
+        unknownCount: foldValue(day, 'unknownCount') - foldValue(prev, 'unknownCount') + g.unknownCount,
+        count: foldValue(day, 'count') - foldValue(prev, 'count') + g.count,
         byAccount,
       };
     }),
@@ -368,13 +408,24 @@ function withGrokLiveCosts(data, storeMod) {
       if (!g) return month;
       const byAccount = { ...(month.byAccount || {}) };
       const prev = byAccount['grok-default'];
-      byAccount['grok-default'] = { totalTokens: g.totalTokens, costUSD: round2(g.costUSD) };
+      byAccount['grok-default'] = {
+        totalTokens: g.totalTokens,
+        costUSD: round2(g.costUSD),
+        fallbackCost: round2(g.fallbackCost),
+        fallbackCount: g.fallbackCount,
+        unknownCount: g.unknownCount,
+        count: g.count,
+      };
       const prevTok = prev?.totalTokens || 0;
       const prevCost = prev?.costUSD || 0;
       return {
         ...month,
         totalTokens: month.totalTokens - prevTok + g.totalTokens,
         costUSD: round2((month.costUSD || 0) - prevCost + g.costUSD),
+        fallbackCost: round2(foldValue(month, 'fallbackCost') - foldValue(prev, 'fallbackCost') + g.fallbackCost),
+        fallbackCount: foldValue(month, 'fallbackCount') - foldValue(prev, 'fallbackCount') + g.fallbackCount,
+        unknownCount: foldValue(month, 'unknownCount') - foldValue(prev, 'unknownCount') + g.unknownCount,
+        count: foldValue(month, 'count') - foldValue(prev, 'count') + g.count,
         byAccount,
       };
     }),

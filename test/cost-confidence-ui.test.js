@@ -74,6 +74,8 @@ function loadDashboardContext() {
     this.allEntries = allEntries;
     this.sessionsMap = sessionsMap;
     this.addEntry = addEntry;
+    this.renderSessionItem = renderSessionItem;
+    this.recomputeSessionStats = recomputeSessionStats;
     this._patchEntryInPlace = _patchEntryInPlace;
     _loading = true;
   `, context);
@@ -213,6 +215,27 @@ describe('#420 Phase 2: cost confidence UI', () => {
       const e = ctx.allEntries.find(x => x.id === 'patch-test-3');
       assert.equal(e.cost, 0.2);
       assert.equal(e.costConfidence, 'exact', 'confidence preserved');
+    });
+  });
+
+  describe('#420 Phase 3 session aggregate display', () => {
+    it('renders ~$20 for an all-fallback session fixture', () => {
+      const ctx = loadDashboardContext();
+      ctx.addEntry(makeEntry({ cost: { cost: 19.58, confidence: 'fallback' } }));
+      ctx.recomputeSessionStats('sess-conf-test');
+      const sess = ctx.sessionsMap.get('sess-conf-test');
+      const html = ctx.renderSessionItem(sess, 'sess-conf-test', { title: '' });
+      assert.ok(html.includes('~$20'), 'aggregate session card should degrade fabricated precision');
+    });
+
+    it('renders a priced session with unknown turns as $X.XX+', () => {
+      const ctx = loadDashboardContext();
+      ctx.addEntry(makeEntry({ id: 'known-cost', cost: { cost: 1.23, confidence: 'exact' } }));
+      ctx.addEntry(makeEntry({ id: 'unknown-cost', cost: { cost: null, confidence: 'unknown' } }));
+      ctx.recomputeSessionStats('sess-conf-test');
+      const sess = ctx.sessionsMap.get('sess-conf-test');
+      const html = ctx.renderSessionItem(sess, 'sess-conf-test', { title: '' });
+      assert.ok(html.includes('$1.23+'), 'unknown turns should use the directional + suffix');
     });
   });
 });
