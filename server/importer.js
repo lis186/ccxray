@@ -117,10 +117,14 @@ function buildTokens(usage, contextWindow = DEFAULT_CONTEXT_WINDOW) {
 }
 
 async function parseSessionFile(filePath, projectSlug) {
-  const entries = [];
   const sessionId = path.basename(filePath, '.jsonl');
   let lastUserText = null;
   let cwd = null;
+  // #428: aggregate by message.id — Claude Code writes multiple assistant lines
+  // per API response (one per content block), each with a different timestamp.
+  // Key = msg.id; value = entry object. Last-seen line wins (richest usage).
+  // Lines without msg.id pass through keyed by their timestamp-derived id.
+  const byResponseId = new Map();
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -157,9 +161,13 @@ async function parseSessionFile(filePath, projectSlug) {
     const tokens = buildTokens(usage);
     const receivedAt = new Date(obj.timestamp).getTime();
 
-    entries.push({
-      id,
-      ts: obj.timestamp,
+    const responseId = msg.id || null;
+    const dedupKey = responseId || id;
+    const prev = byResponseId.get(dedupKey);
+
+    const entry = {
+      id: prev ? prev.id : id,
+      ts: prev ? prev.ts : obj.timestamp,
       method: 'POST',
       url: '/v1/messages',
       req: null,
@@ -168,23 +176,16 @@ async function parseSessionFile(filePath, projectSlug) {
       elapsed: null,
       status: 200,
       isSSE: false,
-      receivedAt,
-      // #329/#333: the transcript carries the same upstream msg_01… id the proxy
-      // logged, so the read-time merge collapses this imported copy with the proxy
-      // copy. Canonical selection prefers the proxy copy (it has on-disk _req/_res),
-      // so the import enriches rather than shadows. See docs/decisions/0012.
-      responseId: msg.id || null,
+      receivedAt: prev ? prev.receivedAt : receivedAt,
+      responseId,
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model,
       sessionId,
-      title: lastUserText || '(imported)',
-      stopReason: msg.stop_reason || null,
+      title: prev ? prev.title : (lastUserText || '(imported)'),
+      stopReason: msg.stop_reason || prev?.stopReason || null,
       imported: true,
       importSource: 'claude-code',
-      // The transcript's own sessionId is authoritative (not inferred), so an
-      // importer copy can supply the real session when it merges with a proxy
-      // copy that fell back to direct-api/inferred (#333 M8/M9).
       sessionInferred: false,
       provider: 'anthropic',
       cwd: obj.cwd || cwd || slugToProject(projectSlug),
@@ -194,9 +195,10 @@ async function parseSessionFile(filePath, projectSlug) {
         cache_read_input_tokens: usage.cache_read_input_tokens || 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
       },
-    });
+    };
+    byResponseId.set(dedupKey, entry);
   }
-  return entries;
+  return [...byResponseId.values()];
 }
 
 // Codex transcript lines are {timestamp, type, payload}. `payload.model` and
