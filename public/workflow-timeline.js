@@ -2864,7 +2864,8 @@ function wfRenderAgentCard(lane) {
   }
 
   if (sess) {
-    var startMs = _wfParseIdMs(sess.firstId);
+    // #426: use epoch-ms field, never parse entry ID (timezone-safe)
+    var startMs = sess.firstReceivedAt > 0 ? sess.firstReceivedAt : null;
     var durationMs = (startMs != null && sess.lastReceivedAt) ? (sess.lastReceivedAt - startMs) : null;
     var activeMs = durationMs != null ? Math.max(0, durationMs - (sess.idleMs || 0)) : null;
     html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Time</div>';

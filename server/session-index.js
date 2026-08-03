@@ -58,12 +58,12 @@ async function loadSessionIndex() {
         if (s && s.sid) sessionIndex.set(s.sid, s);
       } catch {}
     }
-    // #368/#420: force rebuild when sessions.json predates maxContext or the
-    // aggregate cost-confidence fold. After rebuild, _upsert repopulates both
-    // from index.ndjson entries.
+    // #368/#420/#426: force rebuild when sessions.json predates maxContext,
+    // the aggregate cost-confidence fold, or firstReceivedAt. After rebuild,
+    // _upsert repopulates all from index.ndjson entries.
     let needsMigration = false;
     for (const s of sessionIndex.values()) {
-      if (s.count > 0 && (s.maxContext === undefined || s.fallbackCount === undefined)) { needsMigration = true; break; }
+      if (s.count > 0 && (s.maxContext === undefined || s.fallbackCount === undefined || s.firstReceivedAt === undefined)) { needsMigration = true; break; }
     }
     if (needsMigration) {
       console.log('\x1b[33m[session-index] schema migration (maxContext/aggregate cost confidence) — will rebuild\x1b[0m');
@@ -290,7 +290,7 @@ function _upsert(sid, entry) {
   if (!s) {
     // INVARIANT(#420/ADR 0017): session aggregate confidence is folded beside
     // totalCost/count so every persisted session can render the same view.
-    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, title: null, firstPrompt: null, lastReceivedAt: 0, provider: null, agent: null };
+    s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, title: null, firstPrompt: null, firstReceivedAt: 0, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
   // #333: bump COUNT once per responseId so the session card shows merged turns,
@@ -376,6 +376,9 @@ function _upsert(sid, entry) {
     s.title = getSessionTitle(sid) || (entry.title ? stripInjectedTags(entry.title) : null) || null;
   }
   const recvAt = entry.receivedAt || 0;
+  // #426: min-fold for duration — finite-positive guard because rebuild-index
+  // emits receivedAt:null for orphan lines (Number(null)===0 would poison to 1970).
+  if (recvAt > 0 && (!s.firstReceivedAt || recvAt < s.firstReceivedAt)) s.firstReceivedAt = recvAt;
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
