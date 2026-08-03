@@ -197,10 +197,33 @@ function attributionTurnStep(parsedBody) {
   return helpers.computeTurnStep(parsedBody?.messages);
 }
 
+// #427: per-turn tool calls extracted from the RESPONSE (not the cumulative
+// request history). SSE: count content_block_start events with type=tool_use.
+// Non-SSE: count content[] blocks with type=tool_use.
+function extractTurnToolCalls(resData) {
+  if (!resData) return null;
+  const counts = {};
+  if (Array.isArray(resData)) {
+    for (const ev of resData) {
+      if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use' && ev.content_block.name) {
+        counts[ev.content_block.name] = (counts[ev.content_block.name] || 0) + 1;
+      }
+    }
+  } else if (resData.content) {
+    for (const b of resData.content) {
+      if (b.type === 'tool_use' && b.name) {
+        counts[b.name] = (counts[b.name] || 0) + 1;
+      }
+    }
+  }
+  return Object.keys(counts).length ? counts : null;
+}
+
 module.exports = {
   isNoiseRequest,
   extractUsage,
   extractResponseId,
+  extractTurnToolCalls,
   computeConvId,
   detectSession,
   buildEntryFields,

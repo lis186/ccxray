@@ -257,6 +257,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       try { rid = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (rid) { m.responseId = rid; outLine = JSON.stringify(m); enrichedResponseIds++; }
     }
+    // #427 add-only turnToolCalls backfill: legacy lines carry only cumulative
+    // toolCalls from request history. When _res.json survives, extract per-turn
+    // counts from the response. Same add-only, non-degrading pattern as responseId.
+    if (m.turnToolCalls === undefined && m.provider !== 'openai') {
+      let ttc = null;
+      try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
+      if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); }
+    }
     // #342 add-only identity backfill: a legacy line predating identity-field
     // extraction lacks convId/coreHash/agentKey/msgCount/isSubagent, so lane
     // inference (ADR 0005/0009/0010) defaults it into the main lane — the
