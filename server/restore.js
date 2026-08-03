@@ -373,27 +373,13 @@ async function restoreFromLogs() {
     // restored copy folds into it (no duplicate row, no double cost); otherwise
     // registerOrMerge registers it as canonical (setting responseIndex) and we
     // push (codex round-1 M1).
-    // INVARIANT: a first-copy push pairs with entryIndex.set; a merged copy aliases
-    // via registerOrMerge — see docs/decisions/0003-entry-index-map.md + 0012.
     const { merged, canonical } = store.registerOrMerge(entry);
     if (merged) {
-      // A merge here means a LIVE turn (completed during this post-listen restore)
-      // already owns the responseId — registerOrMerge folded the restored copy in
-      // and absorbed its aliases. That live entry was already broadcast, so push
-      // the enriched canonical to any connected client (codex round-2 M6). Harmless
-      // no-op when no client is connected yet (the common startup case).
       broadcastEntryUpdate(canonical);
-      // #388: feed canonical to session-index so enrichment fields (beta1m, maxContext)
-      // from the restored copy propagate to the window fold. Safe: count/cost are
-      // rid-deduped; window fields are monotone max/OR.
       sessionIdx.updateFromEntry(canonical);
       continue;
     }
-    store.entries.push(entry);
-    store.entryIndex.set(entry.id, entry);
-    if (entry._mergedIds) {
-      for (const aliasId of entry._mergedIds) store.entryIndex.set(aliasId, entry);
-    }
+    store.registerEntry(entry);
     if (entry.cost?.cost != null && entry.sessionId) {
       store.sessionCosts.set(entry.sessionId, (store.sessionCosts.get(entry.sessionId) || 0) + entry.cost.cost);
     }

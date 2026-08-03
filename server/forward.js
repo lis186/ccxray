@@ -794,15 +794,12 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     // pushes + broadcasts `entry`; a duplicate of an already-known responseId folds
     // into the canonical, broadcasts `entry_update` (the plain `entry` event would
     // be dropped client-side for a known id), and is not pushed again.
-    // INVARIANT: a first-copy push pairs with entryIndex.set + trim; a merged copy
-    // aliases via registerOrMerge — see docs/decisions/0003 + 0012.
     const { merged, canonical } = store.registerOrMerge(entry);
     if (merged) {
       store.propagateLoadedSkills(canonical, sessionId);
       broadcastEntryUpdate(canonical);
     } else {
-      store.entries.push(entry);
-      store.entryIndex.set(entry.id, entry);
+      store.registerEntry(entry);
       store.trimEntries();
       store.propagateLoadedSkills(entry, sessionId);
       broadcast(entry);
@@ -931,9 +928,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
-    // INVARIANT: push + entryIndex.set must pair — see docs/decisions/0003-entry-index-map.md
-    store.entries.push(entry);
-    store.entryIndex.set(entry.id, entry);
+    store.registerEntry(entry);
     store.trimEntries();
     broadcast(entry);
 
@@ -1100,15 +1095,12 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
     // #333: same responseId dedup as the SSE path. OpenAI entries carry no
     // responseId (different id scheme — exempt), so registerOrMerge no-ops for
     // them and this shared non-SSE push behaves exactly as before for OpenAI.
-    // INVARIANT: first-copy push pairs with entryIndex.set + trim; a merged copy
-    // aliases via registerOrMerge — see docs/decisions/0003 + 0012.
     const { merged, canonical } = store.registerOrMerge(entry);
     if (merged) {
       store.propagateLoadedSkills(canonical, sessionId);
       broadcastEntryUpdate(canonical);
     } else {
-      store.entries.push(entry);
-      store.entryIndex.set(entry.id, entry);
+      store.registerEntry(entry);
       store.trimEntries();
       store.propagateLoadedSkills(entry, sessionId);
       broadcast(entry);

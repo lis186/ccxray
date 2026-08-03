@@ -46,6 +46,16 @@ function trimEntries() {
   }
 }
 
+// ponytail: push + index + aliases in one call, trim is the caller's job.
+// See docs/decisions/0003-entry-index-map.md
+function registerEntry(entry) {
+  entries.push(entry);
+  entryIndex.set(entry.id, entry);
+  if (entry._mergedIds) {
+    for (const aliasId of entry._mergedIds) entryIndex.set(aliasId, entry);
+  }
+}
+
 function getEntryById(id) {
   return entryIndex.get(id) || entries.find(e => e.id === id) || null;
 }
@@ -813,6 +823,7 @@ module.exports = {
   responseIndex,
   mergeByResponseId,
   registerOrMerge,
+  registerEntry,
   trimEntries,
   getEntryById,
   sseClients,
