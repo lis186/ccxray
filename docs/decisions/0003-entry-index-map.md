@@ -19,10 +19,11 @@ Every site that mutates `entries[]` must keep `entryIndex` in sync:
 
 | Mutation | File | Operation |
 |----------|------|-----------|
-| Live push (HTTP) | `server/forward.js` (×3 sites) | `.set(entry.id, entry)` |
-| Live push (WS) | `server/ws-proxy.js` (×1 site) | `.set(entry.id, entry)` |
-| Restore on startup | `server/restore.js` | `.set(entry.id, entry)` |
-| Import (startup/rescan) | `server/importer.js` (×1 site) | `.set(entry.id, entry)` |
+| **All push sites** | `server/store.js` `registerEntry()` | `push` + `.set(entry.id, entry)` + alias `.set()` atomically |
+| Callers (live HTTP) | `server/forward.js` (×3 sites) | `store.registerEntry(entry)` |
+| Callers (live WS) | `server/ws-proxy.js` (×1 site) | `store.registerEntry(entry)` |
+| Callers (restore) | `server/restore.js` | `store.registerEntry(entry)` (batch-trim deferred to loop end) |
+| Import (startup/rescan) | `server/importer.js` (×1 site) | local `entries[]`, not `store.entries` |
 | Trim (eviction) | `server/store.js` `trimEntries()` | `.delete(entry.id)` |
 | API read | `server/routes/api.js` | `.get(id)` (read-only) |
 
@@ -30,14 +31,23 @@ Every site that mutates `entries[]` must keep `entryIndex` in sync:
 
 **Good**: delta-chain lookup is O(1) regardless of store size.
 
-**Bad — consistency contract**: adding a new push site (e.g., a future
-provider transport) without a corresponding `.set()` silently degrades to
-the fallback `entries.find()` path, hiding the O(n) regression until the
-store is large enough to notice.
+**Good — encapsulation**: `registerEntry()` makes push + index sync atomic.
+Raw `entries.push` / `entryIndex.set` outside `store.js` is blocked by
+`test/invariant-encapsulation.test.js` (recursive grep of `server/**/*.js`
++ destructuring bypass guard). Adding a new push site without using
+`registerEntry()` fails CI.
 
-**Mitigation**: Layer 1 guard comments at every push/trim site name this
-ADR. `getEntryById()` in `store.js` has a fallback `.find()` — if
-the fallback path ever fires in production, a push site was missed.
+**Residual — mutable export**: `entries` is still exported as a plain Array
+(17 read-only consumers). A caller could bypass `registerEntry` via
+`const { entries } = require('./store'); entries.push(...)`. The audit test
+catches the destructuring pattern but not all dynamic access. Accepted:
+the grep guard is 95% effective; full encapsulation (getter) deferred.
+
+**Legacy mitigation (superseded)**: ~~Layer 1 guard comments at every
+push/trim site~~. Guard comments at the removed call sites have been
+deleted; the structural enforcement via `registerEntry` + audit test
+replaces them. `getEntryById()` retains its fallback `.find()` as a
+defense-in-depth signal.
 
 ## Alternatives considered
 
