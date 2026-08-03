@@ -20,16 +20,16 @@ describe('#427 turnToolCalls: response-side extraction', () => {
       assert.deepEqual(result, { Bash: 2, Read: 1 });
     });
 
-    it('returns null when no tool_use blocks', () => {
+    it('returns empty object (not null) when no tool_use blocks — distinguishes from legacy', () => {
       const events = [
         { type: 'message_start', message: { id: 'msg_01', usage: {} } },
         { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
         { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
       ];
-      assert.equal(extractTurnToolCalls(events), null);
+      assert.deepEqual(extractTurnToolCalls(events), {});
     });
 
-    it('returns null for null/undefined input', () => {
+    it('returns null for null/undefined input (legacy/missing)', () => {
       assert.equal(extractTurnToolCalls(null), null);
       assert.equal(extractTurnToolCalls(undefined), null);
     });
@@ -49,9 +49,9 @@ describe('#427 turnToolCalls: response-side extraction', () => {
       assert.deepEqual(extractTurnToolCalls(res), { Edit: 2, Write: 1 });
     });
 
-    it('returns null when no tool_use in content', () => {
+    it('returns empty object when no tool_use in content', () => {
       const res = { id: 'msg_01', content: [{ type: 'text', text: 'done' }] };
-      assert.equal(extractTurnToolCalls(res), null);
+      assert.deepEqual(extractTurnToolCalls(res), {});
     });
   });
 

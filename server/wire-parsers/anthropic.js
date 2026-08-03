@@ -216,7 +216,8 @@ function extractTurnToolCalls(resData) {
       }
     }
   }
-  return Object.keys(counts).length ? counts : null;
+  // {} = response parsed, zero tool calls; null = no response data (legacy/missing)
+  return counts;
 }
 
 module.exports = {

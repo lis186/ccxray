@@ -233,6 +233,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
   let enrichedResponseIds = 0;  // #333 legacy backfill count
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
+  let enrichedTurnToolCalls = 0; // #427 legacy backfill count
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -263,7 +264,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     if (m.turnToolCalls === undefined && m.provider !== 'openai') {
       let ttc = null;
       try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
-      if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); }
+      if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); enrichedTurnToolCalls++; }
     }
     // #342 add-only identity backfill: a legacy line predating identity-field
     // extraction lacks convId/coreHash/agentKey/msgCount/isSubagent, so lane
@@ -414,6 +415,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       elapsed: null,
       // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
       responseId: orphanResponseId,
+      // #427: per-turn tool calls from the response (events already loaded above)
+      turnToolCalls: getParser('anthropic').extractTurnToolCalls(events),
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
@@ -435,10 +438,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   log(`  index: ${existingIds.size} existing lines${N ? ` + ${N} recovered` : ''}`);
   if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
   if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
+  if (enrichedTurnToolCalls) log(`  backfilled turnToolCalls onto ${enrichedTurnToolCalls} legacy line(s) (#427)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
   // rewritten lines must be flushed, so the write is gated on any change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0;
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
     return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };

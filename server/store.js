@@ -115,7 +115,7 @@ function _foldEntry(canonical, other) {
   // Tool/skill maps: per-key max union so a partial capture on one copy never
   // drops the other's keys (same response ⇒ equal in practice, but be robust).
   // Object maps only — a non-object shape (legacy array) falls back to fill-if-empty.
-  for (const k of ['toolCalls', 'skillCalls']) {
+  for (const k of ['toolCalls', 'skillCalls', 'turnToolCalls']) {
     const oc = other[k];
     if (oc == null) continue;
     const isMap = v => v && typeof v === 'object' && !Array.isArray(v);
