@@ -270,9 +270,11 @@ rendered entry; the server store stays the single source of truth.
 
 **New consistency contract (ADR 0003 extension).** A push/trim site that
 updates `entryIndex` but not `responseIndex` (or forgets alias handling)
-silently reintroduces duplicates or breaks a delta chain. Mitigation: INVARIANT
-guard comments at every site in the table naming this ADR; the merge is one
-`store` helper both cold-load, restore, and live call.
+silently reintroduces duplicates or breaks a delta chain. Mitigation:
+entryIndex + alias sync is structurally enforced by `registerEntry` (ADR 0003);
+responseIndex sync is guarded by INVARIANT comments at the `registerOrMerge`
+call sites naming this ADR; the merge is one `store` helper both cold-load,
+restore, and live call.
 
 **Bounded risk — trim evicts a canonical copy.** If eviction removes a merged
 entry while a poorer future copy of the same id arrives post-eviction, the view
