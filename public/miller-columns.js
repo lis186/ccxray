@@ -1915,7 +1915,7 @@ function computeSessionScorecard(sid) {
   const usedTools = new Set();
   let availableTools = 0;
   for (const e of turns) {
-    for (const name of Object.keys(e.toolCalls || {})) usedTools.add(name);
+    for (const name of Object.keys(e.turnToolCalls || e.toolCalls || {})) usedTools.add(name);
     if (e.toolCount) availableTools = Math.max(availableTools, e.toolCount);
   }
   const toolUtilization = availableTools > 0 ? (usedTools.size / availableTools * 100) : 0;
@@ -2569,7 +2569,7 @@ function renderSectionsCol(idx) {
 
   const coreTools = req.tools ? req.tools.filter(t => t.name && !t.name.startsWith('mcp__')) : null;
   const mcpTools  = req.tools ? req.tools.filter(t => t.name &&  t.name.startsWith('mcp__')) : null;
-  const tc = allEntries[idx]?.toolCalls || {};
+  const tc = allEntries[idx]?.turnToolCalls || allEntries[idx]?.toolCalls || {};
   const coreCalls = Object.entries(tc).filter(([n]) => !n.startsWith('mcp__')).reduce((s, [, c]) => s + c, 0);
   const mcpCalls  = Object.entries(tc).filter(([n]) =>  n.startsWith('mcp__')).reduce((s, [, c]) => s + c, 0);
 
@@ -2763,7 +2763,7 @@ function renderCostEfficiencyPanel(currentEntry) {
     if (mcpPlugins.length) {
       const sessionToolCalls = {};
       for (const e of sessionTurns) {
-        for (const [name, count] of Object.entries(e.toolCalls || {})) {
+        for (const [name, count] of Object.entries(e.turnToolCalls || e.toolCalls || {})) {
           sessionToolCalls[name] = (sessionToolCalls[name] || 0) + count;
         }
       }
@@ -2961,7 +2961,7 @@ function renderDetailCol() {
       const isMcp = selectedSection === 'mcp-tools';
       const filtered = req.tools ? req.tools.filter(t => t.name && (isMcp ? t.name.startsWith('mcp__') : !t.name.startsWith('mcp__'))) : null;
       if (filtered?.length) {
-        const usageCount = allEntries[selectedTurnIdx]?.toolCalls || {};
+        const usageCount = allEntries[selectedTurnIdx]?.turnToolCalls || allEntries[selectedTurnIdx]?.toolCalls || {};
         const sorted = [...filtered].sort((a, b) => (usageCount[b.name] || 0) - (usageCount[a.name] || 0));
         const tags = sorted.map(t => {
           const cnt = usageCount[t.name] || 0;
