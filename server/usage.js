@@ -207,14 +207,14 @@ function analyze(entries, opts = {}) {
     modelMap[m].cost += c;
     totalCost += c;
 
-    if (e.toolCalls) {
-      for (const [name, count] of Object.entries(e.toolCalls)) {
+    // #427: prefer turnToolCalls (per-turn delta) over toolCalls (cumulative)
+    const tc = e.turnToolCalls || e.toolCalls;
+    if (tc) {
+      for (const [name, count] of Object.entries(tc)) {
         toolAgg[name] = (toolAgg[name] || 0) + count;
         totalToolCalls += count;
       }
     }
-    // Per-skill detail comes from the dedicated skillCalls field (new data).
-    // Entries without it predate skill tracking → counted as (pre-tracking).
     if (e.skillCalls && Object.keys(e.skillCalls).length) {
       for (const [sn, count] of Object.entries(e.skillCalls)) {
         if (!skillMap[sn]) skillMap[sn] = { invocations: 0, sessions: new Set() };
@@ -222,7 +222,7 @@ function analyze(entries, opts = {}) {
         skillMap[sn].sessions.add(sid);
       }
     } else {
-      legacySkillCount += e.toolCalls?.Skill || 0;
+      legacySkillCount += tc?.Skill || 0;
     }
     if (e.toolFail) failCount++;
 

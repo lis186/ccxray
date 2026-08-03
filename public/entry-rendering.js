@@ -712,11 +712,23 @@ function addEntry(e) {
         sess.inputTokens = (sess.inputTokens || 0) + (usage.input_tokens || 0);
         sess.outputTokens = (sess.outputTokens || 0) + (usage.output_tokens || 0);
       }
-      if (e.toolCalls && Object.keys(e.toolCalls).length > 0) {
-        if (!sess.toolCalls) sess.toolCalls = {};
-        for (const [name, cnt] of Object.entries(e.toolCalls)) sess.toolCalls[name] = (sess.toolCalls[name] || 0) + cnt;
-        sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
-        if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+      // #427: prefer turnToolCalls (per-turn delta, exact) over toolCalls
+      // (cumulative from request history — sum inflates quadratically).
+      // Legacy fallback: per-tool max (~26% undercount, documented).
+      {
+        const tc = e.turnToolCalls || null;
+        const legacy = !tc && e.toolCalls && Object.keys(e.toolCalls).length > 0;
+        const src = tc || (legacy ? e.toolCalls : null);
+        if (src && Object.keys(src).length > 0) {
+          if (!sess.toolCalls) sess.toolCalls = {};
+          for (const [name, cnt] of Object.entries(src)) {
+            sess.toolCalls[name] = tc
+              ? (sess.toolCalls[name] || 0) + cnt
+              : Math.max(sess.toolCalls[name] || 0, cnt);
+          }
+          sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
+          if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+        }
       }
       if (!_loading && !window._coldActivating) {
         recomputeProjectCost(projName);
@@ -835,10 +847,20 @@ function recomputeSessionStats(sid) {
       sess.inputTokens += en.usage.input_tokens || 0;
       sess.outputTokens += en.usage.output_tokens || 0;
     }
-    if (en.toolCalls && Object.keys(en.toolCalls).length > 0) {
-      sess.toolCallTurns++;
-      Object.entries(en.toolCalls).forEach(function(kv) { sess.toolCalls[kv[0]] = (sess.toolCalls[kv[0]] || 0) + kv[1]; });
-      if (en.toolFail) sess.toolFailTurns++;
+    // #427: same turnToolCalls preference as the hot path above
+    {
+      var tc = en.turnToolCalls || null;
+      var legacy = !tc && en.toolCalls && Object.keys(en.toolCalls).length > 0;
+      var src = tc || (legacy ? en.toolCalls : null);
+      if (src && Object.keys(src).length > 0) {
+        sess.toolCallTurns++;
+        Object.entries(src).forEach(function(kv) {
+          sess.toolCalls[kv[0]] = tc
+            ? (sess.toolCalls[kv[0]] || 0) + kv[1]
+            : Math.max(sess.toolCalls[kv[0]] || 0, kv[1]);
+        });
+        if (en.toolFail) sess.toolFailTurns++;
+      }
     }
   }
   if (typeof assessWeather === 'function') {

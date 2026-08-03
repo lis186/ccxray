@@ -247,7 +247,7 @@ function wfDetectEvents(t, prev) {
   if (t.isCompacted) evts.push('compaction');
   if (inT > 1000 && (u.cache_read_input_tokens || 0) / inT < 0.5) evts.push('cache-miss');
   if (wfCtxPctRender(t) >= 80 && (!prev || wfCtxPctRender(prev) < 80)) evts.push('ctx80');
-  var tc = t.toolCalls || {};
+  var tc = t.turnToolCalls || t.toolCalls || {};
   if (tc.Write || tc.Edit || tc.MultiEdit || tc.NotebookEdit) evts.push('file-write');
   if (t.hasCredential) evts.push('credential');
   return evts;
@@ -997,8 +997,9 @@ function wfRangeSummary(t0, t1) {
         cost += (turn.cost || 0);
         models[turn.model] = (models[turn.model] || 0) + 1;
         lanes[lane.key] = (lanes[lane.key] || 0) + 1;
-        if (turn.toolCalls) {
-          for (var tk in turn.toolCalls) tools[tk] = (tools[tk] || 0) + turn.toolCalls[tk];
+        var ttc = turn.turnToolCalls || turn.toolCalls;
+        if (ttc) {
+          for (var tk in ttc) tools[tk] = (tools[tk] || 0) + ttc[tk];
         }
       }
     }
@@ -2579,7 +2580,8 @@ function _wfShowTooltip(e, t, lane) {
   var zoneCls = 'wf-tt-' + (zone === 'safe' ? 'good' : zone);
   var median = lane ? wfLaneCostMedian(lane) : 0;
   var outlier = median > 0 && (t.cost || 0) > median * 3 ? ' <span class="wf-tt-outlier">⚡outlier</span>' : '';
-  var tools = t.toolCalls ? Object.entries(t.toolCalls).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
+  var _tc = t.turnToolCalls || t.toolCalls;
+  var tools = _tc ? Object.entries(_tc).map(function(kv) { return kv[0] + (kv[1] > 1 ? '×' + kv[1] : ''); }).join(', ') : '';
   var lock = _wfLockInfo();
   var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
     ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
@@ -2798,7 +2800,7 @@ function wfRenderAgentCard(lane) {
   var toolTotals = (isOrchestrator && sess && sess.toolCalls) ? sess.toolCalls : {};
   if (!isOrchestrator || !sess || !sess.toolCalls) {
     for (var i = 0; i < lane.turns.length; i++) {
-      var tc = lane.turns[i].toolCalls || {};
+      var tc = lane.turns[i].turnToolCalls || lane.turns[i].toolCalls || {};
       for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
     }
   }
@@ -2958,7 +2960,7 @@ function wfRenderTurnCard(turnEntry) {
   html += '</div>';
 
   // Tools
-  var tc = turnEntry.toolCalls || {};
+  var tc = turnEntry.turnToolCalls || turnEntry.toolCalls || {};
   var toolEntries = Object.entries(tc).sort(function(a, b) { return b[1] - a[1]; });
   if (toolEntries.length) {
     var totalCalls = toolEntries.reduce(function(s, e) { return s + e[1]; }, 0);
@@ -3203,7 +3205,7 @@ function wfRenderSteps(scrollToId) {
       }
     }
     var isSel = wfState.selectedTurnId === t.id;
-    var tools = Object.entries(t.toolCalls || {});
+    var tools = Object.entries(t.turnToolCalls || t.toolCalls || {});
     var mc = wfModelColor(t.model);
     var pct = wfCtxPctRender(t);
     var u = t.usage || {};
