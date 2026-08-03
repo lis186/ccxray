@@ -55,6 +55,18 @@ describe('#427 turnToolCalls: response-side extraction', () => {
     });
   });
 
+  describe('_foldEntry merges turnToolCalls', () => {
+    it('enriches canonical from duplicate', () => {
+      const store = require('../server/store');
+      const merged = store.mergeByResponseId([
+        { id: 'a', responseId: 'msg_01', receivedAt: 1 },
+        { id: 'b', responseId: 'msg_01', receivedAt: 2, turnToolCalls: { Bash: 2, Read: 1 } },
+      ]);
+      assert.equal(merged.length, 1);
+      assert.deepEqual(merged[0].turnToolCalls, { Bash: 2, Read: 1 });
+    });
+  });
+
   describe('INDEX_FIELDS includes turnToolCalls', () => {
     it('turnToolCalls is in the index field list', () => {
       const { INDEX_FIELDS } = require('../server/entry');

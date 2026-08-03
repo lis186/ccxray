@@ -356,9 +356,15 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // null for, so fall back to the raw parse there (codex round-1 m3) — else the
     // orphan persists responseId:null and the undefined-only backfill never fixes it.
     let orphanResponseId = getParser('anthropic').extractResponseId(events);
-    if (orphanResponseId == null) {
-      try { orphanResponseId = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(id, '_res.json'))); } catch {}
+    // #427: same non-SSE fallback pattern — readResEvents returns null for non-SSE
+    // responses (bare object, not event array), so parse the raw _res.json.
+    let rawResObj = null;
+    if (orphanResponseId == null || events == null) {
+      try { rawResObj = JSON.parse(await storage.read(id, '_res.json')); } catch {}
+      if (orphanResponseId == null && rawResObj) orphanResponseId = getParser('anthropic').extractResponseId(rawResObj);
     }
+    let orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(events);
+    if (orphanTurnToolCalls == null && rawResObj) orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(rawResObj);
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
     // delta and main-session turn carries it). Otherwise the turn is a subagent /
@@ -415,8 +421,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       elapsed: null,
       // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
       responseId: orphanResponseId,
-      // #427: per-turn tool calls from the response (events already loaded above)
-      turnToolCalls: getParser('anthropic').extractTurnToolCalls(events),
+      // #427: per-turn tool calls from the response (computed above, with non-SSE fallback)
+      turnToolCalls: orphanTurnToolCalls,
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
