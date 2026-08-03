@@ -9,6 +9,10 @@ const INDEX_FIELDS = [
   'imported','importSource',
   // Dedup key for read-time merge (#333) — see docs/decisions/0012-response-id-read-time-merge.md
   'responseId',
+  // #427: per-turn tool calls extracted from the response (not the cumulative
+  // request history). Null on legacy entries — aggregators prefer this over
+  // toolCalls when present.
+  'turnToolCalls',
   // INVARIANT: authoritative 1M-window signal — the non-lagging anthropic-beta
   // `context-1m-*` request header (#339). Persisted so restore/cold-load can
   // derive a per-session consistent context% denominator (sessionWindow) instead

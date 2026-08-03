@@ -52,6 +52,7 @@ function summarizeEntry(entry) {
     msgCount: entry.msgCount || 0,
     toolCount: entry.toolCount || 0,
     toolCalls: entry.toolCalls || [],
+    turnToolCalls: entry.turnToolCalls || null,
     isSubagent: entry.isSubagent || false,
     sessionInferred: entry.sessionInferred || false,
     title: entry.title || null,

@@ -233,6 +233,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   const sessionCwd = new Map(); // sid → latest cwd, for backfilling inferred turns
   let enrichedResponseIds = 0;  // #333 legacy backfill count
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
+  let enrichedTurnToolCalls = 0; // #427 legacy backfill count
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -256,6 +257,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       let rid = null;
       try { rid = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (rid) { m.responseId = rid; outLine = JSON.stringify(m); enrichedResponseIds++; }
+    }
+    // #427 add-only turnToolCalls backfill: legacy lines carry only cumulative
+    // toolCalls from request history. When _res.json survives, extract per-turn
+    // counts from the response. Same add-only, non-degrading pattern as responseId.
+    if (m.turnToolCalls === undefined && m.provider !== 'openai') {
+      let ttc = null;
+      try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
+      if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); enrichedTurnToolCalls++; }
     }
     // #342 add-only identity backfill: a legacy line predating identity-field
     // extraction lacks convId/coreHash/agentKey/msgCount/isSubagent, so lane
@@ -347,9 +356,15 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // null for, so fall back to the raw parse there (codex round-1 m3) — else the
     // orphan persists responseId:null and the undefined-only backfill never fixes it.
     let orphanResponseId = getParser('anthropic').extractResponseId(events);
-    if (orphanResponseId == null) {
-      try { orphanResponseId = getParser('anthropic').extractResponseId(JSON.parse(await storage.read(id, '_res.json'))); } catch {}
+    // #427: same non-SSE fallback pattern — readResEvents returns null for non-SSE
+    // responses (bare object, not event array), so parse the raw _res.json.
+    let rawResObj = null;
+    if (orphanResponseId == null || events == null) {
+      try { rawResObj = JSON.parse(await storage.read(id, '_res.json')); } catch {}
+      if (orphanResponseId == null && rawResObj) orphanResponseId = getParser('anthropic').extractResponseId(rawResObj);
     }
+    let orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(events);
+    if (orphanTurnToolCalls == null && rawResObj) orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(rawResObj);
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
     // delta and main-session turn carries it). Otherwise the turn is a subagent /
@@ -406,6 +421,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       elapsed: null,
       // Backfill dedup key onto recovered orphan lines (#333) — docs/decisions/0012.
       responseId: orphanResponseId,
+      // #427: per-turn tool calls from the response (computed above, with non-SSE fallback)
+      turnToolCalls: orphanTurnToolCalls,
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
@@ -427,10 +444,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   log(`  index: ${existingIds.size} existing lines${N ? ` + ${N} recovered` : ''}`);
   if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
   if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
+  if (enrichedTurnToolCalls) log(`  backfilled turnToolCalls onto ${enrichedTurnToolCalls} legacy line(s) (#427)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
   // rewritten lines must be flushed, so the write is gated on any change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0;
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
     return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
