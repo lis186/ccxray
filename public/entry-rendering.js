@@ -397,7 +397,7 @@ function addEntry(e) {
   const entryCwd = e.cwd || null;
   if (!sessionsMap.has(sid)) {
     const shortSid = sid.slice(0, 8);
-    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, retryCount: 0, model, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null, parentSessionId: e.parentSessionId || null });
+    sessionsMap.set(sid, { id: sid, firstTs: e.ts, firstId: entryId, lastId: entryId, count: 0, mainCount: 0, subCount: 0, retryCount: 0, model, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, cwd: entryCwd, title: null, titleReqTs: 0, lastAssistantText: null, agent: e.agent || 'claude', provider: e.provider || 'anthropic', latestCacheHitRatio: 0, latestCacheReadTokens: 0, resumeCommand: null, parentSessionId: e.parentSessionId || null, firstReceivedAt: 0 });
     // Live-update visibleProviders when a new provider appears
     const settings = window.ccxraySettings;
     if (!Array.isArray(settings.visibleProviders)) settings.visibleProviders = [];
@@ -454,7 +454,12 @@ function addEntry(e) {
   if (model && model !== '?') sess.model = model;
   if (e.firstPrompt && !sess.firstPrompt) sess.firstPrompt = e.firstPrompt;
   sess.lastId = entryId;
-  if (e.receivedAt) sess.lastReceivedAt = Number(e.receivedAt);
+  // #426: min-fold for duration (finite-positive guard — receivedAt can be null/0)
+  if (e.receivedAt) {
+    var ra = Number(e.receivedAt);
+    if (ra > 0 && (!sess.firstReceivedAt || ra < sess.firstReceivedAt)) sess.firstReceivedAt = ra;
+    sess.lastReceivedAt = ra;
+  }
   // Prefer the server-detected agent identity (from system-prompt content,
   // via agentKey) over the raw isSubagent flag when available — codex review:
   // isAnthropicSubagent() in store.js classifies by !cwd && !session_id, but
@@ -896,6 +901,12 @@ function mergeColdSessions(sessions) {
         existing.maxContext = s.maxContext;
         windowWidened = true;
       }
+      // #426: firstReceivedAt is a monotone min-fold (can only move earlier).
+      // Same exemption as beta1m/maxContext: the server fold covers the whole
+      // session; a hot session truncated by RESTORE_DAYS may lack early entries.
+      if (s.firstReceivedAt > 0 && (!existing.firstReceivedAt || s.firstReceivedAt < existing.firstReceivedAt)) {
+        existing.firstReceivedAt = s.firstReceivedAt;
+      }
       if (windowWidened) widenedSessionIds.add(s.sid);
       // #367: merge cold derived fields ONLY when the hot session truly lacks them.
       // Hot sessions compute these from entries — never overwrite with cold fallbacks.
@@ -918,6 +929,7 @@ function mergeColdSessions(sessions) {
       latestCacheReadTokens: s.latestCacheReadTokens || 0,
       cacheBreaks: s.cacheBreaks || 0,
       resumeCommand: null, parentSessionId: null,
+      firstReceivedAt: s.firstReceivedAt || 0,
       lastReceivedAt: s.lastReceivedAt || 0, _cold: true,
       weather: s.weather || null,
     });

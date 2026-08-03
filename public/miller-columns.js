@@ -1453,20 +1453,17 @@ function renderSessionItem(sess, sid, sessEl) {
   const costStr = sess.totalCost > 0 ? formatAggCost(sess.totalCost, sess, 2) : '—';
   const dateStr = sess.lastId ? formatRelativeTime(sess.lastId) : (sess.firstId ? formatEntryDate(sess.firstId) : escapeHtml(sess.firstTs || ''));
 
-  // Duration: from firstId to lastReceivedAt (or now if ongoing)
+  // #426: duration from epoch-ms fields, never parsed from entry ID (timezone-safe)
   let durationStr = '';
-  if (sess.firstId && sess.firstId.length >= 19) {
-    const startTs = new Date(sess.firstId.slice(0, 10) + 'T' + sess.firstId.slice(11, 19).replace(/-/g, ':')).getTime();
-    if (!isNaN(startTs)) {
-      const endTs = sess.lastReceivedAt ? Number(sess.lastReceivedAt) : Date.now();
-      const durationMs = endTs - startTs;
-      if (durationMs >= 86400000) { // >= 24h
-        durationStr = (durationMs / 86400000).toFixed(1) + 'd';
-      } else if (durationMs >= 3600000) { // >= 1h
-        durationStr = (durationMs / 3600000).toFixed(1) + 'h';
-      } else if (durationMs >= 60000) { // >= 1m
-        durationStr = Math.floor(durationMs / 60000) + 'm';
-      }
+  if (sess.firstReceivedAt > 0) {
+    const endTs = sess.lastReceivedAt ? Number(sess.lastReceivedAt) : Date.now();
+    const durationMs = endTs - sess.firstReceivedAt;
+    if (durationMs >= 86400000) {
+      durationStr = (durationMs / 86400000).toFixed(1) + 'd';
+    } else if (durationMs >= 3600000) {
+      durationStr = (durationMs / 3600000).toFixed(1) + 'h';
+    } else if (durationMs >= 60000) {
+      durationStr = Math.floor(durationMs / 60000) + 'm';
     }
   }
 
