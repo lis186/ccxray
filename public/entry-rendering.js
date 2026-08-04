@@ -733,8 +733,9 @@ function addEntry(e) {
         }
         // #438: toolFailTurns outside the src guard — a terminal end_turn entry
         // with turnToolFail=true but no tool calls still counts as a failed turn.
-        const _tf = e.turnToolFail !== undefined ? e.turnToolFail : e.toolFail;
-        if (_tf) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+        // #438: legacy toolFail is cumulative (Lie Factor 44×) — never fall back to it.
+        // Absence = unknown, not "use the wrong answer" (Kleppmann/Tufte/Hickey consensus).
+        if (e.turnToolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
       }
       if (!_loading && !window._coldActivating) {
         recomputeProjectCost(projName);
@@ -869,7 +870,7 @@ function recomputeSessionStats(sid) {
             : Math.max(sess.toolCalls[kv[0]] || 0, kv[1]);
         });
       }
-      var _tf = en.turnToolFail !== undefined ? en.turnToolFail : en.toolFail;
+      var _tf = en.turnToolFail; // never fall back to cumulative toolFail (#438)
       if (_tf) sess.toolFailTurns++;
     }
   }
