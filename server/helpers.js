@@ -663,6 +663,23 @@ function hasToolFail(req) {
   return false;
 }
 
+// #438: per-turn tool failure — only checks the LAST user message (the current
+// turn's tool_result blocks), not the full cumulative history. hasToolFail scans
+// all messages and is infected by any prior failure (#427-class bug).
+function hasToolFailLastTurn(messages) {
+  if (!Array.isArray(messages)) return false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== 'user') continue;
+    const content = messages[i].content;
+    if (!Array.isArray(content)) return false;
+    for (const b of content) {
+      if (b?.type === 'tool_result' && b.is_error === true) return true;
+    }
+    return false;
+  }
+  return false;
+}
+
 // ── Credential scanning ──────────────────────────────────────────────
 const CREDENTIAL_PATTERNS = [
   /sk-ant-[a-zA-Z0-9_-]{20,}/,
@@ -956,7 +973,7 @@ module.exports = {
   extractLastUserText,
   extractToolResultSummary,
   extractFirstUserText,
-  hasToolFail,
+  hasToolFail, hasToolFailLastTurn,
   extractToolCalls,
   extractSkillCalls,
   extractOpenAIToolCalls,

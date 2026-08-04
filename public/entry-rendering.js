@@ -675,7 +675,7 @@ function addEntry(e) {
     thinkingDuration: e.thinkingDuration || null,
     duplicateToolCalls: e.duplicateToolCalls || null,
     hasCredential: e.hasCredential || false,
-    toolFail: e.toolFail || false,
+    toolFail: e.toolFail || false, turnToolFail: e.turnToolFail || undefined,
     toolSources: e.toolSources || null,
     title: e.title || null,
     coreHash: e.coreHash || null,
@@ -730,7 +730,8 @@ function addEntry(e) {
               : Math.max(sess.toolCalls[name] || 0, cnt);
           }
           sess.toolCallTurns = (sess.toolCallTurns || 0) + 1;
-          if (e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
+          // #438: prefer turnToolFail (per-turn) over toolFail (cumulative)
+          if (e.turnToolFail !== undefined ? e.turnToolFail : e.toolFail) sess.toolFailTurns = (sess.toolFailTurns || 0) + 1;
         }
       }
       if (!_loading && !window._coldActivating) {
@@ -865,7 +866,8 @@ function recomputeSessionStats(sid) {
             ? (sess.toolCalls[kv[0]] || 0) + kv[1]
             : Math.max(sess.toolCalls[kv[0]] || 0, kv[1]);
         });
-        if (en.toolFail) sess.toolFailTurns++;
+        // #438: prefer turnToolFail (per-turn) over toolFail (cumulative)
+        if (en.turnToolFail !== undefined ? en.turnToolFail : en.toolFail) sess.toolFailTurns++;
       }
     }
   }
@@ -1099,6 +1101,8 @@ function _patchEntryInPlace(u) {
     }
     // #427: turnToolCalls — always patch (including {} which means "zero calls")
     if (u.turnToolCalls !== undefined) full.turnToolCalls = u.turnToolCalls;
+    // #438: turnToolFail — patch when present
+    if (u.turnToolFail !== undefined) full.turnToolFail = u.turnToolFail;
     // Keep the lightweight entryById record consistent for the mutable field it
     // holds (codex round-1 M4).
     const rec = window.entryById.get(u.id);

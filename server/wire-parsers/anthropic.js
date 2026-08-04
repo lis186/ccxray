@@ -110,6 +110,7 @@ function buildEntryFields(ctx) {
     title: ctx.title || null,
     thinkingDuration: ctx.thinkingDuration ?? null,
     toolFail: ctx.toolFail != null ? ctx.toolFail : helpers.hasToolFail(parsedBody),
+    turnToolFail: helpers.hasToolFailLastTurn(parsedBody?.messages) || undefined,
     sysHash: ctx.sysHash || null,
     toolsHash: ctx.toolsHash || null,
     coreHash: ctx.coreHash || null,

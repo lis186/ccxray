@@ -166,6 +166,7 @@ function _foldEntry(canonical, other) {
   }
   // OR semantics — true if any copy saw it.
   if (other.toolFail) canonical.toolFail = true;
+  if (other.turnToolFail) canonical.turnToolFail = true;
   if (other.hasCredential) canonical.hasCredential = true;
   if (other.edited) {
     canonical.edited = true;
