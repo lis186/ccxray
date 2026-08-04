@@ -2799,10 +2799,18 @@ function wfRenderAgentCard(lane) {
   // total would be undercounted to whatever subset the orchestrator itself called).
   var toolTotals = (isOrchestrator && sess && sess.toolCalls) ? sess.toolCalls : {};
   if (!isOrchestrator || !sess || !sess.toolCalls) {
+    // #427: sum turnToolCalls (exact delta); legacy toolCalls → per-tool max
+    var _legacyMax = {};
     for (var i = 0; i < lane.turns.length; i++) {
-      var tc = lane.turns[i].turnToolCalls || lane.turns[i].toolCalls || {};
-      for (var k in tc) toolTotals[k] = (toolTotals[k] || 0) + tc[k];
+      if (lane.turns[i].turnToolCalls) {
+        var _ttc = lane.turns[i].turnToolCalls;
+        for (var k in _ttc) toolTotals[k] = (toolTotals[k] || 0) + _ttc[k];
+      } else if (lane.turns[i].toolCalls) {
+        var _ltc = lane.turns[i].toolCalls;
+        for (var k in _ltc) _legacyMax[k] = Math.max(_legacyMax[k] || 0, _ltc[k]);
+      }
     }
+    for (var k in _legacyMax) toolTotals[k] = (toolTotals[k] || 0) + _legacyMax[k];
   }
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 

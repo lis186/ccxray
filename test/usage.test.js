@@ -58,11 +58,14 @@ describe('usage analyze', () => {
     assert.equal(r.models[0].turns, 1);
   });
 
-  it('aggregates tool calls', () => {
+  it('aggregates tool calls — legacy per-session max, not cumulative sum (#427)', () => {
+    // Both entries are legacy (no turnToolCalls), same session s1.
+    // Default: { Bash: 2, Read: 1 }, override: { Bash: 3, Write: 1 }
+    // Per-session max: Bash=3, Read=1, Write=1 = total 5 (not 7 from old sum)
     const r = analyze([entry(), entry({ toolCalls: { Bash: 3, Write: 1 } })]);
-    assert.equal(r.tools.totalCalls, 7);
+    assert.equal(r.tools.totalCalls, 5);
     assert.equal(r.tools.top[0].name, 'Bash');
-    assert.equal(r.tools.top[0].count, 5);
+    assert.equal(r.tools.top[0].count, 3);
   });
 
   it('caps tools.top at 7 by default; --tools lifts the cap', () => {
