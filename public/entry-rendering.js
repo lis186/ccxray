@@ -667,7 +667,7 @@ function addEntry(e) {
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, costConfidence, sessionId: sid,
     severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
-    msgCount, toolCount, toolCalls: e.toolCalls || {}, stopReason,
+    msgCount, toolCount, toolCalls: e.toolCalls || {}, turnToolCalls: e.turnToolCalls || null, stopReason,
     status: e.status, elapsed: e.elapsed, method: e.method, id: e.id,
     // GUARD (_seqFlipped ownership): true iff the seq layer flipped THIS
     // arrival (R2 stitch / reordered recompute) — see _seqApplyFlips guard
@@ -1091,6 +1091,8 @@ function _patchEntryInPlace(u) {
     if (u.toolCalls != null && (Array.isArray(u.toolCalls) ? u.toolCalls.length : Object.keys(u.toolCalls).length)) {
       full.toolCalls = u.toolCalls;
     }
+    // #427: turnToolCalls — always patch (including {} which means "zero calls")
+    if (u.turnToolCalls !== undefined) full.turnToolCalls = u.turnToolCalls;
     // Keep the lightweight entryById record consistent for the mutable field it
     // holds (codex round-1 M4).
     const rec = window.entryById.get(u.id);

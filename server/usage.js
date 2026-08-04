@@ -207,10 +207,10 @@ function analyze(entries, opts = {}) {
     modelMap[m].cost += c;
     totalCost += c;
 
-    // #427: prefer turnToolCalls (per-turn delta) over toolCalls (cumulative)
-    const tc = e.turnToolCalls || e.toolCalls;
-    if (tc) {
-      for (const [name, count] of Object.entries(tc)) {
+    // #427: turnToolCalls (per-turn delta) → sum directly into toolAgg.
+    // Legacy toolCalls (cumulative) → per-session max, deferred to post-loop.
+    if (e.turnToolCalls) {
+      for (const [name, count] of Object.entries(e.turnToolCalls)) {
         toolAgg[name] = (toolAgg[name] || 0) + count;
         totalToolCalls += count;
       }
@@ -222,7 +222,7 @@ function analyze(entries, opts = {}) {
         skillMap[sn].sessions.add(sid);
       }
     } else {
-      legacySkillCount += tc?.Skill || 0;
+      legacySkillCount += (e.turnToolCalls || e.toolCalls)?.Skill || 0;
     }
     if (e.toolFail) failCount++;
 
@@ -231,6 +231,23 @@ function analyze(entries, opts = {}) {
       totalCacheCreate += e.usage.cache_creation_input_tokens || 0;
       totalCacheRead += e.usage.cache_read_input_tokens || 0;
       totalOutput += e.usage.output_tokens || 0;
+    }
+  }
+
+  // #427: legacy toolCalls (cumulative) — per-session max then sum into toolAgg.
+  // Done post-loop so each session's max is independent (codex R1).
+  for (const turns of Object.values(bySession)) {
+    const sessMax = {};
+    for (const e of turns) {
+      if (e.turnToolCalls) continue; // already summed in-loop
+      if (!e.toolCalls) continue;
+      for (const [name, count] of Object.entries(e.toolCalls)) {
+        sessMax[name] = Math.max(sessMax[name] || 0, count);
+      }
+    }
+    for (const [name, count] of Object.entries(sessMax)) {
+      toolAgg[name] = (toolAgg[name] || 0) + count;
+      totalToolCalls += count;
     }
   }
 
