@@ -2217,7 +2217,7 @@ function zeroSessionStats(s) {
   s.count = 0; s.mainCount = 0; s.subCount = 0; s.retryCount = 0;
   s.totalCost = 0; s.fallbackCost = 0; s.fallbackCount = 0; s.unknownCount = 0;
   s.inputTokens = 0; s.outputTokens = 0;
-  s.toolCalls = {}; s.toolCallTurns = 0; s.toolFailTurns = 0;
+  s.toolCalls = {}; s.toolCallTurns = 0; s.toolFailTurns = 0; s.toolFailKnownTurns = 0;
 }
 
 function selectSession(id) {
