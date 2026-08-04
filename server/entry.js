@@ -13,6 +13,8 @@ const INDEX_FIELDS = [
   // request history). Null on legacy entries — aggregators prefer this over
   // toolCalls when present.
   'turnToolCalls',
+  // #438: per-turn tool failure from the last user message only (not cumulative).
+  'turnToolFail',
   // INVARIANT: authoritative 1M-window signal — the non-lagging anthropic-beta
   // `context-1m-*` request header (#339). Persisted so restore/cold-load can
   // derive a per-session consistent context% denominator (sessionWindow) instead

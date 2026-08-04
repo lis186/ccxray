@@ -110,6 +110,9 @@ function buildEntryFields(ctx) {
     title: ctx.title || null,
     thinkingDuration: ctx.thinkingDuration ?? null,
     toolFail: ctx.toolFail != null ? ctx.toolFail : helpers.hasToolFail(parsedBody),
+    // #438: per-turn tool failure. Explicit false = checked, no failure (not legacy).
+    // undefined = legacy/not checked. Do NOT normalize false to undefined.
+    turnToolFail: helpers.hasToolFailLastTurn(parsedBody?.messages),
     sysHash: ctx.sysHash || null,
     toolsHash: ctx.toolsHash || null,
     coreHash: ctx.coreHash || null,

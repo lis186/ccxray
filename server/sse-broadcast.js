@@ -60,6 +60,7 @@ function summarizeEntry(entry) {
     thinkingDuration: entry.thinkingDuration || null,
     duplicateToolCalls: entry.duplicateToolCalls || null,
     toolFail: entry.toolFail || false,
+    turnToolFail: entry.turnToolFail,
     hasCredential: entry.hasCredential || undefined,
     coreHash: entry.coreHash || null,
     agentKey: entry.agentKey || null,
