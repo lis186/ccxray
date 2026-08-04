@@ -715,6 +715,9 @@ function addEntry(e) {
       // #427: prefer turnToolCalls (per-turn delta, exact) over toolCalls
       // (cumulative from request history — sum inflates quadratically).
       // Legacy fallback: per-tool max (~26% undercount, documented).
+      // INVARIANT (ADR 0018): null/undefined means legacy or missing response
+      // data; {} means parsed zero-call response and is truthy, so only the
+      // nullish case may fall back to cumulative toolCalls.
       {
         const tc = e.turnToolCalls || null;
         const legacy = !tc && e.toolCalls && Object.keys(e.toolCalls).length > 0;
@@ -848,6 +851,9 @@ function recomputeSessionStats(sid) {
       sess.outputTokens += en.usage.output_tokens || 0;
     }
     // #427: same turnToolCalls preference as the hot path above
+    // INVARIANT (ADR 0018): null/undefined means legacy or missing response
+    // data; {} means parsed zero-call response and is truthy, so only the
+    // nullish case may fall back to cumulative toolCalls.
     {
       var tc = en.turnToolCalls || null;
       var legacy = !tc && en.toolCalls && Object.keys(en.toolCalls).length > 0;
