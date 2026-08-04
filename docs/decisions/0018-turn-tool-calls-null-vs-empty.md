@@ -6,10 +6,15 @@
 
 ## Context
 
-`toolCalls` is cumulative: it is extracted from request history, so summing it
-across turns counts earlier calls repeatedly. `turnToolCalls` is the response-side
-per-turn delta introduced by #427 and is therefore the preferred source for
-aggregates.
+`toolCalls` is cumulative **for Anthropic entries**: it is extracted from the full
+request `messages[]` history, so summing it across turns counts earlier calls
+repeatedly. `turnToolCalls` is the response-side per-turn delta introduced by #427
+and is therefore the preferred source for aggregates.
+
+**OpenAI/Codex entries are exempt**: their `toolCalls` is already per-turn
+(extracted from the response by `openai.js::extractOpenAIToolCalls`), and they
+never set `turnToolCalls`. For these entries, `toolCalls` is exact and may be
+summed directly — the per-tool-max fallback must not apply.
 
 The response-side extractor has to distinguish two cases that both contain no
 tool names:
@@ -57,8 +62,14 @@ stored/indexed field contract and must survive transport, restore, and cold-load
   reusing historical request counts; legacy entries remain usable through the
   documented per-tool-max fallback; all consumers share one unambiguous test.
 
-**Accepted limit**: legacy entries without response data cannot recover exact
-  per-turn deltas, so their cumulative fallback may undercount when the observed
-  per-tool maximum is incomplete. This is the honest behavior until response
-  data is available; it must not be “healed” by treating an observed `{}` as
-  missing.
+**Accepted limit — Anthropic legacy**: entries without response data cannot
+  recover exact per-turn deltas, so their cumulative fallback may undercount
+  when the observed per-tool maximum is incomplete. This is the honest behavior
+  until response data is available; it must not be “healed” by treating an
+  observed `{}` as missing.
+
+**Accepted limit — OpenAI/Codex undercount**: OpenAI entries carry per-turn
+  `toolCalls` (already exact) but never set `turnToolCalls`, so the current
+  fallback sites apply per-tool max instead of sum. This undercounts repeated
+  same-tool calls across turns. Fix: fallback sites should check `provider` and
+  sum directly for OpenAI entries. Tracked as a follow-up, not solved here.
