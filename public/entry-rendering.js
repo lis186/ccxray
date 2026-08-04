@@ -1103,11 +1103,11 @@ function _patchEntryInPlace(u) {
     }
     // #427: turnToolCalls — always patch (including {} which means "zero calls")
     if (u.turnToolCalls !== undefined) full.turnToolCalls = u.turnToolCalls;
-    // #438: turnToolFail — patch when present; recompute session stats on change
+    // #438: turnToolFail — patch when present; recompute only hot sessions
     if (u.turnToolFail !== undefined && full.turnToolFail !== u.turnToolFail) {
       full.turnToolFail = u.turnToolFail;
       const _sess = sessionsMap.get(full.sessionId);
-      if (_sess) recomputeSessionStats(full.sessionId);
+      if (_sess && !_sess._cold) recomputeSessionStats(full.sessionId);
     } else if (u.turnToolFail !== undefined) {
       full.turnToolFail = u.turnToolFail;
     }

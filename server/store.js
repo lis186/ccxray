@@ -166,7 +166,10 @@ function _foldEntry(canonical, other) {
   }
   // OR semantics — true if any copy saw it.
   if (other.toolFail) canonical.toolFail = true;
-  if (other.turnToolFail) canonical.turnToolFail = true;
+  // #438: turnToolFail tri-state: undefined=legacy, false=checked-clean, true=failed.
+  // true dominates; false fills undefined; never downgrade true to false.
+  if (other.turnToolFail === true) canonical.turnToolFail = true;
+  else if (other.turnToolFail === false && canonical.turnToolFail === undefined) canonical.turnToolFail = false;
   if (other.hasCredential) canonical.hasCredential = true;
   if (other.edited) {
     canonical.edited = true;
