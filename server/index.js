@@ -1016,6 +1016,17 @@ async function runPostListenStartupTasks() {
     warmUpCosts();
   }
 
+  // #438: hint when legacy entries lack per-turn failure data
+  if (restoreOk) {
+    let legacyCount = 0;
+    for (const e of store.entries) {
+      if (e.turnToolFail === undefined && e.provider !== 'openai' && !e.imported) { legacyCount++; if (legacyCount >= 10) break; }
+    }
+    if (legacyCount >= 10) {
+      process.stderr.write('\x1b[33m   ⚠ legacy entries lack per-turn failure data — run `ccxray rebuild-index --apply` to backfill\x1b[0m\n');
+    }
+  }
+
   // Import local Claude Code transcripts (non-blocking, after restore)
   if (restoreOk && process.env.CCXRAY_IMPORT_DISABLE !== '1') {
     const { scanAndImport } = require('./importer');
