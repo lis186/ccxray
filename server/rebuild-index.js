@@ -234,6 +234,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   let enrichedResponseIds = 0;  // #333 legacy backfill count
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
   let enrichedTurnToolCalls = 0; // #427 legacy backfill count
+  let enrichedTurnToolFail = 0; // #438 legacy backfill count
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -265,6 +266,25 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       let ttc = null;
       try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); enrichedTurnToolCalls++; }
+    }
+    // #438 add-only turnToolFail backfill: legacy lines predate the per-turn
+    // failure field (tri-state: undefined=legacy, false=checked-clean, true=
+    // failed). It derives from the REQUEST's last user message, so read
+    // _req.json directly — a delta line's stored tail normally ends with the
+    // turn's final user message. A delta slice with NO user message (e.g.
+    // assistant-prefill) cannot be evaluated — the real last-turn evidence is
+    // in the unspliced prefix; leave undefined rather than persist false.
+    // Same add-only, non-degrading pattern as responseId/turnToolCalls.
+    if (m.turnToolFail === undefined && m.provider !== 'openai') {
+      try {
+        const reqBody = JSON.parse(await storage.read(m.id, '_req.json'));
+        const msgs = reqBody?.messages;
+        if (Array.isArray(msgs) && msgs.length > 0 && msgs.some(m => m.role === 'user')) {
+          m.turnToolFail = helpers.hasToolFailLastTurn(msgs);
+          outLine = JSON.stringify(m);
+          enrichedTurnToolFail++;
+        }
+      } catch { /* _req pruned → leave verbatim */ }
     }
     // #342 add-only identity backfill: a legacy line predating identity-field
     // extraction lacks convId/coreHash/agentKey/msgCount/isSubagent, so lane
@@ -445,10 +465,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
   if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
   if (enrichedTurnToolCalls) log(`  backfilled turnToolCalls onto ${enrichedTurnToolCalls} legacy line(s) (#427)`);
+  if (enrichedTurnToolFail) log(`  backfilled turnToolFail onto ${enrichedTurnToolFail} legacy line(s) (#438)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
   // rewritten lines must be flushed, so the write is gated on any change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0;
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0 || enrichedTurnToolFail > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
     return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };
