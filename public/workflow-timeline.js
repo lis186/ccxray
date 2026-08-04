@@ -2800,6 +2800,8 @@ function wfRenderAgentCard(lane) {
   var toolTotals = (isOrchestrator && sess && sess.toolCalls) ? sess.toolCalls : {};
   if (!isOrchestrator || !sess || !sess.toolCalls) {
     // #427: sum turnToolCalls (exact delta); legacy toolCalls → per-tool max
+    // INVARIANT (ADR 0018): {} is a parsed zero-call response and must take the
+    // turnToolCalls branch; only null/undefined may enter the legacy max fold.
     var _legacyMax = {};
     for (var i = 0; i < lane.turns.length; i++) {
       if (lane.turns[i].turnToolCalls) {

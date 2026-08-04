@@ -209,6 +209,8 @@ function analyze(entries, opts = {}) {
 
     // #427: turnToolCalls (per-turn delta) → sum directly into toolAgg.
     // Legacy toolCalls (cumulative) → per-session max, deferred to post-loop.
+    // INVARIANT (ADR 0018): {} is a parsed zero-call response and is truthy,
+    // so only null/undefined may fall through to the legacy per-tool max fold.
     if (e.turnToolCalls) {
       for (const [name, count] of Object.entries(e.turnToolCalls)) {
         toolAgg[name] = (toolAgg[name] || 0) + count;
@@ -236,6 +238,8 @@ function analyze(entries, opts = {}) {
 
   // #427: legacy toolCalls (cumulative) — per-session max then sum into toolAgg.
   // Done post-loop so each session's max is independent (codex R1).
+  // INVARIANT (ADR 0018): only null/undefined turnToolCalls may reach this
+  // cumulative fallback; {} was a parsed zero-call response and was handled above.
   for (const turns of Object.values(bySession)) {
     const sessMax = {};
     for (const e of turns) {
