@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/check-codex-review.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
