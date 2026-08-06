@@ -134,8 +134,8 @@ function sigErrorCluster(turns) {
 function sigCacheHealth(turns) {
   var rates = [];
   for (var i = Math.max(3, turns.length - 10); i < turns.length; i++) {
+    if (turns[i].provider && turns[i].provider !== 'anthropic') continue;
     var u = turns[i].usage || {};
-    if (u.cache_read_input_tokens == null && u.cache_creation_input_tokens == null) continue;
     var inT = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
     if (inT < 1000) continue;
     rates.push((u.cache_read_input_tokens || 0) / inT);

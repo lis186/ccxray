@@ -526,10 +526,17 @@ describe('assessWeather', function() {
     assert.ok(!hasFactor(r, 'cache_health'), 'tiny turns should not trigger cache signal');
   });
 
-  it('cache_codex_exempt — entries without cache fields are skipped', function() {
-    var turns = repeat(15, { usage: { input_tokens: 30000, output_tokens: 800, cache_read_input_tokens: undefined, cache_creation_input_tokens: undefined } });
+  it('cache_codex_exempt — OpenAI/Codex entries are skipped', function() {
+    // OpenAI parser normalizes cache_read_input_tokens to 0, so null-check alone doesn't work
+    var turns = repeat(15, { provider: 'openai', usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 800 } });
     var r = assessWeather(turns);
-    assert.ok(!hasFactor(r, 'cache_health'), 'codex/openai entries without cache fields should not trigger cache signal');
+    assert.ok(!hasFactor(r, 'cache_health'), 'codex/openai entries should not trigger cache signal');
+  });
+
+  it('cache_grok_exempt — xAI/Grok entries are skipped', function() {
+    var turns = repeat(15, { provider: 'xai', usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'), 'grok entries should not trigger cache signal');
   });
 
   it('cache stats shown in sunny tooltip', function() {
