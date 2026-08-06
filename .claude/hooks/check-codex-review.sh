@@ -45,19 +45,26 @@ quote_state() {
       for (i = 1; i <= length(line); i++) {
         c = substr(line, i, 1)
         if (s == 0) {
-          if (c == "#" && (i == 1 || substr(line, i-1, 1) ~ /[ \t]/)) break
-          if (c == "\x27") s = 1
+          # comment starts at line start or after a token boundary (codex R7)
+          if (c == "#" && (i == 1 || substr(line, i-1, 1) ~ /[ \t;&|()]/)) break
+          if (c == "\x27") {
+            # ANSI-C $\x27…\x27 quote: backslash escapes inside (codex R7)
+            if (i > 1 && substr(line, i-1, 1) == "$") s = 3; else s = 1
+          }
           else if (c == "\"") s = 2
           else if (c == "\\") i++
         } else if (s == 1) {
           if (c == "\x27") s = 0
+        } else if (s == 3) {
+          if (c == "\\") i++
+          else if (c == "\x27") s = 0
         } else {
           if (c == "\"") s = 0
           else if (c == "\\") i++
         }
       }
     }
-    END { print s + 0 }'
+    END { print (s + 0 == 0) ? 0 : s }'
 }
 
 # Iterate EVERY textual `gh pr merge` occurrence — a preceding occurrence must not

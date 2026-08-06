@@ -338,6 +338,20 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.equal(r.status, 2);
   });
 
+  it('comment starting right after ; does not poison quote state (codex R7)', () => {
+    const r = runHook("echo ok;# don't merge manually\ngh pr merge 11 --squash", {
+      GH_BODY_LOCAL: 'no evidence',
+    });
+    assert.equal(r.status, 2);
+  });
+
+  it('ANSI-C quote with escaped apostrophe does not skip the real merge (codex R7)', () => {
+    const r = runHook("echo $'don\\'t forget' && gh pr merge 11 --squash", {
+      GH_BODY_LOCAL: 'no evidence',
+    });
+    assert.equal(r.status, 2);
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
