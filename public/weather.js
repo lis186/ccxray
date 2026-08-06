@@ -223,17 +223,14 @@ var _LEVEL_SUMMARY = {
 };
 
 var _ACTION_TABLE = {
-  ctx_pressure: function(d) {
-    return (d.ctxPct || 0) >= 80
-      ? 'Save key decisions to CLAUDE.md before auto-compact'
-      : 'Use subagent for next independent task';
-  },
-  compaction_scar: function() { return 'Save decisions to CLAUDE.md, or start fresh with --resume'; },
-  truncation: function() { return 'Break into smaller steps'; },
   stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
-  latency_drift: function() { return 'Use subagent to reduce context load'; },
   error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
-  error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : 'Check tool errors — common: permissions, paths, settings'; },
+  // Returns null when there is no turn to link to: an unlinked "Check tool
+  // errors" line is the same non-falsifiable advice this table was pruned of
+  // (#336) — it says to look without saying where. Only reachable when a turn
+  // carries no `id`; stored entries always do, so this is a contract guard
+  // rather than a live path.
+  error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : null; },
 };
 
 function _buildTooltip(level, factors, stats) {
@@ -259,8 +256,11 @@ function _buildTooltip(level, factors, stats) {
   if (level === 'cloudy' || level === 'rainy' || level === 'stormy') {
     var top = factors[0];
     if (top) {
+      // An entry may decline to produce a line (returns null) when it has no
+      // evidence to point at — guard the RESULT, not just the entry's presence.
       var act = _ACTION_TABLE[top.type];
-      if (act) lines.push('→ ' + act(top.detail));
+      var actLine = act ? act(top.detail) : null;
+      if (actLine) lines.push('→ ' + actLine);
     }
   }
   return lines.join('\n');
