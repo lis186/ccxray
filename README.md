@@ -148,6 +148,10 @@ Session cards show Claude Code's generated titles (e.g. `Fix login button on mob
 
 ![Session titles and cache expiry alerts](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
+### Session Weather
+
+Each session card shows a weather emoji (☀️ sunny → ⛈️ stormy) that condenses eight health signals — context pressure, compaction, truncation, stuck loops, latency drift, error rate, and cache efficiency — into a single at-a-glance indicator. Hover for a breakdown. See [`docs/weather.md`](docs/weather.md) for signal definitions and scoring.
+
 ### Plan Detection
 
 ccxray auto-detects your subscription plan (Pro vs Max 5x vs Max 20x) by reading Anthropic's `cache_creation` usage fields — no configuration needed. Cache TTL and quota thresholds use the detected plan. Override with `CCXRAY_PLAN` if auto-detection gets it wrong.
