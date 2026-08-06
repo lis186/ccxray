@@ -130,6 +130,24 @@ function sigErrorCluster(turns) {
   return { severity: sev, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100, entryIdStart: turns[bestStart] && turns[bestStart].id || null, entryIdEnd: turns[bestEnd] && turns[bestEnd].id || null } };
 }
 
+// ponytail: sustained low cache hit rate — cost/perf signal, not functionality. Skips first 3 turns (cold start). Expert consensus: 50% threshold (break-even), 0.5 cap.
+function sigCacheHealth(turns) {
+  var rates = [];
+  for (var i = Math.max(3, turns.length - 10); i < turns.length; i++) {
+    if (turns[i].provider && turns[i].provider !== 'anthropic') continue;
+    var u = turns[i].usage || {};
+    var inT = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    if (inT < 1000) continue;
+    rates.push((u.cache_read_input_tokens || 0) / inT);
+  }
+  if (rates.length < 3) return { severity: 0, detail: {} };
+  rates.sort(function(a, b) { return a - b; });
+  var median = percentile(rates, 0.5);
+  // ponytail: 50%→0, 0%→0.5. Aligns with workflow-timeline cache-miss event (<50%) and Anthropic break-even economics (1.4 reads/write).
+  var sev = median >= 0.5 ? 0 : clamp01((0.5 - median) * 1.0);
+  return { severity: sev, detail: { medianHitRate: Math.round(median * 100), recentTurns: rates.length } };
+}
+
 // ponytail: catches chronic tool errors spread across long sessions that error_cluster misses (exp9: ~30 false negatives).
 function sigErrorCumulative(turns) {
   var toolTurns = 0, errTurns = 0, firstErrId = null;
@@ -159,6 +177,7 @@ function assessWeather(turns, opts) {
     { type: 'latency_drift', result: sigLatencyDrift(turns) },
     { type: 'error_cluster', result: sigErrorCluster(turns) },
     { type: 'error_cumulative', result: sigErrorCumulative(turns) },
+    { type: 'cache_health', result: sigCacheHealth(turns) },
   ];
 
   var sevs = signals.map(function(s) { return s.result.severity; }).sort(function(a, b) { return b - a; });
@@ -186,6 +205,7 @@ function assessWeather(turns, opts) {
     errTurns: _sigMap.error_cumulative.detail.errTurns || 0,
     latencyRatio: _sigMap.latency_drift.detail.ratio || null,
     compactions: _sigMap.compaction_scar.detail.compactionCount || 0,
+    cacheHitRate: _sigMap.cache_health.detail.medianHitRate != null ? _sigMap.cache_health.detail.medianHitRate : null,
   };
 
   var tooltip = _buildTooltip(pick.level, factors, stats);
@@ -212,6 +232,7 @@ var _FACTOR_FMT = {
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
   error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
   error_cumulative: function(d) { var label = d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; return d.firstErrId ? _turnLink(label, d.firstErrId) : label; },
+  cache_health: function(d) { return 'cache hit ' + (d.medianHitRate || 0) + '% (last ' + (d.recentTurns || '?') + ' turns)'; },
 };
 
 var _LEVEL_SUMMARY = {
@@ -241,6 +262,7 @@ function _buildTooltip(level, factors, stats) {
       var parts = [];
       parts.push('context ' + (stats.ctxPct || 0) + '%');
       parts.push(stats.errTurns ? stats.errTurns + ' errors' : '0 errors');
+      if (stats.cacheHitRate != null) parts.push('cache ' + stats.cacheHitRate + '%');
       if (stats.latencyRatio != null) parts.push('latency ' + stats.latencyRatio + 'x');
       if (stats.compactions) parts.push('compacted ×' + stats.compactions);
       lines.push(parts.join(' · '));

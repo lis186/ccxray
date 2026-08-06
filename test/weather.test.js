@@ -11,8 +11,8 @@ function makeTurn(overrides) {
     stopReason: 'end_turn',
     usage: {
       output_tokens: 800,
-      input_tokens: 20000,
-      cache_read_input_tokens: 10000,
+      input_tokens: 2000,
+      cache_read_input_tokens: 28000,
       cache_creation_input_tokens: 2000,
     },
     maxContext: 200000,
@@ -470,5 +470,79 @@ describe('assessWeather', function() {
     // Verify other factors are not affected by the ctx numerator change
     var otherFactors = r.factors.filter(function(f) { return f.type !== 'ctx_pressure'; });
     assert.equal(otherFactors.length, 0, 'no other factors should fire on this fixture');
+  });
+
+  // ── cache_health signal ──
+
+  it('cache_miss — sustained 0% cache hit → severity 0.5', function() {
+    var turns = repeat(15, { usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 2000, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(hasFactor(r, 'cache_health'), 'should detect cache miss');
+    var f = r.factors.find(function(f) { return f.type === 'cache_health'; });
+    assert.equal(f.severity, 0.5, 'severity at 0% should be 0.5');
+    assert.equal(f.detail.medianHitRate, 0);
+  });
+
+  it('cache_degraded — 30% hit rate → severity ≈ 0.2', function() {
+    // 9600 / 32000 = 30%
+    var turns = repeat(15, { usage: { input_tokens: 20400, cache_read_input_tokens: 9600, cache_creation_input_tokens: 2000, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(hasFactor(r, 'cache_health'));
+    var f = r.factors.find(function(f) { return f.type === 'cache_health'; });
+    assert.ok(f.severity >= 0.19 && f.severity <= 0.21, 'severity ' + f.severity + ' ≈ 0.2');
+  });
+
+  it('cache_healthy — 80% hit rate → no signal', function() {
+    // 25600 / 32000 = 80%
+    var turns = repeat(15, { usage: { input_tokens: 4400, cache_read_input_tokens: 25600, cache_creation_input_tokens: 2000, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'));
+  });
+
+  it('cache_cold_start — first 3 turns skipped', function() {
+    // 4 turns total, first 3 have 0% cache, turn 4 has 80%
+    // max(3, 4-10) = 3 → only turn 3 qualifies → < 3 qualifying → no signal
+    var turns = [
+      makeTurn({ usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 2000, output_tokens: 800 } }),
+      makeTurn({ usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 2000, output_tokens: 800 } }),
+      makeTurn({ usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 2000, output_tokens: 800 } }),
+      makeTurn({ usage: { input_tokens: 4400, cache_read_input_tokens: 25600, cache_creation_input_tokens: 2000, output_tokens: 800 } }),
+    ];
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'), 'cold start turns should be skipped');
+  });
+
+  it('cache_insufficient — only 2 qualifying turns → no signal', function() {
+    var turns = repeat(5);
+    // Only turns 3-4 qualify (after skipping first 3), that's 2 turns — below minimum 3
+    var r = assessWeather(turns);
+    // With 5 turns: max(3, 5-10) = 3 → turns 3,4 → 2 qualifying → no signal
+    assert.ok(!hasFactor(r, 'cache_health'));
+  });
+
+  it('cache_tiny_turns_skipped — turns with < 1K input tokens ignored', function() {
+    var turns = repeat(15, { usage: { input_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 200, output_tokens: 100 } });
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'), 'tiny turns should not trigger cache signal');
+  });
+
+  it('cache_codex_exempt — OpenAI/Codex entries are skipped', function() {
+    // OpenAI parser normalizes cache_read_input_tokens to 0, so null-check alone doesn't work
+    var turns = repeat(15, { provider: 'openai', usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'), 'codex/openai entries should not trigger cache signal');
+  });
+
+  it('cache_grok_exempt — xAI/Grok entries are skipped', function() {
+    var turns = repeat(15, { provider: 'xai', usage: { input_tokens: 30000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 800 } });
+    var r = assessWeather(turns);
+    assert.ok(!hasFactor(r, 'cache_health'), 'grok entries should not trigger cache signal');
+  });
+
+  it('cache stats shown in sunny tooltip', function() {
+    var turns = repeat(10);
+    var r = assessWeather(turns);
+    assert.ok(r.stats.cacheHitRate != null, 'stats should include cacheHitRate');
+    assert.ok(r.tooltip.includes('cache'), 'sunny tooltip should show cache stat');
   });
 });
