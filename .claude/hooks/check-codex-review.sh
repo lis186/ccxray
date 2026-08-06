@@ -1,73 +1,106 @@
 #!/bin/bash
-# PreToolUse hook: block `gh pr merge` unless PR body contains codex review evidence.
-# Exit 0 = allow, exit 2 + JSON = block.
+# PreToolUse hook: block `gh pr merge` unless the target PR's body contains codex
+# review evidence. Exit 0 = allow, exit 2 + JSON = block.
 #
-# This is a heuristic guard against ACCIDENTAL unreviewed merges by the repo's own
-# trusted agent — not an adversarial filter. Where bash-level parsing of a shell
-# command cannot be done safely (quoted arguments), it fails CLOSED: better to ask
-# for a simpler command than to silently pass an unreviewed PR.
+# Design: this is a guard against ACCIDENTAL unreviewed merges by the repo's own
+# trusted agent. Bash cannot fully parse shell, so instead of chasing parser holes
+# (quotes, escapes, comments, substitutions — codex R2/R3/R4) the gate accepts ONE
+# verifiable grammar and fails CLOSED on everything else:
+#
+#   gh pr merge <number | github pull URL>
+#       [--repo owner/repo | -R owner/repo | --repo=x | -Rx]
+#       [--squash|--merge|--rebase|-s|-m|-r] [--delete-branch|-d] [--admin] [--auto]
+#
+# Anything outside that shape (branch selectors, current-branch merge, value-taking
+# flags like --subject, $VARs, quotes, escapes) → block with instructions.
 
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)
 
-# If jq fails or command doesn't contain gh pr merge, allow
-if [ -z "$CMD" ] || ! echo "$CMD" | grep -qE '^gh pr merge|&& gh pr merge|; gh pr merge'; then
-  exit 0
-fi
+# Fast path: the literal phrase appears nowhere
+case "$CMD" in
+  *"gh pr merge"*) ;;
+  *) exit 0 ;;
+esac
 
 block() {
   echo '{"decision":"block","reason":"'"$1"'"}'
   exit 2
 }
 
-# Iterate EVERY textual `gh pr merge` occurrence: a quoted 'gh pr merge' inside an
-# earlier argument must not shadow the real invocation (codex R2). Each occurrence
-# is parsed only up to the next command separator so a later command's arguments
-# (e.g. `&& gh pr view 12 --repo other`) can't leak in (codex R1).
+# Iterate EVERY textual `gh pr merge` occurrence — a preceding occurrence must not
+# shadow a later real invocation (codex R2). Only occurrences at a COMMAND START
+# are parsed: start of line, or after ; & | ( — `||` and newlines included (codex
+# R4). A space-preceded prose mention (commit -m text, echo of docs) is skipped —
+# prose in messages routinely names this command and must not trip the gate.
 REST=$CMD
 while [ "${REST#*gh pr merge}" != "$REST" ]; do
+  PREFIX=${REST%%gh\ pr\ merge*}
   TAIL=${REST#*gh pr merge}
   REST=$TAIL
-  SEG=$(echo "$TAIL" | sed -E 's/(&&|\|\||;|\|).*$//')
+  LASTLINE=${PREFIX##*$'\n'}
+  if [ -n "$LASTLINE" ] && ! printf '%s' "$LASTLINE" | grep -qE '^[[:space:]]*$|[;&|(][[:space:]]*$'; then
+    continue
+  fi
 
-  # Shell-aware parsing is out of reach for a bash heuristic: quotes and escapes
-  # defeat the separator cut (codex R2/R3), and $-substitution means the hook can't
-  # know which PR is being merged. Any of them in the merge segment → fail closed.
-  # Merges in this repo's workflow are plain `gh pr merge <n> [--repo x] --squash`.
-  case "$SEG" in
+  # Shell dynamics the gate cannot resolve → fail closed (codex R2/R3): quotes and
+  # escapes defeat any separator logic; $ and backticks mean the merged PR is not
+  # knowable statically. Checked on the raw tail BEFORE cutting, so an escaped or
+  # quoted separator cannot fake an early end of the invocation.
+  FIRST_LINE=$(printf '%s' "$TAIL" | sed -n '1p')
+  case "$FIRST_LINE" in
     *"'"* | *'"'* | *'\'* | *'`'* | *'$'* )
       block "gh pr merge with quoted, escaped, or dynamic (\$/backtick) arguments cannot be parsed safely by the codex-review hook — run gh pr merge as a standalone command with a literal PR number"
       ;;
   esac
 
-  # PR number: first standalone integer argument in this merge invocation
-  # (handles both `merge 11 --repo X` and `merge --repo X 11`; a repo name like
-  # lis186/ccxray is not a standalone integer so it can't be mistaken for one).
-  # Known limit: a numeric value of an unrelated flag (`--subject 11 12`) can be
-  # misread as the PR number — resolving that needs gh's flag arity table, which
-  # is out of proportion for a guard against accidental merges.
-  PR_NUM=$(echo "$SEG" | grep -oE '(^|[[:space:]])[0-9]+([[:space:]]|$)' | grep -oE '[0-9]+' | head -1)
-  if [ -z "$PR_NUM" ]; then
-    # No PR number in this occurrence (e.g. the bare string, or `gh pr merge`
-    # without args where gh will prompt) — nothing checkable here.
-    continue
-  fi
+  # This invocation's own arguments: first line only, cut at the first command
+  # separator or comment start ( ; | & # — covers && and || as prefixes; codex R1/R4)
+  SEG=$(printf '%s' "$FIRST_LINE" | sed -E 's/[;&|#].*$//')
 
-  # Cross-repo: a merge can target another repo via -R/--repo. Without forwarding
-  # it, the body check reads the cwd repo's same-numbered PR — a colliding number
-  # whose body happens to contain "codex review" would silently pass an unreviewed
-  # PR (ops docs/solutions/gate-script-vs-runbook-contradictions.md item 3).
-  # Forms: `--repo X`, `--repo=X`, `-R X`, `-RX` (attached, codex R2).
-  REPO_ARG=""
-  if echo "$SEG" | grep -qE '(^|[[:space:]])(--repo([= ]|$)|-R)'; then
-    REPO_ARG=$(echo "$SEG" | sed -nE 's/.*(^|[[:space:]])(--repo[= ]|-R[= ]?)([^[:space:]]+).*/\3/p' | head -1)
-    if [ -z "$REPO_ARG" ]; then
-      # -R/--repo present but unparseable — fail closed rather than validate the cwd repo
-      block "gh pr merge carries -R/--repo but the hook could not parse the target repo — refusing to validate against the cwd repo PR #$PR_NUM"
+  # Token-level allowlist parse
+  PR_NUM=""; REPO_ARG=""; EXPECT_REPO_VAL=0; BAD=""
+  for tok in $SEG; do
+    if [ "$EXPECT_REPO_VAL" = 1 ]; then
+      REPO_ARG=$tok; EXPECT_REPO_VAL=0; continue
     fi
+    case "$tok" in
+      --repo|-R) EXPECT_REPO_VAL=1 ;;
+      --repo=?*) REPO_ARG=${tok#--repo=} ;;
+      -R?*) REPO_ARG=${tok#-R} ;;
+      --squash|--merge|--rebase|-s|-m|-r|--delete-branch|-d|--admin|--auto) ;;
+      https://github.com/*/pull/*)
+        if [ -n "$PR_NUM" ]; then BAD=$tok; break; fi
+        PR_NUM=$(printf '%s' "$tok" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+' | head -1)
+        URL_REPO=$(printf '%s' "$tok" | sed -nE 's#https://github.com/([^/]+/[^/]+)/pull/.*#\1#p')
+        [ -n "$URL_REPO" ] && REPO_ARG=$URL_REPO
+        [ -z "$PR_NUM" ] && { BAD=$tok; break; } ;;
+      *)
+        if printf '%s' "$tok" | grep -qE '^[0-9]+$' && [ -z "$PR_NUM" ]; then
+          PR_NUM=$tok
+        else
+          BAD=$tok; break
+        fi ;;
+    esac
+  done
+
+  if [ -n "$BAD" ]; then
+    # Branch selectors, value-taking flags (--subject/--body/...), or anything else
+    # the gate cannot verify — including a second selector (codex R4).
+    block "codex-review hook cannot verify this merge form (unrecognized argument: $BAD) — use: gh pr merge <number|pull URL> [--repo owner/repo] [--squash|--merge|--rebase] [--delete-branch]"
+  fi
+  if [ "$EXPECT_REPO_VAL" = 1 ]; then
+    block "gh pr merge carries -R/--repo without a value — could not parse the target repo, refusing to validate against the cwd repo"
+  fi
+  if [ -z "$PR_NUM" ]; then
+    # No literal selector. Non-interactively gh merges the CURRENT BRANCH's PR —
+    # an ungated bypass if allowed (codex R4). Require an explicit number/URL.
+    block "gh pr merge without a literal PR number merges the current branch's PR ungated — pass an explicit PR number or pull URL"
   fi
 
-  # Check PR body (in the target repo when one was given)
+  # Check the PR body in the repo the merge actually targets (without forwarding
+  # -R/--repo, a same-numbered cwd PR containing 'codex review' would silently
+  # pass an unreviewed foreign PR — ops gate-script-vs-runbook-contradictions §3).
   if [ -n "$REPO_ARG" ]; then
     BODY=$(gh pr view "$PR_NUM" --repo "$REPO_ARG" --json body --jq '.body' 2>/dev/null || echo "")
   else

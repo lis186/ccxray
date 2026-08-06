@@ -216,6 +216,75 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.match(r.stdout, /cannot be parsed safely/);
   });
 
+  it('pull URL selector: repo and number are taken from the URL (codex R4)', () => {
+    const r = runHook('gh pr merge https://github.com/lis186/ccxray-ops/pull/34 --squash', {
+      GH_BODY_CROSS: 'codex gate clean',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.spy, /pr view 34 --repo lis186\/ccxray-ops/);
+  });
+
+  it('pull URL selector without evidence blocks (previously slipped the allow path)', () => {
+    const r = runHook('gh pr merge https://github.com/lis186/ccxray-ops/pull/34', {
+      GH_BODY_CROSS: 'nothing here',
+    });
+    assert.equal(r.status, 2);
+  });
+
+  it('branch selector cannot be verified → fail closed (codex R4)', () => {
+    const r = runHook('gh pr merge feature-branch --squash', {
+      GH_BODY_LOCAL: 'codex review',
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /unrecognized argument: feature-branch/);
+  });
+
+  it('bare merge (current-branch PR) is no longer an ungated bypass (codex R4)', () => {
+    const r = runHook('gh pr merge --squash', { GH_BODY_LOCAL: 'codex review' });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /explicit PR number/);
+  });
+
+  it('merge reached via || is still gated (codex R4)', () => {
+    const r = runHook('false || gh pr merge 11 --squash', { GH_BODY_LOCAL: 'no evidence' });
+    assert.equal(r.status, 2);
+  });
+
+  it('shell comment cannot smuggle --repo into the invocation (codex R4)', () => {
+    const r = runHook('gh pr merge 11 --squash # --repo foreign/repo', {
+      GH_BODY_LOCAL: 'codex review: clean',
+      GH_BODY_CROSS: 'also codex review',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.doesNotMatch(r.spy, /--repo/);
+  });
+
+  it('newline-separated follow-up command does not leak into the merge segment (codex R4)', () => {
+    const r = runHook('gh pr merge 11 --squash\ngh pr view 12 --repo foreign/repo', {
+      GH_BODY_LOCAL: 'codex review: clean',
+      GH_BODY_CROSS: 'also codex review',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.doesNotMatch(r.spy, /--repo/);
+    assert.match(r.spy, /pr view 11 /);
+  });
+
+  it('value-taking flags outside the allowlist (--subject) → fail closed', () => {
+    // Removes the old numeric-flag-value misread entirely: the grammar simply
+    // rejects flags the gate cannot account for.
+    const r = runHook('gh pr merge --subject 11 12', { GH_BODY_LOCAL: 'codex review' });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /unrecognized argument: --subject/);
+  });
+
+  it('prose mention in a commit message does not trip the gate (command-start preceder)', () => {
+    const r = runHook('git commit -m "docs: the gh pr merge <number> flow is gated" && git push', {
+      GH_BODY_LOCAL: '',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.spy, '', 'gh must never be called for a prose mention');
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
