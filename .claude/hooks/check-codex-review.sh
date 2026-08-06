@@ -10,11 +10,19 @@ if [ -z "$CMD" ] || ! echo "$CMD" | grep -qE '^gh pr merge|&& gh pr merge|; gh p
   exit 0
 fi
 
+# Scope all parsing to THIS merge invocation: cut the tail at the next command
+# separator so a later command's arguments (e.g. `&& gh pr view 12 --repo other`)
+# can't leak their repo or number into the check (codex review finding, 2026-08-06).
+MERGE_TAIL=${CMD#*gh pr merge}
+MERGE_ARGS=$(echo "$MERGE_TAIL" | sed -E 's/(&&|\|\||;|\|).*$//')
+
 # Extract PR number: first standalone integer argument after `gh pr merge`
 # (handles both `merge 11 --repo X` and `merge --repo X 11`; a repo name like
-# lis186/ccxray is not a standalone integer so it can't be mistaken for one)
-MERGE_TAIL=${CMD#*gh pr merge}
-PR_NUM=$(echo "$MERGE_TAIL" | grep -oE '(^|[[:space:]])[0-9]+([[:space:]]|$)' | grep -oE '[0-9]+' | head -1)
+# lis186/ccxray is not a standalone integer so it can't be mistaken for one).
+# Known limit: a numeric value of an unrelated flag (`--subject 11 12`) can be
+# misread as the PR number — resolving that needs gh's flag arity table, which
+# is out of proportion for a heuristic guard against accidental merges.
+PR_NUM=$(echo "$MERGE_ARGS" | grep -oE '(^|[[:space:]])[0-9]+([[:space:]]|$)' | grep -oE '[0-9]+' | head -1)
 if [ -z "$PR_NUM" ]; then
   # No PR number (e.g. `gh pr merge` without args) — allow, gh will prompt
   exit 0
@@ -25,8 +33,8 @@ fi
 # body happens to contain "codex review" would silently pass an unreviewed PR
 # (ops docs/solutions/gate-script-vs-runbook-contradictions.md item 3).
 REPO_ARG=""
-if echo "$CMD" | grep -qE '(^|[[:space:]])(-R|--repo)([= ]|$)'; then
-  REPO_ARG=$(echo "$CMD" | sed -nE 's/.*(^|[[:space:]])(-R|--repo)[= ]([^[:space:]]+).*/\3/p' | head -1)
+if echo "$MERGE_ARGS" | grep -qE '(^|[[:space:]])(-R|--repo)([= ]|$)'; then
+  REPO_ARG=$(echo "$MERGE_ARGS" | sed -nE 's/.*(^|[[:space:]])(-R|--repo)[= ]([^[:space:]]+).*/\3/p' | head -1)
   if [ -z "$REPO_ARG" ]; then
     # -R/--repo present but unparseable — fail closed rather than validate the cwd repo
     echo '{"decision":"block","reason":"gh pr merge carries -R/--repo but the hook could not parse the target repo — refusing to validate against the cwd repo PR #'"$PR_NUM"'"}'
