@@ -1,10 +1,38 @@
 # Changelog
 
-## Unreleased
+## 2.3.0
+
+112 commits since 2.2.0. Two headlines: Grok CLI becomes the third supported agent (`ccxray grok`), and cost display now tells you when it's guessing — per-turn and aggregate confidence markers replace silently fabricated numbers, backed by a set of pricing-correctness fixes.
 
 ### Added
 
-- **Provider module: Grok** — third agent module beside `claude` / `codex` (`AGENT_PROVIDERS` + `OPENAI_WIRE_CLIENTS`). Shared OpenAI Responses parser; client-header routing to `UPSTREAMS.xai` (`cli-chat-proxy.grok.com`, override `XAI_BASE_URL` / `GROK_BASE_URL`); launcher `ccxray grok`. Module contract: `docs/provider-modules.md`. Multi-agent hub acceptance: `test/multi-agent-proxy.e2e.test.js`.
+- **Provider module: Grok (#313).** Third agent module beside `claude` / `codex` (`AGENT_PROVIDERS` + `OPENAI_WIRE_CLIENTS`). Shared OpenAI Responses parser; client-header routing to `UPSTREAMS.xai` (`cli-chat-proxy.grok.com`, override `XAI_BASE_URL` / `GROK_BASE_URL`); launcher `ccxray grok`. Module contract: `docs/provider-modules.md`. Multi-agent hub acceptance: `test/multi-agent-proxy.e2e.test.js`.
+- **Cost confidence (#420 Phases 1–3, ADR 0017).** Every computed cost carries a confidence level (`exact` / `prefix` / `fallback` / `unknown`). Per-turn UI renders `~$X` with a tooltip for fallback-priced turns and `—` for unpriceable ones (#422). Aggregates (session/project cards, lane summaries, Usage tab) fold component confidence: a threshold-gated `~` marker, precision degradation to 2 significant figures when a total is mostly fabricated, and a `+` suffix when unknown-cost turns are excluded from the sum (#424).
+- **Per-turn tool calls (#427 Phases 1–2, ADR 0018).** Entries now carry `turnToolCalls` (this turn's calls, extracted from the response) alongside the cumulative conversation count, and UI consumers prefer the per-turn value. `ccxray rebuild-index` backfills `turnToolFail` onto legacy lines (#443).
+- **SECURITY.md + loopback trust model (#414).** Loopback requests are trusted by default; non-loopback requires the auth token. `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` re-gates loopback for reverse-proxy setups.
+
+### Fixed
+
+- **Hardcoded rates outranked LiteLLM (#397 defects 1/3/4, PR #405).** A spread-order inversion made 23 never-audited hardcoded pricing rows silently override live LiteLLM rates (`gpt-5.5` priced at 2/10 instead of 5/30 per MTok). LiteLLM-wins restored; `/_api/pricing` reads the table lazily instead of serving a require-time snapshot; provider-prefix mirroring restricted to xai.
+- **Three parallel rate engines (#397 defect 2 Phase 0, PR #419).** cost-worker and importer now share `server/default-rates.js` `calculateCostSimple` instead of maintaining drifting copies. Live-path unification is tracked in #459.
+- **Turn failure rate inflated (#438, PRs #439/#441/#442).** The dashboard read the cumulative conversation-level `hasToolFail` as a per-turn signal (a 44× Lie Factor on real data). The metric now uses genuine per-turn data and hides itself when none exists.
+- **Importer duplicated multi-event responses (#428, PR #431).** Imported transcripts aggregate by `message.id` — one entry per API response.
+- **Session duration off by ±8h (#426, PR #430)** when proxy and importer entries mixed timestamp conventions in one session.
+- **cost-worker could never exit (#400/#402/#407/#413, ADR 0015).** The forked usage scanner kept an IPC ref alive forever, piling up orphan workers (~400MB each); importing the module for unit tests also hijacked the importer's lifecycle. Now a pure batch process: drain-exit on success, side-effect-free import, enumerated env input surface.
+- **CI green while tests never ran (#297, PR #456).** `npm audit` sat before the test step in the same job, so one transitive advisory (`ip-address` ≤10.3.0) silently skipped the whole suite for 8 consecutive runs. Audit is now a separate non-blocking job; the lockfile bumps `ip-address` to 10.4.0 (#457, functionally verified through a real SOCKS5 handshake).
+- **Startup restore memory (#348, PR #409, ADR 0016).** Index restore streams line-by-line instead of materializing the parsed array; every re-read pass binds to a snapshot byte bound so live appends can't race restore into duplicates.
+- **Server/client subagent classification aligned (#381, PR #394).** session-index's weather fold now uses the shared L1 agentKey rule from `agent-classification.js`.
+- **Weather panel non-falsifiable advice removed (#336, PR #455).**
+- **Stale Codex Beta caveats + trilingual README sync (#463).** The WS transport has decoded frames (model, usage, request payload, response events) since before 2.2.0; the README claimed otherwise. Caveats rewritten from code, and all three README languages content-synced (zh-TW gained the Codex section; ja gained agent modules, Codex, and grok).
+
+### Architecture
+
+- **ADR 0015** — cost-worker lifecycle: drain-exit completion over a stdout pipe; imported mode side-effect free.
+- **ADR 0016** — restore streaming passes share a snapshot byte bound.
+- **ADR 0017** — aggregate cost confidence: threshold-gated `~`, precision degradation, directional `+`.
+- **ADR 0018** — `turnToolCalls` null-vs-empty contract + provider scope.
+- **Store encapsulation (#429).** All entry-push sites go through `store.registerEntry()` (push + index + aliases atomic); raw pushes outside `store.js` are blocked by an audit test (ADR 0003 hardening).
+- **Merge gate hook (#444, #462).** `.claude/hooks/check-codex-review.sh` blocks `gh pr merge` without codex review evidence; #462 rewrote it around a verifiable merge grammar with correct cross-repo targeting. Dev-tooling only — not shipped in the npm package.
 
 ## 2.2.0
 
