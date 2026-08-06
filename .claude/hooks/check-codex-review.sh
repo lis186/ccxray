@@ -17,8 +17,15 @@
 INPUT=$(cat)
 CMD=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)
 
+# Threat model: guards the repo's own trusted agent against ACCIDENTAL ungated
+# merges. Deliberate evasion (gh pr \"merge\", m=merge; gh pr \$m, base64 wrappers…)
+# is out of scope — the agent is not an adversary (same stance as ops
+# scrub-output.sh). Whitespace runs are squeezed so an accidental double space
+# doesn't dodge the textual scan.
+CMDS=$(printf '%s' "$CMD" | tr '\t' ' ' | tr -s ' ')
+
 # Fast path: the literal phrase appears nowhere
-case "$CMD" in
+case "$CMDS" in
   *"gh pr merge"*) ;;
   *) exit 0 ;;
 esac
@@ -33,13 +40,28 @@ block() {
 # are parsed: start of line, or after ; & | ( — `||` and newlines included (codex
 # R4). A space-preceded prose mention (commit -m text, echo of docs) is skipped —
 # prose in messages routinely names this command and must not trip the gate.
-REST=$CMD
+REST=$CMDS
+CONSUMED=""
 while [ "${REST#*gh pr merge}" != "$REST" ]; do
   PREFIX=${REST%%gh\ pr\ merge*}
   TAIL=${REST#*gh pr merge}
   REST=$TAIL
-  LASTLINE=${PREFIX##*$'\n'}
-  if [ -n "$LASTLINE" ] && ! printf '%s' "$LASTLINE" | grep -qE '^[[:space:]]*$|[;&|(][[:space:]]*$'; then
+  FULLPREFIX="$CONSUMED$PREFIX"
+  CONSUMED="$FULLPREFIX""gh pr merge"
+
+  # Inside an unclosed quote = prose in a string (commit -m text quoting a merge
+  # command), never a command start — skip. Parity on the FULL prefix from the
+  # start of the command line.
+  DQ=$(printf '%s' "$FULLPREFIX" | tr -cd '"' | wc -c)
+  SQ=$(printf '%s' "$FULLPREFIX" | tr -cd "'" | wc -c)
+  if [ $((DQ % 2)) -eq 1 ] || [ $((SQ % 2)) -eq 1 ]; then
+    continue
+  fi
+
+  LASTLINE=${FULLPREFIX##*$'\n'}
+  # Command start = line start, after ; & | ( {, or after env-assignment /
+  # env / command prefixes (GH_TOKEN=x gh pr merge … is an accidental shape).
+  if [ -n "$LASTLINE" ] && ! printf '%s' "$LASTLINE" | grep -qE '(^[[:space:]]*|[;&|({][[:space:]]*)((env|command)[[:space:]]+|[A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*$'; then
     continue
   fi
 
@@ -55,8 +77,10 @@ while [ "${REST#*gh pr merge}" != "$REST" ]; do
   esac
 
   # This invocation's own arguments: first line only, cut at the first command
-  # separator or comment start ( ; | & # — covers && and || as prefixes; codex R1/R4)
-  SEG=$(printf '%s' "$FIRST_LINE" | sed -E 's/[;&|#].*$//')
+  # separator ( ; | & — covers && and || as prefixes; codex R1/R4). A comment
+  # starts only where # begins a word ( 11#feature is a branch selector, not a
+  # comment — codex R5; it then falls to the token allowlist and fails closed).
+  SEG=$(printf '%s' "$FIRST_LINE" | sed -E 's/[;&|].*$//; s/(^|[[:space:]])#.*$//')
 
   # Token-level allowlist parse
   PR_NUM=""; REPO_ARG=""; EXPECT_REPO_VAL=0; BAD=""

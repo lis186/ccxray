@@ -285,6 +285,40 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.equal(r.spy, '', 'gh must never be called for a prose mention');
   });
 
+  it('env-assignment prefix (GH_TOKEN=x gh pr merge) is still gated (codex R5)', () => {
+    const r = runHook('GH_TOKEN=abc gh pr merge 11 --squash', { GH_BODY_LOCAL: 'no evidence' });
+    assert.equal(r.status, 2);
+  });
+
+  it('brace group and accidental double space are still gated (codex R5)', () => {
+    const r1 = runHook('{ gh pr merge 11; }', { GH_BODY_LOCAL: 'no evidence' });
+    assert.equal(r1.status, 2);
+    const r2 = runHook('gh  pr merge 11 --squash', { GH_BODY_LOCAL: 'no evidence' });
+    assert.equal(r2.status, 2);
+  });
+
+  it('11#feature is a branch selector, not a comment → fail closed (codex R5)', () => {
+    const r = runHook('gh pr merge 11#feature --squash', { GH_BODY_LOCAL: 'codex review' });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /unrecognized argument: 11#feature/);
+  });
+
+  it('trailing full-word comment is still stripped (codex R4 behavior kept)', () => {
+    const r = runHook('gh pr merge 11 --squash # merged after review', {
+      GH_BODY_LOCAL: 'codex review: clean',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  });
+
+  it('quoted prose that itself contains an env-prefixed merge is skipped (quote parity)', () => {
+    const r = runHook(
+      'git commit -m "fix: gate GH_TOKEN=x gh pr merge 11 shapes" && git push',
+      { GH_BODY_LOCAL: '' }
+    );
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.equal(r.spy, '', 'gh must never be called for quoted prose');
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
