@@ -175,7 +175,7 @@ describe('check-codex-review hook — cross-repo scope', () => {
       GH_BODY_CROSS: 'codex review',
     });
     assert.equal(r.status, 2);
-    assert.match(r.stdout, /quoted arguments/);
+    assert.match(r.stdout, /cannot be parsed safely/);
   });
 
   it("quoted 'gh pr merge' string shadowing a real merge → fail closed, never silently allowed (codex R2)", () => {
