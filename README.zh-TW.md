@@ -195,7 +195,7 @@ ccxray usage --tools                  # 完整工具呼叫明細
 
 0.6 秒完成自動化使用量分析 — 不用手動翻 log 就能知道 token 和錢花在哪。直接讀取 `index.ndjson`，不需要啟動 server。顯示模型成本分佈、工具與 skill 使用量、prompt hash 穩定性（system/tools/core prompt 在 turn 間的變化頻率）、依 turn 間隔的 cache 命中率、以及花費最高的 10 個 session（含標題）。
 
-`--json` 輸出是 agent-facing 契約 — 完整的逐欄位 schema、multi-cwd 與錯誤輸出形狀、以及過濾語意見 [`docs/usage.md`](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.md)。
+`--json` 輸出是 agent-facing 契約 — 完整的逐欄位 schema、multi-cwd 與錯誤輸出形狀、以及過濾語意見 [`docs/usage.md`](docs/usage.md)。
 
 ### 其他功能
 

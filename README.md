@@ -195,7 +195,7 @@ ccxray usage --tools                  # Full tool breakdown
 
 Automated usage analysis in 0.6 seconds — know where your tokens and dollars go without manual log diving. Reads `index.ndjson` directly, no server needed. Shows model cost breakdown, tool & skill usage, prompt hash stability (how often system/tools/core prompts change between turns), cache hit rates by inter-turn gap, and the 10 costliest sessions with titles.
 
-The `--json` output is an agent-facing contract — see [`docs/usage.md`](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
+The `--json` output is an agent-facing contract — see [`docs/usage.md`](docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
 
 ### More
 
