@@ -145,8 +145,11 @@ function renderContextBreakdownBar(tok, maxContext, usage) {
   // Use API usage as authoritative total when available (tokenizeRequest underestimates by 20-40%)
   const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
-  // Scale category segments proportionally if API total is larger
-  const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
+  // Scale category segments proportionally if API total is larger. Categories are all
+  // input-side, so the scale denominator excludes output_tokens — including it smears
+  // output across every category and inflates the numbers (#267).
+  const apiInputTotal = apiTotal - (usage?.output_tokens || 0);
+  const scale = estimatedTotal > 0 && apiInputTotal > estimatedTotal ? apiInputTotal / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
   const rawPct = total / windowSize * 100;
   const pct = Math.min(100, rawPct).toFixed(0);
@@ -178,7 +181,9 @@ function renderContextBreakdownSticky(tok, maxContext, usage) {
   // Use API usage as authoritative total when available
   const apiTotal = computeCtxUsed(usage);
   const total = apiTotal > estimatedTotal ? apiTotal : estimatedTotal;
-  const scale = estimatedTotal > 0 && total > estimatedTotal ? total / estimatedTotal : 1;
+  // Input-only scale denominator — categories are all input-side (#267)
+  const apiInputTotal = apiTotal - (usage?.output_tokens || 0);
+  const scale = estimatedTotal > 0 && apiInputTotal > estimatedTotal ? apiInputTotal / estimatedTotal : 1;
   const windowSize = maxContext || DEFAULT_MAX_CTX;
   const usedPct = Math.min(100, total / windowSize * 100);
   const barColor = ctxZone(usedPct).cssVar;
