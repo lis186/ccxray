@@ -159,6 +159,43 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.match(r.spy, /--repo lis186\/ccxray-ops/);
   });
 
+  it('attached short form -Rowner/repo is honored (codex R2)', () => {
+    const r = runHook('gh pr merge 7 -Rlis186/ccxray-ops', {
+      GH_BODY_CROSS: 'codex gate clean',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+  });
+
+  it('quoted argument inside the merge invocation → fail closed (codex R2)', () => {
+    // A quote defeats the separator cut (`--body 'note; ready'`), so the hook
+    // must refuse to guess rather than mis-parse and validate the wrong repo.
+    const r = runHook("gh pr merge 11 --body 'note; ready' --repo owner/foreign", {
+      GH_BODY_LOCAL: 'codex review',
+      GH_BODY_CROSS: 'codex review',
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /quoted arguments/);
+  });
+
+  it("quoted 'gh pr merge' string shadowing a real merge → fail closed, never silently allowed (codex R2)", () => {
+    // Old parsing anchored on the FIRST textual occurrence, found no number in
+    // the echo argument, and exited 0 without checking the real merge.
+    const r = runHook("echo 'gh pr merge' && gh pr merge 11", {
+      GH_BODY_LOCAL: 'no evidence',
+    });
+    assert.equal(r.status, 2, 'must not silently allow the real merge');
+  });
+
+  it('two merges in one line: both are gated (loop covers every occurrence)', () => {
+    const r = runHook('gh pr merge 11 --squash && gh pr merge 12 --squash', {
+      GH_BODY_LOCAL: 'codex review: clean',
+    });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    assert.match(r.spy, /pr view 11 /);
+    assert.match(r.spy, /pr view 12 /);
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
