@@ -223,15 +223,7 @@ var _LEVEL_SUMMARY = {
 };
 
 var _ACTION_TABLE = {
-  ctx_pressure: function(d) {
-    return (d.ctxPct || 0) >= 80
-      ? 'Save key decisions to CLAUDE.md before auto-compact'
-      : 'Use subagent for next independent task';
-  },
-  compaction_scar: function() { return 'Save decisions to CLAUDE.md, or start fresh with --resume'; },
-  truncation: function() { return 'Break into smaller steps'; },
   stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
-  latency_drift: function() { return 'Use subagent to reduce context load'; },
   error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
   error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : 'Check tool errors — common: permissions, paths, settings'; },
 };

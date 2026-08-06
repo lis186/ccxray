@@ -331,23 +331,93 @@ describe('assessWeather', function() {
     }
   });
 
-  it('tooltip — cloudy+ has action line', function() {
-    var turns = repeat(30);
-    turns[turns.length - 1] = makeTurn({
+  it('#336 tooltip — only evidence-linked top factors have action lines (fail-on-old)', function() {
+    var ctxTurns = repeat(30);
+    ctxTurns[ctxTurns.length - 1] = makeTurn({
       usage: { input_tokens: 140000, cache_read_input_tokens: 30000, cache_creation_input_tokens: 10000, output_tokens: 800 },
       maxContext: 200000,
     });
-    var r = assessWeather(turns);
-    if (r.level === 'cloudy' || r.level === 'rainy' || r.level === 'stormy') {
-      assert.ok(r.tooltip.includes('→'), 'cloudy+ should have action line');
-    }
-  });
 
-  it('tooltip — stuck has specific action', function() {
-    var turns = [];
-    for (var i = 0; i < 15; i++) turns.push(makeTurn({ stopReason: 'tool_use', toolFail: true }));
-    var r = assessWeather(turns);
-    assert.ok(r.tooltip.includes('permissions'), 'stuck action should mention permissions');
+    var compactionTurns = repeat(20);
+    compactionTurns[5] = makeTurn({ isCompacted: true });
+    compactionTurns[10] = makeTurn({ isCompacted: true });
+    compactionTurns[15] = makeTurn({ isCompacted: true });
+
+    var truncationTurns = repeat(20);
+    truncationTurns[5] = makeTurn({ isCompacted: true });
+    truncationTurns[19] = makeTurn({
+      stopReason: 'max_tokens',
+      usage: { output_tokens: 20000, input_tokens: 20000, cache_read_input_tokens: 10000, cache_creation_input_tokens: 2000 },
+    });
+
+    var stuckTurns = repeat(20, function(i) {
+      return { id: 's' + i, stopReason: 'tool_use' };
+    });
+    for (var i = 20; i < 30; i++) {
+      stuckTurns.push(makeTurn({ id: 's' + i, stopReason: 'tool_use', toolFail: true }));
+    }
+
+    var clusterTurns = repeat(5, function(i) {
+      return { id: 'c' + i, stopReason: 'tool_use', toolFail: true, isCompacted: i === 0 };
+    });
+
+    var cumulativeTurns = repeat(100, function(i) {
+      return { id: 'e' + i, stopReason: 'tool_use', toolFail: i % 4 === 0 };
+    });
+
+    var cases = [
+      {
+        type: 'ctx_pressure',
+        turns: ctxTurns,
+        factors: 'context 90.4%',
+        action: null,
+      },
+      {
+        type: 'compaction_scar',
+        turns: compactionTurns,
+        factors: 'compaction ×3 (info lost)',
+        action: null,
+      },
+      {
+        type: 'truncation',
+        turns: truncationTurns,
+        factors: 'output truncated (turn 19) · compaction ×1 (info lost)',
+        action: null,
+      },
+      {
+        type: 'latency_drift',
+        turns: repeat(10, { elapsed: '33.44' }),
+        factors: 'latency 2.2x baseline',
+        action: null,
+      },
+      {
+        type: 'stuck',
+        turns: stuckTurns,
+        factors: 'stuck 10 failures (turn 20-29) · 10/30 tool errors (33%) · error burst 100% (turn 20-24)',
+        action: '→ Check turn 20-29 — usually permissions or paths',
+      },
+      {
+        type: 'error_cluster',
+        turns: clusterTurns,
+        factors: 'error burst 100% (turn 0-4) · compaction ×1 (info lost)',
+        action: '→ Check turn 0-4',
+      },
+      {
+        type: 'error_cumulative',
+        turns: cumulativeTurns,
+        factors: '25/100 tool errors (25%) · error burst 40% (turn 0-4)',
+        action: '→ Check first error — common: permissions, paths, settings',
+      },
+    ];
+
+    cases.forEach(function(testCase) {
+      var result = assessWeather(testCase.turns);
+      var lines = result.tooltip.split('\n');
+      assert.equal(result.factors[0].type, testCase.type, testCase.type + ' should be the top factor');
+      assert.equal(lines[1], testCase.factors, testCase.type + ' factor formatting should stay unchanged');
+      var actionLines = lines.filter(function(line) { return line.indexOf('→ ') === 0; });
+      assert.deepEqual(actionLines, testCase.action ? [testCase.action] : [], testCase.type + ' action line');
+    });
   });
 
   // ── #387: ctx numerator includes output_tokens (match computeCtxUsed) ──
