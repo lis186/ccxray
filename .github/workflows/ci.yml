@@ -23,8 +23,6 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
-      - name: Audit dependencies (high+)
-        run: npm audit --audit-level=high
       # Run against an empty CCXRAY_HOME so a test that forgets to isolate
       # (rule 1 in docs/testing.md) can't read the real ~/.ccxray and starts
       # from an empty log dir. $HOME is left untouched so puppeteer's Chrome
@@ -33,3 +31,27 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/empty-ccxray"
           CCXRAY_HOME="$RUNNER_TEMP/empty-ccxray" npm test
+
+  # Separate, non-blocking job (#297). It used to be a step inside `test`, ahead
+  # of the test run — so a new advisory against ANY transitive dep failed the
+  # step and left `npm test` SKIPPED. That happened for real: an `ip-address`
+  # high advisory landed 2026-08-04 and the next 8 main runs never executed a
+  # single test, while the red badge read as "audit is red" rather than "nothing
+  # was verified".
+  #
+  # Non-blocking is achieved by job separation, NOT by continue-on-error: branch
+  # protection requires only `test (20)` / `test (22)`, so this job stays visibly
+  # red without gating merge. Deliberately no continue-on-error — swallowing the
+  # failure into a green check would hide the advisory, which is the opposite of
+  # the goal.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Audit dependencies (high+)
+        run: npm audit --audit-level=high
