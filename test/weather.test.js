@@ -365,6 +365,12 @@ describe('assessWeather', function() {
       return { id: 'e' + i, stopReason: 'tool_use', toolFail: i % 4 === 0 };
     });
 
+    // Same shape, no turn ids → firstErrId stays null, so error_cumulative has
+    // nothing to link to and must emit NO action line (#336 codex R1 P2).
+    var cumulativeNoIdTurns = repeat(100, function(i) {
+      return { stopReason: 'tool_use', toolFail: i % 4 === 0 };
+    });
+
     var cases = [
       {
         type: 'ctx_pressure',
@@ -407,6 +413,12 @@ describe('assessWeather', function() {
         turns: cumulativeTurns,
         factors: '25/100 tool errors (25%) · error burst 40% (turn 0-4)',
         action: '→ Check first error — common: permissions, paths, settings',
+      },
+      {
+        type: 'error_cumulative',
+        turns: cumulativeNoIdTurns,
+        factors: '25/100 tool errors (25%) · error burst 40% (turn 0-4)',
+        action: null,
       },
     ];
 
