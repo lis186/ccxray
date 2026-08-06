@@ -20,9 +20,10 @@ CMD=$(echo "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)
 # Threat model: guards the repo's own trusted agent against ACCIDENTAL ungated
 # merges. Deliberate evasion (gh pr \"merge\", m=merge; gh pr \$m, base64 wrappers…)
 # is out of scope — the agent is not an adversary (same stance as ops
-# scrub-output.sh). Whitespace runs are squeezed so an accidental double space
-# doesn't dodge the textual scan.
-CMDS=$(printf '%s' "$CMD" | tr '\t' ' ' | tr -s ' ')
+# scrub-output.sh). Normalization: backslash-newline continuations are joined
+# (codex R6) and whitespace runs squeezed so accidental line wrapping or a double
+# space doesn't dodge the textual scan.
+CMDS=$(printf '%s' "$CMD" | perl -0pe 's/\\\n//g' | tr '\t' ' ' | tr -s ' ')
 
 # Fast path: the literal phrase appears nowhere
 case "$CMDS" in
@@ -33,6 +34,30 @@ esac
 block() {
   echo '{"decision":"block","reason":"'"$1"'"}'
   exit 2
+}
+
+# Shell quote state at the end of the given text: 0=outside, 1=in-single,
+# 2=in-double. Models escapes and skips #-to-EOL comments while outside quotes
+# (codex R6: raw parity miscounts "don't" and quotes inside comments).
+quote_state() {
+  printf '%s' "$1" | awk '
+    { line = $0
+      for (i = 1; i <= length(line); i++) {
+        c = substr(line, i, 1)
+        if (s == 0) {
+          if (c == "#" && (i == 1 || substr(line, i-1, 1) ~ /[ \t]/)) break
+          if (c == "\x27") s = 1
+          else if (c == "\"") s = 2
+          else if (c == "\\") i++
+        } else if (s == 1) {
+          if (c == "\x27") s = 0
+        } else {
+          if (c == "\"") s = 0
+          else if (c == "\\") i++
+        }
+      }
+    }
+    END { print s + 0 }'
 }
 
 # Iterate EVERY textual `gh pr merge` occurrence — a preceding occurrence must not
@@ -50,11 +75,8 @@ while [ "${REST#*gh pr merge}" != "$REST" ]; do
   CONSUMED="$FULLPREFIX""gh pr merge"
 
   # Inside an unclosed quote = prose in a string (commit -m text quoting a merge
-  # command), never a command start — skip. Parity on the FULL prefix from the
-  # start of the command line.
-  DQ=$(printf '%s' "$FULLPREFIX" | tr -cd '"' | wc -c)
-  SQ=$(printf '%s' "$FULLPREFIX" | tr -cd "'" | wc -c)
-  if [ $((DQ % 2)) -eq 1 ] || [ $((SQ % 2)) -eq 1 ]; then
+  # command), never a command start — skip. Shell-aware state on the FULL prefix.
+  if [ "$(quote_state "$FULLPREFIX")" != "0" ]; then
     continue
   fi
 

@@ -319,6 +319,25 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.equal(r.spy, '', 'gh must never be called for quoted prose');
   });
 
+  it("apostrophe in earlier double-quoted prose does not skip the real merge (codex R6)", () => {
+    const r = runHook('echo "don\'t forget" && gh pr merge 11 --squash', {
+      GH_BODY_LOCAL: 'no evidence',
+    });
+    assert.equal(r.status, 2, 'quote-state must see the double-quoted apostrophe as content');
+  });
+
+  it('backslash-newline continuation is joined before scanning (codex R6)', () => {
+    const r = runHook('gh \\\n  pr merge 11 --squash', { GH_BODY_LOCAL: 'no evidence' });
+    assert.equal(r.status, 2, 'continuation-split merge must still be gated');
+  });
+
+  it("apostrophe inside a comment line does not poison the next line's merge (codex R6)", () => {
+    const r = runHook("# don't merge manually\ngh pr merge 11 --squash", {
+      GH_BODY_LOCAL: 'no evidence',
+    });
+    assert.equal(r.status, 2);
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
