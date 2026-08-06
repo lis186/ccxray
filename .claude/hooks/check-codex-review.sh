@@ -30,12 +30,13 @@ while [ "${REST#*gh pr merge}" != "$REST" ]; do
   REST=$TAIL
   SEG=$(echo "$TAIL" | sed -E 's/(&&|\|\||;|\|).*$//')
 
-  # Quote-aware shell parsing is out of reach for a bash heuristic; a quote inside
-  # the merge segment means the separator cut above may be wrong — fail closed
-  # (codex R2). Merges in this repo's workflow don't need quoted arguments.
+  # Shell-aware parsing is out of reach for a bash heuristic: quotes and escapes
+  # defeat the separator cut (codex R2/R3), and $-substitution means the hook can't
+  # know which PR is being merged. Any of them in the merge segment → fail closed.
+  # Merges in this repo's workflow are plain `gh pr merge <n> [--repo x] --squash`.
   case "$SEG" in
-    *"'"* | *'"'* )
-      block "gh pr merge with quoted arguments cannot be parsed safely by the codex-review hook — run gh pr merge as a standalone command without quotes"
+    *"'"* | *'"'* | *'\'* | *'`'* | *'$'* )
+      block "gh pr merge with quoted, escaped, or dynamic (\$/backtick) arguments cannot be parsed safely by the codex-review hook — run gh pr merge as a standalone command with a literal PR number"
       ;;
   esac
 

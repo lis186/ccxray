@@ -196,6 +196,26 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.match(r.spy, /pr view 12 /);
   });
 
+  it('backslash-escaped separator in merge args → fail closed (codex R3)', () => {
+    // `--subject note\;ready` is ONE command targeting the foreign repo, but a
+    // naive separator cut stops at the escaped semicolon and would validate the
+    // cwd repo's PR instead.
+    const r = runHook('gh pr merge 11 --subject note\\;ready --repo owner/foreign', {
+      GH_BODY_LOCAL: 'codex review',
+      GH_BODY_CROSS: 'codex review',
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /cannot be parsed safely/);
+  });
+
+  it('dynamic PR number ($VAR) → fail closed, the gate cannot verify what it cannot resolve', () => {
+    const r = runHook('gh pr merge $PR_NUM --squash', {
+      GH_BODY_LOCAL: 'codex review',
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stdout, /cannot be parsed safely/);
+  });
+
   it('non-merge command is ignored (exit 0, gh never called)', () => {
     const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
     assert.equal(r.status, 0);
