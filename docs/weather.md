@@ -14,9 +14,9 @@ Source of truth: [`public/weather.js`](../public/weather.js).
 | `ctx_pressure` | Last turn's context fill % | 40% &rarr; 0, 100% &rarr; 1.0 (linear) | 1.0 | 1 |
 | `compaction_scar` | Number of compacted turns | 1 = 0.4, 2+ = 0.6 | 0.6 | 1 |
 | `truncation` | Any turn hit `max_tokens` (&ge;16K output) | Fixed 0.5 | 0.5 | 1 |
-| `stuck` | Longest consecutive tool-failure streak | &ge;10 = 0.9, else 0 | 0.9 | 1 |
+| `stuck` | Longest consecutive tool-failure streak | &ge;10 = 0.9, else 0 | 0.9 | 10 consecutive |
 | `latency_drift` | p75 of last 10 turns vs model baseline | 1x &rarr; 0, 3x &rarr; 1.0 | 1.0 | 5 |
-| `error_cluster` | 5-turn sliding window tool error rate | rate / 2.0 | 0.5 | 5 |
+| `error_cluster` | 5-turn sliding window tool error rate | rate / 2.0 | 0.5 | 3 tool_use in window |
 | `error_cumulative` | Session-wide tool error ratio | 20% &rarr; 0.5, 40% &rarr; 1.0 | 1.0 | 10 tool turns |
 | `cache_health` | Median cache hit rate (last 10 turns, skip first 3) | 50% &rarr; 0, 0% &rarr; 0.5 | 0.5 | 3 qualifying |
 
@@ -66,5 +66,7 @@ The hover overlay shows different content depending on the level:
 
 Each signal has a minimum-turns requirement to avoid firing on incomplete
 data. `cache_health` additionally skips the first three turns of the
-window (prompt cache cold start) and ignores turns with fewer than 1,000
-input tokens.
+**session** (prompt cache cold start &mdash; `Math.max(3, len - 10)`) and
+ignores turns with fewer than 1,000 input tokens. For sessions longer
+than 13 turns the full trailing 10 are examined; shorter sessions only
+see turns after the cold-start boundary.
