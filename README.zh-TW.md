@@ -29,7 +29,7 @@ npx ccxray codex
 npx ccxray grok
 ```
 
-就這樣。代理啟動、選定的 CLI 透過代理連線、儀表板自動在瀏覽器中開啟。在多個終端機執行時會自動共用同一個 dashboard。
+就這樣。代理啟動、選定的 CLI 經由它啟動、儀表板自動在瀏覽器中開啟。在多個終端機執行時會自動共用同一個 dashboard。
 
 launcher 參數由 provider registry 管理。目前支援 `claude`、`codex` 與 `grok`；未知的 provider command 會直接失敗，避免靜默啟動未設定的 proxy。
 
@@ -82,9 +82,25 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 | `ccxray codex` | OpenAI Responses | `api.openai.com` / ChatGPT |
 | `ccxray grok` | OpenAI Responses（client 模組） | `cli-chat-proxy.grok.com`（`XAI_BASE_URL` 可覆寫） |
 
-非 Codex 的 OpenAI-wire 客戶端列在 `OPENAI_WIRE_CLIENTS`：共用 parser、各自 host/agent/raw-session。多 agent hub 可並存，不必改 `OPENAI_BASE_URL`。驗收備註：[`docs/grok-testing.md`](docs/grok-testing.md)。
+非 Codex 的 OpenAI-wire 客戶端（目前：Grok）列在 `OPENAI_WIRE_CLIENTS`：共用 parser、各自 host/agent/raw-session。多 agent hub 可並存，不必改 `OPENAI_BASE_URL`。驗收備註：[`docs/grok-testing.md`](docs/grok-testing.md)。
 
 **Grok 帳單揭露：** 代理 Grok CLI 流量時，ccxray 會呼叫 `cli-chat-proxy.grok.com/v1/billing`（使用 CLI 已經透過 proxy 傳送的同一組 auth token）來填充 Usage 分頁的帳戶卡片。成功回應後的 60 秒內會抑制重複呼叫（per alias+credential）。設定 `XAI_BASE_URL` 可將呼叫導向其他主機。
+
+## Codex 支援（Beta）
+
+```bash
+npx ccxray codex
+```
+
+API key 與 ChatGPT 認證的 codex session 都支援。當 codex 帶著 `chatgpt-account-id` header 時，會自動路由到 `chatgpt.com/backend-api/codex` — 不需額外設定。Codex 啟動時的平台輪詢（plugin 清單、connector 目錄、app metadata）會照常代理，但不顯示在儀表板上，讓 timeline 只呈現對話流量。
+
+**Beta 注意事項：**
+- WebSocket 傳輸（`/v1/responses` 升級）會逐 frame 解碼：每個 codex turn 記錄 model、token 用量、請求的 instructions/input/tools 與回應事件。少數大型 envelope 事件只保留精簡的時間錨點（供 TTFT 計算）而非完整內容，所以 codex turn 的細節在部分地方仍不及 Claude turn。
+- 相較 Claude 路徑，實際使用的驗證量較少。
+
+可調整的環境變數：`OPENAI_BASE_URL`、`CHATGPT_BASE_URL`、`CCXRAY_WS_IDLE_TIMEOUT_MS`、`CCXRAY_WS_MAX_QUEUE_BYTES`。詳見 [CLAUDE.md](CLAUDE.md)。
+
+歡迎到 [GitHub](https://github.com/lis186/ccxray/issues) 回報問題 — Beta 的意思就是我們想收到粗糙邊角的回報。
 
 ## 功能
 
@@ -92,11 +108,11 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 
 即時觀看代理的思考過程與並行結構。
 
-**Turn 卡片**：每個回合渲染成五層資訊卡——cost、cache 熱度（含 turn 間空檔時間，及時抓出 cache miss）、tool 失敗風險訊號、`hit:0%` 紅色警示、tools 列前置於標題上方。整場 session 的健康狀態一眼掃完。
+**Turn 卡片**：每個回合渲染成五行資訊卡——cost、cache 熱度（含 turn 間空檔時間，及時抓出 cache miss）、tool 失敗風險訊號、`hit:0%` 紅色警示、tools 列前置於標題上方。不用展開任何一張卡片，就能掃完整場 session 的健康狀態。
 
-**Lane 視覺化**：多 agent session 自動拆分為平行 lane——主流程走主 lane，subagent 分出 Fork / Teammate lane。每條 lane 有 WCAG ≥3:1 對比的獨立色彩，支援混合 model 標示。Sequential-interleave tracker 標記同一對話中哪些 turn 是循序、哪些是並行。
+**Lane 視覺化**：多 agent session 自動拆分為平行 lane——orchestrator 走主 lane，subagent 分出 Fork / Teammate lane。每條 lane 有 WCAG ≥3:1 對比的獨立色彩，支援混合 model 標示。Sequential-interleave tracker 標記同一對話中哪些 turn 是循序、哪些是並行。
 
-**鳥瞰模式**：切換 birdseye overview 可將 overview 區域放大到 80% viewport，搭配放大版 minimap 與範圍摘要，掌握長 session 的全貌。
+**鳥瞰模式**：切換 birdseye overview 可將 overview 區域放大到約 80% viewport，搭配放大版 minimap 與範圍摘要，掌握長 session 的全貌。
 
 **L1/L2 雙層選取**：Tab / ▲▼ 選取 lane（L1），j/k 在 lane 內選取 turn（L2），Esc 逐層退出。取代舊的單層 click 模型。
 
@@ -110,7 +126,7 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 
 ### System Prompt 追蹤
 
-自動偵測版本變更，內建 diff 檢視器。瀏覽多種已辨識的 agent 類型，精確掌握每次更新的差異。不確定的項目會誠實標為 `unknown`。
+自動偵測版本變更，內建 diff 檢視器。瀏覽多種已辨識 agent 類型的 prompt，精確掌握每次更新的差異。不確定的項目會誠實標為 `unknown`。
 
 ![System Prompt 追蹤](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
 
@@ -128,7 +144,7 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 
 ### Session 標題與 Cache 提醒
 
-Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login button on mobile`），並附有即時 cache TTL 倒數（`cache 4m left`），不到 1 分鐘時變紅閃爍。任何 session 接近到期時，瀏覽器分頁標題會在 `ccxray` 和 `⚠ ccxray` 之間交替。可選的瀏覽器通知會在計畫感知的提前時間觸發 — Max 提前 5 分鐘、Pro/API key 提前 60 秒。直接 API 呼叫或標題生成仍在進行中的 session 退回顯示短雜湊。
+Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login button on mobile`），並附有即時 cache TTL 倒數（`cache 4m left`），不到 1 分鐘時變紅閃爍。任何 session 接近到期時，瀏覽器分頁標題會在 `ccxray` 和 `⚠ ccxray` 之間交替。可選的瀏覽器通知會在計畫感知的提前時間觸發 — Max 提前 5 分鐘、Pro/API key 提前 60 秒。直接 API 呼叫或仍在進行中的 session 退回顯示短雜湊。
 
 ![Session 標題與 Cache 到期提醒](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
@@ -152,7 +168,7 @@ ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測�
 
 ### 加星永久保留
 
-在 turn、session 或 project 卡片上點星號，即可標記為永久保留。加星項目不會被 `LOG_RETENTION_DAYS` 的自動清理刪除;狀態存於 `~/.ccxray/settings.json`,server 端持續、跨瀏覽器同步。Star 一個 turn 連帶保護整個 session 的所有 turn;star 一個 session 保護其下所有 turn;star 一個 project 保護其下所有資料。Sentinel bucket(`direct-api`、`(unknown)`、`(quota-check)`)禁止在 bucket 層加星——請對裡面的個別 turn 加星即可。
+在 turn、session 或 project 卡片上點星號，即可標記為永久保留。加星項目不會被 `LOG_RETENTION_DAYS` 的自動清理刪除;狀態存於 `~/.ccxray/settings.json`,server 端持續、跨瀏覽器同步。Star 一個 turn 連帶保護整個 session 的所有 turn;star 一個 session 保護其下所有 turn;star 一個 project 保護其下所有資料。Catch-all bucket(`direct-api`、`(unknown)`、`(quota-check)`)禁止在 bucket 層加星——請對裡面的個別 turn 加星即可。
 
 Timeline 的個別步驟也可以加星（每個步驟 row 上有 `★`/`☆` toggle）。加星的步驟與直接對 turn 加星效果相同，同樣保護其 parent turn 和 session。
 
@@ -178,6 +194,8 @@ ccxray usage --tools                  # 完整工具呼叫明細
 ```
 
 0.6 秒完成自動化使用量分析 — 不用手動翻 log 就能知道 token 和錢花在哪。直接讀取 `index.ndjson`，不需要啟動 server。顯示模型成本分佈、工具與 skill 使用量、prompt hash 穩定性（system/tools/core prompt 在 turn 間的變化頻率）、依 turn 間隔的 cache 命中率、以及花費最高的 10 個 session（含標題）。
+
+`--json` 輸出是 agent-facing 契約 — 完整的逐欄位 schema、multi-cwd 與錯誤輸出形狀、以及過濾語意見 [`docs/usage.md`](docs/usage.md)。
 
 ### 其他功能
 

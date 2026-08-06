@@ -23,15 +23,23 @@ ccxrayはそれをガラス箱に変えます。
 
 ```bash
 npx ccxray claude
+# または
+npx ccxray codex
+# または
+npx ccxray grok
 ```
 
-これだけです。プロキシが起動し、Claude Codeがプロキシ経由で接続し、ダッシュボードが自動的にブラウザで開きます。複数のターミナルで実行すると、自動的に一つのダッシュボードを共有します。
+これだけです。プロキシが起動し、選択した CLI がプロキシ経由で起動され、ダッシュボードが自動的にブラウザで開きます。複数のターミナルで実行すると、自動的に一つのダッシュボードを共有します。
+
+launcher の引数は provider registry で管理されています。現在 `claude`・`codex`・`grok` に対応。未知の provider コマンドは即座に失敗し、未設定のプロキシが静かに起動することはありません。
 
 ### その他の実行方法
 
 ```bash
 ccxray                           # プロキシ + ダッシュボードのみ
 ccxray claude --continue         # すべてのclaude引数がそのまま渡される
+ccxray codex exec "hello"        # すべてのcodex引数がそのまま渡される
+ccxray grok -p "hello"           # すべてのgrok引数がそのまま渡される
 ccxray --port 8080 claude        # カスタムポート（独立モード、hub共有なし）
 ccxray claude --no-browser       # ブラウザの自動オープンをスキップ
 ccxray status                    # hubの情報と接続中のクライアントを表示
@@ -64,17 +72,47 @@ Connected clients (2):
 
 `--port` を使用すると独立モードで実行できます。
 
+## 対応エージェントモジュール
+
+launcher は `server/providers.js` に登録されています（すべて同じ hub + ダッシュボードを共有）：
+
+| コマンド | Wire ファミリー | 上流（デフォルト） |
+|---------|-------------|--------------------|
+| `ccxray claude` | Anthropic Messages | `api.anthropic.com` |
+| `ccxray codex` | OpenAI Responses | `api.openai.com` / ChatGPT |
+| `ccxray grok` | OpenAI Responses（クライアントモジュール） | `cli-chat-proxy.grok.com`（`XAI_BASE_URL` で上書き可） |
+
+Codex 以外の OpenAI-wire クライアント（現在は Grok）は `OPENAI_WIRE_CLIENTS` に登録されます — 共通パーサー、個別の host/agent/raw-session バケット。マルチエージェント hub では `OPENAI_BASE_URL` を切り替えることなく混在できます。受け入れテストの記録：[`docs/grok-testing.md`](docs/grok-testing.md)。
+
+**Grok の課金情報開示：** Grok CLI のトラフィックをプロキシする際、ccxray は `cli-chat-proxy.grok.com/v1/billing` を呼び出し（CLI がすでにプロキシ経由で送信しているのと同じ auth token を使用）、Usage タブのアカウントカードを表示します。成功レスポンスの後 60 秒間は再呼び出しを抑制します（alias+credential ごと）。`XAI_BASE_URL` を設定すると呼び出し先ホストを変更できます。
+
+## Codex サポート（Beta）
+
+```bash
+npx ccxray codex
+```
+
+API キー認証・ChatGPT 認証のどちらの codex セッションでも動作します。codex の `chatgpt-account-id` ヘッダーを検出すると `chatgpt.com/backend-api/codex` へのルーティングが自動的に行われます — 追加設定は不要です。codex 起動時のプラットフォームポーリング（プラグイン一覧、コネクタディレクトリ、アプリメタデータ）はプロキシされますがダッシュボードには表示されず、タイムラインには会話トラフィックのみが表示されます。
+
+**Beta の注意事項：**
+- WebSocket トランスポート（`/v1/responses` のアップグレード）はフレームごとにデコードされます：各 codex ターンは model、トークン使用量、リクエストの instructions/input/tools、レスポンスイベントを記録します。一部の大きなエンベロープイベントは完全なペイロードではなくコンパクトなタイミングアンカー（TTFT 用）として保存されるため、codex ターンの詳細度は部分的に Claude ターンに及ばないことがあります。
+- Claude パスと比較して実運用でのテストが限定的です。
+
+チューニング用の環境変数：`OPENAI_BASE_URL`、`CHATGPT_BASE_URL`、`CCXRAY_WS_IDLE_TIMEOUT_MS`、`CCXRAY_WS_MAX_QUEUE_BYTES`。詳細は [CLAUDE.md](CLAUDE.md) を参照。
+
+問題は [GitHub](https://github.com/lis186/ccxray/issues) へ — Beta とは、粗削りな部分の報告を歓迎するという意味です。
+
 ## 機能
 
 ### ワークフロータイムライン
 
 エージェントの思考プロセスと並行構造をリアルタイムで観察。
 
-**ターンカード**：各ターンは5行カードとして表示 — コスト、キャッシュ温度（ターン間のギャップ時間付きでキャッシュミスを即座に検出）、ツール失敗リスクシグナル、`hit:0%` の赤警告、ツール一覧をタイトル上に配置。セッション全体の健全性を一望できます。
+**ターンカード**：各ターンは5行カードとして表示 — コスト、キャッシュ温度（ターン間のギャップ時間付きでキャッシュミスを即座に検出）、ツール失敗リスクシグナル、`hit:0%` の赤警告、ツール一覧をタイトル上に配置。カードを一枚も展開することなく、セッション全体の健全性を一望できます。
 
-**レーン可視化**：マルチエージェントセッションは自動的に並行レーンに分割されます — メインフローはメインレーン、サブエージェントは Fork / Teammate レーンとして表示。各レーンは WCAG ≥3:1 コントラスト準拠の個別カラーを持ち、混合モデルラベルに対応。Sequential-interleave tracker が同一会話内のターンの順次/並行を識別します。
+**レーン可視化**：マルチエージェントセッションは自動的に並行レーンに分割されます — orchestrator はメインレーン、サブエージェントは Fork / Teammate レーンとして表示。各レーンは WCAG ≥3:1 コントラスト準拠の個別カラーを持ち、混合モデルラベルに対応。Sequential-interleave tracker が同一会話内のターンの順次/並行を識別します。
 
-**鳥瞰モード**：birdseye overview に切り替えると、overview エリアがビューポートの 80% まで拡大。拡大版ミニマップとレンジサマリーで長いセッションの全体像を把握できます。
+**鳥瞰モード**：birdseye overview に切り替えると、overview エリアがビューポートの約 80% に拡大。拡大版ミニマップとレンジサマリーで長いセッションの全体像を把握できます。
 
 **L1/L2 二層選択**：Tab / ▲▼ でレーン選択（L1）、j/k でレーン内のターン選択（L2）、Esc で段階的に戻る。従来の単層クリックモデルを置き換えます。
 
@@ -106,7 +144,7 @@ Connected clients (2):
 
 ### セッションタイトルとキャッシュアラート
 
-セッションカードに Claude Code が自動生成したタイトル（例：`Fix login button on mobile`）とリアルタイムのキャッシュ TTL カウントダウン（`cache 4m left`）が表示され、1 分を切ると赤く点滅します。いずれかのセッションが期限に近づくと、ブラウザのタブタイトルが `ccxray` と `⚠ ccxray` の間で交互に切り替わります。オプトインのブラウザ通知はプラン対応のリードタイムで発火します — Max は 5 分前、Pro/API キーは 60 秒前。ダイレクト API トラフィックやタイトル生成中のセッションは短いハッシュにフォールバックします。
+セッションカードに Claude Code が自動生成したタイトル（例：`Fix login button on mobile`）とリアルタイムのキャッシュ TTL カウントダウン（`cache 4m left`）が表示され、1 分を切ると赤く点滅します。いずれかのセッションが期限に近づくと、ブラウザのタブタイトルが `ccxray` と `⚠ ccxray` の間で交互に切り替わります。オプトインのブラウザ通知はプラン対応のリードタイムで発火します — Max は 5 分前、Pro/API キーは 60 秒前。ダイレクト API トラフィックや進行中のセッションは短いハッシュにフォールバックします。
 
 ![セッションタイトルとキャッシュアラート](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
@@ -157,13 +195,15 @@ ccxray usage --tools                  # 全ツール呼び出しの内訳
 
 0.6 秒で自動使用量分析 — ログを手動で掘らなくても、トークンとコストの行き先が分かります。`index.ndjson` を直接読み取り、サーバー起動不要。モデル別コスト、ツール・スキル使用量、プロンプトハッシュ安定性（system/tools/core プロンプトのターン間変化頻度）、ターン間隔別キャッシュヒット率、コスト上位 10 セッション（タイトル付き）を表示します。
 
+`--json` 出力はエージェント向けの契約です — フィールドごとの完全なスキーマ、multi-cwd とエラー時の出力形状、フィルタのセマンティクスは [`docs/usage.md`](docs/usage.md) を参照してください。
+
 ### その他
 
 - **ディープリンクナビゲーション** — すべての選択状態（project / session / turn / step）はアドレスバーの URL に反映されます。URL を新しいタブに貼り付けると、ダッシュボードが同じ画面に直接ナビゲートします。
 - **折りたたみサイドバー** — overview パネルを折りたたんで、タイムラインにより広いスペースを確保。
 - **キャッシュ TTL 分類** — ターン詳細でキャッシュが 5 分 TTL と 1 時間 TTL のどちらを使用しているかを表示。
 - **プロジェクト非表示** — `settings.json` で `hiddenProjects` を設定して特定プロジェクトをダッシュボードから隠し、共有時に漏れを防止。
-- **セッション別復元上限** — `CCXRAY_SESSION_ENTRY_CAP` により、起動復元時に巨大セッションが他のすべてのセッションを押し出すのを防止。
+- **セッション別復元上限** — `CCXRAY_SESSION_ENTRY_CAP` が起動時にセッションごとの読み込みエントリ数を制限し、巨大セッションが他のセッションを押し出すのを防止。
 - **セッション検出** — Claude Codeセッションごとに自動グループ化。プロジェクト/作業ディレクトリの抽出付き
 - **トークン会計** — ターンごとの内訳：input/output/cache-read/cache-createトークン、USD単位のコスト、コンテキストウィンドウ使用率バー
 
