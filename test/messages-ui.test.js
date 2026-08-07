@@ -21,7 +21,213 @@ function loadMessagesContext() {
   return context;
 }
 
+function renderTimeline(context, steps) {
+  context.escapeHtml = (s) => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  context.selectedTurnIdx = -1;
+  context.allEntries = [];
+  return context.renderStepListHtml(steps, null, null);
+}
+
 describe('dashboard timeline rendering helpers', () => {
+  it('renders a Codex custom_tool_call + output as a named tool DOM row', () => {
+    const context = loadMessagesContext();
+    const input = [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'show cwd' }] },
+      { type: 'custom_tool_call', name: 'shell', call_id: 'call_custom', input: '{"command":"pwd"}' },
+      { type: 'custom_tool_call_output', call_id: 'call_custom', output: '/tmp/project' },
+    ];
+
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const html = renderTimeline(context, steps);
+
+    assert.match(html, /<div class="tl-step-summary[^>]*data-tool="shell"/,
+      'timeline must contain a tool-call DOM node');
+    assert.match(html, />shell<\/span>/, 'tool name must be visible');
+    assert.doesNotMatch(html, /data-unknown-tool-type/,
+      'documented Codex custom tool types must not be marked unknown');
+  });
+
+  it('marks only fictional tool types unknown when compared with documented Codex types', () => {
+    const context = loadMessagesContext();
+    const customSteps = context.buildMergedSteps([
+      { type: 'custom_tool_call', name: 'shell', call_id: 'call_custom', input: '{"command":"pwd"}' },
+      { type: 'custom_tool_call_output', call_id: 'call_custom', output: '/tmp/project' },
+    ], [], 'openai');
+    const futureSteps = context.buildMergedSteps([
+      { type: 'future_tool_call_output', call_id: 'call_future', name: 'future_shell', output: 'future result' },
+    ], [], 'openai');
+
+    const customHtml = renderTimeline(context, customSteps);
+    const futureHtml = renderTimeline(context, futureSteps);
+
+    assert.match(customHtml, /data-tool="shell"/, 'documented custom tool block must render');
+    assert.doesNotMatch(customHtml, /data-unknown-tool-type/,
+      'documented custom tool types must not be marked unknown');
+    assert.match(futureHtml, /data-tool="future_shell"/, 'fictional tool block must render');
+    assert.match(futureHtml, /data-unknown-tool-type="future_tool_call_output"/,
+      'fictional tool types must remain marked unknown');
+  });
+
+  it('normalizes all three OpenAI request items without collapsing custom tool items', () => {
+    const context = loadMessagesContext();
+    const normalized = context.normalizeOpenAIInput([
+      { type: 'message', role: 'user', content: 'run it' },
+      { type: 'custom_tool_call', name: 'shell', call_id: 'call_custom', input: '{"command":"pwd"}' },
+      { type: 'custom_tool_call_output', call_id: 'call_custom', output: '/tmp/project' },
+    ]);
+
+    assert.equal(normalized.length, 3, '3 request items must normalize to 3 timeline messages');
+  });
+
+  it('renders a fictional future_tool_call_output with raw data and an unknown-type badge', () => {
+    const context = loadMessagesContext();
+    const input = [
+      { type: 'future_tool_call_output', call_id: 'call_future', name: 'future_shell', output: 'future result' },
+    ];
+
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const html = renderTimeline(context, steps);
+    const toolGroups = steps.filter(step => step.type === 'tool-group');
+
+    assert.equal(toolGroups.length, 1, 'unknown output must become a generic tool block');
+    assert.match(html, /data-tool="future_shell"/, 'generic tool DOM node must exist');
+    assert.match(html, /data-unknown-tool-type="future_tool_call_output"/);
+    assert.match(html, /未知 type: future_tool_call_output/);
+    assert.deepEqual(JSON.parse(JSON.stringify(toolGroups[0].calls[0].rawItems)), input);
+
+    context.renderToolDetail = (call) => '<div class="tool-detail">' + context.escapeHtml(call.name) + '</div>';
+    context.selectedMessageIdx = 0;
+    context.getSelectedStepSelection = () => ({ stepIdx: 0, sub: 0 });
+    context.__futureSteps = steps;
+    vm.runInContext('currentSteps = __futureSteps;', context);
+    const detailHtml = context.renderStepDetailHtml({ input }, null);
+    assert.match(detailHtml, /data-unknown-tool-raw="1"/, 'generic detail must render a raw-data block');
+    assert.match(detailHtml, /future_tool_call_output/);
+    assert.match(detailHtml, /future result/);
+  });
+
+  it('pairs computer_call with its output in one unknown tool block', () => {
+    const context = loadMessagesContext();
+    const input = [
+      {
+        type: 'computer_call',
+        call_id: 'call_computer',
+        action: { type: 'click', x: 120, y: 80 },
+        input: { action: { type: 'click', x: 120, y: 80 } },
+      },
+      { type: 'computer_call_output', call_id: 'call_computer', output: 'screenshot-1' },
+    ];
+
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const toolGroups = steps.filter(step => step.type === 'tool-group');
+    const html = renderTimeline(context, steps);
+
+    assert.equal(toolGroups.length, 1, 'call and output must share one tool block');
+    assert.equal(toolGroups[0].calls.length, 1);
+    assert.equal(toolGroups[0].calls[0].toolUseId, 'call_computer');
+    assert.equal(toolGroups[0].calls[0].pending, false, 'matched output must resolve the call');
+    assert.equal(toolGroups[0].calls[0].result, 'screenshot-1');
+    assert.deepEqual(JSON.parse(JSON.stringify(toolGroups[0].calls[0].input)), {
+      action: { type: 'click', x: 120, y: 80 },
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(toolGroups[0].calls[0].rawItems.map(item => item.type))), [
+      'computer_call',
+      'computer_call_output',
+    ]);
+    assert.match(html, /data-unknown-tool-type="computer_call"/);
+  });
+
+  it('pairs local_shell_call with its output in one unknown tool block', () => {
+    const context = loadMessagesContext();
+    const input = [
+      {
+        type: 'local_shell_call',
+        call_id: 'call_shell',
+        input: { command: 'pwd' },
+      },
+      { type: 'local_shell_call_output', call_id: 'call_shell', output: '/tmp/project' },
+    ];
+
+    const steps = context.buildMergedSteps(input, [], 'openai');
+    const toolGroups = steps.filter(step => step.type === 'tool-group');
+    const call = toolGroups[0]?.calls[0];
+    const html = renderTimeline(context, steps);
+
+    assert.equal(toolGroups.length, 1, 'call and output must share one tool block');
+    assert.equal(toolGroups[0].calls.length, 1);
+    assert.equal(call.toolUseId, 'call_shell');
+    assert.equal(call.pending, false, 'matched output must resolve the call');
+    assert.equal(call.result, '/tmp/project');
+    assert.deepEqual(JSON.parse(JSON.stringify(call.input)), { command: 'pwd' });
+    assert.deepEqual(JSON.parse(JSON.stringify(call.rawItems.map(item => item.type))), [
+      'local_shell_call',
+      'local_shell_call_output',
+    ]);
+    assert.match(html, /data-unknown-tool-type="local_shell_call"/);
+  });
+
+  it('does not classify non-call Responses items as tools', () => {
+    const context = loadMessagesContext();
+
+    for (const type of ['message', 'reasoning', 'mcp_list_tools']) {
+      assert.equal(context.getOpenAIToolItemKind(type), null, type + ' must not be classified as a tool');
+    }
+  });
+
+  it('keeps Anthropic tool_use and Grok function_call timeline items unchanged', () => {
+    const context = loadMessagesContext();
+    const anthropic = context.buildMergedSteps([], [
+      { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'tu_1', name: 'Bash' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"command":"pwd"}' } },
+    ], 'anthropic');
+    const grok = context.buildMergedSteps([
+      { type: 'message', role: 'user', content: 'show cwd' },
+      { type: 'function_call', name: 'shell', call_id: 'call_grok', arguments: '{"command":"pwd"}' },
+      { type: 'function_call_output', call_id: 'call_grok', output: '/tmp/project' },
+    ], [], 'openai');
+
+    assert.deepEqual(JSON.parse(JSON.stringify(anthropic[0].calls[0])), {
+      name: 'Bash', preview: 'pwd', input: { command: 'pwd' }, result: null,
+      isError: false, errorSummary: '', toolUseId: 'tu_1', pending: true,
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(grok[1].calls[0])), {
+      name: 'shell', preview: 'pwd', input: { command: 'pwd' }, result: '/tmp/project',
+      isError: false, errorSummary: '', toolUseId: 'call_grok', pending: false,
+    });
+    assert.doesNotMatch(renderTimeline(context, anthropic), /data-unknown-tool-type/);
+    assert.doesNotMatch(renderTimeline(context, grok), /data-unknown-tool-type/);
+  });
+
+  it('assembles custom_tool_call input delta/done events into the rendered tool input', () => {
+    const context = loadMessagesContext();
+    const wsEvents = [
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { id: 'call_stream', call_id: 'call_stream', type: 'custom_tool_call', name: 'shell' },
+      },
+      { type: 'response.custom_tool_call_input.delta', item_id: 'call_stream', delta: '{"command":"' },
+      { type: 'response.custom_tool_call_input.delta', item_id: 'call_stream', delta: 'npm test"}' },
+      { type: 'response.custom_tool_call_input.done', item_id: 'call_stream', input: '{"command":"ignored duplicate"}' },
+    ];
+    const steps = context.buildMergedSteps([], wsEvents, 'openai');
+    const sseSteps = context.buildMergedSteps([], wsEvents.map(event => ({ type: event.type, data: event })), 'openai');
+
+    assert.equal(steps[0].calls[0].name, 'shell');
+    assert.deepEqual(JSON.parse(JSON.stringify(steps[0].calls[0].input)), { command: 'npm test' });
+    assert.deepEqual(JSON.parse(JSON.stringify(sseSteps)), JSON.parse(JSON.stringify(steps)),
+      'flat WebSocket and data-wrapped HTTP SSE events must render identically');
+    assert.match(renderTimeline(context, steps), /data-tool="shell"/);
+
+    const freeform = context.buildMergedSteps([], [
+      { type: 'response.output_item.added', output_index: 0, item: { id: 'call_raw', type: 'custom_tool_call', name: 'shell' } },
+      { type: 'response.custom_tool_call_input.delta', item_id: 'call_raw', delta: 'echo not-json' },
+    ], 'openai');
+    assert.deepEqual(JSON.parse(JSON.stringify(freeform[0].calls[0].input)), { input: 'echo not-json' },
+      'freeform custom-tool input must remain visible when it is not JSON');
+  });
+
   it('renders OpenAI Responses output text deltas as assistant timeline text', () => {
     const context = loadMessagesContext();
     const steps = context.buildMergedSteps([], [
