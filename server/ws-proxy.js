@@ -9,7 +9,7 @@ const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
-const { agentForProvider } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient } = require('./providers');
 const { buildIndexLine } = require('./entry');
 const sessionIdx = require('./session-index');
 const {
@@ -450,9 +450,10 @@ function handleWebSocketUpgrade(req, socket, head) {
     function applyTurnIdentity(detectedTurn, request, nextAgentType) {
       const nextSessionId = detectedTurn?.sessionId || ctx.sessionId;
       const nextCwd = getCodexCwd(req.headers, request);
-      if (request && (nextSessionId || nextCwd || nextAgentType)) {
+      const client = matchOpenAIWireClient(req.headers, request?.model);
+      if (request && (nextSessionId || nextCwd || nextAgentType || client)) {
         request.metadata = fillCodexMetadata(request.metadata, {
-          sessionId: nextSessionId, agentType: nextAgentType, cwd: nextCwd,
+          sessionId: nextSessionId, agentType: nextAgentType, cwd: nextCwd, client: client?.id,
         });
       }
       if (nextSessionId && nextSessionId !== ctx.sessionId) {
@@ -573,6 +574,8 @@ function handleWebSocketUpgrade(req, socket, head) {
                 previous_response_id: parsed.previous_response_id || null,
                 metadata: parsed.metadata || null,
               };
+              const client = matchOpenAIWireClient(req.headers, request.model);
+              request.metadata = fillCodexMetadata(request.metadata, { client: client?.id });
               const detectedTurn = detectOpenAISession(req.headers, request);
               const nextAgentType = getOpenAIAgentTypeFromHeaders(req.headers) || request.metadata?.agent_type || ctx.agentType;
               applyTurnIdentity(detectedTurn, request, nextAgentType);

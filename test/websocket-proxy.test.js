@@ -314,6 +314,48 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(reqLog.metadata.thread_id, 'ws-thread-parity-001');
   });
 
+  it('does not trust body-declared client identity on WebSocket turns', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        if (JSON.parse(data.toString()).type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            model: 'gpt-5.5',
+            usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+          },
+        }));
+      });
+    });
+    await startProxy();
+
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: { 'openai-beta': 'responses_websockets=2026-02-06' },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const done = waitForCompleted(ws);
+    ws.send(JSON.stringify({
+      type: 'response.create',
+      model: 'gpt-5.5',
+      metadata: { client: 'grok' },
+      input: [{
+        type: 'function_call_output',
+        output: 'command output\nEXIT_CODE=1',
+      }],
+    }));
+    await done;
+    ws.close(1000, 'done');
+    await new Promise(resolve => ws.on('close', resolve));
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.provider === 'openai');
+    assert.equal(entry.sessionId, 'codex-raw');
+    assert.equal(entry.turnToolFail, undefined);
+    const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
+    assert.equal(reqLog.metadata?.client, undefined);
+  });
+
   it('closes the client and records an error entry when upstream rejects the handshake', async () => {
     upstreamServer.on('upgrade', (_req, socket) => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
@@ -581,6 +623,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
       headers: {
         'openai-beta': 'responses_websockets=2026-02-06',
         session_id: sessionId,
+        'x-codex-turn-metadata': JSON.stringify({ session_id: sessionId }),
       },
     });
     await new Promise((resolve, reject) => {
@@ -594,6 +637,14 @@ describe('OpenAI Responses WebSocket proxy', () => {
       instructions: 'You are a test assistant.',
       input: [
         { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Say hello' }] },
+        {
+          type: 'custom_tool_call_output',
+          call_id: 'call_ws_failure',
+          output: JSON.stringify([
+            { type: 'input_text', text: 'Script completed' },
+            { type: 'input_text', text: JSON.stringify({ exit_code: 1, output: 'failed' }) },
+          ]),
+        },
       ],
       tools: [
         { type: 'function', name: 'shell', description: 'Run command', parameters: { type: 'object' } },
@@ -607,8 +658,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
     await new Promise(resolve => ws.on('close', resolve));
 
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
-    assert.equal(entry.msgCount, 1, 'msgCount should reflect input array length');
+    assert.equal(entry.msgCount, 2, 'msgCount should reflect input array length');
     assert.equal(entry.toolCount, 2, 'toolCount should reflect tools array length');
+    assert.equal(entry.turnToolFail, true, 'WS entry persists the Codex tool result fact');
 
     // Prompt identity parity with the HTTP path (codex main traffic is WS)
     assert.match(entry.sysHash, /^[0-9a-f]{12}$/, 'sysHash from instructions');
@@ -624,8 +676,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(reqLog.transport, 'websocket');
     assert.equal(reqLog.capture, undefined, 'capture should NOT be transport-only when content is captured');
     assert.ok(Array.isArray(reqLog.input), 'input array should be present');
-    assert.equal(reqLog.input.length, 1);
+    assert.equal(reqLog.input.length, 2);
     assert.equal(reqLog.input[0].role, 'user');
+    assert.equal(reqLog.metadata.client, 'codex');
     assert.ok(Array.isArray(reqLog.tools), 'tools array should be present');
     assert.equal(reqLog.tools.length, 2);
     assert.equal(reqLog.tool_choice, 'auto');

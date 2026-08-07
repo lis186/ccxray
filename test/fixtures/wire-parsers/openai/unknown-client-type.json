@@ -1,0 +1,14 @@
+{
+  "model": "gpt-5.5",
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_unknown_pair",
+      "output": "EXIT_CODE=1"
+    }
+  ],
+  "metadata": {
+    "client": "codex",
+    "session_id": "unknown-pair-session"
+  }
+}
