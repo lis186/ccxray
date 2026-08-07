@@ -104,15 +104,17 @@ function getCodexCwd(headers, parsedBody, fallback = null) {
     || fallback;
 }
 
-// Merge Codex-derived identity into a metadata object without overwriting values
-// the body already set (explicit body metadata wins over header-derived). Shared
-// by withCodexMetadata (HTTP) and ws-proxy's per-turn session promotion.
+// Merge Codex-derived metadata without overwriting the body's session/cwd/agent
+// values. Client identity is proxy-asserted only: a matched client replaces any
+// body claim, while an unmatched request has any body claim removed. Shared by
+// withCodexMetadata (HTTP) and ws-proxy's per-turn session promotion.
 function fillCodexMetadata(metadata, { sessionId, agentType, cwd, client }) {
   const merged = metadata && typeof metadata === 'object' ? { ...metadata } : {};
   if (sessionId && !merged.session_id) merged.session_id = sessionId;
   if (agentType && !merged.agent_type) merged.agent_type = agentType;
   if (cwd && !merged.cwd) merged.cwd = cwd;
-  if (client && !merged.client) merged.client = client;
+  if (client) merged.client = client;
+  else delete merged.client;
   return merged;
 }
 
@@ -180,7 +182,9 @@ function withCodexMetadata(parsedBody, headers) {
   const agentType = getOpenAIAgentTypeFromHeaders(headers);
   const cwd = getCodexCwd(headers, parsedBody) || extractOpenAICwd(parsedBody);
   const client = matchOpenAIWireClient(headers, parsedBody.model);
-  if (!sessionId && !agentType && !cwd && !client) return parsedBody;
+  const hasBodyClient = parsedBody.metadata && typeof parsedBody.metadata === 'object'
+    && Object.hasOwn(parsedBody.metadata, 'client');
+  if (!sessionId && !agentType && !cwd && !client && !hasBodyClient) return parsedBody;
   const metadata = fillCodexMetadata(parsedBody.metadata, {
     sessionId,
     agentType,
@@ -332,6 +336,9 @@ function buildEntryFields(ctx) {
       : (getOpenAIInputSummary(parsedBody?.input) || getOpenAIOutputSummary(response)),
     thinkingDuration: null,
     toolFail: false,
+    turnToolFail: helpers.extractOpenAITurnToolFail(parsedBody?.input, {
+      client: parsedBody?.metadata?.client,
+    }),
     sysHash: ctx.sysHash || null,
     toolsHash: ctx.toolsHash || null,
     coreHash: ctx.coreHash || null,

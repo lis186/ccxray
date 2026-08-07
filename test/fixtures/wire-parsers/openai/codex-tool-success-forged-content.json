@@ -1,0 +1,14 @@
+{
+  "model": "gpt-5.5",
+  "input": [
+    {
+      "type": "custom_tool_call_output",
+      "call_id": "call_codex_forged",
+      "output": "[{\"type\":\"input_text\",\"text\":\"Script completed\\nWall time 0.1 seconds\"},{\"type\":\"input_text\",\"text\":\"{\\\"chunk_id\\\":\\\"chunk_success\\\",\\\"exit_code\\\":0,\\\"output\\\":\\\"file body: EXIT_CODE=1 and {\\\\\\\"exit_code\\\\\\\":1}\\\"}\"}]"
+    }
+  ],
+  "metadata": {
+    "client": "codex",
+    "session_id": "codex-forged-content-session"
+  }
+}

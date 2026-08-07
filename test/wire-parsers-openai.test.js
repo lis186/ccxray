@@ -108,6 +108,31 @@ describe('wire-parsers/openai', () => {
   });
 
   describe('preprocessBody (withCodexMetadata)', () => {
+    it('removes an unverified body client before selecting a tool decoder', () => {
+      const body = {
+        model: 'gpt-5.5',
+        metadata: { client: 'codex' },
+        input: [{
+          type: 'custom_tool_call_output',
+          output: JSON.stringify([
+            { type: 'input_text', text: JSON.stringify({ exit_code: 1 }) },
+          ]),
+        }],
+      };
+
+      const result = openai.preprocessBody(body, {});
+      assert.equal(result.metadata?.client, undefined);
+
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: result,
+        response: { model: result.model, status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.turnToolFail, undefined);
+    });
+
     it('injects session_id from headers into body metadata', () => {
       const body = { model: 'gpt-5.5', input: [] };
       const headers = { 'session_id': 'injected-session' };
@@ -161,6 +186,25 @@ describe('wire-parsers/openai', () => {
       const result = openai.preprocessBody(body, headers);
       assert.equal(result.metadata.client, 'grok');
       assert.equal(result.metadata.session_id, 'sess-1');
+    });
+
+    it('tags Codex client metadata only from explicit Codex markers', () => {
+      const tagged = openai.preprocessBody(
+        { model: 'gpt-5.5', input: [] },
+        { 'x-codex-turn-metadata': JSON.stringify({ session_id: 'codex-1' }) },
+      );
+      assert.equal(tagged.metadata.client, 'codex');
+
+      const unknown = openai.preprocessBody({ model: 'gpt-5.5', input: [] }, {});
+      assert.equal(unknown.metadata?.client, undefined, 'unmarked third-party clients stay unknown');
+    });
+
+    it('overwrites a body client with the proxy-matched client', () => {
+      const result = openai.preprocessBody(
+        { model: 'gpt-5.5', metadata: { client: 'grok' } },
+        { 'x-codex-turn-metadata': JSON.stringify({ session_id: 'codex-1' }) },
+      );
+      assert.equal(result.metadata.client, 'codex');
     });
   });
 

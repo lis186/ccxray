@@ -146,6 +146,20 @@ const OPENAI_WIRE_CLIENTS = Object.freeze([
   }),
 ]);
 
+// Codex is the default OpenAI-wire provider module, so it is not in the
+// alternate-upstream registry above. Keep a matcher record for parser context:
+// only explicit Codex markers qualify; otherwise an unknown third-party client
+// must remain unknown rather than silently inheriting Codex decoders.
+const CODEX_WIRE_CLIENT = Object.freeze({
+  id: 'codex',
+  rawSessionId: 'codex-raw',
+  matchHeaders(headers) {
+    const turnMetadata = firstHeaderValue(headers, 'x-codex-turn-metadata');
+    const userAgent = firstHeaderValue(headers, 'user-agent');
+    return Boolean(turnMetadata) || /(?:^|\s)codex(?:_cli_rs)?\//i.test(String(userAgent || ''));
+  },
+});
+
 function firstHeaderValue(headers, name) {
   if (!headers) return undefined;
   const v = headers[name] ?? headers[String(name).toLowerCase()];
@@ -157,6 +171,7 @@ function matchOpenAIWireClient(headers, model) {
     for (const client of OPENAI_WIRE_CLIENTS) {
       if (client.matchHeaders(headers)) return client;
     }
+    if (CODEX_WIRE_CLIENT.matchHeaders(headers)) return CODEX_WIRE_CLIENT;
   }
   if (typeof model === 'string') {
     for (const client of OPENAI_WIRE_CLIENTS) {
