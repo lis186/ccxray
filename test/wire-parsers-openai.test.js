@@ -381,26 +381,4 @@ describe('wire-parsers/openai', () => {
     });
   });
 
-  describe('turnStepCount', () => {
-    it('counts function_call and function_call_output items in input', () => {
-      const body = {
-        input: [
-          { role: 'user', content: 'hi' },
-          { type: 'function_call', name: 'shell', arguments: '{}' },
-          { type: 'function_call_output', output: 'done' },
-          { role: 'assistant', content: 'ok' },
-        ],
-      };
-      assert.equal(openai.turnStepCount(body), 2);
-    });
-
-    it('returns 0 for empty input', () => {
-      assert.equal(openai.turnStepCount({}), 0);
-      assert.equal(openai.turnStepCount({ input: [] }), 0);
-    });
-
-    it('returns 0 when input is not an array', () => {
-      assert.equal(openai.turnStepCount({ input: 'hello' }), 0);
-    });
-  });
 });

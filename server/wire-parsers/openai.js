@@ -403,12 +403,6 @@ function getCwd(parsedBody, headers) {
   return getCodexCwd(headers, parsedBody) || extractOpenAICwd(parsedBody);
 }
 
-function turnStepCount(parsedBody) {
-  const input = parsedBody?.input;
-  if (!Array.isArray(input)) return 0;
-  return input.filter(item => item.type === 'function_call' || item.type === 'function_call_output').length;
-}
-
 function attributionTurnStep(_parsedBody) {
   return { turn: 0, step: 0 };
 }
@@ -427,7 +421,6 @@ module.exports = {
   systemPromptHash,
   toolsHash,
   getCwd,
-  turnStepCount,
   attributionTurnStep,
   // Low-level exports for ws-proxy.js compatibility
   getCodexRawSessionId,
