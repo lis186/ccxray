@@ -188,6 +188,28 @@ function getResponseFunctionCallName(item) {
   return item?.name || item?.function?.name || item?.tool_name || item?.type || 'function_call';
 }
 
+const OPENAI_KNOWN_TOOL_CALL_TYPES = new Set(['function_call', 'tool_call', 'custom_tool_call']);
+const OPENAI_KNOWN_TOOL_OUTPUT_TYPES = new Set(['function_call_output', 'tool_call_output', 'custom_tool_call_output']);
+
+// OpenAI Responses item names follow the tool declaration and have changed
+// across Codex versions. Keep unfamiliar tool-call-shaped items visible instead
+// of silently dropping them when another spelling is introduced.
+function getOpenAIToolItemKind(type) {
+  if (typeof type !== 'string') return null;
+  if (OPENAI_KNOWN_TOOL_CALL_TYPES.has(type)) return { kind: 'call', unknown: false };
+  if (OPENAI_KNOWN_TOOL_OUTPUT_TYPES.has(type)) return { kind: 'output', unknown: false };
+  if (type.endsWith('_call_output')) return { kind: 'output', unknown: true };
+  if (type.endsWith('_call')) return { kind: 'call', unknown: true };
+  return null;
+}
+
+function parseOpenAIToolInput(item) {
+  const rawInput = item?.arguments ?? item?.input ?? {};
+  if (rawInput && typeof rawInput === 'object') return rawInput;
+  try { return JSON.parse(rawInput || '{}'); }
+  catch { return { input: String(rawInput || '') }; }
+}
+
 // Grok CLI sends message.content as a plain string; Codex uses part arrays
 // ({type:input_text,text}). String content must become a text block or the
 // timeline drops the user's first instruction (live QA 2026-07-09).
@@ -207,21 +229,34 @@ function normalizeOpenAIMessageContent(raw) {
 function normalizeOpenAIInput(input) {
   const msgs = [];
   for (const item of input) {
+    const toolKind = getOpenAIToolItemKind(item?.type);
     if (item.type === 'message') {
       if (item.role === 'developer') continue;
       const content = normalizeOpenAIMessageContent(item.content);
       msgs.push({ role: item.role || 'user', content });
-    } else if (item.type === 'function_call') {
-      let input = {};
-      try { input = JSON.parse(item.arguments || '{}'); } catch {}
+    } else if (toolKind?.kind === 'call') {
       msgs.push({
         role: 'assistant',
-        content: [{ type: 'tool_use', id: item.call_id || item.id, name: item.name || 'function_call', input }],
+        content: [{
+          type: 'tool_use',
+          id: item.call_id || item.id,
+          name: getResponseFunctionCallName(item),
+          input: parseOpenAIToolInput(item),
+          openAIUnknownType: toolKind.unknown ? item.type : null,
+          openAIRaw: toolKind.unknown ? item : null,
+        }],
       });
-    } else if (item.type === 'function_call_output') {
+    } else if (toolKind?.kind === 'output') {
       msgs.push({
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: item.call_id, content: item.output || '' }],
+        content: [{
+          type: 'tool_result',
+          tool_use_id: item.call_id || item.id,
+          content: item.output ?? '',
+          openAIToolName: item.name || item.tool_name || item.type,
+          openAIUnknownType: toolKind.unknown ? item.type : null,
+          openAIRaw: toolKind.unknown ? item : null,
+        }],
       });
     }
   }
@@ -230,7 +265,7 @@ function normalizeOpenAIInput(input) {
 
 function isOpenAIInput(items) {
   if (!Array.isArray(items) || !items.length) return false;
-  return items.some(m => m.type === 'message' || m.type === 'function_call' || m.type === 'function_call_output');
+  return items.some(m => m.type === 'message' || getOpenAIToolItemKind(m.type));
 }
 
 function buildMergedSteps(messages, resEvents, provider) {
@@ -278,7 +313,10 @@ function buildMergedSteps(messages, resEvents, provider) {
         const humanTexts = blocks.filter(b => b.type === 'text' && b.text && !INJECTED_TAG_RE.test(b.text.trimStart()));
         const hasSys = blocks.some(b => b.type === 'text' && b.text && INJECTED_TAG_RE.test(b.text.trimStart()));
         const hasToolResult = blocks.some(b => b.type === 'tool_result');
-        const hasOrphanedResult = blocks.some(b => b.type === 'tool_result' && b.tool_use_id && !knownToolUseIds.has(b.tool_use_id));
+        const orphanedResults = blocks.filter(b => b.type === 'tool_result'
+          && ((b.tool_use_id && !knownToolUseIds.has(b.tool_use_id)) || (!b.tool_use_id && b.openAIUnknownType)));
+        const unknownOrphanedResults = orphanedResults.filter(b => b.openAIUnknownType);
+        const hasOrphanedResult = orphanedResults.some(b => !b.openAIUnknownType);
         if (humanTexts.length || (hasSys && !hasToolResult) || hasOrphanedResult) {
           steps.push({
             type: 'human',
@@ -287,6 +325,26 @@ function buildMergedSteps(messages, resEvents, provider) {
             humanText: humanTexts.map(b => unwrapUserQueryText(b.text)).join('\n').slice(0, 200),
             hasSys,
             hasToolResult,
+            msgIndices: [i],
+          });
+        }
+        if (unknownOrphanedResults.length) {
+          steps.push({
+            type: 'tool-group',
+            source: 'history',
+            thinking: null,
+            calls: unknownOrphanedResults.map(result => ({
+              name: result.openAIToolName || result.openAIUnknownType,
+              preview: '',
+              input: {},
+              result: result.content,
+              isError: !!result.is_error,
+              errorSummary: result.is_error ? String(result.content || '').slice(0, 80) : '',
+              toolUseId: result.tool_use_id,
+              pending: false,
+              unknownType: result.openAIUnknownType,
+              rawItems: [result.openAIRaw],
+            })),
             msgIndices: [i],
           });
         }
@@ -310,7 +368,7 @@ function buildMergedSteps(messages, resEvents, provider) {
           const calls = toolUses.map(tu => {
             const result = resultMap.get(tu.id);
             const resultContent = result ? (typeof result.content === 'string' ? result.content : JSON.stringify(result.content)) : '';
-            return {
+            const call = {
               name: tu.name,
               preview: getToolPreview(tu),
               input: tu.input,
@@ -320,6 +378,12 @@ function buildMergedSteps(messages, resEvents, provider) {
               toolUseId: tu.id,
               pending: !result,
             };
+            const unknownType = tu.openAIUnknownType || result?.openAIUnknownType;
+            if (unknownType) {
+              call.unknownType = unknownType;
+              call.rawItems = [tu.openAIRaw, result?.openAIRaw].filter(Boolean);
+            }
+            return call;
           });
           let resultMsgIdx = -1;
           for (let j = i + 1; j < messages.length; j++) {
@@ -377,9 +441,11 @@ function buildMergedSteps(messages, resEvents, provider) {
 
     // Build current turn tool calls
     const currentCalls = curToolUses.map(tu => {
+      const rawInput = tu.inputChunks.join('');
       let input = {};
-      try { input = JSON.parse(tu.inputChunks.join('')); } catch {}
-      return {
+      try { input = JSON.parse(rawInput); }
+      catch { if ((tu.unknownType || tu.freeformInput) && rawInput) input = { input: rawInput }; }
+      const call = {
         name: tu.name,
         preview: getToolPreview({ name: tu.name, input }),
         input,
@@ -389,6 +455,11 @@ function buildMergedSteps(messages, resEvents, provider) {
         toolUseId: tu.id,
         pending: true,
       };
+      if (tu.unknownType) {
+        call.unknownType = tu.unknownType;
+        call.rawItems = tu.rawItem ? [tu.rawItem] : [];
+      }
+      return call;
     });
 
     // Emit current turn thinking + tool group
@@ -535,6 +606,9 @@ function renderStepListHtml(steps, activeStepKey, toolSources) {
         html += '<div class="msg-list-row" style="gap:4px">';
         html += '<span style="color:var(--dim);width:8px;text-align:center;flex-shrink:0">' + bracket + '</span>';
         html += '<span style="color:var(--green);min-width:40px;flex-shrink:0;font-weight:600">' + escapeHtml(c.name) + '</span>';
+        if (c.unknownType) {
+          html += '<span class="tool-chip" data-unknown-tool-type="' + escapeHtml(c.unknownType) + '" style="flex-shrink:0">未知 type: ' + escapeHtml(c.unknownType) + '</span>';
+        }
         html += '<span style="color:var(--text);opacity:0.8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(c.preview) + '</span>';
         if (c.pending) {
           html += '<span style="color:var(--dim)">⏳</span>';
@@ -736,7 +810,11 @@ function renderStepDetailHtml(req, tok) {
       const durLabel = step.thinkingDuration ? ' · ' + step.thinkingDuration.toFixed(1) + 's' : '';
       return '<div class="detail-content">' + renderThinkingDetail(step.thinking, durLabel) + '</div>';
     } else if (subIdx < step.calls.length) {
-      return '<div class="detail-content">' + renderToolDetail(step.calls[subIdx]) + '</div>';
+      const c = step.calls[subIdx];
+      const raw = c.unknownType && c.rawItems?.length
+        ? '<div class="content-block" data-unknown-tool-raw="1"><div class="type" style="color:var(--dim)">RAW · 未知 type: ' + escapeHtml(c.unknownType) + '</div><pre>' + escapeHtml(JSON.stringify(c.rawItems, null, 2)) + '</pre></div>'
+        : '';
+      return '<div class="detail-content">' + renderToolDetail(c) + raw + '</div>';
     } else {
       const c = step.calls[0];
       return c ? '<div class="detail-content">' + renderToolDetail(c) + '</div>' : '<div class="col-empty">Empty tool group</div>';

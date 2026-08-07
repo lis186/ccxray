@@ -33,29 +33,62 @@ window.RENDERERS.openai = {
       state.curThinking += ev.delta || payload.delta || '';
     } else if (ev.type === 'response.output_item.added') {
       const item = payload.item || ev.item || {};
-      if (item.type === 'function_call' || item.type === 'tool_call') {
+      const toolKind = getOpenAIToolItemKind(item.type);
+      if (toolKind?.kind === 'call') {
         const id = getResponseEventItemId(payload, state.eventIndex);
         const toolUse = {
           index: payload.output_index ?? state.eventIndex,
           name: getResponseFunctionCallName(item),
           id,
           inputChunks: [],
+          freeformInput: item.type === 'custom_tool_call',
         };
-        if (item.arguments) toolUse.inputChunks.push(typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments));
+        if (toolKind.unknown) {
+          toolUse.unknownType = item.type;
+          toolUse.rawItem = item;
+        }
+        const input = item.arguments ?? item.input;
+        if (input) toolUse.inputChunks.push(typeof input === 'string' ? input : JSON.stringify(input));
         state.openAIToolUseById.set(id, toolUse);
         state.curToolUses.push(toolUse);
       }
-    } else if (ev.type === 'response.function_call_arguments.delta') {
+    } else if (ev.type === 'response.function_call_arguments.delta' || ev.type === 'response.custom_tool_call_input.delta') {
       const id = getResponseEventItemId(payload, payload.output_index ?? state.eventIndex);
       const tu = state.openAIToolUseById.get(id) || state.curToolUses.find(t => t.index === payload.output_index);
       if (tu) tu.inputChunks.push(ev.delta || payload.delta || '');
+    } else if (ev.type === 'response.custom_tool_call_input.done') {
+      const id = getResponseEventItemId(payload, payload.output_index ?? state.eventIndex);
+      const tu = state.openAIToolUseById.get(id) || state.curToolUses.find(t => t.index === payload.output_index);
+      const input = ev.input ?? payload.input;
+      if (tu && input != null && !tu.inputChunks.length) {
+        tu.inputChunks.push(typeof input === 'string' ? input : JSON.stringify(input));
+      }
     } else if (ev.type === 'response.output_item.done') {
       const item = payload.item || ev.item || {};
-      if (item.type === 'function_call' || item.type === 'tool_call') {
+      const toolKind = getOpenAIToolItemKind(item.type);
+      if (toolKind?.kind === 'call') {
         const id = getResponseEventItemId(payload, state.eventIndex);
-        const tu = state.openAIToolUseById.get(id) || state.curToolUses.find(t => t.index === payload.output_index);
-        if (tu && item.arguments && !tu.inputChunks.length) {
-          tu.inputChunks.push(typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments));
+        let tu = state.openAIToolUseById.get(id) || state.curToolUses.find(t => t.index === payload.output_index);
+        if (!tu) {
+          tu = {
+            index: payload.output_index ?? state.eventIndex,
+            name: getResponseFunctionCallName(item),
+            id,
+            inputChunks: [],
+            freeformInput: item.type === 'custom_tool_call',
+          };
+          if (toolKind.unknown) {
+            tu.unknownType = item.type;
+            tu.rawItem = item;
+          }
+          state.openAIToolUseById.set(id, tu);
+          state.curToolUses.push(tu);
+        } else if (toolKind.unknown) {
+          tu.rawItem = item;
+        }
+        const input = item.arguments ?? item.input;
+        if (tu && input != null && !tu.inputChunks.length) {
+          tu.inputChunks.push(typeof input === 'string' ? input : JSON.stringify(input));
         }
       }
     } else if (ev.type === 'response.completed' || ev.type === 'response.done') {
