@@ -38,6 +38,24 @@ test('#472 Codex custom_tool_call_output records a failed exit code', () => {
   assert.equal(entry.toolFail, false, 'historical cumulative field is unchanged');
 });
 
+test('#475 real Codex WS array envelope reports failure across mixed exit codes', () => {
+  const request = loadFixture('real-codex-ws-tool-output.json');
+  assert.equal(extractOpenAITurnToolFail(request.input, {
+    client: request.metadata.client,
+  }), true);
+});
+
+test('#475 Codex accepts both parsed-array and JSON-string output envelopes', () => {
+  const request = loadFixture('real-codex-ws-tool-output.json');
+  const item = request.input[0];
+  assert.equal(extractOpenAITurnToolFail([
+    { ...item, output: JSON.stringify(item.output) },
+  ], { client: request.metadata.client }), true);
+  assert.equal(extractOpenAITurnToolFail(request.input, {
+    client: request.metadata.client,
+  }), true);
+});
+
 test('#472 Codex accepts integer exit codes only', () => {
   assert.equal(extractOpenAITurnToolFail([
     { type: 'custom_tool_call_output', output: codexToolOutput(0.5) },

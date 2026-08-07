@@ -276,6 +276,42 @@ describe('session-index', () => {
     assert.equal(await si.loadSessionIndex(), false);
   });
 
+  it('#475: sessions.json without tool-signal weather stats requests a rebuild', async () => {
+    const si = require('../server/session-index');
+    const config = require('../server/config');
+    const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    const sessionsPath = path.join(config.LOGS_DIR, 'sessions.json');
+    await fsp.writeFile(indexPath, JSON.stringify({
+      id: 'migration-tool-turn', sessionId: 'migration-tool-session', provider: 'openai',
+    }) + '\n');
+    await fsp.writeFile(sessionsPath, JSON.stringify({
+      sid: 'migration-tool-session', count: 1, totalCost: 0, maxContext: 200000,
+      fallbackCount: 0, firstReceivedAt: 1, provider: 'openai',
+      weather: { level: 'sunny', score: 0, stats: {} },
+    }) + '\n');
+    const now = Date.now() / 1000;
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false);
+  });
+
+  it('#475: rebuild pairs OpenAI call/result ids when deriving persisted weather', () => {
+    const si = require('../server/session-index');
+    si.rebuildFromMetas([
+      {
+        id: 'issued-a', sessionId: 'weather-paired', provider: 'openai', isSubagent: false,
+        turnToolCallIds: { call_a: 'Bash' }, turnToolResults: [],
+      },
+      {
+        id: 'terminal', sessionId: 'weather-paired', provider: 'openai', isSubagent: false,
+        turnToolCallIds: {},
+        turnToolResults: [{ callId: 'call_a', eligible: true, toolFail: true }],
+      },
+    ]);
+    const weather = si.get('weather-paired').weather;
+    assert.equal(weather.level, 'fair');
+    assert.equal(weather.stats.toolSignal, 'failure');
+  });
+
   it('#333: a line without responseId still counts its cost (legacy/exempt)', () => {
     const si = require('../server/session-index');
     const lines = [

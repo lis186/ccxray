@@ -1,0 +1,91 @@
+[
+  {
+    "type": "response.output_item.added",
+    "item": {
+      "id": "msg_0d3ee9b2cdff753f016a760d62ecb88191bd99adae2404d64c",
+      "type": "message",
+      "status": "in_progress",
+      "content": [],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      },
+      "phase": "commentary",
+      "role": "assistant",
+      "metadata": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      }
+    },
+    "output_index": 0,
+    "sequence_number": 2,
+    "_ts": 1786121570957
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "id": "msg_0d3ee9b2cdff753f016a760d62ecb88191bd99adae2404d64c",
+      "type": "message",
+      "status": "completed",
+      "content": [
+        {
+          "type": "output_text",
+          "annotations": [],
+          "logprobs": [],
+          "text": "Running exactly those two commands."
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "create_time": 1786121570.068969,
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      },
+      "phase": "commentary",
+      "role": "assistant",
+      "metadata": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      }
+    },
+    "output_index": 0,
+    "sequence_number": 12,
+    "_ts": 1786121571215
+  },
+  {
+    "type": "response.output_item.added",
+    "item": {
+      "id": "ctc_0d3ee9b2cdff753f016a760d632f008191998995bad52a85ef",
+      "type": "custom_tool_call",
+      "status": "in_progress",
+      "call_id": "call_o1QydyN3rT5Fq61QmIwQMiod",
+      "input": "",
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      },
+      "name": "exec",
+      "metadata": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      }
+    },
+    "output_index": 1,
+    "sequence_number": 13,
+    "_ts": 1786121571223
+  },
+  {
+    "type": "response.output_item.done",
+    "item": {
+      "id": "ctc_0d3ee9b2cdff753f016a760d632f008191998995bad52a85ef",
+      "type": "custom_tool_call",
+      "status": "completed",
+      "call_id": "call_o1QydyN3rT5Fq61QmIwQMiod",
+      "input": "const a = await tools.exec_command({\"cmd\":\"echo hello-ccxray\",\"workdir\":\"/tmp\",\"yield_time_ms\":10000,\"max_output_tokens\":1000});\ntext(JSON.stringify({command:\"echo hello-ccxray\",exit_code:a.exit_code,output:a.output}));\nconst b = await tools.exec_command({\"cmd\":\"cat /tmp/definitely-missing-file-473\",\"workdir\":\"/tmp\",\"yield_time_ms\":10000,\"max_output_tokens\":1000});\ntext(JSON.stringify({command:\"cat /tmp/definitely-missing-file-473\",exit_code:b.exit_code,output:b.output}));",
+      "internal_chat_message_metadata_passthrough": {
+        "create_time": 1786121570.068969,
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      },
+      "name": "exec",
+      "metadata": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      }
+    },
+    "output_index": 1,
+    "sequence_number": 146,
+    "_ts": 1786121572808
+  }
+]

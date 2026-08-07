@@ -608,6 +608,10 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('message', () => {
         ws.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'hi' }));
         ws.send(JSON.stringify({
+          type: 'response.output_item.done',
+          item: { type: 'function_call', name: 'exec_command', call_id: 'call_ws_next' },
+        }));
+        ws.send(JSON.stringify({
           type: 'response.completed',
           response: {
             usage: { input_tokens: 500, output_tokens: 20 },
@@ -661,6 +665,8 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(entry.msgCount, 2, 'msgCount should reflect input array length');
     assert.equal(entry.toolCount, 2, 'toolCount should reflect tools array length');
     assert.equal(entry.turnToolFail, true, 'WS entry persists the Codex tool result fact');
+    assert.deepEqual(entry.turnToolCallIds, { call_ws_next: 'Bash' });
+    assert.deepEqual(entry.turnToolResults, [{ callId: 'call_ws_failure', eligible: true, toolFail: true }]);
 
     // Prompt identity parity with the HTTP path (codex main traffic is WS)
     assert.match(entry.sysHash, /^[0-9a-f]{12}$/, 'sysHash from instructions');

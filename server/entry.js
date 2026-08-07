@@ -15,6 +15,9 @@ const INDEX_FIELDS = [
   'turnToolCalls',
   // #438: per-turn tool failure from the last user message only (not cumulative).
   'turnToolFail',
+  // #475: OpenAI response call ids and next-request result facts. Weather joins
+  // these at read time; entries remain append-only after broadcast.
+  'turnToolCallIds','turnToolResults',
   // INVARIANT: authoritative 1M-window signal — the non-lagging anthropic-beta
   // `context-1m-*` request header (#339). Persisted so restore/cold-load can
   // derive a per-session consistent context% denominator (sessionWindow) instead

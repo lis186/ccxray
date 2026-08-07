@@ -2,7 +2,10 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { assessWeather } = require('../public/weather');
+const { extractOpenAIToolCallIds, extractOpenAITurnToolResults } = require('../server/helpers');
 
 function makeTurn(overrides) {
   var base = {
@@ -36,7 +39,351 @@ function hasFactor(result, type) {
   return result.factors.some(function(f) { return f.type === type; });
 }
 
+function makeOpenAITurn(overrides) {
+  return makeTurn(Object.assign({
+    provider: 'openai',
+    stopReason: 'completed',
+    toolFail: false,
+    turnToolFail: undefined,
+    turnToolCallIds: {},
+    turnToolResults: [],
+  }, overrides));
+}
+
 describe('assessWeather', function() {
+
+  it('#475 real Codex WS call and result fixtures produce known failed weather evidence', function() {
+    var fixtureDir = path.join(__dirname, 'fixtures', 'wire-parsers', 'openai');
+    var request = JSON.parse(fs.readFileSync(path.join(fixtureDir, 'real-codex-ws-tool-output.json'), 'utf8'));
+    var events = JSON.parse(fs.readFileSync(path.join(fixtureDir, 'real-codex-ws-tool-call-events.json'), 'utf8'));
+    var result = assessWeather([
+      makeOpenAITurn({ id: 'real-call', turnToolCallIds: extractOpenAIToolCallIds(events) }),
+      makeOpenAITurn({
+        id: 'real-result',
+        turnToolResults: extractOpenAITurnToolResults(request.input, { client: request.metadata.client }),
+      }),
+    ]);
+
+    assert.notEqual(result.level, 'sunny');
+    assert.notEqual(result.stats.toolSignal, 'no_data');
+    assert.equal(result.stats.toolKnownRate, 100);
+  });
+
+  it('#475 failure followed by a terminal response still raises a warning (fail-on-old)', function() {
+    var turns = [
+      makeOpenAITurn({ id: 'call-a', turnToolCallIds: { call_a: 'Bash' } }),
+      makeOpenAITurn({ id: 'interleaved-unrelated-entry' }),
+      makeOpenAITurn({
+        id: 'terminal',
+        turnToolResults: [{ callId: 'call_a', eligible: true, toolFail: true }],
+      }),
+    ];
+    var r = assessWeather(turns);
+    assert.notEqual(r.level, 'sunny');
+    assert.ok(hasFactor(r, 'tool_failure'), 'paired failure should be visible');
+  });
+
+  it('#475 failure is attributed to call A when the model switches to successful call B (fail-on-old)', function() {
+    var turns = [
+      makeOpenAITurn({ id: 'issued-a', turnToolCallIds: { call_a: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'issued-b',
+        turnToolCallIds: { call_b: 'Bash' },
+        turnToolResults: [{ callId: 'call_a', eligible: true, toolFail: true }],
+      }),
+      makeOpenAITurn({
+        id: 'finished',
+        turnToolResults: [{ callId: 'call_b', eligible: true, toolFail: false }],
+      }),
+    ];
+    var r = assessWeather(turns);
+    var failure = r.factors.find(function(f) { return f.type === 'tool_failure'; });
+    assert.ok(failure, 'A failure should remain visible');
+    assert.equal(failure.detail.entryId, 'issued-a', 'failure belongs to the response that issued A');
+    assert.ok(!hasFactor(r, 'stuck'), 'switching to a successful tool is not a failure streak');
+  });
+
+  it('#475 unmatched Object.prototype call IDs are not accepted as tool evidence', function() {
+    var r = assessWeather([
+      makeOpenAITurn({
+        id: 'unmatched-results',
+        turnToolResults: [
+          { callId: '__proto__', eligible: true, toolFail: true },
+          { callId: 'toString', eligible: true, toolFail: true },
+        ],
+      }),
+    ]);
+
+    assert.equal(r.stats.toolSignal, 'no_data');
+    assert.equal(r.stats.toolKnownRate, null);
+    assert.ok(!hasFactor(r, 'tool_failure'));
+  });
+
+  it('#475 ten call_id-paired failures across entries are stormy (fail-on-old)', function() {
+    var turns = [makeOpenAITurn({ id: 'issued-0', turnToolCallIds: { call_0: 'Bash' } })];
+    for (var i = 0; i < 10; i++) {
+      var nextCalls = {};
+      if (i < 9) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
+    var r = assessWeather(turns);
+    assert.equal(r.level, 'stormy');
+    var stuck = r.factors.find(function(f) { return f.type === 'stuck'; });
+    assert.ok(stuck, 'paired failures should feed the stuck signal');
+    assert.equal(stuck.detail.maxStreak, 10);
+  });
+
+  it('#475 unknown process results are neutral in failure streaks while known success breaks them (fail-on-old)', function() {
+    function assessSequence(middleResult) {
+      var calls = {};
+      var results = [];
+      for (var i = 0; i < 13; i++) {
+        calls['call_' + i] = 'Bash';
+        results.push({ callId: 'call_' + i, eligible: true, toolFail: i === 6 ? middleResult : true });
+      }
+      return assessWeather([
+        makeOpenAITurn({ id: 'issued', turnToolCallIds: calls }),
+        makeOpenAITurn({ id: 'returned', turnToolResults: results }),
+      ]);
+    }
+
+    var unknown = assessSequence(undefined);
+    var knownSuccess = assessSequence(false);
+    var unknownStuck = unknown.factors.find(function(f) { return f.type === 'stuck'; });
+
+    assert.equal(unknown.level, 'stormy');
+    assert.ok(unknownStuck, 'an undecodable result must not erase the surrounding failure streak');
+    assert.equal(unknownStuck.detail.maxStreak, 12);
+    assert.ok(!hasFactor(knownSuccess, 'stuck'), 'a confirmed success must break the failure streak');
+  });
+
+  it('#475 all unknown eligible results make the tool signal unavailable, not sunny or stormy (fail-on-old)', function() {
+    var turns = [
+      makeOpenAITurn({ id: 'issued-unknown', turnToolCallIds: { call_unknown: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'returned-unknown',
+        turnToolResults: [{ callId: 'call_unknown', eligible: true, toolFail: undefined }],
+      }),
+    ];
+    var r = assessWeather(turns);
+    assert.equal(r.level, 'unavailable');
+    assert.notEqual(r.level, 'sunny');
+    assert.notEqual(r.level, 'stormy');
+    assert.equal(r.score, 0, 'unavailable is not a numeric severity');
+    assert.match(r.tooltip, /signal unavailable/i);
+  });
+
+  it('#475 undefined, false, and true remain three distinct tool signal states (fail-on-old)', function() {
+    function assess(toolFail) {
+      return assessWeather([
+        makeOpenAITurn({ id: 'issued', turnToolCallIds: { call_x: 'Bash' } }),
+        makeOpenAITurn({
+          id: 'returned',
+          turnToolResults: [{ callId: 'call_x', eligible: true, toolFail: toolFail }],
+        }),
+      ]);
+    }
+    var unknown = assess(undefined);
+    var clear = assess(false);
+    var failed = assess(true);
+    assert.deepEqual(
+      [unknown.stats.toolSignal, clear.stats.toolSignal, failed.stats.toolSignal],
+      ['unavailable', 'clear', 'failure'],
+    );
+    assert.deepEqual([unknown.level, clear.level, failed.level], ['unavailable', 'sunny', 'fair']);
+  });
+
+  it('#475 partial unknown evidence remains visibly unavailable', function() {
+    var result = assessWeather([
+      makeOpenAITurn({ id: 'known-call', turnToolCallIds: { call_known: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'known-result',
+        turnToolResults: [{ callId: 'call_known', eligible: true, toolFail: false }],
+      }),
+      makeOpenAITurn({ id: 'unknown-call', turnToolCallIds: { call_unknown: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'unknown-result',
+        turnToolResults: [{ callId: 'call_unknown', eligible: true, toolFail: undefined }],
+      }),
+    ]);
+
+    assert.equal(result.level, 'unavailable');
+    assert.equal(result.stats.toolSignal, 'unavailable');
+    assert.equal(result.stats.toolKnownRate, 50);
+    assert.match(result.tooltip, /1 of 2 eligible tool results could be decoded/);
+  });
+
+  it('#475 unavailable tooltip uses the decoded count when the displayed known rate rounds to zero', function() {
+    var calls = {};
+    var results = [];
+    for (var i = 0; i < 201; i++) {
+      calls['call_' + i] = 'Bash';
+      results.push({ callId: 'call_' + i, eligible: true, toolFail: i === 0 ? false : undefined });
+    }
+    var r = assessWeather([
+      makeOpenAITurn({ id: 'issued', turnToolCallIds: calls }),
+      makeOpenAITurn({ id: 'returned', turnToolResults: results }),
+    ]);
+
+    assert.equal(r.level, 'unavailable');
+    assert.equal(r.stats.toolKnownRate, 0);
+    assert.match(r.tooltip, /1 of 201 eligible tool results could be decoded/);
+    assert.doesNotMatch(r.tooltip, /no eligible tool result could be decoded/);
+  });
+
+  it('#475 unavailable tooltip cannot describe 199 of 200 decoded results as only 100% (fail-on-old)', function() {
+    var calls = {};
+    var results = [];
+    for (var i = 0; i < 200; i++) {
+      calls['call_' + i] = 'Bash';
+      results.push({ callId: 'call_' + i, eligible: true, toolFail: i < 199 ? false : undefined });
+    }
+    var r = assessWeather([
+      makeOpenAITurn({ id: 'issued', turnToolCallIds: calls }),
+      makeOpenAITurn({ id: 'returned', turnToolResults: results }),
+    ]);
+
+    assert.equal(r.level, 'unavailable');
+    assert.equal(r.stats.toolKnownRate, 100);
+    assert.match(r.tooltip, /199 of 200 eligible tool results could be decoded/);
+    assert.doesNotMatch(r.tooltip, /only 100%/);
+  });
+
+  it('#475 weather tool-failure decisions use explicit three-value comparisons', function() {
+    var source = fs.readFileSync(path.join(__dirname, '..', 'public', 'weather.js'), 'utf8');
+    var decisionLines = source.split('\n').filter(function(line) {
+      return /\b(?:if|else if|while)\b/.test(line) && /toolFail/.test(line);
+    });
+    assert.ok(decisionLines.length > 0, 'guard must inspect real decision lines');
+    decisionLines.forEach(function(line) {
+      assert.match(line, /toolFail\s*===\s*(?:true|false)/, line.trim());
+    });
+  });
+
+  it('#475 failure-rate excludes unknown and known-rate excludes ineligible Read results', function() {
+    var turns = [];
+    for (var i = 0; i < 100; i++) {
+      var id = 'call_' + i;
+      var tool = i < 10 ? 'Bash' : 'Read';
+      var toolFail = i < 2 ? true : i < 10 ? false : undefined;
+      var eligible = i < 100;
+      turns.push(makeOpenAITurn({ id: 'issued-' + i, turnToolCallIds: { [id]: tool } }));
+      turns.push(makeOpenAITurn({
+        id: 'returned-' + i,
+        turnToolResults: [{ callId: id, eligible: eligible, toolFail: toolFail }],
+      }));
+    }
+    var r = assessWeather(turns);
+    var cumulative = r.factors.find(function(f) { return f.type === 'error_cumulative'; });
+    assert.ok(cumulative, '10 known Bash results satisfy the cumulative denominator');
+    assert.equal(cumulative.detail.toolTurns, 10, 'Read and unknown results are not failure-rate denominator members');
+    assert.equal(cumulative.detail.errTurns, 2);
+    assert.equal(cumulative.detail.rate, 0.2);
+    assert.equal(r.stats.toolKnownRate, 100, 'Read results are ineligible, not unknown eligible results');
+  });
+
+  it('#475 clean non-shell Grok results are excluded from tool-signal eligibility (fail-on-old)', function() {
+    var callId = 'call_grok_search';
+    var callIds = extractOpenAIToolCallIds([
+      { type: 'function_call', name: 'search_documents', call_id: callId },
+    ]);
+    var results = extractOpenAITurnToolResults([
+      { type: 'function_call_output', call_id: callId, output: 'clean search result without an exit footer' },
+    ], { client: 'grok' });
+    var r = assessWeather([
+      makeOpenAITurn({ id: 'issued', turnToolCallIds: callIds }),
+      makeOpenAITurn({ id: 'returned', turnToolResults: results }),
+    ]);
+
+    assert.deepEqual(callIds, { call_grok_search: 'search_documents' });
+    assert.deepEqual(results, [{ callId: callId, eligible: true, toolFail: undefined }]);
+    assert.equal(r.level, 'sunny');
+    assert.equal(r.stats.toolSignal, 'no_data');
+    assert.equal(r.stats.toolKnownRate, null);
+    assert.doesNotMatch(r.tooltip, /signal unavailable/i);
+  });
+
+  it('#475 Anthropic weather scores remain identical to the origin/main baseline', function() {
+    var healthy = repeat(20, function(i) { return { id: 'h' + i, provider: 'anthropic' }; });
+    var failing = repeat(12, function(i) {
+      return { id: 'f' + i, provider: 'anthropic', stopReason: 'tool_use', toolFail: true };
+    });
+    var compacted = repeat(20, function(i) {
+      return { id: 'm' + i, provider: 'anthropic', isCompacted: i === 5 || i === 10 || i === 15 };
+    });
+    assert.deepEqual(
+      [healthy, failing, compacted].map(function(turns) {
+        var r = assessWeather(turns);
+        return { level: r.level, score: r.score };
+      }),
+      [
+        { level: 'sunny', score: 0 },
+        { level: 'stormy', score: 1.27 },
+        { level: 'cloudy', score: 0.6 },
+      ],
+    );
+  });
+
+  it('#475 mixed providers preserve the more severe tool evidence without changing single-provider scores', function() {
+    var anthropicFailures = repeat(12, function(i) {
+      return { id: 'anthropic-' + i, provider: 'anthropic', stopReason: 'tool_use', toolFail: true };
+    });
+    var openAIFailures = [makeOpenAITurn({ id: 'openai-call-0', turnToolCallIds: { call_0: 'Bash' } })];
+    for (var i = 0; i < 12; i++) {
+      var nextCalls = {};
+      if (i < 11) nextCalls['call_' + (i + 1)] = 'Bash';
+      openAIFailures.push(makeOpenAITurn({
+        id: 'openai-result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
+
+    var anthropic = assessWeather(anthropicFailures);
+    var openAI = assessWeather(openAIFailures);
+    var mixed = assessWeather(anthropicFailures.concat(makeOpenAITurn({ id: 'openai-no-tool-data' })));
+    var openAIUnderThreshold = assessWeather([
+      makeOpenAITurn({ id: 'single-call', turnToolCallIds: { single_call: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'single-result',
+        turnToolResults: [{ callId: 'single_call', eligible: true, toolFail: true }],
+      }),
+    ]);
+
+    assert.deepEqual(
+      [anthropic, openAI, mixed].map(function(result) {
+        return { level: result.level, score: result.score };
+      }),
+      [
+        { level: 'stormy', score: 1.27 },
+        { level: 'stormy', score: 1.27 },
+        { level: 'stormy', score: 1.27 },
+      ],
+    );
+    assert.equal(openAIUnderThreshold.stats.errTurns, 1);
+    assert.equal(openAIUnderThreshold.stats.errRate, 1);
+  });
+
+  it('#475 equal-severity provider tie keeps the side with actual tool evidence (fail-on-old)', function() {
+    var result = assessWeather([
+      makeTurn({ id: 'anthropic-no-tools', provider: 'anthropic', toolCount: 0 }),
+      makeOpenAITurn({ id: 'openai-call', turnToolCallIds: { call_failed: 'Bash' } }),
+      makeOpenAITurn({
+        id: 'openai-result',
+        turnToolResults: [{ callId: 'call_failed', eligible: true, toolFail: true }],
+      }),
+    ]);
+
+    assert.ok(hasFactor(result, 'tool_failure'));
+    assert.equal(result.stats.errTurns, 1);
+    assert.equal(result.stats.errRate, 1);
+    assert.match(result.tooltip, /1 errors/);
+    assert.doesNotMatch(result.tooltip, /0 errors/);
+  });
 
   it('no_data — empty turns → sunny', function() {
     var r = assessWeather([]);

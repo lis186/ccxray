@@ -1,0 +1,29 @@
+{
+  "model": "gpt-5.6-sol",
+  "input": [
+    {
+      "type": "custom_tool_call_output",
+      "call_id": "call_o1QydyN3rT5Fq61QmIwQMiod",
+      "output": [
+        {
+          "type": "input_text",
+          "text": "Script completed\nWall time 0.2 seconds\nOutput:\n"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"command\":\"echo hello-ccxray\",\"exit_code\":0,\"output\":\"hello-ccxray\\n\"}"
+        },
+        {
+          "type": "input_text",
+          "text": "{\"command\":\"cat /tmp/definitely-missing-file-473\",\"exit_code\":1,\"output\":\"cat: /tmp/definitely-missing-file-473: No such file or directory\\n\"}"
+        }
+      ],
+      "internal_chat_message_metadata_passthrough": {
+        "turn_id": "019fdd24-35d8-7282-8d8b-97466cfb6b38"
+      }
+    }
+  ],
+  "metadata": {
+    "client": "codex"
+  }
+}

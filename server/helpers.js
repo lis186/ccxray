@@ -799,6 +799,7 @@ function buildToolSources(entry) {
 // ── Tool usage extraction ────────────────────────────────────────────
 // Server-side alias map for Codex tool names (mirrors client CODEX_TOOL_ALIASES).
 const OPENAI_TOOL_ALIASES = { exec_command: 'Bash', shell: 'Bash', read_mcp_resource: 'Read', apply_patch: 'Edit' };
+const OPENAI_PROCESS_TOOLS = new Set(['exec', 'exec_command', 'shell', 'run_terminal_command', 'process']);
 
 // Extract tool call counts from Codex Responses API event stream.
 // Scans response.output_item.done events for function_call items.
@@ -825,6 +826,26 @@ function extractOpenAIToolCalls(responseEventsOrOutput) {
   return counts;
 }
 
+function extractOpenAIToolCallIds(responseEventsOrOutput) {
+  const calls = {};
+  if (!Array.isArray(responseEventsOrOutput)) return calls;
+  const seen = new Set();
+  for (const ev of responseEventsOrOutput) {
+    const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
+    if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
+    const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
+    if (item.type !== 'function_call' && item.type !== 'custom_tool_call' && item.type !== 'tool_call') continue;
+    const callId = item.call_id || item.id;
+    if (!callId || seen.has(callId)) continue;
+    seen.add(callId);
+    const rawName = item.name || item.function?.name || item.tool_name;
+    calls[callId] = rawName
+      ? (OPENAI_PROCESS_TOOLS.has(rawName) ? 'Bash' : (OPENAI_TOOL_ALIASES[rawName] || rawName))
+      : null;
+  }
+  return calls;
+}
+
 function aggregateToolFailResults(results) {
   if (results.length === 0) return undefined;
   if (results.includes(true)) return true;
@@ -837,7 +858,13 @@ function aggregateToolFailResults(results) {
 // names have changed between CLI versions, and the payload convention belongs
 // to the client wrapper rather than to the OpenAI Responses API.
 function extractOpenAITurnToolFail(input, { client } = {}) {
-  if (!Array.isArray(input)) return undefined;
+  return aggregateToolFailResults(
+    extractOpenAITurnToolResults(input, { client, includeMissingCallId: true }).map(result => result.toolFail)
+  );
+}
+
+function extractOpenAITurnToolResults(input, { client, includeMissingCallId = false } = {}) {
+  if (!Array.isArray(input)) return [];
 
   const decoders = {
     'codex:custom_tool_call_output': decodeCodexToolOutput,
@@ -851,18 +878,28 @@ function extractOpenAITurnToolFail(input, { client } = {}) {
     const item = input[i];
     if (!item || typeof item.type !== 'string' || !item.type.endsWith('_call_output')) break;
     const decode = decoders[`${client}:${item.type}`];
-    results.push(decode ? decode(item.output) : undefined);
+    if (!item.call_id && !includeMissingCallId) continue;
+    results.push({
+      callId: item.call_id,
+      eligible: decode !== undefined,
+      toolFail: decode ? decode(item.output) : undefined,
+    });
   }
-
-  return aggregateToolFailResults(results);
+  results.reverse();
+  return results;
 }
 
 function decodeCodexToolOutput(output) {
-  if (typeof output !== 'string') return undefined;
   let envelope;
-  try {
-    envelope = JSON.parse(output);
-  } catch {
+  if (Array.isArray(output)) {
+    envelope = output;
+  } else if (typeof output === 'string') {
+    try {
+      envelope = JSON.parse(output);
+    } catch {
+      return undefined;
+    }
+  } else {
     return undefined;
   }
   if (!Array.isArray(envelope)) return undefined;
@@ -1048,7 +1085,8 @@ module.exports = {
   extractToolCalls,
   extractSkillCalls,
   extractOpenAIToolCalls,
-  extractOpenAITurnToolFail,
+  extractOpenAIToolCallIds,
+  extractOpenAITurnToolFail, extractOpenAITurnToolResults,
   extractDuplicateToolCalls,
   scanCredentials,
   scanObjectForCredentials,

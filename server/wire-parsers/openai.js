@@ -311,15 +311,17 @@ function buildEntryFields(ctx) {
   }
 
   const agent = resolveOpenAIAgent(null, parsedBody);
+  const responseToolItems = isWS
+    ? ctx.responseEvents
+    : ((ctx.events && ctx.events.length) ? ctx.events : response?.output);
   return {
     provider: 'openai',
     agent,
     model,
     msgCount: Array.isArray(parsedBody?.input) ? parsedBody.input.length : 0,
     toolCount: Array.isArray(parsedBody?.tools) ? parsedBody.tools.length : 0,
-    toolCalls: helpers.extractOpenAIToolCalls(
-      isWS ? ctx.responseEvents : ((ctx.events && ctx.events.length) ? ctx.events : response?.output)
-    ),
+    toolCalls: helpers.extractOpenAIToolCalls(responseToolItems),
+    turnToolCallIds: helpers.extractOpenAIToolCallIds(responseToolItems),
     isSubagent: ctx.isSubagent || false,
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
@@ -337,6 +339,9 @@ function buildEntryFields(ctx) {
     thinkingDuration: null,
     toolFail: false,
     turnToolFail: helpers.extractOpenAITurnToolFail(parsedBody?.input, {
+      client: parsedBody?.metadata?.client,
+    }),
+    turnToolResults: helpers.extractOpenAITurnToolResults(parsedBody?.input, {
       client: parsedBody?.metadata?.client,
     }),
     sysHash: ctx.sysHash || null,

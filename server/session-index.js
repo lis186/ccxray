@@ -58,15 +58,19 @@ async function loadSessionIndex() {
         if (s && s.sid) sessionIndex.set(s.sid, s);
       } catch {}
     }
-    // #368/#420/#426: force rebuild when sessions.json predates maxContext,
-    // the aggregate cost-confidence fold, or firstReceivedAt. After rebuild,
-    // _upsert repopulates all from index.ndjson entries.
+    // #368/#420/#426/#475: force rebuild when sessions.json predates a derived
+    // field. After rebuild, _upsert/weather repopulate from index.ndjson entries.
     let needsMigration = false;
     for (const s of sessionIndex.values()) {
-      if (s.count > 0 && (s.maxContext === undefined || s.fallbackCount === undefined || s.firstReceivedAt === undefined)) { needsMigration = true; break; }
+      if (s.count > 0 && (
+        s.maxContext === undefined
+        || s.fallbackCount === undefined
+        || s.firstReceivedAt === undefined
+        || (s.weather !== undefined && s.weather?.stats?.toolSignal === undefined)
+      )) { needsMigration = true; break; }
     }
     if (needsMigration) {
-      console.log('\x1b[33m[session-index] schema migration (maxContext/aggregate cost confidence) — will rebuild\x1b[0m');
+      console.log('\x1b[33m[session-index] schema migration (derived session fields) — will rebuild\x1b[0m');
       sessionIndex.clear();
       return false;
     }
