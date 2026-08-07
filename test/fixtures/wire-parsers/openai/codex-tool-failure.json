@@ -1,0 +1,14 @@
+{
+  "model": "gpt-5.5",
+  "input": [
+    {
+      "type": "custom_tool_call_output",
+      "call_id": "call_codex_fail",
+      "output": "[{\"type\":\"input_text\",\"text\":\"Script completed\\nWall time 0.1 seconds\"},{\"type\":\"input_text\",\"text\":\"{\\\"chunk_id\\\":\\\"chunk_fail\\\",\\\"exit_code\\\":1,\\\"output\\\":\\\"cat: missing: No such file or directory\\\"}\"}]"
+    }
+  ],
+  "metadata": {
+    "client": "codex",
+    "session_id": "codex-failure-session"
+  }
+}

@@ -825,6 +825,77 @@ function extractOpenAIToolCalls(responseEventsOrOutput) {
   return counts;
 }
 
+function aggregateToolFailResults(results) {
+  if (results.length === 0) return undefined;
+  if (results.includes(true)) return true;
+  if (results.includes(undefined)) return undefined;
+  return false;
+}
+
+// Decode the per-turn result carried back by OpenAI-wire tool output items.
+// This is deliberately an allowlist over BOTH client and item type: item type
+// names have changed between CLI versions, and the payload convention belongs
+// to the client wrapper rather than to the OpenAI Responses API.
+function extractOpenAITurnToolFail(input, { client } = {}) {
+  if (!Array.isArray(input)) return undefined;
+
+  const decoders = {
+    'codex:custom_tool_call_output': decodeCodexToolOutput,
+    'grok:function_call_output': decodeGrokToolOutput,
+  };
+  const results = [];
+
+  // Responses input is cumulative history. Only its trailing, contiguous output
+  // block belongs to the turn represented by this request.
+  for (let i = input.length - 1; i >= 0; i--) {
+    const item = input[i];
+    if (!item || typeof item.type !== 'string' || !item.type.endsWith('_call_output')) break;
+    const decode = decoders[`${client}:${item.type}`];
+    results.push(decode ? decode(item.output) : undefined);
+  }
+
+  return aggregateToolFailResults(results);
+}
+
+function decodeCodexToolOutput(output) {
+  if (typeof output !== 'string') return undefined;
+  let envelope;
+  try {
+    envelope = JSON.parse(output);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(envelope)) return undefined;
+
+  const results = [];
+  for (const part of envelope) {
+    if (!part || part.type !== 'input_text' || typeof part.text !== 'string') continue;
+    let result;
+    try {
+      result = JSON.parse(part.text);
+    } catch {
+      continue;
+    }
+    if (!result || Array.isArray(result) || typeof result !== 'object') continue;
+    if (!Object.hasOwn(result, 'exit_code') || !Number.isSafeInteger(result.exit_code)) continue;
+    // Only this top-level field is authoritative. Never scan nested output,
+    // stdout, or text, which may contain command-controlled lookalikes.
+    results.push(result.exit_code !== 0);
+  }
+
+  return aggregateToolFailResults(results);
+}
+
+function decodeGrokToolOutput(output) {
+  if (typeof output !== 'string') return undefined;
+  const lines = output.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length === 0) return undefined;
+  const match = lines.at(-1).match(/^EXIT_CODE[=:](-?\d+)$/);
+  if (!match) return undefined;
+  const exitCode = Number(match[1]);
+  return Number.isSafeInteger(exitCode) ? exitCode !== 0 : undefined;
+}
+
 function extractToolCalls(messages) {
   const counts = {};
   (messages || []).forEach(m => {
@@ -977,6 +1048,7 @@ module.exports = {
   extractToolCalls,
   extractSkillCalls,
   extractOpenAIToolCalls,
+  extractOpenAITurnToolFail,
   extractDuplicateToolCalls,
   scanCredentials,
   scanObjectForCredentials,

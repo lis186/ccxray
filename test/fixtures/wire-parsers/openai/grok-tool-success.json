@@ -1,0 +1,14 @@
+{
+  "model": "grok-code-fast-1",
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_grok_success",
+      "output": "command output\nEXIT_CODE:0\n"
+    }
+  ],
+  "metadata": {
+    "client": "grok",
+    "session_id": "grok-success-session"
+  }
+}
