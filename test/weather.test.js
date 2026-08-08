@@ -328,7 +328,7 @@ describe('assessWeather', function() {
     );
   });
 
-  it('#475 mixed providers preserve the more severe tool evidence without changing single-provider scores', function() {
+  it('#475 an inert OpenAI turn must not erase Anthropic tool severity (round-2 regression)', function() {
     var anthropicFailures = repeat(12, function(i) {
       return { id: 'anthropic-' + i, provider: 'anthropic', stopReason: 'tool_use', toolFail: true };
     });
@@ -366,6 +366,46 @@ describe('assessWeather', function() {
     );
     assert.equal(openAIUnderThreshold.stats.errTurns, 1);
     assert.equal(openAIUnderThreshold.stats.errRate, 1);
+  });
+
+  // Both providers carry real evidence at DIFFERENT severities — the branch
+  // _strongerToolSignal exists for, and the one the round-2 regression broke.
+  // Asserting entryIdStart (not score) is what makes this non-vacuous: it names
+  // which side's window was selected, so a hard-coded single-provider return fails.
+  function mixedErrorClusterDetail(anthropicFailures, openAIFailures) {
+    var turns = [];
+    for (var a = 0; a < 5; a++) {
+      turns.push(makeTurn({
+        id: 'anthropic-' + a,
+        provider: 'anthropic',
+        stopReason: 'tool_use',
+        toolFail: a < anthropicFailures,
+      }));
+    }
+    turns.push(makeOpenAITurn({ id: 'openai-0', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var o = 0; o < 5; o++) {
+      var nextCalls = {};
+      if (o < 4) nextCalls['call_' + (o + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'openai-' + (o + 1),
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + o, eligible: true, toolFail: o < openAIFailures }],
+      }));
+    }
+    var result = assessWeather(turns);
+    return result.factors.filter(function(f) { return f.type === 'error_cluster'; })[0].detail;
+  }
+
+  it('#475 mixed providers with real evidence on both sides select the more severe window', function() {
+    // OpenAI 4/5 errors (sev 0.4) vs Anthropic 1/5 (sev 0.1) → OpenAI window wins
+    var openAIWins = mixedErrorClusterDetail(1, 4);
+    assert.match(openAIWins.entryIdStart, /^openai-/);
+    assert.equal(openAIWins.errorRate, 0.8);
+
+    // Anthropic 4/5 errors (sev 0.4) vs OpenAI 1/5 (sev 0.1) → Anthropic window wins
+    var anthropicWins = mixedErrorClusterDetail(4, 1);
+    assert.match(anthropicWins.entryIdStart, /^anthropic-/);
+    assert.equal(anthropicWins.errorRate, 0.8);
   });
 
   it('#475 equal-severity provider tie keeps the side with actual tool evidence (fail-on-old)', function() {
