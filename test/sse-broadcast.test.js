@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { summarizeEntry, broadcastEntryUpdate } = require('../server/sse-broadcast');
+const { normalizeIndexEntry } = require('../server/routes/api');
 const store = require('../server/store');
 
 describe('sse-broadcast', () => {
@@ -48,6 +49,23 @@ describe('sse-broadcast', () => {
   });
 
   describe('summarizeEntry', () => {
+    it('#475 preserves call/result facts through live summary and cold normalization (fail-on-old)', () => {
+      const facts = {
+        turnToolCallIds: { call_a: 'Bash' },
+        turnToolResults: [{ callId: 'call_previous', eligible: true, toolFail: false }],
+      };
+      const entry = {
+        id: 'tool-facts', sessionId: 'tool-facts-sid', provider: 'openai',
+        usage: { input_tokens: 1 }, isSubagent: false, ...facts,
+      };
+      const live = summarizeEntry(entry);
+      const cold = normalizeIndexEntry({ ...entry });
+      assert.deepEqual(live.turnToolCallIds, facts.turnToolCallIds);
+      assert.deepEqual(live.turnToolResults, facts.turnToolResults);
+      assert.deepEqual(cold.turnToolCallIds, facts.turnToolCallIds);
+      assert.deepEqual(cold.turnToolResults, facts.turnToolResults);
+    });
+
     it('returns all summary fields from pre-computed entry properties when req/res are null', () => {
       const entry = {
         id: 'test-001', ts: '14:30:22', sessionId: 'sess-1',

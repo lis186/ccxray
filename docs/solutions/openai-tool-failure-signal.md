@@ -64,19 +64,24 @@
 | **response** tool call type | `custom_tool_call` | `function_call` |
 | **request** input 的 tool output type | `custom_tool_call_output` | `function_call_output`（標準） |
 | `toolCalls` 抓到？ | ❌ `{}` | ✅ `{"run_terminal_command":1}` |
-| `output` 格式 | **雙層 JSON** | **純文字** |
+| `output` 格式 | `input_text[]` envelope；真實 WS request 已解析為陣列，舊 fixture 也可能保留 JSON 字串 | **純文字** |
 | 失敗訊號 | `"exit_code":1`（JSON 欄位） | `EXIT_CODE=1`（文字行） |
-| 陷阱 | 需兩層 parse | **`output` 同時含 `exit: 0` 與 `EXIT_CODE=1`** |
+| 陷阱 | 每個 `input_text.text` 各自 parse；同一 envelope 可同時含 exit 0 與 exit 1，必須 failure-dominates 聚合 | **`output` 同時含 `exit: 0` 與 `EXIT_CODE=1`** |
 
 ### 證據摘錄（已脫敏）
 
-**Codex** — `output` 是 JSON-in-string，內層陣列的第二個元素才含 `exit_code`：
+**Codex** — 0.145.0 的真實 WS request 中，`output` 已是陣列；每個 `input_text.text`
+才可能是帶 `exit_code` 的 JSON 字串。同一 envelope 可攜帶多個命令結果：
 
 ```
 {"type":"custom_tool_call_output","call_id":"call_...",
- "output":"[{\"type\":\"input_text\",\"text\":\"Script completed\\nWall time 0.1 seconds\\n...\"},
-            {\"type\":\"input_text\",\"text\":\"{\\\"chunk_id\\\":\\\"...\\\",\\\"exit_code\\\":1,...}\"}]"}
+ "output":[{"type":"input_text","text":"Script completed\\nWall time 0.2 seconds\\nOutput:\\n"},
+           {"type":"input_text","text":"{\"command\":\"echo ...\",\"exit_code\":0,...}"},
+           {"type":"input_text","text":"{\"command\":\"cat ...\",\"exit_code\":1,...}"}]}
 ```
+
+Decoder 同時保留 serialized JSON-array envelope 的相容性；兩種外層形狀進入相同的
+`input_text.text` 頂層 `exit_code` 驗證與 failure-dominates 聚合。
 
 **Grok** — `output` 是純文字，且 `exit: 0` 出現在 `EXIT_CODE=1` **之前**：
 

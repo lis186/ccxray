@@ -681,6 +681,8 @@ function addEntry(e) {
     duplicateToolCalls: e.duplicateToolCalls || null,
     hasCredential: e.hasCredential || false,
     toolFail: e.toolFail || false, turnToolFail: e.turnToolFail,
+    turnToolCallIds: e.turnToolCallIds,
+    turnToolResults: e.turnToolResults,
     toolSources: e.toolSources || null,
     title: e.title || null,
     coreHash: e.coreHash || null,

@@ -1046,6 +1046,26 @@ describe('OpenAI Responses raw capture', () => {
     assert.equal(entry.toolCalls.Edit, 1, 'apply_patch should be aliased to Edit');
   });
 
+  it('#475 HTTP entry persists response call ids and request result facts', async () => {
+    const sessionId = 'http-tool-pairing-475';
+    const requestBody = JSON.stringify({
+      model: 'gpt-5.5',
+      input: [{
+        type: 'custom_tool_call_output',
+        call_id: 'call_previous_http',
+        output: JSON.stringify([{ type: 'input_text', text: JSON.stringify({ exit_code: 1 }) }]),
+      }],
+    });
+    await sendOpenAIResponsesRequest(proxyPort, requestBody, '/v1/responses?tools=1', {
+      'x-codex-turn-metadata': JSON.stringify({ session_id: sessionId }),
+    });
+
+    const logsDir = path.join(TEST_HOME, 'logs');
+    const entry = await waitFor(() => readIndex(logsDir).find(e => e.sessionId === sessionId));
+    assert.deepEqual(entry.turnToolCallIds, { call_j1: 'Bash', call_j2: 'Edit' });
+    assert.deepEqual(entry.turnToolResults, [{ callId: 'call_previous_http', eligible: true, toolFail: true }]);
+  });
+
   it('groups Codex turns by session_id header and marks OpenAI subagents', async () => {
     const sessionId = 'codex-session-header-001';
     const mainBody = JSON.stringify({

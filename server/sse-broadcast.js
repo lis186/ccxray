@@ -61,6 +61,8 @@ function summarizeEntry(entry) {
     duplicateToolCalls: entry.duplicateToolCalls || null,
     toolFail: entry.toolFail || false,
     turnToolFail: entry.turnToolFail,
+    turnToolCallIds: entry.turnToolCallIds,
+    turnToolResults: entry.turnToolResults,
     hasCredential: entry.hasCredential || undefined,
     coreHash: entry.coreHash || null,
     agentKey: entry.agentKey || null,

@@ -55,6 +55,33 @@ test('openai entry → buildIndexLine → parsed-back keeps cost/maxContext/stop
   assert.ok('responseMetadata' in back);
 });
 
+test('#475 OpenAI parser and index carry call/result facts for read-time pairing (fail-on-old)', () => {
+  const parsedBody = {
+    model: 'gpt-5.5',
+    metadata: { client: 'codex' },
+    input: [{
+      type: 'custom_tool_call_output',
+      call_id: 'call_previous',
+      output: JSON.stringify([{ type: 'input_text', text: JSON.stringify({ exit_code: 1 }) }]),
+    }],
+  };
+  const f = getParser('openai').buildEntryFields({
+    provider: 'openai', transport: 'http', parsedBody,
+    response: {
+      model: 'gpt-5.5', status: 'completed',
+      output: [{ type: 'function_call', name: 'exec_command', call_id: 'call_next' }],
+    },
+    proxyRes: { statusCode: 200 }, sessionId: 's',
+  });
+  assert.deepEqual(f.turnToolCallIds, { call_next: 'Bash' });
+  assert.deepEqual(f.turnToolResults, [{ callId: 'call_previous', eligible: true, toolFail: true }]);
+  assert.ok(INDEX_FIELDS.includes('turnToolCallIds'));
+  assert.ok(INDEX_FIELDS.includes('turnToolResults'));
+  const back = JSON.parse(buildIndexLine({ id: 'X', ts: 't', status: 200, isSSE: false, receivedAt: 1, ...f }));
+  assert.deepEqual(back.turnToolCallIds, f.turnToolCallIds);
+  assert.deepEqual(back.turnToolResults, f.turnToolResults);
+});
+
 test('anthropic.buildEntryFields yields canonical fields', () => {
   const parsedBody = loadFixture('anthropic', 'turn1_req.json');
   const usage = { input_tokens: 500, output_tokens: 100, total_tokens: 600 };

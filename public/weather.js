@@ -81,18 +81,98 @@ function sigTruncation(turns) {
   return { severity: 0, detail: {} };
 }
 
-function sigStuck(turns) {
-  var streak = 0, maxStreak = 0, maxStreakEnd = 0;
+function _openAIToolEvidence(turns) {
+  var pending = Object.create(null);
+  var results = [];
   for (var i = 0; i < turns.length; i++) {
-    if (turns[i].stopReason === 'tool_use' && turns[i].toolFail) {
+    var returned = Array.isArray(turns[i].turnToolResults) ? turns[i].turnToolResults : [];
+    for (var r = 0; r < returned.length; r++) {
+      var result = returned[r];
+      var call = result && pending[result.callId];
+      if (!call || result.eligible !== true || call.tool !== 'Bash') continue;
+      results.push({
+        callId: result.callId,
+        toolFail: result.toolFail,
+        turnIndex: call.turnIndex,
+        entryId: call.entryId,
+      });
+      delete pending[result.callId];
+    }
+    var calls = turns[i].turnToolCallIds;
+    if (!calls || typeof calls !== 'object' || Array.isArray(calls)) continue;
+    for (var callId in calls) {
+      pending[callId] = { tool: calls[callId], turnIndex: i, entryId: turns[i].id || null };
+    }
+  }
+  return results;
+}
+
+function sigToolFailure(toolEvidence) {
+  var known = 0, firstFailure = null;
+  for (var i = 0; i < toolEvidence.length; i++) {
+    if (toolEvidence[i].toolFail === true || toolEvidence[i].toolFail === false) known++;
+    if (toolEvidence[i].toolFail === true && firstFailure === null) firstFailure = toolEvidence[i];
+  }
+  if (firstFailure !== null) {
+    return { severity: 0.35, availability: 'failure', detail: { turnIndex: firstFailure.turnIndex, entryId: firstFailure.entryId, known: known, eligible: toolEvidence.length } };
+  }
+  if (toolEvidence.length > known) {
+    return { severity: null, availability: 'unavailable', detail: { known: known, eligible: toolEvidence.length } };
+  }
+  return { severity: 0, availability: toolEvidence.length > 0 ? 'clear' : 'no_data', detail: { known: known, eligible: toolEvidence.length } };
+}
+
+function _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns) {
+  if (openAIResult.severity > anthropicResult.severity) return openAIResult;
+  if (anthropicResult.severity > openAIResult.severity) return anthropicResult;
+  if (openAIResult.evidenceCount > 0 && !(anthropicResult.evidenceCount > 0)) return openAIResult;
+  if (anthropicResult.evidenceCount > 0 && !(openAIResult.evidenceCount > 0)) return anthropicResult;
+  return hasAnthropicTurns ? anthropicResult : openAIResult;
+}
+
+function sigStuck(turns, toolEvidence) {
+  var pairedStreak = 0, pairedMax = 0, pairedStart = 0, pairedEnd = 0;
+  var pairedEvidenceCount = 0;
+  var pairedStartId = null, pairedEndId = null, currentStart = 0, currentStartId = null;
+  for (var p = 0; p < toolEvidence.length; p++) {
+    if (toolEvidence[p].toolFail === true) {
+      pairedEvidenceCount++;
+      if (pairedStreak === 0) {
+        currentStart = toolEvidence[p].turnIndex;
+        currentStartId = toolEvidence[p].entryId;
+      }
+      pairedStreak++;
+      if (pairedStreak > pairedMax) {
+        pairedMax = pairedStreak;
+        pairedStart = currentStart;
+        pairedEnd = toolEvidence[p].turnIndex;
+        pairedStartId = currentStartId;
+        pairedEndId = toolEvidence[p].entryId;
+      }
+    } else if (toolEvidence[p].toolFail === false) {
+      pairedEvidenceCount++;
+      pairedStreak = 0;
+    }
+  }
+  var openAIResult = { severity: pairedMax >= 10 ? 0.9 : 0, evidenceCount: pairedEvidenceCount, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+
+  var streak = 0, maxStreak = 0, maxStreakStart = 0, maxStreakEnd = 0;
+  var streakStart = 0, anthropicEvidenceCount = 0;
+  var hasAnthropicTurns = false;
+  for (var i = 0; i < turns.length; i++) {
+    if (turns[i].provider === 'openai') continue;
+    hasAnthropicTurns = true;
+    if (turns[i].stopReason === 'tool_use') anthropicEvidenceCount++;
+    if (turns[i].stopReason === 'tool_use' && turns[i].toolFail === true) {
+      if (streak === 0) streakStart = i;
       streak++;
-      if (streak > maxStreak) { maxStreak = streak; maxStreakEnd = i; }
+      if (streak > maxStreak) { maxStreak = streak; maxStreakStart = streakStart; maxStreakEnd = i; }
     } else {
       streak = 0;
     }
   }
-  var startIdx = maxStreak > 0 ? maxStreakEnd - maxStreak + 1 : 0;
-  return { severity: maxStreak >= 10 ? 0.9 : 0, detail: { maxStreak: maxStreak, turnStart: startIdx, turnEnd: maxStreakEnd, entryIdStart: turns[startIdx] && turns[startIdx].id || null, entryIdEnd: turns[maxStreakEnd] && turns[maxStreakEnd].id || null } };
+  var anthropicResult = { severity: maxStreak >= 10 ? 0.9 : 0, evidenceCount: anthropicEvidenceCount, detail: { maxStreak: maxStreak, turnStart: maxStreakStart, turnEnd: maxStreakEnd, entryIdStart: turns[maxStreakStart] && turns[maxStreakStart].id || null, entryIdEnd: turns[maxStreakEnd] && turns[maxStreakEnd].id || null } };
+  return _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns);
 }
 
 function sigLatencyDrift(turns) {
@@ -111,23 +191,55 @@ function sigLatencyDrift(turns) {
   return { severity: clamp01((ratio - 1) * 0.5), detail: { p75: Math.round(p75), baseline: baseline, ratio: Math.round(ratio * 100) / 100 } };
 }
 
-function sigErrorCluster(turns) {
+function sigErrorCluster(turns, toolEvidence) {
+  var pairedMaxRate = 0, pairedBestStart = 0, pairedBestEnd = 0;
+  var pairedStartId = null, pairedEndId = null, pairedEvidenceCount = 0;
+  for (var e = 0; e < toolEvidence.length; e++) {
+    if (toolEvidence[e].toolFail === true || toolEvidence[e].toolFail === false) pairedEvidenceCount++;
+  }
+  for (var p = 0; p <= toolEvidence.length - 5; p++) {
+    var pairedKnown = 0, pairedErrors = 0;
+    for (var q = p; q < p + 5; q++) {
+      if (toolEvidence[q].toolFail === true) { pairedKnown++; pairedErrors++; }
+      else if (toolEvidence[q].toolFail === false) pairedKnown++;
+    }
+    if (pairedKnown < 3) continue;
+    var pairedRate = pairedErrors / pairedKnown;
+    if (pairedRate > pairedMaxRate) {
+      pairedMaxRate = pairedRate;
+      pairedBestStart = toolEvidence[p].turnIndex;
+      pairedBestEnd = toolEvidence[p + 4].turnIndex;
+      pairedStartId = toolEvidence[p].entryId;
+      pairedEndId = toolEvidence[p + 4].entryId;
+    }
+  }
+  var openAIResult = { severity: clamp01(pairedMaxRate / 2.0), evidenceCount: pairedEvidenceCount, detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+
+  var anthropicTurns = [];
+  var anthropicEvidenceCount = 0;
+  for (var a = 0; a < turns.length; a++) {
+    if (turns[a].provider !== 'openai') {
+      anthropicTurns.push({ turn: turns[a], turnIndex: a });
+      if (turns[a].stopReason === 'tool_use') anthropicEvidenceCount++;
+    }
+  }
   var maxRate = 0, bestStart = 0, bestEnd = 0;
-  for (var i = 0; i <= turns.length - 5; i++) {
+  for (var i = 0; i <= anthropicTurns.length - 5; i++) {
     var toolUse = 0, errors = 0;
     for (var j = i; j < i + 5; j++) {
-      if (turns[j].stopReason === 'tool_use') {
+      if (anthropicTurns[j].turn.stopReason === 'tool_use') {
         toolUse++;
-        if (turns[j].toolFail) errors++;
+        if (anthropicTurns[j].turn.toolFail === true) errors++;
       }
     }
     if (toolUse < 3) continue;
     var rate = errors / toolUse;
-    if (rate > maxRate) { maxRate = rate; bestStart = i; bestEnd = i + 4; }
+    if (rate > maxRate) { maxRate = rate; bestStart = anthropicTurns[i].turnIndex; bestEnd = anthropicTurns[i + 4].turnIndex; }
   }
   // ponytail: denom=2.0 — window needs 100% error rate to reach severity 0.5. Exp2: 0.6 flagged 247/346 sessions.
   var sev = clamp01(maxRate / 2.0);
-  return { severity: sev, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100, entryIdStart: turns[bestStart] && turns[bestStart].id || null, entryIdEnd: turns[bestEnd] && turns[bestEnd].id || null } };
+  var anthropicResult = { severity: sev, evidenceCount: anthropicEvidenceCount, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100, entryIdStart: turns[bestStart] && turns[bestStart].id || null, entryIdEnd: turns[bestEnd] && turns[bestEnd].id || null } };
+  return _strongerToolSignal(anthropicResult, openAIResult, anthropicTurns.length > 0);
 }
 
 // ponytail: sustained low cache hit rate — cost/perf signal, not functionality. Skips first 3 turns (cold start). Expert consensus: 50% threshold (break-even), 0.5 cap.
@@ -149,43 +261,65 @@ function sigCacheHealth(turns) {
 }
 
 // ponytail: catches chronic tool errors spread across long sessions that error_cluster misses (exp9: ~30 false negatives).
-function sigErrorCumulative(turns) {
-  var toolTurns = 0, errTurns = 0, firstErrId = null;
-  for (var i = 0; i < turns.length; i++) {
-    if (turns[i].stopReason === 'tool_use') {
-      toolTurns++;
-      if (turns[i].toolFail) { errTurns++; if (!firstErrId) firstErrId = turns[i].id || null; }
+function sigErrorCumulative(turns, toolEvidence) {
+  var pairedKnown = 0, pairedErrors = 0, pairedFirstErrId = null;
+  for (var p = 0; p < toolEvidence.length; p++) {
+    if (toolEvidence[p].toolFail === true) {
+      pairedKnown++;
+      pairedErrors++;
+      if (!pairedFirstErrId) pairedFirstErrId = toolEvidence[p].entryId || null;
+    } else if (toolEvidence[p].toolFail === false) {
+      pairedKnown++;
     }
   }
-  if (toolTurns < 10) return { severity: 0, detail: {} };
-  var rate = errTurns / toolTurns;
+  var pairedRate = pairedKnown ? pairedErrors / pairedKnown : 0;
+  var openAIResult = { severity: pairedKnown < 10 ? 0 : clamp01(pairedRate / 0.4), evidenceCount: pairedKnown, detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
+
+  var toolTurns = 0, errTurns = 0, firstErrId = null;
+  var hasAnthropicTurns = false;
+  for (var i = 0; i < turns.length; i++) {
+    if (turns[i].provider === 'openai') continue;
+    hasAnthropicTurns = true;
+    if (turns[i].stopReason === 'tool_use') {
+      toolTurns++;
+      if (turns[i].toolFail === true) { errTurns++; if (!firstErrId) firstErrId = turns[i].id || null; }
+    }
+  }
+  var rate = toolTurns ? errTurns / toolTurns : 0;
   // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥10 tool turns to avoid noise.
-  var sev = clamp01(rate / 0.4);
-  return { severity: sev, detail: { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100, firstErrId: firstErrId } };
+  var sev = toolTurns < 10 ? 0 : clamp01(rate / 0.4);
+  var anthropicResult = { severity: sev, evidenceCount: toolTurns, detail: toolTurns < 10 ? {} : { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100, firstErrId: firstErrId } };
+  return _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns);
 }
 
 function assessWeather(turns, opts) {
   if (!turns || !turns.length) {
-    return { level: 'sunny', emoji: LEVELS[0].emoji, score: 0, factors: [], stats: { ctxPct: 0, errRate: 0, errTurns: 0, latencyRatio: null, compactions: 0 }, tooltip: 'Operating normally' };
+    return { level: 'sunny', emoji: LEVELS[0].emoji, score: 0, factors: [], stats: { ctxPct: 0, errRate: 0, errTurns: 0, latencyRatio: null, compactions: 0, toolKnownRate: null, toolSignal: 'no_data' }, tooltip: 'Operating normally' };
   }
 
+  var openAIToolEvidence = _openAIToolEvidence(turns);
   var signals = [
     { type: 'ctx_pressure', result: sigCtxPressure(turns, opts) },
     { type: 'compaction_scar', result: sigCompaction(turns) },
     { type: 'truncation', result: sigTruncation(turns) },
-    { type: 'stuck', result: sigStuck(turns) },
+    { type: 'tool_failure', result: sigToolFailure(openAIToolEvidence) },
+    { type: 'stuck', result: sigStuck(turns, openAIToolEvidence) },
     { type: 'latency_drift', result: sigLatencyDrift(turns) },
-    { type: 'error_cluster', result: sigErrorCluster(turns) },
-    { type: 'error_cumulative', result: sigErrorCumulative(turns) },
+    { type: 'error_cluster', result: sigErrorCluster(turns, openAIToolEvidence) },
+    { type: 'error_cumulative', result: sigErrorCumulative(turns, openAIToolEvidence) },
     { type: 'cache_health', result: sigCacheHealth(turns) },
   ];
 
-  var sevs = signals.map(function(s) { return s.result.severity; }).sort(function(a, b) { return b - a; });
+  // Availability is metadata, never a severity input.
+  var sevs = signals.map(function(s) { return s.result.severity; }).filter(function(s) { return typeof s === 'number'; }).sort(function(a, b) { return b - a; });
   var score = sevs[0] + 0.3 * (sevs[1] || 0);
 
   var pick = LEVELS[LEVELS.length - 1];
   for (var i = 0; i < LEVELS.length; i++) {
     if (score < LEVELS[i].ceil) { pick = LEVELS[i]; break; }
+  }
+  if (pick.level === 'sunny' && signals.some(function(s) { return s.result.availability === 'unavailable'; })) {
+    pick = { level: 'unavailable', emoji: '❔' };
   }
 
   var factors = [];
@@ -206,9 +340,13 @@ function assessWeather(turns, opts) {
     latencyRatio: _sigMap.latency_drift.detail.ratio || null,
     compactions: _sigMap.compaction_scar.detail.compactionCount || 0,
     cacheHitRate: _sigMap.cache_health.detail.medianHitRate != null ? _sigMap.cache_health.detail.medianHitRate : null,
+    toolKnownRate: _sigMap.tool_failure.detail.eligible > 0
+      ? Math.round(_sigMap.tool_failure.detail.known / _sigMap.tool_failure.detail.eligible * 100)
+      : null,
+    toolSignal: _sigMap.tool_failure.availability,
   };
 
-  var tooltip = _buildTooltip(pick.level, factors, stats);
+  var tooltip = _buildTooltip(pick.level, factors, stats, _sigMap.tool_failure.detail.known, _sigMap.tool_failure.detail.eligible);
   return { level: pick.level, emoji: pick.emoji, score: Math.round(score * 1000) / 1000, factors: factors, stats: stats, tooltip: tooltip };
 }
 
@@ -228,6 +366,7 @@ var _FACTOR_FMT = {
   ctx_pressure: function(d) { return 'context ' + (d.ctxPct || 0) + '%'; },
   compaction_scar: function(d) { return 'compaction ×' + (d.compactionCount || 1) + ' (info lost)'; },
   truncation: function(d) { return 'output truncated (' + _turnLink('turn ' + (d.turnIndex || '?'), d.entryId) + ')'; },
+  tool_failure: function(d) { return 'tool failed (' + _turnLink('turn ' + (d.turnIndex || 0), d.entryId) + ')'; },
   stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
   error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
@@ -236,6 +375,7 @@ var _FACTOR_FMT = {
 };
 
 var _LEVEL_SUMMARY = {
+  unavailable: 'Tool failure signal unavailable',
   sunny: 'Operating normally',
   fair: 'Minor signals, no action needed',
   cloudy: 'Quality starting to degrade',
@@ -254,8 +394,14 @@ var _ACTION_TABLE = {
   error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : null; },
 };
 
-function _buildTooltip(level, factors, stats) {
+function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount) {
   var lines = [_LEVEL_SUMMARY[level] || ''];
+  if (level === 'unavailable') {
+    lines.push(toolKnownCount > 0
+      ? toolKnownCount + ' of ' + toolEligibleCount + ' eligible tool results could be decoded'
+      : 'no eligible tool result could be decoded');
+    return lines.join('\n');
+  }
   if (level === 'sunny' || level === 'fair') {
     // Show key stats to prove WHY it's healthy
     if (stats) {
@@ -265,16 +411,22 @@ function _buildTooltip(level, factors, stats) {
       if (stats.cacheHitRate != null) parts.push('cache ' + stats.cacheHitRate + '%');
       if (stats.latencyRatio != null) parts.push('latency ' + stats.latencyRatio + 'x');
       if (stats.compactions) parts.push('compacted ×' + stats.compactions);
+      if (stats.toolSignal === 'unavailable') parts.push('tool failure signal unavailable');
+      if (stats.toolKnownRate != null && stats.toolKnownRate < 100) parts.push('tool results ' + stats.toolKnownRate + '% known');
       lines.push(parts.join(' · '));
     }
     return lines.join('\n');
   }
   if (factors.length) {
-    lines.push(factors.map(function(f) {
+    var factorLine = factors.map(function(f) {
       var fmt = _FACTOR_FMT[f.type];
       return fmt ? fmt(f.detail) : f.type;
-    }).join(' · '));
+    }).join(' · ');
+    if (stats && stats.toolSignal === 'unavailable') factorLine += ' · tool failure signal unavailable';
+    if (stats && stats.toolKnownRate != null && stats.toolKnownRate < 100) factorLine += ' · tool results ' + stats.toolKnownRate + '% known';
+    lines.push(factorLine);
   }
+  else if (stats && stats.toolSignal === 'unavailable') lines.push('tool failure signal unavailable');
   if (level === 'cloudy' || level === 'rainy' || level === 'stormy') {
     var top = factors[0];
     if (top) {

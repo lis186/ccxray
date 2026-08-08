@@ -205,7 +205,7 @@ describe('helpers', () => {
   });
 
   describe('extractOpenAIToolCalls', () => {
-    const { extractOpenAIToolCalls } = require('../server/helpers');
+    const { extractOpenAIToolCalls, extractOpenAIToolCallIds } = require('../server/helpers');
 
     it('returns empty for null/empty', () => {
       assert.deepEqual(extractOpenAIToolCalls(null), {});
@@ -250,6 +250,30 @@ describe('helpers', () => {
       ];
       const counts = extractOpenAIToolCalls(events);
       assert.equal(counts.Bash, 1);
+    });
+
+    it('#475 carries Codex/Grok process call ids while retaining non-process tool kinds', () => {
+      const output = [
+        { type: 'custom_tool_call', tool_name: 'exec_command', call_id: 'codex-process' },
+        { type: 'function_call', name: 'run_terminal_command', call_id: 'grok-process' },
+        { type: 'function_call', name: 'read_mcp_resource', call_id: 'read-result' },
+      ];
+      assert.deepEqual(extractOpenAIToolCallIds(output), {
+        'codex-process': 'Bash',
+        'grok-process': 'Bash',
+        'read-result': 'Read',
+      });
+    });
+
+    it('#475 maps the real Codex WS exec tool call to Bash', () => {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const events = JSON.parse(fs.readFileSync(path.join(
+        __dirname, 'fixtures', 'wire-parsers', 'openai', 'real-codex-ws-tool-call-events.json'
+      ), 'utf8'));
+      assert.deepEqual(extractOpenAIToolCallIds(events), {
+        call_o1QydyN3rT5Fq61QmIwQMiod: 'Bash',
+      });
     });
   });
 
