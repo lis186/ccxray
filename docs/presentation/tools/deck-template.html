@@ -198,6 +198,9 @@
   .mcscene { display: flex; flex-direction: column; gap: 2vh; width: 92vw; }
   .mcrow { display: flex; gap: 2vw; justify-content: center; }
   .mccol { flex: 1 1 0; min-width: 0; transition: opacity .6s ease, transform .6s ease; }
+  .mccol .shot { display: inline-block; }
+  .mccol .shot img { max-height: 46vh; width: auto; max-width: 100%; }
+  .mccol { text-align: center; }
   .mccol .mclabel { font-weight: 900; font-size: clamp(.9rem, 2vw, 1.3rem); margin-bottom: .8vh; text-align: center; }
   .mccol .mcstats { display: flex; gap: 1.2em; justify-content: center; margin-top: 1vh;
     font-family: ui-monospace, monospace; font-size: clamp(.75rem, 1.8vmin, 1.05rem);
@@ -345,12 +348,12 @@ function pxApply(k) {
 // ── STEP 10 模型選擇對照分鏡 ──
 function mcSceneHTML(k) {
   return '<div id="mcroot" class="mcscene mc-' + k + '"><div class="mcrow">' +
-    '<div class="mccol good"><div class="mclabel"><span class="good">fable-5 1M 指揮</span> · 子代理各給一小塊</div>' +
+    '<div class="mccol good"><div class="mclabel"><span class="good">選對模型</span> · window 充足</div>' +
       '<div class="shot hero"><img class="wipe" src="' + IMG.fanoutgood + '" alt=""></div>' +
-      '<div class="mcstats"><span>34m</span><span><b class="good">$20.86</b></span><span>失敗 <b class="good">0%</b></span></div></div>' +
-    '<div class="mccol bad"><div class="mclabel"><span class="hot">全塞 200K 小模型</span> · window 不足</div>' +
+      '<div class="mcstats"><span class="good">一片綠</span><span>快進快出</span><span>零失敗</span></div></div>' +
+    '<div class="mccol bad"><div class="mclabel"><span class="hot">模型太小</span> · window 不足</div>' +
       '<div class="shot"><img class="wipe" src="' + IMG.fanoutbad + '" alt=""></div>' +
-      '<div class="mcstats"><span><b class="hot">52m</b></span><span><b class="hot">$32.69</b></span><span>失敗 <b class="hot">43%</b></span></div></div>' +
+      '<div class="mcstats"><span class="hot">失敗率飆高</span><span class="hot">長紅 bar</span><span class="hot">更久、更貴</span></div></div>' +
   '</div></div>';
 }
 // 縮時倍率一致:同一時間比例尺,GOOD 34m→7s、BAD 52m→10.7s
@@ -361,7 +364,7 @@ function mcApply(k) {
   const b = root.querySelector('.mccol.bad img.wipe');
   const play = (el, sec) => { el.classList.remove('play', 'done'); void el.offsetWidth; el.style.animationDuration = sec + 's'; el.classList.add('play'); };
   if (k === 1) { play(g, 7); b.classList.remove('play', 'done'); }
-  else if (k === 2) { g.classList.remove('play'); g.classList.add('done'); play(b, 10.7); }
+  else if (k === 2) { g.classList.remove('play'); g.classList.add('done'); play(b, 10); }
   else { g.classList.remove('play'); b.classList.remove('play'); g.classList.add('done'); b.classList.add('done'); }
 }
 
@@ -514,8 +517,8 @@ const S = [
   { t: '但——', c: 'dim', a: 6 },
   { t: '分工,也要<span class="accent">選對模型</span>', c: 'long', a: 6 },
   { t: '同一個長任務<br>兩種選擇', c: 'long', a: 6 },
-  { mc: 1, t: '<span class="good">選對模型</span>:輪替派工,34 分鐘縮時——一片綠', a: 6 },
-  { mc: 2, t: '<span class="hot">選錯模型</span>:同一縮時比例——紅 bar 越拖越長,52 分鐘', a: 6 },
+  { mc: 1, t: '<span class="good">選對模型</span>:縮時重播——一片綠,快進快出', a: 6 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>:失敗率一下就上來,<span class="hot">紅 bar 越拖越長</span>', a: 6 },
   { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 6 },
   { t: '對的模型 × 會分工<br>= <span class="good">又快、又省、又穩</span>', c: 'long', a: 6 },
 
@@ -561,7 +564,7 @@ function show(n) {
     } else {
       const wrap = document.createElement('div');
       wrap.className = 'pxwrap';
-      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">' + NOTE + ' · birds-eye overview 縮時重播</div>';
+      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">真實 session birds-eye overview · 縮時重播</div>';
       stageEl.replaceChildren(wrap);
     }
     mcApply(s.mc);
