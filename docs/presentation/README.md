@@ -8,6 +8,9 @@
 2. **視覺層:十步揭開真實 dashboard** — STEP 2–10 全部是 **ccxray v2.3 實際介面截圖**
    (深色主題、合成示範資料實拍,非示意圖);只有 STEP 1 的架構分鏡是線框示意,並標註「架構示意」。
 3. **故事層:英雄旅程八幕** — 右上角幕別徽章,讓聽眾隱約感覺「這是一個故事」。
+4. **隱喻層:X 光** — 第三幕點題(「給 AI session 照一張 X 光」),第六幕收尾埋伏筆
+   (「而這些選擇——X 光不會替你做」),終幕收束:照得出病灶、治不了病,
+   開刀的判斷在你手上。工具給看見,決定留給人。
 
 ## 操作
 
@@ -29,7 +32,7 @@
 | 2 | Topbar | 第四幕 | `● ccxray` + Dashboard / Usage / System Prompt + Context HUD + quota ticker |
 | 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(`fable-5 · 17t · 9m`、`$6.80`、**38% of 1M** context bar、綠色 cache 倒數)|
 | 4 | TIMELINE steps | 第四幕 | user 泡泡、Read/Grep/Edit/Bash 步驟、thinking、逐字內容 |
-| 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY/DAILY COST + ACCOUNTS |
+| 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY(07/$245、08/$74)+ DAILY 30 天起伏(週日 $0、高峰 $28.94、今日 $6.89 與 demo session 對帳一致)+ ACCOUNTS |
 | 6 | Cache 過期分鏡 ×4 | 試煉一 | 同一張真實 session 卡跨四頁存活,一頁一個情況、狀態原地交叉淡變:`cache 50m left`(綠,安心)→ 去開會 `20m`(黃)→ 最後 3 分鐘(紅,**以原生 cachePulse 節奏閃爍**,鏡頭推近 1.24×)→ `cache expired`(灰,鏡頭拉回);紅色態由兩幀真實畫格交錯重現 |
 | 7 | Workflow 泳道 | 試煉二 | main lane + Explore 子代理 lane、minimap、時間軸 |
 | 8 | System Prompt 頁 | 試煉三 | AGENTS / VERSIONS(v2.0.14 → v2.0.15 `+0.2k`)/ DIFF mode |
@@ -71,7 +74,9 @@ webapp session 用 `claude-sonnet-4-6`(200K)同法計價。STEP 9 的螺旋 sess
 sessions:STEP 10 現採用**講者提供的真實 session 原圖**(`tools/` 仍保留 `gen-fanout.mjs`
 可生成同形狀的合成對照組,供無原圖時重建)。Usage 頁的 $6.89(Today/Month)
 = ccxray 專案 $6.80 + webapp $0.09——產生器同步輸出 `~/.claude/projects/*.jsonl`
-(cost-worker 的掃描來源),兩邊數字天然一致。
+(cost-worker 的掃描來源),兩邊數字天然一致。Usage 的 MONTHLY/DAILY 歷史(過去 30 天)
+也由產生器合成:日型分佈(工作日重度 $18–32 fable 為主/一般 $6–14/輕 $1–4/週日多半 $0),
+金額不手填——湊 token 再由同一費率表推出;今日一列即 demo session 的 $6.89。
 
 ### Cache 20× 這個數字
 
@@ -82,7 +87,7 @@ sessions:STEP 10 現採用**講者提供的真實 session 原圖**(`tools/` 仍�
 (`public/cache-notify.js`,Max 預設開、提前 5 分鐘)。STEP 6 的四態截圖用
 `CCXRAY_PLAN=max5x` 跑出 1h TTL 後實拍。
 
-## 節奏表(總長 ~10:10,102 頁;需壓回 10:00 時第一、二幕文字頁加速)
+## 節奏表(總長 ~10:15,108 頁;需壓回 10:00 時第一、二幕文字頁加速)
 
 高橋流的節奏感 = **快慢交錯**:文字頁 1–5 秒連發,截圖頁停 15–25 秒講;
 紅字 = 痛點、青字 = ccxray/轉折、綠字 = 解脫。
@@ -97,7 +102,7 @@ sessions:STEP 10 現採用**講者提供的真實 session 原圖**(`tools/` 仍�
 | 第五幕 | 試煉之路 | 5:00–7:10 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」;試煉一內插 cache 段:「差 20 倍」重擊後停 2 秒;STEP 6 四頁分鏡一頁一個情況(綠安心 → 黃開會 → 紅閃爍推近鏡頭壓低聲音 → 過期拉遠嘆氣),講「它在催你回去」 |
 | 第六幕 | 深淵尋寶 | 7:10–8:55 | 這是全簡報的「深淵」本體。Smart/Dumb Zone 兩個大字各停 2 秒;六頁逐格重播讓柱狀圖自己長:「還在漲」語速加快製造焦慮 → 紅點段壓低聲音「它開始失手了」→ 95% 定格停 3 秒 → auto compact 那格落下時拍手一聲「沒了」→ 重生段放鬆;收尾回扣試煉二:「分工給 subagent,留在 smart zone」;接著模型選擇對照三頁:good 縮時 7 秒播完先立標竿 → bad 續播(觀眾會等它停,它還一直長)→ 結論浮現時逐項點名「更久、更貴、更差」,實際數字由講者口述 |
 | 第七幕 | 帶著火種歸返 | 8:55–9:40 | 輕快收攏 hub/多代理/delta;code 頁二現首尾呼應;STEP 10 壓軸大圖停滿 20 秒 |
-| 終幕 | — | 9:40–10:10 | 點破故事層:「不是屠龍,是帶回火種」。「透明」一字收束,報 repo,謝幕 |
+| 終幕 | — | 9:40–10:15 | 點破故事層與隱喻:「不是屠龍,是帶回一雙透視的眼睛」;「X 光照得出病灶」放慢、「治不了病」重擊停 2 秒、「開刀的判斷,在你手上」指向觀眾;「看見,然後決定」收束,報 repo,謝幕 |
 
 ## 設計原則
 
