@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccxray — 高橋流簡報(10 分鐘)</title>
+<style>
+  /* 高橋流:一頁一句、字要夠大、節奏要快。深色定調(X-ray 影像的世界觀),不隨系統主題切換。 */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #05080c;
+    color: #e6edf3;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    cursor: pointer;
+  }
+  #stage {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 6vmin 7vmin 10vmin;
+  }
+  .slide {
+    font-weight: 900;
+    line-height: 1.15;
+    letter-spacing: .02em;
+    font-size: clamp(2.6rem, 13vw, 12rem);
+    animation: pop .18s ease-out;
+  }
+  @keyframes pop { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+  .slide.long  { font-size: clamp(2rem, 7.5vw, 7rem); }
+  .slide.small { font-size: clamp(1.4rem, 4.5vw, 3.6rem); font-weight: 700; color: #9fb0c0; }
+  .slide.code {
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: clamp(1.6rem, 5.5vw, 5rem);
+    font-weight: 600;
+    color: #7ee787;
+    background: #0b1420;
+    border: 1px solid #1d2d40;
+    border-radius: .18em;
+    padding: .5em .7em;
+  }
+  .slide .sub {
+    display: block;
+    margin-top: .6em;
+    font-size: .32em;
+    font-weight: 600;
+    color: #8b98a5;
+    letter-spacing: .06em;
+  }
+  .accent { color: #22d3ee; }
+  .hot    { color: #ff7b72; }
+  .good   { color: #7ee787; }
+  .dim    { color: #55606b; }
+
+  /* 第二層敘事:英雄旅程幕別,常駐右上角 */
+  #act {
+    position: fixed; top: 2.4vmin; right: 3vmin;
+    font-size: clamp(.7rem, 1.6vmin, 1rem);
+    font-weight: 700; letter-spacing: .18em;
+    color: #22d3ee; opacity: .85;
+    border: 1px solid #164e5f; border-radius: 99px;
+    padding: .45em 1.1em;
+    transition: opacity .3s;
+  }
+  #counter {
+    position: fixed; bottom: 2.2vmin; right: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b; font-variant-numeric: tabular-nums;
+  }
+  #hint {
+    position: fixed; bottom: 2.2vmin; left: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b;
+  }
+  #bar {
+    position: fixed; left: 0; bottom: 0; height: 4px; width: 0;
+    background: linear-gradient(90deg, #22d3ee, #7ee787);
+    transition: width .15s ease-out;
+  }
+</style>
+</head>
+<body>
+<div id="act"></div>
+<div id="stage"><div class="slide" id="slide"></div></div>
+<div id="bar"></div>
+<div id="counter"></div>
+<div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放</div>
+<script>
+// 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
+const ACTS = [
+  '序幕 · 平凡世界',
+  '第一幕 · 冒險的召喚',
+  '第二幕 · 拒絕召喚',
+  '第三幕 · 導師現身',
+  '第四幕 · 跨越門檻',
+  '第五幕 · 試煉之路',
+  '第六幕 · 深淵尋寶',
+  '第七幕 · 帶著火種歸返',
+  '終幕',
+];
+
+// t: 內容(HTML) / c: 額外 class / a: 幕別索引
+const S = [
+  // ── 序幕 · 平凡世界(0:00–0:40)──────────────────────
+  { t:'你', a:0 },
+  { t:'每天', a:0 },
+  { t:'和 AI', a:0 },
+  { t:'結對寫程式', c:'long', a:0 },
+  { t:'Claude Code<span class="sub">Codex · Grok</span>', c:'long', a:0 },
+  { t:'它很強', a:0 },
+  { t:'但是——', c:'dim', a:0 },
+
+  // ── 第一幕 · 冒險的召喚(0:40–2:00)──────────────────
+  { t:'黑盒子', c:'hot', a:1 },
+  { t:'它在想什麼?', c:'long', a:1 },
+  { t:'為什麼', a:1 },
+  { t:'停頓 30 秒?', c:'long', a:1 },
+  { t:'200K', a:1 },
+  { t:'context', a:1 },
+  { t:'被什麼吃掉了?', c:'long', a:1 },
+  { t:'System Prompt', c:'long', a:1 },
+  { t:'長什麼樣?', c:'long', a:1 },
+  { t:'每一次呼叫', c:'long', a:1 },
+  { t:'花多少錢?', c:'long', a:1 },
+  { t:'你不知道', c:'long', a:1 },
+  { t:'帳單知道', c:'long hot', a:1 },
+
+  // ── 第二幕 · 拒絕召喚(2:00–2:40)────────────────────
+  { t:'「算了」', a:2 },
+  { t:'「能動就好」', c:'long', a:2 },
+  { t:'「不看,比較幸福」', c:'long dim', a:2 },
+  { t:'直到——', a:2 },
+  { t:'某個深夜', c:'long', a:2 },
+  { t:'一個 session', c:'long', a:2 },
+  { t:'燒掉整晚預算', c:'long hot', a:2 },
+  { t:'你需要真相', c:'long', a:2 },
+
+  // ── 第三幕 · 導師現身(2:40–3:40)────────────────────
+  { t:'一行指令', c:'long', a:3 },
+  { t:'npx ccxray claude', c:'code', a:3 },
+  { t:'就這樣', a:3 },
+  { t:'零設定', c:'accent', a:3 },
+  { t:'零依賴', c:'accent', a:3 },
+  { t:'不改你的習慣', c:'long', a:3 },
+  { t:'它是誰?', a:3 },
+  { t:'<span class="accent">cc</span>xray', a:3 },
+  { t:'透明代理', c:'long', a:3 },
+  { t:'站在你與 API 之間', c:'long', a:3 },
+  { t:'每個 request', c:'long', a:3 },
+  { t:'每個 response', c:'long', a:3 },
+  { t:'全部記下來', c:'long accent', a:3 },
+
+  // ── 第四幕 · 跨越門檻(3:40–5:00)────────────────────
+  { t:'打開 Dashboard', c:'long', a:4 },
+  { t:'你第一次', c:'long', a:4 },
+  { t:'看見', c:'accent', a:4 },
+  { t:'專案 → Session → 回合<span class="sub">Miller Columns 逐層下鑽</span>', c:'long', a:4 },
+  { t:'即時更新', c:'long', a:4 },
+  { t:'那 30 秒的停頓?', c:'long', a:4 },
+  { t:'是 thinking', c:'long good', a:4 },
+  { t:'那些 token?', c:'long', a:4 },
+  { t:'逐字可見', c:'long good', a:4 },
+  { t:'黑盒', c:'hot', a:4 },
+  { t:'變玻璃盒', c:'long good', a:4 },
+
+  // ── 第五幕 · 試煉之路(5:00–7:00)────────────────────
+  { t:'試煉一', c:'dim', a:5 },
+  { t:'錢去哪了?', c:'long hot', a:5 },
+  { t:'每回合成本', c:'long', a:5 },
+  { t:'每日熱圖', c:'long', a:5 },
+  { t:'Burn Rate', a:5 },
+  { t:'一目了然', c:'long good', a:5 },
+
+  { t:'試煉二', c:'dim', a:5 },
+  { t:'Subagent 亂舞', c:'long hot', a:5 },
+  { t:'誰生了誰?', c:'long', a:5 },
+  { t:'泳道時間軸<span class="sub">Workflow Timeline</span>', c:'long', a:5 },
+  { t:'主線、支線、平行', c:'long', a:5 },
+  { t:'像讀樂譜', c:'long good', a:5 },
+
+  { t:'試煉三', c:'dim', a:5 },
+  { t:'System Prompt 之謎', c:'long hot', a:5 },
+  { t:'版本歷史', c:'long', a:5 },
+  { t:'逐版 diff', c:'long', a:5 },
+  { t:'升級改了什麼', c:'long', a:5 },
+  { t:'無所遁形', c:'long good', a:5 },
+
+  // ── 第六幕 · 深淵尋寶(7:00–8:20)────────────────────
+  { t:'再深一層', a:6 },
+  { t:'只是「看」嗎?', c:'long', a:6 },
+  { t:'不', c:'accent', a:6 },
+  { t:'攔截', c:'accent', a:6 },
+  { t:'暫停 request', c:'long', a:6 },
+  { t:'動手編輯', c:'long', a:6 },
+  { t:'放行,或拒絕', c:'long', a:6 },
+  { t:'你從觀眾', c:'long', a:6 },
+  { t:'變成導演', c:'long accent', a:6 },
+
+  // ── 第七幕 · 帶著火種歸返(8:20–9:20)────────────────
+  { t:'回到日常', c:'long', a:7 },
+  { t:'開多個終端?', c:'long', a:7 },
+  { t:'自動共用一個 Hub', c:'long', a:7 },
+  { t:'Claude · Codex · Grok', c:'long', a:7 },
+  { t:'一個儀表板', c:'long accent', a:7 },
+  { t:'長 session 爆磁碟?', c:'long', a:7 },
+  { t:'Delta 儲存', c:'long', a:7 },
+  { t:'省 85% 空間', c:'long good', a:7 },
+  { t:'npx ccxray claude', c:'code', a:7 },
+  { t:'十秒後', a:7 },
+  { t:'你的 AI', c:'long', a:7 },
+  { t:'不再是謎', c:'long accent', a:7 },
+
+  // ── 終幕(9:20–10:00)────────────────────────────────
+  { t:'英雄旅程的終點', c:'long', a:8 },
+  { t:'不是屠龍', c:'long', a:8 },
+  { t:'是帶回火種', c:'long', a:8 },
+  { t:'透明', c:'accent', a:8 },
+  { t:'就是火種', c:'long', a:8 },
+  { t:'github.com/lis186/ccxray', c:'code', a:8 },
+  { t:'謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a:8 },
+];
+
+let i = 0, timer = null;
+const slideEl = document.getElementById('slide');
+const actEl = document.getElementById('act');
+const barEl = document.getElementById('bar');
+const counterEl = document.getElementById('counter');
+
+function show(n) {
+  i = Math.max(0, Math.min(S.length - 1, n));
+  const s = S[i];
+  const el = slideEl.cloneNode(false);
+  el.className = 'slide' + (s.c ? ' ' + s.c : '');
+  el.innerHTML = s.t;
+  slideEl.replaceWith(el);
+  el.id = 'slide';
+  actEl.textContent = ACTS[s.a];
+  barEl.style.width = ((i + 1) / S.length * 100) + '%';
+  counterEl.textContent = (i + 1) + ' / ' + S.length;
+  location.hash = i ? '#' + (i + 1) : '';
+}
+function next() { show(i + 1); }
+function prev() { show(i - 1); }
+function toggleAuto() {
+  if (timer) { clearInterval(timer); timer = null; }
+  else { timer = setInterval(() => { if (i >= S.length - 1) toggleAuto(); else next(); }, 6000); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(S.length - 1);
+  else if (e.key === 'a' || e.key === 'A') toggleAuto();
+});
+document.addEventListener('click', e => {
+  (e.clientX < window.innerWidth * 0.25) ? prev() : next();
+});
+let touchX = null;
+document.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (touchX === null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  if (dx < -30) next(); else if (dx > 30) prev();
+  touchX = null;
+}, { passive: true });
+
+show(parseInt(location.hash.slice(1), 10) - 1 || 0);
+</script>
+</body>
+</html>
