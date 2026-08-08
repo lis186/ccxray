@@ -139,6 +139,11 @@
   @keyframes flowR { from { left: -3px; } to { left: calc(100% - 4px); } }
   @keyframes flowL { from { left: calc(100% - 4px); } to { left: -3px; } }
 
+  .blinkwrap { position: relative; }
+  .blinkwrap img.frameb { position: absolute; inset: 0; animation: cacheBlink 1s ease-in-out infinite; }
+  @keyframes cacheBlink { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+  .statecap { font-family: ui-monospace, monospace; font-size: clamp(.6rem, 1.4vmin, .8rem); color: #55606b; margin-top: .7em; text-align: center; }
+
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
   }
@@ -174,6 +179,11 @@ const IMG = {
   usagemo: '{{IMG:crop-usage-monthly}}',
   usageday: '{{IMG:crop-usage-daily}}',
   usageacct: '{{IMG:crop-usage-accounts}}',
+  cachefar: '{{IMG:cache-far}}',
+  cachenear: '{{IMG:cache-near}}',
+  cacheclosea: '{{IMG:cache-close-a}}',
+  cachecloseb: '{{IMG:cache-close-b}}',
+  cacheexpired: '{{IMG:cache-expired}}',
   swimlane: '{{IMG:crop-swimlane}}',
   spdiff: '{{IMG:full-sysprompt-diff}}',
   heldbar: '{{IMG:crop-topbar-held}}',
@@ -181,7 +191,7 @@ const IMG = {
   full: '{{IMG:full-session}}',
 };
 
-const VIZ_STEPS = 9;
+const VIZ_STEPS = 10;
 const NOTE = 'ccxray v2.3 實際畫面(示範資料)';
 
 // stage 1 = 架構示意;2..9 = 真實截圖
@@ -202,10 +212,21 @@ function renderViz(s) {
       '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
       img('usagemo', 'hero') + img('usageday', 'hero') + '</div>' +
       img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
-    case 6: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
-    case 7: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
-    case 8: return '<div class="shots" style="flex-direction:column;align-items:center;gap:2.4vh">' + img('heldbar', 'hero', 'width:80vw') + img('heldsess', '', 'width:26vw;min-width:250px') + '</div>';
-    case 9: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
+    case 6: {
+      const card = (k, cap, cls) => '<div style="width:19vw;min-width:190px">' +
+        img(k, cls || '') + '<div class="statecap">' + cap + '</div></div>';
+      const blink = '<div style="width:19vw;min-width:190px">' +
+        '<div class="shot hero blinkwrap"><img src="' + IMG.cacheclosea + '" alt="">' +
+        '<img class="frameb" src="' + IMG.cachecloseb + '" alt=""></div>' +
+        '<div class="statecap"><span class="hot">&lt;30% 紅色閃爍</span></div></div>';
+      return '<div class="shots">' +
+        card('cachefar', '剩 &gt;60% · 綠') + card('cachenear', '30–60% · 黃') + blink +
+        card('cacheexpired', '過期 · 重建 2×') + '</div>';
+    }
+    case 7: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
+    case 8: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
+    case 9: return '<div class="shots" style="flex-direction:column;align-items:center;gap:2.4vh">' + img('heldbar', 'hero', 'width:80vw') + img('heldsess', '', 'width:26vw;min-width:250px') + '</div>';
+    case 10: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
   }
 }
 
@@ -264,15 +285,23 @@ const S = [
   { t: '試煉一', c: 'dim', a: 5 },
   { t: '錢去哪了?', c: 'long hot', a: 5 },
   { v: 5, t: '每回合、每日、每月——<span class="good">一目了然</span>', a: 5 },
+  { t: '還有一個隱形殺手', c: 'long', a: 5 },
+  { t: 'Cache 斷線', c: 'long hot', a: 5 },
+  { t: '命中 0.1×<br>重建 <span class="hot">2×</span>', c: 'long', a: 5 },
+  { t: '差 20 倍', c: 'hot', a: 5 },
+  { t: '1h TTL,錯過就重付', c: 'long', a: 5 },
+  { v: 6, t: '倒數就在卡片上:綠 → 黃 → <span class="hot">紅色閃爍</span> → 過期', a: 5 },
+  { t: '快斷線時<br>分頁標題也會閃 <span class="hot">⚠ ccxray</span>', c: 'long', a: 5 },
+  { t: '回去戳一下,省 20 倍', c: 'long good', a: 5 },
 
   { t: '試煉二', c: 'dim', a: 5 },
   { t: 'Subagent 亂舞', c: 'long hot', a: 5 },
   { t: '誰生了誰?', c: 'long', a: 5 },
-  { v: 6, t: '泳道時間軸:main 與子代理,<span class="accent">像讀樂譜</span>', a: 5 },
+  { v: 7, t: '泳道時間軸:main 與子代理,<span class="accent">像讀樂譜</span>', a: 5 },
 
   { t: '試煉三', c: 'dim', a: 5 },
   { t: 'System Prompt 之謎', c: 'long hot', a: 5 },
-  { v: 7, t: '版本歷史 v2.0.14 → v2.0.15,逐版 <span class="good">diff</span>', a: 5 },
+  { v: 8, t: '版本歷史 v2.0.14 → v2.0.15,逐版 <span class="good">diff</span>', a: 5 },
   { t: '無所遁形', c: 'long good', a: 5 },
 
   // ── 第六幕 · 深淵尋寶(7:00–8:10)────────────────────
@@ -280,7 +309,7 @@ const S = [
   { t: '只是「看」嗎?', c: 'long', a: 6 },
   { t: '不', c: 'accent', a: 6 },
   { t: '攔截', c: 'accent', a: 6 },
-  { v: 8, t: '<span class="hot">HELD</span>——請求暫停,等你決定:編輯、放行、拒絕', a: 6 },
+  { v: 9, t: '<span class="hot">HELD</span>——請求暫停,等你決定:編輯、放行、拒絕', a: 6 },
   { t: '你從觀眾', c: 'long', a: 6 },
   { t: '變成導演', c: 'long accent', a: 6 },
 
@@ -293,7 +322,7 @@ const S = [
   { t: 'Delta 儲存,省 85%', c: 'long good', a: 7 },
   { t: 'npx ccxray claude', c: 'code', a: 7 },
   { t: '十秒後——', a: 7 },
-  { v: 9, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
+  { v: 10, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
 
   // ── 終幕(9:20–10:00)────────────────────────────────
   { t: '英雄旅程的終點', c: 'long', a: 8 },
