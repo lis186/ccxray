@@ -58,6 +58,7 @@
   .hot    { color: #ff7b72; }
   .good   { color: #7ee787; }
   .dim    { color: #55606b; }
+  .warn   { color: #e3b341; }
 
   /* 第二層敘事:英雄旅程幕別,常駐右上角 */
   #act {
@@ -186,10 +187,21 @@
   .scene-5 #px-x { box-shadow: 0 0 26px #22d3ee55; }
   .scene-5 .pxlogs { opacity: 1; }
 
-  .blinkwrap { position: relative; }
-  .blinkwrap img.frameb { position: absolute; inset: 0; animation: cacheBlink 1s ease-in-out infinite; }
+  /* STEP 6:cache 過期分鏡。同一張真實 session 卡跨頁存活(#cxroot),
+     翻頁只換 cx-N class:四個狀態圖層原地交叉淡變,紅色態疊上第二畫格
+     以原生 cachePulse 節奏閃爍;鏡頭在警告時推近、過期時拉回。 */
   @keyframes cacheBlink { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
-  .statecap { font-family: ui-monospace, monospace; font-size: clamp(.6rem, 1.4vmin, .8rem); color: #55606b; margin-top: .7em; text-align: center; }
+  .cxscene { display: flex; align-items: center; justify-content: center; height: 46vh; }
+  .cxzoom { transition: transform .7s cubic-bezier(.33,0,.15,1); transform-origin: 72% 86%; }
+  .cxcard { position: relative; width: min(34vw, 440px); min-width: 260px; }
+  .cxcard img { display: block; width: 100%; height: auto; }
+  .cxcard img.ov { position: absolute; inset: 0; opacity: 0; transition: opacity .6s ease; }
+  .cx-2 .cxzoom { transform: scale(1.07); }
+  .cx-3 .cxzoom { transform: scale(1.24); }
+  .cx-2 img.ov.near { opacity: 1; }
+  .cx-3 img.ov.closea { opacity: 1; }
+  .cx-3 img.ov.closeb { animation: cacheBlink 1s ease-in-out infinite; }
+  .cx-4 img.ov.expired { opacity: 1; }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -275,6 +287,21 @@ function pxApply(k) {
   logs.innerHTML = k >= 5 ? pxLogsHTML() : '';
 }
 
+// ── STEP 6 cache 過期分鏡:同一張真實卡片跨頁存活,狀態圖層交叉淡變 ──
+function cxSceneHTML(k) {
+  return '<div id="cxroot" class="cxscene cx-' + k + '">' +
+    '<div class="cxzoom"><div class="shot hero cxcard">' +
+      '<img class="base" src="' + IMG.cachefar + '" alt="">' +
+      '<img class="ov near" src="' + IMG.cachenear + '" alt="">' +
+      '<img class="ov closea" src="' + IMG.cacheclosea + '" alt="">' +
+      '<img class="ov closeb" src="' + IMG.cachecloseb + '" alt="">' +
+      '<img class="ov expired" src="' + IMG.cacheexpired + '" alt="">' +
+    '</div></div></div>';
+}
+function cxApply(k) {
+  stageEl.querySelector('#cxroot').className = 'cxscene cx-' + k;
+}
+
 function renderViz(s) {
   const img = (k, cls, style) => '<div class="shot ' + (cls || '') + '"' + (style ? ' style="' + style + '"' : '') + '><img src="' + IMG[k] + '" alt=""></div>';
   switch (s) {
@@ -285,17 +312,6 @@ function renderViz(s) {
       '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
       img('usagemo', 'hero') + img('usageday', 'hero') + '</div>' +
       img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
-    case 6: {
-      const card = (k, cap, cls) => '<div style="width:19vw;min-width:190px">' +
-        img(k, cls || '') + '<div class="statecap">' + cap + '</div></div>';
-      const blink = '<div style="width:19vw;min-width:190px">' +
-        '<div class="shot hero blinkwrap"><img src="' + IMG.cacheclosea + '" alt="">' +
-        '<img class="frameb" src="' + IMG.cachecloseb + '" alt=""></div>' +
-        '<div class="statecap"><span class="hot">&lt;30% 紅色閃爍</span></div></div>';
-      return '<div class="shots">' +
-        card('cachefar', '剩 &gt;60% · 綠') + card('cachenear', '30–60% · 黃') + blink +
-        card('cacheexpired', '過期 · 重建 2×') + '</div>';
-    }
     case 7: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
     case 8: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
     case 9: return '<div class="shots" style="flex-direction:column;align-items:center;gap:2.4vh">' + img('heldbar', 'hero', 'width:80vw') + img('heldsess', '', 'width:26vw;min-width:250px') + '</div>';
@@ -366,7 +382,10 @@ const S = [
   { t: '命中 0.1×<br>重建 <span class="hot">2×</span>', c: 'long', a: 5 },
   { t: '差 20 倍', c: 'hot', a: 5 },
   { t: '1h TTL,錯過就重付', c: 'long', a: 5 },
-  { v: 6, t: '倒數就在卡片上:綠 → 黃 → <span class="hot">紅色閃爍</span> → 過期', a: 5 },
+  { cx: 1, t: '倒數就在卡片上——<span class="good">cache 50m left</span>,綠燈,安心寫', a: 5 },
+  { cx: 2, t: '去開了個會——剩 <span class="warn">20 分鐘</span>,轉黃', a: 5 },
+  { cx: 3, t: '最後 3 分鐘——<span class="hot">紅色,一閃一閃催你</span>', a: 5 },
+  { cx: 4, t: '沒趕上——<span class="dim">cache expired</span>,下一段重付 <span class="hot">2×</span>', a: 5 },
   { t: '快斷線時<br>分頁標題也會閃 <span class="hot">⚠ ccxray</span>', c: 'long', a: 5 },
   { t: '回去戳一下,省 20 倍', c: 'long good', a: 5 },
 
@@ -419,6 +438,27 @@ const counterEl = document.getElementById('counter');
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
+  if (s.cx) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 6/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const root = stageEl.querySelector('#cxroot');
+    if (root) {
+      cxApply(s.cx);
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = cxSceneHTML(s.cx) + capHtml + '<div class="vnote">' + NOTE + '</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
   if (s.sc) {
     const capHtml = '<div class="vcap"><span class="step">STEP 1/' + VIZ_STEPS + '</span>' + s.t + '</div>';
     const root = stageEl.querySelector('#pxroot');

@@ -30,7 +30,7 @@
 | 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(model · turns · 時長、**97% of 200K** 紅色 context bar)|
 | 4 | TIMELINE steps | 第四幕 | user 泡泡、Read/Grep/Edit/Bash 步驟、thinking、逐字內容 |
 | 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY/DAILY COST + ACCOUNTS |
-| 6 | Cache TTL 四態 | 試煉一 | 同一張 session 卡的四個真實狀態:`cache 50m left`(綠)→ `20m`(黃)→ `3m`(紅,**以原生 cachePulse 節奏閃爍**)→ `cache expired`(灰);紅色態由兩幀真實畫格交錯重現 |
+| 6 | Cache 過期分鏡 ×4 | 試煉一 | 同一張真實 session 卡跨四頁存活,一頁一個情況、狀態原地交叉淡變:`cache 50m left`(綠,安心)→ 去開會 `20m`(黃)→ 最後 3 分鐘(紅,**以原生 cachePulse 節奏閃爍**,鏡頭推近 1.24×)→ `cache expired`(灰,鏡頭拉回);紅色態由兩幀真實畫格交錯重現 |
 | 7 | Workflow 泳道 | 試煉二 | main lane + Explore 子代理 lane、minimap、時間軸 |
 | 8 | System Prompt 頁 | 試煉三 | AGENTS / VERSIONS(v2.0.14 → v2.0.15 `+0.2k`)/ DIFF mode |
 | 9 | Intercept | 第六幕 | topbar `HELD (117s)` 琥珀 chip + session 卡紅色 `HELD` 徽章 |
@@ -60,7 +60,7 @@ node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進
 (`public/cache-notify.js`,Max 預設開、提前 5 分鐘)。STEP 6 的四態截圖用
 `CCXRAY_PLAN=max5x` 跑出 1h TTL 後實拍。
 
-## 節奏表(總長 10:00,84 頁)
+## 節奏表(總長 10:00,87 頁)
 
 高橋流的節奏感 = **快慢交錯**:文字頁 1–5 秒連發,截圖頁停 15–25 秒講;
 紅字 = 痛點、青字 = ccxray/轉折、綠字 = 解脫。
@@ -72,7 +72,7 @@ node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進
 | 第二幕 | 拒絕召喚 | 1:50–2:30 | 模仿觀眾自我安慰,輕鬆;「直到——」轉折收笑 |
 | 第三幕 | 導師現身 | 2:30–3:40 | code 頁停 4 秒讓人拍照;五頁分鏡一頁一個重點、每頁 3–6 秒:獨處 → 直連 → zoom in「中間什麼都沒有」(壓低聲音)→「站進來」(重擊)→ zoom out 看 log 疊出 |
 | 第四幕 | 跨越門檻 | 3:40–5:00 | 「看見」是軸心字;STEP 2→3→4 逐步揭開:入口 → 欄位 → 逐字步驟;指著紅色 97% bar 與 thinking 步驟講 |
-| 第五幕 | 試煉之路 | 5:00–7:10 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」;試煉一內插 cache 段:「差 20 倍」重擊後停 2 秒,STEP 6 指著紅色閃爍卡講「它在催你回去」 |
+| 第五幕 | 試煉之路 | 5:00–7:10 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」;試煉一內插 cache 段:「差 20 倍」重擊後停 2 秒;STEP 6 四頁分鏡一頁一個情況(綠安心 → 黃開會 → 紅閃爍推近鏡頭壓低聲音 → 過期拉遠嘆氣),講「它在催你回去」 |
 | 第六幕 | 深淵尋寶 | 7:10–8:15 | 語速最慢。「不」「攔截」單字重擊;STEP 9 指著 HELD 徽章講「主導權回到你手上」 |
 | 第七幕 | 帶著火種歸返 | 8:15–9:20 | 輕快收攏 hub/多代理/delta;code 頁二現首尾呼應;STEP 10 壓軸大圖停滿 20 秒 |
 | 終幕 | — | 9:20–10:00 | 點破故事層:「不是屠龍,是帶回火種」。「透明」一字收束,報 repo,謝幕 |
@@ -83,7 +83,8 @@ node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進
   「ccxray v2.3 實際畫面(示範資料)」;唯一的線框(STEP 1)明確標示「架構示意」。
 - **一頁一個念頭**:超過 7 個字就該懷疑要不要拆頁。
 - **視覺是累積的**:入口 → 欄位 → 步驟 → 各功能分區 → 最後全畫面同框,壓軸沒有新資訊,只有完成感。
-- **分鏡連續性**:STEP 1 的五頁共用同一個 DOM(`#pxroot`),翻頁只切換 `scene-N` class,
-  元素靠 CSS transition 平移/縮放到新狀態——一頁一個重點,節奏不被重繪打斷;倒退翻頁會反向動畫。
+- **分鏡連續性**:STEP 1(`#pxroot`,五頁)與 STEP 6(`#cxroot`,四頁)各共用同一個 DOM,
+  翻頁只切換 scene class,元素靠 CSS transition 平移/縮放/交叉淡變到新狀態——一頁一個重點,
+  節奏不被重繪打斷;倒退翻頁會反向動畫(含紅色態閃爍的恢復)。
 - **問答對仗**:第一幕的每個問題,第四、五幕逐一回收。
 - **首尾呼應**:`npx ccxray claude` 出現兩次;第一次是神器,第二次是行動呼籲。
