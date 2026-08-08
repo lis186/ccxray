@@ -3115,7 +3115,7 @@ function renderToolInput(c) {
     } else {
       html += '<pre class="detail-cmd-block">' + escapeHtml(cmd) + '</pre>';
     }
-    if (inp.timeout && inp.timeout !== 120000) html += '<div class="detail-meta-line">timeout: ' + inp.timeout + 'ms</div>';
+    if (inp.timeout && inp.timeout !== 120000) html += '<div class="detail-meta-line">timeout: ' + escapeHtml(String(inp.timeout)) + 'ms</div>';
     html += '</div>';
     return html;
   }
