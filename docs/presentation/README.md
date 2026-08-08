@@ -27,7 +27,7 @@
 |------|------|--------|------|
 | 1 | 架構分鏡 ×5(唯一線框)| 第三幕 | 連續五頁共用同一組元素,翻頁不重建、以平移/縮放延伸(FLIP 轉場):Claude Code 獨處 → 直連 API(光點開始流)→ **zoom in** 管線中點(虛線圈標記空位)→ ccxray 縮放進場 → **zoom out** + 記錄流逐列疊出 |
 | 2 | Topbar | 第四幕 | `● ccxray` + Dashboard / Usage / System Prompt + Context HUD + quota ticker |
-| 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(model · turns · 時長、**97% of 200K** 紅色 context bar)|
+| 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(`fable-5 · 17t · 9m`、`$6.80`、**38% of 1M** context bar、綠色 cache 倒數)|
 | 4 | TIMELINE steps | 第四幕 | user 泡泡、Read/Grep/Edit/Bash 步驟、thinking、逐字內容 |
 | 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY/DAILY COST + ACCOUNTS |
 | 6 | Cache 過期分鏡 ×4 | 試煉一 | 同一張真實 session 卡跨四頁存活,一頁一個情況、狀態原地交叉淡變:`cache 50m left`(綠,安心)→ 去開會 `20m`(黃)→ 最後 3 分鐘(紅,**以原生 cachePulse 節奏閃爍**,鏡頭推近 1.24×)→ `cache expired`(灰,鏡頭拉回);紅色態由兩幀真實畫格交錯重現 |
@@ -41,15 +41,29 @@
 截圖來自真的 ccxray server(非 mockup):
 
 ```bash
-node tools/gen-fixture.mjs /tmp/ccxray-demo      # 合成示範資料(index + req/res + system prompts)
-CCXRAY_HOME=/tmp/ccxray-demo ccxray --port 5602 --no-browser
+node tools/gen-fixture.mjs /tmp/ccxray-demo /tmp/ccxray-demo-home   # 合成示範資料
+#   → CCXRAY_HOME(index + req/res + system prompts)+ 假 HOME(~/.claude JSONL,Usage 頁來源)
+HOME=/tmp/ccxray-demo-home CCXRAY_PLAN=max5x CCXRAY_HOME=/tmp/ccxray-demo ccxray --port 5602 --no-browser
 # headless Chromium(dark color-scheme)逐畫面截圖(含真的 intercept HELD:
 # 開 /_api/intercept/toggle 後送一個 request 讓它真的被攔下)
 node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進 deck-template.html → index.html
 ```
 
-改版後要更新簡報:重跑上面三步即可。截圖務必走 `CCXRAY_HOME` 隔離目錄(見 `docs/testing.md`),
-不要拿自己真實的 `~/.ccxray` 資料截圖。
+改版後要更新簡報:重跑上面三步即可。截圖務必同時隔離 `CCXRAY_HOME` **和** `HOME`(ADR 0015 R4
+的教訓:cost-worker 掃 `$HOME/.claude*`,不隔離 HOME 會把你自己的真實帳單掃進 Usage 頁),
+不要拿真實的 `~/.ccxray`/`~/.claude` 資料截圖。
+
+### 示範資料的數字怎麼算
+
+主 session 用 `claude-fable-5`(1M 視窗,`SUPPORTS_1M` 實測支援 `[1m]` marker):
+14 回合、context 從 184K 爬到 **380K = 38% of 1M**;每回合 cache 寫入 8–30K(工具結果)、
+增量 input 23–88、output 290–2,450(thinking 回合最大)、elapsed 8–72 秒、回合間隔 15–45 秒,
+全程約 10 分鐘。**成本不是手填的**:`tools/gen-fixture.mjs` 直接按
+`server/default-rates.js` 的 fable-5 費率(input $10 / output $50 / cache write $12.5 /
+cache read $1 每百萬 token)算出每回合 cost,主 session 合計 ≈ $6.7。Explore 子代理與
+webapp session 用 `claude-sonnet-4-6`(200K)同法計價。Usage 頁的 $6.89(Today/Month)
+= ccxray 專案 $6.80 + webapp $0.09——產生器同步輸出 `~/.claude/projects/*.jsonl`
+(cost-worker 的掃描來源),兩邊數字天然一致。
 
 ### Cache 20× 這個數字
 
@@ -71,7 +85,7 @@ node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進
 | 第一幕 | 冒險的召喚 | 0:40–1:50 | 連珠炮拋問題。「你不知道」放慢,「帳單知道」重擊+停 3 秒 |
 | 第二幕 | 拒絕召喚 | 1:50–2:30 | 模仿觀眾自我安慰,輕鬆;「直到——」轉折收笑 |
 | 第三幕 | 導師現身 | 2:30–3:40 | code 頁停 4 秒讓人拍照;五頁分鏡一頁一個重點、每頁 3–6 秒:獨處 → 直連 → zoom in「中間什麼都沒有」(壓低聲音)→「站進來」(重擊)→ zoom out 看 log 疊出 |
-| 第四幕 | 跨越門檻 | 3:40–5:00 | 「看見」是軸心字;STEP 2→3→4 逐步揭開:入口 → 欄位 → 逐字步驟;指著紅色 97% bar 與 thinking 步驟講 |
+| 第四幕 | 跨越門檻 | 3:40–5:00 | 「看見」是軸心字;STEP 2→3→4 逐步揭開:入口 → 欄位 → 逐字步驟;指著 38% of 1M context bar 與 thinking 步驟講 |
 | 第五幕 | 試煉之路 | 5:00–7:10 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」;試煉一內插 cache 段:「差 20 倍」重擊後停 2 秒;STEP 6 四頁分鏡一頁一個情況(綠安心 → 黃開會 → 紅閃爍推近鏡頭壓低聲音 → 過期拉遠嘆氣),講「它在催你回去」 |
 | 第六幕 | 深淵尋寶 | 7:10–8:15 | 語速最慢。「不」「攔截」單字重擊;STEP 9 指著 HELD 徽章講「主導權回到你手上」 |
 | 第七幕 | 帶著火種歸返 | 8:15–9:20 | 輕快收攏 hub/多代理/delta;code 頁二現首尾呼應;STEP 10 壓軸大圖停滿 20 秒 |
