@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ccxray — 高橋流簡報(10 分鐘)</title>
 <style>
-  /* 高橋流:一頁一句、字要夠大、節奏要快。深色定調(X-ray 影像的世界觀),不隨系統主題切換。 */
+  /* 高橋流:一頁一句、字要夠大、節奏要快。
+     視覺層:最小線框 UI 元素,九步逐層蓋出完整 dashboard。
+     深色定調(X-ray 影像的世界觀),不隨系統主題切換。 */
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
   body {
@@ -22,7 +24,7 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 6vmin 7vmin 10vmin;
+    padding: 5vmin 6vmin 9vmin;
   }
   .slide {
     font-weight: 900;
@@ -66,6 +68,7 @@
     border: 1px solid #164e5f; border-radius: 99px;
     padding: .45em 1.1em;
     transition: opacity .3s;
+    z-index: 5;
   }
   #counter {
     position: fixed; bottom: 2.2vmin; right: 3vmin;
@@ -81,6 +84,188 @@
     position: fixed; left: 0; bottom: 0; height: 4px; width: 0;
     background: linear-gradient(90deg, #22d3ee, #7ee787);
     transition: width .15s ease-out;
+  }
+
+  /* ────────────────────────────────────────────────
+     視覺層:線框 dashboard,逐步組裝
+     ──────────────────────────────────────────────── */
+  .vizslide {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3.2vh;
+    animation: pop .22s ease-out;
+  }
+  .vcap {
+    font-size: clamp(1.15rem, 3.2vw, 2.1rem);
+    font-weight: 900; letter-spacing: .03em;
+  }
+  .vcap .step {
+    display: inline-block; margin-right: .8em;
+    font-size: .55em; font-weight: 700; letter-spacing: .2em;
+    color: #22d3ee; border: 1px solid #164e5f; border-radius: 99px;
+    padding: .3em .9em; vertical-align: .18em;
+    font-variant-numeric: tabular-nums;
+  }
+  .viz { --line: #1d2d40; --panel: #0b1420; --mut: #8b98a5; --fnt: clamp(9px, 1.5vh, 13px); }
+  .viz { font-size: var(--fnt); color: var(--mut); text-align: left; }
+
+  /* STEP 1-2:代理管線 */
+  .flow { display: flex; align-items: center; gap: 0; }
+  .flow .node {
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 6px; padding: 1.1em 1.6em;
+    font-weight: 700; color: #c9d5e0; white-space: nowrap;
+    font-size: 1.25em;
+  }
+  .flow .node.hero { border-color: #22d3ee; color: #22d3ee; box-shadow: 0 0 18px #22d3ee33; }
+  .flow .pipe { position: relative; width: clamp(60px, 11vw, 150px); height: 2px; background: var(--line); }
+  .flow .dot { position: absolute; top: -2.5px; width: 7px; height: 7px; border-radius: 50%; }
+  .flow .dot.req { background: #22d3ee; animation: flowR 2.2s linear infinite; }
+  .flow .dot.res { background: #7ee787; animation: flowL 2.2s linear infinite; animation-delay: 1.1s; }
+  @keyframes flowR { from { left: -3px; } to { left: calc(100% - 4px); } }
+  @keyframes flowL { from { left: calc(100% - 4px); } to { left: -3px; } }
+  .flow.big { transform: scale(1.15); }
+
+  /* STEP 2:記錄流 */
+  .stream { display: flex; flex-direction: column; gap: .45em; margin-top: 3.5vh; width: min(78vw, 640px); }
+  .srow {
+    display: flex; gap: 1.4em; align-items: baseline;
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 4px; padding: .55em .9em;
+    font-family: ui-monospace, monospace;
+    opacity: 0; animation: rowin .4s ease-out forwards;
+  }
+  @keyframes rowin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .srow .t { color: #55606b; }
+  .srow .m { color: #c9d5e0; flex: 1; }
+  .srow .ok { color: #7ee787; }
+  .srow .dur { color: #55606b; }
+
+  /* dashboard 外框 */
+  .vizwrap { display: flex; align-items: center; gap: clamp(10px, 2vw, 26px); }
+  .frame {
+    width: min(86vw, 1060px);
+    border: 1px solid var(--line); border-radius: 10px;
+    background: #070d14;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .vizwrap.withhub .frame { width: min(68vw, 900px); }
+  .frame.full { border-color: #22d3ee; box-shadow: 0 0 34px #22d3ee2e; }
+  .ftop {
+    display: flex; align-items: center; gap: 1.2em;
+    border-bottom: 1px solid var(--line);
+    padding: .6em 1em; background: var(--panel);
+  }
+  .ftop .lights { color: #2a3644; letter-spacing: .25em; font-size: 1.1em; }
+  .ftop b { color: #22d3ee; letter-spacing: .06em; }
+  .ftop .flow { margin-left: auto; }
+  .ftop .flow .node { padding: .25em .8em; font-size: 1em; }
+  .ftop .flow .pipe { width: clamp(30px, 4vw, 60px); }
+  .ftop .livebadge {
+    color: #7ee787; border: 1px solid #1d4428; border-radius: 99px;
+    padding: .15em .8em; font-weight: 700; letter-spacing: .15em; font-size: .9em;
+  }
+  .fbody { display: flex; min-height: 0; }
+  .fside { display: flex; flex-direction: column; border-left: 1px solid var(--line); width: 44%; min-width: 0; }
+
+  /* STEP 3:Miller columns */
+  .mc { display: flex; flex: 1; min-width: 0; }
+  .col { flex: 1; min-width: 0; border-right: 1px solid var(--line); padding: .6em 0 .9em; }
+  .col:last-child { border-right: 0; }
+  .ch { color: #55606b; font-weight: 700; letter-spacing: .18em; padding: 0 1em .5em; font-size: .85em; }
+  .ci {
+    display: flex; align-items: center; gap: .6em;
+    padding: .42em 1em; color: #c9d5e0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .ci.sel { background: #10202f; color: #e6edf3; box-shadow: inset 2px 0 0 #22d3ee; }
+  .ci .cost { margin-left: auto; color: #7ee787; font-family: ui-monospace, monospace; font-size: .9em; }
+  .ci .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ci .bar { flex: 0 0 22%; height: 5px; background: #14202e; border-radius: 3px; overflow: hidden; }
+  .ci .cost { flex: none; }
+  .ci .bar i { display: block; height: 100%; background: #22d3ee; border-radius: 3px; }
+  .ci .bar i.warn { background: #e3b341; }
+  .livedot { width: 7px; height: 7px; border-radius: 50%; background: #7ee787; animation: blink 1.4s infinite; flex: none; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  /* 側欄面板(泳道 / diff)*/
+  .panel { border-bottom: 1px solid var(--line); padding: .7em 1em .9em; }
+  .panel:last-child { border-bottom: 0; }
+  .ph { color: #55606b; font-weight: 700; letter-spacing: .18em; margin-bottom: .6em; font-size: .85em; }
+
+  /* STEP 5:泳道 */
+  .lane { display: flex; align-items: center; gap: .8em; margin-bottom: .5em; }
+  .lane:last-child { margin-bottom: 0; }
+  .ll { flex: 0 0 5.5em; color: #8b98a5; text-align: right; font-family: ui-monospace, monospace; font-size: .9em; }
+  .lt { position: relative; flex: 1; height: 10px; background: #0d1520; border-radius: 3px; }
+  .lt i { position: absolute; top: 2px; bottom: 2px; border-radius: 2px; background: #22d3ee; }
+  .lt.sub i { background: #a371f7; }
+  .lt.tm i { background: #e3b341; }
+
+  /* STEP 6:diff */
+  .dl { font-family: ui-monospace, monospace; white-space: pre; padding: .12em .5em; color: #8b98a5; font-size: .95em; }
+  .dl.add { background: #12261a; color: #7ee787; }
+  .dl.del { background: #2c1517; color: #ff7b72; }
+
+  /* STEP 4:成本列 */
+  .coststrip {
+    display: flex; align-items: center; gap: 1.6em;
+    border-top: 1px solid var(--line); background: var(--panel);
+    padding: .7em 1em;
+  }
+  .heat { display: grid; grid-template-columns: repeat(14, 1fr); gap: 3px; }
+  .heat i { width: clamp(7px, 1.1vh, 11px); aspect-ratio: 1; border-radius: 2px; background: #22d3ee; }
+  .burn { color: #8b98a5; }
+  .burn b { color: #7ee787; font-family: ui-monospace, monospace; }
+
+  /* STEP 7:攔截列 */
+  .icept {
+    display: flex; align-items: center; gap: 1em;
+    border-bottom: 1px solid #4b2226; background: #1c0f12;
+    padding: .55em 1em; color: #ffb3ad;
+  }
+  .icept .pause { color: #ff7b72; font-size: 1.2em; }
+  .icept .btns { margin-left: auto; display: flex; gap: .6em; }
+  .icept .btns b {
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: .25em .9em; font-weight: 700; color: #c9d5e0;
+  }
+  .icept .btns b.go { border-color: #1d4428; color: #7ee787; }
+  .icept .btns b.no { border-color: #4b2226; color: #ff7b72; }
+
+  /* STEP 8:Hub 多終端 */
+  .hubcol { display: flex; flex-direction: column; gap: 1.2em; }
+  .term {
+    position: relative;
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 6px; padding: .6em .9em;
+    font-family: ui-monospace, monospace; color: #c9d5e0;
+    white-space: nowrap; font-size: .95em;
+  }
+  .term small { display: block; color: #55606b; }
+  .term::after {
+    content: ""; position: absolute; top: 50%; left: 100%;
+    width: clamp(10px, 2vw, 26px); height: 2px; background: var(--line);
+  }
+  .term .tdot {
+    position: absolute; top: calc(50% - 3px); left: 100%;
+    width: 6px; height: 6px; border-radius: 50%; background: #22d3ee;
+    animation: flowR 1.6s linear infinite;
+  }
+
+  /* 新元素高亮 */
+  .nw { animation: glow 1.6s ease-out 2; }
+  @keyframes glow {
+    0% { box-shadow: 0 0 0 0 #22d3ee88; }
+    70% { box-shadow: 0 0 22px 5px #22d3ee33; }
+    100% { box-shadow: 0 0 0 0 #22d3ee00; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .srow { opacity: 1; }
   }
 </style>
 </head>
@@ -104,7 +289,110 @@ const ACTS = [
   '終幕',
 ];
 
-// t: 內容(HTML) / c: 額外 class / a: 幕別索引
+// ── 視覺層:九步逐層組裝 dashboard ──────────────────────
+const VIZ_STEPS = 9;
+
+function flowHTML(big) {
+  return '<div class="flow' + (big ? ' big' : '') + '">' +
+    '<div class="node">Claude Code</div>' +
+    '<div class="pipe"><span class="dot req"></span><span class="dot res"></span></div>' +
+    '<div class="node hero">ccxray</div>' +
+    '<div class="pipe"><span class="dot req"></span><span class="dot res"></span></div>' +
+    '<div class="node">Anthropic API</div>' +
+    '</div>';
+}
+
+function streamHTML() {
+  const rows = [
+    ['12:04:11', 'POST /v1/messages', '3.2s', '200'],
+    ['12:04:19', 'POST /v1/messages', '8.7s', '200'],
+    ['12:04:31', 'POST /v1/messages · subagent', '2.1s', '200'],
+    ['12:04:36', 'POST /v1/messages', '12.4s', '200'],
+    ['12:04:52', 'POST /v1/messages · thinking', '29.8s', '200'],
+    ['12:05:24', 'POST /v1/messages', '4.0s', '200'],
+  ];
+  return '<div class="stream">' + rows.map((r, k) =>
+    '<div class="srow" style="animation-delay:' + (k * .28) + 's">' +
+    '<span class="t">' + r[0] + '</span><span class="m">' + r[1] + '</span>' +
+    '<span class="dur">' + r[2] + '</span><span class="ok">' + r[3] + '</span></div>'
+  ).join('') + '</div>';
+}
+
+// stage s(1..9);元素在自己登場的那一步帶 .nw 高亮
+function renderViz(s) {
+  const nw = k => (s === k ? ' nw' : '');
+  if (s === 1) return '<div class="viz">' + flowHTML(true) + '</div>';
+  if (s === 2) return '<div class="viz">' + flowHTML(false) + streamHTML() + '</div>';
+
+  const cost = v => (s >= 4 ? '<span class="cost' + (s === 4 ? ' nw' : '') + '">' + v + '</span>' : '');
+  const mc =
+    '<div class="mc' + nw(3) + '">' +
+      '<div class="col"><div class="ch">專案</div>' +
+        '<div class="ci sel">ccxray' + cost('$4.21') + '</div>' +
+        '<div class="ci">webapp' + cost('$1.03') + '</div>' +
+        '<div class="ci">api-server' + cost('$0.42') + '</div>' +
+      '</div>' +
+      '<div class="col"><div class="ch">Session</div>' +
+        '<div class="ci sel"><span class="livedot"></span>修 dashboard bug' + cost('$2.87') + '</div>' +
+        '<div class="ci">加使用者驗證' + cost('$0.94') + '</div>' +
+        '<div class="ci">重構 API client' + cost('$0.40') + '</div>' +
+      '</div>' +
+      '<div class="col"><div class="ch">回合</div>' +
+        '<div class="ci"><span class="lbl">#12 Read ×4</span><span class="bar"><i style="width:38%"></i></span>' + cost('$0.03') + '</div>' +
+        '<div class="ci"><span class="lbl">#13 Edit ×3</span><span class="bar"><i style="width:52%"></i></span>' + cost('$0.06') + '</div>' +
+        '<div class="ci sel"><span class="lbl">#14 thinking 29.8s</span><span class="bar"><i class="warn" style="width:81%"></i></span>' + cost('$0.31') + '</div>' +
+        '<div class="ci"><span class="lbl">#15 Bash ×2</span><span class="bar"><i style="width:57%"></i></span>' + cost('$0.05') + '</div>' +
+      '</div>' +
+    '</div>';
+
+  const lanes = s >= 5 ?
+    '<div class="panel' + nw(5) + '"><div class="ph">WORKFLOW 泳道</div>' +
+      '<div class="lane"><span class="ll">main</span><span class="lt"><i style="left:2%;width:19%"></i><i style="left:29%;width:13%"></i><i style="left:55%;width:36%"></i></span></div>' +
+      '<div class="lane"><span class="ll">agent #1</span><span class="lt sub"><i style="left:23%;width:21%"></i></span></div>' +
+      '<div class="lane"><span class="ll">agent #2</span><span class="lt sub"><i style="left:25%;width:29%"></i></span></div>' +
+      '<div class="lane"><span class="ll">teammate</span><span class="lt tm"><i style="left:47%;width:19%"></i></span></div>' +
+    '</div>' : '';
+
+  const diff = s >= 6 ?
+    '<div class="panel' + nw(6) + '"><div class="ph">SYSTEM PROMPT · v2.1 → v2.3</div>' +
+      '<div class="dl">  You are Claude Code, Anthropic’s…</div>' +
+      '<div class="dl del">- 工具:Bash, Read, Edit</div>' +
+      '<div class="dl add">+ 工具:Bash, Read, Edit, Task</div>' +
+      '<div class="dl add">+ IMPORTANT: 使用者指示優先</div>' +
+    '</div>' : '';
+
+  const heats = [.15,.3,.5,.2,.7,.4,.25,.6,.35,.9,.45,.2,.55,.3,.4,.75,.25,.5,.35,.65,.2,.45,.85,.3,.55,.4,.25,.7,.5,.35,.6,.2,.45,.3,.8,.4,.55,.25,.65,.35,.5,.9];
+  const coststrip = s >= 4 ?
+    '<div class="coststrip' + nw(4) + '">' +
+      '<div class="heat">' + heats.slice(0, 28).map(o => '<i style="opacity:' + o + '"></i>').join('') + '</div>' +
+      '<div class="burn">Burn rate <b>$1.9/hr</b> · 本月 <b>$87.40</b></div>' +
+    '</div>' : '';
+
+  const icept = s >= 7 ?
+    '<div class="icept' + nw(7) + '"><span class="pause">⏸</span>POST /v1/messages — 已攔截,等待你決定' +
+      '<span class="btns"><b>編輯</b><b class="go">放行</b><b class="no">拒絕</b></span></div>' : '';
+
+  const hub = s >= 8 ?
+    '<div class="hubcol' + nw(8) + '">' +
+      '<div class="term">❯ ~/project-a<small>ccxray claude</small><span class="tdot"></span></div>' +
+      '<div class="term">❯ ~/project-b<small>ccxray codex</small><span class="tdot"></span></div>' +
+      '<div class="term">❯ ~/project-c<small>ccxray grok</small><span class="tdot"></span></div>' +
+    '</div>' : '';
+
+  const side = (lanes || diff) ? '<div class="fside">' + lanes + diff + '</div>' : '';
+
+  return '<div class="viz"><div class="vizwrap' + (s >= 8 ? ' withhub' : '') + '">' + hub +
+    '<div class="frame' + (s === 9 ? ' full' : '') + '">' +
+      '<div class="ftop"><span class="lights">●●●</span><b>ccxray</b>' +
+        (s === 9 ? '<span class="livebadge">LIVE</span>' : '') + flowHTML(false) + '</div>' +
+      icept +
+      '<div class="fbody">' + mc + side + '</div>' +
+      coststrip +
+    '</div>' +
+  '</div></div>';
+}
+
+// t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟(1..9,t 變為說明字幕)
 const S = [
   // ── 序幕 · 平凡世界(0:00–0:40)──────────────────────
   { t:'你', a:0 },
@@ -115,52 +403,40 @@ const S = [
   { t:'它很強', a:0 },
   { t:'但是——', c:'dim', a:0 },
 
-  // ── 第一幕 · 冒險的召喚(0:40–2:00)──────────────────
+  // ── 第一幕 · 冒險的召喚(0:40–1:50)──────────────────
   { t:'黑盒子', c:'hot', a:1 },
   { t:'它在想什麼?', c:'long', a:1 },
-  { t:'為什麼', a:1 },
-  { t:'停頓 30 秒?', c:'long', a:1 },
-  { t:'200K', a:1 },
-  { t:'context', a:1 },
+  { t:'為什麼停頓 30 秒?', c:'long', a:1 },
+  { t:'200K context', c:'long', a:1 },
   { t:'被什麼吃掉了?', c:'long', a:1 },
-  { t:'System Prompt', c:'long', a:1 },
-  { t:'長什麼樣?', c:'long', a:1 },
-  { t:'每一次呼叫', c:'long', a:1 },
-  { t:'花多少錢?', c:'long', a:1 },
+  { t:'System Prompt 長什麼樣?', c:'long', a:1 },
+  { t:'每次呼叫花多少錢?', c:'long', a:1 },
   { t:'你不知道', c:'long', a:1 },
   { t:'帳單知道', c:'long hot', a:1 },
 
-  // ── 第二幕 · 拒絕召喚(2:00–2:40)────────────────────
+  // ── 第二幕 · 拒絕召喚(1:50–2:30)────────────────────
   { t:'「算了」', a:2 },
   { t:'「能動就好」', c:'long', a:2 },
   { t:'「不看,比較幸福」', c:'long dim', a:2 },
   { t:'直到——', a:2 },
   { t:'某個深夜', c:'long', a:2 },
-  { t:'一個 session', c:'long', a:2 },
-  { t:'燒掉整晚預算', c:'long hot', a:2 },
+  { t:'一個 session<br>燒掉整晚預算', c:'long hot', a:2 },
   { t:'你需要真相', c:'long', a:2 },
 
-  // ── 第三幕 · 導師現身(2:40–3:40)────────────────────
+  // ── 第三幕 · 導師現身(2:30–3:40)────────────────────
   { t:'一行指令', c:'long', a:3 },
   { t:'npx ccxray claude', c:'code', a:3 },
-  { t:'就這樣', a:3 },
-  { t:'零設定', c:'accent', a:3 },
-  { t:'零依賴', c:'accent', a:3 },
-  { t:'不改你的習慣', c:'long', a:3 },
+  { t:'零設定 · 零依賴', c:'long accent', a:3 },
   { t:'它是誰?', a:3 },
   { t:'<span class="accent">cc</span>xray', a:3 },
-  { t:'透明代理', c:'long', a:3 },
-  { t:'站在你與 API 之間', c:'long', a:3 },
-  { t:'每個 request', c:'long', a:3 },
-  { t:'每個 response', c:'long', a:3 },
-  { t:'全部記下來', c:'long accent', a:3 },
+  { v:1, t:'透明代理,站在你與 API 之間', a:3 },
+  { v:2, t:'每個 request、每個 response,<span class="accent">全部記下來</span>', a:3 },
 
   // ── 第四幕 · 跨越門檻(3:40–5:00)────────────────────
   { t:'打開 Dashboard', c:'long', a:4 },
   { t:'你第一次', c:'long', a:4 },
   { t:'看見', c:'accent', a:4 },
-  { t:'專案 → Session → 回合<span class="sub">Miller Columns 逐層下鑽</span>', c:'long', a:4 },
-  { t:'即時更新', c:'long', a:4 },
+  { v:3, t:'專案 → Session → 回合,<span class="accent">即時更新</span>', a:4 },
   { t:'那 30 秒的停頓?', c:'long', a:4 },
   { t:'是 thinking', c:'long good', a:4 },
   { t:'那些 token?', c:'long', a:4 },
@@ -171,49 +447,39 @@ const S = [
   // ── 第五幕 · 試煉之路(5:00–7:00)────────────────────
   { t:'試煉一', c:'dim', a:5 },
   { t:'錢去哪了?', c:'long hot', a:5 },
-  { t:'每回合成本', c:'long', a:5 },
-  { t:'每日熱圖', c:'long', a:5 },
-  { t:'Burn Rate', a:5 },
+  { v:4, t:'每回合成本 · 每日熱圖 · <span class="good">Burn Rate</span>', a:5 },
   { t:'一目了然', c:'long good', a:5 },
 
   { t:'試煉二', c:'dim', a:5 },
   { t:'Subagent 亂舞', c:'long hot', a:5 },
   { t:'誰生了誰?', c:'long', a:5 },
-  { t:'泳道時間軸<span class="sub">Workflow Timeline</span>', c:'long', a:5 },
-  { t:'主線、支線、平行', c:'long', a:5 },
+  { v:5, t:'泳道時間軸:主線、支線、平行', a:5 },
   { t:'像讀樂譜', c:'long good', a:5 },
 
   { t:'試煉三', c:'dim', a:5 },
   { t:'System Prompt 之謎', c:'long hot', a:5 },
-  { t:'版本歷史', c:'long', a:5 },
-  { t:'逐版 diff', c:'long', a:5 },
-  { t:'升級改了什麼', c:'long', a:5 },
+  { v:6, t:'版本歷史,逐版 <span class="accent">diff</span>', a:5 },
   { t:'無所遁形', c:'long good', a:5 },
 
-  // ── 第六幕 · 深淵尋寶(7:00–8:20)────────────────────
+  // ── 第六幕 · 深淵尋寶(7:00–8:10)────────────────────
   { t:'再深一層', a:6 },
   { t:'只是「看」嗎?', c:'long', a:6 },
   { t:'不', c:'accent', a:6 },
   { t:'攔截', c:'accent', a:6 },
-  { t:'暫停 request', c:'long', a:6 },
-  { t:'動手編輯', c:'long', a:6 },
-  { t:'放行,或拒絕', c:'long', a:6 },
+  { v:7, t:'暫停 · 編輯 · <span class="good">放行</span>或<span class="hot">拒絕</span>', a:6 },
   { t:'你從觀眾', c:'long', a:6 },
   { t:'變成導演', c:'long accent', a:6 },
 
-  // ── 第七幕 · 帶著火種歸返(8:20–9:20)────────────────
+  // ── 第七幕 · 帶著火種歸返(8:10–9:20)────────────────
   { t:'回到日常', c:'long', a:7 },
   { t:'開多個終端?', c:'long', a:7 },
-  { t:'自動共用一個 Hub', c:'long', a:7 },
-  { t:'Claude · Codex · Grok', c:'long', a:7 },
-  { t:'一個儀表板', c:'long accent', a:7 },
+  { v:8, t:'自動共用一個 <span class="accent">Hub</span>', a:7 },
+  { t:'Claude · Codex · Grok<br>一個儀表板', c:'long', a:7 },
   { t:'長 session 爆磁碟?', c:'long', a:7 },
-  { t:'Delta 儲存', c:'long', a:7 },
-  { t:'省 85% 空間', c:'long good', a:7 },
+  { t:'Delta 儲存,省 85%', c:'long good', a:7 },
   { t:'npx ccxray claude', c:'code', a:7 },
-  { t:'十秒後', a:7 },
-  { t:'你的 AI', c:'long', a:7 },
-  { t:'不再是謎', c:'long accent', a:7 },
+  { t:'十秒後——', a:7 },
+  { v:9, t:'完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a:7 },
 
   // ── 終幕(9:20–10:00)────────────────────────────────
   { t:'英雄旅程的終點', c:'long', a:8 },
@@ -235,8 +501,14 @@ function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
   const el = document.createElement('div');
-  el.className = 'slide' + (s.c ? ' ' + s.c : '');
-  el.innerHTML = s.t;
+  if (s.v) {
+    el.className = 'vizslide';
+    el.innerHTML = renderViz(s.v) +
+      '<div class="vcap"><span class="step">STEP ' + s.v + '/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+  } else {
+    el.className = 'slide' + (s.c ? ' ' + s.c : '');
+    el.innerHTML = s.t;
+  }
   stageEl.replaceChildren(el);
   actEl.textContent = ACTS[s.a];
   barEl.style.width = ((i + 1) / S.length * 100) + '%';
