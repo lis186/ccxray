@@ -226,7 +226,7 @@ const S = [
 ];
 
 let i = 0, timer = null;
-const slideEl = document.getElementById('slide');
+const stageEl = document.getElementById('stage');
 const actEl = document.getElementById('act');
 const barEl = document.getElementById('bar');
 const counterEl = document.getElementById('counter');
@@ -234,15 +234,14 @@ const counterEl = document.getElementById('counter');
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
-  const el = slideEl.cloneNode(false);
+  const el = document.createElement('div');
   el.className = 'slide' + (s.c ? ' ' + s.c : '');
   el.innerHTML = s.t;
-  slideEl.replaceWith(el);
-  el.id = 'slide';
+  stageEl.replaceChildren(el);
   actEl.textContent = ACTS[s.a];
   barEl.style.width = ((i + 1) / S.length * 100) + '%';
   counterEl.textContent = (i + 1) + ' / ' + S.length;
-  location.hash = i ? '#' + (i + 1) : '';
+  try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
 }
 function next() { show(i + 1); }
 function prev() { show(i - 1); }
@@ -270,7 +269,9 @@ document.addEventListener('touchend', e => {
   touchX = null;
 }, { passive: true });
 
-show(parseInt(location.hash.slice(1), 10) - 1 || 0);
+let start = 0;
+try { start = (parseInt(location.hash.slice(1), 10) - 1) || 0; } catch (_) {}
+show(start);
 </script>
 </body>
 </html>
