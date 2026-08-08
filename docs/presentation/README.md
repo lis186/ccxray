@@ -34,7 +34,7 @@
 | 7 | Workflow 泳道 | 試煉二 | main lane + Explore 子代理 lane、minimap、時間軸 |
 | 8 | System Prompt 頁 | 試煉三 | AGENTS / VERSIONS(v2.0.14 → v2.0.15 `+0.2k`)/ DIFF mode |
 | 9 | Auto-compact 逐格重播 ×6 | 第六幕 | 26 幀**真實泳道 render**(對同一份 log 取前 k 回合前綴、真 server 逐格實拍),六頁分段自動播放、跨頁同一 DOM 續播:context 柱狀圖慢慢長高 → 穿過 80 虛線進 dumb zone(faults 軌紅點連發、天氣轉雷雨)→ 聊到 95% → auto compact 摔回 15%(cache 全滅:該回合 read=0、整根橙色重寫 + compaction/cache-miss 標記)→ 再爬。倒退翻頁重播該段;`prefers-reduced-motion` 直接跳段尾 |
-| 10 | 模型選擇對照 ×3 | 第六幕 | 兩個真實 birds-eye overview(`wfToggleBirdsEye()`)並排:同一個多 subagent 長任務,`fable-5 1M 指揮+子代理各給一小塊` 一片綠(31m/$9.20/失敗 0%/61 回合)vs `全塞 200K 小模型` 黃紅瀑布(52m/$20.71/失敗 40%/136 回合);三頁同 DOM:good 獨秀 → bad 滑入並排 → 統計浮現。數字全部由費率表對兩份合成 log 計算 |
+| 10 | 模型選擇對照 ×3(縮時)| 第六幕 | 兩個完整 session 的真實 birds-eye overview(`wfToggleBirdsEye()`,橫軸=時間,連續輪替派工的斜瀑布):以**左→右時間擦除**縮時重播——擦除線就是時間游標,跨線的長紅 bar 會逐漸變長。`fable-5 1M 指揮+子代理各給一小塊` 一片綠(34m/$20.86/失敗 0%)vs `全塞 200K` 橘底長紅(52m/$32.69/失敗 43%);兩頁縮時同一時間比例(7s vs 10.7s),第三頁統計浮現。三頁同 DOM;倒退重播 |
 | 11 | 完整 dashboard | 第七幕壓軸 | 全畫面:columns + 泳道 + agent 卡 + timeline 同框 |
 
 ### 截圖是怎麼來的(可重現)
@@ -68,10 +68,11 @@ webapp session 用 `claude-sonnet-4-6`(200K)同法計價。STEP 9 的螺旋 sess
 也是 sonnet-4-6:26 回合、49 分鐘,context 依 [11%→95%] 再 compact 至 15% 的曲線推進,
 `toolFail` 落在 13/16/18–21 回合(dumb zone 失敗率上升的紅點來源),compact 回合
 `cache_read=0`、`cache_creation≈29.6K`(全量重寫),同費率表計價共 $1.87。STEP 10 的對照
-sessions(data-pipeline 專案)同法生成:GOOD = fable-5 1M 指揮 + 14 個 sonnet 子代理
-(ctx 7–31%,61 回合,31m,$9.20,0 失敗);BAD = 全部 sonnet 200K、子代理 brief 塞爆
-(ctx 45→95%,20 lanes、136 回合,52m,$20.71,toolFail 40%)——「更貴」不是費率差
-(兩者子代理同費率),是高 ctx 重讀 × 重試回合數的實付 token。Usage 頁的 $6.89(Today/Month)
+sessions(data-pipeline 專案)同法生成,結構為連續輪替派工(每 ~80–150s 開一個新子代理
+lane,各自跑數分鐘,birds-eye 呈斜瀑布):GOOD = fable-5 1M 指揮 + 21 個 sonnet 子代理小塊
+任務(ctx 6–34% 全綠,291 子回合,34m,$20.86,0 失敗);BAD = 全部 sonnet 200K、brief 塞爆
+(子代理 ctx 44→93%,22 lanes,284 子回合,52m,$32.69,toolFail 43%,長紅 bar = 高 ctx
+卡 70–180 秒的回合)——「更貴」不是費率差(兩者子代理同費率),是高 ctx 重讀與失敗重試的實付 token。Usage 頁的 $6.89(Today/Month)
 = ccxray 專案 $6.80 + webapp $0.09——產生器同步輸出 `~/.claude/projects/*.jsonl`
 (cost-worker 的掃描來源),兩邊數字天然一致。
 
@@ -97,7 +98,7 @@ sessions(data-pipeline 專案)同法生成:GOOD = fable-5 1M 指揮 + 14 個 son
 | 第三幕 | 導師現身 | 2:30–3:40 | code 頁停 4 秒讓人拍照;五頁分鏡一頁一個重點、每頁 3–6 秒:獨處 → 直連 → zoom in「中間什麼都沒有」(壓低聲音)→「站進來」(重擊)→ zoom out 看 log 疊出 |
 | 第四幕 | 跨越門檻 | 3:40–5:00 | 「看見」是軸心字;STEP 2→3→4 逐步揭開:入口 → 欄位 → 逐字步驟;指著 38% of 1M context bar 與 thinking 步驟講 |
 | 第五幕 | 試煉之路 | 5:00–7:10 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」;試煉一內插 cache 段:「差 20 倍」重擊後停 2 秒;STEP 6 四頁分鏡一頁一個情況(綠安心 → 黃開會 → 紅閃爍推近鏡頭壓低聲音 → 過期拉遠嘆氣),講「它在催你回去」 |
-| 第六幕 | 深淵尋寶 | 7:10–8:55 | 這是全簡報的「深淵」本體。Smart/Dumb Zone 兩個大字各停 2 秒;六頁逐格重播讓柱狀圖自己長:「還在漲」語速加快製造焦慮 → 紅點段壓低聲音「它開始失手了」→ 95% 定格停 3 秒 → auto compact 那格落下時拍手一聲「沒了」→ 重生段放鬆;收尾回扣試煉二:「分工給 subagent,留在 smart zone」;接著模型選擇對照三頁:good 一片綠先立標竿 → bad 滑入時停半拍讓紅黃自己說話 → 統計浮現時逐項點名「更久、更貴、更差」 |
+| 第六幕 | 深淵尋寶 | 7:10–8:55 | 這是全簡報的「深淵」本體。Smart/Dumb Zone 兩個大字各停 2 秒;六頁逐格重播讓柱狀圖自己長:「還在漲」語速加快製造焦慮 → 紅點段壓低聲音「它開始失手了」→ 95% 定格停 3 秒 → auto compact 那格落下時拍手一聲「沒了」→ 重生段放鬆;收尾回扣試煉二:「分工給 subagent,留在 smart zone」;接著模型選擇對照三頁:good 縮時 7 秒播完先立標竿 → bad 以同一時間比例續播(觀眾會等它停,結果它一直長到 52 分)→ 統計浮現時逐項點名「更久、更貴、更差」 |
 | 第七幕 | 帶著火種歸返 | 8:55–9:40 | 輕快收攏 hub/多代理/delta;code 頁二現首尾呼應;STEP 10 壓軸大圖停滿 20 秒 |
 | 終幕 | — | 9:40–10:10 | 點破故事層:「不是屠龍,是帶回火種」。「透明」一字收束,報 repo,謝幕 |
 

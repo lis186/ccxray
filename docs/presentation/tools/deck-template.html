@@ -206,6 +206,12 @@
   .mccol.bad { opacity: 0; transform: translateX(4vw); }
   .mc-2 .mccol.bad, .mc-3 .mccol.bad { opacity: 1; transform: none; }
   .mc-3 .mcstats { opacity: 1; }
+  /* 縮時攝影:x 軸=時間,左→右擦除 = 時間游標;跨線的長 bar 會逐漸變長 */
+  .mccol img.wipe { clip-path: inset(0 100% 0 0); }
+  .mccol img.wipe.play { animation: tlwipe linear forwards; }
+  .mccol img.wipe.done { clip-path: none; animation: none; }
+  @keyframes tlwipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0% 0 0); } }
+  @media (prefers-reduced-motion: reduce) { .mccol img.wipe { clip-path: none !important; } }
 
   /* STEP 6:cache 過期分鏡。同一張真實 session 卡跨頁存活(#cxroot),
      翻頁只換 cx-N class:四個狀態圖層原地交叉淡變,紅色態疊上第二畫格
@@ -340,14 +346,24 @@ function pxApply(k) {
 function mcSceneHTML(k) {
   return '<div id="mcroot" class="mcscene mc-' + k + '"><div class="mcrow">' +
     '<div class="mccol good"><div class="mclabel"><span class="good">fable-5 1M 指揮</span> · 子代理各給一小塊</div>' +
-      '<div class="shot hero"><img src="' + IMG.fanoutgood + '" alt=""></div>' +
-      '<div class="mcstats"><span>31m</span><span><b class="good">$9.20</b></span><span>失敗 <b class="good">0%</b></span><span>61 回合</span></div></div>' +
+      '<div class="shot hero"><img class="wipe" src="' + IMG.fanoutgood + '" alt=""></div>' +
+      '<div class="mcstats"><span>34m</span><span><b class="good">$20.86</b></span><span>失敗 <b class="good">0%</b></span></div></div>' +
     '<div class="mccol bad"><div class="mclabel"><span class="hot">全塞 200K 小模型</span> · window 不足</div>' +
-      '<div class="shot"><img src="' + IMG.fanoutbad + '" alt=""></div>' +
-      '<div class="mcstats"><span><b class="hot">52m</b></span><span><b class="hot">$20.71</b></span><span>失敗 <b class="hot">40%</b></span><span><b class="hot">136 回合</b></span></div></div>' +
+      '<div class="shot"><img class="wipe" src="' + IMG.fanoutbad + '" alt=""></div>' +
+      '<div class="mcstats"><span><b class="hot">52m</b></span><span><b class="hot">$32.69</b></span><span>失敗 <b class="hot">43%</b></span></div></div>' +
   '</div></div>';
 }
-function mcApply(k) { stageEl.querySelector('#mcroot').className = 'mcscene mc-' + k; }
+// 縮時倍率一致:同一時間比例尺,GOOD 34m→7s、BAD 52m→10.7s
+function mcApply(k) {
+  const root = stageEl.querySelector('#mcroot');
+  root.className = 'mcscene mc-' + k;
+  const g = root.querySelector('.mccol.good img.wipe');
+  const b = root.querySelector('.mccol.bad img.wipe');
+  const play = (el, sec) => { el.classList.remove('play', 'done'); void el.offsetWidth; el.style.animationDuration = sec + 's'; el.classList.add('play'); };
+  if (k === 1) { play(g, 7); b.classList.remove('play', 'done'); }
+  else if (k === 2) { g.classList.remove('play'); g.classList.add('done'); play(b, 10.7); }
+  else { g.classList.remove('play'); b.classList.remove('play'); g.classList.add('done'); b.classList.add('done'); }
+}
 
 // ── STEP 9 auto-compact 逐格重播 ──
 let acTimer = null;
@@ -498,8 +514,8 @@ const S = [
   { t: '但——', c: 'dim', a: 6 },
   { t: '分工,也要<span class="accent">選對模型</span>', c: 'long', a: 6 },
   { t: '同一個長任務<br>兩種選擇', c: 'long', a: 6 },
-  { mc: 1, t: '<span class="good">選對模型</span>:波次分工,快進快出,一片綠', a: 6 },
-  { mc: 2, t: '<span class="hot">選錯模型</span>:context 塞爆,紅黃一片、越拖越長', a: 6 },
+  { mc: 1, t: '<span class="good">選對模型</span>:輪替派工,34 分鐘縮時——一片綠', a: 6 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>:同一縮時比例——紅 bar 越拖越長,52 分鐘', a: 6 },
   { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 6 },
   { t: '對的模型 × 會分工<br>= <span class="good">又快、又省、又穩</span>', c: 'long', a: 6 },
 
@@ -545,9 +561,10 @@ function show(n) {
     } else {
       const wrap = document.createElement('div');
       wrap.className = 'pxwrap';
-      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">' + NOTE + ' · birds-eye overview</div>';
+      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">' + NOTE + ' · birds-eye overview 縮時重播</div>';
       stageEl.replaceChildren(wrap);
     }
+    mcApply(s.mc);
     actEl.textContent = ACTS[s.a];
     barEl.style.width = ((i + 1) / S.length * 100) + '%';
     counterEl.textContent = (i + 1) + ' / ' + S.length;
