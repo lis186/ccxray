@@ -5,8 +5,8 @@
 三層結構:
 
 1. **表層:高橋流** — 一頁一句、字極大,文字頁用機關槍節奏連發。
-2. **視覺層:九步蓋出 dashboard** — 用最小線框 UI 元素,從一條代理管線開始,
-   一步一步把元素加上去,最後亮出完整 dashboard(STEP 1–9,徽章常駐字幕列)。
+2. **視覺層:九步揭開真實 dashboard** — STEP 2–9 全部是 **ccxray v2.3 實際介面截圖**
+   (深色主題、合成示範資料實拍,非示意圖);只有 STEP 1 的架構圖是線框示意,並標註「架構示意」。
 3. **故事層:英雄旅程八幕** — 右上角幕別徽章,讓聽眾隱約感覺「這是一個故事」。
 
 ## 操作
@@ -21,25 +21,38 @@
 
 網址 hash 記錄頁碼(`#42`),中斷後可從原頁繼續。
 
-## 視覺層:dashboard 組裝九步
+## 視覺層:九步(全部真實畫面)
 
-每個視覺頁停留 15–25 秒講解;新加入的元素會發光高亮兩次,講者指著它講。
+| STEP | 畫面 | 出現於 | 內容 |
+|------|------|--------|------|
+| 1 | 架構示意(唯一線框)| 第三幕 | Claude Code ⇄ **ccxray** ⇄ API,請求/回應光點 |
+| 2 | Topbar | 第四幕 | `● ccxray` + Dashboard / Usage / System Prompt + Context HUD + quota ticker |
+| 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(model · turns · 時長、**97% of 200K** 紅色 context bar)|
+| 4 | TIMELINE steps | 第四幕 | user 泡泡、Read/Grep/Edit/Bash 步驟、thinking、逐字內容 |
+| 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY/DAILY COST + ACCOUNTS |
+| 6 | Workflow 泳道 | 試煉二 | main lane + Explore 子代理 lane、minimap、時間軸 |
+| 7 | System Prompt 頁 | 試煉三 | AGENTS / VERSIONS(v2.0.14 → v2.0.15 `+0.2k`)/ DIFF mode |
+| 8 | Intercept | 第六幕 | topbar `HELD (117s)` 琥珀 chip + session 卡紅色 `HELD` 徽章 |
+| 9 | 完整 dashboard | 第七幕壓軸 | 全畫面:columns + 泳道 + agent 卡 + timeline 同框 |
 
-| STEP | 加入的元素 | 出現於 | 對應功能 |
-|------|-----------|--------|----------|
-| 1 | 代理管線:Claude Code ⇄ **ccxray** ⇄ API(請求/回應光點)| 第三幕 | 透明代理 |
-| 2 | 記錄流:request 一列一列進來 | 第三幕 | 全量記錄 |
-| 3 | Miller columns:專案 → Session → 回合(含 live 綠點、context bar)| 第四幕 | 即時 dashboard |
-| 4 | 成本:每列金額 + 每日熱圖 + burn rate | 第五幕・試煉一 | 成本分析 |
-| 5 | Workflow 泳道:main / agent / teammate | 第五幕・試煉二 | 泳道時間軸 |
-| 6 | System Prompt diff(紅刪綠增)| 第五幕・試煉三 | 版本比對 |
-| 7 | 攔截列:⏸ 已攔截 → 編輯/放行/拒絕 | 第六幕 | Intercept |
-| 8 | Hub:三個終端(claude/codex/grok)接進同一框 | 第七幕 | 多專案共用 |
-| 9 | 完整 dashboard:全元素點亮 + LIVE 徽章 | 第七幕壓軸 | 全貌 |
+### 截圖是怎麼來的(可重現)
 
-## 節奏表(總長 10:00,76 頁)
+截圖來自真的 ccxray server(非 mockup):
 
-高橋流的節奏感 = **快慢交錯**:文字頁 1–5 秒連發,視覺頁停下來講;
+```bash
+node tools/gen-fixture.mjs /tmp/ccxray-demo      # 合成示範資料(index + req/res + system prompts)
+CCXRAY_HOME=/tmp/ccxray-demo ccxray --port 5602 --no-browser
+# headless Chromium(dark color-scheme)逐畫面截圖(含真的 intercept HELD:
+# 開 /_api/intercept/toggle 後送一個 request 讓它真的被攔下)
+node tools/build-deck.mjs                        # 把截圖以 base64 內嵌進 deck-template.html → index.html
+```
+
+改版後要更新簡報:重跑上面三步即可。截圖務必走 `CCXRAY_HOME` 隔離目錄(見 `docs/testing.md`),
+不要拿自己真實的 `~/.ccxray` 資料截圖。
+
+## 節奏表(總長 10:00,73 頁)
+
+高橋流的節奏感 = **快慢交錯**:文字頁 1–5 秒連發,截圖頁停 15–25 秒講;
 紅字 = 痛點、青字 = ccxray/轉折、綠字 = 解脫。
 
 | 幕 | 英雄旅程 | 時間 | 節奏與講法 |
@@ -47,18 +60,18 @@
 | 序幕 | 平凡世界 | 0:00–0:40 | 平穩親切。「但是——」故意拖長,吊住全場 |
 | 第一幕 | 冒險的召喚 | 0:40–1:50 | 連珠炮拋問題。「你不知道」放慢,「帳單知道」重擊+停 3 秒 |
 | 第二幕 | 拒絕召喚 | 1:50–2:30 | 模仿觀眾自我安慰,輕鬆;「直到——」轉折收笑 |
-| 第三幕 | 導師現身 | 2:30–3:40 | code 頁停 4 秒讓人拍照;STEP 1 指著光點講「請求出去、回應回來」;STEP 2 看列一條條進來 |
-| 第四幕 | 跨越門檻 | 3:40–5:00 | 「看見」是軸心字,停最久;STEP 3 從左往右走一遍三欄;之後一問一答回收第一幕 |
-| 第五幕 | 試煉之路 | 5:00–7:00 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 視覺 → 收尾(綠)」,重複結構就是節奏 |
-| 第六幕 | 深淵尋寶 | 7:00–8:10 | 語速最慢。「不」「攔截」單字重擊;STEP 7 指著三顆按鈕講「主導權回到你手上」 |
-| 第七幕 | 帶著火種歸返 | 8:10–9:20 | 輕快收攏;STEP 8 三個終端接進來;code 頁二現首尾呼應;STEP 9 是壓軸大圖,停滿 20 秒 |
+| 第三幕 | 導師現身 | 2:30–3:30 | code 頁停 4 秒讓人拍照;STEP 1 指著光點講「請求出去、回應回來」 |
+| 第四幕 | 跨越門檻 | 3:30–5:00 | 「看見」是軸心字;STEP 2→3→4 逐步揭開:入口 → 欄位 → 逐字步驟;指著紅色 97% bar 與 thinking 步驟講 |
+| 第五幕 | 試煉之路 | 5:00–7:00 | 三段同構:「試煉 N(灰)→ 痛點(紅)→ STEP 截圖 → 收尾(綠)」 |
+| 第六幕 | 深淵尋寶 | 7:00–8:10 | 語速最慢。「不」「攔截」單字重擊;STEP 8 指著 HELD 徽章講「主導權回到你手上」 |
+| 第七幕 | 帶著火種歸返 | 8:10–9:20 | 輕快收攏 hub/多代理/delta;code 頁二現首尾呼應;STEP 9 壓軸大圖停滿 20 秒 |
 | 終幕 | — | 9:20–10:00 | 點破故事層:「不是屠龍,是帶回火種」。「透明」一字收束,報 repo,謝幕 |
 
 ## 設計原則
 
+- **示範介面 = 實際介面**:STEP 2–9 不畫示意圖,直接放真實截圖,每頁角落標
+  「ccxray v2.3 實際畫面(示範資料)」;唯一的線框(STEP 1)明確標示「架構示意」。
 - **一頁一個念頭**:超過 7 個字就該懷疑要不要拆頁。
-- **視覺是累積的**:每個 STEP 都保留前面所有元素,聽眾看著 dashboard 長出來,
-  最後一步只是「把燈全打開」——沒有新資訊,只有完成感。
-- **顏色即語法**:紅 = 痛點,青 = ccxray / 轉折,綠 = 解脫,灰 = 旁白;線框圖同色系。
+- **視覺是累積的**:入口 → 欄位 → 步驟 → 各功能分區 → 最後全畫面同框,壓軸沒有新資訊,只有完成感。
 - **問答對仗**:第一幕的每個問題,第四、五幕逐一回收。
 - **首尾呼應**:`npx ccxray claude` 出現兩次;第一次是神器,第二次是行動呼籲。

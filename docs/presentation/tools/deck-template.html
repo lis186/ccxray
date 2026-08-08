@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccxray — 高橋流簡報(10 分鐘)</title>
+<style>
+  /* 高橋流:一頁一句、字要夠大、節奏要快。
+     視覺層:九步真實介面截圖(ccxray v2.3.0 實拍),逐步揭開完整 dashboard;
+     僅 STEP 1 為架構示意線框。深色定調(X-ray 影像的世界觀),不隨系統主題切換。 */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #05080c;
+    color: #e6edf3;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    cursor: pointer;
+  }
+  #stage {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 5vmin 6vmin 9vmin;
+  }
+  .slide {
+    font-weight: 900;
+    line-height: 1.15;
+    letter-spacing: .02em;
+    font-size: clamp(2.6rem, 13vw, 12rem);
+    animation: pop .18s ease-out;
+  }
+  @keyframes pop { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+  .slide.long  { font-size: clamp(2rem, 7.5vw, 7rem); }
+  .slide.small { font-size: clamp(1.4rem, 4.5vw, 3.6rem); font-weight: 700; color: #9fb0c0; }
+  .slide.code {
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: clamp(1.6rem, 5.5vw, 5rem);
+    font-weight: 600;
+    color: #7ee787;
+    background: #0b1420;
+    border: 1px solid #1d2d40;
+    border-radius: .18em;
+    padding: .5em .7em;
+  }
+  .slide .sub {
+    display: block;
+    margin-top: .6em;
+    font-size: .32em;
+    font-weight: 600;
+    color: #8b98a5;
+    letter-spacing: .06em;
+  }
+  .accent { color: #22d3ee; }
+  .hot    { color: #ff7b72; }
+  .good   { color: #7ee787; }
+  .dim    { color: #55606b; }
+
+  /* 第二層敘事:英雄旅程幕別,常駐右上角 */
+  #act {
+    position: fixed; top: 2.4vmin; right: 3vmin;
+    font-size: clamp(.7rem, 1.6vmin, 1rem);
+    font-weight: 700; letter-spacing: .18em;
+    color: #22d3ee; opacity: .85;
+    border: 1px solid #164e5f; border-radius: 99px;
+    padding: .45em 1.1em;
+    transition: opacity .3s;
+    z-index: 5;
+  }
+  #counter {
+    position: fixed; bottom: 2.2vmin; right: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b; font-variant-numeric: tabular-nums;
+  }
+  #hint {
+    position: fixed; bottom: 2.2vmin; left: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b;
+  }
+  #bar {
+    position: fixed; left: 0; bottom: 0; height: 4px; width: 0;
+    background: linear-gradient(90deg, #22d3ee, #7ee787);
+    transition: width .15s ease-out;
+  }
+
+  /* ────────────────────────────────────────────────
+     視覺層:真實截圖,逐步揭開
+     ──────────────────────────────────────────────── */
+  .vizslide {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3vh;
+    animation: pop .22s ease-out;
+  }
+  .vcap {
+    font-size: clamp(1.1rem, 3vw, 2rem);
+    font-weight: 900; letter-spacing: .03em;
+  }
+  .vcap .step {
+    display: inline-block; margin-right: .8em;
+    font-size: .55em; font-weight: 700; letter-spacing: .2em;
+    color: #22d3ee; border: 1px solid #164e5f; border-radius: 99px;
+    padding: .3em .9em; vertical-align: .18em;
+    font-variant-numeric: tabular-nums;
+  }
+  .vnote {
+    font-size: clamp(.65rem, 1.5vmin, .85rem);
+    color: #55606b; letter-spacing: .1em; margin-top: -1.6vh;
+  }
+  .shots { display: flex; gap: 2vw; align-items: flex-start; justify-content: center; max-width: 94vw; }
+  .shot {
+    border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+    background: #0d1117; box-shadow: 0 12px 40px #00000088;
+    flex: 0 1 auto; min-width: 0;
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot.hero { box-shadow: 0 0 0 1px #22d3ee55, 0 0 44px #22d3ee2e, 0 12px 40px #00000088; }
+  /* 高度上限:過高的截圖從底部裁掉(DAILY 長列表、diff 頁下方留白) */
+  .shot.crop   { max-height: 56vh; }
+  .shot.croptall { max-height: 62vh; }
+
+  /* STEP 1:架構示意(唯一的非截圖視覺) */
+  .viz { --line: #1d2d40; --panel: #0b1420; font-size: clamp(10px, 1.6vh, 14px); color: #8b98a5; }
+  .flow { display: flex; align-items: center; }
+  .flow .node {
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 6px; padding: 1.1em 1.6em;
+    font-weight: 700; color: #c9d5e0; white-space: nowrap; font-size: 1.3em;
+  }
+  .flow .node.hero2 { border-color: #22d3ee; color: #22d3ee; box-shadow: 0 0 18px #22d3ee33; }
+  .flow .pipe { position: relative; width: clamp(70px, 12vw, 170px); height: 2px; background: var(--line); }
+  .flow .dot { position: absolute; top: -2.5px; width: 7px; height: 7px; border-radius: 50%; }
+  .flow .dot.req { background: #22d3ee; animation: flowR 2.2s linear infinite; }
+  .flow .dot.res { background: #7ee787; animation: flowL 2.2s linear infinite; animation-delay: 1.1s; }
+  @keyframes flowR { from { left: -3px; } to { left: calc(100% - 4px); } }
+  @keyframes flowL { from { left: calc(100% - 4px); } to { left: -3px; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="act"></div>
+<div id="stage"><div class="slide" id="slide"></div></div>
+<div id="bar"></div>
+<div id="counter"></div>
+<div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放</div>
+<script>
+// 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
+const ACTS = [
+  '序幕 · 平凡世界',
+  '第一幕 · 冒險的召喚',
+  '第二幕 · 拒絕召喚',
+  '第三幕 · 導師現身',
+  '第四幕 · 跨越門檻',
+  '第五幕 · 試煉之路',
+  '第六幕 · 深淵尋寶',
+  '第七幕 · 帶著火種歸返',
+  '終幕',
+];
+
+// 內嵌的真實截圖(ccxray v2.3.0,合成示範資料實拍;build-deck.mjs 產生)
+const IMG = {
+  topbar: '{{IMG:crop-topbar}}',
+  projects: '{{IMG:crop-projects}}',
+  sessions: '{{IMG:crop-sessions}}',
+  steps: '{{IMG:crop-steps}}',
+  agentcard: '{{IMG:crop-agentcard}}',
+  usagemo: '{{IMG:crop-usage-monthly}}',
+  usageday: '{{IMG:crop-usage-daily}}',
+  usageacct: '{{IMG:crop-usage-accounts}}',
+  swimlane: '{{IMG:crop-swimlane}}',
+  spdiff: '{{IMG:full-sysprompt-diff}}',
+  heldbar: '{{IMG:crop-topbar-held}}',
+  heldsess: '{{IMG:crop-sessions-held}}',
+  full: '{{IMG:full-session}}',
+};
+
+const VIZ_STEPS = 9;
+const NOTE = 'ccxray v2.3 實際畫面(示範資料)';
+
+// stage 1 = 架構示意;2..9 = 真實截圖
+function renderViz(s) {
+  if (s === 1) return '<div class="viz"><div class="flow">' +
+    '<div class="node">Claude Code</div>' +
+    '<div class="pipe"><span class="dot req"></span><span class="dot res"></span></div>' +
+    '<div class="node hero2">ccxray</div>' +
+    '<div class="pipe"><span class="dot req"></span><span class="dot res"></span></div>' +
+    '<div class="node">Anthropic API</div>' +
+    '</div></div>';
+  const img = (k, cls, style) => '<div class="shot ' + (cls || '') + '"' + (style ? ' style="' + style + '"' : '') + '><img src="' + IMG[k] + '" alt=""></div>';
+  switch (s) {
+    case 2: return '<div class="shots">' + img('topbar', 'hero', 'width:88vw') + '</div>';
+    case 3: return '<div class="shots">' + img('projects', '', 'width:24vw;min-width:230px') + img('sessions', 'hero', 'width:26vw;min-width:250px') + '</div>';
+    case 4: return '<div class="shots">' + img('steps', 'hero croptall', 'width:44vw;min-width:340px') + '</div>';
+    case 5: return '<div class="shots">' + img('agentcard', '', 'width:22vw;min-width:220px;max-height:60vh') +
+      '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
+      img('usagemo', 'hero') + img('usageday', 'hero') + '</div>' +
+      img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
+    case 6: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
+    case 7: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
+    case 8: return '<div class="shots" style="flex-direction:column;align-items:center;gap:2.4vh">' + img('heldbar', 'hero', 'width:80vw') + img('heldsess', '', 'width:26vw;min-width:250px') + '</div>';
+    case 9: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
+  }
+}
+
+// t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟(1..9,t 變為說明字幕)
+const S = [
+  // ── 序幕 · 平凡世界(0:00–0:40)──────────────────────
+  { t: '你', a: 0 },
+  { t: '每天', a: 0 },
+  { t: '和 AI', a: 0 },
+  { t: '結對寫程式', c: 'long', a: 0 },
+  { t: 'Claude Code<span class="sub">Codex · Grok</span>', c: 'long', a: 0 },
+  { t: '它很強', a: 0 },
+  { t: '但是——', c: 'dim', a: 0 },
+
+  // ── 第一幕 · 冒險的召喚(0:40–1:50)──────────────────
+  { t: '黑盒子', c: 'hot', a: 1 },
+  { t: '它在想什麼?', c: 'long', a: 1 },
+  { t: '為什麼停頓 30 秒?', c: 'long', a: 1 },
+  { t: '200K context', c: 'long', a: 1 },
+  { t: '被什麼吃掉了?', c: 'long', a: 1 },
+  { t: 'System Prompt 長什麼樣?', c: 'long', a: 1 },
+  { t: '每次呼叫花多少錢?', c: 'long', a: 1 },
+  { t: '你不知道', c: 'long', a: 1 },
+  { t: '帳單知道', c: 'long hot', a: 1 },
+
+  // ── 第二幕 · 拒絕召喚(1:50–2:30)────────────────────
+  { t: '「算了」', a: 2 },
+  { t: '「能動就好」', c: 'long', a: 2 },
+  { t: '「不看,比較幸福」', c: 'long dim', a: 2 },
+  { t: '直到——', a: 2 },
+  { t: '某個深夜', c: 'long', a: 2 },
+  { t: '一個 session<br>燒掉整晚預算', c: 'long hot', a: 2 },
+  { t: '你需要真相', c: 'long', a: 2 },
+
+  // ── 第三幕 · 導師現身(2:30–3:30)────────────────────
+  { t: '一行指令', c: 'long', a: 3 },
+  { t: 'npx ccxray claude', c: 'code', a: 3 },
+  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 3 },
+  { t: '它是誰?', a: 3 },
+  { t: '<span class="accent">cc</span>xray', a: 3 },
+  { v: 1, t: '透明代理,站在你與 API 之間<span style="display:block;font-size:.5em;color:#55606b;margin-top:.5em">架構示意</span>', a: 3 },
+  { t: '每個 request、每個 response<br><span class="accent">全部記下來</span>', c: 'long', a: 3 },
+
+  // ── 第四幕 · 跨越門檻(3:30–5:00)────────────────────
+  { t: '打開 Dashboard', c: 'long', a: 4 },
+  { v: 2, t: 'Dashboard · Usage · System Prompt,一個入口', a: 4 },
+  { t: '你第一次', c: 'long', a: 4 },
+  { t: '看見', c: 'accent', a: 4 },
+  { v: 3, t: '專案 → Session,<span class="accent">即時更新</span>——context 撐到 <span class="hot">97%</span> 都看得見', a: 4 },
+  { t: '那 30 秒的停頓?', c: 'long', a: 4 },
+  { v: 4, t: '是 <span class="good">thinking</span>——每一步工具、思考、對話,逐字可見', a: 4 },
+  { t: '黑盒', c: 'hot', a: 4 },
+  { t: '變玻璃盒', c: 'long good', a: 4 },
+
+  // ── 第五幕 · 試煉之路(5:00–7:00)────────────────────
+  { t: '試煉一', c: 'dim', a: 5 },
+  { t: '錢去哪了?', c: 'long hot', a: 5 },
+  { v: 5, t: '每回合、每日、每月——<span class="good">一目了然</span>', a: 5 },
+
+  { t: '試煉二', c: 'dim', a: 5 },
+  { t: 'Subagent 亂舞', c: 'long hot', a: 5 },
+  { t: '誰生了誰?', c: 'long', a: 5 },
+  { v: 6, t: '泳道時間軸:main 與子代理,<span class="accent">像讀樂譜</span>', a: 5 },
+
+  { t: '試煉三', c: 'dim', a: 5 },
+  { t: 'System Prompt 之謎', c: 'long hot', a: 5 },
+  { v: 7, t: '版本歷史 v2.0.14 → v2.0.15,逐版 <span class="good">diff</span>', a: 5 },
+  { t: '無所遁形', c: 'long good', a: 5 },
+
+  // ── 第六幕 · 深淵尋寶(7:00–8:10)────────────────────
+  { t: '再深一層', a: 6 },
+  { t: '只是「看」嗎?', c: 'long', a: 6 },
+  { t: '不', c: 'accent', a: 6 },
+  { t: '攔截', c: 'accent', a: 6 },
+  { v: 8, t: '<span class="hot">HELD</span>——請求暫停,等你決定:編輯、放行、拒絕', a: 6 },
+  { t: '你從觀眾', c: 'long', a: 6 },
+  { t: '變成導演', c: 'long accent', a: 6 },
+
+  // ── 第七幕 · 帶著火種歸返(8:10–9:20)────────────────
+  { t: '回到日常', c: 'long', a: 7 },
+  { t: '開多個終端?', c: 'long', a: 7 },
+  { t: '自動共用一個 <span class="accent">Hub</span>', c: 'long', a: 7 },
+  { t: 'Claude · Codex · Grok<br>一個儀表板', c: 'long', a: 7 },
+  { t: '長 session 爆磁碟?', c: 'long', a: 7 },
+  { t: 'Delta 儲存,省 85%', c: 'long good', a: 7 },
+  { t: 'npx ccxray claude', c: 'code', a: 7 },
+  { t: '十秒後——', a: 7 },
+  { v: 9, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
+
+  // ── 終幕(9:20–10:00)────────────────────────────────
+  { t: '英雄旅程的終點', c: 'long', a: 8 },
+  { t: '不是屠龍', c: 'long', a: 8 },
+  { t: '是帶回火種', c: 'long', a: 8 },
+  { t: '透明', c: 'accent', a: 8 },
+  { t: '就是火種', c: 'long', a: 8 },
+  { t: 'github.com/lis186/ccxray', c: 'code', a: 8 },
+  { t: '謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 8 },
+];
+
+let i = 0, timer = null;
+const stageEl = document.getElementById('stage');
+const actEl = document.getElementById('act');
+const barEl = document.getElementById('bar');
+const counterEl = document.getElementById('counter');
+
+function show(n) {
+  i = Math.max(0, Math.min(S.length - 1, n));
+  const s = S[i];
+  const el = document.createElement('div');
+  if (s.v) {
+    el.className = 'vizslide';
+    el.innerHTML = renderViz(s.v) +
+      '<div class="vcap"><span class="step">STEP ' + s.v + '/' + VIZ_STEPS + '</span>' + s.t + '</div>' +
+      (s.v > 1 ? '<div class="vnote">' + NOTE + '</div>' : '');
+  } else {
+    el.className = 'slide' + (s.c ? ' ' + s.c : '');
+    el.innerHTML = s.t;
+  }
+  stageEl.replaceChildren(el);
+  actEl.textContent = ACTS[s.a];
+  barEl.style.width = ((i + 1) / S.length * 100) + '%';
+  counterEl.textContent = (i + 1) + ' / ' + S.length;
+  try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+}
+function next() { show(i + 1); }
+function prev() { show(i - 1); }
+function toggleAuto() {
+  if (timer) { clearInterval(timer); timer = null; }
+  else { timer = setInterval(() => { if (i >= S.length - 1) toggleAuto(); else next(); }, 6000); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(S.length - 1);
+  else if (e.key === 'a' || e.key === 'A') toggleAuto();
+});
+document.addEventListener('click', e => {
+  (e.clientX < window.innerWidth * 0.25) ? prev() : next();
+});
+let touchX = null;
+document.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (touchX === null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  if (dx < -30) next(); else if (dx > 30) prev();
+  touchX = null;
+}, { passive: true });
+
+let start = 0;
+try { start = (parseInt(location.hash.slice(1), 10) - 1) || 0; } catch (_) {}
+show(start);
+</script>
+</body>
+</html>
