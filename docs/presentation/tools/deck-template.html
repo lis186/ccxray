@@ -246,15 +246,14 @@
 <script>
 // 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
 const ACTS = [
-  '序幕 · 平凡世界',
-  '第一幕 · 冒險的召喚',
-  '第二幕 · 拒絕召喚',
-  '第三幕 · 導師現身',
-  '第四幕 · 跨越門檻',
-  '第五幕 · 試煉之路',
-  '第六幕 · 深淵尋寶',
-  '第七幕 · 帶著火種歸返',
-  '終幕',
+  '序幕 · 除夕夜',
+  '第一幕 · 上限之謎',
+  '第二幕 · 打造 X 光機',
+  '第三幕 · 第一張 X 光片',
+  '第四幕 · 試煉之路',
+  '第五幕 · 深淵',
+  '第六幕 · 歸返',
+  '終幕 · 處方箋',
 ];
 
 // 內嵌的真實截圖(ccxray v2.3.0,合成示範資料實拍;build-deck.mjs 產生)
@@ -273,7 +272,7 @@ const IMG = {
   cachecloseb: '{{IMG:cache-close-b}}',
   cacheexpired: '{{IMG:cache-expired}}',
   swimlane: '{{IMG:crop-swimlane}}',
-  spdiff: '{{IMG:full-sysprompt-diff}}',
+  tax: '{{IMG:turn1-tax}}',
   fanoutgood: '{{IMG:fanout-good}}',
   fanoutbad: '{{IMG:fanout-bad}}',
   full: '{{IMG:full-session}}',
@@ -408,145 +407,113 @@ function renderViz(s) {
     case 2: return '<div class="shots">' + img('topbar', 'hero', 'width:88vw') + '</div>';
     case 3: return '<div class="shots">' + img('projects', '', 'width:24vw;min-width:230px') + img('sessions', 'hero', 'width:26vw;min-width:250px') + '</div>';
     case 4: return '<div class="shots">' + img('steps', 'hero croptall', 'width:44vw;min-width:340px') + '</div>';
-    case 5: return '<div class="shots">' + img('agentcard', '', 'width:22vw;min-width:220px;max-height:60vh') +
+    case 5: return '<div class="shots">' + img('tax', 'hero', 'width:88vw;max-height:64vh') + '</div>';
+    case 6: return '<div class="shots">' + img('agentcard', '', 'width:22vw;min-width:220px;max-height:60vh') +
       '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
       img('usagemo', 'hero') + img('usageday', 'hero') + '</div>' +
       img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
-    case 7: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
-    case 8: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
+    case 8: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
     case 11: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
   }
 }
 
-// t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟(1..9,t 變為說明字幕)
+// t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟 / sc/cx/ac/mc: 分鏡
 const S = [
-  // ── 序幕 · 平凡世界(0:00–0:40)──────────────────────
-  { t: '你', a: 0 },
-  { t: '每天', a: 0 },
-  { t: '和 AI', a: 0 },
-  { t: '結對寫程式', c: 'long', a: 0 },
-  { t: 'Claude Code<span class="sub">Codex · Grok</span>', c: 'long', a: 0 },
-  { t: '它很強', a: 0 },
-  { t: '但是——', c: 'dim', a: 0 },
+  // ── 序幕 · 除夕夜(0:00–0:50)自介融入故事 ─────────────
+  { t: '過年', a: 0 },
+  { t: '別人在圍爐', c: 'long', a: 0 },
+  { t: '我在 vibe coding', c: 'long', a: 0 },
+  { t: 'Claude usage limit reached.<span class="sub">Your limit will reset at 11:00 PM.</span>', c: 'code', a: 0 },
+  { t: '撞牆', c: 'hot', a: 0 },
+  { t: '又撞', c: 'hot', a: 0 },
+  { t: '再撞', c: 'hot', a: 0 },
+  { t: '大家好,我是 <span class="accent">Justin</span><span class="sub">一個不服氣的工程師</span>', c: 'long', a: 0 },
 
-  // ── 第一幕 · 冒險的召喚(0:40–1:50)──────────────────
-  { t: '黑盒子', c: 'hot', a: 1 },
+  // ── 第一幕 · 上限之謎(0:50–1:40)────────────────────
+  { t: '上限', a: 1 },
+  { t: '到底被<span class="hot">什麼</span>吃掉?', c: 'long', a: 1 },
   { t: '它在想什麼?', c: 'long', a: 1 },
-  { t: '為什麼停頓 30 秒?', c: 'long', a: 1 },
-  { t: '200K context', c: 'long', a: 1 },
-  { t: '被什麼吃掉了?', c: 'long', a: 1 },
-  { t: 'System Prompt 長什麼樣?', c: 'long', a: 1 },
-  { t: '每次呼叫花多少錢?', c: 'long', a: 1 },
+  { t: 'context 誰佔走了?', c: 'long', a: 1 },
+  { t: '每一次呼叫,多重?', c: 'long', a: 1 },
   { t: '你不知道', c: 'long', a: 1 },
-  { t: '帳單知道', c: 'long hot', a: 1 },
+  { t: '上限知道', c: 'long hot', a: 1 },
+  { t: '所以,過年假期<br>我造了一台——', c: 'long', a: 1 },
 
-  // ── 第二幕 · 拒絕召喚(1:50–2:30)────────────────────
-  { t: '「算了」', a: 2 },
-  { t: '「能動就好」', c: 'long', a: 2 },
-  { t: '「不看,比較幸福」', c: 'long dim', a: 2 },
-  { t: '直到——', a: 2 },
-  { t: '某個深夜', c: 'long', a: 2 },
-  { t: '一個 session<br>燒掉整晚預算', c: 'long hot', a: 2 },
-  { t: '你需要真相', c: 'long', a: 2 },
+  // ── 第二幕 · 打造 X 光機(1:40–2:50)──────────────────
+  { t: '<span class="accent">cc</span>xray', a: 2 },
+  { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', c: 'long', a: 2 },
+  { t: 'npx ccxray claude', c: 'code', a: 2 },
+  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 2 },
+  { sc: 1, t: '你的 <span class="accent">Claude Code</span>', a: 2 },
+  { sc: 2, t: '每一次對話,直奔 Anthropic API', a: 2 },
+  { sc: 3, t: '中間——<span class="dim">本來什麼都沒有</span>', a: 2 },
+  { sc: 4, t: '<span class="accent">ccxray</span>,站進來', a: 2 },
+  { sc: 5, t: '每個 request、每個 response,<span class="accent">全部記下來</span>', a: 2 },
 
-  // ── 第三幕 · 導師現身(2:30–3:30)────────────────────
-  { t: '一行指令', c: 'long', a: 3 },
-  { t: 'npx ccxray claude', c: 'code', a: 3 },
-  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 3 },
-  { t: '它是誰?', a: 3 },
-  { t: '<span class="accent">cc</span>xray', a: 3 },
-  { t: '給 AI session<br>照一張 <span class="accent">X 光</span>', c: 'long', a: 3 },
-  { sc: 1, t: '你的 <span class="accent">Claude Code</span>', a: 3 },
-  { sc: 2, t: '每一次對話,直奔 Anthropic API', a: 3 },
-  { sc: 3, t: '中間——<span class="dim">本來什麼都沒有</span>', a: 3 },
-  { sc: 4, t: '<span class="accent">ccxray</span>,站進來', a: 3 },
-  { sc: 5, t: '每個 request、每個 response,<span class="accent">全部記下來</span>', a: 3 },
+  // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
+  { t: '打開 Dashboard', c: 'long', a: 3 },
+  { v: 2, t: 'Dashboard · Usage · System Prompt,一個入口', a: 3 },
+  { v: 3, t: '專案 → Session,<span class="accent">即時更新</span>——context 一眼看見', a: 3 },
+  { v: 4, t: '每一步工具、思考、對話,<span class="accent">逐字可見</span>', a: 3 },
+  { t: '現在——', a: 3 },
+  { t: '照第一張片子', c: 'long accent', a: 3 },
+  { t: '對話<span class="hot">還沒開始</span>的那一刻', c: 'long', a: 3 },
+  { t: 'LIVE<span class="sub">按 D 開 dashboard → 點一個新 session → turn #1 → System<br>(demo 不順就直接翻下一頁,截圖已備好)</span>', c: 'hot', a: 3 },
+  { v: 5, t: '你只說了一句話——<span class="hot">22K token 已經先付了</span>', a: 3 },
+  { t: 'system prompt · tools<br>MCP · skills · 記憶', c: 'long', a: 3 },
+  { t: '全是<span class="hot">房租</span>,開口前就扣', c: 'long', a: 3 },
+  { t: '而且——大部分<br>是<span class="warn">你自己裝的</span>', c: 'long', a: 3 },
 
-  // ── 第四幕 · 跨越門檻(3:30–5:00)────────────────────
-  { t: '打開 Dashboard', c: 'long', a: 4 },
-  { v: 2, t: 'Dashboard · Usage · System Prompt,一個入口', a: 4 },
-  { t: '你第一次', c: 'long', a: 4 },
-  { t: '看見', c: 'accent', a: 4 },
-  { v: 3, t: '專案 → Session,<span class="accent">即時更新</span>——<span class="accent">38% of 1M</span>,用了多少一眼看見', a: 4 },
-  { t: '那 30 秒的停頓?', c: 'long', a: 4 },
-  { v: 4, t: '是 <span class="good">thinking</span>——每一步工具、思考、對話,逐字可見', a: 4 },
-  { t: '黑盒', c: 'hot', a: 4 },
-  { t: '變玻璃盒', c: 'long good', a: 4 },
+  // ── 第四幕 · 試煉之路(5:00–6:50)─────────────────────
+  { t: '試煉一', c: 'dim', a: 4 },
+  { t: '錢去哪了?', c: 'long hot', a: 4 },
+  { v: 6, t: '每回合、每日、每月——<span class="good">一目了然</span>', a: 4 },
+  { t: 'Cache 斷線<br>命中 0.1× · 重建 <span class="hot">2×</span>', c: 'long', a: 4 },
+  { t: '差 20 倍', c: 'hot', a: 4 },
+  { cx: 1, t: '倒數就在卡片上——<span class="good">cache 50m left</span>,綠燈,安心寫', a: 4 },
+  { cx: 2, t: '去開了個會——剩 <span class="warn">20 分鐘</span>,轉黃', a: 4 },
+  { cx: 3, t: '最後 3 分鐘——<span class="hot">紅色,一閃一閃催你</span>', a: 4 },
+  { cx: 4, t: '沒趕上——<span class="dim">cache expired</span>,下一段重付 <span class="hot">2×</span>', a: 4 },
+  { t: '試煉二', c: 'dim', a: 4 },
+  { t: 'Subagent 亂舞,誰生了誰?', c: 'long', a: 4 },
+  { v: 8, t: '泳道時間軸:main 與子代理,<span class="accent">像讀樂譜</span>', a: 4 },
 
-  // ── 第五幕 · 試煉之路(5:00–7:00)────────────────────
-  { t: '試煉一', c: 'dim', a: 5 },
-  { t: '錢去哪了?', c: 'long hot', a: 5 },
-  { v: 5, t: '每回合、每日、每月——<span class="good">一目了然</span>', a: 5 },
-  { t: '還有一個隱形殺手', c: 'long', a: 5 },
-  { t: 'Cache 斷線', c: 'long hot', a: 5 },
-  { t: '命中 0.1×<br>重建 <span class="hot">2×</span>', c: 'long', a: 5 },
-  { t: '差 20 倍', c: 'hot', a: 5 },
-  { t: '1h TTL,錯過就重付', c: 'long', a: 5 },
-  { cx: 1, t: '倒數就在卡片上——<span class="good">cache 50m left</span>,綠燈,安心寫', a: 5 },
-  { cx: 2, t: '去開了個會——剩 <span class="warn">20 分鐘</span>,轉黃', a: 5 },
-  { cx: 3, t: '最後 3 分鐘——<span class="hot">紅色,一閃一閃催你</span>', a: 5 },
-  { cx: 4, t: '沒趕上——<span class="dim">cache expired</span>,下一段重付 <span class="hot">2×</span>', a: 5 },
-  { t: '快斷線時<br>分頁標題也會閃 <span class="hot">⚠ ccxray</span>', c: 'long', a: 5 },
-  { t: '回去戳一下,省 20 倍', c: 'long good', a: 5 },
+  // ── 第五幕 · 深淵(6:50–8:40)─────────────────────────
+  { t: '再深一層', a: 5 },
+  { t: '模型有個秘密', c: 'long', a: 5 },
+  { t: 'Smart Zone', c: 'good', a: 5 },
+  { t: 'context 淺:又快又準', c: 'long', a: 5 },
+  { t: 'Dumb Zone', c: 'hot', a: 5 },
+  { t: 'context 塞滿:<br>變笨、變慢、開始出錯', c: 'long', a: 5 },
+  { ac: [1, 8], t: '不分工的 session:全都自己來,context 一直墊高', a: 5 },
+  { ac: [8, 15], t: '60%…70%…80%,還在漲', a: 5 },
+  { ac: [15, 21], t: '進入 <span class="hot">dumb zone</span>——紅點:tool call 開始失敗', a: 5 },
+  { ac: [21, 21], t: '你沒理它,一路聊到 <span class="hot">95%</span>', a: 5 },
+  { ac: [21, 22], t: '<span class="hot">auto compact</span>——摔回 15%,cache <span class="hot">全滅</span>,重新付錢', a: 5 },
+  { ac: [22, 26], t: '然後……又開始爬', a: 5 },
+  { t: '分工給 subagent<br>留在 <span class="good">smart zone</span>', c: 'long', a: 5 },
+  { t: '但——分工也要<span class="accent">選對模型</span>', c: 'long', a: 5 },
+  { mc: 1, t: '<span class="good">選對模型</span>:縮時重播——一片綠,快進快出', a: 5 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>:失敗率一下就上來,<span class="hot">紅 bar 越拖越長</span>', a: 5 },
+  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 5 },
 
-  { t: '試煉二', c: 'dim', a: 5 },
-  { t: 'Subagent 亂舞', c: 'long hot', a: 5 },
-  { t: '誰生了誰?', c: 'long', a: 5 },
-  { v: 7, t: '泳道時間軸:main 與子代理,<span class="accent">像讀樂譜</span>', a: 5 },
+  // ── 第六幕 · 歸返(8:40–9:20)─────────────────────────
+  { t: '回到那個除夕夜', c: 'long', a: 6 },
+  { t: '上限被什麼吃掉?', c: 'long', a: 6 },
+  { t: '房租 · 斷掉的 cache<br>塞爆的 context · 選錯的模型', c: 'long', a: 6 },
+  { v: 11, t: '現在,<span class="accent">全都看得見</span>', a: 6 },
+  { t: 'X 光照得出病灶', c: 'long', a: 6 },
+  { t: '治不了病', c: 'long hot', a: 6 },
+  { t: '開刀的判斷<br>在<span class="accent">你</span>手上', c: 'long', a: 6 },
 
-  { t: '試煉三', c: 'dim', a: 5 },
-  { t: 'System Prompt 之謎', c: 'long hot', a: 5 },
-  { v: 8, t: '版本歷史 v2.0.14 → v2.0.15,逐版 <span class="good">diff</span>', a: 5 },
-  { t: '無所遁形', c: 'long good', a: 5 },
-
-  // ── 第六幕 · 深淵尋寶(7:00–8:10)────────────────────
-  { t: '再深一層', a: 6 },
-  { t: '模型有個秘密', c: 'long', a: 6 },
-  { t: 'Smart Zone', c: 'good', a: 6 },
-  { t: 'context 淺:又快又準', c: 'long', a: 6 },
-  { t: 'Dumb Zone', c: 'hot', a: 6 },
-  { t: 'context 塞滿:<br>變笨、變慢、開始出錯', c: 'long', a: 6 },
-  { ac: [1, 8], t: '不分工的 session:全都自己來,context 一直墊高', a: 6 },
-  { ac: [8, 15], t: '60%…70%…80%,還在漲', a: 6 },
-  { ac: [15, 21], t: '進入 <span class="hot">dumb zone</span>——紅點:tool call 開始失敗', a: 6 },
-  { ac: [21, 21], t: '你沒理它,一路聊到 <span class="hot">95%</span>', a: 6 },
-  { ac: [21, 22], t: '<span class="hot">auto compact</span>——摔回 15%,cache <span class="hot">全滅</span>,重新付錢', a: 6 },
-  { ac: [22, 26], t: '然後……又開始爬', a: 6 },
-  { t: '整段深淵,<span class="accent">看得一清二楚</span>', c: 'long', a: 6 },
-  { t: '教訓?', a: 6 },
-  { t: '分工給 subagent<br>留在 <span class="good">smart zone</span>', c: 'long', a: 6 },
-  { t: '但——', c: 'dim', a: 6 },
-  { t: '分工,也要<span class="accent">選對模型</span>', c: 'long', a: 6 },
-  { t: '同一個長任務<br>兩種選擇', c: 'long', a: 6 },
-  { mc: 1, t: '<span class="good">選對模型</span>:縮時重播——一片綠,快進快出', a: 6 },
-  { mc: 2, t: '<span class="hot">選錯模型</span>:失敗率一下就上來,<span class="hot">紅 bar 越拖越長</span>', a: 6 },
-  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 6 },
-  { t: '對的模型 × 會分工<br>= <span class="good">又快、又省、又穩</span>', c: 'long', a: 6 },
-  { t: '而這些選擇——', c: 'dim', a: 6 },
-  { t: 'X 光不會替你做', c: 'long', a: 6 },
-
-  // ── 第七幕 · 帶著火種歸返(8:10–9:20)────────────────
-  { t: '回到日常', c: 'long', a: 7 },
-  { t: '開多個終端?', c: 'long', a: 7 },
-  { t: '自動共用一個 <span class="accent">Hub</span>', c: 'long', a: 7 },
-  { t: 'Claude · Codex · Grok<br>一個儀表板', c: 'long', a: 7 },
-  { t: '長 session 爆磁碟?', c: 'long', a: 7 },
-  { t: 'Delta 儲存,省 85%', c: 'long good', a: 7 },
+  // ── 終幕 · 處方箋(9:20–10:00)CTA ─────────────────────
+  { t: '處方箋', c: 'accent', a: 7 },
   { t: 'npx ccxray claude', c: 'code', a: 7 },
-  { t: '十秒後——', a: 7 },
-  { v: 11, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
-
-  // ── 終幕(9:20–10:00)────────────────────────────────
-  { t: '英雄旅程的終點', c: 'long', a: 8 },
-  { t: '不是屠龍', c: 'long', a: 8 },
-  { t: '是帶回一雙<br><span class="accent">透視的眼睛</span>', c: 'long', a: 8 },
-  { t: 'X 光照得出病灶', c: 'long', a: 8 },
-  { t: '治不了病', c: 'long hot', a: 8 },
-  { t: '開刀的判斷', c: 'long', a: 8 },
-  { t: '在<span class="accent">你</span>手上', c: 'long', a: 8 },
-  { t: '<span class="accent">看見</span>,然後<span class="good">決定</span>', c: 'long', a: 8 },
-  { t: 'github.com/lis186/ccxray', c: 'code', a: 8 },
-  { t: '謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 8 },
+  { t: '今晚睡前<br>給你的 agent 照一張 X 光', c: 'long', a: 7 },
+  { t: 'PM 們——<br>把 Usage 頁丟進老闆的群組', c: 'long', a: 7 },
+  { t: 'github.com/lis186/ccxray<span class="sub">⭐ star · issues · PR 歡迎——還有 hub、delta 儲存、Codex/Grok 支援等你挖</span>', c: 'code', a: 7 },
+  { t: '<span class="accent">看見</span>,然後<span class="good">決定</span>', c: 'long', a: 7 },
+  { t: '謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 7 },
 ];
 
 let i = 0, timer = null;
@@ -603,7 +570,7 @@ function show(n) {
   }
   acStop();
   if (s.cx) {
-    const capHtml = '<div class="vcap"><span class="step">STEP 6/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const capHtml = '<div class="vcap"><span class="step">STEP 7/' + VIZ_STEPS + '</span>' + s.t + '</div>';
     const root = stageEl.querySelector('#cxroot');
     if (root) {
       cxApply(s.cx);
@@ -674,6 +641,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Home') show(0);
   else if (e.key === 'End') show(S.length - 1);
   else if (e.key === 'a' || e.key === 'A') toggleAuto();
+  else if (e.key === 'd' || e.key === 'D') window.open('http://localhost:5577', '_blank');
 });
 document.addEventListener('click', e => {
   (e.clientX < window.innerWidth * 0.25) ? prev() : next();

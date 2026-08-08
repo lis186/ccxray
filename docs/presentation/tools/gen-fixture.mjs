@@ -39,6 +39,54 @@ const CORE_B = CORE_A + `
 # Task Management
 You have access to the TaskCreate and TaskUpdate tools to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress.
 `;
+const MCP_BLOCK = `
+# User's Current Configuration
+
+The following custom skills are enabled for this user and may be invoked with the Skill tool:
+` + Array.from({length: 9}, (_, i) => {
+  const sk = [['pdf','Read, create, merge, split, watermark and OCR PDF files. Use whenever a .pdf is the input or the requested deliverable.'],['docx','Create or edit Word documents with headings, tables of contents, tracked changes and letterheads.'],['xlsx','Open, clean, transform and chart spreadsheet files; the deliverable must be a spreadsheet.'],['pptx','Create or edit slide decks; trigger whenever a .pptx is involved in any way.'],['code-review','Review the current diff for correctness bugs and simplification opportunities at a given effort level.'],['security-review','Complete a security review of the pending changes on the current branch before merging.'],['release','Prepare and publish a release: bump version, update CHANGELOG, tag, push, npm publish.'],['dataviz','Design-system guidance for every chart, dashboard or visualization before writing the first line of chart code.'],['deep-reading-analyst','Systematic multi-model analysis framework for long-form articles and papers.']][i];
+  return '- ' + sk[0] + ': ' + sk[1];
+}).join('\n') + `
+
+**Configured MCP servers and their tools:**
+
+## github (mcp__github__*)
+` + Array.from({length: 18}, (_, i) => {
+  const names = ['create_pull_request','list_issues','get_file_contents','search_code','merge_pull_request','add_issue_comment','create_branch','list_commits','get_pull_request_diff','request_review','update_issue','list_workflows','get_job_logs','rerun_workflow','create_release','search_repositories','fork_repository','subscribe_pr_activity'];
+  return '- mcp__github__' + names[i] + ': ' + names[i].replace(/_/g, ' ') + ' on a GitHub repository. Accepts owner, repo and operation-specific parameters; returns structured JSON. Use pagination whenever possible with batches of 5-10 items to conserve context. Always call get_me first to understand current user permissions.';
+}).join('\n') + `
+
+## slack (mcp__slack__*)
+- mcp__slack__post_message: Post a message to a channel. Requires channel id; supports thread_ts for replies and blocks for rich formatting.
+- mcp__slack__search_messages: Search workspace messages with query operators (from:, in:, before:, after:). Returns at most 20 results per page.
+- mcp__slack__list_channels: Enumerate visible channels with topic, member count and archive state.
+- mcp__slack__upload_file: Attach a file to a channel or thread; supports initial_comment and title.
+
+## notion (mcp__notion__*)
+- mcp__notion__query_database: Run a filtered, sorted query against a database. Compose filters with and/or groups; supports pagination cursors.
+- mcp__notion__create_page: Create a page under a parent page or database with property values and rich-text content blocks.
+- mcp__notion__append_blocks: Append content blocks (paragraph, heading, code, to-do, table) to an existing page.
+
+**Available plugin skills (loaded from installed plugins):**
+- superpowers:brainstorming — structured divergent/convergent ideation with voting rounds and theme clustering.
+- superpowers:writing-coach — voice-preserving edit passes over long-form drafts with rationale annotations.
+- workflows:release-train — multi-repo coordinated release orchestration with rollback checkpoints.
+- workflows:incident-review — blameless postmortem scaffolding from alert timeline to action items.
+
+# Environment
+<env>
+Working directory: /home/justin/dev/side-quest
+Is directory a git repo: Yes
+Platform: darwin
+OS Version: macOS 15.5
+Today's date: 2026-08-08
+Model: claude-sonnet-4-6
+</env>
+
+# Auto memory
+You have a persistent, file-based memory system at ~/.claude/memory. MEMORY.md is loaded into every session. Topic files hold project conventions: testing isolation rules (always CCXRAY_HOME to a temp dir), the three-layer guard convention for invariants, verification principles requiring fail-on-old evidence, and the wire-protocol confidence tagging scheme. Record durable insights as you work; prune stale entries when contradicted.
+`;
+
 const TONE = `
 # Tone and style
 You should be concise, direct, and to the point. When you run a non-trivial bash command, you should explain what the command does and why you are running it. Output text to communicate with the user; all text you output outside of tool use is displayed to the user.
@@ -46,7 +94,7 @@ You should be concise, direct, and to the point. When you run a non-trivial bash
 const mkSys = (core, ver, modelMarker) => ([
   { type: 'text', text: `x-anthropic-internal cc_version=${ver}; platform=darwin` },
   { type: 'text', text: 'You are Claude Code, Anthropic\'s official CLI for Claude.' + (modelMarker ? ' The exact model ID is ' + modelMarker + '.' : '') },
-  { type: 'text', text: core + TONE },
+  { type: 'text', text: core + MCP_BLOCK + TONE },
 ]);
 fs.writeFileSync(SHARED + '/sys_f3a9c1.json', JSON.stringify(mkSys(CORE_A, '2.0.14', 'claude-fable-5[1m]')));
 fs.writeFileSync(SHARED + '/sys_e5b7d2.json', JSON.stringify(mkSys(CORE_B, '2.0.15')));
@@ -56,7 +104,11 @@ fs.writeFileSync(SHARED + '/sys_99baaf.json', JSON.stringify([
   { type: 'text', text: 'You are a file search specialist for Claude Code. Your job is to locate files and code relevant to a query using Glob, Grep and Read, then report precise paths and line numbers back to the orchestrator. Be thorough: check multiple naming conventions and locations before concluding something does not exist. Never modify files. Keep your final report compact and structured so the calling agent can act on it without re-reading the files you cite. Prefer targeted reads over full-file dumps to conserve context. When the query is ambiguous, enumerate the plausible interpretations and cover each briefly.' + TONE },
 ]));
 fs.writeFileSync(SHARED + '/tools_7d2e88.json', JSON.stringify(
-  ['Bash','Read','Edit','Write','Glob','Grep','Task','WebFetch'].map(n => ({ name: n, description: n + ' tool', input_schema: { type: 'object' } }))
+  ['Bash','Read','Edit','Write','Glob','Grep','Task','WebFetch','WebSearch','NotebookEdit','TaskCreate','TaskUpdate','TaskList','Skill','AskUserQuestion','EnterPlanMode','ExitPlanMode','KillShell','BashOutput','ListMcpResources','ReadMcpResource','TodoWrite','MultiEdit','LS','Agent','Monitor','SendMessage','ListAgents'].map(n => ({
+    name: n,
+    description: 'The ' + n + ' tool. ' + 'Use this tool to perform ' + n.toLowerCase() + ' operations with the documented parameter contract, permission model, sandboxing behaviour, retry semantics and output-format guarantees described in the full usage notes. '.repeat(3),
+    input_schema: { type: 'object', properties: { input: { type: 'string', description: 'Primary argument. Prefer absolute paths; quote paths containing spaces; batches of independent calls may run in parallel.' }, options: { type: 'object', description: 'Operation-specific options object controlling timeout, verbosity and output limits.' } } },
+  }))
 ));
 
 // ── 回合資料 ────────────────────────────────────────────────
@@ -175,6 +227,26 @@ let ts2 = mainStart + Math.round(spanMs * 0.55);
   });
   ts2 += (elapsed + 14) * 1000;
 });
+
+// ── Session D:全新 session 的第一句話(隱形房租示範:read=0、先付 ~21K)──
+{
+  const td = now - 6 * 60000;
+  const usage = { input_tokens: 21600, output_tokens: 520, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const id = mkId(td);
+  writeTurn(id,
+    { model: 'claude-sonnet-4-6', max_tokens: 16000, messages: [user('嗨,幫我看一個 flaky test')], sysHash: 'f3a9c1', toolsHash: '7d2e88' },
+    sseFor('msg_01FRESH0', 'claude-sonnet-4-6', usage, [{ t: 'text', text: '好,先看測試檔。' }, { t: 'tool', id: 'fr0', name: 'Read', input: { file_path: 'test/flaky.test.js' } }], false));
+  lines.push({
+    id, ts: mkTs(td), sessionId: 'c0ffee99-3333-4444-5555-666677778888', provider: 'anthropic', agent: 'claude',
+    model: 'claude-sonnet-4-6', msgCount: 1, toolCount: 28,
+    toolCalls: { Read: 1 }, turnToolCalls: { Read: 1 }, isSubagent: false, sessionInferred: false,
+    cwd: '/home/justin/dev/side-quest', receivedAt: td, elapsed: '8.6',
+    usage, cost: { cost: price('claude-sonnet-4-6', usage) }, maxContext: 200000,
+    stopReason: 'end_turn', title: 'Look at a flaky test', status: 200,
+    sysHash: 'f3a9c1', toolsHash: '7d2e88', coreHash: 'aa11bb', agentKey: 'orchestrator', agentLabel: 'Claude Code',
+    convId: 'fresh001', responseId: 'msg_01FRESH0', isSSE: true,
+  });
+}
 
 // ── Session B:webapp,sonnet-4-6,45K/200K(≈22%)──
 let tb = now - 3 * 3600000;
