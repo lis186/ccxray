@@ -187,6 +187,12 @@
   .scene-5 #px-x { box-shadow: 0 0 26px #22d3ee55; }
   .scene-5 .pxlogs { opacity: 1; }
 
+  /* STEP 9:auto-compact 逐格重播。26 幀真實泳道 render(log 前綴逐格),
+     一個 #acroot 跨六頁存活,每頁自動播放自己的段落後定格;
+     倒退重播該段。prefers-reduced-motion 直接跳到段尾。 */
+  .acscene { display: flex; justify-content: center; width: 100%; }
+  .acframe { width: 90vw; }
+
   /* STEP 6:cache 過期分鏡。同一張真實 session 卡跨頁存活(#cxroot),
      翻頁只換 cx-N class:四個狀態圖層原地交叉淡變,紅色態疊上第二畫格
      以原生 cachePulse 節奏閃爍;鏡頭在警告時推近、過期時拉回。 */
@@ -245,10 +251,37 @@ const IMG = {
   cacheexpired: '{{IMG:cache-expired}}',
   swimlane: '{{IMG:crop-swimlane}}',
   spdiff: '{{IMG:full-sysprompt-diff}}',
-  heldbar: '{{IMG:crop-topbar-held}}',
-  heldsess: '{{IMG:crop-sessions-held}}',
   full: '{{IMG:full-session}}',
 };
+
+const ACF = [
+  '{{IMG:spiral-01}}',
+  '{{IMG:spiral-02}}',
+  '{{IMG:spiral-03}}',
+  '{{IMG:spiral-04}}',
+  '{{IMG:spiral-05}}',
+  '{{IMG:spiral-06}}',
+  '{{IMG:spiral-07}}',
+  '{{IMG:spiral-08}}',
+  '{{IMG:spiral-09}}',
+  '{{IMG:spiral-10}}',
+  '{{IMG:spiral-11}}',
+  '{{IMG:spiral-12}}',
+  '{{IMG:spiral-13}}',
+  '{{IMG:spiral-14}}',
+  '{{IMG:spiral-15}}',
+  '{{IMG:spiral-16}}',
+  '{{IMG:spiral-17}}',
+  '{{IMG:spiral-18}}',
+  '{{IMG:spiral-19}}',
+  '{{IMG:spiral-20}}',
+  '{{IMG:spiral-21}}',
+  '{{IMG:spiral-22}}',
+  '{{IMG:spiral-23}}',
+  '{{IMG:spiral-24}}',
+  '{{IMG:spiral-25}}',
+  '{{IMG:spiral-26}}',
+];
 
 const VIZ_STEPS = 10;
 const NOTE = 'ccxray v2.3 實際畫面(示範資料)';
@@ -287,6 +320,25 @@ function pxApply(k) {
   logs.innerHTML = k >= 5 ? pxLogsHTML() : '';
 }
 
+// ── STEP 9 auto-compact 逐格重播 ──
+let acTimer = null;
+function acStop() { if (acTimer) { clearInterval(acTimer); acTimer = null; } }
+function acSceneHTML(from) {
+  return '<div id="acroot" class="acscene"><div class="shot hero acframe"><img id="acframe" src="' + ACF[from - 1] + '" alt=""></div></div>';
+}
+function acPlay(from, to) {
+  acStop();
+  const img = stageEl.querySelector('#acframe');
+  let idx = from;
+  img.src = ACF[idx - 1];
+  if (to <= from || matchMedia('(prefers-reduced-motion: reduce)').matches) { img.src = ACF[to - 1]; return; }
+  acTimer = setInterval(() => {
+    idx++;
+    img.src = ACF[idx - 1];
+    if (idx >= to) acStop();
+  }, 420);
+}
+
 // ── STEP 6 cache 過期分鏡:同一張真實卡片跨頁存活,狀態圖層交叉淡變 ──
 function cxSceneHTML(k) {
   return '<div id="cxroot" class="cxscene cx-' + k + '">' +
@@ -314,7 +366,6 @@ function renderViz(s) {
       img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
     case 7: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
     case 8: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
-    case 9: return '<div class="shots" style="flex-direction:column;align-items:center;gap:2.4vh">' + img('heldbar', 'hero', 'width:80vw') + img('heldsess', '', 'width:26vw;min-width:250px') + '</div>';
     case 10: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
   }
 }
@@ -401,12 +452,20 @@ const S = [
 
   // ── 第六幕 · 深淵尋寶(7:00–8:10)────────────────────
   { t: '再深一層', a: 6 },
-  { t: '只是「看」嗎?', c: 'long', a: 6 },
-  { t: '不', c: 'accent', a: 6 },
-  { t: '攔截', c: 'accent', a: 6 },
-  { v: 9, t: '<span class="hot">HELD</span>——請求暫停,等你決定:編輯、放行、拒絕', a: 6 },
-  { t: '你從觀眾', c: 'long', a: 6 },
-  { t: '變成導演', c: 'long accent', a: 6 },
+  { t: '模型有個秘密', c: 'long', a: 6 },
+  { t: 'Smart Zone', c: 'good', a: 6 },
+  { t: 'context 淺:又快又準', c: 'long', a: 6 },
+  { t: 'Dumb Zone', c: 'hot', a: 6 },
+  { t: 'context 塞滿:<br>變笨、變慢、開始出錯', c: 'long', a: 6 },
+  { ac: [1, 8], t: '不分工的 session:全都自己來,context 一直墊高', a: 6 },
+  { ac: [8, 15], t: '60%…70%…80%,還在漲', a: 6 },
+  { ac: [15, 21], t: '進入 <span class="hot">dumb zone</span>——紅點:tool call 開始失敗', a: 6 },
+  { ac: [21, 21], t: '你沒理它,一路聊到 <span class="hot">95%</span>', a: 6 },
+  { ac: [21, 22], t: '<span class="hot">auto compact</span>——摔回 15%,cache <span class="hot">全滅</span>,重新付錢', a: 6 },
+  { ac: [22, 26], t: '然後……又開始爬', a: 6 },
+  { t: '整段深淵,<span class="accent">看得一清二楚</span>', c: 'long', a: 6 },
+  { t: '教訓?', a: 6 },
+  { t: '分工給 subagent<br>留在 <span class="good">smart zone</span>', c: 'long', a: 6 },
 
   // ── 第七幕 · 帶著火種歸返(8:10–9:20)────────────────
   { t: '回到日常', c: 'long', a: 7 },
@@ -438,6 +497,28 @@ const counterEl = document.getElementById('counter');
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
+  if (s.ac) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 9/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const root = stageEl.querySelector('#acroot');
+    if (root) {
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = acSceneHTML(s.ac[0]) + capHtml + '<div class="vnote">實際 render 逐格重播(示範資料)</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    acPlay(s.ac[0], s.ac[1]);
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  acStop();
   if (s.cx) {
     const capHtml = '<div class="vcap"><span class="step">STEP 6/' + VIZ_STEPS + '</span>' + s.t + '</div>';
     const root = stageEl.querySelector('#cxroot');
