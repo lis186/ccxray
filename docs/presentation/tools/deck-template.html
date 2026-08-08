@@ -193,6 +193,20 @@
   .acscene { display: flex; justify-content: center; width: 100%; }
   .acframe { width: 90vw; }
 
+  /* STEP 10:模型選擇對照分鏡。#mcroot 跨三頁存活:good 獨秀 →
+     bad 滑入並排 → 真實統計浮現。 */
+  .mcscene { display: flex; flex-direction: column; gap: 2vh; width: 92vw; }
+  .mcrow { display: flex; gap: 2vw; justify-content: center; }
+  .mccol { flex: 1 1 0; min-width: 0; transition: opacity .6s ease, transform .6s ease; }
+  .mccol .mclabel { font-weight: 900; font-size: clamp(.9rem, 2vw, 1.3rem); margin-bottom: .8vh; text-align: center; }
+  .mccol .mcstats { display: flex; gap: 1.2em; justify-content: center; margin-top: 1vh;
+    font-family: ui-monospace, monospace; font-size: clamp(.75rem, 1.8vmin, 1.05rem);
+    opacity: 0; transition: opacity .6s ease; }
+  .mccol .mcstats b { font-weight: 700; }
+  .mccol.bad { opacity: 0; transform: translateX(4vw); }
+  .mc-2 .mccol.bad, .mc-3 .mccol.bad { opacity: 1; transform: none; }
+  .mc-3 .mcstats { opacity: 1; }
+
   /* STEP 6:cache 過期分鏡。同一張真實 session 卡跨頁存活(#cxroot),
      翻頁只換 cx-N class:四個狀態圖層原地交叉淡變,紅色態疊上第二畫格
      以原生 cachePulse 節奏閃爍;鏡頭在警告時推近、過期時拉回。 */
@@ -251,6 +265,8 @@ const IMG = {
   cacheexpired: '{{IMG:cache-expired}}',
   swimlane: '{{IMG:crop-swimlane}}',
   spdiff: '{{IMG:full-sysprompt-diff}}',
+  fanoutgood: '{{IMG:fanout-good}}',
+  fanoutbad: '{{IMG:fanout-bad}}',
   full: '{{IMG:full-session}}',
 };
 
@@ -283,7 +299,7 @@ const ACF = [
   '{{IMG:spiral-26}}',
 ];
 
-const VIZ_STEPS = 10;
+const VIZ_STEPS = 11;
 const NOTE = 'ccxray v2.3 實際畫面(示範資料)';
 
 // STEP 1 是分鏡(pxSceneHTML);2..10 = 真實截圖
@@ -319,6 +335,19 @@ function pxApply(k) {
   const logs = root.querySelector('#px-logs');
   logs.innerHTML = k >= 5 ? pxLogsHTML() : '';
 }
+
+// ── STEP 10 模型選擇對照分鏡 ──
+function mcSceneHTML(k) {
+  return '<div id="mcroot" class="mcscene mc-' + k + '"><div class="mcrow">' +
+    '<div class="mccol good"><div class="mclabel"><span class="good">fable-5 1M 指揮</span> · 子代理各給一小塊</div>' +
+      '<div class="shot hero"><img src="' + IMG.fanoutgood + '" alt=""></div>' +
+      '<div class="mcstats"><span>31m</span><span><b class="good">$9.20</b></span><span>失敗 <b class="good">0%</b></span><span>61 回合</span></div></div>' +
+    '<div class="mccol bad"><div class="mclabel"><span class="hot">全塞 200K 小模型</span> · window 不足</div>' +
+      '<div class="shot"><img src="' + IMG.fanoutbad + '" alt=""></div>' +
+      '<div class="mcstats"><span><b class="hot">52m</b></span><span><b class="hot">$20.71</b></span><span>失敗 <b class="hot">40%</b></span><span><b class="hot">136 回合</b></span></div></div>' +
+  '</div></div>';
+}
+function mcApply(k) { stageEl.querySelector('#mcroot').className = 'mcscene mc-' + k; }
 
 // ── STEP 9 auto-compact 逐格重播 ──
 let acTimer = null;
@@ -366,7 +395,7 @@ function renderViz(s) {
       img('usageacct', '', 'width:20vw;min-width:200px') + '</div>';
     case 7: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
     case 8: return '<div class="shots">' + img('spdiff', 'hero crop', 'width:76vw') + '</div>';
-    case 10: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
+    case 11: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
   }
 }
 
@@ -466,6 +495,13 @@ const S = [
   { t: '整段深淵,<span class="accent">看得一清二楚</span>', c: 'long', a: 6 },
   { t: '教訓?', a: 6 },
   { t: '分工給 subagent<br>留在 <span class="good">smart zone</span>', c: 'long', a: 6 },
+  { t: '但——', c: 'dim', a: 6 },
+  { t: '分工,也要<span class="accent">選對模型</span>', c: 'long', a: 6 },
+  { t: '同一個長任務<br>兩種選擇', c: 'long', a: 6 },
+  { mc: 1, t: '<span class="good">選對模型</span>:波次分工,快進快出,一片綠', a: 6 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>:context 塞爆,紅黃一片、越拖越長', a: 6 },
+  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 6 },
+  { t: '對的模型 × 會分工<br>= <span class="good">又快、又省、又穩</span>', c: 'long', a: 6 },
 
   // ── 第七幕 · 帶著火種歸返(8:10–9:20)────────────────
   { t: '回到日常', c: 'long', a: 7 },
@@ -476,7 +512,7 @@ const S = [
   { t: 'Delta 儲存,省 85%', c: 'long good', a: 7 },
   { t: 'npx ccxray claude', c: 'code', a: 7 },
   { t: '十秒後——', a: 7 },
-  { v: 10, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
+  { v: 11, t: '完整的 dashboard,你的 AI <span class="accent">不再是謎</span>', a: 7 },
 
   // ── 終幕(9:20–10:00)────────────────────────────────
   { t: '英雄旅程的終點', c: 'long', a: 8 },
@@ -497,6 +533,27 @@ const counterEl = document.getElementById('counter');
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
+  if (s.mc) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 10/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const root = stageEl.querySelector('#mcroot');
+    if (root) {
+      mcApply(s.mc);
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">' + NOTE + ' · birds-eye overview</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
   if (s.ac) {
     const capHtml = '<div class="vcap"><span class="step">STEP 9/' + VIZ_STEPS + '</span>' + s.t + '</div>';
     const root = stageEl.querySelector('#acroot');
