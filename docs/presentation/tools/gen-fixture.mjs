@@ -221,44 +221,48 @@ if (FAKE_HOME) {
     fs.writeFileSync(projDir(proj) + '/' + sid + '.jsonl', rows.join('\n') + '\n');
   }
   // ── 過去 30 天歷史使用(Usage 頁的 MONTHLY/DAILY 才不會空)──
-  // 日型:工作日重度 $18–32(fable 為主)、一般 $6–14、輕 $1–4、每週約一天 $0。
-  // 金額不手填:湊 token、由同一費率表推出。
+  // 需求:成本逐步攀升、帶起伏,30 天平均 $258/日。
+  // 形狀:趨勢線 $150 → $420(採用量成長),週末低(六 ~0.6×、日 ~0.4×),
+  // 日間噪聲 ±22%,今天為進行中的部分天(≈0.55×趨勢)+ demo session。
+  // 金額不手填:湊 token、由同一費率表推出,最後整體正規化到精確平均。
   let hseed = 7;
   const hrnd = () => (hseed = (hseed * 1103515245 + 12345) % 2147483648) / 2147483648;
   const RH = { fable: { i: 10, o: 50, w: 12.5, r: 1.0 }, sonnet: { i: 3, o: 15, w: 3.75, r: 0.3 } };
   const histDir = projDir('-home-justin-dev-ccxray');
   fs.mkdirSync(histDir, { recursive: true });
-  let monthTotals = {};
-  for (let ago = 29; ago >= 1; ago--) {
+  const DAYS = 30, AVG_TARGET = 258, demoToday = 6.89;
+  const dayFactor = d => { const dow = d.getDay(); return dow === 0 ? 0.4 : dow === 6 ? 0.6 : 1.08; };
+  const targets = [];
+  for (let ago = DAYS - 1; ago >= 0; ago--) {
     const day = new Date(now - ago * 86400000);
-    const dow = day.getDay();
-    const roll = hrnd();
-    let target;
-    if (dow === 0 && roll < 0.7) target = 0;                       // 週日多半休息
-    else if (dow === 6) target = 1 + hrnd() * 3;                    // 週六輕度
-    else if (roll < 0.3) target = 18 + hrnd() * 14;                 // 重度開發日
-    else if (roll < 0.85) target = 6 + hrnd() * 8;                  // 一般日
-    else target = 1 + hrnd() * 3;                                   // 輕日
-    if (target === 0) continue;
+    const trend = 150 + ((DAYS - 1 - ago) / (DAYS - 1)) * 270;      // 150 → 420
+    let v = trend * dayFactor(day) * (0.78 + hrnd() * 0.44);        // ±22% 起伏
+    if (ago === 0) v = trend * 0.55;                                  // 今天:進行中
+    targets.push({ ago, day, v });
+  }
+  const rawSum = targets.reduce((s, x) => s + x.v, 0);
+  const scale = (AVG_TARGET * DAYS - demoToday) / rawSum;             // 正規化到精確平均
+  let monthTotals = {};
+  for (const { ago, day, v } of targets) {
+    const target = v * scale;
     const rows = [];
     let sum = 0, n = 0;
-    while (sum < target) {
-      const heavy = target > 15 ? hrnd() < 0.75 : hrnd() < 0.2;
+    while (sum < target && n < 1500) {
+      const heavy = hrnd() < 0.8;                                     // 重度期:fable 為主
       const R = heavy ? RH.fable : RH.sonnet;
       const u = {
-        input_tokens: Math.round(30 + hrnd() * 60),
-        output_tokens: Math.round(300 + hrnd() * 900),
-        cache_creation_input_tokens: Math.round(4000 + hrnd() * 16000),
-        cache_read_input_tokens: Math.round((heavy ? 150000 : 45000) * (0.6 + hrnd() * 0.8)),
+        input_tokens: Math.round(30 + hrnd() * 70),
+        output_tokens: Math.round(400 + hrnd() * 1400),
+        cache_creation_input_tokens: Math.round(8000 + hrnd() * 30000),
+        cache_read_input_tokens: Math.round((heavy ? 480000 : 90000) * (0.5 + hrnd())),
       };
       const c = (u.input_tokens * R.i + u.output_tokens * R.o +
         u.cache_creation_input_tokens * R.w + u.cache_read_input_tokens * R.r) / 1e6;
       sum += c;
-      const ts = new Date(day); ts.setHours(9 + Math.floor(hrnd() * 13), Math.floor(hrnd() * 60), Math.floor(hrnd() * 60), 0);
+      const ts = new Date(day); ts.setHours(8 + Math.floor(hrnd() * (ago === 0 ? 6 : 15)), Math.floor(hrnd() * 60), Math.floor(hrnd() * 60), 0);
       rows.push(JSON.stringify({ timestamp: ts.toISOString(),
         message: { id: 'msg_hist_' + ago + '_' + n, model: heavy ? 'claude-fable-5' : 'claude-sonnet-4-6', usage: u } }));
       n++;
-      if (n > 200) break;
     }
     const dstr = day.toISOString().slice(0, 10);
     fs.writeFileSync(histDir + '/hist-' + dstr + '.jsonl', rows.join('\n') + '\n');

@@ -32,7 +32,7 @@
 | 2 | Topbar | 第四幕 | `● ccxray` + Dashboard / Usage / System Prompt + Context HUD + quota ticker |
 | 3 | PROJECTS + SESSIONS 欄 | 第四幕 | 專案卡(成本黃字)、session 卡(`fable-5 · 17t · 9m`、`$6.80`、**38% of 1M** context bar、綠色 cache 倒數)|
 | 4 | TIMELINE steps | 第四幕 | user 泡泡、Read/Grep/Edit/Bash 步驟、thinking、逐字內容 |
-| 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY(07/$245、08/$74)+ DAILY 30 天起伏(週日 $0、高峰 $28.94、今日 $6.89 與 demo session 對帳一致)+ ACCOUNTS |
+| 5 | Agent 卡 + Usage 卡 | 試煉一 | CONTEXT/CACHE/COST/TOKENS/TOOLS + MONTHLY(07/≈$5.1K、08/≈$2.6K)+ DAILY 30 天:趨勢逐步攀升($150 → $486 高峰)、週末規律下沉、avg **$258.47**/active day、Last 30 days $7,754 + ACCOUNTS(Today $235.49)|
 | 6 | Cache 過期分鏡 ×4 | 試煉一 | 同一張真實 session 卡跨四頁存活,一頁一個情況、狀態原地交叉淡變:`cache 50m left`(綠,安心)→ 去開會 `20m`(黃)→ 最後 3 分鐘(紅,**以原生 cachePulse 節奏閃爍**,鏡頭推近 1.24×)→ `cache expired`(灰,鏡頭拉回);紅色態由兩幀真實畫格交錯重現 |
 | 7 | Workflow 泳道 | 試煉二 | main lane + Explore 子代理 lane、minimap、時間軸 |
 | 8 | System Prompt 頁 | 試煉三 | AGENTS / VERSIONS(v2.0.14 → v2.0.15 `+0.2k`)/ DIFF mode |
@@ -75,8 +75,9 @@ sessions:STEP 10 現採用**講者提供的真實 session 原圖**(`tools/` 仍�
 可生成同形狀的合成對照組,供無原圖時重建)。Usage 頁的 $6.89(Today/Month)
 = ccxray 專案 $6.80 + webapp $0.09——產生器同步輸出 `~/.claude/projects/*.jsonl`
 (cost-worker 的掃描來源),兩邊數字天然一致。Usage 的 MONTHLY/DAILY 歷史(過去 30 天)
-也由產生器合成:日型分佈(工作日重度 $18–32 fable 為主/一般 $6–14/輕 $1–4/週日多半 $0),
-金額不手填——湊 token 再由同一費率表推出;今日一列即 demo session 的 $6.89。
+也由產生器合成:趨勢線 $150 → $420(採用量成長)× 週末係數(六 0.6/日 0.4)× ±22% 噪聲,
+整體正規化到 **avg $258/day**;金額不手填——湊 token(fable 為主的大量 cache 重讀)再由
+同一費率表推出。今天為進行中的部分天($235.49,含 demo session 的 $6.89)。
 
 ### Cache 20× 這個數字
 
