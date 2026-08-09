@@ -14,6 +14,9 @@ function loadWfModule(opts) {
   const ctx = {
     document: { createElement: () => ({ appendChild() {}, style: {}, id: '' }), createElementNS: () => ({ setAttribute() {}, innerHTML: '' }), getElementById: () => null, body: { appendChild() {} }, documentElement: {} },
     window: { innerHeight: 800, addEventListener() {} },
+    localStorage: { getItem: () => opts && opts.weatherDisplay ? 'on' : null },
+    location: { search: '' },
+    URLSearchParams,
     getComputedStyle: () => ({ getPropertyValue: () => '' }),
     requestAnimationFrame: (fn) => 1,
     cancelAnimationFrame() {},
@@ -188,7 +191,7 @@ describe('workflow-timeline data layer', () => {
   });
 
   it('#377 slice 2: single-turn weather matches the lane-fold context window in tooltip and turn card', () => {
-    const ctx = loadWfModule({ weather: true });
+    const ctx = loadWfModule({ weather: true, weatherDisplay: true });
     const turn = mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {
       maxContext: 200000,
       ctxUsed: 176000,

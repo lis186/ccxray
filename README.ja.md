@@ -148,6 +148,12 @@ API キー認証・ChatGPT 認証のどちらの codex セッションでも動�
 
 ![セッションタイトルとキャッシュアラート](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
+### セッション天気
+
+各セッションカードに天気絵文字（☀️ 晴れ → ⛈️ 嵐）が表示され、8 つのヘルスシグナル（コンテキスト圧力、コンパクション、切り詰め、スタックループ、レイテンシドリフト、エラー率、キャッシュ効率）を一目で確認できます。ホバーで内訳を表示。詳細は [`docs/weather.md`](docs/weather.md) を参照。
+
+> **注意（2.3.1）：** ツール失敗シグナルの修正中のため、天気表示は**デフォルトでオフ**です。計算はバックグラウンドで継続しています。ダッシュボード URL に `?weather=on` を追加して一時的に確認するか、コンソールで `localStorage.setItem('ccxray-weather-display', 'on')` を実行して永続化できます。詳細は [docs/weather.md](docs/weather.md#display-toggle-231) を参照。
+
 ### プラン自動検出
 
 ccxray は Anthropic の `cache_creation` 使用量フィールドを読み取り、設定不要でサブスクリプションプラン（Pro、Max 5x、Max 20x）を自動検出します。キャッシュ TTL とクォータしきい値は検出されたプランを使用します。自動検出が誤っている場合は `CCXRAY_PLAN` で上書きできます。

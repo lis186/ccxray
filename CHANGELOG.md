@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.3.1
+
+### Changed
+
+- **Weather display off by default (#484, PR #488).** The tool-failure signals (`stuck`, `error_cluster`, `error_cumulative`, `tool_failure`) are unreliable across all data paths — cumulative inflation on Anthropic proxy, absent fields on imported data, decoder defects on OpenAI wire. Weather computation and persistence continue running; only the six render sites are hidden behind a localStorage tri-state toggle (default OFF). Append `?weather=on` to inspect. See `docs/weather.md` § Display toggle for details.
+
 ## 2.3.0
 
 112 commits since 2.2.0. Three headlines: Grok CLI becomes the third supported agent (`ccxray grok`), Session Weather puts a five-level health verdict on every session card, and cost display now tells you when it's guessing — per-turn and aggregate confidence markers replace silently fabricated numbers, backed by a set of pricing-correctness fixes.

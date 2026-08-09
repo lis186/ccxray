@@ -148,6 +148,12 @@ Session 卡片顯示 Claude Code 自動生成的標題（例如 `Fix login butto
 
 ![Session 標題與 Cache 到期提醒](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
 
+### Session 天氣
+
+每張 session 卡片顯示天氣 emoji（☀️ 晴天 → ⛈️ 暴風雨），濃縮八項健康訊號——context 壓力、compaction、截斷、卡住迴圈、延遲漂移、錯誤率、cache 效率——為一個一目瞭然的指標。Hover 可看分解。詳見 [`docs/weather.md`](docs/weather.md)。
+
+> **注意（2.3.1）：** 天氣顯示**預設關閉**，因為工具失敗訊號正在修復中。計算仍在背景持續進行。在 dashboard URL 後加 `?weather=on` 可臨時檢視，或在 console 執行 `localStorage.setItem('ccxray-weather-display', 'on')` 持久啟用。詳見 [docs/weather.md](docs/weather.md#display-toggle-231)。
+
 ### 計畫自動偵測
 
 ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測你的訂閱計畫（Pro、Max 5x、Max 20x），無需任何設定。Cache TTL 和配額門檻均使用偵測到的計畫。若偵測結果有誤，可用 `CCXRAY_PLAN` 覆蓋。
