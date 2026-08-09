@@ -46,6 +46,7 @@
     border-radius: .18em;
     padding: .5em .7em;
   }
+  .slide.code.longcode { font-size: clamp(0.95rem, 3.1vw, 2.7rem); }
   .slide .sub {
     display: block;
     margin-top: .6em;
@@ -452,13 +453,17 @@ const S = [
   // ── 第二幕 · 打造 X 光機(1:40–2:50)──────────────────
   { t: '<span class="accent">cc</span>xray', a: 2 },
   { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', c: 'long', a: 2 },
-  { t: 'npx ccxray claude', c: 'code', a: 2 },
-  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 2 },
+  { t: '開機，兩行', c: 'long', a: 2 },
+  { t: 'npx ccxray --port 5577<span class="sub">先把 X 光機開起來——proxy 和 dashboard 就緒</span>', c: 'code longcode', a: 2 },
+  { t: 'ANTHROPIC_BASE_URL=<br>http://localhost:5577 claude<span class="sub">再讓 Claude Code 從這裡過——大家最常忘的就是這行</span>', c: 'code longcode', a: 2 },
   { sc: 1, t: '你的 <span class="accent">Claude Code</span>', a: 2 },
   { sc: 2, t: '每一次對話，直奔 Anthropic API', a: 2 },
   { sc: 3, t: '中間——<span class="dim">本來什麼都沒有</span>', a: 2 },
   { sc: 4, t: '<span class="accent">ccxray</span>，站進來', a: 2 },
   { sc: 5, t: '每個 request、每個 response，<span class="accent">全部記下來</span>', a: 2 },
+  { t: '嫌兩行麻煩？', c: 'long', a: 2 },
+  { t: 'npx ccxray claude<span class="sub">一行版——proxy、base URL、啟動 claude，全包</span>', c: 'code', a: 2 },
+  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 2 },
 
   // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
   { t: '打開 Dashboard', c: 'long', a: 3 },
