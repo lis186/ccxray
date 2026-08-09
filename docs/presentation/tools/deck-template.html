@@ -75,6 +75,9 @@
   .slide .accent, .slide .hot, .slide .good, .slide .warn, .slide .dim,
   .vcap .accent, .vcap .hot, .vcap .good, .vcap .warn, .vcap .dim { color: inherit; }
   .slide.accent, .slide.hot, .slide.good, .slide.warn, .slide.dim { color: #e6edf3; }
+  /* 例外:owner 指定可跳色的字(自介頁名字) */
+  .slide .pop { color: #22d3ee; }
+  .slide .sub.subbig { font-size: .42em; }
   .accent { color: #22d3ee; }
   .hot    { color: #ff7b72; }
   .good   { color: #7ee787; }
@@ -609,14 +612,14 @@ const S = [
   { t: '又撞', c: 'hot', a: 0 },
   { t: '再撞', c: 'hot', a: 0 },
   { t: '為什麼？<br><span class="dim">不知道</span>', c: 'long', a: 0 },
-  { t: '大家好，我是 <span class="accent">阿修</span><span class="sub">一個想看清楚的工程師</span>', c: 'long', a: 0 },
+  { t: '大家好，我是 <span class="pop">阿修</span><span class="sub subbig">一個想搞清楚 AI Agent 可觀測性機制的工程師</span>', c: 'long', a: 0 },
 
   // ── 第一幕 · 上限之謎(0:50–1:40)────────────────────
   { t: '上限', a: 1 },
   { t: '到底被<span class="hot">什麼</span>吃掉？', c: 'long', a: 1 },
   { t: '它在想什麼？', c: 'long', a: 1 },
   { t: 'context 誰佔走了？', c: 'long', a: 1 },
-  { t: '每一次呼叫，多重？', c: 'long', a: 1 },
+  { t: '每一次呼叫，花多少 token？', c: 'long', a: 1 },
   { t: '你不知道', c: 'long', a: 1 },
   { t: '上限知道', c: 'long hot', a: 1 },
   { t: '所以我動手<br>造了一台', c: 'long', a: 1 },
