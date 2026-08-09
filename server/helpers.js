@@ -918,16 +918,18 @@ function decodeCodexToolOutput(output) {
   // #485 D3: array-shaped payload — try input_text envelope first, then
   // top-level exit_code objects (skip-and-aggregate, failure-dominates)
   const results = [];
-  let hasInputText = false;
-  let hasNonJsonText = false;
+  let hasAsyncStartText = false;
   for (const part of envelope) {
     if (part && part.type === 'input_text' && typeof part.text === 'string') {
-      hasInputText = true;
+      // D2: detect async start only by the specific "Script running" sentinel.
+      // A truncated/malformed completed result is unknown evidence, not an
+      // async start — keeping eligible:true preserves the rot-honesty signal
+      // (codex review P2, Fable D2 analysis).
+      if (/^Script running\b/i.test(part.text.trim())) hasAsyncStartText = true;
       let result;
       try {
         result = JSON.parse(part.text);
       } catch {
-        hasNonJsonText = true;
         continue;
       }
       if (!result || Array.isArray(result) || typeof result !== 'object') continue;
@@ -944,8 +946,8 @@ function decodeCodexToolOutput(output) {
 
   if (results.length > 0) return aggregateToolFailResults(results);
 
-  // D2: async start — input_text envelope with non-JSON status text, no exit_code
-  if (hasInputText && hasNonJsonText) return CODEX_ASYNC_START;
+  // D2: async start — only the specific "Script running" sentinel, not any non-JSON text
+  if (hasAsyncStartText) return CODEX_ASYNC_START;
 
   return aggregateToolFailResults(results);
 }

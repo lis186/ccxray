@@ -255,6 +255,22 @@ test('#485 D2 — codex async start segment is eligible:false', () => {
   assert.equal(results[0].eligible, false, 'start segment must not be eligible');
 });
 
+test('#485 D2 — truncated/malformed output stays eligible (not misclassified as async start)', () => {
+  const results = extractOpenAITurnToolResults([
+    {
+      type: 'custom_tool_call_output',
+      call_id: 'call_truncated',
+      output: JSON.stringify([
+        { type: 'input_text', text: 'Script completed\nWall time 0.3 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'some truncated partial output without exit_code' },
+      ]),
+    },
+  ], { client: 'codex' });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].eligible, true, 'truncated output must stay eligible to preserve rot-honesty');
+  assert.equal(results[0].toolFail, undefined, 'no verdict — unknown, not clean');
+});
+
 test('#485 D3 — codex array-shaped top-level exit_code decodes', () => {
   assert.equal(extractOpenAITurnToolFail([
     {
