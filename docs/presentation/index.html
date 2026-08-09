@@ -80,6 +80,9 @@
   .slide .popgood, .vcap .popgood { color: #86efac; }
   .slide .pophot,  .vcap .pophot  { color: #ff8a80; }
   .slide .sub.subbig { font-size: .42em; }
+  /* 英文小標(服務外國聽眾):中文下方一行,灰、小、不搶主句 */
+  .slide .sub.en { font-size: .26em; color: #7d8a97; letter-spacing: .05em; margin-top: .5em; }
+  .vcapen { font-size: .52em; font-weight: 600; color: #8b98a5; letter-spacing: .05em; margin-top: .2em; }
   .accent { color: #22d3ee; }
   .hot    { color: #ff7b72; }
   .good   { color: #7ee787; }
@@ -103,9 +106,16 @@
     color: #55606b; font-variant-numeric: tabular-nums;
   }
   #hint {
-    position: fixed; bottom: 2.2vmin; left: 3vmin;
+    position: fixed; bottom: 5.2vmin; left: 3vmin;
     font-size: clamp(.65rem, 1.5vmin, .9rem);
     color: #55606b;
+  }
+  /* repo 網址全程常駐左下角(owner 指定) */
+  #repourl {
+    position: fixed; bottom: 2.2vmin; left: 3vmin;
+    font-family: "SF Mono", ui-monospace, Consolas, monospace;
+    font-size: clamp(.75rem, 1.8vmin, 1.05rem);
+    color: #22d3ee; letter-spacing: .04em; z-index: 40;
   }
   /* T 鍵切換的講者配速器:經過時間 vs 該頁目標時間(15 分鐘配速) */
   #pace {
@@ -297,6 +307,7 @@
 <div id="stage"><div class="slide" id="slide"></div></div>
 <div id="bar"></div>
 <div id="counter"></div>
+<div id="repourl">github.com/lis186/ccxray</div>
 <div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放 · T 配速</div>
 <div id="pace"></div>
 <script>
@@ -598,139 +609,139 @@ const S = [
   // ── 標題頁:開講前的海報(停留不開錶;離開此頁配速器才起算)──
   { t: '給你的 Agent<br>照一張 <span class="accent">X 光</span><span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions<br>阿修 · COSCUP 2026</span>', c: 'long', a: 0 },
   // ── 序幕 · 大爆發(0:00–1:30)背景鋪陳 → 個人故事 ──────
-  { t: '2026 年 2 月', c: 'long', a: 0 },
-  { t: 'Agentic Coding<br>大躍進', c: 'long', a: 0 },
-  { t: '<span class="accent">Opus 4.6</span><br>GPT-5.3 Codex', c: 'long', a: 0 },
-  { t: '從助手<br>變自主工程代理', c: 'long', a: 0 },
-  { t: '自主規劃、執行<br>自我修正', c: 'long', a: 0 },
-  { t: '多代理協作<br>像一支真的團隊', c: 'long', a: 0 },
-  { t: '不只寫 code<br>吃下完整生命週期', c: 'long', a: 0 },
-  { t: '大型專案<br>幾小時搞定', c: 'long', a: 0 },
-  { t: '競爭加速<br>實用門檻大降', c: 'long', a: 0 },
-  { t: '我很好奇', c: 'long', a: 0 },
-  { t: 'Agent 到底<br>能做到什麼？', c: 'long', a: 0 },
-  { t: '於是，日夜嘗試', c: 'long', a: 0 },
+  { t: '2026 年 2 月', en: 'February 2026', c: 'long', a: 0 },
+  { t: 'Agentic Coding<br>大躍進', en: 'The agentic coding leap', c: 'long', a: 0 },
+  { t: '<span class="accent">Opus 4.6</span><br>GPT-5.3 Codex', en: 'New frontier models, back to back', c: 'long', a: 0 },
+  { t: '從助手<br>變自主工程代理', en: 'From assistant to autonomous engineer', c: 'long', a: 0 },
+  { t: '自主規劃、執行<br>自我修正', en: 'Plans, executes, self-corrects', c: 'long', a: 0 },
+  { t: '多代理協作<br>像一支真的團隊', en: 'Multi-agent teamwork, like a real team', c: 'long', a: 0 },
+  { t: '不只寫 code<br>吃下完整生命週期', en: 'Beyond code: the full dev lifecycle', c: 'long', a: 0 },
+  { t: '大型專案<br>幾小時搞定', en: 'Big projects, done in hours', c: 'long', a: 0 },
+  { t: '競爭加速<br>實用門檻大降', en: 'Competition up, barriers down', c: 'long', a: 0 },
+  { t: '我很好奇', en: 'I got curious', c: 'long', a: 0 },
+  { t: 'Agent 到底<br>能做到什麼？', en: 'How far can agents really go?', c: 'long', a: 0 },
+  { t: '於是，日夜嘗試', en: 'So I pushed them, day and night', c: 'long', a: 0 },
   { t: 'Claude usage limit reached.<span class="sub">Your limit will reset at 11:00 PM.</span>', c: 'code', a: 0 },
-  { t: '撞牆', c: 'hot', a: 0 },
-  { t: '又撞', c: 'hot', a: 0 },
-  { t: '再撞', c: 'hot', a: 0 },
-  { t: '為什麼？<br><span class="dim">不知道</span>', c: 'long', a: 0 },
-  { t: '大家好，我是 <span class="pop">阿修</span><span class="sub subbig">一個想搞清楚 AI Agent 可觀測性機制的工程師</span>', c: 'long', a: 0 },
+  { t: '撞牆', en: 'Hit the limit', c: 'hot', a: 0 },
+  { t: '又撞', en: 'Again', c: 'hot', a: 0 },
+  { t: '再撞', en: 'And again', c: 'hot', a: 0 },
+  { t: '為什麼？<br><span class="dim">不知道</span>', en: 'Why? No idea', c: 'long', a: 0 },
+  { t: '大家好，我是 <span class="pop">阿修</span><span class="sub subbig">一個想搞清楚 AI Agent 可觀測性機制的工程師</span><span class="sub en">An engineer trying to figure out AI-agent observability</span>', c: 'long', a: 0 },
 
   // ── 第一幕 · 上限之謎(0:50–1:40)────────────────────
-  { t: '上限', a: 1 },
-  { t: '到底被<span class="hot">什麼</span>吃掉？', c: 'long', a: 1 },
-  { t: '它在想什麼？', c: 'long', a: 1 },
-  { t: 'context 誰佔走了？', c: 'long', a: 1 },
-  { t: '每一次呼叫，花多少 token？', c: 'long', a: 1 },
-  { t: '你不知道', c: 'long', a: 1 },
-  { t: '上限知道', c: 'long hot', a: 1 },
-  { t: '所以我動手<br>造了一台', c: 'long', a: 1 },
+  { t: '上限', en: 'The limit', a: 1 },
+  { t: '到底被<span class="hot">什麼</span>吃掉？', en: 'What is eating it?', c: 'long', a: 1 },
+  { t: '它在想什麼？', en: 'What is it thinking?', c: 'long', a: 1 },
+  { t: 'context 誰佔走了？', en: 'Who took my context?', c: 'long', a: 1 },
+  { t: '每一次呼叫，花多少 token？', en: 'How many tokens per call?', c: 'long', a: 1 },
+  { t: '你不知道', en: 'You don\'t know', c: 'long', a: 1 },
+  { t: '上限知道', en: 'The limit knows', c: 'long hot', a: 1 },
+  { t: '所以我動手<br>造了一台', en: 'So I built a machine', c: 'long', a: 1 },
 
   // ── 第二幕 · 打造 X 光機(1:40–2:50)──────────────────
   { t: '<span class="accent">cc</span>xray', a: 2 },
-  { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', c: 'long', a: 2 },
-  { t: '開機，兩行', c: 'long', a: 2 },
+  { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', en: 'An X-ray machine for AI sessions', c: 'long', a: 2 },
+  { t: '開機，兩行', en: 'Boot it up: two lines', c: 'long', a: 2 },
   { t: 'npx ccxray --port 5577<span class="sub">先把 X 光機開起來，proxy 和 dashboard 就緒</span>', c: 'code longcode', a: 2, copy: 'npx ccxray --port 5577' },
   { t: 'ANTHROPIC_BASE_URL=<br>http://localhost:5577 claude<span class="sub">再讓 Claude Code 從這裡過，大家最常忘的就是這行</span>', c: 'code longcode', a: 2, copy: 'ANTHROPIC_BASE_URL=http://localhost:5577 claude' },
-  { sc: 1, t: '你的 <span class="accent">Claude Code</span>', a: 2 },
-  { sc: 2, t: '每一次對話，直奔 Anthropic API', a: 2 },
-  { sc: 3, t: '中間，<span class="dim">本來什麼都沒有</span>', a: 2 },
-  { sc: 4, t: '<span class="accent">ccxray</span>，站進來', a: 2 },
-  { sc: 5, t: '每個 request、每個 response，<span class="accent">全部記下來</span>', a: 2 },
-  { t: '嫌兩行麻煩？', c: 'long', a: 2 },
+  { sc: 1, t: '你的 <span class="accent">Claude Code</span>', en: 'Your Claude Code', a: 2 },
+  { sc: 2, t: '每一次對話，直奔 Anthropic API', en: 'Every turn goes straight to the Anthropic API', a: 2 },
+  { sc: 3, t: '中間，<span class="dim">本來什麼都沒有</span>', en: 'Nothing in between', a: 2 },
+  { sc: 4, t: '<span class="accent">ccxray</span>，站進來', en: 'ccxray steps in', a: 2 },
+  { sc: 5, t: '每個 request、每個 response，<span class="accent">全部記下來</span>', en: 'Every request and response, recorded', a: 2 },
+  { t: '嫌兩行麻煩？', en: 'Two lines too many?', c: 'long', a: 2 },
   { t: 'npx ccxray claude<span class="sub">一行版：proxy、base URL、啟動 claude，全包</span>', c: 'code', a: 2, copy: 'npx ccxray claude' },
-  { t: '零設定 · 不改你的習慣', c: 'long accent', a: 2 },
+  { t: '零設定 · 不改你的習慣', en: 'Zero config, zero habit change', c: 'long accent', a: 2 },
 
   // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
-  { t: '打開 Dashboard', c: 'long', a: 3 },
-  { dv: 1, t: '這，就是完整的畫面', a: 3 },
-  { dv: 2, t: '先看最上面', a: 3 },
-  { dv: 3, t: 'Dashboard · Usage · System Prompt，一個入口', a: 3, step: 2 },
-  { dv: 4, t: '左邊：專案與 session', a: 3 },
-  { dv: 5, t: '<span class="accent">即時更新</span>：context、成本、cache 一眼看見', a: 3, step: 3 },
-  { dv: 6, t: '右邊：這個 session 的每一步', a: 3 },
-  { dv: 7, t: '工具、思考、對話，<span class="accent">逐字可見</span>', a: 3, step: 4 },
-  { t: '現在', a: 3 },
-  { t: '照第一張片子', c: 'long accent', a: 3 },
-  { t: '對話<span class="hot">還沒開始</span>的那一刻', c: 'long', a: 3 },
-  { t: '有些<span class="hot">隱形的成本</span><br>已經付出去了<span class="sub">LIVE：dashboard 已自動打開，切回那個分頁<br>點新 session → turn #1 → Cost（不順就翻下一頁，截圖已備好）</span>', c: 'long', a: 3 },
-  { t: '這個 session<br>我<span class="warn">故意裝好裝滿</span>', c: 'long', a: 3 },
-  { t: '28 個 MCP · 22 個 skills<br>CLAUDE.md · 記憶', c: 'long', a: 3 },
-  { dv: 1, tour: 'tax', t: '剛剛 LIVE 的畫面，回放一次', a: 3 },
-  { dv: 2, tour: 'tax', t: '第一步：點 main lane 的<span class="accent">第 1 個 turn</span>', a: 3 },
-  { dv: 3, tour: 'tax', t: '第二步：看 <span class="accent">Cost</span>', a: 3 },
-  { dv: 4, tour: 'tax', t: '你只說了一句話：<span class="hot">In 99K，$1.02</span>', a: 3, step: 5 },
-  { dv: 1, tour: 'eff', t: '第三步：<span class="accent">Cost</span> 分頁，稅單攤開', a: 3 },
-  { dv: 2, tour: 'eff', t: 'skills、記憶、CLAUDE.md，<span class="warn">全是你放進去的</span>', a: 3 },
-  { dv: 3, tour: 'eff', t: '光 skills 就 <span class="hot">12,770</span> tokens', a: 3 },
-  { dv: 4, tour: 'eff', t: '28 個 MCP server，<span class="accent">一個一條帳</span>', a: 3 },
-  { dv: 5, tour: 'eff', t: 'gmail 6,306 · github 7,846，<span class="warn">還沒用就先付</span>', a: 3 },
-  { dv: 1, tour: 'eff2', t: '總結一行：固定稅 <span class="hot">96,947 tokens = 48.5%</span>', a: 3 },
-  { dv: 2, tour: 'eff2', t: '而且它會<span class="accent">點名</span>', a: 3 },
-  { dv: 3, tour: 'eff2', t: '<span class="warn">0 uses this session</span>，28 個全上榜', a: 3 },
-  { t: '全是<span class="hot">行前簡報</span>，<br>你開口前，它得先讀完', c: 'long', a: 3 },
-  { t: 'MCP · skills<br>CLAUDE.md · 記憶，<br><span class="warn">你自己塞進去的</span>', c: 'long', a: 3 },
-  { t: '用不到的，<br><span class="good">就刪掉</span>', c: 'long', a: 3 },
+  { t: '打開 Dashboard', en: 'Open the dashboard', c: 'long', a: 3 },
+  { dv: 1, t: '這，就是完整的畫面', en: 'The full picture', a: 3 },
+  { dv: 2, t: '先看最上面', en: 'Start at the top', a: 3 },
+  { dv: 3, t: 'Dashboard · Usage · System Prompt，一個入口', en: 'One entry point: Dashboard, Usage, System Prompt', a: 3, step: 2 },
+  { dv: 4, t: '左邊：專案與 session', en: 'Left: projects and sessions', a: 3 },
+  { dv: 5, t: '<span class="accent">即時更新</span>：context、成本、cache 一眼看見', en: 'Live: context, cost and cache at a glance', a: 3, step: 3 },
+  { dv: 6, t: '右邊：這個 session 的每一步', en: 'Right: every step of the session', a: 3 },
+  { dv: 7, t: '工具、思考、對話，<span class="accent">逐字可見</span>', en: 'Tools, thinking, dialogue, word by word', a: 3, step: 4 },
+  { t: '現在', en: 'Now', a: 3 },
+  { t: '照第一張片子', en: 'Time for the first X-ray', c: 'long accent', a: 3 },
+  { t: '對話<span class="hot">還沒開始</span>的那一刻', en: 'The moment before the conversation starts', c: 'long', a: 3 },
+  { t: '有些<span class="hot">隱形的成本</span><br>已經付出去了<span class="sub en">Some invisible costs are already paid</span><span class="sub">LIVE：dashboard 已自動打開，切回那個分頁<br>點新 session → turn #1 → Cost（不順就翻下一頁，截圖已備好）</span>', c: 'long', a: 3 },
+  { t: '這個 session<br>我<span class="warn">故意裝好裝滿</span>', en: 'I loaded this session on purpose', c: 'long', a: 3 },
+  { t: '28 個 MCP · 22 個 skills<br>CLAUDE.md · 記憶', en: '28 MCP servers, 22 skills, CLAUDE.md, memory', c: 'long', a: 3 },
+  { dv: 1, tour: 'tax', t: '剛剛 LIVE 的畫面，回放一次', en: 'Same screen, replayed', a: 3 },
+  { dv: 2, tour: 'tax', t: '第一步：點 main lane 的<span class="accent">第 1 個 turn</span>', en: 'Step 1: click turn #1 on the main lane', a: 3 },
+  { dv: 3, tour: 'tax', t: '第二步：看 <span class="accent">Cost</span>', en: 'Step 2: check Cost', a: 3 },
+  { dv: 4, tour: 'tax', t: '你只說了一句話：<span class="hot">In 99K，$1.02</span>', en: 'One sentence in: 99K tokens, $1.02', a: 3, step: 5 },
+  { dv: 1, tour: 'eff', t: '第三步：<span class="accent">Cost</span> 分頁，稅單攤開', en: 'Step 3: the Cost tab, itemized', a: 3 },
+  { dv: 2, tour: 'eff', t: 'skills、記憶、CLAUDE.md，<span class="warn">全是你放進去的</span>', en: 'Skills, memory, CLAUDE.md: all yours', a: 3 },
+  { dv: 3, tour: 'eff', t: '光 skills 就 <span class="hot">12,770</span> tokens', en: 'Skills alone: 12,770 tokens', a: 3 },
+  { dv: 4, tour: 'eff', t: '28 個 MCP server，<span class="accent">一個一條帳</span>', en: '28 MCP servers, one line each', a: 3 },
+  { dv: 5, tour: 'eff', t: 'gmail 6,306 · github 7,846，<span class="warn">還沒用就先付</span>', en: 'Paid before ever used', a: 3 },
+  { dv: 1, tour: 'eff2', t: '總結一行：固定稅 <span class="hot">96,947 tokens = 48.5%</span>', en: 'Fixed tax: 96,947 tokens = 48.5% of the window', a: 3 },
+  { dv: 2, tour: 'eff2', t: '而且它會<span class="accent">點名</span>', en: 'And it names names', a: 3 },
+  { dv: 3, tour: 'eff2', t: '<span class="warn">0 uses this session</span>，28 個全上榜', en: 'All 28 flagged: zero uses', a: 3 },
+  { t: '全是<span class="hot">行前簡報</span>，<br>你開口前，它得先讀完', en: 'A pre-mission briefing, read before you speak', c: 'long', a: 3 },
+  { t: 'MCP · skills<br>CLAUDE.md · 記憶，<br><span class="warn">你自己塞進去的</span>', en: 'You put all of it there', c: 'long', a: 3 },
+  { t: '用不到的，<br><span class="good">就刪掉</span>', en: 'Unused? Delete it', c: 'long', a: 3 },
 
   // ── 第四幕 · 試煉之路(5:00–6:50)─────────────────────
-  { t: '錢去哪了？', c: 'long hot', a: 4 },
-  { dv: 1, tour: 'cost', t: '回到 dashboard：帳，<span class="good">一直都在記</span>', a: 4 },
-  { dv: 2, tour: 'cost', t: '每個<span class="accent">專案</span>：多少錢，卡片上就有', a: 4 },
-  { dv: 3, tour: 'cost', t: 'ccxray 這個專案：<span class="hot">$6.80</span>', a: 4, step: 6 },
-  { dv: 4, tour: 'cost', t: '每個 <span class="accent">session</span>，一場一筆帳', a: 4 },
-  { dv: 5, tour: 'cost', t: '這場 debug，9 分鐘：<span class="hot">$6.80</span>', a: 4 },
-  { dv: 6, tour: 'cost', t: '再點進 <span class="accent">turn</span>：單回合成本', a: 4 },
-  { dv: 7, tour: 'cost', t: '這一回合 <span class="hot">$0.5464</span>，In 380K，全記著', a: 4 },
-  { v: 6, nostep: 1, t: '切到 Usage：<span class="good">每天花多少，也記著</span>', a: 4 },
-  { t: 'Cache 是有<span class="hot">保鮮期</span>的', c: 'long', a: 4 },
-  { t: '命中：<span class="good">打 1 折</span>', c: 'long', a: 4 },
-  { t: '過期重建：<span class="hot">原價 2 倍</span>', c: 'long', a: 4 },
-  { dv: 1, tour: 'price', t: '不信？<span class="accent">官方價目表</span>', a: 4 },
-  { dv: 2, tour: 'price', t: '就看我們用的 <span class="accent">Claude Fable 5</span>', a: 4 },
-  { dv: 3, tour: 'price', t: '1h 重建 <span class="hot">$20</span> · 命中 <span class="good">$1</span>，白紙黑字', a: 4 },
-  { t: '差 20 倍', c: 'hot', a: 4 },
-  { cx: 1, t: '倒數就在卡片上：<span class="good">cache 50m left</span>，綠燈，安心寫', a: 4 },
-  { cx: 2, t: '去開了個會，剩 <span class="warn">20 分鐘</span>，轉黃', a: 4 },
-  { cx: 3, t: '最後 3 分鐘：<span class="hot">紅色，一閃一閃催你</span>', a: 4 },
-  { cx: 4, t: '沒趕上，<span class="dim">cache expired</span>，下一段重付 <span class="hot">2 倍</span>', a: 4 },
+  { t: '錢去哪了？', en: 'Where did the money go?', c: 'long hot', a: 4 },
+  { dv: 1, tour: 'cost', t: '回到 dashboard：帳，<span class="good">一直都在記</span>', en: 'Back to the dashboard: the ledger never stops', a: 4 },
+  { dv: 2, tour: 'cost', t: '每個<span class="accent">專案</span>：多少錢，卡片上就有', en: 'Per project, right on the card', a: 4 },
+  { dv: 3, tour: 'cost', t: 'ccxray 這個專案：<span class="hot">$6.80</span>', en: 'This project: $6.80', a: 4, step: 6 },
+  { dv: 4, tour: 'cost', t: '每個 <span class="accent">session</span>，一場一筆帳', en: 'Per session, one bill each', a: 4 },
+  { dv: 5, tour: 'cost', t: '這場 debug，9 分鐘：<span class="hot">$6.80</span>', en: 'This debug run: 9 minutes, $6.80', a: 4 },
+  { dv: 6, tour: 'cost', t: '再點進 <span class="accent">turn</span>：單回合成本', en: 'Down to the turn: per-call cost', a: 4 },
+  { dv: 7, tour: 'cost', t: '這一回合 <span class="hot">$0.5464</span>，In 380K，全記著', en: 'This turn: $0.5464, 380K in', a: 4 },
+  { v: 6, nostep: 1, t: '切到 Usage：<span class="good">每天花多少，也記著</span>', en: 'The Usage tab tracks daily spend too', a: 4 },
+  { t: 'Cache 是有<span class="hot">保鮮期</span>的', en: 'Cache has a shelf life', c: 'long', a: 4 },
+  { t: '命中：<span class="good">打 1 折</span>', en: 'Cache hit: 90% off', c: 'long', a: 4 },
+  { t: '過期重建：<span class="hot">原價 2 倍</span>', en: 'Expired rebuild: 2x full price', c: 'long', a: 4 },
+  { dv: 1, tour: 'price', t: '不信？<span class="accent">官方價目表</span>', en: 'Don\'t take my word: official pricing', a: 4 },
+  { dv: 2, tour: 'price', t: '就看我們用的 <span class="accent">Claude Fable 5</span>', en: 'The model we just used: Claude Fable 5', a: 4 },
+  { dv: 3, tour: 'price', t: '1h 重建 <span class="hot">$20</span> · 命中 <span class="good">$1</span>，白紙黑字', en: '$20 to rebuild vs $1 on hit, in writing', a: 4 },
+  { t: '差 20 倍', en: '20x difference', c: 'hot', a: 4 },
+  { cx: 1, t: '倒數就在卡片上：<span class="good">cache 50m left</span>，綠燈，安心寫', en: 'Countdown on the card: 50m left, green', a: 4 },
+  { cx: 2, t: '去開了個會，剩 <span class="warn">20 分鐘</span>，轉黃', en: 'One meeting later: 20 minutes, yellow', a: 4 },
+  { cx: 3, t: '最後 3 分鐘：<span class="hot">紅色，一閃一閃催你</span>', en: 'Last 3 minutes: red and blinking', a: 4 },
+  { cx: 4, t: '沒趕上，<span class="dim">cache expired</span>，下一段重付 <span class="hot">2 倍</span>', en: 'Missed it: expired, next turn pays 2x', a: 4 },
 
   // ── 第五幕 · 深淵(6:50–8:40)─────────────────────────
-  { t: '再深一層', a: 5 },
-  { t: '模型有個秘密', c: 'long', a: 5 },
+  { t: '再深一層', en: 'One level deeper', a: 5 },
+  { t: '模型有個秘密', en: 'Models have a secret', c: 'long', a: 5 },
   { t: '<span class="popgood">Smart Zone</span>', a: 5 },
-  { t: 'context 淺：又快又準', c: 'long', a: 5 },
+  { t: 'context 淺：又快又準', en: 'Shallow context: fast and sharp', c: 'long', a: 5 },
   { t: '<span class="pophot">Dumb Zone</span>', a: 5 },
-  { t: 'context 塞滿：<br>變笨、變慢、開始出錯', c: 'long', a: 5 },
-  { ac: [1, 8], t: '不分工的 session：全都自己來，context 一直墊高', a: 5 },
-  { ac: [8, 15], t: '60%…70%…80%，還在漲', a: 5 },
-  { ac: [15, 21], t: '進入 <span class="pophot">dumb zone</span>，紅點：tool call 開始失敗', a: 5 },
-  { ac: [21, 21], t: '你沒理它，一路聊到 <span class="hot">95%</span>', a: 5 },
-  { ac: [21, 22], t: '<span class="hot">auto compact</span>：摔回 15%，cache <span class="hot">全滅</span>，重新付錢', a: 5 },
-  { ac: [22, 26], t: '然後……又開始爬', a: 5 },
-  { t: '分工給 subagent<br>留在 <span class="popgood">smart zone</span>', c: 'long', a: 5 },
-  { t: 'Subagent 亂舞，誰生了誰？', c: 'long', a: 5 },
-  { v: 8, t: '泳道時間軸：main 與子代理，<span class="accent">像讀樂譜</span>', a: 5 },
-  { t: '不過，分工也要<span class="accent">選對模型</span>', c: 'long', a: 5 },
-  { mc: 1, t: '<span class="good">選對模型</span>：縮時重播：一片綠，快進快出', a: 5 },
-  { mc: 2, t: '<span class="hot">選錯模型</span>：失敗率一下就上來，<span class="hot">紅 bar 越拖越長</span>', a: 5 },
-  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 5 },
+  { t: 'context 塞滿：<br>變笨、變慢、開始出錯', en: 'Stuffed context: slower, dumber, error-prone', c: 'long', a: 5 },
+  { ac: [1, 8], t: '不分工的 session：全都自己來，context 一直墊高', en: 'No delegation: context keeps piling up', a: 5 },
+  { ac: [8, 15], t: '60%…70%…80%，還在漲', en: '60%... 70%... 80%... still climbing', a: 5 },
+  { ac: [15, 21], t: '進入 <span class="pophot">dumb zone</span>，紅點：tool call 開始失敗', en: 'Into the dumb zone: tool calls start failing', a: 5 },
+  { ac: [21, 21], t: '你沒理它，一路聊到 <span class="hot">95%</span>', en: 'Ignore it, and you ride to 95%', a: 5 },
+  { ac: [21, 22], t: '<span class="hot">auto compact</span>：摔回 15%，cache <span class="hot">全滅</span>，重新付錢', en: 'Auto-compact: down to 15%, cache wiped, pay again', a: 5 },
+  { ac: [22, 26], t: '然後……又開始爬', en: 'And the climb starts over', a: 5 },
+  { t: '分工給 subagent<br>留在 <span class="popgood">smart zone</span>', en: 'Delegate to subagents, stay in the smart zone', c: 'long', a: 5 },
+  { t: 'Subagent 亂舞，誰生了誰？', en: 'Subagent chaos: who spawned whom?', c: 'long', a: 5 },
+  { v: 8, t: '泳道時間軸：main 與子代理，<span class="accent">像讀樂譜</span>', en: 'Swimlane timeline: read it like a score', a: 5 },
+  { t: '不過，分工也要<span class="accent">選對模型</span>', en: 'But delegation needs the right model', c: 'long', a: 5 },
+  { mc: 1, t: '<span class="good">選對模型</span>：縮時重播：一片綠，快進快出', en: 'Right model: all green, in and out fast', a: 5 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>：失敗率一下就上來，<span class="hot">紅 bar 越拖越長</span>', en: 'Wrong model: failures spike, red bars drag on', a: 5 },
+  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', en: 'Fail, retry: slower, pricier, worse', a: 5 },
 
   // ── 第六幕 · 歸返(8:40–9:20)─────────────────────────
-  { t: '回到二月底<br>那個問題', c: 'long', a: 6 },
-  { t: '上限被什麼吃掉？', c: 'long', a: 6 },
-  { t: '行前簡報 · 過期的 cache<br>塞爆的 context · 選錯的模型', c: 'long', a: 6 },
-  { v: 11, t: '現在，<span class="accent">全都看得見</span>', a: 6 },
-  { t: 'X 光照得出病灶', c: 'long', a: 6 },
-  { t: '治不了病', c: 'long hot', a: 6 },
-  { t: '開刀的判斷<br>在<span class="accent">你</span>手上', c: 'long', a: 6 },
+  { t: '回到二月底<br>那個問題', en: 'Back to that February question', c: 'long', a: 6 },
+  { t: '上限被什麼吃掉？', en: 'What was eating the limit?', c: 'long', a: 6 },
+  { t: '行前簡報 · 過期的 cache<br>塞爆的 context · 選錯的模型', en: 'Briefing tax, expired cache, stuffed context, wrong model', c: 'long', a: 6 },
+  { v: 11, t: '現在，<span class="accent">全都看得見</span>', en: 'Now you can see all of it', a: 6 },
+  { t: 'X 光照得出病灶', en: 'An X-ray reveals the lesion', c: 'long', a: 6 },
+  { t: '治不了病', en: 'It cannot cure', c: 'long hot', a: 6 },
+  { t: '開刀的判斷<br>在<span class="accent">你</span>手上', en: 'The call to operate is yours', c: 'long', a: 6 },
 
   // ── 終幕(9:20–10:00)CTA ─────────────────────
-  { t: '總之，<br>平常用 Agent<br>先掛上 <span class="accent">ccxray</span>', c: 'long', a: 7 },
+  { t: '總之，<br>平常用 Agent<br>先掛上 <span class="accent">ccxray</span>', en: 'Bottom line: run your agents through ccxray', c: 'long', a: 7 },
   { t: 'npx ccxray claude', c: 'code', a: 7, copy: 'npx ccxray claude' },
-  { t: '<span class="accent">看見</span>，然後<span class="good">決定</span>', c: 'long', a: 7 },
-  { t: '謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 7 },
-  { t: '你可以在 X 找到我<span class="sub">x.com/lis186 ・ github.com/lis186/ccxray（⭐ 歡迎）</span><div class="qrwrap"><img src="' + IMG.qrx + '" alt="QR code: x.com/lis186"></div>', c: 'long', a: 7, copy: 'https://github.com/lis186/ccxray' },
+  { t: '<span class="accent">看見</span>，然後<span class="good">決定</span>', en: 'See, then decide', c: 'long', a: 7 },
+  { t: '謝謝<span class="sub en">Thank you</span><span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 7 },
+  { t: '你可以在 X 找到我<span class="sub en">Find me on X</span><span class="sub">x.com/lis186 ・ github.com/lis186/ccxray（⭐ 歡迎）</span><div class="qrwrap"><img src="' + IMG.qrx + '" alt="QR code: x.com/lis186"></div>', c: 'long', a: 7, copy: 'https://github.com/lis186/ccxray' },
 ];
 
 let i = 0, timer = null;
@@ -776,7 +787,7 @@ function show(n) {
   const s = S[i];
   if (s.dv) {
     const badge = s.step ? '<span class="step">STEP ' + s.step + '/' + VIZ_STEPS + '</span>' : '';
-    const capHtml = '<div class="vcap">' + badge + s.t + '</div>';
+    const capHtml = '<div class="vcap">' + badge + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
     const tour = s.tour || 'main';
     const root = stageEl.querySelector('#dvroot');
     if (root && root.dataset.tour === tour) {
@@ -798,7 +809,7 @@ function show(n) {
     return;
   }
   if (s.mc) {
-    const capHtml = '<div class="vcap"><span class="step">STEP 10/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const capHtml = '<div class="vcap"><span class="step">STEP 10/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
     const root = stageEl.querySelector('#mcroot');
     if (root) {
       mcApply(s.mc);
@@ -820,7 +831,7 @@ function show(n) {
     return;
   }
   if (s.ac) {
-    const capHtml = '<div class="vcap"><span class="step">STEP 9/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const capHtml = '<div class="vcap"><span class="step">STEP 9/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
     const root = stageEl.querySelector('#acroot');
     if (root) {
       const capEl = stageEl.querySelector('.vcap');
@@ -842,7 +853,7 @@ function show(n) {
   }
   acStop();
   if (s.cx) {
-    const capHtml = '<div class="vcap"><span class="step">STEP 7/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const capHtml = '<div class="vcap"><span class="step">STEP 7/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
     const root = stageEl.querySelector('#cxroot');
     if (root) {
       cxApply(s.cx);
@@ -863,7 +874,7 @@ function show(n) {
     return;
   }
   if (s.sc) {
-    const capHtml = '<div class="vcap"><span class="step">STEP 1/' + VIZ_STEPS + '</span>' + s.t + '</div>';
+    const capHtml = '<div class="vcap"><span class="step">STEP 1/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
     const root = stageEl.querySelector('#pxroot');
     if (root) {
       // 前一頁也是分鏡:不重建,元素以 transition 延伸到新狀態
@@ -888,11 +899,11 @@ function show(n) {
   if (s.v) {
     el.className = 'vizslide';
     el.innerHTML = renderViz(s.v) +
-      '<div class="vcap">' + (s.nostep ? '' : '<span class="step">STEP ' + s.v + '/' + VIZ_STEPS + '</span>') + s.t + '</div>' +
+      '<div class="vcap">' + (s.nostep ? '' : '<span class="step">STEP ' + s.v + '/' + VIZ_STEPS + '</span>') + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>' +
       (s.v > 1 ? '<div class="vnote">' + NOTE + '</div>' : '');
   } else {
     el.className = 'slide' + (s.c ? ' ' + s.c : '');
-    el.innerHTML = s.t;
+    el.innerHTML = s.t + (s.en ? '<span class="sub en">' + s.en + '</span>' : '');
     if (s.copy) {
       const btn = document.createElement('button');
       btn.className = 'copybtn';
