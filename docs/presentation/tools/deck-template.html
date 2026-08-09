@@ -1,0 +1,975 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ccxray</title>
+<style>
+  /* 高橋流:一頁一句、字要夠大、節奏要快。
+     視覺層:九步真實介面截圖(ccxray v2.3.0 實拍),逐步揭開完整 dashboard;
+     僅 STEP 1 為架構示意線框。深色定調(X-ray 影像的世界觀),不隨系統主題切換。 */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #05080c;
+    color: #e6edf3;
+    font-family: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", -apple-system, sans-serif;
+    overflow: hidden;
+    user-select: none;
+    cursor: pointer;
+  }
+  #stage {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 5vmin 6vmin 9vmin;
+  }
+  .slide {
+    font-weight: 900;
+    line-height: 1.15;
+    letter-spacing: .02em;
+    font-size: clamp(2.6rem, 13vw, 12rem);
+    animation: pop .18s ease-out;
+  }
+  @keyframes pop { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+  .slide.long  { font-size: clamp(2rem, 7.5vw, 7rem); }
+  .slide.small { font-size: clamp(1.4rem, 4.5vw, 3.6rem); font-weight: 700; color: #9fb0c0; }
+  .slide.code {
+    font-family: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+    font-size: clamp(1.6rem, 5.5vw, 5rem);
+    font-weight: 600;
+    color: #7ee787;
+    background: #0b1420;
+    border: 1px solid #1d2d40;
+    border-radius: .18em;
+    padding: .5em .7em;
+  }
+  .slide { position: relative; }
+  .slide.code { user-select: text; cursor: text; }
+  .slide.code.longcode { font-size: clamp(1.1rem, 3.1vw, 2.7rem); }
+  .copybtn {
+    position: absolute; top: .28em; right: .32em;
+    font-size: .32em; line-height: 1;
+    background: #0d1a29; color: #8b98a5;
+    border: 1px solid #1d2d40; border-radius: .3em;
+    padding: .35em .55em; cursor: pointer;
+    font-family: inherit; user-select: none;
+    transition: color .15s, border-color .15s;
+  }
+  /* 非 code 頁(如最終 QR 頁)按鈕移到框外右下,不壓標題 */
+  .slide:not(.code) .copybtn { top: auto; bottom: -1.6em; right: 0; font-size: .2em; }
+  .copybtn:hover { color: #22d3ee; border-color: #22d3ee; }
+  .copybtn.ok { color: #7ee787; border-color: #1d4428; }
+  .slide .sub {
+    display: block;
+    margin-top: .6em;
+    font-size: .32em;
+    font-weight: 600;
+    color: #8b98a5;
+    letter-spacing: .06em;
+  }
+  /* 正文不跳色(owner 決定):強調 span 一律繼承白色;整頁色版也回白。
+     色彩只留在 UI chrome(幕別徽章、STEP 徽章、圈選環、進度條)與 code 頁。 */
+  .slide .accent, .slide .hot, .slide .good, .slide .warn, .slide .dim,
+  .vcap .accent, .vcap .hot, .vcap .good, .vcap .warn, .vcap .dim { color: inherit; }
+  .slide.accent, .slide.hot, .slide.good, .slide.warn, .slide.dim { color: #e6edf3; }
+  /* 例外:owner 指定可跳色的字(自介頁名字;Smart/Dumb Zone 綠紅) */
+  .slide .pop { color: #22d3ee; }
+  .slide .popgood, .vcap .popgood { color: #86efac; }
+  .slide .pophot,  .vcap .pophot  { color: #ff8a80; }
+  .slide .sub.subbig { font-size: .42em; }
+  /* 英文小標(服務外國聽眾):中文下方一行,灰、小、不搶主句 */
+  .slide .sub.en { font-size: .26em; color: #7d8a97; letter-spacing: .05em; margin-top: .5em; }
+  .vcapen { font-size: .52em; font-weight: 600; color: #8b98a5; letter-spacing: .05em; margin-top: .2em; }
+  .accent { color: #22d3ee; }
+  .hot    { color: #ff7b72; }
+  .good   { color: #7ee787; }
+  .dim    { color: #55606b; }
+  .warn   { color: #e3b341; }
+
+  /* 第二層敘事:英雄旅程幕別,常駐右上角 */
+  #act {
+    position: fixed; top: 2.4vmin; right: 3vmin;
+    font-size: clamp(.7rem, 1.6vmin, 1rem);
+    font-weight: 700; letter-spacing: .18em;
+    color: #22d3ee; opacity: .85;
+    border: 1px solid #164e5f; border-radius: 99px;
+    padding: .45em 1.1em;
+    transition: opacity .3s;
+    z-index: 5;
+  }
+  #counter {
+    position: fixed; bottom: 2.2vmin; right: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b; font-variant-numeric: tabular-nums;
+  }
+  #hint {
+    position: fixed; bottom: 5.2vmin; left: 3vmin;
+    font-size: clamp(.65rem, 1.5vmin, .9rem);
+    color: #55606b;
+  }
+  /* repo 網址全程常駐左下角(owner 指定) */
+  #repourl {
+    position: fixed; bottom: 2.2vmin; left: 3vmin;
+    font-family: "SF Mono", ui-monospace, Consolas, monospace;
+    font-size: clamp(.75rem, 1.8vmin, 1.05rem);
+    color: #22d3ee; letter-spacing: .04em; z-index: 40;
+  }
+  /* T 鍵切換的講者配速器:經過時間 vs 該頁目標時間(15 分鐘配速) */
+  #pace {
+    position: fixed; bottom: 2.2vmin; left: 50%; transform: translateX(-50%);
+    font-family: "SF Mono", ui-monospace, Consolas, monospace;
+    font-size: clamp(.7rem, 1.7vmin, 1rem); font-variant-numeric: tabular-nums;
+    color: #7ee787; display: none; z-index: 40; letter-spacing: .05em;
+  }
+  #bar {
+    position: fixed; left: 0; bottom: 0; height: 4px; width: 0;
+    background: linear-gradient(90deg, #22d3ee, #7ee787);
+    transition: width .15s ease-out;
+  }
+
+  /* ────────────────────────────────────────────────
+     視覺層:真實截圖,逐步揭開
+     ──────────────────────────────────────────────── */
+  .vizslide {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3vh;
+    animation: pop .22s ease-out;
+  }
+  .vcap {
+    font-size: clamp(1.3rem, 3.4vw, 2.6rem);
+    font-weight: 900; letter-spacing: .03em;
+    order: -1;   /* 場地調整:標題一律置於畫面上方(銀幕下緣易被前排遮擋) */
+  }
+  .vcap .step {
+    display: inline-block; margin-right: .8em;
+    font-size: .55em; font-weight: 700; letter-spacing: .2em;
+    color: #22d3ee; border: 1px solid #164e5f; border-radius: 99px;
+    padding: .3em .9em; vertical-align: .18em;
+    font-variant-numeric: tabular-nums;
+  }
+  .vnote {
+    font-size: clamp(.75rem, 1.7vmin, 1rem);
+    color: #6b7680; letter-spacing: .1em; margin-top: -1.6vh;
+  }
+  .shots { display: flex; gap: 2vw; align-items: flex-start; justify-content: center; max-width: 94vw; }
+  .shot {
+    border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+    background: #0d1117; box-shadow: 0 12px 40px #00000088;
+    flex: 0 1 auto; min-width: 0;
+  }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot.hero { box-shadow: 0 0 0 1px #22d3ee55, 0 0 44px #22d3ee2e, 0 12px 40px #00000088; }
+  /* 高度上限:過高的截圖從底部裁掉(DAILY 長列表、diff 頁下方留白) */
+  .shot.crop   { max-height: 56vh; }
+  .shot.croptall { max-height: 62vh; }
+
+  /* 第三幕開場:dashboard 導覽分鏡(#dvroot,七頁同 DOM)。
+     鏡頭語言「總—分」:完整畫面 → 圈出注意區(其餘壓暗)→ 放大該區,
+     三組循環(topbar / columns / timeline)。同一張全圖做 zoom,
+     不切裁片,空間關係不斷裂。 */
+  .dvviewport {
+    width: 88vw; aspect-ratio: 16 / 9; overflow: hidden; position: relative;
+    border: 1px solid #30363d; border-radius: 8px; background: #0d1117;
+    box-shadow: 0 0 0 1px #22d3ee55, 0 0 44px #22d3ee2e, 0 12px 40px #00000088;
+  }
+  .dvzoom { width: 100%; height: 100%; transform-origin: 0 0; transition: transform .95s cubic-bezier(.33,0,.15,1); position: relative; }
+  .dvzoom img { width: 100%; height: 100%; display: block; }
+  .dvhl {
+    position: absolute; border: 3px solid #22d3ee; border-radius: 8px;
+    box-shadow: 0 0 0 200vmax rgba(3, 6, 10, .6);
+    opacity: 0; pointer-events: none;
+    transition: opacity .5s ease, left .8s cubic-bezier(.33,0,.15,1), top .8s cubic-bezier(.33,0,.15,1), width .8s cubic-bezier(.33,0,.15,1), height .8s cubic-bezier(.33,0,.15,1);
+  }
+
+  /* STEP 1:架構分鏡(唯一的非截圖視覺)。
+     連續五頁共用同一個 #pxroot——翻頁只換 scene-N class,元素靠 CSS
+     transition 平移/縮放延伸,不重建 DOM,節奏不中斷。 */
+  .pxwrap {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 3vh;
+    animation: pop .22s ease-out;
+  }
+  .pxscene { position: relative; width: 86vw; height: 46vh; font-size: clamp(11px, 1.9vh, 16px); }
+  .pxworld { position: absolute; inset: 0; transform-origin: 50% 42%; transition: transform .7s cubic-bezier(.33,0,.15,1); }
+  .pxnode {
+    position: absolute; top: 42%; transform: translateY(-50%);
+    border: 1px solid #1d2d40; background: #0b1420; border-radius: 8px;
+    padding: .85em 1.3em; font-weight: 700; color: #c9d5e0;
+    white-space: nowrap; font-size: 1.25em; z-index: 1;
+    transition: left .7s cubic-bezier(.33,0,.15,1), transform .7s cubic-bezier(.33,0,.15,1), opacity .5s ease, box-shadow .6s ease;
+  }
+  #px-cc { left: 5%; }
+  #px-api { left: auto; right: 5%; }
+  #px-x { left: 50%; transform: translate(-50%, -50%) scale(0); border-color: #22d3ee; color: #22d3ee; z-index: 2; }
+  .pxpipe { position: absolute; top: 42%; height: 2px; margin-top: -1px; background: #1d2d40; z-index: 0; transition: opacity .5s ease; }
+  .pxpipe.pl { left: 13%; width: 37%; }
+  .pxpipe.pr { left: 50%; width: 37%; }
+  .pxpipe .dot { position: absolute; top: -2.5px; width: 7px; height: 7px; border-radius: 50%; }
+  .pxpipe .dot.req { background: #22d3ee; animation: flowR 2.2s linear infinite; }
+  .pxpipe .dot.res { background: #7ee787; animation: flowL 2.2s linear infinite; animation-delay: 1.1s; }
+  @keyframes flowR { from { left: -3px; } to { left: calc(100% - 4px); } }
+  @keyframes flowL { from { left: calc(100% - 4px); } to { left: -3px; } }
+  #px-gap {
+    position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%);
+    width: 9em; height: 9em; border: 1px dashed #22d3ee66; border-radius: 50%;
+    opacity: 0; transition: opacity .5s ease;
+  }
+  .pxlogs {
+    position: absolute; left: 50%; top: 62%; transform: translateX(-50%);
+    display: flex; flex-direction: column; gap: .45em;
+    opacity: 0; transition: opacity .4s ease; z-index: 2;
+  }
+  .pxlog {
+    display: flex; gap: 1.1em; align-items: baseline;
+    border: 1px solid #1d2d40; background: #0b1420; border-radius: 5px;
+    padding: .45em .8em; font-family: ui-monospace, monospace;
+    font-size: .95em; color: #c9d5e0; white-space: nowrap;
+    opacity: 0; animation: rowin .4s ease-out forwards;
+  }
+  .pxlog .t { color: #55606b; }
+  .pxlog .ok { color: #7ee787; }
+  @keyframes rowin { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  /* 分鏡狀態:每頁 = 前頁的延伸 */
+  .scene-1 #px-cc { left: 50%; transform: translate(-50%, -50%) scale(1.3); }
+  .scene-1 #px-api, .scene-1 .pxpipe { opacity: 0; }
+  .scene-3 .pxworld { transform: scale(1.7); }
+  .scene-3 #px-cc, .scene-3 #px-api { opacity: .4; }
+  .scene-3 #px-gap { opacity: 1; }
+  .scene-4 .pxworld { transform: scale(1.45); }
+  .scene-4 #px-cc, .scene-4 #px-api { opacity: .75; }
+  .scene-4 #px-x, .scene-5 #px-x { transform: translate(-50%, -50%) scale(1); }
+  .scene-4 #px-x { box-shadow: 0 0 18px #22d3ee33; }
+  .scene-5 #px-x { box-shadow: 0 0 26px #22d3ee55; }
+  .scene-5 .pxlogs { opacity: 1; }
+
+  /* STEP 9:auto-compact 逐格重播。26 幀真實泳道 render(log 前綴逐格),
+     一個 #acroot 跨六頁存活,每頁自動播放自己的段落後定格;
+     倒退重播該段。prefers-reduced-motion 直接跳到段尾。 */
+  .acscene { display: flex; justify-content: center; width: 100%; }
+  .acframe { width: 90vw; }
+
+  /* STEP 10:模型選擇對照分鏡。#mcroot 跨三頁存活:good 獨秀 →
+     bad 滑入並排 → 真實統計浮現。 */
+  .mcscene { display: flex; flex-direction: column; gap: 2vh; width: 92vw; }
+  .mcrow { display: flex; gap: 2vw; justify-content: center; }
+  .mccol { flex: 1 1 0; min-width: 0; transition: opacity .6s ease, transform .6s ease; }
+  .mccol .shot { display: inline-block; }
+  .mccol .shot img { max-height: 46vh; width: auto; max-width: 100%; }
+  .mccol { text-align: center; }
+  .mccol .mclabel { font-weight: 900; font-size: clamp(.9rem, 2vw, 1.3rem); margin-bottom: .8vh; text-align: center; }
+  .mccol .mcstats { display: flex; gap: 1.2em; justify-content: center; margin-top: 1vh;
+    font-family: ui-monospace, monospace; font-size: clamp(.75rem, 1.8vmin, 1.05rem);
+    opacity: 0; transition: opacity .6s ease; }
+  .mccol .mcstats b { font-weight: 700; }
+  .mccol.bad { opacity: 0; transform: translateX(4vw); }
+  .mc-2 .mccol.bad, .mc-3 .mccol.bad { opacity: 1; transform: none; }
+  .mc-3 .mcstats { opacity: 1; }
+  /* 縮時攝影:x 軸=時間,左→右擦除 = 時間游標;跨線的長 bar 會逐漸變長 */
+  .mccol img.wipe { clip-path: inset(0 100% 0 0); }
+  .mccol img.wipe.play { animation: tlwipe linear forwards; }
+  .mccol img.wipe.done { clip-path: none; animation: none; }
+  @keyframes tlwipe { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0% 0 0); } }
+  @media (prefers-reduced-motion: reduce) { .mccol img.wipe { clip-path: none !important; } }
+
+  /* STEP 6:cache 過期分鏡。同一張真實 session 卡跨頁存活(#cxroot),
+     翻頁只換 cx-N class:四個狀態圖層原地交叉淡變,紅色態疊上第二畫格
+     以原生 cachePulse 節奏閃爍;鏡頭在警告時推近、過期時拉回。 */
+  @keyframes cacheBlink { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }
+  .cxscene { display: flex; align-items: center; justify-content: center; height: 46vh; }
+  .cxzoom { transition: transform .7s cubic-bezier(.33,0,.15,1); transform-origin: 72% 86%; }
+  .cxcard { position: relative; width: min(34vw, 440px); min-width: 260px; }
+  .cxcard img { display: block; width: 100%; height: auto; }
+  .cxcard img.ov { position: absolute; inset: 0; opacity: 0; transition: opacity .6s ease; }
+  .cx-2 .cxzoom { transform: scale(1.07); }
+  .cx-3 .cxzoom { transform: scale(1.24); }
+  .cx-2 img.ov.near { opacity: 1; }
+  .cx-3 img.ov.closea { opacity: 1; }
+  .cx-3 img.ov.closeb { animation: cacheBlink 1s ease-in-out infinite; }
+  .cx-4 img.ov.expired { opacity: 1; }
+
+  .qrwrap { margin-top: 4vh; display: flex; justify-content: center; }
+  .qrwrap img { width: 30vh; height: 30vh; border-radius: 12px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="act"></div>
+<div id="stage"><div class="slide" id="slide"></div></div>
+<div id="bar"></div>
+<div id="counter"></div>
+<div id="repourl">github.com/lis186/ccxray</div>
+<div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放 · T 配速</div>
+<div id="pace"></div>
+<script>
+// 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
+const ACTS = [
+  '序幕 · 大爆發',
+  '第一幕 · 上限之謎',
+  '第二幕 · 打造 X 光機',
+  '第三幕 · 第一張 X 光片',
+  '第四幕 · 試煉之路',
+  '第五幕 · 深淵',
+  '第六幕 · 歸返',
+  '終幕 · 處方箋',
+];
+
+// 內嵌的真實截圖(ccxray v2.3.0,合成示範資料實拍;build-deck.mjs 產生)
+const IMG = {
+  usageday: '{{IMG:crop-usage-daily}}',
+  costfull: '{{IMG:cost-tour}}',
+  pricing: '{{IMG:pricing-table}}',
+  eff: '{{IMG:cost-eff}}',
+  eff2: '{{IMG:cost-eff2}}',
+  qrx: '{{IMG:qr-x}}',
+  cachefar: '{{IMG:cache-far}}',
+  cachenear: '{{IMG:cache-near}}',
+  cacheclosea: '{{IMG:cache-close-a}}',
+  cachecloseb: '{{IMG:cache-close-b}}',
+  cacheexpired: '{{IMG:cache-expired}}',
+  swimlane: '{{IMG:crop-swimlane}}',
+  tax: '{{IMG:turn1-tax}}',
+  fanoutgood: '{{IMG:fanout-good}}',
+  fanoutbad: '{{IMG:fanout-bad}}',
+  full: '{{IMG:full-session}}',
+};
+
+const ACF = [
+  '{{IMG:spiral-01}}',
+  '{{IMG:spiral-02}}',
+  '{{IMG:spiral-03}}',
+  '{{IMG:spiral-04}}',
+  '{{IMG:spiral-05}}',
+  '{{IMG:spiral-06}}',
+  '{{IMG:spiral-07}}',
+  '{{IMG:spiral-08}}',
+  '{{IMG:spiral-09}}',
+  '{{IMG:spiral-10}}',
+  '{{IMG:spiral-11}}',
+  '{{IMG:spiral-12}}',
+  '{{IMG:spiral-13}}',
+  '{{IMG:spiral-14}}',
+  '{{IMG:spiral-15}}',
+  '{{IMG:spiral-16}}',
+  '{{IMG:spiral-17}}',
+  '{{IMG:spiral-18}}',
+  '{{IMG:spiral-19}}',
+  '{{IMG:spiral-20}}',
+  '{{IMG:spiral-21}}',
+  '{{IMG:spiral-22}}',
+  '{{IMG:spiral-23}}',
+  '{{IMG:spiral-24}}',
+  '{{IMG:spiral-25}}',
+  '{{IMG:spiral-26}}',
+];
+
+const VIZ_STEPS = 11;
+const NOTE = 'ccxray v2.3 實際畫面（示範資料）';
+
+// STEP 1 是分鏡(pxSceneHTML);2..10 = 真實截圖
+// ── STEP 1 架構分鏡:同一個 #pxroot 跨頁存活,翻頁只換 scene class ──
+const PX_SCENES = 5;
+function pxLogsHTML() {
+  const rows = [
+    ['12:04:11', 'POST /v1/messages', '3.2s'],
+    ['12:04:19', 'POST /v1/messages', '8.7s'],
+    ['12:04:31', 'POST /v1/messages · subagent', '2.1s'],
+  ];
+  return rows.map((r, k) =>
+    '<div class="pxlog" style="animation-delay:' + (0.15 + k * 0.3) + 's">' +
+    '<span class="t">' + r[0] + '</span>' + r[1] +
+    '<span class="ok">200</span><span class="t">' + r[2] + '</span></div>').join('');
+}
+function pxSceneHTML(k) {
+  return '<div id="pxroot" class="pxscene scene-' + k + '">' +
+    '<div class="pxworld">' +
+      '<div class="pxpipe pl"><span class="dot req"></span><span class="dot res"></span></div>' +
+      '<div class="pxpipe pr"><span class="dot req"></span><span class="dot res"></span></div>' +
+      '<div class="pxnode" id="px-cc">Claude Code</div>' +
+      '<div class="pxnode" id="px-api">Anthropic API</div>' +
+      '<div class="pxnode" id="px-x">ccxray</div>' +
+      '<div id="px-gap"></div>' +
+      '<div class="pxlogs" id="px-logs">' + (k >= 5 ? pxLogsHTML() : '') + '</div>' +
+    '</div></div>';
+}
+function pxApply(k) {
+  const root = stageEl.querySelector('#pxroot');
+  root.className = 'pxscene scene-' + k;
+  // 進入分鏡 5 時重灌 log,讓逐列進場動畫重跑
+  const logs = root.querySelector('#px-logs');
+  logs.innerHTML = k >= 5 ? pxLogsHTML() : '';
+}
+
+// ── 第三幕 dashboard 導覽分鏡:全圖 → 圈選 → 放大(同一張全圖 zoom)──
+const TOURS = {
+  main: {
+    imgKey: 'full',
+    regions: {
+      top:   { x: 0,     y: 0,      w: 1,      h: 0.0711 },
+      cols:  { x: 0,     y: 0.0711, w: 0.275,  h: 0.2989 },
+      steps: { x: 0.425, y: 0.3333, w: 0.5744, h: 0.6344 },
+    },
+    states: [
+      {},
+      { hl: 'top' },
+      { z: 'top', s: 1.9, cx: 0.19 },
+      { hl: 'cols' },
+      { z: 'cols', s: 3.0 },
+      { hl: 'steps' },
+      { z: 'steps', s: 1.48 },
+    ],
+  },
+  // STEP 5 操作路徑:點第 1 個 turn → 看 Cost 面板($1.02)
+  tax: {
+    imgKey: 'tax',
+    regions: {
+      turnbar: { x: 0.4175, y: 0.16,   w: 0.5894, h: 0.1 },
+      cost:    { x: 0.275,  y: 0.4189, w: 0.15,   h: 0.1178 },
+    },
+    states: [
+      {},
+      { hl: 'turnbar' },
+      { hl: 'cost' },
+      { z: 'cost', s: 3.4 },
+    ],
+  },
+  // Cost Efficiency 稅單攤開:skills/記憶/CLAUDE.md 區塊 + 28 個 MCP bars
+  eff: {
+    imgKey: 'eff',
+    regions: {
+      userblock: { x: 0.43,  y: 0.4256, w: 0.5556, h: 0.1033 },
+      mcpbars:   { x: 0.43,  y: 0.59,   w: 0.5556, h: 0.3922 },
+    },
+    states: [
+      {},
+      { hl: 'userblock' },
+      { z: 'userblock', s: 1.75 },
+      { hl: 'mcpbars' },
+      { z: 'mcpbars', s: 1.75 },
+    ],
+  },
+  // 稅單總結 + 0-uses 點名牆(同區塊捲動後的畫面)
+  eff2: {
+    imgKey: 'eff2',
+    regions: {
+      tax:   { x: 0.43,   y: 0.3756, w: 0.5644, h: 0.0411 },
+      warns: { x: 0.4288, y: 0.4189, w: 0.5669, h: 0.54 },
+    },
+    states: [
+      { z: 'tax', s: 1.75 },
+      { hl: 'warns' },
+      { z: 'warns', s: 1.7 },
+    ],
+  },
+  // STEP 6 錢去哪了:專案 → session → turn,三層帳都在真實 UI 上
+  cost: {
+    imgKey: 'costfull',
+    regions: {
+      projects: { x: 0,      y: 0.11,   w: 0.1407, h: 0.2533 },
+      sessions: { x: 0.1338, y: 0.11,   w: 0.1444, h: 0.1508 },
+      turncost: { x: 0.275,  y: 0.5111, w: 0.15,   h: 0.1178 },
+    },
+    states: [
+      {},
+      { hl: 'projects' },
+      { z: 'projects', s: 3.2 },
+      { hl: 'sessions' },
+      { z: 'sessions', s: 3.6 },
+      { hl: 'turncost' },
+      { z: 'turncost', s: 3.4 },
+    ],
+  },
+  // cache 過期 20 倍的官方佐證:platform.claude.com pricing 頁實際截圖
+  price: {
+    imgKey: 'pricing',
+    note: 'platform.claude.com/docs/en/about-claude/pricing 官方頁面實際截圖',
+    regions: {
+      fablerow:  { x: 0.2238, y: 0.2134, w: 0.5275, h: 0.0544 },
+      cachecols: { x: 0.535,  y: 0.1595, w: 0.1595, h: 0.1083 },
+    },
+    states: [
+      {},
+      { hl: 'fablerow' },
+      { z: 'cachecols', s: 4.6 },
+    ],
+  },
+};
+function dvSceneHTML(k, tour) {
+  return '<div id="dvroot" class="dvviewport" data-tour="' + tour + '"><div class="dvzoom">' +
+    '<img src="' + IMG[TOURS[tour].imgKey] + '" alt="">' +
+    '<div class="dvhl"></div>' +
+  '</div></div>';
+}
+function dvApply(k, tour) {
+  const T = TOURS[tour];
+  const st = T.states[k - 1];
+  const root = stageEl.querySelector('#dvroot');
+  const zoom = root.querySelector('.dvzoom');
+  const hl = root.querySelector('.dvhl');
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  if (st.z) {
+    const r = T.regions[st.z];
+    const S = st.s;
+    const cx = st.cx != null ? st.cx : r.x + r.w / 2;
+    const cy = st.cy != null ? st.cy : r.y + r.h / 2;
+    const tx = clamp(50 / S - cx * 100, 100 / S - 100, 0);
+    const ty = clamp(50 / S - cy * 100, 100 / S - 100, 0);
+    zoom.style.transform = 'scale(' + S + ') translate(' + tx + '%, ' + ty + '%)';
+    hl.style.opacity = '0';
+  } else {
+    zoom.style.transform = 'scale(1)';
+    if (st.hl) {
+      const r = T.regions[st.hl];
+      hl.style.left = (r.x * 100) + '%';
+      hl.style.top = (r.y * 100) + '%';
+      hl.style.width = (r.w * 100) + '%';
+      hl.style.height = (r.h * 100) + '%';
+      hl.style.opacity = '1';
+    } else hl.style.opacity = '0';
+  }
+}
+
+// ── STEP 10 模型選擇對照分鏡 ──
+function mcSceneHTML(k) {
+  return '<div id="mcroot" class="mcscene mc-' + k + '"><div class="mcrow">' +
+    '<div class="mccol good"><div class="mclabel"><span class="good">選對模型</span> · window 充足</div>' +
+      '<div class="shot hero"><img class="wipe" src="' + IMG.fanoutgood + '" alt=""></div>' +
+      '<div class="mcstats"><span class="good">一片綠</span><span>快進快出</span><span>零失敗</span></div></div>' +
+    '<div class="mccol bad"><div class="mclabel"><span class="hot">模型太小</span> · window 不足</div>' +
+      '<div class="shot"><img class="wipe" src="' + IMG.fanoutbad + '" alt=""></div>' +
+      '<div class="mcstats"><span class="hot">失敗率飆高</span><span class="hot">長紅 bar</span><span class="hot">更久、更貴</span></div></div>' +
+  '</div></div>';
+}
+// 縮時倍率一致:同一時間比例尺,GOOD 34m→7s、BAD 52m→10.7s
+function mcApply(k) {
+  const root = stageEl.querySelector('#mcroot');
+  root.className = 'mcscene mc-' + k;
+  const g = root.querySelector('.mccol.good img.wipe');
+  const b = root.querySelector('.mccol.bad img.wipe');
+  const play = (el, sec) => { el.classList.remove('play', 'done'); void el.offsetWidth; el.style.animationDuration = sec + 's'; el.classList.add('play'); };
+  if (k === 1) { play(g, 7); b.classList.remove('play', 'done'); }
+  else if (k === 2) { g.classList.remove('play'); g.classList.add('done'); play(b, 10); }
+  else { g.classList.remove('play'); b.classList.remove('play'); g.classList.add('done'); b.classList.add('done'); }
+}
+
+// ── STEP 9 auto-compact 逐格重播 ──
+let acTimer = null;
+function acStop() { if (acTimer) { clearInterval(acTimer); acTimer = null; } }
+function acSceneHTML(from) {
+  return '<div id="acroot" class="acscene"><div class="shot hero acframe"><img id="acframe" src="' + ACF[from - 1] + '" alt=""></div></div>';
+}
+function acPlay(from, to) {
+  acStop();
+  const img = stageEl.querySelector('#acframe');
+  let idx = from;
+  img.src = ACF[idx - 1];
+  if (to <= from || matchMedia('(prefers-reduced-motion: reduce)').matches) { img.src = ACF[to - 1]; return; }
+  acTimer = setInterval(() => {
+    idx++;
+    img.src = ACF[idx - 1];
+    if (idx >= to) acStop();
+  }, 420);
+}
+
+// ── STEP 6 cache 過期分鏡:同一張真實卡片跨頁存活,狀態圖層交叉淡變 ──
+function cxSceneHTML(k) {
+  return '<div id="cxroot" class="cxscene cx-' + k + '">' +
+    '<div class="cxzoom"><div class="shot hero cxcard">' +
+      '<img class="base" src="' + IMG.cachefar + '" alt="">' +
+      '<img class="ov near" src="' + IMG.cachenear + '" alt="">' +
+      '<img class="ov closea" src="' + IMG.cacheclosea + '" alt="">' +
+      '<img class="ov closeb" src="' + IMG.cachecloseb + '" alt="">' +
+      '<img class="ov expired" src="' + IMG.cacheexpired + '" alt="">' +
+    '</div></div></div>';
+}
+function cxApply(k) {
+  stageEl.querySelector('#cxroot').className = 'cxscene cx-' + k;
+}
+
+function renderViz(s) {
+  const img = (k, cls, style) => '<div class="shot ' + (cls || '') + '"' + (style ? ' style="' + style + '"' : '') + '><img src="' + IMG[k] + '" alt=""></div>';
+  switch (s) {
+    case 6: return '<div class="shots">' + img('usageday', 'hero', 'width:72vw;max-height:66vh') + '</div>';
+    case 8: return '<div class="shots">' + img('swimlane', 'hero', 'width:88vw') + '</div>';
+    case 11: return '<div class="shots">' + img('full', 'hero', 'width:86vw;max-height:70vh') + '</div>';
+  }
+}
+
+// t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟 / sc/cx/ac/mc: 分鏡
+const S = [
+  // ── 標題頁:開講前的海報(停留不開錶;離開此頁配速器才起算)──
+  { t: '給你的 Agent<br>照一張 <span class="accent">X 光</span><span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions<br>阿修 · COSCUP 2026</span>', c: 'long', a: 0 },
+  // ── 序幕 · 大爆發(0:00–1:30)背景鋪陳 → 個人故事 ──────
+  { t: '2026 年 2 月', en: 'February 2026', c: 'long', a: 0 },
+  { t: 'Agentic Coding<br>大躍進', en: 'The agentic coding leap', c: 'long', a: 0 },
+  { t: '<span class="accent">Opus 4.6</span><br>GPT-5.3 Codex', en: 'New frontier models, back to back', c: 'long', a: 0 },
+  { t: '從助手<br>變自主工程代理', en: 'From assistant to autonomous engineer', c: 'long', a: 0 },
+  { t: '自主規劃、執行<br>自我修正', en: 'Plans, executes, self-corrects', c: 'long', a: 0 },
+  { t: '多代理協作<br>像一支真的團隊', en: 'Multi-agent teamwork, like a real team', c: 'long', a: 0 },
+  { t: '不只寫 code<br>吃下完整生命週期', en: 'Beyond code: the full dev lifecycle', c: 'long', a: 0 },
+  { t: '大型專案<br>幾小時搞定', en: 'Big projects, done in hours', c: 'long', a: 0 },
+  { t: '競爭加速<br>實用門檻大降', en: 'Competition up, barriers down', c: 'long', a: 0 },
+  { t: '我很好奇', en: 'I got curious', c: 'long', a: 0 },
+  { t: 'Agent 到底<br>能做到什麼？', en: 'How far can agents really go?', c: 'long', a: 0 },
+  { t: '於是，日夜嘗試', en: 'So I pushed them, day and night', c: 'long', a: 0 },
+  { t: 'Claude usage limit reached.<span class="sub">Your limit will reset at 11:00 PM.</span>', c: 'code', a: 0 },
+  { t: '撞牆', en: 'Hit the limit', c: 'hot', a: 0 },
+  { t: '又撞', en: 'Again', c: 'hot', a: 0 },
+  { t: '再撞', en: 'And again', c: 'hot', a: 0 },
+  { t: '為什麼？<br><span class="dim">不知道</span>', en: 'Why? No idea', c: 'long', a: 0 },
+  { t: '大家好，我是 <span class="pop">阿修</span><span class="sub subbig">一個想搞清楚 AI Agent 可觀測性機制的工程師</span><span class="sub en">An engineer trying to figure out AI-agent observability</span>', c: 'long', a: 0 },
+
+  // ── 第一幕 · 上限之謎(0:50–1:40)────────────────────
+  { t: '上限', en: 'The limit', a: 1 },
+  { t: '到底被<span class="hot">什麼</span>吃掉？', en: 'What is eating it?', c: 'long', a: 1 },
+  { t: '它在想什麼？', en: 'What is it thinking?', c: 'long', a: 1 },
+  { t: 'context 誰佔走了？', en: 'Who took my context?', c: 'long', a: 1 },
+  { t: '每一次呼叫，花多少 token？', en: 'How many tokens per call?', c: 'long', a: 1 },
+  { t: '你不知道', en: 'You don\'t know', c: 'long', a: 1 },
+  { t: '上限知道', en: 'The limit knows', c: 'long hot', a: 1 },
+  { t: '所以我動手<br>造了一台', en: 'So I built a machine', c: 'long', a: 1 },
+
+  // ── 第二幕 · 打造 X 光機(1:40–2:50)──────────────────
+  { t: '<span class="accent">cc</span>xray', a: 2 },
+  { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', en: 'An X-ray machine for AI sessions', c: 'long', a: 2 },
+  { t: '開機，兩行', en: 'Boot it up: two lines', c: 'long', a: 2 },
+  { t: 'npx ccxray --port 5577<span class="sub">先把 X 光機開起來，proxy 和 dashboard 就緒</span>', c: 'code longcode', a: 2, copy: 'npx ccxray --port 5577' },
+  { t: 'ANTHROPIC_BASE_URL=<br>http://localhost:5577 claude<span class="sub">再讓 Claude Code 從這裡過，大家最常忘的就是這行</span>', c: 'code longcode', a: 2, copy: 'ANTHROPIC_BASE_URL=http://localhost:5577 claude' },
+  { sc: 1, t: '你的 <span class="accent">Claude Code</span>', en: 'Your Claude Code', a: 2 },
+  { sc: 2, t: '每一次對話，直奔 Anthropic API', en: 'Every turn goes straight to the Anthropic API', a: 2 },
+  { sc: 3, t: '中間，<span class="dim">本來什麼都沒有</span>', en: 'Nothing in between', a: 2 },
+  { sc: 4, t: '<span class="accent">ccxray</span>，站進來', en: 'ccxray steps in', a: 2 },
+  { sc: 5, t: '每個 request、每個 response，<span class="accent">全部記下來</span>', en: 'Every request and response, recorded', a: 2 },
+  { t: '嫌兩行麻煩？', en: 'Two lines too many?', c: 'long', a: 2 },
+  { t: 'npx ccxray claude<span class="sub">一行版：proxy、base URL、啟動 claude，全包</span>', c: 'code', a: 2, copy: 'npx ccxray claude' },
+  { t: '零設定 · 不改你的習慣', en: 'Zero config, zero habit change', c: 'long accent', a: 2 },
+
+  // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
+  { t: '打開 Dashboard', en: 'Open the dashboard', c: 'long', a: 3 },
+  { dv: 1, t: '這，就是完整的畫面', en: 'The full picture', a: 3 },
+  { dv: 2, t: '先看最上面', en: 'Start at the top', a: 3 },
+  { dv: 3, t: 'Dashboard · Usage · System Prompt，一個入口', en: 'One entry point: Dashboard, Usage, System Prompt', a: 3, step: 2 },
+  { dv: 4, t: '左邊：專案與 session', en: 'Left: projects and sessions', a: 3 },
+  { dv: 5, t: '<span class="accent">即時更新</span>：context、成本、cache 一眼看見', en: 'Live: context, cost and cache at a glance', a: 3, step: 3 },
+  { dv: 6, t: '右邊：這個 session 的每一步', en: 'Right: every step of the session', a: 3 },
+  { dv: 7, t: '工具、思考、對話，<span class="accent">逐字可見</span>', en: 'Tools, thinking, dialogue, word by word', a: 3, step: 4 },
+  { t: '現在', en: 'Now', a: 3 },
+  { t: '照第一張片子', en: 'Time for the first X-ray', c: 'long accent', a: 3 },
+  { t: '對話<span class="hot">還沒開始</span>的那一刻', en: 'The moment before the conversation starts', c: 'long', a: 3 },
+  { t: '有些<span class="hot">隱形的成本</span><br>已經付出去了<span class="sub en">Some invisible costs are already paid</span><span class="sub">LIVE：dashboard 已自動打開，切回那個分頁<br>點新 session → turn #1 → Cost（不順就翻下一頁，截圖已備好）</span>', c: 'long', a: 3 },
+  { t: '這個 session<br>我<span class="warn">故意裝好裝滿</span>', en: 'I loaded this session on purpose', c: 'long', a: 3 },
+  { t: '28 個 MCP · 22 個 skills<br>CLAUDE.md · 記憶', en: '28 MCP servers, 22 skills, CLAUDE.md, memory', c: 'long', a: 3 },
+  { dv: 1, tour: 'tax', t: '剛剛 LIVE 的畫面，回放一次', en: 'Same screen, replayed', a: 3 },
+  { dv: 2, tour: 'tax', t: '第一步：點 main lane 的<span class="accent">第 1 個 turn</span>', en: 'Step 1: click turn #1 on the main lane', a: 3 },
+  { dv: 3, tour: 'tax', t: '第二步：看 <span class="accent">Cost</span>', en: 'Step 2: check Cost', a: 3 },
+  { dv: 4, tour: 'tax', t: '你只說了一句話：<span class="hot">In 99K，$1.02</span>', en: 'One sentence in: 99K tokens, $1.02', a: 3, step: 5 },
+  { dv: 1, tour: 'eff', t: '第三步：<span class="accent">Cost</span> 分頁，稅單攤開', en: 'Step 3: the Cost tab, itemized', a: 3 },
+  { dv: 2, tour: 'eff', t: 'skills、記憶、CLAUDE.md，<span class="warn">全是你放進去的</span>', en: 'Skills, memory, CLAUDE.md: all yours', a: 3 },
+  { dv: 3, tour: 'eff', t: '光 skills 就 <span class="hot">12,770</span> tokens', en: 'Skills alone: 12,770 tokens', a: 3 },
+  { dv: 4, tour: 'eff', t: '28 個 MCP server，<span class="accent">一個一條帳</span>', en: '28 MCP servers, one line each', a: 3 },
+  { dv: 5, tour: 'eff', t: 'gmail 6,306 · github 7,846，<span class="warn">還沒用就先付</span>', en: 'Paid before ever used', a: 3 },
+  { dv: 1, tour: 'eff2', t: '總結一行：固定稅 <span class="hot">96,947 tokens = 48.5%</span>', en: 'Fixed tax: 96,947 tokens = 48.5% of the window', a: 3 },
+  { dv: 2, tour: 'eff2', t: '而且它會<span class="accent">點名</span>', en: 'And it names names', a: 3 },
+  { dv: 3, tour: 'eff2', t: '<span class="warn">0 uses this session</span>，28 個全上榜', en: 'All 28 flagged: zero uses', a: 3 },
+  { t: '全是<span class="hot">行前簡報</span>，<br>你開口前，它得先讀完', en: 'A pre-mission briefing, read before you speak', c: 'long', a: 3 },
+  { t: 'MCP · skills<br>CLAUDE.md · 記憶，<br><span class="warn">你自己塞進去的</span>', en: 'You put all of it there', c: 'long', a: 3 },
+  { t: '用不到的，<br><span class="good">就刪掉</span>', en: 'Unused? Delete it', c: 'long', a: 3 },
+
+  // ── 第四幕 · 試煉之路(5:00–6:50)─────────────────────
+  { t: '錢去哪了？', en: 'Where did the money go?', c: 'long hot', a: 4 },
+  { dv: 1, tour: 'cost', t: '回到 dashboard：帳，<span class="good">一直都在記</span>', en: 'Back to the dashboard: the ledger never stops', a: 4 },
+  { dv: 2, tour: 'cost', t: '每個<span class="accent">專案</span>：多少錢，卡片上就有', en: 'Per project, right on the card', a: 4 },
+  { dv: 3, tour: 'cost', t: 'ccxray 這個專案：<span class="hot">$6.80</span>', en: 'This project: $6.80', a: 4, step: 6 },
+  { dv: 4, tour: 'cost', t: '每個 <span class="accent">session</span>，一場一筆帳', en: 'Per session, one bill each', a: 4 },
+  { dv: 5, tour: 'cost', t: '這場 debug，9 分鐘：<span class="hot">$6.80</span>', en: 'This debug run: 9 minutes, $6.80', a: 4 },
+  { dv: 6, tour: 'cost', t: '再點進 <span class="accent">turn</span>：單回合成本', en: 'Down to the turn: per-call cost', a: 4 },
+  { dv: 7, tour: 'cost', t: '這一回合 <span class="hot">$0.5464</span>，In 380K，全記著', en: 'This turn: $0.5464, 380K in', a: 4 },
+  { v: 6, nostep: 1, t: '切到 Usage：<span class="good">每天花多少，也記著</span>', en: 'The Usage tab tracks daily spend too', a: 4 },
+  { t: 'Cache 是有<span class="hot">保鮮期</span>的', en: 'Cache has a shelf life', c: 'long', a: 4 },
+  { t: '命中：<span class="good">打 1 折</span>', en: 'Cache hit: 90% off', c: 'long', a: 4 },
+  { t: '過期重建：<span class="hot">原價 2 倍</span>', en: 'Expired rebuild: 2x full price', c: 'long', a: 4 },
+  { dv: 1, tour: 'price', t: '不信？<span class="accent">官方價目表</span>', en: 'Don\'t take my word: official pricing', a: 4 },
+  { dv: 2, tour: 'price', t: '就看我們用的 <span class="accent">Claude Fable 5</span>', en: 'The model we just used: Claude Fable 5', a: 4 },
+  { dv: 3, tour: 'price', t: '1h 重建 <span class="hot">$20</span> · 命中 <span class="good">$1</span>，白紙黑字', en: '$20 to rebuild vs $1 on hit, in writing', a: 4 },
+  { t: '差 20 倍', en: '20x difference', c: 'hot', a: 4 },
+  { cx: 1, t: '倒數就在卡片上：<span class="good">cache 50m left</span>，綠燈，安心寫', en: 'Countdown on the card: 50m left, green', a: 4 },
+  { cx: 2, t: '去開了個會，剩 <span class="warn">20 分鐘</span>，轉黃', en: 'One meeting later: 20 minutes, yellow', a: 4 },
+  { cx: 3, t: '最後 3 分鐘：<span class="hot">紅色，一閃一閃催你</span>', en: 'Last 3 minutes: red and blinking', a: 4 },
+  { cx: 4, t: '沒趕上，<span class="dim">cache expired</span>，下一段重付 <span class="hot">2 倍</span>', en: 'Missed it: expired, next turn pays 2x', a: 4 },
+
+  // ── 第五幕 · 深淵(6:50–8:40)─────────────────────────
+  { t: '再深一層', en: 'One level deeper', a: 5 },
+  { t: '模型有個秘密', en: 'Models have a secret', c: 'long', a: 5 },
+  { t: '<span class="popgood">Smart Zone</span>', a: 5 },
+  { t: 'context 淺：又快又準', en: 'Shallow context: fast and sharp', c: 'long', a: 5 },
+  { t: '<span class="pophot">Dumb Zone</span>', a: 5 },
+  { t: 'context 塞滿：<br>變笨、變慢、開始出錯', en: 'Stuffed context: slower, dumber, error-prone', c: 'long', a: 5 },
+  { ac: [1, 8], t: '不分工的 session：全都自己來，context 一直墊高', en: 'No delegation: context keeps piling up', a: 5 },
+  { ac: [8, 15], t: '60%…70%…80%，還在漲', en: '60%... 70%... 80%... still climbing', a: 5 },
+  { ac: [15, 21], t: '進入 <span class="pophot">dumb zone</span>，紅點：tool call 開始失敗', en: 'Into the dumb zone: tool calls start failing', a: 5 },
+  { ac: [21, 21], t: '你沒理它，一路聊到 <span class="hot">95%</span>', en: 'Ignore it, and you ride to 95%', a: 5 },
+  { ac: [21, 22], t: '<span class="hot">auto compact</span>：摔回 15%，cache <span class="hot">全滅</span>，重新付錢', en: 'Auto-compact: down to 15%, cache wiped, pay again', a: 5 },
+  { ac: [22, 26], t: '然後……又開始爬', en: 'And the climb starts over', a: 5 },
+  { t: '分工給 subagent<br>留在 <span class="popgood">smart zone</span>', en: 'Delegate to subagents, stay in the smart zone', c: 'long', a: 5 },
+  { t: 'Subagent 亂舞，誰生了誰？', en: 'Subagent chaos: who spawned whom?', c: 'long', a: 5 },
+  { v: 8, t: '泳道時間軸：main 與子代理，<span class="accent">像讀樂譜</span>', en: 'Swimlane timeline: read it like a score', a: 5 },
+  { t: '不過，分工也要<span class="accent">選對模型</span>', en: 'But delegation needs the right model', c: 'long', a: 5 },
+  { mc: 1, t: '<span class="good">選對模型</span>：縮時重播：一片綠，快進快出', en: 'Right model: all green, in and out fast', a: 5 },
+  { mc: 2, t: '<span class="hot">選錯模型</span>：失敗率一下就上來，<span class="hot">紅 bar 越拖越長</span>', en: 'Wrong model: failures spike, red bars drag on', a: 5 },
+  { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', en: 'Fail, retry: slower, pricier, worse', a: 5 },
+
+  // ── 第六幕 · 歸返(8:40–9:20)─────────────────────────
+  { t: '回到二月底<br>那個問題', en: 'Back to that February question', c: 'long', a: 6 },
+  { t: '上限被什麼吃掉？', en: 'What was eating the limit?', c: 'long', a: 6 },
+  { t: '行前簡報 · 過期的 cache<br>塞爆的 context · 選錯的模型', en: 'Briefing tax, expired cache, stuffed context, wrong model', c: 'long', a: 6 },
+  { v: 11, t: '現在，<span class="accent">全都看得見</span>', en: 'Now you can see all of it', a: 6 },
+  { t: 'X 光照得出病灶', en: 'An X-ray reveals the lesion', c: 'long', a: 6 },
+  { t: '治不了病', en: 'It cannot cure', c: 'long hot', a: 6 },
+  { t: '開刀的判斷<br>在<span class="accent">你</span>手上', en: 'The call to operate is yours', c: 'long', a: 6 },
+
+  // ── 終幕(9:20–10:00)CTA ─────────────────────
+  { t: '總之，<br>平常用 Agent<br>先掛上 <span class="accent">ccxray</span>', en: 'Bottom line: run your agents through ccxray', c: 'long', a: 7 },
+  { t: 'npx ccxray claude', c: 'code', a: 7, copy: 'npx ccxray claude' },
+  { t: '<span class="accent">看見</span>，然後<span class="good">決定</span>', en: 'See, then decide', c: 'long', a: 7 },
+  { t: '謝謝<span class="sub en">Thank you</span><span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 7 },
+  { t: '你可以在 X 找到我<span class="sub en">Find me on X</span><span class="sub">x.com/lis186 ・ github.com/lis186/ccxray（⭐ 歡迎）</span><div class="qrwrap"><img src="' + IMG.qrx + '" alt="QR code: x.com/lis186"></div>', c: 'long', a: 7, copy: 'https://github.com/lis186/ccxray' },
+];
+
+let i = 0, timer = null;
+const stageEl = document.getElementById('stage');
+const actEl = document.getElementById('act');
+const barEl = document.getElementById('bar');
+const counterEl = document.getElementById('counter');
+
+// ── 講者配速(15 分鐘)──────────────────────────────
+// 各幕起點的目標秒數;幕內逐頁線性內插。T 鍵顯示/隱藏。
+const PACE = [0, 90, 160, 270, 450, 600, 750, 810];   // 序幕..終幕 起點
+const PACE_END = 870;                                   // 終幕結束(留 30s 緩衝)
+const _actStart = ACTS.map((_, a) => S.findIndex(x => x.a === a));
+function paceTarget(k) {
+  const a = S[k].a;
+  const start = _actStart[a];
+  const next = a + 1 < ACTS.length ? _actStart[a + 1] : S.length;
+  const t1 = a + 1 < PACE.length ? PACE[a + 1] : PACE_END;
+  return PACE[a] + (k - start) / Math.max(1, next - start) * (t1 - PACE[a]);
+}
+let paceT0 = null, paceOn = false;
+const paceEl = document.getElementById('pace');
+const _mmss = v => Math.floor(v / 60) + ':' + String(Math.floor(v % 60)).padStart(2, '0');
+function paceRender() {
+  if (!paceOn) return;
+  const el = paceT0 == null ? 0 : (Date.now() - paceT0) / 1000;
+  const tgt = paceTarget(i);
+  const d = el - tgt;   // 正 = 落後
+  paceEl.textContent = _mmss(el) + ' / 目標 ' + _mmss(tgt) + '(' + (d >= 0 ? '+' : '−') + _mmss(Math.abs(d)) + ')';
+  paceEl.style.color = d <= 0 ? '#7ee787' : d <= 30 ? '#e3b341' : '#ff7b72';
+}
+setInterval(paceRender, 1000);
+function togglePace() {
+  paceOn = !paceOn;
+  paceEl.style.display = paceOn ? 'block' : 'none';
+  paceRender();
+}
+
+function show(n) {
+  i = Math.max(0, Math.min(S.length - 1, n));
+  if (paceT0 == null && i > 0) paceT0 = Date.now();   // 第一次翻頁開錶
+  paceRender();
+  const s = S[i];
+  if (s.dv) {
+    const badge = s.step ? '<span class="step">STEP ' + s.step + '/' + VIZ_STEPS + '</span>' : '';
+    const capHtml = '<div class="vcap">' + badge + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
+    const tour = s.tour || 'main';
+    const root = stageEl.querySelector('#dvroot');
+    if (root && root.dataset.tour === tour) {
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = dvSceneHTML(s.dv, tour) + capHtml + '<div class="vnote">' + (TOURS[tour].note || NOTE) + '</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    dvApply(s.dv, tour);
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  if (s.mc) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 10/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
+    const root = stageEl.querySelector('#mcroot');
+    if (root) {
+      mcApply(s.mc);
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = mcSceneHTML(s.mc) + capHtml + '<div class="vnote">真實 session birds-eye overview · 縮時重播</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    mcApply(s.mc);
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  if (s.ac) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 9/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
+    const root = stageEl.querySelector('#acroot');
+    if (root) {
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = acSceneHTML(s.ac[0]) + capHtml + '<div class="vnote">實際 render 逐格重播（示範資料）</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    acPlay(s.ac[0], s.ac[1]);
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  acStop();
+  if (s.cx) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 7/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
+    const root = stageEl.querySelector('#cxroot');
+    if (root) {
+      cxApply(s.cx);
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = cxSceneHTML(s.cx) + capHtml + '<div class="vnote">' + NOTE + '</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  if (s.sc) {
+    const capHtml = '<div class="vcap"><span class="step">STEP 1/' + VIZ_STEPS + '</span>' + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>';
+    const root = stageEl.querySelector('#pxroot');
+    if (root) {
+      // 前一頁也是分鏡:不重建,元素以 transition 延伸到新狀態
+      pxApply(s.sc);
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = pxSceneHTML(s.sc) + capHtml + '<div class="vnote">架構示意</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
+  const el = document.createElement('div');
+  if (s.v) {
+    el.className = 'vizslide';
+    el.innerHTML = renderViz(s.v) +
+      '<div class="vcap">' + (s.nostep ? '' : '<span class="step">STEP ' + s.v + '/' + VIZ_STEPS + '</span>') + s.t + (s.en ? '<div class="vcapen">' + s.en + '</div>' : '') + '</div>' +
+      (s.v > 1 ? '<div class="vnote">' + NOTE + '</div>' : '');
+  } else {
+    el.className = 'slide' + (s.c ? ' ' + s.c : '');
+    el.innerHTML = s.t + (s.en ? '<span class="sub en">' + s.en + '</span>' : '');
+    if (s.copy) {
+      const btn = document.createElement('button');
+      btn.className = 'copybtn';
+      btn.textContent = '⧉';
+      btn.title = '複製指令';
+      btn.onclick = ev => { ev.stopPropagation(); copyText(s.copy, btn); };
+      el.appendChild(btn);
+    }
+  }
+  stageEl.replaceChildren(el);
+  actEl.textContent = ACTS[s.a];
+  barEl.style.width = ((i + 1) / S.length * 100) + '%';
+  counterEl.textContent = (i + 1) + ' / ' + S.length;
+  try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+}
+function next() { show(i + 1); }
+function prev() { show(i - 1); }
+// code 頁複製按鈕:講者現場示範、聽眾開同一份簡報照做,零打字零打錯
+function copyText(text, btn) {
+  const done = ok => {
+    btn.textContent = ok ? '✓' : '✗';
+    btn.classList.toggle('ok', ok);
+    setTimeout(() => { btn.textContent = '⧉'; btn.classList.remove('ok'); }, 1400);
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (_) {}
+    ta.remove(); done(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => done(true), fallback);
+  } else fallback();
+}
+
+function toggleAuto() {
+  if (timer) { clearInterval(timer); timer = null; }
+  else { timer = setInterval(() => { if (i >= S.length - 1) toggleAuto(); else next(); }, 6000); }
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { e.preventDefault(); next(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); prev(); }
+  else if (e.key === 'Home') show(0);
+  else if (e.key === 'End') show(S.length - 1);
+  else if (e.key === 'a' || e.key === 'A') toggleAuto();
+  else if (e.key === 'd' || e.key === 'D') window.open('http://localhost:5577', '_blank');
+  else if (e.key === 't' || e.key === 'T') togglePace();
+});
+document.addEventListener('click', e => {
+  if (e.target.closest('.slide.code')) return;   // code 頁開放選字/複製,不觸發翻頁
+  (e.clientX < window.innerWidth * 0.25) ? prev() : next();
+});
+let touchX = null;
+document.addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (touchX === null) return;
+  const dx = e.changedTouches[0].clientX - touchX;
+  if (dx < -30) next(); else if (dx > 30) prev();
+  touchX = null;
+}, { passive: true });
+
+let start = 0;
+try { start = (parseInt(location.hash.slice(1), 10) - 1) || 0; } catch (_) {}
+show(start);
+</script>
+</body>
+</html>
