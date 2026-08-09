@@ -75,8 +75,10 @@
   .slide .accent, .slide .hot, .slide .good, .slide .warn, .slide .dim,
   .vcap .accent, .vcap .hot, .vcap .good, .vcap .warn, .vcap .dim { color: inherit; }
   .slide.accent, .slide.hot, .slide.good, .slide.warn, .slide.dim { color: #e6edf3; }
-  /* 例外:owner 指定可跳色的字(自介頁名字) */
+  /* 例外:owner 指定可跳色的字(自介頁名字;Smart/Dumb Zone 綠紅) */
   .slide .pop { color: #22d3ee; }
+  .slide .popgood, .vcap .popgood { color: #86efac; }
+  .slide .pophot,  .vcap .pophot  { color: #ff8a80; }
   .slide .sub.subbig { font-size: .42em; }
   .accent { color: #22d3ee; }
   .hot    { color: #ff7b72; }
@@ -696,17 +698,17 @@ const S = [
   // ── 第五幕 · 深淵(6:50–8:40)─────────────────────────
   { t: '再深一層', a: 5 },
   { t: '模型有個秘密', c: 'long', a: 5 },
-  { t: 'Smart Zone', c: 'good', a: 5 },
+  { t: '<span class="popgood">Smart Zone</span>', a: 5 },
   { t: 'context 淺：又快又準', c: 'long', a: 5 },
-  { t: 'Dumb Zone', c: 'hot', a: 5 },
+  { t: '<span class="pophot">Dumb Zone</span>', a: 5 },
   { t: 'context 塞滿：<br>變笨、變慢、開始出錯', c: 'long', a: 5 },
   { ac: [1, 8], t: '不分工的 session：全都自己來，context 一直墊高', a: 5 },
   { ac: [8, 15], t: '60%…70%…80%，還在漲', a: 5 },
-  { ac: [15, 21], t: '進入 <span class="hot">dumb zone</span>，紅點：tool call 開始失敗', a: 5 },
+  { ac: [15, 21], t: '進入 <span class="pophot">dumb zone</span>，紅點：tool call 開始失敗', a: 5 },
   { ac: [21, 21], t: '你沒理它，一路聊到 <span class="hot">95%</span>', a: 5 },
   { ac: [21, 22], t: '<span class="hot">auto compact</span>：摔回 15%，cache <span class="hot">全滅</span>，重新付錢', a: 5 },
   { ac: [22, 26], t: '然後……又開始爬', a: 5 },
-  { t: '分工給 subagent<br>留在 <span class="good">smart zone</span>', c: 'long', a: 5 },
+  { t: '分工給 subagent<br>留在 <span class="popgood">smart zone</span>', c: 'long', a: 5 },
   { t: 'Subagent 亂舞，誰生了誰？', c: 'long', a: 5 },
   { v: 8, t: '泳道時間軸：main 與子代理，<span class="accent">像讀樂譜</span>', a: 5 },
   { t: '不過，分工也要<span class="accent">選對模型</span>', c: 'long', a: 5 },
