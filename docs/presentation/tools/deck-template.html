@@ -137,6 +137,24 @@
   .shot.crop   { max-height: 56vh; }
   .shot.croptall { max-height: 62vh; }
 
+  /* 第三幕開場:dashboard 導覽分鏡(#dvroot,七頁同 DOM)。
+     鏡頭語言「總—分」:完整畫面 → 圈出注意區(其餘壓暗)→ 放大該區,
+     三組循環(topbar / columns / timeline)。同一張全圖做 zoom,
+     不切裁片,空間關係不斷裂。 */
+  .dvviewport {
+    width: 88vw; aspect-ratio: 16 / 9; overflow: hidden; position: relative;
+    border: 1px solid #30363d; border-radius: 8px; background: #0d1117;
+    box-shadow: 0 0 0 1px #22d3ee55, 0 0 44px #22d3ee2e, 0 12px 40px #00000088;
+  }
+  .dvzoom { width: 100%; height: 100%; transform-origin: 0 0; transition: transform .95s cubic-bezier(.33,0,.15,1); position: relative; }
+  .dvzoom img { width: 100%; height: 100%; display: block; }
+  .dvhl {
+    position: absolute; border: 3px solid #22d3ee; border-radius: 8px;
+    box-shadow: 0 0 0 200vmax rgba(3, 6, 10, .6);
+    opacity: 0; pointer-events: none;
+    transition: opacity .5s ease, left .8s cubic-bezier(.33,0,.15,1), top .8s cubic-bezier(.33,0,.15,1), width .8s cubic-bezier(.33,0,.15,1), height .8s cubic-bezier(.33,0,.15,1);
+  }
+
   /* STEP 1:架構分鏡(唯一的非截圖視覺)。
      連續五頁共用同一個 #pxroot——翻頁只換 scene-N class,元素靠 CSS
      transition 平移/縮放延伸,不重建 DOM,節奏不中斷。 */
@@ -271,10 +289,6 @@ const ACTS = [
 
 // 內嵌的真實截圖(ccxray v2.3.0,合成示範資料實拍;build-deck.mjs 產生)
 const IMG = {
-  topbar: '{{IMG:crop-topbar}}',
-  projects: '{{IMG:crop-projects}}',
-  sessions: '{{IMG:crop-sessions}}',
-  steps: '{{IMG:crop-steps}}',
   agentcard: '{{IMG:crop-agentcard}}',
   usagemo: '{{IMG:crop-usage-monthly}}',
   usageday: '{{IMG:crop-usage-daily}}',
@@ -357,6 +371,56 @@ function pxApply(k) {
   logs.innerHTML = k >= 5 ? pxLogsHTML() : '';
 }
 
+// ── 第三幕 dashboard 導覽分鏡:全圖 → 圈選 → 放大(同一張全圖 zoom)──
+const DV_REGIONS = {
+  top:   { x: 0,     y: 0,      w: 1,      h: 0.0711 },
+  cols:  { x: 0,     y: 0.0711, w: 0.275,  h: 0.2989 },
+  steps: { x: 0.425, y: 0.3333, w: 0.5744, h: 0.6344 },
+};
+// 每頁狀態:hl = 圈選區;z = 放大區(帶 scale 上限,避免超採樣過度)
+const DV_STATES = [
+  {},                              // dv1 全圖
+  { hl: 'top' },                   // dv2 圈 topbar
+  { z: 'top', s: 1.9, cx: 0.19 },  // dv3 放大 topbar(聚焦左側分頁列)
+  { hl: 'cols' },                  // dv4 拉回、圈 columns
+  { z: 'cols', s: 3.0 },           // dv5 放大 columns
+  { hl: 'steps' },                 // dv6 拉回、圈 timeline
+  { z: 'steps', s: 1.48 },         // dv7 放大 timeline
+];
+function dvSceneHTML(k) {
+  return '<div id="dvroot" class="dvviewport"><div class="dvzoom">' +
+    '<img src="' + IMG.full + '" alt="">' +
+    '<div class="dvhl"></div>' +
+  '</div></div>';
+}
+function dvApply(k) {
+  const st = DV_STATES[k - 1];
+  const root = stageEl.querySelector('#dvroot');
+  const zoom = root.querySelector('.dvzoom');
+  const hl = root.querySelector('.dvhl');
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  if (st.z) {
+    const r = DV_REGIONS[st.z];
+    const S = st.s;
+    const cx = st.cx != null ? st.cx : r.x + r.w / 2;
+    const cy = st.cy != null ? st.cy : r.y + r.h / 2;
+    const tx = clamp(50 / S - cx * 100, 100 / S - 100, 0);
+    const ty = clamp(50 / S - cy * 100, 100 / S - 100, 0);
+    zoom.style.transform = 'scale(' + S + ') translate(' + tx + '%, ' + ty + '%)';
+    hl.style.opacity = '0';
+  } else {
+    zoom.style.transform = 'scale(1)';
+    if (st.hl) {
+      const r = DV_REGIONS[st.hl];
+      hl.style.left = (r.x * 100) + '%';
+      hl.style.top = (r.y * 100) + '%';
+      hl.style.width = (r.w * 100) + '%';
+      hl.style.height = (r.h * 100) + '%';
+      hl.style.opacity = '1';
+    } else hl.style.opacity = '0';
+  }
+}
+
 // ── STEP 10 模型選擇對照分鏡 ──
 function mcSceneHTML(k) {
   return '<div id="mcroot" class="mcscene mc-' + k + '"><div class="mcrow">' +
@@ -417,9 +481,6 @@ function cxApply(k) {
 function renderViz(s) {
   const img = (k, cls, style) => '<div class="shot ' + (cls || '') + '"' + (style ? ' style="' + style + '"' : '') + '><img src="' + IMG[k] + '" alt=""></div>';
   switch (s) {
-    case 2: return '<div class="shots">' + img('topbar', 'hero', 'width:88vw') + '</div>';
-    case 3: return '<div class="shots">' + img('projects', '', 'width:24vw;min-width:230px') + img('sessions', 'hero', 'width:26vw;min-width:250px') + '</div>';
-    case 4: return '<div class="shots">' + img('steps', 'hero croptall', 'width:44vw;min-width:340px') + '</div>';
     case 5: return '<div class="shots">' + img('tax', 'hero', 'width:88vw;max-height:64vh') + '</div>';
     case 6: return '<div class="shots">' + img('agentcard', '', 'width:22vw;min-width:220px;max-height:60vh') +
       '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
@@ -479,13 +540,17 @@ const S = [
 
   // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
   { t: '打開 Dashboard', c: 'long', a: 3 },
-  { v: 2, t: 'Dashboard · Usage · System Prompt，一個入口', a: 3 },
-  { v: 3, t: '專案 → Session，<span class="accent">即時更新</span>——context 一眼看見', a: 3 },
-  { v: 4, t: '每一步工具、思考、對話，<span class="accent">逐字可見</span>', a: 3 },
+  { dv: 1, t: '這，就是完整的畫面', a: 3 },
+  { dv: 2, t: '先看最上面', a: 3 },
+  { dv: 3, t: 'Dashboard · Usage · System Prompt，一個入口', a: 3, step: 2 },
+  { dv: 4, t: '左邊——專案與 session', a: 3 },
+  { dv: 5, t: '<span class="accent">即時更新</span>——context、成本、cache 一眼看見', a: 3, step: 3 },
+  { dv: 6, t: '右邊——這個 session 的每一步', a: 3 },
+  { dv: 7, t: '工具、思考、對話，<span class="accent">逐字可見</span>', a: 3, step: 4 },
   { t: '現在——', a: 3 },
   { t: '照第一張片子', c: 'long accent', a: 3 },
   { t: '對話<span class="hot">還沒開始</span>的那一刻', c: 'long', a: 3 },
-  { t: 'LIVE<span class="sub">剛剛開的 server 已經熱好了——按 D 開 dashboard<br>點一個新 session → turn #1 → System（不順就翻下一頁，截圖已備好）</span>', c: 'hot', a: 3 },
+  { t: 'LIVE<span class="sub">剛剛指令一跑，dashboard 已經自己打開了——切回那個分頁<br>點一個新 session → turn #1 → System（不順就翻下一頁，截圖已備好）</span>', c: 'hot', a: 3 },
   { v: 5, t: '你只說了一句話——<span class="hot">22K token 已經先付了</span>', a: 3 },
   { t: 'system prompt · tools<br>MCP · skills · 記憶', c: 'long', a: 3 },
   { t: '全是<span class="hot">房租</span>，開口前就扣', c: 'long', a: 3 },
@@ -552,6 +617,28 @@ const counterEl = document.getElementById('counter');
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
   const s = S[i];
+  if (s.dv) {
+    const badge = s.step ? '<span class="step">STEP ' + s.step + '/' + VIZ_STEPS + '</span>' : '';
+    const capHtml = '<div class="vcap">' + badge + s.t + '</div>';
+    const root = stageEl.querySelector('#dvroot');
+    if (root) {
+      const capEl = stageEl.querySelector('.vcap');
+      const tmp = document.createElement('template');
+      tmp.innerHTML = capHtml;
+      capEl.replaceWith(tmp.content.firstChild);
+    } else {
+      const wrap = document.createElement('div');
+      wrap.className = 'pxwrap';
+      wrap.innerHTML = dvSceneHTML(s.dv) + capHtml + '<div class="vnote">' + NOTE + '</div>';
+      stageEl.replaceChildren(wrap);
+    }
+    dvApply(s.dv);
+    actEl.textContent = ACTS[s.a];
+    barEl.style.width = ((i + 1) / S.length * 100) + '%';
+    counterEl.textContent = (i + 1) + ' / ' + S.length;
+    try { location.hash = i ? '#' + (i + 1) : ''; } catch (_) {}
+    return;
+  }
   if (s.mc) {
     const capHtml = '<div class="vcap"><span class="step">STEP 10/' + VIZ_STEPS + '</span>' + s.t + '</div>';
     const root = stageEl.querySelector('#mcroot');
