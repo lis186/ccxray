@@ -228,24 +228,120 @@ let ts2 = mainStart + Math.round(spanMs * 0.55);
   ts2 += (elapsed + 14) * 1000;
 });
 
-// ── Session D:全新 session 的第一句話(context 稅示範:read=0、先付 ~21K)──
+// ── Session D:故意裝好裝滿的全新 session(context 稅震撼示範)──
+// 28 個 MCP server(全部 0 次呼叫)+ 22 個 custom skills + plugin skills
+// + CLAUDE.md + auto memory:開口第一句就付 ~100K token ≈ $1(fable-5 費率)。
+// token 尺寸用與 server/helpers.js 相同的 char/4 估算器對齊。
 {
+  const est = s => Math.ceil(s.length / 4);
+  const FILL = [
+    'Accepts owner, resource and operation-specific parameters; returns structured JSON.',
+    'Use pagination whenever possible with batches of 5-10 items to conserve context.',
+    'Always call the corresponding profile endpoint first to understand current user permissions.',
+    'Supports cursor-based pagination; pass the next_cursor from a previous response to fetch the following page.',
+    'Rate limits apply per workspace; on 429 back off exponentially starting at 2 seconds.',
+    'Timestamps are ISO 8601 in UTC; convert to the local timezone before displaying to the user.',
+    'Destructive variants require an explicit confirm flag and are rejected without it.',
+    'Large responses are truncated at 50 KB; request narrower filters instead of raising the limit.',
+    'Field selectors let you request only the attributes you need; prefer them over full-object reads.',
+    'Errors return a machine-readable code plus a human-readable message; surface both when reporting failures.',
+  ];
+  const padTo = (base, chars) => { let s = base, i = 0; while (s.length < chars) s += ' ' + FILL[i++ % FILL.length]; return s.slice(0, chars); };
+  // [plugin, [tool names…], 總 token 預算]
+  const MCPS = [
+    ['gmail', ['search_messages','read_message','send_message','create_draft','list_labels','apply_label','archive_message','trash_message','list_threads','get_thread','get_attachment','mark_read','batch_modify'], 6500],
+    ['google-calendar', ['list_events','get_event','create_event','update_event','delete_event','find_free_time','list_calendars','respond_to_event','quick_add'], 5400],
+    ['google-drive', ['search_files','get_file','upload_file','create_folder','share_file','list_revisions','export_file','move_file'], 2700],
+    ['github', ['create_pull_request','list_issues','get_file_contents','search_code','merge_pull_request','add_issue_comment','create_branch','list_commits','get_pull_request_diff','request_review','update_issue','list_workflows','get_job_logs','rerun_workflow','create_release','search_repositories','fork_repository','get_me'], 8100],
+    ['slack', ['post_message','search_messages','list_channels','upload_file','add_reaction','get_thread'], 2400],
+    ['notion', ['query_database','create_page','append_blocks','search','get_page'], 2100],
+    ['figma', ['get_file_nodes','export_images'], 1400],
+    ['linear', ['create_issue','search_issues','update_issue'], 1600],
+    ['jira', ['create_issue','search_jql','transition_issue','add_comment'], 2200],
+    ['asana', ['create_task','list_projects'], 1200],
+    ['airtable', ['list_records','create_record'], 1300],
+    ['stripe', ['list_charges','create_invoice','list_customers'], 1900],
+    ['vercel', ['list_deployments','get_deployment','deploy','get_build_logs'], 2100],
+    ['salesforce', ['soql_query','update_record','describe_object'], 2000],
+    ['hubspot', ['list_contacts','create_deal','log_activity'], 1800],
+    ['zapier', ['run_zap','list_zaps'], 1400],
+    ['canva', ['create_design','export_design','list_brand_kits'], 1800],
+    ['excalidraw', ['create_scene','export_png'], 1200],
+    ['posthog', ['run_insight','list_dashboards'], 1300],
+    ['gitlab', ['create_merge_request','list_pipelines'], 1200],
+    ['ga4', ['run_report','list_properties'], 1200],
+    ['google-docs', ['create_doc','append_text'], 1200],
+    ['calendly', ['list_scheduled_events','create_link'], 1100],
+    ['zoho-crm', ['search_records','create_record'], 1100],
+    ['zoho-books', ['list_invoices','create_invoice'], 1100],
+    ['zoho-desk', ['list_tickets','reply_ticket'], 1100],
+    ['adobe-express', ['create_asset','export_asset'], 1300],
+    ['monday', ['list_boards','create_item'], 1200],
+  ];
+  const mcpTools = MCPS.flatMap(([plugin, names, tok]) => {
+    const perToolChars = Math.max(220, Math.floor(tok * 4 / names.length) - 240);
+    return names.map(n => ({
+      name: 'mcp__' + plugin + '__' + n,
+      description: padTo(n.replace(/_/g, ' ') + ' via the ' + plugin + ' connector.', perToolChars),
+      input_schema: { type: 'object', properties: { query: { type: 'string', description: 'Primary argument for this operation.' } } },
+    }));
+  });
+  const CORE_NAMES = ['Bash','Read','Edit','Write','Glob','Grep','Task','WebFetch','WebSearch','NotebookEdit','TaskCreate','TaskUpdate','TaskList','Skill','AskUserQuestion','EnterPlanMode','ExitPlanMode','KillShell','BashOutput','ListMcpResources','ReadMcpResource','TodoWrite','MultiEdit','LS','Agent','Monitor','SendMessage','ListAgents'];
+  const coreTools = CORE_NAMES.map(n => ({
+    name: n,
+    description: padTo('The ' + n + ' tool. Use this tool to perform ' + n.toLowerCase() + ' operations with the documented parameter contract, permission model, sandboxing behaviour, retry semantics and output-format guarantees.', 2100),
+    input_schema: { type: 'object', properties: { input: { type: 'string', description: 'Primary argument. Prefer absolute paths; quote paths containing spaces.' }, options: { type: 'object', description: 'Operation-specific options controlling timeout, verbosity and output limits.' } } },
+  }));
+  const dTools = [...coreTools, ...mcpTools];
+  fs.writeFileSync(SHARED + '/tools_beef77.json', JSON.stringify(dTools));
+
+  const SKILL_NAMES = ['pdf','docx','xlsx','pptx','code-review','security-review','release','dataviz','deep-reading-analyst','brand-guidelines','meeting-notes','okr-tracker','competitor-scan','user-interview','a11y-audit','i18n-check','api-docs','sql-tuning','incident-writeup','growth-experiments','roadmap-sync','press-release'];
+  const dSkills = '# User\'s Current Configuration\n\nThe following custom skills are enabled for this user and may be invoked with the Skill tool:\n' +
+    SKILL_NAMES.map(n => '- ' + n + ': ' + padTo('Structured workflow for ' + n.replace(/-/g, ' ') + ' deliverables.', 2300)).join('\n');
+  const dMcpList = '\n\n**Configured MCP servers and their tools:**\n\n' +
+    MCPS.map(([plugin, names]) => '## ' + plugin + ' (mcp__' + plugin + '__*): ' + names.length + ' tools').join('\n') +
+    '\n(Tool definitions are provided in the tools list.)';
+  const dPluginSkills = '\n\n**Available plugin skills (loaded from installed plugins):**\n' +
+    ['superpowers:brainstorming','superpowers:writing-coach','superpowers:slide-doctor','workflows:release-train','workflows:incident-review','workflows:sprint-report','marketing:campaign-brief','marketing:seo-audit','design:critique','design:tokens-sync','data:notebook-runner','data:metric-tree','sales:call-summary','legal:contract-scan'].map(n =>
+      '- ' + n + ' — ' + padTo('multi-step guided workflow.', 1650)).join('\n');
+  const dSettings = '\n\n**User\'s settings.json configuration:**\n' + padTo('{ "permissions": { "allow": ["Bash(npm:*)"] }, "hooks": {}, "model": "claude-fable-5" }', 4800);
+  const dEnv = '\n\n# Environment\n<env>\nWorking directory: /home/justin/dev/side-quest\nIs directory a git repo: Yes\nPlatform: darwin\nOS Version: macOS 15.5\nToday\'s date: 2026-08-09\nModel: claude-fable-5\n</env>';
+  const dMemory = '\n\n# Auto memory\nYou have a persistent, file-based memory system at ~/.claude/memory. MEMORY.md is loaded into every session. ' + padTo('Topic files hold project conventions, testing isolation rules, verification principles, deploy runbooks, code style preferences, meeting cadences and stakeholder notes accumulated across sessions.', 8600);
+  const dSysArr = [
+    { type: 'text', text: 'x-anthropic-internal cc_version=2.0.14; platform=darwin' },
+    { type: 'text', text: 'You are Claude Code, Anthropic\'s official CLI for Claude.' },
+    { type: 'text', text: CORE_A + dSkills + dMcpList + dPluginSkills + dSettings + dEnv + dMemory + TONE },
+  ];
+  fs.writeFileSync(SHARED + '/sys_d00d42.json', JSON.stringify(dSysArr));
+
+  const globalMd = padTo('Always answer in 繁體中文. Prefer concise replies. Never commit without an explicit ask.', 3600);
+  const projMd = padTo('# side-quest\nVitest + Playwright. Tests must be isolated: no shared fixtures, no network. Flaky tests get quarantined behind a tag, never deleted.', 6000);
+  const dFirstMsg = '<system-reminder>\nAs you answer the user\'s questions, you can use the following context:\nContents of /home/justin/.claude/CLAUDE.md (user\'s private global instructions for all projects):\n' + globalMd + '\nContents of /home/justin/dev/side-quest/CLAUDE.md (project instructions, checked into the codebase):\n' + projMd + '\n</system-reminder>\n嗨,幫我看一個 flaky test';
+
   const td = now - 6 * 60000;
-  const usage = { input_tokens: 21600, output_tokens: 520, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  const DM = 'claude-fable-5';
+  const sysTok = dSysArr.reduce((s, b) => s + est(b.text), 0);
+  const toolsTok = est(JSON.stringify(dTools));
+  const msgTok = est(dFirstMsg);
+  const inTok = sysTok + toolsTok + msgTok + 90;   // 90 ≈ wrapper/格式雜項
+  const usage = { input_tokens: inTok, output_tokens: 520, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   const id = mkId(td);
   writeTurn(id,
-    { model: 'claude-sonnet-4-6', max_tokens: 16000, messages: [user('嗨,幫我看一個 flaky test')], sysHash: 'f3a9c1', toolsHash: '7d2e88' },
-    sseFor('msg_01FRESH0', 'claude-sonnet-4-6', usage, [{ t: 'text', text: '好,先看測試檔。' }, { t: 'tool', id: 'fr0', name: 'Read', input: { file_path: 'test/flaky.test.js' } }], false));
+    { model: DM, max_tokens: 16000, messages: [user(dFirstMsg)], sysHash: 'd00d42', toolsHash: 'beef77' },
+    sseFor('msg_01FRESH0', DM, usage, [{ t: 'text', text: '好,先看測試檔。' }, { t: 'tool', id: 'fr0', name: 'Read', input: { file_path: 'test/flaky.test.js' } }], false));
   lines.push({
     id, ts: mkTs(td), sessionId: 'c0ffee99-3333-4444-5555-666677778888', provider: 'anthropic', agent: 'claude',
-    model: 'claude-sonnet-4-6', msgCount: 1, toolCount: 28,
+    model: DM, msgCount: 1, toolCount: dTools.length,
     toolCalls: { Read: 1 }, turnToolCalls: { Read: 1 }, isSubagent: false, sessionInferred: false,
-    cwd: '/home/justin/dev/side-quest', receivedAt: td, elapsed: '8.6',
-    usage, cost: { cost: price('claude-sonnet-4-6', usage) }, maxContext: 200000,
+    cwd: '/home/justin/dev/side-quest', receivedAt: td, elapsed: '12.4',
+    usage, cost: { cost: price(DM, usage) }, maxContext: 200000,
     stopReason: 'end_turn', title: 'Look at a flaky test', status: 200,
-    sysHash: 'f3a9c1', toolsHash: '7d2e88', coreHash: 'aa11bb', agentKey: 'orchestrator', agentLabel: 'Claude Code',
+    sysHash: 'd00d42', toolsHash: 'beef77', coreHash: 'aa11bb', agentKey: 'orchestrator', agentLabel: 'Claude Code',
     convId: 'fresh001', responseId: 'msg_01FRESH0', isSSE: true,
   });
+  console.log('session D 稅單: sys', sysTok, '+ tools', toolsTok, '+ msg', msgTok,
+    '→ In', inTok, '=', (inTok / 200000 * 100).toFixed(1) + '% of 200K | turn cost $' + price(DM, usage).toFixed(4),
+    '| MCP servers', MCPS.length, '| tools', dTools.length);
 }
 
 // ── Session B:webapp,sonnet-4-6,45K/200K(≈22%)──
