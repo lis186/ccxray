@@ -152,6 +152,8 @@ Session cards show Claude Code's generated titles (e.g. `Fix login button on mob
 
 Each session card shows a weather emoji (☀️ sunny → ⛈️ stormy) that condenses eight health signals — context pressure, compaction, truncation, stuck loops, latency drift, error rate, and cache efficiency — into a single at-a-glance indicator. Hover for a breakdown. See [`docs/weather.md`](docs/weather.md) for signal definitions and scoring.
 
+> **Note (2.3.1):** Weather display is **off by default** while the tool-failure signals are being fixed. Computation continues in the background. Append `?weather=on` to the dashboard URL to inspect, or set `localStorage.setItem('ccxray-weather-display', 'on')` to persist. See [docs/weather.md](docs/weather.md#display-toggle-231) for details.
+
 ### Plan Detection
 
 ccxray auto-detects your subscription plan (Pro vs Max 5x vs Max 20x) by reading Anthropic's `cache_creation` usage fields — no configuration needed. Cache TTL and quota thresholds use the detected plan. Override with `CCXRAY_PLAN` if auto-detection gets it wrong.

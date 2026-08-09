@@ -62,6 +62,33 @@ The hover overlay shows different content depending on the level:
 - **Cloudy / Rainy / Stormy**: active factors sorted by severity, plus an
   action line linking to the relevant turns (when available).
 
+## Display toggle (2.3.1)
+
+Weather display is **off by default** since 2.3.1. Computation and
+persistence continue running — `sessions.json` keeps accumulating weather
+objects — but the six render sites (session card emoji, lane label, turn
+tooltip Health row, agent card emoji, turn card emoji, and Turn failure
+rate) are gated behind `weatherDisplayEnabled()`.
+
+The tool-failure signals (`stuck`, `error_cluster`, `error_cumulative`,
+`tool_failure`) are currently unreliable across all data paths: Anthropic
+proxy reads cumulative `toolFail` (~16× inflation), imported data has no
+signal (74% of entries), and the OpenAI-wire decoders have known defects.
+See #484 for details. The remaining five signals (`ctx_pressure`,
+`compaction_scar`, `truncation`, `latency_drift`, `cache_health`) are
+unaffected but share the same emoji, so the entire display is hidden.
+
+### Toggling on for inspection
+
+- **URL param** (one-shot, survives SPA navigation via load-time latch):
+  append `?weather=on` to the dashboard URL.
+- **localStorage** (persistent per browser):
+  `localStorage.setItem('ccxray-weather-display', 'on')` in the console,
+  then reload. Set to `'off'` or remove the key to revert.
+- **Program default**: `_weatherDisplayDefault` in `public/weather.js`.
+  Will be flipped to `true` once the tool-failure signals are fixed and
+  recalibrated (#487).
+
 ## Cold-start immunity
 
 Each signal has a minimum-turns requirement to avoid firing on incomplete
