@@ -246,7 +246,7 @@
 <script>
 // 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
 const ACTS = [
-  '序幕 · 除夕夜',
+  '序幕 · 大爆發',
   '第一幕 · 上限之謎',
   '第二幕 · 打造 X 光機',
   '第三幕 · 第一張 X 光片',
@@ -419,15 +419,20 @@ function renderViz(s) {
 
 // t: 內容(HTML) / c: 額外 class / a: 幕別索引 / v: 視覺步驟 / sc/cx/ac/mc: 分鏡
 const S = [
-  // ── 序幕 · 除夕夜(0:00–0:50)自介融入故事 ─────────────
-  { t: '過年', a: 0 },
-  { t: '別人在圍爐', c: 'long', a: 0 },
-  { t: '我在 vibe coding', c: 'long', a: 0 },
+  // ── 序幕 · 大爆發(0:00–1:00)自介融入故事 ─────────────
+  { t: '2026 年<br>2 月底', c: 'long', a: 0 },
+  { t: '新模型<br>爆發性登場', c: 'long', a: 0 },
+  { t: '能力,大躍進', c: 'long', a: 0 },
+  { t: 'Claude,來到<br><span class="accent">Opus 4.6</span>', c: 'long', a: 0 },
+  { t: '我很好奇——', c: 'long', a: 0 },
+  { t: 'Agent 到底<br>能做到什麼?', c: 'long', a: 0 },
+  { t: '於是,不斷嘗試', c: 'long', a: 0 },
   { t: 'Claude usage limit reached.<span class="sub">Your limit will reset at 11:00 PM.</span>', c: 'code', a: 0 },
   { t: '撞牆', c: 'hot', a: 0 },
   { t: '又撞', c: 'hot', a: 0 },
   { t: '再撞', c: 'hot', a: 0 },
-  { t: '大家好,我是 <span class="accent">Justin</span><span class="sub">一個不服氣的工程師</span>', c: 'long', a: 0 },
+  { t: '為什麼?<br><span class="dim">不知道</span>', c: 'long', a: 0 },
+  { t: '大家好,我是 <span class="accent">阿修</span><span class="sub">一個想看清楚的工程師</span>', c: 'long', a: 0 },
 
   // ── 第一幕 · 上限之謎(0:50–1:40)────────────────────
   { t: '上限', a: 1 },
@@ -437,7 +442,7 @@ const S = [
   { t: '每一次呼叫,多重?', c: 'long', a: 1 },
   { t: '你不知道', c: 'long', a: 1 },
   { t: '上限知道', c: 'long hot', a: 1 },
-  { t: '所以,過年假期<br>我造了一台——', c: 'long', a: 1 },
+  { t: '所以我動手<br>造了一台——', c: 'long', a: 1 },
 
   // ── 第二幕 · 打造 X 光機(1:40–2:50)──────────────────
   { t: '<span class="accent">cc</span>xray', a: 2 },
@@ -498,7 +503,7 @@ const S = [
   { mc: 3, t: '失敗 → 重試 → <span class="hot">更久、更貴、更差</span>', a: 5 },
 
   // ── 第六幕 · 歸返(8:40–9:20)─────────────────────────
-  { t: '回到那個除夕夜', c: 'long', a: 6 },
+  { t: '回到二月底<br>那個問題', c: 'long', a: 6 },
   { t: '上限被什麼吃掉?', c: 'long', a: 6 },
   { t: '房租 · 斷掉的 cache<br>塞爆的 context · 選錯的模型', c: 'long', a: 6 },
   { v: 11, t: '現在,<span class="accent">全都看得見</span>', a: 6 },
