@@ -228,7 +228,7 @@ let ts2 = mainStart + Math.round(spanMs * 0.55);
   ts2 += (elapsed + 14) * 1000;
 });
 
-// ── Session D:全新 session 的第一句話(隱形房租示範:read=0、先付 ~21K)──
+// ── Session D:全新 session 的第一句話(context 稅示範:read=0、先付 ~21K)──
 {
   const td = now - 6 * 60000;
   const usage = { input_tokens: 21600, output_tokens: 520, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };

@@ -372,35 +372,57 @@ function pxApply(k) {
 }
 
 // ── 第三幕 dashboard 導覽分鏡:全圖 → 圈選 → 放大(同一張全圖 zoom)──
-const DV_REGIONS = {
-  top:   { x: 0,     y: 0,      w: 1,      h: 0.0711 },
-  cols:  { x: 0,     y: 0.0711, w: 0.275,  h: 0.2989 },
-  steps: { x: 0.425, y: 0.3333, w: 0.5744, h: 0.6344 },
+const TOURS = {
+  main: {
+    imgKey: 'full',
+    regions: {
+      top:   { x: 0,     y: 0,      w: 1,      h: 0.0711 },
+      cols:  { x: 0,     y: 0.0711, w: 0.275,  h: 0.2989 },
+      steps: { x: 0.425, y: 0.3333, w: 0.5744, h: 0.6344 },
+    },
+    states: [
+      {},
+      { hl: 'top' },
+      { z: 'top', s: 1.9, cx: 0.19 },
+      { hl: 'cols' },
+      { z: 'cols', s: 3.0 },
+      { hl: 'steps' },
+      { z: 'steps', s: 1.48 },
+    ],
+  },
+  // STEP 5 操作路徑:點第 1 個 turn → 看 Cost → 看 System 分塊(可以省的)
+  tax: {
+    imgKey: 'tax',
+    regions: {
+      turnbar: { x: 0.4175, y: 0.1789, w: 0.5894, h: 0.0811 },
+      cost:    { x: 0.275,  y: 0.4189, w: 0.15,   h: 0.1178 },
+      system:  { x: 0.425,  y: 0.2578, w: 0.5744, h: 0.7089 },
+    },
+    states: [
+      {},
+      { hl: 'turnbar' },
+      { hl: 'cost' },
+      { z: 'cost', s: 3.4 },
+      { hl: 'system' },
+      { z: 'system', s: 1.34 },
+    ],
+  },
 };
-// 每頁狀態:hl = 圈選區;z = 放大區(帶 scale 上限,避免超採樣過度)
-const DV_STATES = [
-  {},                              // dv1 全圖
-  { hl: 'top' },                   // dv2 圈 topbar
-  { z: 'top', s: 1.9, cx: 0.19 },  // dv3 放大 topbar(聚焦左側分頁列)
-  { hl: 'cols' },                  // dv4 拉回、圈 columns
-  { z: 'cols', s: 3.0 },           // dv5 放大 columns
-  { hl: 'steps' },                 // dv6 拉回、圈 timeline
-  { z: 'steps', s: 1.48 },         // dv7 放大 timeline
-];
-function dvSceneHTML(k) {
-  return '<div id="dvroot" class="dvviewport"><div class="dvzoom">' +
-    '<img src="' + IMG.full + '" alt="">' +
+function dvSceneHTML(k, tour) {
+  return '<div id="dvroot" class="dvviewport" data-tour="' + tour + '"><div class="dvzoom">' +
+    '<img src="' + IMG[TOURS[tour].imgKey] + '" alt="">' +
     '<div class="dvhl"></div>' +
   '</div></div>';
 }
-function dvApply(k) {
-  const st = DV_STATES[k - 1];
+function dvApply(k, tour) {
+  const T = TOURS[tour];
+  const st = T.states[k - 1];
   const root = stageEl.querySelector('#dvroot');
   const zoom = root.querySelector('.dvzoom');
   const hl = root.querySelector('.dvhl');
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
   if (st.z) {
-    const r = DV_REGIONS[st.z];
+    const r = T.regions[st.z];
     const S = st.s;
     const cx = st.cx != null ? st.cx : r.x + r.w / 2;
     const cy = st.cy != null ? st.cy : r.y + r.h / 2;
@@ -411,7 +433,7 @@ function dvApply(k) {
   } else {
     zoom.style.transform = 'scale(1)';
     if (st.hl) {
-      const r = DV_REGIONS[st.hl];
+      const r = T.regions[st.hl];
       hl.style.left = (r.x * 100) + '%';
       hl.style.top = (r.y * 100) + '%';
       hl.style.width = (r.w * 100) + '%';
@@ -481,7 +503,6 @@ function cxApply(k) {
 function renderViz(s) {
   const img = (k, cls, style) => '<div class="shot ' + (cls || '') + '"' + (style ? ' style="' + style + '"' : '') + '><img src="' + IMG[k] + '" alt=""></div>';
   switch (s) {
-    case 5: return '<div class="shots">' + img('tax', 'hero', 'width:88vw;max-height:64vh') + '</div>';
     case 6: return '<div class="shots">' + img('agentcard', '', 'width:22vw;min-width:220px;max-height:60vh') +
       '<div style="display:flex;flex-direction:column;gap:2vh;width:30vw;min-width:280px">' +
       img('usagemo', 'hero') + img('usageday', 'hero') + '</div>' +
@@ -551,10 +572,16 @@ const S = [
   { t: '照第一張片子', c: 'long accent', a: 3 },
   { t: '對話<span class="hot">還沒開始</span>的那一刻', c: 'long', a: 3 },
   { t: 'LIVE<span class="sub">剛剛指令一跑，dashboard 已經自己打開了——切回那個分頁<br>點一個新 session → turn #1 → System（不順就翻下一頁，截圖已備好）</span>', c: 'hot', a: 3 },
-  { v: 5, t: '你只說了一句話——<span class="hot">22K token 已經先付了</span>', a: 3 },
+  { dv: 1, tour: 'tax', t: '剛剛 LIVE 的畫面——回放一次', a: 3 },
+  { dv: 2, tour: 'tax', t: '第一步：點 main lane 的<span class="accent">第 1 個 turn</span>', a: 3 },
+  { dv: 3, tour: 'tax', t: '第二步：看 <span class="accent">Cost</span>', a: 3 },
+  { dv: 4, tour: 'tax', t: '你只說了一句話——<span class="hot">In 22K</span>，$0.07', a: 3, step: 5 },
+  { dv: 5, tour: 'tax', t: '第三步：這 22K，是誰吃的？', a: 3 },
+  { dv: 6, tour: 'tax', t: '<span class="warn">[user]</span> 佔大頭——skills、MCP、記憶，<span class="good">都修剪得動</span>', a: 3 },
   { t: 'system prompt · tools<br>MCP · skills · 記憶', c: 'long', a: 3 },
-  { t: '全是<span class="hot">房租</span>，開口前就扣', c: 'long', a: 3 },
-  { t: '而且——大部分<br>是<span class="warn">你自己裝的</span>', c: 'long', a: 3 },
+  { t: '全是<span class="hot">行前簡報</span>——<br>你開口前，它得先讀完', c: 'long', a: 3 },
+  { t: '而且大部分<br>是<span class="warn">你自己塞進去的</span>', c: 'long', a: 3 },
+  { t: '用不到的——<br><span class="good">就刪掉</span>', c: 'long', a: 3 },
 
   // ── 第四幕 · 試煉之路(5:00–6:50)─────────────────────
   { t: '試煉一', c: 'dim', a: 4 },
@@ -592,7 +619,7 @@ const S = [
   // ── 第六幕 · 歸返(8:40–9:20)─────────────────────────
   { t: '回到二月底<br>那個問題', c: 'long', a: 6 },
   { t: '上限被什麼吃掉？', c: 'long', a: 6 },
-  { t: '房租 · 斷掉的 cache<br>塞爆的 context · 選錯的模型', c: 'long', a: 6 },
+  { t: '行前簡報 · 斷掉的 cache<br>塞爆的 context · 選錯的模型', c: 'long', a: 6 },
   { v: 11, t: '現在，<span class="accent">全都看得見</span>', a: 6 },
   { t: 'X 光照得出病灶', c: 'long', a: 6 },
   { t: '治不了病', c: 'long hot', a: 6 },
@@ -620,8 +647,9 @@ function show(n) {
   if (s.dv) {
     const badge = s.step ? '<span class="step">STEP ' + s.step + '/' + VIZ_STEPS + '</span>' : '';
     const capHtml = '<div class="vcap">' + badge + s.t + '</div>';
+    const tour = s.tour || 'main';
     const root = stageEl.querySelector('#dvroot');
-    if (root) {
+    if (root && root.dataset.tour === tour) {
       const capEl = stageEl.querySelector('.vcap');
       const tmp = document.createElement('template');
       tmp.innerHTML = capHtml;
@@ -629,10 +657,10 @@ function show(n) {
     } else {
       const wrap = document.createElement('div');
       wrap.className = 'pxwrap';
-      wrap.innerHTML = dvSceneHTML(s.dv) + capHtml + '<div class="vnote">' + NOTE + '</div>';
+      wrap.innerHTML = dvSceneHTML(s.dv, tour) + capHtml + '<div class="vnote">' + NOTE + '</div>';
       stageEl.replaceChildren(wrap);
     }
-    dvApply(s.dv);
+    dvApply(s.dv, tour);
     actEl.textContent = ACTS[s.a];
     barEl.style.width = ((i + 1) / S.length * 100) + '%';
     counterEl.textContent = (i + 1) + ' / ' + S.length;
