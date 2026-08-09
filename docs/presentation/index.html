@@ -48,7 +48,7 @@
   }
   .slide { position: relative; }
   .slide.code { user-select: text; cursor: text; }
-  .slide.code.longcode { font-size: clamp(0.95rem, 3.1vw, 2.7rem); }
+  .slide.code.longcode { font-size: clamp(1.1rem, 3.1vw, 2.7rem); }
   .copybtn {
     position: absolute; top: .28em; right: .32em;
     font-size: .32em; line-height: 1;
@@ -129,8 +129,9 @@
     animation: pop .22s ease-out;
   }
   .vcap {
-    font-size: clamp(1.1rem, 3vw, 2rem);
+    font-size: clamp(1.3rem, 3.4vw, 2.6rem);
     font-weight: 900; letter-spacing: .03em;
+    order: -1;   /* 場地調整:標題一律置於畫面上方(銀幕下緣易被前排遮擋) */
   }
   .vcap .step {
     display: inline-block; margin-right: .8em;
@@ -140,8 +141,8 @@
     font-variant-numeric: tabular-nums;
   }
   .vnote {
-    font-size: clamp(.65rem, 1.5vmin, .85rem);
-    color: #55606b; letter-spacing: .1em; margin-top: -1.6vh;
+    font-size: clamp(.75rem, 1.7vmin, 1rem);
+    color: #6b7680; letter-spacing: .1em; margin-top: -1.6vh;
   }
   .shots { display: flex; gap: 2vw; align-items: flex-start; justify-content: center; max-width: 94vw; }
   .shot {
