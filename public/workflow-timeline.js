@@ -1564,7 +1564,7 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   // text above; the fullTitle <title> only covers the name row's box.
   var _lw = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
   svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
-  if (_lw) svg += '<foreignObject x="' + (WF_LABEL_W - 22) + '" y="16" width="20" height="14"><span xmlns="http://www.w3.org/1999/xhtml" style="font-size:11px;cursor:default" data-weather=\'' + wfEsc(JSON.stringify(_lw)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + _lw.emoji + '</span></foreignObject>';
+  if (_lw && weatherDisplayEnabled()) svg += '<foreignObject x="' + (WF_LABEL_W - 22) + '" y="16" width="20" height="14"><span xmlns="http://www.w3.org/1999/xhtml" style="font-size:11px;cursor:default" data-weather=\'' + wfEsc(JSON.stringify(_lw)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + _lw.emoji + '</span></foreignObject>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
   // Hashes go into innerHTML data attributes — accept hex only (index.ndjson
@@ -2589,7 +2589,7 @@ function _wfShowTooltip(e, t, lane) {
   var ttWeather = typeof assessWeather === 'function' ? assessWeather([t], { sessionWindow: _wfTurnWindow(t) }) : null;
   _wfTooltipEl.innerHTML =
     row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + (t._wfSeqStitched ? ' · seq-stitched' : '') + lockLbl)
-    + (ttWeather ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
+    + (ttWeather && weatherDisplayEnabled() ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
     + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
     // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
@@ -2822,7 +2822,7 @@ function wfRenderAgentCard(lane) {
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" title="' + wfEsc(acModelLbl.title) + '" style="background:' + color + '22;color:' + color + '">' + wfEsc(acModelLbl.text) + '</span></div>';
   // INVARIANT: main/subagent label must use _wfIsMainLane, not lane.spawnParent
   // — see docs/decisions/0007-wf-is-main-lane-not-spawn-parent.md
-  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + (laneWeather ? ' · <span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(laneWeather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + laneWeather.emoji + '</span>' : '') + '</div>';
+  html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + (laneWeather && weatherDisplayEnabled() ? ' · <span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(laneWeather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + laneWeather.emoji + '</span>' : '') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
   html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
@@ -2867,7 +2867,7 @@ function wfRenderAgentCard(lane) {
     // #438: only show failure rate when we have per-turn data (toolFailKnownTurns > 0).
     // Legacy sessions with only cumulative toolFail show nothing — 0% would be a lie,
     // and the old cumulative rate was a 44× Lie Factor.
-    if (sess && (sess.toolFailKnownTurns || 0) > 0) {
+    if (sess && (sess.toolFailKnownTurns || 0) > 0 && weatherDisplayEnabled()) {
       var failRate = (sess.toolFailTurns || 0) / sess.toolFailKnownTurns * 100;
       html += '<div class="wf-ac-row"><span title="Turns with 1+ failed tool result, not individual call failures">Turn failure rate</span><span class="wf-ac-val">' + failRate.toFixed(1) + '%</span></div>';
     }
@@ -2935,7 +2935,7 @@ function wfRenderTurnCard(turnEntry) {
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
   var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry], { sessionWindow: _wfTurnWindow(turnEntry) }) : null;
-  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
+  html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' && weatherDisplayEnabled() ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
   var laneName = lane ? lane.name : '?';

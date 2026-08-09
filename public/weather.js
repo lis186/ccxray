@@ -486,4 +486,34 @@ function _dismissWeatherOverlay() {
   if (_weatherOverlayTitleEl && _weatherOverlaySavedTitle != null) { _weatherOverlayTitleEl.title = _weatherOverlaySavedTitle; _weatherOverlayTitleEl = null; _weatherOverlaySavedTitle = null; }
 }
 
-if (typeof module !== 'undefined') module.exports = { assessWeather };
+// #484: weather display toggle — default OFF until tool-failure signals are trustworthy.
+// Computation and persistence keep running; only these render gates are affected.
+// localStorage tri-state: 'on' | 'off' | null (null = program default = OFF).
+// URL param ?weather=1 (also on/off) overrides for one-shot inspection.
+var _WEATHER_STORAGE_KEY = 'ccxray-weather-display';
+var _weatherDisplayDefault = false;
+
+// Latch URL override at load time so syncUrlFromState (miller-columns.js:2183)
+// cannot silently wash it away on the first navigation.
+var _weatherUrlOverride = (function() {
+  try {
+    if (typeof URLSearchParams === 'undefined' || typeof location === 'undefined') return null;
+    var v = new URLSearchParams(location.search).get('weather');
+    if (v === '1' || v === 'on') return true;
+    if (v === '0' || v === 'off') return false;
+  } catch (_) {}
+  return null;
+})();
+
+function weatherDisplayEnabled() {
+  if (_weatherUrlOverride !== null) return _weatherUrlOverride;
+  if (typeof localStorage === 'undefined') return _weatherDisplayDefault;
+  try {
+    var stored = localStorage.getItem(_WEATHER_STORAGE_KEY);
+    if (stored === 'on') return true;
+    if (stored === 'off') return false;
+  } catch (_) {}
+  return _weatherDisplayDefault;
+}
+
+if (typeof module !== 'undefined') module.exports = { assessWeather, weatherDisplayEnabled };
