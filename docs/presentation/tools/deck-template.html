@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ccxray — 高橋流簡報(10 分鐘)</title>
+<title>ccxray</title>
 <style>
   /* 高橋流:一頁一句、字要夠大、節奏要快。
      視覺層:九步真實介面截圖(ccxray v2.3.0 實拍),逐步揭開完整 dashboard;
@@ -96,6 +96,13 @@
     position: fixed; bottom: 2.2vmin; left: 3vmin;
     font-size: clamp(.65rem, 1.5vmin, .9rem);
     color: #55606b;
+  }
+  /* T 鍵切換的講者配速器:經過時間 vs 該頁目標時間(15 分鐘配速) */
+  #pace {
+    position: fixed; bottom: 2.2vmin; left: 50%; transform: translateX(-50%);
+    font-family: "SF Mono", ui-monospace, Consolas, monospace;
+    font-size: clamp(.7rem, 1.7vmin, 1rem); font-variant-numeric: tabular-nums;
+    color: #7ee787; display: none; z-index: 40; letter-spacing: .05em;
   }
   #bar {
     position: fixed; left: 0; bottom: 0; height: 4px; width: 0;
@@ -279,7 +286,8 @@
 <div id="stage"><div class="slide" id="slide"></div></div>
 <div id="bar"></div>
 <div id="counter"></div>
-<div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放</div>
+<div id="hint">← → / 空白鍵 / 點擊翻頁 · A 自動播放 · T 配速</div>
+<div id="pace"></div>
 <script>
 // 英雄旅程八幕(第二敘事層)。每張投影片標記所屬幕別。
 const ACTS = [
@@ -653,7 +661,6 @@ const S = [
   { t: '用不到的——<br><span class="good">就刪掉</span>', c: 'long', a: 3 },
 
   // ── 第四幕 · 試煉之路(5:00–6:50)─────────────────────
-  { t: '試煉一', c: 'dim', a: 4 },
   { t: '錢去哪了？', c: 'long hot', a: 4 },
   { dv: 1, tour: 'cost', t: '回到 dashboard——帳，<span class="good">一直都在記</span>', a: 4 },
   { dv: 2, tour: 'cost', t: '每個<span class="accent">專案</span>——多少錢，卡片上就有', a: 4 },
@@ -663,7 +670,6 @@ const S = [
   { dv: 6, tour: 'cost', t: '再點進 <span class="accent">turn</span>——單回合成本', a: 4 },
   { dv: 7, tour: 'cost', t: '這一回合 <span class="hot">$0.5464</span>——In 380K，全記著', a: 4 },
   { v: 6, nostep: 1, t: '切到 Usage——<span class="good">每天花多少，也記著</span>', a: 4 },
-  { t: '試煉二', c: 'dim', a: 4 },
   { t: 'Cache <span class="hot">過期</span><br>重建 2× · 命中 0.1×', c: 'long', a: 4 },
   { dv: 1, tour: 'price', t: '不信？<span class="accent">官方價目表</span>', a: 4 },
   { dv: 2, tour: 'price', t: '就看我們用的 <span class="accent">Claude Fable 5</span>', a: 4 },
@@ -718,8 +724,40 @@ const actEl = document.getElementById('act');
 const barEl = document.getElementById('bar');
 const counterEl = document.getElementById('counter');
 
+// ── 講者配速(15 分鐘)──────────────────────────────
+// 各幕起點的目標秒數;幕內逐頁線性內插。T 鍵顯示/隱藏。
+const PACE = [0, 90, 160, 270, 450, 600, 750, 810];   // 序幕..終幕 起點
+const PACE_END = 870;                                   // 終幕結束(留 30s 緩衝)
+const _actStart = ACTS.map((_, a) => S.findIndex(x => x.a === a));
+function paceTarget(k) {
+  const a = S[k].a;
+  const start = _actStart[a];
+  const next = a + 1 < ACTS.length ? _actStart[a + 1] : S.length;
+  const t1 = a + 1 < PACE.length ? PACE[a + 1] : PACE_END;
+  return PACE[a] + (k - start) / Math.max(1, next - start) * (t1 - PACE[a]);
+}
+let paceT0 = null, paceOn = false;
+const paceEl = document.getElementById('pace');
+const _mmss = v => Math.floor(v / 60) + ':' + String(Math.floor(v % 60)).padStart(2, '0');
+function paceRender() {
+  if (!paceOn) return;
+  const el = paceT0 == null ? 0 : (Date.now() - paceT0) / 1000;
+  const tgt = paceTarget(i);
+  const d = el - tgt;   // 正 = 落後
+  paceEl.textContent = _mmss(el) + ' / 目標 ' + _mmss(tgt) + '(' + (d >= 0 ? '+' : '−') + _mmss(Math.abs(d)) + ')';
+  paceEl.style.color = d <= 0 ? '#7ee787' : d <= 30 ? '#e3b341' : '#ff7b72';
+}
+setInterval(paceRender, 1000);
+function togglePace() {
+  paceOn = !paceOn;
+  paceEl.style.display = paceOn ? 'block' : 'none';
+  paceRender();
+}
+
 function show(n) {
   i = Math.max(0, Math.min(S.length - 1, n));
+  if (paceT0 == null && i > 0) paceT0 = Date.now();   // 第一次翻頁開錶
+  paceRender();
   const s = S[i];
   if (s.dv) {
     const badge = s.step ? '<span class="step">STEP ' + s.step + '/' + VIZ_STEPS + '</span>' : '';
@@ -888,6 +926,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'End') show(S.length - 1);
   else if (e.key === 'a' || e.key === 'A') toggleAuto();
   else if (e.key === 'd' || e.key === 'D') window.open('http://localhost:5577', '_blank');
+  else if (e.key === 't' || e.key === 'T') togglePace();
 });
 document.addEventListener('click', e => {
   if (e.target.closest('.slide.code')) return;   // code 頁開放選字/複製,不觸發翻頁
