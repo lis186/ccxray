@@ -46,7 +46,19 @@
     border-radius: .18em;
     padding: .5em .7em;
   }
+  .slide.code { position: relative; user-select: text; cursor: text; }
   .slide.code.longcode { font-size: clamp(0.95rem, 3.1vw, 2.7rem); }
+  .copybtn {
+    position: absolute; top: .28em; right: .32em;
+    font-size: .32em; line-height: 1;
+    background: #0d1a29; color: #8b98a5;
+    border: 1px solid #1d2d40; border-radius: .3em;
+    padding: .35em .55em; cursor: pointer;
+    font-family: inherit; user-select: none;
+    transition: color .15s, border-color .15s;
+  }
+  .copybtn:hover { color: #22d3ee; border-color: #22d3ee; }
+  .copybtn.ok { color: #7ee787; border-color: #1d4428; }
   .slide .sub {
     display: block;
     margin-top: .6em;
@@ -454,15 +466,15 @@ const S = [
   { t: '<span class="accent">cc</span>xray', a: 2 },
   { t: '給 AI session<br>照 <span class="accent">X 光</span> 的機器', c: 'long', a: 2 },
   { t: '開機，兩行', c: 'long', a: 2 },
-  { t: 'npx ccxray --port 5577<span class="sub">先把 X 光機開起來——proxy 和 dashboard 就緒</span>', c: 'code longcode', a: 2 },
-  { t: 'ANTHROPIC_BASE_URL=<br>http://localhost:5577 claude<span class="sub">再讓 Claude Code 從這裡過——大家最常忘的就是這行</span>', c: 'code longcode', a: 2 },
+  { t: 'npx ccxray --port 5577<span class="sub">先把 X 光機開起來——proxy 和 dashboard 就緒</span>', c: 'code longcode', a: 2, copy: 'npx ccxray --port 5577' },
+  { t: 'ANTHROPIC_BASE_URL=<br>http://localhost:5577 claude<span class="sub">再讓 Claude Code 從這裡過——大家最常忘的就是這行</span>', c: 'code longcode', a: 2, copy: 'ANTHROPIC_BASE_URL=http://localhost:5577 claude' },
   { sc: 1, t: '你的 <span class="accent">Claude Code</span>', a: 2 },
   { sc: 2, t: '每一次對話，直奔 Anthropic API', a: 2 },
   { sc: 3, t: '中間——<span class="dim">本來什麼都沒有</span>', a: 2 },
   { sc: 4, t: '<span class="accent">ccxray</span>，站進來', a: 2 },
   { sc: 5, t: '每個 request、每個 response，<span class="accent">全部記下來</span>', a: 2 },
   { t: '嫌兩行麻煩？', c: 'long', a: 2 },
-  { t: 'npx ccxray claude<span class="sub">一行版——proxy、base URL、啟動 claude，全包</span>', c: 'code', a: 2 },
+  { t: 'npx ccxray claude<span class="sub">一行版——proxy、base URL、啟動 claude，全包</span>', c: 'code', a: 2, copy: 'npx ccxray claude' },
   { t: '零設定 · 不改你的習慣', c: 'long accent', a: 2 },
 
   // ── 第三幕 · 第一張 X 光片(2:50–5:00)含 LIVE DEMO ────
@@ -473,7 +485,7 @@ const S = [
   { t: '現在——', a: 3 },
   { t: '照第一張片子', c: 'long accent', a: 3 },
   { t: '對話<span class="hot">還沒開始</span>的那一刻', c: 'long', a: 3 },
-  { t: 'LIVE<span class="sub">按 D 開 dashboard → 點一個新 session → turn #1 → System<br>（demo 不順就直接翻下一頁，截圖已備好）</span>', c: 'hot', a: 3 },
+  { t: 'LIVE<span class="sub">剛剛開的 server 已經熱好了——按 D 開 dashboard<br>點一個新 session → turn #1 → System（不順就翻下一頁，截圖已備好）</span>', c: 'hot', a: 3 },
   { v: 5, t: '你只說了一句話——<span class="hot">22K token 已經先付了</span>', a: 3 },
   { t: 'system prompt · tools<br>MCP · skills · 記憶', c: 'long', a: 3 },
   { t: '全是<span class="hot">房租</span>，開口前就扣', c: 'long', a: 3 },
@@ -523,10 +535,10 @@ const S = [
 
   // ── 終幕 · 處方箋(9:20–10:00)CTA ─────────────────────
   { t: '處方箋', c: 'accent', a: 7 },
-  { t: 'npx ccxray claude', c: 'code', a: 7 },
+  { t: 'npx ccxray claude', c: 'code', a: 7, copy: 'npx ccxray claude' },
   { t: '今晚睡前<br>給你的 agent 照一張 X 光', c: 'long', a: 7 },
   { t: 'PM 們——<br>把 Usage 頁丟進老闆的群組', c: 'long', a: 7 },
-  { t: 'github.com/lis186/ccxray<span class="sub">⭐ star · issues · PR 歡迎——還有 hub、delta 儲存、Codex/Grok 支援等你挖</span>', c: 'code', a: 7 },
+  { t: 'github.com/lis186/ccxray<span class="sub">⭐ star · issues · PR 歡迎——還有 hub、delta 儲存、Codex/Grok 支援等你挖</span>', c: 'code', a: 7, copy: 'https://github.com/lis186/ccxray' },
   { t: '<span class="accent">看見</span>，然後<span class="good">決定</span>', c: 'long', a: 7 },
   { t: '謝謝<span class="sub"><span class="accent">cc</span>xray — X-ray vision for AI agent sessions</span>', a: 7 },
 ];
@@ -636,6 +648,14 @@ function show(n) {
   } else {
     el.className = 'slide' + (s.c ? ' ' + s.c : '');
     el.innerHTML = s.t;
+    if (s.copy) {
+      const btn = document.createElement('button');
+      btn.className = 'copybtn';
+      btn.textContent = '⧉';
+      btn.title = '複製指令';
+      btn.onclick = ev => { ev.stopPropagation(); copyText(s.copy, btn); };
+      el.appendChild(btn);
+    }
   }
   stageEl.replaceChildren(el);
   actEl.textContent = ACTS[s.a];
@@ -645,6 +665,25 @@ function show(n) {
 }
 function next() { show(i + 1); }
 function prev() { show(i - 1); }
+// code 頁複製按鈕:講者現場示範、聽眾開同一份簡報照做,零打字零打錯
+function copyText(text, btn) {
+  const done = ok => {
+    btn.textContent = ok ? '✓' : '✗';
+    btn.classList.toggle('ok', ok);
+    setTimeout(() => { btn.textContent = '⧉'; btn.classList.remove('ok'); }, 1400);
+  };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (_) {}
+    ta.remove(); done(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => done(true), fallback);
+  } else fallback();
+}
+
 function toggleAuto() {
   if (timer) { clearInterval(timer); timer = null; }
   else { timer = setInterval(() => { if (i >= S.length - 1) toggleAuto(); else next(); }, 6000); }
@@ -659,6 +698,7 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'd' || e.key === 'D') window.open('http://localhost:5577', '_blank');
 });
 document.addEventListener('click', e => {
+  if (e.target.closest('.slide.code')) return;   // code 頁開放選字/複製,不觸發翻頁
   (e.clientX < window.innerWidth * 0.25) ? prev() : next();
 });
 let touchX = null;

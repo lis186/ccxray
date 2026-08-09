@@ -16,7 +16,14 @@
 | 六 · 歸返 | 8:40–9:20 | 回扣二月底那個問題:上限=房租+斷 cache+塞爆 context+選錯模型;X 光哲學 | 「治不了病」重擊 |
 | 終幕 · 處方箋 | 9:20–10:00 | CTA:npx 指令/「今晚照一張」/PM 丟老闆群組/repo+star | 醫療隱喻收束:X 光照完,處方箋自己開 |
 
-## LIVE DEMO(2:50 段內,約 90 秒)
+## LIVE DEMO(兩段式,總計約 100 秒)
+
+**第一段(第二幕 ~2:30,約 20 秒)**:講到「開機兩行」時,按投影片上的 ⧉ 複製按鈕
+把兩行指令貼進終端執行(現場示範「照著抄就會動」),然後立刻切回投影片繼續講
+架構分鏡——server 在背景暖機,不佔演講時間。
+**第二段(第三幕 ~4:20,約 80 秒)**:LIVE 頁按 `D` 回到已經熱好的 dashboard 做 turn #1 示範。
+
+## LIVE DEMO 細節
 
 - **內容**:還沒開始對話,MCP 工具描述、skills、system prompt、記憶就先吃掉 context。
   點一個**新 session 的 turn #1** → 右側 System 分塊:coreInstructions [anthropic] 只佔零頭,
@@ -26,8 +33,10 @@
   `node tools/gen-fixture.mjs /tmp/demo /tmp/demo-home && HOME=/tmp/demo-home CCXRAY_HOME=/tmp/demo ccxray --port 5577 --no-browser`
   (side-quest 專案的 c0ffee99 session 就是為此設計的乾淨範例)。
 - **Fallback**:demo 任何一步卡住,直接翻下一頁——STEP 5 就是同畫面截圖,講稿照走,零損傷。
-- **排練清單**:會前開好 server 分頁 ✓ 簡報 hash 會記頁碼(中斷可回)✓ `D` 鍵測過 ✓
-  投影機解析度下 System 分塊字體可讀 ✓
+- **複製按鈕**:五個指令/URL 頁右上有 ⧉(點擊複製、✓ 回饋、不觸發翻頁;code 頁可直接選字)。
+  聽眾開同一份簡報也能照按——「我做一遍,你們照著做」零打字零打錯。
+- **排練清單**:終端先開好、字體調大 ✓ 兩行指令現場貼上跑一次 ✓ 簡報 hash 記頁碼(切走可回)✓
+  `D` 鍵測過 ✓ 投影機解析度下 System 分塊字體可讀 ✓
 
 ## 給講者的其他鍵
 
