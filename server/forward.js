@@ -775,6 +775,9 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
       responseId: getParser('anthropic').extractResponseId(events),
       turnToolCalls: getParser('anthropic').extractTurnToolCalls(events),
+      // #486: per-turn tool_use ids from response, set here (not in buildEntryFields)
+      // because the non-SSE path doesn't pass response data to buildEntryFields.
+      turnToolCallIds: getParser('anthropic').extractAnthropicToolCallIds(events),
       edited: ctx.edited, editSummary: ctx.editSummary,
       tokens: null,
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
@@ -1076,6 +1079,8 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
         responseId: getParser('anthropic').extractResponseId(resData),
         turnToolCalls: getParser('anthropic').extractTurnToolCalls(resData),
+        // #486: per-turn tool_use ids from response (non-SSE path, resData is object)
+        turnToolCallIds: getParser('anthropic').extractAnthropicToolCallIds(resData),
         edited: ctx.edited, editSummary: ctx.editSummary,
         tokens: null,
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),

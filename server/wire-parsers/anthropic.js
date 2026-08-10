@@ -110,9 +110,13 @@ function buildEntryFields(ctx) {
     title: ctx.title || null,
     thinkingDuration: ctx.thinkingDuration ?? null,
     toolFail: ctx.toolFail != null ? ctx.toolFail : helpers.hasToolFail(parsedBody),
-    // #438: per-turn tool failure. Explicit false = checked, no failure (not legacy).
-    // undefined = legacy/not checked. Do NOT normalize false to undefined.
+    // #486: per-turn tool evidence. turnToolFail tri-state: true=failure,
+    // false=checked-clean, undefined=no tool_result in last user message.
+    // turnToolCallIds set at the entry literal level (forward.js) like turnToolCalls,
+    // because buildEntryFields doesn't receive response data on the non-SSE path.
+    // turnToolResults extracted from the request's last user message here.
     turnToolFail: helpers.hasToolFailLastTurn(parsedBody?.messages),
+    turnToolResults: helpers.extractAnthropicTurnToolResults(parsedBody?.messages),
     sysHash: ctx.sysHash || null,
     toolsHash: ctx.toolsHash || null,
     coreHash: ctx.coreHash || null,
@@ -223,11 +227,18 @@ function extractTurnToolCalls(resData) {
   return counts;
 }
 
+// #486: per-turn tool_use call ids from the response, keyed by id → name.
+// Matches the shape of helpers.extractOpenAIToolCallIds.
+function extractAnthropicToolCallIds(resData) {
+  return helpers.extractAnthropicToolCallIds(resData);
+}
+
 module.exports = {
   isNoiseRequest,
   extractUsage,
   extractResponseId,
   extractTurnToolCalls,
+  extractAnthropicToolCallIds,
   computeConvId,
   detectSession,
   buildEntryFields,
