@@ -197,6 +197,7 @@ describe('#438 turnToolFail backfill in rebuild-index', () => {
 
     const lines = readIndexLines();
     assert.equal(lines.find(l => l.id === idOrphanFail).turnToolFail, true, 'recovered orphan carries true');
-    assert.equal(lines.find(l => l.id === idOrphanClean).turnToolFail, false, 'recovered clean orphan carries explicit false');
+    // #486: no tool_result blocks → undefined (no-tools ≠ checked-clean)
+    assert.equal(lines.find(l => l.id === idOrphanClean).turnToolFail, undefined, 'recovered no-tool orphan carries undefined');
   });
 });

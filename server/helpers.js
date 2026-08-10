@@ -666,18 +666,70 @@ function hasToolFail(req) {
 // #438: per-turn tool failure — only checks the LAST user message (the current
 // turn's tool_result blocks), not the full cumulative history. hasToolFail scans
 // all messages and is infected by any prior failure (#427-class bug).
+// #486: tri-state — true=failure, false=checked-clean, undefined=no tool_result blocks.
+// undefined prevents conflation of "tools succeeded" with "no tools ran".
 function hasToolFailLastTurn(messages) {
-  if (!Array.isArray(messages)) return false;
+  if (!Array.isArray(messages)) return undefined;
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i]?.role !== 'user') continue;
     const content = messages[i].content;
-    if (!Array.isArray(content)) return false;
+    if (!Array.isArray(content)) return undefined;
+    let hasToolResult = false;
     for (const b of content) {
-      if (b?.type === 'tool_result' && b.is_error === true) return true;
+      if (b?.type === 'tool_result') {
+        hasToolResult = true;
+        if (b.is_error === true) return true;
+      }
     }
-    return false;
+    return hasToolResult ? false : undefined;
   }
-  return false;
+  return undefined;
+}
+
+// #486: extract tool_result evidence from the last user message (request side).
+// Returns [{callId, toolFail, eligible:true}] — all tool results, no Bash-only filter.
+// Anthropic has explicit is_error, so no output parsing needed.
+function extractAnthropicTurnToolResults(messages) {
+  if (!Array.isArray(messages)) return [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== 'user') continue;
+    const content = messages[i].content;
+    if (!Array.isArray(content)) return [];
+    const results = [];
+    for (const b of content) {
+      if (b?.type === 'tool_result') {
+        results.push({
+          callId: b.tool_use_id || null,
+          toolFail: b.is_error === true,
+          eligible: true,
+        });
+      }
+    }
+    return results;
+  }
+  return [];
+}
+
+// #486: extract tool_use call ids from the response (response side).
+// Returns {tool_use.id → tool name} matching the OpenAI extractOpenAIToolCallIds shape.
+function extractAnthropicToolCallIds(resData) {
+  const calls = {};
+  if (!resData) return calls;
+  if (Array.isArray(resData)) {
+    for (const ev of resData) {
+      if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
+        const id = ev.content_block.id;
+        if (id) calls[id] = ev.content_block.name || null;
+      }
+    }
+  } else if (resData.content) {
+    for (const b of resData.content) {
+      if (b.type === 'tool_use' && b.id) {
+        calls[b.id] = b.name || null;
+      }
+    }
+  }
+  return calls;
 }
 
 // ── Credential scanning ──────────────────────────────────────────────
@@ -1121,6 +1173,8 @@ module.exports = {
   extractToolResultSummary,
   extractFirstUserText,
   hasToolFail, hasToolFailLastTurn,
+  extractAnthropicTurnToolResults,
+  extractAnthropicToolCallIds,
   extractToolCalls,
   extractSkillCalls,
   extractOpenAIToolCalls,

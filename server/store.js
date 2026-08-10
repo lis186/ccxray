@@ -115,7 +115,8 @@ function _foldEntry(canonical, other) {
   // Tool/skill maps: per-key max union so a partial capture on one copy never
   // drops the other's keys (same response ⇒ equal in practice, but be robust).
   // Object maps only — a non-object shape (legacy array) falls back to fill-if-empty.
-  for (const k of ['toolCalls', 'skillCalls', 'turnToolCalls']) {
+  // #486: turnToolCallIds included (same {id→name} map shape).
+  for (const k of ['toolCalls', 'skillCalls', 'turnToolCalls', 'turnToolCallIds']) {
     const oc = other[k];
     if (oc == null) continue;
     const isMap = v => v && typeof v === 'object' && !Array.isArray(v);
@@ -166,10 +167,15 @@ function _foldEntry(canonical, other) {
   }
   // OR semantics — true if any copy saw it.
   if (other.toolFail) canonical.toolFail = true;
-  // #438: turnToolFail tri-state: undefined=legacy, false=checked-clean, true=failed.
+  // #438/#486: turnToolFail tri-state: undefined=no evidence, false=checked-clean, true=failed.
   // true dominates; false fills undefined; never downgrade true to false.
   if (other.turnToolFail === true) canonical.turnToolFail = true;
   else if (other.turnToolFail === false && canonical.turnToolFail === undefined) canonical.turnToolFail = false;
+  // #486: turnToolResults — array, fill-if-empty (same response ⇒ identical).
+  if (Array.isArray(other.turnToolResults) && other.turnToolResults.length > 0
+    && (!Array.isArray(canonical.turnToolResults) || canonical.turnToolResults.length === 0)) {
+    canonical.turnToolResults = other.turnToolResults;
+  }
   if (other.hasCredential) canonical.hasCredential = true;
   if (other.edited) {
     canonical.edited = true;

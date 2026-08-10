@@ -235,6 +235,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
   let enrichedTurnToolCalls = 0; // #427 legacy backfill count
   let enrichedTurnToolFail = 0; // #438 legacy backfill count
+  let enrichedTurnToolCallIds = 0; // #486 legacy backfill count
+  let enrichedTurnToolResults = 0; // #486 legacy backfill count
   // #345: stream lines — a recovered index can exceed Node's ~512MB single-string
   // limit, where readIndex() (readFile utf8) throws ERR_STRING_TOO_LONG.
   for await (const line of storage.readIndexLines()) {
@@ -267,22 +269,35 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); enrichedTurnToolCalls++; }
     }
-    // #438 add-only turnToolFail backfill: legacy lines predate the per-turn
-    // failure field (tri-state: undefined=legacy, false=checked-clean, true=
-    // failed). It derives from the REQUEST's last user message, so read
-    // _req.json directly — a delta line's stored tail normally ends with the
-    // turn's final user message. A delta slice with NO user message (e.g.
-    // assistant-prefill) cannot be evaluated — the real last-turn evidence is
-    // in the unspliced prefix; leave undefined rather than persist false.
+    // #486 add-only turnToolCallIds backfill: extract {tool_use.id → name} from
+    // _res.json. Same add-only, non-degrading pattern as turnToolCalls.
+    if (m.turnToolCallIds === undefined && m.provider !== 'openai') {
+      let tci = null;
+      try { tci = getParser('anthropic').extractAnthropicToolCallIds(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
+      if (tci && Object.keys(tci).length > 0) { m.turnToolCallIds = tci; outLine = JSON.stringify(m); enrichedTurnToolCallIds++; }
+    }
+    // #438/#486 add-only turnToolFail + turnToolResults backfill: derive from
+    // the REQUEST's last user message. turnToolFail tri-state: true=failure,
+    // false=checked-clean, undefined=no tool_result blocks.
+    // turnToolResults: [{callId, toolFail, eligible}] for all tool results.
+    // A delta slice with NO user message (assistant-prefill) cannot be
+    // evaluated — leave undefined rather than persist false/[].
     // Same add-only, non-degrading pattern as responseId/turnToolCalls.
-    if (m.turnToolFail === undefined && m.provider !== 'openai') {
+    if ((m.turnToolFail === undefined || m.turnToolResults === undefined) && m.provider !== 'openai') {
       try {
         const reqBody = JSON.parse(await storage.read(m.id, '_req.json'));
         const msgs = reqBody?.messages;
         if (Array.isArray(msgs) && msgs.length > 0 && msgs.some(m => m.role === 'user')) {
-          m.turnToolFail = helpers.hasToolFailLastTurn(msgs);
+          if (m.turnToolFail === undefined) {
+            m.turnToolFail = helpers.hasToolFailLastTurn(msgs);
+            enrichedTurnToolFail++;
+          }
+          if (m.turnToolResults === undefined) {
+            const results = helpers.extractAnthropicTurnToolResults(msgs);
+            m.turnToolResults = results; // [] for no-tool turns — marks as processed
+            if (results.length > 0) enrichedTurnToolResults++;
+          }
           outLine = JSON.stringify(m);
-          enrichedTurnToolFail++;
         }
       } catch { /* _req pruned → leave verbatim */ }
     }
@@ -385,6 +400,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     }
     let orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(events);
     if (orphanTurnToolCalls == null && rawResObj) orphanTurnToolCalls = getParser('anthropic').extractTurnToolCalls(rawResObj);
+    // #486: per-turn tool_use ids from the response
+    let orphanTurnToolCallIds = getParser('anthropic').extractAnthropicToolCallIds(events);
+    if ((!orphanTurnToolCallIds || !Object.keys(orphanTurnToolCallIds).length) && rawResObj) {
+      orphanTurnToolCallIds = getParser('anthropic').extractAnthropicToolCallIds(rawResObj);
+    }
 
     // Session attribution. Explicit metadata.session_id is authoritative (every
     // delta and main-session turn carries it). Otherwise the turn is a subagent /
@@ -443,6 +463,8 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       responseId: orphanResponseId,
       // #427: per-turn tool calls from the response (computed above, with non-SSE fallback)
       turnToolCalls: orphanTurnToolCalls,
+      // #486: per-turn tool_use ids from the response
+      turnToolCallIds: orphanTurnToolCallIds && Object.keys(orphanTurnToolCallIds).length ? orphanTurnToolCallIds : undefined,
       ...fields,
     };
     recovered.push({ id, line: buildIndexLine(entry) });
@@ -466,10 +488,12 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
   if (enrichedTurnToolCalls) log(`  backfilled turnToolCalls onto ${enrichedTurnToolCalls} legacy line(s) (#427)`);
   if (enrichedTurnToolFail) log(`  backfilled turnToolFail onto ${enrichedTurnToolFail} legacy line(s) (#438)`);
+  if (enrichedTurnToolCallIds) log(`  backfilled turnToolCallIds onto ${enrichedTurnToolCallIds} legacy line(s) (#486)`);
+  if (enrichedTurnToolResults) log(`  backfilled turnToolResults onto ${enrichedTurnToolResults} legacy line(s) (#486)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
   // rewritten lines must be flushed, so the write is gated on any change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0 || enrichedTurnToolFail > 0;
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0 || enrichedTurnToolFail > 0 || enrichedTurnToolCallIds > 0 || enrichedTurnToolResults > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
     return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };

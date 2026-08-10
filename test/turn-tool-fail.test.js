@@ -36,9 +36,9 @@ describe('#438 turnToolFail: per-turn failure from last user message', () => {
     assert.equal(hasToolFailLastTurn(messages), false);
   });
 
-  it('returns false for empty/missing messages', () => {
-    assert.equal(hasToolFailLastTurn(null), false);
-    assert.equal(hasToolFailLastTurn([]), false);
+  it('returns undefined for empty/missing messages (#486: no-tools ≠ clean)', () => {
+    assert.equal(hasToolFailLastTurn(null), undefined);
+    assert.equal(hasToolFailLastTurn([]), undefined);
   });
 
   it('turnToolFail is in INDEX_FIELDS', () => {

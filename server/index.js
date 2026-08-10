@@ -1016,14 +1016,17 @@ async function runPostListenStartupTasks() {
     warmUpCosts();
   }
 
-  // #438: hint when legacy entries lack per-turn failure data
+  // #438/#486: hint when legacy entries lack per-turn tool evidence.
+  // turnToolResults is always set on new entries ([] for no-tools, [{...}] for
+  // tools); undefined means truly legacy (pre-#486). turnToolFail alone cannot
+  // distinguish legacy from no-tools after #486's tri-state change.
   if (restoreOk) {
     let legacyCount = 0;
     for (const e of store.entries) {
-      if (e.turnToolFail === undefined && e.provider !== 'openai' && !e.imported) { legacyCount++; if (legacyCount >= 10) break; }
+      if (e.turnToolResults === undefined && e.provider !== 'openai' && !e.imported) { legacyCount++; if (legacyCount >= 10) break; }
     }
     if (legacyCount >= 10) {
-      process.stderr.write('\x1b[33m   ⚠ legacy entries lack per-turn failure data — run `ccxray rebuild-index --apply` to backfill\x1b[0m\n');
+      process.stderr.write('\x1b[33m   ⚠ legacy entries lack per-turn tool evidence — run `ccxray rebuild-index --apply` to backfill\x1b[0m\n');
     }
   }
 
