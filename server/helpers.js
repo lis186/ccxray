@@ -859,7 +859,9 @@ function aggregateToolFailResults(results) {
 // to the client wrapper rather than to the OpenAI Responses API.
 function extractOpenAITurnToolFail(input, { client } = {}) {
   return aggregateToolFailResults(
-    extractOpenAITurnToolResults(input, { client, includeMissingCallId: true }).map(result => result.toolFail)
+    extractOpenAITurnToolResults(input, { client, includeMissingCallId: true })
+      .filter(result => result.eligible)
+      .map(result => result.toolFail)
   );
 }
 

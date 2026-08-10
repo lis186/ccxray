@@ -268,6 +268,19 @@ test('#485 D2 — async start+retrieval pair: real fixture, same call_id → exa
   assert.equal(ineligible[0].toolFail, undefined, 'start segment has no verdict');
 });
 
+test('#485 D2 — successful async command: turnToolFail aggregates eligible results only', () => {
+  // Codex review R2: start(eligible:false) + retrieval(eligible:true,toolFail:false)
+  // must yield false, not undefined — otherwise a successful long command is omitted
+  // from the failure-rate denominator.
+  const fail = extractOpenAITurnToolFail([
+    { type: 'custom_tool_call_output', call_id: 'call_async',
+      output: JSON.stringify([{ type: 'input_text', text: 'Script running with cell ID 1\nWall time 11.0 seconds\nOutput:\n' }]) },
+    { type: 'function_call_output', call_id: 'call_async',
+      output: JSON.stringify([{ type: 'input_text', text: JSON.stringify({ exit_code: 0 }) }]) },
+  ], { client: 'codex' });
+  assert.equal(fail, false, 'successful async command must be false, not undefined');
+});
+
 test('#485 D2 — truncated/malformed output stays eligible (not misclassified as async start)', () => {
   const results = extractOpenAITurnToolResults([
     {
