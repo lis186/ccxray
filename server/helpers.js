@@ -859,15 +859,22 @@ function aggregateToolFailResults(results) {
 // to the client wrapper rather than to the OpenAI Responses API.
 function extractOpenAITurnToolFail(input, { client } = {}) {
   return aggregateToolFailResults(
-    extractOpenAITurnToolResults(input, { client, includeMissingCallId: true }).map(result => result.toolFail)
+    extractOpenAITurnToolResults(input, { client, includeMissingCallId: true })
+      .filter(result => result.eligible)
+      .map(result => result.toolFail)
   );
 }
+
+// #485 D2: async start sentinel — decodeCodexToolOutput returns this for
+// "Script running..." segments; extractOpenAITurnToolResults maps it to eligible:false
+const CODEX_ASYNC_START = { asyncStart: true };
 
 function extractOpenAITurnToolResults(input, { client, includeMissingCallId = false } = {}) {
   if (!Array.isArray(input)) return [];
 
   const decoders = {
     'codex:custom_tool_call_output': decodeCodexToolOutput,
+    'codex:function_call_output': decodeCodexToolOutput, // #485 D2: async retrieval segment
     'grok:function_call_output': decodeGrokToolOutput,
   };
   const results = [];
@@ -879,10 +886,12 @@ function extractOpenAITurnToolResults(input, { client, includeMissingCallId = fa
     if (!item || typeof item.type !== 'string' || !item.type.endsWith('_call_output')) break;
     const decode = decoders[`${client}:${item.type}`];
     if (!item.call_id && !includeMissingCallId) continue;
+    const decoded = decode ? decode(item.output) : undefined;
+    const isAsyncStart = decoded === CODEX_ASYNC_START; // #485 D2
     results.push({
       callId: item.call_id,
-      eligible: decode !== undefined,
-      toolFail: decode ? decode(item.output) : undefined,
+      eligible: decode !== undefined && !isAsyncStart,
+      toolFail: isAsyncStart ? undefined : decoded,
     });
   }
   results.reverse();
@@ -902,35 +911,65 @@ function decodeCodexToolOutput(output) {
   } else {
     return undefined;
   }
-  if (!Array.isArray(envelope)) return undefined;
+  if (!Array.isArray(envelope)) {
+    // Non-array envelope (e.g. bare object or primitive) — not a shape we decode.
+    // The array path below handles input_text[] and top-level exit_code objects.
+    return undefined;
+  }
 
+  // #485 D3: array-shaped payload — try input_text envelope first, then
+  // top-level exit_code objects (skip-and-aggregate, failure-dominates)
   const results = [];
+  let hasAsyncStartText = false;
   for (const part of envelope) {
-    if (!part || part.type !== 'input_text' || typeof part.text !== 'string') continue;
-    let result;
-    try {
-      result = JSON.parse(part.text);
-    } catch {
+    if (part && part.type === 'input_text' && typeof part.text === 'string') {
+      // D2: detect async start only by the specific "Script running" sentinel.
+      // A truncated/malformed completed result is unknown evidence, not an
+      // async start — keeping eligible:true preserves the rot-honesty signal
+      // (codex review P2, Fable D2 analysis).
+      if (/^Script running\b/i.test(part.text.trim())) hasAsyncStartText = true;
+      let result;
+      try {
+        result = JSON.parse(part.text);
+      } catch {
+        continue;
+      }
+      if (!result || Array.isArray(result) || typeof result !== 'object') continue;
+      if (!Object.hasOwn(result, 'exit_code') || !Number.isSafeInteger(result.exit_code)) continue;
+      results.push(result.exit_code !== 0);
       continue;
     }
-    if (!result || Array.isArray(result) || typeof result !== 'object') continue;
-    if (!Object.hasOwn(result, 'exit_code') || !Number.isSafeInteger(result.exit_code)) continue;
-    // Only this top-level field is authoritative. Never scan nested output,
-    // stdout, or text, which may contain command-controlled lookalikes.
-    results.push(result.exit_code !== 0);
+    // D3: top-level exit_code objects (no input_text wrapper)
+    if (part && typeof part === 'object' && !Array.isArray(part) &&
+        Object.hasOwn(part, 'exit_code') && Number.isSafeInteger(part.exit_code)) {
+      results.push(part.exit_code !== 0);
+    }
   }
+
+  if (results.length > 0) return aggregateToolFailResults(results);
+
+  // D2: async start — only the specific "Script running" sentinel, not any non-JSON text
+  if (hasAsyncStartText) return CODEX_ASYNC_START;
 
   return aggregateToolFailResults(results);
 }
 
+// #485 D1: footer priority — last non-empty line EXIT_CODE[=:]N, then first non-empty line exit: N
 function decodeGrokToolOutput(output) {
   if (typeof output !== 'string') return undefined;
   const lines = output.trim().split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   if (lines.length === 0) return undefined;
-  const match = lines.at(-1).match(/^EXIT_CODE[=:](-?\d+)$/);
-  if (!match) return undefined;
-  const exitCode = Number(match[1]);
-  return Number.isSafeInteger(exitCode) ? exitCode !== 0 : undefined;
+  const footerMatch = lines.at(-1).match(/^EXIT_CODE[=:](-?\d+)$/);
+  if (footerMatch) {
+    const exitCode = Number(footerMatch[1]);
+    return Number.isSafeInteger(exitCode) ? exitCode !== 0 : undefined;
+  }
+  const headerMatch = lines[0].match(/^exit:\s?(-?\d+)$/);
+  if (headerMatch) {
+    const exitCode = Number(headerMatch[1]);
+    return Number.isSafeInteger(exitCode) ? exitCode !== 0 : undefined;
+  }
+  return undefined;
 }
 
 function extractToolCalls(messages) {

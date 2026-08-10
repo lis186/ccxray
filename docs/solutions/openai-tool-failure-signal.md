@@ -147,8 +147,16 @@ context**，架構上無法做 per-client 分派。
 - **grok-over-WebSocket 未測**：grok CLI 沒有 transport 選項（`--help` 無 websocket 相關），
   可能不支援 WS。因此「grok 換 transport 是否也不變」未驗證 —但 codex 那組已足以排除
   per-transport 分派。
-- **`exit: 0` 語意未確定**：Grok `output` 開頭那個 `exit: 0` 可能是 shell wrapper 自身的
-  exit，而非指令的。2 個樣本不足以判斷哪個權威。**選 B 前必須釐清。**
+- ~~**`exit: 0` 語意未確定**：Grok `output` 開頭那個 `exit: 0` 可能是 shell wrapper 自身的
+  exit，而非指令的。2 個樣本不足以判斷哪個權威。**選 B 前必須釐清。**~~
+  **已釐清 (#485 D1, 2026-08-10)**：2026-08-09/10 的 live 捕獲已無 `EXIT_CODE=` footer，
+  退出碼改為首行 `exit: N`。四個 payload 形狀實測確認：`exit: N` 是目前唯一的訊號。
+  ccxray 現在雙格式接受（footer 優先），因為 2026-08-07 捕獲中 `exit: 0` 與 `EXIT_CODE=1`
+  同時出現時首行不可靠。
+- **codex async 指令拆分**（#485 D2, 2026-08-10）：>~11s 的指令分成 start segment
+  (`custom_tool_call_output`, "Script running...") 和 retrieval segment
+  (`function_call_output`, 帶真正 `exit_code`)。`codex:function_call_output` 現已註冊；
+  start segment 標記 `eligible:false` 以免搶佔 weather 的 call_id pairing。
 - **latency baseline 樣本不足**：codex 4 筆（elapsed 3.0 / 4.8s + HTTP 那次 2 筆）、grok 3 筆。
   遠不足以定 p75。`weather.js` 的 `MODEL_BASELINES` 缺 OpenAI/Grok 鍵需獨立收集，
   **不應照抄 `BASELINE_FALLBACK` 的 20000**。

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { getParser } = require('../server/wire-parsers');
-const { extractOpenAITurnToolFail } = require('../server/helpers');
+const { extractOpenAITurnToolFail, extractOpenAITurnToolResults } = require('../server/helpers');
 
 function loadFixture(name) {
   return JSON.parse(fs.readFileSync(
@@ -185,4 +185,145 @@ test('#472 incomplete Codex envelopes stay unknown but true dominates mixed exit
       ]),
     },
   ], { client: 'codex' }), true);
+});
+
+// --- #485 fail-on-old tests (must fail on current code, pass after fix) ---
+
+test('#485 D1 — grok new-format "exit: N" on first line decodes failure', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'exit: 42\n' },
+  ], { client: 'grok' }), true);
+});
+
+test('#485 D1 — grok new-format "exit: 127" with stderr decodes failure', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'exit: 127\nzsh: command not found: nonexistent\n' },
+  ], { client: 'grok' }), true);
+});
+
+test('#485 D1 — grok new-format "exit: 1" with error output decodes failure', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'exit: 1\ncat: /no/such/file: No such file or directory\n' },
+  ], { client: 'grok' }), true);
+});
+
+test('#485 D1 — grok new-format "exit: 0" decodes success', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'exit: 0\nsuccess-marker\n' },
+  ], { client: 'grok' }), false);
+});
+
+test('#485 D1 — old grok footer format still works (regression guard)', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'some output\nEXIT_CODE=1\n' },
+  ], { client: 'grok' }), true);
+});
+
+test('#485 D1 — footer wins over first-line when both present', () => {
+  // Real 2026-08-07 capture: exit: 0 on first line, EXIT_CODE=1 on last — ground truth = failure
+  assert.equal(extractOpenAITurnToolFail([
+    { type: 'function_call_output', output: 'exit: 0\ncat: /no/such/file: No such file or directory\nEXIT_CODE=1\n' },
+  ], { client: 'grok' }), true);
+});
+
+test('#485 D2 — codex function_call_output is eligible and decodes exit_code', () => {
+  const results = extractOpenAITurnToolResults([
+    {
+      type: 'function_call_output',
+      call_id: 'call_async_retrieval',
+      output: JSON.stringify([
+        { type: 'input_text', text: JSON.stringify({ exit_code: 42 }) },
+      ]),
+    },
+  ], { client: 'codex' });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].eligible, true);
+  assert.equal(results[0].toolFail, true);
+});
+
+test('#485 D2 — codex async start segment is eligible:false', () => {
+  const results = extractOpenAITurnToolResults([
+    {
+      type: 'custom_tool_call_output',
+      call_id: 'call_async_start',
+      output: JSON.stringify([
+        { type: 'input_text', text: 'Script running...' },
+      ]),
+    },
+  ], { client: 'codex' });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].eligible, false, 'start segment must not be eligible');
+});
+
+test('#485 D2 — async start+retrieval pair: real fixture, same call_id → exactly one eligible result', () => {
+  const start = loadFixture('codex-async-start-segment.json');
+  const retrieval = loadFixture('codex-async-retrieval-segment.json');
+  const results = extractOpenAITurnToolResults([start, retrieval], { client: 'codex' });
+  const eligible = results.filter(r => r.eligible);
+  assert.equal(eligible.length, 1, 'exactly one eligible result from the pair');
+  assert.equal(eligible[0].toolFail, true, 'exit_code 42 → failure');
+  assert.equal(eligible[0].callId, start.call_id, 'paired to the original call_id');
+  const ineligible = results.filter(r => !r.eligible);
+  assert.equal(ineligible.length, 1, 'start segment is ineligible');
+  assert.equal(ineligible[0].toolFail, undefined, 'start segment has no verdict');
+});
+
+test('#485 D2 — successful async command: turnToolFail aggregates eligible results only', () => {
+  // Codex review R2: start(eligible:false) + retrieval(eligible:true,toolFail:false)
+  // must yield false, not undefined — otherwise a successful long command is omitted
+  // from the failure-rate denominator.
+  const fail = extractOpenAITurnToolFail([
+    { type: 'custom_tool_call_output', call_id: 'call_async',
+      output: JSON.stringify([{ type: 'input_text', text: 'Script running with cell ID 1\nWall time 11.0 seconds\nOutput:\n' }]) },
+    { type: 'function_call_output', call_id: 'call_async',
+      output: JSON.stringify([{ type: 'input_text', text: JSON.stringify({ exit_code: 0 }) }]) },
+  ], { client: 'codex' });
+  assert.equal(fail, false, 'successful async command must be false, not undefined');
+});
+
+test('#485 D2 — truncated/malformed output stays eligible (not misclassified as async start)', () => {
+  const results = extractOpenAITurnToolResults([
+    {
+      type: 'custom_tool_call_output',
+      call_id: 'call_truncated',
+      output: JSON.stringify([
+        { type: 'input_text', text: 'Script completed\nWall time 0.3 seconds\nOutput:\n' },
+        { type: 'input_text', text: 'some truncated partial output without exit_code' },
+      ]),
+    },
+  ], { client: 'codex' });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].eligible, true, 'truncated output must stay eligible to preserve rot-honesty');
+  assert.equal(results[0].toolFail, undefined, 'no verdict — unknown, not clean');
+});
+
+test('#485 D3 — codex array-shaped top-level exit_code decodes', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    {
+      type: 'custom_tool_call_output',
+      output: JSON.stringify([{ exit_code: 1 }]),
+    },
+  ], { client: 'codex' }), true);
+});
+
+test('#485 D3 — codex array with mixed valid/invalid elements aggregates', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    {
+      type: 'custom_tool_call_output',
+      output: JSON.stringify([
+        { exit_code: 0 },
+        'invalid',
+        { exit_code: 1 },
+      ]),
+    },
+  ], { client: 'codex' }), true);
+});
+
+test('#485 D3 — codex array with all-invalid elements returns undefined', () => {
+  assert.equal(extractOpenAITurnToolFail([
+    {
+      type: 'custom_tool_call_output',
+      output: JSON.stringify(['invalid', null, 42]),
+    },
+  ], { client: 'codex' }), undefined);
 });

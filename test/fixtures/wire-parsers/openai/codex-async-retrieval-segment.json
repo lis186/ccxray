@@ -1,0 +1,7 @@
+{
+  "_provenance": "Real capture: ccxray codex, bash -c 'sleep 15; exit 42', 2026-08-08, isolated proxy port 5614",
+  "_segment": "retrieval (async — Script completed, carries real exit_code)",
+  "type": "function_call_output",
+  "call_id": "call_sREd63E9ySFDypAZQhSalFHv",
+  "output": "[{\"type\":\"input_text\",\"text\":\"Script completed\\nWall time 0.9 seconds\\nOutput:\\n\"},{\"type\":\"input_text\",\"text\":\"{\\\"chunk_id\\\":\\\"44bb02\\\",\\\"wall_time_seconds\\\":0,\\\"exit_code\\\":42,\\\"original_token_count\\\":0}\"}]"
+}
