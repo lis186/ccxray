@@ -255,6 +255,19 @@ test('#485 D2 — codex async start segment is eligible:false', () => {
   assert.equal(results[0].eligible, false, 'start segment must not be eligible');
 });
 
+test('#485 D2 — async start+retrieval pair: real fixture, same call_id → exactly one eligible result', () => {
+  const start = loadFixture('codex-async-start-segment.json');
+  const retrieval = loadFixture('codex-async-retrieval-segment.json');
+  const results = extractOpenAITurnToolResults([start, retrieval], { client: 'codex' });
+  const eligible = results.filter(r => r.eligible);
+  assert.equal(eligible.length, 1, 'exactly one eligible result from the pair');
+  assert.equal(eligible[0].toolFail, true, 'exit_code 42 → failure');
+  assert.equal(eligible[0].callId, start.call_id, 'paired to the original call_id');
+  const ineligible = results.filter(r => !r.eligible);
+  assert.equal(ineligible.length, 1, 'start segment is ineligible');
+  assert.equal(ineligible[0].toolFail, undefined, 'start segment has no verdict');
+});
+
 test('#485 D2 — truncated/malformed output stays eligible (not misclassified as async start)', () => {
   const results = extractOpenAITurnToolResults([
     {

@@ -1,0 +1,7 @@
+{
+  "_provenance": "Real capture: ccxray codex, bash -c 'sleep 15; exit 42', 2026-08-08, isolated proxy port 5614",
+  "_segment": "start (async — Script running, no exit_code yet)",
+  "type": "custom_tool_call_output",
+  "call_id": "call_sREd63E9ySFDypAZQhSalFHv",
+  "output": "[{\"type\":\"input_text\",\"text\":\"Script running with cell ID 1\\nWall time 11.0 seconds\\nOutput:\\n\"}]"
+}

@@ -910,8 +910,8 @@ function decodeCodexToolOutput(output) {
     return undefined;
   }
   if (!Array.isArray(envelope)) {
-    // #485 D3: unwrap not needed — single non-array object handled below after
-    // the input_text path; but if it's not an array AND not an object, bail
+    // Non-array envelope (e.g. bare object or primitive) — not a shape we decode.
+    // The array path below handles input_text[] and top-level exit_code objects.
     return undefined;
   }
 
