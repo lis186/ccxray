@@ -678,6 +678,36 @@ describe('store', () => {
     });
   });
 
+  describe('extractConfigDir', () => {
+    it('extracts the global Claude config dir from system blocks', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ text: "Contents of /Users/test/.claude-work/CLAUDE.md (user's private global instructions for all projects):" }],
+      };
+      assert.equal(store.extractConfigDir(req), '/Users/test/.claude-work');
+    });
+
+    it('falls through a system miss and extracts context_management content', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ text: 'System block without the global instructions marker.' }],
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: "Contents of /home/test/.claude-team/CLAUDE.md (user's private global instructions for all projects):" },
+        ] }],
+      };
+      assert.equal(store.extractConfigDir(req), '/home/test/.claude-team');
+    });
+
+    it('returns null without the global marker or when the dirname is not .claude*', () => {
+      const store = require('../server/store');
+      assert.equal(store.extractConfigDir({ system: [{ text: 'No global instructions here.' }] }), null);
+      assert.equal(store.extractConfigDir({
+        system: [{ text: "Contents of /repo/project/CLAUDE.md (user's private global instructions for all projects):" }],
+      }), null);
+    });
+  });
+
   describe('isAnthropicSubagent – context_management guard', () => {
     it('returns false for context_management requests', () => {
       const store = require('../server/store');

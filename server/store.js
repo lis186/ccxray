@@ -1,5 +1,6 @@
 'use strict';
 
+const path = require('path');
 const { agentForProvider, getUpstreamProfile, listRawSessionBuckets } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
 const sessionIdx = require('./session-index');
@@ -349,8 +350,8 @@ function stripInjectedTags(text) {
   return cleaned || null;
 }
 
-// ── Session metadata (cwd per session) ──────────────────────────────
-const sessionMeta = {}; // { sessionId: { cwd, lastSeenAt } }
+// ── Session metadata (cwd/config dir per session) ───────────────────
+const sessionMeta = {}; // { sessionId: { cwd, configDir, lastSeenAt } }
 const activeRequests = {}; // sessionId → in-flight count
 const sessionCosts = new Map(); // sessionId → accumulated cost
 
@@ -389,6 +390,30 @@ function extractCwd(req) {
         const cm = block.text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
         if (cm) return cm[1].trim();
       }
+    }
+  }
+  return null;
+}
+
+function configDirFromText(text) {
+  const m = text.match(/Contents of ([^\n]+)\/CLAUDE\.md \(user's private global instructions/);
+  if (!m) return null;
+  const dir = m[1].trim();
+  return path.basename(dir).startsWith('.claude') ? dir : null;
+}
+
+// Unlike extractCwd, a system miss intentionally falls through to context_management.
+function extractConfigDir(req) {
+  if (req?.system) {
+    const text = Array.isArray(req.system) ? req.system.map(block => block.text || '').join('\n') : String(req.system);
+    const dir = configDirFromText(text);
+    if (dir) return dir;
+  }
+  if (req?.context_management && Array.isArray(req?.messages?.[0]?.content)) {
+    for (const block of req.messages[0].content) {
+      if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+      const dir = configDirFromText(block.text);
+      if (dir) return dir;
     }
   }
   return null;
@@ -852,6 +877,7 @@ module.exports = {
   getCurrentSessionId,
   isQuotaCheck,
   extractCwd,
+  extractConfigDir,
   extractSessionId,
   isAnthropicSubagent,
   isLikelySubagent,

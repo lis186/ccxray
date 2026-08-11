@@ -25,12 +25,41 @@ const INDEX_FIELDS = [
   // positive signal; monotone OR-fold). Classification keeps raw per-turn
   // maxContext — never derived from this. See docs/decisions/0013-beta1m-persist-session-window-derive.md
   'beta1m',
+  // #504: optional deployment identity, local calendar metadata, and duplicate
+  // request-history tool calls. Append-only: existing field order is stable.
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
 ];
+
+const OMIT_IF_NULL = new Set([
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+]);
+
+function deploymentFields(ts) {
+  const fields = {};
+  for (const [key, envName] of [
+    ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
+    ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
+  ]) {
+    if (process.env[envName]) fields[key] = process.env[envName];
+  }
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (tz) fields.tz = tz;
+  if (Number.isFinite(ts)) {
+    const parts = new Intl.DateTimeFormat('en', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date(ts));
+    const byType = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    fields.localDate = `${byType.year}-${byType.month}-${byType.day}`;
+  }
+  return fields;
+}
 
 function buildIndexLine(entry) {
   const out = {};
-  for (const k of INDEX_FIELDS) if (entry[k] !== undefined) out[k] = entry[k];
+  for (const k of INDEX_FIELDS) {
+    if (entry[k] !== undefined && !(entry[k] === null && OMIT_IF_NULL.has(k))) out[k] = entry[k];
+  }
   return JSON.stringify(out);
 }
 
-module.exports = { INDEX_FIELDS, buildIndexLine };
+module.exports = { INDEX_FIELDS, buildIndexLine, deploymentFields };

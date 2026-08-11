@@ -15,7 +15,7 @@ const hub = require('./hub');
 const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
 const { agentForProvider, matchOpenAIWireClient } = require('./providers');
-const { buildIndexLine } = require('./entry');
+const { buildIndexLine, deploymentFields } = require('./entry');
 const path = require('path');
 const { resolveCcxrayHome } = require('./paths');
 const sessionIdx = require('./session-index');
@@ -772,6 +772,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
+      ...deploymentFields(startTime),
       // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
       responseId: getParser('anthropic').extractResponseId(events),
       turnToolCalls: getParser('anthropic').extractTurnToolCalls(events),
@@ -925,6 +926,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
+      ...deploymentFields(startTime),
       tokens: null,
       duplicateToolCalls: null,
       ...fields,
@@ -1053,6 +1055,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
         receivedAt: startTime,
+        ...deploymentFields(startTime),
         tokens: null,
         duplicateToolCalls: null,
         ...fields,
@@ -1076,6 +1079,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
+        ...deploymentFields(startTime),
         // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
         responseId: getParser('anthropic').extractResponseId(resData),
         turnToolCalls: getParser('anthropic').extractTurnToolCalls(resData),
