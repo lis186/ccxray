@@ -285,6 +285,34 @@ describe('importer', () => {
       assert.ok(entries[0].turnToolCallIds !== undefined);
     });
 
+    it('#500: merges tool evidence across duplicate assistant lines (same msg.id)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-merge.jsonl');
+      // Claude Code writes one assistant line per content block, all sharing msg.id
+      const msgId = 'msg_01MERGE';
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_prev', is_error: true }]),
+        // First line: text block
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z', msgId, text: 'Let me check...' }),
+        // Second line: tool_use block (same msg.id, different content)
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.100Z',
+          msgId,
+          content: [{ type: 'tool_use', id: 'toolu_01C', name: 'Bash', input: { command: 'ls' } }],
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      // Tool call from the second line should be merged in
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { toolu_01C: 'Bash' });
+      // Tool results from the first line should be preserved (not overwritten)
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_prev');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, true);
+    });
+
     it('#500: no preceding user tool_result → turnToolResults is [] (not undefined)', async () => {
       const sessionDir = path.join(importDir, 'test-project');
       fs.mkdirSync(sessionDir, { recursive: true });

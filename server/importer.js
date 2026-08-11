@@ -190,6 +190,10 @@ async function parseSessionFile(filePath, projectSlug) {
     const dedupKey = responseId || id;
     const prev = byResponseId.get(dedupKey);
 
+    // #500: merge tool evidence across duplicate assistant lines (same msg.id)
+    const mergedToolCallIds = prev ? { ...prev.turnToolCallIds, ...turnToolCallIds } : turnToolCallIds;
+    const mergedToolResults = prev ? prev.turnToolResults : pendingToolResults;
+
     const entry = {
       id: prev ? prev.id : id,
       ts: prev ? prev.ts : obj.timestamp,
@@ -203,8 +207,8 @@ async function parseSessionFile(filePath, projectSlug) {
       isSSE: false,
       receivedAt: prev ? prev.receivedAt : receivedAt,
       responseId,
-      turnToolCallIds,
-      turnToolResults: pendingToolResults,
+      turnToolCallIds: mergedToolCallIds,
+      turnToolResults: mergedToolResults,
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model,

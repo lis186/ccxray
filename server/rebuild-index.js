@@ -530,6 +530,11 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
 // #500: --reimport — remove all imported index lines and re-run scanAndImport()
 // so imported entries pick up newly-extracted fields (turnToolCallIds, turnToolResults).
 async function reimportEntries({ storage = config.storage, log = console.log } = {}) {
+  if (process.env.CCXRAY_IMPORT_DISABLE === '1') {
+    log('\x1b[31mCCXRAY_IMPORT_DISABLE=1 — reimport would delete imported lines without replacement. Aborting.\x1b[0m');
+    return { refused: true };
+  }
+
   const blockingHub = liveHubBlocking();
   if (blockingHub) {
     log(`\x1b[31mA ccxray hub is running (pid ${blockingHub.pid}). Stop it first.\x1b[0m`);
@@ -543,21 +548,22 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
     return { refused: true };
   }
 
-  // Count and remove imported lines
+  // Stream-filter: keep non-imported lines, count removed
   const indexPath = path.join(storage.location, 'index.ndjson');
-  const kept = [];
+  const kept = []; // [{ line }] for writeLinesToFile
   let removed = 0;
   for await (const line of storage.readIndexLines()) {
     if (!line.trim()) continue;
     let m;
-    try { m = JSON.parse(line); } catch { kept.push(line); continue; }
+    try { m = JSON.parse(line); } catch { kept.push({ line }); continue; }
     if (m && m.imported) { removed++; continue; }
-    kept.push(line);
+    kept.push({ line });
   }
 
   log(`Removing ${removed} imported line(s) from index...`);
   const tmpPath = `${indexPath}.reimport-${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, kept.join('\n') + (kept.length ? '\n' : ''), { mode: 0o600 });
+  await writeLinesToFile(tmpPath, kept);
+  try { fs.chmodSync(tmpPath, 0o600); } catch {}
   fs.renameSync(tmpPath, indexPath);
 
   // Rebuild session index from cleaned state
