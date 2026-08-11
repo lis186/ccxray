@@ -152,7 +152,7 @@ async function parseSessionFile(filePath, projectSlug) {
           if (b?.type === 'tool_result') {
             pendingToolResults.push({
               callId: b.tool_use_id || null,
-              toolFail: b.is_error === true ? true : undefined,
+              toolFail: 'is_error' in b ? (b.is_error === true) : undefined,
               eligible: true,
             });
           }

@@ -77,7 +77,7 @@ function makeUserWithToolResults(results, opts = {}) {
     type: 'tool_result',
     tool_use_id: r.tool_use_id,
     content: r.content || 'ok',
-    ...(r.is_error ? { is_error: true } : {}),
+    ...('is_error' in r ? { is_error: r.is_error } : {}),
   }));
   return makeLine('user', {
     timestamp: opts.timestamp || '2026-07-15T10:29:55.000Z',
@@ -251,6 +251,23 @@ describe('importer', () => {
       assert.strictEqual(entries[0].turnToolResults.length, 1);
       assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_01A');
       assert.strictEqual(entries[0].turnToolResults[0].toolFail, undefined);
+    });
+
+    it('#500: extracts turnToolResults from user tool_result (is_error: false)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-tool-ok-explicit.jsonl');
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_01A', is_error: false, content: 'success' }]),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_01A');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, false);
+      assert.strictEqual(entries[0].turnToolResults[0].eligible, true);
     });
 
     it('#500: assistant with no tool_use → turnToolCallIds is {} (not undefined)', async () => {
