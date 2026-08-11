@@ -706,6 +706,16 @@ describe('store', () => {
         system: [{ text: "Contents of /repo/project/CLAUDE.md (user's private global instructions for all projects):" }],
       }), null);
     });
+
+    it('accepts Windows separators while preserving the .claude* dirname guard', () => {
+      const store = require('../server/store');
+      assert.equal(store.extractConfigDir({
+        system: [{ text: "Contents of C:\\Users\\me\\.claude\\CLAUDE.md (user's private global instructions for all projects):" }],
+      }), 'C:\\Users\\me\\.claude');
+      assert.equal(store.extractConfigDir({
+        system: [{ text: "Contents of C:\\Users\\me\\notclaude\\CLAUDE.md (user's private global instructions for all projects):" }],
+      }), null);
+    });
   });
 
   describe('isAnthropicSubagent – context_management guard', () => {

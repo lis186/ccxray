@@ -48,3 +48,23 @@ test('same-session later turns retain configDir through the real index.js caller
   });
   assert.ok(!('configDir' in sessionMeta['openai-session']));
 });
+
+test('WebSocket entry expands deployment fields with its receivedAt timestamp', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '..', 'server', 'ws-proxy.js'), 'utf8');
+  const entryImport = source.match(/const \{ ([^}]+) \} = require\('\.\/entry'\);/);
+  assert.ok(entryImport, 'entry helper import must remain discoverable');
+  assert.ok(entryImport[1].split(',').map(name => name.trim()).includes('deploymentFields'));
+
+  const entryMatch = source.match(/  const entry = \{([\s\S]*?)\n  \};\n  entry\.hasCredential/);
+  assert.ok(entryMatch, 'WebSocket entry literal must remain discoverable');
+  const entryBody = entryMatch[1];
+  const receivedAtMatch = entryBody.match(/receivedAt:\s*([^,\n]+),/);
+  const deploymentMatch = entryBody.match(/\.\.\.deploymentFields\(([^)\n]+)\),/);
+  assert.ok(receivedAtMatch, 'WebSocket entry must set receivedAt');
+  assert.ok(deploymentMatch, 'WebSocket entry must expand deploymentFields');
+  assert.ok(
+    entryBody.indexOf(deploymentMatch[0]) < entryBody.indexOf("...getParser('openai').buildEntryFields("),
+    'deploymentFields must precede parser-built entry fields',
+  );
+  assert.equal(deploymentMatch[1].trim(), receivedAtMatch[1].trim());
+});

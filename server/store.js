@@ -1,6 +1,5 @@
 'use strict';
 
-const path = require('path');
 const { agentForProvider, getUpstreamProfile, listRawSessionBuckets } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
 const sessionIdx = require('./session-index');
@@ -396,10 +395,11 @@ function extractCwd(req) {
 }
 
 function configDirFromText(text) {
-  const m = text.match(/Contents of ([^\n]+)\/CLAUDE\.md \(user's private global instructions/);
+  const m = text.match(/Contents of ([^\n]+)[\\/]CLAUDE\.md \(user's private global instructions/);
   if (!m) return null;
   const dir = m[1].trim();
-  return path.basename(dir).startsWith('.claude') ? dir : null;
+  const basename = dir.split(/[\\/]/).pop();
+  return basename.startsWith('.claude') ? dir : null;
 }
 
 // Unlike extractCwd, a system miss intentionally falls through to context_management.

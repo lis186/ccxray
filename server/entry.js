@@ -30,6 +30,13 @@ const INDEX_FIELDS = [
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
 ];
 
+// INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
+// undefined must also be registered here, or every index row gains `"key":null`.
+// Existing fields are intentionally absent and continue writing null; preserving
+// that behavior is the #504 add-only guard. Tests that only feed an entry to
+// buildIndexLine cannot catch caller omissions: deploymentFields is spread at
+// the entry-construction paths in forward.js and ws-proxy.js, so assertions must
+// exercise those construction paths.
 const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
 ]);
