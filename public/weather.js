@@ -114,20 +114,12 @@ function sigToolFailure(toolEvidence) {
     if (toolEvidence[i].toolFail === true && firstFailure === null) firstFailure = toolEvidence[i];
   }
   if (firstFailure !== null) {
-    return { severity: 0.35, availability: 'failure', detail: { turnIndex: firstFailure.turnIndex, entryId: firstFailure.entryId, known: known, eligible: toolEvidence.length } };
+    return { severity: null, availability: 'failure', detail: { turnIndex: firstFailure.turnIndex, entryId: firstFailure.entryId, known: known, eligible: toolEvidence.length } };
   }
   if (toolEvidence.length > known) {
     return { severity: null, availability: 'unavailable', detail: { known: known, eligible: toolEvidence.length } };
   }
   return { severity: 0, availability: toolEvidence.length > 0 ? 'clear' : 'no_data', detail: { known: known, eligible: toolEvidence.length } };
-}
-
-function _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns) {
-  if (openAIResult.severity > anthropicResult.severity) return openAIResult;
-  if (anthropicResult.severity > openAIResult.severity) return anthropicResult;
-  if (openAIResult.evidenceCount > 0 && !(anthropicResult.evidenceCount > 0)) return openAIResult;
-  if (anthropicResult.evidenceCount > 0 && !(openAIResult.evidenceCount > 0)) return anthropicResult;
-  return hasAnthropicTurns ? anthropicResult : openAIResult;
 }
 
 function sigStuck(turns, toolEvidence) {
@@ -154,25 +146,7 @@ function sigStuck(turns, toolEvidence) {
       pairedStreak = 0;
     }
   }
-  var openAIResult = { severity: pairedMax >= 10 ? 0.9 : 0, evidenceCount: pairedEvidenceCount, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
-
-  var streak = 0, maxStreak = 0, maxStreakStart = 0, maxStreakEnd = 0;
-  var streakStart = 0, anthropicEvidenceCount = 0;
-  var hasAnthropicTurns = false;
-  for (var i = 0; i < turns.length; i++) {
-    if (turns[i].provider === 'openai') continue;
-    hasAnthropicTurns = true;
-    if (turns[i].stopReason === 'tool_use') anthropicEvidenceCount++;
-    if (turns[i].stopReason === 'tool_use' && turns[i].toolFail === true) {
-      if (streak === 0) streakStart = i;
-      streak++;
-      if (streak > maxStreak) { maxStreak = streak; maxStreakStart = streakStart; maxStreakEnd = i; }
-    } else {
-      streak = 0;
-    }
-  }
-  var anthropicResult = { severity: maxStreak >= 10 ? 0.9 : 0, evidenceCount: anthropicEvidenceCount, detail: { maxStreak: maxStreak, turnStart: maxStreakStart, turnEnd: maxStreakEnd, entryIdStart: turns[maxStreakStart] && turns[maxStreakStart].id || null, entryIdEnd: turns[maxStreakEnd] && turns[maxStreakEnd].id || null } };
-  return _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns);
+  return { severity: pairedMax >= 10 ? 0.9 : 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 function sigLatencyDrift(turns) {
@@ -213,33 +187,8 @@ function sigErrorCluster(turns, toolEvidence) {
       pairedEndId = toolEvidence[p + 4].entryId;
     }
   }
-  var openAIResult = { severity: clamp01(pairedMaxRate / 2.0), evidenceCount: pairedEvidenceCount, detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
-
-  var anthropicTurns = [];
-  var anthropicEvidenceCount = 0;
-  for (var a = 0; a < turns.length; a++) {
-    if (turns[a].provider !== 'openai') {
-      anthropicTurns.push({ turn: turns[a], turnIndex: a });
-      if (turns[a].stopReason === 'tool_use') anthropicEvidenceCount++;
-    }
-  }
-  var maxRate = 0, bestStart = 0, bestEnd = 0;
-  for (var i = 0; i <= anthropicTurns.length - 5; i++) {
-    var toolUse = 0, errors = 0;
-    for (var j = i; j < i + 5; j++) {
-      if (anthropicTurns[j].turn.stopReason === 'tool_use') {
-        toolUse++;
-        if (anthropicTurns[j].turn.toolFail === true) errors++;
-      }
-    }
-    if (toolUse < 3) continue;
-    var rate = errors / toolUse;
-    if (rate > maxRate) { maxRate = rate; bestStart = anthropicTurns[i].turnIndex; bestEnd = anthropicTurns[i + 4].turnIndex; }
-  }
   // ponytail: denom=2.0 — window needs 100% error rate to reach severity 0.5. Exp2: 0.6 flagged 247/346 sessions.
-  var sev = clamp01(maxRate / 2.0);
-  var anthropicResult = { severity: sev, evidenceCount: anthropicEvidenceCount, detail: { windowStart: bestStart, windowEnd: bestEnd, errorRate: Math.round(maxRate * 100) / 100, entryIdStart: turns[bestStart] && turns[bestStart].id || null, entryIdEnd: turns[bestEnd] && turns[bestEnd].id || null } };
-  return _strongerToolSignal(anthropicResult, openAIResult, anthropicTurns.length > 0);
+  return { severity: clamp01(pairedMaxRate / 2.0), detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 // ponytail: sustained low cache hit rate — cost/perf signal, not functionality. Skips first 3 turns (cold start). Expert consensus: 50% threshold (break-even), 0.5 cap.
@@ -273,23 +222,8 @@ function sigErrorCumulative(turns, toolEvidence) {
     }
   }
   var pairedRate = pairedKnown ? pairedErrors / pairedKnown : 0;
-  var openAIResult = { severity: pairedKnown < 10 ? 0 : clamp01(pairedRate / 0.4), evidenceCount: pairedKnown, detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
-
-  var toolTurns = 0, errTurns = 0, firstErrId = null;
-  var hasAnthropicTurns = false;
-  for (var i = 0; i < turns.length; i++) {
-    if (turns[i].provider === 'openai') continue;
-    hasAnthropicTurns = true;
-    if (turns[i].stopReason === 'tool_use') {
-      toolTurns++;
-      if (turns[i].toolFail === true) { errTurns++; if (!firstErrId) firstErrId = turns[i].id || null; }
-    }
-  }
-  var rate = toolTurns ? errTurns / toolTurns : 0;
-  // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥10 tool turns to avoid noise.
-  var sev = toolTurns < 10 ? 0 : clamp01(rate / 0.4);
-  var anthropicResult = { severity: sev, evidenceCount: toolTurns, detail: toolTurns < 10 ? {} : { errTurns: errTurns, toolTurns: toolTurns, rate: Math.round(rate * 100) / 100, firstErrId: firstErrId } };
-  return _strongerToolSignal(anthropicResult, openAIResult, hasAnthropicTurns);
+  // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥5 tool turns to avoid noise.
+  return { severity: pairedKnown < 5 ? 0 : clamp01(pairedRate / 0.4), detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
 }
 
 function assessWeather(turns, opts) {
@@ -337,6 +271,7 @@ function assessWeather(turns, opts) {
     ctxPct: _sigMap.ctx_pressure.detail.ctxPct || 0,
     errRate: _sigMap.error_cumulative.detail.rate || 0,
     errTurns: _sigMap.error_cumulative.detail.errTurns || 0,
+    toolTurns: _sigMap.error_cumulative.detail.toolTurns || 0,
     latencyRatio: _sigMap.latency_drift.detail.ratio || null,
     compactions: _sigMap.compaction_scar.detail.compactionCount || 0,
     cacheHitRate: _sigMap.cache_health.detail.medianHitRate != null ? _sigMap.cache_health.detail.medianHitRate : null,
@@ -407,7 +342,7 @@ function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount)
     if (stats) {
       var parts = [];
       parts.push('context ' + (stats.ctxPct || 0) + '%');
-      parts.push(stats.errTurns ? stats.errTurns + ' errors' : '0 errors');
+      parts.push(stats.toolTurns >= 5 ? (stats.errTurns ? stats.errTurns + ' errors' : '0 errors') : '—');
       if (stats.cacheHitRate != null) parts.push('cache ' + stats.cacheHitRate + '%');
       if (stats.latencyRatio != null) parts.push('latency ' + stats.latencyRatio + 'x');
       if (stats.compactions) parts.push('compacted ×' + stats.compactions);
