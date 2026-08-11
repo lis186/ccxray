@@ -242,9 +242,12 @@ async function parseCodexSessionFile(filePath) {
   let sessionId = path.basename(filePath, '.jsonl');
   let cwd = null;
   let lastModel = 'unknown';
-  // #500: accumulate tool calls/results between token_count boundaries
+  // #500: accumulate tool calls/results between token_count boundaries.
+  // Results carry to the NEXT entry (matching proxy convention: turnToolResults
+  // = what was fed INTO this request, i.e. results from the previous turn).
   let pendingCalls = {};
   let pendingResults = [];
+  let prevResults = [];
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -318,7 +321,7 @@ async function parseCodexSessionFile(filePath) {
       isSSE: false,
       receivedAt,
       turnToolCallIds: pendingCalls,
-      turnToolResults: pendingResults,
+      turnToolResults: prevResults,
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model: lastModel,
@@ -335,6 +338,7 @@ async function parseCodexSessionFile(filePath) {
       usage,
     });
     pendingCalls = {};
+    prevResults = pendingResults;
     pendingResults = [];
   }
   return entries;

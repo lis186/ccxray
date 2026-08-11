@@ -562,7 +562,7 @@ describe('codex importer', () => {
       assert.deepStrictEqual(entries[0].turnToolCallIds, { call_AAA: 'Bash', call_BBB: 'Read' });
     });
 
-    it('#500: custom_tool_call_output then token_count → turnToolResults populated', async () => {
+    it('#500: call+output in same window, results carry to NEXT entry', async () => {
       const sessDir = path.join(codexDir, '2026', '07', '15');
       fs.mkdirSync(sessDir, { recursive: true });
       const file = path.join(sessDir, 'rollout-tool-result.jsonl');
@@ -570,18 +570,24 @@ describe('codex importer', () => {
       fs.writeFileSync(file, [
         makeCodexSessionMeta({ sessionId: 'codex-tool-2' }),
         makeCodexTurnContext({ model: 'gpt-5.5' }),
+        // Window 0: call + output in same window (real Codex behavior)
+        JSON.stringify({ timestamp: '2026-07-15T10:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_AAA', name: 'exec' } }),
         JSON.stringify({ timestamp: '2026-07-15T10:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_AAA', output } }),
-        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:04.000Z' }),
+        // Window 1: empty, creates entry that receives the results
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:08.000Z' }),
       ].join('\n'));
 
       const entries = await parseCodexSessionFile(file);
-      assert.strictEqual(entries.length, 1);
-      assert.strictEqual(entries[0].turnToolResults.length, 1);
-      assert.strictEqual(entries[0].turnToolResults[0].callId, 'call_AAA');
-      assert.strictEqual(entries[0].turnToolResults[0].eligible, true);
+      assert.strictEqual(entries.length, 2);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { call_AAA: 'Bash' });
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
+      assert.strictEqual(entries[1].turnToolResults.length, 1);
+      assert.strictEqual(entries[1].turnToolResults[0].callId, 'call_AAA');
+      assert.strictEqual(entries[1].turnToolResults[0].eligible, true);
     });
 
-    it('#500: multiple tool calls/outputs accumulated correctly', async () => {
+    it('#500: multi-tool calls+outputs in same window, results carry to next', async () => {
       const sessDir = path.join(codexDir, '2026', '07', '15');
       fs.mkdirSync(sessDir, { recursive: true });
       const file = path.join(sessDir, 'rollout-tool-multi.jsonl');
@@ -589,19 +595,23 @@ describe('codex importer', () => {
       fs.writeFileSync(file, [
         makeCodexSessionMeta({ sessionId: 'codex-tool-3' }),
         makeCodexTurnContext({ model: 'gpt-5.5' }),
+        // Window 0: two call+output pairs
         JSON.stringify({ timestamp: '2026-07-15T10:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_1', name: 'exec' } }),
         JSON.stringify({ timestamp: '2026-07-15T10:30:02.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_1', output } }),
         JSON.stringify({ timestamp: '2026-07-15T10:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_2', name: 'apply_patch' } }),
         JSON.stringify({ timestamp: '2026-07-15T10:30:03.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_2', output } }),
         makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        // Window 1: empty, receives the results
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:10.000Z' }),
       ].join('\n'));
 
       const entries = await parseCodexSessionFile(file);
-      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries.length, 2);
       assert.deepStrictEqual(entries[0].turnToolCallIds, { call_1: 'Bash', call_2: 'Edit' });
-      assert.strictEqual(entries[0].turnToolResults.length, 2);
-      assert.strictEqual(entries[0].turnToolResults[0].callId, 'call_1');
-      assert.strictEqual(entries[0].turnToolResults[1].callId, 'call_2');
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
+      assert.strictEqual(entries[1].turnToolResults.length, 2);
+      assert.strictEqual(entries[1].turnToolResults[0].callId, 'call_1');
+      assert.strictEqual(entries[1].turnToolResults[1].callId, 'call_2');
     });
 
     it('#500: no tool lines before token_count → turnToolCallIds {}, turnToolResults []', async () => {

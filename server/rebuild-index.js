@@ -566,10 +566,16 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   try { fs.chmodSync(tmpPath, 0o600); } catch {}
   fs.renameSync(tmpPath, indexPath);
 
-  // Rebuild session index from cleaned state
+  // Rebuild session index from cleaned state (streaming — the index can exceed
+  // Node's max string size; readFileSync would throw ERR_STRING_TOO_LONG after
+  // the old index is already replaced, leaving imported history deleted).
   const sessionIdx = require('./session-index');
-  const content = fs.readFileSync(indexPath, 'utf8');
-  sessionIdx.rebuildFromIndexContent(content);
+  async function* parsedLines() {
+    for await (const line of storage.readIndexLines()) {
+      try { yield JSON.parse(line); } catch {}
+    }
+  }
+  await sessionIdx.rebuildFromMetasAsync(parsedLines());
 
   // Re-run importer
   const { scanAndImport } = require('./importer');
