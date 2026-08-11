@@ -27,13 +27,20 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const readline = require('readline');
-const { assessWeather } = require('../public/weather');
+// sessionIssuedBashCall is the ADR 0018-correct presence test, shared with the
+// escalation rule in weather.js rather than reimplemented here (#509).
+const { assessWeather, sessionIssuedBashCall } = require('../public/weather');
 const store = require('../server/store');
 
-// Gate thresholds — docs/solutions/weather-evidence-audit.md §5c
-const GATE_MIN_PAIRED_SESSIONS = 100;   // prong 1: sessions with ≥5 paired Bash results
-const GATE_MIN_DEGRADED = 20;           // prong 2: of those, failure rate > 10%
-const GATE_MAX_NO_DATA_RATE = 0.50;     // prong 3: sigToolFailure no_data share
+// docs/solutions/weather-evidence-audit.md §5c, as revised 2026-08-11 (owner-signed).
+// Prong 1 and 2 are no longer toggle conditions: prong 1 reports whether a manual
+// review sample exists, prong 2 supplies the fixtures for it. The one machine-checkable
+// gate is FALSE-SUNNY = 0. Prong 3 (corpus-wide no_data share) is retired — it gated a
+// per-session display on corpus age, and ~85% of the index structurally cannot carry
+// paired fields, so no amount of new data moved it. It is still printed for continuity
+// with the runs recorded in the audit doc, labelled as retired.
+const SAMPLE_MIN_PAIRED_SESSIONS = 100; // prong 1, now a sample-size indicator
+const SAMPLE_MIN_DEGRADED = 20;         // prong 2, now a fixture-count indicator
 const QUALIFY_PAIRED = 5;               // §4c: ≥5 paired results makes a session measurable
 const DEGRADED_RATE = 0.10;             // §5c: "failure rate > 10%"
 
@@ -134,6 +141,11 @@ function measure(bySid) {
       paired, errs,
       rate: paired ? errs / paired : null,
       toolSignal: w.stats.toolSignal,
+      // Derived HERE from raw fields, deliberately NOT from weather's own helper:
+      // the false-sunny check below compares two independent derivations, so a
+      // divergence between them shows up as a non-zero rate instead of cancelling out.
+      capable: _capableBashSession(turns),
+      issuedBash: sessionIssuedBashCall(turns),
       top: w.factors[0] ? w.factors[0].type : null,
     });
     levels[w.level] = (levels[w.level] || 0) + 1;
@@ -144,22 +156,37 @@ function measure(bySid) {
   const degraded = qualifying.filter(s => s.rate > DEGRADED_RATE);
   const rates = qualifying.map(s => s.rate).sort((a, b) => a - b);
   const noData = availability.no_data || 0;
-  // Primary denominator is every session, matching the audit appendix's
-  // "sigToolFailure: 100% no_data" over the whole corpus. The tool-active
-  // denominator is reported too: a session that made no tool call at all is
-  // correctly no_data, so it dilutes the primary figure (see follow-up issue on
-  // the no_data-vs-no-tool-calls distinction).
-  const toolActive = sessions.filter(s => s.toolSignal !== 'no_data' || _hadToolCalls(bySid.get(s.sid)));
+
+  // The gate statistic (#509): evidence-capable sessions that recorded NO paired
+  // evidence and still render sunny. Denominator is evidence-capable only — a
+  // session that never issued a Bash call, or whose turns predate the #486 results
+  // pipeline, structurally cannot produce evidence and must not sit in it (that was
+  // prong 3's defect: it measured corpus age).
+  const capable = sessions.filter(s => s.capable);
+  const noEvidence = s => s.toolSignal === 'no_data' || s.toolSignal === 'unmeasured';
+  const falseSunny = capable.filter(s => noEvidence(s) && s.level === 'sunny');
+  // Sessions the escalation caught — the population that USED to be false-sunny.
+  const escalated = sessions.filter(s => s.toolSignal === 'unmeasured');
+
+  // The p90 tail is the manual-review sample the revised §5c asks for; list it so
+  // "manually check the tail" is an actionable set of ids rather than an instruction.
+  const tail = qualifying.filter(s => s.rate > DEGRADED_RATE)
+    .sort((a, b) => b.rate - a.rate).slice(0, 20);
 
   return {
     sessions, levels, availability,
     count: sessions.length,
     prong1: qualifying.length,
     prong2: degraded.length,
-    noData,
-    noDataRate: sessions.length ? noData / sessions.length : 0,
-    noDataRateToolActive: toolActive.length ? toolActive.filter(s => s.toolSignal === 'no_data').length / toolActive.length : 0,
-    toolActiveCount: toolActive.length,
+    capableCount: capable.length,
+    issuedBashCount: sessions.filter(s => s.issuedBash).length,
+    escalatedCount: escalated.length,
+    falseSunny,
+    falseSunnyRate: capable.length ? falseSunny.length / capable.length : 0,
+    // Retired as a gate, kept for continuity with the runs already recorded in the
+    // audit doc (99.5% on 2026-08-11).
+    retiredNoDataRate: sessions.length ? noData / sessions.length : 0,
+    tail,
     dist: {
       n: rates.length,
       p25: percentile(rates, 0.25), p50: percentile(rates, 0.50),
@@ -169,30 +196,40 @@ function measure(bySid) {
   };
 }
 
-// Did the session make any tool call at all? Uses the per-turn field first and
-// falls back to the cumulative one — INVARIANT(ADR 0018): `{}` is a parsed
-// response with zero calls and must not fall back, so the truthiness test is
-// load-bearing. See docs/decisions/0018-turn-tool-calls-null-vs-empty.md
-function _hadToolCalls(turns) {
-  if (!turns) return false;
+// Evidence-capable: a Bash call appears in some turn's `turnToolCallIds`. That field's
+// presence is the #486/#475 capability marker — the response-side writer ran and listed
+// the turn's calls — so a Bash call in it with no matching result is a real measurement
+// gap. Mirrors weather.js's `_issuedCapableBashCall` by intent, kept as a separate
+// implementation on purpose (see the `capable` field comment above).
+function _capableBashSession(turns) {
   for (const t of turns) {
-    const per = t.turnToolCalls || t.turnToolCallIds;
-    if (per && Object.keys(per).length) return true;
-    if (!per && t.toolCalls && Object.keys(t.toolCalls).length) return true;
+    const ids = t.turnToolCallIds;
+    if (!ids || typeof ids !== 'object' || Array.isArray(ids)) continue;
+    for (const callId in ids) if (ids[callId] === 'Bash') return true;
   }
   return false;
 }
 
+// Revised §5c (owner-signed 2026-08-11): the machine-checkable condition is
+// false-sunny = 0. The remaining condition is a MANUAL qualitative check of the
+// degraded tail, which no script can assert — so this never prints a bare "ready".
 function verdict(m) {
-  const p1 = m.prong1 >= GATE_MIN_PAIRED_SESSIONS;
-  const p2 = m.prong2 >= GATE_MIN_DEGRADED;
-  const p3 = m.noDataRate < GATE_MAX_NO_DATA_RATE;
-  if (p1 && p2 && p3) return { ready: true, text: 'ready' };
-  const missing = [];
-  if (!p1) missing.push(m.prong1 + ' sessions with ≥' + QUALIFY_PAIRED + ' paired Bash results (need ' + GATE_MIN_PAIRED_SESSIONS + ')');
-  if (!p2) missing.push(m.prong2 + ' degraded samples (need ' + GATE_MIN_DEGRADED + ')');
-  if (!p3) missing.push('no_data ' + pct(m.noDataRate) + ' (need <' + pct(GATE_MAX_NO_DATA_RATE) + ')');
-  return { ready: false, text: 'not ready — ' + missing.join(', ') };
+  if (m.falseSunny.length > 0) {
+    return {
+      pass: false,
+      text: 'NOT READY — ' + m.falseSunny.length + ' of ' + m.capableCount
+        + ' evidence-capable sessions render sunny with no recorded evidence ('
+        + pct(m.falseSunnyRate) + '); the #509 escalation does not cover them',
+    };
+  }
+  const sample = m.prong1 >= SAMPLE_MIN_PAIRED_SESSIONS && m.prong2 >= SAMPLE_MIN_DEGRADED;
+  return {
+    pass: true,
+    text: 'machine checks pass (false-sunny 0/' + m.capableCount + ') — MANUAL REVIEW OUTSTANDING: '
+      + (sample
+        ? 'confirm the ' + m.tail.length + ' tail sessions below are actually degraded'
+        : 'review sample is thin (' + m.prong1 + ' measurable, ' + m.prong2 + ' degraded) — judge on what exists'),
+  };
 }
 
 // ── reporting ──────────────────────────────────────────────────────
@@ -203,18 +240,35 @@ function reportPass(label, note, m, listBad) {
   console.log('  sessions: ' + m.count);
   console.log('  levels: ' + Object.keys(m.levels).map(k => k + ' ' + m.levels[k]).join(' · '));
   console.log('  tool signal: ' + Object.keys(m.availability).map(k => k + ' ' + m.availability[k]).join(' · '));
-  console.log('  prong 1  sessions with ≥' + QUALIFY_PAIRED + ' paired Bash results : '
-    + m.prong1 + '  (need ≥' + GATE_MIN_PAIRED_SESSIONS + ')  ' + (m.prong1 >= GATE_MIN_PAIRED_SESSIONS ? 'PASS' : 'FAIL'));
-  console.log('  prong 2  degraded samples (failure rate >' + pct(DEGRADED_RATE) + ')  : '
-    + m.prong2 + '  (need ≥' + GATE_MIN_DEGRADED + ')  ' + (m.prong2 >= GATE_MIN_DEGRADED ? 'PASS' : 'FAIL'));
-  console.log('  prong 3  sigToolFailure no_data rate            : '
-    + pct(m.noDataRate) + '  (need <' + pct(GATE_MAX_NO_DATA_RATE) + ')  ' + (m.noDataRate < GATE_MAX_NO_DATA_RATE ? 'PASS' : 'FAIL'));
-  console.log('           ' + m.noData + '/' + m.count + ' sessions; over tool-active sessions only: '
-    + pct(m.noDataRateToolActive) + ' (' + m.toolActiveCount + ' sessions)');
+  console.log('  GATE     false-sunny (capable, no evidence, sunny) : '
+    + m.falseSunny.length + '/' + m.capableCount + ' = ' + pct(m.falseSunnyRate)
+    + '  (need 0)  ' + (m.falseSunny.length === 0 ? 'PASS' : 'FAIL'));
+  console.log('           evidence-capable ' + m.capableCount + ' · issued Bash by any signal '
+    + m.issuedBashCount + ' · escalated to ❔ by #509 ' + m.escalatedCount);
+  console.log('  sample   sessions with ≥' + QUALIFY_PAIRED + ' paired Bash results : '
+    + m.prong1 + '  (' + (m.prong1 >= SAMPLE_MIN_PAIRED_SESSIONS ? 'sample available' : 'thin, was prong 1 ≥' + SAMPLE_MIN_PAIRED_SESSIONS) + ')');
+  console.log('  fixtures degraded samples (failure rate >' + pct(DEGRADED_RATE) + ')  : '
+    + m.prong2 + '  (' + (m.prong2 >= SAMPLE_MIN_DEGRADED ? 'enough for review' : 'thin, was prong 2 ≥' + SAMPLE_MIN_DEGRADED) + ')');
+  console.log('  retired  corpus-wide no_data rate               : '
+    + pct(m.retiredNoDataRate) + '  (was prong 3 <50%; retired 2026-08-11 — measured corpus age, not signal quality)');
   console.log('  per-turn failure rate (n=' + m.dist.n + ' qualifying): p25 ' + pct(m.dist.p25)
     + ' · p50 ' + pct(m.dist.p50) + ' · p75 ' + pct(m.dist.p75) + ' · p90 ' + pct(m.dist.p90));
   console.log('  bad rate (rainy+stormy): ' + pct(m.badRate));
   console.log('  verdict: ' + v.text);
+
+  if (m.tail.length) {
+    console.log('  manual-review tail (highest failure rate first):');
+    for (const t of m.tail) {
+      console.log('    ' + t.sid.slice(0, 8) + '  ' + pct(t.rate) + '  ' + t.errs + '/' + t.paired
+        + ' Bash results failed · ' + t.turns + ' turns · ' + t.level);
+    }
+  }
+  if (m.falseSunny.length) {
+    console.log('  FALSE-SUNNY sessions (should be empty):');
+    for (const f of m.falseSunny.slice(0, 20)) {
+      console.log('    ' + f.sid.slice(0, 8) + '  signal=' + f.toolSignal + '  ' + f.turns + ' turns');
+    }
+  }
 
   const bad = m.sessions.filter(s => s.level === 'rainy' || s.level === 'stormy')
     .sort((a, b) => b.score - a.score);
@@ -293,8 +347,8 @@ async function run() {
   // the counterfactual — it is the evidence for having made that change.
   console.log('\n=== Verdict (merged = the semantics production renders) ===');
   console.log('  ' + vMerged.text);
-  console.log('  counterfactual (pre-#503 first-seen): ' + vFirst.text);
-  if (vFirst.ready !== vMerged.ready) {
+  console.log('  counterfactual (first-seen dedup): ' + vFirst.text);
+  if (vFirst.pass !== vMerged.pass) {
     console.log('  NOTE: the two semantics would gate differently — the merge is what counts.');
   }
 }
@@ -355,6 +409,13 @@ function goldenFixture() {
   push({ id: 's9b1', sessionId: 'S9', provider: 'anthropic', receivedAt: 2000, responseId: 'r9', sessionInferred: false, turnToolResults: results([['i1', false], ['i2', false], ['i3', false]]) });
   push({ id: 's9b2', sessionId: 'S9', provider: 'anthropic', receivedAt: 2001, responseId: 'r9', imported: true, sessionInferred: false, turnToolResults: results([['i4', false], ['i5', false], ['i6', true]]) });
 
+  // S10 — #509: a capable Bash call whose result was never recorded. Zero paired
+  // evidence, so it is NOT in prong 1/2 or the distribution, but it must render ❔
+  // (availability 'unmeasured') instead of sunny, and it must therefore NOT count as
+  // false-sunny. This is the case the escalation exists for.
+  push({ id: 's10a', sessionId: 'S10', provider: 'anthropic', receivedAt: 1, turnToolCallIds: call('Bash', ['j1']) });
+  push({ id: 's10b', sessionId: 'S10', provider: 'anthropic', receivedAt: 2 });
+
   return L;
 }
 
@@ -362,19 +423,23 @@ function goldenFixture() {
 //   S1 0/5=0 · S2 2/6=1/3 · S8 1/5=0.2 · S6 0 then (merged) 2/6=1/3 · S9 0 then 1/6.
 // Qualifying (≥5 paired) rate sets, sorted, feeding the percentiles below:
 //   first-seen n=3 [0, 0.2, 1/3]        merged n=5 [0, 1/6, 0.2, 1/3, 1/3]
+// Evidence-capable (a Bash value in some turn's turnToolCallIds): S1 S2 S3 S5 S8 S9 S10,
+// plus S6 only under `merged` (first-seen keeps the copy that carries no calls).
+// Escalated to ❔ ('unmeasured'): S10 only. False-sunny must be 0 everywhere — that is
+// the gate, and S10 is exactly the session that would break it without the escalation.
 const GOLDEN = {
   all: {
-    lines: 20,
-    firstSeen: { count: 8, prong1: 3, prong2: 2, noData: 2, dist: { n: 3, p25: 0.1, p50: 0.2, p75: 0.2 + (1 / 3 - 0.2) * 0.5, p90: 0.2 + (1 / 3 - 0.2) * 0.8 } },
-    merged: { count: 8, prong1: 5, prong2: 4, noData: 1, dist: { n: 5, p25: 1 / 6, p50: 0.2, p75: 1 / 3, p90: 1 / 3 } },
+    lines: 22,
+    firstSeen: { count: 9, prong1: 3, prong2: 2, noData: 2, capable: 7, escalated: 1, falseSunny: 0, dist: { n: 3, p25: 0.1, p50: 0.2, p75: 0.2 + (1 / 3 - 0.2) * 0.5, p90: 0.2 + (1 / 3 - 0.2) * 0.8 } },
+    merged: { count: 9, prong1: 5, prong2: 4, noData: 1, capable: 8, escalated: 1, falseSunny: 0, dist: { n: 5, p25: 1 / 6, p50: 0.2, p75: 1 / 3, p90: 1 / 3 } },
   },
   anthropic: {
-    firstSeen: { count: 7, prong1: 2, prong2: 1, noData: 2 },
-    merged: { count: 7, prong1: 4, prong2: 3, noData: 1 },
+    firstSeen: { count: 8, prong1: 2, prong2: 1, noData: 2, capable: 6, escalated: 1, falseSunny: 0 },
+    merged: { count: 8, prong1: 4, prong2: 3, noData: 1, capable: 7, escalated: 1, falseSunny: 0 },
   },
   openai: {
-    firstSeen: { count: 1, prong1: 1, prong2: 1, noData: 0 },
-    merged: { count: 1, prong1: 1, prong2: 1, noData: 0 },
+    firstSeen: { count: 1, prong1: 1, prong2: 1, noData: 0, capable: 1, escalated: 0, falseSunny: 0 },
+    merged: { count: 1, prong1: 1, prong2: 1, noData: 0, capable: 1, escalated: 0, falseSunny: 0 },
   },
 };
 
@@ -400,12 +465,17 @@ async function golden() {
       check(key + '.' + name + '.sessions', m.count, want.count);
       check(key + '.' + name + '.prong1', m.prong1, want.prong1);
       check(key + '.' + name + '.prong2', m.prong2, want.prong2);
-      check(key + '.' + name + '.noData', m.noData, want.noData);
+      check(key + '.' + name + '.noData', m.availability.no_data || 0, want.noData);
+      check(key + '.' + name + '.capable', m.capableCount, want.capable);
+      check(key + '.' + name + '.escalatedToQuestionMark', m.escalatedCount, want.escalated);
+      check(key + '.' + name + '.falseSunny', m.falseSunny.length, want.falseSunny);
       if (want.dist) {
         check(key + '.' + name + '.dist.n', m.dist.n, want.dist.n);
         for (const p of ['p25', 'p50', 'p75', 'p90']) check(key + '.' + name + '.dist.' + p, m.dist[p], want.dist[p]);
       }
-      check(key + '.' + name + '.verdict', verdict(m).ready, false); // fixture is far below every threshold
+      // The gate passes on the fixture (false-sunny 0) while the manual review stays
+      // outstanding — assert the shape, not a bare "ready".
+      check(key + '.' + name + '.gatePasses', verdict(m).pass, true);
     }
   }
 
