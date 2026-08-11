@@ -210,133 +210,133 @@ Post-#486, Anthropic entries carry `turnToolCallIds` and `turnToolResults`, whic
 `_openAIToolEvidence` consumes without a provider guard. This is the intended
 migration direction but creates the dual-evaluation period described in §1d.
 
-## 4. Scoring redesign
+## 4. Scoring redesign (owner-approved 2026-08-11)
 
-### 4a. Cumulative `toolFail` must be retired from weather
+### 4a. Delete Anthropic cumulative branches, keep paired path
 
-**Evidence**: corpus replay shows 100% false positive rate for `sigStuck` under
-cumulative `toolFail`:
-- Using cumulative: 132 sessions fire (`maxStreak ≥ 10`)
-- Using per-turn: 0 sessions fire
-- Example: session `d1e9f79f` — cumulative streak 45, per-turn streak 2
+**Decision**: `sigStuck`, `sigErrorCluster`, `sigErrorCumulative` each have two
+parallel paths — an Anthropic branch reading cumulative `toolFail` + `stopReason`,
+and a paired branch reading `_openAIToolEvidence`. Delete the Anthropic branches,
+keep the paired branches. This is not "retire vs rewrite" — the correct
+implementation already exists; the contaminated input is the only thing to remove.
 
-The cumulative `toolFail` contaminates ALL subsequent turns once any historical
-tool call fails. This is the #427-class bug applied to weather signals.
+**Evidence**: corpus replay shows 100% false positive rate for the Anthropic branch
+in `sigStuck` (132 sessions fire on cumulative, 0 on per-turn). The paired branch
+is already correct and provider-agnostic (post-#486/#498 all three providers write
+`turnToolCallIds`/`turnToolResults`).
 
-**Recommendation**: retire the Anthropic-specific branches in `sigStuck`,
-`sigErrorCluster`, and `sigErrorCumulative` entirely. Use ONLY the paired
-`_openAIToolEvidence` pipeline for all providers, since #486/#498 ensure all
-three providers write the paired fields.
+**Effect**: with zero paired data currently, all three signals go silent
+(severity 0). As production data accumulates they automatically start working
+correctly on all providers, with no second decision needed.
 
-### 4b. Per-turn failure rate distribution (calibration data)
+Adversarial review: Fable chose "rewrite" (Option B), Codex chose "retire"
+(Option A). Both missed that the paired path already exists inside each function —
+the false dichotomy was caused by a poorly framed prompt that omitted the code
+structure.
 
-Corpus-wide (Anthropic, ≥10 tool turns, using cumulative `turnToolFail`):
+### 4b. `sigToolFailure` severity → `null`, availability preserved
+
+**Decision**: set `sigToolFailure` severity to `null` (does not participate in
+the weather score). Keep the function for its unique availability detection
+(no_data / unavailable / clear / failure) which drives the `❔` weather state
+and tooltip `toolKnownRate`. No other signal provides this.
+
+The fixed 0.35 is removed. Tool failure severity is handled solely by
+`sigErrorCumulative`'s proportional rate.
+
+Adversarial review: both Fable and Codex independently chose Option 1
+(severity null). Both identified the same risk: short sessions (< 10 tool turns)
+become a blind spot because `sigErrorCumulative`'s ≥10 threshold doesn't fire.
+
+### 4c. `sigErrorCumulative` threshold ≥10 → ≥5
+
+**Decision**: lower the minimum tool-turn threshold from 10 to 5 to cover short
+sessions after `sigToolFailure` stops contributing severity. Fable's proposal
+(simpler than Codex's switchover-fallback alternative — one constant change vs
+new conditional logic).
+
+Statistical noise in 5-turn windows (3/5 = 60% vs 3/6 = 50%) is accepted:
+the threshold is a constant that can be adjusted after the first calibration
+replay with production paired data.
+
+### 4d. Per-turn failure rate distribution (calibration data)
+
+Corpus-wide (Anthropic, ≥10 tool turns, using `turnToolFail` at 17% coverage):
 - 217 qualifying sessions
 - p50: 1.9%, p75: 3.2%, p90: 4.6%
 - 77% of qualifying sessions have >0% failure rate
 
-**Note**: these numbers are from `turnToolFail` (the per-turn bool field), which
-existed pre-#486 on 17% of Anthropic entries. The new `turnToolResults` paired
-pipeline has zero production data.
-
-**Threshold recommendation (blocked-on-owner)**: cannot calibrate paired-pipeline
-thresholds until production data accumulates. The current `sigErrorCumulative`
-threshold of `0.4` (40% → severity 1.0) was tuned against cumulative-contaminated
-data and will need recalibration.
-
-### 4c. `sigStuck`: retire or restructure
-
-**Recommendation**: retire `sigStuck` as a separate signal. Rationale:
-- Current implementation uses cumulative `toolFail` → 100% false positive rate
-- A "stuck" pattern is a special case of `sigErrorCumulative` (high consecutive
-  error rate) — folding it into the error rate signals avoids redundant logic
-- If a distinct "consecutive failures" signal is wanted, it must use the paired
-  pipeline's per-call results, not the cumulative bool
-
-### 4d. `sigToolFailure` fixed 0.35 severity (#483)
-
-Currently `sigToolFailure` fires at fixed severity 0.35 regardless of how many
-failures exist. A single failure in a 500-turn session produces the same severity
-as 50 failures in a 100-turn session.
-
-**Recommendation (blocked-on-owner)**: two options:
-1. **Remove `sigToolFailure`** — redundant with `sigErrorCumulative`. The "first
-   failure" information is already carried in `sigErrorCumulative.detail.firstErrId`.
-2. **Make it proportional** — severity = `clamp01(failureRate / K)` for some K,
-   replacing the fixed 0.35.
+These numbers are from the pre-#486 `turnToolFail` field. The `turnToolResults`
+paired pipeline has zero production data. The `sigErrorCumulative` threshold of
+`0.4` (40% → severity 1.0) was tuned against cumulative-contaminated data and
+will need recalibration after paired data accumulates.
 
 ### 4e. Tooltip "0 errors" false claim
-
-When `toolTurns < 10`, `sigErrorCumulative` returns severity 0 with empty detail.
-`stats.errTurns` defaults to 0. Tooltip shows `"0 errors"` — implying measurement
-when none occurred.
 
 **Fix** (not blocked): when `stats.errTurns === 0 && stats.toolSignal === 'no_data'`,
 display `"—"` or omit the error count entirely instead of `"0 errors"`.
 
-### 4f. `turnToolFail` retirement (three → two fields)
+### 4f. `turnToolFail` — keep on write path
 
 `turnToolFail` has zero consumers in `weather.js`. `entry-rendering.js` accumulates
-it as `sess.toolFailTurns` but this never feeds `assessWeather`. The canonical
-per-turn tool evidence is now the paired `turnToolCallIds` + `turnToolResults`
-pipeline.
-
-**Recommendation**: keep `turnToolFail` on the write path as a convenience boolean
-for non-weather consumers (e.g. per-turn badge rendering in `entry-rendering.js`).
-Do not add it to weather — the paired pipeline is strictly more informative.
+it as `sess.toolFailTurns` for per-turn badge rendering. Keep on the write path as
+a convenience boolean; do not add to weather — the paired pipeline is strictly more
+informative.
 
 ## 5. Toggle-ON criteria (#484)
 
 ### 5a. Prerequisites (must-fix before toggle)
 
-1. **Retire cumulative `toolFail` from weather** — the Anthropic branches in
-   `sigStuck`/`sigErrorCluster`/`sigErrorCumulative` use contaminated data.
-   Migrating to the paired pipeline eliminates the 100% false positive rate.
-2. **Accumulate production data** — `turnToolCallIds`/`turnToolResults` have zero
-   entries in the corpus. Cannot calibrate thresholds without real distribution data.
-3. **Fix tooltip "0 errors"** — false claim when below measurement threshold.
+1. **Delete Anthropic cumulative branches** from `sigStuck`/`sigErrorCluster`/
+   `sigErrorCumulative` (§4a).
+2. **`sigToolFailure` severity → `null`** (§4b).
+3. **`sigErrorCumulative` threshold → ≥5** (§4c).
+4. **Fix tooltip "0 errors"** (§4e).
 
 ### 5b. Calibration replay script
 
-A streaming replay script should be a deliverable of the implementation PR(s).
-Shape:
+A streaming replay script is a deliverable of the implementation PR:
 
 ```
 node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
 ```
 
-- Streams `index.ndjson` line-by-line
-- Groups by sessionId
+- Streams `index.ndjson`, groups by sessionId
 - Runs `assessWeather(turns)` per session
-- Reports: level distribution, sigToolFailure availability, per-turn failure
-  rate distribution (p25/p50/p75/p90), false-positive analysis
+- Reports: level distribution, `sigToolFailure` availability, per-turn failure
+  rate distribution (p25/p50/p75/p90)
+- Outputs `ready` / `not ready` based on data sufficiency (see §5c)
 
-Re-run after each calibration change to verify distribution shift.
+### 5c. Toggle-ON decision gate — data-driven, not fixed threshold
 
-### 5c. Toggle-ON decision gate
+No fixed session count. The calibration replay script determines readiness:
 
-The toggle can be set to `_weatherDisplayDefault = true` when ALL of:
-1. Cumulative `toolFail` branches removed from weather.js
-2. ≥1000 production sessions have `turnToolCallIds` + `turnToolResults` data
-3. Calibration replay shows:
-   - `sigToolFailure` `no_data` rate < 50% (enough sessions have tool evidence)
-   - `sigStuck` (if retained) false positive rate = 0 on per-turn data
-   - `sigErrorCumulative` distribution is bimodal (clear separation between
-     healthy and degraded sessions)
-4. Tooltip accurately represents measurement state (no false "0 errors")
+```
+replay → if sessions with ≥5 tool turns ≥ 100
+       → AND degraded samples (failure rate > 10%) ≥ 20
+       → output "ready" + distribution chart
+       → otherwise "not ready, N sessions, M degraded samples"
+```
+
+Existing corpus already has 1,188 sessions with ≥5 tool turns (99 in the 5–9
+range, 1,089 with ≥10). Once paired data starts flowing, the first replay run
+determines whether the distribution is bimodal (healthy vs degraded separable).
+If not, wait one week and re-run.
+
+Additional gate checks:
+- `sigToolFailure` `no_data` rate < 50%
+- Tooltip accurately represents measurement state
 
 ## Follow-up issues (at least two)
 
 ### Issue 1: weather.js read-side migration
 
-Migrate `sigStuck`, `sigErrorCluster`, `sigErrorCumulative` to consume ONLY the
-paired `_openAIToolEvidence` pipeline. Remove the Anthropic-specific branches that
-read cumulative `toolFail` + `stopReason`. Affects `:166`/`:232`/`:285`.
-
-Include:
-- Threshold recalibration using the replay script
-- Tooltip fix for "0 errors" → "—" when below measurement threshold
-- `sigToolFailure` fixed-0.35 resolution (#483 scope)
+Delete Anthropic cumulative branches in `sigStuck`/`sigErrorCluster`/
+`sigErrorCumulative` (the paired path is already implemented). Also:
+- `sigToolFailure` severity → `null`
+- `sigErrorCumulative` threshold ≥10 → ≥5
+- Tooltip "0 errors" → "—" when below measurement threshold
+- Calibration replay script as deliverable
 
 ### Issue 2: importer tool-failure evidence
 
