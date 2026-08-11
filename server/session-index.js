@@ -36,8 +36,10 @@ const FLUSH_DELAY_MS = 2000;
 // while all checks pass. Bump whenever the derivation changes.
 //   1 (absent) — responseId first-seen skip, no field merge, pre-merge subagent filter
 //   2          — store.mergeByResponseId per session, subagent filtered post-merge
-// INVARIANT: see docs/decisions/0013-beta1m-persist-session-window-derive.md (#503 amendment)
-const WEATHER_REV = 2;
+//   3 (#509)   — a capable Bash call with no recorded result escalates to ❔ instead
+//                of rendering sunny (weather.js sigToolFailure 'unmeasured')
+// INVARIANT: see docs/decisions/0013-beta1m-persist-session-window-derive.md
+const WEATHER_REV = 3;
 
 // Single writer for persisted weather so the stamp can never be missed by one of
 // the three paths (rebuild finalize, _recomputeWeather, setWeather). A record

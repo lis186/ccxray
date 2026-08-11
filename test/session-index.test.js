@@ -605,22 +605,40 @@ describe('session-index', () => {
     await fsp.utimes(sessionsPath, now + 1, now + 1);
     assert.equal(await si.loadSessionIndex(), false, 'unstamped weather forces a rebuild');
 
-    // Same record with the current stamp loads without a rebuild — otherwise every
-    // startup would rebuild forever.
+    // A superseded revision is as stale as an absent one.
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: 1 }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false, 'an older revision forces a rebuild');
+
+    // Pins the #509 bump specifically: rev 2 was the merge-swap derivation, and the
+    // ❔ escalation superseded it. UPDATE THIS LITERAL ON EVERY BUMP — it is the only
+    // assertion that fails when a derivation changes without bumping WEATHER_REV,
+    // which is the whole point of the stamp.
     await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: 2 }) + '\n');
     await fsp.utimes(sessionsPath, now + 1, now + 1);
-    assert.equal(await si.loadSessionIndex(), true, 'stamped weather loads as-is');
+    assert.equal(await si.loadSessionIndex(), false, 'rev 2 (pre-#509 derivation) forces a rebuild');
+
+    // Whatever the writer currently stamps must load without a rebuild — otherwise
+    // every startup would rebuild forever. Read the revision from the writer rather
+    // than hardcoding it, so a future bump does not need this test edited.
+    si.rebuildFromMetas([{ id: 'rev-probe', sessionId: 'rev-probe', receivedAt: 1, model: 'm', maxContext: 200000 }]);
+    const currentRev = si.get('rev-probe').weatherRev;
+    assert.equal(typeof currentRev, 'number', 'the rebuild writer stamps a numeric revision');
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), true, 'currently-stamped weather loads as-is');
   });
 
   it('#503: all three weather writers stamp the revision', () => {
     const si = require('../server/session-index');
     si.rebuildFromMetas([{ id: 'w1', sessionId: 'stamp', receivedAt: 1, model: 'm', maxContext: 200000 }]);
-    assert.equal(si.get('stamp').weatherRev, 2, 'rebuild finalize stamps');
+    const rev = si.get('stamp').weatherRev;
+    assert.equal(typeof rev, 'number', 'rebuild finalize stamps a revision');
     si.setWeather('stamp', { level: 'fair', score: 0.4, stats: {} });
-    assert.equal(si.get('stamp').weatherRev, 2, 'setWeather stamps');
+    assert.equal(si.get('stamp').weatherRev, rev, 'setWeather stamps the same revision');
     // updateFromEntry → _recomputeWeather
     si.updateFromEntry({ id: 'w2', sessionId: 'stamp2', receivedAt: 2, model: 'm', maxContext: 200000 });
-    assert.equal(si.get('stamp2').weatherRev, 2, '_recomputeWeather stamps');
+    assert.equal(si.get('stamp2').weatherRev, rev, '_recomputeWeather stamps the same revision');
   });
 
   // #499: Anthropic cumulative branches deleted — legacy metas no longer feed tool

@@ -962,6 +962,90 @@ describe('assessWeather', function() {
     assert.ok(!hasFactor(r, 'cache_health'), 'grok entries should not trigger cache signal');
   });
 
+  // #509: a session that ran a Bash call whose result was never recorded must not
+  // read as healthy. The zero-tool and legacy cases below are the over-warning
+  // guards — without them this fix would make ❔ the default state.
+  describe('#509 unmeasured tool outcome does not render sunny', function() {
+    it('a capable Bash call with no recorded result escalates to ❔ (fail-on-old)', function() {
+      var r = assessWeather([
+        makeOpenAITurn({ id: 'issued', turnToolCallIds: { call_a: 'Bash' } }),
+        makeOpenAITurn({ id: 'later', turnToolCallIds: {}, turnToolResults: [] }),
+      ]);
+      assert.equal(r.stats.toolSignal, 'unmeasured');
+      assert.equal(r.level, 'unavailable');
+      assert.equal(r.emoji, '❔');
+      assert.match(r.tooltip, /no tool result was recorded/,
+        'tooltip must not claim results arrived and failed to decode');
+      assert.doesNotMatch(r.tooltip, /could be decoded/);
+    });
+
+    it('a session that called no tools at all stays sunny', function() {
+      var r = assessWeather(repeat(10));
+      assert.equal(r.stats.toolSignal, 'no_data');
+      assert.equal(r.level, 'sunny');
+    });
+
+    it('a capable non-Bash call stays sunny — evidence is Bash-only by design', function() {
+      var r = assessWeather([
+        makeOpenAITurn({ id: 'issued', turnToolCallIds: { call_r: 'Read' } }),
+        makeOpenAITurn({ id: 'later' }),
+      ]);
+      assert.equal(r.stats.toolSignal, 'no_data');
+      assert.equal(r.level, 'sunny');
+    });
+
+    it('a legacy Bash session with no paired pipeline stays sunny (ADR 0017: legacy contributes nothing)', function() {
+      // Cumulative toolCalls only — the pre-#486 write path could not record results,
+      // so this is absence of capability, not absence of a result.
+      var r = assessWeather(repeat(10, { toolCalls: { Bash: 4, Read: 9 } }));
+      assert.equal(r.stats.toolSignal, 'no_data');
+      assert.equal(r.level, 'sunny');
+    });
+
+    it('a decoded-clean session is still clear, not escalated', function() {
+      var r = assessWeather([
+        makeOpenAITurn({ id: 'issued', turnToolCallIds: { call_a: 'Bash' } }),
+        makeOpenAITurn({ id: 'returned', turnToolResults: [{ callId: 'call_a', toolFail: false, eligible: true }] }),
+      ]);
+      assert.equal(r.stats.toolSignal, 'clear');
+      assert.equal(r.level, 'sunny');
+    });
+
+    it('a non-sunny session keeps the caveat in its tooltip', function() {
+      var turns = repeat(6, { isCompacted: true });
+      turns[0].turnToolCallIds = { call_a: 'Bash' };
+      var r = assessWeather(turns);
+      assert.equal(r.stats.toolSignal, 'unmeasured');
+      assert.notEqual(r.level, 'sunny', 'a real signal outranks the ❔ escalation');
+      assert.match(r.tooltip, /tool result never recorded/);
+    });
+  });
+
+  describe('#509 sessionIssuedBashCall honours the ADR 0018 null-vs-empty contract', function() {
+    const { sessionIssuedBashCall } = require('../public/weather');
+
+    it('an empty per-turn map suppresses the cumulative fallback', function() {
+      // turnToolCalls === {} is a parsed response with zero calls; the cumulative
+      // toolCalls below is request-derived history and must not resurrect it.
+      assert.equal(sessionIssuedBashCall([{ turnToolCalls: {}, toolCalls: { Bash: 3 } }]), false);
+    });
+
+    it('an absent per-turn map falls back to cumulative toolCalls', function() {
+      assert.equal(sessionIssuedBashCall([{ toolCalls: { Bash: 3 } }]), true);
+      assert.equal(sessionIssuedBashCall([{ toolCalls: { Read: 3 } }]), false);
+    });
+
+    it('an empty turnToolCalls does not shadow a non-empty turnToolCallIds', function() {
+      assert.equal(sessionIssuedBashCall([{ turnToolCalls: {}, turnToolCallIds: { c1: 'Bash' } }]), true);
+    });
+
+    it('reads either per-turn shape', function() {
+      assert.equal(sessionIssuedBashCall([{ turnToolCalls: { Bash: 1 } }]), true);
+      assert.equal(sessionIssuedBashCall([{ turnToolCallIds: { c1: 'Read' } }]), false);
+      assert.equal(sessionIssuedBashCall([]), false);
+    });
+  });
+
   it('cache stats shown in sunny tooltip', function() {
     var turns = repeat(10);
     var r = assessWeather(turns);
