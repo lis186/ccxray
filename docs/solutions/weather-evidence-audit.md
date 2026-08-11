@@ -303,10 +303,12 @@ informative.
 
 ### 5b. Calibration replay script
 
-A streaming replay script is a deliverable of the implementation PR:
+A streaming replay script is a deliverable of the implementation PR. It shipped as
+`scripts/weather-replay.js` (not the `replay-tool-signal.js` name sketched here):
 
 ```
-node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
+node scripts/weather-replay.js [--index PATH] [--provider anthropic|openai]
+                               [--list-bad] [--golden]
 ```
 
 - Streams `index.ndjson`, groups by sessionId
@@ -314,6 +316,12 @@ node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
 - Reports: level distribution, `sigToolFailure` availability, per-turn failure
   rate distribution (p25/p50/p75/p90)
 - Outputs `ready` / `not ready` based on data sufficiency (see §5c)
+- Reports both responseId dedup semantics side by side — `first-seen` (the
+  pre-#503 rebuild path) and `merged` (`store.mergeByResponseId`, what the store
+  path and cold-load see). The verdict comes from `merged`; `first-seen` remains
+  as the counterfactual.
+- `--golden` self-checks 41 assertions against a hand-counted synthetic fixture,
+  so the measurement is a re-runnable regression test rather than a one-off.
 
 ### 5c. Toggle-ON decision gate — data-driven, not fixed threshold
 
@@ -334,6 +342,40 @@ If not, wait one week and re-run.
 Additional gate checks:
 - `sigToolFailure` `no_data` rate < 50%
 - Tooltip accurately represents measurement state
+
+#### First adjudicated run — 2026-08-11 (278,757 lines / 4,258 sessions)
+
+Verdict: **not ready**, all three prongs failing. Both dedup semantics agree.
+
+| prong | threshold | measured | after `--apply` backfill (projected) |
+|---|---|---|---|
+| 1. sessions ≥5 paired Bash results | ≥100 | **17** FAIL | **126** PASS |
+| 2. degraded samples (rate >10%) | ≥20 | **2** FAIL | **14** FAIL |
+| 3. `no_data` rate | <50% | **99.5%** FAIL | **96.7%** FAIL |
+
+Per-turn failure rate, n=17 qualifying: p25 2.1% · p50 5.7% · p75 7.6% · p90 15.6%.
+Projected at n=126: p25 0.2% · p50 3.8% · p75 7.0% · p90 11.0%.
+
+Three findings that change what "wait one week" means:
+
+1. **The distribution is not bimodal.** §5c's fallback applies: healthy and
+   degraded are not separable — the projected p90 is 11.0%, barely over the 10%
+   line that defines "degraded", so prong 2's ≥20 threshold is measuring the tail
+   of a smooth low-failure distribution, not a second mode.
+2. **Prong 3 cannot pass on this corpus shape, for a reason unrelated to scoring.**
+   85% of the index is imported lines and Codex traffic that carry no paired field
+   at all, and a session that never called a tool is *correctly* `no_data`. The
+   replay therefore also reports `no_data` over tool-active sessions only (88.2%
+   measured / 90.0% merged). Until `no_data` distinguishes "no tool calls" from
+   "tool calls happened but nothing was recorded", the all-sessions denominator
+   measures corpus composition rather than signal quality.
+3. **The backfill that flips prong 1 is bounded and does not reach the bulk of the
+   corpus.** `rebuild-index --apply` can enrich ~28.2k lines with
+   `turnToolCallIds` (from a surviving `_res.json`) and ~30.6k with non-empty
+   `turnToolResults` (from `_req.json`); ~204k imported lines have neither file and
+   are reachable only by `--reimport`, which deletes imported lines first and is
+   not an acceptable operation. The projection above is a lower bound (the merge's
+   callId union can only add evidence).
 
 ## Follow-up issues (at least two)
 
