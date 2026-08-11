@@ -527,4 +527,65 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
 }
 
-module.exports = { rebuildIndex, reconstructReq, tsFromId, nearestPrecedingSession };
+// #500: --reimport — remove all imported index lines and re-run scanAndImport()
+// so imported entries pick up newly-extracted fields (turnToolCallIds, turnToolResults).
+async function reimportEntries({ storage = config.storage, log = console.log } = {}) {
+  if (process.env.CCXRAY_IMPORT_DISABLE === '1') {
+    log('\x1b[31mCCXRAY_IMPORT_DISABLE=1 — reimport would delete imported lines without replacement. Aborting.\x1b[0m');
+    return { refused: true };
+  }
+
+  const blockingHub = liveHubBlocking();
+  if (blockingHub) {
+    log(`\x1b[31mA ccxray hub is running (pid ${blockingHub.pid}). Stop it first.\x1b[0m`);
+    return { refused: true };
+  }
+
+  await storage.init();
+
+  if (!storage.supportsDelta || !storage.location) {
+    log('  --reimport needs the local filesystem backend; aborting.');
+    return { refused: true };
+  }
+
+  // Stream-filter: keep non-imported lines, count removed
+  const indexPath = path.join(storage.location, 'index.ndjson');
+  const kept = []; // [{ line }] for writeLinesToFile
+  let removed = 0;
+  for await (const line of storage.readIndexLines()) {
+    if (!line.trim()) continue;
+    let m;
+    try { m = JSON.parse(line); } catch { kept.push({ line }); continue; }
+    if (m && m.imported) { removed++; continue; }
+    kept.push({ line });
+  }
+
+  log(`Removing ${removed} imported line(s) from index...`);
+  const tmpPath = `${indexPath}.reimport-${process.pid}.tmp`;
+  await writeLinesToFile(tmpPath, kept);
+  try { fs.chmodSync(tmpPath, 0o600); } catch {}
+  fs.renameSync(tmpPath, indexPath);
+
+  // Rebuild session index from cleaned state (streaming — the index can exceed
+  // Node's max string size; readFileSync would throw ERR_STRING_TOO_LONG after
+  // the old index is already replaced, leaving imported history deleted).
+  const sessionIdx = require('./session-index');
+  async function* parsedLines() {
+    for await (const line of storage.readIndexLines()) {
+      try { yield JSON.parse(line); } catch {}
+    }
+  }
+  await sessionIdx.rebuildFromMetasAsync(parsedLines());
+
+  // Re-run importer
+  const { scanAndImport } = require('./importer');
+  const result = await scanAndImport();
+  await storage.drain();
+  log(`Re-imported ${result.imported} entries (${result.skipped} duplicates skipped).`);
+  if (result.imported < removed) {
+    log(`\x1b[33m  ⚠ ${removed - result.imported} fewer entries than before — source transcripts may have been deleted or moved\x1b[0m`);
+  }
+  return { refused: false, removed, imported: result.imported, skipped: result.skipped };
+}
+
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession };

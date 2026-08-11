@@ -44,13 +44,14 @@ function makeLine(type, extra = {}) {
 }
 
 function makeAssistant(opts = {}) {
+  const content = opts.content || [{ type: 'text', text: opts.text || 'Hello' }];
   return makeLine('assistant', {
     timestamp: opts.timestamp || '2026-07-15T10:30:00.000Z',
     message: {
       id: opts.msgId,
       model: opts.model || 'claude-sonnet-4-5-20250514',
       role: 'assistant',
-      content: [{ type: 'text', text: opts.text || 'Hello' }],
+      content,
       stop_reason: opts.stop_reason || 'end_turn',
       usage: {
         input_tokens: opts.input ?? 5000,
@@ -68,6 +69,19 @@ function makeUser(text = 'Hello world') {
   return makeLine('user', {
     timestamp: '2026-07-15T10:29:50.000Z',
     message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+}
+
+function makeUserWithToolResults(results, opts = {}) {
+  const content = results.map(r => ({
+    type: 'tool_result',
+    tool_use_id: r.tool_use_id,
+    content: r.content || 'ok',
+    ...('is_error' in r ? { is_error: r.is_error } : {}),
+  }));
+  return makeLine('user', {
+    timestamp: opts.timestamp || '2026-07-15T10:29:55.000Z',
+    message: { role: 'user', content },
   });
 }
 
@@ -183,6 +197,135 @@ describe('importer', () => {
 
       const entries = await parseSessionFile(file, 'test-project');
       assert.strictEqual(entries.length, 0);
+    });
+
+    it('#500: extracts turnToolCallIds from assistant tool_use blocks', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-tool-calls.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('run a command'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          content: [
+            { type: 'text', text: 'Running...' },
+            { type: 'tool_use', id: 'toolu_01A', name: 'Bash', input: { command: 'ls' } },
+            { type: 'tool_use', id: 'toolu_01B', name: 'Read', input: { path: '/tmp/x' } },
+          ],
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { toolu_01A: 'Bash', toolu_01B: 'Read' });
+    });
+
+    it('#500: extracts turnToolResults from user tool_result (is_error: true)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-tool-fail.jsonl');
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_01A', is_error: true, content: 'command failed' }]),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_01A');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, true);
+      assert.strictEqual(entries[0].turnToolResults[0].eligible, true);
+    });
+
+    it('#500: extracts turnToolResults from user tool_result (no is_error)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-tool-ok.jsonl');
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_01A', content: 'success' }]),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_01A');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, undefined);
+    });
+
+    it('#500: extracts turnToolResults from user tool_result (is_error: false)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-tool-ok-explicit.jsonl');
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_01A', is_error: false, content: 'success' }]),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_01A');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, false);
+      assert.strictEqual(entries[0].turnToolResults[0].eligible, true);
+    });
+
+    it('#500: assistant with no tool_use → turnToolCallIds is {} (not undefined)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-no-tools.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hello'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, {});
+      assert.ok(entries[0].turnToolCallIds !== undefined);
+    });
+
+    it('#500: merges tool evidence across duplicate assistant lines (same msg.id)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-merge.jsonl');
+      // Claude Code writes one assistant line per content block, all sharing msg.id
+      const msgId = 'msg_01MERGE';
+      fs.writeFileSync(file, [
+        makeUserWithToolResults([{ tool_use_id: 'toolu_prev', is_error: true }]),
+        // First line: text block
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z', msgId, text: 'Let me check...' }),
+        // Second line: tool_use block (same msg.id, different content)
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.100Z',
+          msgId,
+          content: [{ type: 'tool_use', id: 'toolu_01C', name: 'Bash', input: { command: 'ls' } }],
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      // Tool call from the second line should be merged in
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { toolu_01C: 'Bash' });
+      // Tool results from the first line should be preserved (not overwritten)
+      assert.strictEqual(entries[0].turnToolResults.length, 1);
+      assert.strictEqual(entries[0].turnToolResults[0].callId, 'toolu_prev');
+      assert.strictEqual(entries[0].turnToolResults[0].toolFail, true);
+    });
+
+    it('#500: no preceding user tool_result → turnToolResults is [] (not undefined)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-no-results.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hello'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
+      assert.ok(entries[0].turnToolResults !== undefined);
     });
   });
 
@@ -400,6 +543,91 @@ describe('codex importer', () => {
 
       const entries = await parseCodexSessionFile(file);
       assert.strictEqual(entries.length, 0);
+    });
+
+    it('#500: custom_tool_call then token_count → turnToolCallIds populated', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-tool-call.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-tool-1' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_AAA', name: 'exec_command' } }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:03.000Z', type: 'response_item', payload: { type: 'function_call', call_id: 'call_BBB', name: 'read_mcp_resource' } }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { call_AAA: 'Bash', call_BBB: 'Read' });
+    });
+
+    it('#500: call+output in same window, results carry to NEXT entry', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-tool-result.jsonl');
+      const output = [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\nhello\n' }];
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-tool-2' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        // Window 0: call + output in same window (real Codex behavior)
+        JSON.stringify({ timestamp: '2026-07-15T10:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_AAA', name: 'exec' } }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_AAA', output } }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:04.000Z' }),
+        // Window 1: empty, creates entry that receives the results
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:08.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { call_AAA: 'Bash' });
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
+      assert.strictEqual(entries[1].turnToolResults.length, 1);
+      assert.strictEqual(entries[1].turnToolResults[0].callId, 'call_AAA');
+      assert.strictEqual(entries[1].turnToolResults[0].eligible, true);
+    });
+
+    it('#500: multi-tool calls+outputs in same window, results carry to next', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-tool-multi.jsonl');
+      const output = [{ type: 'input_text', text: 'Script completed\nWall time 0.1 seconds\nOutput:\nok\n' }];
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-tool-3' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        // Window 0: two call+output pairs
+        JSON.stringify({ timestamp: '2026-07-15T10:30:02.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_1', name: 'exec' } }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:02.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_1', output } }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:03.000Z', type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_2', name: 'apply_patch' } }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:03.500Z', type: 'response_item', payload: { type: 'custom_tool_call_output', call_id: 'call_2', output } }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        // Window 1: empty, receives the results
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:10.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, { call_1: 'Bash', call_2: 'Edit' });
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
+      assert.strictEqual(entries[1].turnToolResults.length, 2);
+      assert.strictEqual(entries[1].turnToolResults[0].callId, 'call_1');
+      assert.strictEqual(entries[1].turnToolResults[1].callId, 'call_2');
+    });
+
+    it('#500: no tool lines before token_count → turnToolCallIds {}, turnToolResults []', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-no-tools.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-no-tools' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.deepStrictEqual(entries[0].turnToolCallIds, {});
+      assert.deepStrictEqual(entries[0].turnToolResults, []);
     });
   });
 
