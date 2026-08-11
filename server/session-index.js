@@ -28,6 +28,25 @@ let dirty = false;
 let flushTimer = null;
 const FLUSH_DELAY_MS = 2000;
 
+// #503: revision of the DERIVATION behind persisted weather, stamped on every
+// session record that carries one. The schema probe in loadSessionIndex tests
+// field EXISTENCE only, and reconcile compares counts only — neither notices a
+// change in HOW weather was computed, so without this stamp a semantics change
+// would leave every cold session card rendering weather derived by the old rule
+// while all checks pass. Bump whenever the derivation changes.
+//   1 (absent) — responseId first-seen skip, no field merge, pre-merge subagent filter
+//   2          — store.mergeByResponseId per session, subagent filtered post-merge
+const WEATHER_REV = 2;
+
+// Single writer for persisted weather so the stamp can never be missed by one of
+// the three paths (rebuild finalize, _recomputeWeather, setWeather). A record
+// whose weather was written without the current stamp forces a rebuild at load.
+function _assignWeather(s, weather) {
+  if (!s || !weather) return;
+  s.weather = weather;
+  s.weatherRev = WEATHER_REV;
+}
+
 function sessionsPath() {
   return path.join(config.LOGS_DIR, 'sessions.json');
 }
@@ -68,6 +87,8 @@ async function loadSessionIndex() {
         || s.firstReceivedAt === undefined
         || (s.weather !== undefined && s.weather?.stats?.toolSignal === undefined)
         || (s.weather !== undefined && s.weather?.stats?.toolTurns === undefined)
+        // #503: not a field probe — a derivation-semantics probe. See WEATHER_REV.
+        || (s.weather !== undefined && s.weatherRev !== WEATHER_REV)
       )) { needsMigration = true; break; }
     }
     if (needsMigration) {
@@ -105,25 +126,41 @@ function _rebuildCore(feedFn) {
   _countedRids.clear();
   _unknownByRid.clear();
   const { assessWeather } = require('../public/weather');
-  const _weatherSeenRid = new Set();
   const bySid = new Map();
   const consume = (m) => {
     if (!m || !m.sessionId) return;
+    // Cost/count attribution stays on the raw line (first-seen by responseId) —
+    // ADR 0012 documents that as an accepted limitation and it is not in scope
+    // here. Only the weather grouping below changes.
     _upsert(m.sessionId, m);
-    if (m.isSubagent) return;
-    const rid = m.responseId;
-    if (rid) {
-      if (_weatherSeenRid.has(rid)) return;
-      _weatherSeenRid.add(rid);
-    }
+    // INVARIANT(#503): EVERY copy is kept for the weather group, including
+    // subagent-flagged ones. The merge in finalize() needs the whole group, and
+    // isSubagent is filtered POST-merge because the flag travels as part of the
+    // identity unit a merge adopts (ADR 0012) — an imported copy never sets it
+    // (importer.js), so a pre-merge filter would admit the imported half of a
+    // subagent turn as a main turn.
     let arr = bySid.get(m.sessionId);
     if (!arr) { arr = []; bySid.set(m.sessionId, arr); }
     arr.push(m);
   };
   const finalize = () => {
+    // Lazy require: store.js requires THIS module at its top (store.js:3), so a
+    // top-level import here would close the cycle.
+    const { mergeByResponseId } = require('./store');
     for (const [sid, turns] of bySid) {
       const s = sessionIndex.get(sid);
-      if (s) s.weather = assessWeather(turns);
+      if (!s) continue;
+      // #503: fold duplicate copies with the real field merge instead of keeping
+      // only the first-seen copy. On a shared ~/.ccxray ~48% of responseId-bearing
+      // lines are duplicate copies carrying COMPLEMENTARY evidence (one copy has
+      // the tool results, another the agentKey), so first-seen silently dropped
+      // signal that the store path (_recomputeWeather over merged store.entries)
+      // and cold-load (routes/api.js:122) both see. Same helper as those two, so
+      // a cold session card and a hot one can no longer disagree.
+      // Per session, not global: cross-session duplicate attribution is #222 /
+      // ADR 0012 territory and deliberately untouched.
+      const merged = mergeByResponseId(turns).filter(t => !t.isSubagent);
+      _assignWeather(s, assessWeather(merged));
     }
     dirty = true;
   };
@@ -287,7 +324,10 @@ function _recomputeWeather(sid) {
     if (e.sessionId === sid && !e.isSubagent) turns.push(e);
   }
   const s = sessionIndex.get(sid);
-  if (s) s.weather = assessWeather(turns, { sessionWindow: sessionWindow(sid) });
+  // #503: store.entries is already the merged canonical set, so no merge here —
+  // but the stamp must match the rebuild's, or every startup would see rev-less
+  // weather and rebuild forever.
+  if (s) _assignWeather(s, assessWeather(turns, { sessionWindow: sessionWindow(sid) }));
 }
 
 function _upsert(sid, entry) {
@@ -478,7 +518,10 @@ function size() {
 
 function setWeather(sid, weather) {
   const s = sessionIndex.get(sid);
-  if (s && weather) { s.weather = weather; _scheduleDirtyFlush(); }
+  // Stamped like the other two writers (#503): restore's step-6 pass runs AFTER a
+  // rebuild and overwrites its weather, so an unstamped write here would undo the
+  // rebuild's stamp and force a rebuild on every subsequent startup.
+  if (s && weather) { _assignWeather(s, weather); _scheduleDirtyFlush(); }
 }
 
 module.exports = {
