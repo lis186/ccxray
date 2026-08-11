@@ -582,6 +582,9 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   const result = await scanAndImport();
   await storage.drain();
   log(`Re-imported ${result.imported} entries (${result.skipped} duplicates skipped).`);
+  if (result.imported < removed) {
+    log(`\x1b[33m  ⚠ ${removed - result.imported} fewer entries than before — source transcripts may have been deleted or moved\x1b[0m`);
+  }
   return { refused: false, removed, imported: result.imported, skipped: result.skipped };
 }
 
