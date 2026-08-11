@@ -228,7 +228,7 @@ function sigErrorCumulative(turns, toolEvidence) {
 
 function assessWeather(turns, opts) {
   if (!turns || !turns.length) {
-    return { level: 'sunny', emoji: LEVELS[0].emoji, score: 0, factors: [], stats: { ctxPct: 0, errRate: 0, errTurns: 0, latencyRatio: null, compactions: 0, toolKnownRate: null, toolSignal: 'no_data' }, tooltip: 'Operating normally' };
+    return { level: 'sunny', emoji: LEVELS[0].emoji, score: 0, factors: [], stats: { ctxPct: 0, errRate: 0, errTurns: 0, toolTurns: 0, latencyRatio: null, compactions: 0, toolKnownRate: null, toolSignal: 'no_data' }, tooltip: 'Operating normally' };
   }
 
   var openAIToolEvidence = _openAIToolEvidence(turns);

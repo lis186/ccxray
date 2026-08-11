@@ -67,6 +67,7 @@ async function loadSessionIndex() {
         || s.fallbackCount === undefined
         || s.firstReceivedAt === undefined
         || (s.weather !== undefined && s.weather?.stats?.toolSignal === undefined)
+        || (s.weather !== undefined && s.weather?.stats?.toolTurns === undefined)
       )) { needsMigration = true; break; }
     }
     if (needsMigration) {
