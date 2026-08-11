@@ -10,7 +10,7 @@ const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
 const { agentForProvider, matchOpenAIWireClient } = require('./providers');
-const { buildIndexLine } = require('./entry');
+const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
 const {
   detectSession: _detectOpenAISession3,
@@ -342,6 +342,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     status: result.status,
     isSSE: false,
     receivedAt: t.startTime || ctx.startTime,
+    ...deploymentFields(t.startTime || ctx.startTime),
     tokens: null,
     duplicateToolCalls: null,
     ...getParser('openai').buildEntryFields({
