@@ -527,4 +527,50 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
 }
 
-module.exports = { rebuildIndex, reconstructReq, tsFromId, nearestPrecedingSession };
+// #500: --reimport — remove all imported index lines and re-run scanAndImport()
+// so imported entries pick up newly-extracted fields (turnToolCallIds, turnToolResults).
+async function reimportEntries({ storage = config.storage, log = console.log } = {}) {
+  const blockingHub = liveHubBlocking();
+  if (blockingHub) {
+    log(`\x1b[31mA ccxray hub is running (pid ${blockingHub.pid}). Stop it first.\x1b[0m`);
+    return { refused: true };
+  }
+
+  await storage.init();
+
+  if (!storage.supportsDelta || !storage.location) {
+    log('  --reimport needs the local filesystem backend; aborting.');
+    return { refused: true };
+  }
+
+  // Count and remove imported lines
+  const indexPath = path.join(storage.location, 'index.ndjson');
+  const kept = [];
+  let removed = 0;
+  for await (const line of storage.readIndexLines()) {
+    if (!line.trim()) continue;
+    let m;
+    try { m = JSON.parse(line); } catch { kept.push(line); continue; }
+    if (m && m.imported) { removed++; continue; }
+    kept.push(line);
+  }
+
+  log(`Removing ${removed} imported line(s) from index...`);
+  const tmpPath = `${indexPath}.reimport-${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, kept.join('\n') + (kept.length ? '\n' : ''), { mode: 0o600 });
+  fs.renameSync(tmpPath, indexPath);
+
+  // Rebuild session index from cleaned state
+  const sessionIdx = require('./session-index');
+  const content = fs.readFileSync(indexPath, 'utf8');
+  sessionIdx.rebuildFromIndexContent(content);
+
+  // Re-run importer
+  const { scanAndImport } = require('./importer');
+  const result = await scanAndImport();
+  await storage.drain();
+  log(`Re-imported ${result.imported} entries (${result.skipped} duplicates skipped).`);
+  return { refused: false, removed, imported: result.imported, skipped: result.skipped };
+}
+
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession };

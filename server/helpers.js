@@ -1180,6 +1180,8 @@ module.exports = {
   extractOpenAIToolCalls,
   extractOpenAIToolCallIds,
   extractOpenAITurnToolFail, extractOpenAITurnToolResults,
+  decodeCodexToolOutput, CODEX_ASYNC_START, aggregateToolFailResults,
+  OPENAI_TOOL_ALIASES, OPENAI_PROCESS_TOOLS,
   extractDuplicateToolCalls,
   scanCredentials,
   scanObjectForCredentials,

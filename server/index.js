@@ -91,10 +91,16 @@ if (process.argv[2] === 'secret') {
 // Rebuilds index.ndjson from surviving _req/_res log files. Dry-run by default;
 // --apply atomically writes the merged index. Merge-only and hub-safe.
 if (process.argv[2] === 'rebuild-index') {
-  const { rebuildIndex } = require('./rebuild-index');
-  rebuildIndex({ apply: process.argv.includes('--apply') })
-    .then(r => process.exit(r && r.refused ? 1 : 0))
-    .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
+  const { rebuildIndex, reimportEntries } = require('./rebuild-index');
+  if (process.argv.includes('--reimport')) {
+    reimportEntries()
+      .then(r => process.exit(r && r.refused ? 1 : 0))
+      .catch(err => { console.error(`rebuild-index --reimport failed: ${err.message}`); process.exit(1); });
+  } else {
+    rebuildIndex({ apply: process.argv.includes('--apply') })
+      .then(r => process.exit(r && r.refused ? 1 : 0))
+      .catch(err => { console.error(`rebuild-index failed: ${err.message}`); process.exit(1); });
+  }
   return;
 }
 

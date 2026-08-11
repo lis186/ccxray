@@ -9,6 +9,7 @@ const config = require('./config');
 const { broadcastRaw } = require('./sse-broadcast');
 const { buildIndexLine } = require('./entry');
 const sessionIdx = require('./session-index');
+const helpers = require('./helpers');
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const CODEX_CONTEXT_WINDOW = 400000;
@@ -120,6 +121,8 @@ async function parseSessionFile(filePath, projectSlug) {
   const sessionId = path.basename(filePath, '.jsonl');
   let lastUserText = null;
   let cwd = null;
+  // #500: tool_result blocks from the most recent user line, carried to next assistant
+  let pendingToolResults = [];
   // #428: aggregate by message.id — Claude Code writes multiple assistant lines
   // per API response (one per content block), each with a different timestamp.
   // Key = msg.id; value = entry object. Last-seen line wins (richest usage).
@@ -139,9 +142,21 @@ async function parseSessionFile(filePath, projectSlug) {
       const content = obj.message.content;
       if (typeof content === 'string') {
         lastUserText = content.slice(0, 120);
+        pendingToolResults = [];
       } else if (Array.isArray(content)) {
         const textBlock = content.find(b => b.type === 'text');
         if (textBlock) lastUserText = (textBlock.text || '').slice(0, 120);
+        // #500: extract tool_result blocks from user content
+        pendingToolResults = [];
+        for (const b of content) {
+          if (b?.type === 'tool_result') {
+            pendingToolResults.push({
+              callId: b.tool_use_id || null,
+              toolFail: b.is_error === true ? true : undefined,
+              eligible: true,
+            });
+          }
+        }
       }
       continue;
     }
@@ -161,6 +176,16 @@ async function parseSessionFile(filePath, projectSlug) {
     const tokens = buildTokens(usage);
     const receivedAt = new Date(obj.timestamp).getTime();
 
+    // #500: extract tool_use call ids from assistant content
+    const turnToolCallIds = {};
+    if (Array.isArray(msg.content)) {
+      for (const b of msg.content) {
+        if (b.type === 'tool_use' && b.id) {
+          turnToolCallIds[b.id] = b.name || null;
+        }
+      }
+    }
+
     const responseId = msg.id || null;
     const dedupKey = responseId || id;
     const prev = byResponseId.get(dedupKey);
@@ -178,6 +203,8 @@ async function parseSessionFile(filePath, projectSlug) {
       isSSE: false,
       receivedAt: prev ? prev.receivedAt : receivedAt,
       responseId,
+      turnToolCallIds,
+      turnToolResults: pendingToolResults,
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model,
@@ -197,6 +224,7 @@ async function parseSessionFile(filePath, projectSlug) {
       },
     };
     byResponseId.set(dedupKey, entry);
+    pendingToolResults = [];
   }
   return [...byResponseId.values()];
 }
@@ -210,6 +238,9 @@ async function parseCodexSessionFile(filePath) {
   let sessionId = path.basename(filePath, '.jsonl');
   let cwd = null;
   let lastModel = 'unknown';
+  // #500: accumulate tool calls/results between token_count boundaries
+  let pendingCalls = {};
+  let pendingResults = [];
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -223,6 +254,30 @@ async function parseCodexSessionFile(filePath) {
     if (payload.cwd && !cwd) cwd = payload.cwd;
     if (payload.model) lastModel = payload.model;
     if (obj.type === 'session_meta' && typeof payload.session_id === 'string') sessionId = payload.session_id;
+
+    // #500: tool call lines (response side)
+    if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
+      const callId = payload.call_id || payload.id;
+      if (callId) {
+        const rawName = payload.name || payload.function?.name || payload.tool_name;
+        pendingCalls[callId] = rawName
+          ? (helpers.OPENAI_PROCESS_TOOLS.has(rawName) ? 'Bash' : (helpers.OPENAI_TOOL_ALIASES[rawName] || rawName))
+          : null;
+      }
+      continue;
+    }
+
+    // #500: tool result lines (request side)
+    if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+      const decoded = helpers.decodeCodexToolOutput(payload.output);
+      const isAsyncStart = decoded === helpers.CODEX_ASYNC_START;
+      pendingResults.push({
+        callId: payload.call_id || null,
+        eligible: !isAsyncStart,
+        toolFail: isAsyncStart ? undefined : decoded,
+      });
+      continue;
+    }
 
     if (payload.type !== 'token_count') continue;
     const tu = payload.info && payload.info.last_token_usage;
@@ -258,6 +313,8 @@ async function parseCodexSessionFile(filePath) {
       status: 200,
       isSSE: false,
       receivedAt,
+      turnToolCallIds: pendingCalls,
+      turnToolResults: pendingResults,
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model: lastModel,
@@ -273,6 +330,8 @@ async function parseCodexSessionFile(filePath) {
       cwd,
       usage,
     });
+    pendingCalls = {};
+    pendingResults = [];
   }
   return entries;
 }
