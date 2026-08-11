@@ -271,10 +271,13 @@ Corpus-wide (Anthropic, ≥10 tool turns, using `turnToolFail` at 17% coverage):
 - p50: 1.9%, p75: 3.2%, p90: 4.6%
 - 77% of qualifying sessions have >0% failure rate
 
-These numbers are from the pre-#486 `turnToolFail` field. The `turnToolResults`
-paired pipeline has zero production data. The `sigErrorCumulative` threshold of
-`0.4` (40% → severity 1.0) was tuned against cumulative-contaminated data and
-will need recalibration after paired data accumulates.
+**Selection bias caveat**: these numbers are from the pre-#486 `turnToolFail`
+field, which covers only 17% of Anthropic entries (newer versions). The 83%
+without `turnToolFail` have no data, not zero failures — so the 77% figure
+is not generalizable to the full corpus. The `turnToolResults` paired pipeline
+has zero production data. The `sigErrorCumulative` threshold of `0.4`
+(40% → severity 1.0) was tuned against cumulative-contaminated data and will
+need recalibration after paired data accumulates.
 
 ### 4e. Tooltip "0 errors" false claim
 
@@ -317,13 +320,13 @@ node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
 No fixed session count. The calibration replay script determines readiness:
 
 ```
-replay → if sessions with ≥5 tool turns ≥ 100
+replay → if sessions with ≥5 paired Bash tool results ≥ 100
        → AND degraded samples (failure rate > 10%) ≥ 20
        → output "ready" + distribution chart
        → otherwise "not ready, N sessions, M degraded samples"
 ```
 
-Existing corpus already has 1,188 sessions with ≥5 tool turns (99 in the 5–9
+Existing corpus has 1,188 sessions with ≥5 `stopReason=tool_use` turns (99 in the 5–9
 range, 1,089 with ≥10). Once paired data starts flowing, the first replay run
 determines whether the distribution is bimodal (healthy vs degraded separable).
 If not, wait one week and re-run.
@@ -341,6 +344,8 @@ Delete Anthropic cumulative branches in `sigStuck`/`sigErrorCluster`/
 - `sigToolFailure` severity → `null`
 - `sigErrorCumulative` threshold ≥10 → ≥5
 - Tooltip "0 errors" → "—" when below measurement threshold
+- `_strongerToolSignal` simplification or removal (all three consumers will
+  only pass the paired result after the Anthropic branch is deleted)
 - Calibration replay script as deliverable
 
 ### Issue 2: importer tool-failure evidence
