@@ -1,7 +1,7 @@
 # Weather evidence audit: provider-by-provider + scoring redesign
 
 Ref #487 — diagnostic output. All findings verified against real corpus
-(277,748 entries / 4,223 sessions) and synthetic unit exercises.
+(277,747 entries / 4,223 sessions) and synthetic unit exercises.
 
 ## 1. Provider-by-provider evidence audit
 
@@ -13,8 +13,9 @@ Ref #487 — diagnostic output. All findings verified against real corpus
   `:1083` (non-SSE). Shape: `{ "toolu_01X": "Bash", "toolu_01Y": "Read" }`.
 - `turnToolResults`: extracted from the request's last user message
   (`extractAnthropicTurnToolResults`, `helpers.js:692`). Shape:
-  `[{ callId, toolFail: bool, eligible: true }]`. All Anthropic results have
-  explicit `is_error`, so `eligible ≡ known` — no "undecoded" state.
+  `[{ callId, toolFail: bool, eligible: true }]`. On the live proxy path, all
+  Anthropic results have explicit `is_error`, so `eligible ≡ known` — no
+  "undecoded" state. (Historical transcripts: 48% lack `is_error` — see §2a.)
 - `turnToolFail`: tri-state from `hasToolFailLastTurn` (`helpers.js:671`). Correctly
   distinguishes `true` (failure), `false` (checked-clean), `undefined` (no tool_result).
 
@@ -189,7 +190,7 @@ The paired path counts only Bash tool results matched by call ID.
 
 ### 3b. Anthropic `eligible ≡ known`
 
-For Anthropic, `is_error` is always explicit. `extractAnthropicTurnToolResults`
+For Anthropic on the live proxy path, `is_error` is always explicit. `extractAnthropicTurnToolResults`
 always returns `eligible: true`. Therefore `eligible === known` — the
 `sigToolFailure` `unavailable` state is unreachable for Anthropic sessions
 (except when zero Bash tool calls exist).
@@ -241,12 +242,16 @@ the weather score). Keep the function for its unique availability detection
 (no_data / unavailable / clear / failure) which drives the `❔` weather state
 and tooltip `toolKnownRate`. No other signal provides this.
 
-The fixed 0.35 is removed. Tool failure severity is handled solely by
-`sigErrorCumulative`'s proportional rate.
+The fixed 0.35 is removed. Tool failure severity is handled by
+`sigErrorCumulative`'s proportional rate, `sigErrorCluster`'s sliding window,
+and `sigStuck`'s consecutive-failure detection — all via the paired path.
 
 Adversarial review: both Fable and Codex independently chose Option 1
 (severity null). Both identified the same risk: short sessions (< 10 tool turns)
-become a blind spot because `sigErrorCumulative`'s ≥10 threshold doesn't fire.
+lose `sigErrorCumulative`'s rate signal (its ≥10 threshold doesn't fire).
+`sigErrorCluster`'s 5-turn window partially covers this (fires with ≥3 known
+results), but its severity is capped at 0.5 and it measures burst rate, not
+cumulative rate.
 
 ### 4c. `sigErrorCumulative` threshold ≥10 → ≥5
 
@@ -361,7 +366,7 @@ Extract tool evidence from source transcripts to produce `turnToolCallIds`/
 
 ## Appendix: corpus replay raw numbers
 
-- Total: 277,748 entries, 4,223 sessions
+- Total: 277,747 entries, 4,223 sessions
 - Anthropic: 245,934 entries, 2,323 sessions
 - OpenAI: 31,813 entries, 1,900 sessions (codex 31,804, grok 9)
 - `turnToolCallIds` present: 0 entries (pre-production)
