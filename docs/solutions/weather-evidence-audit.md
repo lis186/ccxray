@@ -320,10 +320,71 @@ node scripts/weather-replay.js [--index PATH] [--provider anthropic|openai]
   pre-#503 rebuild path) and `merged` (`store.mergeByResponseId`, what the store
   path and cold-load see). The verdict comes from `merged`; `first-seen` remains
   as the counterfactual.
-- `--golden` self-checks 41 assertions against a hand-counted synthetic fixture,
-  so the measurement is a re-runnable regression test rather than a one-off.
+- `--golden` self-checks 62 assertions against a hand-counted synthetic fixture. It
+  runs in CI (`test/weather-replay-golden.test.js`), so acceptance is a regression
+  test rather than a command someone remembers to type.
 
-### 5c. Toggle-ON decision gate — data-driven, not fixed threshold
+### 5c. Toggle-ON decision gate
+
+> **Revised 2026-08-11 — policy change, owner-signed.** The condition moved from
+> "corpus-wide statistics meet thresholds" to "per-session honest display + manual
+> validation of a sample". Prong 3 is **retired**; prong 2 is **downgraded** to a
+> fixture source. The original text is kept below under *Superseded* because the
+> reasoning that replaced it only makes sense against it.
+>
+> Two adversarial reviews (Fable + Codex, independent) converged on the same
+> diagnosis: the corpus-wide gate asked the wrong question, and ADR 0017 already
+> established the right pattern — per-display honesty, missing data as its own error
+> class, and legacy data contributing nothing.
+
+**Current condition (all three required):**
+
+1. **#509 fixed** — a session that ran a Bash call whose result was never recorded
+   renders ❔, not sunny. ✅ landed; `sigToolFailure` returns `unmeasured` and the
+   sunny→❔ escalation covers it.
+2. **False-sunny rate = 0** — evidence-capable sessions (a Bash call present in some
+   turn's `turnToolCallIds`, the #486 capability marker) that recorded zero paired
+   evidence and still render sunny. ✅ measured 0/23 on 2026-08-11.
+   This replaces prong 3 as rollout telemetry: it is a per-session honesty invariant,
+   so it stays checkable as the corpus grows instead of being a one-time hurdle.
+3. **Manual qualitative check of the degraded tail** — confirm the highest-failure-rate
+   sessions are *actually* degraded. ❌ **OUTSTANDING — not done.** No script can
+   assert this; `scripts/weather-replay.js` now prints the tail as an actionable list
+   of session ids. Current tail is thin (2 sessions >10%: `6cbdc179` at 28.6%,
+   `118e2c67` at 25.9%), so the check should be made against what exists rather than
+   deferred until a larger sample appears.
+
+**Why prong 3 was retired.** It gated a per-session display on corpus age. ~85% of the
+index is imported/Codex lines that structurally cannot carry paired fields, so the
+statistic could not move regardless of how much new data arrived (measured 99.5%
+all-sessions, 88.2% tool-active — both fail, so the narrower denominator was not a fix
+either). It also recreated the "worst-of" shape ADR 0017's expert panel scored 3/3/3
+and rejected — one contaminated component condemning the whole display
+(`docs/decisions/0017-aggregate-cost-confidence.md:41,136`). Retired, not deleted: the
+script still prints it, labelled, for continuity with the runs recorded above.
+
+**Why prong 2 was downgraded.** It is circular — the 10% threshold defines the tail it
+then counts — and satisfiable by sample size alone at ~180–200 qualifying sessions.
+The bimodality precondition ("healthy vs degraded separable") was imported from a
+classifier problem; weather renders a *continuous* severity, so there is no reason to
+expect two modes. It remains useful as the source of fixtures for condition 3.
+
+**Internal contradiction corrected.** The superseded text below called itself
+"data-driven, not fixed threshold" while specifying fixed 100 / 20 / 10% / 50% cutoffs
+that the script hardcoded. The current condition has exactly one machine-checkable
+threshold (false-sunny = 0, which is not a tuned number but an invariant), and names
+the remaining judgement as human.
+
+**Scope note.** The escalation is deliberately Bash-only and capability-gated, so it
+changes **0 sessions in the current corpus** (23 evidence-capable sessions, all of
+which have evidence). The earlier "157 sessions affected" figure counted sessions by
+cumulative `toolCalls`, which includes pre-#486 sessions that never had a results
+pipeline; marking those ❔ would be prong 3's corpus-age reasoning wearing a
+per-session mask, and would make ❔ the default state. Whether legacy Bash sessions
+should nonetheless be marked is an open owner decision — it is a one-line change to
+`_issuedCapableBashCall` affecting ~157 sessions.
+
+#### Superseded (pre-2026-08-11) — corpus-wide thresholds
 
 No fixed session count. The calibration replay script determines readiness:
 
@@ -340,7 +401,7 @@ determines whether the distribution is bimodal (healthy vs degraded separable).
 If not, wait one week and re-run.
 
 Additional gate checks:
-- `sigToolFailure` `no_data` rate < 50%
+- `sigToolFailure` `no_data` rate < 50%  ← retired 2026-08-11, see above
 - Tooltip accurately represents measurement state
 
 #### First adjudicated run — 2026-08-11 (278,757 lines / 4,258 sessions)
