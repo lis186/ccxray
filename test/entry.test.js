@@ -14,6 +14,15 @@ const LEGACY_INDEX_FIELDS = [
   'edited','editSummary','imported','importSource','responseId','turnToolCalls','turnToolFail',
   'turnToolCallIds','turnToolResults','beta1m',
 ];
+const G2_LEGACY_ENTRY = {
+  id:'G2', ts:'12:34:56', sessionId:'s', provider:'openai', agent:'codex', model:'gpt-5.5',
+  msgCount:1, toolCount:0, toolCalls:{}, skillCalls:{}, isSubagent:false, sessionInferred:false,
+  cwd:'/p', isSSE:true, usage:{input_tokens:1}, cost:null, maxContext:400000,
+  responseMetadata:null, stopReason:'completed', title:null, thinkingDuration:null, toolFail:false,
+  elapsed:'0.1', status:200, receivedAt:1786440000000, sysHash:null, toolsHash:null, coreHash:null,
+  agentKey:null, agentLabel:null, convId:null, duplicateToolCalls:null,
+};
+const G2_LEGACY_LINE = '{"id":"G2","ts":"12:34:56","sessionId":"s","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/p","isSSE":true,"usage":{"input_tokens":1},"cost":null,"maxContext":400000,"responseMetadata":null,"stopReason":"completed","title":null,"thinkingDuration":null,"toolFail":false,"elapsed":"0.1","status":200,"receivedAt":1786440000000,"sysHash":null,"toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null}';
 
 test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 fields', () => {
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
@@ -54,32 +63,46 @@ test('duplicate tool-call fixtures produce counts only when duplicates exist', (
 });
 
 test('deployment fields read env per call and derive reproducible local date/time zone', () => {
-  const envNames = ['CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE','TZ'];
+  const envNames = [
+    'CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE',
+    'CCXRAY_INDEX_LOCALE','TZ',
+  ];
   const original = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
   try {
     delete process.env.CCXRAY_AGENT_ID;
     delete process.env.CCXRAY_USER_EMAIL;
     delete process.env.CCXRAY_TEAM;
     process.env.CCXRAY_AGENT_TYPE = '';
+    delete process.env.CCXRAY_INDEX_LOCALE;
     process.env.TZ = 'America/Los_Angeles';
     const ts = Date.parse('2026-01-15T07:30:00.000Z');
 
     const unsetFields = deploymentFields(ts);
     for (const key of ['agentId','userEmail','team','agentType']) assert.ok(!(key in unsetFields));
-    const withoutEnv = JSON.parse(buildIndexLine({ id: 'without-env', ...unsetFields }));
-    for (const key of ['agentId','userEmail','team','agentType']) assert.ok(!(key in withoutEnv));
-    assert.equal(withoutEnv.localDate, '2026-01-14');
-    assert.equal(withoutEnv.tz, 'America/Los_Angeles');
+    assert.equal('localDate' in unsetFields, false);
+    assert.equal('tz' in unsetFields, false);
 
     process.env.CCXRAY_AGENT_ID = 'machine-7';
     process.env.CCXRAY_USER_EMAIL = 'dev@example.com';
     process.env.CCXRAY_TEAM = 'platform';
     process.env.CCXRAY_AGENT_TYPE = 'claude-code';
-    const withEnv = JSON.parse(buildIndexLine({ id: 'with-env', ...deploymentFields(ts) }));
+    const withEnv = deploymentFields(ts);
     assert.deepEqual(
       { agentId: withEnv.agentId, userEmail: withEnv.userEmail, team: withEnv.team, agentType: withEnv.agentType },
       { agentId: 'machine-7', userEmail: 'dev@example.com', team: 'platform', agentType: 'claude-code' },
     );
+    assert.equal('localDate' in withEnv, false);
+    assert.equal('tz' in withEnv, false);
+
+    process.env.CCXRAY_INDEX_LOCALE = '1';
+    const losAngelesFields = deploymentFields(ts);
+    assert.equal(losAngelesFields.localDate, '2026-01-14');
+    assert.equal(losAngelesFields.tz, 'America/Los_Angeles');
+
+    process.env.TZ = 'Asia/Tokyo';
+    const tokyoFields = deploymentFields(ts);
+    assert.equal(tokyoFields.localDate, '2026-01-15');
+    assert.equal(tokyoFields.tz, 'Asia/Tokyo');
   } finally {
     for (const name of envNames) {
       if (original[name] === undefined) delete process.env[name];
@@ -89,16 +112,54 @@ test('deployment fields read env per call and derive reproducible local date/tim
 });
 
 test('G2: a legacy-shaped entry without duplicates remains byte-identical', () => {
-  const entry = {
-    id:'G2', ts:'12:34:56', sessionId:'s', provider:'openai', agent:'codex', model:'gpt-5.5',
-    msgCount:1, toolCount:0, toolCalls:{}, skillCalls:{}, isSubagent:false, sessionInferred:false,
-    cwd:'/p', isSSE:true, usage:{input_tokens:1}, cost:null, maxContext:400000,
-    responseMetadata:null, stopReason:'completed', title:null, thinkingDuration:null, toolFail:false,
-    elapsed:'0.1', status:200, receivedAt:1786440000000, sysHash:null, toolsHash:null, coreHash:null,
-    agentKey:null, agentLabel:null, convId:null, duplicateToolCalls:null,
-  };
-  const legacyLine = '{"id":"G2","ts":"12:34:56","sessionId":"s","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/p","isSSE":true,"usage":{"input_tokens":1},"cost":null,"maxContext":400000,"responseMetadata":null,"stopReason":"completed","title":null,"thinkingDuration":null,"toolFail":false,"elapsed":"0.1","status":200,"receivedAt":1786440000000,"sysHash":null,"toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null}';
-  assert.equal(buildIndexLine(entry), legacyLine);
+  const envNames = [
+    'CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE','CCXRAY_INDEX_LOCALE',
+  ];
+  const original = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
+  try {
+    for (const name of envNames) delete process.env[name];
+    const line = buildIndexLine({
+      ...G2_LEGACY_ENTRY,
+      ...deploymentFields(G2_LEGACY_ENTRY.receivedAt),
+    });
+    const expectedKeys = LEGACY_INDEX_FIELDS.filter(key => G2_LEGACY_ENTRY[key] !== undefined);
+    assert.deepEqual(Object.keys(JSON.parse(line)), expectedKeys);
+    assert.equal(line, G2_LEGACY_LINE);
+  } finally {
+    for (const name of envNames) {
+      if (original[name] === undefined) delete process.env[name];
+      else process.env[name] = original[name];
+    }
+  }
+});
+
+test('G2 negative control: locale opt-in adds localDate and tz', () => {
+  const envNames = [
+    'CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE',
+    'CCXRAY_INDEX_LOCALE','TZ',
+  ];
+  const original = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
+  try {
+    for (const name of envNames) delete process.env[name];
+    process.env.CCXRAY_INDEX_LOCALE = '1';
+    process.env.TZ = 'Asia/Taipei';
+    const indexed = JSON.parse(buildIndexLine({
+      ...G2_LEGACY_ENTRY,
+      ...deploymentFields(G2_LEGACY_ENTRY.receivedAt),
+    }));
+    const expectedKeys = [
+      ...LEGACY_INDEX_FIELDS.filter(key => G2_LEGACY_ENTRY[key] !== undefined),
+      'localDate','tz',
+    ];
+    assert.deepEqual(Object.keys(indexed), expectedKeys);
+    assert.equal(indexed.localDate, '2026-08-11');
+    assert.equal(indexed.tz, 'Asia/Taipei');
+  } finally {
+    for (const name of envNames) {
+      if (original[name] === undefined) delete process.env[name];
+      else process.env[name] = original[name];
+    }
+  }
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {

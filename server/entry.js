@@ -42,6 +42,7 @@ function deploymentFields(ts) {
   ]) {
     if (process.env[envName]) fields[key] = process.env[envName];
   }
+  if (process.env.CCXRAY_INDEX_LOCALE !== '1') return fields;
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (tz) fields.tz = tz;
   if (Number.isFinite(ts)) {
