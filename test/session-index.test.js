@@ -308,7 +308,8 @@ describe('session-index', () => {
       },
     ]);
     const weather = si.get('weather-paired').weather;
-    assert.equal(weather.level, 'fair');
+    // #499: sigToolFailure severity → null, so a single failure → sunny (not fair)
+    assert.equal(weather.level, 'sunny');
     assert.equal(weather.stats.toolSignal, 'failure');
   });
 
@@ -525,17 +526,16 @@ describe('session-index', () => {
     assert.equal(ecFactor, undefined, 'error_cluster must not fire on deduped metas');
   });
 
+  // #499: Anthropic cumulative branches deleted — legacy metas no longer feed tool
+  // signals via stopReason/toolFail. Use compaction_scar to prove all 5 lines pass
+  // through (compaction is unaffected by the cumulative branch deletion).
   it('#385 Guard 1: legacy metas without responseId pass through to weather', () => {
     const si = require('../server/session-index');
-    // 5 distinct legacy lines (no responseId) — all must count in weather.
-    // sigErrorCluster checks: 5-turn window has 5 tool_use, 5 errors → errorRate=1.0.
-    // If the dedup wrongly dropped legacy lines, errorRate would be lower or the
-    // window wouldn't have ≥3 tool_use turns.
     const metas = [];
     for (let i = 0; i < 5; i++) {
       metas.push({
         id: `legacy${i}`, sessionId: 'weather-legacy',
-        model: 'claude-sonnet-4-6', stopReason: 'tool_use', toolFail: true,
+        model: 'claude-sonnet-4-6', isCompacted: true,
         cost: { cost: 0.01 }, receivedAt: (i + 1) * 1000, maxContext: 200000,
         usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
       });
@@ -543,10 +543,10 @@ describe('session-index', () => {
     si.rebuildFromMetas(metas);
     const s = si.get('weather-legacy');
     assert.ok(s.weather, 'weather computed');
-    // error_cluster must fire with errorRate=1.0 — proves all 5 lines counted
-    const ecFactor = s.weather.factors.find(f => f.type === 'error_cluster');
-    assert.ok(ecFactor, 'error_cluster fires — proves all 5 legacy lines reached weather');
-    assert.equal(ecFactor.detail.errorRate, 1.0, 'all 5 turns are errors (no dedup applied)');
+    // compaction_scar fires with count=5 — proves all 5 legacy lines counted
+    const compFactor = s.weather.factors.find(f => f.type === 'compaction_scar');
+    assert.ok(compFactor, 'compaction_scar fires — proves all 5 legacy lines reached weather');
+    assert.equal(compFactor.detail.compactionCount, 5, 'all 5 turns are compacted (no dedup applied)');
     assert.equal(s.count, 5, 'count also 5 (no responseId = no dedup)');
   });
 

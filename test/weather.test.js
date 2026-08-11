@@ -64,7 +64,8 @@ describe('assessWeather', function() {
       }),
     ]);
 
-    assert.notEqual(result.level, 'sunny');
+    // #499: sigToolFailure severity → null — a single failure alone doesn't bump score
+    // but the tool signal metadata must still be populated
     assert.notEqual(result.stats.toolSignal, 'no_data');
     assert.equal(result.stats.toolKnownRate, 100);
   });
@@ -79,8 +80,9 @@ describe('assessWeather', function() {
       }),
     ];
     var r = assessWeather(turns);
-    assert.notEqual(r.level, 'sunny');
-    assert.ok(hasFactor(r, 'tool_failure'), 'paired failure should be visible');
+    // #499: sigToolFailure severity → null, so it doesn't appear in factors
+    // but the availability/signal metadata is still populated
+    assert.equal(r.stats.toolSignal, 'failure');
   });
 
   it('#475 failure is attributed to call A when the model switches to successful call B (fail-on-old)', function() {
@@ -97,9 +99,9 @@ describe('assessWeather', function() {
       }),
     ];
     var r = assessWeather(turns);
-    var failure = r.factors.find(function(f) { return f.type === 'tool_failure'; });
-    assert.ok(failure, 'A failure should remain visible');
-    assert.equal(failure.detail.entryId, 'issued-a', 'failure belongs to the response that issued A');
+    // #499: sigToolFailure severity → null, so it doesn't appear in factors
+    // but the availability metadata captures the failure
+    assert.equal(r.stats.toolSignal, 'failure');
     assert.ok(!hasFactor(r, 'stuck'), 'switching to a successful tool is not a failure streak');
   });
 
@@ -194,7 +196,8 @@ describe('assessWeather', function() {
       [unknown.stats.toolSignal, clear.stats.toolSignal, failed.stats.toolSignal],
       ['unavailable', 'clear', 'failure'],
     );
-    assert.deepEqual([unknown.level, clear.level, failed.level], ['unavailable', 'sunny', 'fair']);
+    // #499: sigToolFailure severity → null, so 'failure' no longer bumps the score
+    assert.deepEqual([unknown.level, clear.level, failed.level], ['unavailable', 'sunny', 'sunny']);
   });
 
   it('#475 partial unknown evidence remains visibly unavailable', function() {
@@ -307,31 +310,21 @@ describe('assessWeather', function() {
     assert.doesNotMatch(r.tooltip, /signal unavailable/i);
   });
 
-  it('#475 Anthropic weather scores remain identical to the origin/main baseline', function() {
-    var healthy = repeat(20, function(i) { return { id: 'h' + i, provider: 'anthropic' }; });
+  // #499: Anthropic cumulative branches deleted — Anthropic-only turns without
+  // paired evidence (turnToolCallIds/turnToolResults) no longer feed tool signals.
+  it('#499 Anthropic-only turns without paired evidence produce no tool signal', function() {
     var failing = repeat(12, function(i) {
       return { id: 'f' + i, provider: 'anthropic', stopReason: 'tool_use', toolFail: true };
     });
-    var compacted = repeat(20, function(i) {
-      return { id: 'm' + i, provider: 'anthropic', isCompacted: i === 5 || i === 10 || i === 15 };
-    });
-    assert.deepEqual(
-      [healthy, failing, compacted].map(function(turns) {
-        var r = assessWeather(turns);
-        return { level: r.level, score: r.score };
-      }),
-      [
-        { level: 'sunny', score: 0 },
-        { level: 'stormy', score: 1.27 },
-        { level: 'cloudy', score: 0.6 },
-      ],
-    );
+    var r = assessWeather(failing);
+    assert.equal(r.level, 'sunny', 'cumulative stopReason/toolFail no longer feeds signals');
+    assert.ok(!hasFactor(r, 'stuck'));
+    assert.ok(!hasFactor(r, 'error_cluster'));
+    assert.ok(!hasFactor(r, 'error_cumulative'));
   });
 
-  it('#475 an inert OpenAI turn must not erase Anthropic tool severity (round-2 regression)', function() {
-    var anthropicFailures = repeat(12, function(i) {
-      return { id: 'anthropic-' + i, provider: 'anthropic', stopReason: 'tool_use', toolFail: true };
-    });
+  // #499: Anthropic cumulative branches deleted — only paired evidence matters now.
+  it('#499 paired OpenAI failures still produce stormy (Anthropic cumulative path removed)', function() {
     var openAIFailures = [makeOpenAITurn({ id: 'openai-call-0', turnToolCallIds: { call_0: 'Bash' } })];
     for (var i = 0; i < 12; i++) {
       var nextCalls = {};
@@ -343,45 +336,15 @@ describe('assessWeather', function() {
       }));
     }
 
-    var anthropic = assessWeather(anthropicFailures);
     var openAI = assessWeather(openAIFailures);
-    var mixed = assessWeather(anthropicFailures.concat(makeOpenAITurn({ id: 'openai-no-tool-data' })));
-    var openAIUnderThreshold = assessWeather([
-      makeOpenAITurn({ id: 'single-call', turnToolCallIds: { single_call: 'Bash' } }),
-      makeOpenAITurn({
-        id: 'single-result',
-        turnToolResults: [{ callId: 'single_call', eligible: true, toolFail: true }],
-      }),
-    ]);
-
-    assert.deepEqual(
-      [anthropic, openAI, mixed].map(function(result) {
-        return { level: result.level, score: result.score };
-      }),
-      [
-        { level: 'stormy', score: 1.27 },
-        { level: 'stormy', score: 1.27 },
-        { level: 'stormy', score: 1.27 },
-      ],
-    );
-    assert.equal(openAIUnderThreshold.stats.errTurns, 1);
-    assert.equal(openAIUnderThreshold.stats.errRate, 1);
+    assert.equal(openAI.level, 'stormy');
+    assert.equal(openAI.score, 1.27);
   });
 
-  // Both providers carry real evidence at DIFFERENT severities — the branch
-  // _strongerToolSignal exists for, and the one the round-2 regression broke.
-  // Asserting entryIdStart (not score) is what makes this non-vacuous: it names
-  // which side's window was selected, so a hard-coded single-provider return fails.
-  function mixedErrorClusterDetail(anthropicFailures, openAIFailures) {
+  // #499: _strongerToolSignal deleted — only paired evidence path remains.
+  // Anthropic cumulative turns no longer contribute to error_cluster.
+  it('#499 paired OpenAI error_cluster evidence produces correct window', function() {
     var turns = [];
-    for (var a = 0; a < 5; a++) {
-      turns.push(makeTurn({
-        id: 'anthropic-' + a,
-        provider: 'anthropic',
-        stopReason: 'tool_use',
-        toolFail: a < anthropicFailures,
-      }));
-    }
     turns.push(makeOpenAITurn({ id: 'openai-0', turnToolCallIds: { call_0: 'Bash' } }));
     for (var o = 0; o < 5; o++) {
       var nextCalls = {};
@@ -389,28 +352,17 @@ describe('assessWeather', function() {
       turns.push(makeOpenAITurn({
         id: 'openai-' + (o + 1),
         turnToolCallIds: nextCalls,
-        turnToolResults: [{ callId: 'call_' + o, eligible: true, toolFail: o < openAIFailures }],
+        turnToolResults: [{ callId: 'call_' + o, eligible: true, toolFail: o < 4 }],
       }));
     }
     var result = assessWeather(turns);
-    return result.factors.filter(function(f) { return f.type === 'error_cluster'; })[0].detail;
-  }
-
-  it('#475 mixed providers with real evidence on both sides select the more severe window', function() {
-    // OpenAI 4/5 errors (sev 0.4) vs Anthropic 1/5 (sev 0.1) → OpenAI window wins
-    var openAIWins = mixedErrorClusterDetail(1, 4);
-    assert.match(openAIWins.entryIdStart, /^openai-/);
-    assert.equal(openAIWins.errorRate, 0.8);
-
-    // Anthropic 4/5 errors (sev 0.4) vs OpenAI 1/5 (sev 0.1) → Anthropic window wins
-    var anthropicWins = mixedErrorClusterDetail(4, 1);
-    assert.match(anthropicWins.entryIdStart, /^anthropic-/);
-    assert.equal(anthropicWins.errorRate, 0.8);
+    var cluster = result.factors.find(function(f) { return f.type === 'error_cluster'; });
+    assert.ok(cluster, 'paired evidence should produce error_cluster');
+    assert.equal(cluster.detail.errorRate, 0.8);
   });
 
-  it('#475 equal-severity provider tie keeps the side with actual tool evidence (fail-on-old)', function() {
+  it('#499 paired failure without severity still populates tool signal metadata', function() {
     var result = assessWeather([
-      makeTurn({ id: 'anthropic-no-tools', provider: 'anthropic', toolCount: 0 }),
       makeOpenAITurn({ id: 'openai-call', turnToolCallIds: { call_failed: 'Bash' } }),
       makeOpenAITurn({
         id: 'openai-result',
@@ -418,11 +370,10 @@ describe('assessWeather', function() {
       }),
     ]);
 
-    assert.ok(hasFactor(result, 'tool_failure'));
+    // sigToolFailure severity=null → no factor, but signal metadata populated
+    assert.equal(result.stats.toolSignal, 'failure');
     assert.equal(result.stats.errTurns, 1);
     assert.equal(result.stats.errRate, 1);
-    assert.match(result.tooltip, /1 errors/);
-    assert.doesNotMatch(result.tooltip, /0 errors/);
   });
 
   it('no_data — empty turns → sunny', function() {
@@ -537,9 +488,19 @@ describe('assessWeather', function() {
     assert.ok(!hasFactor(r, 'truncation'));
   });
 
-  it('stuck — 12 consecutive toolFail turns → stormy', function() {
+  // #499: stuck signal now uses paired evidence only
+  it('stuck — 12 consecutive paired toolFail → stormy', function() {
     var turns = repeat(5);
-    for (var i = 0; i < 12; i++) turns.push(makeTurn({ stopReason: 'tool_use', toolFail: true }));
+    turns.push(makeOpenAITurn({ id: 'call-0', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 12; i++) {
+      var nextCalls = {};
+      if (i < 11) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
     turns.push(makeTurn());
     var r = assessWeather(turns);
     assert.ok(hasFactor(r, 'stuck'));
@@ -548,9 +509,18 @@ describe('assessWeather', function() {
     assert.equal(r.level, 'stormy');
   });
 
-  it('stuck — 9 consecutive errors not enough', function() {
-    var turns = repeat(5);
-    for (var i = 0; i < 9; i++) turns.push(makeTurn({ stopReason: 'tool_use', toolFail: true }));
+  it('stuck — 9 consecutive paired errors not enough', function() {
+    var turns = [];
+    turns.push(makeOpenAITurn({ id: 'call-0', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 9; i++) {
+      var nextCalls = {};
+      if (i < 8) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
     var r = assessWeather(turns);
     assert.ok(!hasFactor(r, 'stuck'));
   });
@@ -581,10 +551,18 @@ describe('assessWeather', function() {
     assert.ok(f.detail.baseline === 20000);
   });
 
-  it('error_burst — 5 consecutive turns with 4 tool errors among 5 tool_use', function() {
-    var turns = repeat(20);
-    for (var i = 10; i < 15; i++) {
-      turns[i] = makeTurn({ stopReason: 'tool_use', toolFail: i !== 12 });
+  // #499: error_cluster now uses paired evidence only
+  it('error_burst — 5 paired tool results with 4 errors among 5', function() {
+    var turns = repeat(15);
+    turns.push(makeOpenAITurn({ id: 'call-0', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 5; i++) {
+      var nextCalls = {};
+      if (i < 4) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: i !== 2 }],
+      }));
     }
     var r = assessWeather(turns);
     assert.ok(hasFactor(r, 'error_cluster'));
@@ -601,39 +579,64 @@ describe('assessWeather', function() {
     assert.ok(!hasFactor(r, 'error_cluster') || r.factors.find(function(f) { return f.type === 'error_cluster'; }).severity === 0);
   });
 
-  it('error_cumulative — scattered errors across long session', function() {
-    // 100 tool_use turns, 25 with errors = 25% rate, spread out (not clustered)
+  // #499: error_cumulative now uses paired evidence only
+  it('error_cumulative — 100 paired results with 25 errors → severity ≈ 0.625', function() {
     var turns = [];
+    turns.push(makeOpenAITurn({ id: 'call-0', turnToolCallIds: { call_0: 'Bash' } }));
     for (var i = 0; i < 100; i++) {
-      turns.push(makeTurn({ stopReason: 'tool_use', toolFail: i % 4 === 0 }));
+      var nextCalls = {};
+      if (i < 99) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: i % 4 === 0 }],
+      }));
     }
     var r = assessWeather(turns);
     assert.ok(hasFactor(r, 'error_cumulative'), 'should detect cumulative errors');
     var f = r.factors.find(function(f) { return f.type === 'error_cumulative'; });
-    // 25% rate / 0.4 = 0.625 severity
     assert.ok(f.severity >= 0.6 && f.severity <= 0.65, 'severity ' + f.severity + ' ≈ 0.625');
     assert.equal(f.detail.errTurns, 25);
     assert.equal(f.detail.toolTurns, 100);
   });
 
-  it('error_cumulative — not enough tool turns to trigger', function() {
-    var turns = repeat(8, { stopReason: 'tool_use', toolFail: true });
+  // #499: threshold changed from 10 to 5
+  it('error_cumulative — 4 paired results (below threshold 5) do not trigger', function() {
+    var turns = [];
+    turns.push(makeOpenAITurn({ id: 'call-0', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 4; i++) {
+      var nextCalls = {};
+      if (i < 3) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i,
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
     var r = assessWeather(turns);
-    // Only 8 tool turns, minimum is 10
     assert.ok(!hasFactor(r, 'error_cumulative') || r.factors.find(function(f) { return f.type === 'error_cumulative'; }).severity === 0);
   });
 
-  it('compound — ctx 80% + error burst + latency high → stormy', function() {
-    var turns = repeat(30, { elapsed: '25' });
-    turns[turns.length - 1] = makeTurn({
+  // #499: compound test uses paired evidence for error_cluster
+  it('compound — ctx 80% + paired error burst + latency high → rainy+', function() {
+    var turns = repeat(19, { elapsed: '25' });
+    // Add paired error burst via OpenAI evidence
+    turns.push(makeOpenAITurn({ id: 'call-0', elapsed: '25', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 5; i++) {
+      var nextCalls = {};
+      if (i < 4) nextCalls['call_' + (i + 1)] = 'Bash';
+      turns.push(makeOpenAITurn({
+        id: 'result-' + i, elapsed: '25',
+        turnToolCallIds: nextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
+    }
+    // ctx_pressure checks the LAST turn — put the high-context turn at the end
+    turns.push(makeTurn({
       usage: { input_tokens: 130000, cache_read_input_tokens: 20000, cache_creation_input_tokens: 10000, output_tokens: 800 },
       maxContext: 200000, elapsed: '25',
-    });
-    for (var i = 20; i < 25; i++) {
-      turns[i] = makeTurn({ stopReason: 'tool_use', toolFail: true, elapsed: '25' });
-    }
+    }));
     var r = assessWeather(turns);
-    // With calibrated params (ctxFloor=0.4, errDenom=2.0, latK=0.5), compound is rainy not stormy
     assert.ok(r.score >= 0.75, 'score ' + r.score + ' should be >= 0.75 for rainy+');
     assert.ok(r.level === 'rainy' || r.level === 'stormy', 'level ' + r.level + ' should be rainy or stormy');
     assert.ok(hasFactor(r, 'ctx_pressure'));
@@ -697,11 +700,13 @@ describe('assessWeather', function() {
     assert.equal(r2.emoji, map[r2.level]);
   });
 
+  // #499: tooltip shows '—' instead of '0 errors' when toolTurns < 5
   it('tooltip — sunny shows stats proving health', function() {
     var r = assessWeather(repeat(10));
     assert.ok(r.tooltip.includes('Operating normally'), 'has summary');
     assert.ok(r.tooltip.includes('context'), 'has context stat');
-    assert.ok(r.tooltip.includes('0 errors'), 'has error stat');
+    assert.ok(r.tooltip.includes('—'), 'has dash for insufficient tool data');
+    assert.ok(!r.tooltip.includes('0 errors'), 'no false "0 errors" without evidence');
   });
 
   it('tooltip — fair has factors line', function() {
@@ -737,26 +742,55 @@ describe('assessWeather', function() {
       usage: { output_tokens: 20000, input_tokens: 20000, cache_read_input_tokens: 10000, cache_creation_input_tokens: 2000 },
     });
 
-    var stuckTurns = repeat(20, function(i) {
-      return { id: 's' + i, stopReason: 'tool_use' };
-    });
-    for (var i = 20; i < 30; i++) {
-      stuckTurns.push(makeTurn({ id: 's' + i, stopReason: 'tool_use', toolFail: true }));
+    // #499: convert stuck/cluster/cumulative to paired evidence
+    var stuckTurns = repeat(20);
+    stuckTurns.push(makeOpenAITurn({ id: 's20', turnToolCallIds: { call_0: 'Bash' } }));
+    for (var i = 0; i < 10; i++) {
+      var sNextCalls = {};
+      if (i < 9) sNextCalls['call_' + (i + 1)] = 'Bash';
+      stuckTurns.push(makeOpenAITurn({
+        id: 's' + (21 + i),
+        turnToolCallIds: sNextCalls,
+        turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
+      }));
     }
 
-    var clusterTurns = repeat(5, function(i) {
-      return { id: 'c' + i, stopReason: 'tool_use', toolFail: true, isCompacted: i === 0 };
-    });
+    var clusterTurns = [makeTurn({ id: 'c-pre', isCompacted: true })];
+    clusterTurns.push(makeOpenAITurn({ id: 'c0', turnToolCallIds: { cc_0: 'Bash' } }));
+    for (var ci = 0; ci < 5; ci++) {
+      var cNextCalls = {};
+      if (ci < 4) cNextCalls['cc_' + (ci + 1)] = 'Bash';
+      clusterTurns.push(makeOpenAITurn({
+        id: 'c' + (ci + 1),
+        turnToolCallIds: cNextCalls,
+        turnToolResults: [{ callId: 'cc_' + ci, eligible: true, toolFail: true }],
+      }));
+    }
 
-    var cumulativeTurns = repeat(100, function(i) {
-      return { id: 'e' + i, stopReason: 'tool_use', toolFail: i % 4 === 0 };
-    });
+    var cumulativeTurns = [];
+    cumulativeTurns.push(makeOpenAITurn({ id: 'e0', turnToolCallIds: { ec_0: 'Bash' } }));
+    for (var ei = 0; ei < 100; ei++) {
+      var eNextCalls = {};
+      if (ei < 99) eNextCalls['ec_' + (ei + 1)] = 'Bash';
+      cumulativeTurns.push(makeOpenAITurn({
+        id: 'e' + (ei + 1),
+        turnToolCallIds: eNextCalls,
+        turnToolResults: [{ callId: 'ec_' + ei, eligible: true, toolFail: ei % 4 === 0 }],
+      }));
+    }
 
     // Same shape, no turn ids → firstErrId stays null, so error_cumulative has
     // nothing to link to and must emit NO action line (#336 codex R1 P2).
-    var cumulativeNoIdTurns = repeat(100, function(i) {
-      return { stopReason: 'tool_use', toolFail: i % 4 === 0 };
-    });
+    var cumulativeNoIdTurns = [];
+    cumulativeNoIdTurns.push(makeOpenAITurn({ turnToolCallIds: { nc_0: 'Bash' } }));
+    for (var ni = 0; ni < 100; ni++) {
+      var nNextCalls = {};
+      if (ni < 99) nNextCalls['nc_' + (ni + 1)] = 'Bash';
+      cumulativeNoIdTurns.push(makeOpenAITurn({
+        turnToolCallIds: nNextCalls,
+        turnToolResults: [{ callId: 'nc_' + ni, eligible: true, toolFail: ni % 4 === 0 }],
+      }));
+    }
 
     var cases = [
       {
@@ -784,16 +818,18 @@ describe('assessWeather', function() {
         action: null,
       },
       {
-        type: 'stuck',
+        // #499: error_cumulative (sev 1.0) now outranks stuck (sev 0.9) — all 10 paired results are failures
+        type: 'error_cumulative',
         turns: stuckTurns,
-        factors: 'stuck 10 failures (turn 20-29) · 10/30 tool errors (33%) · error burst 100% (turn 20-24)',
-        action: '→ Check turn 20-29 — usually permissions or paths',
+        factors: '10/10 tool errors (100%) · stuck 10 failures (turn 20-29) · error burst 100% (turn 20-24)',
+        action: '→ Check first error — common: permissions, paths, settings',
       },
       {
-        type: 'error_cluster',
+        // #499: error_cumulative (sev 1.0) outranks error_cluster (sev 0.5) when all 5 results fail
+        type: 'error_cumulative',
         turns: clusterTurns,
-        factors: 'error burst 100% (turn 0-4) · compaction ×1 (info lost)',
-        action: '→ Check turn 0-4',
+        factors: '5/5 tool errors (100%) · error burst 100% (turn 1-5) · compaction ×1 (info lost)',
+        action: '→ Check first error — common: permissions, paths, settings',
       },
       {
         type: 'error_cumulative',
