@@ -9,6 +9,7 @@ const { resolveCcxrayHome } = require('./paths');
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
 const LOCK_STALE_MS = 5 * 60_000;
+const GCS_TIMEOUT_MS = 30_000; // #4: GCS request timeout
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
 const SCHEMA_VERSION = 1;
@@ -114,6 +115,7 @@ function exchangeJwt(jwt) {
     const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
     const req = https.request('https://oauth2.googleapis.com/token', {
       method: 'POST',
+      timeout: GCS_TIMEOUT_MS,
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
     }, res => {
       let data = '';
@@ -126,6 +128,7 @@ function exchangeJwt(jwt) {
         } catch (e) { reject(e); }
       });
     });
+    req.on('timeout', () => { req.destroy(new Error('GCS auth timeout')); });
     req.on('error', reject);
     req.end(body);
   });
@@ -145,6 +148,7 @@ function uploadToGcs(bucket, objectName, body, accessToken) {
     const url = `https://storage.googleapis.com/upload/storage/v1/b/${encodeURIComponent(bucket)}/o?uploadType=media&name=${encoded}`;
     const req = https.request(url, {
       method: 'POST',
+      timeout: GCS_TIMEOUT_MS,
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/x-ndjson',
@@ -158,6 +162,7 @@ function uploadToGcs(bucket, objectName, body, accessToken) {
         else reject(new Error(`GCS ${res.statusCode}: ${data}`));
       });
     });
+    req.on('timeout', () => { req.destroy(new Error('GCS upload timeout')); });
     req.on('error', reject);
     req.end(body);
   });
@@ -165,10 +170,15 @@ function uploadToGcs(bucket, objectName, body, accessToken) {
 
 // ── Aggregation ────────────────────────────────────────────────────────
 
+// #5: entry ids are formatted in local time (Asia/Taipei). Parse the id
+// timestamp and convert to UTC date for the dt partition key.
 function utcDateFromId(id) {
-  // id format: YYYY-MM-DDTHH-MM-SS-mmm
-  const m = id && id.match(/^(\d{4}-\d{2}-\d{2})T/);
-  return m ? m[1] : null;
+  // id format: YYYY-MM-DDTHH-MM-SS-mmm (local time, not UTC)
+  const m = id && id.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})$/);
+  if (!m) return null;
+  // Parse as local time components, construct a Date, extract UTC date
+  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], +m[7]);
+  return d.toISOString().slice(0, 10);
 }
 
 function addMap(target, source) {
@@ -182,52 +192,72 @@ function addMap(target, source) {
   }
 }
 
-function foldToolSources(target, sources) {
+// #7/#8: toolSources and skillCalls are cumulative in Anthropic entries.
+// Use per-session per-tool max, same shape as the ADR 0018 legacy fallback.
+function maxMap(target, source) {
+  if (!source || typeof source !== 'object') return;
+  for (const [k, v] of Object.entries(source)) {
+    const name = sanitizeName(k);
+    if (!name) continue;
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      target[name] = Math.max(target[name] || 0, v);
+    }
+  }
+}
+
+// #7: toolSources values are strings like 'local', not numbers.
+// Per-session max of string-value counts.
+function maxToolSourceCounts(target, sources) {
   if (!sources || typeof sources !== 'object') return;
+  const counts = {};
   for (const v of Object.values(sources)) {
     if (typeof v !== 'string') continue;
-    // normalize: 'local:sensitive' → 'local', 'network' stays, 'mcp' stays
     const cat = v.includes(':') ? v.split(':')[0] : v;
     const name = sanitizeName(cat);
-    if (name) target[name] = (target[name] || 0) + 1;
+    if (name) counts[name] = (counts[name] || 0) + 1;
+  }
+  for (const [name, count] of Object.entries(counts)) {
+    target[name] = Math.max(target[name] || 0, count);
   }
 }
 
 // INVARIANT(ADR 0018): turnToolCalls null-vs-empty contract.
-// null/undefined = legacy, fall back to per-tool max from cumulative toolCalls.
-// {} = parsed zero-tool response, contributes zero.
-// non-empty object = per-turn delta, sum directly.
 function getToolCalls(entry) {
   if (entry.provider !== 'anthropic') {
-    // OpenAI/Codex/Grok: toolCalls is already per-turn
     return entry.toolCalls || null;
   }
-  // Anthropic: prefer turnToolCalls
   const ttc = entry.turnToolCalls;
-  if (ttc !== null && ttc !== undefined) return ttc; // includes {} (truthy, zero tools)
-  return null; // legacy — caller handles per-tool-max fallback
+  if (ttc !== null && ttc !== undefined) return ttc;
+  return null;
 }
 
 function aggregate(lines, agentId, configDirAllowlist) {
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
   const sessionPrevMsg = new Map(); // sid → last msgCount for compaction detection
-  // Per-session-per-date per-tool max for legacy fallback (Anthropic only)
   const legacyToolMax = new Map(); // "dt\0sid" → Map(tool → maxCount)
+  // #7/#8: per-session max for cumulative fields
+  const sessToolSources = new Map(); // "dt\0sid" → {cat: maxCount}
+  const sessSkillCalls = new Map(); // "dt\0sid" → {skill: maxCount}
+  // #1: responseId dedup
+  const seenResponseIds = new Set();
 
   for (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     if (!entry.id || !entry.sessionId) continue;
 
+    // #1: responseId dedup — skip duplicate copies of the same response
+    if (entry.responseId) {
+      if (seenResponseIds.has(entry.responseId)) continue;
+      seenResponseIds.add(entry.responseId);
+    }
+
     const dt = utcDateFromId(entry.id);
     if (!dt) continue;
 
     // configDir filter: unknown → include.
     // ponytail: configDir is in sessionMeta (runtime), not INDEX_FIELDS (disk).
-    // Filter only excludes entries that explicitly carry a non-allowlisted configDir.
-    // Currently all index entries have configDir=undefined → all pass through.
-    // Adding configDir to INDEX_FIELDS is a separate concern.
     if (configDirAllowlist) {
       const cd = entry.configDir;
       if (cd && !configDirAllowlist.has(cd)) continue;
@@ -251,7 +281,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
         partial_day: false,
         cost_total: 0,
         models: {},
-        first_turn_context_pcts: [], // internal, cleaned in finishDaily
+        first_turn_context_pcts: [],
         context_utilization: { '0-40': 0, '40-80': 0, '80+': 0 },
         compaction_count: 0,
         distinct_sys_hashes: new Set(),
@@ -274,29 +304,26 @@ function aggregate(lines, agentId, configDirAllowlist) {
         _providerCounts: {},
         _costConfidence: { exact: 0, prefix: 0, fallback: 0, unknown: 0 },
         _fallbackCost: 0,
+        _hasNewData: false,
       };
       dailyByDt.set(dt, daily);
     }
 
-    // Update local_date/tz from latest entry with data
     if (entry.localDate) daily.local_date = entry.localDate;
     if (entry.tz) daily.tz = entry.tz;
 
     daily.turn_count++;
     if (entry.isSubagent) daily.subagent_turn_count++;
 
-    // Provider
     const prov = entry.provider || 'anthropic';
     daily._providerCounts[prov] = (daily._providerCounts[prov] || 0) + 1;
 
-    // Sessions
     const sid = entry.sessionId;
     if (!daily._sessions.has(sid)) {
       daily._sessions.add(sid);
       daily.session_count++;
     }
 
-    // Model breakdown
     const model = entry.model || 'unknown';
     let mb = daily.models[model];
     if (!mb) {
@@ -313,7 +340,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
     if (entry.thinkingDuration > 0) mb.thinking_turns++;
     if (entry.beta1m === true) mb.beta1m_turns++;
 
-    // Cost
+    // #9: cost confidence — null cost = unknown, legacy numeric = unknown confidence
     const costObj = entry.cost;
     if (costObj && typeof costObj === 'object') {
       const c = costObj.cost;
@@ -321,13 +348,18 @@ function aggregate(lines, agentId, configDirAllowlist) {
       if (c != null && Number.isFinite(c)) {
         daily.cost_total += c;
         mb.cost += c;
+      } else {
+        daily._costConfidence.unknown++;
       }
-      daily._costConfidence[conf] = (daily._costConfidence[conf] || 0) + 1;
+      if (c != null) daily._costConfidence[conf] = (daily._costConfidence[conf] || 0) + 1;
+      else daily._costConfidence.unknown++;
       if (conf === 'fallback' && c != null) daily._fallbackCost += c;
     } else if (typeof costObj === 'number') {
-      // Legacy numeric cost
       daily.cost_total += costObj;
       mb.cost += costObj;
+      daily._costConfidence.unknown++; // #9: legacy numeric has no confidence signal
+    } else {
+      daily._costConfidence.unknown++; // #9: null/missing cost
     }
 
     // INVARIANT(ADR 0013): context utilization denominator is raw per-turn maxContext
@@ -341,8 +373,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
       else daily.context_utilization['80+']++;
     }
 
-    // First-turn context % (for median calculation)
-    // A "first turn" is the first entry we see for this session in this date
+    // First-turn context %
     if (!sessionsByDt.has(dt)) sessionsByDt.set(dt, new Map());
     const dtSessions = sessionsByDt.get(dt);
     if (!dtSessions.has(sid) && entry.usage && entry.maxContext > 0 && !entry.isSubagent) {
@@ -359,7 +390,6 @@ function aggregate(lines, agentId, configDirAllowlist) {
       sessionPrevMsg.set(sid, entry.msgCount);
     }
 
-    // Hash counts
     if (entry.sysHash) daily.distinct_sys_hashes.add(entry.sysHash);
     if (entry.toolsHash) daily.distinct_tools_hashes.add(entry.toolsHash);
 
@@ -368,7 +398,6 @@ function aggregate(lines, agentId, configDirAllowlist) {
     if (tc && typeof tc === 'object') {
       addMap(daily.tool_usage, tc);
     } else if (tc === null && entry.provider === 'anthropic' && entry.toolCalls) {
-      // Legacy fallback: per-tool max within session+date
       const ltKey = `${dt}\0${sid}`;
       if (!legacyToolMax.has(ltKey)) legacyToolMax.set(ltKey, new Map());
       const stm = legacyToolMax.get(ltKey);
@@ -380,33 +409,34 @@ function aggregate(lines, agentId, configDirAllowlist) {
       }
     }
 
-    // Tool sources
-    foldToolSources(daily.tool_sources, entry.toolSources);
+    // #7: toolSources is cumulative — per-session max then sum across sessions
+    const tsKey = `${dt}\0${sid}`;
+    if (!sessToolSources.has(tsKey)) sessToolSources.set(tsKey, {});
+    maxToolSourceCounts(sessToolSources.get(tsKey), entry.toolSources);
 
-    // Skill usage
+    // #8: skillCalls is cumulative — same per-session max shape
     if (entry.skillCalls && typeof entry.skillCalls === 'object') {
-      addMap(daily.skill_usage, entry.skillCalls);
+      if (!sessSkillCalls.has(tsKey)) sessSkillCalls.set(tsKey, {});
+      maxMap(sessSkillCalls.get(tsKey), entry.skillCalls);
     }
 
-    // Tool fail (per-turn signal, not cumulative)
     if (entry.turnToolFail === true) daily.tool_fail_count++;
 
-    // Duplicate tool calls
-    if (entry.duplicateToolCalls > 0) daily.duplicate_tool_call_count++;
+    // #10: duplicateToolCalls is an object, not a number
+    if (entry.duplicateToolCalls != null && typeof entry.duplicateToolCalls === 'object') {
+      daily.duplicate_tool_call_count++;
+    }
 
-    // Credential
     if (entry.hasCredential === true) daily.credential_flag = true;
 
-    // Error (non-200 status)
-    if (entry.status && entry.status !== 200) daily.error_count++;
+    // #11: WS status 101 is not an error
+    if (entry.status && entry.status !== 200 && entry.status !== 101) daily.error_count++;
 
-    // Stop reasons
     if (entry.stopReason) {
       const sr = sanitizeName(String(entry.stopReason));
       if (sr) daily.stop_reasons[sr] = (daily.stop_reasons[sr] || 0) + 1;
     }
 
-    // CWD → repo root
     if (entry.cwd) {
       const repo = repoRoot(entry.cwd);
       if (repo) daily.cwd_repos.add(repo);
@@ -438,21 +468,26 @@ function aggregate(lines, agentId, configDirAllowlist) {
     sess._models[model] = (sess._models[model] || 0) + 1;
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);
 
+    // #9: session cost confidence — same null/legacy handling
     if (costObj && typeof costObj === 'object') {
       const c = costObj.cost;
       const conf = costObj.confidence || 'unknown';
       if (c != null && Number.isFinite(c)) sess.cost_total += c;
-      sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
+      if (c != null) sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
+      else sess._costConfidence.unknown++;
     } else if (typeof costObj === 'number') {
       sess.cost_total += costObj;
+      sess._costConfidence.unknown++;
+    } else {
+      sess._costConfidence.unknown++;
     }
 
     if (entry.hasCredential === true) sess._hasCredential = true;
     if (entry.turnToolFail === true) sess._toolFailCount++;
   }
 
+  // Fold per-session maxima into daily totals
   // ponytail: legacy per-tool max is cumulative high-water-mark, not actual count.
-  // Summing maxima across sessions over-counts (inherent — no exact per-turn data).
   for (const [ltKey, stm] of legacyToolMax) {
     const dt = ltKey.split('\0')[0];
     const daily = dailyByDt.get(dt);
@@ -462,14 +497,32 @@ function aggregate(lines, agentId, configDirAllowlist) {
     }
   }
 
+  // #7: fold per-session toolSources maxima
+  for (const [tsKey, cats] of sessToolSources) {
+    const dt = tsKey.split('\0')[0];
+    const daily = dailyByDt.get(dt);
+    if (!daily) continue;
+    for (const [cat, count] of Object.entries(cats)) {
+      daily.tool_sources[cat] = (daily.tool_sources[cat] || 0) + count;
+    }
+  }
+
+  // #8: fold per-session skillCalls maxima
+  for (const [tsKey, skills] of sessSkillCalls) {
+    const dt = tsKey.split('\0')[0];
+    const daily = dailyByDt.get(dt);
+    if (!daily) continue;
+    for (const [skill, count] of Object.entries(skills)) {
+      daily.skill_usage[skill] = (daily.skill_usage[skill] || 0) + count;
+    }
+  }
+
   return { dailyByDt, sessionsByDt };
 }
 
 function repoRoot(cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
-  // Normalize separators
   const norm = cwd.replace(/\\/g, '/');
-  // Take the last path component (repo name), not the full path
   const parts = norm.split('/').filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : null;
 }
@@ -479,34 +532,30 @@ function finishDaily(daily, summaryId, uploadSeq, partial) {
   daily.upload_seq = uploadSeq;
   if (partial) daily.partial_day = true;
 
-  // Provider: dominant
   let maxProv = null, maxCount = 0;
   for (const [p, c] of Object.entries(daily._providerCounts)) {
     if (c > maxCount) { maxCount = c; maxProv = p; }
   }
   daily.provider = maxProv;
 
-  // Cost confidence
   daily.cost_confidence = foldConfidence(daily._costConfidence);
 
-  // First-turn median
+  // #6: median — proper two-middle average for even-length arrays, value is ratio 0-1
   const pcts = daily.first_turn_context_pcts.sort((a, b) => a - b);
-  daily.first_turn_context_pct_median = pcts.length > 0
-    ? Math.round(pcts[Math.floor(pcts.length / 2)] * 10000) / 10000
-    : null;
+  if (pcts.length > 0) {
+    const mid = Math.floor(pcts.length / 2);
+    const median = pcts.length % 2 === 1 ? pcts[mid] : (pcts[mid - 1] + pcts[mid]) / 2;
+    daily.first_turn_context_pct_median = Math.round(median * 10000) / 10000;
+  } else {
+    daily.first_turn_context_pct_median = null;
+  }
 
-  // Hash counts → integers
   daily.distinct_sys_hash_count = daily.distinct_sys_hashes.size;
   daily.distinct_tools_hash_count = daily.distinct_tools_hashes.size;
-
-  // Tool counts
   daily.tool_used_count = Object.keys(daily.tool_usage).length;
-  daily.tool_defined_count = daily.tool_used_count; // no separate source for defined count
-
-  // cwd_repos → array
+  daily.tool_defined_count = daily.tool_used_count; // no separate source
   daily.cwd_repos = [...daily.cwd_repos];
 
-  // Clean internal fields
   delete daily._sessions;
   delete daily._providerCounts;
   delete daily._costConfidence;
@@ -514,12 +563,12 @@ function finishDaily(daily, summaryId, uploadSeq, partial) {
   delete daily.first_turn_context_pcts;
   delete daily.distinct_sys_hashes;
   delete daily.distinct_tools_hashes;
+  delete daily._hasNewData;
 }
 
 function finishSession(sess, daily, summaryId) {
   sess.summary_id = summaryId;
 
-  // Model primary: most turns, tie-break alphabetical
   let best = null, bestCount = 0;
   for (const [m, c] of Object.entries(sess._models)) {
     if (c > bestCount || (c === bestCount && (!best || m < best))) {
@@ -527,15 +576,11 @@ function finishSession(sess, daily, summaryId) {
     }
   }
   sess.model_primary = best;
-
-  // Cost confidence
   sess.cost_confidence = foldConfidence(sess._costConfidence);
 
-  // Flags
   const flags = [];
   if (sess._hasCredential) flags.push('credential_leak');
   if (sess.turn_count > RUNAWAY_TURNS && sess.cost_total > RUNAWAY_COST) flags.push('runaway');
-  // high_cost: > daily average × 3, or > absolute threshold
   if (daily && daily.session_count > 0) {
     const avg = daily.cost_total / daily.session_count;
     if (sess.cost_total > avg * HIGH_COST_FACTOR || sess.cost_total > HIGH_COST_ABS) flags.push('high_cost');
@@ -545,7 +590,6 @@ function finishSession(sess, daily, summaryId) {
   if (sess.turn_count > 0 && sess._toolFailCount / sess.turn_count > TOOL_FAIL_SPIKE_PCT) flags.push('tool_fail_spike');
   sess.flags = flags;
 
-  // Clean internal fields
   delete sess._models;
   delete sess._costConfidence;
   delete sess._hasCredential;
@@ -559,7 +603,7 @@ function foldConfidence(counts) {
   if (counts.fallback === total) return 'fallback';
   if (counts.fallback > 0 || counts.unknown > 0) return 'mixed';
   if (counts.exact > 0 && counts.prefix === 0) return 'exact';
-  return 'mixed'; // prefix-only or exact+prefix → not fully exact
+  return 'mixed';
 }
 
 // ── Flush ──────────────────────────────────────────────────────────────
@@ -574,40 +618,39 @@ async function flushExport() {
 
   fs.mkdirSync(home, { recursive: true });
   const token = acquireLock(lockPath);
-  if (!token) return; // another process holds the lock
+  if (!token) return;
 
   try {
-    // Re-read cursor inside lock (ticket: 鎖內從共享 cursor 重讀)
     let cursor = readCursor(cursorPath);
     const isFirstRun = !cursor;
 
-    // Read index via storage adapter
     const config = require('./config');
     const lines = [];
     let lastId = null;
+    let hasNewData = false;
     for await (const line of config.storage.readIndexLines()) {
       lines.push(line);
       try {
         const parsed = JSON.parse(line);
-        if (parsed.id) lastId = parsed.id;
+        if (parsed.id) {
+          lastId = parsed.id;
+          // #2: track which dates have new data
+          if (!isFirstRun && cursor.lastId && parsed.id > cursor.lastId) hasNewData = true;
+        }
       } catch {}
     }
 
     if (isFirstRun) {
-      // First run: init cursor to tail, no upload
       writeCursor(cursorPath, { lastId, seq: {}, partial: true });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
       return;
     }
 
-    // Check if there's new data
-    if (cursor.lastId && lastId === cursor.lastId) return; // nothing new
+    if (!hasNewData) return;
 
-    // Parse configDir allowlist
     const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
     const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
 
-    // Aggregate full index (last-writer-wins = complete daily snapshot)
     const { dailyByDt, sessionsByDt } = aggregate(lines, agentId, configDirAllowlist);
 
     if (dailyByDt.size === 0) {
@@ -615,12 +658,26 @@ async function flushExport() {
       return;
     }
 
-    // Upload each date
+    // #2: figure out which dates have new entries (post-cursor)
+    const datesWithNewData = new Set();
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.id && parsed.id > cursor.lastId) {
+          const dt = utcDateFromId(parsed.id);
+          if (dt) datesWithNewData.add(dt);
+        }
+      } catch {}
+    }
+
     const prefix = process.env.CCXRAY_EXPORT_GCS_PREFIX || 'summaries';
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
-    const seq = cursor.seq || {};
+    const seq = { ...(cursor.seq || {}) };
 
+    // #2/#3: only upload dates with new data, per-date checkpoint
     for (const [dt, daily] of dailyByDt) {
+      if (!datesWithNewData.has(dt)) continue;
+
       const dtSeq = (seq[dt] || 0) + 1;
       seq[dt] = dtSeq;
 
@@ -635,22 +692,20 @@ async function flushExport() {
         finishSession(sess, daily, summaryId);
       }
 
-      // Build JSONL payload
       const payload = [daily, ...dtSessions.values()]
         .map(r => JSON.stringify(r))
         .join('\n') + '\n';
 
-      // Upload
       const objectName = `${prefix}/dt=${dt}/${agentId}--${dtSeq}--${uuid8}.jsonl`;
       const upload = _uploader || (async (b, name, body) => {
         const accessToken = await getAccessToken(keyFile);
         return uploadToGcs(b, name, body, accessToken);
       });
       await upload(bucket, objectName, payload);
-    }
 
-    // Advance cursor
-    writeCursor(cursorPath, { lastId, seq, partial: false });
+      // #3: per-date checkpoint — advance cursor after each successful upload
+      writeCursor(cursorPath, { lastId, seq, partial: false });
+    }
   } finally {
     releaseLock(lockPath, token);
   }
@@ -659,7 +714,6 @@ async function flushExport() {
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
   if (!process.env.CCXRAY_EXPORT_GCS_BUCKET) return;
-  // Initial flush (fire and forget — errors logged, not fatal)
   flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message));

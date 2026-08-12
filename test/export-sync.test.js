@@ -49,7 +49,8 @@ function setup(entries, envOverrides = {}) {
   _uploads = [];
   writeIndex(_home, entries);
 
-  // Env
+  // Env — TZ must match the server that generates entry ids (Asia/Taipei)
+  process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = _home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
   delete process.env.LOGS_DIR;
@@ -392,10 +393,13 @@ describe('export-sync', () => {
   });
 
   it('multi-date aggregation: separate uploads per date', async () => {
+    // Use ids that span two UTC dates (Asia/Taipei UTC+8)
+    // 2026-08-12T04-00-00-000 local → 2026-08-11T20:00 UTC → dt=2026-08-11
+    // 2026-08-12T10-00-00-000 local → 2026-08-12T02:00 UTC → dt=2026-08-12
     setup([
-      makeEntry({ id: '2026-08-11T23-00-00-000', sessionId: 'sess-day1' }),
-      makeEntry({ id: '2026-08-12T01-00-00-000', sessionId: 'sess-day2' }),
-      makeEntry({ id: '2026-08-12T02-00-00-000', sessionId: 'sess-day2', msgCount: 12 }),
+      makeEntry({ id: '2026-08-12T04-00-00-000', sessionId: 'sess-day1' }),
+      makeEntry({ id: '2026-08-12T10-00-00-000', sessionId: 'sess-day2' }),
+      makeEntry({ id: '2026-08-12T11-00-00-000', sessionId: 'sess-day2', msgCount: 12 }),
     ]);
     await flushExport();
     assert.equal(_uploads.length, 2, 'one upload per date');
@@ -420,6 +424,47 @@ describe('export-sync', () => {
     await flushExport();
     assert.equal(_uploads.length, 1, 'stale lock was recovered');
     cleanup();
+  });
+
+  it('#1 responseId dedup: duplicate entries counted once', async () => {
+    setup([
+      makeEntry({ responseId: 'msg_001', cost: { cost: 0.15, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-00-01-000', responseId: 'msg_001', cost: { cost: 0.15, confidence: 'exact' } }),
+    ]);
+    await flushExport();
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.turn_count, 1, 'duplicate counted once');
+    assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost not doubled');
+  });
+
+  it('#9 null cost counts as unknown confidence', async () => {
+    setup([
+      makeEntry({ cost: { cost: null, confidence: 'unknown' } }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', cost: 42, msgCount: 12 }), // legacy numeric
+    ]);
+    await flushExport();
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.cost_confidence, 'unknown', 'null + legacy → unknown');
+  });
+
+  it('#10 duplicateToolCalls object detected', async () => {
+    setup([
+      makeEntry({ duplicateToolCalls: { Read: 2 } }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', duplicateToolCalls: null, msgCount: 12 }),
+    ]);
+    await flushExport();
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.duplicate_tool_call_count, 1);
+  });
+
+  it('#11 WS status 101 is not an error', async () => {
+    setup([
+      makeEntry({ status: 101 }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', status: 500, msgCount: 12 }),
+    ]);
+    await flushExport();
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.error_count, 1, '101 excluded, 500 counted');
   });
 
   it('foldConfidence: prefix-only returns mixed, not exact', async () => {
