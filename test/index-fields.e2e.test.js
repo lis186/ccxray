@@ -1,11 +1,21 @@
 'use strict';
 
 // #504 projection guard. These tests exercise the real entry-construction and
-// serialization paths in forward.js and ws-proxy.js, then assert structure,
-// presence, and legacy field order on the resulting index.ndjson lines. They
-// cannot prove that each legacy field VALUE is byte-identical to the old server;
-// that requires running the old server as an oracle and is one-time orchestrator
-// evidence, not a self-contained regression test.
+// serialization paths in forward.js (anthropic SSE / non-SSE, openai SSE /
+// non-SSE), ws-proxy.js, rebuild-index, and the importer, then assert
+// structure, presence, and legacy field order on the resulting index.ndjson
+// lines.
+//
+// Value-level oracle: GOLDEN_LEGACY_LINES below are pre-#504 index lines
+// captured by replaying these exact fixtures against origin/main@6e2aa71
+// (the last commit before this branch), normalized by replacing the
+// time/pricing-volatile fields in VOLATILE_FIELDS with '<volatile>'.
+// Comparing the live line (minus the enumerated #504 fields) byte-wise
+// against the golden proves every legacy field VALUE still serializes as the
+// old server did — not merely that key order is stable. Regenerate with the
+// procedure in the PR that introduced this file if a legit legacy-field
+// change lands: replay the same fixtures on the pre-change commit and paste
+// the normalized lines.
 
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -30,8 +40,46 @@ const LEGACY_INDEX_FIELDS = [
   'turnToolCallIds','turnToolResults','beta1m',
 ];
 const NEW_504_FIELDS = ['agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls'];
+const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
+const IDENTITY_VALUES = {
+  agentId: 'machine-7', team: 'platform',
+  userEmail: 'dev@example.test', agentType: 'ci-bot',
+};
 
-function assertProjection(obj, where) {
+// Fields whose values are time- or pricing-dependent and therefore replaced
+// with '<volatile>' before comparing against GOLDEN_LEGACY_LINES. Everything
+// else must match the pre-#504 oracle byte-for-byte.
+const VOLATILE_FIELDS = new Set(['id','ts','receivedAt','elapsed','cost','responseId']);
+
+// pre-#504 oracle: origin/main@6e2aa71, fixtures identical to this file,
+// volatile fields normalized to <volatile>. See header comment for provenance.
+const GOLDEN_LEGACY_LINES = {
+  'anthropic non-SSE dupes':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"11111111-1111-4111-8111-111111111111","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_JSON_DUPES-tool-1":"local","INDEX_FIELDS_JSON_DUPES-tool-2":"local"},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'anthropic non-SSE plain':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"22222222-2222-4222-8222-222222222222","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"1de3abc0","toolSources":{},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'anthropic SSE dupes':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"33333333-3333-4333-8333-333333333333","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_SSE_DUPES-tool-1":"local","INDEX_FIELDS_SSE_DUPES-tool-2":"local"},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'anthropic SSE plain':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"44444444-4444-4444-8444-444444444444","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"83ab9ba6","toolSources":{},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'openai SSE':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"openai-fields-http-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":null,"isSSE":true,"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"input_tokens_details":{"cached_tokens":0}},"cost":"<volatile>","maxContext":400000,"responseMetadata":{"provider":"openai","id":"resp_OPENAI_FIELDS_SSE","object":"response","model":"gpt-5.5","status":200,"responseStatus":"completed","streaming":true},"stopReason":"completed","title":"OPENAI_FIELDS_SSE","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"6214b4838c62","toolsHash":null,"coreHash":"c66aaa345818","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'openai non-SSE':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"openai-fields-http-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":null,"isSSE":false,"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"input_tokens_details":{"cached_tokens":0}},"cost":"<volatile>","maxContext":400000,"responseMetadata":{"provider":"openai","id":"resp_OPENAI_FIELDS_JSON","object":"response","model":"gpt-5.5","status":200,"responseStatus":"completed"},"stopReason":"completed","title":"OPENAI_FIELDS_JSON","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"6214b4838c62","toolsHash":null,"coreHash":"c66aaa345818","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'ws-proxy':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"index-fields-ws-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-ws","isSSE":false,"usage":null,"cost":"<volatile>","maxContext":400000,"responseMetadata":{"transport":"websocket","capture":"transport-only","endpoint":"/v1/responses","frameCounts":{"clientToUpstream":1,"upstreamToClient":1},"byteCounts":{"clientToUpstream":179,"upstreamToClient":50},"close":{"side":"client","code":1000,"reason":"test complete"},"error":null},"stopReason":"test complete","title":"hello","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":101,"receivedAt":"<volatile>","sysHash":"b54cd80f54c1","toolsHash":null,"coreHash":"2db6420c3d64","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
+};
+
+function normalizedLegacyLine(obj) {
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    if (NEW_504_FIELDS.includes(k)) continue;
+    out[k] = VOLATILE_FIELDS.has(k) ? '<volatile>' : obj[k];
+  }
+  return JSON.stringify(out);
+}
+
+function assertProjection(obj, where, goldenKey) {
   const keys = Object.keys(obj);
   // (a) 不得出現枚舉之外的 key
   const stray = keys.filter(k => !LEGACY_INDEX_FIELDS.includes(k) && !NEW_504_FIELDS.includes(k));
@@ -46,13 +94,20 @@ function assertProjection(obj, where) {
   const stripped = { ...obj };
   for (const k of NEW_504_FIELDS) delete stripped[k];
   assert.equal(projLine, JSON.stringify(stripped), `${where}: projection not byte-identical to stripped line`);
+  // (d) value 層 oracle：與 pre-#504 golden line 逐 byte 相同（揮發欄位正規化後）。
+  //     (a)-(c) 都由同一份新輸出推導，抓不到 legacy VALUE 的回歸；這條抓得到。
+  if (goldenKey) {
+    const golden = GOLDEN_LEGACY_LINES[goldenKey];
+    assert.ok(golden, `${where}: no golden registered for ${goldenKey}`);
+    assert.equal(normalizedLegacyLine(obj), golden, `${where}: legacy projection diverged from pre-#504 golden (${goldenKey})`);
+  }
 }
 
-function assertPresence(obj, { hasDupes }, where) {
-  assert.equal(obj.agentId, 'machine-7', `${where}: agentId`);
-  assert.equal(obj.team, 'platform', `${where}: team`);
-  assert.ok(!('userEmail' in obj), `${where}: unset env must not appear`);
-  assert.ok(!('agentType' in obj), `${where}: unset env must not appear`);
+function assertPresence(obj, { hasDupes, identity }, where) {
+  for (const k of IDENTITY_KEYS) {
+    if (identity[k] !== undefined) assert.equal(obj[k], identity[k], `${where}: ${k}`);
+    else assert.ok(!(k in obj), `${where}: unset env ${k} must not appear`);
+  }
   assert.equal(obj.tz, 'Asia/Tokyo', `${where}: tz`);
   assert.ok('localDate' in obj, `${where}: localDate must exist on every live entry`);
   // 可重現性：由該 entry 自己的 receivedAt + tz 重算
@@ -65,7 +120,7 @@ function assertPresence(obj, { hasDupes }, where) {
 }
 
 function assertLiveLine(obj, options, where) {
-  assertProjection(obj, where);
+  assertProjection(obj, where, options.golden);
   assertPresence(obj, options, where);
   console.log(`[index-fields keys] ${where}: ${Object.keys(obj).join(',')}`);
 }
@@ -114,7 +169,11 @@ function killAndWait(child) {
   });
 }
 
-function isolatedEnv(home, overrides = {}, { identity = true } = {}) {
+// identity: 'partial' = agentId+team only（userEmail/agentType 未設）,
+//           'full'    = 四個 env 全設,
+//           'none'    = 四個 env 全未設。
+// 三種狀態合起來讓每個 env-derived 欄位的 set 與 unset 兩態都被真實路徑驗過。
+function isolatedEnv(home, overrides = {}, { identity = 'partial' } = {}) {
   const env = {
     ...process.env,
     ...overrides,
@@ -127,17 +186,23 @@ function isolatedEnv(home, overrides = {}, { identity = true } = {}) {
   delete env.LOGS_DIR;
   delete env.STORAGE_BACKEND;
   delete env.ANTHROPIC_BASE_URL;
-  delete env.CCXRAY_USER_EMAIL;
-  delete env.CCXRAY_AGENT_TYPE;
-  if (identity) {
-    env.CCXRAY_AGENT_ID = 'machine-7';
-    env.CCXRAY_TEAM = 'platform';
-  } else {
-    delete env.CCXRAY_AGENT_ID;
-    delete env.CCXRAY_TEAM;
+  for (const k of ['CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE']) delete env[k];
+  if (identity === 'partial' || identity === 'full') {
+    env.CCXRAY_AGENT_ID = IDENTITY_VALUES.agentId;
+    env.CCXRAY_TEAM = IDENTITY_VALUES.team;
+  }
+  if (identity === 'full') {
+    env.CCXRAY_USER_EMAIL = IDENTITY_VALUES.userEmail;
+    env.CCXRAY_AGENT_TYPE = IDENTITY_VALUES.agentType;
   }
   return env;
 }
+
+const IDENTITY_EXPECT = {
+  partial: { agentId: IDENTITY_VALUES.agentId, team: IDENTITY_VALUES.team },
+  full: { ...IDENTITY_VALUES },
+  none: {},
+};
 
 function launchProxy(port, env) {
   const child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(port), '--no-browser'], {
@@ -227,6 +292,42 @@ function makeAnthropicUpstream() {
   });
 }
 
+// codex-shaped OpenAI Responses upstream：SSE 與 JSON 兩型由 request 內的
+// marker 決定。response id 由 marker 推導（不是 counter），golden 才可重現。
+function makeOpenAIUpstream() {
+  return http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      let body = {};
+      try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch {}
+      const model = body.model || 'gpt-5.5';
+      const raw = JSON.stringify(body);
+      const wantsSSE = raw.includes('OPENAI_FIELDS_SSE');
+      const marker = wantsSSE ? 'OPENAI_FIELDS_SSE' : 'OPENAI_FIELDS_JSON';
+      const completed = {
+        type: 'response.completed',
+        response: {
+          id: `resp_${marker}`, object: 'response', model, status: 'completed',
+          output: [{ type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'ok' }] }],
+          usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_tokens_details: { cached_tokens: 0 } },
+        },
+      };
+      if (!wantsSSE) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(completed.response));
+        return;
+      }
+      const sse = [
+        `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { id: completed.response.id, model, status: 'in_progress' } })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify(completed)}\n\n`,
+      ].join('');
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(sse);
+    });
+  });
+}
+
 function messagesBody(marker, { dupes = false, sessionId }) {
   const messages = [];
   if (dupes) {
@@ -245,16 +346,15 @@ function messagesBody(marker, { dupes = false, sessionId }) {
   };
 }
 
-function postMessages(port, body) {
+function postJson(port, reqPath, body, headers) {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const req = http.request({
-      hostname: 'localhost', port, path: '/v1/messages', method: 'POST',
+      hostname: 'localhost', port, path: reqPath, method: 'POST',
       headers: {
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
-        'x-api-key': 'sk-test',
-        'anthropic-version': '2023-06-01',
+        ...headers,
       },
     }, res => {
       res.resume();
@@ -263,6 +363,29 @@ function postMessages(port, body) {
     req.on('error', reject);
     req.end(payload);
   });
+}
+
+function postMessages(port, body) {
+  return postJson(port, '/v1/messages', body, {
+    'x-api-key': 'sk-test',
+    'anthropic-version': '2023-06-01',
+  });
+}
+
+function postResponses(port, body) {
+  return postJson(port, '/v1/responses', body, {
+    authorization: 'Bearer sk-test',
+    'session_id': 'openai-fields-http-session',
+  });
+}
+
+function responsesBody(marker, { stream }) {
+  return {
+    model: 'gpt-5.5',
+    stream,
+    instructions: 'You are Codex',
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: marker }] }],
+  };
 }
 
 after(() => {
@@ -276,6 +399,7 @@ describe('live Anthropic index lines use the real forward.js construction paths'
   let proxy;
   let proxyPort;
   let home;
+  const identity = IDENTITY_EXPECT.partial;
 
   before(async () => {
     const upstreamPort = await findFreePort();
@@ -288,7 +412,7 @@ describe('live Anthropic index lines use the real forward.js construction paths'
       ANTHROPIC_TEST_HOST: '127.0.0.1',
       ANTHROPIC_TEST_PORT: String(upstreamPort),
       ANTHROPIC_TEST_PROTOCOL: 'http',
-    });
+    }, { identity: 'partial' });
     proxy = launchProxy(proxyPort, env);
     await waitForPort(proxyPort);
   });
@@ -308,8 +432,8 @@ describe('live Anthropic index lines use the real forward.js construction paths'
     })), 200);
     const lines = (await waitForIndexLines(home, beforeCount + 2)).slice(beforeCount);
     assert.equal(lines.length, 2, `unexpected proxy stderr: ${proxy.stderr()}`);
-    assertLiveLine(lines[0], { hasDupes: true }, 'anthropic non-SSE dupes');
-    assertLiveLine(lines[1], { hasDupes: false }, 'anthropic non-SSE plain');
+    assertLiveLine(lines[0], { hasDupes: true, identity, golden: 'anthropic non-SSE dupes' }, 'anthropic non-SSE dupes');
+    assertLiveLine(lines[1], { hasDupes: false, identity, golden: 'anthropic non-SSE plain' }, 'anthropic non-SSE plain');
   });
 
   it('anthropic SSE projects legacy fields and enforces #504 presence', async () => {
@@ -322,8 +446,53 @@ describe('live Anthropic index lines use the real forward.js construction paths'
     })), 200);
     const lines = (await waitForIndexLines(home, beforeCount + 2)).slice(beforeCount);
     assert.equal(lines.length, 2, `unexpected proxy stderr: ${proxy.stderr()}`);
-    assertLiveLine(lines[0], { hasDupes: true }, 'anthropic SSE dupes');
-    assertLiveLine(lines[1], { hasDupes: false }, 'anthropic SSE plain');
+    assertLiveLine(lines[0], { hasDupes: true, identity, golden: 'anthropic SSE dupes' }, 'anthropic SSE dupes');
+    assertLiveLine(lines[1], { hasDupes: false, identity, golden: 'anthropic SSE plain' }, 'anthropic SSE plain');
+  });
+});
+
+describe('live OpenAI HTTP index lines use the real forward.js construction paths', () => {
+  let upstream;
+  let proxy;
+  let proxyPort;
+  let home;
+  const identity = IDENTITY_EXPECT.full;
+
+  before(async () => {
+    const upstreamPort = await findFreePort();
+    proxyPort = await findFreePort();
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-oai-'));
+    tmpDirs.push(home);
+    upstream = makeOpenAIUpstream();
+    await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
+    const env = isolatedEnv(home, {
+      OPENAI_TEST_HOST: '127.0.0.1',
+      OPENAI_TEST_PORT: String(upstreamPort),
+      OPENAI_TEST_PROTOCOL: 'http',
+    }, { identity: 'full' });
+    proxy = launchProxy(proxyPort, env);
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    if (proxy) await killAndWait(proxy.child);
+    if (upstream) await new Promise(resolve => upstream.close(resolve));
+  });
+
+  it('openai SSE projects legacy fields and enforces #504 presence (all identity vars set)', async () => {
+    const beforeCount = readIndexLines(home).length;
+    assert.equal(await postResponses(proxyPort, responsesBody('OPENAI_FIELDS_SSE', { stream: true })), 200);
+    const lines = (await waitForIndexLines(home, beforeCount + 1)).slice(beforeCount);
+    assert.equal(lines.length, 1, `unexpected proxy stderr: ${proxy.stderr()}`);
+    assertLiveLine(lines[0], { hasDupes: false, identity, golden: 'openai SSE' }, 'openai SSE');
+  });
+
+  it('openai non-SSE projects legacy fields and enforces #504 presence (all identity vars set)', async () => {
+    const beforeCount = readIndexLines(home).length;
+    assert.equal(await postResponses(proxyPort, responsesBody('OPENAI_FIELDS_JSON', { stream: false })), 200);
+    const lines = (await waitForIndexLines(home, beforeCount + 1)).slice(beforeCount);
+    assert.equal(lines.length, 1, `unexpected proxy stderr: ${proxy.stderr()}`);
+    assertLiveLine(lines[0], { hasDupes: false, identity, golden: 'openai non-SSE' }, 'openai non-SSE');
   });
 });
 
@@ -343,7 +512,7 @@ function makeWsUpstream(port) {
 }
 
 describe('live OpenAI WebSocket index line uses the real ws-proxy.js construction path', () => {
-  it('projects legacy fields and omits unset identity and null duplicate fields', async () => {
+  it('projects legacy fields and omits all unset identity and null duplicate fields', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-ws-'));
@@ -352,7 +521,7 @@ describe('live OpenAI WebSocket index line uses the real ws-proxy.js constructio
     const env = isolatedEnv(home, {
       OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
       CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
-    });
+    }, { identity: 'none' });
     delete env.OPENAI_TEST_HOST;
     delete env.OPENAI_TEST_PORT;
     delete env.OPENAI_TEST_PROTOCOL;
@@ -387,7 +556,7 @@ describe('live OpenAI WebSocket index line uses the real ws-proxy.js constructio
 
       const lines = await waitForIndexLines(home, 1);
       assert.equal(lines.length, 1, `unexpected proxy stderr: ${proxy.stderr()}`);
-      assertLiveLine(lines[0], { hasDupes: false }, 'ws-proxy');
+      assertLiveLine(lines[0], { hasDupes: false, identity: IDENTITY_EXPECT.none, golden: 'ws-proxy' }, 'ws-proxy');
     } finally {
       await killAndWait(proxy.child);
       for (const client of upstream.wss.clients) client.terminate();
@@ -398,7 +567,7 @@ describe('live OpenAI WebSocket index line uses the real ws-proxy.js constructio
 });
 
 describe('rebuild-index does not stamp current deployment metadata onto historical turns', () => {
-  it('rebuilds a real orphan without identity, localDate, or tz', async () => {
+  it('rebuilds a real orphan without identity, localDate, or tz — all four identity vars set', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-rebuild-'));
@@ -409,7 +578,7 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       ANTHROPIC_TEST_HOST: '127.0.0.1',
       ANTHROPIC_TEST_PORT: String(upstreamPort),
       ANTHROPIC_TEST_PROTOCOL: 'http',
-    }, { identity: false });
+    }, { identity: 'none' });
     const proxy = launchProxy(proxyPort, producerEnv);
 
     try {
@@ -417,15 +586,22 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       assert.equal(await postMessages(proxyPort, messagesBody('INDEX_FIELDS_REBUILD_SOURCE', {
         sessionId: '66666666-6666-4666-8666-666666666666',
       })), 200);
-      await waitForIndexLines(home, 1);
+      const [liveLine] = await waitForIndexLines(home, 1);
+      // identity-none live line：四個 env-derived 欄位皆不得出現（unset 態的
+      // 全覆蓋），但 localDate/tz 是 live entry 的無條件事實、仍在。
+      for (const key of IDENTITY_KEYS) {
+        assert.ok(!(key in liveLine), `producer live line: unset ${key} must not appear`);
+      }
+      assert.ok('localDate' in liveLine && 'tz' in liveLine, 'producer live line keeps localDate/tz');
       await killAndWait(proxy.child);
 
       const indexPath = path.join(home, 'logs', 'index.ndjson');
       fs.unlinkSync(indexPath);
       assert.equal(fs.existsSync(indexPath), false, 'precondition: live index line removed');
 
+      // rebuild 以四個 identity env 全設的環境跑：歷史 turn 一個都不得被蓋上。
       const rebuild = spawnSync(process.execPath, [SERVER_SCRIPT, 'rebuild-index', '--apply'], {
-        env: isolatedEnv(home),
+        env: isolatedEnv(home, {}, { identity: 'full' }),
         encoding: 'utf8',
       });
       assert.equal(rebuild.status, 0, `rebuild failed: ${rebuild.stderr}`);
@@ -435,13 +611,59 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       assert.equal(lines.length, 1);
       const rebuilt = lines[0];
       assertProjection(rebuilt, 'rebuild orphan');
-      for (const key of ['agentId', 'team', 'localDate', 'tz']) {
+      for (const key of [...IDENTITY_KEYS, 'localDate', 'tz']) {
         assert.ok(!(key in rebuilt), `rebuild orphan: historical turn must not gain ${key}`);
       }
       console.log(`[index-fields keys] rebuild orphan: ${Object.keys(rebuilt).join(',')}`);
     } finally {
       await killAndWait(proxy.child);
       await new Promise(resolve => upstream.close(resolve));
+    }
+  });
+});
+
+describe('importer does not stamp current deployment metadata onto imported turns', () => {
+  it('imports a claude-code transcript with all four identity vars set — no #504 fields appear', async () => {
+    const proxyPort = await findFreePort();
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-'));
+    const importHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-src-'));
+    const codexImportHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-codex-'));
+    tmpDirs.push(home, importHome, codexImportHome);
+
+    const sessionDir = path.join(importHome, 'index-fields-import-project');
+    fs.mkdirSync(sessionDir, { recursive: true });
+    const base = { parentUuid: 'parent-1', sessionId: 'importer-fields-session-1', cwd: '/tmp/index-fields-import' };
+    fs.writeFileSync(path.join(sessionDir, 'sess-1.jsonl'), [
+      JSON.stringify({ ...base, type: 'user', uuid: 'u-1', timestamp: '2026-07-15T10:29:50.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'imported turn' }] } }),
+      JSON.stringify({ ...base, type: 'assistant', uuid: 'a-1', timestamp: '2026-07-15T10:30:00.000Z',
+        message: {
+          id: 'msg_import_fields_1', model: 'claude-sonnet-4-5-20250514', role: 'assistant',
+          content: [{ type: 'text', text: 'Hello' }], stop_reason: 'end_turn',
+          usage: { input_tokens: 5000, output_tokens: 500, cache_read_input_tokens: 1000, cache_creation_input_tokens: 2000 },
+        } }),
+    ].join('\n'));
+
+    const env = isolatedEnv(home, {
+      CCXRAY_IMPORT_HOMES: importHome,
+      CCXRAY_IMPORT_CODEX_HOMES: codexImportHome,
+    }, { identity: 'full' });
+    env.CCXRAY_IMPORT_DISABLE = '0';
+    const proxy = launchProxy(proxyPort, env);
+
+    try {
+      await waitForPort(proxyPort);
+      const lines = await waitForIndexLines(home, 1);
+      assert.equal(lines.length, 1, `unexpected proxy stderr: ${proxy.stderr()}`);
+      const imported = lines[0];
+      assert.equal(imported.imported, true, 'line came from the importer');
+      assertProjection(imported, 'importer');
+      for (const key of NEW_504_FIELDS) {
+        assert.ok(!(key in imported), `importer: imported turn must not gain ${key}`);
+      }
+      console.log(`[index-fields keys] importer: ${Object.keys(imported).join(',')}`);
+    } finally {
+      await killAndWait(proxy.child);
     }
   });
 });

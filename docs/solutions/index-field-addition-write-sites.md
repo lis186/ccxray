@@ -1,4 +1,4 @@
-# 新增 INDEX_FIELDS 欄位：五個寫入點、兩個刻意不蓋、一個看不到的接縫
+# 新增 INDEX_FIELDS 欄位：七個寫入點（五個 live ＋ 兩個歷史）、兩個刻意不蓋、一個看不到的接縫
 
 - 發現：2026-08-11，#504 / PR #512
 - 適用：任何要往 `INDEX_FIELDS` 加欄位的票
@@ -11,7 +11,7 @@
 
 同族問題見 ADR 0018（`turnToolCalls` 的 `null` / `{}` / 非空三態），那裡的「沒有值」有三種寫法而每種被不同消費端賦予不同語意。
 
-## 二、index 寫入點是五個，不是一個
+## 二、index 寫入點是七個（五個 live constructor ＋ 兩個歷史路徑），不是一個
 
 ```
 server/forward.js      ×4   HTTP：anthropic SSE / openai SSE / non-SSE ×2
