@@ -73,7 +73,7 @@ function setup(entries, envOverrides = {}) {
   // Pre-create cursor so it's not a first-run (unless test wants first-run)
   if (!envOverrides._skipCursor) {
     fs.writeFileSync(path.join(_home, 'export-cursor.json'),
-      JSON.stringify({ lineCount: 0, seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lastId: null, seq: {}, partial: false }) + '\n');
   }
 }
 
@@ -113,7 +113,7 @@ describe('export-sync', () => {
     await flushExport();
     assert.equal(_uploads.length, 0, 'no upload on first run');
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
-    assert.equal(cursor.lineCount, 1);
+    assert.equal(cursor.lastId, '2026-08-12T10-00-00-000');
     assert.equal(cursor.partial, true);
     cleanup();
   });
@@ -488,6 +488,54 @@ describe('export-sync', () => {
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.cost_confidence, 'mixed', 'prefix-only is not exact');
+    cleanup();
+  });
+
+  it('#1 responseId field-wise merge enriches canonical', async () => {
+    setup([
+      makeEntry({ responseId: 'msg_001', cost: null, usage: null, model: 'claude-sonnet-4-6',
+        toolSources: { call1: 'local' } }),
+      makeEntry({ id: '2026-08-12T10-00-01-000', responseId: 'msg_001',
+        cost: { cost: 0.15, confidence: 'exact' },
+        usage: { input_tokens: 1000, output_tokens: 500 },
+        model: null, toolSources: null }),
+    ]);
+    await flushExport();
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.turn_count, 1, 'merged into one turn');
+    assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost from enriching copy');
+    assert.equal(daily.models['claude-sonnet-4-6']?.turns, 1, 'model from canonical');
+    assert.ok(daily.tool_sources.local >= 1, 'toolSources from canonical');
+    cleanup();
+  });
+
+  it('#6 malformed lock file is recovered', async () => {
+    setup([makeEntry()]);
+    const lockPath = path.join(_home, 'export.lock');
+    fs.writeFileSync(lockPath, 'NOT VALID JSON{{{{', { flag: 'wx' });
+    await flushExport();
+    assert.equal(_uploads.length, 1, 'malformed lock recovered');
+    cleanup();
+  });
+
+  it('#2 cross-midnight cumulative fields fold into home date only', async () => {
+    setup([
+      makeEntry({ id: '2026-08-11T23-00-00-000', sessionId: 'sess-cross',
+        receivedAt: new Date('2026-08-11T15:00:00Z').getTime(),
+        skillCalls: { mySkill: 3 }, toolSources: { call1: 'local', call2: 'local' } }),
+      makeEntry({ id: '2026-08-12T10-00-00-000', sessionId: 'sess-cross', msgCount: 12,
+        receivedAt: new Date('2026-08-12T02:00:00Z').getTime(),
+        skillCalls: { mySkill: 5 }, toolSources: { call1: 'local', call2: 'local', call3: 'network' } }),
+    ]);
+    await flushExport();
+    const dailies = _uploads.map(u => u.records.find(r => r.type === 'daily'));
+    const day1 = dailies.find(d => d.dt === '2026-08-11');
+    const day2 = dailies.find(d => d.dt === '2026-08-12');
+    assert.ok(day1, 'day1 exists');
+    assert.equal(day1.skill_usage.mySkill, 5, 'session max folds into home date');
+    if (day2) {
+      assert.equal(day2.skill_usage?.mySkill || 0, 0, 'no double-count on day2');
+    }
     cleanup();
   });
 });

@@ -25,6 +25,7 @@ const TOOL_FAIL_SPIKE_PCT = 0.5;
 let _interval = null;
 let _uploader = null; // test seam
 let _cachedToken = null; // { accessToken, expiresAt }
+let _runningFlush = null; // in-flight flush promise for graceful shutdown
 
 function _setUploader(fn) { _uploader = fn; }
 
@@ -57,18 +58,17 @@ function acquireLock(lockPath) {
     return token;
   } catch (err) {
     if (err.code !== 'EEXIST') return null;
-    try {
-      const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-      // R5: require dead PID, not just stale time — a live long-running flush must not be stolen
-      if (!isPidAlive(lock.pid)) {
-        const stale = lockPath + `.stale.${process.pid}`;
-        try { fs.renameSync(lockPath, stale); fs.unlinkSync(stale); } catch {}
-        try {
-          fs.writeFileSync(lockPath, payload, { flag: 'wx' });
-          return token;
-        } catch { return null; }
-      }
-    } catch {}
+    // #6: parse failure = treat as stale (corrupted lock)
+    let lock;
+    try { lock = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch { lock = null; }
+    if (!lock || !isPidAlive(lock.pid)) {
+      const stale = lockPath + `.stale.${process.pid}`;
+      try { fs.renameSync(lockPath, stale); fs.unlinkSync(stale); } catch {}
+      try {
+        fs.writeFileSync(lockPath, payload, { flag: 'wx' });
+        return token;
+      } catch { return null; }
+    }
     return null;
   }
 }
@@ -247,15 +247,41 @@ function getToolCalls(entry) {
   return null;
 }
 
+// #1(ADR 0012): field-wise merge for responseId duplicates — prefer non-null
+function mergeEntry(a, b) {
+  const merged = { ...a };
+  if (b.usage) {
+    const aOut = a.usage?.output_tokens || 0;
+    const bOut = b.usage.output_tokens || 0;
+    if (bOut > aOut || !a.usage) merged.usage = b.usage;
+  }
+  if (b.cost && typeof b.cost === 'object' && b.cost.cost != null) {
+    if (!a.cost || typeof a.cost !== 'object' || a.cost.cost == null) {
+      merged.cost = b.cost;
+    }
+  }
+  for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
+    'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
+    'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider']) {
+    if (merged[f] == null && b[f] != null) merged[f] = b[f];
+  }
+  if (b.hasCredential) merged.hasCredential = true;
+  if (b.turnToolFail) merged.turnToolFail = true;
+  if (b.beta1m) merged.beta1m = true;
+  return merged;
+}
+
 function aggregate(lines, agentId, configDirAllowlist) {
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
   const sessionPrevMsg = new Map(); // sid → last msgCount for compaction detection
-  const legacyToolMax = new Map(); // "dt\0sid" → Map(tool → maxCount)
-  // #7/#8: per-session max for cumulative fields
-  const sessToolSources = new Map(); // "dt\0sid" → {cat: maxCount}
-  const sessSkillCalls = new Map(); // "dt\0sid" → {skill: maxCount}
-  const sessDupToolCalls = new Map(); // "dt\0sid" → {tool: maxCount}
+  const legacyToolMax = new Map(); // sid → Map(tool → maxCount)
+  // #7/#8: per-session max for cumulative fields, keyed by sid only
+  // #2: fold into session's home date only (no cross-midnight double-count)
+  const sessToolSources = new Map(); // sid → {cat: maxCount}
+  const sessSkillCalls = new Map(); // sid → {skill: maxCount}
+  const sessDupToolCalls = new Map(); // sid → {tool: maxCount}
+  const sessionHomeDt = new Map(); // sid → first turn UTC date
   // #1+R3(ADR 0012): responseId dedup — pre-merge keeps the entry with
   // the richest usage/cost per ADR 0012's most-informative-register principle.
   const seenRids = new Map(); // responseId → index in dedupedEntries
@@ -266,14 +292,11 @@ function aggregate(lines, agentId, configDirAllowlist) {
     try { entry = JSON.parse(line); } catch { continue; }
     if (!entry.id || !entry.sessionId) continue;
 
-    // #1+R3: responseId dedup — keep richest copy
+    // #1(ADR 0012): responseId dedup — field-wise merge
     if (entry.responseId) {
       const prevIdx = seenRids.get(entry.responseId);
       if (prevIdx !== undefined) {
-        const prev = dedupedEntries[prevIdx];
-        const prevHasCost = prev.cost && typeof prev.cost === 'object' && prev.cost.cost != null;
-        const curHasCost = entry.cost && typeof entry.cost === 'object' && entry.cost.cost != null;
-        if (curHasCost && !prevHasCost) dedupedEntries[prevIdx] = entry;
+        dedupedEntries[prevIdx] = mergeEntry(dedupedEntries[prevIdx], entry);
         continue;
       }
       seenRids.set(entry.responseId, dedupedEntries.length);
@@ -356,6 +379,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
     daily._providerCounts[prov] = (daily._providerCounts[prov] || 0) + 1;
 
     const sid = entry.sessionId;
+    if (!sessionHomeDt.has(sid)) sessionHomeDt.set(sid, dt);
     if (!daily._sessions.has(sid)) {
       daily._sessions.add(sid);
       daily.session_count++;
@@ -434,9 +458,8 @@ function aggregate(lines, agentId, configDirAllowlist) {
     if (tc && typeof tc === 'object') {
       addMap(daily.tool_usage, tc);
     } else if (tc === null && entry.provider === 'anthropic' && entry.toolCalls) {
-      const ltKey = `${dt}\0${sid}`;
-      if (!legacyToolMax.has(ltKey)) legacyToolMax.set(ltKey, new Map());
-      const stm = legacyToolMax.get(ltKey);
+      if (!legacyToolMax.has(sid)) legacyToolMax.set(sid, new Map());
+      const stm = legacyToolMax.get(sid);
       for (const [tool, count] of Object.entries(entry.toolCalls)) {
         const name = sanitizeName(tool);
         if (!name) continue;
@@ -445,15 +468,14 @@ function aggregate(lines, agentId, configDirAllowlist) {
       }
     }
 
-    // #7: toolSources is cumulative — per-session max then sum across sessions
-    const tsKey = `${dt}\0${sid}`;
-    if (!sessToolSources.has(tsKey)) sessToolSources.set(tsKey, {});
-    maxToolSourceCounts(sessToolSources.get(tsKey), entry.toolSources);
+    // #7: toolSources is cumulative — per-session max, fold into home date only (#2)
+    if (!sessToolSources.has(sid)) sessToolSources.set(sid, {});
+    maxToolSourceCounts(sessToolSources.get(sid), entry.toolSources);
 
-    // #8: skillCalls is cumulative — same per-session max shape
+    // #8: skillCalls is cumulative — same per-session max shape (#2)
     if (entry.skillCalls && typeof entry.skillCalls === 'object') {
-      if (!sessSkillCalls.has(tsKey)) sessSkillCalls.set(tsKey, {});
-      maxMap(sessSkillCalls.get(tsKey), entry.skillCalls);
+      if (!sessSkillCalls.has(sid)) sessSkillCalls.set(sid, {});
+      maxMap(sessSkillCalls.get(sid), entry.skillCalls);
     }
 
     if (entry.turnToolFail === true) daily.tool_fail_count++;
@@ -463,11 +485,10 @@ function aggregate(lines, agentId, configDirAllowlist) {
       daily._maxToolCount = entry.toolCount;
     }
 
-    // R4: duplicateToolCalls is cumulative {toolName: count}. Per-session max then sum.
+    // R4: duplicateToolCalls is cumulative {toolName: count}. Per-session max, home date only (#2).
     if (entry.duplicateToolCalls != null && typeof entry.duplicateToolCalls === 'object') {
-      const dtcKey = `${dt}\0${sid}`;
-      if (!sessDupToolCalls.has(dtcKey)) sessDupToolCalls.set(dtcKey, {});
-      maxMap(sessDupToolCalls.get(dtcKey), entry.duplicateToolCalls);
+      if (!sessDupToolCalls.has(sid)) sessDupToolCalls.set(sid, {});
+      maxMap(sessDupToolCalls.get(sid), entry.duplicateToolCalls);
     }
 
     if (entry.hasCredential === true) daily.credential_flag = true;
@@ -531,41 +552,37 @@ function aggregate(lines, agentId, configDirAllowlist) {
     if (entry.turnToolFail === true) sess._toolFailCount++;
   }
 
-  // Fold per-session maxima into daily totals
-  // ponytail: legacy per-tool max is cumulative high-water-mark, not actual count.
-  for (const [ltKey, stm] of legacyToolMax) {
-    const dt = ltKey.split('\0')[0];
-    const daily = dailyByDt.get(dt);
+  // #2: fold per-session maxima into the session's home date daily total
+  for (const [sid, stm] of legacyToolMax) {
+    const dt = sessionHomeDt.get(sid);
+    const daily = dt && dailyByDt.get(dt);
     if (!daily) continue;
     for (const [name, count] of stm) {
       daily.tool_usage[name] = (daily.tool_usage[name] || 0) + count;
     }
   }
 
-  // #7: fold per-session toolSources maxima
-  for (const [tsKey, cats] of sessToolSources) {
-    const dt = tsKey.split('\0')[0];
-    const daily = dailyByDt.get(dt);
+  for (const [sid, cats] of sessToolSources) {
+    const dt = sessionHomeDt.get(sid);
+    const daily = dt && dailyByDt.get(dt);
     if (!daily) continue;
     for (const [cat, count] of Object.entries(cats)) {
       daily.tool_sources[cat] = (daily.tool_sources[cat] || 0) + count;
     }
   }
 
-  // #8: fold per-session skillCalls maxima
-  for (const [tsKey, skills] of sessSkillCalls) {
-    const dt = tsKey.split('\0')[0];
-    const daily = dailyByDt.get(dt);
+  for (const [sid, skills] of sessSkillCalls) {
+    const dt = sessionHomeDt.get(sid);
+    const daily = dt && dailyByDt.get(dt);
     if (!daily) continue;
     for (const [skill, count] of Object.entries(skills)) {
       daily.skill_usage[skill] = (daily.skill_usage[skill] || 0) + count;
     }
   }
 
-  // R4: fold per-session duplicateToolCalls maxima
-  for (const [dtcKey, tools] of sessDupToolCalls) {
-    const dt = dtcKey.split('\0')[0];
-    const daily = dailyByDt.get(dt);
+  for (const [sid, tools] of sessDupToolCalls) {
+    const dt = sessionHomeDt.get(sid);
+    const daily = dt && dailyByDt.get(dt);
     if (!daily) continue;
     for (const count of Object.values(tools)) {
       if (typeof count === 'number') daily.duplicate_tool_call_count += count;
@@ -680,28 +697,28 @@ async function flushExport() {
     let cursor = readCursor(cursorPath);
     const isFirstRun = !cursor;
 
-    // R4: use line count as cursor position — handles out-of-order appends
+    // #4: cursor tracks last-processed entry id (not line count)
     const config = require('./config');
     const lines = [];
-    let lineCount = 0;
     for await (const line of config.storage.readIndexLines()) {
       lines.push(line);
-      lineCount++;
+    }
+
+    // Find last entry id in index
+    let currentLastId = null;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try { const p = JSON.parse(lines[i]); if (p.id) { currentLastId = p.id; break; } } catch {}
     }
 
     if (isFirstRun) {
-      const cutoffDt = lineCount > 0 ? utcDateFromLastLine(lines) : null;
-      writeCursor(cursorPath, { lineCount, seq: {}, partial: true, cutoffDt });
+      const cutoffDt = lines.length > 0 ? utcDateFromLastLine(lines) : null;
+      writeCursor(cursorPath, { lastId: currentLastId, seq: {}, partial: true, cutoffDt });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
       return;
     }
 
-    // R5: if index shrank (prune rewrote it), reset cursor to re-scan
-    const prevLineCount = cursor.lineCount || 0;
-    if (lineCount < prevLineCount) {
-      cursor = { lineCount: 0, seq: cursor.seq || {}, partial: false };
-    }
-    if (lineCount <= (cursor.lineCount || 0)) return; // nothing new
+    // #4: nothing new if last entry id unchanged
+    if (!currentLastId || currentLastId === cursor.lastId) return;
 
     const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
     const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
@@ -709,14 +726,20 @@ async function flushExport() {
     const { dailyByDt, sessionsByDt } = aggregate(lines, agentId, configDirAllowlist);
 
     if (dailyByDt.size === 0) {
-      writeCursor(cursorPath, { lineCount, seq: cursor.seq || {}, partial: false });
+      writeCursor(cursorPath, { lastId: currentLastId, seq: cursor.seq || {}, partial: false });
       return;
     }
 
-    // #2: dates with new data = lines after cursor position
-    const cursorLineCount = cursor.lineCount || 0;
+    // #4: find cursor.lastId position → lines after it have new data
     const datesWithNewData = new Set();
-    for (let i = cursorLineCount; i < lines.length; i++) {
+    let cursorLineIdx = -1;
+    if (cursor.lastId) {
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try { const p = JSON.parse(lines[i]); if (p.id === cursor.lastId) { cursorLineIdx = i; break; } } catch {}
+      }
+    }
+    const startIdx = cursorLineIdx >= 0 ? cursorLineIdx + 1 : 0;
+    for (let i = startIdx; i < lines.length; i++) {
       try {
         const parsed = JSON.parse(lines[i]);
         const dt = utcDateFromEntry(parsed);
@@ -728,13 +751,13 @@ async function flushExport() {
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
     const seq = { ...(cursor.seq || {}) };
 
-    // R3+R4: partial_day only on the cutoff date — use persisted UTC date
     const cutoffDt = cursor.partial ? (cursor.cutoffDt || null) : null;
 
-    // R5: track completed dates so retry after partial failure skips them
-    const completedDts = new Set(cursor.completedDts || []);
+    // #3: completedDts bound to snapshot — clear if index changed since they were recorded
+    const completedDts = new Set(
+      cursor.snapshotLastId === currentLastId ? (cursor.completedDts || []) : []
+    );
 
-    // #2/#3: only upload dates with new data, per-date checkpoint
     for (const [dt, daily] of dailyByDt) {
       if (!datesWithNewData.has(dt)) continue;
       if (completedDts.has(dt) && seq[dt] && seq[dt] === cursor.seq?.[dt]) continue;
@@ -764,13 +787,14 @@ async function flushExport() {
       });
       await upload(bucket, objectName, payload);
 
-      // #3+R5: per-date checkpoint — record completed date for retry safety
+      // #3: per-date checkpoint bound to current snapshot
       completedDts.add(dt);
-      writeCursor(cursorPath, { lineCount: cursor.lineCount || 0, seq, partial: false, completedDts: [...completedDts] });
+      writeCursor(cursorPath, { lastId: cursor.lastId, seq, partial: false,
+        completedDts: [...completedDts], snapshotLastId: currentLastId });
     }
 
-    // All dates uploaded — advance lineCount to the current tail, clear completedDts
-    writeCursor(cursorPath, { lineCount, seq, partial: false });
+    // All dates uploaded — advance lastId to current tail, clear completedDts
+    writeCursor(cursorPath, { lastId: currentLastId, seq, partial: false });
   } finally {
     releaseLock(lockPath, token);
   }
@@ -779,9 +803,9 @@ async function flushExport() {
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
   if (!process.env.CCXRAY_EXPORT_GCS_BUCKET) return;
-  flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
+  _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
-    flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message));
+    _runningFlush = flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message));
   }, FLUSH_INTERVAL_MS);
   _interval.unref();
 }
@@ -790,4 +814,12 @@ function stopExportSync() {
   if (_interval) { clearInterval(_interval); _interval = null; }
 }
 
-module.exports = { startExportSync, stopExportSync, flushExport, _setUploader };
+// #5: await in-flight flush before shutdown
+async function awaitPendingFlush() {
+  if (_runningFlush) {
+    try { await _runningFlush; } catch {}
+    _runningFlush = null;
+  }
+}
+
+module.exports = { startExportSync, stopExportSync, flushExport, awaitPendingFlush, _setUploader };

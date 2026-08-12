@@ -24,7 +24,7 @@ const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
-const { startExportSync, stopExportSync, flushExport } = require('./export-sync');
+const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = require('./export-sync');
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
@@ -650,6 +650,8 @@ async function gracefulExit(code) {
   stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
   const drain = (async () => {
+    // #5: await any in-flight periodic flush before starting shutdown sequence
+    try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
     try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
     // drain() before flush(): in-flight appendIndex .then(updateFromEntry) callbacks
     // must fire before flush persists the session Map to disk (#309)
