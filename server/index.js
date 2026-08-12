@@ -650,14 +650,14 @@ async function gracefulExit(code) {
   stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
   const drain = (async () => {
-    // #5: await any in-flight periodic flush before starting shutdown sequence
-    try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
     try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
     // drain() before flush(): in-flight appendIndex .then(updateFromEntry) callbacks
     // must fire before flush persists the session Map to disk (#309)
     try { await config.storage.drain(); } catch (e) { console.error('Storage drain failed:', e.message); }
     try { await sessionIdx.flush(); } catch (e) { console.error('Session index flush failed:', e.message); }
-    // Export after storage drain so readIndexLines sees all committed writes
+    // #5: await in-flight export AFTER critical drains so a 30s GCS timeout
+    // doesn't block WS/storage under the 5s shutdown deadline
+    try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
     try { await flushExport(); } catch (e) { console.error('Export flush failed:', e.message); }
   })();
   await Promise.race([drain, deadline]);
