@@ -73,7 +73,7 @@ function setup(entries, envOverrides = {}) {
   // Pre-create cursor so it's not a first-run (unless test wants first-run)
   if (!envOverrides._skipCursor) {
     fs.writeFileSync(path.join(_home, 'export-cursor.json'),
-      JSON.stringify({ lastId: '2026-08-11T00-00-00-000', seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lineCount: 0, seq: {}, partial: false }) + '\n');
   }
 }
 
@@ -113,7 +113,7 @@ describe('export-sync', () => {
     await flushExport();
     assert.equal(_uploads.length, 0, 'no upload on first run');
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
-    assert.equal(cursor.lastId, '2026-08-12T10-00-00-000');
+    assert.equal(cursor.lineCount, 1);
     assert.equal(cursor.partial, true);
     cleanup();
   });

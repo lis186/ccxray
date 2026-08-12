@@ -185,6 +185,17 @@ function utcDateFromEntry(entry) {
   return m ? m[1] : null;
 }
 
+function utcDateFromLastLine(lines) {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const entry = JSON.parse(lines[i]);
+      const dt = utcDateFromEntry(entry);
+      if (dt) return dt;
+    } catch {}
+  }
+  return null;
+}
+
 function addMap(target, source) {
   if (!source || typeof source !== 'object') return;
   for (const [k, v] of Object.entries(source)) {
@@ -243,6 +254,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
   // #7/#8: per-session max for cumulative fields
   const sessToolSources = new Map(); // "dt\0sid" → {cat: maxCount}
   const sessSkillCalls = new Map(); // "dt\0sid" → {skill: maxCount}
+  const sessDupToolCalls = new Map(); // "dt\0sid" → {tool: maxCount}
   // #1+R3(ADR 0012): responseId dedup — pre-merge keeps the entry with
   // the richest usage/cost per ADR 0012's most-informative-register principle.
   const seenRids = new Map(); // responseId → index in dedupedEntries
@@ -267,6 +279,10 @@ function aggregate(lines, agentId, configDirAllowlist) {
     }
     dedupedEntries.push(entry);
   }
+
+  // R4: sort by receivedAt so compaction detection and first-turn selection
+  // are not confused by out-of-order append order.
+  dedupedEntries.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
 
   // Second pass: aggregate deduped entries
   for (const entry of dedupedEntries) {
@@ -444,11 +460,11 @@ function aggregate(lines, agentId, configDirAllowlist) {
       daily._maxToolCount = entry.toolCount;
     }
 
-    // #10+R3: duplicateToolCalls is {toolName: count}. Sum values.
+    // R4: duplicateToolCalls is cumulative {toolName: count}. Per-session max then sum.
     if (entry.duplicateToolCalls != null && typeof entry.duplicateToolCalls === 'object') {
-      for (const v of Object.values(entry.duplicateToolCalls)) {
-        if (typeof v === 'number' && Number.isFinite(v)) daily.duplicate_tool_call_count += v;
-      }
+      const dtcKey = `${dt}\0${sid}`;
+      if (!sessDupToolCalls.has(dtcKey)) sessDupToolCalls.set(dtcKey, {});
+      maxMap(sessDupToolCalls.get(dtcKey), entry.duplicateToolCalls);
     }
 
     if (entry.hasCredential === true) daily.credential_flag = true;
@@ -540,6 +556,16 @@ function aggregate(lines, agentId, configDirAllowlist) {
     if (!daily) continue;
     for (const [skill, count] of Object.entries(skills)) {
       daily.skill_usage[skill] = (daily.skill_usage[skill] || 0) + count;
+    }
+  }
+
+  // R4: fold per-session duplicateToolCalls maxima
+  for (const [dtcKey, tools] of sessDupToolCalls) {
+    const dt = dtcKey.split('\0')[0];
+    const daily = dailyByDt.get(dt);
+    if (!daily) continue;
+    for (const count of Object.values(tools)) {
+      if (typeof count === 'number') daily.duplicate_tool_call_count += count;
     }
   }
 
@@ -651,29 +677,23 @@ async function flushExport() {
     let cursor = readCursor(cursorPath);
     const isFirstRun = !cursor;
 
+    // R4: use line count as cursor position — handles out-of-order appends
     const config = require('./config');
     const lines = [];
-    let lastId = null;
-    let hasNewData = false;
+    let lineCount = 0;
     for await (const line of config.storage.readIndexLines()) {
       lines.push(line);
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.id) {
-          lastId = parsed.id;
-          // #2: track which dates have new data
-          if (!isFirstRun && (!cursor.lastId || parsed.id > cursor.lastId)) hasNewData = true;
-        }
-      } catch {}
+      lineCount++;
     }
 
     if (isFirstRun) {
-      writeCursor(cursorPath, { lastId, seq: {}, partial: true });
+      const cutoffDt = lineCount > 0 ? utcDateFromLastLine(lines) : null;
+      writeCursor(cursorPath, { lineCount, seq: {}, partial: true, cutoffDt });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
       return;
     }
 
-    if (!hasNewData) return;
+    if (lineCount <= (cursor.lineCount || 0)) return; // nothing new
 
     const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
     const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
@@ -681,19 +701,18 @@ async function flushExport() {
     const { dailyByDt, sessionsByDt } = aggregate(lines, agentId, configDirAllowlist);
 
     if (dailyByDt.size === 0) {
-      writeCursor(cursorPath, { lastId, seq: cursor.seq || {}, partial: false });
+      writeCursor(cursorPath, { lineCount, seq: cursor.seq || {}, partial: false });
       return;
     }
 
-    // #2: figure out which dates have new entries (post-cursor)
+    // #2: dates with new data = lines after cursor position
+    const prevLineCount = cursor.lineCount || 0;
     const datesWithNewData = new Set();
-    for (const line of lines) {
+    for (let i = prevLineCount; i < lines.length; i++) {
       try {
-        const parsed = JSON.parse(line);
-        if (parsed.id && (!cursor.lastId || parsed.id > cursor.lastId)) {
-          const dt = utcDateFromEntry(parsed);
-          if (dt) datesWithNewData.add(dt);
-        }
+        const parsed = JSON.parse(lines[i]);
+        const dt = utcDateFromEntry(parsed);
+        if (dt) datesWithNewData.add(dt);
       } catch {}
     }
 
@@ -701,9 +720,8 @@ async function flushExport() {
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
     const seq = { ...(cursor.seq || {}) };
 
-    // R3: partial_day only on the cutoff date (the date containing cursor init)
-    const cutoffDt = cursor.partial && cursor.lastId
-      ? utcDateFromEntry({ id: cursor.lastId }) : null;
+    // R3+R4: partial_day only on the cutoff date — use persisted UTC date
+    const cutoffDt = cursor.partial ? (cursor.cutoffDt || null) : null;
 
     // #2/#3: only upload dates with new data, per-date checkpoint
     for (const [dt, daily] of dailyByDt) {
@@ -734,13 +752,12 @@ async function flushExport() {
       });
       await upload(bucket, objectName, payload);
 
-      // #3: per-date checkpoint — advance seq but keep lastId at cursor position
-      // until all dates succeed. If a later date fails, retry picks up from seq.
-      writeCursor(cursorPath, { lastId: cursor.lastId, seq, partial: false });
+      // #3: per-date checkpoint — advance seq but keep lineCount at cursor position
+      writeCursor(cursorPath, { lineCount: cursor.lineCount || 0, seq, partial: false });
     }
 
-    // All dates uploaded — advance lastId to the global tail
-    writeCursor(cursorPath, { lastId, seq, partial: false });
+    // All dates uploaded — advance lineCount to the current tail
+    writeCursor(cursorPath, { lineCount, seq, partial: false });
   } finally {
     releaseLock(lockPath, token);
   }
