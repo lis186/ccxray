@@ -262,8 +262,14 @@ function mergeEntry(a, b) {
   }
   for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
     'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
-    'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider']) {
+    'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider',
+    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
+  }
+  // ADR 0012: prefer non-inferred session identity
+  if (b.sessionInferred === false && a.sessionInferred !== false) {
+    if (b.sessionId) merged.sessionId = b.sessionId;
+    merged.sessionInferred = false;
   }
   if (b.hasCredential) merged.hasCredential = true;
   if (b.turnToolFail) merged.turnToolFail = true;
@@ -589,7 +595,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
     }
   }
 
-  return { dailyByDt, sessionsByDt };
+  return { dailyByDt, sessionsByDt, sessionHomeDt };
 }
 
 function repoRoot(cwd) {
@@ -723,7 +729,7 @@ async function flushExport() {
     const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
     const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
 
-    const { dailyByDt, sessionsByDt } = aggregate(lines, agentId, configDirAllowlist);
+    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId, configDirAllowlist);
 
     if (dailyByDt.size === 0) {
       writeCursor(cursorPath, { lastId: currentLastId, seq: cursor.seq || {}, partial: false });
@@ -732,6 +738,7 @@ async function flushExport() {
 
     // #4: find cursor.lastId position → lines after it have new data
     const datesWithNewData = new Set();
+    const sessionsWithNewData = new Set();
     let cursorLineIdx = -1;
     if (cursor.lastId) {
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -744,7 +751,15 @@ async function flushExport() {
         const parsed = JSON.parse(lines[i]);
         const dt = utcDateFromEntry(parsed);
         if (dt) datesWithNewData.add(dt);
+        if (parsed.sessionId) sessionsWithNewData.add(parsed.sessionId);
       } catch {}
+    }
+
+    // P1: cross-midnight cumulative fold targets home date, which may differ
+    // from the new-data date. Include it so the fold is uploaded.
+    for (const sid of sessionsWithNewData) {
+      const homeDt = sessionHomeDt.get(sid);
+      if (homeDt) datesWithNewData.add(homeDt);
     }
 
     const prefix = process.env.CCXRAY_EXPORT_GCS_PREFIX || 'summaries';
@@ -805,7 +820,10 @@ function startExportSync() {
   if (!process.env.CCXRAY_EXPORT_GCS_BUCKET) return;
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
-    _runningFlush = flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message));
+    // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
+    _runningFlush = Promise.resolve(_runningFlush).then(() =>
+      flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message))
+    );
   }, FLUSH_INTERVAL_MS);
   _interval.unref();
 }
