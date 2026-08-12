@@ -6,7 +6,8 @@
 // structure, presence, and legacy field order on the resulting index.ndjson
 // lines.
 //
-// Value-level oracle: GOLDEN_LEGACY_LINES below are pre-#504 index lines
+// Value-level oracle: GOLDEN_LEGACY_LINES below are pre-#504 index lines —
+// live (anthropic/openai/ws) AND historical (rebuild-index, importer) —
 // captured by replaying these exact fixtures against origin/main@6e2aa71
 // (the last commit before this branch), normalized by replacing the
 // time/pricing-volatile fields in VOLATILE_FIELDS with '<volatile>'.
@@ -48,26 +49,31 @@ const IDENTITY_VALUES = {
 
 // Fields whose values are time- or pricing-dependent and therefore replaced
 // with '<volatile>' before comparing against GOLDEN_LEGACY_LINES. Everything
-// else must match the pre-#504 oracle byte-for-byte.
-const VOLATILE_FIELDS = new Set(['id','ts','receivedAt','elapsed','cost','responseId']);
+// else — including responseId, which the mocks derive deterministically from
+// the request marker — must match the pre-#504 oracle byte-for-byte.
+const VOLATILE_FIELDS = new Set(['id','ts','receivedAt','elapsed','cost']);
 
 // pre-#504 oracle: origin/main@6e2aa71, fixtures identical to this file,
 // volatile fields normalized to <volatile>. See header comment for provenance.
 const GOLDEN_LEGACY_LINES = {
   'anthropic non-SSE dupes':
-    '{"id":"<volatile>","ts":"<volatile>","sessionId":"11111111-1111-4111-8111-111111111111","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_JSON_DUPES-tool-1":"local","INDEX_FIELDS_JSON_DUPES-tool-2":"local"},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"11111111-1111-4111-8111-111111111111","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_JSON_DUPES-tool-1":"local","INDEX_FIELDS_JSON_DUPES-tool-2":"local"},"responseId":"msg_INDEX_FIELDS_JSON_DUPES","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic non-SSE plain':
-    '{"id":"<volatile>","ts":"<volatile>","sessionId":"22222222-2222-4222-8222-222222222222","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"1de3abc0","toolSources":{},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"22222222-2222-4222-8222-222222222222","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"1de3abc0","toolSources":{},"responseId":"msg_INDEX_FIELDS_JSON_PLAIN","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic SSE dupes':
-    '{"id":"<volatile>","ts":"<volatile>","sessionId":"33333333-3333-4333-8333-333333333333","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_SSE_DUPES-tool-1":"local","INDEX_FIELDS_SSE_DUPES-tool-2":"local"},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"33333333-3333-4333-8333-333333333333","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_SSE_DUPES-tool-1":"local","INDEX_FIELDS_SSE_DUPES-tool-2":"local"},"responseId":"msg_INDEX_FIELDS_SSE_DUPES","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic SSE plain':
-    '{"id":"<volatile>","ts":"<volatile>","sessionId":"44444444-4444-4444-8444-444444444444","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"83ab9ba6","toolSources":{},"responseId":"<volatile>","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"44444444-4444-4444-8444-444444444444","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"83ab9ba6","toolSources":{},"responseId":"msg_INDEX_FIELDS_SSE_PLAIN","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'openai SSE':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"openai-fields-http-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":null,"isSSE":true,"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"input_tokens_details":{"cached_tokens":0}},"cost":"<volatile>","maxContext":400000,"responseMetadata":{"provider":"openai","id":"resp_OPENAI_FIELDS_SSE","object":"response","model":"gpt-5.5","status":200,"responseStatus":"completed","streaming":true},"stopReason":"completed","title":"OPENAI_FIELDS_SSE","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"6214b4838c62","toolsHash":null,"coreHash":"c66aaa345818","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'openai non-SSE':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"openai-fields-http-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":null,"isSSE":false,"usage":{"input_tokens":100,"output_tokens":5,"total_tokens":105,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"input_tokens_details":{"cached_tokens":0}},"cost":"<volatile>","maxContext":400000,"responseMetadata":{"provider":"openai","id":"resp_OPENAI_FIELDS_JSON","object":"response","model":"gpt-5.5","status":200,"responseStatus":"completed"},"stopReason":"completed","title":"OPENAI_FIELDS_JSON","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"6214b4838c62","toolsHash":null,"coreHash":"c66aaa345818","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'ws-proxy':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"index-fields-ws-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-ws","isSSE":false,"usage":null,"cost":"<volatile>","maxContext":400000,"responseMetadata":{"transport":"websocket","capture":"transport-only","endpoint":"/v1/responses","frameCounts":{"clientToUpstream":1,"upstreamToClient":1},"byteCounts":{"clientToUpstream":179,"upstreamToClient":50},"close":{"side":"client","code":1000,"reason":"test complete"},"error":null},"stopReason":"test complete","title":"hello","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":101,"receivedAt":"<volatile>","sysHash":"b54cd80f54c1","toolsHash":null,"coreHash":"2db6420c3d64","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'rebuild orphan':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"66666666-6666-4666-8666-666666666666","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":null,"cost":"<volatile>","maxContext":200000,"stopReason":"","title":"INDEX_FIELDS_REBUILD_SOURCE","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":null,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"ca0026d0","responseId":"msg_INDEX_FIELDS_REBUILD_SOURCE","turnToolCalls":{},"turnToolResults":[]}',
+  'importer':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"sess-1","provider":"anthropic","model":"claude-sonnet-4-5-20250514","sessionInferred":false,"cwd":"/tmp/index-fields-import","isSSE":false,"usage":{"input_tokens":5000,"output_tokens":500,"cache_read_input_tokens":1000,"cache_creation_input_tokens":2000},"cost":"<volatile>","stopReason":"end_turn","title":"imported turn","elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","imported":true,"importSource":"claude-code","responseId":"msg_import_fields_1","turnToolCallIds":{},"turnToolResults":[]}',
 };
 
 function normalizedLegacyLine(obj) {
@@ -79,7 +85,12 @@ function normalizedLegacyLine(obj) {
   return JSON.stringify(out);
 }
 
-function assertProjection(obj, where, goldenKey) {
+function assertProjection(entry, where, goldenKey) {
+  const { raw, obj } = entry;
+  // (0) raw line 正準性：後面所有斷言都建立在 parse→reserialize 之上；若
+  //     序列化改了空白或跳脫方式，parse 後比較會看不見。這條把 raw byte
+  //     釘回 JSON.stringify 的正準形，讓 (c)(d) 的比較是 byte 級可信的。
+  assert.equal(JSON.stringify(obj), raw, `${where}: raw index line is not canonical JSON.stringify output`);
   const keys = Object.keys(obj);
   // (a) 不得出現枚舉之外的 key
   const stray = keys.filter(k => !LEGACY_INDEX_FIELDS.includes(k) && !NEW_504_FIELDS.includes(k));
@@ -96,11 +107,10 @@ function assertProjection(obj, where, goldenKey) {
   assert.equal(projLine, JSON.stringify(stripped), `${where}: projection not byte-identical to stripped line`);
   // (d) value 層 oracle：與 pre-#504 golden line 逐 byte 相同（揮發欄位正規化後）。
   //     (a)-(c) 都由同一份新輸出推導，抓不到 legacy VALUE 的回歸；這條抓得到。
-  if (goldenKey) {
-    const golden = GOLDEN_LEGACY_LINES[goldenKey];
-    assert.ok(golden, `${where}: no golden registered for ${goldenKey}`);
-    assert.equal(normalizedLegacyLine(obj), golden, `${where}: legacy projection diverged from pre-#504 golden (${goldenKey})`);
-  }
+  //     goldenKey 為必填——沒有 oracle 的路徑等於退回自我指涉檢查。
+  const golden = GOLDEN_LEGACY_LINES[goldenKey];
+  assert.ok(golden, `${where}: no golden registered for ${goldenKey}`);
+  assert.equal(normalizedLegacyLine(obj), golden, `${where}: legacy projection diverged from pre-#504 golden (${goldenKey})`);
 }
 
 function assertPresence(obj, { hasDupes, identity }, where) {
@@ -119,10 +129,10 @@ function assertPresence(obj, { hasDupes, identity }, where) {
   else assert.ok(!('duplicateToolCalls' in obj), `${where}: no-duplicate turn must omit the key`);
 }
 
-function assertLiveLine(obj, options, where) {
-  assertProjection(obj, where, options.golden);
-  assertPresence(obj, options, where);
-  console.log(`[index-fields keys] ${where}: ${Object.keys(obj).join(',')}`);
+function assertLiveLine(entry, options, where) {
+  assertProjection(entry, where, options.golden);
+  assertPresence(entry.obj, options, where);
+  console.log(`[index-fields keys] ${where}: ${Object.keys(entry.obj).join(',')}`);
 }
 
 function findFreePort() {
@@ -174,8 +184,16 @@ function killAndWait(child) {
 //           'none'    = 四個 env 全未設。
 // 三種狀態合起來讓每個 env-derived 欄位的 set 與 unset 兩態都被真實路徑驗過。
 function isolatedEnv(home, overrides = {}, { identity = 'partial' } = {}) {
+  const base = { ...process.env };
+  // 開發機外洩的行為性變數（如 CCXRAY_LOOPBACK_REQUIRE_AUTH、指向本機 hub 的
+  // ANTHROPIC_BASE_URL）會改變受測行為；整族刷掉，需要的由 overrides 白名單放回。
+  for (const k of Object.keys(base)) {
+    if (/^(CCXRAY_|ANTHROPIC_|OPENAI_|CHATGPT_|XAI_|GROK_)/.test(k)) delete base[k];
+  }
+  delete base.LOGS_DIR;
+  delete base.STORAGE_BACKEND;
   const env = {
-    ...process.env,
+    ...base,
     ...overrides,
     CCXRAY_HOME: home,
     RESTORE_DAYS: '0',
@@ -183,10 +201,6 @@ function isolatedEnv(home, overrides = {}, { identity = 'partial' } = {}) {
     BROWSER: 'none',
     TZ: 'Asia/Tokyo',
   };
-  delete env.LOGS_DIR;
-  delete env.STORAGE_BACKEND;
-  delete env.ANTHROPIC_BASE_URL;
-  for (const k of ['CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE']) delete env[k];
   if (identity === 'partial' || identity === 'full') {
     env.CCXRAY_AGENT_ID = IDENTITY_VALUES.agentId;
     env.CCXRAY_TEAM = IDENTITY_VALUES.team;
@@ -218,7 +232,8 @@ function launchProxy(port, env) {
 function readIndexLines(home) {
   const indexPath = path.join(home, 'logs', 'index.ndjson');
   if (!fs.existsSync(indexPath)) return [];
-  return fs.readFileSync(indexPath, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return fs.readFileSync(indexPath, 'utf8').split('\n').filter(Boolean)
+    .map(raw => ({ raw, obj: JSON.parse(raw) }));
 }
 
 function waitForIndexLines(home, expected, timeoutMs = 8000) {
@@ -237,16 +252,18 @@ function waitForIndexLines(home, expected, timeoutMs = 8000) {
   });
 }
 
-let messageSeq = 0;
-
 function makeAnthropicUpstream() {
   return http.createServer((req, res) => {
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
     req.on('end', () => {
       const body = JSON.parse(Buffer.concat(chunks).toString());
-      const messageId = `msg_index_fields_${++messageSeq}`;
-      const wantsSSE = JSON.stringify(body).includes('INDEX_FIELDS_SSE');
+      const rawBody = JSON.stringify(body);
+      // message id 由 request marker 推導（不是 counter）：responseId 因此可
+      // 凍結在 golden 裡，dedup 身分欄位的回歸抓得到。
+      const anthMarker = (rawBody.match(/INDEX_FIELDS_[A-Z_]+/) || ['INDEX_FIELDS_UNKNOWN'])[0];
+      const messageId = `msg_${anthMarker}`;
+      const wantsSSE = rawBody.includes('INDEX_FIELDS_SSE');
       if (!wantsSSE) {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({
@@ -522,9 +539,6 @@ describe('live OpenAI WebSocket index line uses the real ws-proxy.js constructio
       OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}/v1`,
       CHATGPT_BASE_URL: `http://127.0.0.1:${upstreamPort}/backend-api/codex`,
     }, { identity: 'none' });
-    delete env.OPENAI_TEST_HOST;
-    delete env.OPENAI_TEST_PORT;
-    delete env.OPENAI_TEST_PROTOCOL;
     const proxy = launchProxy(proxyPort, env);
 
     try {
@@ -586,7 +600,7 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       assert.equal(await postMessages(proxyPort, messagesBody('INDEX_FIELDS_REBUILD_SOURCE', {
         sessionId: '66666666-6666-4666-8666-666666666666',
       })), 200);
-      const [liveLine] = await waitForIndexLines(home, 1);
+      const [{ obj: liveLine }] = await waitForIndexLines(home, 1);
       // identity-none live line：四個 env-derived 欄位皆不得出現（unset 態的
       // 全覆蓋），但 localDate/tz 是 live entry 的無條件事實、仍在。
       for (const key of IDENTITY_KEYS) {
@@ -610,11 +624,11 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       const lines = readIndexLines(home);
       assert.equal(lines.length, 1);
       const rebuilt = lines[0];
-      assertProjection(rebuilt, 'rebuild orphan');
+      assertProjection(rebuilt, 'rebuild orphan', 'rebuild orphan');
       for (const key of [...IDENTITY_KEYS, 'localDate', 'tz']) {
-        assert.ok(!(key in rebuilt), `rebuild orphan: historical turn must not gain ${key}`);
+        assert.ok(!(key in rebuilt.obj), `rebuild orphan: historical turn must not gain ${key}`);
       }
-      console.log(`[index-fields keys] rebuild orphan: ${Object.keys(rebuilt).join(',')}`);
+      console.log(`[index-fields keys] rebuild orphan: ${Object.keys(rebuilt.obj).join(',')}`);
     } finally {
       await killAndWait(proxy.child);
       await new Promise(resolve => upstream.close(resolve));
@@ -656,12 +670,12 @@ describe('importer does not stamp current deployment metadata onto imported turn
       const lines = await waitForIndexLines(home, 1);
       assert.equal(lines.length, 1, `unexpected proxy stderr: ${proxy.stderr()}`);
       const imported = lines[0];
-      assert.equal(imported.imported, true, 'line came from the importer');
-      assertProjection(imported, 'importer');
+      assert.equal(imported.obj.imported, true, 'line came from the importer');
+      assertProjection(imported, 'importer', 'importer');
       for (const key of NEW_504_FIELDS) {
-        assert.ok(!(key in imported), `importer: imported turn must not gain ${key}`);
+        assert.ok(!(key in imported.obj), `importer: imported turn must not gain ${key}`);
       }
-      console.log(`[index-fields keys] importer: ${Object.keys(imported).join(',')}`);
+      console.log(`[index-fields keys] importer: ${Object.keys(imported.obj).join(',')}`);
     } finally {
       await killAndWait(proxy.child);
     }
