@@ -59,7 +59,8 @@ function acquireLock(lockPath) {
     if (err.code !== 'EEXIST') return null;
     try {
       const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-      if (Date.now() - lock.acquiredAt > LOCK_STALE_MS || !isPidAlive(lock.pid)) {
+      // R5: require dead PID, not just stale time — a live long-running flush must not be stolen
+      if (!isPidAlive(lock.pid)) {
         const stale = lockPath + `.stale.${process.pid}`;
         try { fs.renameSync(lockPath, stale); fs.unlinkSync(stale); } catch {}
         try {
@@ -282,7 +283,9 @@ function aggregate(lines, agentId, configDirAllowlist) {
 
   // R4: sort by receivedAt so compaction detection and first-turn selection
   // are not confused by out-of-order append order.
-  dedupedEntries.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
+  // R5: null receivedAt sorts last (not 0 → first) so rebuild-index rows
+  // don't poison first-turn/compaction detection.
+  dedupedEntries.sort((a, b) => (a.receivedAt || Infinity) - (b.receivedAt || Infinity));
 
   // Second pass: aggregate deduped entries
   for (const entry of dedupedEntries) {
@@ -693,6 +696,11 @@ async function flushExport() {
       return;
     }
 
+    // R5: if index shrank (prune rewrote it), reset cursor to re-scan
+    const prevLineCount = cursor.lineCount || 0;
+    if (lineCount < prevLineCount) {
+      cursor = { lineCount: 0, seq: cursor.seq || {}, partial: false };
+    }
     if (lineCount <= (cursor.lineCount || 0)) return; // nothing new
 
     const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
@@ -706,9 +714,9 @@ async function flushExport() {
     }
 
     // #2: dates with new data = lines after cursor position
-    const prevLineCount = cursor.lineCount || 0;
+    const cursorLineCount = cursor.lineCount || 0;
     const datesWithNewData = new Set();
-    for (let i = prevLineCount; i < lines.length; i++) {
+    for (let i = cursorLineCount; i < lines.length; i++) {
       try {
         const parsed = JSON.parse(lines[i]);
         const dt = utcDateFromEntry(parsed);
@@ -723,9 +731,13 @@ async function flushExport() {
     // R3+R4: partial_day only on the cutoff date — use persisted UTC date
     const cutoffDt = cursor.partial ? (cursor.cutoffDt || null) : null;
 
+    // R5: track completed dates so retry after partial failure skips them
+    const completedDts = new Set(cursor.completedDts || []);
+
     // #2/#3: only upload dates with new data, per-date checkpoint
     for (const [dt, daily] of dailyByDt) {
       if (!datesWithNewData.has(dt)) continue;
+      if (completedDts.has(dt) && seq[dt] && seq[dt] === cursor.seq?.[dt]) continue;
 
       const dtSeq = (seq[dt] || 0) + 1;
       seq[dt] = dtSeq;
@@ -752,11 +764,12 @@ async function flushExport() {
       });
       await upload(bucket, objectName, payload);
 
-      // #3: per-date checkpoint — advance seq but keep lineCount at cursor position
-      writeCursor(cursorPath, { lineCount: cursor.lineCount || 0, seq, partial: false });
+      // #3+R5: per-date checkpoint — record completed date for retry safety
+      completedDts.add(dt);
+      writeCursor(cursorPath, { lineCount: cursor.lineCount || 0, seq, partial: false, completedDts: [...completedDts] });
     }
 
-    // All dates uploaded — advance lineCount to the current tail
+    // All dates uploaded — advance lineCount to the current tail, clear completedDts
     writeCursor(cursorPath, { lineCount, seq, partial: false });
   } finally {
     releaseLock(lockPath, token);
