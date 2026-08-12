@@ -4,7 +4,22 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { INDEX_FIELDS, buildIndexLine } = require('../server/entry');
 
-const EXCLUDED = ['req','res','tokens','duplicateToolCalls','method','url','_loaded','_writePromise','_loadingPromise'];
+const EXCLUDED = ['req','res','tokens','method','url','_loaded','_writePromise','_loadingPromise'];
+const LEGACY_INDEX_FIELDS = [
+  'id','ts','sessionId','provider','agent','model','msgCount','toolCount','toolCalls','skillCalls',
+  'isSubagent','sessionInferred','cwd','isSSE','usage','cost','maxContext','responseMetadata',
+  'stopReason','title','thinkingDuration','toolFail','elapsed','status','receivedAt',
+  'sysHash','toolsHash','coreHash','agentKey','agentLabel','convId','thinkingStripped','hasCredential','toolSources',
+  'edited','editSummary','imported','importSource','responseId','turnToolCalls','turnToolFail',
+  'turnToolCallIds','turnToolResults','beta1m',
+];
+
+test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 fields', () => {
+  assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
+  assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
+    'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+  ]);
+});
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {
   const entry = {

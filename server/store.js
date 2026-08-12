@@ -349,8 +349,8 @@ function stripInjectedTags(text) {
   return cleaned || null;
 }
 
-// ── Session metadata (cwd per session) ──────────────────────────────
-const sessionMeta = {}; // { sessionId: { cwd, lastSeenAt } }
+// ── Session metadata (cwd/config dir per session) ───────────────────
+const sessionMeta = {}; // { sessionId: { cwd, configDir, lastSeenAt } }
 const activeRequests = {}; // sessionId → in-flight count
 const sessionCosts = new Map(); // sessionId → accumulated cost
 
@@ -392,6 +392,42 @@ function extractCwd(req) {
     }
   }
   return null;
+}
+
+function configDirFromText(text) {
+  const m = text.match(/Contents of ([^\n]+)[\\/]CLAUDE\.md \(user's private global instructions/);
+  if (!m) return null;
+  const dir = m[1].trim();
+  const basename = dir.split(/[\\/]/).pop();
+  return basename.startsWith('.claude') ? dir : null;
+}
+
+// Unlike extractCwd, a system miss intentionally falls through to context_management.
+function extractConfigDir(req) {
+  if (req?.system) {
+    const text = Array.isArray(req.system) ? req.system.map(block => block.text || '').join('\n') : String(req.system);
+    const dir = configDirFromText(text);
+    if (dir) return dir;
+  }
+  if (req?.context_management && Array.isArray(req?.messages?.[0]?.content)) {
+    for (const block of req.messages[0].content) {
+      if (block?.type !== 'text' || typeof block.text !== 'string') continue;
+      const dir = configDirFromText(block.text);
+      if (dir) return dir;
+    }
+  }
+  return null;
+}
+
+// Session-scoped config-dir cache: the marker only appears in the requests at
+// the start of a session, so later turns read the cached value. Mirrors how
+// sessionMeta caches cwd.
+function cacheConfigDir(sessionId, req) {
+  if (!sessionId) return null;
+  const meta = sessionMeta[sessionId] || (sessionMeta[sessionId] = {});
+  const found = extractConfigDir(req);
+  if (found) meta.configDir = found;
+  return meta.configDir || null;
 }
 
 function extractSessionId(req) {
@@ -852,6 +888,8 @@ module.exports = {
   getCurrentSessionId,
   isQuotaCheck,
   extractCwd,
+  extractConfigDir,
+  cacheConfigDir,
   extractSessionId,
   isAnthropicSubagent,
   isLikelySubagent,

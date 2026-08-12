@@ -25,12 +25,48 @@ const INDEX_FIELDS = [
   // positive signal; monotone OR-fold). Classification keeps raw per-turn
   // maxContext — never derived from this. See docs/decisions/0013-beta1m-persist-session-window-derive.md
   'beta1m',
+  // #504: optional deployment identity, local calendar metadata, and duplicate
+  // request-history tool calls. Append-only: existing field order is stable.
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
 ];
+
+// INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
+// undefined must also be registered here, or every index row gains `"key":null`.
+// Existing fields are intentionally absent and continue writing null; preserving
+// that behavior is the #504 add-only guard. Tests that only feed an entry to
+// buildIndexLine cannot catch caller omissions: deploymentFields is spread at
+// the entry-construction paths in forward.js and ws-proxy.js, so assertions must
+// exercise those construction paths.
+const OMIT_IF_NULL = new Set([
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+]);
+
+function deploymentFields(ts) {
+  const fields = {};
+  for (const [key, envName] of [
+    ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
+    ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
+  ]) {
+    if (process.env[envName]) fields[key] = process.env[envName];
+  }
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (tz) fields.tz = tz;
+  if (Number.isFinite(ts)) {
+    const parts = new Intl.DateTimeFormat('en', {
+      timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(new Date(ts));
+    const byType = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    fields.localDate = `${byType.year}-${byType.month}-${byType.day}`;
+  }
+  return fields;
+}
 
 function buildIndexLine(entry) {
   const out = {};
-  for (const k of INDEX_FIELDS) if (entry[k] !== undefined) out[k] = entry[k];
+  for (const k of INDEX_FIELDS) {
+    if (entry[k] !== undefined && !(entry[k] === null && OMIT_IF_NULL.has(k))) out[k] = entry[k];
+  }
   return JSON.stringify(out);
 }
 
-module.exports = { INDEX_FIELDS, buildIndexLine };
+module.exports = { INDEX_FIELDS, buildIndexLine, deploymentFields };
