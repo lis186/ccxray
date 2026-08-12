@@ -437,14 +437,26 @@ describe('export-sync', () => {
     assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost not doubled');
   });
 
-  it('#9 null cost counts as unknown confidence', async () => {
+  it('#9 null cost counts as unknown confidence (no double-count)', async () => {
+    // 2 entries: one exact, one null-cost. If null-cost double-counted as 2 unknowns,
+    // the fold would see 1 exact + 2 unknown = mixed. Correct: 1 exact + 1 unknown = mixed.
+    // Regression: with only null-cost entries, double-count made total=2 instead of 1.
     setup([
       makeEntry({ cost: { cost: null, confidence: 'unknown' } }),
-      makeEntry({ id: '2026-08-12T10-01-00-000', cost: 42, msgCount: 12 }), // legacy numeric
     ]);
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
-    assert.equal(daily.cost_confidence, 'unknown', 'null + legacy → unknown');
+    assert.equal(daily.cost_confidence, 'unknown', 'single null-cost → unknown');
+    cleanup();
+
+    // Mixed: 1 exact + 1 legacy numeric = mixed
+    setup([
+      makeEntry({ cost: { cost: 0.10, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', cost: 42, msgCount: 12 }),
+    ]);
+    await flushExport();
+    const daily2 = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily2.cost_confidence, 'mixed', 'exact + legacy → mixed');
   });
 
   it('#10 duplicateToolCalls object detected', async () => {

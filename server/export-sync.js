@@ -348,12 +348,11 @@ function aggregate(lines, agentId, configDirAllowlist) {
       if (c != null && Number.isFinite(c)) {
         daily.cost_total += c;
         mb.cost += c;
+        daily._costConfidence[conf] = (daily._costConfidence[conf] || 0) + 1;
+        if (conf === 'fallback') daily._fallbackCost += c;
       } else {
         daily._costConfidence.unknown++;
       }
-      if (c != null) daily._costConfidence[conf] = (daily._costConfidence[conf] || 0) + 1;
-      else daily._costConfidence.unknown++;
-      if (conf === 'fallback' && c != null) daily._fallbackCost += c;
     } else if (typeof costObj === 'number') {
       daily.cost_total += costObj;
       mb.cost += costObj;
@@ -468,13 +467,15 @@ function aggregate(lines, agentId, configDirAllowlist) {
     sess._models[model] = (sess._models[model] || 0) + 1;
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);
 
-    // #9: session cost confidence — same null/legacy handling
     if (costObj && typeof costObj === 'object') {
       const c = costObj.cost;
       const conf = costObj.confidence || 'unknown';
-      if (c != null && Number.isFinite(c)) sess.cost_total += c;
-      if (c != null) sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
-      else sess._costConfidence.unknown++;
+      if (c != null && Number.isFinite(c)) {
+        sess.cost_total += c;
+        sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
+      } else {
+        sess._costConfidence.unknown++;
+      }
     } else if (typeof costObj === 'number') {
       sess.cost_total += costObj;
       sess._costConfidence.unknown++;
