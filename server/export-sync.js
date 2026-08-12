@@ -36,8 +36,11 @@ function getAgentId(home) {
   const id = crypto.randomUUID();
   try {
     fs.mkdirSync(home, { recursive: true });
-    fs.writeFileSync(p, id + '\n', { mode: 0o600 });
-  } catch {}
+    fs.writeFileSync(p, id + '\n', { flag: 'wx', mode: 0o600 }); // R3: atomic
+  } catch {
+    // Another process won the race — read its value
+    try { return fs.readFileSync(p, 'utf8').trim(); } catch {}
+  }
   return id;
 }
 
@@ -170,15 +173,16 @@ function uploadToGcs(bucket, objectName, body, accessToken) {
 
 // ── Aggregation ────────────────────────────────────────────────────────
 
-// #5: entry ids are formatted in local time (Asia/Taipei). Parse the id
-// timestamp and convert to UTC date for the dt partition key.
-function utcDateFromId(id) {
-  // id format: YYYY-MM-DDTHH-MM-SS-mmm (local time, not UTC)
-  const m = id && id.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})$/);
-  if (!m) return null;
-  // Parse as local time components, construct a Date, extract UTC date
-  const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6], +m[7]);
-  return d.toISOString().slice(0, 10);
+// #5+R3: prefer receivedAt (epoch ms, timezone-safe) for UTC date.
+// Fallback to id only when receivedAt is absent (legacy entries).
+// Entry ids are formatted in Asia/Taipei local time (server/helpers.js),
+// so parsing them as local time only works when TZ matches the writer.
+function utcDateFromEntry(entry) {
+  if (typeof entry.receivedAt === 'number' && entry.receivedAt > 0) {
+    return new Date(entry.receivedAt).toISOString().slice(0, 10);
+  }
+  const m = entry.id && entry.id.match(/^(\d{4}-\d{2}-\d{2})T/);
+  return m ? m[1] : null;
 }
 
 function addMap(target, source) {
@@ -239,21 +243,34 @@ function aggregate(lines, agentId, configDirAllowlist) {
   // #7/#8: per-session max for cumulative fields
   const sessToolSources = new Map(); // "dt\0sid" → {cat: maxCount}
   const sessSkillCalls = new Map(); // "dt\0sid" → {skill: maxCount}
-  // #1: responseId dedup
-  const seenResponseIds = new Set();
+  // #1+R3(ADR 0012): responseId dedup — pre-merge keeps the entry with
+  // the richest usage/cost per ADR 0012's most-informative-register principle.
+  const seenRids = new Map(); // responseId → index in dedupedEntries
+  const dedupedEntries = [];
 
   for (const line of lines) {
     let entry;
     try { entry = JSON.parse(line); } catch { continue; }
     if (!entry.id || !entry.sessionId) continue;
 
-    // #1: responseId dedup — skip duplicate copies of the same response
+    // #1+R3: responseId dedup — keep richest copy
     if (entry.responseId) {
-      if (seenResponseIds.has(entry.responseId)) continue;
-      seenResponseIds.add(entry.responseId);
+      const prevIdx = seenRids.get(entry.responseId);
+      if (prevIdx !== undefined) {
+        const prev = dedupedEntries[prevIdx];
+        const prevHasCost = prev.cost && typeof prev.cost === 'object' && prev.cost.cost != null;
+        const curHasCost = entry.cost && typeof entry.cost === 'object' && entry.cost.cost != null;
+        if (curHasCost && !prevHasCost) dedupedEntries[prevIdx] = entry;
+        continue;
+      }
+      seenRids.set(entry.responseId, dedupedEntries.length);
     }
+    dedupedEntries.push(entry);
+  }
 
-    const dt = utcDateFromId(entry.id);
+  // Second pass: aggregate deduped entries
+  for (const entry of dedupedEntries) {
+    const dt = utcDateFromEntry(entry);
     if (!dt) continue;
 
     // configDir filter: unknown → include.
@@ -291,6 +308,7 @@ function aggregate(lines, agentId, configDirAllowlist) {
         skill_usage: {},
         tool_defined_count: 0,
         tool_used_count: 0,
+        _maxToolCount: 0,
         tool_fail_count: 0,
         duplicate_tool_call_count: 0,
         credential_flag: false,
@@ -421,9 +439,16 @@ function aggregate(lines, agentId, configDirAllowlist) {
 
     if (entry.turnToolFail === true) daily.tool_fail_count++;
 
-    // #10: duplicateToolCalls is an object, not a number
+    // R3: tool_defined_count from entry.toolCount (number of tools defined in request)
+    if (typeof entry.toolCount === 'number' && entry.toolCount > daily._maxToolCount) {
+      daily._maxToolCount = entry.toolCount;
+    }
+
+    // #10+R3: duplicateToolCalls is {toolName: count}. Sum values.
     if (entry.duplicateToolCalls != null && typeof entry.duplicateToolCalls === 'object') {
-      daily.duplicate_tool_call_count++;
+      for (const v of Object.values(entry.duplicateToolCalls)) {
+        if (typeof v === 'number' && Number.isFinite(v)) daily.duplicate_tool_call_count += v;
+      }
     }
 
     if (entry.hasCredential === true) daily.credential_flag = true;
@@ -554,7 +579,7 @@ function finishDaily(daily, summaryId, uploadSeq, partial) {
   daily.distinct_sys_hash_count = daily.distinct_sys_hashes.size;
   daily.distinct_tools_hash_count = daily.distinct_tools_hashes.size;
   daily.tool_used_count = Object.keys(daily.tool_usage).length;
-  daily.tool_defined_count = daily.tool_used_count; // no separate source
+  daily.tool_defined_count = daily._maxToolCount || daily.tool_used_count;
   daily.cwd_repos = [...daily.cwd_repos];
 
   delete daily._sessions;
@@ -565,6 +590,7 @@ function finishDaily(daily, summaryId, uploadSeq, partial) {
   delete daily.distinct_sys_hashes;
   delete daily.distinct_tools_hashes;
   delete daily._hasNewData;
+  delete daily._maxToolCount;
 }
 
 function finishSession(sess, daily, summaryId) {
@@ -636,7 +662,7 @@ async function flushExport() {
         if (parsed.id) {
           lastId = parsed.id;
           // #2: track which dates have new data
-          if (!isFirstRun && cursor.lastId && parsed.id > cursor.lastId) hasNewData = true;
+          if (!isFirstRun && (!cursor.lastId || parsed.id > cursor.lastId)) hasNewData = true;
         }
       } catch {}
     }
@@ -664,8 +690,8 @@ async function flushExport() {
     for (const line of lines) {
       try {
         const parsed = JSON.parse(line);
-        if (parsed.id && parsed.id > cursor.lastId) {
-          const dt = utcDateFromId(parsed.id);
+        if (parsed.id && (!cursor.lastId || parsed.id > cursor.lastId)) {
+          const dt = utcDateFromEntry(parsed);
           if (dt) datesWithNewData.add(dt);
         }
       } catch {}
@@ -674,6 +700,10 @@ async function flushExport() {
     const prefix = process.env.CCXRAY_EXPORT_GCS_PREFIX || 'summaries';
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
     const seq = { ...(cursor.seq || {}) };
+
+    // R3: partial_day only on the cutoff date (the date containing cursor init)
+    const cutoffDt = cursor.partial && cursor.lastId
+      ? utcDateFromEntry({ id: cursor.lastId }) : null;
 
     // #2/#3: only upload dates with new data, per-date checkpoint
     for (const [dt, daily] of dailyByDt) {
@@ -684,7 +714,7 @@ async function flushExport() {
 
       const uuid8 = crypto.randomUUID().slice(0, 8);
       const summaryId = `${agentId}:${dt}:${uuid8}`;
-      const isPartial = !!cursor.partial;
+      const isPartial = cursor.partial && dt === cutoffDt;
 
       finishDaily(daily, summaryId, dtSeq, isPartial);
 
@@ -704,9 +734,13 @@ async function flushExport() {
       });
       await upload(bucket, objectName, payload);
 
-      // #3: per-date checkpoint — advance cursor after each successful upload
-      writeCursor(cursorPath, { lastId, seq, partial: false });
+      // #3: per-date checkpoint — advance seq but keep lastId at cursor position
+      // until all dates succeed. If a later date fails, retry picks up from seq.
+      writeCursor(cursorPath, { lastId: cursor.lastId, seq, partial: false });
     }
+
+    // All dates uploaded — advance lastId to the global tail
+    writeCursor(cursorPath, { lastId, seq, partial: false });
   } finally {
     releaseLock(lockPath, token);
   }

@@ -393,13 +393,14 @@ describe('export-sync', () => {
   });
 
   it('multi-date aggregation: separate uploads per date', async () => {
-    // Use ids that span two UTC dates (Asia/Taipei UTC+8)
-    // 2026-08-12T04-00-00-000 local → 2026-08-11T20:00 UTC → dt=2026-08-11
-    // 2026-08-12T10-00-00-000 local → 2026-08-12T02:00 UTC → dt=2026-08-12
+    // Use receivedAt for timezone-safe UTC date partitioning
     setup([
-      makeEntry({ id: '2026-08-12T04-00-00-000', sessionId: 'sess-day1' }),
-      makeEntry({ id: '2026-08-12T10-00-00-000', sessionId: 'sess-day2' }),
-      makeEntry({ id: '2026-08-12T11-00-00-000', sessionId: 'sess-day2', msgCount: 12 }),
+      makeEntry({ id: '2026-08-11T23-00-00-000', sessionId: 'sess-day1',
+        receivedAt: new Date('2026-08-11T15:00:00Z').getTime() }), // dt=2026-08-11
+      makeEntry({ id: '2026-08-12T10-00-00-000', sessionId: 'sess-day2',
+        receivedAt: new Date('2026-08-12T02:00:00Z').getTime() }), // dt=2026-08-12
+      makeEntry({ id: '2026-08-12T11-00-00-000', sessionId: 'sess-day2', msgCount: 12,
+        receivedAt: new Date('2026-08-12T03:00:00Z').getTime() }),
     ]);
     await flushExport();
     assert.equal(_uploads.length, 2, 'one upload per date');
@@ -459,14 +460,14 @@ describe('export-sync', () => {
     assert.equal(daily2.cost_confidence, 'mixed', 'exact + legacy → mixed');
   });
 
-  it('#10 duplicateToolCalls object detected', async () => {
+  it('#10+R3 duplicateToolCalls values summed', async () => {
     setup([
-      makeEntry({ duplicateToolCalls: { Read: 2 } }),
+      makeEntry({ duplicateToolCalls: { Read: 2, Bash: 3 } }),
       makeEntry({ id: '2026-08-12T10-01-00-000', duplicateToolCalls: null, msgCount: 12 }),
     ]);
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
-    assert.equal(daily.duplicate_tool_call_count, 1);
+    assert.equal(daily.duplicate_tool_call_count, 5, 'sum of map values, not count of entries');
   });
 
   it('#11 WS status 101 is not an error', async () => {
