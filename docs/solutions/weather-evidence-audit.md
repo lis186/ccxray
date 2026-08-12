@@ -320,7 +320,7 @@ node scripts/weather-replay.js [--index PATH] [--provider anthropic|openai]
   pre-#503 rebuild path) and `merged` (`store.mergeByResponseId`, what the store
   path and cold-load see). The verdict comes from `merged`; `first-seen` remains
   as the counterfactual.
-- `--golden` self-checks 62 assertions against a hand-counted synthetic fixture. It
+- `--golden` self-checks 59 assertions against a hand-counted synthetic fixture. It
   runs in CI (`test/weather-replay-golden.test.js`), so acceptance is a regression
   test rather than a command someone remembers to type.
 

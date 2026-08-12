@@ -207,7 +207,14 @@ function sigStuck(turns, toolEvidence) {
       pairedStreak = 0;
     }
   }
-  return { severity: pairedMax >= 10 ? 0.9 : 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+  // RETIRED(#516): severity permanently 0. Six independent sources (CUSUM simulation,
+  // ISA-18.2 rationalization, Hawkes analysis, circuit-breaker scoping review, Fable,
+  // Codex) confirmed: (a) max observed streak in entire corpus = 3 vs threshold 10,
+  // (b) any Bash success resets the counter so the canonical stuck loop (npm test fails
+  // → read → edit → npm test fails) never exceeds streak 1 — the bug is scoping not
+  // threshold, (c) failure rate has no predictive relationship with any proxy outcome.
+  // Detail preserved for tooltip display.
+  return { severity: 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 function sigLatencyDrift(turns) {
@@ -248,8 +255,11 @@ function sigErrorCluster(turns, toolEvidence) {
       pairedEndId = toolEvidence[p + 4].entryId;
     }
   }
-  // ponytail: denom=2.0 — window needs 100% error rate to reach severity 0.5. Exp2: 0.6 flagged 247/346 sessions.
-  return { severity: clamp01(pairedMaxRate / 2.0), detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+  // RETIRED(#516): severity permanently 0. CUSUM simulation proved the max-over-
+  // overlapping-windows null drifts with session length — under pure 6% noise a
+  // 1,000-turn healthy session's expected 5-window max rate is 53.8%, P(≥0.4) = 100%.
+  // This signal measured session length, not failure. Detail preserved for tooltip.
+  return { severity: 0, detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 // ponytail: sustained low cache hit rate — cost/perf signal, not functionality. Skips first 3 turns (cold start). Expert consensus: 50% threshold (break-even), 0.5 cap.
@@ -283,8 +293,13 @@ function sigErrorCumulative(turns, toolEvidence) {
     }
   }
   var pairedRate = pairedKnown ? pairedErrors / pairedKnown : 0;
-  // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥5 tool turns to avoid noise.
-  return { severity: pairedKnown < 5 ? 0 : clamp01(pairedRate / 0.4), detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
+  // RETIRED(#516): severity permanently 0. Falsified empirically: failure rate has
+  // no positive predictive relationship with truncation, compaction, or cost outliers
+  // (the only relationship is negative and explained by session length). Present in
+  // 94% of measurable sessions, failing ISA-18.2's "Abnormal" criterion — a condition
+  // in the majority IS the normal operating state. Detail preserved: errTurns/toolTurns
+  // feed stats.errRate and the tooltip's tool-error line.
+  return { severity: 0, detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
 }
 
 function assessWeather(turns, opts) {

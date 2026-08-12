@@ -132,11 +132,11 @@ describe('assessWeather', function() {
         turnToolResults: [{ callId: 'call_' + i, eligible: true, toolFail: true }],
       }));
     }
+    // RETIRED(#516): stuck severity permanently 0 — detail still computed
     var r = assessWeather(turns);
-    assert.equal(r.level, 'stormy');
-    var stuck = r.factors.find(function(f) { return f.type === 'stuck'; });
-    assert.ok(stuck, 'paired failures should feed the stuck signal');
-    assert.equal(stuck.detail.maxStreak, 10);
+    assert.ok(!hasFactor(r, 'stuck'), 'stuck is retired — severity 0');
+    // The detail is still computed via the signal's internal logic
+    assert.equal(r.stats.toolTurns, 10, 'stats.toolTurns still reflects paired evidence');
   });
 
   it('#475 unknown process results are neutral in failure streaks while known success breaks them (fail-on-old)', function() {
@@ -155,11 +155,10 @@ describe('assessWeather', function() {
 
     var unknown = assessSequence(undefined);
     var knownSuccess = assessSequence(false);
-    var unknownStuck = unknown.factors.find(function(f) { return f.type === 'stuck'; });
 
-    assert.equal(unknown.level, 'stormy');
-    assert.ok(unknownStuck, 'an undecodable result must not erase the surrounding failure streak');
-    assert.equal(unknownStuck.detail.maxStreak, 12);
+    // RETIRED(#516): stuck severity permanently 0 — but the streak detail is still
+    // computed and the underlying logic should not regress.
+    assert.ok(!hasFactor(unknown, 'stuck'), 'stuck is retired — severity 0');
     assert.ok(!hasFactor(knownSuccess, 'stuck'), 'a confirmed success must break the failure streak');
   });
 
@@ -281,11 +280,11 @@ describe('assessWeather', function() {
       }));
     }
     var r = assessWeather(turns);
-    var cumulative = r.factors.find(function(f) { return f.type === 'error_cumulative'; });
-    assert.ok(cumulative, '10 known Bash results satisfy the cumulative denominator');
-    assert.equal(cumulative.detail.toolTurns, 10, 'Read and unknown results are not failure-rate denominator members');
-    assert.equal(cumulative.detail.errTurns, 2);
-    assert.equal(cumulative.detail.rate, 0.2);
+    // RETIRED(#516): error_cumulative severity permanently 0 — but stats still computed
+    assert.ok(!hasFactor(r, 'error_cumulative'), 'error_cumulative is retired');
+    assert.equal(r.stats.toolTurns, 10, 'Read and unknown results are not failure-rate denominator members');
+    assert.equal(r.stats.errTurns, 2);
+    assert.equal(r.stats.errRate, 0.2);
     assert.equal(r.stats.toolKnownRate, 100, 'Read results are ineligible, not unknown eligible results');
   });
 
@@ -336,9 +335,11 @@ describe('assessWeather', function() {
       }));
     }
 
+    // RETIRED(#516): error_cumulative + stuck severity permanently 0.
+    // With all error signals retired, this is sunny (no other signal fires).
     var openAI = assessWeather(openAIFailures);
-    assert.equal(openAI.level, 'stormy');
-    assert.equal(openAI.score, 1.27);
+    assert.equal(openAI.level, 'sunny', 'all error signals retired — pure failures alone = sunny');
+    assert.equal(openAI.score, 0);
   });
 
   // #499: _strongerToolSignal deleted — only paired evidence path remains.
@@ -356,9 +357,8 @@ describe('assessWeather', function() {
       }));
     }
     var result = assessWeather(turns);
-    var cluster = result.factors.find(function(f) { return f.type === 'error_cluster'; });
-    assert.ok(cluster, 'paired evidence should produce error_cluster');
-    assert.equal(cluster.detail.errorRate, 0.8);
+    // RETIRED(#516): error_cluster severity permanently 0
+    assert.ok(!hasFactor(result, 'error_cluster'), 'error_cluster is retired');
   });
 
   it('#499 paired failure without severity still populates tool signal metadata', function() {
@@ -503,10 +503,8 @@ describe('assessWeather', function() {
     }
     turns.push(makeTurn());
     var r = assessWeather(turns);
-    assert.ok(hasFactor(r, 'stuck'));
-    var f = r.factors.find(function(f) { return f.type === 'stuck'; });
-    assert.equal(f.severity, 0.9);
-    assert.equal(r.level, 'stormy');
+    // RETIRED(#516): sig_stuck severity permanently 0; should NOT appear in factors
+    assert.ok(!hasFactor(r, 'stuck'), 'stuck is retired — severity 0, must not appear in factors');
   });
 
   it('stuck — 9 consecutive paired errors not enough', function() {
@@ -565,10 +563,8 @@ describe('assessWeather', function() {
       }));
     }
     var r = assessWeather(turns);
-    assert.ok(hasFactor(r, 'error_cluster'));
-    var f = r.factors.find(function(f) { return f.type === 'error_cluster'; });
-    assert.ok(f.severity > 0, 'severity should be > 0');
-    assert.ok(f.detail.errorRate >= 0.8, 'errorRate ' + f.detail.errorRate + ' should be >= 0.8');
+    // RETIRED(#516): error_cluster severity permanently 0; should NOT appear in factors
+    assert.ok(!hasFactor(r, 'error_cluster'), 'error_cluster is retired — severity 0, must not appear in factors');
   });
 
   it('error_cluster requires >= 3 tool_use in window', function() {
@@ -593,11 +589,11 @@ describe('assessWeather', function() {
       }));
     }
     var r = assessWeather(turns);
-    assert.ok(hasFactor(r, 'error_cumulative'), 'should detect cumulative errors');
-    var f = r.factors.find(function(f) { return f.type === 'error_cumulative'; });
-    assert.ok(f.severity >= 0.6 && f.severity <= 0.65, 'severity ' + f.severity + ' ≈ 0.625');
-    assert.equal(f.detail.errTurns, 25);
-    assert.equal(f.detail.toolTurns, 100);
+    // RETIRED(#516): error_cumulative severity permanently 0; should NOT appear in factors.
+    // Stats (errTurns/toolTurns) still flow via _sigMap — tested via stats below.
+    assert.ok(!hasFactor(r, 'error_cumulative'), 'error_cumulative is retired — severity 0');
+    assert.equal(r.stats.errTurns, 25, 'stats.errTurns still computed for tooltip');
+    assert.equal(r.stats.toolTurns, 100, 'stats.toolTurns still computed for tooltip');
   });
 
   // #499: threshold changed from 10 to 5
@@ -637,10 +633,10 @@ describe('assessWeather', function() {
       maxContext: 200000, elapsed: '25',
     }));
     var r = assessWeather(turns);
-    assert.ok(r.score >= 0.75, 'score ' + r.score + ' should be >= 0.75 for rainy+');
-    assert.ok(r.level === 'rainy' || r.level === 'stormy', 'level ' + r.level + ' should be rainy or stormy');
+    // RETIRED(#516): error_cluster no longer contributes severity; the remaining
+    // active signals (ctx_pressure + latency_drift) still drive the score.
     assert.ok(hasFactor(r, 'ctx_pressure'));
-    assert.ok(hasFactor(r, 'error_cluster'));
+    assert.ok(!hasFactor(r, 'error_cluster'), 'error_cluster is retired');
     assert.ok(hasFactor(r, 'latency_drift'));
   });
 
@@ -817,32 +813,12 @@ describe('assessWeather', function() {
         factors: 'latency 2.2x baseline',
         action: null,
       },
-      {
-        // #499: error_cumulative (sev 1.0) now outranks stuck (sev 0.9) — all 10 paired results are failures
-        type: 'error_cumulative',
-        turns: stuckTurns,
-        factors: '10/10 tool errors (100%) · stuck 10 failures (turn 20-29) · error burst 100% (turn 20-24)',
-        action: '→ Check first error — common: permissions, paths, settings',
-      },
-      {
-        // #499: error_cumulative (sev 1.0) outranks error_cluster (sev 0.5) when all 5 results fail
-        type: 'error_cumulative',
-        turns: clusterTurns,
-        factors: '5/5 tool errors (100%) · error burst 100% (turn 1-5) · compaction ×1 (info lost)',
-        action: '→ Check first error — common: permissions, paths, settings',
-      },
-      {
-        type: 'error_cumulative',
-        turns: cumulativeTurns,
-        factors: '25/100 tool errors (25%) · error burst 40% (turn 0-4)',
-        action: '→ Check first error — common: permissions, paths, settings',
-      },
-      {
-        type: 'error_cumulative',
-        turns: cumulativeNoIdTurns,
-        factors: '25/100 tool errors (25%) · error burst 40% (turn 0-4)',
-        action: null,
-      },
+      // RETIRED(#516): error_cumulative/error_cluster/stuck severity permanently 0.
+      // These four cases used to assert error signals as top factor; with retirement,
+      // the sessions are sunny (no other signal fires). Tooltip still shows stats via
+      // the 'Operating normally' line but no factor/action lines from retired signals.
+      // Keeping the fixture construction to ensure the retired severity=0 holds under
+      // the same inputs that used to produce stormy.
     ];
 
     cases.forEach(function(testCase) {
@@ -852,6 +828,15 @@ describe('assessWeather', function() {
       assert.equal(lines[1], testCase.factors, testCase.type + ' factor formatting should stay unchanged');
       var actionLines = lines.filter(function(line) { return line.indexOf('→ ') === 0; });
       assert.deepEqual(actionLines, testCase.action ? [testCase.action] : [], testCase.type + ' action line');
+    });
+
+    // RETIRED(#516): verify the retired signals produce severity 0 on inputs that
+    // used to produce stormy/rainy. The fixtures above are preserved for this check.
+    [stuckTurns, clusterTurns, cumulativeTurns, cumulativeNoIdTurns].forEach(function(turns) {
+      var r = assessWeather(turns);
+      assert.ok(!r.factors.some(function(f) {
+        return f.type === 'stuck' || f.type === 'error_cluster' || f.type === 'error_cumulative';
+      }), 'retired signals must not appear in factors');
     });
   });
 
