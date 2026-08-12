@@ -44,8 +44,10 @@ buildIndexLine({ ...entry, ...deploymentFields(startTime) })   // ← 違反在�
 
 寫 guard 指標時把觀察點寫進去，錯誤的接縫就寫不出來。
 
+這次改寫的結論是採用投影式契約：對所有 production index 寫入路徑，把新版輸出投影回變更前欄位集合與順序後做 byte 級比較；而觀察點必須是真實建構路徑，不能直餵 `buildIndexLine()` 或用 regex 掃原始碼替代。
+
 ## 相關
 
 - ADR 0012（`_foldEntry` 的 prefer-non-null 合併清單；`duplicateToolCalls` 已在內，#504 的其餘 6 個欄位是同機常數故未加）
-- ADR 0013（persist the fact, derive the view——#504 的 4 個 env 欄位是 fact，`localDate`/`tz` 則是可由 `receivedAt` + `tz` 於讀取時推導的 view，逐行儲存兩者有冗餘）
+- ADR 0013（persist the fact, derive the view——4 個 env 欄位與 `tz` 都是 fact：`tz` 是該機器寫入當下的時區，無法由任何其他欄位重建，事後補不回來。`localDate` 則是 `f(receivedAt, tz)` 的推導值，逐行儲存屬廉價 denormalization（約 25 bytes/行），owner 明示保留以便分析端不必自算 UTC 邊界）
 - ADR 0018（`turnToolCalls` 的 null-vs-empty 契約）

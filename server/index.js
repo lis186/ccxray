@@ -426,8 +426,7 @@ const server = http.createServer((clientReq, clientRes) => {
       const cwd = parser.getCwd(parsedBody, clientReq.headers)
         || (provider === 'openai' ? getAgentCwdFallback() : null);
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
-      const configDir = provider === 'anthropic' ? store.extractConfigDir(parsedBody) : null;
-      if (configDir) store.sessionMeta[reqSessionId].configDir = configDir;
+      if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;
       if (provider === 'openai' && typeof parser.resolveOpenAIAgent === 'function') {
         store.sessionMeta[reqSessionId].agent = parser.resolveOpenAIAgent(clientReq.headers, parsedBody);

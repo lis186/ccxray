@@ -419,6 +419,17 @@ function extractConfigDir(req) {
   return null;
 }
 
+// Session-scoped config-dir cache: the marker only appears in the requests at
+// the start of a session, so later turns read the cached value. Mirrors how
+// sessionMeta caches cwd.
+function cacheConfigDir(sessionId, req) {
+  if (!sessionId) return null;
+  const meta = sessionMeta[sessionId] || (sessionMeta[sessionId] = {});
+  const found = extractConfigDir(req);
+  if (found) meta.configDir = found;
+  return meta.configDir || null;
+}
+
 function extractSessionId(req) {
   if (typeof req?.metadata?.session_id === 'string') return req.metadata.session_id;
   const uid = req?.metadata?.user_id || '';
@@ -878,6 +889,7 @@ module.exports = {
   isQuotaCheck,
   extractCwd,
   extractConfigDir,
+  cacheConfigDir,
   extractSessionId,
   isAnthropicSubagent,
   isLikelySubagent,

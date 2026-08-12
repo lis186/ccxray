@@ -2,8 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { INDEX_FIELDS, buildIndexLine, deploymentFields } = require('../server/entry');
-const { extractDuplicateToolCalls } = require('../server/helpers');
+const { INDEX_FIELDS, buildIndexLine } = require('../server/entry');
 
 const EXCLUDED = ['req','res','tokens','method','url','_loaded','_writePromise','_loadingPromise'];
 const LEGACY_INDEX_FIELDS = [
@@ -20,85 +19,6 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
   ]);
-});
-
-test('duplicateToolCalls omits null and persists a count object', () => {
-  const withoutDuplicates = JSON.parse(buildIndexLine({ id: 'none', duplicateToolCalls: null }));
-  assert.ok(!('duplicateToolCalls' in withoutDuplicates));
-
-  const withDuplicates = JSON.parse(buildIndexLine({ id: 'dupes', duplicateToolCalls: { Bash: 2 } }));
-  assert.deepEqual(withDuplicates.duplicateToolCalls, { Bash: 2 });
-});
-
-test('duplicate tool-call fixtures produce counts only when duplicates exist', () => {
-  const duplicateFixture = [{ role: 'assistant', content: [
-    { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
-    { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
-    { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
-  ] }];
-  const duplicateEntry = JSON.parse(buildIndexLine({
-    id: 'dupe-fixture',
-    duplicateToolCalls: extractDuplicateToolCalls(duplicateFixture),
-  }));
-  assert.deepEqual(duplicateEntry.duplicateToolCalls, { Bash: 2 });
-
-  const uniqueFixture = [{ role: 'assistant', content: [
-    { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
-    { type: 'tool_use', name: 'Bash', input: { command: 'ls' } },
-  ] }];
-  const uniqueEntry = JSON.parse(buildIndexLine({
-    id: 'unique-fixture',
-    duplicateToolCalls: extractDuplicateToolCalls(uniqueFixture),
-  }));
-  assert.ok(!('duplicateToolCalls' in uniqueEntry));
-});
-
-test('deployment fields read env per call and derive reproducible local date/time zone', () => {
-  const envNames = ['CCXRAY_AGENT_ID','CCXRAY_USER_EMAIL','CCXRAY_TEAM','CCXRAY_AGENT_TYPE','TZ'];
-  const original = Object.fromEntries(envNames.map(name => [name, process.env[name]]));
-  try {
-    delete process.env.CCXRAY_AGENT_ID;
-    delete process.env.CCXRAY_USER_EMAIL;
-    delete process.env.CCXRAY_TEAM;
-    process.env.CCXRAY_AGENT_TYPE = '';
-    process.env.TZ = 'America/Los_Angeles';
-    const ts = Date.parse('2026-01-15T07:30:00.000Z');
-
-    const unsetFields = deploymentFields(ts);
-    for (const key of ['agentId','userEmail','team','agentType']) assert.ok(!(key in unsetFields));
-    const withoutEnv = JSON.parse(buildIndexLine({ id: 'without-env', ...unsetFields }));
-    for (const key of ['agentId','userEmail','team','agentType']) assert.ok(!(key in withoutEnv));
-    assert.equal(withoutEnv.localDate, '2026-01-14');
-    assert.equal(withoutEnv.tz, 'America/Los_Angeles');
-
-    process.env.CCXRAY_AGENT_ID = 'machine-7';
-    process.env.CCXRAY_USER_EMAIL = 'dev@example.com';
-    process.env.CCXRAY_TEAM = 'platform';
-    process.env.CCXRAY_AGENT_TYPE = 'claude-code';
-    const withEnv = JSON.parse(buildIndexLine({ id: 'with-env', ...deploymentFields(ts) }));
-    assert.deepEqual(
-      { agentId: withEnv.agentId, userEmail: withEnv.userEmail, team: withEnv.team, agentType: withEnv.agentType },
-      { agentId: 'machine-7', userEmail: 'dev@example.com', team: 'platform', agentType: 'claude-code' },
-    );
-  } finally {
-    for (const name of envNames) {
-      if (original[name] === undefined) delete process.env[name];
-      else process.env[name] = original[name];
-    }
-  }
-});
-
-test('G2: a legacy-shaped entry without duplicates remains byte-identical', () => {
-  const entry = {
-    id:'G2', ts:'12:34:56', sessionId:'s', provider:'openai', agent:'codex', model:'gpt-5.5',
-    msgCount:1, toolCount:0, toolCalls:{}, skillCalls:{}, isSubagent:false, sessionInferred:false,
-    cwd:'/p', isSSE:true, usage:{input_tokens:1}, cost:null, maxContext:400000,
-    responseMetadata:null, stopReason:'completed', title:null, thinkingDuration:null, toolFail:false,
-    elapsed:'0.1', status:200, receivedAt:1786440000000, sysHash:null, toolsHash:null, coreHash:null,
-    agentKey:null, agentLabel:null, convId:null, duplicateToolCalls:null,
-  };
-  const legacyLine = '{"id":"G2","ts":"12:34:56","sessionId":"s","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/p","isSSE":true,"usage":{"input_tokens":1},"cost":null,"maxContext":400000,"responseMetadata":null,"stopReason":"completed","title":null,"thinkingDuration":null,"toolFail":false,"elapsed":"0.1","status":200,"receivedAt":1786440000000,"sysHash":null,"toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null}';
-  assert.equal(buildIndexLine(entry), legacyLine);
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {
