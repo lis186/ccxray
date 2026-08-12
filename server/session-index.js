@@ -38,8 +38,10 @@ const FLUSH_DELAY_MS = 2000;
 //   2          — store.mergeByResponseId per session, subagent filtered post-merge
 //   3 (#509)   — a capable Bash call with no recorded result escalates to ❔ instead
 //                of rendering sunny (weather.js sigToolFailure 'unmeasured')
+//   4 (#516)   — retire error_cumulative/error_cluster/sig_stuck (severity → 0);
+//                same inputs that produced stormy now produce sunny
 // INVARIANT: see docs/decisions/0013-beta1m-persist-session-window-derive.md
-const WEATHER_REV = 3;
+const WEATHER_REV = 4;
 
 // Single writer for persisted weather so the stamp can never be missed by one of
 // the three paths (rebuild finalize, _recomputeWeather, setWeather). A record
