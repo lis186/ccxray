@@ -213,7 +213,9 @@ function sigStuck(turns, toolEvidence) {
   // (b) any Bash success resets the counter so the canonical stuck loop (npm test fails
   // → read → edit → npm test fails) never exceeds streak 1 — the bug is scoping not
   // threshold, (c) failure rate has no predictive relationship with any proxy outcome.
-  // Detail preserved for tooltip display.
+  // Detail computed but has no live consumer (severity 0 → never enters factors →
+  // _FACTOR_FMT.stuck deleted). Kept only so the function signature stays stable for
+  // callers that destructure the result; the detail object is write-only.
   return { severity: 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
@@ -258,7 +260,8 @@ function sigErrorCluster(turns, toolEvidence) {
   // RETIRED(#516): severity permanently 0. CUSUM simulation proved the max-over-
   // overlapping-windows null drifts with session length — under pure 6% noise a
   // 1,000-turn healthy session's expected 5-window max rate is 53.8%, P(≥0.4) = 100%.
-  // This signal measured session length, not failure. Detail preserved for tooltip.
+  // This signal measured session length, not failure. Detail computed but has no
+  // live consumer (_FACTOR_FMT.error_cluster deleted); write-only.
   return { severity: 0, detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
@@ -384,10 +387,9 @@ var _FACTOR_FMT = {
   compaction_scar: function(d) { return 'compaction ×' + (d.compactionCount || 1) + ' (info lost)'; },
   truncation: function(d) { return 'output truncated (' + _turnLink('turn ' + (d.turnIndex || '?'), d.entryId) + ')'; },
   tool_failure: function(d) { return 'tool failed (' + _turnLink('turn ' + (d.turnIndex || 0), d.entryId) + ')'; },
-  stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
+  // RETIRED(#516): stuck, error_cluster, error_cumulative removed — severity permanently 0,
+  // these formatters were unreachable (factors only admits severity > 0).
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
-  error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
-  error_cumulative: function(d) { var label = d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; return d.firstErrId ? _turnLink(label, d.firstErrId) : label; },
   cache_health: function(d) { return 'cache hit ' + (d.medianHitRate || 0) + '% (last ' + (d.recentTurns || '?') + ' turns)'; },
 };
 
@@ -400,16 +402,12 @@ var _LEVEL_SUMMARY = {
   stormy: 'Critically degraded, act now',
 };
 
-var _ACTION_TABLE = {
-  stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
-  error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
-  // Returns null when there is no turn to link to: an unlinked "Check tool
-  // errors" line is the same non-falsifiable advice this table was pruned of
-  // (#336) — it says to look without saying where. Only reachable when a turn
-  // carries no `id`; stored entries always do, so this is a contract guard
-  // rather than a live path.
-  error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : null; },
-};
+// RETIRED(#516): _ACTION_TABLE deleted — its only three keys (stuck, error_cluster,
+// error_cumulative) all have severity 0, so they never enter factors and the action
+// lookup at _buildTooltip:458 never matches. The table was the last remaining
+// prescriptive element ("take action", "act now") whose retirement was recommended
+// by both adversarial review rounds.
+var _ACTION_TABLE = {};
 
 function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount) {
   var lines = [_LEVEL_SUMMARY[level] || ''];
