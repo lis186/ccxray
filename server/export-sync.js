@@ -138,10 +138,42 @@ function exchangeJwt(jwt) {
   });
 }
 
+// ponytail: ADC fallback — reads ~/.config/gcloud/application_default_credentials.json
+// and does an OAuth2 refresh. SA key file takes precedence when set.
+function refreshAdc() {
+  const adcPath = path.join(process.env.HOME || '', '.config', 'gcloud', 'application_default_credentials.json');
+  const adc = JSON.parse(fs.readFileSync(adcPath, 'utf8'));
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    client_id: adc.client_id,
+    client_secret: adc.client_secret,
+    refresh_token: adc.refresh_token,
+  }).toString();
+  return new Promise((resolve, reject) => {
+    const req = https.request('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      timeout: GCS_TIMEOUT_MS,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
+    }, res => {
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(data);
+          if (j.access_token) resolve(j);
+          else reject(new Error(data));
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('ADC refresh timeout')); });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 async function getAccessToken(keyFile) {
   if (_cachedToken && Date.now() < _cachedToken.expiresAt - 60_000) return _cachedToken.accessToken;
-  const jwt = signJwt(keyFile);
-  const tok = await exchangeJwt(jwt);
+  const tok = keyFile ? await exchangeJwt(signJwt(keyFile)) : await refreshAdc();
   _cachedToken = { accessToken: tok.access_token, expiresAt: Date.now() + (tok.expires_in || 3600) * 1000 };
   return _cachedToken.accessToken;
 }
