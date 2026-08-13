@@ -9,7 +9,7 @@ const { resolveCcxrayHome } = require('./paths');
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
 const LOCK_STALE_MS = 5 * 60_000;
-const GCS_TIMEOUT_MS = 30_000; // #4: GCS request timeout
+const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5s, at-least-once retries next flush
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
 const SCHEMA_VERSION = 1;
