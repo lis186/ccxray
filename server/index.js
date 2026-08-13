@@ -24,6 +24,7 @@ const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
+const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = require('./export-sync');
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
@@ -646,6 +647,7 @@ function spawnAgent(command, port, args, onExit) {
 // can never block shutdown.
 async function gracefulExit(code) {
   stopCodexRefresh();
+  stopExportSync();
   const deadline = new Promise(resolve => setTimeout(resolve, 5000));
   const drain = (async () => {
     try { await drainWebSocketProxy(); } catch (e) { console.error('WS drain failed:', e.message); }
@@ -653,6 +655,10 @@ async function gracefulExit(code) {
     // must fire before flush persists the session Map to disk (#309)
     try { await config.storage.drain(); } catch (e) { console.error('Storage drain failed:', e.message); }
     try { await sessionIdx.flush(); } catch (e) { console.error('Session index flush failed:', e.message); }
+    // #5: await in-flight export AFTER critical drains so a 30s GCS timeout
+    // doesn't block WS/storage under the 5s shutdown deadline
+    try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
+    try { await flushExport(); } catch (e) { console.error('Export flush failed:', e.message); }
   })();
   await Promise.race([drain, deadline]);
   process.exit(code);
@@ -1019,9 +1025,11 @@ async function runPostListenStartupTasks() {
 
   await pricingReady;
   if (restoreOk) {
+    try { await flushExport(); } catch (e) { console.error('[ccxray export] Pre-prune flush failed:', e.message); }
     await pruneLogs();
     warmUpCosts();
   }
+  startExportSync();
 
   // #438/#486: hint when legacy entries lack per-turn tool evidence.
   // turnToolResults is always set on new entries ([] for no-tools, [{...}] for
