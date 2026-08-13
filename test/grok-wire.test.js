@@ -162,13 +162,12 @@ describe('Grok wire contract', () => {
       assert.ok(line.cost.cost != null);
     });
 
-    it('pricing for grok-4.5 comes from LiteLLM bare mirror; grok-build keeps lag override', () => {
+    it('pricing for grok-4.5 comes from LiteLLM bare mirror; grok-build from DEFAULT_PRICING', () => {
       const table = buildPricingTable({
         'xai/grok-4.5': { input: 2, output: 6, cache_create: 0, cache_read: 0.5 },
       });
       assert.ok(table['grok-4.5'], 'bare wire id mirrors from xai/grok-4.5');
       assert.equal(table['grok-4.5'].input, 2);
-      // Title-gen model still needs local override until LiteLLM lists it
       assert.ok(table['grok-build']);
       assert.equal(table['grok-build'].input, 1);
       const c = calculateCost({

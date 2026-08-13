@@ -52,7 +52,7 @@ describe('pricing', () => {
       assert.equal(table['grok-4.5'].cache_read, 0.5);
     });
 
-    it('returns pricing for grok-build title-gen model via lag override', () => {
+    it('returns pricing for grok-build title-gen model from DEFAULT_PRICING', () => {
       const table = buildPricingTable({});
       assert.ok(table['grok-build']);
       assert.equal(table['grok-build'].input, 1);
@@ -75,44 +75,14 @@ describe('pricing', () => {
   });
 
   describe('LITELLM_LAG_OVERRIDES lifecycle', () => {
-    it('documents each override with litellmKeys + removeWhen (maintenance memory)', () => {
-      assert.ok(LITELLM_LAG_OVERRIDES.length >= 1);
-      for (const entry of LITELLM_LAG_OVERRIDES) {
-        assert.ok(entry.id, 'override needs id');
-        assert.ok(Array.isArray(entry.wireIds) && entry.wireIds.length, 'wireIds');
-        assert.ok(Array.isArray(entry.litellmKeys) && entry.litellmKeys.length, 'litellmKeys to watch');
-        assert.ok(entry.rates && entry.rates.input != null && entry.rates.output != null);
-        assert.ok(entry.source, 'official source URL');
-        assert.ok(entry.since, 'since date');
-        assert.ok(entry.removeWhen, 'human remove condition');
-      }
+    it('no active overrides (all graduated to DEFAULT_PRICING)', () => {
+      assert.equal(LITELLM_LAG_OVERRIDES.length, 0);
     });
 
-    it('stops applying override once LiteLLM lists a watched key (auto-return)', () => {
-      // Simulate LiteLLM catching up with xai/grok-build
-      const litellm = {
-        'xai/grok-build': { input: 1.1, output: 2.1, cache_create: 0, cache_read: 0.21 },
-      };
-      const table = buildPricingTable(litellm);
-      // bare mirror from xai/ + lag override sees litellmKeys present → does NOT overwrite
-      assert.equal(table['grok-build'].input, 1.1, 'LiteLLM rate must win after catch-up');
-      assert.equal(table['xai/grok-build'].input, 1.1);
-    });
-
-    it('applyLagOverrides reports remove-override when LiteLLM has the key', () => {
-      const { status } = (() => {
-        // applyLagOverrides returns table only; status is on module after call
-        applyLagOverrides({
-          'xai/grok-build': { input: 1, output: 2, cache_create: 0, cache_read: 0.2 },
-          'grok-build': { input: 1, output: 2, cache_create: 0, cache_read: 0.2 },
-        });
-        const pricing = require('../server/pricing');
-        return { status: pricing.lastLagOverrideStatus };
-      })();
-      const grokBuild = status.find(s => s.id === 'grok-build');
-      assert.ok(grokBuild);
-      assert.equal(grokBuild.active, false);
-      assert.equal(grokBuild.action, 'remove-override');
+    it('applyLagOverrides produces empty status when no overrides exist', () => {
+      applyLagOverrides({});
+      const pricing = require('../server/pricing');
+      assert.deepEqual(pricing.lastLagOverrideStatus, []);
     });
   });
 

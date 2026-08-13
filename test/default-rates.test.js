@@ -38,6 +38,8 @@ describe('default-rates: single source of truth (#397)', () => {
     it('covers grok models', () => {
       assert.ok(DEFAULT_PRICING['grok-4.5']);
       assert.ok(DEFAULT_PRICING['grok-4.3']);
+      assert.ok(DEFAULT_PRICING['grok-build']);
+      assert.ok(DEFAULT_PRICING['grok-build-0.1']);
     });
 
     it('covers OpenAI models', () => {
@@ -59,36 +61,19 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.ok(Array.isArray(result.status));
     });
 
-    it('adds lag override models to the table when not in LiteLLM', () => {
-      const { table } = applyLagOverrides({});
-      for (const entry of LITELLM_LAG_OVERRIDES) {
-        for (const wireId of entry.wireIds) {
-          assert.ok(table[wireId], `lag override ${wireId} missing from table`);
-          assert.equal(table[wireId].input, entry.rates.input);
-        }
-      }
-    });
-
-    it('skips lag override when LiteLLM already has the key', () => {
-      const litellm = {
-        'xai/grok-build': { input: 99, output: 99, cache_create: 0, cache_read: 0 },
-      };
-      const { table, status } = applyLagOverrides(litellm);
-      assert.equal(table['grok-build'], undefined, 'override should not apply');
-      const s = status.find(s => s.id === 'grok-build');
-      assert.ok(s);
-      assert.equal(s.active, false);
+    it('returns empty status when no overrides are defined', () => {
+      const { table, status } = applyLagOverrides({});
+      assert.ok(table);
+      assert.deepEqual(status, []);
     });
   });
 
   describe('getOfflineRates', () => {
-    it('returns DEFAULT_PRICING + lag overrides merged', () => {
+    it('returns DEFAULT_PRICING merged (no active lag overrides)', () => {
       const rates = getOfflineRates();
-      // Has all DEFAULT_PRICING keys
       for (const key of Object.keys(DEFAULT_PRICING)) {
         assert.ok(rates[key], `missing: ${key}`);
       }
-      // Has lag override wire IDs
       assert.ok(rates['grok-build']);
       assert.ok(rates['grok-build-0.1']);
     });
@@ -106,7 +91,7 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build').cost, 2);
     });
 
-    it('matches grok-build to grok-build via lag override ($1/MTok input)', () => {
+    it('matches grok-build to grok-build ($1/MTok input)', () => {
       assert.equal(calculateCostSimple(usage1M, 'grok-build').cost, 1);
     });
 
@@ -143,8 +128,8 @@ describe('default-rates: single source of truth (#397)', () => {
     });
 
     it('longest-prefix-first: grok-4.5-build matches grok-4.5-build not grok-build', () => {
-      // grok-4.5-build has input $2/MTok, grok-build has input $1/MTok.
-      // If prefix matching were insertion-order, grok-build could win.
+      // grok-4.5-build has input $2/MTok (DEFAULT_PRICING), grok-build has $1/MTok.
+      // Longest-prefix-first ensures grok-4.5-build wins.
       assert.equal(calculateCostSimple(usage1M, 'grok-4.5-build').cost, 2);
     });
 
@@ -181,7 +166,7 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.equal(calculateCostSimple(usage1M, null).confidence, 'fallback');
     });
 
-    it('returns exact confidence for lag override model', () => {
+    it('returns exact confidence for grok-build', () => {
       assert.equal(calculateCostSimple(usage1M, 'grok-build').confidence, 'exact');
     });
 
