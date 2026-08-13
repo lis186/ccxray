@@ -303,10 +303,12 @@ informative.
 
 ### 5b. Calibration replay script
 
-A streaming replay script is a deliverable of the implementation PR:
+A streaming replay script is a deliverable of the implementation PR. It shipped as
+`scripts/weather-replay.js` (not the `replay-tool-signal.js` name sketched here):
 
 ```
-node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
+node scripts/weather-replay.js [--index PATH] [--provider anthropic|openai]
+                               [--list-bad] [--golden]
 ```
 
 - Streams `index.ndjson`, groups by sessionId
@@ -314,8 +316,75 @@ node scripts/replay-tool-signal.js [--index PATH] [--provider anthropic|openai]
 - Reports: level distribution, `sigToolFailure` availability, per-turn failure
   rate distribution (p25/p50/p75/p90)
 - Outputs `ready` / `not ready` based on data sufficiency (see §5c)
+- Reports both responseId dedup semantics side by side — `first-seen` (the
+  pre-#503 rebuild path) and `merged` (`store.mergeByResponseId`, what the store
+  path and cold-load see). The verdict comes from `merged`; `first-seen` remains
+  as the counterfactual.
+- `--golden` self-checks 59 assertions against a hand-counted synthetic fixture. It
+  runs in CI (`test/weather-replay-golden.test.js`), so acceptance is a regression
+  test rather than a command someone remembers to type.
 
-### 5c. Toggle-ON decision gate — data-driven, not fixed threshold
+### 5c. Toggle-ON decision gate
+
+> **Revised 2026-08-11 — policy change, owner-signed.** The condition moved from
+> "corpus-wide statistics meet thresholds" to "per-session honest display + manual
+> validation of a sample". Prong 3 is **retired**; prong 2 is **downgraded** to a
+> fixture source. The original text is kept below under *Superseded* because the
+> reasoning that replaced it only makes sense against it.
+>
+> Two adversarial reviews (Fable + Codex, independent) converged on the same
+> diagnosis: the corpus-wide gate asked the wrong question, and ADR 0017 already
+> established the right pattern — per-display honesty, missing data as its own error
+> class, and legacy data contributing nothing.
+
+**Current condition (all three required):**
+
+1. **#509 fixed** — a session that ran a Bash call whose result was never recorded
+   renders ❔, not sunny. ✅ landed; `sigToolFailure` returns `unmeasured` and the
+   sunny→❔ escalation covers it.
+2. **False-sunny rate = 0** — evidence-capable sessions (a Bash call present in some
+   turn's `turnToolCallIds`, the #486 capability marker) that recorded zero paired
+   evidence and still render sunny. ✅ measured 0/23 on 2026-08-11.
+   This replaces prong 3 as rollout telemetry: it is a per-session honesty invariant,
+   so it stays checkable as the corpus grows instead of being a one-time hurdle.
+3. **Manual qualitative check of the degraded tail** — confirm the highest-failure-rate
+   sessions are *actually* degraded. ❌ **OUTSTANDING — not done.** No script can
+   assert this; `scripts/weather-replay.js` now prints the tail as an actionable list
+   of session ids. Current tail is thin (2 sessions >10%: `6cbdc179` at 28.6%,
+   `118e2c67` at 25.9%), so the check should be made against what exists rather than
+   deferred until a larger sample appears.
+
+**Why prong 3 was retired.** It gated a per-session display on corpus age. ~85% of the
+index is imported/Codex lines that structurally cannot carry paired fields, so the
+statistic could not move regardless of how much new data arrived (measured 99.5%
+all-sessions, 88.2% tool-active — both fail, so the narrower denominator was not a fix
+either). It also recreated the "worst-of" shape ADR 0017's expert panel scored 3/3/3
+and rejected — one contaminated component condemning the whole display
+(`docs/decisions/0017-aggregate-cost-confidence.md:41,136`). Retired, not deleted: the
+script still prints it, labelled, for continuity with the runs recorded above.
+
+**Why prong 2 was downgraded.** It is circular — the 10% threshold defines the tail it
+then counts — and satisfiable by sample size alone at ~180–200 qualifying sessions.
+The bimodality precondition ("healthy vs degraded separable") was imported from a
+classifier problem; weather renders a *continuous* severity, so there is no reason to
+expect two modes. It remains useful as the source of fixtures for condition 3.
+
+**Internal contradiction corrected.** The superseded text below called itself
+"data-driven, not fixed threshold" while specifying fixed 100 / 20 / 10% / 50% cutoffs
+that the script hardcoded. The current condition has exactly one machine-checkable
+threshold (false-sunny = 0, which is not a tuned number but an invariant), and names
+the remaining judgement as human.
+
+**Scope note.** The escalation is deliberately Bash-only and capability-gated, so it
+changes **0 sessions in the current corpus** (23 evidence-capable sessions, all of
+which have evidence). The earlier "157 sessions affected" figure counted sessions by
+cumulative `toolCalls`, which includes pre-#486 sessions that never had a results
+pipeline; marking those ❔ would be prong 3's corpus-age reasoning wearing a
+per-session mask, and would make ❔ the default state. Whether legacy Bash sessions
+should nonetheless be marked is an open owner decision — it is a one-line change to
+`_issuedCapableBashCall` affecting ~157 sessions.
+
+#### Superseded (pre-2026-08-11) — corpus-wide thresholds
 
 No fixed session count. The calibration replay script determines readiness:
 
@@ -332,8 +401,42 @@ determines whether the distribution is bimodal (healthy vs degraded separable).
 If not, wait one week and re-run.
 
 Additional gate checks:
-- `sigToolFailure` `no_data` rate < 50%
+- `sigToolFailure` `no_data` rate < 50%  ← retired 2026-08-11, see above
 - Tooltip accurately represents measurement state
+
+#### First adjudicated run — 2026-08-11 (278,757 lines / 4,258 sessions)
+
+Verdict: **not ready**, all three prongs failing. Both dedup semantics agree.
+
+| prong | threshold | measured | after `--apply` backfill (projected) |
+|---|---|---|---|
+| 1. sessions ≥5 paired Bash results | ≥100 | **17** FAIL | **126** PASS |
+| 2. degraded samples (rate >10%) | ≥20 | **2** FAIL | **14** FAIL |
+| 3. `no_data` rate | <50% | **99.5%** FAIL | **96.7%** FAIL |
+
+Per-turn failure rate, n=17 qualifying: p25 2.1% · p50 5.7% · p75 7.6% · p90 15.6%.
+Projected at n=126: p25 0.2% · p50 3.8% · p75 7.0% · p90 11.0%.
+
+Three findings that change what "wait one week" means:
+
+1. **The distribution is not bimodal.** §5c's fallback applies: healthy and
+   degraded are not separable — the projected p90 is 11.0%, barely over the 10%
+   line that defines "degraded", so prong 2's ≥20 threshold is measuring the tail
+   of a smooth low-failure distribution, not a second mode.
+2. **Prong 3 cannot pass on this corpus shape, for a reason unrelated to scoring.**
+   85% of the index is imported lines and Codex traffic that carry no paired field
+   at all, and a session that never called a tool is *correctly* `no_data`. The
+   replay therefore also reports `no_data` over tool-active sessions only (88.2%
+   measured / 90.0% merged). Until `no_data` distinguishes "no tool calls" from
+   "tool calls happened but nothing was recorded", the all-sessions denominator
+   measures corpus composition rather than signal quality.
+3. **The backfill that flips prong 1 is bounded and does not reach the bulk of the
+   corpus.** `rebuild-index --apply` can enrich ~28.2k lines with
+   `turnToolCallIds` (from a surviving `_res.json`) and ~30.6k with non-empty
+   `turnToolResults` (from `_req.json`); ~204k imported lines have neither file and
+   are reachable only by `--reimport`, which deletes imported lines first and is
+   not an acceptable operation. The projection above is a lower bound (the merge's
+   callId union can only add evidence).
 
 ## Follow-up issues (at least two)
 

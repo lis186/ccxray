@@ -107,7 +107,59 @@ function _openAIToolEvidence(turns) {
   return results;
 }
 
-function sigToolFailure(toolEvidence) {
+// #509: did this session issue a Bash call on a turn that was CAPABLE of recording
+// the result? `turnToolCallIds` is the #486/#475 paired-pipeline marker: its presence
+// means the response-side writer ran and listed the turn's calls, so a Bash call in
+// it with no matching result is a genuine measurement gap rather than an old log.
+//
+// Two scoping decisions, both load-bearing:
+//  - Bash only, because _openAIToolEvidence pairs Bash and nothing else. A session
+//    whose only tools were Read/Grep can never produce evidence, so escalating it
+//    would make ❔ the default state and devalue the marker (ADR 0017's habituation
+//    argument, applied per display).
+//  - `turnToolCallIds` only — NOT the cumulative `toolCalls`, and not `turnToolCalls`
+//    (#427, which predates the results pipeline). A legacy turn carries no capability
+//    signal and must contribute nothing, exactly as ADR 0017 has legacy entries
+//    contribute nothing to the aggregate confidence fold. Marking every pre-#486
+//    Bash session ❔ would be the retired corpus-age gate wearing a per-session mask.
+function _issuedCapableBashCall(turns) {
+  for (var i = 0; i < turns.length; i++) {
+    var ids = turns[i].turnToolCallIds;
+    if (!ids || typeof ids !== 'object' || Array.isArray(ids)) continue;
+    for (var callId in ids) {
+      if (ids[callId] === 'Bash') return true;
+    }
+  }
+  return false;
+}
+
+// Did this session issue a Bash call by ANY available signal? Reporting/denominator
+// helper — the escalation above deliberately uses the narrower capability test.
+// INVARIANT(ADR 0018): a per-turn map that is present but EMPTY (`{}`) means the
+// response was parsed and made zero calls, so it must suppress the cumulative
+// fallback; only a fully absent per-turn map falls back to request-derived
+// `toolCalls`. The per-tool max-vs-sum distinction ADR 0018 draws for counts is moot
+// here — this is a presence test. See docs/decisions/0018-turn-tool-calls-null-vs-empty.md
+function sessionIssuedBashCall(turns) {
+  if (!turns || !turns.length) return false;
+  var isMap = function(v) { return v && typeof v === 'object' && !Array.isArray(v); };
+  for (var i = 0; i < turns.length; i++) {
+    var t = turns[i], perTurnPresent = false;
+    if (isMap(t.turnToolCallIds)) {
+      perTurnPresent = true;
+      for (var callId in t.turnToolCallIds) if (t.turnToolCallIds[callId] === 'Bash') return true;
+    }
+    if (isMap(t.turnToolCalls)) {
+      perTurnPresent = true;
+      if (t.turnToolCalls.Bash) return true;
+    }
+    if (perTurnPresent) continue; // parsed response, zero calls — no fallback
+    if (isMap(t.toolCalls) && t.toolCalls.Bash) return true;
+  }
+  return false;
+}
+
+function sigToolFailure(toolEvidence, issuedCapableBash) {
   var known = 0, firstFailure = null;
   for (var i = 0; i < toolEvidence.length; i++) {
     if (toolEvidence[i].toolFail === true || toolEvidence[i].toolFail === false) known++;
@@ -119,7 +171,16 @@ function sigToolFailure(toolEvidence) {
   if (toolEvidence.length > known) {
     return { severity: null, availability: 'unavailable', detail: { known: known, eligible: toolEvidence.length } };
   }
-  return { severity: 0, availability: toolEvidence.length > 0 ? 'clear' : 'no_data', detail: { known: known, eligible: toolEvidence.length } };
+  if (toolEvidence.length > 0) {
+    return { severity: 0, availability: 'clear', detail: { known: known, eligible: toolEvidence.length } };
+  }
+  // #509: no evidence at all. Distinguish "nothing to measure" (sunny is honest)
+  // from "a Bash call ran and its outcome was never recorded" (must not read as
+  // healthy). Kept as its own availability value rather than folded into
+  // 'unavailable' so the two diagnoses stay separable — 'unavailable' means results
+  // arrived and could not be decoded (the Codex decoder gap, #506), 'unmeasured'
+  // means no result arrived at all.
+  return { severity: 0, availability: issuedCapableBash ? 'unmeasured' : 'no_data', detail: { known: known, eligible: toolEvidence.length } };
 }
 
 function sigStuck(turns, toolEvidence) {
@@ -146,7 +207,16 @@ function sigStuck(turns, toolEvidence) {
       pairedStreak = 0;
     }
   }
-  return { severity: pairedMax >= 10 ? 0.9 : 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+  // RETIRED(#516): severity permanently 0. Six independent sources (CUSUM simulation,
+  // ISA-18.2 rationalization, Hawkes analysis, circuit-breaker scoping review, Fable,
+  // Codex) confirmed: (a) max observed streak in entire corpus = 3 vs threshold 10,
+  // (b) any Bash success resets the counter so the canonical stuck loop (npm test fails
+  // → read → edit → npm test fails) never exceeds streak 1 — the bug is scoping not
+  // threshold, (c) failure rate has no predictive relationship with any proxy outcome.
+  // Detail computed but has no live consumer (severity 0 → never enters factors →
+  // _FACTOR_FMT.stuck deleted). Kept only so the function signature stays stable for
+  // callers that destructure the result; the detail object is write-only.
+  return { severity: 0, detail: { maxStreak: pairedMax, turnStart: pairedStart, turnEnd: pairedEnd, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 function sigLatencyDrift(turns) {
@@ -187,8 +257,12 @@ function sigErrorCluster(turns, toolEvidence) {
       pairedEndId = toolEvidence[p + 4].entryId;
     }
   }
-  // ponytail: denom=2.0 — window needs 100% error rate to reach severity 0.5. Exp2: 0.6 flagged 247/346 sessions.
-  return { severity: clamp01(pairedMaxRate / 2.0), detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
+  // RETIRED(#516): severity permanently 0. CUSUM simulation proved the max-over-
+  // overlapping-windows null drifts with session length — under pure 6% noise a
+  // 1,000-turn healthy session's expected 5-window max rate is 53.8%, P(≥0.4) = 100%.
+  // This signal measured session length, not failure. Detail computed but has no
+  // live consumer (_FACTOR_FMT.error_cluster deleted); write-only.
+  return { severity: 0, detail: { windowStart: pairedBestStart, windowEnd: pairedBestEnd, errorRate: Math.round(pairedMaxRate * 100) / 100, entryIdStart: pairedStartId, entryIdEnd: pairedEndId } };
 }
 
 // ponytail: sustained low cache hit rate — cost/perf signal, not functionality. Skips first 3 turns (cold start). Expert consensus: 50% threshold (break-even), 0.5 cap.
@@ -222,8 +296,13 @@ function sigErrorCumulative(turns, toolEvidence) {
     }
   }
   var pairedRate = pairedKnown ? pairedErrors / pairedKnown : 0;
-  // ponytail: 20% cumulative error rate = severity 0.5, 40% = 1.0. Requires ≥5 tool turns to avoid noise.
-  return { severity: pairedKnown < 5 ? 0 : clamp01(pairedRate / 0.4), detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
+  // RETIRED(#516): severity permanently 0. Falsified empirically: failure rate has
+  // no positive predictive relationship with truncation, compaction, or cost outliers
+  // (the only relationship is negative and explained by session length). Present in
+  // 94% of measurable sessions, failing ISA-18.2's "Abnormal" criterion — a condition
+  // in the majority IS the normal operating state. Detail preserved: errTurns/toolTurns
+  // feed stats.errRate and the tooltip's tool-error line.
+  return { severity: 0, detail: { errTurns: pairedErrors, toolTurns: pairedKnown, rate: Math.round(pairedRate * 100) / 100, firstErrId: pairedFirstErrId } };
 }
 
 function assessWeather(turns, opts) {
@@ -236,7 +315,7 @@ function assessWeather(turns, opts) {
     { type: 'ctx_pressure', result: sigCtxPressure(turns, opts) },
     { type: 'compaction_scar', result: sigCompaction(turns) },
     { type: 'truncation', result: sigTruncation(turns) },
-    { type: 'tool_failure', result: sigToolFailure(openAIToolEvidence) },
+    { type: 'tool_failure', result: sigToolFailure(openAIToolEvidence, _issuedCapableBashCall(turns)) },
     { type: 'stuck', result: sigStuck(turns, openAIToolEvidence) },
     { type: 'latency_drift', result: sigLatencyDrift(turns) },
     { type: 'error_cluster', result: sigErrorCluster(turns, openAIToolEvidence) },
@@ -252,7 +331,13 @@ function assessWeather(turns, opts) {
   for (var i = 0; i < LEVELS.length; i++) {
     if (score < LEVELS[i].ceil) { pick = LEVELS[i]; break; }
   }
-  if (pick.level === 'sunny' && signals.some(function(s) { return s.result.availability === 'unavailable'; })) {
+  // #509: both no-measurement states escalate a sunny pick to ❔ — 'unavailable'
+  // (results arrived, none decodable) and 'unmeasured' (a capable Bash call ran and
+  // no result was ever recorded). A session that made no Bash call keeps 'no_data'
+  // and stays sunny, which is the correct reading of "nothing to measure".
+  if (pick.level === 'sunny' && signals.some(function(s) {
+    return s.result.availability === 'unavailable' || s.result.availability === 'unmeasured';
+  })) {
     pick = { level: 'unavailable', emoji: '❔' };
   }
 
@@ -302,10 +387,9 @@ var _FACTOR_FMT = {
   compaction_scar: function(d) { return 'compaction ×' + (d.compactionCount || 1) + ' (info lost)'; },
   truncation: function(d) { return 'output truncated (' + _turnLink('turn ' + (d.turnIndex || '?'), d.entryId) + ')'; },
   tool_failure: function(d) { return 'tool failed (' + _turnLink('turn ' + (d.turnIndex || 0), d.entryId) + ')'; },
-  stuck: function(d) { return 'stuck ' + (d.maxStreak || 0) + ' failures (' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
+  // RETIRED(#516): stuck, error_cluster, error_cumulative removed — severity permanently 0,
+  // these formatters were unreachable (factors only admits severity > 0).
   latency_drift: function(d) { return 'latency ' + (d.ratio || '?') + 'x baseline'; },
-  error_cluster: function(d) { return 'error burst ' + Math.round((d.errorRate || 0) * 100) + '% (' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd) + ')'; },
-  error_cumulative: function(d) { var label = d.errTurns + '/' + d.toolTurns + ' tool errors (' + Math.round((d.rate || 0) * 100) + '%)'; return d.firstErrId ? _turnLink(label, d.firstErrId) : label; },
   cache_health: function(d) { return 'cache hit ' + (d.medianHitRate || 0) + '% (last ' + (d.recentTurns || '?') + ' turns)'; },
 };
 
@@ -318,21 +402,20 @@ var _LEVEL_SUMMARY = {
   stormy: 'Critically degraded, act now',
 };
 
-var _ACTION_TABLE = {
-  stuck: function(d) { return 'Check ' + _rangeLink(d.turnStart || 0, d.turnEnd || 0, d.entryIdStart, d.entryIdEnd) + ' — usually permissions or paths'; },
-  error_cluster: function(d) { return 'Check ' + _rangeLink(d.windowStart || 0, d.windowEnd || 0, d.entryIdStart, d.entryIdEnd); },
-  // Returns null when there is no turn to link to: an unlinked "Check tool
-  // errors" line is the same non-falsifiable advice this table was pruned of
-  // (#336) — it says to look without saying where. Only reachable when a turn
-  // carries no `id`; stored entries always do, so this is a contract guard
-  // rather than a live path.
-  error_cumulative: function(d) { return d.firstErrId ? 'Check ' + _turnLink('first error', d.firstErrId) + ' — common: permissions, paths, settings' : null; },
-};
+// RETIRED(#516): _ACTION_TABLE deleted — its only three keys (stuck, error_cluster,
+// error_cumulative) all have severity 0, so they never enter factors and the action
+// lookup at _buildTooltip:458 never matches. The table was the last remaining
+// prescriptive element ("take action", "act now") whose retirement was recommended
+// by both adversarial review rounds.
+var _ACTION_TABLE = {};
 
 function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount) {
   var lines = [_LEVEL_SUMMARY[level] || ''];
   if (level === 'unavailable') {
-    lines.push(toolKnownCount > 0
+    // #509: the ❔ level now covers two distinct gaps — say which one, otherwise the
+    // decode message would claim results arrived when none did.
+    if (stats && stats.toolSignal === 'unmeasured') lines.push('a Bash call ran but no tool result was recorded');
+    else lines.push(toolKnownCount > 0
       ? toolKnownCount + ' of ' + toolEligibleCount + ' eligible tool results could be decoded'
       : 'no eligible tool result could be decoded');
     return lines.join('\n');
@@ -347,6 +430,7 @@ function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount)
       if (stats.latencyRatio != null) parts.push('latency ' + stats.latencyRatio + 'x');
       if (stats.compactions) parts.push('compacted ×' + stats.compactions);
       if (stats.toolSignal === 'unavailable') parts.push('tool failure signal unavailable');
+      else if (stats.toolSignal === 'unmeasured') parts.push('tool result never recorded');
       if (stats.toolKnownRate != null && stats.toolKnownRate < 100) parts.push('tool results ' + stats.toolKnownRate + '% known');
       lines.push(parts.join(' · '));
     }
@@ -358,10 +442,12 @@ function _buildTooltip(level, factors, stats, toolKnownCount, toolEligibleCount)
       return fmt ? fmt(f.detail) : f.type;
     }).join(' · ');
     if (stats && stats.toolSignal === 'unavailable') factorLine += ' · tool failure signal unavailable';
+    else if (stats && stats.toolSignal === 'unmeasured') factorLine += ' · tool result never recorded';
     if (stats && stats.toolKnownRate != null && stats.toolKnownRate < 100) factorLine += ' · tool results ' + stats.toolKnownRate + '% known';
     lines.push(factorLine);
   }
   else if (stats && stats.toolSignal === 'unavailable') lines.push('tool failure signal unavailable');
+  else if (stats && stats.toolSignal === 'unmeasured') lines.push('tool result never recorded');
   if (level === 'cloudy' || level === 'rainy' || level === 'stormy') {
     var top = factors[0];
     if (top) {
@@ -451,4 +537,4 @@ function weatherDisplayEnabled() {
   return _weatherDisplayDefault;
 }
 
-if (typeof module !== 'undefined') module.exports = { assessWeather, weatherDisplayEnabled };
+if (typeof module !== 'undefined') module.exports = { assessWeather, weatherDisplayEnabled, sessionIssuedBashCall };

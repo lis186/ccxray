@@ -526,6 +526,121 @@ describe('session-index', () => {
     assert.equal(ecFactor, undefined, 'error_cluster must not fire on deduped metas');
   });
 
+  // #503: the rebuild path folds duplicates with store.mergeByResponseId instead of
+  // keeping only the first-seen copy, so complementary evidence split across copies
+  // reaches persisted weather — the same record the store path and cold-load see.
+  it('#503: evidence carried only by a duplicate copy reaches persisted weather', () => {
+    const si = require('../server/session-index');
+    // Turn 1 issues two Bash calls. Turn 2 was observed twice: the proxy copy saw
+    // only x1 (clean), the imported copy only x2 (failed). First-seen dedup keeps
+    // the proxy copy and drops the failure entirely → falsely clear.
+    si.rebuildFromMetas([
+      {
+        id: 'calls', sessionId: 'merge-weather', responseId: 'rid_calls', receivedAt: 1000,
+        model: 'claude-sonnet-4-6', sessionInferred: false, maxContext: 200000,
+        turnToolCallIds: { x1: 'Bash', x2: 'Bash' },
+      },
+      {
+        id: 'res-proxy', sessionId: 'merge-weather', responseId: 'rid_res', receivedAt: 2000,
+        model: 'claude-sonnet-4-6', sessionInferred: false, maxContext: 200000,
+        turnToolResults: [{ callId: 'x1', toolFail: false, eligible: true }],
+      },
+      {
+        id: 'res-import', sessionId: 'merge-weather', responseId: 'rid_res', receivedAt: 2001,
+        model: 'claude-sonnet-4-6', sessionInferred: false, imported: true, maxContext: 200000,
+        turnToolResults: [{ callId: 'x2', toolFail: true, eligible: true }],
+      },
+    ]);
+    const s = si.get('merge-weather');
+    assert.ok(s.weather, 'weather computed');
+    assert.equal(s.weather.stats.toolTurns, 2, 'both paired results counted once each');
+    assert.equal(s.weather.stats.errTurns, 1, 'the duplicate copy\'s failure survives');
+    assert.equal(s.weather.stats.toolSignal, 'failure', 'sigToolFailure is not falsely clear');
+  });
+
+  it('#503: a subagent turn whose imported copy lacks the flag stays out of weather', () => {
+    const si = require('../server/session-index');
+    // The importer never writes isSubagent, so under a PRE-merge subagent filter the
+    // imported half of a subagent turn was admitted as a main turn. Post-merge the
+    // canonical keeps the proxy copy's flag (ADR 0012 identity unit) and is excluded.
+    // compaction_scar counts the turns that actually reached weather.
+    si.rebuildFromMetas([
+      {
+        id: 'main', sessionId: 'merge-sub', receivedAt: 1000, model: 'claude-sonnet-4-6',
+        isCompacted: true, sessionInferred: false, maxContext: 200000,
+      },
+      {
+        id: 'sub-proxy', sessionId: 'merge-sub', responseId: 'rid_sub', receivedAt: 2000,
+        model: 'claude-sonnet-4-6', isCompacted: true, isSubagent: true,
+        sessionInferred: true, maxContext: 200000,
+      },
+      {
+        id: 'sub-import', sessionId: 'merge-sub', responseId: 'rid_sub', receivedAt: 2001,
+        model: 'claude-sonnet-4-6', isCompacted: true, imported: true,
+        sessionInferred: false, maxContext: 200000,
+      },
+    ]);
+    const s = si.get('merge-sub');
+    const comp = s.weather.factors.find(f => f.type === 'compaction_scar');
+    assert.equal(comp.detail.compactionCount, 1, 'only the main turn reached weather');
+  });
+
+  it('#503: sessions.json weather written by an older derivation requests a rebuild', async () => {
+    const si = require('../server/session-index');
+    const config = require('../server/config');
+    const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    const sessionsPath = path.join(config.LOGS_DIR, 'sessions.json');
+    // Every FIELD the older probes look for is present — only the derivation differs,
+    // which is exactly what the field probes cannot see.
+    await fsp.writeFile(indexPath, JSON.stringify({
+      id: 'rev-turn', sessionId: 'rev-session', responseId: 'rev-rid',
+    }) + '\n');
+    const record = {
+      sid: 'rev-session', count: 1, totalCost: 0, maxContext: 200000,
+      fallbackCount: 0, firstReceivedAt: 1,
+      weather: { level: 'sunny', score: 0, stats: { toolSignal: 'no_data', toolTurns: 0 } },
+    };
+    const now = Date.now() / 1000;
+    await fsp.writeFile(sessionsPath, JSON.stringify(record) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false, 'unstamped weather forces a rebuild');
+
+    // A superseded revision is as stale as an absent one.
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: 1 }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false, 'an older revision forces a rebuild');
+
+    // Pins the #509 bump specifically: rev 2 was the merge-swap derivation, and the
+    // ❔ escalation superseded it. UPDATE THIS LITERAL ON EVERY BUMP — it is the only
+    // assertion that fails when a derivation changes without bumping WEATHER_REV,
+    // which is the whole point of the stamp.
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: 2 }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false, 'rev 2 (pre-#509 derivation) forces a rebuild');
+
+    // Whatever the writer currently stamps must load without a rebuild — otherwise
+    // every startup would rebuild forever. Read the revision from the writer rather
+    // than hardcoding it, so a future bump does not need this test edited.
+    si.rebuildFromMetas([{ id: 'rev-probe', sessionId: 'rev-probe', receivedAt: 1, model: 'm', maxContext: 200000 }]);
+    const currentRev = si.get('rev-probe').weatherRev;
+    assert.equal(typeof currentRev, 'number', 'the rebuild writer stamps a numeric revision');
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), true, 'currently-stamped weather loads as-is');
+  });
+
+  it('#503: all three weather writers stamp the revision', () => {
+    const si = require('../server/session-index');
+    si.rebuildFromMetas([{ id: 'w1', sessionId: 'stamp', receivedAt: 1, model: 'm', maxContext: 200000 }]);
+    const rev = si.get('stamp').weatherRev;
+    assert.equal(typeof rev, 'number', 'rebuild finalize stamps a revision');
+    si.setWeather('stamp', { level: 'fair', score: 0.4, stats: {} });
+    assert.equal(si.get('stamp').weatherRev, rev, 'setWeather stamps the same revision');
+    // updateFromEntry → _recomputeWeather
+    si.updateFromEntry({ id: 'w2', sessionId: 'stamp2', receivedAt: 2, model: 'm', maxContext: 200000 });
+    assert.equal(si.get('stamp2').weatherRev, rev, '_recomputeWeather stamps the same revision');
+  });
+
   // #499: Anthropic cumulative branches deleted — legacy metas no longer feed tool
   // signals via stopReason/toolFail. Use compaction_scar to prove all 5 lines pass
   // through (compaction is unaffected by the cumulative branch deletion).

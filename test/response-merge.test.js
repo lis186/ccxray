@@ -204,6 +204,103 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.equal(out[0].isSubagent, true, 'undefined importer isSubagent did not wipe the proxy true');
   });
 
+  // #503 addendum: turnToolResults union by callId. The old fill-if-empty rule
+  // dropped `other` whenever the canonical array was non-empty, which loses the
+  // complementary half of an import×proxy pair — the proxy writes
+  // `toolFail: is_error === true` (absent ⇒ false) while the importer writes
+  // tri-state undefined for the ~48% of historical tool_results with no is_error.
+  describe('turnToolResults union by callId (ADR 0018 tri-state per result)', () => {
+    it('a failure only the imported copy saw survives the merge — and reaches weather', () => {
+      // Turn 0 issues two Bash calls; turn 1 carries their results in two copies.
+      const callTurn = {
+        id: 'c0', responseId: 'msg_A', receivedAt: 1000,
+        turnToolCallIds: { t1: 'Bash', t2: 'Bash' },
+      };
+      const proxyCopy = {
+        id: 'r1', responseId: 'msg_B', receivedAt: 2000,
+        turnToolResults: [
+          { callId: 't1', toolFail: false, eligible: true },
+          { callId: 't2', toolFail: false, eligible: true },
+        ],
+      };
+      const importedCopy = {
+        id: 'r2', responseId: 'msg_B', receivedAt: 2001, imported: true,
+        turnToolResults: [
+          { callId: 't1', eligible: true },                 // transcript had no is_error
+          { callId: 't2', toolFail: true, eligible: true },  // …and this one failed
+        ],
+      };
+      const out = mergeByResponseId([callTurn, proxyCopy, importedCopy]);
+      assert.equal(out.length, 2);
+      const merged = out[1];
+      const byId = Object.fromEntries(merged.turnToolResults.map(r => [r.callId, r]));
+      assert.equal(byId.t2.toolFail, true, 'the imported copy\'s failure is not dropped');
+      assert.equal(byId.t1.toolFail, false, 'undefined does not downgrade a known false');
+      assert.equal(merged.turnToolResults.length, 2, 'same callId folds — no duplicate rows');
+
+      // The user-visible consequence: without the union this session renders sunny.
+      const { assessWeather } = require('../public/weather');
+      const w = assessWeather([callTurn, merged]);
+      assert.equal(w.stats.toolSignal, 'failure', 'sigToolFailure sees the failure');
+      assert.equal(w.stats.errTurns, 1);
+      assert.equal(w.stats.toolTurns, 2);
+    });
+
+    it('never downgrades a known failure, and unions unseen callIds', () => {
+      const canonical = {
+        id: 'a', responseId: 'R', receivedAt: 1,
+        turnToolResults: [{ callId: 't3', toolFail: true, eligible: true }],
+      };
+      const other = {
+        id: 'b', responseId: 'R', receivedAt: 2,
+        turnToolResults: [
+          { callId: 't3', toolFail: false, eligible: true },
+          { callId: 't4', toolFail: true, eligible: true },
+        ],
+      };
+      const out = mergeByResponseId([canonical, other]);
+      const byId = Object.fromEntries(out[0].turnToolResults.map(r => [r.callId, r]));
+      assert.equal(byId.t3.toolFail, true, 'true is never downgraded to false');
+      assert.equal(byId.t4.toolFail, true, 'a callId only the other copy saw is appended');
+      assert.equal(out[0].turnToolResults.length, 2);
+    });
+
+    it('ORs eligible so a decodable copy beats an async-start placeholder', () => {
+      const canonical = {
+        id: 'a', responseId: 'R', receivedAt: 1,
+        turnToolResults: [{ callId: 't5', eligible: false }],
+      };
+      const other = {
+        id: 'b', responseId: 'R', receivedAt: 2,
+        turnToolResults: [{ callId: 't5', toolFail: false, eligible: true }],
+      };
+      const out = mergeByResponseId([canonical, other]);
+      assert.deepEqual(out[0].turnToolResults, [{ callId: 't5', toolFail: false, eligible: true }]);
+    });
+
+    it('folds without mutating the other copy\'s array', () => {
+      const canonical = {
+        id: 'a', responseId: 'R', receivedAt: 1,
+        turnToolResults: [{ callId: 't6', toolFail: false, eligible: true }],
+      };
+      const otherResults = [{ callId: 't6', toolFail: true, eligible: true }];
+      const other = { id: 'b', responseId: 'R', receivedAt: 2, turnToolResults: otherResults };
+      const out = mergeByResponseId([canonical, other]);
+      assert.equal(out[0].turnToolResults[0].toolFail, true);
+      assert.deepEqual(otherResults, [{ callId: 't6', toolFail: true, eligible: true }],
+        'source array untouched');
+      assert.notEqual(out[0].turnToolResults[0], otherResults[0], 'elements are copies, not aliases');
+    });
+
+    it('still fills an empty canonical array, by copy', () => {
+      const canonical = { id: 'a', responseId: 'R', receivedAt: 1, turnToolResults: [] };
+      const src = [{ callId: 't7', toolFail: true, eligible: true }];
+      const out = mergeByResponseId([canonical, { id: 'b', responseId: 'R', receivedAt: 2, turnToolResults: src }]);
+      assert.deepEqual(out[0].turnToolResults, src);
+      assert.notEqual(out[0].turnToolResults, src, 'not the same array reference');
+    });
+  });
+
   it('does not resurrect req/res or load state across copies', () => {
     const canonical = { id: 'a', responseId: 'R', receivedAt: 1, req: null, res: null, _loaded: false };
     const other = { id: 'b', responseId: 'R', receivedAt: 2, req: { big: 1 }, res: [1, 2], _loaded: true };

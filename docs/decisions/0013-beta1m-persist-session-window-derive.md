@@ -229,3 +229,46 @@ Classification remains separate and unchanged. `isCompacted`, per-turn
 `severity`, and lane placement still read raw per-turn `maxContext`; this
 amendment changes only weather's display/health denominator and preserves the
 ADR's display/classification boundary.
+
+## Amended by #503 (2026-08-11) — a derivation-semantics probe for persisted weather
+
+This ADR established that `sessions.json` is a **rebuildable derived view** whose
+staleness is caught by three mechanisms: the mtime check (`loadSessionIndex:45-51`),
+the field-existence probe (`:63-77`), and `reconcile`'s count comparison
+(`:208`). #503 changed *how* the rebuild path derives weather — from a
+first-seen responseId skip to `store.mergeByResponseId` — and none of the three
+mechanisms can see that change:
+
+- the field probe asks whether `weather.stats.toolSignal` **exists**, which is
+  true before and after;
+- `reconcile` compares session and entry **counts**, which the merge preserves by
+  construction (one canonical per responseId — the ADR 0012 cardinality property);
+- the mtime check compares files, not derivations, and `sessions.json` is normally
+  the newer of the two.
+
+So the rebuild would have been skipped and every cold session card would have kept
+rendering weather produced by the deleted rule, with all checks green. The gap is
+generic: **any** future change to a derivation feeding a persisted view has it.
+
+**Decision**: persisted weather carries an explicit derivation revision,
+`s.weatherRev`, and the load-time probe treats a mismatch exactly like a missing
+field. `WEATHER_REV` is bumped whenever the derivation changes; revision 1 is the
+implicit (absent) pre-#503 state.
+
+The stamp is written by ONE setter, `_assignWeather`, because three paths persist
+weather and restore's step-6 pass (`restore.js:457`, via `setWeather`) overwrites
+what the rebuild wrote. An unstamped writer among them does not merely lose the
+stamp — it makes every subsequent startup detect a stale revision and rebuild,
+turning the probe into a permanent rebuild loop.
+
+**New consistency contract**: a site that persists `s.weather` must go through
+`_assignWeather`, and a change to the weather derivation must bump `WEATHER_REV`.
+Neither is enforced at build or test time; the guard comments at `WEATHER_REV`,
+`_assignWeather`, the probe, and each of the three writers name this ADR.
+`test/session-index.test.js` (`#503`) asserts all three writers stamp, so a new
+writer that bypasses the setter is caught only if it is added to that assertion —
+the honest limitation, same class as ADR 0002's `sigParts` and ADR 0015's R4.
+
+This changes nothing about the display/classification boundary: weather remains a
+display/health view, and `isCompacted`, per-turn `severity`, and lane placement
+still read raw per-turn `maxContext`.

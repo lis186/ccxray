@@ -171,10 +171,46 @@ function _foldEntry(canonical, other) {
   // true dominates; false fills undefined; never downgrade true to false.
   if (other.turnToolFail === true) canonical.turnToolFail = true;
   else if (other.turnToolFail === false && canonical.turnToolFail === undefined) canonical.turnToolFail = false;
-  // #486: turnToolResults — array, fill-if-empty (same response ⇒ identical).
-  if (Array.isArray(other.turnToolResults) && other.turnToolResults.length > 0
-    && (!Array.isArray(canonical.turnToolResults) || canonical.turnToolResults.length === 0)) {
-    canonical.turnToolResults = other.turnToolResults;
+  // #486/#503: turnToolResults — UNION BY callId, matching the per-key union that
+  // turnToolCallIds already gets above. The former fill-if-empty rule dropped
+  // `other` wholesale whenever the canonical array was non-empty, on the premise
+  // "same response ⇒ identical results". That premise does not hold across an
+  // import/proxy pair: the proxy writes `toolFail: is_error === true` (absent
+  // is_error ⇒ false, helpers.js:703) while the importer writes tri-state
+  // `undefined` when the transcript has no is_error (importer.js:156), which is
+  // ~48% of historical tool_results. So the two copies carry genuinely different
+  // toolFail shapes and the discarded one can be the only copy that saw a
+  // failure — a lost failure renders a falsely sunny card.
+  // INVARIANT(ADR 0018 tri-state, applied per callId): true dominates, false
+  // fills undefined/null, true is NEVER downgraded. `eligible` ORs — a copy that
+  // could decode the result outranks one that could not (a codex async-start
+  // placeholder writes eligible:false, importer.js:283).
+  // A result without a callId has no join key, so it is appended, never merged;
+  // weather ignores it anyway (it can never match a pending call).
+  if (Array.isArray(other.turnToolResults) && other.turnToolResults.length > 0) {
+    const own = Array.isArray(canonical.turnToolResults) ? canonical.turnToolResults : [];
+    // Copy elements so folding never mutates another entry's array in place.
+    const out = [], byCallId = new Map();
+    for (const r of own) {
+      if (!r || typeof r !== 'object') { out.push(r); continue; }
+      const c = { ...r };
+      out.push(c);
+      if (c.callId != null && !byCallId.has(c.callId)) byCallId.set(c.callId, c);
+    }
+    for (const r of other.turnToolResults) {
+      if (!r || typeof r !== 'object') continue;
+      const have = r.callId != null ? byCallId.get(r.callId) : null;
+      if (!have) {
+        const c = { ...r };
+        out.push(c);
+        if (c.callId != null) byCallId.set(c.callId, c);
+        continue;
+      }
+      if (r.toolFail === true) have.toolFail = true;
+      else if (r.toolFail === false && (have.toolFail === undefined || have.toolFail === null)) have.toolFail = false;
+      if (r.eligible === true) have.eligible = true;
+    }
+    canonical.turnToolResults = out;
   }
   if (other.hasCredential) canonical.hasCredential = true;
   if (other.edited) {
