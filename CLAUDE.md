@@ -140,7 +140,12 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 
 - Hub lockfile: `~/.ccxray/hub.json` (written after `listen()` succeeds = readiness signal)
 - Hub log: `~/.ccxray/hub.log` (stdout/stderr of detached process)
-- `--port` opts out of hub mode entirely (independent server)
+- **Hub mode is narrower than it looks.** `hubMode` is set ONLY by the internal `--hub-mode` flag (`server/index.js:53`), which the detached hub gives itself. These all run as independent servers sharing the same `CCXRAY_HOME`:
+  - `ccxray --port N <agent>` — explicit port opts out (`index.js:1185`; no lockfile, `:1116`)
+  - `ccxray` with no agent — standalone proxy + dashboard
+  - **Windows, always** — hub requires Unix sockets, so `--hub-mode` exits with an error (`index.js:55-57`)
+
+  Only `ccxray <agent>` with no explicit port forks a detached hub. Anything reasoning about "one process per machine" (cross-process locks, cursors, shared-file writers) must use this list, not the `--port` case alone.
 - Crash recovery: clients monitor hub pid every 5s, auto-fork new hub using port as mutex
 - Version check: semver major mismatch → reject, minor → warn, patch → silent
 
