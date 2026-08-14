@@ -41,13 +41,19 @@ const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
 ]);
 
-function deploymentFields(ts) {
+const DEPLOYMENT_ENV_FIELDS = [
+  ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
+  ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
+];
+
+function deploymentFields(ts, opts = {}) {
+  const env = opts.env || process.env;
+  const identity = opts.identity || {};
+  const useEnvIdentity = opts.useEnvIdentity !== false;
   const fields = {};
-  for (const [key, envName] of [
-    ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
-    ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
-  ]) {
-    if (process.env[envName]) fields[key] = process.env[envName];
+  for (const [key, envName] of DEPLOYMENT_ENV_FIELDS) {
+    const value = identity[key] || (useEnvIdentity ? env[envName] : null);
+    if (value) fields[key] = value;
   }
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (tz) fields.tz = tz;

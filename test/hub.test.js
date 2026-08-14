@@ -387,16 +387,36 @@ describe('register/unregister via socket', () => {
 
   it('registerClient + unregisterClient round-trip via socket', async () => {
     const lockInfo = { port: 9999, sockPath: hub.SOCK_PATH };
-    const reg = await hub.registerClient(lockInfo, 44444, '/test/project');
+    const reg = await hub.registerClient(lockInfo, 44444, '/test/project', {
+      agentId: 'herdr:w1:p9',
+      agentType: 'codex',
+      team: 'agents',
+    });
     assert.equal(reg.ok, true);
 
     const status = hub.getHubStatus();
-    assert.ok(status.clients.some(c => c.pid === 44444));
+    const client = status.clients.find(c => c.pid === 44444);
+    assert.ok(client);
+    assert.equal(client.agentId, 'herdr:w1:p9');
+    assert.equal(client.agentType, 'codex');
+    assert.equal(client.team, 'agents');
+    assert.deepEqual(hub.lookupClientIdentityForAgent('codex'), {
+      agentId: 'herdr:w1:p9',
+      agentType: 'codex',
+      team: 'agents',
+    });
 
     await hub.unregisterClient(lockInfo, 44444);
 
     const status2 = hub.getHubStatus();
     assert.ok(!status2.clients.some(c => c.pid === 44444));
+  });
+
+  it('lookupClientIdentityForAgent returns null when an agent has multiple clients', () => {
+    clearAllClients();
+    hub.addClient(44445, '/test/one', { agentId: 'one', agentType: 'codex' });
+    hub.addClient(44446, '/test/two', { agentId: 'two', agentType: 'codex' });
+    assert.equal(hub.lookupClientIdentityForAgent('codex'), null);
   });
 });
 

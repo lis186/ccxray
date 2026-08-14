@@ -928,8 +928,15 @@ async function startClientMode(lock) {
     _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
   }
 
+  const clientIdentity = {
+    agentId: process.env.CCXRAY_AGENT_ID || '',
+    userEmail: process.env.CCXRAY_USER_EMAIL || '',
+    team: process.env.CCXRAY_TEAM || '',
+    agentType: process.env.CCXRAY_AGENT_TYPE || agentCommand || '',
+  };
+
   try {
-    const reg = await hub.registerClient(lock, process.pid, process.cwd());
+    const reg = await hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
     if (!reg) {
       console.error('\x1b[31mHub rejected client registration.\x1b[0m');
       process.exit(1);
@@ -968,7 +975,7 @@ async function startClientMode(lock) {
   // Monitor hub health and auto-recover
   hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
     // Re-register with new hub (newLock has sockPath from lockfile)
-    hub.registerClient(newLock, process.pid, process.cwd()).catch(() => {});
+    hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
   });
 
   // Spawn agent pointing to hub

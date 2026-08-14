@@ -1,0 +1,60 @@
+id = "ccxray.herdr"
+name = "ccxray"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "X-ray vision for Herdr agent sessions: local ccxray health, usage, and live diagnostics."
+platforms = ["linux", "macos", "windows"]
+
+[[actions]]
+id = "doctor"
+title = "ccxray doctor"
+contexts = ["global", "workspace", "pane"]
+command = ["node", "bin/doctor.js"]
+
+[[actions]]
+id = "launch-claude"
+title = "Launch Claude via ccxray"
+contexts = ["workspace", "pane"]
+command = ["node", "bin/launch-agent.js", "claude"]
+
+[[actions]]
+id = "launch-codex"
+title = "Launch Codex via ccxray"
+contexts = ["workspace", "pane"]
+command = ["node", "bin/launch-agent.js", "codex"]
+
+[[actions]]
+id = "launch-grok"
+title = "Launch Grok via ccxray"
+contexts = ["workspace", "pane"]
+command = ["node", "bin/launch-agent.js", "grok"]
+
+[[actions]]
+id = "install-sidebar-summary"
+title = "Install ccxray sidebar summary rows"
+contexts = ["global"]
+command = ["node", "bin/install-sidebar-summary.js"]
+
+[[actions]]
+id = "usage-summary"
+title = "ccxray usage summary"
+contexts = ["global", "workspace", "pane"]
+command = ["node", "bin/usage-summary.js"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open ccxray dashboard"
+contexts = ["global", "workspace", "pane"]
+command = ["node", "bin/open-dashboard.js"]
+
+[[actions]]
+id = "refresh-badges"
+title = "Refresh ccxray badges"
+contexts = ["global", "workspace", "pane"]
+command = ["node", "bin/refresh-badges.js"]
+
+[[panes]]
+id = "mission-control"
+title = "ccxray Mission Control"
+placement = "split"
+command = ["node", "bin/mission-control.js"]

@@ -337,7 +337,7 @@ function handleSocketCommand(msg, socket) {
       if (typeof msg.pid !== 'number' || msg.pid <= 0 || msg.pid > 4194304 || !Number.isInteger(msg.pid)) return;
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
-      addClient(msg.pid, msg.cwd);
+      addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
       socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty }) + '\n');
       break;
     }
@@ -390,14 +390,15 @@ function hubSocketRequest(sockPath, msg, timeoutMs = 3000) {
 
 // ── Client registration (socket-preferred, HTTP fallback) ──────────
 
-function registerClient(lockInfoOrPort, pid, cwd) {
+function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
   const sockPath = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.sockPath : null;
+  const payload = { pid, cwd, ...clientIdentityFromMessage(identity) };
   if (sockPath) {
-    return hubSocketRequest(sockPath, { cmd: 'register', pid, cwd });
+    return hubSocketRequest(sockPath, { cmd: 'register', ...payload });
   }
   const port = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.port : lockInfoOrPort;
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ pid, cwd });
+    const body = JSON.stringify(payload);
     const req = http.request(`http://localhost:${port}/_api/hub/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
@@ -458,15 +459,26 @@ function truncateHubLog() {
 
 // ── Client lifecycle (hub-side state) ───────────────────────────────
 
-const clients = new Map(); // pid → { cwd, connectedAt }
+const clients = new Map(); // pid → { cwd, connectedAt, agentId?, userEmail?, team?, agentType? }
 let idleTimer = null;
 let deadCheckInterval = null;
 let hubListenPort = null; // set once at startup, survives lockfile deletion
 let onShutdown = null; // injectable shutdown handler (default: process.exit)
 
-function addClient(pid, cwd) {
+function clientIdentityFromMessage(msg) {
+  const out = {};
+  for (const key of ['agentId', 'userEmail', 'team', 'agentType']) {
+    if (typeof msg?.[key] === 'string') {
+      const value = msg[key].trim();
+      if (value && value.length <= 512) out[key] = value;
+    }
+  }
+  return out;
+}
+
+function addClient(pid, cwd, identity = {}) {
   if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-  clients.set(pid, { cwd, connectedAt: new Date().toISOString() });
+  clients.set(pid, { cwd, connectedAt: new Date().toISOString(), ...clientIdentityFromMessage(identity) });
 }
 
 function removeClient(pid) {
@@ -483,6 +495,19 @@ function lookupClientCwd() {
   if (clients.size !== 1) return null;
   const only = clients.values().next().value;
   return only && only.cwd ? only.cwd : null;
+}
+
+function hasClients() {
+  return clients.size > 0;
+}
+
+function lookupClientIdentityForAgent(agentType) {
+  const agent = String(agentType || '').trim();
+  if (!agent) return null;
+  const matches = [...clients.values()].filter(c => c.agentType === agent);
+  if (matches.length !== 1) return null;
+  const match = matches[0];
+  return clientIdentityFromMessage(match);
 }
 
 function startIdleTimer() {
@@ -643,6 +668,8 @@ module.exports = {
   truncateHubLog,
   addClient,
   removeClient,
+  hasClients,
+  lookupClientIdentityForAgent,
   lookupClientCwd,
   startIdleTimer,
   setOnShutdown,

@@ -3,13 +3,14 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const config = require('./config');
+const hub = require('./hub');
 const store = require('./store');
 const helpers = require('./helpers');
 const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
-const { agentForProvider, matchOpenAIWireClient } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
 const {
@@ -100,6 +101,16 @@ function isUpgradeRequest(req) {
 function isOpenAIWebSocket(req, upstream) {
   const pathname = (req.url || '').split('?')[0];
   return upstream?.provider === 'openai' && OPENAI_WS_PATHS.has(pathname) && isUpgradeRequest(req);
+}
+
+function requestDeploymentFields(startTime, req, parsedBody) {
+  const agent = resolveOpenAIWireAgent(req.headers, parsedBody);
+  const identity = hub.lookupClientIdentityForAgent(agent);
+  const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
+  return deploymentFields(startTime, {
+    identity: identity || {},
+    useEnvIdentity: !identity && (!hub.hasClients() || envMatchesAgent),
+  });
 }
 
 
@@ -342,7 +353,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     status: result.status,
     isSSE: false,
     receivedAt: t.startTime || ctx.startTime,
-    ...deploymentFields(t.startTime || ctx.startTime),
+    ...requestDeploymentFields(t.startTime || ctx.startTime, ctx.req, cr || { model: lastModel }),
     tokens: null,
     duplicateToolCalls: null,
     ...getParser('openai').buildEntryFields({
