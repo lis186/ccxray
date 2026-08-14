@@ -61,6 +61,8 @@ const DEFAULT_PRICING = {
   'grok-4.5-build':    { input: 2.00,  output: 6.00, cache_create: 2.00, cache_read: 0.50 },
   'grok-4.3':          { input: 1.25,  output: 2.50, cache_create: 1.25, cache_read: 0.20 },
   'grok-4.3-latest':   { input: 1.25,  output: 2.50, cache_create: 1.25, cache_read: 0.20 },
+  'grok-build':        { input: 1.00,  output: 2.00, cache_create: 1.00, cache_read: 0.20 },
+  'grok-build-0.1':    { input: 1.00,  output: 2.00, cache_create: 1.00, cache_read: 0.20 },
 };
 
 /**
@@ -77,17 +79,8 @@ const DEFAULT_PRICING = {
  * Source of truth for rates: official provider docs (see `source` field).
  */
 const LITELLM_LAG_OVERRIDES = Object.freeze([
-  // grok-4.5 / grok-4.3 retired 2026-07-19: LiteLLM lists xai/grok-4.5 and xai/grok-4.3
-  // (bare names come from mirrorProviderPrefixedKeys). grok-build still missing.
-  Object.freeze({
-    id: 'grok-build',
-    wireIds: Object.freeze(['grok-build', 'grok-build-0.1']),
-    litellmKeys: Object.freeze(['xai/grok-build', 'xai/grok-build-0.1', 'grok-build', 'grok-build-0.1']),
-    rates: Object.freeze({ input: 1.00, output: 2.00, cache_create: 0, cache_read: 0.20 }),
-    source: 'https://docs.x.ai/developers/pricing (Code API grok-build-0.1)',
-    since: '2026-07-09',
-    removeWhen: 'LiteLLM lists xai/grok-build or xai/grok-build-0.1',
-  }),
+  // grok-build retired 2026-08-13: LiteLLM lists xai/grok-build-0.1 and grok-build-0.1.
+  // Rates moved to DEFAULT_PRICING as stable offline fallback.
 ]);
 
 /**

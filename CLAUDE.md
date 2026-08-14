@@ -182,7 +182,7 @@ Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` 
 2. Search `LITELLM_LAG_OVERRIDES` or `pricing lag override` to find rows to delete.
 3. Lifecycle tests live in `test/pricing.test.js` (`LITELLM_LAG_OVERRIDES lifecycle`).
 
-`DEFAULT_PRICING` (in `server/default-rates.js`) is the offline safety net (Claude/OpenAI/**stable Grok** bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently `grok-build`).
+`DEFAULT_PRICING` (in `server/default-rates.js`) is the offline safety net (Claude/OpenAI/Grok bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently empty — `grok-build` graduated 2026-08-13).
 
 ### Delta Log Storage
 
