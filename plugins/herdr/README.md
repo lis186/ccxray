@@ -68,7 +68,7 @@ Reinstalling replaces Herdr's managed checkout. Removing the sidebar rows create
 
 ## Local data and trust
 
-The plugin reads ccxray session metadata from `~/.ccxray/logs`, keeps only onboarding state under `HERDR_PLUGIN_STATE_DIR`, and talks to the local Herdr socket/CLI. It does not upload analytics. Agent requests still pass through ccxray to the provider selected by the user, as they do outside Herdr.
+The plugin reads ccxray session metadata from `~/.ccxray/logs`, keeps onboarding and per-pane notification deduplication state under `HERDR_PLUGIN_STATE_DIR`, and talks to the local Herdr socket/CLI. It does not upload analytics. Agent requests still pass through ccxray to the provider selected by the user, as they do outside Herdr.
 
 ## Use
 
