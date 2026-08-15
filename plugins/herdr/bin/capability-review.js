@@ -31,7 +31,7 @@ function recommendationDetail(value) {
   if (value === 'KEEP') return 'frequently used in eligible sessions';
   if (value === 'DEFERRED') return 'already excluded from upfront schema';
   if (value === 'OBSERVE') return 'need at least 5 eligible sessions';
-  return 'review usage and task outcomes';
+  return 'review usage before changing configuration';
 }
 
 function windowLabel(windowMs) {

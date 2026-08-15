@@ -8,7 +8,6 @@ const path = require('path');
 const {
   pluginRoot,
   readIndexTailEntries,
-  readOutcomeStore,
   resolveCcxrayCommand,
   runHerdr,
   statusReport,
@@ -71,8 +70,6 @@ function snapshot(env = process.env) {
   const linkedSessionIds = new Set(entries
     .filter(entry => !entry.isSubagent && String(entry.agentId || '').startsWith('herdr:') && entry.sessionId)
     .map(entry => entry.sessionId));
-  const outcomes = readOutcomeStore({ env });
-  const labelled = [...linkedSessionIds].filter(sessionId => outcomes.sessions?.[sessionId]?.outcome).length;
   return {
     ccxrayReady,
     ccxrayCommand: resolveCcxrayCommand(env).label,
@@ -80,7 +77,6 @@ function snapshot(env = process.env) {
     sidebar: sidebarInstalled(env),
     providers: availableProviders(env),
     sessions: linkedSessionIds.size,
-    outcomes: labelled,
   };
 }
 
@@ -91,9 +87,8 @@ function nextStep(state) {
     if (!provider) return 'Install one supported CLI: claude, codex, or grok.';
     return `Press ${provider.key} to launch ${provider.label} through ccxray.`;
   }
-  if (state.sessions === 1) return 'Press M to inspect the live session; label its outcome when done.';
-  if (state.outcomes < 2) return 'After a task, mark its outcome from the pane action menu.';
-  return 'Press C to review outcome, cost, and duration together.';
+  if (state.sessions < 5) return 'Press M to inspect live pressure, cost, and failures.';
+  return 'Press R to review capability usage before changing configuration.';
 }
 
 function render(state, message = '') {
@@ -106,9 +101,6 @@ function render(state, message = '') {
   console.log(line(`${state.ccxrayReady ? 'READY' : 'FIX'}  ccxray ${state.ccxrayReady ? 'available' : 'not found'}${state.hubRunning ? ' · hub running' : ''}`));
   console.log(line(`${state.sidebar ? 'READY' : 'SETUP'}  sidebar ${state.sidebar ? 'installed' : 'optional, not installed'}`));
   console.log(line(`${state.sessions ? 'READY' : 'START'}  ${state.sessions} traced session${state.sessions === 1 ? '' : 's'}`));
-  console.log(line(state.outcomes >= 2
-    ? `READY  ${state.outcomes} outcomes ready for comparison`
-    : `LATER  ${state.outcomes}/2 outcomes for comparison`));
   console.log('');
   console.log(line('Launch a traced session'));
   for (const provider of state.providers) {
@@ -117,7 +109,6 @@ function render(state, message = '') {
   console.log('');
   console.log(line(`  [S] ${state.sidebar ? 'Sidebar summary installed' : 'Install sidebar summary (optional)'}`));
   if (state.sessions > 0) console.log(line('  [M] Open Mission Control'));
-  if (state.sessions >= 2) console.log(line('  [C] Open Session Compare'));
   if (state.sessions >= 5) console.log(line('  [R] Open Capability Review'));
   console.log(line('  [D] Run Doctor'));
   console.log(line('  [Q] Close Quick Start'));
@@ -182,16 +173,6 @@ function main() {
           '--entrypoint', 'mission-control', '--placement', 'split', '--focus',
         ], { timeoutMs: 5000 });
         message = resultMessage(result, 'Mission Control opened.');
-      }
-    } else if (normalized === 'c') {
-      if (state.sessions < 2) {
-        message = 'Two traced sessions are needed before comparison.';
-      } else {
-        const result = runHerdr([
-          'plugin', 'pane', 'open', '--plugin', 'ccxray.herdr',
-          '--entrypoint', 'session-compare', '--placement', 'tab', '--focus',
-        ], { timeoutMs: 5000 });
-        message = resultMessage(result, 'Session Compare opened.');
       }
     } else if (normalized === 'r') {
       if (state.sessions < 5) {

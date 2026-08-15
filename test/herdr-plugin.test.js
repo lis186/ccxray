@@ -95,13 +95,11 @@ describe('Herdr plugin manifest', () => {
     assert.doesNotMatch(paneBlock, /command = \["node", "bin\/mission-control\.js"\]/);
   });
 
-  it('declares the outcome actions and Session Compare pane', () => {
+  it('keeps outcomes and cross-session value comparison out of the Herdr plugin', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     assert.match(manifest, /^version = "0\.3\.0"$/m);
-    assert.match(manifest, /id = "mark-success"[\s\S]*command = \["node", "bin\/mark-outcome\.js", "success"\]/);
-    assert.match(manifest, /id = "mark-partial"[\s\S]*command = \["node", "bin\/mark-outcome\.js", "partial"\]/);
-    assert.match(manifest, /id = "mark-failed"[\s\S]*command = \["node", "bin\/mark-outcome\.js", "failed"\]/);
-    assert.match(manifest, /id = "session-compare"[\s\S]*bin\/session-compare\.js/);
+    assert.doesNotMatch(manifest, /mark-(?:success|partial|failed)|clear-outcome|mark-outcome\.js/);
+    assert.doesNotMatch(manifest, /session-compare|Session Compare/);
   });
 
   it('automatically refreshes sidebar metadata at startup and agent state changes', () => {
@@ -137,7 +135,7 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /\[2\] Codex\s+available/);
     assert.match(result.stdout, /\[3\] Grok\s+not found/);
     assert.match(result.stdout, /Next: Press 1 to launch Claude through ccxray/);
-    assert.doesNotMatch(result.stdout, /Open Mission Control|Open Session Compare|Open Capability Review/);
+    assert.doesNotMatch(result.stdout, /Open Mission Control|Open Capability Review/);
   });
 
   it('Quick Start progressively reveals analysis after enough traced sessions', () => {
@@ -149,28 +147,17 @@ describe('Herdr plugin commands', () => {
       receivedAt: Date.now() - i * 1000,
     }));
     const home = makeHome(entries);
-    const stateDir = path.join(home, 'state');
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(path.join(stateDir, 'outcomes.json'), JSON.stringify({
-      version: 1,
-      sessions: {
-        'onboarding-session-0': { outcome: 'success' },
-        'onboarding-session-1': { outcome: 'partial' },
-      },
-    }));
     const result = runScript('onboarding.js', ['--once'], {
       CCXRAY_HOME: home,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
+      HERDR_PLUGIN_STATE_DIR: path.join(home, 'state'),
       HERDR_CONFIG_PATH: path.join(home, 'missing-config.toml'),
       CCXRAY_ONBOARDING_PROVIDERS: 'codex',
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /READY  5 traced sessions/);
-    assert.match(result.stdout, /READY  2 outcomes ready for comparison/);
     assert.match(result.stdout, /\[M\] Open Mission Control/);
-    assert.match(result.stdout, /\[C\] Open Session Compare/);
     assert.match(result.stdout, /\[R\] Open Capability Review/);
-    assert.match(result.stdout, /Next: Press C to review outcome, cost, and duration together/);
+    assert.match(result.stdout, /Next: Press R to review capability usage before changing configuration/);
   });
 
   it('opens Quick Start once at startup but allows an explicit reopen', () => {
@@ -544,168 +531,6 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /used 4\/5 eligible/);
     assert.match(result.stdout, /KEEP/);
     assert.match(result.stdout, /tdd · seen 3\/5 sessions · 6 calls · observed only/);
-  });
-
-  it('records outcomes only for an exactly linked Herdr pane session', () => {
-    const now = Date.now();
-    const home = makeHome([{
-      ...sampleEntry,
-      id: 'outcome-exact',
-      sessionId: 'outcome-session',
-      agentId: 'herdr:w1:p3',
-      receivedAt: now,
-    }]);
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-state-'));
-    const result = runScript('mark-outcome.js', ['success'], {
-      CCXRAY_HOME: home,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
-      HERDR_PANE_ID: 'w1:p3',
-      HERDR_BIN_PATH: makeHerdr([]),
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Marked session outcome-session as success/);
-
-    const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'outcomes.json'), 'utf8'));
-    assert.equal(saved.version, 1);
-    assert.equal(saved.sessions['outcome-session'].outcome, 'success');
-    assert.equal(saved.sessions['outcome-session'].paneId, 'w1:p3');
-
-    const unlinked = runScript('mark-outcome.js', ['failed'], {
-      CCXRAY_HOME: home,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
-      HERDR_PANE_ID: 'w1:p9',
-      HERDR_BIN_PATH: makeHerdr([]),
-    });
-    assert.equal(unlinked.status, 1);
-    assert.match(unlinked.stderr, /No ccxray session is linked to Herdr pane w1:p9/);
-  });
-
-  it('compares two outcome-labelled sessions without implying a causal model winner', () => {
-    const now = Date.now();
-    const entries = [
-      {
-        ...sampleEntry,
-        id: 'compare-a-1',
-        sessionId: 'compare-a',
-        agentId: 'herdr:w1:p1',
-        agentType: 'claude',
-        model: 'claude-opus-5',
-        receivedAt: now - 10 * 60000,
-        usage: { input_tokens: 200, cache_read_input_tokens: 300, output_tokens: 20 },
-        cost: { cost: 0.30, confidence: 'exact' },
-        maxContext: 2000,
-        turnToolCalls: { Bash: 2 },
-        turnToolFail: false,
-      },
-      {
-        ...sampleEntry,
-        id: 'compare-a-2',
-        sessionId: 'compare-a',
-        agentId: 'herdr:w1:p1',
-        agentType: 'claude',
-        model: 'claude-opus-5',
-        receivedAt: now - 5 * 60000,
-        usage: { input_tokens: 700, cache_read_input_tokens: 100, output_tokens: 30 },
-        cost: { cost: 0.21, confidence: 'exact' },
-        maxContext: 2000,
-        turnToolCalls: { Bash: 1 },
-        turnToolFail: false,
-      },
-      {
-        ...sampleEntry,
-        id: 'compare-a-child',
-        sessionId: 'compare-a-child',
-        parentSessionId: 'compare-a',
-        agentId: 'herdr:w1:p1',
-        agentType: 'claude',
-        model: 'claude-sonnet-5',
-        isSubagent: true,
-        receivedAt: now - 4 * 60000,
-        cost: { cost: 0.09, confidence: 'exact' },
-        turnToolCalls: { Read: 1 },
-        turnToolFail: false,
-      },
-      {
-        ...sampleEntry,
-        id: 'compare-b-1',
-        sessionId: 'compare-b',
-        agentId: 'herdr:w1:p2',
-        agentType: 'codex',
-        model: 'gpt-5.6-sol',
-        receivedAt: now - 8 * 60000,
-        usage: { input_tokens: 400, output_tokens: 20 },
-        cost: { cost: 0.40, confidence: 'exact' },
-        maxContext: 2000,
-        turnToolCalls: { shell: 4 },
-        turnToolFail: true,
-      },
-    ];
-    const home = makeHome(entries);
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-state-'));
-    fs.writeFileSync(path.join(stateDir, 'outcomes.json'), JSON.stringify({
-      version: 1,
-      sessions: {
-        'compare-a': { outcome: 'success', recordedAt: now, paneId: 'w1:p1' },
-        'compare-b': { outcome: 'partial', recordedAt: now, paneId: 'w1:p2' },
-      },
-    }));
-    const agents = [
-      { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'done', agent: 'claude' },
-      { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'done', agent: 'codex' },
-    ];
-    const result = runScript('session-compare.js', ['--once'], {
-      CCXRAY_HOME: home,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
-      HERDR_BIN_PATH: makeHerdr(agents),
-      CCXRAY_HERDR_NOW_MS: String(now),
-      CCXRAY_COMPARE_COLS: '100',
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ccxray Session Compare/);
-    assert.match(result.stdout, /A\s+SUCCESS\s+w1:p1\s+opus-5/);
-    assert.match(result.stdout, /B\s+PARTIAL\s+w1:p2\s+gpt-5\.6-sol/);
-    assert.match(result.stdout, /Total cost\s+\$0\.60\s+\$0\.40/);
-    assert.match(result.stdout, /Main \+ child\s+\$0\.51 \+ \$0\.09\s+\$0\.40 \+ \$0\.00/);
-    assert.match(result.stdout, /Calls main\+child\s+3 \+ 1\s+4 \+ 0/);
-    assert.match(result.stdout, /Read: A reached success; B is partial/);
-    assert.match(result.stdout, /Observed sessions are not a controlled A\/B test/);
-    assert.doesNotMatch(result.stdout, /Claude wins|Opus wins|winner/i);
-
-    const narrow = runScript('session-compare.js', ['--once'], {
-      CCXRAY_HOME: home,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
-      HERDR_BIN_PATH: makeHerdr(agents),
-      CCXRAY_HERDR_NOW_MS: String(now),
-      CCXRAY_COMPARE_COLS: '40',
-    });
-    assert.equal(narrow.status, 0, narrow.stderr);
-    assert.match(narrow.stdout, /subagents 1/);
-    assert.match(narrow.stdout, /difficulty and environment/);
-    assert.match(narrow.stdout, /may differ/);
-    for (const line of narrow.stdout.trim().split('\n')) {
-      assert.ok(line.length <= 39, `Session Compare line fits narrow pane: ${line}`);
-    }
-  });
-
-  it('withholds a Session Compare recommendation until outcomes are labelled', () => {
-    const now = Date.now();
-    const entries = [
-      { ...sampleEntry, id: 'unlabelled-a', sessionId: 'unlabelled-a', agentId: 'herdr:w1:p1', receivedAt: now },
-      { ...sampleEntry, id: 'unlabelled-b', sessionId: 'unlabelled-b', agentId: 'herdr:w1:p2', receivedAt: now - 1000 },
-    ];
-    const agents = [
-      { pane_id: 'w1:p1', agent_status: 'done', agent: 'claude' },
-      { pane_id: 'w1:p2', agent_status: 'done', agent: 'codex' },
-    ];
-    const result = runScript('session-compare.js', ['--once'], {
-      CCXRAY_HOME: makeHome(entries),
-      HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-state-')),
-      HERDR_BIN_PATH: makeHerdr(agents),
-      CCXRAY_HERDR_NOW_MS: String(now),
-      CCXRAY_COMPARE_COLS: '72',
-    });
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /Read: mark both outcomes before comparing value/);
   });
 
   it('focus-attention jumps to the highest-priority actionable pane', () => {

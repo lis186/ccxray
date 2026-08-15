@@ -85,30 +85,6 @@ title = "Focus highest-priority ccxray agent"
 contexts = ["global", "workspace", "pane"]
 command = ["node", "bin/focus-attention.js"]
 
-[[actions]]
-id = "mark-success"
-title = "Mark ccxray session successful"
-contexts = ["pane"]
-command = ["node", "bin/mark-outcome.js", "success"]
-
-[[actions]]
-id = "mark-partial"
-title = "Mark ccxray session partially successful"
-contexts = ["pane"]
-command = ["node", "bin/mark-outcome.js", "partial"]
-
-[[actions]]
-id = "mark-failed"
-title = "Mark ccxray session failed"
-contexts = ["pane"]
-command = ["node", "bin/mark-outcome.js", "failed"]
-
-[[actions]]
-id = "clear-outcome"
-title = "Clear ccxray session outcome"
-contexts = ["pane"]
-command = ["node", "bin/mark-outcome.js", "clear"]
-
 [[panes]]
 id = "mission-control"
 title = "ccxray Mission Control"
@@ -126,9 +102,3 @@ id = "capability-review"
 title = "ccxray Capability Review"
 placement = "tab"
 command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/capability-review.js')"]
-
-[[panes]]
-id = "session-compare"
-title = "ccxray Session Compare"
-placement = "tab"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/session-compare.js')"]

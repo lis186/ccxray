@@ -1059,154 +1059,6 @@ function pluginStateDir(env = process.env) {
     || path.join(env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'herdr-plugin');
 }
 
-function outcomeStorePath(env = process.env) {
-  return path.join(pluginStateDir(env), 'outcomes.json');
-}
-
-function emptyOutcomeStore() {
-  return { version: 1, sessions: {} };
-}
-
-function readOutcomeStore(opts = {}) {
-  const file = outcomeStorePath(opts.env || process.env);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (parsed?.version === 1 && parsed.sessions && typeof parsed.sessions === 'object') {
-      return parsed;
-    }
-  } catch {}
-  return emptyOutcomeStore();
-}
-
-function writeOutcomeStore(store, opts = {}) {
-  const env = opts.env || process.env;
-  const file = outcomeStorePath(env);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(tmp, file);
-  return file;
-}
-
-function trimOutcomeStore(store, maxSessions = 500) {
-  const rows = Object.entries(store.sessions || {});
-  if (rows.length <= maxSessions) return store;
-  rows.sort((a, b) => Number(b[1]?.recordedAt || 0) - Number(a[1]?.recordedAt || 0));
-  store.sessions = Object.fromEntries(rows.slice(0, maxSessions));
-  return store;
-}
-
-function recordSessionOutcome(outcome, opts = {}) {
-  const allowed = new Set(['success', 'partial', 'failed', 'clear']);
-  if (!allowed.has(outcome)) {
-    return { ok: false, reason: `Unsupported outcome: ${outcome}` };
-  }
-  const env = opts.env || process.env;
-  const paneId = opts.paneId || env.HERDR_PANE_ID;
-  if (!paneId) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
-  const entries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
-  const exact = entries.filter(entry => entry.agentId === `herdr:${paneId}`);
-  const telemetry = paneSessionTelemetry(exact, null);
-  const turns = telemetry.turns;
-  const sessionId = turns.at(-1)?.sessionId;
-  if (!sessionId) {
-    return { ok: false, reason: `No ccxray session is linked to Herdr pane ${paneId}` };
-  }
-
-  const store = readOutcomeStore({ env });
-  if (outcome === 'clear') {
-    delete store.sessions[sessionId];
-  } else {
-    const latest = turns.at(-1) || {};
-    store.sessions[sessionId] = {
-      outcome,
-      recordedAt: Number(opts.nowMs || env.CCXRAY_HERDR_NOW_MS) || Date.now(),
-      paneId,
-      agentId: `herdr:${paneId}`,
-      provider: latest.provider || null,
-      model: dominantModel(turns, latest.model),
-    };
-  }
-  trimOutcomeStore(store, opts.maxSessions);
-  const file = writeOutcomeStore(store, { env });
-  return { ok: true, outcome, sessionId, paneId, file };
-}
-
-function selectComparisonRow(rows, selector, excluded) {
-  if (!selector) return rows.find(row => row !== excluded) || null;
-  return rows.find(row => (
-    row !== excluded
-    && (row.paneId === selector
-      || row.sessionId === selector
-      || String(row.sessionId || '').startsWith(selector))
-  )) || null;
-}
-
-function comparisonRead(left, right) {
-  if (!left || !right) return 'Need two linked ccxray sessions to compare.';
-  const a = left.outcome;
-  const b = right.outcome;
-  if (!a || !b) return 'mark both outcomes before comparing value.';
-  if (a === 'success' && b !== 'success') {
-    return `A reached success; B is ${b}. Treat the outcome difference as primary; compare cost as supporting evidence.`;
-  }
-  if (b === 'success' && a !== 'success') {
-    return `B reached success; A is ${a}. Treat the outcome difference as primary; compare cost as supporting evidence.`;
-  }
-  if (a !== 'success' || b !== 'success') {
-    return `Neither session is marked successful (${a} vs ${b}); lower cost does not establish better value.`;
-  }
-
-  const costDelta = left.totalCost - right.totalCost;
-  const timeDelta = left.durationMs - right.durationMs;
-  if (Math.abs(costDelta) < 0.005 && Math.abs(timeDelta) < 60000) {
-    return 'Both succeeded with similar observed cost and duration.';
-  }
-  const costSide = costDelta < 0 ? 'A' : 'B';
-  const costBase = Math.max(left.totalCost, right.totalCost, 0.0001);
-  const costPct = Math.round(Math.abs(costDelta) / costBase * 100);
-  const parts = [`Both succeeded; ${costSide} used ${costPct}% less observed cost`];
-  if (Math.abs(timeDelta) >= 60000) {
-    const timeSide = timeDelta < 0 ? 'A' : 'B';
-    parts.push(`${timeSide} finished sooner`);
-  }
-  return `${parts.join(', ')}. Confirm with the same task before changing defaults.`;
-}
-
-function sessionCompareSnapshot(opts = {}) {
-  const env = opts.env || process.env;
-  const base = missionControlSnapshot({
-    env,
-    entries: opts.entries,
-    agentReport: opts.agentReport,
-    nowMs: opts.nowMs,
-    maxBytes: opts.maxBytes,
-    maxRows: 24,
-  });
-  const outcomes = opts.outcomes || readOutcomeStore({ env });
-  const rows = base.rows
-    .filter(row => row.turns > 0 && row.sessionId)
-    .map(row => ({
-      ...row,
-      outcome: outcomes.sessions?.[row.sessionId]?.outcome || null,
-      outcomeRecordedAt: outcomes.sessions?.[row.sessionId]?.recordedAt || null,
-    }))
-    .sort((a, b) => (b.latestAt || 0) - (a.latestAt || 0));
-  const leftSelector = opts.left || env.CCXRAY_COMPARE_LEFT;
-  const rightSelector = opts.right || env.CCXRAY_COMPARE_RIGHT;
-  const left = selectComparisonRow(rows, leftSelector, null);
-  const right = selectComparisonRow(rows, rightSelector, left);
-  return {
-    source: base.source,
-    rows,
-    left,
-    right,
-    read: comparisonRead(left, right),
-    controlled: false,
-    nowMs: base.nowMs,
-  };
-}
-
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
@@ -1273,14 +1125,11 @@ module.exports = {
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
-  outcomeStorePath,
   parseJsonOutput,
   parseStatus,
   pluginStateDir,
   pluginRoot,
   readIndexTailEntries,
-  readOutcomeStore,
-  recordSessionOutcome,
   reportPaneTokens,
   reportWorkspaceTokens,
   resolveCcxrayCommand,
@@ -1288,7 +1137,6 @@ module.exports = {
   runHerdr,
   sessionSummary,
   sessionSummaryDetails,
-  sessionCompareSnapshot,
   shortId,
   shortModel,
   statusReport,

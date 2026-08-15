@@ -1,6 +1,6 @@
 # ccxray for Herdr
 
-Mission control and outcome-aware session comparison for Claude, Codex, and Grok sessions running in Herdr.
+Mission control and capability diagnostics for Claude, Codex, and Grok sessions running in Herdr.
 
 ## Install
 
@@ -21,7 +21,6 @@ Quick Start progressively reveals the rest of the product:
 
 - Before the first traced session, it focuses on launching an available provider.
 - After one session, it offers Mission Control.
-- After two sessions, it offers Session Compare and asks for outcome labels before judging value.
 - After five sessions, it offers Capability Review.
 
 Reopen it at any time with the action below. To suppress only the automatic first-run pane, set `CCXRAY_HERDR_SKIP_ONBOARDING=1` in the environment that starts Herdr.
@@ -43,10 +42,7 @@ herdr plugin action invoke ccxray.herdr.quick-start
 - `Focus highest-priority ccxray agent` jumps to the first actionable Mission Control row.
 - `ccxray Mission Control` joins active Herdr agents to exact ccxray pane identities, ranks red/yellow/ready/green attention, and shows context velocity, main and child cost scopes, tool failures, cache health, freshness, and the next action.
 - `ccxray Capability Review` aggregates seven-day MCP adoption, estimated schema tokens, and observed skill usage. It requires at least five eligible sessions before suggesting changes.
-- `Mark ccxray session successful`, `partially successful`, or `failed` records an explicit user outcome for the focused, exactly linked session. An unlinked pane is rejected instead of guessed.
-- `ccxray Session Compare` compares two linked sessions across outcome, total/main/child cost, duration, turns, context, cache, tool calls, failures, and subagents.
-
-Outcome labels are local plugin state. Session Compare uses them as a quality gate: without both labels it shows measurements but withholds a value recommendation. Natural sessions are observations, not a controlled model experiment.
+Task outcomes and cross-session value comparison deliberately remain ccxray core concerns. The plugin does not infer success from process exit, cost, context, or model behavior. Provider-neutral outcome capture is tracked in [ccxray issue #532](https://github.com/lis186/ccxray/issues/532).
 
 ## Common operations
 
@@ -67,7 +63,7 @@ Reinstalling replaces Herdr's managed checkout. Removing the sidebar rows create
 
 ## Local data and trust
 
-The plugin reads ccxray session metadata from `~/.ccxray/logs`, writes outcome labels under `HERDR_PLUGIN_STATE_DIR`, and talks to the local Herdr socket/CLI. It does not upload analytics. Agent requests still pass through ccxray to the provider selected by the user, as they do outside Herdr.
+The plugin reads ccxray session metadata from `~/.ccxray/logs`, keeps only onboarding state under `HERDR_PLUGIN_STATE_DIR`, and talks to the local Herdr socket/CLI. It does not upload analytics. Agent requests still pass through ccxray to the provider selected by the user, as they do outside Herdr.
 
 ## Use
 
@@ -75,11 +71,9 @@ The plugin reads ccxray session metadata from `~/.ccxray/logs`, writes outcome l
 herdr plugin action list --plugin ccxray.herdr
 herdr plugin action invoke ccxray.herdr.quick-start
 herdr plugin action invoke ccxray.herdr.focus-attention
-herdr plugin action invoke ccxray.herdr.mark-success
 herdr plugin pane open --plugin ccxray.herdr --entrypoint mission-control --placement split
 herdr plugin pane open --plugin ccxray.herdr --entrypoint onboarding --placement tab
 herdr plugin pane open --plugin ccxray.herdr --entrypoint capability-review --placement tab
-herdr plugin pane open --plugin ccxray.herdr --entrypoint session-compare --placement tab
 ```
 
 The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
@@ -88,15 +82,12 @@ Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is 
 
 Mission Control adapts at 32 columns. `CCXRAY_MISSION_MAX_ROWS` limits visible agents and `CCXRAY_MISSION_COLS` overrides terminal width for diagnostics. Single-session capability observations are hidden by default; pass `--capabilities` only for diagnostics or use Capability Review.
 
-Session Compare defaults to the two most recently observed linked sessions. `CCXRAY_COMPARE_LEFT` and `CCXRAY_COMPARE_RIGHT` may select a pane id, full session id, or unique session-id prefix. `CCXRAY_COMPARE_COLS` overrides width and `CCXRAY_COMPARE_ONCE=1` renders one snapshot.
-
 ## Local development
 
 ```bash
 herdr plugin link /path/to/ccxray/plugins/herdr --enabled
 herdr plugin action invoke ccxray.herdr.doctor
 CCXRAY_MISSION_ONCE=1 node bin/mission-control.js
-CCXRAY_COMPARE_ONCE=1 node bin/session-compare.js
 CCXRAY_HERDR_NO_BROWSER=1 node bin/open-dashboard.js
 ```
 
