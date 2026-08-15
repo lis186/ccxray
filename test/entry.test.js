@@ -17,8 +17,17 @@ const LEGACY_INDEX_FIELDS = [
 test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 fields', () => {
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
-    'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+    'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
   ]);
+});
+
+test('buildIndexLine persists child-session parent identity only when known', () => {
+  const child = JSON.parse(buildIndexLine({
+    id: 'child', sessionId: 'child-session', parentSessionId: 'parent-session',
+  }));
+  assert.equal(child.parentSessionId, 'parent-session');
+  const main = JSON.parse(buildIndexLine({ id: 'main', sessionId: 'main-session' }));
+  assert.ok(!('parentSessionId' in main));
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {

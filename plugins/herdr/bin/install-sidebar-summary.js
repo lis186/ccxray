@@ -6,8 +6,9 @@ const os = require('os');
 const path = require('path');
 const { runHerdr } = require('./lib/ccxray');
 
-const CTX_BAR_COLOR_TOKENS = ['ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
+const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
 const CTX_BAR_ROWS = [
+  '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
   '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
   '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
   '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
@@ -53,6 +54,23 @@ function addCtxBarRows(config) {
   return config.replace(summaryRow, match => `${match}\n${CTX_BAR_ROWS}`);
 }
 
+function addMissingCtxBarRows(config) {
+  const missing = CTX_BAR_COLOR_TOKENS.filter(token => !hasToken(config, token));
+  if (!missing.length) return config;
+  const rows = missing.map(token => {
+    const colors = {
+      ctx_bar_unknown: '#a6adc8',
+      ctx_bar_green: '#a6e3a1',
+      ctx_bar_yellow: '#f9e2af',
+      ctx_bar_red: '#f38ba8',
+    };
+    return `  [{ token = "$${token}", fg = "${colors[token]}", dim = true }],`;
+  }).join('\n');
+  const summaryRow = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$summary"[^\n]*\}\],[ \t]*$/m;
+  if (!summaryRow.test(config)) return null;
+  return config.replace(summaryRow, match => `${match}\n${rows}`);
+}
+
 function ensureColorCtxBarRows(config) {
   if (hasColorRows(config) && !OLD_CTX_BAR_ROW_RE.test(config)) return { changed: false, config };
 
@@ -63,7 +81,7 @@ function ensureColorCtxBarRows(config) {
     };
   }
 
-  const added = addCtxBarRows(config);
+  const added = addMissingCtxBarRows(config);
   if (!added) return null;
   return { changed: true, config: added };
 }

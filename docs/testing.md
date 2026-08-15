@@ -30,6 +30,11 @@ ccxray reads logs, the hub lockfile, and secrets from `CCXRAY_HOME` (default
 point `CCXRAY_HOME` at a throwaway temp dir and write its own synthetic
 `logs/index.ndjson`. Never read the real `~/.ccxray`.
 
+Server tests that do not exercise transcript importing must also set
+`CCXRAY_IMPORT_DISABLE=1`. Import discovery intentionally scans real
+`$HOME/.claude*` and `$HOME/.codex*/sessions`; isolating `CCXRAY_HOME` alone
+does not stop an active local agent session from contaminating a proxy test.
+
 For in-process tests, set it before requiring any module that captures it at
 load time:
 

@@ -807,6 +807,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
       }),
     };
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
@@ -946,6 +947,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       duplicateToolCalls: null,
       ...fields,
     };
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
@@ -1115,6 +1117,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         }),
       };
     }
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));

@@ -130,4 +130,4 @@ Anthropic system prompts are arrays of `{type:"text", text, cache_control?}` blo
 
 ### ChatGPT OAuth routing
 
-When `chatgpt-account-id` header is present with a JWT-shaped authorization token, requests route to `chatgpt.com/backend-api/codex/...` instead of `api.openai.com`. The proxy strips the `/v1` prefix before prepending the base path. This is transparent to the dashboard — `provider` is still `'openai'`.
+When `chatgpt-account-id` is present with a JWT-shaped authorization token, Responses requests route to `chatgpt.com/backend-api/codex/...` instead of `api.openai.com`. Codex platform calls are path-scoped: plugin catalogs, connectors, and Apps MCP live under `/backend-api`, while `/v1/codex/*` already includes the `codex` path segment. Applying `/backend-api/codex` to every platform path duplicates segments and causes 404s. This remains transparent to the dashboard — `provider` is still `'openai'`.

@@ -513,7 +513,7 @@ server.keepAliveTimeout = 5_000;   // 5s — idle keep-alive connections
 server.requestTimeout = 300_000;   // 5min — matches Node default; slow POST body = slowloris, body size cap (#152) handles OOM
 
 server.on('upgrade', (req, socket, head) => {
-  handleWebSocketUpgrade(req, socket, head);
+  handleWebSocketUpgrade(req, socket, head, { cwdFallback: getAgentCwdFallback() });
 });
 
 

@@ -213,6 +213,9 @@ function _foldEntry(canonical, other) {
     canonical.turnToolResults = out;
   }
   if (other.hasCredential) canonical.hasCredential = true;
+  if (!canonical.parentSessionId && other.parentSessionId && other.sessionId === canonical.sessionId) {
+    canonical.parentSessionId = other.parentSessionId;
+  }
   if (other.edited) {
     canonical.edited = true;
     if (!canonical.editSummary && other.editSummary) canonical.editSummary = other.editSummary;
@@ -274,6 +277,7 @@ function _mergeGroup(copies) {
     // metadata-poor `undefined` must not overwrite `true` (fable round-4 minor).
     if (identityCopy.isSubagent != null) canonical.isSubagent = identityCopy.isSubagent;
     if (identityCopy.sessionInferred != null) canonical.sessionInferred = identityCopy.sessionInferred;
+    if (identityCopy.parentSessionId != null) canonical.parentSessionId = identityCopy.parentSessionId;
   }
   // A real observation supersedes an import reconstruction.
   if (!canonical.imported) { delete canonical.imported; delete canonical.importSource; }
@@ -340,6 +344,7 @@ function registerOrMerge(entry) {
     // Guard against wiping a real value with undefined (fable round-4 minor).
     if (entry.sessionInferred != null) canonical.sessionInferred = entry.sessionInferred;
     if (entry.isSubagent != null) canonical.isSubagent = entry.isSubagent;
+    if (entry.parentSessionId != null) canonical.parentSessionId = entry.parentSessionId;
   }
   // Alias the incoming id → canonical, and ABSORB any aliases the incoming already
   // carried (e.g. a restored batch group merging into a live canonical) so trim

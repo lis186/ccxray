@@ -1,45 +1,103 @@
 # ccxray for Herdr
 
-This Herdr plugin exposes ccxray diagnostics inside Herdr:
+Mission control and outcome-aware session comparison for Claude, Codex, and Grok sessions running in Herdr.
 
+## Install
+
+Requirements: Herdr 0.8.0 or newer, Node.js 18 or newer, and at least one supported agent CLI.
+
+```bash
+herdr plugin install lis186/ccxray/plugins/herdr
+herdr plugin action invoke ccxray.herdr.quick-start
+```
+
+The GitHub checkout contains ccxray, so a separate global ccxray installation is not required. The plugin remains disabled if its platform or minimum Herdr version is incompatible.
+
+## First run
+
+The install command does not run startup hooks in an already-running Herdr process, so the second command opens **ccxray Quick Start** immediately. If onboarding has not been completed, the plugin also opens it once on the next full Herdr startup. Quick Start checks ccxray, detects the installed Claude, Codex, and Grok CLIs, and offers one-key launch actions. It does not install the optional sidebar or change Herdr configuration without an explicit `S` keypress.
+
+Quick Start progressively reveals the rest of the product:
+
+- Before the first traced session, it focuses on launching an available provider.
+- After one session, it offers Mission Control.
+- After two sessions, it offers Session Compare and asks for outcome labels before judging value.
+- After five sessions, it offers Capability Review.
+
+Reopen it at any time with the action below. To suppress only the automatic first-run pane, set `CCXRAY_HERDR_SKIP_ONBOARDING=1` in the environment that starts Herdr.
+
+```bash
+herdr plugin action invoke ccxray.herdr.quick-start
+```
+
+## What it adds
+
+- `Open ccxray Quick Start` reports setup progress, launches installed providers, installs the optional sidebar with consent, and reveals analysis panes as their data becomes useful.
 - `ccxray doctor` checks the Herdr runtime context, ccxray command resolution, hub status, and recent usage.
 - `Launch Claude/Codex/Grok via ccxray` opens a Herdr split pane and starts the selected agent through ccxray with Herdr identity exported.
 - `ccxray usage summary` prints a compact cost/session/tool summary.
-- `Refresh ccxray badges` writes short `summary`, `ctx_bar`, `ctx_bar_green`, `ctx_bar_yellow`, `ctx_bar_red`, `ctx_band`, `ctx`, `age`, `cost`, `model`, `xray`, `turns`, `cache`, and `fail` tokens to the focused pane and workspace.
-- `Install ccxray sidebar summary row` appends Herdr sidebar layout rows that render `$summary` and the active color-specific context bar under each agent.
+- `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
+- Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.
+- `Install ccxray sidebar summary rows` renders a two-line model/age/cost and width-aware context summary under each agent.
 - `Open ccxray dashboard` delegates to `ccxray open`.
-- `ccxray Mission Control` opens a live terminal pane and reports pane metadata when Herdr provides `HERDR_PANE_ID`.
+- `Focus highest-priority ccxray agent` jumps to the first actionable Mission Control row.
+- `ccxray Mission Control` joins active Herdr agents to exact ccxray pane identities, ranks red/yellow/ready/green attention, and shows context velocity, main and child cost scopes, tool failures, cache health, freshness, and the next action.
+- `ccxray Capability Review` aggregates seven-day MCP adoption, estimated schema tokens, and observed skill usage. It requires at least five eligible sessions before suggesting changes.
+- `Mark ccxray session successful`, `partially successful`, or `failed` records an explicit user outcome for the focused, exactly linked session. An unlinked pane is rejected instead of guessed.
+- `ccxray Session Compare` compares two linked sessions across outcome, total/main/child cost, duration, turns, context, cache, tool calls, failures, and subagents.
 
-## Local Development
+Outcome labels are local plugin state. Session Compare uses them as a quality gate: without both labels it shows measurements but withholds a value recommendation. Natural sessions are observations, not a controlled model experiment.
+
+## Common operations
+
+```bash
+# Update the Herdr-managed GitHub checkout
+herdr plugin install lis186/ccxray/plugins/herdr
+
+# Temporarily stop or resume hooks and actions
+herdr plugin disable ccxray.herdr
+herdr plugin enable ccxray.herdr
+
+# Remove the sidebar rows before uninstalling the plugin
+herdr plugin action invoke ccxray.herdr.remove-sidebar-summary
+herdr plugin uninstall ccxray.herdr
+```
+
+Reinstalling replaces Herdr's managed checkout. Removing the sidebar rows creates a timestamped configuration backup and validates the resulting Herdr configuration before reloading it.
+
+## Local data and trust
+
+The plugin reads ccxray session metadata from `~/.ccxray/logs`, writes outcome labels under `HERDR_PLUGIN_STATE_DIR`, and talks to the local Herdr socket/CLI. It does not upload analytics. Agent requests still pass through ccxray to the provider selected by the user, as they do outside Herdr.
+
+## Use
+
+```bash
+herdr plugin action list --plugin ccxray.herdr
+herdr plugin action invoke ccxray.herdr.quick-start
+herdr plugin action invoke ccxray.herdr.focus-attention
+herdr plugin action invoke ccxray.herdr.mark-success
+herdr plugin pane open --plugin ccxray.herdr --entrypoint mission-control --placement split
+herdr plugin pane open --plugin ccxray.herdr --entrypoint onboarding --placement tab
+herdr plugin pane open --plugin ccxray.herdr --entrypoint capability-review --placement tab
+herdr plugin pane open --plugin ccxray.herdr --entrypoint session-compare --placement tab
+```
+
+The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
+
+Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact ccxray identity remains unknown; the plugin never borrows telemetry from another session in the project.
+
+Mission Control adapts at 32 columns. `CCXRAY_MISSION_MAX_ROWS` limits visible agents and `CCXRAY_MISSION_COLS` overrides terminal width for diagnostics. Single-session capability observations are hidden by default; pass `--capabilities` only for diagnostics or use Capability Review.
+
+Session Compare defaults to the two most recently observed linked sessions. `CCXRAY_COMPARE_LEFT` and `CCXRAY_COMPARE_RIGHT` may select a pane id, full session id, or unique session-id prefix. `CCXRAY_COMPARE_COLS` overrides width and `CCXRAY_COMPARE_ONCE=1` renders one snapshot.
+
+## Local development
 
 ```bash
 herdr plugin link /path/to/ccxray/plugins/herdr --enabled
-herdr plugin action list --plugin ccxray.herdr
 herdr plugin action invoke ccxray.herdr.doctor
-herdr plugin pane open --plugin ccxray.herdr --entrypoint mission-control --placement split
-```
-
-To show the compact two-line ccxray session summary under agents in the expanded sidebar:
-
-```bash
-herdr plugin action invoke ccxray.herdr.install-sidebar-summary
-herdr plugin action invoke ccxray.herdr.refresh-badges
-```
-
-The second row is width-aware. `refresh-badges` first honors
-`CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields if they
-exist, then falls back to `herdr pane layout` and uses `layout.area.x` as the
-sidebar width estimate. Wider sidebars show more recent turns in `$ctx_bar` and
-may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
-The installed sidebar uses mutually exclusive colored rows: `ctx <= 40%` is
-green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. The plain
-`$ctx_bar` token is still emitted for compatibility and debugging.
-
-When the plugin is developed inside the ccxray repository it uses the local `server/index.js` CLI. In installed checkouts, set `CCXRAY_BIN` to a `ccxray` executable or ensure `ccxray` is on `PATH`.
-
-For noninteractive validation:
-
-```bash
 CCXRAY_MISSION_ONCE=1 node bin/mission-control.js
+CCXRAY_COMPARE_ONCE=1 node bin/session-compare.js
 CCXRAY_HERDR_NO_BROWSER=1 node bin/open-dashboard.js
 ```
+
+Inside the ccxray repository, the plugin resolves the local `server/index.js` CLI. `CCXRAY_BIN` or `CCXRAY_BIN_JSON` can override command resolution for diagnostics.

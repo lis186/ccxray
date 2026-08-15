@@ -49,6 +49,14 @@ describe('sse-broadcast', () => {
   });
 
   describe('summarizeEntry', () => {
+    it('preserves persisted parentSessionId through cold normalization', () => {
+      const cold = normalizeIndexEntry({
+        id: 'child-turn', sessionId: 'child-session', parentSessionId: 'parent-session',
+        provider: 'openai', usage: { input_tokens: 1 }, isSubagent: true,
+      });
+      assert.equal(cold.parentSessionId, 'parent-session');
+    });
+
     it('#475 preserves call/result facts through live summary and cold normalization (fail-on-old)', () => {
       const facts = {
         turnToolCallIds: { call_a: 'Bash' },

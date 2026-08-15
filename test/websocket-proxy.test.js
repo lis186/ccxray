@@ -24,8 +24,9 @@ async function findFreePort() {
   });
 }
 
-function spawnServer(args, env) {
+function spawnServer(args, env, opts = {}) {
   const child = spawn(process.execPath, [SERVER_SCRIPT, ...args], {
+    cwd: opts.cwd,
     env: { ...process.env, BROWSER: 'none', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -149,14 +150,15 @@ describe('OpenAI Responses WebSocket proxy', () => {
     fs.rmSync(testHome, { recursive: true, force: true });
   });
 
-  async function startProxy(extraEnv = {}) {
-    proxyChild = spawnServer(['--port', String(proxyPort)], {
+  async function startProxy(extraEnv = {}, opts = {}) {
+    proxyChild = spawnServer(['--port', String(proxyPort), ...(opts.serverArgs || [])], {
       CCXRAY_HOME: testHome,
+      CCXRAY_IMPORT_DISABLE: '1',
       OPENAI_TEST_HOST: 'localhost',
       OPENAI_TEST_PORT: String(upstreamPort),
       OPENAI_TEST_PROTOCOL: 'http',
       ...extraEnv,
-    });
+    }, { cwd: opts.cwd });
     await waitForPort(proxyPort);
   }
 
@@ -312,6 +314,57 @@ describe('OpenAI Responses WebSocket proxy', () => {
     const reqLog = JSON.parse(fs.readFileSync(path.join(testHome, 'logs', `${entry.id}_req.json`), 'utf8'));
     assert.equal(reqLog.headers.sessionId, 'ws-thread-parity-001');
     assert.equal(reqLog.metadata.thread_id, 'ws-thread-parity-001');
+  });
+
+  it('falls back to the launched Codex cwd when WS metadata omits workspaces', async () => {
+    upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+    upstreamWss.on('connection', ws => {
+      ws.on('message', data => {
+        if (JSON.parse(data.toString()).type !== 'response.create') return;
+        ws.send(JSON.stringify({
+          type: 'response.completed',
+          response: {
+            status: 'completed',
+            model: 'gpt-5.5',
+            usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+          },
+        }));
+      });
+    });
+
+    const projectDir = path.join(testHome, 'herdr-codex-project');
+    const binDir = path.join(testHome, 'bin');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    const fakeCodex = path.join(binDir, 'codex');
+    fs.writeFileSync(fakeCodex, '#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n');
+    fs.chmodSync(fakeCodex, 0o755);
+    await startProxy({ PATH: `${binDir}${path.delimiter}${process.env.PATH}` }, {
+      cwd: projectDir,
+      serverArgs: ['codex'],
+    });
+
+    const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea951';
+    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+      headers: {
+        'openai-beta': 'responses_websockets=2026-02-06',
+        session_id: sessionId,
+        'user-agent': 'codex_cli_rs/0.148.0',
+      },
+    });
+    await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const done = waitForCompleted(ws);
+    ws.send(JSON.stringify({
+      type: 'response.create',
+      model: 'gpt-5.5',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'Inspect fallback project' }] }],
+    }));
+    await done;
+    ws.close(1000, 'done');
+    await new Promise(resolve => ws.on('close', resolve));
+
+    const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
+    assert.equal(fs.realpathSync(entry.cwd), fs.realpathSync(projectDir));
   });
 
   it('does not trust body-declared client identity on WebSocket turns', async () => {

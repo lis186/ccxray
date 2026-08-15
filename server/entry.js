@@ -27,7 +27,7 @@ const INDEX_FIELDS = [
   'beta1m',
   // #504: optional deployment identity, local calendar metadata, and duplicate
   // request-history tool calls. Append-only: existing field order is stable.
-  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -38,7 +38,7 @@ const INDEX_FIELDS = [
 // the entry-construction paths in forward.js and ws-proxy.js, so assertions must
 // exercise those construction paths.
 const OMIT_IF_NULL = new Set([
-  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
 ]);
 
 const DEPLOYMENT_ENV_FIELDS = [

@@ -230,7 +230,7 @@ function contextBlock(pct) {
 }
 
 function contextBand(pct) {
-  if (!Number.isFinite(pct)) return 'green';
+  if (!Number.isFinite(pct)) return 'unknown';
   if (pct <= 40) return 'green';
   if (pct <= 80) return 'yellow';
   return 'red';
@@ -432,6 +432,24 @@ function sessionSummaryDetails(data, opts = {}) {
   if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
   if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
 
+  if (agentId && !turns.some(entry => entry.agentId === agentId)) {
+    const ctxText = '?';
+    return {
+      matched: false,
+      sessionId: null,
+      ctxPct: null,
+      ctxText,
+      ctxBand: contextBand(null),
+      ctxBar: emptyContextBar(opts),
+      ageText: '?',
+      cost: null,
+      costText: 'n/a',
+      model: 'unknown',
+      turns: 0,
+      summary: 'ccxray: not linked',
+    };
+  }
+
   if (turns.length) {
     const bySession = new Map();
     for (const entry of turns) {
@@ -446,7 +464,7 @@ function sessionSummaryDetails(data, opts = {}) {
     });
     const detail = summarizeTurnGroup(groups[0], top, nowMs, opts);
     const summary = `${shortModel(detail.model)}, ${detail.ageText}, ${detail.costText}`;
-    return { ...detail, summary: clip(summary, 80) };
+    return { ...detail, matched: true, summary: clip(summary, 80) };
   }
 
   const fallback = {
@@ -464,6 +482,528 @@ function sessionSummaryDetails(data, opts = {}) {
   return {
     ...fallback,
     summary: clip(`${shortModel(fallback.model)}, ${fallback.ageText}, ${fallback.costText}`, 80),
+  };
+}
+
+function herdrAgentReport(opts = {}) {
+  const result = runHerdr(['agent', 'list'], {
+    env: opts.env || process.env,
+    timeoutMs: opts.timeoutMs || 1500,
+  });
+  const data = parseJsonOutput(result.stdout);
+  const agents = data?.result?.agents || data?.agents;
+  return {
+    ok: result.status === 0 && Array.isArray(agents),
+    agents: Array.isArray(agents) ? agents : [],
+    result,
+  };
+}
+
+function groupSessions(entries) {
+  const bySession = new Map();
+  for (const entry of entries) {
+    const sid = entry.sessionId || 'unknown';
+    if (!bySession.has(sid)) bySession.set(sid, []);
+    bySession.get(sid).push(entry);
+  }
+  return [...bySession.values()].map(turns => (
+    turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0))
+  ));
+}
+
+function paneSessionTelemetry(entries, agent) {
+  const groups = groupSessions(entries);
+  const nativeSessionId = agent?.agent_session?.kind === 'id'
+    ? agent.agent_session.value
+    : null;
+  const native = nativeSessionId
+    ? groups.find(turns => turns.some(turn => turn.sessionId === nativeSessionId))
+    : null;
+  const withMain = groups
+    .map(turns => ({
+      turns,
+      main: turns.filter(turn => !turn.isSubagent),
+    }))
+    .filter(group => group.main.length)
+    .sort((a, b) => (b.main.at(-1)?.receivedAt || 0) - (a.main.at(-1)?.receivedAt || 0));
+  const latest = groups
+    .slice()
+    .sort((a, b) => (b.at(-1)?.receivedAt || 0) - (a.at(-1)?.receivedAt || 0))[0];
+  const selected = native || withMain[0]?.turns || latest || [];
+  const mainTurns = selected.filter(turn => !turn.isSubagent);
+  const selectedSessionId = selected.at(-1)?.sessionId || null;
+  const childSessions = groups.filter(turns => (
+    turns !== selected && turns.some(turn => turn.parentSessionId === selectedSessionId)
+  ));
+  const subagentTurns = [
+    ...selected.filter(turn => turn.isSubagent),
+    ...childSessions.flat(),
+  ].sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
+
+  return {
+    turns: mainTurns.length ? mainTurns : selected,
+    subagentTurns,
+    sessionRole: mainTurns.length ? 'main' : (selected.length ? 'subagent' : null),
+    selectedBy: native ? 'native' : (withMain.length ? 'main' : (latest ? 'latest' : null)),
+  };
+}
+
+function subagentSummary(turns, nowMs) {
+  if (!turns.length) return null;
+  const identities = new Set(turns.map(turn => (
+    turn.parentSessionId ? `session:${turn.sessionId}`
+      : turn.convId ? `conv:${turn.convId}`
+        : turn.agentKey ? `agent:${turn.agentKey}`
+          : `session:${turn.sessionId || 'unknown'}`
+  )));
+  const activeCutoff = nowMs - 5 * 60000;
+  const recentTurns = turns.filter(turn => Number(turn.receivedAt || 0) >= activeCutoff);
+  const seenRecently = new Set(recentTurns
+    .map(turn => (
+      turn.parentSessionId ? `session:${turn.sessionId}`
+        : turn.convId ? `conv:${turn.convId}`
+          : turn.agentKey ? `agent:${turn.agentKey}`
+            : `session:${turn.sessionId || 'unknown'}`
+    )));
+  return {
+    count: identities.size,
+    seenRecently: seenRecently.size,
+    turns: turns.length,
+    cost: turns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
+    exactCost: turns.every(turn => turn.cost?.confidence === 'exact'),
+    recentCost: recentTurns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
+    exactRecentCost: recentTurns.every(turn => turn.cost?.confidence === 'exact'),
+    toolCalls: Object.values(observedToolCalls(turns))
+      .reduce((sum, count) => sum + Number(count || 0), 0),
+    failures: turns.filter(turnFailed).length,
+    failureCoverage: turns.filter(hasFailureCoverage).length,
+  };
+}
+
+function sessionCachePercent(turns) {
+  let total = 0;
+  let cached = 0;
+  for (const turn of turns) {
+    const usage = turn.usage || {};
+    const read = Number(usage.cache_read_input_tokens || 0);
+    const input = Number(usage.input_tokens || 0);
+    const created = Number(usage.cache_creation_input_tokens || 0);
+    total += input + created + read;
+    cached += read;
+  }
+  return total > 0 ? cached / total * 100 : null;
+}
+
+function promptChanged(turns) {
+  if (turns.length < 2) return false;
+  const previous = turns.at(-2);
+  const latest = turns.at(-1);
+  return ['sysHash', 'toolsHash', 'coreHash'].some(key => (
+    previous[key] && latest[key] && previous[key] !== latest[key]
+  ));
+}
+
+function turnCachePercent(turn) {
+  const usage = turn?.usage || {};
+  const read = Number(usage.cache_read_input_tokens || 0);
+  const input = Number(usage.input_tokens || 0);
+  const created = Number(usage.cache_creation_input_tokens || 0);
+  const total = input + created + read;
+  return total > 0 ? read / total * 100 : null;
+}
+
+function cacheDroppedAfterPromptChange(turns) {
+  if (!promptChanged(turns)) return false;
+  const previous = turnCachePercent(turns.at(-2));
+  const latest = turnCachePercent(turns.at(-1));
+  return Number.isFinite(previous)
+    && Number.isFinite(latest)
+    && previous >= 20
+    && latest <= 5
+    && previous - latest >= 20;
+}
+
+function estimatedTokens(value) {
+  if (value == null) return 0;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return Math.ceil(text.length / 4);
+}
+
+function toolName(tool) {
+  return tool?.name || tool?.function?.name || tool?.type || 'unknown';
+}
+
+function mcpServerName(name) {
+  if (!String(name).startsWith('mcp__')) return null;
+  return String(name).split('__')[1] || 'unknown';
+}
+
+function readToolDefinitions(turns, opts = {}) {
+  const latestWithHash = turns.slice().reverse().find(turn => turn.toolsHash);
+  const hash = latestWithHash?.toolsHash;
+  if (!hash || !/^[a-f0-9]{6,64}$/i.test(hash)) return null;
+  const cache = opts.cache;
+  const cacheKey = `${latestWithHash.provider || 'unknown'}:${hash}`;
+  if (cache?.has(cacheKey)) return cache.get(cacheKey);
+
+  const sharedDir = path.join(resolveCcxrayLogsDir(opts.env || process.env), 'shared');
+  const prefixes = latestWithHash.provider === 'openai'
+    ? ['openai_tools_', 'tools_']
+    : ['tools_', 'openai_tools_'];
+  let tools = null;
+  for (const prefix of prefixes) {
+    const file = path.join(sharedDir, `${prefix}${hash}.json`);
+    try {
+      if (fs.statSync(file).size > 32 * 1024 * 1024) continue;
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (Array.isArray(parsed)) {
+        tools = parsed;
+        break;
+      }
+    } catch {}
+  }
+  if (cache) cache.set(cacheKey, tools);
+  return tools;
+}
+
+function observedToolCalls(turns) {
+  const calls = {};
+  const legacyMax = {};
+  for (const turn of turns) {
+    if (turn.turnToolCalls !== null && turn.turnToolCalls !== undefined) {
+      for (const [name, count] of Object.entries(turn.turnToolCalls || {})) {
+        calls[name] = (calls[name] || 0) + Number(count || 0);
+      }
+      continue;
+    }
+    for (const [name, count] of Object.entries(turn.toolCalls || {})) {
+      legacyMax[name] = Math.max(legacyMax[name] || 0, Number(count || 0));
+    }
+  }
+  for (const [name, count] of Object.entries(legacyMax)) {
+    calls[name] = (calls[name] || 0) + count;
+  }
+  return calls;
+}
+
+function observedSkillCalls(turns) {
+  const calls = {};
+  for (const turn of turns) {
+    for (const [name, count] of Object.entries(turn.skillCalls || {})) {
+      calls[name] = Math.max(calls[name] || 0, Number(count || 0));
+    }
+  }
+  return Object.entries(calls)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => ({ name, count }));
+}
+
+function capabilityPortfolio(turns, opts = {}) {
+  const definitions = readToolDefinitions(turns, opts);
+  const skills = observedSkillCalls(turns);
+  if (!definitions) return skills.length ? { skills } : null;
+
+  const calls = observedToolCalls(turns);
+  const tools = definitions.map(definition => {
+    const name = toolName(definition);
+    const deferred = definition?.defer_loading === true;
+    return {
+      name,
+      server: mcpServerName(name),
+      tokens: deferred ? 0 : estimatedTokens(definition),
+      deferred,
+      calls: Number(calls[name] || 0),
+    };
+  });
+  const upfront = tools.filter(tool => !tool.deferred);
+  const used = tools.filter(tool => tool.calls > 0);
+  const mcpMap = new Map();
+  for (const tool of tools.filter(tool => tool.server)) {
+    if (!mcpMap.has(tool.server)) {
+      mcpMap.set(tool.server, { server: tool.server, tools: 0, usedTools: 0, calls: 0, tokens: 0 });
+    }
+    const row = mcpMap.get(tool.server);
+    row.tools++;
+    if (tool.calls > 0) row.usedTools++;
+    row.calls += tool.calls;
+    row.tokens += tool.tokens;
+  }
+  const mcp = [...mcpMap.values()].sort((a, b) => b.tokens - a.tokens);
+  return {
+    exposedTools: tools.length,
+    upfrontTools: upfront.length,
+    usedTools: used.length,
+    schemaTokens: upfront.reduce((sum, tool) => sum + tool.tokens, 0),
+    usedSchemaTokens: used.reduce((sum, tool) => sum + tool.tokens, 0),
+    deferredTools: tools.filter(tool => tool.deferred).length,
+    mcp,
+    largestUnusedMcp: mcp.filter(row => row.usedTools === 0 && row.tokens > 0)[0] || null,
+    skills,
+    confidence: 'estimated',
+  };
+}
+
+function capabilityRecommendation(row) {
+  if (row.avgSchemaTokens === 0) return 'DEFERRED';
+  if (row.eligibleSessions < 5) return 'OBSERVE';
+  const adoption = row.usedSessions / row.eligibleSessions;
+  if (adoption >= 0.5) return 'KEEP';
+  if (adoption <= 0.1 && row.avgSchemaTokens >= 1000) return 'DEFER CANDIDATE';
+  const toolUse = row.exposedTools > 0 ? row.usedTools / row.exposedTools : 0;
+  if (adoption > 0.1 && toolUse <= 0.25 && row.avgSchemaTokens >= 1000) return 'FILTER CANDIDATE';
+  return 'REVIEW';
+}
+
+function capabilityReview(entries, opts = {}) {
+  const nowMs = Number(opts.nowMs) || Date.now();
+  const windowMs = Number(opts.windowMs) || 7 * 24 * 60 * 60000;
+  const cutoff = nowMs - windowMs;
+  const sessions = groupSessions(entries.filter(entry => (
+    entry.sessionId
+    && entry.sessionId !== 'direct-api'
+    && Number(entry.receivedAt || 0) >= cutoff
+  )));
+  const cache = new Map();
+  const servers = new Map();
+  const skills = new Map();
+  let sessionsWithSchema = 0;
+  let sessionsWithSkillCoverage = 0;
+
+  for (const turns of sessions) {
+    const portfolio = capabilityPortfolio(turns, { env: opts.env, cache });
+    if (portfolio?.mcp) {
+      sessionsWithSchema++;
+      for (const mcp of portfolio.mcp) {
+        if (!servers.has(mcp.server)) {
+          servers.set(mcp.server, {
+            server: mcp.server,
+            eligibleSessions: 0,
+            usedSessions: 0,
+            schemaTokens: 0,
+            exposedTools: 0,
+            usedTools: 0,
+            calls: 0,
+          });
+        }
+        const row = servers.get(mcp.server);
+        row.eligibleSessions++;
+        if (mcp.usedTools > 0) row.usedSessions++;
+        row.schemaTokens += mcp.tokens;
+        row.exposedTools += mcp.tools;
+        row.usedTools += mcp.usedTools;
+        row.calls += mcp.calls;
+      }
+    }
+    if (turns.some(turn => Object.hasOwn(turn, 'skillCalls'))) sessionsWithSkillCoverage++;
+    for (const skill of portfolio?.skills || []) {
+      if (!skills.has(skill.name)) skills.set(skill.name, { name: skill.name, sessions: 0, calls: 0 });
+      const row = skills.get(skill.name);
+      row.sessions++;
+      row.calls += skill.count;
+    }
+  }
+
+  const mcp = [...servers.values()].map(row => {
+    const result = {
+      ...row,
+      avgSchemaTokens: row.eligibleSessions ? row.schemaTokens / row.eligibleSessions : 0,
+    };
+    result.recommendation = capabilityRecommendation(result);
+    return result;
+  }).sort((a, b) => b.avgSchemaTokens - a.avgSchemaTokens || a.server.localeCompare(b.server));
+
+  return {
+    windowMs,
+    totalSessions: sessions.length,
+    sessionsWithSchema,
+    sessionsWithSkillCoverage,
+    mcp,
+    skills: [...skills.values()].sort((a, b) => b.sessions - a.sessions || b.calls - a.calls),
+    confidence: 'estimated',
+  };
+}
+
+function turnFailed(turn) {
+  if (typeof turn.turnToolFail === 'boolean') return turn.turnToolFail;
+  return turn.toolFail === true;
+}
+
+function hasFailureCoverage(turn) {
+  return typeof turn.turnToolFail === 'boolean' || typeof turn.toolFail === 'boolean';
+}
+
+function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
+  const latest = turns.at(-1) || {};
+  const first = turns[0] || {};
+  const win = turns.length ? sessionWindow(turns) : 0;
+  const pcts = win ? contextPercents(turns, win) : [];
+  const ctxPct = pcts.at(-1) ?? null;
+  const previousPct = pcts.length > 1 ? pcts.at(-2) : null;
+  const ctxDelta = Number.isFinite(ctxPct) && Number.isFinite(previousPct)
+    ? ctxPct - previousPct
+    : null;
+  const cost = turns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
+  const fiveMinAgo = nowMs - 5 * 60000;
+  const recentCost = turns
+    .filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo)
+    .reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
+  const recentTurns = turns.filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo);
+  const failures = turns.slice(-6).filter(turnFailed).length;
+  const failureCoverage = turns.slice(-6).filter(hasFailureCoverage).length;
+  const hashChanged = promptChanged(turns);
+  const cacheDropped = cacheDroppedAfterPromptChange(turns);
+  const status = agent?.agent_status || 'recent';
+  const paneId = agent?.pane_id || null;
+  const latestAt = Number(latest.receivedAt || 0) || null;
+
+  let severity = 'green';
+  const reasons = [];
+  if (!turns.length) {
+    severity = 'yellow';
+    reasons.push('no ccxray telemetry');
+  }
+  if (Number.isFinite(ctxPct)) {
+    if (ctxPct > 80) severity = 'red';
+    else if (ctxPct > 40 && severity === 'green') severity = 'yellow';
+  }
+  if (failures >= 2) {
+    severity = 'red';
+    reasons.push(`fail ${failures}x`);
+  } else if (failures === 1) {
+    if (severity === 'green') severity = 'yellow';
+    reasons.push('fail 1x');
+  }
+  if (status === 'blocked') {
+    severity = 'red';
+    reasons.push('blocked');
+  } else if (status === 'done' && severity === 'green') {
+    severity = 'ready';
+  }
+  if (cacheDropped) {
+    if (severity === 'green') severity = 'yellow';
+    reasons.push('cache dropped after prompt change');
+  }
+
+  let action = null;
+  if (!turns.length) action = 'relaunch via ccxray';
+  else if (status === 'blocked' || failures >= 2) action = 'inspect last error';
+  else if (Number.isFinite(ctxPct) && ctxPct > 80) action = 'compact or start fresh';
+  else if (cacheDropped) action = 'inspect prompt/tool diff';
+  else if (failures === 1) action = 'inspect failed tool';
+  else if (Number.isFinite(ctxPct) && ctxPct > 40) action = 'checkpoint soon';
+  else if (severity === 'ready') action = 'review output';
+
+  const exactCost = turns.length > 0 && turns.every(turn => turn.cost?.confidence === 'exact');
+  const subagents = subagentSummary(opts.subagentTurns || [], nowMs);
+  const totalCost = cost + Number(subagents?.cost || 0);
+  const exactTotalCost = exactCost && (!subagents || subagents.exactCost);
+  const mainToolCalls = Object.values(observedToolCalls(turns))
+    .reduce((sum, count) => sum + Number(count || 0), 0);
+  const allTurns = [...turns, ...(opts.subagentTurns || [])]
+    .sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
+  const observedStartedAt = Number(allTurns[0]?.receivedAt || 0) || null;
+  const observedLatestAt = Number(allTurns.at(-1)?.receivedAt || 0) || null;
+  const totalRecentCost = recentCost + Number(subagents?.recentCost || 0);
+  const exactRecentCost = recentTurns.every(turn => turn.cost?.confidence === 'exact')
+    && (!subagents || subagents.exactRecentCost);
+  return {
+    paneId,
+    workspaceId: agent?.workspace_id || null,
+    tabId: agent?.tab_id || null,
+    status,
+    agent: agent?.display_agent || agent?.agent || latest.agentType || latest.agent || shortModel(latest.model),
+    model: dominantModel(turns, latest.model),
+    sessionId: latest.sessionId || null,
+    sessionRole: opts.sessionRole || null,
+    sessionSelectedBy: opts.sessionSelectedBy || null,
+    subagents,
+    mapping,
+    severity,
+    reasons,
+    action,
+    turns: turns.length,
+    ctxPct,
+    ctxDelta,
+    cost,
+    totalCost,
+    recentCost,
+    totalRecentCost,
+    exactRecentCost,
+    exactCost,
+    exactTotalCost,
+    cachePct: sessionCachePercent(turns),
+    mainToolCalls,
+    toolCalls: mainToolCalls + Number(subagents?.toolCalls || 0),
+    failures,
+    failureCoverage,
+    hashChanged,
+    cacheDropped,
+    capabilities: capabilityPortfolio(turns, {
+      env: opts.env,
+      cache: opts.toolSchemaCache,
+    }),
+    startedAt: Number(first.receivedAt || 0) || null,
+    latestAt,
+    observedStartedAt,
+    observedLatestAt,
+    durationMs: allTurns.length > 1 && observedStartedAt && observedLatestAt
+      ? Math.max(0, observedLatestAt - observedStartedAt)
+      : 0,
+    freshness: latestAt ? formatAge(nowMs - latestAt) : 'none',
+  };
+}
+
+function missionControlSnapshot(opts = {}) {
+  const env = opts.env || process.env;
+  const nowMs = Number(opts.nowMs || env.CCXRAY_HERDR_NOW_MS) || Date.now();
+  const entries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
+  const report = opts.agentReport || herdrAgentReport({ env, timeoutMs: opts.timeoutMs });
+  const agents = report.ok ? report.agents : [];
+  const maxRows = clampNumber(opts.maxRows || env.CCXRAY_MISSION_MAX_ROWS, 1, 24) || 8;
+  const toolSchemaCache = new Map();
+  const rows = [];
+
+  if (agents.length) {
+    for (const agent of agents) {
+      const exact = entries.filter(entry => entry.agentId === `herdr:${agent.pane_id}`);
+      const telemetry = paneSessionTelemetry(exact, agent);
+      rows.push(missionControlRow(telemetry.turns, agent, nowMs, exact.length ? 'exact' : 'unlinked', {
+        env,
+        toolSchemaCache,
+        subagentTurns: telemetry.subagentTurns,
+        sessionRole: telemetry.sessionRole,
+        sessionSelectedBy: telemetry.selectedBy,
+      }));
+    }
+  } else {
+    const bySession = new Map();
+    for (const entry of entries) {
+      if (!entry.sessionId || entry.sessionId === 'direct-api') continue;
+      if (!bySession.has(entry.sessionId)) bySession.set(entry.sessionId, []);
+      bySession.get(entry.sessionId).push(entry);
+    }
+    for (const turns of bySession.values()) {
+      turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
+      rows.push(missionControlRow(turns, null, nowMs, 'recent', { env, toolSchemaCache }));
+    }
+  }
+
+  const rank = { red: 0, yellow: 1, ready: 2, green: 3 };
+  rows.sort((a, b) => (
+    rank[a.severity] - rank[b.severity]
+    || (b.latestAt || 0) - (a.latestAt || 0)
+  ));
+  const visibleRows = rows.slice(0, maxRows);
+  return {
+    source: agents.length ? 'agents' : 'recent',
+    herdrOk: report.ok,
+    rows: visibleRows,
+    totalRows: rows.length,
+    attention: rows.filter(row => row.severity !== 'green').length,
+    recentCost: rows.reduce((sum, row) => sum + row.totalRecentCost, 0),
+    exactRecentCost: rows.every(row => row.exactRecentCost),
+    nowMs,
   };
 }
 
@@ -514,11 +1054,165 @@ function herdrRuntime(env = process.env) {
   };
 }
 
+function pluginStateDir(env = process.env) {
+  return env.HERDR_PLUGIN_STATE_DIR
+    || path.join(env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'herdr-plugin');
+}
+
+function outcomeStorePath(env = process.env) {
+  return path.join(pluginStateDir(env), 'outcomes.json');
+}
+
+function emptyOutcomeStore() {
+  return { version: 1, sessions: {} };
+}
+
+function readOutcomeStore(opts = {}) {
+  const file = outcomeStorePath(opts.env || process.env);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed?.version === 1 && parsed.sessions && typeof parsed.sessions === 'object') {
+      return parsed;
+    }
+  } catch {}
+  return emptyOutcomeStore();
+}
+
+function writeOutcomeStore(store, opts = {}) {
+  const env = opts.env || process.env;
+  const file = outcomeStorePath(env);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+function trimOutcomeStore(store, maxSessions = 500) {
+  const rows = Object.entries(store.sessions || {});
+  if (rows.length <= maxSessions) return store;
+  rows.sort((a, b) => Number(b[1]?.recordedAt || 0) - Number(a[1]?.recordedAt || 0));
+  store.sessions = Object.fromEntries(rows.slice(0, maxSessions));
+  return store;
+}
+
+function recordSessionOutcome(outcome, opts = {}) {
+  const allowed = new Set(['success', 'partial', 'failed', 'clear']);
+  if (!allowed.has(outcome)) {
+    return { ok: false, reason: `Unsupported outcome: ${outcome}` };
+  }
+  const env = opts.env || process.env;
+  const paneId = opts.paneId || env.HERDR_PANE_ID;
+  if (!paneId) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
+  const entries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
+  const exact = entries.filter(entry => entry.agentId === `herdr:${paneId}`);
+  const telemetry = paneSessionTelemetry(exact, null);
+  const turns = telemetry.turns;
+  const sessionId = turns.at(-1)?.sessionId;
+  if (!sessionId) {
+    return { ok: false, reason: `No ccxray session is linked to Herdr pane ${paneId}` };
+  }
+
+  const store = readOutcomeStore({ env });
+  if (outcome === 'clear') {
+    delete store.sessions[sessionId];
+  } else {
+    const latest = turns.at(-1) || {};
+    store.sessions[sessionId] = {
+      outcome,
+      recordedAt: Number(opts.nowMs || env.CCXRAY_HERDR_NOW_MS) || Date.now(),
+      paneId,
+      agentId: `herdr:${paneId}`,
+      provider: latest.provider || null,
+      model: dominantModel(turns, latest.model),
+    };
+  }
+  trimOutcomeStore(store, opts.maxSessions);
+  const file = writeOutcomeStore(store, { env });
+  return { ok: true, outcome, sessionId, paneId, file };
+}
+
+function selectComparisonRow(rows, selector, excluded) {
+  if (!selector) return rows.find(row => row !== excluded) || null;
+  return rows.find(row => (
+    row !== excluded
+    && (row.paneId === selector
+      || row.sessionId === selector
+      || String(row.sessionId || '').startsWith(selector))
+  )) || null;
+}
+
+function comparisonRead(left, right) {
+  if (!left || !right) return 'Need two linked ccxray sessions to compare.';
+  const a = left.outcome;
+  const b = right.outcome;
+  if (!a || !b) return 'mark both outcomes before comparing value.';
+  if (a === 'success' && b !== 'success') {
+    return `A reached success; B is ${b}. Treat the outcome difference as primary; compare cost as supporting evidence.`;
+  }
+  if (b === 'success' && a !== 'success') {
+    return `B reached success; A is ${a}. Treat the outcome difference as primary; compare cost as supporting evidence.`;
+  }
+  if (a !== 'success' || b !== 'success') {
+    return `Neither session is marked successful (${a} vs ${b}); lower cost does not establish better value.`;
+  }
+
+  const costDelta = left.totalCost - right.totalCost;
+  const timeDelta = left.durationMs - right.durationMs;
+  if (Math.abs(costDelta) < 0.005 && Math.abs(timeDelta) < 60000) {
+    return 'Both succeeded with similar observed cost and duration.';
+  }
+  const costSide = costDelta < 0 ? 'A' : 'B';
+  const costBase = Math.max(left.totalCost, right.totalCost, 0.0001);
+  const costPct = Math.round(Math.abs(costDelta) / costBase * 100);
+  const parts = [`Both succeeded; ${costSide} used ${costPct}% less observed cost`];
+  if (Math.abs(timeDelta) >= 60000) {
+    const timeSide = timeDelta < 0 ? 'A' : 'B';
+    parts.push(`${timeSide} finished sooner`);
+  }
+  return `${parts.join(', ')}. Confirm with the same task before changing defaults.`;
+}
+
+function sessionCompareSnapshot(opts = {}) {
+  const env = opts.env || process.env;
+  const base = missionControlSnapshot({
+    env,
+    entries: opts.entries,
+    agentReport: opts.agentReport,
+    nowMs: opts.nowMs,
+    maxBytes: opts.maxBytes,
+    maxRows: 24,
+  });
+  const outcomes = opts.outcomes || readOutcomeStore({ env });
+  const rows = base.rows
+    .filter(row => row.turns > 0 && row.sessionId)
+    .map(row => ({
+      ...row,
+      outcome: outcomes.sessions?.[row.sessionId]?.outcome || null,
+      outcomeRecordedAt: outcomes.sessions?.[row.sessionId]?.recordedAt || null,
+    }))
+    .sort((a, b) => (b.latestAt || 0) - (a.latestAt || 0));
+  const leftSelector = opts.left || env.CCXRAY_COMPARE_LEFT;
+  const rightSelector = opts.right || env.CCXRAY_COMPARE_RIGHT;
+  const left = selectComparisonRow(rows, leftSelector, null);
+  const right = selectComparisonRow(rows, rightSelector, left);
+  return {
+    source: base.source,
+    rows,
+    left,
+    right,
+    read: comparisonRead(left, right),
+    controlled: false,
+    nowMs: base.nowMs,
+  };
+}
+
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
   const herdr = env.HERDR_BIN_PATH || 'herdr';
   const args = ['pane', 'report-metadata', env.HERDR_PANE_ID, '--source', 'ccxray'];
+  if (opts.agent) args.push('--agent', String(opts.agent));
   for (const name of opts.clearTokens || []) {
     args.push('--clear-token', String(name));
   }
@@ -568,17 +1262,25 @@ function reportWorkspaceTokens(tokens, opts = {}) {
 }
 
 module.exports = {
+  capabilityPortfolio,
+  capabilityReview,
   findRepoRoot,
   contextBand,
   contextSidebarColumns,
   formatMoney,
   formatPercent,
   formatContextBar,
+  herdrAgentReport,
   herdrRuntime,
+  missionControlSnapshot,
+  outcomeStorePath,
   parseJsonOutput,
   parseStatus,
+  pluginStateDir,
   pluginRoot,
   readIndexTailEntries,
+  readOutcomeStore,
+  recordSessionOutcome,
   reportPaneTokens,
   reportWorkspaceTokens,
   resolveCcxrayCommand,
@@ -586,6 +1288,7 @@ module.exports = {
   runHerdr,
   sessionSummary,
   sessionSummaryDetails,
+  sessionCompareSnapshot,
   shortId,
   shortModel,
   statusReport,
