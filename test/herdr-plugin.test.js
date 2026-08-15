@@ -255,6 +255,51 @@ describe('Herdr TUI primitives', () => {
   });
 });
 
+describe('Herdr attention notifications', () => {
+  it('notifies only once per background done or blocked transition', () => {
+    const { agentNotification, recordAgentStatus } = require('../plugins/herdr/bin/lib/notifications');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-notifications-'));
+    const env = { HERDR_PLUGIN_STATE_DIR: stateDir };
+
+    assert.equal(agentNotification({ paneId: 'w1:p1', status: 'working', agent: 'Claude' }, '', { env }), null);
+    const doneEvent = { paneId: 'w1:p1', status: 'done', agent: 'Claude' };
+    assert.deepEqual(
+      agentNotification(doneEvent, 'opus-5, 15m, $0.51', { env }),
+      { title: 'Claude finished', body: 'opus-5, 15m, $0.51 · w1:p1', sound: 'done' },
+    );
+    recordAgentStatus(doneEvent, env);
+    assert.equal(agentNotification({ paneId: 'w1:p1', status: 'done', agent: 'Claude' }, '', { env }), null);
+    assert.equal(agentNotification({ paneId: 'w1:p1', status: 'working', agent: 'Claude' }, '', { env }), null);
+    const blockedEvent = { paneId: 'w1:p1', status: 'blocked', agent: 'Claude' };
+    assert.deepEqual(
+      agentNotification(blockedEvent, 'ctx 84%', { env }),
+      { title: 'Claude needs attention', body: 'ctx 84% · w1:p1', sound: 'request' },
+    );
+    recordAgentStatus(blockedEvent, env);
+  });
+
+  it('keeps a notification retryable until Herdr confirms delivery', () => {
+    const { agentNotification, recordAgentStatus } = require('../plugins/herdr/bin/lib/notifications');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-notification-retry-'));
+    const env = { HERDR_PLUGIN_STATE_DIR: stateDir };
+    const event = { paneId: 'w1:p5', status: 'blocked', agent: 'Codex' };
+    assert.ok(agentNotification(event, 'ctx 91%', { env }));
+    assert.ok(agentNotification(event, 'ctx 91%', { env }), 'failed delivery remains retryable');
+    recordAgentStatus(event, env);
+    assert.equal(agentNotification(event, 'ctx 91%', { env }), null);
+  });
+
+  it('honors notification modes and suppresses the focused pane', () => {
+    const { agentNotification } = require('../plugins/herdr/bin/lib/notifications');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-notification-mode-'));
+    const blockedOnly = { HERDR_PLUGIN_STATE_DIR: stateDir, CCXRAY_HERDR_NOTIFICATIONS: 'blocked' };
+    assert.equal(agentNotification({ paneId: 'w1:p2', status: 'done' }, '', { env: blockedOnly }), null);
+    assert.equal(agentNotification({ paneId: 'w1:p3', status: 'blocked' }, '', { env: blockedOnly, focused: true }), null);
+    const off = { HERDR_PLUGIN_STATE_DIR: stateDir, CCXRAY_HERDR_NOTIFICATIONS: 'off' };
+    assert.equal(agentNotification({ paneId: 'w1:p4', status: 'blocked' }, '', { env: off }), null);
+  });
+});
+
 describe('Capability Footprint keyboard model', () => {
   it('supports recognition-first navigation and stable selection', () => {
     const {
@@ -1222,6 +1267,41 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(fs.readFileSync(log, 'utf8'), /pane report-metadata w1:p7/);
+  });
+
+  it('notifies a background blocked pane once with an attention sound', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-notify-event-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'args.log');
+    const stateDir = path.join(dir, 'state');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      `process.stdout.write(${JSON.stringify(JSON.stringify({ id: 'test', result: { type: 'ok' } }) + '\n')});`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const eventEnv = {
+      CCXRAY_HOME: makeHome([{ ...sampleEntry, agentId: 'herdr:w1:p7' }]),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      HERDR_PLUGIN_EVENT: 'pane.agent_status_changed',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ focused_pane_id: 'w1:p1' }),
+      HERDR_PLUGIN_EVENT_JSON: JSON.stringify({
+        event: 'pane_agent_status_changed',
+        data: { pane_id: 'w1:p7', workspace_id: 'w1', agent_status: 'blocked', agent: 'codex' },
+      }),
+      CCXRAY_BADGE_EVENT_DELAY_MS: '0',
+    };
+    const first = runScript('refresh-badges.js', [], eventEnv);
+    const second = runScript('refresh-badges.js', [], eventEnv);
+    assert.equal(first.status, 0, first.stderr);
+    assert.equal(second.status, 0, second.stderr);
+    assert.match(first.stdout, /Notification: codex needs attention/);
+    assert.doesNotMatch(second.stdout, /Notification:/);
+    const calls = fs.readFileSync(log, 'utf8');
+    assert.equal((calls.match(/notification show codex needs attention/g) || []).length, 1);
+    assert.match(calls, /--sound request/);
   });
 
   it('refresh-badges shows routed readiness without borrowing another session', () => {

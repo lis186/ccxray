@@ -8,10 +8,12 @@ const {
   herdrRuntime,
   reportPaneTokens,
   reportWorkspaceTokens,
+  runHerdr,
   sessionSummaryDetails,
   statusReport,
   usageReport,
 } = require('./lib/ccxray');
+const { agentNotification, recordAgentStatus } = require('./lib/notifications');
 
 const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
 
@@ -26,6 +28,7 @@ function eventContext(env = process.env) {
       tabId: data.tab_id || data.pane?.tab_id || null,
       cwd: data.foreground_cwd || data.cwd || data.pane?.foreground_cwd || data.pane?.cwd || null,
       agent: data.agent || data.display_agent || null,
+      status: data.agent_status || data.status || data.pane?.agent_status || null,
       sessionId: (data.agent_session || data.pane?.agent_session)?.kind === 'id'
         ? (data.agent_session || data.pane?.agent_session).value
         : null,
@@ -127,12 +130,28 @@ function main() {
 
   const pane = reportPaneTokens(tokens, { env, ttlMs, stateLabels, clearTokens, agent: event.agent });
   const workspace = reportWorkspaceTokens(tokens, { env, ttlMs, clearTokens });
+  const notification = process.env.HERDR_PLUGIN_EVENT === 'pane.agent_status_changed'
+    ? agentNotification(event, tokens.summary, {
+      env,
+      focused: targetPaneId === context.focused_pane_id,
+    })
+    : null;
+  const notificationResult = notification
+    ? runHerdr([
+      'notification', 'show', notification.title,
+      '--body', notification.body,
+      '--sound', notification.sound,
+    ], { env, timeoutMs: 3000 })
+    : null;
+  if (notificationResult?.status === 0) recordAgentStatus(event, env);
 
   console.log('ccxray badges refreshed');
   console.log(`Workspace: ${runtime.workspaceId || 'n/a'} (${workspace.ok ? 'ok' : workspace.reason})`);
   console.log(`Pane: ${runtime.paneId || 'n/a'} (${pane.ok ? 'ok' : pane.reason})`);
   console.log(`Tokens: ${Object.entries(tokens).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   if (clearTokens.length) console.log(`Clear: ${clearTokens.join(' ')}`);
+  if (notificationResult?.status === 0) console.log(`Notification: ${notification.title}`);
+  else if (notificationResult) console.log('Notification unavailable: run Doctor for Herdr details.');
 
   process.exit((runtime.workspaceId || runtime.paneId) ? 0 : 1);
 }

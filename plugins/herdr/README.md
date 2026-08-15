@@ -41,6 +41,7 @@ herdr plugin action invoke ccxray.herdr.quick-start
 - `ccxray usage summary` prints a compact cost/session/tool summary.
 - `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
 - Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.
+- Background panes notify once when an agent becomes done or blocked. Done uses Herdr's done sound; blocked uses the request sound. Set `CCXRAY_HERDR_NOTIFICATIONS=blocked` to suppress completion notices or `off` to disable both.
 - `Install ccxray sidebar summary rows` renders a two-line model/age/cost and width-aware context summary under each agent.
 - `Open ccxray dashboard` delegates to `ccxray open`.
 - `Focus highest-priority ccxray agent` jumps to the first actionable Mission Control row.
