@@ -219,8 +219,8 @@ function buildForwardHeaders(clientHeaders, upstream) {
 
 // Cwd when the wire body has none: hub client cwd, else launcher process cwd
 // for modules that declare cwdFallback (codex, grok, …).
-function getAgentCwdFallback() {
-  return hub.lookupClientCwd()
+function getAgentCwdFallback(req) {
+  return hub.lookupClientCwdForRequest(req)
     || (providers.agentUsesCwdFallback(agentCommand) ? process.cwd() : null);
 }
 // Back-compat alias for call sites / tests
@@ -229,6 +229,7 @@ const getCodexCwdFallback = getAgentCwdFallback;
 
 // ── Server ──────────────────────────────────────────────────────────
 const server = http.createServer((clientReq, clientRes) => {
+  hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
   // Placed before auth: these are local IPC endpoints, not user-facing
@@ -425,7 +426,7 @@ const server = http.createServer((clientReq, clientRes) => {
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
       const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback() : null);
+        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;
@@ -513,7 +514,8 @@ server.keepAliveTimeout = 5_000;   // 5s — idle keep-alive connections
 server.requestTimeout = 300_000;   // 5min — matches Node default; slow POST body = slowloris, body size cap (#152) handles OOM
 
 server.on('upgrade', (req, socket, head) => {
-  handleWebSocketUpgrade(req, socket, head, { cwdFallback: getAgentCwdFallback() });
+  hub.applyClientRoute(req);
+  handleWebSocketUpgrade(req, socket, head, { cwdFallback: getAgentCwdFallback(req) });
 });
 
 
@@ -979,6 +981,7 @@ async function startClientMode(lock) {
   });
 
   // Spawn agent pointing to hub
+  process.env.CCXRAY_HUB_CLIENT_PID = String(process.pid);
   spawnAgent(agentCommand, lock.port, agentArgs, (code) => {
     hub.unregisterClient(lock, process.pid).finally(() => {
       process.exit(code);

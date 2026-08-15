@@ -105,11 +105,12 @@ function isOpenAIWebSocket(req, upstream) {
 
 function requestDeploymentFields(startTime, req, parsedBody) {
   const agent = resolveOpenAIWireAgent(req.headers, parsedBody);
-  const identity = hub.lookupClientIdentityForAgent(agent);
+  const identity = hub.lookupClientIdentityForRequest(req, agent);
+  const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
     identity: identity || {},
-    useEnvIdentity: !identity && (!hub.hasClients() || envMatchesAgent),
+    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
   });
 }
 

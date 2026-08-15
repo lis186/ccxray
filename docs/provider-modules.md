@@ -30,6 +30,19 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
 | `codex` | `openai_base_url` / model_provider | openai | `openai` / ChatGPT |
 | `grok` | `GROK_CLI_CHAT_PROXY_BASE_URL` | openai + client | `xai` (cli-chat-proxy) |
 
+## Shared hub client identity
+
+In hub mode, every launcher base URL includes `/_ccxray/client/<pid>` before the
+provider API path. The HTTP and WebSocket entrypoints strip that internal route
+before normal dispatch, then resolve deployment identity from the matching hub
+client. This is required when two panes run the same provider: agent type alone
+is ambiguous and must never fall back to the hub process environment.
+
+Standalone `--port` launches do not use the client route. Any new provider
+module must preserve the base URL returned by the shared launcher helper so the
+same identity contract covers Anthropic requests, OpenAI HTTP, and OpenAI
+WebSocket traffic.
+
 ## How to add a module
 
 ### A. Anthropic Messages CLI
@@ -96,6 +109,7 @@ describeAgentModule('grok');
 - [ ] Conversation traffic creates dashboard entries with correct `agent`
 - [ ] Control-plane noise does not flood the index
 - [ ] Shared hub: traffic from other modules keeps their own upstream hosts
+- [ ] Shared hub: two clients of the same module retain distinct deployment identity
 - [ ] Resume command uses `UPSTREAM_PROFILES` / client `upstreamKey`
 
 Grok-specific checklist: `docs/grok-testing.md`.

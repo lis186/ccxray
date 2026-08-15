@@ -412,6 +412,36 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /unlinked/);
   });
 
+  it('mission-control recovers an exact pane from Herdr native session identity', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const now = Date.now();
+    const entries = [
+      { ...sampleEntry, id: 'old-pane', sessionId: 'session-old', agentId: 'herdr:w1:p17', receivedAt: now - 1000 },
+      { ...sampleEntry, id: 'new-pane', sessionId: 'session-new', agentId: 'herdr:w1:p17', receivedAt: now },
+    ];
+    const agents = [
+      {
+        pane_id: 'w1:p17', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'idle', agent: 'claude',
+        agent_session: { kind: 'id', value: 'session-old' },
+      },
+      {
+        pane_id: 'w1:p21', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'idle', agent: 'claude',
+        agent_session: { kind: 'id', value: 'session-new' },
+      },
+    ];
+    const snapshot = missionControlSnapshot({
+      entries,
+      nowMs: now,
+      agentReport: { ok: true, agents },
+    });
+    const oldPane = snapshot.rows.find(row => row.paneId === 'w1:p17');
+    const newPane = snapshot.rows.find(row => row.paneId === 'w1:p21');
+    assert.equal(oldPane.sessionId, 'session-old');
+    assert.equal(newPane.sessionId, 'session-new');
+    assert.equal(newPane.turns, 1);
+    assert.equal(newPane.mapping, 'native');
+  });
+
   it('mission-control distinguishes review-ready agents from yellow risk', () => {
     const now = Date.now();
     const entry = {
@@ -799,13 +829,37 @@ describe('Herdr plugin commands', () => {
     assert.match(fs.readFileSync(log, 'utf8'), /pane report-metadata w1:p7/);
   });
 
-  it('refresh-badges never borrows another session when the target pane is unlinked', () => {
+  it('refresh-badges shows routed readiness without borrowing another session', () => {
     const unrelated = {
       ...sampleEntry,
       agentId: 'herdr:w1:p2',
       model: 'claude-opus-5',
       cost: { cost: 99 },
     };
+    const sessionlessProbe = {
+      ...sampleEntry,
+      id: 'sessionless-probe',
+      sessionId: null,
+      agentId: 'herdr:w1:p9',
+      model: null,
+      cost: null,
+    };
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome([unrelated, sessionlessProbe]),
+      HERDR_PANE_ID: 'w1:p9',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_BIN_PATH: makeHerdr([]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /summary=ccxray: ready · send prompt/);
+    assert.match(result.stdout, /ctx_band=unknown/);
+    assert.match(result.stdout, /cost=n\/a/);
+    assert.match(result.stdout, /turns=0/);
+    assert.doesNotMatch(result.stdout, /opus-5|\$99/);
+  });
+
+  it('refresh-badges reports not linked when the pane has no routed telemetry', () => {
+    const unrelated = { ...sampleEntry, agentId: 'herdr:w1:p2' };
     const result = runScript('refresh-badges.js', [], {
       CCXRAY_HOME: makeHome([unrelated]),
       HERDR_PANE_ID: 'w1:p9',
@@ -814,10 +868,64 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /summary=ccxray: not linked/);
-    assert.match(result.stdout, /ctx_band=unknown/);
-    assert.match(result.stdout, /cost=n\/a/);
-    assert.match(result.stdout, /turns=0/);
-    assert.doesNotMatch(result.stdout, /opus-5|\$99/);
+  });
+
+  it('refresh-badges links by Herdr native session when hub attribution used an older pane', () => {
+    const entry = {
+      ...sampleEntry,
+      sessionId: 'session-new',
+      agentId: 'herdr:w1:p17',
+      model: 'claude-opus-5',
+    };
+    const agents = [{
+      pane_id: 'w1:p21', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'idle', agent: 'claude',
+      agent_session: { kind: 'id', value: 'session-new' },
+    }];
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome([entry]),
+      HERDR_PANE_ID: 'w1:p21',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_BIN_PATH: makeHerdr(agents),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /summary=opus-5/);
+    assert.match(result.stdout, /turns=1/);
+    assert.doesNotMatch(result.stdout, /ccxray: not linked/);
+  });
+
+  it('refresh-badges prefers the pane native session over polluted exact agentId history', () => {
+    const now = Date.now();
+    const entries = [
+      {
+        ...sampleEntry,
+        id: 'native-old',
+        sessionId: 'session-old',
+        agentId: 'herdr:w1:p17',
+        model: 'claude-sonnet-5',
+        receivedAt: now - 1000,
+      },
+      {
+        ...sampleEntry,
+        id: 'misattributed-new',
+        sessionId: 'session-new',
+        agentId: 'herdr:w1:p17',
+        model: 'claude-opus-5',
+        receivedAt: now,
+      },
+    ];
+    const agents = [{
+      pane_id: 'w1:p17', workspace_id: 'w1', tab_id: 'w1:t1', agent_status: 'idle', agent: 'claude',
+      agent_session: { kind: 'id', value: 'session-old' },
+    }];
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(entries),
+      HERDR_PANE_ID: 'w1:p17',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_BIN_PATH: makeHerdr(agents),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /summary=sonnet-5/);
+    assert.doesNotMatch(result.stdout, /summary=opus-5/);
   });
 
   it('refresh-badges renders sidebar summary as model/cost plus context sparkline', () => {

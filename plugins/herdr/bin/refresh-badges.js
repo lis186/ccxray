@@ -4,6 +4,7 @@
 const {
   contextSidebarColumns,
   formatPercent,
+  herdrAgentReport,
   herdrRuntime,
   reportPaneTokens,
   reportWorkspaceTokens,
@@ -25,6 +26,9 @@ function eventContext(env = process.env) {
       tabId: data.tab_id || data.pane?.tab_id || null,
       cwd: data.foreground_cwd || data.cwd || data.pane?.foreground_cwd || data.pane?.cwd || null,
       agent: data.agent || data.display_agent || null,
+      sessionId: (data.agent_session || data.pane?.agent_session)?.kind === 'id'
+        ? (data.agent_session || data.pane?.agent_session).value
+        : null,
     };
   } catch {
     return {};
@@ -93,6 +97,12 @@ function main() {
   const usage = usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
+  let nativeSessionId = event.sessionId || null;
+  if (!nativeSessionId && targetPaneId) {
+    const report = herdrAgentReport({ env });
+    const agent = report.agents.find(item => item.pane_id === targetPaneId);
+    if (agent?.agent_session?.kind === 'id') nativeSessionId = agent.agent_session.value;
+  }
   const sidebarCols = contextSidebarColumns({
     env,
     paneId: targetPaneId,
@@ -101,6 +111,7 @@ function main() {
   const badge = badgeTokens(status, usage, {
     env: process.env,
     paneId: targetPaneId,
+    sessionId: nativeSessionId,
     cwd: event.cwd || context.focused_pane_cwd || context.workspace_cwd || null,
     sidebarCols,
   });

@@ -418,6 +418,21 @@ describe('register/unregister via socket', () => {
     hub.addClient(44446, '/test/two', { agentId: 'two', agentType: 'codex' });
     assert.equal(hub.lookupClientIdentityForAgent('codex'), null);
   });
+
+  it('resolves the exact client identity from a routed provider request', () => {
+    clearAllClients();
+    hub.addClient(44445, '/test/one', { agentId: 'herdr:w1:p18', agentType: 'codex' });
+    hub.addClient(44446, '/test/two', { agentId: 'herdr:w1:p22', agentType: 'codex' });
+    const req = { url: '/_ccxray/client/44446/v1/responses?stream=true' };
+
+    assert.equal(hub.applyClientRoute(req), true);
+    assert.equal(req.url, '/v1/responses?stream=true');
+    assert.deepEqual(hub.lookupClientIdentityForRequest(req, 'codex'), {
+      agentId: 'herdr:w1:p22',
+      agentType: 'codex',
+    });
+    assert.equal(hub.lookupClientCwdForRequest(req), '/test/two');
+  });
 });
 
 // With setOnShutdown(() => {}), idle timer is harmless — just clear clients.

@@ -16,6 +16,14 @@ function getUpstreamToken() {
   }
 }
 
+function proxyBaseUrl(port, env, suffix = '') {
+  const clientPid = String(env.CCXRAY_HUB_CLIENT_PID || '');
+  const clientRoute = /^[1-9]\d*$/.test(clientPid)
+    ? `/_ccxray/client/${clientPid}`
+    : '';
+  return `http://localhost:${port}${clientRoute}${suffix}`;
+}
+
 const AGENT_PROVIDERS = Object.freeze({
   claude: Object.freeze({
     id: 'claude',
@@ -24,7 +32,7 @@ const AGENT_PROVIDERS = Object.freeze({
     upstream: 'anthropic',
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
-      const launchEnv = { ...env, ANTHROPIC_BASE_URL: `http://localhost:${port}` };
+      const launchEnv = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port, env) };
       const token = getUpstreamToken();
       if (token) {
         const authHeader = `X-Ccxray-Auth: ${token}`;
@@ -49,13 +57,13 @@ const AGENT_PROVIDERS = Object.freeze({
     cwdFallback: true,
     installHint: '  npm install -g @openai/codex',
     createLaunch({ port, args, env }) {
-      const proxyBaseUrl = `http://localhost:${port}/v1`;
+      const baseUrl = proxyBaseUrl(port, env, '/v1');
       const hasApiKey = Boolean(env.OPENAI_API_KEY);
 
       if (hasApiKey) {
         const token = getUpstreamToken();
         if (token) {
-          const mpConfig = `model_providers.ccxray={name="ccxray", base_url="${proxyBaseUrl}", wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
+          const mpConfig = `model_providers.ccxray={name="ccxray", base_url="${baseUrl}", wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
           return {
             bin: 'codex',
             args: ['-c', mpConfig, '-c', 'model_provider="ccxray"', ...args],
@@ -71,9 +79,9 @@ const AGENT_PROVIDERS = Object.freeze({
         bin: 'codex',
         args: [
           '-c',
-          `openai_base_url="${proxyBaseUrl}"`,
+          `openai_base_url="${baseUrl}"`,
           '-c',
-          `chatgpt_base_url="${proxyBaseUrl}"`,
+          `chatgpt_base_url="${baseUrl}"`,
           ...args,
         ],
         env: { ...env },
@@ -95,11 +103,11 @@ const AGENT_PROVIDERS = Object.freeze({
     cwdFallback: true,
     installHint: '  curl -fsSL https://x.ai/cli/install.sh | bash',
     createLaunch({ port, args, env }) {
-      const proxyBaseUrl = `http://localhost:${port}/v1`;
+      const baseUrl = proxyBaseUrl(port, env, '/v1');
       return {
         bin: 'grok',
         args: [...args],
-        env: { ...env, GROK_CLI_CHAT_PROXY_BASE_URL: proxyBaseUrl },
+        env: { ...env, GROK_CLI_CHAT_PROXY_BASE_URL: baseUrl },
       };
     },
   }),

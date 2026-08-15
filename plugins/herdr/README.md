@@ -19,6 +19,8 @@ The install command does not run startup hooks in an already-running Herdr proce
 
 Quick Start is a keyboard menu. Use `Up`/`Down` or `j`/`k` to move, `Enter` to run the highlighted action, and `q`, `Esc`, or `Ctrl+C` to close it. Number and letter shortcuts remain available. Unavailable providers and analysis panes stay visible with their requirement, but cursor movement skips them. `--once` keeps a plain, noninteractive rendering for logs and diagnostics.
 
+Immediately after a provider starts, the sidebar may show `ccxray: ready · send prompt`: the pane has reached ccxray but no conversation turn exists yet. It changes to model, age, cost, and context after the first response. `ccxray: not linked` is reserved for a pane with no routed ccxray telemetry. When Herdr exposes a native session id, the plugin also uses it to recover safely from older misattributed hub history without borrowing another pane's session.
+
 Quick Start progressively reveals the rest of the product:
 
 - Before the first traced session, it focuses on launching an available provider.

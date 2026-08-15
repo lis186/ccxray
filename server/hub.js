@@ -510,6 +510,29 @@ function lookupClientIdentityForAgent(agentType) {
   return clientIdentityFromMessage(match);
 }
 
+function applyClientRoute(req) {
+  const match = /^\/_ccxray\/client\/([1-9]\d*)(\/[^?]*)?(\?.*)?$/.exec(String(req?.url || ''));
+  if (!match) return false;
+  req.ccxrayClientPid = Number(match[1]);
+  req.url = `${match[2] || '/'}${match[3] || ''}`;
+  return true;
+}
+
+function lookupClientIdentityForRequest(req, agentType) {
+  if (Number.isSafeInteger(req?.ccxrayClientPid)) {
+    const client = clients.get(req.ccxrayClientPid);
+    return client ? clientIdentityFromMessage(client) : null;
+  }
+  return lookupClientIdentityForAgent(agentType);
+}
+
+function lookupClientCwdForRequest(req) {
+  if (Number.isSafeInteger(req?.ccxrayClientPid)) {
+    return clients.get(req.ccxrayClientPid)?.cwd || null;
+  }
+  return lookupClientCwd();
+}
+
 function startIdleTimer() {
   if (idleTimer) return;
   idleTimer = setTimeout(() => {
@@ -669,8 +692,11 @@ module.exports = {
   addClient,
   removeClient,
   hasClients,
+  applyClientRoute,
   lookupClientIdentityForAgent,
+  lookupClientIdentityForRequest,
   lookupClientCwd,
+  lookupClientCwdForRequest,
   startIdleTimer,
   setOnShutdown,
   shutdownHub,

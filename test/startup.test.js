@@ -457,7 +457,7 @@ describe('claude launcher mode', () => {
       assert.equal(code, 0, stderr);
       const capture = JSON.parse(fs.readFileSync(capturePath, 'utf8'));
       assert.deepEqual(capture.argv, ['--continue']);
-      assert.equal(capture.anthropicBaseUrl, `http://localhost:${port}`);
+      assert.match(capture.anthropicBaseUrl, new RegExp(`^http://localhost:${port}/_ccxray/client/[1-9]\\d*$`));
     } finally {
       fs.rmSync(fakeBin, { recursive: true, force: true });
       await killAndWait(hubChild);

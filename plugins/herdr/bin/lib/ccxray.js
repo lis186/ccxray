@@ -425,14 +425,20 @@ function sessionSummaryDetails(data, opts = {}) {
   const nowMs = Number(opts.nowMs || opts.env?.CCXRAY_HERDR_NOW_MS) || Date.now();
   const paneId = opts.paneId || null;
   const agentId = opts.agentId || (paneId ? `herdr:${paneId}` : null);
-  const entries = readIndexTailEntries({ env: opts.env });
+  const nativeSessionId = opts.sessionId || null;
+  const allEntries = readIndexTailEntries({ env: opts.env });
+  const entries = allEntries.filter(entry => entry.sessionId);
+  const routed = agentId && allEntries.some(entry => entry.agentId === agentId);
 
   let turns = [];
-  if (agentId) turns = entries.filter(e => e.agentId === agentId);
+  if (nativeSessionId) turns = entries.filter(e => e.sessionId === nativeSessionId);
+  if (!turns.length && agentId) turns = entries.filter(e => e.agentId === agentId);
   if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
   if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
 
-  if (agentId && !turns.some(entry => entry.agentId === agentId)) {
+  const exactAgentMatch = agentId && turns.some(entry => entry.agentId === agentId);
+  const nativeSessionMatch = nativeSessionId && turns.some(entry => entry.sessionId === nativeSessionId);
+  if (agentId && !exactAgentMatch && !nativeSessionMatch) {
     const ctxText = '?';
     return {
       matched: false,
@@ -446,7 +452,7 @@ function sessionSummaryDetails(data, opts = {}) {
       costText: 'n/a',
       model: 'unknown',
       turns: 0,
-      summary: 'ccxray: not linked',
+      summary: routed ? 'ccxray: ready · send prompt' : 'ccxray: not linked',
     };
   }
 
@@ -545,6 +551,26 @@ function paneSessionTelemetry(entries, agent) {
     subagentTurns,
     sessionRole: mainTurns.length ? 'main' : (selected.length ? 'subagent' : null),
     selectedBy: native ? 'native' : (withMain.length ? 'main' : (latest ? 'latest' : null)),
+  };
+}
+
+function paneTelemetryCandidates(entries, agent) {
+  const linkedEntries = entries.filter(entry => entry.sessionId);
+  const agentId = `herdr:${agent.pane_id}`;
+  const exact = linkedEntries.filter(entry => entry.agentId === agentId);
+  const nativeSessionId = agent?.agent_session?.kind === 'id'
+    ? agent.agent_session.value
+    : null;
+  if (!nativeSessionId) return { entries: exact, mapping: exact.length ? 'exact' : 'unlinked' };
+
+  const native = linkedEntries.filter(entry => (
+    entry.sessionId === nativeSessionId || entry.parentSessionId === nativeSessionId
+  ));
+  const combined = new Map([...exact, ...native].map(entry => [entry.id, entry]));
+  const nativeIsExact = exact.some(entry => entry.sessionId === nativeSessionId);
+  return {
+    entries: [...combined.values()],
+    mapping: native.length ? (nativeIsExact ? 'exact' : 'native') : (exact.length ? 'exact' : 'unlinked'),
   };
 }
 
@@ -966,9 +992,9 @@ function missionControlSnapshot(opts = {}) {
 
   if (agents.length) {
     for (const agent of agents) {
-      const exact = entries.filter(entry => entry.agentId === `herdr:${agent.pane_id}`);
-      const telemetry = paneSessionTelemetry(exact, agent);
-      rows.push(missionControlRow(telemetry.turns, agent, nowMs, exact.length ? 'exact' : 'unlinked', {
+      const candidates = paneTelemetryCandidates(entries, agent);
+      const telemetry = paneSessionTelemetry(candidates.entries, agent);
+      rows.push(missionControlRow(telemetry.turns, agent, nowMs, candidates.mapping, {
         env,
         toolSchemaCache,
         subagentTurns: telemetry.subagentTurns,

@@ -82,6 +82,18 @@ describe('agent provider registry', () => {
     assert.match(launch.installHint, /x\.ai\/cli/);
   });
 
+  it('routes every hub-launched provider through its registered client identity', () => {
+    const env = { PATH: '/usr/bin', CCXRAY_HUB_CLIENT_PID: '78846' };
+    const claude = providers.getAgentLaunch('claude', 5577, [], env);
+    const codex = providers.getAgentLaunch('codex', 5577, [], env);
+    const grok = providers.getAgentLaunch('grok', 5577, [], env);
+
+    assert.equal(claude.env.ANTHROPIC_BASE_URL, 'http://localhost:5577/_ccxray/client/78846');
+    assert.ok(codex.args.includes('openai_base_url="http://localhost:5577/_ccxray/client/78846/v1"'));
+    assert.ok(codex.args.includes('chatgpt_base_url="http://localhost:5577/_ccxray/client/78846/v1"'));
+    assert.equal(grok.env.GROK_CLI_CHAT_PROXY_BASE_URL, 'http://localhost:5577/_ccxray/client/78846/v1');
+  });
+
   it('PROVIDER_AGENT maps upstream family to agent label', () => {
     assert.equal(providers.agentForProvider('openai'), 'codex');
     assert.equal(providers.agentForProvider('anthropic'), 'claude');
