@@ -14,7 +14,9 @@ const {
 const {
   budgetedListViewport,
   displayWidth,
+  restoreFrameCursor,
   truncateText,
+  writeFrame,
   wrapText,
 } = require('./lib/tui');
 
@@ -22,7 +24,7 @@ function parseArgs(argv) {
   return {
     once: argv.includes('--once') || process.env.CCXRAY_MISSION_ONCE === '1',
     intervalMs: Number(process.env.CCXRAY_MISSION_INTERVAL_MS || 5000),
-    maxRows: Number(process.env.CCXRAY_MISSION_MAX_ROWS || 24),
+    maxRows: Number(process.env.CCXRAY_MISSION_MAX_ROWS || 100),
     showCapabilities: argv.includes('--capabilities') || process.env.CCXRAY_MISSION_SHOW_CAPABILITIES === '1',
   };
 }
@@ -211,8 +213,7 @@ function renderMissionHelp(max, lineBudget = Infinity) {
     'd: open ccxray dashboard · f: change filter · r: refresh',
     'Esc or q: close · ?: hide this help',
   ];
-  const lines = help.flatMap(item => wrapText(item, max)).slice(0, lineBudget);
-  for (const line of lines) console.log(line);
+  return help.flatMap(item => wrapText(item, max)).slice(0, lineBudget);
 }
 
 function render(args, uiState = {}, message = '') {
@@ -247,19 +248,19 @@ function render(args, uiState = {}, message = '') {
   const viewport = budgetedListViewport(rows.length, state.selectedIndex, listHeight, state.viewportStart || 0);
   state = { ...state, viewportStart: viewport.start };
 
-  if (!args.once) process.stdout.write('\x1b[2J\x1b[H');
-  console.log(fitColumns(compact ? 'ccxray MC' : 'ccxray Mission Control', `Filter ${state.filter || 'all'}`, max));
+  const output = [];
+  output.push(fitColumns(compact ? 'ccxray MC' : 'ccxray Mission Control', `Filter ${state.filter || 'all'}`, max));
   const sourceLabel = snapshot.source === 'agents' ? 'panes' : (tiny ? 'recent' : 'recent sessions');
   const summary = compact
     ? `${snapshot.totalRows} ${sourceLabel} / ${snapshot.attention} alert`
     : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.exactRecentCost)}/5m`;
-  console.log(fit(summary, max));
+  output.push(fit(summary, max));
   const hubLabel = status.parsed.running ? 'ok' : (tiny ? 'no' : 'unavailable');
-  console.log(fit(tiny ? `Hub ${hubLabel}` : `Updated ${now} · Hub ${hubLabel}`, max));
-  console.log('');
+  output.push(fit(tiny ? `Hub ${hubLabel}` : `Updated ${now} · Hub ${hubLabel}`, max));
+  output.push('');
 
   if (state.help) {
-    renderMissionHelp(max, bodyBudget);
+    output.push(...renderMissionHelp(max, bodyBudget));
   } else if (!rows.length) {
     const empty = snapshot.rows.length
       ? `No agents match the ${state.filter} filter`
@@ -268,9 +269,9 @@ function render(args, uiState = {}, message = '') {
     const recoveryLines = wrapText(snapshot.rows.length
       ? 'Press f to change the filter.'
       : 'Next: open ccxray Quick Start and launch an agent.', max);
-    for (const line of [...emptyLines, ...recoveryLines].slice(0, bodyBudget)) console.log(line);
+    output.push(...[...emptyLines, ...recoveryLines].slice(0, bodyBudget));
   } else {
-    if (viewport.overflow && viewport.overflowBefore) console.log(fit(`  ${viewport.overflow}`, max));
+    if (viewport.overflow && viewport.overflowBefore) output.push(fit(`  ${viewport.overflow}`, max));
     for (let index = viewport.start; index < viewport.end; index++) {
       const row = rows[index];
       const selected = index === state.selectedIndex;
@@ -278,17 +279,18 @@ function render(args, uiState = {}, message = '') {
       const identity = `${cursor} ${rowIdentity(row)} · ${row.status}`;
       const ctx = Number.isFinite(row.ctxPct) ? `ctx ${Math.round(row.ctxPct)}%` : 'ctx ?';
       const line = fitColumns(identity, `${ctx} · ${rowCost(row)}`, max);
-      if (!args.once && selected) console.log(`\x1b[7m${line}\x1b[0m`);
-      else console.log(line);
+      if (!args.once && selected) output.push(`\x1b[7m${line}\x1b[0m`);
+      else output.push(line);
     }
-    if (viewport.overflow && !viewport.overflowBefore) console.log(fit(`  ${viewport.overflow}`, max));
-    if (detailGap) console.log('');
-    for (const line of detail) console.log(line);
+    if (viewport.overflow && !viewport.overflowBefore) output.push(fit(`  ${viewport.overflow}`, max));
+    if (detailGap) output.push('');
+    output.push(...detail);
   }
 
-  console.log('');
-  for (const line of footerLines) console.log(line);
-  for (const line of messageLines) console.log(line);
+  output.push('');
+  output.push(...footerLines);
+  output.push(...messageLines);
+  writeFrame(output, { clear: !args.once, interactive: !args.once });
 
   const meta = reportPaneTokens({
     xray: xrayState,
@@ -344,7 +346,7 @@ function main() {
     process.stdout.removeListener('resize', onResize);
     try { process.stdin.setRawMode(false); } catch {}
     process.stdin.pause();
-    process.stdout.write('\x1b[?25h');
+    restoreFrameCursor();
   };
   const draw = () => {
     view = render(args, state, message);

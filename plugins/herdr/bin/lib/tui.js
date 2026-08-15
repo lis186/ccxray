@@ -123,12 +123,24 @@ function budgetedListViewport(total, selectedIndex, lineBudget, previousStart = 
   };
 }
 
+function writeFrame(lines, opts = {}) {
+  if (opts.clear) process.stdout.write('\x1b[2J\x1b[H');
+  process.stdout.write(lines.join('\n'));
+  if (!opts.interactive) process.stdout.write('\n');
+}
+
+function restoreFrameCursor(stream = process.stdout) {
+  stream.write('\n\x1b[?25h');
+}
+
 module.exports = {
   budgetedListViewport,
   displayWidth,
   listViewport,
+  restoreFrameCursor,
   stripAnsi,
   takeWidth,
   truncateText,
+  writeFrame,
   wrapText,
 };

@@ -81,7 +81,7 @@ describe('Herdr plugin manifest', () => {
     assert.match(manifest, /^\[\[actions\]\]$/m);
     assert.match(manifest, /^\[\[panes\]\]$/m);
 
-    const commandMatches = [...manifest.matchAll(/command = \["bin\/run-node\.sh", "([^"]+)"/g)];
+    const commandMatches = [...manifest.matchAll(/command = \["\/bin\/sh", "-c", "exec \\\"\$HERDR_PLUGIN_ROOT\/bin\/run-node\.sh\\\" \\\"\$HERDR_PLUGIN_ROOT\/([^"]+?)\\\"/g)];
     assert.ok(commandMatches.length >= 4);
     assert.ok(fs.statSync(path.join(PLUGIN, 'bin', 'run-node.sh')).mode & 0o111, 'Node launcher is executable');
     for (const [, rel] of commandMatches) {
@@ -92,7 +92,7 @@ describe('Herdr plugin manifest', () => {
   it('starts Mission Control directly through the shared Node launcher', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     const paneBlock = manifest.match(/\[\[panes\]\][\s\S]*$/)?.[0] || '';
-    assert.match(paneBlock, /command = \["bin\/run-node\.sh", "bin\/mission-control\.js"\]/);
+    assert.match(paneBlock, /command = \["\/bin\/sh", "-c", "exec \\\"\$HERDR_PLUGIN_ROOT\/bin\/run-node\.sh\\\" \\\"\$HERDR_PLUGIN_ROOT\/bin\/mission-control\.js\\\""\]/);
     assert.match(fs.readFileSync(path.join(PLUGIN, 'bin', 'mission-control.js'), 'utf8'), /if \(require\.main === module\) main\(\)/);
   });
 
@@ -105,22 +105,26 @@ describe('Herdr plugin manifest', () => {
 
   it('automatically refreshes sidebar metadata at startup and agent state changes', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
-    assert.match(manifest, /\[\[startup\]\]\s+command = \["bin\/run-node\.sh", "bin\/refresh-all-badges\.js"\]/);
-    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_detected"\s+command = \["bin\/run-node\.sh", "bin\/refresh-badges\.js"\]/);
-    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_status_changed"\s+command = \["bin\/run-node\.sh", "bin\/refresh-badges\.js"\]/);
+    const refreshAll = 'command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/refresh-all-badges.js\\""]';
+    const refreshPane = 'command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/refresh-badges.js\\""]';
+    assert.ok(manifest.includes(`[[startup]]\n${refreshAll}`));
+    assert.ok(manifest.includes(`on = "pane.agent_detected"\n${refreshPane}`));
+    assert.ok(manifest.includes(`on = "pane.agent_status_changed"\n${refreshPane}`));
   });
 
   it('declares a one-time Quick Start startup hook, action, and pane', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
-    assert.match(manifest, /\[\[startup\]\]\s+command = \["bin\/run-node\.sh", "bin\/open-onboarding\.js", "--first-run"\]/);
-    assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"[\s\S]*command = \["bin\/run-node\.sh", "bin\/open-onboarding\.js"\]/);
-    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*command = \["bin\/run-node\.sh", "bin\/onboarding\.js"\]/);
+    assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\" --first-run"]'));
+    assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"/);
+    assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\""]'));
+    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"/);
+    assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/onboarding.js\\""]'));
   });
 
   it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     assert.match(manifest, /id = "capability-review"[\s\S]*title = "ccxray Capability Footprint \(Experimental\)"/);
-    assert.match(manifest, /command = \["bin\/run-node\.sh", "bin\/capability-review\.js"\]/);
+    assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/capability-review.js\\""]'));
   });
 });
 
@@ -242,6 +246,13 @@ describe('Herdr TUI primitives', () => {
     assert.equal(lines.join(' '), source);
     assert.ok(lines.every(line => displayWidth(line) <= 16));
   });
+
+  it('moves the shell prompt to a fresh line when an interactive frame exits', () => {
+    const { restoreFrameCursor } = require('../plugins/herdr/bin/lib/tui');
+    let output = '';
+    restoreFrameCursor({ write(value) { output += value; } });
+    assert.equal(output, '\n\x1b[?25h');
+  });
 });
 
 describe('Capability Footprint keyboard model', () => {
@@ -329,6 +340,59 @@ describe('Herdr plugin commands', () => {
     assert.match(readable, /Capability Footprint experimental · needs 5/);
     assert.match(readable, /Up\/Down or j\/k move · Enter select · 1-3 launch · q close/);
     assert.match(readable, /Recommended: Inspect live pressure, cost, and failures\./);
+  });
+
+  it('Quick Start keeps its title and every action visible in a short narrow pane', () => {
+    const { displayWidth } = require('../plugins/herdr/bin/lib/tui');
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_ONBOARDING_ONCE: '1',
+      CCXRAY_ONBOARDING_PROVIDERS: 'claude,codex,grok',
+      CCXRAY_ONBOARDING_COLS: '28',
+      CCXRAY_ONBOARDING_ROWS: '21',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.ok(lines.length <= 21, `Quick Start fits 21 rows, got ${lines.length}`);
+    assert.match(lines[0], /ccxray Quick Start/);
+    assert.match(result.stdout, /\[1\] Claude/);
+    assert.match(result.stdout, /\[2\] Codex/);
+    assert.match(result.stdout, /\[3\] Grok/);
+    assert.match(result.stdout, /\[M\] Mission Control/);
+    assert.match(result.stdout, /\[R\] Capability \(exp\)/);
+    assert.match(result.stdout, /\[S\] Sidebar summary/);
+    assert.match(result.stdout, /\[D\] Doctor/);
+    assert.match(result.stdout, /\[Q\] Close/);
+    for (const row of lines) assert.ok(displayWidth(row) <= 27, `Quick Start row fits: ${row}`);
+  });
+
+  it('Quick Start preserves all actions at its 16-row minimum', () => {
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_ONBOARDING_ONCE: '1',
+      CCXRAY_ONBOARDING_PROVIDERS: 'claude,codex,grok',
+      CCXRAY_ONBOARDING_COLS: '24',
+      CCXRAY_ONBOARDING_ROWS: '16',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.ok(lines.length <= 16, `Quick Start fits 16 rows, got ${lines.length}`);
+    assert.match(lines[0], /ccxray Quick Start/);
+    assert.match(result.stdout, /\[1\] Claude[\s\S]*\[Q\] Close/);
+    assert.match(result.stdout, /j\/k · Enter · q/);
+  });
+
+  it('Quick Start prioritizes actions over section headings in a short wide pane', () => {
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_ONBOARDING_ONCE: '1',
+      CCXRAY_ONBOARDING_PROVIDERS: 'claude,codex,grok',
+      CCXRAY_ONBOARDING_COLS: '72',
+      CCXRAY_ONBOARDING_ROWS: '16',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.trimEnd().split('\n');
+    assert.ok(lines.length <= 16, `Quick Start fits 16 rows, got ${lines.length}`);
+    assert.match(lines[0], /ccxray Quick Start/);
+    assert.doesNotMatch(result.stdout, /Launch a traced session/);
+    assert.match(result.stdout, /\[1\] Claude[\s\S]*\[Q\] Close/);
   });
 
   it('opens Quick Start once at startup but allows an explicit reopen', () => {
@@ -597,6 +661,24 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /12 panes/);
     assert.match(result.stdout, /↓ \d+ more/);
     assert.match(result.stdout, /Selected w1:p1/);
+  });
+
+  it('mission-control keeps more than 24 recent sessions reachable', () => {
+    const entries = Array.from({ length: 30 }, (_, index) => ({
+      ...sampleEntry,
+      id: `turn-${index}`,
+      sessionId: `session-${index}`,
+      receivedAt: Date.now() - index * 1000,
+    }));
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome(entries),
+      CCXRAY_MISSION_ROWS: '12',
+      CCXRAY_MISSION_COLS: '48',
+      HERDR_BIN_PATH: makeHerdr([]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /30 recent sessions/);
+    assert.match(result.stdout, /↓ \d+ more/);
   });
 
   it('mission-control ranks exact pane telemetry by actionable risk', () => {

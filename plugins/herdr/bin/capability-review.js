@@ -9,7 +9,9 @@ const {
 const {
   budgetedListViewport,
   displayWidth,
+  restoreFrameCursor,
   truncateText,
+  writeFrame,
   wrapText,
 } = require('./lib/tui');
 
@@ -154,7 +156,7 @@ function renderHelp(max, lineBudget = Infinity) {
     'f: filter all, MCP, or skills · r: refresh',
     'Esc or q: close · ?: hide this help',
   ];
-  for (const line of lines.flatMap(value => wrapText(value, max)).slice(0, lineBudget)) console.log(line);
+  return lines.flatMap(value => wrapText(value, max)).slice(0, lineBudget);
 }
 
 function render(args, uiState = {}, message = '') {
@@ -188,37 +190,38 @@ function render(args, uiState = {}, message = '') {
   const viewport = budgetedListViewport(rows.length, state.selectedIndex, listHeight, state.viewportStart || 0);
   state = { ...state, viewportStart: viewport.start };
 
-  if (!args.once) process.stdout.write('\x1b[2J\x1b[H');
-  console.log(fitColumns('ccxray Capability Footprint', `Filter ${state.filter}`, max));
-  for (const line of experimentalLines) console.log(line);
-  console.log(truncateText(`Window ${windowLabel(review.windowMs)} · ${review.sessionsWithSchema} sessions with schema · estimates`, max));
-  console.log('');
+  const output = [];
+  output.push(fitColumns('ccxray Capability Footprint', `Filter ${state.filter}`, max));
+  output.push(...experimentalLines);
+  output.push(truncateText(`Window ${windowLabel(review.windowMs)} · ${review.sessionsWithSchema} sessions with schema · estimates`, max));
+  output.push('');
 
   if (state.help) {
-    renderHelp(max, bodyBudget);
+    output.push(...renderHelp(max, bodyBudget));
   } else if (!rows.length) {
     const empty = allRows.length ? `No rows match the ${state.filter} filter.` : 'No MCP or skill observations in this window.';
     const emptyLines = wrapText(empty, max);
     const recoveryLines = wrapText(allRows.length ? 'Press f to change the filter.' : 'Run traced sessions before reviewing capability footprint.', max);
-    for (const line of [...emptyLines, ...recoveryLines].slice(0, bodyBudget)) console.log(line);
+    output.push(...[...emptyLines, ...recoveryLines].slice(0, bodyBudget));
   } else {
-    if (viewport.overflow && viewport.overflowBefore) console.log(truncateText(`  ${viewport.overflow}`, max));
+    if (viewport.overflow && viewport.overflowBefore) output.push(truncateText(`  ${viewport.overflow}`, max));
     for (let index = viewport.start; index < viewport.end; index++) {
       const row = rows[index];
       const selected = index === state.selectedIndex;
       const cursor = selected ? '›' : ' ';
       const line = fitColumns(`${cursor} ${row.label}`, rowSummary(row), max);
-      if (!args.once && selected) console.log(`\x1b[7m${line}\x1b[0m`);
-      else console.log(line);
+      if (!args.once && selected) output.push(`\x1b[7m${line}\x1b[0m`);
+      else output.push(line);
     }
-    if (viewport.overflow && !viewport.overflowBefore) console.log(truncateText(`  ${viewport.overflow}`, max));
-    if (detailGap) console.log('');
-    for (const line of detail) console.log(line);
+    if (viewport.overflow && !viewport.overflowBefore) output.push(truncateText(`  ${viewport.overflow}`, max));
+    if (detailGap) output.push('');
+    output.push(...detail);
   }
 
-  console.log('');
-  for (const line of footerLines) console.log(line);
-  for (const line of messageLines) console.log(line);
+  output.push('');
+  output.push(...footerLines);
+  output.push(...messageLines);
+  writeFrame(output, { clear: !args.once, interactive: !args.once });
   return { review, rows, state, selected: rows[state.selectedIndex] || null };
 }
 
@@ -243,7 +246,7 @@ function main() {
     process.stdout.removeListener('resize', onResize);
     try { process.stdin.setRawMode(false); } catch {}
     process.stdin.pause();
-    process.stdout.write('\x1b[?25h');
+    restoreFrameCursor();
   };
   const draw = () => {
     view = render(args, state, message);

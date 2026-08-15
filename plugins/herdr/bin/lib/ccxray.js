@@ -987,7 +987,7 @@ function missionControlSnapshot(opts = {}) {
   const entries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
   const report = opts.agentReport || herdrAgentReport({ env, timeoutMs: opts.timeoutMs });
   const agents = report.ok ? report.agents : [];
-  const maxRows = clampNumber(opts.maxRows || env.CCXRAY_MISSION_MAX_ROWS, 1, 24) || 8;
+  const maxRows = clampNumber(opts.maxRows || env.CCXRAY_MISSION_MAX_ROWS, 1, 200) || 100;
   const toolSchemaCache = new Map();
   const rows = [];
 

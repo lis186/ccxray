@@ -12,7 +12,7 @@ const {
   runHerdr,
   statusReport,
 } = require('./lib/ccxray');
-const { displayWidth, truncateText, wrapText } = require('./lib/tui');
+const { displayWidth, restoreFrameCursor, truncateText, writeFrame, wrapText } = require('./lib/tui');
 
 const PROVIDERS = [
   { id: 'claude', label: 'Claude', key: '1' },
@@ -183,39 +183,59 @@ function menuRowLines(left, right, cols) {
 }
 
 function render(state, message = '', selectedId = recommendedItemId(state)) {
-  const cols = Math.max(36, Math.min(Number(process.env.CCXRAY_ONBOARDING_COLS) || process.stdout.columns || 72, 100));
+  const cols = Math.max(24, Math.min(Number(process.env.CCXRAY_ONBOARDING_COLS) || process.stdout.columns || 72, 100));
+  const terminalRows = Math.max(16, Math.min(Number(process.env.CCXRAY_ONBOARDING_ROWS) || process.stdout.rows || 24, 80));
+  const compactHeight = terminalRows <= 24;
+  const compactWidth = cols < 40;
+  const veryShort = terminalRows < 18;
   const line = value => String(value).slice(0, cols - 1);
   const interactive = process.stdout.isTTY && process.env.CCXRAY_ONBOARDING_ONCE !== '1';
-  if (interactive) process.stdout.write('\x1b[2J\x1b[H');
-  console.log(fitRow('ccxray Quick Start', state.ccxrayReady ? 'READY' : 'NEEDS SETUP', cols));
-  console.log(line('Get your first live session signal'));
-  console.log('');
-  console.log(line(`ccxray       ${state.ccxrayReady ? 'READY' : 'FIX'}${state.hubRunning ? ' · hub running' : ''}`));
-  console.log(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
-  console.log(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} observed`));
+  const output = [];
+  output.push(fitRow('ccxray Quick Start', state.ccxrayReady ? 'READY' : 'NEEDS SETUP', cols));
+  if (!compactHeight) {
+    output.push(line('Get your first live session signal'));
+    output.push('');
+  }
+  output.push(line(`ccxray       ${state.ccxrayReady ? 'READY' : 'FIX'}${state.hubRunning ? ' · hub running' : ''}`));
+  output.push(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
+  output.push(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} observed`));
 
   for (const item of menuItems(state)) {
     if (item.type === 'section') {
-      console.log('');
-      console.log(line(item.label));
+      if (!compactWidth && !veryShort) {
+        if (!compactHeight) output.push('');
+        output.push(line(item.label));
+      }
       continue;
     }
     const cursor = item.id === selectedId ? '›' : ' ';
-    const left = `  ${cursor} [${item.key}] ${item.label}`;
-    const rows = menuRowLines(left, item.detail, cols);
+    const compactLabels = {
+      'capability-review': 'Capability (exp)',
+      sidebar: 'Sidebar summary',
+    };
+    const label = compactWidth ? (compactLabels[item.id] || item.label) : item.label;
+    const left = `  ${cursor} [${item.key}] ${label}`;
+    const rows = menuRowLines(left, compactWidth ? '' : item.detail, cols);
     for (const row of rows) {
-      if (interactive && item.id === selectedId) console.log(`\x1b[7m${row}\x1b[0m`);
-      else if (interactive && !item.enabled) console.log(`\x1b[2m${row}\x1b[0m`);
-      else console.log(row);
+      if (interactive && item.id === selectedId) output.push(`\x1b[7m${row}\x1b[0m`);
+      else if (interactive && !item.enabled) output.push(`\x1b[2m${row}\x1b[0m`);
+      else output.push(row);
     }
   }
-  console.log('');
-  for (const footerLine of wrapText('Up/Down or j/k move · Enter select · 1-3 launch · q close', cols - 1)) {
-    console.log(footerLine);
-  }
-  for (const messageLine of wrapText(message || `Recommended: ${recommendationText(state)}`, cols - 1)) {
-    console.log(messageLine);
-  }
+  output.push('');
+  output.push(...wrapText(veryShort
+    ? 'j/k · Enter · q'
+    : compactWidth
+      ? 'j/k move · Enter select · 1-3 launch · q close'
+    : 'Up/Down or j/k move · Enter select · 1-3 launch · q close', cols - 1));
+  const shortNext = !state.ccxrayReady
+    ? 'Next: run Doctor'
+    : state.sessions
+      ? 'Next: Mission Control'
+      : `Next: launch ${state.providers.find(provider => provider.available)?.label || 'an agent'}`;
+  if (veryShort) output.push(truncateText(message || shortNext, cols - 1));
+  else output.push(...wrapText(message || `Recommended: ${recommendationText(state)}`, cols - 1));
+  writeFrame(output, { clear: interactive, interactive });
 }
 
 function runNode(script, args = []) {
@@ -292,7 +312,7 @@ function main() {
     process.stdout.removeListener('resize', onResize);
     try { process.stdin.setRawMode(false); } catch {}
     process.stdin.pause();
-    process.stdout.write('\x1b[?25h');
+    restoreFrameCursor();
   };
   const closeMenu = () => {
     restoreTerminal();
