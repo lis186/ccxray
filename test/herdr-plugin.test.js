@@ -113,12 +113,43 @@ describe('Herdr plugin manifest', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     assert.match(manifest, /\[\[startup\]\]\s+command = \["node", "bin\/open-onboarding\.js", "--first-run"\]/);
     assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"[\s\S]*command = \["node", "bin\/open-onboarding\.js"\]/);
-    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*bin\/onboarding\.js/);
+    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*bin\/onboarding\.js'\)\.main\(\)/);
+  });
+});
+
+describe('Quick Start keyboard menu', () => {
+  it('decodes navigation, activation, close, and direct hotkeys', () => {
+    const { keyIntent } = require('../plugins/herdr/bin/onboarding');
+    assert.deepEqual(keyIntent('\x1b[A'), { type: 'move', delta: -1 });
+    assert.deepEqual(keyIntent('j'), { type: 'move', delta: 1 });
+    assert.deepEqual(keyIntent('\r'), { type: 'activate' });
+    assert.deepEqual(keyIntent('\x1b'), { type: 'close' });
+    assert.deepEqual(keyIntent('M'), { type: 'hotkey', key: 'm' });
+  });
+
+  it('moves over disabled rows and keeps direct hotkeys discoverable', () => {
+    const { menuItems, moveSelection, recommendedItemId } = require('../plugins/herdr/bin/onboarding');
+    const state = {
+      ccxrayReady: true,
+      hubRunning: true,
+      sessions: 0,
+      sidebar: true,
+      providers: [
+        { id: 'claude', label: 'Claude', key: '1', available: false },
+        { id: 'codex', label: 'Codex', key: '2', available: true },
+        { id: 'grok', label: 'Grok', key: '3', available: false },
+      ],
+    };
+    const items = menuItems(state);
+    assert.equal(recommendedItemId(state), 'launch-codex');
+    assert.equal(moveSelection(items, 'launch-codex', 1), 'doctor');
+    assert.equal(moveSelection(items, 'doctor', -1), 'launch-codex');
+    assert.equal(items.find(item => item.key === 'M').enabled, false);
   });
 });
 
 describe('Herdr plugin commands', () => {
-  it('Quick Start shows readiness and only marks detected provider CLIs available', () => {
+  it('Quick Start renders a cursor menu with unavailable actions visibly disabled', () => {
     const home = makeHome();
     const config = path.join(home, 'config.toml');
     const result = runScript('onboarding.js', ['--once'], {
@@ -129,16 +160,18 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /ccxray Quick Start/);
-    assert.match(result.stdout, /SETUP  sidebar optional, not installed/);
-    assert.match(result.stdout, /START  0 traced sessions/);
-    assert.match(result.stdout, /\[1\] Claude\s+available/);
+    assert.match(result.stdout, /sidebar\s+SETUP · optional/);
+    assert.match(result.stdout, /sessions\s+START · 0 observed/);
+    assert.match(result.stdout, /› \[1\] Claude\s+available/);
     assert.match(result.stdout, /\[2\] Codex\s+available/);
     assert.match(result.stdout, /\[3\] Grok\s+not found/);
-    assert.match(result.stdout, /Next: Press 1 to launch Claude through ccxray/);
-    assert.doesNotMatch(result.stdout, /Open Mission Control|Open Capability Review/);
+    assert.match(result.stdout, /\[M\] Mission Control\s+needs 1 session/);
+    assert.match(result.stdout, /\[R\] Capability Review\s+needs 5 sessions/);
+    assert.match(result.stdout, /↑↓ or j\/k move · Enter select/);
+    assert.match(result.stdout, /Recommended: Launch Claude through ccxray/);
   });
 
-  it('Quick Start progressively reveals analysis after enough traced sessions', () => {
+  it('Quick Start selects Capability Review after enough traced sessions', () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({
       ...sampleEntry,
       id: `onboarding-${i}`,
@@ -154,10 +187,25 @@ describe('Herdr plugin commands', () => {
       CCXRAY_ONBOARDING_PROVIDERS: 'codex',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /READY  5 traced sessions/);
-    assert.match(result.stdout, /\[M\] Open Mission Control/);
-    assert.match(result.stdout, /\[R\] Open Capability Review/);
-    assert.match(result.stdout, /Next: Press R to review capability usage before changing configuration/);
+    assert.match(result.stdout, /sessions\s+READY · 5 observed/);
+    assert.match(result.stdout, /\[M\] Mission Control\s+live attention/);
+    assert.match(result.stdout, /› \[R\] Capability Review\s+5 sessions/);
+    assert.match(result.stdout, /Recommended: Review capability usage before changing configuration/);
+  });
+
+  it('Quick Start keeps every cursor-menu row within a narrow pane', () => {
+    const home = makeHome([{ ...sampleEntry, agentId: 'herdr:w1:p1' }]);
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_HOME: home,
+      HERDR_CONFIG_PATH: path.join(home, 'missing-config.toml'),
+      CCXRAY_ONBOARDING_PROVIDERS: 'claude,codex,grok',
+      CCXRAY_ONBOARDING_COLS: '40',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /› \[M\] Mission Control/);
+    for (const line of result.stdout.trim().split('\n')) {
+      assert.ok(line.length <= 39, `Quick Start line fits narrow pane: ${line}`);
+    }
   });
 
   it('opens Quick Start once at startup but allows an explicit reopen', () => {

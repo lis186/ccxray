@@ -17,6 +17,8 @@ The GitHub checkout contains ccxray, so a separate global ccxray installation is
 
 The install command does not run startup hooks in an already-running Herdr process, so the second command opens **ccxray Quick Start** immediately. If onboarding has not been completed, the plugin also opens it once on the next full Herdr startup. Quick Start checks ccxray, detects the installed Claude, Codex, and Grok CLIs, and offers one-key launch actions. It does not install the optional sidebar or change Herdr configuration without an explicit `S` keypress.
 
+Quick Start is a keyboard menu. Use `Up`/`Down` or `j`/`k` to move, `Enter` to run the highlighted action, and `q`, `Esc`, or `Ctrl+C` to close it. Number and letter shortcuts remain available. Unavailable providers and analysis panes stay visible with their requirement, but cursor movement skips them. `--once` keeps a plain, noninteractive rendering for logs and diagnostics.
+
 Quick Start progressively reveals the rest of the product:
 
 - Before the first traced session, it focuses on launching an available provider.

@@ -40,7 +40,7 @@ herdr plugin install lis186/ccxray/plugins/herdr
 herdr plugin action invoke ccxray.herdr.quick-start
 ```
 
-The second command opens Quick Start immediately because installing into an already-running Herdr process does not run startup hooks. The plugin also offers the one-time Quick Start on the next full Herdr startup if onboarding is still incomplete. It detects installed providers and launches the first traced session; sidebar changes remain optional and require explicit confirmation. Mission Control and Capability Review appear as enough data becomes available. See [`plugins/herdr`](plugins/herdr) for usage, trust, update, and uninstall details.
+The second command opens a cursor-driven Quick Start because installing into an already-running Herdr process does not run startup hooks. Use the arrow keys or `j`/`k` and `Enter`; number and letter shortcuts remain available. The plugin also offers Quick Start once on the next full Herdr startup if onboarding is still incomplete. It detects installed providers and launches the first traced session; sidebar changes remain optional and require explicit confirmation. Mission Control and Capability Review appear as enough data becomes available. See [`plugins/herdr`](plugins/herdr) for usage, trust, update, and uninstall details.
 
 The launcher argument is provider-backed. Today `claude`, `codex`, and `grok` are supported; unknown provider commands fail fast instead of silently starting an unconfigured proxy.
 

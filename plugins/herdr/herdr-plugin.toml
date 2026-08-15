@@ -95,7 +95,7 @@ command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/mission-
 id = "onboarding"
 title = "ccxray Quick Start"
 placement = "tab"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/onboarding.js')"]
+command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/onboarding.js').main()"]
 
 [[panes]]
 id = "capability-review"
