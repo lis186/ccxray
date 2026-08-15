@@ -213,8 +213,9 @@ function mintBootstrapToken() {
 // the hub socket's `bootstrap-token` command). mintAutoOpenUrl is the in-
 // process convenience that mints + formats; safe only when this process is
 // also the one whose /_auth/redeem will be hit.
-function formatAutoOpenUrl(port, token) {
-  return `http://localhost:${port}/#k=${token}`;
+function formatAutoOpenUrl(port, token, opts = {}) {
+  const query = opts.sid ? `?s=${encodeURIComponent(opts.sid)}` : '';
+  return `http://localhost:${port}/${query}#k=${token}`;
 }
 
 function mintAutoOpenUrl(port) {

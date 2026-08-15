@@ -409,6 +409,10 @@ describe('mintAutoOpenUrl — launcher auto-bootstrap (Phase 2.4)', () => {
   it('formatAutoOpenUrl builds a URL from any caller-supplied token (hub-mode socket-minted)', () => {
     const auth = loadAuthFresh();
     assert.equal(auth.formatAutoOpenUrl(5577, 'tok-xyz'), 'http://localhost:5577/#k=tok-xyz');
+    assert.equal(
+      auth.formatAutoOpenUrl(5577, 'tok-xyz', { sid: 'session/one' }),
+      'http://localhost:5577/?s=session%2Fone#k=tok-xyz',
+    );
   });
 });
 

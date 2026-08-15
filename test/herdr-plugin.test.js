@@ -92,6 +92,7 @@ describe('Herdr plugin manifest', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     const paneBlock = manifest.match(/\[\[panes\]\][\s\S]*$/)?.[0] || '';
     assert.match(paneBlock, /HERDR_PLUGIN_ROOT/);
+    assert.match(paneBlock, /mission-control\.js'\)\.main\(\)/);
     assert.doesNotMatch(paneBlock, /command = \["node", "bin\/mission-control\.js"\]/);
   });
 
@@ -114,6 +115,12 @@ describe('Herdr plugin manifest', () => {
     assert.match(manifest, /\[\[startup\]\]\s+command = \["node", "bin\/open-onboarding\.js", "--first-run"\]/);
     assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"[\s\S]*command = \["node", "bin\/open-onboarding\.js"\]/);
     assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*bin\/onboarding\.js'\)\.main\(\)/);
+  });
+
+  it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
+    const manifest = fs.readFileSync(MANIFEST, 'utf8');
+    assert.match(manifest, /id = "capability-review"[\s\S]*title = "ccxray Capability Footprint \(Experimental\)"/);
+    assert.match(manifest, /capability-review\.js'\)\.main\(\)/);
   });
 });
 
@@ -142,9 +149,120 @@ describe('Quick Start keyboard menu', () => {
     };
     const items = menuItems(state);
     assert.equal(recommendedItemId(state), 'launch-codex');
-    assert.equal(moveSelection(items, 'launch-codex', 1), 'doctor');
-    assert.equal(moveSelection(items, 'doctor', -1), 'launch-codex');
+    assert.equal(moveSelection(items, 'launch-codex', 1), 'sidebar');
+    assert.equal(moveSelection(items, 'sidebar', -1), 'launch-codex');
     assert.equal(items.find(item => item.key === 'M').enabled, false);
+    assert.equal(items.find(item => item.key === 'S').detail, 'installed · Enter remove');
+  });
+});
+
+describe('Mission Control keyboard model', () => {
+  it('maps visible controls and preserves pane selection across refreshes', () => {
+    const {
+      missionKeyIntent,
+      moveMissionSelection,
+      reconcileMissionState,
+    } = require('../plugins/herdr/bin/mission-control');
+    assert.deepEqual(missionKeyIntent('\x1b[A'), { type: 'move', delta: -1 });
+    assert.deepEqual(missionKeyIntent('j'), { type: 'move', delta: 1 });
+    assert.deepEqual(missionKeyIntent('\r'), { type: 'focus' });
+    assert.deepEqual(missionKeyIntent('d'), { type: 'dashboard' });
+    assert.deepEqual(missionKeyIntent('f'), { type: 'filter' });
+    assert.deepEqual(missionKeyIntent('?'), { type: 'help' });
+    assert.deepEqual(missionKeyIntent('q'), { type: 'close' });
+
+    const rows = [
+      { paneId: 'w1:p1', severity: 'red' },
+      { paneId: 'w1:p2', severity: 'green' },
+      { paneId: 'w1:p3', severity: 'ready' },
+    ];
+    let state = reconcileMissionState({ selectedKey: 'w1:p2', selectedIndex: 1, filter: 'all' }, rows);
+    assert.equal(state.selectedKey, 'w1:p2');
+    state = reconcileMissionState(state, [rows[2], rows[1], rows[0]]);
+    assert.equal(state.selectedKey, 'w1:p2');
+    state = moveMissionSelection(state, [rows[2], rows[1], rows[0]], 1);
+    assert.equal(state.selectedKey, 'w1:p1');
+    state = reconcileMissionState(state, [rows[2], rows[1]]);
+    assert.equal(state.selectedKey, 'w1:p2');
+  });
+
+  it('cycles explicit filters and gives recovery feedback for unavailable actions', () => {
+    const {
+      cycleMissionFilter,
+      executeMissionAction,
+      filteredMissionRows,
+    } = require('../plugins/herdr/bin/mission-control');
+    const rows = [
+      { paneId: 'w1:p1', sessionId: 'session-red', severity: 'red' },
+      { paneId: 'w1:p2', sessionId: 'session-green', severity: 'green' },
+      { paneId: 'w1:p3', sessionId: 'session-ready', severity: 'ready' },
+    ];
+    assert.equal(cycleMissionFilter('all'), 'attention');
+    assert.equal(cycleMissionFilter('attention'), 'ready');
+    assert.equal(cycleMissionFilter('ready'), 'all');
+    assert.deepEqual(filteredMissionRows(rows, 'attention').map(row => row.paneId), ['w1:p1']);
+    assert.deepEqual(filteredMissionRows(rows, 'ready').map(row => row.paneId), ['w1:p3']);
+
+    const herdr = makeRecordingHerdr();
+    const env = {
+      ...process.env,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HOME: makeHome(),
+      BROWSER: 'none',
+    };
+    assert.equal(executeMissionAction({ type: 'focus' }, rows[0], env), 'Focused w1:p1.');
+    assert.match(fs.readFileSync(herdr.log, 'utf8'), /agent focus w1:p1/);
+    assert.equal(
+      executeMissionAction({ type: 'dashboard' }, rows[0], env),
+      'Dashboard unavailable: start a traced agent or run Doctor.',
+    );
+  });
+});
+
+describe('Herdr TUI primitives', () => {
+  it('keeps the selected row inside a stable scrolling viewport', () => {
+    const { budgetedListViewport, listViewport } = require('../plugins/herdr/bin/lib/tui');
+    assert.deepEqual(listViewport(12, 0, 4, 0), { start: 0, end: 4 });
+    assert.deepEqual(listViewport(12, 5, 4, 0), { start: 2, end: 6 });
+    assert.deepEqual(listViewport(12, 10, 4, 2), { start: 7, end: 11 });
+    assert.deepEqual(listViewport(2, 1, 4, 0), { start: 0, end: 2 });
+    assert.deepEqual(budgetedListViewport(12, 5, 3, 0), {
+      start: 4,
+      end: 6,
+      overflow: '↑ 4 · ↓ 6 more',
+      overflowBefore: true,
+    });
+  });
+
+  it('measures wide terminal glyphs and wraps without losing content', () => {
+    const { displayWidth, wrapText } = require('../plugins/herdr/bin/lib/tui');
+    assert.equal(displayWidth('ctx 模型 80%'), 12);
+    const source = 'Evidence: 模型 context remains visible';
+    const lines = wrapText(source, 16);
+    assert.equal(lines.join(' '), source);
+    assert.ok(lines.every(line => displayWidth(line) <= 16));
+  });
+});
+
+describe('Capability Footprint keyboard model', () => {
+  it('supports recognition-first navigation and stable selection', () => {
+    const {
+      capabilityKeyIntent,
+      moveCapabilitySelection,
+      reconcileCapabilityState,
+    } = require('../plugins/herdr/bin/capability-review');
+    assert.deepEqual(capabilityKeyIntent('k'), { type: 'move', delta: -1 });
+    assert.deepEqual(capabilityKeyIntent('\x1b[B'), { type: 'move', delta: 1 });
+    assert.deepEqual(capabilityKeyIntent('f'), { type: 'filter' });
+    assert.deepEqual(capabilityKeyIntent('r'), { type: 'refresh' });
+    assert.deepEqual(capabilityKeyIntent('?'), { type: 'help' });
+    assert.deepEqual(capabilityKeyIntent('q'), { type: 'close' });
+    const rows = [{ key: 'mcp:a' }, { key: 'mcp:b' }, { key: 'skill:tdd' }];
+    let state = reconcileCapabilityState({ selectedKey: 'mcp:b', selectedIndex: 1 }, rows);
+    state = reconcileCapabilityState(state, [rows[2], rows[1], rows[0]]);
+    assert.equal(state.selectedKey, 'mcp:b');
+    state = moveCapabilitySelection(state, [rows[2], rows[1], rows[0]], 1);
+    assert.equal(state.selectedKey, 'mcp:a');
   });
 });
 
@@ -166,12 +284,12 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /\[2\] Codex\s+available/);
     assert.match(result.stdout, /\[3\] Grok\s+not found/);
     assert.match(result.stdout, /\[M\] Mission Control\s+needs 1 session/);
-    assert.match(result.stdout, /\[R\] Capability Review\s+needs 5 sessions/);
-    assert.match(result.stdout, /↑↓ or j\/k move · Enter select/);
+    assert.match(result.stdout, /\[R\] Capability Footprint\s+experimental · needs 5/);
+    assert.match(result.stdout, /Up\/Down or j\/k move · Enter select/);
     assert.match(result.stdout, /Recommended: Launch Claude through ccxray/);
   });
 
-  it('Quick Start selects Capability Review after enough traced sessions', () => {
+  it('Quick Start keeps Mission Control primary and labels capability analysis experimental', () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({
       ...sampleEntry,
       id: `onboarding-${i}`,
@@ -189,8 +307,9 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /sessions\s+READY · 5 observed/);
     assert.match(result.stdout, /\[M\] Mission Control\s+live attention/);
-    assert.match(result.stdout, /› \[R\] Capability Review\s+5 sessions/);
-    assert.match(result.stdout, /Recommended: Review capability usage before changing configuration/);
+    assert.match(result.stdout, /› \[M\] Mission Control\s+live attention/);
+    assert.match(result.stdout, /\[R\] Capability Footprint\s+experimental · 5 sessions/);
+    assert.match(result.stdout, /Recommended: Inspect live pressure, cost, and failures/);
   });
 
   it('Quick Start keeps every cursor-menu row within a narrow pane', () => {
@@ -206,6 +325,10 @@ describe('Herdr plugin commands', () => {
     for (const line of result.stdout.trim().split('\n')) {
       assert.ok(line.length <= 39, `Quick Start line fits narrow pane: ${line}`);
     }
+    const readable = result.stdout.replace(/\s+/g, ' ');
+    assert.match(readable, /Capability Footprint experimental · needs 5/);
+    assert.match(readable, /Up\/Down or j\/k move · Enter select · 1-3 launch · q close/);
+    assert.match(readable, /Recommended: Inspect live pressure, cost, and failures\./);
   });
 
   it('opens Quick Start once at startup but allows an explicit reopen', () => {
@@ -332,6 +455,148 @@ describe('Herdr plugin commands', () => {
     for (const line of result.stdout.trim().split('\n')) {
       assert.ok(line.length <= 22, `line fits narrow pane: ${line}`);
     }
+  });
+
+  it('mission-control keeps the selected action readable in a narrow pane', () => {
+    const now = Date.now();
+    const entry = {
+      ...sampleEntry,
+      id: 'selected-risk',
+      sessionId: 'selected-risk-session',
+      agentId: 'herdr:w1:p1',
+      agentType: 'codex',
+      receivedAt: now,
+      usage: { input_tokens: 900, output_tokens: 10 },
+      cost: { cost: 0.30, confidence: 'exact' },
+      maxContext: 1000,
+      turnToolFail: false,
+    };
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome([entry]),
+      CCXRAY_HERDR_NOW_MS: String(now),
+      HERDR_BIN_PATH: makeHerdr([{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1',
+        agent_status: 'working', agent: 'codex',
+      }]),
+      CCXRAY_MISSION_COLS: '40',
+      CCXRAY_MISSION_ROWS: '24',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const readable = result.stdout.replace(/\s+/g, ' ');
+    assert.match(readable, /› RED w1:p1 codex/);
+    assert.match(readable, /Selected w1:p1 · codex · working/);
+    assert.match(readable, /Session: sonnet-4-6 · age now · 1 turn · 2 tools/);
+    assert.match(readable, /Why: context pressure 90%/);
+    assert.match(readable, /Next: compact or start fresh/);
+    assert.match(readable, /Evidence: pane\/session exact · cost exact · seen now/);
+    assert.match(readable, /Enter focus · d dashboard · f filter · r refresh · \? help · q close/);
+    for (const line of result.stdout.trim().split('\n')) {
+      assert.ok(line.length <= 39, `Mission Control line fits narrow pane: ${line}`);
+    }
+  });
+
+  it('mission-control keeps decisions and controls inside a 12-row pane', () => {
+    const now = Date.now();
+    const entry = {
+      ...sampleEntry,
+      id: 'short-pane',
+      sessionId: 'short-pane-session',
+      agentId: 'herdr:w1:p1',
+      receivedAt: now,
+      usage: { input_tokens: 900, output_tokens: 10 },
+      maxContext: 1000,
+    };
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome([entry]),
+      CCXRAY_HERDR_NOW_MS: String(now),
+      HERDR_BIN_PATH: makeHerdr([{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1',
+        agent_status: 'working', agent: 'claude',
+      }]),
+      CCXRAY_MISSION_COLS: '40',
+      CCXRAY_MISSION_ROWS: '12',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const lines = result.stdout.trim().split('\n');
+    const readable = lines.join(' ');
+    assert.ok(lines.length <= 12, `Mission Control stays within 12 rows: ${lines.length}`);
+    assert.match(readable, /Next: compact or start fresh/);
+    assert.match(readable, /Enter focus/);
+  });
+
+  it('mission-control preserves readable detail across common pane widths', () => {
+    const { displayWidth } = require('../plugins/herdr/bin/lib/tui');
+    const now = Date.now();
+    const entry = {
+      ...sampleEntry,
+      id: 'responsive-detail',
+      sessionId: 'responsive-session',
+      agentId: 'herdr:w1:p1',
+      agentType: 'claude',
+      model: 'claude-opus-5',
+      receivedAt: now,
+      usage: { input_tokens: 830, output_tokens: 20 },
+      maxContext: 1000,
+    };
+    const home = makeHome([entry]);
+    const herdr = makeHerdr([{
+      pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1',
+      agent_status: 'idle', agent: 'claude',
+    }]);
+
+    for (const width of [36, 48, 80, 120]) {
+      const result = runScript('mission-control.js', ['--once'], {
+        CCXRAY_HOME: home,
+        CCXRAY_HERDR_NOW_MS: String(now),
+        HERDR_BIN_PATH: herdr,
+        CCXRAY_MISSION_COLS: String(width),
+        CCXRAY_MISSION_ROWS: '24',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const readable = result.stdout.replace(/\s+/g, ' ');
+      assert.match(readable, /Session: opus-5 · age now · 1 turn · 2 tools/);
+      assert.match(readable, /Next: compact or start fresh/);
+      if (width === 36) {
+        assert.match(readable, /ccxray MC Filter all/);
+        assert.match(readable, /1 panes \/ 1 alert/);
+        assert.doesNotMatch(readable, /\$0\.12~/);
+      }
+      for (const line of result.stdout.trim().split('\n')) {
+        assert.ok(displayWidth(line) <= width - 1, `${width}-column line fits: ${line}`);
+      }
+    }
+  });
+
+  it('mission-control exposes overflow instead of silently dropping many agents', () => {
+    const now = Date.now();
+    const agents = Array.from({ length: 12 }, (_, index) => ({
+      pane_id: `w1:p${index + 1}`,
+      workspace_id: 'w1',
+      tab_id: 'w1:t1',
+      agent_status: 'working',
+      agent: index % 2 ? 'claude' : 'codex',
+    }));
+    const entries = agents.map((agent, index) => ({
+      ...sampleEntry,
+      id: `many-${index}`,
+      sessionId: `many-session-${index}`,
+      agentId: `herdr:${agent.pane_id}`,
+      agentType: agent.agent,
+      receivedAt: now - index,
+      usage: { input_tokens: 100 + index, output_tokens: 10 },
+      maxContext: 1000,
+    }));
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome(entries),
+      CCXRAY_HERDR_NOW_MS: String(now),
+      HERDR_BIN_PATH: makeHerdr(agents),
+      CCXRAY_MISSION_COLS: '52',
+      CCXRAY_MISSION_ROWS: '18',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /12 panes/);
+    assert.match(result.stdout, /↓ \d+ more/);
+    assert.match(result.stdout, /Selected w1:p1/);
   });
 
   it('mission-control ranks exact pane telemetry by actionable risk', () => {
@@ -463,7 +728,8 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /1 panes · 1 attention/);
-    assert.match(result.stdout, /READY w1:p8 claude · done · next review output/);
+    assert.match(result.stdout, /READY w1:p8 claude · done/);
+    assert.match(result.stdout, /Next: review output/);
     assert.doesNotMatch(result.stdout, /YELLOW w1:p8/);
   });
 
@@ -523,7 +789,8 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /2 panes · 1 attention/);
-    assert.match(result.stdout, /YELLOW w1:p6 codex · working · next inspect prompt\/tool diff/);
+    assert.match(result.stdout, /YELLOW w1:p6 codex · working/);
+    assert.match(result.stdout, /Next: inspect prompt\/tool diff/);
     assert.match(result.stdout, /cache dropped after prompt change/);
     assert.match(result.stdout, /GREEN w1:p5 claude · working/);
   });
@@ -600,15 +867,61 @@ describe('Herdr plugin commands', () => {
       CCXRAY_CAPABILITY_COLS: '100',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /ccxray Capability Review/);
+    assert.match(result.stdout, /ccxray Capability Footprint/);
+    assert.match(result.stdout, /Experimental · observations, not outcome-backed recommendations/);
     assert.match(result.stdout, /5 sessions with schema · estimates/);
-    assert.match(result.stdout, /MCP notion/);
-    assert.match(result.stdout, /schema ~1\.2K\/session · used 0\/5 eligible/);
-    assert.match(result.stdout, /DEFER CANDIDATE · validate with a project-scoped experiment/);
+    assert.match(result.stdout, /› MCP notion/);
+    assert.match(result.stdout, /Selected MCP notion/);
+    assert.match(result.stdout, /Observed: schema ~1\.2K\/session · used 0\/5 eligible/);
+    assert.match(result.stdout, /Interpretation: experiment candidate/);
+    assert.match(result.stdout, /Confidence: derived estimate · outcome impact unknown/);
+    assert.match(result.stdout, /Next: validate with a project-scoped experiment/);
     assert.match(result.stdout, /MCP github/);
     assert.match(result.stdout, /used 4\/5 eligible/);
-    assert.match(result.stdout, /KEEP/);
-    assert.match(result.stdout, /tdd · seen 3\/5 sessions · 6 calls · observed only/);
+    assert.match(result.stdout, /Skill tdd\s+seen 3\/5 sessions · 6 calls · observed only/);
+    assert.match(result.stdout, /Up\/Down or j\/k move · f filter · r refresh · \? help · q close/);
+  });
+
+  it('capability footprint preserves uncertainty and next steps in a narrow pane', () => {
+    const hash = 'abc123fed456';
+    const now = Date.now();
+    const home = makeHome([{
+      ...sampleEntry,
+      id: 'narrow-capability',
+      sessionId: 'narrow-capability-session',
+      receivedAt: now,
+      toolsHash: hash,
+      turnToolCalls: {},
+    }]);
+    writeToolDefinitions(home, hash, [
+      { name: 'mcp__notion__search', description: 'x'.repeat(4800), input_schema: { type: 'object' } },
+    ]);
+    const result = runScript('capability-review.js', ['--once'], {
+      CCXRAY_HOME: home,
+      CCXRAY_HERDR_NOW_MS: String(now),
+      CCXRAY_CAPABILITY_COLS: '36',
+      CCXRAY_CAPABILITY_ROWS: '18',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const readable = result.stdout.replace(/\s+/g, ' ');
+    assert.match(readable, /Experimental · observations, not outcome-backed recommendations/);
+    assert.match(readable, /Confidence: derived estimate · outcome impact unknown/);
+    assert.match(readable, /Next: collect at least 5 eligible sessions/);
+    for (const line of result.stdout.trim().split('\n')) {
+      assert.ok(line.length <= 35, `Capability Footprint line fits narrow pane: ${line}`);
+    }
+
+    const shortResult = runScript('capability-review.js', ['--once'], {
+      CCXRAY_HOME: home,
+      CCXRAY_HERDR_NOW_MS: String(now),
+      CCXRAY_CAPABILITY_COLS: '36',
+      CCXRAY_CAPABILITY_ROWS: '12',
+    });
+    assert.equal(shortResult.status, 0, shortResult.stderr);
+    const shortLines = shortResult.stdout.trim().split('\n');
+    assert.ok(shortLines.length <= 12, `Capability Footprint stays within 12 rows: ${shortLines.length}`);
+    assert.match(shortLines.join(' '), /Next: collect at least 5 eligible sessions/);
+    assert.match(shortLines.join(' '), /Up\/Down or j\/k move/);
   });
 
   it('focus-attention jumps to the highest-priority actionable pane', () => {

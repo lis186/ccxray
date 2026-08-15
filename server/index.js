@@ -682,6 +682,7 @@ function spawnStandaloneAgent(port, command, args) {
 if (process.argv[2] === 'open') {
   const lock = hub.readHubLock();
   const port = lock?.port || config.PORT;
+  const requestedSession = process.argv.find((arg, index) => process.argv[index - 1] === '--session') || null;
 
   (async () => {
     try {
@@ -721,7 +722,7 @@ if (process.argv[2] === 'open') {
         console.error('\x1b[31mHub did not return a token. Run "ccxray status" to check.\x1b[0m');
         process.exit(1);
       }
-      const url = `http://localhost:${port}/#k=${token}`;
+      const url = formatAutoOpenUrl(port, token, { sid: requestedSession });
       console.log(url);
       console.log('\x1b[90mOpen this URL in your browser (one-time, valid 60 seconds).\x1b[0m');
       if (!process.env.BROWSER && process.env.BROWSER !== 'none' && !process.env.CI && !process.env.SSH_TTY) {

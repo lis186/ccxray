@@ -12,6 +12,7 @@ const {
   runHerdr,
   statusReport,
 } = require('./lib/ccxray');
+const { displayWidth, truncateText, wrapText } = require('./lib/tui');
 
 const PROVIDERS = [
   { id: 'claude', label: 'Claude', key: '1' },
@@ -84,8 +85,7 @@ function recommendedItemId(state) {
   const provider = state.providers.find(item => item.available);
   if (!state.ccxrayReady || (state.sessions === 0 && !provider)) return 'doctor';
   if (state.sessions === 0) return `launch-${provider.id}`;
-  if (state.sessions < 5) return 'mission-control';
-  return 'capability-review';
+  return 'mission-control';
 }
 
 function recommendationText(state) {
@@ -95,8 +95,7 @@ function recommendationText(state) {
     if (!provider) return 'Install one supported CLI: claude, codex, or grok.';
     return `Launch ${provider.label} through ccxray.`;
   }
-  if (state.sessions < 5) return 'Inspect live pressure, cost, and failures.';
-  return 'Review capability usage before changing configuration.';
+  return 'Inspect live pressure, cost, and failures.';
 }
 
 function menuItems(state) {
@@ -122,19 +121,18 @@ function menuItems(state) {
     {
       id: 'capability-review',
       key: 'R',
-      label: 'Capability Review',
-      detail: state.sessions >= 5 ? `${state.sessions} sessions` : 'needs 5 sessions',
+      label: 'Capability Footprint',
+      detail: state.sessions >= 5 ? `experimental · ${state.sessions} sessions` : 'experimental · needs 5',
       enabled: state.sessions >= 5,
-      unavailableMessage: 'Capability Review needs at least five traced sessions.',
+      unavailableMessage: 'Capability Footprint needs at least five traced sessions.',
     },
     { type: 'section', label: 'Setup' },
     {
       id: 'sidebar',
       key: 'S',
       label: 'Sidebar summary',
-      detail: state.sidebar ? 'installed' : 'optional',
-      enabled: !state.sidebar,
-      unavailableMessage: 'Sidebar summary is already installed.',
+      detail: state.sidebar ? 'installed · Enter remove' : 'optional · Enter install',
+      enabled: true,
     },
     { id: 'doctor', key: 'D', label: 'Doctor', detail: 'diagnostics', enabled: true },
     { id: 'close', key: 'Q', label: 'Close', detail: '', enabled: true },
@@ -168,10 +166,20 @@ function normalizeSelection(items, selectedId, fallbackId) {
 
 function fitRow(left, right, cols) {
   const max = cols - 1;
-  if (!right) return left.slice(0, max);
-  const gap = max - left.length - right.length;
+  if (!right) return truncateText(left, max);
+  const gap = max - displayWidth(left) - displayWidth(right);
   if (gap >= 2) return `${left}${' '.repeat(gap)}${right}`;
-  return `${left} · ${right}`.slice(0, max);
+  return truncateText(`${left} · ${right}`, max);
+}
+
+function menuRowLines(left, right, cols) {
+  const max = cols - 1;
+  const gap = max - displayWidth(left) - displayWidth(right || '');
+  if (!right || gap >= 2) return [fitRow(left, right, cols)];
+  return [
+    truncateText(left, max),
+    ...wrapText(right, max, { initialIndent: '      ', subsequentIndent: '      ' }),
+  ];
 }
 
 function render(state, message = '', selectedId = recommendedItemId(state)) {
@@ -194,14 +202,20 @@ function render(state, message = '', selectedId = recommendedItemId(state)) {
     }
     const cursor = item.id === selectedId ? '›' : ' ';
     const left = `  ${cursor} [${item.key}] ${item.label}`;
-    const row = fitRow(left, item.detail, cols);
-    if (interactive && item.id === selectedId) console.log(`\x1b[7m${row}\x1b[0m`);
-    else if (interactive && !item.enabled) console.log(`\x1b[2m${row}\x1b[0m`);
-    else console.log(row);
+    const rows = menuRowLines(left, item.detail, cols);
+    for (const row of rows) {
+      if (interactive && item.id === selectedId) console.log(`\x1b[7m${row}\x1b[0m`);
+      else if (interactive && !item.enabled) console.log(`\x1b[2m${row}\x1b[0m`);
+      else console.log(row);
+    }
   }
   console.log('');
-  console.log(line('↑↓ or j/k move · Enter select · 1-3 launch · q close'));
-  console.log(line(message || `Recommended: ${recommendationText(state)}`));
+  for (const footerLine of wrapText('Up/Down or j/k move · Enter select · 1-3 launch · q close', cols - 1)) {
+    console.log(footerLine);
+  }
+  for (const messageLine of wrapText(message || `Recommended: ${recommendationText(state)}`, cols - 1)) {
+    console.log(messageLine);
+  }
 }
 
 function runNode(script, args = []) {
@@ -229,8 +243,13 @@ function executeItem(item, state) {
     return { message: resultMessage(result, `${provider.label} launched in a traced pane.`) };
   }
   if (item.id === 'sidebar') {
-    const result = runNode('install-sidebar-summary.js');
-    return { message: resultMessage(result, 'Sidebar summary installed.') };
+    const script = state.sidebar ? 'remove-sidebar-summary.js' : 'install-sidebar-summary.js';
+    const result = runNode(script);
+    return {
+      message: resultMessage(result, state.sidebar
+        ? 'Sidebar summary removed; backup retained.'
+        : 'Sidebar summary installed.'),
+    };
   }
   if (item.id === 'mission-control') {
     const result = runHerdr([
@@ -244,7 +263,7 @@ function executeItem(item, state) {
       'plugin', 'pane', 'open', '--plugin', 'ccxray.herdr',
       '--entrypoint', 'capability-review', '--placement', 'tab', '--focus',
     ], { timeoutMs: 5000 });
-    return { message: resultMessage(result, 'Capability Review opened.') };
+    return { message: resultMessage(result, 'Capability Footprint opened.') };
   }
   if (item.id === 'doctor') {
     const result = runNode('doctor.js');

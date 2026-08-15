@@ -973,6 +973,7 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     latestAt,
     observedStartedAt,
     observedLatestAt,
+    sessionAge: observedStartedAt ? formatAge(nowMs - observedStartedAt) : 'unknown',
     durationMs: allTurns.length > 1 && observedStartedAt && observedLatestAt
       ? Math.max(0, observedLatestAt - observedStartedAt)
       : 0,

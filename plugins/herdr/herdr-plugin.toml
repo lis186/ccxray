@@ -2,7 +2,7 @@ id = "ccxray.herdr"
 name = "ccxray"
 version = "0.3.0"
 min_herdr_version = "0.8.0"
-description = "X-ray vision for Herdr agent sessions: local ccxray health, usage, and live diagnostics."
+description = "Live Herdr session triage with context pressure, cost, evidence, and next actions."
 platforms = ["linux", "macos"]
 
 [[startup]]
@@ -89,7 +89,7 @@ command = ["node", "bin/focus-attention.js"]
 id = "mission-control"
 title = "ccxray Mission Control"
 placement = "split"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/mission-control.js')"]
+command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/mission-control.js').main()"]
 
 [[panes]]
 id = "onboarding"
@@ -99,6 +99,6 @@ command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/onboardi
 
 [[panes]]
 id = "capability-review"
-title = "ccxray Capability Review"
+title = "ccxray Capability Footprint (Experimental)"
 placement = "tab"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/capability-review.js')"]
+command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/capability-review.js').main()"]
