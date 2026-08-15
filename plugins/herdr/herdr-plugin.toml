@@ -6,99 +6,99 @@ description = "Live Herdr session triage with context pressure, cost, evidence, 
 platforms = ["linux", "macos"]
 
 [[startup]]
-command = ["node", "bin/refresh-all-badges.js"]
+command = ["bin/run-node.sh", "bin/refresh-all-badges.js"]
 
 [[startup]]
-command = ["node", "bin/open-onboarding.js", "--first-run"]
+command = ["bin/run-node.sh", "bin/open-onboarding.js", "--first-run"]
 
 [[events]]
 on = "pane.agent_detected"
-command = ["node", "bin/refresh-badges.js"]
+command = ["bin/run-node.sh", "bin/refresh-badges.js"]
 
 [[events]]
 on = "pane.agent_status_changed"
-command = ["node", "bin/refresh-badges.js"]
+command = ["bin/run-node.sh", "bin/refresh-badges.js"]
 
 [[actions]]
 id = "doctor"
 title = "ccxray doctor"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/doctor.js"]
+command = ["bin/run-node.sh", "bin/doctor.js"]
 
 [[actions]]
 id = "quick-start"
 title = "Open ccxray Quick Start"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/open-onboarding.js"]
+command = ["bin/run-node.sh", "bin/open-onboarding.js"]
 
 [[actions]]
 id = "launch-claude"
 title = "Launch Claude via ccxray"
 contexts = ["workspace", "pane"]
-command = ["node", "bin/launch-agent.js", "claude"]
+command = ["bin/run-node.sh", "bin/launch-agent.js", "claude"]
 
 [[actions]]
 id = "launch-codex"
 title = "Launch Codex via ccxray"
 contexts = ["workspace", "pane"]
-command = ["node", "bin/launch-agent.js", "codex"]
+command = ["bin/run-node.sh", "bin/launch-agent.js", "codex"]
 
 [[actions]]
 id = "launch-grok"
 title = "Launch Grok via ccxray"
 contexts = ["workspace", "pane"]
-command = ["node", "bin/launch-agent.js", "grok"]
+command = ["bin/run-node.sh", "bin/launch-agent.js", "grok"]
 
 [[actions]]
 id = "install-sidebar-summary"
 title = "Install ccxray sidebar summary rows"
 contexts = ["global"]
-command = ["node", "bin/install-sidebar-summary.js"]
+command = ["bin/run-node.sh", "bin/install-sidebar-summary.js"]
 
 [[actions]]
 id = "remove-sidebar-summary"
 title = "Remove ccxray sidebar summary rows"
 contexts = ["global"]
-command = ["node", "bin/remove-sidebar-summary.js"]
+command = ["bin/run-node.sh", "bin/remove-sidebar-summary.js"]
 
 [[actions]]
 id = "usage-summary"
 title = "ccxray usage summary"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/usage-summary.js"]
+command = ["bin/run-node.sh", "bin/usage-summary.js"]
 
 [[actions]]
 id = "open-dashboard"
 title = "Open ccxray dashboard"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/open-dashboard.js"]
+command = ["bin/run-node.sh", "bin/open-dashboard.js"]
 
 [[actions]]
 id = "refresh-badges"
 title = "Refresh ccxray badges"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/refresh-badges.js"]
+command = ["bin/run-node.sh", "bin/refresh-badges.js"]
 
 [[actions]]
 id = "focus-attention"
 title = "Focus highest-priority ccxray agent"
 contexts = ["global", "workspace", "pane"]
-command = ["node", "bin/focus-attention.js"]
+command = ["bin/run-node.sh", "bin/focus-attention.js"]
 
 [[panes]]
 id = "mission-control"
 title = "ccxray Mission Control"
 placement = "split"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/mission-control.js').main()"]
+command = ["bin/run-node.sh", "bin/mission-control.js"]
 
 [[panes]]
 id = "onboarding"
 title = "ccxray Quick Start"
 placement = "tab"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/onboarding.js').main()"]
+command = ["bin/run-node.sh", "bin/onboarding.js"]
 
 [[panes]]
 id = "capability-review"
 title = "ccxray Capability Footprint (Experimental)"
 placement = "tab"
-command = ["node", "-e", "require(process.env.HERDR_PLUGIN_ROOT + '/bin/capability-review.js').main()"]
+command = ["bin/run-node.sh", "bin/capability-review.js"]

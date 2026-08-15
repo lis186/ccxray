@@ -4,7 +4,7 @@ Live session triage for Claude, Codex, and Grok in Herdr: see what needs attenti
 
 ## Install
 
-Requirements: Herdr 0.8.0 or newer, Node.js 18 or newer, and at least one supported agent CLI.
+Requirements: Herdr 0.8.0 or newer, Node.js 18 or newer, and at least one supported agent CLI. The plugin accepts `CCXRAY_NODE=/absolute/path/to/node`; if `node` is a nonfunctional mise shim, it automatically uses the newest installed mise Node version.
 
 ```bash
 herdr plugin install lis186/ccxray/plugins/herdr

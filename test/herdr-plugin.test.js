@@ -81,19 +81,19 @@ describe('Herdr plugin manifest', () => {
     assert.match(manifest, /^\[\[actions\]\]$/m);
     assert.match(manifest, /^\[\[panes\]\]$/m);
 
-    const commandMatches = [...manifest.matchAll(/command = \["node", "([^"]+)"\]/g)];
+    const commandMatches = [...manifest.matchAll(/command = \["bin\/run-node\.sh", "([^"]+)"/g)];
     assert.ok(commandMatches.length >= 4);
+    assert.ok(fs.statSync(path.join(PLUGIN, 'bin', 'run-node.sh')).mode & 0o111, 'Node launcher is executable');
     for (const [, rel] of commandMatches) {
       assert.ok(fs.existsSync(path.join(PLUGIN, rel)), `${rel} exists`);
     }
   });
 
-  it('resolves the Mission Control script from HERDR_PLUGIN_ROOT', () => {
+  it('starts Mission Control directly through the shared Node launcher', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     const paneBlock = manifest.match(/\[\[panes\]\][\s\S]*$/)?.[0] || '';
-    assert.match(paneBlock, /HERDR_PLUGIN_ROOT/);
-    assert.match(paneBlock, /mission-control\.js'\)\.main\(\)/);
-    assert.doesNotMatch(paneBlock, /command = \["node", "bin\/mission-control\.js"\]/);
+    assert.match(paneBlock, /command = \["bin\/run-node\.sh", "bin\/mission-control\.js"\]/);
+    assert.match(fs.readFileSync(path.join(PLUGIN, 'bin', 'mission-control.js'), 'utf8'), /if \(require\.main === module\) main\(\)/);
   });
 
   it('keeps outcomes and cross-session value comparison out of the Herdr plugin', () => {
@@ -105,22 +105,22 @@ describe('Herdr plugin manifest', () => {
 
   it('automatically refreshes sidebar metadata at startup and agent state changes', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
-    assert.match(manifest, /\[\[startup\]\]\s+command = \["node", "bin\/refresh-all-badges\.js"\]/);
-    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_detected"\s+command = \["node", "bin\/refresh-badges\.js"\]/);
-    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_status_changed"\s+command = \["node", "bin\/refresh-badges\.js"\]/);
+    assert.match(manifest, /\[\[startup\]\]\s+command = \["bin\/run-node\.sh", "bin\/refresh-all-badges\.js"\]/);
+    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_detected"\s+command = \["bin\/run-node\.sh", "bin\/refresh-badges\.js"\]/);
+    assert.match(manifest, /\[\[events\]\]\s+on = "pane\.agent_status_changed"\s+command = \["bin\/run-node\.sh", "bin\/refresh-badges\.js"\]/);
   });
 
   it('declares a one-time Quick Start startup hook, action, and pane', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
-    assert.match(manifest, /\[\[startup\]\]\s+command = \["node", "bin\/open-onboarding\.js", "--first-run"\]/);
-    assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"[\s\S]*command = \["node", "bin\/open-onboarding\.js"\]/);
-    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*bin\/onboarding\.js'\)\.main\(\)/);
+    assert.match(manifest, /\[\[startup\]\]\s+command = \["bin\/run-node\.sh", "bin\/open-onboarding\.js", "--first-run"\]/);
+    assert.match(manifest, /id = "quick-start"[\s\S]*title = "Open ccxray Quick Start"[\s\S]*command = \["bin\/run-node\.sh", "bin\/open-onboarding\.js"\]/);
+    assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"[\s\S]*command = \["bin\/run-node\.sh", "bin\/onboarding\.js"\]/);
   });
 
   it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     assert.match(manifest, /id = "capability-review"[\s\S]*title = "ccxray Capability Footprint \(Experimental\)"/);
-    assert.match(manifest, /capability-review\.js'\)\.main\(\)/);
+    assert.match(manifest, /command = \["bin\/run-node\.sh", "bin\/capability-review\.js"\]/);
   });
 });
 
@@ -1370,6 +1370,34 @@ describe('Herdr plugin commands', () => {
     assert.ok(parts.includes('/tmp/ccxray-demo-home/.grok/bin'));
     assert.ok(parts.includes('/Applications/ChatGPT.app/Contents/Resources'));
     assert.ok(parts.includes('/opt/homebrew/bin'));
+  });
+
+  it('run-node recovers when node is an inactive mise shim', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-node-'));
+    const target = path.join(dir, 'target.js');
+    fs.writeFileSync(target, 'process.stdout.write("NODE_FALLBACK_OK")\n');
+    fs.writeFileSync(path.join(dir, 'node'), '#!/bin/sh\nexit 1\n');
+    fs.writeFileSync(path.join(dir, 'mise'), [
+      '#!/bin/sh',
+      'if [ "$1" = "latest" ]; then printf "%s\\n" "22.22.2"; exit 0; fi',
+      'if [ "$1" = "exec" ]; then',
+      '  shift; shift; shift; shift',
+      `  exec ${JSON.stringify(process.execPath)} "$@"`,
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'));
+    fs.chmodSync(path.join(dir, 'node'), 0o755);
+    fs.chmodSync(path.join(dir, 'mise'), 0o755);
+
+    const result = spawnSync(path.join(PLUGIN, 'bin', 'run-node.sh'), [target], {
+      cwd: PLUGIN,
+      env: { ...process.env, PATH: dir, CCXRAY_NODE: '' },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'NODE_FALLBACK_OK');
   });
 
   it('install-sidebar-summary appends a safe sidebar row with a backup', () => {
