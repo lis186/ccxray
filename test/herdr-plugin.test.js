@@ -211,6 +211,25 @@ describe('Herdr workspace scope', () => {
     assert.equal(scoped.scope.cwd, '/shared');
   });
 
+  it('deduplicates a live pane turn from its later transcript import', () => {
+    const { filterEntriesToWorkspace } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      {
+        id: 'live', sessionId: 'session-1', responseId: 'response-1',
+        agentId: 'herdr:w1:p1', cwd: '/work/one', imported: false,
+      },
+      {
+        id: 'imported', sessionId: 'session-1', responseId: 'response-1',
+        cwd: '/work/one', imported: true,
+      },
+    ];
+    const scoped = filterEntriesToWorkspace(entries, {
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: '/work/one' }),
+    });
+    assert.deepEqual(scoped.entries.map(entry => entry.id), ['live']);
+  });
+
   it('remembers an exact plugin-routed pane until its first trace arrives', () => {
     const {
       recordRoutedPane,

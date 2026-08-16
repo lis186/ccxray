@@ -1093,17 +1093,39 @@ function currentWorkspaceScope(env = process.env) {
   return { kind: 'workspace', workspaceId, cwd };
 }
 
+function dedupeObservedEntries(entries) {
+  const unique = [];
+  const indexes = new Map();
+  const score = entry => (entry.agentId ? 4 : 0)
+    + (!entry.imported ? 2 : 0)
+    + (entry.responseMetadata ? 1 : 0);
+
+  for (const entry of entries) {
+    const responseId = entry.responseId || entry.responseMetadata?.id;
+    const key = responseId ? `${entry.sessionId || ''}:${responseId}` : null;
+    if (!key || !indexes.has(key)) {
+      if (key) indexes.set(key, unique.length);
+      unique.push(entry);
+      continue;
+    }
+    const index = indexes.get(key);
+    if (score(entry) > score(unique[index])) unique[index] = entry;
+  }
+  return unique;
+}
+
 function filterEntriesToWorkspace(entries, env = process.env) {
   const scope = currentWorkspaceScope(env);
-  if (scope.kind === 'global') return { entries: entries.slice(), scope };
+  if (scope.kind === 'global') return { entries: dedupeObservedEntries(entries), scope };
   const agentPrefix = scope.workspaceId ? `herdr:${scope.workspaceId}:` : null;
+  const filtered = entries.filter(entry => {
+    const agentId = String(entry.agentId || '');
+    if (agentId.startsWith('herdr:')) return Boolean(agentPrefix && agentId.startsWith(agentPrefix));
+    return Boolean(scope.cwd && entry.cwd === scope.cwd);
+  });
   return {
     scope,
-    entries: entries.filter(entry => {
-      const agentId = String(entry.agentId || '');
-      if (agentId.startsWith('herdr:')) return Boolean(agentPrefix && agentId.startsWith(agentPrefix));
-      return Boolean(scope.cwd && entry.cwd === scope.cwd);
-    }),
+    entries: dedupeObservedEntries(filtered),
   };
 }
 
