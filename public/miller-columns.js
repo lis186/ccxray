@@ -22,6 +22,16 @@ let entryCount = 0;
 // it would relaunder an interpretation as a fact (ADR 0013). A display site that
 // asserts context pressure (colour, "compact soon") must consult this before
 // treating a percentage as measured. See docs/decisions/0013-*.
+// INVARIANT: four states — 'declared' | 'observed' | 'contradicted' | 'default'.
+// A consumer that only special-cases 'default' silently treats 'contradicted' as a
+// resolved window and renders a clamped, unmarked percentage — worse than what it
+// replaced. Handle the enum exhaustively, or ask `ctxWindowUnverified()` instead.
+// See docs/decisions/0013-beta1m-persist-session-window-derive.md.
+function ctxWindowUnverified(sid) {
+  const src = sessionCtxWindowSource(sid);
+  return src === 'default' || src === 'contradicted';
+}
+
 function sessionCtxWindowSource(sid) {
   const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
   // Read the window that is actually rendered, then ask what produced it. Deriving
@@ -29,6 +39,12 @@ function sessionCtxWindowSource(sid) {
   // exceeded 200K reported `observed` while the fold still returned 200K, so the
   // marker went quiet on a denominator the data had already disproved.
   const win = sessionCtxWindow(sid);
+  // The numerator the card actually renders. Checking it directly is what makes the
+  // label describe the number rather than a parallel derivation of it: `allEntries`
+  // can be truncated and cold-load rows carry no usage, so an entry scan alone
+  // would report a resolved window for a ratio already over 100%.
+  const foldUsed = sessionsMap.get(sid)?.latestMainCtxUsed || 0;
+  if (foldUsed > win) return 'contradicted';
   let declared = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
@@ -42,6 +58,9 @@ function sessionCtxWindowSource(sid) {
       const usedCtx = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
       if (usedCtx > win) return 'contradicted';
     }
+    // `contradictedByFold` below is the load-bearing half: this loop can only see
+    // turns the client still holds, and the overflowing one may have been evicted
+    // or arrived without a usage object.
     // `beta1m` only — NOT bare `ctxBeta`. The header rides every request on a beta
     // account, including turns whose declaration the capability gate refused
     // (haiku title-gen, a model the gate does not know yet). Treating its mere
@@ -1568,10 +1587,12 @@ function renderSessionItem(sess, sid, sessEl) {
     : '';
   // #339: divide the latest main turn's raw ctxUsed by the render-time session window.
   // The clamp keeps a bad denominator from painting an absurd bar, but on a window
-  // the data has already disproved it also erases the disagreement: "100%" reads as
-  // "full" when the truth is "we do not know the window and it is larger than this".
-  // Clamp the bar, mark the number.
-  const ctxPct = sess.latestMainCtxUsed ? Math.min(100, sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100) : 0;
+  // the data has already disproved it, clamping the NUMBER erases the disagreement:
+  // "100%" reads as "full" when the ratio is genuinely above 100. Clamp the bar,
+  // report the number — a `≤100%` on a clamped value would even assert the opposite
+  // inequality to the one the evidence supports.
+  const ctxRatio = sess.latestMainCtxUsed ? sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100 : 0;
+  const ctxPct = Math.min(100, ctxRatio);
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
   // light up red/yellow — prevents sea-of-red when scanning the session list.
@@ -1594,7 +1615,7 @@ function renderSessionItem(sess, sid, sessEl) {
         : windowAssumed
           ? ' title="No window evidence for this session — ' + windowSizeStr + ' assumed, so this percentage is an upper bound. A turn that declares the context-1m header, or one that exceeds the default, resolves it."'
           : '') +
-      '>' + (windowContradicted ? '\u2264' : '') + Math.round(ctxPct) + '%' +
+      '>' + Math.round(windowContradicted ? ctxRatio : ctxPct) + '%' +
       (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + (windowContradicted ? '\u2717' : windowAssumed ? '?' : '') + '</span>' : '') +
       '</span>'
     : '';

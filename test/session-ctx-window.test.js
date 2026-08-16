@@ -60,6 +60,7 @@ function loadCtx(includeEntryRendering) {
     this.sessionsMap = sessionsMap;
     this.sessionCtxWindow = sessionCtxWindow;
     this.sessionCtxWindowSource = sessionCtxWindowSource;
+    this.ctxWindowUnverified = ctxWindowUnverified;
     this.turnCtxWindow = turnCtxWindow;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
@@ -324,6 +325,28 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     ctx.allEntries.push(turn(false));
     ctx.allEntries.push({ ...turn(true), isSubagent: true, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reports contradicted from the fold when the overflowing turn is gone (fail-on-old)', () => {
+    // The card divides `latestMainCtxUsed` from the server fold, not the entries the
+    // client happens to hold. With the overflowing turn evicted (or a cold-load row
+    // that carries no usage), an entry scan alone reported a resolved window for a
+    // ratio already over 100%.
+    ctx.sessionsMap.set('s4', { latestMainCtxUsed: 260000, maxContext: 200000, beta1m: false });
+    assert.equal(ctx.sessionCtxWindow('s4'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s4'), 'contradicted');
+    // …and it outranks a declaration carried by that same fold.
+    ctx.sessionsMap.set('s5', { latestMainCtxUsed: 1200000, maxContext: 1000000, beta1m: true });
+    assert.equal(ctx.sessionCtxWindowSource('s5'), 'contradicted');
+  });
+
+  it('ctxWindowUnverified covers every state that must not read as resolved', () => {
+    ctx.sessionsMap.set('s6', { latestMainCtxUsed: 260000, maxContext: 200000, beta1m: false });
+    assert.equal(ctx.ctxWindowUnverified('s6'), true, 'contradicted');
+    ctx.allEntries.push(turn(false));
+    assert.equal(ctx.ctxWindowUnverified('s1'), true, 'default');
+    ctx.allEntries.push({ ...turn(false), sessionId: 's7', beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.ctxWindowUnverified('s7'), false, 'declared');
   });
 
   it('reads the server fold when the client no longer holds the turns', () => {
