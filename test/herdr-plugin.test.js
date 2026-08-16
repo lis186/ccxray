@@ -2339,6 +2339,35 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /backup:/);
   });
 
+  // remove-sidebar-summary restores its backup when `herdr config check` rejects
+  // the result; install did not, so a rejected merge left the user's own herdr
+  // config in the broken state and only printed where the backup was.
+  it('install-sidebar-summary restores the config when herdr rejects it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-badcheck-'));
+    const configPath = path.join(dir, 'config.toml');
+    const original = '[ui]\nshow_agent_labels_on_pane_borders = true\n';
+    fs.writeFileSync(configPath, original);
+    const bin = path.join(dir, 'herdr');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "if (process.argv[2] === 'config' && process.argv[3] === 'check') {",
+      "  process.stderr.write('invalid table\\n'); process.exit(1);",
+      '}',
+      "process.stdout.write('{}\\n');",
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('install-sidebar-summary.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      HERDR_BIN_PATH: bin,
+    });
+    assert.equal(result.status, 1);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), original,
+      "a rejected merge must not leave the user's config rewritten");
+    assert.match(result.stderr, /restored/i);
+  });
+
   it('uses XDG_CONFIG_HOME consistently for sidebar detection and installation', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-home-'));
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-xdg-'));

@@ -202,7 +202,17 @@ function writeAndReload(file, before, next, action) {
   process.stdout.write(check.stdout || '');
   process.stderr.write(check.stderr || '');
   if (check.status !== 0 || check.error) {
-    console.error(`Herdr config check failed; backup: ${backup || 'none'}`);
+    // Put the user's own config back. Printing where the backup lives and
+    // leaving the rejected merge in place hands them a herdr that will not
+    // start and a manual recovery step — remove-sidebar-summary has always
+    // restored here, and install must be symmetric with it.
+    if (backup) {
+      fs.copyFileSync(backup, file);
+      console.error(`Herdr config check failed; restored ${backup}`);
+    } else {
+      fs.rmSync(file, { force: true });
+      console.error('Herdr config check failed; restored the absent config');
+    }
     process.exit(1);
   }
 
