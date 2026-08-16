@@ -230,6 +230,37 @@ describe('Herdr workspace scope', () => {
     assert.deepEqual(scoped.entries.map(entry => entry.id), ['live']);
   });
 
+  it('recovers the project cwd when a plugin pane is focused', () => {
+    const { currentWorkspaceScope } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-scope-'));
+    const bin = path.join(dir, 'herdr');
+    const response = {
+      id: 'test',
+      result: {
+        type: 'pane_list',
+        panes: [
+          { pane_id: 'w1:p1', workspace_id: 'w1', cwd: '/work/project' },
+          { pane_id: 'w1:p2', workspace_id: 'w1', cwd: PLUGIN, label: 'ccxray Mission Control' },
+        ],
+      },
+    };
+    fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(response) + '\n')});\n`);
+    fs.chmodSync(bin, 0o755);
+
+    const scope = currentWorkspaceScope({
+      ...process.env,
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_ROOT: PLUGIN,
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        workspace_id: 'w1',
+        focused_pane_cwd: PLUGIN,
+        workspace_cwd: PLUGIN,
+      }),
+    });
+    assert.equal(scope.cwd, '/work/project');
+  });
+
   it('remembers an exact plugin-routed pane until its first trace arrives', () => {
     const {
       recordRoutedPane,

@@ -1084,11 +1084,39 @@ function readHerdrContext(env = process.env) {
   try { return JSON.parse(env.HERDR_PLUGIN_CONTEXT_JSON); } catch { return null; }
 }
 
+function cwdInsidePlugin(cwd, env = process.env) {
+  if (!cwd) return false;
+  const root = path.resolve(pluginRoot(env));
+  const candidate = path.resolve(cwd);
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function recoverWorkspaceCwd(workspaceId, env = process.env) {
+  if (!workspaceId) return null;
+  const result = runHerdr(['pane', 'list'], { env, timeoutMs: 1200 });
+  if (result.status !== 0 || result.error) return null;
+  const data = parseJsonOutput(result.stdout);
+  const panes = data?.result?.panes || [];
+  const candidates = panes.filter(pane => pane.workspace_id === workspaceId
+    && pane.cwd
+    && !cwdInsidePlugin(pane.cwd, env));
+  candidates.sort((left, right) => {
+    const leftRoot = /:p1$/.test(left.pane_id || '') ? 0 : 1;
+    const rightRoot = /:p1$/.test(right.pane_id || '') ? 0 : 1;
+    return leftRoot - rightRoot;
+  });
+  return candidates[0]?.cwd || null;
+}
+
 function currentWorkspaceScope(env = process.env) {
   const runtime = herdrRuntime(env);
   const context = runtime.context || {};
   const workspaceId = runtime.workspaceId || context.workspace_id || null;
-  const cwd = context.focused_pane_cwd || context.workspace_cwd || null;
+  const reportedCwd = context.focused_pane_cwd || context.workspace_cwd || null;
+  const cwd = (!reportedCwd || cwdInsidePlugin(reportedCwd, env))
+    ? recoverWorkspaceCwd(workspaceId, env) || reportedCwd
+    : reportedCwd;
   if (!workspaceId && !cwd) return { kind: 'global', workspaceId: null, cwd: null };
   return { kind: 'workspace', workspaceId, cwd };
 }

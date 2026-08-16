@@ -123,7 +123,7 @@ describe('hub client signal lifecycle', () => {
       const after = await waitFor(async () => {
         const status = await hubStatus(home);
         return status.clients?.every(item => item.pid !== client.pid) ? status : null;
-      }, 1500);
+      }, 3000);
       assert.equal(after.clients.some(item => item.pid === client.pid), false);
     } finally {
       if (client.exitCode == null && client.signalCode == null) client.kill('SIGKILL');

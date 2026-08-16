@@ -5,6 +5,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
+const { mergeByResponseId } = require('./store');
 
 const HELP = `Usage: ccxray usage [options]
 
@@ -50,6 +51,25 @@ function parseArgs(argv) {
     }
   }
   return args;
+}
+
+function dedupeEntries(entries) {
+  const seen = new Set();
+  let hasDuplicate = false;
+  for (const entry of entries) {
+    const responseId = entry?.responseId;
+    if (!responseId) continue;
+    if (seen.has(responseId)) {
+      hasDuplicate = true;
+      break;
+    }
+    seen.add(responseId);
+  }
+  if (!hasDuplicate) return entries;
+
+  // mergeByResponseId deliberately folds into its canonical object. Usage is a
+  // read-only command, so merge cloned index summaries and leave callers intact.
+  return mergeByResponseId(structuredClone(entries));
 }
 
 async function run(argv) {
@@ -99,6 +119,10 @@ async function run(argv) {
       });
     });
   }
+  // A live proxy observation and a later transcript import can describe the
+  // same provider response. Resolve those copies before smart session aliases,
+  // grouping, and totals so `costliest` and every aggregate see one turn.
+  entries = dedupeEntries(entries);
   // ponytail: #1 smart --session — resolved AFTER --last/--cwd so `latest` and
   // `costliest` pick the newest/priciest session *within* the filtered scope,
   // not globally (alias → UUID prefix → title substring).
@@ -179,6 +203,7 @@ async function run(argv) {
 // ── Analysis ────────────────────────────────────────────────────────────
 
 function analyze(entries, opts = {}) {
+  entries = dedupeEntries(entries);
   const timestamps = [];
   const byProvider = {};
   const bySession = {};
