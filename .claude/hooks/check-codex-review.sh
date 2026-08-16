@@ -160,8 +160,25 @@ while [ "${REST#*gh pr merge}" != "$REST" ]; do
     BODY=$(gh pr view "$PR_NUM" --json body --jq '.body' 2>/dev/null || echo "")
   fi
 
-  if ! echo "$BODY" | grep -qiE 'codex gate clean|codex review|codex-exempt'; then
-    block "PR #$PR_NUM body missing codex review evidence — run /codex-loop first"
+  # The gate is "a second reviewer ran to completion and the PR says so", not "codex
+  # specifically". codex is the default; grok is accepted because the codex CLI goes
+  # unavailable on its own account quota, and a gate that cannot be satisfied for a
+  # week gets routed around rather than obeyed (2026-08-17).
+  #
+  # The grok alternative is the COMPLETION MARKER ONLY — `grok gate clean`, the
+  # phrase the review loop terminates with. Not a bare `grok review`, which as an
+  # unanchored substring also matches "TODO: grok review after CI", "please grok
+  # review this" and "grok reviewer signed off": a body that names the reviewer
+  # while saying the review has NOT happened would pass. (The legacy `codex review`
+  # alternative carries that same looseness; it is left alone because existing PR
+  # bodies depend on it, and tightening it belongs in its own change.)
+  #
+  # Same threat model as the rest of this script: a guard against ACCIDENTAL
+  # unreviewed merges by the repo's own trusted agent, not against evasion. It stays
+  # a textual check because the alternative — verifying a review actually happened —
+  # is not something a merge-time hook can do.
+  if ! echo "$BODY" | grep -qiE 'codex gate clean|codex review|codex-exempt|grok gate clean'; then
+    block "PR #$PR_NUM body missing second-review evidence — run /codex-loop (or the grok equivalent) and record which reviewer ran"
   fi
 done
 
