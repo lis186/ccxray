@@ -2442,6 +2442,31 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stderr, /restored/i);
   });
 
+  // Herdr's documentation shows sidebar rows in comments. A config carrying a
+  // commented-out example dead-ended the install: the token test matched it, so
+  // the script said the row already existed, while the row regexes (which need a
+  // real `[{ … }],` line) found nothing to insert below.
+  it('install-sidebar-summary ignores a commented-out example row', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-comment-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui]',
+      '# example row you can copy:',
+      '#   [{ token = "$summary", fg = "#89b4fa" }],',
+      '',
+    ].join('\n'));
+    const result = runScript('install-sidebar-summary.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /\[ui\.sidebar\.agents\]/);
+    assert.match(config, /\$ctx_bar_green/);
+    // The user's comment is theirs; leave it alone.
+    assert.match(config, /# example row you can copy:/);
+  });
+
   it('uses XDG_CONFIG_HOME consistently for sidebar detection and installation', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-home-'));
     const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-xdg-'));

@@ -41,8 +41,20 @@ function tokenRegex(token) {
   return new RegExp(`token\\s*=\\s*"\\$${escaped}"`);
 }
 
+// Row detection must not see commented-out examples. Herdr's own documentation
+// shows sidebar rows in comments, and a config carrying one dead-ended the
+// install: `hasToken` matched the commented `$summary`, so the script reported
+// "Herdr already has a $summary sidebar row", while the row regexes — which
+// require a real `[{ … }],` line — found nothing to insert below, leaving the
+// user with a manual-add message and no way to proceed.
+// Line-leading comments are what actually occur; a token hidden in a trailing
+// comment after real content is not handled and would still be seen.
+function stripCommentLines(config) {
+  return String(config).replace(/^[ \t]*#.*$/gm, '');
+}
+
 function hasToken(config, token) {
-  return tokenRegex(token).test(config);
+  return tokenRegex(token).test(stripCommentLines(config));
 }
 
 function hasColorRows(config) {
