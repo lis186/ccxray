@@ -1705,6 +1705,34 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.stdout, 'NODE_FALLBACK_OK');
   });
 
+  it('run-node finds an installed mise Node when a Herdr pane has a minimal PATH', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-minimal-path-'));
+    const bin = path.join(home, '.local', 'share', 'mise', 'installs', 'node', '22.22.2', 'bin');
+    const target = path.join(home, 'target.js');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(target, 'process.stdout.write("MINIMAL_PATH_OK")\n');
+    fs.writeFileSync(path.join(bin, 'node'), [
+      '#!/bin/sh',
+      `exec ${JSON.stringify(process.execPath)} "$@"`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(path.join(bin, 'node'), 0o755);
+
+    const result = spawnSync(path.join(PLUGIN, 'bin', 'run-node.sh'), [target], {
+      cwd: PLUGIN,
+      env: {
+        ...process.env,
+        HOME: home,
+        PATH: '/usr/bin:/bin',
+        CCXRAY_NODE: '',
+      },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, 'MINIMAL_PATH_OK');
+  });
+
   it('dependency install recovers when npm is an inactive mise shim', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-npm-'));
     const log = path.join(dir, 'mise-args.log');
