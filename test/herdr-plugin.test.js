@@ -2087,6 +2087,67 @@ describe('Herdr plugin commands', () => {
     assert.doesNotMatch(result.stdout, /plugins[/\\]herdr/);
   });
 
+  // `herdr pane run` timing out is not the same as failing: herdr may already
+  // have started the command. Forgetting the routed record on an unknown outcome
+  // is the harmful choice — if the pane did start, its badge never recognises it.
+  it('launch-agent keeps the routed record when pane run times out', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slowrun-'));
+    const bin = path.join(dir, 'herdr');
+    const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      // `pane run` answers far slower than launch-agent's 3s budget, then succeeds.
+      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
+      '  const until = Date.now() + 6000; while (Date.now() < until) {}',
+      "  process.stdout.write('{}\\n'); process.exit(0);",
+      '}',
+      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+    });
+    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p7')}.json`);
+    assert.ok(fs.existsSync(routed), 'an unconfirmed launch must stay routed, not be forgotten');
+    assert.match(result.stderr, /could not confirm/i);
+  });
+
+  it('launch-agent forgets the routed record when pane run genuinely fails', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-failrun-'));
+    const bin = path.join(dir, 'herdr');
+    const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p8' }, tab: { tab_id: 'w1:t2' } } });
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
+      "  process.stderr.write('no such pane\\n'); process.exit(1);",
+      '}',
+      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+    });
+    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p8')}.json`);
+    assert.equal(fs.existsSync(routed), false, 'a refused launch must not stay routed');
+    assert.equal(result.status, 1);
+  });
+
   it('launch-agent recovers the workspace directory when the caller sits in the plugin', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-panes-'));

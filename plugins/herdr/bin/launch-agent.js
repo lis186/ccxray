@@ -129,6 +129,18 @@ function main() {
   });
   recordRoutedPane(paneId, args.agent);
   const run = runHerdr(['pane', 'run', paneId, ...command], { timeoutMs: 3000 });
+  // A timeout is an unknown outcome, not a failure: Herdr may already have
+  // started the command. Forgetting the routed record here is the harmful
+  // choice — if the pane did start, nothing would recognise it as ours until
+  // its first trace lands. Keep the record, say plainly that we could not
+  // confirm, and still exit non-zero so nothing downstream assumes success.
+  if (run.timedOut) {
+    process.stderr.write(
+      `Could not confirm the launcher started in ${paneId} within 3s. `
+      + 'The pane may still come up; its identity is preserved either way.\n',
+    );
+    process.exit(1);
+  }
   if (run.status !== 0 || run.error) {
     forgetRoutedPane(paneId);
     process.stderr.write(run.stderr || run.stdout || run.error?.message || 'Failed to run launcher command.\n');
