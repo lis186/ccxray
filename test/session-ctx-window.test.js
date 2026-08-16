@@ -59,6 +59,7 @@ function loadCtx(includeEntryRendering) {
     this.allEntries = allEntries;
     this.sessionsMap = sessionsMap;
     this.sessionCtxWindow = sessionCtxWindow;
+    this.sessionCtxWindowSource = sessionCtxWindowSource;
     this.turnCtxWindow = turnCtxWindow;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
@@ -237,5 +238,57 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     assert.equal(sess.beta1m, true);
     assert.equal(sess.maxContext, 1000000);
     assert.equal(sess.weather, weather, 'an unchanged window does not trigger recomputation');
+  });
+});
+
+// A window is either measured or assumed, and the display cannot tell the
+// difference from the number alone: 200K with no evidence and 200K proven by a
+// declaration render identically, while only the first makes its percentage an
+// assumption too. See ADR 0013 — derived at render time, never stored.
+describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
+  let ctx;
+  beforeEach(() => { ctx = loadCtx(false); });
+
+  const turn = (over) => ({
+    sessionId: 's1', isSubagent: false, maxContext: 200000,
+    usage: { input_tokens: over ? 260000 : 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  });
+
+  it('reports default when nothing proves the window', () => {
+    ctx.allEntries.push(turn(false));
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+    assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+  });
+
+  it('reports declared only when the declaration resolved the window', () => {
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
+  it('a header the gate refused must NOT count as declared (fail-on-old)', () => {
+    // The header rides every request on a beta account, including turns whose
+    // declaration was refused — a haiku title-gen turn, or the next model the
+    // gate does not know yet. If bare presence counted, the marker would go
+    // quiet in exactly the case it exists for: an unlisted 1M model rendering
+    // its usage against an assumed 200K.
+    ctx.allEntries.push({ ...turn(false), ctxBeta: 'context-1m-2025-08-07' });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reports observed when a turn exceeded the default on its own', () => {
+    ctx.allEntries.push(turn(true));
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+  });
+
+  it('treats a fossil above the default as observed, not assumed', () => {
+    // The turn that proved it may have aged out of allEntries; the evidence existed.
+    ctx.allEntries.push({ ...turn(false), maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+  });
+
+  it('ignores subagent turns, like the window fold does', () => {
+    ctx.allEntries.push(turn(false));
+    ctx.allEntries.push({ ...turn(true), isSubagent: true });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 });

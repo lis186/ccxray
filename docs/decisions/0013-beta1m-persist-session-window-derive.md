@@ -349,3 +349,14 @@ therefore outside `CCXRAY_HOME` isolation** — the ADR 0015 R4 class. `CCXRAY_P
 overrides the path and `pricing.__setContextTableForTests()` injects a table; a test that
 asserts window behaviour must use one of them or stub `getModelContext`, or it silently
 reads the developer's cache. See `docs/testing.md`.
+### Provenance is derived, never stored
+
+`sessionCtxWindowSource(sid)` returns `declared | observed | default`, and the session
+card marks an assumed denominator (`60% of 200K?` + tooltip) while leaving an evidenced
+one clean. It is computed at render time from persisted facts, exactly as this ADR
+requires of `sessionCtxWindow` — storing it would relaunder an interpretation as a fact.
+
+`declared` is keyed on `beta1m`, NOT on `ctxBeta` presence. Claude Code sends the header
+on every request on a beta account, so keying on presence would mark every session
+measured and silence the marker in precisely the case it exists for: the next unlisted
+1M model rendering against an assumed 200K.
