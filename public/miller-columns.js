@@ -24,7 +24,11 @@ let entryCount = 0;
 // treating a percentage as measured. See docs/decisions/0013-*.
 function sessionCtxWindowSource(sid) {
   const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
-  let declared = false, observed = false, win = 0;
+  // Read the window that is actually rendered, then ask what produced it. Deriving
+  // this from the raw signals instead let the two disagree: a turn whose usage
+  // exceeded 200K reported `observed` while the fold still returned 200K, so the
+  // marker went quiet on a denominator the data had already disproved.
+  const win = sessionCtxWindow(sid);
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.sessionId !== sid || e.isSubagent) continue;
@@ -35,25 +39,15 @@ function sessionCtxWindowSource(sid) {
     // the marker in exactly the case it exists for: the next unlisted model
     // rendering "76% of 200K" when it is really a 1M session. beta1m is the
     // declaration that actually resolved the window.
-    if (e.beta1m === true) declared = true;
-    if ((e.maxContext || 0) > win) win = e.maxContext;
-    const u = e.usage;
-    if (u) {
-      const used = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
-      if (used > DEF) observed = true;
-    }
+    if (e.beta1m === true) return 'declared';
   }
-  const sess = sessionsMap.get(sid);
-  if (sess) {
-    if (sess.beta1m === true) declared = true;
-    if ((sess.maxContext || 0) > win) win = sess.maxContext;
-  }
-  if (declared) return 'declared';
-  if (observed) return 'observed';
-  // A fossil above the default with neither signal in view: a turn we no longer
-  // hold proved it. Treat as observed rather than assumed — the evidence existed.
-  if (win > DEF) return 'observed';
-  return 'default';
+  if (sessionsMap.get(sid)?.beta1m === true) return 'declared';
+  // A window that differs from the default came from a real per-turn derivation —
+  // a fossil above it (the header at write time, or the usage hatch) or a smaller
+  // model-specific capability below it. Exactly the default is indistinguishable
+  // from the fallback that produces it when nothing was derived at all, so it is
+  // reported as assumed even when some turn happens to carry it.
+  return win === DEF ? 'default' : 'observed';
 }
 
 function sessionCtxWindow(sid) {

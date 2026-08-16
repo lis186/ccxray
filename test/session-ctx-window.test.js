@@ -275,20 +275,39 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 
-  it('reports observed when a turn exceeded the default on its own', () => {
+  it('an observation the window contradicts is still assumed, not observed (fail-on-old)', () => {
+    // 260K of context cannot fit the 200K this session is being divided by. The
+    // earlier version reported `observed` off the raw usage and suppressed the
+    // marker on a denominator the data had already disproved.
     ctx.allEntries.push(turn(true));
+    assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reports observed once the window itself reflects the evidence', () => {
+    ctx.allEntries.push({ ...turn(true), maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
   });
 
-  it('treats a fossil above the default as observed, not assumed', () => {
-    // The turn that proved it may have aged out of allEntries; the evidence existed.
-    ctx.allEntries.push({ ...turn(false), maxContext: 1000000 });
+  it('a model-specific window below the default is measured, not assumed (fail-on-old)', () => {
+    // A 128K fossil is a real per-model capability; calling it assumed would put a
+    // "?" on a number that was derived, not guessed.
+    ctx.allEntries.push({ ...turn(false), maxContext: 128000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 128000);
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
   });
 
   it('ignores subagent turns, like the window fold does', () => {
     ctx.allEntries.push(turn(false));
-    ctx.allEntries.push({ ...turn(true), isSubagent: true });
+    ctx.allEntries.push({ ...turn(true), isSubagent: true, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reads the server fold when the client no longer holds the turns', () => {
+    ctx.sessionsMap.set('s2', { beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s2'), 'declared');
+    ctx.sessionsMap.set('s3', { beta1m: false, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s3'), 'observed');
   });
 });
