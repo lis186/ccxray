@@ -300,8 +300,16 @@ function cacheHitText(turns) {
   return `cache ${formatWholePercent(cached / total * 100)}`;
 }
 
+// INVARIANT: count with `turnFailed`, never `turnToolFail || toolFail`. `toolFail`
+// is the cumulative request-side flag; `turnToolFail` is the per-turn one (#438).
+// The disjunction lets ONE historical failure mark every later turn, so a session
+// whose last six turns each failed nothing reported `fail 6x` — measured on the
+// live index (session 7baf1fc0: six turns, all turnToolFail:false + toolFail:true,
+// buggy count 6, true count 0). `turnFailed` prefers the per-turn boolean when it
+// exists and only falls back to the cumulative flag for legacy turns that have no
+// per-turn evidence at all.
 function toolFailureCount(turns) {
-  return turns.slice(-6).filter(turn => turn.turnToolFail || turn.toolFail).length;
+  return turns.slice(-6).filter(turnFailed).length;
 }
 
 function contextSignal(turns, detail) {

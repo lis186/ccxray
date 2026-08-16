@@ -389,6 +389,46 @@ describe('Herdr sidebar main-agent anchoring', () => {
     });
     assert.equal(Math.round(detail.ctxPct), 25);
   });
+
+  // `toolFail` is the cumulative request-side flag; `turnToolFail` is the
+  // per-turn one (#438). Counting `turnToolFail || toolFail` makes one historical
+  // failure mark every later turn, so the badge reports `fail 6x` for a session
+  // whose last six turns each failed nothing. Measured on the live index
+  // (session 7baf1fc0): all six carried turnToolFail:false, toolFail:true —
+  // buggy count 6, true count 0.
+  it('counts only per-turn tool failures in the badge signal', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const turns = Array.from({ length: 6 }, (_, i) => ({
+      id: `t${i}`, sessionId: 's3', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, receivedAt: T + i * 1000, maxContext: 1000000,
+      usage: { input_tokens: 100000, cache_read_input_tokens: 100000 },
+      turnToolFail: false, toolFail: true,
+    }));
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(turns) },
+      sessionId: 's3',
+      nowMs: T + 7000,
+      sidebarCols: 32,
+    });
+    assert.doesNotMatch(detail.ctxBar, /fail/, 'no turn failed; the badge must not claim one did');
+  });
+
+  it('still reports a genuine per-turn tool failure', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const turns = Array.from({ length: 6 }, (_, i) => ({
+      id: `u${i}`, sessionId: 's4', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, receivedAt: T + i * 1000, maxContext: 1000000,
+      usage: { input_tokens: 100000, cache_read_input_tokens: 100000 },
+      turnToolFail: i >= 4, toolFail: true,
+    }));
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(turns) },
+      sessionId: 's4',
+      nowMs: T + 7000,
+      sidebarCols: 32,
+    });
+    assert.match(detail.ctxBar, /fail 2x/);
+  });
 });
 
 describe('Mission Control keyboard model', () => {
