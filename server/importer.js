@@ -173,7 +173,14 @@ async function parseSessionFile(filePath, projectSlug) {
 
     const model = msg.model || 'unknown';
     const costResult = calculateCostSimple(usage, model);
-    const tokens = buildTokens(usage);
+    // #384 did this for Codex, whose transcript declares model_context_window.
+    // Claude Code's transcript declares nothing and never records the
+    // anthropic-beta header, so the only evidence here is the observation:
+    // a turn carrying more than the default window proves a bigger one. Leaving
+    // maxContext unset instead made every reader fall back to 200K, which is how
+    // a 1M session renders as phantom context pressure.
+    const contextWindow = config.inferMaxContext(model, null, usage);
+    const tokens = buildTokens(usage, contextWindow);
     const receivedAt = new Date(obj.timestamp).getTime();
 
     // #500: extract tool_use call ids from assistant content
@@ -212,6 +219,7 @@ async function parseSessionFile(filePath, projectSlug) {
       tokens,
       cost: { cost: costResult.cost, confidence: costResult.confidence },
       model,
+      maxContext: contextWindow,
       sessionId,
       title: prev ? prev.title : (lastUserText || '(imported)'),
       stopReason: msg.stop_reason || prev?.stopReason || null,

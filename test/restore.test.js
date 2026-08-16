@@ -102,6 +102,11 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
   let realRestoreDays;
 
   before(async () => {
+    // Pin the LiteLLM capability table. It is read from a package-relative
+    // pricing-cache.json, which CCXRAY_HOME does not isolate, so without this the
+    // same assertion resolves differently on a machine that has run the server
+    // than on CI (docs/testing.md, ADR 0015 R4 class).
+    require('../server/pricing').__setContextTableForTests(null);
     realStorage = config.storage;
     realRestoreDays = config.RESTORE_DAYS;
     // Bypass the RESTORE_DAYS date-window filter. The synthetic entries below
@@ -150,6 +155,75 @@ describe('restoreFromLogs — maxContext re-inference for legacy entries', () =>
       model: 'claude-opus-4-7',
       usage: { input_tokens: 50000 },
       maxContext: 1_000_000, // originally detected correctly via [1m] in system
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
+  it('keeps a stored 1M for a 1M-capable model the old regex did not list (fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T14-15-00-000';
+    // Write path and heal path must share one capability predicate. While the
+    // regex lacked claude-opus-5, trustStored was false for it, so restore
+    // discarded the 1M the proxy had just written from the beta header — every
+    // restart silently reverted the session to a 200K denominator.
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '14:15:00', sessionId: 'sess-opus5',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-opus-5',
+      usage: { input_tokens: 50000 },
+      maxContext: 1_000_000, // written live from anthropic-beta context-1m-*
+      beta1m: true,
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
+  it('re-derives a 1M window from the persisted context-* beta with no marker (fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T14-20-00-000';
+    // The header is not in _req.json, so before it was persisted the heal pass
+    // could only re-infer from model + usage: a 1M session under 200K of usage
+    // and without the "[1m]" system marker had no way back to its real window.
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '14:20:00', sessionId: 'sess-ctxbeta',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-opus-4-7',
+      usage: { input_tokens: 50000 },
+      ctxBeta: 'context-1m-2025-08-07',
+      isSSE: true, status: 200, receivedAt: 1779000000000,
+    }) + '\n');
+
+    await restoreFromLogs();
+    const entry = store.entries.find(e => e.id === id);
+    assert.ok(entry);
+    assert.equal(entry.maxContext, 1_000_000);
+  });
+
+  it('keeps an attested 1M when the capability data is unavailable (fail-on-old)', async () => {
+    store.entries.length = 0;
+    const id = '2026-05-14T14-25-00-000';
+    // A model known to be 1M-capable only through LiteLLM: with no pricing cache
+    // (fresh install, another machine, a renamed upstream key) the capability
+    // lookup returns nothing. `beta1m` on the line is a write-time attestation —
+    // the header was present AND the gate accepted it — so absence of today's
+    // capability data must not act as a deny and shrink the window. Without this
+    // the restart-erases-the-fix failure returns through a new door.
+    await config.storage.appendIndex(JSON.stringify({
+      id, ts: '14:25:00', sessionId: 'sess-attested',
+      provider: 'anthropic', agent: 'claude',
+      model: 'claude-unlisted-9',
+      usage: { input_tokens: 50000 },
+      maxContext: 1_000_000,
+      beta1m: true,
       isSSE: true, status: 200, receivedAt: 1779000000000,
     }) + '\n');
 

@@ -690,7 +690,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         console.log(`\x1b[90m   Context HUD: injecting into session ${reqSessionId.slice(0, 8)}\x1b[0m`);
         _hudLoggedSessions.add(reqSessionId);
       }
-      const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage, { beta1m: ctx.beta1m });
+      const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage, { beta1m: ctx.beta1m, ctxBeta: ctx.ctxBeta });
       const pct = (totalCtx / maxCtx * 100).toFixed(1);
       const newIdx = maxBlockIndex + 1;
       const costInfo = calculateCost(usage, parsedBody?.model);
@@ -788,7 +788,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
         cwd: store.sessionMeta[sessionId]?.cwd || null,
-        stopReason, title, thinkingDuration, thinkingStripped, beta1m: ctx.beta1m,
+        stopReason, title, thinkingDuration, thinkingStripped, beta1m: ctx.beta1m, ctxBeta: ctx.ctxBeta,
         isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
       }),
     };
@@ -1095,7 +1095,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
           sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
           cwd: store.sessionMeta[sessionId]?.cwd || null,
-          stopReason, title, thinkingDuration: null, thinkingStripped, beta1m: ctx.beta1m,
+          stopReason, title, thinkingDuration: null, thinkingStripped, beta1m: ctx.beta1m, ctxBeta: ctx.ctxBeta,
           isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
         }),
       };
