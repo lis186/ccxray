@@ -318,6 +318,29 @@ function executeItem(item, state) {
   return { message: '' };
 }
 
+// `executeItem` runs spawnSync, which blocks the event loop for seconds. Keys
+// typed — or autorepeated — while it blocks are delivered the moment it returns,
+// aimed at the menu that existed before the action rather than the one now on
+// screen. On the Sidebar row that was destructive: `s` installs, the queued `s`
+// is evaluated against the refreshed state and REMOVES, so a double tap left the
+// config untouched while the menu reported a removal the user never asked for.
+//
+// Draining stdin cannot fix it — by the time the handler returns the keypress is
+// already a queued `data` callback, so neither pausing nor reading the stream
+// takes it back. A deadzone measured from the end of the action does: anything
+// delivered inside it was aimed at the pre-action menu. 250ms is far longer than
+// the queue takes to flush and far shorter than a human reading the new state
+// and choosing again — a key pressed seconds later still acts.
+const ACTION_DEADZONE_MS = 250;
+
+function createActionGate(deadzoneMs = ACTION_DEADZONE_MS, now = Date.now) {
+  let openAt = 0;
+  return {
+    blocked: () => now() < openAt,
+    armAfterAction: () => { openAt = now() + deadzoneMs; },
+  };
+}
+
 function main() {
   let state = snapshot();
   const interactive = !process.argv.includes('--once')
@@ -346,12 +369,14 @@ function main() {
       runHerdr(['plugin', 'pane', 'close', process.env.HERDR_PANE_ID], { timeoutMs: 2000 });
     }
   };
+  const gate = createActionGate();
   const onResize = () => render(state, message, selectedId);
   const onSignal = code => {
     restoreTerminal();
     process.exit(code);
   };
   const onData = key => {
+    if (gate.blocked()) return;
     const intent = keyIntent(key);
     const items = menuItems(state);
     if (intent.type === 'ignore') return;
@@ -370,6 +395,9 @@ function main() {
       ? items.find(value => value.id === selectedId)
       : items.find(value => value.type !== 'section' && value.key.toLowerCase() === intent.key);
     const result = executeItem(item, state);
+    // Swallow whatever was typed while we were not listening — see
+    // createActionGate above for why draining stdin cannot do this.
+    gate.armAfterAction();
     if (result.close) {
       closeMenu();
       return;
@@ -395,6 +423,7 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+  createActionGate,
   displayPath,
   keyIntent,
   main,

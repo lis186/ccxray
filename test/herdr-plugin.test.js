@@ -644,6 +644,80 @@ describe('Herdr TUI primitives', () => {
 // than the space available makes takeWidth return '', so neither `line` nor
 // `remainder` advanced: the loop pushed empty lines forever. Runs in a child
 // because a synchronous infinite loop cannot be interrupted by a test timeout.
+// GUARD (passes before and after — no behaviour changed here). Quick Start's
+// closeMenu restores the terminal and may ask Herdr to close the pane, but
+// unlike mission-control.js and capability-review.js it never calls
+// process.exit(0). A review flagged that as a hang; measured under a real pty it
+// is not one — with the listener removed and stdin paused the loop drains and
+// the process ends on its own. The asymmetry is still fragile: the day someone
+// adds a timer or an open handle to this file, `q` silently stops working. This
+// pins the observable behaviour so that day fails a test instead of a user.
+// `executeItem` runs spawnSync, which blocks the event loop for seconds. Keys
+// typed while it blocks are delivered the moment it returns, aimed at the menu
+// that existed before the action. On the Sidebar row that was destructive: `s`
+// installs, the queued `s` sees the refreshed state and removes it, so a double
+// tap left the config untouched while the menu said "Sidebar summary removed".
+//
+// The behavioural differential was measured directly rather than automated —
+// under a real pty with a herdr stub whose config calls take a second, a double
+// tap at 0.4s leaves 0 summary rows and 2 backups before the fix versus 2 rows
+// and 1 backup after (two backups being the tell that both scripts ran). That
+// harness proved too timing-fragile to keep in the suite: under full-suite load
+// it reported 0 backups because the first install had not finished either, and a
+// flaky test is worse than none. The procedure is written up in
+// .scratch/REVIEW-531-LEDGER.md; what is pinned here is the gate itself, with a
+// fake clock, deterministically.
+describe('Herdr Quick Start action gate', () => {
+  const { createActionGate } = require('../plugins/herdr/bin/onboarding');
+
+  it('swallows a keypress delivered right after an action and then reopens', () => {
+    let now = 1000;
+    const gate = createActionGate(250, () => now);
+    assert.equal(gate.blocked(), false, 'the first key must always act');
+    gate.armAfterAction();
+    now += 1;                       // the queued keypress arrives immediately
+    assert.equal(gate.blocked(), true);
+    now += 100;
+    assert.equal(gate.blocked(), true);
+    now += 200;                     // 301ms after the action
+    assert.equal(gate.blocked(), false, 'a deliberate later keypress must act');
+  });
+
+  it('does not block before any action has run', () => {
+    let now = 5000;
+    const gate = createActionGate(250, () => now);
+    now += 10_000;
+    assert.equal(gate.blocked(), false);
+  });
+});
+
+describe('Herdr Quick Start close', () => {
+  it('exits the process when the menu is closed', () => {
+    const home = makeHome();
+    const cfg = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-qs-')), 'config.toml');
+    fs.writeFileSync(cfg, '[ui]\n');
+    const marker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-mark-')), 'exit');
+    const onboarding = path.join(PLUGIN, 'bin', 'onboarding.js');
+    // `script` gives the child a real pty, which onboarding requires to go
+    // interactive. Keeping stdin open past the keypress is what exposes a
+    // process that never exits; the marker records that it did.
+    const inner = `${JSON.stringify(process.execPath)} ${JSON.stringify(onboarding)}; `
+      + `echo done > ${JSON.stringify(marker)}`;
+    // stdin is held open far longer than the poll window on purpose: otherwise
+    // the process would exit on stdin EOF and the test would pass for the wrong
+    // reason. Seeing the marker inside the window means `q` itself ended it.
+    const command = `( printf 'q'; sleep 40 ) | script -q /dev/null `
+      + `env CCXRAY_HOME=${JSON.stringify(home)} HERDR_CONFIG_PATH=${JSON.stringify(cfg)} `
+      + `CCXRAY_PRICING_CACHE=/nonexistent/p.json HERDR_PANE_ID= `
+      + `/bin/sh -c ${JSON.stringify(inner)} >/dev/null 2>&1 &\n`
+      + `for i in $(seq 1 40); do [ -f ${JSON.stringify(marker)} ] && break; sleep 0.2; done\n`
+      + `[ -f ${JSON.stringify(marker)} ] && echo EXITED || echo LINGERED\n`
+      + `pkill -f ${JSON.stringify(onboarding)} 2>/dev/null; true`;
+    const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8', timeout: 30000 });
+    assert.match(result.stdout, /EXITED/, 'closing Quick Start must end the process, not leave it inert on screen');
+  });
+});
+
 describe('Herdr TUI narrow-width safety', () => {
   function evalInChild(expr) {
     const script = `const t=require(${JSON.stringify(path.join(PLUGIN, 'bin', 'lib', 'tui.js'))});`
