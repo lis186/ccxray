@@ -349,12 +349,32 @@ therefore outside `CCXRAY_HOME` isolation** — the ADR 0015 R4 class. `CCXRAY_P
 overrides the path and `pricing.__setContextTableForTests()` injects a table; a test that
 asserts window behaviour must use one of them or stub `getModelContext`, or it silently
 reads the developer's cache. See `docs/testing.md`.
+
 ### Provenance is derived, never stored
 
 `sessionCtxWindowSource(sid)` returns `declared | observed | default`, and the session
 card marks an assumed denominator (`60% of 200K?` + tooltip) while leaving an evidenced
 one clean. It is computed at render time from persisted facts, exactly as this ADR
 requires of `sessionCtxWindow` — storing it would relaunder an interpretation as a fact.
+
+The fold has a fourth state, `contradicted`, keyed on EVIDENCE rather than on
+provenance: a main turn that carried more context than the window it is divided by
+proves that window wrong, whatever produced it — so it outranks `declared` too. This
+is a different claim from "unverified" and must not share its marker: the percentage
+is not merely uncertain, it is a ratio whose denominator is already known to be too
+small, and the display's `Math.min(100, …)` clamp otherwise renders it as a confident
+"100%". The clamp is kept for the bar and the colour — saturation, not a claim — while
+the number reports the real ratio, so the card shows `130% of 200K✗`.
+
+It is keyed on the numerator the card actually renders (`latestMainCtxUsed` from the
+session fold), with the retained entries as a second source. Deriving it from the
+entries alone let the label and the number disagree whenever the overflowing turn had
+been evicted or arrived without usage — which is precisely the cold-load path where
+this state lives. A marker site must switch on the enum; `ctxWindowUnverified()`
+answers only "may I treat this window as measured". Restore's heal pass repairs
+such a window before the client ever sees it (the observation floor), so the state is
+reachable only where the heal does not run: legacy lines with no `provider`, and the
+cold-load path that serves raw index lines.
 
 `declared` is keyed on `beta1m`, NOT on `ctxBeta` presence. Claude Code sends the header
 on every request on a beta account, so keying on presence would mark every session
