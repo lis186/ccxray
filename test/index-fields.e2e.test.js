@@ -244,7 +244,14 @@ function readIndexLines(home) {
     .map(raw => ({ raw, obj: JSON.parse(raw) }));
 }
 
-function waitForIndexLines(home, expected, timeoutMs = 8000) {
+// 8s was too tight and produced a load-sensitive false failure (#538): the
+// importer is deliberately non-blocking and runs only AFTER restore and the
+// pricing warm-up, so "server boots, restores, warms pricing, then scans and
+// imports" is the budget being measured — not the import itself. Measured on a
+// 14-core machine with every core saturated, the first index line appeared after
+// 31s; unloaded it is ~1s. A passing run returns as soon as the line appears, so
+// the larger budget costs nothing except on a genuine failure.
+function waitForIndexLines(home, expected, timeoutMs = 45000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
