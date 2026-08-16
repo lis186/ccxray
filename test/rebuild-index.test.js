@@ -93,6 +93,51 @@ describe('rebuild-index', () => {
     assert.ok(!('responseId' in lines.find(l => l.id === idC)), 'openai line exempt');
   });
 
+  it('add-only backfills a context window that the evidence on the line already proves', async () => {
+    // A line with no maxContext makes every reader divide by the 200K default. When
+    // the line's own usage exceeded that, the window is provably larger and the
+    // number rendered today is wrong — the evidence needs no file on disk.
+    const idA = '2026-07-02T10-00-00-000';
+    writeIndexLine({ id: idA, ts: '10:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7',
+      usage: { input_tokens: 10, cache_read_input_tokens: 260000, cache_creation_input_tokens: 0 }, isSSE: true, status: 200 });
+    // Usage under the default proves nothing: writing 200000 would turn "nothing was
+    // derived" into a fossil that looks derived, which the provenance fold reads.
+    const idB = '2026-07-02T11-00-00-000';
+    writeIndexLine({ id: idB, ts: '11:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7',
+      usage: { input_tokens: 10, cache_read_input_tokens: 50000, cache_creation_input_tokens: 0 }, isSSE: true, status: 200 });
+    // An existing window is never overwritten (#48 never-degrade).
+    const idC = '2026-07-02T12-00-00-000';
+    writeIndexLine({ id: idC, ts: '12:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7',
+      maxContext: 200000, usage: { input_tokens: 10, cache_read_input_tokens: 260000, cache_creation_input_tokens: 0 },
+      isSSE: true, status: 200 });
+    // OpenAI lines are exempt — they get their window from the transcript (#384).
+    const idD = '2026-07-02T13-00-00-000';
+    writeIndexLine({ id: idD, ts: '13-00-00', sessionId: 's', provider: 'openai', model: 'gpt-5',
+      usage: { input_tokens: 500000 }, isSSE: true, status: 200 });
+
+    // A declaration alone resolves a window — no usage needed.
+    const idE = '2026-07-02T14-00-00-000';
+    writeIndexLine({ id: idE, ts: '14:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7',
+      beta1m: true, isSSE: true, status: 200 });
+    // A legacy line with no provider is claimed only when the model says claude.
+    const idF = '2026-07-02T15-00-00-000';
+    writeIndexLine({ id: idF, ts: '15:00:00', sessionId: 's', model: 'claude-opus-4-7',
+      usage: { input_tokens: 10, cache_read_input_tokens: 260000, cache_creation_input_tokens: 0 }, isSSE: true, status: 200 });
+    const idG = '2026-07-02T16-00-00-000';
+    writeIndexLine({ id: idG, ts: '16:00:00', sessionId: 's', model: 'gpt-5',
+      usage: { input_tokens: 500000 }, isSSE: true, status: 200 });
+
+    await rebuildIndex({ apply: true, storage, log });
+    const lines = readIndexIds();
+    assert.equal(lines.find(l => l.id === idA).maxContext, 1_000_000, 'observation above the default recovers the window');
+    assert.equal(lines.find(l => l.id === idE).maxContext, 1_000_000, 'a declaration resolves it without usage');
+    assert.equal(lines.find(l => l.id === idF).maxContext, 1_000_000, 'provider-less claude line is claimed');
+    assert.ok(!('maxContext' in lines.find(l => l.id === idG)), 'provider-less non-claude line is not');
+    assert.ok(!('maxContext' in lines.find(l => l.id === idB)), 'nothing proven → no fossil written');
+    assert.equal(lines.find(l => l.id === idC).maxContext, 200000, 'existing value untouched');
+    assert.ok(!('maxContext' in lines.find(l => l.id === idD)), 'openai exempt');
+  });
+
   it('#342: add-only backfills identity onto legacy lines whose _req is reconstructable', async () => {
     writeShared();
     const { getParser } = require('../server/wire-parsers');
