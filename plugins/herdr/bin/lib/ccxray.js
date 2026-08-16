@@ -11,6 +11,25 @@ function stripAnsi(value) {
   return String(value || '').replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
 }
 
+// Backup names carry a second-resolution timestamp, so an install followed
+// immediately by a remove (two keypresses in Quick Start) collided and
+// COPYFILE_EXCL threw an unhandled EEXIST. Retry with a suffix instead of
+// overwriting an existing backup.
+function backupConfigFile(file, now = new Date()) {
+  const stamp = now.toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
+  const base = `${file}.ccxray-summary-backup-${stamp}`;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const candidate = attempt === 0 ? base : `${base}-${attempt + 1}`;
+    try {
+      fs.copyFileSync(file, candidate, fs.constants.COPYFILE_EXCL);
+      return candidate;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  }
+  throw new Error(`could not create a backup for ${file}`);
+}
+
 function pluginRoot(env = process.env) {
   return env.HERDR_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 }
@@ -1114,8 +1133,12 @@ function currentWorkspaceScope(env = process.env) {
   const context = runtime.context || {};
   const workspaceId = runtime.workspaceId || context.workspace_id || null;
   const reportedCwd = context.focused_pane_cwd || context.workspace_cwd || null;
+  // A cwd inside the plugin's own checkout is never a project directory: it is
+  // replaced on every reinstall. When recovery finds no workspace pane, report
+  // no cwd rather than handing the plugin checkout to a caller that would launch
+  // an agent in it (launch-agent.js).
   const cwd = (!reportedCwd || cwdInsidePlugin(reportedCwd, env))
-    ? recoverWorkspaceCwd(workspaceId, env) || reportedCwd
+    ? recoverWorkspaceCwd(workspaceId, env) || (cwdInsidePlugin(reportedCwd, env) ? null : reportedCwd)
     : reportedCwd;
   if (!workspaceId && !cwd) return { kind: 'global', workspaceId: null, cwd: null };
   return { kind: 'workspace', workspaceId, cwd };
@@ -1264,6 +1287,7 @@ function reportWorkspaceTokens(tokens, opts = {}) {
 }
 
 module.exports = {
+  backupConfigFile,
   capabilityPortfolio,
   capabilityReview,
   currentWorkspaceScope,

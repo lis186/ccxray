@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
+const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
 
 const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
 const CTX_BAR_ROWS = [
@@ -13,25 +13,27 @@ const CTX_BAR_ROWS = [
   '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
 ].join('\n');
 const OLD_CTX_BAR_ROW_RE = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$ctx_bar"[^\n]*\}\],[ \t]*$/m;
+const SUMMARY_ROW = '  [{ token = "$summary", fg = "#89b4fa", dim = true }],';
+const CCXRAY_ROWS = `${SUMMARY_ROW}\n${CTX_BAR_ROWS}`;
+const DEFAULT_ROWS = '  ["state_icon", "workspace", "tab"],\n  ["agent"],';
+// Written only when this script creates the section itself, so
+// remove-sidebar-summary can tell "ccxray added this whole table" from
+// "the user already had a sidebar table and ccxray added rows to it".
+const SECTION_MARKER = '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)';
 
 const SIDEBAR_SUMMARY_SECTION = `
 
+${SECTION_MARKER}
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "workspace", "tab"],
-  ["agent"],
-  [{ token = "$summary", fg = "#89b4fa", dim = true }],
-${CTX_BAR_ROWS}
+${DEFAULT_ROWS}
+${CCXRAY_ROWS}
 ]
 `;
 
 function configPath(env = process.env) {
   return resolveHerdrConfigPath(env);
-}
-
-function timestamp() {
-  return new Date().toISOString().replace(/[-:]/g, '').replace(/\..*/, '').replace('T', '-');
 }
 
 function tokenRegex(token) {
@@ -85,6 +87,68 @@ function ensureColorCtxBarRows(config) {
   return { changed: true, config: added };
 }
 
+// A TOML table header is a bare dotted key in brackets at column 0, so an
+// unindented `["agent"]` element inside a rows array can never be mistaken for
+// the start of the next table.
+const TABLE_HEADER_RE = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m;
+
+function sidebarSectionBounds(config) {
+  const header = /^[ \t]*\[ui\.sidebar\.agents\][ \t]*$/m.exec(config);
+  if (!header) return null;
+  const bodyStart = header.index + header[0].length;
+  const next = TABLE_HEADER_RE.exec(config.slice(bodyStart));
+  return {
+    headerStart: header.index,
+    bodyStart,
+    bodyEnd: next ? bodyStart + next.index : config.length,
+  };
+}
+
+function rowsArrayBounds(config, bounds) {
+  const slice = config.slice(bounds.bodyStart, bounds.bodyEnd);
+  const match = /^[ \t]*rows[ \t]*=[ \t]*\[/m.exec(slice);
+  if (!match) return null;
+  const open = bounds.bodyStart + match.index + match[0].length - 1;
+  let depth = 0;
+  for (let index = open; index < bounds.bodyEnd; index += 1) {
+    const char = config[index];
+    if (char === '#') {
+      while (index < bounds.bodyEnd && config[index] !== '\n') index += 1;
+      continue;
+    }
+    if (char === '"') {
+      index += 1;
+      while (index < bounds.bodyEnd && config[index] !== '"') {
+        if (config[index] === '\\') index += 1;
+        index += 1;
+      }
+      continue;
+    }
+    if (char === '[') depth += 1;
+    else if (char === ']') {
+      depth -= 1;
+      if (depth === 0) return { open, close: index };
+    }
+  }
+  return null;
+}
+
+// A user who already has [ui.sidebar.agents] — including one this plugin's own
+// remove action left behind — must still be able to install. Refusing here made
+// remove/install a one-way door.
+function addRowsToExistingSection(config) {
+  const bounds = sidebarSectionBounds(config);
+  if (!bounds) return null;
+  const rows = rowsArrayBounds(config, bounds);
+  if (!rows) {
+    const insertion = `\nrows = [\n${DEFAULT_ROWS}\n${CCXRAY_ROWS}\n]`;
+    return config.slice(0, bounds.bodyStart) + insertion + config.slice(bounds.bodyStart);
+  }
+  const inner = config.slice(rows.open + 1, rows.close).replace(/[ \t\r\n]*$/, '');
+  const separator = inner.trim() && !inner.trim().endsWith(',') ? ',' : '';
+  return `${config.slice(0, rows.open + 1)}${inner}${separator}\n${CCXRAY_ROWS}\n${config.slice(rows.close)}`;
+}
+
 function main() {
   const file = configPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -105,9 +169,13 @@ function main() {
   }
 
   if (/^\s*\[ui\.sidebar\.agents\]\s*$/m.test(before)) {
-    console.error('Herdr already has [ui.sidebar.agents]. Add the ccxray rows manually:');
-    console.error(SIDEBAR_SUMMARY_SECTION.trim());
-    process.exit(1);
+    const merged = addRowsToExistingSection(before);
+    if (!merged) {
+      console.error(`Could not parse [ui.sidebar.agents] in ${file}; add these rows to its rows array manually:`);
+      console.error(CCXRAY_ROWS);
+      process.exit(1);
+    }
+    return writeAndReload(file, before, merged, 'installed');
   }
 
   return writeAndReload(file, before, before.replace(/\s*$/, '') + SIDEBAR_SUMMARY_SECTION + '\n', 'installed');
@@ -120,10 +188,7 @@ function writeAndReload(file, before, next, action) {
   }
 
   let backup = null;
-  if (fs.existsSync(file)) {
-    backup = `${file}.ccxray-summary-backup-${timestamp()}`;
-    fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL);
-  }
+  if (fs.existsSync(file)) backup = backupConfigFile(file);
 
   fs.writeFileSync(file, next);
 

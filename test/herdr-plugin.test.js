@@ -505,6 +505,43 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /Recommended: Launch Claude through ccxray/);
   });
 
+  it('Quick Start names the directory a launch would start in', () => {
+    const home = makeHome();
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_HOME: home,
+      HERDR_PLUGIN_STATE_DIR: path.join(home, 'state'),
+      HERDR_CONFIG_PATH: path.join(home, 'config.toml'),
+      CCXRAY_ONBOARDING_PROVIDERS: 'claude',
+      CCXRAY_ONBOARDING_COLS: '100',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        workspace_id: 'w1',
+        workspace_cwd: project,
+        focused_pane_cwd: project,
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`directory    ${project}`), result.stdout);
+  });
+
+  it('Quick Start reports the first line of a failing action, not the last', () => {
+    const { resultMessage } = require(path.join(PLUGIN, 'bin', 'onboarding.js'));
+    const failure = {
+      status: 1,
+      stdout: '',
+      stderr: [
+        'Could not parse [ui.sidebar.agents] in /tmp/config.toml; add these rows to its rows array manually:',
+        '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+        ']',
+      ].join('\n'),
+    };
+    assert.equal(
+      resultMessage(failure, 'Sidebar summary installed.'),
+      'Could not complete: Could not parse [ui.sidebar.agents] in /tmp/config.toml; add these rows to its rows array manually:',
+    );
+    assert.equal(resultMessage({ status: 0 }, 'Sidebar summary installed.'), 'Sidebar summary installed.');
+  });
+
   it('Quick Start keeps Mission Control primary and labels capability analysis experimental', () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({
       ...sampleEntry,
@@ -1087,10 +1124,15 @@ describe('Herdr plugin commands', () => {
         agent_session: { kind: 'id', value: 'session-new' },
       },
     ];
+    // In-process call, so it reads the ambient env unless one is supplied: a
+    // suite run from inside a Herdr pane exports HERDR_WORKSPACE_ID, which
+    // scopes the snapshot to that live workspace and drops every w1 fixture
+    // agent. Same isolation rule as the spawned scripts (see pluginEnv).
     const snapshot = missionControlSnapshot({
       entries,
       nowMs: now,
       agentReport: { ok: true, agents },
+      env: pluginEnv(),
     });
     const oldPane = snapshot.rows.find(row => row.paneId === 'w1:p17');
     const newPane = snapshot.rows.find(row => row.paneId === 'w1:p21');
@@ -1776,6 +1818,46 @@ describe('Herdr plugin commands', () => {
     assert.equal(plan.cwd, '/work/demo');
   });
 
+  it('launch-agent refuses to start an agent inside the plugin checkout', () => {
+    const context = {
+      focused_pane_id: 'w1:p1',
+      focused_pane_cwd: path.join(PLUGIN, 'bin'),
+      workspace_id: 'w1',
+      tab_id: 'w1:t1',
+    };
+    const result = runScript('launch-agent.js', ['codex', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify(context),
+      HERDR_BIN_PATH: makeHerdr([]),
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /No project directory for this workspace/);
+    assert.doesNotMatch(result.stdout, /plugins[/\\]herdr/);
+  });
+
+  it('launch-agent recovers the workspace directory when the caller sits in the plugin', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-panes-'));
+    const bin = path.join(dir, 'herdr');
+    const panes = JSON.stringify({
+      id: 'test',
+      result: { type: 'pane_list', panes: [{ pane_id: 'w1:p1', workspace_id: 'w1', cwd: project }] },
+    });
+    fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(panes)} + '\\n');\n`);
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p2',
+        focused_pane_cwd: PLUGIN,
+        workspace_id: 'w1',
+        tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).cwd, project);
+  });
+
   it('run-agent exports Herdr identity before launching ccxray', () => {
     const result = runScript('run-agent.js', ['codex', 'w1:p9', 'w1', 'w1:t1', 'w1:p1', '--dry-run']);
     assert.equal(result.status, 0, result.stderr);
@@ -2017,6 +2099,105 @@ describe('Herdr plugin commands', () => {
     assert.match(updated, /\["state_icon", "workspace", "tab"\]/);
     assert.match(updated, /\[terminal\]/);
     assert.equal(fs.readdirSync(dir).filter(name => name.includes('ccxray-summary-backup')).length, 1);
+  });
+
+  it('install-sidebar-summary adds its rows to a sidebar table the user already has', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      ']',
+      '',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+    ].join('\n'));
+    const result = runScript('install-sidebar-summary.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /\$summary/);
+    assert.match(config, /\$ctx_bar_unknown/);
+    assert.match(config, /\$ctx_bar_green/);
+    assert.match(config, /\$ctx_bar_yellow/);
+    assert.match(config, /\$ctx_bar_red/);
+    assert.match(config, /\["state_icon", "workspace", "tab"\]/);
+    assert.match(config, /\["agent"\]/);
+    assert.match(config, /\[terminal\]/);
+    assert.equal(config.match(/\[ui\.sidebar\.agents\]/g).length, 1);
+  });
+
+  it('sidebar summary survives a remove and install round trip', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+      '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+      '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    const removed = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    assert.doesNotMatch(fs.readFileSync(configPath, 'utf8'), /\$summary/);
+
+    const reinstalled = runScript('install-sidebar-summary.js', [], env);
+    assert.equal(reinstalled.status, 0, reinstalled.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /\$summary/);
+    assert.match(config, /\$ctx_bar_red/);
+    assert.match(config, /\["agent"\]/);
+    assert.equal(config.match(/\$summary/g).length, 1);
+  });
+
+  it('remove-sidebar-summary drops the whole table when the plugin created it', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /\[ui\.sidebar\.agents\]/);
+
+    const removed = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(config, /\[ui\.sidebar\.agents\]/);
+    assert.doesNotMatch(config, /ccxray sidebar summary rows/);
+    assert.match(config, /show_agent_labels_on_pane_borders = true/);
+  });
+
+  it('remove-sidebar-summary keeps a table the user extended', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+
+    const extended = fs.readFileSync(configPath, 'utf8')
+      .replace('  ["agent"],', '  ["agent"],\n  ["cwd"],');
+    fs.writeFileSync(configPath, extended);
+
+    assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /\[ui\.sidebar\.agents\]/);
+    assert.match(config, /\["cwd"\]/);
+    assert.doesNotMatch(config, /\$summary/);
   });
 
   it('can be validated by Herdr CLI when Herdr is installed', () => {

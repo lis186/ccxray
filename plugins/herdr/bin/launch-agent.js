@@ -3,6 +3,7 @@
 
 const path = require('path');
 const {
+  currentWorkspaceScope,
   herdrRuntime,
   parseJsonOutput,
   pluginRoot,
@@ -24,13 +25,18 @@ function parseArgs(argv) {
   };
 }
 
+// INVARIANT: the launch directory comes from currentWorkspaceScope(), the same
+// resolver Quick Start displays and every other pane-scoped reader uses. It
+// rejects paths inside the plugin's own checkout and recovers the workspace cwd
+// instead. Falling back to process.cwd() here would start the agent inside the
+// Herdr-managed plugin checkout, which reinstalling replaces.
 function context(env = process.env) {
   const runtime = herdrRuntime(env);
   const ctx = runtime.context || {};
   return {
     runtime,
     sourcePaneId: ctx.focused_pane_id || runtime.paneId || '',
-    cwd: ctx.focused_pane_cwd || ctx.workspace_cwd || process.cwd(),
+    cwd: currentWorkspaceScope(env).cwd || '',
     workspaceId: ctx.workspace_id || runtime.workspaceId || '',
     tabId: ctx.tab_id || runtime.tabId || '',
   };
@@ -76,6 +82,10 @@ function main() {
     process.exit(2);
   }
   const ctx = context();
+  if (!ctx.cwd) {
+    console.error('No project directory for this workspace; focus a pane inside your project, then launch again.');
+    process.exit(1);
+  }
   const plannedOpen = openArgs(args, ctx);
 
   if (args.planOnly) {

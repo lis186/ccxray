@@ -175,6 +175,20 @@ function fitRow(left, right, cols) {
   return truncateText(`${left} · ${right}`, max);
 }
 
+// Home-relative and tail-preserving: when the pane is too narrow the project
+// name is the part worth keeping, not the leading path segments.
+function displayPath(cwd, max = 0, env = process.env) {
+  const home = env.HOME || os.homedir();
+  const value = home && cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
+  if (!max || displayWidth(value) <= max) return value;
+  const segments = value.split('/');
+  let tail = segments.pop() || value;
+  while (segments.length && displayWidth(`…/${segments.at(-1)}/${tail}`) <= max) {
+    tail = `${segments.pop()}/${tail}`;
+  }
+  return truncateText(`…/${tail}`, max);
+}
+
 function menuRowLines(left, right, cols) {
   const max = cols - 1;
   const gap = max - displayWidth(left) - displayWidth(right || '');
@@ -203,6 +217,9 @@ function render(state, message = '', selectedId = recommendedItemId(state)) {
   output.push(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
   const sessionScope = state.scope?.kind === 'workspace' ? 'traced here' : 'observed';
   output.push(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} ${sessionScope}`));
+  // Launching starts an agent in this directory, so name it before the user
+  // commits to it — the same scope launch-agent.js resolves.
+  output.push(line(`directory    ${state.scope?.cwd ? displayPath(state.scope.cwd, cols - 14) : 'FIX · none detected'}`));
 
   for (const item of menuItems(state)) {
     if (item.type === 'section') {
@@ -251,9 +268,14 @@ function runNode(script, args = []) {
   });
 }
 
+// A failing helper reports its reason on the first line and any manual recovery
+// steps below it. Taking the last line instead surfaced the closing bracket of a
+// printed TOML snippet as the entire error ("Could not complete: ]").
 function resultMessage(result, success) {
-  const text = String(result.stdout || result.stderr || '').trim().split('\n').at(-1);
-  return result.status === 0 ? success : `Could not complete: ${text || 'unknown error'}`;
+  if (result.status === 0) return success;
+  const source = String(result.stderr || '').trim() || String(result.stdout || '').trim();
+  const reason = source.split('\n').map(value => value.trim()).find(Boolean);
+  return `Could not complete: ${reason || 'unknown error'}`;
 }
 
 function executeItem(item, state) {
@@ -373,8 +395,10 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
+  displayPath,
   keyIntent,
   main,
+  resultMessage,
   menuItems,
   moveSelection,
   normalizeSelection,
