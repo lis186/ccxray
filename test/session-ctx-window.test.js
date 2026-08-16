@@ -59,6 +59,7 @@ function loadCtx(includeEntryRendering) {
     this.allEntries = allEntries;
     this.sessionsMap = sessionsMap;
     this.sessionCtxWindow = sessionCtxWindow;
+    this.sessionCtxWindowSource = sessionCtxWindowSource;
     this.turnCtxWindow = turnCtxWindow;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
@@ -237,5 +238,76 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     assert.equal(sess.beta1m, true);
     assert.equal(sess.maxContext, 1000000);
     assert.equal(sess.weather, weather, 'an unchanged window does not trigger recomputation');
+  });
+});
+
+// A window is either measured or assumed, and the display cannot tell the
+// difference from the number alone: 200K with no evidence and 200K proven by a
+// declaration render identically, while only the first makes its percentage an
+// assumption too. See ADR 0013 — derived at render time, never stored.
+describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
+  let ctx;
+  beforeEach(() => { ctx = loadCtx(false); });
+
+  const turn = (over) => ({
+    sessionId: 's1', isSubagent: false, maxContext: 200000,
+    usage: { input_tokens: over ? 260000 : 1000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  });
+
+  it('reports default when nothing proves the window', () => {
+    ctx.allEntries.push(turn(false));
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+    assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+  });
+
+  it('reports declared only when the declaration resolved the window', () => {
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
+  it('a header the gate refused must NOT count as declared (fail-on-old)', () => {
+    // The header rides every request on a beta account, including turns whose
+    // declaration was refused — a haiku title-gen turn, or the next model the
+    // gate does not know yet. If bare presence counted, the marker would go
+    // quiet in exactly the case it exists for: an unlisted 1M model rendering
+    // its usage against an assumed 200K.
+    ctx.allEntries.push({ ...turn(false), ctxBeta: 'context-1m-2025-08-07' });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('an observation the window contradicts is still assumed, not observed (fail-on-old)', () => {
+    // 260K of context cannot fit the 200K this session is being divided by. The
+    // earlier version reported `observed` off the raw usage and suppressed the
+    // marker on a denominator the data had already disproved.
+    ctx.allEntries.push(turn(true));
+    assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reports observed once the window itself reflects the evidence', () => {
+    ctx.allEntries.push({ ...turn(true), maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+  });
+
+  it('a model-specific window below the default is measured, not assumed (fail-on-old)', () => {
+    // A 128K fossil is a real per-model capability; calling it assumed would put a
+    // "?" on a number that was derived, not guessed.
+    ctx.allEntries.push({ ...turn(false), maxContext: 128000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 128000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+  });
+
+  it('ignores subagent turns, like the window fold does', () => {
+    ctx.allEntries.push(turn(false));
+    ctx.allEntries.push({ ...turn(true), isSubagent: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reads the server fold when the client no longer holds the turns', () => {
+    ctx.sessionsMap.set('s2', { beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s2'), 'declared');
+    ctx.sessionsMap.set('s3', { beta1m: false, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s3'), 'observed');
   });
 });

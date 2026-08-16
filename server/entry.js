@@ -27,7 +27,19 @@ const INDEX_FIELDS = [
   'beta1m',
   // #504: optional deployment identity, local calendar metadata, and duplicate
   // request-history tool calls. Append-only: existing field order is stable.
-  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+  // INVARIANT: `ctxBeta` is the OBSERVATION (the context-* entries of the
+  // anthropic-beta header, verbatim); `beta1m` above is its INTERPRETATION, gated
+  // on model capability. The two may legitimately disagree — a header on a model
+  // the gate refuses stores ctxBeta and no beta1m — so reading ctxBeta presence as
+  // "this turn ran 1M" reintroduces the #211 over-claim. Parse the tier with
+  // config.contextBetaWindow(); never test truthiness. Whitelisted (no other
+  // request header is persisted) and appended last to keep the field order
+  // add-only (test/entry.test.js G1). See docs/decisions/0013-*.
+  'ctxBeta',
+  // #531: the parent session of a Herdr-launched agent, appended after ctxBeta to
+  // keep the field order add-only on both sides of the merge.
+  'parentSessionId',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than

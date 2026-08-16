@@ -822,3 +822,196 @@ describe('getMaxContext — LiteLLM max-capability clamp for Claude models (#211
     assert.equal(getMaxContext('claude-3-7-sonnet', null), 200_000);
   });
 });
+
+// The 1M capability gate is model metadata, not a ccxray opinion. It used to be
+// a hand-maintained regex, which was wrong in both directions the moment a model
+// shipped: claude-opus-5 was missing (a 1M session divided by 200K → phantom
+// context pressure, measured at 76% for a session actually at 13%), while the
+// bare `opus-4` prefix claimed 1M for claude-opus-4-5, which serves 200K (real
+// pressure hidden). LiteLLM's context table — already downloaded and refreshed
+// daily by fetchPricing — is the source; the regex is the offline floor.
+describe('modelSupports1M — capability comes from LiteLLM, regex is the offline floor', () => {
+  const { getMaxContext, modelSupports1M, beta1mIndicates1M, SUPPORTS_1M } = require('../server/config');
+  const pricing = require('../server/pricing');
+  const origGetModelContext = pricing.getModelContext;
+
+  afterEach(() => { pricing.getModelContext = origGetModelContext; });
+
+  it('FIX: a 1M-capable model missing from the regex still gets 1M (fail-on-old)', () => {
+    // The measured case: claude-opus-5 shipped, the regex did not learn it.
+    pricing.getModelContext = (m) => (m === 'claude-opus-5' ? 1_000_000 : null);
+    assert.equal(getMaxContext('claude-opus-5', null, { beta1m: true }), 1_000_000);
+    assert.equal(beta1mIndicates1M('claude-opus-5', null, true), true);
+    const marker1m = [{ type: 'text', text: 'The exact model ID is claude-opus-5[1m].' }];
+    assert.equal(getMaxContext('claude-opus-5', marker1m), 1_000_000);
+  });
+
+  it('FIX: the narrowed regex stops claiming 1M for claude-opus-4-5 (fail-on-old)', () => {
+    // `^claude-opus-4` matched claude-opus-4-5, which serves 200K. Over-claiming
+    // 1M there hides real context pressure — the more dangerous direction.
+    // Note the fix is the hand-narrowed list, NOT LiteLLM: no upstream datum is
+    // trusted to mean "cannot do 1M" (see the sonnet-4-5 guard below).
+    pricing.getModelContext = (m) => (m === 'claude-opus-4-5' ? 200_000 : null);
+    assert.equal(getMaxContext('claude-opus-4-5', null, { beta1m: true }), 200_000);
+    assert.equal(beta1mIndicates1M('claude-opus-4-5', null, true), false);
+  });
+
+  it('GUARD: LiteLLM may add but never deny — claude-sonnet-4-5 keeps its 1M', () => {
+    // LiteLLM lists claude-sonnet-4-5 at 200_000 (its default serving window)
+    // although Sonnet 4.5 serves 1M under the beta, while listing fable-5 at 1M
+    // (its capability). The field is not a consistent capability signal, so a
+    // capability-decides gate silently demoted a model the regex had right.
+    pricing.getModelContext = (m) => (m === 'claude-sonnet-4-5' ? 200_000 : null);
+    assert.equal(getMaxContext('claude-sonnet-4-5', null, { beta1m: true }), 1_000_000);
+    assert.equal(modelSupports1M('claude-sonnet-4-5'), true);
+  });
+
+  it('FIX: a future model unknown to the regex needs no code change', () => {
+    pricing.getModelContext = (m) => (m === 'claude-opus-9' ? 1_000_000 : null);
+    assert.equal(modelSupports1M('claude-opus-9'), true);
+    assert.equal(SUPPORTS_1M.test('claude-opus-9'), false, 'the regex must not be what makes this pass');
+    assert.equal(getMaxContext('claude-opus-9', null, { beta1m: true }), 1_000_000);
+  });
+
+  it('GUARD: the account-level beta header still resolves haiku turns to 200K', () => {
+    // The reason the gate exists: Claude Code sends anthropic-beta context-1m-*
+    // on EVERY request, including haiku title-gen turns that really run 200K.
+    pricing.getModelContext = (m) => (m === 'claude-haiku-4-5' ? 200_000 : null);
+    assert.equal(getMaxContext('claude-haiku-4-5', null, { beta1m: true }), 200_000);
+    assert.equal(beta1mIndicates1M('claude-haiku-4-5', null, true), false);
+  });
+
+  it('GUARD: the offline list matches the sonnet-4 family without claiming future minors', () => {
+    // LiteLLM reports sonnet-4 and sonnet-4-5 at 200K, so this list is their only
+    // source — but a bare `sonnet-4` prefix would claim 1M for every future minor,
+    // which is exactly the `opus-4` over-match this work had to undo. A dated build
+    // is the same model; a new minor is not.
+    pricing.getModelContext = () => null;
+    assert.equal(modelSupports1M('claude-sonnet-4'), true);
+    assert.equal(modelSupports1M('claude-sonnet-4-20250514'), true);
+    assert.equal(modelSupports1M('claude-sonnet-4-5'), true);
+    assert.equal(modelSupports1M('claude-sonnet-4-5-20250929'), true);
+    assert.equal(modelSupports1M('claude-sonnet-4-9'), false, 'an unknown minor is not assumed 1M offline');
+    // A shipping model must be in the offline list, not left to LiteLLM: on a fresh
+    // install the cache does not exist yet, and sonnet-4-6 is a current model here
+    // (default-rates, weather baselines, the intercept model picker).
+    assert.equal(modelSupports1M('claude-sonnet-4-6'), true);
+    // …and LiteLLM can still add it when it knows better (union, never deny).
+    pricing.getModelContext = (m) => (m === 'claude-sonnet-4-9' ? 1_000_000 : null);
+    assert.equal(modelSupports1M('claude-sonnet-4-9'), true);
+  });
+
+  it('GUARD: with no LiteLLM data the offline regex decides, and it knows opus-5', () => {
+    pricing.getModelContext = () => null;
+    assert.equal(modelSupports1M('claude-opus-5'), true);
+    assert.equal(modelSupports1M('claude-sonnet-5'), true);
+    assert.equal(modelSupports1M('claude-opus-4-6'), true);
+    assert.equal(modelSupports1M('claude-haiku-4-5'), false);
+    assert.equal(modelSupports1M(''), false);
+  });
+
+  it('GUARD: capability alone never widens a window without a 1M signal', () => {
+    pricing.getModelContext = (m) => (m === 'claude-opus-5' ? 1_000_000 : null);
+    assert.equal(getMaxContext('claude-opus-5', null), 200_000);
+    assert.equal(getMaxContext('claude-opus-5', null, { beta1m: false }), 200_000);
+  });
+});
+
+// Observed context is the one signal no table can contradict: a request that
+// carried N tokens proves the window is at least N. The old rule jumped to a
+// hardcoded 1M for Claude and did nothing for anything else.
+describe('inferMaxContext — the observation floor climbs to the smallest covering tier', () => {
+  const { inferMaxContext } = require('../server/config');
+  const pricing = require('../server/pricing');
+  const origGetModelContext = pricing.getModelContext;
+  const use = n => ({ input_tokens: n, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 });
+
+  afterEach(() => { pricing.getModelContext = origGetModelContext; });
+
+  it('FIX: a model on the real 409,600 tier stops claiming 1M (fail-on-old)', () => {
+    // LiteLLM lists claude models at 80K/100K/128K/200K/409,600/1M. Jumping a
+    // 409,600 model to 1M is 2.5x too generous — it hides real pressure.
+    pricing.getModelContext = (m) => (m === 'claude-mid' ? 409_600 : null);
+    assert.equal(inferMaxContext('claude-mid', null, use(250_000)), 409_600);
+  });
+
+  it('GUARD: non-Claude models are never bumped, even with a capability datum', () => {
+    // Some providers report input_tokens inclusive of cached tokens, so an
+    // un-normalized usage object can sum above the window without the window
+    // being wrong. Widening from that total would hide pressure; an overflow
+    // stays visible as ctx > 100% instead.
+    pricing.getModelContext = (m) => (m === 'gpt-fast' ? 400_000 : null);
+    assert.equal(inferMaxContext('gpt-fast', null, use(450_000)), 400_000);
+  });
+
+  it('GUARD: an observation the capability says is impossible trusts the request', () => {
+    pricing.getModelContext = (m) => (m === 'claude-mid' ? 409_600 : null);
+    assert.equal(inferMaxContext('claude-mid', null, use(600_000)), 600_000);
+  });
+
+  it('GUARD: with no capability datum Claude keeps the 200K → 1M jump', () => {
+    // Claude serves two windows in practice; without data, the old behaviour is
+    // still the best available guess and errs toward under-reporting pressure.
+    pricing.getModelContext = () => null;
+    assert.equal(inferMaxContext('claude-unlisted', null, use(250_000)), 1_000_000);
+  });
+
+  it('GUARD: usage at or below the base never moves the window', () => {
+    pricing.getModelContext = (m) => (m === 'claude-mid' ? 409_600 : null);
+    assert.equal(inferMaxContext('claude-mid', null, use(200_000)), 200_000);
+    assert.equal(inferMaxContext('claude-mid', null, null), 200_000);
+    assert.equal(inferMaxContext('claude-mid', null, { input_tokens: -5 }), 200_000);
+  });
+});
+
+// The anthropic-beta header carries the tier in its id (context-1m-2025-08-07).
+// Persisting only the boolean interpretation of it means a future context-400k-*
+// arrives as a silent false, and a rebuild cannot re-derive a window the live
+// path knew (the header is not in _req.json).
+describe('anthropic-beta context-* persistence', () => {
+  const { getMaxContext, extractContextBeta, contextBetaWindow } = require('../server/config');
+  const pricing = require('../server/pricing');
+  const origGetModelContext = pricing.getModelContext;
+
+  afterEach(() => { pricing.getModelContext = origGetModelContext; });
+
+  it('keeps only window-shaped context betas, not everything prefixed context-', () => {
+    assert.equal(
+      extractContextBeta('oauth-2025-04-20,context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14'),
+      'context-1m-2025-08-07',
+    );
+    // context-management-* is the context-EDITING beta and ships on real traffic.
+    // It carries no window, so it must not land in a window field.
+    assert.equal(extractContextBeta('context-management-2025-06-27'), null);
+    assert.equal(extractContextBeta('context-management-2025-06-27,context-1m-2025-08-07'), 'context-1m-2025-08-07');
+    assert.equal(extractContextBeta('oauth-2025-04-20'), null);
+    assert.equal(extractContextBeta(''), null);
+    assert.equal(extractContextBeta(undefined), null);
+  });
+
+  it('reads the tier out of the beta id instead of tabulating it', () => {
+    assert.equal(contextBetaWindow('context-1m-2025-08-07'), 1_000_000);
+    assert.equal(contextBetaWindow('context-400k-2026-01-01'), 400_000);
+    assert.equal(contextBetaWindow('context-1m-2025-08-07,context-400k-2026-01-01'), 1_000_000);
+    assert.equal(contextBetaWindow('context-huge-2026'), null);
+    assert.equal(contextBetaWindow(null), null);
+  });
+
+  it('honours a non-1M tier only when the model can serve it', () => {
+    pricing.getModelContext = (m) => (m === 'claude-mid' ? 409_600 : 200_000);
+    assert.equal(getMaxContext('claude-mid', null, { ctxBeta: 'context-400k-2026-01-01' }), 400_000);
+    assert.equal(getMaxContext('claude-small', null, { ctxBeta: 'context-400k-2026-01-01' }), 200_000);
+  });
+
+  it('the raw header alone reproduces the 1M window', () => {
+    // What restore and rebuild get to work with once the header is on disk.
+    pricing.getModelContext = (m) => (m === 'claude-opus-5' ? 1_000_000 : null);
+    assert.equal(getMaxContext('claude-opus-5', null, { ctxBeta: 'context-1m-2025-08-07' }), 1_000_000);
+    assert.equal(getMaxContext('claude-opus-5', null, {}), 200_000);
+  });
+
+  it('GUARD: a header on a model that cannot serve 1M is still ignored', () => {
+    pricing.getModelContext = (m) => (m === 'claude-haiku-4-5' ? 200_000 : null);
+    assert.equal(getMaxContext('claude-haiku-4-5', null, { ctxBeta: 'context-1m-2025-08-07' }), 200_000);
+  });
+});

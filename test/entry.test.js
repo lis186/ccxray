@@ -17,7 +17,8 @@ const LEGACY_INDEX_FIELDS = [
 test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 fields', () => {
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
-    'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
+    'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+    'ctxBeta','parentSessionId',
   ]);
 });
 

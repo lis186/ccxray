@@ -476,11 +476,17 @@ const server = http.createServer((clientReq, clientRes) => {
     // is the authoritative, non-lagging signal for the context-window denominator.
     // Carried on ctx and fed into inferMaxContext downstream.
     const beta1m = /(^|,)\s*context-1m-/.test(clientReq.headers['anthropic-beta'] || '');
+    // The boolean above collapses the header to "is it 1M". Keep the context-*
+    // entries verbatim as well: the id carries the tier the client asked for, so
+    // a future `context-400k-*` is distinguishable instead of arriving as a
+    // silent false. Whitelisted on purpose — request headers also carry
+    // authorization / x-api-key, which must never reach the log.
+    const ctxBeta = config.extractContextBeta(clientReq.headers['anthropic-beta']);
 
     const ctx = {
       id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders,
       reqSessionId, reqWritePromise, sysHash, toolsHash, coreHash, agentKey, agentLabel, sessionInferred, upstream,
-      beta1m,
+      beta1m, ctxBeta,
       isSubagent: isSubagentHint,
     };
 

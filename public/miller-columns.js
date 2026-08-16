@@ -10,6 +10,46 @@ let entryCount = 0;
 // session that never showed a 1M signal stays 200K (#211 over-latch guard). Classification
 // (severity / isCompacted / lane placement) deliberately keeps raw per-turn maxContext —
 // this is display only. See docs/decisions/0013-beta1m-persist-session-window-derive.md
+// Where the window above came from, so a display site can tell a measured
+// denominator from an assumed one. Three states, in descending strength:
+//   'declared' — a turn carried the anthropic-beta context-* header (beta1m).
+//   'observed' — no declaration, but a turn's own context exceeded the default,
+//                which is physical proof of a larger window.
+//   'default'  — no evidence at all; 200K is an assumption, and a context% built
+//                on it is an assumption too. Sites that assert pressure (colour,
+//                "compact soon") must not treat this like the other two.
+// INVARIANT: derived at render time from persisted facts, never stored — storing
+// it would relaunder an interpretation as a fact (ADR 0013). A display site that
+// asserts context pressure (colour, "compact soon") must consult this before
+// treating a percentage as measured. See docs/decisions/0013-*.
+function sessionCtxWindowSource(sid) {
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  // Read the window that is actually rendered, then ask what produced it. Deriving
+  // this from the raw signals instead let the two disagree: a turn whose usage
+  // exceeded 200K reported `observed` while the fold still returned 200K, so the
+  // marker went quiet on a denominator the data had already disproved.
+  const win = sessionCtxWindow(sid);
+  for (let i = 0; i < allEntries.length; i++) {
+    const e = allEntries[i];
+    if (e.sessionId !== sid || e.isSubagent) continue;
+    // `beta1m` only — NOT bare `ctxBeta`. The header rides every request on a beta
+    // account, including turns whose declaration the capability gate refused
+    // (haiku title-gen, a model the gate does not know yet). Treating its mere
+    // presence as a declaration would mark those sessions measured and suppress
+    // the marker in exactly the case it exists for: the next unlisted model
+    // rendering "76% of 200K" when it is really a 1M session. beta1m is the
+    // declaration that actually resolved the window.
+    if (e.beta1m === true) return 'declared';
+  }
+  if (sessionsMap.get(sid)?.beta1m === true) return 'declared';
+  // A window that differs from the default came from a real per-turn derivation —
+  // a fossil above it (the header at write time, or the usage hatch) or a smaller
+  // model-specific capability below it. Exactly the default is indistinguishable
+  // from the fallback that produces it when nothing was derived at all, so it is
+  // reported as assumed even when some turn happens to carry it.
+  return win === DEF ? 'default' : 'observed';
+}
+
 function sessionCtxWindow(sid) {
   let win = 0, has1m = false;
   for (let i = 0; i < allEntries.length; i++) {
@@ -1470,8 +1510,13 @@ function renderSessionItem(sess, sid, sessEl) {
   // Context window size formatting (e.g., "1M", "200K"). #339: fold the per-session
   // window at render time (not the stale incremental value) so all turns show one denominator.
   let windowSizeStr = '';
+  let windowAssumed = false;
   if (sess.latestMainCtxUsed) {
     const w = sessionCtxWindow(sid);
+    // An assumed denominator makes the percentage next to it an assumption too.
+    // Mark the denominator rather than the number: the tokens are measured, only
+    // what they are divided by is a guess.
+    windowAssumed = sessionCtxWindowSource(sid) === 'default';
     if (w >= 1000000) {
       windowSizeStr = Math.round(w / 1000000) + 'M';
     } else if (w >= 1000) {
@@ -1524,8 +1569,10 @@ function renderSessionItem(sess, sid, sessEl) {
                                        : 'ctx-alert-dim';
   }
   const ctxAlertHtml = ctxPct > 0
-    ? '<span class="ctx-alert ' + ctxPctClass + '">' + Math.round(ctxPct) + '%' +
-      (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + '</span>' : '') +
+    ? '<span class="ctx-alert ' + ctxPctClass + '"' +
+      (windowAssumed ? ' title="No window evidence for this session — ' + windowSizeStr + ' assumed, so this percentage is an upper bound. A turn that declares the context-1m header, or one that exceeds the default, resolves it."' : '') +
+      '>' + Math.round(ctxPct) + '%' +
+      (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + (windowAssumed ? '?' : '') + '</span>' : '') +
       '</span>'
     : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.

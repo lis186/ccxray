@@ -98,6 +98,11 @@ function _foldEntry(canonical, other) {
   // header (e.g. an imported copy, #329) inherits it from a proxy copy that saw it. Never
   // downgrades (monotone), matching the sessionCtxWindow fold that consumes it.
   if (other.beta1m === true) canonical.beta1m = true;
+  // ctxBeta is the OBSERVATION behind beta1m (the raw context-* header). Fill it the
+  // same way: an imported canonical never saw the header, and losing it while keeping
+  // the interpretation would discard the more fundamental fact — and with it any tier
+  // the interpretation cannot express. Never overwrites a value already present.
+  if (!canonical.ctxBeta && other.ctxBeta) canonical.ctxBeta = other.ctxBeta;
   // toolSources is a map — fill when canonical is null/undefined OR an EMPTY object
   // ({} must not read as "already populated" and block a real map; round-3 m1).
   {

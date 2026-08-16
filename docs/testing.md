@@ -179,3 +179,26 @@ a shared home can introduce order-dependence between tests. Rule 1 (each test
 makes its own temp home) is the real guard; CI just stops the real-data
 dependency from going unnoticed. `$HOME` is left untouched so puppeteer's Chrome
 cache stays intact. It costs nothing extra — it doesn't re-run the suite.
+
+## `pricing-cache.json` is a second, non-`CCXRAY_HOME` input
+
+`CCXRAY_HOME` does not isolate everything a test can accidentally read. The
+LiteLLM cache (`pricing-cache.json`) lives **package-relative**, next to
+`package.json`, and since the 1M-capability work it is read synchronously on
+first use to resolve a model's context window — so a test that asserts window
+behaviour resolves differently on a machine that has run the server (cache
+present) than on CI (cache absent). Both directions pass today, which is exactly
+why this is easy to miss: it is the ADR 0015 R4 / #407 class, one module over.
+
+A test that exercises `getMaxContext` / `inferMaxContext` / `modelSupports1M`
+must pin that input, by any of:
+
+- stub `pricing.getModelContext` (the pattern already used throughout
+  `test/config.test.js`, restored in `afterEach`),
+- `pricing.__setContextTableForTests({...})` to inject a table through the real
+  lookup, including its prefix matching, or
+- set `CCXRAY_PRICING_CACHE` to a path that does not exist, for a spawned server
+  or CLI that must resolve windows with no LiteLLM data at all.
+
+The rule of thumb matches rule 1: never let an assertion depend on a file the
+test did not create.

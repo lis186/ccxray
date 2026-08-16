@@ -16,7 +16,11 @@ const {
 } = require('./default-rates');
 
 // ── Pricing ─────────────────────────────────────────────────────────
-const PRICING_CACHE_PATH = path.join(__dirname, '..', 'pricing-cache.json');
+// Package-relative, so it is outside CCXRAY_HOME isolation. CCXRAY_PRICING_CACHE
+// lets a test (or a read-only install) point it somewhere else or at a path that
+// does not exist, keeping window resolution independent of the developer's cache.
+const PRICING_CACHE_PATH = process.env.CCXRAY_PRICING_CACHE
+  || path.join(__dirname, '..', 'pricing-cache.json');
 const PRICING_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
@@ -96,7 +100,7 @@ async function fetchPricing() {
     const cached = JSON.parse(await fsp.readFile(PRICING_CACHE_PATH, 'utf8'));
     if (Date.now() - cached.fetchedAt < PRICING_TTL_MS) {
       pricingTable = buildPricingTable(cached.pricing || {});
-      if (cached.context) contextTable = mirrorProviderPrefixedKeys(cached.context);
+      if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
       console.log(`\x1b[90m   Pricing loaded from cache (${new Date(cached.fetchedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })})\x1b[0m`);
       logLagOverrideStatus(lastLagOverrideStatus);
       return;
@@ -136,7 +140,7 @@ async function fetchPricing() {
             context: mirroredCtx,
           }, null, 2)).catch(e => console.error('Write pricing cache failed:', e.message));
           pricingTable = buildPricingTable(fetched);
-          contextTable = mirroredCtx;
+          setContextTable(mirroredCtx);
           console.log(`\x1b[90m   Pricing fetched: ${Object.keys(fetched).length} models, ${Object.keys(fetchedCtx).length} context windows\x1b[0m`);
           logLagOverrideStatus(lastLagOverrideStatus);
         } catch (e) {
@@ -198,12 +202,43 @@ function calculateCost(usage, model) {
   return { cost, rates, confidence: rateConfidence };
 }
 
+// fetchPricing() is async and is awaited AFTER listen() and AFTER
+// restoreFromLogs() (server/index.js), so live turns and the restore heal pass
+// both ask for context windows while contextTable is still empty. Reading the
+// cache synchronously on first use removes that ordering dependency: without
+// it, the same model resolves to a different window before and after the fetch
+// resolves — the intra-session sawtooth ADR 0013 exists to prevent. TTL is
+// deliberately ignored: a model's *capability* does not expire, and the async
+// fetch overwrites this table when it lands.
+let contextTableLoadAttempted = false;
+function ensureContextTable() {
+  if (contextTableLoadAttempted || Object.keys(contextTable).length) return;
+  contextTableLoadAttempted = true;
+  try {
+    const cached = JSON.parse(fs.readFileSync(PRICING_CACHE_PATH, 'utf8'));
+    if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
+  } catch {}
+}
+
+// The prefix scan sorts ~4,200 keys. It used to run only for models missing
+// from MODEL_CONTEXT_FALLBACK; the 1M capability gate now consults this table
+// for every Claude turn, so the sort is memoized per table instead of per call.
+let contextKeysByLength = null;
+function setContextTable(next) {
+  contextTable = next;
+  contextKeysByLength = null;
+}
+function contextKeys() {
+  if (!contextKeysByLength) contextKeysByLength = Object.keys(contextTable).sort((a, b) => b.length - a.length);
+  return contextKeysByLength;
+}
+
 function getModelContext(model) {
   if (!model) return null;
+  ensureContextTable();
   if (contextTable[model]) return contextTable[model];
   if (!model.includes('/') && contextTable[`xai/${model}`]) return contextTable[`xai/${model}`];
-  const keys = Object.keys(contextTable).sort((a, b) => b.length - a.length);
-  for (const key of keys) {
+  for (const key of contextKeys()) {
     if (model.startsWith(key)) return contextTable[key];
   }
   return null;
@@ -222,5 +257,11 @@ module.exports = {
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides,
   buildPricingTable,
+  // Tests inject a table instead of reading the developer's pricing-cache.json,
+  // which is package-relative and therefore outside CCXRAY_HOME isolation.
+  __setContextTableForTests(table) {
+    setContextTable(table ? mirrorProviderPrefixedKeys(table) : {});
+    contextTableLoadAttempted = true;
+  },
   get lastLagOverrideStatus() { return lastLagOverrideStatus; },
 };

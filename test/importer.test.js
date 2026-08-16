@@ -16,6 +16,10 @@ const store = require('../server/store');
 const config = require('../server/config');
 const sessionIdx = require('../server/session-index');
 const { scanAndImport, parseSessionFile, parseCodexSessionFile, slugToProject, tsToId } = require('../server/importer');
+// The importer now derives maxContext, so these assertions depend on the LiteLLM
+// capability table. It is read from a package-relative pricing-cache.json, which
+// CCXRAY_HOME does not isolate — pin it (docs/testing.md, ADR 0015 R4 class).
+require('../server/pricing').__setContextTableForTests(null);
 
 const INDEX_PATH = path.join(tmpHome, 'logs', 'index.ndjson');
 
@@ -144,6 +148,34 @@ describe('importer', () => {
       assert.strictEqual(entries[0].tokens.output, 200);
       assert.strictEqual(entries[0].model, 'claude-sonnet-4-5-20250514');
       assert.strictEqual(entries[0].stopReason, 'end_turn');
+    });
+
+    it('writes maxContext, and observation alone recovers a window above the default (fail-on-old)', async () => {
+      // The Codex importer has written maxContext since #384; the Claude one wrote
+      // nothing, so every reader fell back to 200K — a 1M session rendered as
+      // phantom context pressure. Claude transcripts declare no window and never
+      // record the anthropic-beta header, so the only evidence is the observation.
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+
+      const small = path.join(sessionDir, 'sess-window-small.jsonl');
+      fs.writeFileSync(small, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:31:00.000Z', input: 1000, cacheRead: 1000, cacheCreate: 0 }),
+      ].join('\n'));
+      const under = await parseSessionFile(small, 'test-project');
+      assert.strictEqual(under[0].maxContext, 200_000, 'default window when nothing proves otherwise');
+      assert.strictEqual(under[0].tokens.contextWindow, 200_000);
+
+      const big = path.join(sessionDir, 'sess-window-big.jsonl');
+      fs.writeFileSync(big, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:32:00.000Z', input: 10, cacheRead: 260_000, cacheCreate: 0 }),
+      ].join('\n'));
+      const over = await parseSessionFile(big, 'test-project');
+      assert.strictEqual(over[0].maxContext, 1_000_000, '260K of context cannot fit a 200K window');
+      assert.strictEqual(over[0].tokens.contextWindow, 1_000_000);
+      assert.ok(over[0].tokens.contextPct < 100, 'context% stops exceeding its own denominator');
     });
 
     it('carries the upstream message id as responseId for #329/#333 merge', async () => {

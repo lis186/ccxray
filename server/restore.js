@@ -137,9 +137,24 @@ async function healMetaInPlace(meta) {
   }
   // anthropic: re-apply usage-aware context inference (#211 trustStored logic)
   if (meta.provider === 'anthropic') {
-    const inferred = config.inferMaxContext(meta.model, null, meta.usage);
+    // Re-derive from the signals the line itself persisted (#339 beta1m and the
+    // raw context-* beta): without them the heal pass re-infers from model+usage
+    // alone and cannot reproduce a window the live path knew from the header.
+    const inferred = config.inferMaxContext(meta.model, null, meta.usage, {
+      beta1m: meta.beta1m === true,
+      ctxBeta: meta.ctxBeta,
+    });
     const stripped = (meta.model || '').replace(/\[.*\]/, '');
-    let trustStored = !stripped.startsWith('claude-') || config.SUPPORTS_1M.test(stripped);
+    // INVARIANT (ADR 0013): `beta1m` on the line is a write-time attestation: the header was present AND
+    // the gate accepted it. Trust it independently of today's capability data —
+    // otherwise absence of LiteLLM (missing cache, renamed key, another machine)
+    // acts as a DENY and a restart shrinks a header-attested 1M back to 200K,
+    // which is the "every restart erases it" failure this work exists to close.
+    // Denial must stay as deliberate as the hand-narrowed list, never a side
+    // effect of data being unavailable.
+    let trustStored = meta.beta1m === true
+      || !stripped.startsWith('claude-')
+      || config.modelSupports1M(stripped);
     if (trustStored && (meta.maxContext || 0) > inferred && meta.sysHash) {
       const marker = await sysModelMarker(meta.sysHash);
       const markerMatches = !!marker && marker.replace(/\[.*\]/, '') === stripped;

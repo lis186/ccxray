@@ -338,7 +338,85 @@ const DEFAULT_CONTEXT = 200_000;
 // sends neither and runs 200K. sonnet-5 / mythos are 1M-capable per Anthropic
 // model docs (1M is the API default for fable/mythos; Claude Code still
 // serves 200K sessions unless [1m] is selected).
-const SUPPORTS_1M = /^claude-(opus-4|sonnet-4|sonnet-5|fable-5|mythos)/;
+//
+// This regex is now the OFFLINE FALLBACK only — `modelSupports1M()` prefers
+// LiteLLM's context table, which ccxray already downloads and refreshes daily.
+// A hand-maintained list is wrong in both directions the moment a model ships:
+// it missed claude-opus-5 (1M shown as 200K → phantom context pressure) while
+// the bare `opus-4` prefix claimed 1M for claude-opus-4-5, which serves 200K
+// (real pressure hidden). Keep this list narrow and literal; it only decides
+// models seen before the pricing cache exists.
+// The sonnet-4 family is anchored rather than prefix-matched: `sonnet-4` and
+// `sonnet-4-5` serve 1M (LiteLLM reports both at 200K, so this list is the only
+// source for them), but a bare `sonnet-4` prefix would also claim 1M for every
+// future minor — the exact `opus-4` over-match that this work had to undo. A
+// dated build (`-20250514`) is the same model; a new minor is not.
+const SUPPORTS_1M = /^claude-(opus-4-6|opus-4-7|opus-4-8|opus-5|sonnet-4-6|sonnet-5|fable-5|mythos)|^claude-sonnet-4(-5)?($|[-@]\d{8})/;
+
+// Is this model CAPABLE of a 1M window? Two sources, UNION — LiteLLM may only
+// ADD, never DENY.
+//
+// LiteLLM's max_input_tokens is not a consistent capability signal: it reports
+// claude-fable-5 at 1M (capability) but claude-sonnet-4-5 at 200K (default
+// serving window), even though Sonnet 4.5 serves 1M under the beta. Letting it
+// deny therefore breaks a model the regex had right. Letting it add picks up
+// every newly shipped model it lists at 1M (claude-opus-5 was the miss that
+// started this) without waiting for a release here.
+//
+// Removing a WRONG entry stays a manual edit of the regex above, because no
+// upstream source can be trusted to mean "cannot do 1M".
+//
+// Capability alone never widens a window — getMaxContext still requires the 1M
+// signal — so a haiku title-gen turn carrying the account-level beta header
+// still resolves to 200K.
+// INVARIANT: LiteLLM may ADD, never DENY (its max_input_tokens means capability
+// for some models and default serving window for others), and this predicate's
+// input is a table refreshed daily — so agreement with restore.js's trustStored
+// is agreement in code, not in time. Absence of capability data must never act
+// as a deny. See docs/decisions/0013-*.
+function modelSupports1M(stripped) {
+  if (!stripped) return false;
+  if (SUPPORTS_1M.test(stripped)) return true;
+  const { getModelContext } = require('./pricing');
+  const capability = getModelContext(stripped);
+  return typeof capability === 'number' && capability >= 1_000_000;
+}
+
+// The `anthropic-beta` request header, reduced to its context-* entries. The
+// tier lives in the id (`context-1m-2025-08-07`), so persisting the string keeps
+// a future `context-400k-*` legible instead of collapsing it to "not 1M".
+// Whitelisted deliberately: the rest of that header, and every other request
+// header, stays out of the log.
+function extractContextBeta(headerValue) {
+  if (!headerValue) return null;
+  // Shape-matched, not prefix-matched: `context-` also prefixes betas that have
+  // nothing to do with window size (context-management-*, the context-editing
+  // beta, ships on real traffic). Storing those would put a window-less string
+  // in a window field on nearly every line, and any consumer testing truthiness
+  // would misread it. The filter and contextBetaWindow's parser share one shape.
+  const parts = String(headerValue)
+    .split(',')
+    .map(part => part.trim())
+    .filter(part => /^context-\d+(?:\.\d+)?[km]-/i.test(part));
+  return parts.length ? parts.join(',') : null;
+}
+
+// Window a context-* beta id asks for, e.g. `context-1m-2025-08-07` → 1_000_000
+// and `context-400k-…` → 400_000. Parsed rather than tabulated so an unreleased
+// tier does not need a code change to be readable; an id we cannot parse returns
+// null and the caller falls back to the other signals.
+function contextBetaWindow(ctxBeta) {
+  if (!ctxBeta) return null;
+  let best = null;
+  for (const part of String(ctxBeta).split(',')) {
+    const m = /^context-(\d+(?:\.\d+)?)(k|m)-/i.exec(part.trim());
+    if (!m) continue;
+    const scale = m[2].toLowerCase() === 'm' ? 1_000_000 : 1_000;
+    const size = Math.round(parseFloat(m[1]) * scale);
+    if (size > 0 && (best == null || size > best)) best = size;
+  }
+  return best;
+}
 
 // Extract effective model ID from system prompt (includes [1m] suffix if present).
 // API request model field never includes [1m], but system prompt does:
@@ -360,7 +438,7 @@ function extractModelFromSystem(system) {
 function beta1mIndicates1M(model, system, beta1m) {
   if (beta1m !== true) return false;
   const stripped = (model || extractModelFromSystem(system) || '').replace(/\[.*\]/, '');
-  return SUPPORTS_1M.test(stripped);
+  return modelSupports1M(stripped);
 }
 
 function getMaxContext(model, system, opts = {}) {
@@ -384,11 +462,20 @@ function getMaxContext(model, system, opts = {}) {
   //    client-level flag riding on a haiku request does not over-claim 1M.
   // beta1m branch delegates to the shared helper so the persisted `beta1m` fact
   // (wire-parsers/anthropic.js) can never diverge from this gate (#339 / codex round 2).
-  if (beta1mIndicates1M(model, system, opts.beta1m)) return 1_000_000;
+  const asked = contextBetaWindow(opts.ctxBeta);
+  if (beta1mIndicates1M(model, system, opts.beta1m || asked === 1_000_000)) return 1_000_000;
+  // A context-* beta naming a tier other than 1M (none shipped yet — this is the
+  // reason the raw header is persisted rather than a boolean). Same shape as the
+  // 1M gate: the client asked, the model still has to be able to serve it.
+  if (asked && asked > DEFAULT_CONTEXT) {
+    const { getModelContext } = require('./pricing');
+    const capability = getModelContext(stripped);
+    if (typeof capability === 'number' && capability >= asked) return asked;
+  }
   // [1m] system-marker branch (lagging legacy signal), same SUPPORTS_1M gate.
   const markerMatchesIdentity = !!sysModel && sysModel.replace(/\[.*\]/, '') === stripped;
   const markerSignal = (markerMatchesIdentity && /\[1m\]/i.test(sysModel)) || /\[1m\]/i.test(model || '');
-  if (markerSignal && SUPPORTS_1M.test(stripped)) return 1_000_000;
+  if (markerSignal && modelSupports1M(stripped)) return 1_000_000;
   // 2) Known Claude Code / Codex defaults (200K / 400K)
   const keys = Object.keys(MODEL_CONTEXT_FALLBACK).sort((a, b) => b.length - a.length);
   for (const key of keys) {
@@ -413,10 +500,15 @@ function getMaxContext(model, system, opts = {}) {
 // Usage-aware refinement of getMaxContext. The [1m] marker only appears in
 // Claude Code's system prompt; requests without that prompt (title-gen,
 // some subagent paths) report a bare model name and fall back to 200K — but
-// a Max-plan user may actually be on 1M. When observed usage exceeds the
-// base, bump Claude models up to 1M so the dashboard "X / Y (Z%)" stays
-// self-consistent. Non-Claude models are not bumped because we have no
-// reliable next tier to escalate to.
+// a Max-plan user may actually be on 1M.
+//
+// Observed context is the one signal no table can contradict: a request
+// carrying N tokens proves the window is at least N. Climb to the smallest
+// window that covers the observation — the model's own capability when we know
+// it, the observation itself when the data says that is impossible — instead of
+// jumping to a hardcoded 1M. Two failures that fixed: a model on the real
+// 409,600 tier claimed 1M (2.5x too generous, hiding pressure), and a non-Claude
+// model that exceeded its assumed window kept it and rendered above 100%.
 function inferMaxContext(model, system, usage, opts = {}) {
   const base = getMaxContext(model, system, opts);
   if (!usage) return base;
@@ -426,8 +518,20 @@ function inferMaxContext(model, system, usage, opts = {}) {
   if (used <= base) return base;
   const effective = extractModelFromSystem(system) || model || '';
   const stripped = effective.replace(/\[.*\]/, '');
-  if (stripped.startsWith('claude-') && base < 1_000_000) return 1_000_000;
-  return base;
+  // Non-Claude providers keep their window untouched: some report input_tokens
+  // INCLUSIVE of cached tokens (providers.js normalizeUsageForProvider), so an
+  // un-normalized usage object can sum above the window without the window being
+  // wrong. Inflating it from a possibly double-counted total would hide pressure
+  // — the unsafe direction. A genuine overflow stays visible as ctx > 100%.
+  if (!stripped.startsWith('claude-')) return base;
+  const { getModelContext } = require('./pricing');
+  const capability = getModelContext(stripped);
+  if (typeof capability === 'number' && capability > base) {
+    // The smallest window we can name that still covers what we saw.
+    return capability >= used ? capability : used;
+  }
+  // No usable capability datum: Claude serves 200K or 1M in practice.
+  return base < 1_000_000 ? 1_000_000 : base;
 }
 
 // Logs-dir creation and the one-time legacy-logs migration now live in the
@@ -460,6 +564,9 @@ module.exports = {
   MODEL_CONTEXT_FALLBACK,
   DEFAULT_CONTEXT,
   SUPPORTS_1M,
+  modelSupports1M,
+  extractContextBeta,
+  contextBetaWindow,
   extractModelFromSystem,
   beta1mIndicates1M,
   getMaxContext,
