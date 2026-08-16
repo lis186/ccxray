@@ -356,6 +356,17 @@ card marks an assumed denominator (`60% of 200K?` + tooltip) while leaving an ev
 one clean. It is computed at render time from persisted facts, exactly as this ADR
 requires of `sessionCtxWindow` — storing it would relaunder an interpretation as a fact.
 
+The fold has a fourth state, `contradicted`, keyed on EVIDENCE rather than on
+provenance: a main turn that carried more context than the window it is divided by
+proves that window wrong, whatever produced it — so it outranks `declared` too. This
+is a different claim from "unverified" and must not share its marker: the percentage
+is not merely uncertain, it is a floor on a ratio whose denominator is already known
+to be too small, and the display's `Math.min(100, …)` clamp otherwise renders it as a
+confident "100%". The card shows `≤100% of 200K✗` instead. Restore's heal pass repairs
+such a window before the client ever sees it (the observation floor), so the state is
+reachable only where the heal does not run: legacy lines with no `provider`, and the
+cold-load path that serves raw index lines.
+
 `declared` is keyed on `beta1m`, NOT on `ctxBeta` presence. Claude Code sends the header
 on every request on a beta account, so keying on presence would mark every session
 measured and silence the marker in precisely the case it exists for: the next unlisted

@@ -275,12 +275,34 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 
-  it('an observation the window contradicts is still assumed, not observed (fail-on-old)', () => {
-    // 260K of context cannot fit the 200K this session is being divided by. The
-    // earlier version reported `observed` off the raw usage and suppressed the
-    // marker on a denominator the data had already disproved.
+  it('a window the session\'s own usage exceeded is contradicted, not merely assumed (fail-on-old)', () => {
+    // 260K of context cannot fit the 200K this session is divided by. That is a
+    // stronger claim than "unverified": the denominator is known wrong, so the
+    // percentage is a floor. Sharing the assumed marker flattened the two.
     ctx.allEntries.push(turn(true));
     assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'contradicted');
+  });
+
+  it('contradiction is keyed on evidence, not on provenance (fail-on-old)', () => {
+    // A declared or fossil-backed window can be exceeded too — by a later turn on
+    // a model switch, or by a fossil that under-states the real window. Evidence
+    // beats provenance in both directions.
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000,
+      usage: { input_tokens: 1200000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'contradicted');
+  });
+
+  it('a turn at exactly the window is not a contradiction', () => {
+    ctx.allEntries.push({ ...turn(false),
+      usage: { input_tokens: 200000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('a subagent that exceeds the parent window does not contradict it', () => {
+    ctx.allEntries.push(turn(false));
+    ctx.allEntries.push({ ...turn(true), isSubagent: true });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 
