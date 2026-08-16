@@ -411,6 +411,49 @@ function sessionWindow(turns) {
   return turns.reduce((max, t) => Math.max(max, t.maxContext || 0), 0) || 200000;
 }
 
+// INVARIANT: this selection deliberately DIVERGES from core's
+// `isMainTurnByAgentKey()` — do not "unify" them. That predicate returns TRUE for
+// exactly the shape this exists to exclude: `agentKey: 'agent'` is in
+// AGENT_KEY_UNRELIABLE, so it falls back to the raw `isSubagent` flag, which a
+// background conversation carries as false. Importing it here would be a no-op.
+// See docs/decisions/0005-agent-key-unreliable-shared-contract.md.
+//
+// Core's rule is recall-oriented (never misfile a possibly-new main variant as a
+// subagent); the badge needs precision (an unrecognized key must not SET the
+// number). Hence: prefer turns positively identified as an interactive main
+// agent, then degrade to the raw flag, then to everything — so a session run
+// entirely by an unrecognized variant, by codex, or by the importer (no agentKey
+// at all) behaves exactly as it did before. Never worse, by construction.
+//
+// Only the KEY LIST comes from core — that is the drift-prone data (it has grown
+// twice: `sdk-agent`, `default`). The predicate stays here. The require is
+// defensive because `findRepoRoot()` already contemplates a plugin installed
+// outside a ccxray checkout, where core's file is simply absent; that degrades
+// to the raw-flag tier rather than embedding a copy that would silently rot.
+let _mainAgentKeys;
+function mainAgentKeys() {
+  if (_mainAgentKeys) return _mainAgentKeys;
+  try {
+    _mainAgentKeys = require('../../../../public/agent-classification.js').WF_MAIN_AGENT_KEYS || {};
+  } catch {
+    _mainAgentKeys = {};
+  }
+  return _mainAgentKeys;
+}
+
+// The turns the badge is allowed to read its context% and cache% from. This is a
+// display fold, not a classification: it is computed at render time from
+// persisted facts, is never stored, and feeds nothing that classifies a turn
+// (the plugin has no isCompacted, no severity, no lane placement).
+// See docs/decisions/0013-beta1m-persist-session-window-derive.md.
+function mainDisplayTurns(turns) {
+  const keys = mainAgentKeys();
+  const positive = turns.filter(turn => keys[turn.agentKey]);
+  if (positive.length) return positive;
+  const notSubagent = turns.filter(turn => !turn.isSubagent);
+  return notSubagent.length ? notSubagent : turns;
+}
+
 function dominantModel(turns, fallback) {
   const counts = {};
   for (const turn of turns) counts[turn.model || fallback || 'unknown'] = (counts[turn.model || fallback || 'unknown'] || 0) + 1;
@@ -419,10 +462,16 @@ function dominantModel(turns, fallback) {
 
 function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {}) {
   const sorted = turns.slice().sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
-  const latest = sorted.at(-1) || {};
+  // Context%, cache%, and the model label read the main agent only; a second
+  // conversation riding the same sessionId otherwise sets them whenever it
+  // happens to finish last, so the badge oscillates with no compaction.
+  // Cost, age, and the turn count stay whole-session — those are facts about
+  // the session, not about one conversation inside it.
+  const anchor = mainDisplayTurns(sorted);
+  const latest = anchor.at(-1) || {};
   const firstTs = sorted.find(t => Number.isFinite(t.receivedAt))?.receivedAt;
   const cost = sorted.reduce((sum, t) => sum + (t.cost?.cost || 0), 0);
-  const win = sessionWindow(sorted);
+  const win = sessionWindow(anchor);
   const used = contextUsed(latest);
   const ctxPct = used && win ? used / win * 100 : null;
   const ctxText = ctxPct == null ? '?' : formatWholePercent(ctxPct);
@@ -431,20 +480,20 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ctxText,
     ctxBand: contextBand(ctxPct),
   };
-  const signal = contextSignal(sorted, detail);
+  const signal = contextSignal(anchor, detail);
   return {
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
     ctxText,
     ctxBand: detail.ctxBand,
-    ctxBar: formatContextBar(sorted, win, ctxText, {
+    ctxBar: formatContextBar(anchor, win, ctxText, {
       sidebarCols: opts.sidebarCols,
       signal,
     }),
     ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
     cost: sorted.length ? cost : fallback.cost,
     costText: formatMoney(sorted.length ? cost : fallback.cost),
-    model: dominantModel(sorted, fallback.model),
+    model: dominantModel(anchor, fallback.model),
     turns: sorted.length || fallback.turns || 0,
   };
 }

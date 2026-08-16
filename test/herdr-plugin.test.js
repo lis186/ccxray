@@ -321,6 +321,76 @@ describe('Herdr workspace scope', () => {
   });
 });
 
+// The sidebar badge reports the MAIN agent's context% and cache%. A second
+// conversation can ride the same sessionId — a background helper on another model
+// with its own convId — and before this fix the badge simply took the group's
+// latest turn, so the number oscillated between the two conversations with no
+// compaction involved. Real evidence: session 7baf1fc0, main convId 5e666e0a
+// (opus-5, orchestrator, 245 msgs, ~319K) interleaved with 5abe96ae (sonnet-5,
+// agentKey 'agent', 2 msgs, ~126K) → 30.2 → 12.3 → 30.5 → 12.5 → …
+describe('Herdr sidebar main-agent anchoring', () => {
+  const T = Date.parse('2026-08-17T00:00:00.000Z');
+  const mainTurn = {
+    id: 'a1', sessionId: 's1', model: 'claude-opus-5', agentKey: 'orchestrator',
+    isSubagent: false, convId: 'aaaa', receivedAt: T, beta1m: true,
+    maxContext: 1000000, usage: { input_tokens: 319000 },
+  };
+  // Latest by receivedAt, and NOT flagged a subagent — `agentKey: 'agent'` is
+  // core's catch-all, which is why isMainTurnByAgentKey() calls this turn main.
+  const backgroundTurn = {
+    id: 'b1', sessionId: 's1', model: 'claude-sonnet-5', agentKey: 'agent',
+    isSubagent: false, convId: 'bbbb', coreHash: '', receivedAt: T + 1000,
+    maxContext: 200000, usage: { input_tokens: 126000 },
+  };
+
+  it('anchors context% on the main conversation, not the latest turn', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome([mainTurn, backgroundTurn]) },
+      sessionId: 's1',
+      nowMs: T + 2000,
+    });
+    assert.equal(detail.matched, true);
+    // 319000/1000000 = 31.9%. Before the fix: 126000/1000000 = 12.6%.
+    assert.equal(Math.round(detail.ctxPct), 32);
+    assert.equal(detail.model, 'claude-opus-5');
+  });
+
+  it('anchors cache% on the main conversation too', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    // Main reads 90% of its context from cache; the background turn reads none.
+    const main = { ...mainTurn, usage: { input_tokens: 31900, cache_read_input_tokens: 287100 } };
+    const background = { ...backgroundTurn, usage: { input_tokens: 126000 } };
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome([main, background]) },
+      sessionId: 's1',
+      nowMs: T + 2000,
+      sidebarCols: 32,
+    });
+    // cacheHitText folds only the anchored turns, so the background turn's
+    // uncached 126K must not dilute the ratio: 287100/319000 = 90%.
+    assert.match(detail.ctxBar, /cache 90%/);
+  });
+
+  it('falls back to every turn when no turn is positively a main agent', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    // Imported turns carry neither agentKey nor isSubagent — an all-imported
+    // session must keep behaving exactly as it did. Guard, passes on both sides.
+    const imported = [
+      { id: 'i1', sessionId: 's2', model: 'claude-opus-5', receivedAt: T, imported: true,
+        maxContext: 1000000, usage: { input_tokens: 100000 } },
+      { id: 'i2', sessionId: 's2', model: 'claude-opus-5', receivedAt: T + 1000, imported: true,
+        maxContext: 1000000, usage: { input_tokens: 250000 } },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(imported) },
+      sessionId: 's2',
+      nowMs: T + 2000,
+    });
+    assert.equal(Math.round(detail.ctxPct), 25);
+  });
+});
+
 describe('Mission Control keyboard model', () => {
   it('maps visible controls and preserves pane selection across refreshes', () => {
     const {
