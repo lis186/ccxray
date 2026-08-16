@@ -429,6 +429,50 @@ describe('Herdr sidebar main-agent anchoring', () => {
     });
     assert.match(detail.ctxBar, /fail 2x/);
   });
+
+  // Every turn from a pane carries that pane's agentId, including turns from a
+  // subagent that was given its own sessionId. Grouping by sessionId and taking
+  // the most recently active group therefore lets a short-lived child session
+  // displace the pane's own main session in the badge.
+  it('reports the pane root session, not a more recent child session', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      { id: 'm1', sessionId: 'main-1234', agentId: 'herdr:w1:p4', model: 'claude-opus-5',
+        agentKey: 'orchestrator', isSubagent: false, receivedAt: T - 120000,
+        maxContext: 1000000, usage: { input_tokens: 300000 }, cost: { cost: 0.2, confidence: 'exact' } },
+      { id: 'c1', sessionId: 'child-5678', parentSessionId: 'main-1234', agentId: 'herdr:w1:p4',
+        model: 'claude-sonnet-5', agentKey: 'orchestrator', isSubagent: false, receivedAt: T,
+        maxContext: 1000000, usage: { input_tokens: 950000 }, cost: { cost: 0.07, confidence: 'exact' } },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries) },
+      paneId: 'w1:p4',
+      nowMs: T + 1000,
+    });
+    // Before the fix: child-5678, 95%, claude-sonnet-5 — the pane looked nearly
+    // full while its own conversation sat at 30%.
+    assert.equal(detail.sessionId, 'main-1234');
+    assert.equal(Math.round(detail.ctxPct), 30);
+    assert.equal(detail.model, 'claude-opus-5');
+  });
+
+  it('still reports a session whose parent is not this pane', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    // parentSessionId names a session this pane never saw, so there is no root to
+    // prefer and the only group must still be reported. Guard: passes both sides.
+    const entries = [
+      { id: 'o1', sessionId: 'orphan-1', parentSessionId: 'elsewhere-9', agentId: 'herdr:w1:p5',
+        model: 'claude-opus-5', agentKey: 'orchestrator', isSubagent: false, receivedAt: T,
+        maxContext: 1000000, usage: { input_tokens: 400000 } },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries) },
+      paneId: 'w1:p5',
+      nowMs: T + 1000,
+    });
+    assert.equal(detail.sessionId, 'orphan-1');
+    assert.equal(Math.round(detail.ctxPct), 40);
+  });
 });
 
 describe('Mission Control keyboard model', () => {

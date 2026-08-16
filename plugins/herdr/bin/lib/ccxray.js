@@ -554,7 +554,20 @@ function sessionSummaryDetails(data, opts = {}) {
       const bLast = Math.max(...b.map(t => t.receivedAt || 0));
       return bLast - aLast;
     });
-    const detail = summarizeTurnGroup(groups[0], top, nowMs, opts);
+    // Every turn from a pane carries that pane's agentId, including turns from a
+    // subagent that was given its own sessionId. Taking the most recently active
+    // group therefore let a short-lived child displace the pane's own session —
+    // a subagent at 95% made the pane look nearly full while its conversation sat
+    // at 30%. Prefer a group that is not a child of another group we can see; if
+    // the named parent is not among them there is no root to prefer, so keep the
+    // old ordering rather than hiding the only session the pane has.
+    const known = new Set(bySession.keys());
+    const roots = groups.filter(turns => !turns.some(turn => (
+      turn.parentSessionId
+      && turn.parentSessionId !== (turn.sessionId || 'unknown')
+      && known.has(turn.parentSessionId)
+    )));
+    const detail = summarizeTurnGroup((roots.length ? roots : groups)[0], top, nowMs, opts);
     const summary = `${shortModel(detail.model)}, ${detail.ageText}, ${detail.costText}`;
     return { ...detail, matched: true, summary: clip(summary, 80) };
   }
