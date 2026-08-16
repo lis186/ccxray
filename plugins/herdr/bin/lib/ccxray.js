@@ -15,6 +15,13 @@ function pluginRoot(env = process.env) {
   return env.HERDR_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 }
 
+function resolveHerdrConfigPath(env = process.env) {
+  if (env.HERDR_CONFIG_PATH) return env.HERDR_CONFIG_PATH;
+  const configHome = env.XDG_CONFIG_HOME
+    || path.join(env.HOME || os.homedir(), '.config');
+  return path.join(configHome, 'herdr', 'config.toml');
+}
+
 function findRepoRoot(env = process.env) {
   if (env.CCXRAY_REPO_ROOT && fs.existsSync(path.join(env.CCXRAY_REPO_ROOT, 'server', 'index.js'))) {
     return env.CCXRAY_REPO_ROOT;
@@ -105,12 +112,15 @@ function parseStatus(text) {
 function statusReport(opts = {}) {
   const result = runCcxray(['status'], { timeoutMs: opts.timeoutMs || 5000, env: opts.env });
   const text = `${result.stdout}${result.stderr}`;
+  const clean = stripAnsi(text);
+  const ok = result.status === 0 || /No hub running/i.test(clean);
   const parsed = parseStatus(text);
+  if (!ok) parsed.running = false;
   return {
-    ok: result.status === 0 || /No hub running/i.test(stripAnsi(text)),
+    ok,
     command: resolveCcxrayCommand(opts.env || process.env).label,
     result,
-    text: stripAnsi(text).trim(),
+    text: clean.trim(),
     parsed,
   };
 }
@@ -428,7 +438,7 @@ function sessionSummaryDetails(data, opts = {}) {
   const nativeSessionId = opts.sessionId || null;
   const allEntries = readIndexTailEntries({ env: opts.env });
   const entries = allEntries.filter(entry => entry.sessionId);
-  const routed = agentId && allEntries.some(entry => entry.agentId === agentId);
+  const routed = Boolean(opts.routed) || (agentId && allEntries.some(entry => entry.agentId === agentId));
 
   let turns = [];
   if (nativeSessionId) turns = entries.filter(e => e.sessionId === nativeSessionId);
@@ -984,9 +994,14 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
 function missionControlSnapshot(opts = {}) {
   const env = opts.env || process.env;
   const nowMs = Number(opts.nowMs || env.CCXRAY_HERDR_NOW_MS) || Date.now();
-  const entries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
+  const unscopedEntries = opts.entries || readIndexTailEntries({ env, maxBytes: opts.maxBytes });
+  const scoped = filterEntriesToWorkspace(unscopedEntries, env);
+  const entries = scoped.entries;
   const report = opts.agentReport || herdrAgentReport({ env, timeoutMs: opts.timeoutMs });
-  const agents = report.ok ? report.agents : [];
+  const reportedAgents = report.ok ? report.agents : [];
+  const agents = scoped.scope.workspaceId
+    ? reportedAgents.filter(agent => agent.workspace_id === scoped.scope.workspaceId)
+    : reportedAgents;
   const maxRows = clampNumber(opts.maxRows || env.CCXRAY_MISSION_MAX_ROWS, 1, 200) || 100;
   const toolSchemaCache = new Map();
   const rows = [];
@@ -1031,6 +1046,7 @@ function missionControlSnapshot(opts = {}) {
     recentCost: rows.reduce((sum, row) => sum + row.totalRecentCost, 0),
     exactRecentCost: rows.every(row => row.exactRecentCost),
     nowMs,
+    scope: scoped.scope,
   };
 }
 
@@ -1068,6 +1084,29 @@ function readHerdrContext(env = process.env) {
   try { return JSON.parse(env.HERDR_PLUGIN_CONTEXT_JSON); } catch { return null; }
 }
 
+function currentWorkspaceScope(env = process.env) {
+  const runtime = herdrRuntime(env);
+  const context = runtime.context || {};
+  const workspaceId = runtime.workspaceId || context.workspace_id || null;
+  const cwd = context.focused_pane_cwd || context.workspace_cwd || null;
+  if (!workspaceId && !cwd) return { kind: 'global', workspaceId: null, cwd: null };
+  return { kind: 'workspace', workspaceId, cwd };
+}
+
+function filterEntriesToWorkspace(entries, env = process.env) {
+  const scope = currentWorkspaceScope(env);
+  if (scope.kind === 'global') return { entries: entries.slice(), scope };
+  const agentPrefix = scope.workspaceId ? `herdr:${scope.workspaceId}:` : null;
+  return {
+    scope,
+    entries: entries.filter(entry => {
+      const agentId = String(entry.agentId || '');
+      if (agentId.startsWith('herdr:')) return Boolean(agentPrefix && agentId.startsWith(agentPrefix));
+      return Boolean(scope.cwd && entry.cwd === scope.cwd);
+    }),
+  };
+}
+
 function herdrRuntime(env = process.env) {
   return {
     present: env.HERDR_ENV === '1' || Boolean(env.HERDR_SOCKET_PATH || env.HERDR_PLUGIN_ID),
@@ -1084,6 +1123,40 @@ function herdrRuntime(env = process.env) {
 function pluginStateDir(env = process.env) {
   return env.HERDR_PLUGIN_STATE_DIR
     || path.join(env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'herdr-plugin');
+}
+
+function routedPanePath(paneId, env = process.env) {
+  if (!paneId) return null;
+  return path.join(pluginStateDir(env), 'routed-panes-v1', `${encodeURIComponent(paneId)}.json`);
+}
+
+function recordRoutedPane(paneId, agent, env = process.env) {
+  const file = routedPanePath(paneId, env);
+  if (!file) return false;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify({ paneId, agent, routedAt: Date.now() })}\n`, { mode: 0o600 });
+  fs.renameSync(temp, file);
+  return true;
+}
+
+function routedPaneKnown(paneId, env = process.env, maxAgeMs = 5 * 60000) {
+  const file = routedPanePath(paneId, env);
+  if (!file) return false;
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return saved.paneId === paneId
+      && Number.isFinite(saved.routedAt)
+      && Date.now() - saved.routedAt <= maxAgeMs;
+  } catch {
+    return false;
+  }
+}
+
+function forgetRoutedPane(paneId, env = process.env) {
+  const file = routedPanePath(paneId, env);
+  if (!file) return;
+  try { fs.unlinkSync(file); } catch {}
 }
 
 function reportPaneTokens(tokens, opts = {}) {
@@ -1143,7 +1216,10 @@ function reportWorkspaceTokens(tokens, opts = {}) {
 module.exports = {
   capabilityPortfolio,
   capabilityReview,
+  currentWorkspaceScope,
   findRepoRoot,
+  filterEntriesToWorkspace,
+  forgetRoutedPane,
   contextBand,
   contextSidebarColumns,
   formatMoney,
@@ -1157,9 +1233,12 @@ module.exports = {
   pluginStateDir,
   pluginRoot,
   readIndexTailEntries,
+  recordRoutedPane,
   reportPaneTokens,
   reportWorkspaceTokens,
   resolveCcxrayCommand,
+  resolveHerdrConfigPath,
+  routedPaneKnown,
   runCcxray,
   runHerdr,
   sessionSummary,

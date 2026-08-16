@@ -11,7 +11,7 @@ herdr plugin install lis186/ccxray/plugins/herdr
 herdr plugin action invoke ccxray.herdr.quick-start
 ```
 
-The GitHub checkout contains ccxray, so a separate global ccxray installation is not required. The plugin remains disabled if its platform or minimum Herdr version is incompatible.
+The GitHub checkout contains ccxray, and Herdr runs the plugin's production dependency build before registration, so a separate global ccxray installation is not required. If that build fails, installation aborts instead of registering a broken plugin. The plugin remains disabled if its platform or minimum Herdr version is incompatible.
 
 ## First run
 
@@ -37,7 +37,7 @@ herdr plugin action invoke ccxray.herdr.quick-start
 
 - `Open ccxray Quick Start` reports setup progress, launches installed providers, installs the optional sidebar with consent, and reveals analysis panes as their data becomes useful.
 - `ccxray doctor` checks the Herdr runtime context, ccxray command resolution, hub status, and recent usage.
-- `Launch Claude/Codex/Grok via ccxray` opens a Herdr split pane and starts the selected agent through ccxray with Herdr identity exported.
+- `Launch Claude/Codex/Grok via ccxray` opens a stable new Herdr tab and starts the selected agent through ccxray with Herdr identity exported. Set `CCXRAY_HERDR_LAUNCH_PLACEMENT=split` only when a split is intentional.
 - `ccxray usage summary` prints a compact cost/session/tool summary.
 - `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
 - Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.
@@ -76,7 +76,7 @@ The plugin reads ccxray session metadata from `~/.ccxray/logs`, keeps onboarding
 herdr plugin action list --plugin ccxray.herdr
 herdr plugin action invoke ccxray.herdr.quick-start
 herdr plugin action invoke ccxray.herdr.focus-attention
-herdr plugin pane open --plugin ccxray.herdr --entrypoint mission-control --placement split
+herdr plugin pane open --plugin ccxray.herdr --entrypoint mission-control --placement tab
 herdr plugin pane open --plugin ccxray.herdr --entrypoint onboarding --placement tab
 herdr plugin pane open --plugin ccxray.herdr --entrypoint capability-review --placement tab
 ```

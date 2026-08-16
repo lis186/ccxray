@@ -3,6 +3,7 @@
 
 const {
   capabilityReview,
+  filterEntriesToWorkspace,
   readIndexTailEntries,
   runHerdr,
 } = require('./lib/ccxray');
@@ -161,7 +162,8 @@ function renderHelp(max, lineBudget = Infinity) {
 
 function render(args, uiState = {}, message = '') {
   const nowMs = Number(process.env.CCXRAY_HERDR_NOW_MS) || Date.now();
-  const review = capabilityReview(readIndexTailEntries({ env: process.env }), {
+  const scoped = filterEntriesToWorkspace(readIndexTailEntries({ env: process.env }), process.env);
+  const review = capabilityReview(scoped.entries, {
     env: process.env,
     nowMs,
     windowMs: args.windowMs,
@@ -193,7 +195,8 @@ function render(args, uiState = {}, message = '') {
   const output = [];
   output.push(fitColumns('ccxray Capability Footprint', `Filter ${state.filter}`, max));
   output.push(...experimentalLines);
-  output.push(truncateText(`Window ${windowLabel(review.windowMs)} · ${review.sessionsWithSchema} sessions with schema · estimates`, max));
+  const scopeLabel = scoped.scope.kind === 'workspace' ? 'eligible workspace sessions' : 'sessions';
+  output.push(truncateText(`Window ${windowLabel(review.windowMs)} · ${review.sessionsWithSchema} ${scopeLabel} with schema · estimates`, max));
   output.push('');
 
   if (state.help) {

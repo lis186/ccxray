@@ -6,6 +6,8 @@ const {
   herdrRuntime,
   parseJsonOutput,
   pluginRoot,
+  forgetRoutedPane,
+  recordRoutedPane,
   reportPaneTokens,
   runHerdr,
 } = require('./lib/ccxray');
@@ -16,6 +18,7 @@ function parseArgs(argv) {
   return {
     agent: argv[0],
     planOnly: argv.includes('--plan') || process.env.CCXRAY_HERDR_LAUNCH_PLAN === '1',
+    placement: process.env.CCXRAY_HERDR_LAUNCH_PLACEMENT === 'split' ? 'split' : 'tab',
     direction: process.env.CCXRAY_HERDR_LAUNCH_DIRECTION || 'right',
     ratio: process.env.CCXRAY_HERDR_LAUNCH_RATIO || '0.5',
   };
@@ -33,7 +36,13 @@ function context(env = process.env) {
   };
 }
 
-function splitArgs(args, ctx) {
+function openArgs(args, ctx) {
+  if (args.placement === 'tab') {
+    const out = ['tab', 'create'];
+    if (ctx.workspaceId) out.push('--workspace', ctx.workspaceId);
+    out.push('--cwd', ctx.cwd, '--label', `ccxray ${args.agent}`, '--focus');
+    return out;
+  }
   const out = ['pane', 'split'];
   if (ctx.sourcePaneId) out.push('--pane', ctx.sourcePaneId);
   else out.push('--current');
@@ -67,12 +76,13 @@ function main() {
     process.exit(2);
   }
   const ctx = context();
-  const plannedSplit = splitArgs(args, ctx);
+  const plannedOpen = openArgs(args, ctx);
 
   if (args.planOnly) {
     console.log(JSON.stringify({
       agent: args.agent,
-      split: plannedSplit,
+      open: plannedOpen,
+      placement: args.placement,
       cwd: ctx.cwd,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
@@ -81,11 +91,11 @@ function main() {
     process.exit(0);
   }
 
-  const split = runHerdr(plannedSplit, { timeoutMs: 5000 });
-  const splitData = parseJsonOutput(split.stdout);
-  const paneId = splitData?.result?.pane?.pane_id;
+  const opened = runHerdr(plannedOpen, { timeoutMs: 5000 });
+  const openedData = parseJsonOutput(opened.stdout);
+  const paneId = openedData?.result?.root_pane?.pane_id || openedData?.result?.pane?.pane_id;
   if (!paneId) {
-    process.stderr.write(split.stderr || split.stdout || 'Failed to split Herdr pane.\n');
+    process.stderr.write(opened.stderr || opened.stdout || opened.error?.message || 'Failed to create the Herdr agent pane.\n');
     process.exit(1);
   }
 
@@ -103,14 +113,20 @@ function main() {
     ttlMs: 30000,
   });
 
-  const command = runnerCommand(args.agent, paneId, ctx);
+  const command = runnerCommand(args.agent, paneId, {
+    ...ctx,
+    tabId: openedData?.result?.tab?.tab_id || ctx.tabId,
+  });
+  recordRoutedPane(paneId, args.agent);
   const run = runHerdr(['pane', 'run', paneId, ...command], { timeoutMs: 3000 });
   if (run.status !== 0 || run.error) {
+    forgetRoutedPane(paneId);
     process.stderr.write(run.stderr || run.stdout || run.error?.message || 'Failed to run launcher command.\n');
     process.exit(1);
   }
 
   console.log(`ccxray ${args.agent} launch pane: ${paneId}`);
+  console.log(`placement: ${args.placement}`);
   console.log(`cwd: ${ctx.cwd}`);
   console.log(`identity: herdr:${paneId}`);
 }

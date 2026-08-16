@@ -633,6 +633,7 @@ function spawnAgent(command, port, args, onExit) {
     });
     process.on('SIGINT', () => {});
     process.on('SIGTERM', () => child.kill('SIGTERM'));
+    process.on('SIGHUP', () => child.kill('SIGHUP'));
   };
 
   if (command === 'claude') {

@@ -250,7 +250,11 @@ function render(args, uiState = {}, message = '') {
 
   const output = [];
   output.push(fitColumns(compact ? 'ccxray MC' : 'ccxray Mission Control', `Filter ${state.filter || 'all'}`, max));
-  const sourceLabel = snapshot.source === 'agents' ? 'panes' : (tiny ? 'recent' : 'recent sessions');
+  const sourceLabel = snapshot.source === 'agents'
+    ? (tiny ? 'panes' : 'active panes')
+    : snapshot.scope?.kind === 'workspace'
+      ? (tiny ? 'traces' : 'workspace traces')
+      : (tiny ? 'recent' : 'recent sessions');
   const summary = compact
     ? `${snapshot.totalRows} ${sourceLabel} / ${snapshot.attention} alert`
     : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.exactRecentCost)}/5m`;

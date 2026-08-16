@@ -7,8 +7,10 @@ const os = require('os');
 const path = require('path');
 const {
   pluginRoot,
+  filterEntriesToWorkspace,
   readIndexTailEntries,
   resolveCcxrayCommand,
+  resolveHerdrConfigPath,
   runHerdr,
   statusReport,
 } = require('./lib/ccxray');
@@ -55,7 +57,7 @@ function availableProviders(env = process.env) {
 }
 
 function sidebarInstalled(env = process.env) {
-  const file = env.HERDR_CONFIG_PATH || path.join(env.HOME || os.homedir(), '.config', 'herdr', 'config.toml');
+  const file = resolveHerdrConfigPath(env);
   try {
     const config = fs.readFileSync(file, 'utf8');
     return /token\s*=\s*"\$summary"/.test(config) && /token\s*=\s*"\$ctx_bar_(?:green|yellow|red)"/.test(config);
@@ -67,17 +69,18 @@ function sidebarInstalled(env = process.env) {
 function snapshot(env = process.env) {
   const status = statusReport({ env, timeoutMs: 4000 });
   const ccxrayReady = !status.result.error;
-  const entries = readIndexTailEntries({ env });
-  const linkedSessionIds = new Set(entries
+  const scoped = filterEntriesToWorkspace(readIndexTailEntries({ env }), env);
+  const linkedSessionIds = new Set(scoped.entries
     .filter(entry => !entry.isSubagent && String(entry.agentId || '').startsWith('herdr:') && entry.sessionId)
     .map(entry => entry.sessionId));
   return {
-    ccxrayReady,
+    ccxrayReady: status.ok,
     ccxrayCommand: resolveCcxrayCommand(env).label,
     hubRunning: status.parsed.running,
     sidebar: sidebarInstalled(env),
     providers: availableProviders(env),
     sessions: linkedSessionIds.size,
+    scope: scoped.scope,
   };
 }
 
@@ -198,7 +201,8 @@ function render(state, message = '', selectedId = recommendedItemId(state)) {
   }
   output.push(line(`ccxray       ${state.ccxrayReady ? 'READY' : 'FIX'}${state.hubRunning ? ' · hub running' : ''}`));
   output.push(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
-  output.push(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} observed`));
+  const sessionScope = state.scope?.kind === 'workspace' ? 'traced here' : 'observed';
+  output.push(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} ${sessionScope}`));
 
   for (const item of menuItems(state)) {
     if (item.type === 'section') {
@@ -274,7 +278,7 @@ function executeItem(item, state) {
   if (item.id === 'mission-control') {
     const result = runHerdr([
       'plugin', 'pane', 'open', '--plugin', 'ccxray.herdr',
-      '--entrypoint', 'mission-control', '--placement', 'split', '--focus',
+      '--entrypoint', 'mission-control', '--placement', 'tab', '--focus',
     ], { timeoutMs: 5000 });
     return { message: resultMessage(result, 'Mission Control opened.') };
   }

@@ -89,6 +89,14 @@ describe('Herdr plugin manifest', () => {
     }
   });
 
+  it('installs production dependencies for a GitHub-managed checkout', () => {
+    const manifest = fs.readFileSync(MANIFEST, 'utf8');
+    assert.ok(
+      manifest.includes('[[build]]\ncommand = ["npm", "ci", "--omit=dev", "--ignore-scripts", "--prefix", "../.."]'),
+      'managed installs must provision the repository dependencies before registration',
+    );
+  });
+
   it('starts Mission Control directly through the shared Node launcher', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     const paneBlock = manifest.match(/\[\[panes\]\][\s\S]*$/)?.[0] || '';
@@ -98,7 +106,7 @@ describe('Herdr plugin manifest', () => {
 
   it('keeps outcomes and cross-session value comparison out of the Herdr plugin', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
-    assert.match(manifest, /^version = "0\.3\.0"$/m);
+    assert.match(manifest, /^version = "0\.4\.0"$/m);
     assert.doesNotMatch(manifest, /mark-(?:success|partial|failed)|clear-outcome|mark-outcome\.js/);
     assert.doesNotMatch(manifest, /session-compare|Session Compare/);
   });
@@ -119,6 +127,14 @@ describe('Herdr plugin manifest', () => {
     assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\""]'));
     assert.match(manifest, /id = "onboarding"[\s\S]*title = "ccxray Quick Start"/);
     assert.ok(manifest.includes('command = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/onboarding.js\\""]'));
+    assert.ok(manifest.includes('on = "workspace.created"\ncommand = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\" --first-run"]'));
+  });
+
+  it('opens Mission Control and launched providers in stable new tabs by default', () => {
+    const manifest = fs.readFileSync(MANIFEST, 'utf8');
+    assert.match(manifest, /id = "mission-control"[\s\S]*?placement = "tab"/);
+    const onboarding = fs.readFileSync(path.join(PLUGIN, 'bin', 'onboarding.js'), 'utf8');
+    assert.match(onboarding, /'--entrypoint', 'mission-control', '--placement', 'tab'/);
   });
 
   it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
@@ -157,6 +173,62 @@ describe('Quick Start keyboard menu', () => {
     assert.equal(moveSelection(items, 'sidebar', -1), 'launch-codex');
     assert.equal(items.find(item => item.key === 'M').enabled, false);
     assert.equal(items.find(item => item.key === 'S').detail, 'installed · Enter remove');
+  });
+
+  it('counts traced sessions only in the current workspace', () => {
+    const entries = [
+      { ...sampleEntry, id: 'w1-turn', sessionId: 'w1-session', agentId: 'herdr:w1:p2', cwd: '/work/one' },
+      { ...sampleEntry, id: 'w2-turn', sessionId: 'w2-session', agentId: 'herdr:w2:p2', cwd: '/work/two' },
+    ];
+    const result = runScript('onboarding.js', ['--once'], {
+      CCXRAY_HOME: makeHome(entries),
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/one' }),
+      CCXRAY_ONBOARDING_PROVIDERS: 'codex',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /sessions\s+READY · 1 traced here/);
+  });
+});
+
+describe('Herdr workspace scope', () => {
+  it('keeps Herdr-attributed traces inside the current workspace', () => {
+    const { filterEntriesToWorkspace } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      { id: 'w1', agentId: 'herdr:w1:p1', cwd: '/shared' },
+      { id: 'w2', agentId: 'herdr:w2:p1', cwd: '/shared' },
+      { id: 'plain', cwd: '/shared' },
+      { id: 'other', cwd: '/other' },
+    ];
+    const scoped = filterEntriesToWorkspace(entries, {
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: '/shared' }),
+    });
+    assert.deepEqual(scoped.entries.map(entry => entry.id), ['w1', 'plain']);
+    assert.equal(scoped.scope.kind, 'workspace');
+    assert.equal(scoped.scope.workspaceId, 'w1');
+    assert.equal(scoped.scope.cwd, '/shared');
+  });
+
+  it('remembers an exact plugin-routed pane until its first trace arrives', () => {
+    const {
+      recordRoutedPane,
+      routedPaneKnown,
+      sessionSummaryDetails,
+    } = require('../plugins/herdr/bin/lib/ccxray');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
+    const env = { HERDR_PLUGIN_STATE_DIR: stateDir };
+    recordRoutedPane('w1:p9', 'codex', env);
+    assert.equal(routedPaneKnown('w1:p9', env), true);
+    assert.equal(routedPaneKnown('w1:p8', env), false);
+
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { ...env, CCXRAY_HOME: makeHome() },
+      paneId: 'w1:p9',
+      routed: true,
+    });
+    assert.equal(detail.summary, 'ccxray: ready · send prompt');
+    assert.equal(detail.matched, false);
   });
 });
 
@@ -515,6 +587,43 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /Hub: not running/);
   });
 
+  it('doctor fails truthfully when the ccxray status command crashes', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-doctor-failure-'));
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      'echo "Error: Cannot find module ws" >&2',
+      'exit 1',
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('doctor.js', [], {
+      CCXRAY_BIN: bin,
+      CCXRAY_HOME: makeHome(),
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stdout, /Hub: check failed/);
+    assert.match(result.stdout, /Cannot find module ws/);
+    assert.doesNotMatch(result.stdout, /Hub: running/);
+  });
+
+  it('doctor reports usage from the current workspace instead of global history', () => {
+    const entries = [
+      { ...sampleEntry, id: 'inside', sessionId: 'inside-session', cwd: '/work/inside' },
+      { ...sampleEntry, id: 'outside', sessionId: 'outside-session', cwd: '/work/outside' },
+    ];
+    const result = runScript('doctor.js', [], {
+      CCXRAY_HOME: makeHome(entries),
+      CCXRAY_HERDR_LAST: '9999d',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: '/work/inside' }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Usage \(9999d, workspace \/work\/inside\):/);
+    assert.match(result.stdout, /1 turns across 1 sessions/);
+  });
+
   it('usage-summary prints compact usage for an isolated ccxray home', () => {
     const home = makeHome([sampleEntry]);
     const result = runScript('usage-summary.js', ['--last', '9999d'], { CCXRAY_HOME: home });
@@ -522,6 +631,21 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /ccxray Usage Summary/);
     assert.match(result.stdout, /1 turns across 1 sessions/);
     assert.match(result.stdout, /Validate Herdr plugin/);
+  });
+
+  it('usage-summary defaults to the current Herdr workspace cwd and names its scope', () => {
+    const entries = [
+      { ...sampleEntry, id: 'inside', sessionId: 'inside-session', cwd: '/work/inside' },
+      { ...sampleEntry, id: 'outside', sessionId: 'outside-session', cwd: '/work/outside' },
+    ];
+    const result = runScript('usage-summary.js', ['--last', '9999d'], {
+      CCXRAY_HOME: makeHome(entries),
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: '/work/inside' }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Scope: workspace \/work\/inside/);
+    assert.match(result.stdout, /1 turns across 1 sessions/);
   });
 
   it('mission-control can render once for noninteractive validation', () => {
@@ -536,6 +660,23 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /GREEN 11111111 claude/);
     assert.match(result.stdout, /ctx 20%/);
     assert.match(result.stdout, /cache 38%/);
+  });
+
+  it('mission-control recent traces stay scoped to the current workspace', () => {
+    const entries = [
+      { ...sampleEntry, id: 'inside', sessionId: 'inside-session', agentId: 'herdr:w1:p2', cwd: '/work/inside' },
+      { ...sampleEntry, id: 'outside', sessionId: 'outside-session', agentId: 'herdr:w2:p2', cwd: '/work/outside' },
+    ];
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome(entries),
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/inside' }),
+      HERDR_BIN_PATH: makeHerdr([]),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /1 workspace traces/);
+    assert.match(result.stdout, /inside-s/);
+    assert.doesNotMatch(result.stdout, /outside-/);
   });
 
   it('mission-control empty state points to Quick Start', () => {
@@ -667,7 +808,7 @@ describe('Herdr plugin commands', () => {
       assert.match(readable, /Next: compact or start fresh/);
       if (width === 36) {
         assert.match(readable, /ccxray MC Filter all/);
-        assert.match(readable, /1 panes \/ 1 alert/);
+        assert.match(readable, /1 active panes \/ 1 alert/);
         assert.doesNotMatch(readable, /\$0\.12~/);
       }
       for (const line of result.stdout.trim().split('\n')) {
@@ -703,7 +844,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_ROWS: '18',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /12 panes/);
+    assert.match(result.stdout, /12 active panes/);
     assert.match(result.stdout, /↓ \d+ more/);
     assert.match(result.stdout, /Selected w1:p1/);
   });
@@ -780,7 +921,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '72',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /2 panes · 1 attention/);
+    assert.match(result.stdout, /2 active panes · 1 attention/);
     assert.match(result.stdout, /RED w1:p1 codex · working/);
     assert.match(result.stdout, /ctx 90% \(\+30%\/turn\)/);
     assert.match(result.stdout, /fail 2x/);
@@ -798,7 +939,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '64',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /1 panes · 1 attention/);
+    assert.match(result.stdout, /1 active panes · 1 attention/);
     assert.match(result.stdout, /YELLOW w1:p9 grok · working/);
     assert.match(result.stdout, /no ccxray telemetry/);
     assert.match(result.stdout, /unlinked/);
@@ -854,7 +995,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '80',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /1 panes · 1 attention/);
+    assert.match(result.stdout, /1 active panes · 1 attention/);
     assert.match(result.stdout, /READY w1:p8 claude · done/);
     assert.match(result.stdout, /Next: review output/);
     assert.doesNotMatch(result.stdout, /YELLOW w1:p8/);
@@ -915,7 +1056,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '100',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /2 panes · 1 attention/);
+    assert.match(result.stdout, /2 active panes · 1 attention/);
     assert.match(result.stdout, /YELLOW w1:p6 codex · working/);
     assert.match(result.stdout, /Next: inspect prompt\/tool diff/);
     assert.match(result.stdout, /cache dropped after prompt change/);
@@ -1152,7 +1293,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '100',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /1 panes · 0 attention · \+\$0\.32\/5m/);
+    assert.match(result.stdout, /1 active panes · 0 attention · \+\$0\.32\/5m/);
     assert.match(result.stdout, /ctx 30%/);
     assert.match(result.stdout, /main \$0\.20/);
     assert.match(result.stdout, /subagents 2, seen 5m 2, total \$0\.12/);
@@ -1194,7 +1335,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_MISSION_COLS: '100',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /1 panes · 0 attention · \+~\$0\.27\/5m/);
+    assert.match(result.stdout, /1 active panes · 0 attention · \+~\$0\.27\/5m/);
     assert.match(result.stdout, /main \$0\.20/);
     assert.match(result.stdout, /subagents 1, seen 5m 1, total ~\$0\.07/);
   });
@@ -1492,7 +1633,7 @@ describe('Herdr plugin commands', () => {
     assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · near full/);
   });
 
-  it('launch-agent can produce a Herdr split plan without side effects', () => {
+  it('launch-agent can produce a stable new-tab plan without side effects', () => {
     const context = {
       focused_pane_id: 'w1:p1',
       focused_pane_cwd: '/work/demo',
@@ -1505,7 +1646,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const plan = JSON.parse(result.stdout);
     assert.equal(plan.agent, 'codex');
-    assert.deepEqual(plan.split.slice(0, 4), ['pane', 'split', '--pane', 'w1:p1']);
+    assert.deepEqual(plan.open.slice(0, 4), ['tab', 'create', '--workspace', 'w1']);
+    assert.ok(plan.open.includes('--focus'));
     assert.equal(plan.cwd, '/work/demo');
   });
 
@@ -1580,6 +1722,31 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_red/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
     assert.match(result.stdout, /backup:/);
+  });
+
+  it('uses XDG_CONFIG_HOME consistently for sidebar detection and installation', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-home-'));
+    const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-xdg-'));
+    const configPath = path.join(xdg, 'herdr', 'config.toml');
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const env = {
+      HOME: home,
+      XDG_CONFIG_HOME: xdg,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    };
+
+    const install = runScript('install-sidebar-summary.js', [], env);
+    assert.equal(install.status, 0, install.stderr);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /\$summary/);
+    assert.equal(fs.existsSync(path.join(home, '.config', 'herdr', 'config.toml')), false);
+
+    const quickStart = runScript('onboarding.js', ['--once'], {
+      ...env,
+      CCXRAY_ONBOARDING_PROVIDERS: '',
+    });
+    assert.equal(quickStart.status, 0, quickStart.stderr);
+    assert.match(quickStart.stdout, /sidebar\s+READY · installed/);
   });
 
   it('install-sidebar-summary upgrades the old one-line sidebar summary config', () => {

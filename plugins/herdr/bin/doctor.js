@@ -2,6 +2,7 @@
 'use strict';
 
 const {
+  currentWorkspaceScope,
   herdrRuntime,
   reportPaneTokens,
   resolveCcxrayCommand,
@@ -18,8 +19,7 @@ function main() {
   const runtime = herdrRuntime();
   const command = resolveCcxrayCommand();
   const status = statusReport();
-  const usage = usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
-  const hardFailure = status.result.error && status.result.error.code === 'ENOENT';
+  const scope = currentWorkspaceScope();
 
   console.log('ccxray Herdr Doctor');
   console.log('');
@@ -31,10 +31,21 @@ function main() {
   console.log(`ccxray command: ${command.label}`);
   console.log('');
 
-  if (hardFailure) {
-    console.log(`ccxray command failed: ${status.result.error.message}`);
+  if (!status.ok) {
+    const reason = status.result.error?.message
+      || status.text
+      || `status command exited ${status.result.status ?? 'without a result'}`;
+    const exit = status.result.error?.code || status.result.status;
+    console.log(`Hub: check failed${exit != null ? ` (${exit})` : ''}`);
+    console.log(reason);
+    console.log('Next: reinstall the plugin, then run ccxray doctor again.');
     process.exit(1);
   }
+
+  const usage = usageReport({
+    last: process.env.CCXRAY_HERDR_LAST || '24h',
+    cwd: scope.cwd,
+  });
 
   if (status.parsed.running) {
     const bits = [];
@@ -48,7 +59,8 @@ function main() {
 
   if (usage.ok) {
     console.log('');
-    console.log(`Usage (${process.env.CCXRAY_HERDR_LAST || '24h'}):`);
+    const scopeLabel = scope.cwd ? `, workspace ${scope.cwd}` : ', all imported history';
+    console.log(`Usage (${process.env.CCXRAY_HERDR_LAST || '24h'}${scopeLabel}):`);
     for (const line of summarizeUsage(usage.data)) console.log(`- ${line}`);
   } else {
     const hint = usage.errorData?.hint || usage.text || 'usage command returned no data';

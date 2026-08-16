@@ -8,6 +8,7 @@ const {
   herdrRuntime,
   reportPaneTokens,
   reportWorkspaceTokens,
+  routedPaneKnown,
   runHerdr,
   sessionSummaryDetails,
   statusReport,
@@ -117,6 +118,7 @@ function main() {
     sessionId: nativeSessionId,
     cwd: event.cwd || context.focused_pane_cwd || context.workspace_cwd || null,
     sidebarCols,
+    routed: status.parsed.running && routedPaneKnown(targetPaneId, process.env),
   });
   const { tokens, clearTokens } = badge;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);

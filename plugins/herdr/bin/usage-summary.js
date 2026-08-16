@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const { summarizeUsage, usageReport } = require('./lib/ccxray');
+const { currentWorkspaceScope, summarizeUsage, usageReport } = require('./lib/ccxray');
 
 function parseArgs(argv) {
   const args = { last: process.env.CCXRAY_HERDR_LAST || '24h', cwd: null };
@@ -14,9 +14,12 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const usage = usageReport({ last: args.last, cwd: args.cwd });
+  const scope = currentWorkspaceScope();
+  const cwd = args.cwd || scope.cwd;
+  const usage = usageReport({ last: args.last, cwd });
 
   console.log(`ccxray Usage Summary (${args.last})`);
+  console.log(cwd ? `Scope: workspace ${cwd}` : 'Scope: all imported history');
   console.log('');
 
   if (!usage.ok) {

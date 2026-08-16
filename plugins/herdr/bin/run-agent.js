@@ -100,6 +100,8 @@ function main() {
   child.on('exit', (code, signal) => {
     process.exit(code ?? (signal === 'SIGINT' ? 130 : 1));
   });
+  process.on('SIGTERM', () => child.kill('SIGTERM'));
+  process.on('SIGHUP', () => child.kill('SIGHUP'));
 }
 
 main();

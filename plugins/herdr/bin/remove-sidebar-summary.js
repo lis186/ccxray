@@ -2,14 +2,12 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
-const path = require('path');
-const { runHerdr } = require('./lib/ccxray');
+const { resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
 
 const TOKENS = ['summary', 'ctx_bar', 'ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
 
 function configPath(env = process.env) {
-  return env.HERDR_CONFIG_PATH || path.join(os.homedir(), '.config', 'herdr', 'config.toml');
+  return resolveHerdrConfigPath(env);
 }
 
 function timestamp() {
