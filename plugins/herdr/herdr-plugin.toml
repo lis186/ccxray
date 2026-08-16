@@ -6,7 +6,7 @@ description = "Live Herdr session triage with context pressure, cost, evidence, 
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["npm", "ci", "--omit=dev", "--ignore-scripts", "--prefix", "../.."]
+command = ["/bin/sh", "bin/install-dependencies.sh"]
 
 [[startup]]
 command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/refresh-all-badges.js\""]

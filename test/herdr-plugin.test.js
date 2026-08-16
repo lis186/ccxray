@@ -92,9 +92,10 @@ describe('Herdr plugin manifest', () => {
   it('installs production dependencies for a GitHub-managed checkout', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
     assert.ok(
-      manifest.includes('[[build]]\ncommand = ["npm", "ci", "--omit=dev", "--ignore-scripts", "--prefix", "../.."]'),
+      manifest.includes('[[build]]\ncommand = ["/bin/sh", "bin/install-dependencies.sh"]'),
       'managed installs must provision the repository dependencies before registration',
     );
+    assert.ok(fs.existsSync(path.join(PLUGIN, 'bin', 'install-dependencies.sh')));
   });
 
   it('starts Mission Control directly through the shared Node launcher', () => {
@@ -1702,6 +1703,37 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, 'NODE_FALLBACK_OK');
+  });
+
+  it('dependency install recovers when npm is an inactive mise shim', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-npm-'));
+    const log = path.join(dir, 'mise-args.log');
+    fs.writeFileSync(path.join(dir, 'npm'), '#!/bin/sh\nexit 1\n');
+    fs.writeFileSync(path.join(dir, 'mise'), [
+      '#!/bin/sh',
+      'if [ "$1" = "latest" ]; then printf "%s\\n" "22.22.2"; exit 0; fi',
+      `printf '%s\\n' "$*" > ${JSON.stringify(log)}`,
+      'exit 0',
+      '',
+    ].join('\n'));
+    fs.chmodSync(path.join(dir, 'npm'), 0o755);
+    fs.chmodSync(path.join(dir, 'mise'), 0o755);
+
+    const result = spawnSync('/bin/sh', [path.join(PLUGIN, 'bin', 'install-dependencies.sh')], {
+      cwd: PLUGIN,
+      env: {
+        ...process.env,
+        PATH: `${dir}:/usr/bin:/bin`,
+        CCXRAY_NODE: '',
+        CCXRAY_NPM: '',
+      },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const args = fs.readFileSync(log, 'utf8');
+    assert.match(args, /^exec node@22\.22\.2 -- npm ci --omit=dev --ignore-scripts --prefix /);
+    assert.match(args, /ccxray-herdr-plugin-research\s*$/);
   });
 
   it('install-sidebar-summary appends a safe sidebar row with a backup', () => {
