@@ -72,7 +72,7 @@ describe('check-codex-review hook — cross-repo scope', () => {
       GH_BODY_CROSS: 'no second review here',
     });
     assert.equal(r.status, 2, 'must not validate against the cwd repo PR');
-    assert.match(r.stdout, /missing codex review evidence/);
+    assert.match(r.stdout, /missing second-review evidence/);
   });
 
   it('-R short flag is honored the same as --repo', () => {
@@ -97,6 +97,36 @@ describe('check-codex-review hook — cross-repo scope', () => {
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
     assert.doesNotMatch(r.spy, /--repo/);
+  });
+
+  it('a named grok review satisfies the gate (fail-on-old)', () => {
+    // The gate is "a second reviewer ran and the PR says so", not "codex
+    // specifically". codex goes unavailable on its own account quota, and a rule
+    // that cannot be satisfied for a week gets routed around instead of obeyed.
+    for (const body of ['grok gate clean', 'Round 2: GROK GATE CLEAN, no findings', 'grok gate clean\n\nrest of body']) {
+      const r = runHook('gh pr merge 42 --squash', { GH_BODY_LOCAL: body });
+      assert.equal(r.status, 0, `expected ${JSON.stringify(body)} to pass: ${r.stdout}${r.stderr}`);
+    }
+  });
+
+  it('a body that names grok without the completion marker still blocks', () => {
+    // "reviewed", "LGTM" and friends stay insufficient: the body must say WHICH
+    // reviewer ran, so a reader can weigh it.
+    // The near-misses are the point: each of these NAMES grok while saying the
+    // review has not happened, or happened without a verdict. A bare `grok review`
+    // alternative would pass every one of them — including this test's own title.
+    for (const body of [
+      'reviewed and clean', 'LGTM', 'second review done',
+      'second review (grok) went fine',
+      'TODO: grok review after CI',
+      'please grok review this',
+      'grok reviewer signed off',
+      'a named grok review satisfies the gate',
+    ]) {
+      const r = runHook('gh pr merge 42 --squash', { GH_BODY_LOCAL: body });
+      assert.equal(r.status, 2, `expected ${JSON.stringify(body)} to block`);
+      assert.match(r.stdout, /missing second-review evidence/);
+    }
   });
 
   it('same-repo merge without evidence still blocks', () => {

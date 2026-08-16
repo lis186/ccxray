@@ -234,6 +234,7 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   let enrichedResponseIds = 0;  // #333 legacy backfill count
   let enrichedIdentity = 0;     // #342 legacy identity backfill count
   let enrichedTurnToolCalls = 0; // #427 legacy backfill count
+  let enrichedMaxContext = 0; // context-window backfill count
   let enrichedTurnToolFail = 0; // #438 legacy backfill count
   let enrichedTurnToolCallIds = 0; // #486 legacy backfill count
   let enrichedTurnToolResults = 0; // #486 legacy backfill count
@@ -268,6 +269,39 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       let ttc = null;
       try { ttc = getParser('anthropic').extractTurnToolCalls(JSON.parse(await storage.read(m.id, '_res.json'))); } catch {}
       if (ttc) { m.turnToolCalls = ttc; outLine = JSON.stringify(m); enrichedTurnToolCalls++; }
+    }
+    // Add-only context-window backfill. A legacy or imported anthropic line can
+    // carry no maxContext at all (the Claude importer wrote none before the window
+    // work), so every reader divides by the 200K default — which renders a 1M
+    // session as phantom pressure, and renders a session whose own usage exceeded
+    // 200K as a flat, wrong 100%. The evidence is already on the line: usage is
+    // persisted, and a request that carried more than the default proves a bigger
+    // window. Derived with the SAME function the live path and the restore heal
+    // use, so a backfilled value is identical to a freshly written one.
+    //
+    // Written only when the derivation lands somewhere other than the default:
+    // storing 200000 would turn "nothing was derived" into a fossil that looks
+    // derived, and the provenance fold (ADR 0013) reads exactly that distinction.
+    // No file reads — this works for lines whose _req/_res have aged out.
+    // Anthropic lines only, named explicitly rather than by excluding the string
+    // 'openai': an OpenAI-wire line whose provider is missing or spelled otherwise
+    // would otherwise get a catalog window frozen onto it by #48, and its real one
+    // comes from the transcript (#384). A provider-less legacy line is claimed only
+    // when its model says claude. `usage` is not required — beta1m / ctxBeta alone
+    // can resolve a window, and without any of them the derivation lands on the
+    // default and the write is skipped anyway.
+    const anthropicLine = m.provider === 'anthropic'
+      || (!m.provider && /^claude-/.test(String(m.model || '')));
+    if (m.maxContext === undefined && anthropicLine && m.model) {
+      const win = config.inferMaxContext(m.model, null, m.usage, {
+        beta1m: m.beta1m === true,
+        ctxBeta: m.ctxBeta,
+      });
+      if (win !== config.DEFAULT_CONTEXT) {
+        m.maxContext = win;
+        outLine = JSON.stringify(m);
+        enrichedMaxContext++;
+      }
     }
     // #486 add-only turnToolCallIds backfill: extract {tool_use.id → name} from
     // _res.json. Same add-only, non-degrading pattern as turnToolCalls.
@@ -487,13 +521,14 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   if (enrichedResponseIds) log(`  backfilled responseId onto ${enrichedResponseIds} legacy line(s) (#333)`);
   if (enrichedIdentity) log(`  backfilled convId/coreHash/agentKey onto ${enrichedIdentity} legacy line(s) (#342)`);
   if (enrichedTurnToolCalls) log(`  backfilled turnToolCalls onto ${enrichedTurnToolCalls} legacy line(s) (#427)`);
+  if (enrichedMaxContext) log(`  backfilled maxContext onto ${enrichedMaxContext} line(s) that had no context window`);
   if (enrichedTurnToolFail) log(`  backfilled turnToolFail onto ${enrichedTurnToolFail} legacy line(s) (#438)`);
   if (enrichedTurnToolCallIds) log(`  backfilled turnToolCallIds onto ${enrichedTurnToolCallIds} legacy line(s) (#486)`);
   if (enrichedTurnToolResults) log(`  backfilled turnToolResults onto ${enrichedTurnToolResults} legacy line(s) (#486)`);
 
   // A run with no orphans to add can still have enriched existing lines — those
   // rewritten lines must be flushed, so the write is gated on any change.
-  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedTurnToolCalls > 0 || enrichedTurnToolFail > 0 || enrichedTurnToolCallIds > 0 || enrichedTurnToolResults > 0;
+  const hasChanges = N > 0 || enrichedResponseIds > 0 || enrichedIdentity > 0 || enrichedMaxContext > 0 || enrichedTurnToolCalls > 0 || enrichedTurnToolFail > 0 || enrichedTurnToolCallIds > 0 || enrichedTurnToolResults > 0;
   if (!hasChanges) {
     log(apply ? '  nothing to add — index left unchanged.' : '  dry run — nothing to add.');
     return { refused: false, recovered: 0, enriched: 0, enrichedIdentity: 0, total: M, unrecoverable, applied: false, cacheFinalSize: cache.size };

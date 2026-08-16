@@ -22,6 +22,19 @@ let entryCount = 0;
 // it would relaunder an interpretation as a fact (ADR 0013). A display site that
 // asserts context pressure (colour, "compact soon") must consult this before
 // treating a percentage as measured. See docs/decisions/0013-*.
+// INVARIANT: four states — 'declared' | 'observed' | 'contradicted' | 'default'.
+// A consumer that only special-cases 'default' silently treats 'contradicted' as a
+// resolved window and renders a clamped, unmarked percentage — worse than what it
+// replaced. Any site that CHOOSES A MARKER must switch on the enum: collapsing
+// 'contradicted' into 'default' puts a "this is unverified" glyph on a number the
+// data has already disproved. `ctxWindowUnverified()` below is only for the coarser
+// question "may I treat this window as measured", never for picking the marker.
+// See docs/decisions/0013-beta1m-persist-session-window-derive.md.
+function ctxWindowUnverified(sid) {
+  const src = sessionCtxWindowSource(sid);
+  return src === 'default' || src === 'contradicted';
+}
+
 function sessionCtxWindowSource(sid) {
   const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
   // Read the window that is actually rendered, then ask what produced it. Deriving
@@ -29,9 +42,28 @@ function sessionCtxWindowSource(sid) {
   // exceeded 200K reported `observed` while the fold still returned 200K, so the
   // marker went quiet on a denominator the data had already disproved.
   const win = sessionCtxWindow(sid);
+  // The numerator the card actually renders. Checking it directly is what makes the
+  // label describe the number rather than a parallel derivation of it: `allEntries`
+  // can be truncated and cold-load rows carry no usage, so an entry scan alone
+  // would report a resolved window for a ratio already over 100%.
+  const foldUsed = sessionsMap.get(sid)?.latestMainCtxUsed || 0;
+  if (foldUsed > win) return 'contradicted';
+  let declared = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.sessionId !== sid || e.isSubagent) continue;
+    // A turn that carried more context than the window it is divided by proves the
+    // window wrong, whatever produced it — evidence outranks provenance, so this
+    // returns even on a declared window. Keeping it below `declared` would let a
+    // stale or under-stated declaration render clean while its own data refutes it.
+    const u = e.usage;
+    if (u) {
+      const usedCtx = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+      if (usedCtx > win) return 'contradicted';
+    }
+    // `contradictedByFold` below is the load-bearing half: this loop can only see
+    // turns the client still holds, and the overflowing one may have been evicted
+    // or arrived without a usage object.
     // `beta1m` only — NOT bare `ctxBeta`. The header rides every request on a beta
     // account, including turns whose declaration the capability gate refused
     // (haiku title-gen, a model the gate does not know yet). Treating its mere
@@ -39,9 +71,9 @@ function sessionCtxWindowSource(sid) {
     // the marker in exactly the case it exists for: the next unlisted model
     // rendering "76% of 200K" when it is really a 1M session. beta1m is the
     // declaration that actually resolved the window.
-    if (e.beta1m === true) return 'declared';
+    if (e.beta1m === true) declared = true;
   }
-  if (sessionsMap.get(sid)?.beta1m === true) return 'declared';
+  if (declared || sessionsMap.get(sid)?.beta1m === true) return 'declared';
   // A window that differs from the default came from a real per-turn derivation —
   // a fossil above it (the header at write time, or the usage hatch) or a smaller
   // model-specific capability below it. Exactly the default is indistinguishable
@@ -1511,12 +1543,17 @@ function renderSessionItem(sess, sid, sessEl) {
   // window at render time (not the stale incremental value) so all turns show one denominator.
   let windowSizeStr = '';
   let windowAssumed = false;
+  let windowContradicted = false;
   if (sess.latestMainCtxUsed) {
     const w = sessionCtxWindow(sid);
     // An assumed denominator makes the percentage next to it an assumption too.
     // Mark the denominator rather than the number: the tokens are measured, only
     // what they are divided by is a guess.
-    windowAssumed = sessionCtxWindowSource(sid) === 'default';
+    const ctxSource = sessionCtxWindowSource(sid);
+    windowAssumed = ctxSource === 'default';
+    // A window the session's own usage exceeded is not merely unverified — it is
+    // known to be too small, so the ratio built on it is a floor, not a reading.
+    windowContradicted = ctxSource === 'contradicted';
     if (w >= 1000000) {
       windowSizeStr = Math.round(w / 1000000) + 'M';
     } else if (w >= 1000) {
@@ -1552,7 +1589,13 @@ function renderSessionItem(sess, sid, sessEl) {
     ? '<div class="si-truncated" title="Session too large — only the first turn is loaded into memory">Session too large — ' + sess.totalEntryCount + ' total turns, showing 1</div>'
     : '';
   // #339: divide the latest main turn's raw ctxUsed by the render-time session window.
-  const ctxPct = sess.latestMainCtxUsed ? Math.min(100, sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100) : 0;
+  // The clamp keeps a bad denominator from painting an absurd bar, but on a window
+  // the data has already disproved it, clamping the NUMBER erases the disagreement:
+  // "100%" reads as "full" when the ratio is genuinely above 100. Clamp the bar,
+  // report the number — a `≤100%` on a clamped value would even assert the opposite
+  // inequality to the one the evidence supports.
+  const ctxRatio = sess.latestMainCtxUsed ? sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100 : 0;
+  const ctxPct = Math.min(100, ctxRatio);
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
   // light up red/yellow — prevents sea-of-red when scanning the session list.
@@ -1570,9 +1613,13 @@ function renderSessionItem(sess, sid, sessEl) {
   }
   const ctxAlertHtml = ctxPct > 0
     ? '<span class="ctx-alert ' + ctxPctClass + '"' +
-      (windowAssumed ? ' title="No window evidence for this session — ' + windowSizeStr + ' assumed, so this percentage is an upper bound. A turn that declares the context-1m header, or one that exceeds the default, resolves it."' : '') +
-      '>' + Math.round(ctxPct) + '%' +
-      (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + (windowAssumed ? '?' : '') + '</span>' : '') +
+      (windowContradicted
+        ? ' title="This session sent more context than ' + windowSizeStr + ', so that window is wrong — the real one is larger and was never recorded. The percentage is an upper bound, not a reading."'
+        : windowAssumed
+          ? ' title="No window evidence for this session — ' + windowSizeStr + ' assumed, so this percentage is an upper bound. A turn that declares the context-1m header, or one that exceeds the default, resolves it."'
+          : '') +
+      '>' + Math.round(windowContradicted ? ctxRatio : ctxPct) + '%' +
+      (windowSizeStr ? ' <span style="color:var(--dim)">' + 'of ' + windowSizeStr + (windowContradicted ? '\u2717' : windowAssumed ? '?' : '') + '</span>' : '') +
       '</span>'
     : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.

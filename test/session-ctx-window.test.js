@@ -60,6 +60,7 @@ function loadCtx(includeEntryRendering) {
     this.sessionsMap = sessionsMap;
     this.sessionCtxWindow = sessionCtxWindow;
     this.sessionCtxWindowSource = sessionCtxWindowSource;
+    this.ctxWindowUnverified = ctxWindowUnverified;
     this.turnCtxWindow = turnCtxWindow;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
@@ -275,12 +276,34 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 
-  it('an observation the window contradicts is still assumed, not observed (fail-on-old)', () => {
-    // 260K of context cannot fit the 200K this session is being divided by. The
-    // earlier version reported `observed` off the raw usage and suppressed the
-    // marker on a denominator the data had already disproved.
+  it('a window the session\'s own usage exceeded is contradicted, not merely assumed (fail-on-old)', () => {
+    // 260K of context cannot fit the 200K this session is divided by. That is a
+    // stronger claim than "unverified": the denominator is known wrong, so the
+    // percentage is a floor. Sharing the assumed marker flattened the two.
     ctx.allEntries.push(turn(true));
     assert.equal(ctx.sessionCtxWindow('s1'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'contradicted');
+  });
+
+  it('contradiction is keyed on evidence, not on provenance (fail-on-old)', () => {
+    // A declared or fossil-backed window can be exceeded too — by a later turn on
+    // a model switch, or by a fossil that under-states the real window. Evidence
+    // beats provenance in both directions.
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000,
+      usage: { input_tokens: 1200000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'contradicted');
+  });
+
+  it('a turn at exactly the window is not a contradiction', () => {
+    ctx.allEntries.push({ ...turn(false),
+      usage: { input_tokens: 200000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('a subagent that exceeds the parent window does not contradict it', () => {
+    ctx.allEntries.push(turn(false));
+    ctx.allEntries.push({ ...turn(true), isSubagent: true });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
   });
 
@@ -302,6 +325,28 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     ctx.allEntries.push(turn(false));
     ctx.allEntries.push({ ...turn(true), isSubagent: true, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'default');
+  });
+
+  it('reports contradicted from the fold when the overflowing turn is gone (fail-on-old)', () => {
+    // The card divides `latestMainCtxUsed` from the server fold, not the entries the
+    // client happens to hold. With the overflowing turn evicted (or a cold-load row
+    // that carries no usage), an entry scan alone reported a resolved window for a
+    // ratio already over 100%.
+    ctx.sessionsMap.set('s4', { latestMainCtxUsed: 260000, maxContext: 200000, beta1m: false });
+    assert.equal(ctx.sessionCtxWindow('s4'), 200000);
+    assert.equal(ctx.sessionCtxWindowSource('s4'), 'contradicted');
+    // …and it outranks a declaration carried by that same fold.
+    ctx.sessionsMap.set('s5', { latestMainCtxUsed: 1200000, maxContext: 1000000, beta1m: true });
+    assert.equal(ctx.sessionCtxWindowSource('s5'), 'contradicted');
+  });
+
+  it('ctxWindowUnverified covers every state that must not read as resolved', () => {
+    ctx.sessionsMap.set('s6', { latestMainCtxUsed: 260000, maxContext: 200000, beta1m: false });
+    assert.equal(ctx.ctxWindowUnverified('s6'), true, 'contradicted');
+    ctx.allEntries.push(turn(false));
+    assert.equal(ctx.ctxWindowUnverified('s1'), true, 'default');
+    ctx.allEntries.push({ ...turn(false), sessionId: 's7', beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.ctxWindowUnverified('s7'), false, 'declared');
   });
 
   it('reads the server fold when the client no longer holds the turns', () => {
