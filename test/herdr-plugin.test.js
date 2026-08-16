@@ -1694,6 +1694,34 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_yellow ctx_bar_red/);
   });
 
+  // refresh-all-badges counts a child that exited 0 as refreshed. Exiting 0 when
+  // `herdr pane report-metadata` failed makes the fan-out report "N refreshed"
+  // while the sidebar still shows the previous badge.
+  it('refresh-badges fails when the metadata write failed', () => {
+    const herdr = makeRecordingHerdr({ status: 1 });
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome([sampleEntry]),
+      CCXRAY_HERDR_LAST: '9999d',
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.match(result.stdout, /Pane: w1:p1 \(/);
+    assert.notEqual(result.status, 0, 'a failed metadata write must not be reported as success');
+  });
+
+  it('refresh-badges succeeds when the metadata write succeeded', () => {
+    const herdr = makeRecordingHerdr();
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome([sampleEntry]),
+      CCXRAY_HERDR_LAST: '9999d',
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.equal(result.status, 0);
+  });
+
   it('refresh-badges uses a neutral band when context is unknown', () => {
     const result = runScript('refresh-badges.js', [], {
       CCXRAY_HOME: makeHome(),

@@ -155,7 +155,13 @@ function main() {
   if (notificationResult?.status === 0) console.log(`Notification: ${notification.title}`);
   else if (notificationResult) console.log('Notification unavailable: run Doctor for Herdr details.');
 
-  process.exit((runtime.workspaceId || runtime.paneId) ? 0 : 1);
+  // refresh-all-badges counts a child that exited 0 as refreshed. Exiting 0 on a
+  // failed `herdr pane report-metadata` made the fan-out report "N refreshed"
+  // while the sidebar still showed the previous badge — a silent failure that
+  // looked like a success. Report a write we were asked to make and could not.
+  const targeted = runtime.workspaceId || runtime.paneId;
+  const wrote = (!runtime.paneId || pane.ok) && (!runtime.workspaceId || workspace.ok);
+  process.exit(targeted && wrote ? 0 : 1);
 }
 
 main();
