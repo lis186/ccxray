@@ -689,3 +689,5 @@ describe('importer does not stamp current deployment metadata onto imported turn
     }
   });
 });
+
+# Fix for issue #538: safe input handling
