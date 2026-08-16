@@ -115,9 +115,24 @@ describe('rebuild-index', () => {
     writeIndexLine({ id: idD, ts: '13-00-00', sessionId: 's', provider: 'openai', model: 'gpt-5',
       usage: { input_tokens: 500000 }, isSSE: true, status: 200 });
 
+    // A declaration alone resolves a window — no usage needed.
+    const idE = '2026-07-02T14-00-00-000';
+    writeIndexLine({ id: idE, ts: '14:00:00', sessionId: 's', provider: 'anthropic', model: 'claude-opus-4-7',
+      beta1m: true, isSSE: true, status: 200 });
+    // A legacy line with no provider is claimed only when the model says claude.
+    const idF = '2026-07-02T15-00-00-000';
+    writeIndexLine({ id: idF, ts: '15:00:00', sessionId: 's', model: 'claude-opus-4-7',
+      usage: { input_tokens: 10, cache_read_input_tokens: 260000, cache_creation_input_tokens: 0 }, isSSE: true, status: 200 });
+    const idG = '2026-07-02T16-00-00-000';
+    writeIndexLine({ id: idG, ts: '16:00:00', sessionId: 's', model: 'gpt-5',
+      usage: { input_tokens: 500000 }, isSSE: true, status: 200 });
+
     await rebuildIndex({ apply: true, storage, log });
     const lines = readIndexIds();
     assert.equal(lines.find(l => l.id === idA).maxContext, 1_000_000, 'observation above the default recovers the window');
+    assert.equal(lines.find(l => l.id === idE).maxContext, 1_000_000, 'a declaration resolves it without usage');
+    assert.equal(lines.find(l => l.id === idF).maxContext, 1_000_000, 'provider-less claude line is claimed');
+    assert.ok(!('maxContext' in lines.find(l => l.id === idG)), 'provider-less non-claude line is not');
     assert.ok(!('maxContext' in lines.find(l => l.id === idB)), 'nothing proven → no fossil written');
     assert.equal(lines.find(l => l.id === idC).maxContext, 200000, 'existing value untouched');
     assert.ok(!('maxContext' in lines.find(l => l.id === idD)), 'openai exempt');

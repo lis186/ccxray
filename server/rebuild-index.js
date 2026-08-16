@@ -283,7 +283,16 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     // storing 200000 would turn "nothing was derived" into a fossil that looks
     // derived, and the provenance fold (ADR 0013) reads exactly that distinction.
     // No file reads — this works for lines whose _req/_res have aged out.
-    if (m.maxContext === undefined && m.provider !== 'openai' && m.model && m.usage) {
+    // Anthropic lines only, named explicitly rather than by excluding the string
+    // 'openai': an OpenAI-wire line whose provider is missing or spelled otherwise
+    // would otherwise get a catalog window frozen onto it by #48, and its real one
+    // comes from the transcript (#384). A provider-less legacy line is claimed only
+    // when its model says claude. `usage` is not required — beta1m / ctxBeta alone
+    // can resolve a window, and without any of them the derivation lands on the
+    // default and the write is skipped anyway.
+    const anthropicLine = m.provider === 'anthropic'
+      || (!m.provider && /^claude-/.test(String(m.model || '')));
+    if (m.maxContext === undefined && anthropicLine && m.model) {
       const win = config.inferMaxContext(m.model, null, m.usage, {
         beta1m: m.beta1m === true,
         ctxBeta: m.ctxBeta,
