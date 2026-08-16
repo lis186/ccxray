@@ -550,6 +550,26 @@ describe('Herdr plugin commands', () => {
     assert.equal(fs.existsSync(path.join(stateDir, 'onboarding-v1.json')), false);
   });
 
+  it('defers first-run onboarding cleanly until a workspace exists', () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-onboarding-'));
+    const herdr = makeRecordingHerdr({ status: 1 });
+    fs.writeFileSync(herdr.bin, [
+      '#!/usr/bin/env node',
+      'process.stderr.write(JSON.stringify({ error: { code: "no_active_workspace", message: "no active workspace" } }) + "\\n");',
+      'process.exit(1);',
+      '',
+    ].join('\n'));
+    fs.chmodSync(herdr.bin, 0o755);
+
+    const result = runScript('open-onboarding.js', ['--first-run'], {
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      HERDR_BIN_PATH: herdr.bin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /deferred until a workspace is created/);
+    assert.equal(fs.existsSync(path.join(stateDir, 'onboarding-v1.json')), false);
+  });
+
   it('recovers from a stale first-run lock after an interrupted startup', () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-onboarding-'));
     const lock = path.join(stateDir, 'onboarding-v1.json.lock');

@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   herdrRuntime,
+  parseJsonOutput,
   pluginStateDir,
   runHerdr,
 } = require('./lib/ccxray');
@@ -91,6 +92,11 @@ function main() {
     if (firstRun && alreadyOpened()) return;
     const opened = runHerdr(openArgs(), { timeoutMs: 5000 });
     if (opened.status !== 0 || opened.error) {
+      const response = parseJsonOutput(`${opened.stdout}\n${opened.stderr}`);
+      if (firstRun && response?.error?.code === 'no_active_workspace') {
+        console.log('ccxray Quick Start deferred until a workspace is created.');
+        return;
+      }
       process.stderr.write(opened.stderr || opened.stdout || opened.error?.message || 'Could not open ccxray Quick Start.\n');
       process.exitCode = 1;
       return;
