@@ -112,6 +112,23 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.ok(!mergeByResponseId([n1, n2])[0].beta1m, 'no beta1m anywhere → none fabricated');
   });
 
+  it('carries the raw context-* beta across a merge, not just its interpretation (fail-on-old)', () => {
+    // The merge already ORs beta1m. Keeping the conclusion while dropping the
+    // observation it was drawn from loses the more fundamental fact — and with it
+    // any tier the boolean cannot express — e.g. a canonical copy written before the
+    // header was observed on a later copy of the same response.
+    const canonNoHeader = { id: 'p1', responseId: 'R9', receivedAt: 1, usage: { output_tokens: 5 } };
+    const laterSawHeader = { id: 'p2', responseId: 'R9', receivedAt: 2, beta1m: true, ctxBeta: 'context-1m-2025-08-07' };
+    const out = mergeByResponseId([canonNoHeader, laterSawHeader]);
+    assert.equal(out[0].id, 'p1', 'canonical is the earliest copy, which had no header of its own');
+    assert.equal(out[0].ctxBeta, 'context-1m-2025-08-07');
+    assert.equal(out[0].beta1m, true);
+    // Never overwrites an observation the canonical already has.
+    const a = { id: 'a1', responseId: 'R10', receivedAt: 1, ctxBeta: 'context-1m-2025-08-07' };
+    const b = { id: 'b1', responseId: 'R10', receivedAt: 2, ctxBeta: 'context-400k-2026-01-01' };
+    assert.equal(mergeByResponseId([a, b])[0].ctxBeta, 'context-1m-2025-08-07');
+  });
+
   it('#420 codex R2 M2: on equal usage a priced cost beats an unpriced canonical', () => {
     // Chained-proxy shape: an outdated hop has no rate (unknown, cost null),
     // the updated hop priced the same response. Identical usage tuples tied the

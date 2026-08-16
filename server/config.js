@@ -320,7 +320,7 @@ const DEFAULT_CONTEXT = 200_000;
 // source for them), but a bare `sonnet-4` prefix would also claim 1M for every
 // future minor — the exact `opus-4` over-match that this work had to undo. A
 // dated build (`-20250514`) is the same model; a new minor is not.
-const SUPPORTS_1M = /^claude-(opus-4-6|opus-4-7|opus-4-8|opus-5|sonnet-5|fable-5|mythos)|^claude-sonnet-4(-5)?($|[-@]\d{8})/;
+const SUPPORTS_1M = /^claude-(opus-4-6|opus-4-7|opus-4-8|opus-5|sonnet-4-6|sonnet-5|fable-5|mythos)|^claude-sonnet-4(-5)?($|[-@]\d{8})/;
 
 // Is this model CAPABLE of a 1M window? Two sources, UNION — LiteLLM may only
 // ADD, never DENY.

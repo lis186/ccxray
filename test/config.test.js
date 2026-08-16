@@ -877,6 +877,10 @@ describe('modelSupports1M — capability comes from LiteLLM, regex is the offlin
     assert.equal(modelSupports1M('claude-sonnet-4-5'), true);
     assert.equal(modelSupports1M('claude-sonnet-4-5-20250929'), true);
     assert.equal(modelSupports1M('claude-sonnet-4-9'), false, 'an unknown minor is not assumed 1M offline');
+    // A shipping model must be in the offline list, not left to LiteLLM: on a fresh
+    // install the cache does not exist yet, and sonnet-4-6 is a current model here
+    // (default-rates, weather baselines, the intercept model picker).
+    assert.equal(modelSupports1M('claude-sonnet-4-6'), true);
     // …and LiteLLM can still add it when it knows better (union, never deny).
     pricing.getModelContext = (m) => (m === 'claude-sonnet-4-9' ? 1_000_000 : null);
     assert.equal(modelSupports1M('claude-sonnet-4-9'), true);
