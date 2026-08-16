@@ -82,7 +82,16 @@ function wrapText(value, maxWidth, opts = {}) {
     let remainder = word;
     while (displayWidth(`${line}${remainder}`) > max) {
       const available = Math.max(1, max - displayWidth(line));
-      const chunk = takeWidth(remainder, available);
+      // INVARIANT: every iteration must consume at least one glyph. takeWidth
+      // returns '' when the next glyph is wider than the space available — a
+      // width-2 CJK character or an emoji against a one-column budget — and
+      // that left both `line` and `remainder` untouched, so the loop pushed
+      // empty lines forever (`wrapText('中', 1)` threw RangeError, and
+      // `wrapText('a 中 b', 1)` hung the process outright). A glyph that cannot
+      // fit is emitted anyway: overflowing by one column is strictly better
+      // than never terminating.
+      const chunk = takeWidth(remainder, available) || [...remainder][0] || '';
+      if (!chunk) break;
       line += chunk;
       remainder = remainder.slice(chunk.length);
       pushLine();

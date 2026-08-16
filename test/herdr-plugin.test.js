@@ -640,6 +640,41 @@ describe('Herdr TUI primitives', () => {
   });
 });
 
+// wrapText's inner loop consumed `takeWidth(remainder, available)`. A glyph wider
+// than the space available makes takeWidth return '', so neither `line` nor
+// `remainder` advanced: the loop pushed empty lines forever. Runs in a child
+// because a synchronous infinite loop cannot be interrupted by a test timeout.
+describe('Herdr TUI narrow-width safety', () => {
+  function evalInChild(expr) {
+    const script = `const t=require(${JSON.stringify(path.join(PLUGIN, 'bin', 'lib', 'tui.js'))});`
+      + `process.stdout.write(JSON.stringify(${expr}));`;
+    return spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 5000 });
+  }
+
+  for (const [label, expr] of [
+    ['a wide glyph alone', 't.wrapText("中", 1)'],
+    ['a wide glyph among narrow ones', 't.wrapText("a 中 b", 1)'],
+    ['a wide word at width 1', 't.wrapText("中文字", 1)'],
+    ['an emoji at width 1', 't.wrapText("🙂🙂", 1)'],
+  ]) {
+    it(`wraps ${label} without hanging`, () => {
+      const result = evalInChild(expr);
+      assert.equal(result.signal, null, `${expr} did not terminate`);
+      assert.equal(result.status, 0, `${expr} crashed: ${result.stderr}`);
+      const lines = JSON.parse(result.stdout);
+      assert.ok(Array.isArray(lines) && lines.length > 0 && lines.length < 100, `unreasonable output: ${result.stdout.slice(0, 120)}`);
+      assert.equal(lines.join('').replace(/\s/g, ''), expr.match(/"([^"]+)"/)[1].replace(/\s/g, ''),
+        'every glyph must survive the wrap');
+    });
+  }
+
+  it('still wraps normally when the width fits', () => {
+    // Guard: the fix must not change ordinary wrapping. Passes on both sides.
+    const result = evalInChild('t.wrapText("中文字", 2)');
+    assert.deepEqual(JSON.parse(result.stdout), ['中', '文', '字']);
+  });
+});
+
 describe('Herdr attention notifications', () => {
   it('notifies only once per background done or blocked transition', () => {
     const { agentNotification, recordAgentStatus } = require('../plugins/herdr/bin/lib/notifications');
