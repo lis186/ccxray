@@ -51,6 +51,26 @@ execFileSync(process.execPath, ['server/index.js', 'usage'],
   { env: { ...process.env, CCXRAY_HOME: FIX_HOME } });
 ```
 
+### 1b. Scrub `HERDR_*` for Herdr plugin tests
+
+`plugins/herdr` reads its workspace scope, pane identity, socket path, and CLI
+path from the ambient `HERDR_*` environment. A developer who runs the suite from
+inside a Herdr pane exports those variables, so a spawn that inherits
+`process.env` resolves to the **live** workspace: scope-dependent wording
+changes, and cwd filtering drops the fixture entries. `HERDR_WORKSPACE_ID` alone
+turned 14 tests red; the full ambient set, 16.
+
+`test/herdr-plugin.test.js` therefore builds every child env through
+`pluginEnv()`, which drops all `HERDR_*` **and** `CCXRAY_*` keys before applying
+the test's own overrides (and defaults `CCXRAY_HOME` to an empty throwaway home,
+per rule 1). Tests that call plugin library functions in-process pass the same
+`pluginEnv({...})` object rather than `{ ...process.env, ... }`. The guard test
+`ignores the ambient Herdr environment of the shell running the suite` sets those
+variables deliberately and asserts the output is unaffected.
+
+CI is green either way because it has no `HERDR_*` set — this rule exists for the
+local run, which is where the plugin is actually developed.
+
 ### 2. No real data in fixtures
 
 Fixtures contain only synthetic session ids, cwds, and titles — never real

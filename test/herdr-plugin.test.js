@@ -11,13 +11,52 @@ const ROOT = path.resolve(__dirname, '..');
 const PLUGIN = path.join(ROOT, 'plugins', 'herdr');
 const MANIFEST = path.join(PLUGIN, 'herdr-plugin.toml');
 
+// INVARIANT: plugin code resolves workspace scope, ccxray home, and command
+// paths from the ambient environment, so no spawn may inherit the developer's.
+// A suite run from inside a Herdr pane exports HERDR_WORKSPACE_ID /
+// HERDR_SOCKET_PATH, which flips currentWorkspaceScope() to the live workspace
+// and rewrites every scope-sensitive assertion; an exported CCXRAY_HOME points
+// the readers at real logs. Same isolation rule as docs/testing.md, extended to
+// the plugin's HERDR_* surface.
+function pluginEnv(overrides = {}) {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_')) continue;
+    env[key] = value;
+  }
+  env.CCXRAY_HOME = isolatedHome();
+  return { ...env, ...overrides };
+}
+
+// Sets ambient process env for the duration of fn, restoring prior values —
+// used to prove the isolation above rather than assume it.
+function withAmbientEnv(vars, fn) {
+  const prior = Object.keys(vars).map(key => [key, process.env[key]]);
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function runScript(script, args = [], env = {}) {
   return spawnSync(process.execPath, [path.join(PLUGIN, 'bin', script), ...args], {
     cwd: PLUGIN,
-    env: { ...process.env, ...env },
+    env: pluginEnv(env),
     encoding: 'utf8',
     timeout: 15000,
   });
+}
+
+// Default home for spawns that do not name one: empty, throwaway, never ~/.ccxray.
+let emptyHome = null;
+function isolatedHome() {
+  if (!emptyHome) emptyHome = makeHome();
+  return emptyHome;
 }
 
 function makeHome(entries = []) {
@@ -247,8 +286,7 @@ describe('Herdr workspace scope', () => {
     fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(response) + '\n')});\n`);
     fs.chmodSync(bin, 0o755);
 
-    const scope = currentWorkspaceScope({
-      ...process.env,
+    const scope = currentWorkspaceScope(pluginEnv({
       HERDR_WORKSPACE_ID: 'w1',
       HERDR_PLUGIN_ROOT: PLUGIN,
       HERDR_BIN_PATH: bin,
@@ -257,7 +295,7 @@ describe('Herdr workspace scope', () => {
         focused_pane_cwd: PLUGIN,
         workspace_cwd: PLUGIN,
       }),
-    });
+    }));
     assert.equal(scope.cwd, '/work/project');
   });
 
@@ -331,12 +369,11 @@ describe('Mission Control keyboard model', () => {
     assert.deepEqual(filteredMissionRows(rows, 'ready').map(row => row.paneId), ['w1:p3']);
 
     const herdr = makeRecordingHerdr();
-    const env = {
-      ...process.env,
+    const env = pluginEnv({
       HERDR_BIN_PATH: herdr.bin,
       CCXRAY_HOME: makeHome(),
       BROWSER: 'none',
-    };
+    });
     assert.equal(executeMissionAction({ type: 'focus' }, rows[0], env), 'Focused w1:p1.');
     assert.match(fs.readFileSync(herdr.log, 'utf8'), /agent focus w1:p1/);
     assert.equal(
@@ -702,6 +739,23 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /ccxray Usage Summary/);
     assert.match(result.stdout, /1 turns across 1 sessions/);
     assert.match(result.stdout, /Validate Herdr plugin/);
+  });
+
+  // Guards the pluginEnv() isolation: running this suite from inside a Herdr
+  // pane exports HERDR_* into every spawn, which scopes the readers to the live
+  // workspace and drops the fixture entries. Without the scrub this fails.
+  it('ignores the ambient Herdr environment of the shell running the suite', () => {
+    const home = makeHome([sampleEntry]);
+    withAmbientEnv({
+      HERDR_ENV: '1',
+      HERDR_WORKSPACE_ID: 'ambient-workspace',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: '/ambient/live' }),
+    }, () => {
+      const result = runScript('usage-summary.js', ['--last', '9999d'], { CCXRAY_HOME: home });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /1 turns across 1 sessions/);
+      assert.doesNotMatch(result.stdout, /ambient\/live/);
+    });
   });
 
   it('usage-summary defaults to the current Herdr workspace cwd and names its scope', () => {
@@ -1767,7 +1821,7 @@ describe('Herdr plugin commands', () => {
 
     const result = spawnSync(path.join(PLUGIN, 'bin', 'run-node.sh'), [target], {
       cwd: PLUGIN,
-      env: { ...process.env, PATH: dir, CCXRAY_NODE: '' },
+      env: pluginEnv({ PATH: dir, CCXRAY_NODE: '' }),
       encoding: 'utf8',
       timeout: 5000,
     });
@@ -1790,12 +1844,11 @@ describe('Herdr plugin commands', () => {
 
     const result = spawnSync(path.join(PLUGIN, 'bin', 'run-node.sh'), [target], {
       cwd: PLUGIN,
-      env: {
-        ...process.env,
+      env: pluginEnv({
         HOME: home,
         PATH: '/usr/bin:/bin',
         CCXRAY_NODE: '',
-      },
+      }),
       encoding: 'utf8',
       timeout: 5000,
     });
@@ -1819,12 +1872,11 @@ describe('Herdr plugin commands', () => {
 
     const result = spawnSync('/bin/sh', [path.join(PLUGIN, 'bin', 'install-dependencies.sh')], {
       cwd: PLUGIN,
-      env: {
-        ...process.env,
+      env: pluginEnv({
         PATH: `${dir}:/usr/bin:/bin`,
         CCXRAY_NODE: '',
         CCXRAY_NPM: '',
-      },
+      }),
       encoding: 'utf8',
       timeout: 5000,
     });
