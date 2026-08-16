@@ -25,7 +25,10 @@ let entryCount = 0;
 // INVARIANT: four states — 'declared' | 'observed' | 'contradicted' | 'default'.
 // A consumer that only special-cases 'default' silently treats 'contradicted' as a
 // resolved window and renders a clamped, unmarked percentage — worse than what it
-// replaced. Handle the enum exhaustively, or ask `ctxWindowUnverified()` instead.
+// replaced. Any site that CHOOSES A MARKER must switch on the enum: collapsing
+// 'contradicted' into 'default' puts a "this is unverified" glyph on a number the
+// data has already disproved. `ctxWindowUnverified()` below is only for the coarser
+// question "may I treat this window as measured", never for picking the marker.
 // See docs/decisions/0013-beta1m-persist-session-window-derive.md.
 function ctxWindowUnverified(sid) {
   const src = sessionCtxWindowSource(sid);
