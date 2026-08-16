@@ -1830,8 +1830,10 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const args = fs.readFileSync(log, 'utf8');
-    assert.match(args, /^exec node@22\.22\.2 -- npm ci --omit=dev --ignore-scripts --prefix /);
-    assert.match(args, /ccxray-herdr-plugin-research\s*$/);
+    assert.equal(
+      args.trim(),
+      `exec node@22.22.2 -- npm ci --omit=dev --ignore-scripts --prefix ${ROOT}`,
+    );
   });
 
   it('install-sidebar-summary appends a safe sidebar row with a backup', () => {
