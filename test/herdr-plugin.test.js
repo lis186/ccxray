@@ -475,6 +475,77 @@ describe('Herdr sidebar main-agent anchoring', () => {
   });
 });
 
+// run-node.sh is the shim every plugin entrypoint goes through. `exec` replaces
+// the shell, so once the mise branch fires the candidate loop below it is
+// unreachable — a mise whose newest installed Node is too old took the process
+// down with it while a usable Node sat at one of the candidate paths.
+describe('Herdr Node launcher fallback', () => {
+  function makeFakeToolchain({ miseNodeMajor }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-node-'));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-nodehome-'));
+
+    // A Node that reports `miseNodeMajor`: the >=18 probe is `-e <script>`.
+    const fakeNode = path.join(dir, 'fake-node');
+    fs.writeFileSync(fakeNode, [
+      '#!/bin/sh',
+      'if [ "$1" = "-e" ]; then',
+      `  [ ${miseNodeMajor} -ge 18 ] && exit 0`,
+      '  exit 1',
+      'fi',
+      `echo "FAKE_NODE_${miseNodeMajor}"`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeNode, 0o755);
+
+    const mise = path.join(dir, 'mise');
+    fs.writeFileSync(mise, [
+      '#!/bin/sh',
+      'if [ "$1" = "latest" ]; then',
+      `  echo "${miseNodeMajor}.20.2"`,
+      '  exit 0',
+      'fi',
+      'if [ "$1" = "exec" ]; then',
+      '  shift 4',            // drop: exec, node@X, --, node
+      `  exec "${fakeNode}" "$@"`,
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'));
+    fs.chmodSync(mise, 0o755);
+
+    // A real, supported Node at one of run-node.sh's candidate paths.
+    fs.mkdirSync(path.join(home, '.volta', 'bin'), { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(home, '.volta', 'bin', 'node'));
+
+    const script = path.join(dir, 'probe.js');
+    fs.writeFileSync(script, 'process.stdout.write("REAL_NODE_" + process.versions.node.split(".")[0]);\n');
+    return { dir, home, script };
+  }
+
+  function runLauncher({ dir, home, script }) {
+    return spawnSync('/bin/sh', [path.join(PLUGIN, 'bin', 'run-node.sh'), script], {
+      env: { PATH: `${dir}:/usr/bin:/bin`, HOME: home },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+  }
+
+  it('skips a mise Node that is too old and uses a supported one', () => {
+    const fake = makeFakeToolchain({ miseNodeMajor: 16 });
+    const result = runLauncher(fake);
+    assert.doesNotMatch(result.stdout, /FAKE_NODE_16/, 'must not run a Node older than 18');
+    assert.match(result.stdout, /REAL_NODE_/);
+  });
+
+  it('still uses the mise Node when it is supported', () => {
+    // Guard: the fix must not disable the mise branch outright. Here mise
+    // reports a supported major, so the launcher should stay on it.
+    const fake = makeFakeToolchain({ miseNodeMajor: 22 });
+    const result = runLauncher(fake);
+    assert.match(result.stdout, /FAKE_NODE_22/);
+  });
+});
+
 describe('Mission Control keyboard model', () => {
   it('maps visible controls and preserves pane selection across refreshes', () => {
     const {

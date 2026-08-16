@@ -27,9 +27,15 @@ elif [ -x "${HOME:-}/.local/share/mise/bin/mise" ]; then
   MISE_BIN="${HOME}/.local/share/mise/bin/mise"
 fi
 
+# `exec` replaces this shell, so once we take the mise branch the candidate loop
+# below is unreachable. Probe first: this both rejects a mise whose newest
+# installed Node is older than 18 and proves `mise exec` itself works, so a
+# broken or outdated mise falls through to the candidates instead of taking the
+# process down with it.
 if [ -n "$MISE_BIN" ]; then
   MISE_NODE_VERSION="$($MISE_BIN latest --installed node 2>/dev/null || true)"
-  if [ -n "$MISE_NODE_VERSION" ]; then
+  if [ -n "$MISE_NODE_VERSION" ] && "$MISE_BIN" exec "node@$MISE_NODE_VERSION" -- node \
+      -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
     exec "$MISE_BIN" exec "node@$MISE_NODE_VERSION" -- node "$@"
   fi
 fi
