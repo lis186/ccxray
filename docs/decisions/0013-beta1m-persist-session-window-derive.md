@@ -349,6 +349,7 @@ therefore outside `CCXRAY_HOME` isolation** — the ADR 0015 R4 class. `CCXRAY_P
 overrides the path and `pricing.__setContextTableForTests()` injects a table; a test that
 asserts window behaviour must use one of them or stub `getModelContext`, or it silently
 reads the developer's cache. See `docs/testing.md`.
+
 ### Provenance is derived, never stored
 
 `sessionCtxWindowSource(sid)` returns `declared | observed | default`, and the session
