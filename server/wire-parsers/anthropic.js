@@ -105,6 +105,12 @@ function buildEntryFields(ctx) {
     // only when true (absent = no positive signal; monotone OR-fold). Classification keeps
     // raw per-turn maxContext — never derived from this. See docs/decisions/0013-*.
     beta1m: config.beta1mIndicates1M(model, parsedBody?.system, ctx.beta1m) ? true : undefined,
+    // The raw context-* entries of anthropic-beta. beta1m above is this header's
+    // interpretation ("is it 1M, and can the model serve it"); this is the
+    // observation itself, so a tier we do not yet interpret survives on disk and
+    // a rebuild can re-derive the window without the header being on the wire.
+    // Ungated on purpose: an observation is not a claim.
+    ctxBeta: ctx.ctxBeta || undefined,
     responseMetadata: undefined,
     stopReason: ctx.stopReason || '',
     title: ctx.title || null,

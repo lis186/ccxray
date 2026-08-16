@@ -72,8 +72,11 @@ const GOLDEN_LEGACY_LINES = {
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"index-fields-ws-session","provider":"openai","agent":"codex","model":"gpt-5.5","msgCount":1,"toolCount":0,"toolCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-ws","isSSE":false,"usage":null,"cost":"<volatile>","maxContext":400000,"responseMetadata":{"transport":"websocket","capture":"transport-only","endpoint":"/v1/responses","frameCounts":{"clientToUpstream":1,"upstreamToClient":1},"byteCounts":{"clientToUpstream":179,"upstreamToClient":50},"close":{"side":"client","code":1000,"reason":"test complete"},"error":null},"stopReason":"test complete","title":"hello","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":101,"receivedAt":"<volatile>","sysHash":"b54cd80f54c1","toolsHash":null,"coreHash":"2db6420c3d64","agentKey":"default","agentLabel":"Codex Default","toolSources":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'rebuild orphan':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"66666666-6666-4666-8666-666666666666","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":null,"cost":"<volatile>","maxContext":200000,"stopReason":"","title":"INDEX_FIELDS_REBUILD_SOURCE","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":null,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"ca0026d0","responseId":"msg_INDEX_FIELDS_REBUILD_SOURCE","turnToolCalls":{},"turnToolResults":[]}',
+  // maxContext joins the imported line: the Claude importer derives a window the
+  // same way the live path does, so a reader no longer has to assume 200K for
+  // every imported turn (the Codex importer has done this since #384).
   'importer':
-    '{"id":"<volatile>","ts":"<volatile>","sessionId":"sess-1","provider":"anthropic","model":"claude-sonnet-4-5-20250514","sessionInferred":false,"cwd":"/tmp/index-fields-import","isSSE":false,"usage":{"input_tokens":5000,"output_tokens":500,"cache_read_input_tokens":1000,"cache_creation_input_tokens":2000},"cost":"<volatile>","stopReason":"end_turn","title":"imported turn","elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","imported":true,"importSource":"claude-code","responseId":"msg_import_fields_1","turnToolCallIds":{},"turnToolResults":[]}',
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"sess-1","provider":"anthropic","model":"claude-sonnet-4-5-20250514","sessionInferred":false,"cwd":"/tmp/index-fields-import","isSSE":false,"usage":{"input_tokens":5000,"output_tokens":500,"cache_read_input_tokens":1000,"cache_creation_input_tokens":2000},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"imported turn","elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","imported":true,"importSource":"claude-code","responseId":"msg_import_fields_1","turnToolCallIds":{},"turnToolResults":[]}',
 };
 
 function normalizedLegacyLine(obj) {
@@ -196,6 +199,11 @@ function isolatedEnv(home, overrides = {}, { identity = 'partial' } = {}) {
     ...base,
     ...overrides,
     CCXRAY_HOME: home,
+    // Window resolution reads a package-relative pricing-cache.json that
+    // CCXRAY_HOME does not isolate; pin it so a spawned server derives windows
+    // from the same input on CI and on a machine that has run ccxray for real.
+    // See docs/testing.md.
+    CCXRAY_PRICING_CACHE: '/nonexistent/ccxray-pricing-cache.json',
     RESTORE_DAYS: '0',
     CCXRAY_IMPORT_DISABLE: '1',
     BROWSER: 'none',

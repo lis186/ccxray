@@ -272,3 +272,80 @@ the honest limitation, same class as ADR 0002's `sigParts` and ADR 0015's R4.
 This changes nothing about the display/classification boundary: weather remains a
 display/health view, and `isCompacted`, per-turn `severity`, and lane placement
 still read raw per-turn `maxContext`.
+
+## Amended by the 1M-capability work (2026-08-16) — `beta1m` is an interpretation, `ctxBeta` is the fact
+
+This ADR's Decision line reads "**Persist `beta1m` (the fact); derive `sessionWindow`
+(the view)**". Measured against real traffic, `beta1m` was never the fact. It is a
+conclusion drawn at write time from two inputs: the observed `anthropic-beta` header
+AND a model-capability judgement (`SUPPORTS_1M`). Collapsing both into one boolean
+lost information the ADR's own persist-the-fact principle says to keep, and the
+capability half was wrong in both directions the moment a model shipped:
+
+- `claude-opus-5` was absent from the regex, so every 1M Opus 5 session divided by
+  200K. Measured: a session at 13% of its window rendered 76%, and a counterfactual
+  replay of the real corpus (the header as it actually rode the wire) moves 161 turns
+  from 200K to 1M and flips 7 of 32 sessions from red to green.
+- the bare `opus-4` prefix claimed 1M for `claude-opus-4-5`, which serves 200K —
+  hiding real pressure, the more dangerous direction.
+
+### What changes
+
+1. **`ctxBeta` is persisted** (`INDEX_FIELDS`, add-only, appended last): the
+   `context-*` entries of the request header, verbatim, filtered to the window shape
+   `context-<n><k|m>-` so the context-EDITING beta cannot land in a window field.
+   `beta1m` stays, unchanged in meaning, as the capability-gated interpretation.
+   **The two may legitimately disagree**: a header on a model the gate refuses stores
+   `ctxBeta` and no `beta1m`. A consumer that reads `ctxBeta` presence as "this is 1M"
+   reintroduces the #211 over-claim.
+2. **The tier is parsed, not tabulated**: `contextBetaWindow()` reads the size out of
+   the beta id, so a future `context-400k-*` is legible without a code change. Nothing
+   on the wire ships a non-1M tier today — this is why the raw header is kept rather
+   than its boolean.
+3. **The capability gate is a UNION of two sources**, `modelSupports1M()` =
+   hand-list OR LiteLLM `max_input_tokens >= 1M`. LiteLLM may ADD, never DENY: its
+   field is semantically inconsistent (it reports `claude-fable-5` at 1M = capability
+   but `claude-sonnet-4-5` at 200K = default serving window, though Sonnet 4.5 serves
+   1M under the beta), so a capability-decides gate silently demoted a model the list
+   had right. Removing a wrong entry stays a manual edit; no upstream datum is trusted
+   to mean "cannot do 1M".
+4. **"The header was never on disk" is no longer true going forward.** This ADR's
+   no-backfill section stays correct for legacy lines — the fact is gone for those —
+   but new turns carry it, and `restore`'s heal pass re-derives from the line's own
+   persisted signals instead of re-inferring from model+usage alone.
+5. **The observation floor climbs to the smallest covering tier** instead of jumping
+   to a hardcoded 1M (LiteLLM lists real Claude tiers at 80K/100K/128K/200K/409,600/1M),
+   bounded by capability. Non-Claude providers are still never bumped: some report
+   `input_tokens` inclusive of cached tokens, so an un-normalized usage object can sum
+   above its window without the window being wrong, and widening from a possibly
+   double-counted total would hide pressure.
+6. **The Claude importer now derives `maxContext`**, as the Codex importer has since
+   #384. Claude transcripts declare no window and never record the header, so the only
+   evidence there is the observation. Measured on the real corpus: 332 of 750 imported
+   turns gain a larger window, and 7 sessions stop rendering above 100% (148%, 239%, …).
+
+### Trust must be monotone in time, not just consistent in code
+
+The write gate, the marker branch, and `restore`'s `trustStored` share one predicate.
+That is agreement in code, not in time: the predicate's input is a table refreshed
+daily, so a missing cache, a renamed upstream key, or another machine can make the
+same line resolve differently across a restart. `trustStored` therefore ALSO accepts
+`meta.beta1m === true` — a write-time attestation that the header was present and the
+gate accepted it. **Absence of capability data must never act as a deny**, or the
+"every restart erases it" failure returns through a new door.
+
+### Boundary preserved, inputs changed
+
+`isCompacted`, per-turn `severity`, and lane placement still divide by raw per-turn
+`maxContext`; the display fold is still session-global. What changed is HOW the raw
+per-turn value is derived, and only for turns written after this lands — existing lines
+are not rewritten, so nothing reclassifies retroactively and no `WEATHER_REV` bump is
+required (the weather derivation is untouched; only future inputs differ).
+
+### New test-isolation surface
+
+Window resolution now reads `pricing-cache.json`, which is **package-relative and
+therefore outside `CCXRAY_HOME` isolation** — the ADR 0015 R4 class. `CCXRAY_PRICING_CACHE`
+overrides the path and `pricing.__setContextTableForTests()` injects a table; a test that
+asserts window behaviour must use one of them or stub `getModelContext`, or it silently
+reads the developer's cache. See `docs/testing.md`.
