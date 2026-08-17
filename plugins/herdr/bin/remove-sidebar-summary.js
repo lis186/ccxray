@@ -68,7 +68,9 @@ function main() {
   }
 
   const backup = backupConfigFile(file);
-  fs.writeFileSync(file, next);
+  const tmpFile = `${file}.ccxray-tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, next);
+  fs.renameSync(tmpFile, file);
 
   if (process.env.CCXRAY_HERDR_SKIP_RELOAD === '1') {
     console.log(`removed ccxray sidebar summary rows from ${file}`);

@@ -202,7 +202,9 @@ function writeAndReload(file, before, next, action) {
   let backup = null;
   if (fs.existsSync(file)) backup = backupConfigFile(file);
 
-  fs.writeFileSync(file, next);
+  const tmpFile = `${file}.ccxray-tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, next);
+  fs.renameSync(tmpFile, file);
 
   if (process.env.CCXRAY_HERDR_SKIP_RELOAD === '1') {
     console.log(`${action} sidebar summary rows in ${file}`);
