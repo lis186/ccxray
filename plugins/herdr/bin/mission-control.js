@@ -87,11 +87,13 @@ function signedPercent(value) {
 }
 
 function rowCost(row) {
+  if (row.unknownCost) return '—';
   const cost = formatMoney(row.cost);
   return row.exactCost || row.cost === 0 ? cost : `~${cost}`;
 }
 
-function confidenceCost(value, exact) {
+function confidenceCost(value, exact, unknown) {
+  if (unknown) return '—';
   const cost = formatMoney(value);
   return exact || value === 0 ? cost : `~${cost}`;
 }
@@ -159,7 +161,7 @@ function rowCapabilities(row) {
 }
 
 function filteredMissionRows(rows, filter) {
-  if (filter === 'attention') return rows.filter(row => row.severity === 'red' || row.severity === 'yellow');
+  if (filter === 'attention') return rows.filter(row => row.severity !== 'green');
   if (filter === 'ready') return rows.filter(row => row.severity === 'ready');
   return rows;
 }
@@ -257,7 +259,7 @@ function render(args, uiState = {}, message = '') {
       : (tiny ? 'recent' : 'recent sessions');
   const summary = compact
     ? `${snapshot.totalRows} ${sourceLabel} / ${snapshot.attention} alert`
-    : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.exactRecentCost)}/5m`;
+    : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.exactRecentCost, snapshot.unknownRecentCost)}/5m`;
   output.push(fit(summary, max));
   const hubLabel = status.parsed.running ? 'ok' : (tiny ? 'no' : 'unavailable');
   output.push(fit(tiny ? `Hub ${hubLabel}` : `Updated ${now} · Hub ${hubLabel}`, max));

@@ -590,7 +590,8 @@ describe('Mission Control keyboard model', () => {
     assert.equal(cycleMissionFilter('all'), 'attention');
     assert.equal(cycleMissionFilter('attention'), 'ready');
     assert.equal(cycleMissionFilter('ready'), 'all');
-    assert.deepEqual(filteredMissionRows(rows, 'attention').map(row => row.paneId), ['w1:p1']);
+    // attention includes everything non-green, matching the count at ccxray.js:1134
+    assert.deepEqual(filteredMissionRows(rows, 'attention').map(row => row.paneId), ['w1:p1', 'w1:p3']);
     assert.deepEqual(filteredMissionRows(rows, 'ready').map(row => row.paneId), ['w1:p3']);
 
     const herdr = makeRecordingHerdr();
@@ -1841,6 +1842,35 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /subagents 1, seen 5m 1, total ~\$0\.07/);
   });
 
+  it('mission-control renders dash when all turns have unknown cost', () => {
+    const now = Date.now();
+    const entries = [
+      {
+        ...sampleEntry,
+        id: 'unknown-cost-turn',
+        sessionId: 'unknown-session',
+        agentId: 'herdr:w1:p5',
+        receivedAt: now,
+        isSubagent: false,
+        cost: { cost: null, confidence: 'unknown' },
+      },
+    ];
+    const agents = [{
+      pane_id: 'w1:p5', workspace_id: 'w1', tab_id: 'w1:t1',
+      agent_status: 'working', agent: 'codex',
+    }];
+    const result = runScript('mission-control.js', ['--once'], {
+      CCXRAY_HOME: makeHome(entries),
+      CCXRAY_HERDR_NOW_MS: String(now),
+      HERDR_BIN_PATH: makeHerdr(agents),
+      CCXRAY_MISSION_COLS: '100',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    // Old code rendered a confident $0.00; new code renders —
+    assert.match(result.stdout, /main —/);
+    assert.doesNotMatch(result.stdout, /main \$0\.00/);
+  });
+
   it('open-dashboard explains missing hub without opening a browser', () => {
     const home = makeHome();
     const result = runScript('open-dashboard.js', [], {
@@ -2576,6 +2606,19 @@ describe('Herdr plugin commands', () => {
     assert.match(updated, /\["state_icon", "workspace", "tab"\]/);
     assert.match(updated, /\[terminal\]/);
     assert.equal(fs.readdirSync(dir).filter(name => name.includes('ccxray-summary-backup')).length, 1);
+  });
+
+  it('install and remove leave no temp files behind (atomic write guard)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    runScript('install-sidebar-summary.js', [], env);
+    const afterInstall = fs.readdirSync(dir).filter(n => n.includes('ccxray-tmp'));
+    assert.equal(afterInstall.length, 0, 'install left a temp file');
+    runScript('remove-sidebar-summary.js', [], env);
+    const afterRemove = fs.readdirSync(dir).filter(n => n.includes('ccxray-tmp'));
+    assert.equal(afterRemove.length, 0, 'remove left a temp file');
   });
 
   it('install-sidebar-summary adds its rows to a sidebar table the user already has', () => {

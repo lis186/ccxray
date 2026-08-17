@@ -1020,6 +1020,7 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   else if (severity === 'ready') action = 'review output';
 
   const exactCost = turns.length > 0 && turns.every(turn => turn.cost?.confidence === 'exact');
+  const unknownCost = turns.length > 0 && !turns.some(turn => turn.cost?.cost != null && turn.cost.confidence !== 'unknown');
   const subagents = subagentSummary(opts.subagentTurns || [], nowMs);
   const totalCost = cost + Number(subagents?.cost || 0);
   const exactTotalCost = exactCost && (!subagents || subagents.exactCost);
@@ -1056,6 +1057,7 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     totalRecentCost,
     exactRecentCost,
     exactCost,
+    unknownCost,
     exactTotalCost,
     cachePct: sessionCachePercent(turns),
     mainToolCalls,
@@ -1134,6 +1136,7 @@ function missionControlSnapshot(opts = {}) {
     attention: rows.filter(row => row.severity !== 'green').length,
     recentCost: rows.reduce((sum, row) => sum + row.totalRecentCost, 0),
     exactRecentCost: rows.every(row => row.exactRecentCost),
+    unknownRecentCost: rows.length > 0 && rows.every(row => row.unknownCost),
     nowMs,
     scope: scoped.scope,
   };
