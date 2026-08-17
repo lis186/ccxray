@@ -630,11 +630,19 @@ function aggregate(lines, agentId, configDirAllowlist) {
   return { dailyByDt, sessionsByDt, sessionHomeDt };
 }
 
+// ponytail: allowlist gates which repo names leave the machine; unknown → '[other]'
+const _cwdAllowlist = process.env.CCXRAY_EXPORT_CWD_ALLOWLIST
+  ? new Set(process.env.CCXRAY_EXPORT_CWD_ALLOWLIST.split(',').map(s => s.trim()).filter(Boolean))
+  : null;
+
 function repoRoot(cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
   const norm = cwd.replace(/\\/g, '/');
   const parts = norm.split('/').filter(Boolean);
-  return parts.length > 0 ? parts[parts.length - 1] : null;
+  const name = parts.length > 0 ? parts[parts.length - 1] : null;
+  if (!name) return null;
+  if (!_cwdAllowlist) return name;
+  return _cwdAllowlist.has(name) ? name : '[other]';
 }
 
 function finishDaily(daily, summaryId, uploadSeq, partial) {
