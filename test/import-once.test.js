@@ -96,20 +96,33 @@ describe('ccxray import --once', () => {
       'and must not leave the shared tmp name behind');
   });
 
-  it('throttles a second run inside the interval, and --force overrides it', () => {
+  // Both halves of the throttle return BEFORE the importer is required, so they
+  // are exercised in-process. Each spawn is a full `node server/index.js` and the
+  // runner executes test files in parallel: measured over 4 baseline runs the
+  // suite was 2157/2157 every time, while 2 of 6 runs containing an earlier,
+  // spawn-heavier version of this file saw a pre-existing 8s-timeout websocket
+  // or hub-lifecycle test flake. Spawn count is a cost.
+  it('throttles a second run inside the interval, and --force gets past it', async () => {
+    const { importOnce, lockPath } = require('../server/import-once');
     const home = tmpdir('ccxray-import-home-');
     const projects = tmpdir('ccxray-import-projects-');
     writeTranscript(projects, 'cccccccc-1111-2222-3333-444444444444', '/work/proj', 1);
+    const env = { CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: projects };
 
+    // One real run, through the CLI, to leave genuine state behind.
     assert.equal(runImport(home, projects).imported, 1);
-    const second = runImport(home, projects);
+
+    const second = await importOnce({ env });
     assert.equal(second.ran, false, 'a rescan seconds later is wasted work');
     assert.equal(second.reason, 'throttled');
     assert.ok(second.retryInMs > 0);
 
-    const forced = runImport(home, projects, {}, ['--once', '--force']);
-    assert.equal(forced.ran, true, '--force must override the throttle');
-    assert.equal(forced.imported, 0, 'already-imported turns must dedup, not double');
+    // --force must skip the throttle. Proven without a real scan by holding the
+    // lock: reaching 'locked' means the throttle check was already passed, which
+    // an unforced call in this same state cannot do.
+    fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+    const forced = await importOnce({ env, force: true });
+    assert.equal(forced.reason, 'locked', '--force must get past the throttle');
   });
 
   it('runs again once the throttle window has passed', () => {
@@ -126,17 +139,16 @@ describe('ccxray import --once', () => {
   // A detached run has nobody reading its stdout, so reporting ok/exit-0 on a
   // failure is a silent death that is indistinguishable from a throttle skip.
   // Only 'locked' — somebody else is doing the work — may report success.
-  it('fails loudly when it cannot take the lock at all', () => {
+  it('fails loudly when it cannot take the lock at all', async () => {
+    const { importOnce } = require('../server/import-once');
     const home = tmpdir('ccxray-import-ro-');
-    const projects = tmpdir('ccxray-import-projects-');
     fs.chmodSync(home, 0o500);
-    let failed = null;
-    try { runImport(home, projects, {}, ['--once', '--force']); } catch (e) { failed = e; }
-    fs.chmodSync(home, 0o700);
-    assert.ok(failed, 'an unwritable home must exit non-zero');
-    const result = JSON.parse(failed.stdout.toString().trim().split('\n').pop());
-    assert.equal(result.ok, false);
+    let result;
+    try { result = await importOnce({ env: { CCXRAY_HOME: home }, force: true }); }
+    finally { fs.chmodSync(home, 0o700); }
+    assert.equal(result.ok, false, 'an unwritable home is a failure, not a skip');
     assert.equal(result.reason, 'lock-error');
+    assert.equal(result.ran, false);
   });
 
   it('rejects an import mode it does not implement', () => {
