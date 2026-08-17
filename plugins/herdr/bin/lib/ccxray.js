@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -468,6 +468,180 @@ function dominantModel(turns, fallback) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || fallback || 'unknown';
 }
 
+const STALE_THRESHOLD_DEFAULT_MS = 600000;
+
+function staleThresholdMs(env = process.env) {
+  const raw = Number(env.CCXRAY_BADGE_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : STALE_THRESHOLD_DEFAULT_MS;
+}
+
+// ISOLATION: this is a scan root derived from the ambient $HOME, OUTSIDE
+// CCXRAY_HOME — the ADR 0015 R4 class. A test that exercises staleness must set
+// CCXRAY_IMPORT_HOMES (the same knob core's importer honours) or it reads the
+// developer's real transcripts. See docs/testing.md.
+function claudeProjectRoots(env = process.env) {
+  if (env.CCXRAY_IMPORT_HOMES) return [env.CCXRAY_IMPORT_HOMES];
+  const home = os.homedir();
+  const roots = [];
+  let items = [];
+  try { items = fs.readdirSync(home); } catch { return roots; }
+  for (const name of items) {
+    if (!name.startsWith('.claude') || name.includes('.bak')) continue;
+    if (name !== '.claude' && !name.startsWith('.claude-')) continue;
+    roots.push(path.join(home, name, 'projects'));
+  }
+  roots.push(path.join(home, '.config', 'claude', 'projects'));
+  return roots;
+}
+
+// Claude Code names a project directory after its cwd with every character
+// outside [a-zA-Z0-9] flattened to '-'. Derived by replaying all 118 cwds in the
+// real index against the 184 project directories on disk: this rule reproduced
+// 43, while flattening only '/' and '.' reproduced 41 — it misses '_' and '+'
+// (/Users/x/dev/android_shopping really lives at -Users-x-dev-android-shopping).
+// The mapping is lossy and homes are globbed, so a lookup can still legitimately
+// miss; a miss must degrade to "no marker", never to a guess.
+function transcriptSlug(cwd) {
+  // Collapse duplicate separators and drop a trailing one first: '/a//b/' and
+  // '/a/b' are the same directory to Claude Code but slug to different names,
+  // and the difference is a silent miss rather than a visible error.
+  const normalized = String(cwd).replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+  return normalized.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+function transcriptFile(sessionId, cwd, env = process.env) {
+  if (!sessionId || !cwd) return null;
+  const slug = transcriptSlug(cwd);
+  let best = null;
+  for (const root of claudeProjectRoots(env)) {
+    const file = path.join(root, slug, `${sessionId}.jsonl`);
+    try {
+      const stat = fs.statSync(file);
+      if (!best || stat.mtimeMs > best.mtimeMs) best = { file, mtimeMs: stat.mtimeMs };
+    } catch { /* this home does not hold the session */ }
+  }
+  return best;
+}
+
+// Bounded read, taken only when the mtime gate already suspects staleness. The
+// bound is a real false-negative surface: a missed turn followed by more than
+// this much metadata, or a single assistant line larger than it, leaves the
+// newest turn outside the window and the badge stays quiet. Sized well above the
+// largest trailing-metadata run observed on the real corpus rather than tuned.
+const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
+
+// The newest COMPLETED turn in a transcript, by the transcript's own clock.
+//
+// A file mtime is not this: Claude Code appends `system`, `last-prompt`, `mode`,
+// `permission-mode`, `file-history-snapshot` and `attachment` records that never
+// correspond to an API request, so mtime advances on a session ccxray is
+// watching perfectly. Measured over 161 locatable real sessions at the original
+// 512KB bound, an mtime rule fired on 41 while only 4 had turns we had genuinely
+// missed — 37 false positives, including both sessions that first looked like
+// proof of the bug. At the 4MB bound the same corpus gives 8 of 194 locatable,
+// still zero false positives; the ratio is the finding, not the raw counts.
+//
+// The turn rule is core's, verbatim (server/importer.js:165-172): an assistant
+// record carrying usage with a non-zero token total and a parseable timestamp.
+// Reading `obj.timestamp` also puts both sides of the comparison on the SAME
+// clock — it is the very field the importer stores as `receivedAt`.
+//
+// The read is bounded to the file's tail, where the newest records are. A file
+// whose tail holds no turn at all yields null and the badge says nothing — the
+// safe direction, and the common shape behind it is a stub session that never
+// completed a turn (measured at a 512KB bound: 61 of 161 sessions, all 8-84KB
+// files of queue-operation/attachment/user records; the bound is 4MB now, so
+// that share is a ceiling rather than a current count).
+function newestTranscriptTurnMs(file) {
+  let stat;
+  try { stat = fs.statSync(file); } catch { return null; }
+  const start = Math.max(0, stat.size - TRANSCRIPT_TAIL_BYTES);
+  const length = stat.size - start;
+  if (length <= 0) return null;
+  const buffer = Buffer.alloc(length);
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    fs.readSync(fd, buffer, 0, length, start);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  let text = buffer.toString('utf8');
+  if (start > 0) {
+    const firstNewline = text.indexOf('\n');
+    text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+  }
+  let newest = null;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let obj;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (obj.type !== 'assistant') continue;
+    const usage = obj.message && obj.message.usage;
+    if (!usage) continue;
+    if ((usage.input_tokens || 0) + (usage.output_tokens || 0) === 0) continue;
+    const ts = Date.parse(obj.timestamp);
+    if (!Number.isFinite(ts)) continue;
+    if (newest == null || ts > newest) newest = ts;
+  }
+  return newest;
+}
+
+// The badge is only as fresh as the newest turn ccxray logged. A session ccxray
+// stopped observing — started outside the proxy, or resumed after the hub went
+// away — keeps writing its transcript while the index stands still, so the badge
+// pairs a live-ticking age with numbers frozen hours ago (the reported case: a
+// transcript at 89% of 1M still rendering 35%).
+//
+// Elapsed time ALONE cannot tell that apart from a session that simply finished
+// or a user who stepped away; both are equally quiet and their numbers are still
+// correct. Over the full index an elapsed-only rule fires on 4467 of 4470
+// sessions — it degenerates to "always on", which is the same as off.
+//
+// The distinguishing fact is on disk, but it has to be read carefully: the file
+// mtime is NOT it (see newestTranscriptTurnMs). Only a completed turn newer than
+// our newest evidence proves we missed something. Measured over 161 locatable
+// real sessions, that fired on 8 of 194 locatable — each verified by an
+// independent signal: every one carries a 100%-imported index whose transcript
+// holds 63 to 639 MORE completed turns than ccxray ever logged, which is exactly
+// the failure this exists to surface. Zero false positives.
+function evidenceStaleness(turns, nowMs, opts = {}) {
+  const env = opts.env || process.env;
+  const newest = turns.reduce((max, turn) => Math.max(max, Number(turn.receivedAt) || 0), 0);
+  if (!newest) return null;
+  const latest = turns.find(turn => Number(turn.receivedAt) === newest) || {};
+  const found = transcriptFile(latest.sessionId, latest.cwd || opts.cwd, env);
+  if (!found) return null;
+  const thresholdMs = staleThresholdMs(env);
+  // Cheap gate: normally an append sets mtime at or after the record it wrote,
+  // so an mtime sitting in [newest, newest+threshold] means nothing can be ahead
+  // and the healthy case never reads the file.
+  //
+  // "Normally" is doing work there, and the exception runs the wrong way: a
+  // transcript that was copied without -p, restored from a backup, rehydrated by
+  // a sync client, or touched to an older time can carry an mtime BEHIND content
+  // that is hours ahead of the index — exactly the session this exists to catch.
+  // So the trusted band is symmetric around our newest evidence: an mtime
+  // MATERIALLY behind it (a restore, a touch, a clock set back) is unexplained
+  // and falls through to the read. The band has to be symmetric rather than
+  // "any negative is suspicious" — measured over 194 locatable real sessions,
+  // 34 sit a few seconds to a few minutes behind for ordinary reasons, and
+  // treating that as anomalous would read 34 extra files to learn nothing.
+  const mtimeAhead = found.mtimeMs - newest;
+  if (Math.abs(mtimeAhead) <= thresholdMs) return null;
+  const turnMs = newestTranscriptTurnMs(found.file);
+  if (turnMs == null) return null;
+  const aheadMs = turnMs - newest;
+  if (aheadMs <= thresholdMs) return null;
+  // Report how old the numbers ARE, not how far the transcript ran ahead: the
+  // reader needs "this is from 11h ago", and the two differ whenever the session
+  // also stopped writing a while back.
+  const ageMs = Math.max(0, nowMs - newest);
+  return { ageMs, aheadMs, text: `stale ${formatAge(ageMs)}` };
+}
+
 function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {}) {
   const sorted = turns.slice().sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
   // Context%, cache%, and the model label read the main agent only; a second
@@ -488,12 +662,27 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ctxText,
     ctxBand: contextBand(ctxPct),
   };
-  const signal = contextSignal(anchor, detail);
+  // Freshness reads EVERY turn, not just the anchored ones: a subagent turn
+  // logged a minute ago proves ccxray is still watching this session, even when
+  // the main conversation has been quiet.
+  const stale = evidenceStaleness(sorted, nowMs, opts);
+  // A stale number must not keep a confident colour: the reported case rendered
+  // a green 35% for a session actually sitting at 89%, so the band that says
+  // "this session is fine" is precisely the part that was wrong. Owner decision
+  // (2026-08-17) is to withdraw the colour and let the text carry the reason.
+  //
+  // Note this is the channel-INVERSE of ADR 0013's provenance markers, which
+  // mark the number ('60% of 200K?') and keep colour as saturation. The badge
+  // has no room for a marked number — ctx_bar is ~18 columns and already spends
+  // its tail on the cache/fail signal — so the colour is the only channel wide
+  // enough to carry the doubt here. Do not cite ADR 0013 as endorsing this.
+  const signal = stale ? stale.text : contextSignal(anchor, detail);
   return {
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
     ctxText,
-    ctxBand: detail.ctxBand,
+    ctxBand: stale ? 'unknown' : detail.ctxBand,
+    stale,
     ctxBar: formatContextBar(anchor, win, ctxText, {
       sidebarCols: opts.sidebarCols,
       signal,
@@ -533,6 +722,7 @@ function sessionSummaryDetails(data, opts = {}) {
       ctxText,
       ctxBand: contextBand(null),
       ctxBar: emptyContextBar(opts),
+      stale: null,
       ageText: '?',
       cost: null,
       costText: 'n/a',
@@ -568,7 +758,11 @@ function sessionSummaryDetails(data, opts = {}) {
       && known.has(turn.parentSessionId)
     )));
     const detail = summarizeTurnGroup((roots.length ? roots : groups)[0], top, nowMs, opts);
-    const summary = `${shortModel(detail.model)}, ${detail.ageText}, ${detail.costText}`;
+    // The sidebar is often narrower than the signal slot, so ctx_bar drops the
+    // stale text and only the dimmed band survives there. The summary has 80
+    // columns and is the one place the reason is always spelled out.
+    const base = `${shortModel(detail.model)}, ${detail.ageText}, ${detail.costText}`;
+    const summary = detail.stale ? `${base} · ${detail.stale.text}` : base;
     return { ...detail, matched: true, summary: clip(summary, 80) };
   }
 
@@ -583,11 +777,41 @@ function sessionSummaryDetails(data, opts = {}) {
     turns: top.turns || data?.meta?.totalEntries || 0,
     ctxBar: emptyContextBar(opts),
     ctxBand: contextBand(null),
+    // The fallback renders the whole-index top session, not a located one, so
+    // there is no transcript to compare against — no evidence, no claim.
+    stale: null,
   };
   return {
     ...fallback,
     summary: clip(`${shortModel(fallback.model)}, ${fallback.ageText}, ${fallback.costText}`, 80),
   };
+}
+
+// Fire-and-forget `ccxray import --once` for a pane whose badge just went stale.
+//
+// The badge refresh is on Herdr's event path, so this must never join its
+// lifecycle: detached + unref'd + stdio ignored means the child outlives this
+// process and this process does not wait a millisecond for it. All of the
+// throttling, locking and error recording lives in server/import-once.js, which
+// is the only thing that can enforce it across the many refreshes a workspace
+// fires; asking here would race with the other panes.
+function requestImport(opts = {}) {
+  const env = opts.env || process.env;
+  if (env.CCXRAY_BADGE_IMPORT_DISABLE === '1') return { ok: false, reason: 'disabled' };
+  const cmd = resolveCcxrayCommand(env);
+  if (!cmd || !cmd.bin) return { ok: false, reason: 'no-ccxray' };
+  try {
+    const child = spawn(cmd.bin, [...cmd.argsPrefix, 'import', '--once'], {
+      env,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => { /* the badge must not fail because a scan could not start */ });
+    child.unref();
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'spawn-failed' };
+  }
 }
 
 function herdrAgentReport(opts = {}) {
@@ -1383,6 +1607,7 @@ module.exports = {
   recordRoutedPane,
   reportPaneTokens,
   reportWorkspaceTokens,
+  requestImport,
   resolveCcxrayCommand,
   resolveHerdrConfigPath,
   routedPaneKnown,
@@ -1397,5 +1622,6 @@ module.exports = {
   summarizeUsage,
   summarizeUsageCompact,
   summarizeUsageTiny,
+  transcriptFile,
   usageReport,
 };

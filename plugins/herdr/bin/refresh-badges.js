@@ -8,6 +8,7 @@ const {
   herdrRuntime,
   reportPaneTokens,
   reportWorkspaceTokens,
+  requestImport,
   routedPaneKnown,
   runHerdr,
   sessionSummaryDetails,
@@ -58,12 +59,24 @@ function badgeTokens(status, usage, opts = {}) {
     xray: status.parsed.running ? 'ok' : 'no-hub',
   };
 
+  let stale = null;
   if (usage.ok && usage.data?.meta) {
     const detail = sessionSummaryDetails(usage.data, opts);
+    stale = detail.stale || null;
     tokens.summary = detail.summary;
     tokens.ctx_bar = detail.ctxBar;
     tokens.ctx_band = detail.ctxBand;
-    tokens.ctx = detail.ctxText;
+    // The stale marker otherwise lives only in `summary` and the ctx_bar colour
+    // band, and a sidebar row shows a token only if it names it. Our own
+    // install-sidebar-summary.js does add those rows — but it is not the only way
+    // a config gets written. A real one observed in the field
+    // (~/.config/herdr/config.toml, rows ["$ctx","$model","$cost"], left behind by
+    // an earlier plugin generation) names neither, so the entire marker rendered
+    // nowhere and the badge showed a bare confident percentage for a session whose
+    // transcript had moved on. `$ctx` is the channel a minimal layout does render,
+    // so the state has to survive there too — and marking the number is ADR 0013's
+    // own convention for a percentage you cannot vouch for.
+    tokens.ctx = detail.stale ? `${detail.ctxText} stale` : detail.ctxText;
     tokens.age = detail.ageText;
     tokens.cost = detail.costText;
     tokens.model = detail.model;
@@ -83,6 +96,7 @@ function badgeTokens(status, usage, opts = {}) {
 
   return {
     tokens,
+    stale,
     clearTokens: applyContextColorTokens(tokens, tokens.ctx_band),
   };
 }
@@ -121,6 +135,10 @@ function main() {
     routed: status.parsed.running && routedPaneKnown(targetPaneId, process.env),
   });
   const { tokens, clearTokens } = badge;
+  // A stale badge means completed turns are sitting on disk that ccxray never
+  // logged, which is exactly what a rescan fixes — so the marker doubles as the
+  // trigger. Detached: the badge write below must not wait for a disk scan.
+  const importRequest = badge.stale ? requestImport({ env: process.env }) : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
   const stateLabels = {
     unknown: tokens.summary,
@@ -152,6 +170,7 @@ function main() {
   console.log(`Pane: ${runtime.paneId || 'n/a'} (${pane.ok ? 'ok' : pane.reason})`);
   console.log(`Tokens: ${Object.entries(tokens).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   if (clearTokens.length) console.log(`Clear: ${clearTokens.join(' ')}`);
+  if (importRequest) console.log(`Import: requested (${importRequest.ok ? 'spawned' : importRequest.reason})`);
   if (notificationResult?.status === 0) console.log(`Notification: ${notification.title}`);
   else if (notificationResult) console.log('Notification unavailable: run Doctor for Herdr details.');
 
@@ -164,4 +183,8 @@ function main() {
   process.exit(targeted && wrote ? 0 : 1);
 }
 
-main();
+// ADR 0015's two-mode shape: executed mode runs, imported mode is side-effect
+// free so badgeTokens() can be asserted without refreshing anybody's sidebar.
+if (require.main === module) main();
+
+module.exports = { badgeTokens, applyContextColorTokens, eventContext };
