@@ -58,16 +58,16 @@ function runHook(command, env = {}) {
 
 describe('check-codex-review hook — cross-repo scope', () => {
   it('forwards --repo to gh pr view and allows when the TARGET repo PR has evidence', () => {
-    const r = runHook('gh pr merge 11 --repo lis186/ccxray-ops --squash', {
+    const r = runHook('gh pr merge 11 --repo example-org/private-ops --squash', {
       GH_BODY_CROSS: 'summary\n\ncodex review: pass, 0 findings',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /--repo example-org\/private-ops/);
   });
 
   it('DANGER direction: cwd repo same-numbered PR has evidence, target repo PR does not → block', () => {
     // Old code read the cwd repo body (no --repo) and would silently pass.
-    const r = runHook('gh pr merge 11 --repo lis186/ccxray-ops', {
+    const r = runHook('gh pr merge 11 --repo example-org/private-ops', {
       GH_BODY_LOCAL: 'unrelated old PR that mentions codex review',
       GH_BODY_CROSS: 'no second review here',
     });
@@ -76,19 +76,19 @@ describe('check-codex-review hook — cross-repo scope', () => {
   });
 
   it('-R short flag is honored the same as --repo', () => {
-    const r = runHook('gh pr merge 7 -R lis186/ccxray-ops', {
+    const r = runHook('gh pr merge 7 -R example-org/private-ops', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /--repo example-org\/private-ops/);
   });
 
   it('--repo=owner/repo (equals form) is honored', () => {
-    const r = runHook('gh pr merge 7 --repo=lis186/ccxray-ops', {
+    const r = runHook('gh pr merge 7 --repo=example-org/private-ops', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /--repo example-org\/private-ops/);
   });
 
   it('same-repo merge is unchanged: no --repo forwarded, local body decides', () => {
@@ -145,15 +145,15 @@ describe('check-codex-review hook — cross-repo scope', () => {
   it('PR number after flags (merge --repo X 12) is still gated — not silently allowed', () => {
     // Old code required the number immediately after `merge`; this form slipped
     // through the "no PR number → allow" path with zero body check.
-    const r = runHook('gh pr merge --repo lis186/ccxray-ops 12', {
+    const r = runHook('gh pr merge --repo example-org/private-ops 12', {
       GH_BODY_CROSS: 'no evidence',
     });
     assert.equal(r.status, 2, 'flags-first form must still be gated');
     assert.match(r.stdout, /PR #12 /);
   });
 
-  it('repo name digits (lis186) are never mistaken for the PR number', () => {
-    const r = runHook('gh pr merge --repo lis186/ccxray-ops 12', {
+  it('repo name digits (example186) are never mistaken for the PR number', () => {
+    const r = runHook('gh pr merge --repo example186/private-ops 12', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -182,19 +182,19 @@ describe('check-codex-review hook — cross-repo scope', () => {
   });
 
   it('compound command: --repo on the merge segment itself is still forwarded', () => {
-    const r = runHook('git push && gh pr merge 11 --repo lis186/ccxray-ops --squash && echo done', {
+    const r = runHook('git push && gh pr merge 11 --repo example-org/private-ops --squash && echo done', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /--repo example-org\/private-ops/);
   });
 
   it('attached short form -Rowner/repo is honored (codex R2)', () => {
-    const r = runHook('gh pr merge 7 -Rlis186/ccxray-ops', {
+    const r = runHook('gh pr merge 7 -Rexample-org/private-ops', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /--repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /--repo example-org\/private-ops/);
   });
 
   it('quoted argument inside the merge invocation → fail closed (codex R2)', () => {
@@ -247,15 +247,15 @@ describe('check-codex-review hook — cross-repo scope', () => {
   });
 
   it('pull URL selector: repo and number are taken from the URL (codex R4)', () => {
-    const r = runHook('gh pr merge https://github.com/lis186/ccxray-ops/pull/34 --squash', {
+    const r = runHook('gh pr merge https://github.com/example-org/private-ops/pull/34 --squash', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
-    assert.match(r.spy, /pr view 34 --repo lis186\/ccxray-ops/);
+    assert.match(r.spy, /pr view 34 --repo example-org\/private-ops/);
   });
 
   it('pull URL selector without evidence blocks (previously slipped the allow path)', () => {
-    const r = runHook('gh pr merge https://github.com/lis186/ccxray-ops/pull/34', {
+    const r = runHook('gh pr merge https://github.com/example-org/private-ops/pull/34', {
       GH_BODY_CROSS: 'nothing here',
     });
     assert.equal(r.status, 2);
@@ -383,7 +383,7 @@ describe('check-codex-review hook — cross-repo scope', () => {
   });
 
   it('non-merge command is ignored (exit 0, gh never called)', () => {
-    const r = runHook('gh pr view 11 --repo lis186/ccxray-ops');
+    const r = runHook('gh pr view 11 --repo example-org/private-ops');
     assert.equal(r.status, 0);
     assert.equal(r.spy, '');
   });
