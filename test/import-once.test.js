@@ -67,7 +67,12 @@ function runImport(home, projectsRoot, extraEnv = {}, args = ['--once']) {
 }
 
 describe('ccxray import --once', () => {
-  it('imports transcript turns the index has never seen', () => {
+  // Both halves of one run's contract are asserted from a single spawn: what it
+  // must write (index lines) and what it must NOT (the hub's derived view).
+  // Each spawn here is a full `node server/index.js`, and the suite runs files
+  // in parallel — a run of this file once coincided with a timing-sensitive
+  // websocket test timing out, so spawn count is a cost, not free coverage.
+  it('appends index lines and never writes sessions.json', () => {
     const home = tmpdir('ccxray-import-home-');
     const projects = tmpdir('ccxray-import-projects-');
     writeTranscript(projects, 'aaaaaaaa-1111-2222-3333-444444444444', '/work/proj', 3);
@@ -80,20 +85,11 @@ describe('ccxray import --once', () => {
     const lines = index.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
     assert.equal(lines.length, 3);
     assert.ok(lines.every(l => l.imported), 'imported lines must carry the imported flag');
-  });
 
-  // The whole reason this command may run beside a live hub: it appends index
-  // lines and leaves the hub's sessions.json alone, because session-index's
-  // tmp file has a FIXED name and a second writer can rename another process's
-  // half-written bytes. sessions.json is rebuildable — loadSessionIndex already
-  // rebuilds when index.ndjson is the newer file.
-  it('never writes sessions.json, so it cannot race a running hub', () => {
-    const home = tmpdir('ccxray-import-home-');
-    const projects = tmpdir('ccxray-import-projects-');
-    writeTranscript(projects, 'bbbbbbbb-1111-2222-3333-444444444444', '/work/proj', 2);
-
-    const result = runImport(home, projects);
-    assert.equal(result.imported, 2);
+    // The whole reason this command may run beside a live hub: session-index's
+    // tmp file has a FIXED name, so a second writer can rename another
+    // process's half-written bytes. sessions.json is rebuildable —
+    // loadSessionIndex already rebuilds when index.ndjson is the newer file.
     assert.equal(fs.existsSync(path.join(home, 'logs', 'sessions.json')), false,
       'import --once must not write the derived session view');
     assert.equal(fs.existsSync(path.join(home, 'logs', 'sessions.json.tmp')), false,
@@ -154,9 +150,13 @@ describe('ccxray import --once', () => {
 });
 
 describe('ccxray import --once locking', () => {
-  const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
+  // Required inside each test, not in the describe body: a throw here would
+  // unregister all four subtests instead of failing them, which quietly shrinks
+  // the differential when this file is replayed against a build that lacks the
+  // module (observed: 2175 registered vs 2179).
 
   it('refuses while a live owner holds the lock', () => {
+    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
@@ -168,6 +168,7 @@ describe('ccxray import --once locking', () => {
   // A crashed run must not wedge every later one — the two ways an owner can be
   // gone are a dead pid and a lock older than its TTL.
   it('reclaims a lock whose owner is dead', () => {
+    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     // pid 1 is alive; a never-allocated high pid is the portable dead case.
@@ -180,6 +181,7 @@ describe('ccxray import --once locking', () => {
   });
 
   it('reclaims a lock older than its TTL even if the pid is alive', () => {
+    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     const now = Date.now();
@@ -190,6 +192,7 @@ describe('ccxray import --once locking', () => {
   });
 
   it('releases the lock so the next run can take it', () => {
+    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     const first = acquireLock(env);

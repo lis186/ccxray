@@ -483,7 +483,7 @@ function _scheduleDirtyFlush() {
 
 // Write full sessions.json atomically (tmp + rename).
 //
-// INVARIANT: `tmpPath()` is a FIXED name with no pid in it, so "atomically" holds
+// INVARIANT (ADR 0019): `tmpPath()` is a FIXED name with no pid in it, so "atomically" holds
 // against a crash, not against a second writer. Two processes flushing at once
 // can have one rename the other's half-written bytes. Every other writer in this
 // repo is the single hub process, which is why the name has been safe; a second
@@ -494,6 +494,7 @@ function _scheduleDirtyFlush() {
 // behind. Giving the tmp file a pid suffix would make concurrent flushes safe
 // but would still race last-writer-wins over the whole file, which is a
 // correctness question about WHOSE view wins — not one to settle here.
+// See docs/decisions/0019-second-writer-appends-never-derives.md.
 async function flush() {
   if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (!dirty && !flushTimer) return;
