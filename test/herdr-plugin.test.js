@@ -68,6 +68,17 @@ function makeHome(entries = []) {
   return home;
 }
 
+// ISOLATION: sessionSummaryDetails now consults the Claude transcript tree to
+// decide staleness, and server/importer.js's rule is that an unset
+// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one.
+// Measured: one unisolated call statted 7 real paths. It "passed" only because no
+// real transcript is named s1.jsonl, which is the #407 shape (a leak that passes
+// because the real data happens to be empty). Every sessionSummaryDetails call
+// pins this empty root unless it is deliberately providing a transcript.
+// See docs/testing.md and docs/decisions/0015-cost-worker-lifecycle-drain-exit.md R4.
+const NO_TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-no-transcripts-'));
+process.on('exit', () => { try { fs.rmSync(NO_TRANSCRIPTS, { recursive: true, force: true }); } catch {} });
+
 function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
   const shared = path.join(home, 'logs', 'shared');
   fs.mkdirSync(shared, { recursive: true });
@@ -312,7 +323,7 @@ describe('Herdr workspace scope', () => {
     assert.equal(routedPaneKnown('w1:p8', env), false);
 
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { ...env, CCXRAY_HOME: makeHome() },
+      env: { ...env, CCXRAY_HOME: makeHome(), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p9',
       routed: true,
     });
@@ -346,7 +357,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
   it('anchors context% on the main conversation, not the latest turn', () => {
     const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome([mainTurn, backgroundTurn]) },
+      env: { CCXRAY_HOME: makeHome([mainTurn, backgroundTurn]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's1',
       nowMs: T + 2000,
     });
@@ -362,7 +373,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
     const main = { ...mainTurn, usage: { input_tokens: 31900, cache_read_input_tokens: 287100 } };
     const background = { ...backgroundTurn, usage: { input_tokens: 126000 } };
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome([main, background]) },
+      env: { CCXRAY_HOME: makeHome([main, background]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's1',
       nowMs: T + 2000,
       sidebarCols: 32,
@@ -383,7 +394,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 250000 } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(imported) },
+      env: { CCXRAY_HOME: makeHome(imported), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's2',
       nowMs: T + 2000,
     });
@@ -405,7 +416,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
       turnToolFail: false, toolFail: true,
     }));
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(turns) },
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's3',
       nowMs: T + 7000,
       sidebarCols: 32,
@@ -422,7 +433,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
       turnToolFail: i >= 4, toolFail: true,
     }));
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(turns) },
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's4',
       nowMs: T + 7000,
       sidebarCols: 32,
@@ -445,7 +456,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 950000 }, cost: { cost: 0.07, confidence: 'exact' } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(entries) },
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p4',
       nowMs: T + 1000,
     });
@@ -466,12 +477,310 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 400000 } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(entries) },
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p5',
       nowMs: T + 1000,
     });
     assert.equal(detail.sessionId, 'orphan-1');
     assert.equal(Math.round(detail.ctxPct), 40);
+  });
+});
+
+// The badge is only as fresh as the newest turn ccxray logged. A session ccxray
+// stopped observing keeps writing its transcript while the index stands still,
+// so the badge pairs a live-ticking age with frozen numbers — measured on real
+// data, a transcript at 89% of 1M rendering 35%.
+//
+// Elapsed time alone cannot separate that from a finished session or a user who
+// stepped away, and marking those would spend the marker on cases whose numbers
+// are correct. Measured over the badge's real 4MB index window (6 sessions):
+// elapsed-only fired on 3 and was wrong about 1; the transcript-ahead rule fired
+// on exactly the 2 whose transcripts ran 11h and 13h past our newest evidence,
+// with the live sessions at 0m — nothing sat near the threshold.
+// The badge is only as fresh as the newest turn ccxray logged. A session ccxray
+// stopped observing keeps writing its transcript while the index stands still,
+// so the badge pairs a live-ticking age with frozen numbers.
+//
+// The signal has to be read carefully. Claude Code appends `system`,
+// `last-prompt`, `mode`, `permission-mode`, `file-history-snapshot` and
+// `attachment` records that never correspond to an API request, so the file
+// mtime advances on a session ccxray is watching perfectly. Measured over 161
+// locatable real sessions: an mtime rule fired on 41, of which only 4 had turns
+// we had genuinely missed — and those 4 were verified independently (each has a
+// 100%-imported index whose transcript holds 192 to 752 MORE completed turns
+// than ccxray logged). Only a completed turn newer than our newest evidence
+// counts, using core's own rule (server/importer.js:165-172).
+describe('Herdr sidebar import freshness', () => {
+  const T = Date.parse('2026-08-17T00:00:00.000Z');
+  const NOW = T + 11 * 3600000;
+  const CWD = '/Users/dev/proj.app';
+  const turn = {
+    id: 'a1', sessionId: 's1', model: 'claude-opus-5', agentKey: 'orchestrator',
+    isSubagent: false, receivedAt: T, cwd: CWD, beta1m: true,
+    maxContext: 1000000, usage: { input_tokens: 319000 },
+  };
+
+  function assistantLine(ms) {
+    return JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(ms).toISOString(),
+      message: { model: 'claude-opus-5', usage: { input_tokens: 1000, output_tokens: 50 } },
+    });
+  }
+
+  // The records Claude Code writes with no API request behind them. These are
+  // what made a file-mtime rule fire on 37 healthy sessions.
+  function metadataLines(ms) {
+    return ['system', 'last-prompt', 'mode', 'permission-mode', 'file-history-snapshot']
+      .map(type => JSON.stringify({ type, timestamp: new Date(ms).toISOString() }));
+  }
+
+  // ISOLATION: staleness stats and reads a scan root outside CCXRAY_HOME (the
+  // ADR 0015 R4 class). CCXRAY_IMPORT_HOMES pins it at a temp projects/ tree so
+  // the suite never touches the developer's real ~/.claude*/projects.
+  // See docs/testing.md.
+  function makeTranscript(opts = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-transcripts-'));
+    if (opts.absent) return root;
+    const sessionId = opts.sessionId || 's1';
+    const cwd = opts.cwd || CWD;
+    const dir = path.join(root, String(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const lines = [];
+    if (opts.turnMs != null) lines.push(assistantLine(opts.turnMs));
+    if (opts.trailingMetadataMs != null) lines.push(...metadataLines(opts.trailingMetadataMs));
+    fs.writeFileSync(file, lines.join('\n') + (lines.length ? '\n' : ''));
+    const mtime = new Date(opts.mtimeMs != null ? opts.mtimeMs : (opts.turnMs || T));
+    fs.utimesSync(file, mtime, mtime);
+    return root;
+  }
+
+  function detailFor(transcriptRoot, extraEnv = {}) {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: {
+        CCXRAY_HOME: makeHome([turn]),
+        CCXRAY_IMPORT_HOMES: transcriptRoot,
+        ...extraEnv,
+      },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    });
+  }
+
+  // FAIL-ON-OLD: pre-fix code has no `stale` field and reports ctxBand 'green'
+  // for this input, because 32% is genuinely under the green threshold — the
+  // number is stale, not high.
+  it('marks the badge when a completed turn is newer than our newest evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: NOW }));
+    assert.ok(detail.stale, 'expected a staleness marker');
+    assert.equal(detail.stale.text, 'stale 11h');
+    assert.match(detail.summary, /· stale 11h$/);
+    assert.match(detail.ctxBar, /stale 11h/);
+    // The percentage survives; only the confident colour is withdrawn.
+    assert.equal(Math.round(detail.ctxPct), 32);
+    assert.equal(detail.ctxBand, 'unknown');
+  });
+
+  // FAIL-ON-OLD against the mtime implementation this replaced: 37 of its 41
+  // real-data firings were exactly this shape — the transcript's newest TURN is
+  // no newer than ours, only its metadata records are.
+  it('ignores metadata-only writes that carry no API turn behind them', () => {
+    const detail = detailFor(makeTranscript({ turnMs: T, trailingMetadataMs: NOW, mtimeMs: NOW }));
+    assert.ok(!detail.stale, 'metadata records must not count as missed turns');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  it('ignores an assistant record that completed no turn', () => {
+    // A zero-token or usage-less assistant record is not a turn by core's rule
+    // (server/importer.js:167-170), so it cannot be evidence we missed one.
+    const root = makeTranscript({ turnMs: T, mtimeMs: NOW });
+    const dir = path.join(root, CWD.replace(/[^a-zA-Z0-9]/g, '-'));
+    const file = path.join(dir, 's1.jsonl');
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(NOW).toISOString(),
+      message: { usage: { input_tokens: 0, output_tokens: 0 } },
+    }) + '\n');
+    fs.utimesSync(file, new Date(NOW), new Date(NOW));
+    const detail = detailFor(root);
+    assert.ok(!detail.stale, 'a zero-token assistant record is not a completed turn');
+  });
+
+  // GUARD (passes on both sides — the pre-fix code marks nothing at all). This
+  // is the precision half: a session that simply stopped is equally quiet, and
+  // its numbers are still correct.
+  it('leaves a finished session alone, however old its evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: T - 60000, mtimeMs: T - 60000 }));
+    assert.ok(!detail.stale, 'a finished session must not be marked');
+    assert.equal(detail.ctxBand, 'green');
+    assert.doesNotMatch(detail.summary, /stale/);
+  });
+
+  it('leaves a live session alone while the transcript leads by less than the threshold', () => {
+    // A long turn writes its transcript continuously but reaches the index only
+    // when the response completes, so a few minutes of lead is normal.
+    const detail = detailFor(makeTranscript({ turnMs: T + 5 * 60000, mtimeMs: T + 5 * 60000 }));
+    assert.ok(!detail.stale, 'a normal in-flight lead must not be marked');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  // An append normally sets mtime at or after the record it wrote, so the gate
+  // skips reading when mtime sits in the normal band. A transcript copied without
+  // -p, restored from a backup, or touched to an older time breaks that in the
+  // dangerous direction: mtime behind content that is hours ahead of the index.
+  // The gate must not read such a file as proof of health.
+  it('still reads a transcript whose mtime sits behind our own newest evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: NOW, mtimeMs: T - 3600000 }));
+    assert.ok(detail.stale, 'an mtime behind our evidence is unexplained, not reassuring');
+    assert.equal(detail.stale.text, 'stale 11h');
+  });
+
+  it('says nothing when no transcript can be located', () => {
+    // Codex panes and any session whose cwd we never learned land here — 40% of
+    // sessions in the real corpus. A miss degrades to silence, never a guess.
+    const detail = detailFor(makeTranscript({ absent: true }));
+    assert.ok(!detail.stale, 'an unlocatable transcript must stay silent');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  it('honours CCXRAY_BADGE_STALE_MS', () => {
+    const detail = detailFor(
+      makeTranscript({ turnMs: T + 5 * 60000, mtimeMs: T + 5 * 60000 }),
+      { CCXRAY_BADGE_STALE_MS: '60000' },
+    );
+    assert.ok(detail.stale, 'a one-minute threshold should fire on a five-minute lead');
+  });
+
+  // Freshness reads every turn, not just the main-agent anchor: a subagent turn
+  // logged a minute ago proves ccxray is still watching, even while the main
+  // conversation is quiet. Anchoring freshness would have marked this stale.
+  it('treats a recent subagent turn as proof the session is still observed', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const subagent = {
+      id: 'b1', sessionId: 's1', model: 'claude-sonnet-5', agentKey: 'agent',
+      isSubagent: true, receivedAt: NOW - 60000, cwd: CWD,
+      maxContext: 200000, usage: { input_tokens: 10000 },
+    };
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: {
+        CCXRAY_HOME: makeHome([turn, subagent]),
+        CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: NOW }),
+      },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    });
+    assert.ok(!detail.stale, 'a recent subagent turn proves the session is observed');
+  });
+
+  // The badge refresh runs on Herdr's event path, so the rescan it triggers must
+  // be detached: spawned, unref'd, never awaited. A refresh that blocked on a
+  // disk scan would stall the sidebar for every pane in the workspace.
+  it('spawns the rescan without waiting for it', () => {
+    const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-import-'));
+    const marker = path.join(dir, 'ran');
+    const bin = path.join(dir, 'fake-ccxray');
+    // Sleeps well past any reasonable badge refresh, then records that it ran.
+    fs.writeFileSync(bin, `#!/usr/bin/env node\nsetTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' ')), 400);\n`);
+    fs.chmodSync(bin, 0o755);
+
+    const started = Date.now();
+    const result = requestImport({ env: { ...process.env, CCXRAY_BIN: bin } });
+    const elapsed = Date.now() - started;
+    assert.equal(result.ok, true);
+    assert.ok(elapsed < 300, `requestImport must return immediately, took ${elapsed}ms`);
+
+    // And the child really does outlive the call.
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+    assert.equal(fs.existsSync(marker), true, 'the detached child should still run');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'import --once');
+  });
+
+  it('can be switched off without switching off the marker', () => {
+    const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
+    const result = requestImport({ env: { ...process.env, CCXRAY_BADGE_IMPORT_DISABLE: '1' } });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'disabled');
+  });
+
+  // A sidebar row only shows tokens it references. Measured on a real
+  // ~/.config/herdr/config.toml whose row is ["$ctx","$model","$cost"]: neither
+  // `summary` nor any `ctx_bar*` token is referenced, so the marker rendered
+  // NOWHERE and the badge showed a bare confident percentage for a session whose
+  // transcript had moved on. `$ctx` is the channel such a layout does render.
+  it('marks the ctx token too, so a summary-less sidebar still shows the state', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges.js');
+    const status = { parsed: { running: true } };
+    const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+    const opts = {
+      env: { CCXRAY_HOME: makeHome([turn]), CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: NOW }) },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    };
+    const { tokens } = badgeTokens(status, usage, opts);
+    assert.equal(tokens.ctx, '32% stale', 'the rendered percentage must carry the state');
+    assert.equal(tokens.ctx_band, 'unknown');
+    assert.match(tokens.summary, /stale 11h/);
+  });
+
+  it('leaves the ctx token clean when the session is current', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges.js');
+    const status = { parsed: { running: true } };
+    const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+    const opts = {
+      env: { CCXRAY_HOME: makeHome([turn]), CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: T, mtimeMs: T }) },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    };
+    const { tokens } = badgeTokens(status, usage, opts);
+    assert.equal(tokens.ctx, '32%');
+    assert.equal(tokens.ctx_band, 'green');
+  });
+
+  // Derived by replaying all 118 cwds in the real index against the 184 project
+  // directories on disk: flattening every non-alphanumeric reproduced 43, while
+  // flattening only '/' and '.' reproduced 41. The two it missed are real — a
+  // cwd with '_' and a worktree branch name with '+' — and each made the whole
+  // feature silently inert for that project.
+  it('resolves a transcript through Claude\'s cwd encoding', () => {
+    const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
+    // The expected names are written out literally. Building the fixture with
+    // the same regex the production function uses would make this pass for any
+    // rule, including a wrong one — it would only prove the two agree.
+    const cases = [
+      ['/Users/dev/proj.app', '-Users-dev-proj-app'],
+      ['/Users/justinlee/dev/android_shopping', '-Users-justinlee-dev-android-shopping'],
+      ['/w/claude+vehicle-x', '-w-claude-vehicle-x'],
+      ['/Users/x/.claude', '-Users-x--claude'],
+      ['/Users/dev/proj/', '-Users-dev-proj'],
+      ['/Users//dev/proj', '-Users-dev-proj'],
+    ];
+    for (const [cwd, expectedDir] of cases) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slug-'));
+      const dir = path.join(root, expectedDir);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 's1.jsonl');
+      fs.writeFileSync(file, assistantLine(T) + '\n');
+      fs.utimesSync(file, new Date(T), new Date(T));
+      const found = transcriptFile('s1', cwd, { CCXRAY_IMPORT_HOMES: root });
+      assert.ok(found, `cwd ${cwd} should resolve to ${expectedDir}`);
+      assert.equal(Math.round(found.mtimeMs), T);
+    }
+
+    const env = { CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: T }) };
+    assert.equal(transcriptFile('s1', '/other/path', env), null);
+    assert.equal(transcriptFile('missing', CWD, env), null);
+    assert.equal(transcriptFile(null, CWD, env), null);
+    assert.equal(transcriptFile('s1', null, env), null);
   });
 });
 
@@ -707,10 +1016,17 @@ describe('Herdr Quick Start close', () => {
     // stdin is held open far longer than the poll window on purpose: otherwise
     // the process would exit on stdin EOF and the test would pass for the wrong
     // reason. Seeing the marker inside the window means `q` itself ended it.
-    const command = `( printf 'q'; sleep 40 ) | script -q /dev/null `
-      + `env CCXRAY_HOME=${JSON.stringify(home)} HERDR_CONFIG_PATH=${JSON.stringify(cfg)} `
+    // BSD script (macOS) takes the command as positional args after the file;
+    // util-linux script (Linux CI) rejects positional commands and needs -c.
+    const run = `env CCXRAY_HOME=${JSON.stringify(home)} HERDR_CONFIG_PATH=${JSON.stringify(cfg)} `
       + `CCXRAY_PRICING_CACHE=/nonexistent/p.json HERDR_PANE_ID= `
-      + `/bin/sh -c ${JSON.stringify(inner)} >/dev/null 2>&1 &\n`
+      + `/bin/sh -c ${JSON.stringify(inner)}`;
+    const pty = process.platform === 'linux'
+      ? `script -qec ${JSON.stringify(run)} /dev/null`
+      : `script -q /dev/null ${run}`;
+    // The job-level redirect covers the feeder subshell too — its inherited
+    // stderr would otherwise hold spawnSync's pipe open until the sleep ends.
+    const command = `{ ( printf 'q'; sleep 12 ) | ${pty}; } >/dev/null 2>&1 &\n`
       + `for i in $(seq 1 40); do [ -f ${JSON.stringify(marker)} ] && break; sleep 0.2; done\n`
       + `[ -f ${JSON.stringify(marker)} ] && echo EXITED || echo LINGERED\n`
       + `pkill -f ${JSON.stringify(onboarding)} 2>/dev/null; true`;

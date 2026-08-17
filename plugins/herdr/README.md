@@ -83,6 +83,22 @@ herdr plugin pane open --plugin ccxray.herdr --entrypoint onboarding --placement
 herdr plugin pane open --plugin ccxray.herdr --entrypoint capability-review --placement tab
 ```
 
+When the badge can prove ccxray has fallen behind — a completed turn sits in the
+session's Claude transcript that the index never recorded — the context row
+reports `stale 11h` and drops to the neutral colour, because a confident green
+would be asserting safety about a number hours out of date. The percentage
+itself is still shown. Proof means a completed turn, not a newer file: Claude
+Code writes `system`, `last-prompt` and `mode` records with no API request
+behind them, and treating those as evidence marked 37 healthy sessions out of 41
+in measurement. A session whose transcript cannot be located (codex panes, or a
+cwd ccxray never recorded) is never marked. `CCXRAY_BADGE_STALE_MS` sets the
+threshold (default 10 minutes).
+
+A marked badge also fires `ccxray import --once` detached, which is the thing
+that fixes it: the scan is throttled to once per 10 minutes and guarded by a
+lockfile, so many panes noticing at once still produce one scan.
+`CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the marker but stops the rescan.
+
 The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
 
 Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact ccxray identity remains unknown; the plugin never borrows telemetry from another session in the project.

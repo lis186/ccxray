@@ -67,6 +67,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'open'
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
+  && cliCommand !== 'import'
   && cliCommand !== 'setup-statusline'
   && cliCommand !== 'usage'
   && !cliCommand.startsWith('-')
@@ -86,6 +87,21 @@ if (process.argv[2] === 'secret') {
   }
   console.error(`\x1b[31mError: unknown secret subcommand "${sub || ''}". Supported: upstream\x1b[0m`);
   process.exit(1);
+}
+
+// ── "import --once" — early exit, no server/hub boot ──
+// A throttled, lock-guarded transcript scan for a dashboard that has noticed the
+// index has fallen behind. Appends index lines only; see server/import-once.js
+// for why it does not refuse while a hub is running.
+if (process.argv[2] === 'import') {
+  if (!process.argv.includes('--once')) {
+    console.error('\x1b[31mError: unknown import mode. Supported: ccxray import --once\x1b[0m');
+    process.exit(1);
+  }
+  require('./import-once').importOnce({ force: process.argv.includes('--force') })
+    .then(r => { console.log(JSON.stringify(r)); process.exit(r.ok ? 0 : 1); })
+    .catch(err => { console.error(`import --once failed: ${err.message}`); process.exit(1); });
+  return;
 }
 
 // ── "rebuild-index [--apply]" — early exit, no server/hub boot ──

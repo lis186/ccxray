@@ -162,6 +162,22 @@ also writes two tiny child-process entrypoints (a surrogate parent and a
 fixtures, not tests; generating them outside `test/` keeps them invisible to
 `node --test` auto-discovery.
 
+The Herdr badge's staleness check is a second reader of that layer, and it runs
+**in-process** rather than in a fork. `evidenceStaleness` (`plugins/herdr/bin/
+lib/ccxray.js`) stats and reads `$HOME/.claude*/projects/<slug>/<sessionId>.jsonl`
+to decide whether a transcript holds turns ccxray never logged — a scan root
+outside `CCXRAY_HOME`, the ADR 0015 R4 class. Because it runs in the test
+process, a throwaway `$HOME` is not an option (it would take the puppeteer cache
+with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
+`server/importer.js` honours, and the plugin treats its value as the `projects/`
+root verbatim. A test that exercises staleness without it silently reads the
+developer's real transcripts. Fixture shape: a `<cwd with every non-alphanumeric
+flattened to '-'>/<sessionId>.jsonl` holding at least one `{type:'assistant',
+timestamp, message.usage}` line — metadata-only records (`system`, `last-prompt`,
+`mode`, `permission-mode`, `file-history-snapshot`) deliberately do NOT count as
+turns, and a test asserting that is the regression guard for the file-mtime rule
+this replaced. See `test/herdr-plugin.test.js`, `Herdr sidebar import freshness`.
+
 So: scrub `CCXRAY_HOME` for the whole suite; only set a throwaway `$HOME` for a
 specific non-browser test that needs to assert `~` expansion.
 
