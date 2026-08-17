@@ -501,15 +501,6 @@ function hasClients() {
   return clients.size > 0;
 }
 
-function lookupClientIdentityForAgent(agentType) {
-  const agent = String(agentType || '').trim();
-  if (!agent) return null;
-  const matches = [...clients.values()].filter(c => c.agentType === agent);
-  if (matches.length !== 1) return null;
-  const match = matches[0];
-  return clientIdentityFromMessage(match);
-}
-
 function applyClientRoute(req) {
   const match = /^\/_ccxray\/client\/([1-9]\d*)(\/[^?]*)?(\?.*)?$/.exec(String(req?.url || ''));
   if (!match) return false;
@@ -518,12 +509,12 @@ function applyClientRoute(req) {
   return true;
 }
 
-function lookupClientIdentityForRequest(req, agentType) {
+function lookupClientIdentityForRequest(req) {
   if (Number.isSafeInteger(req?.ccxrayClientPid)) {
     const client = clients.get(req.ccxrayClientPid);
     return client ? clientIdentityFromMessage(client) : null;
   }
-  return lookupClientIdentityForAgent(agentType);
+  return null;
 }
 
 function lookupClientCwdForRequest(req) {
@@ -693,7 +684,6 @@ module.exports = {
   removeClient,
   hasClients,
   applyClientRoute,
-  lookupClientIdentityForAgent,
   lookupClientIdentityForRequest,
   lookupClientCwd,
   lookupClientCwdForRequest,

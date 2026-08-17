@@ -400,11 +400,6 @@ describe('register/unregister via socket', () => {
     assert.equal(client.agentId, 'herdr:w1:p9');
     assert.equal(client.agentType, 'codex');
     assert.equal(client.team, 'agents');
-    assert.deepEqual(hub.lookupClientIdentityForAgent('codex'), {
-      agentId: 'herdr:w1:p9',
-      agentType: 'codex',
-      team: 'agents',
-    });
 
     await hub.unregisterClient(lockInfo, 44444);
 
@@ -412,11 +407,14 @@ describe('register/unregister via socket', () => {
     assert.ok(!status2.clients.some(c => c.pid === 44444));
   });
 
-  it('lookupClientIdentityForAgent returns null when an agent has multiple clients', () => {
+  it('unrouted traffic is not attributed to a registered client', () => {
     clearAllClients();
-    hub.addClient(44445, '/test/one', { agentId: 'one', agentType: 'codex' });
-    hub.addClient(44446, '/test/two', { agentId: 'two', agentType: 'codex' });
-    assert.equal(hub.lookupClientIdentityForAgent('codex'), null);
+    hub.addClient(44445, '/test/one', { agentId: 'herdr:w1:p18', agentType: 'codex' });
+    const unrouted = { url: '/v1/messages' };
+    assert.equal(hub.applyClientRoute(unrouted), false);
+    // Old code fell back to lookupClientIdentityForAgent(agentType) here,
+    // attributing unrouted traffic to the sole client of that type — wrong.
+    assert.equal(hub.lookupClientIdentityForRequest(unrouted, 'codex'), null);
   });
 
   it('resolves the exact client identity from a routed provider request', () => {
@@ -427,7 +425,7 @@ describe('register/unregister via socket', () => {
 
     assert.equal(hub.applyClientRoute(req), true);
     assert.equal(req.url, '/v1/responses?stream=true');
-    assert.deepEqual(hub.lookupClientIdentityForRequest(req, 'codex'), {
+    assert.deepEqual(hub.lookupClientIdentityForRequest(req), {
       agentId: 'herdr:w1:p22',
       agentType: 'codex',
     });

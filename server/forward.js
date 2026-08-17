@@ -130,7 +130,7 @@ function requestAgentForDeployment(provider, headers, parsedBody) {
 function requestDeploymentFields(startTime, provider, req, parsedBody) {
   const headers = req.headers;
   const agent = requestAgentForDeployment(provider, headers, parsedBody);
-  const identity = hub.lookupClientIdentityForRequest(req, agent);
+  const identity = hub.lookupClientIdentityForRequest(req);
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
