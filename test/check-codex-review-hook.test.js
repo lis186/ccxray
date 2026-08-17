@@ -152,8 +152,8 @@ describe('check-codex-review hook — cross-repo scope', () => {
     assert.match(r.stdout, /PR #12 /);
   });
 
-  it('repo name digits (lis186) are never mistaken for the PR number', () => {
-    const r = runHook('gh pr merge --repo example-org/private-ops 12', {
+  it('repo name digits (example186) are never mistaken for the PR number', () => {
+    const r = runHook('gh pr merge --repo example186/private-ops 12', {
       GH_BODY_CROSS: 'codex gate clean',
     });
     assert.equal(r.status, 0, r.stdout + r.stderr);
