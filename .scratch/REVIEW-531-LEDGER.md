@@ -351,4 +351,20 @@ bypassed `ccxray <agent>` — e.g. a hand-exported `ANTHROPIC_BASE_URL`. In that
 turns are stamped with the one registered pane's `agentId` and land on that pane's badge.
 
 Narrow today (the PATH shim that would create such traffic is explicitly de-scoped), but
-real, and it is new code. Adjudication pending.
+real, and it is new code. **REAL — FIXED** by removing `lookupClientIdentityForAgent`
+entirely. Unrouted traffic now returns null (differential test: fail-on-old confirmed).
+
+### Batch 3 — docs, READMEs, and manifest (2026-08-17, this session)
+
+Files: `plugins/herdr/herdr-plugin.toml`, `plugins/herdr/README.md`, `README.md`,
+`docs/data-model.md`, `docs/herdr-ccxray-plugin-research.md`, `docs/normalization-map.md`,
+`docs/provider-modules.md`, `docs/testing.md`, `docs/war-stories.md`,
+`docs/wire-protocol-reference.md`.
+
+| # | Sev | Claim | Verdict |
+|---|-----|-------|---------|
+| 1 | low | `docs/herdr-ccxray-plugin-research.md:10,38` references `reference/herdr` directory that does not exist in the repo | **DEFERRED** — archival research doc, not user instructions; harmless dead path |
+
+All other claims verified correct: manifest commands resolve to existing scripts,
+README env vars exist in code, data-model `parentSessionId` field exists, provider and
+testing doc additions are accurate. No REAL findings.
