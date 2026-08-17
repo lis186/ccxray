@@ -85,6 +85,15 @@ detected and rebuilt on load), so it would most likely be observed as an
 occasional unexplained rebuild rather than as a bug. This is the same
 enforcement class as ADR 0002's `sigParts` and ADR 0015's R4.
 
+**Latent — an in-process caller sets the guard on itself.** `importOnce` refuses
+an *injected* env, because the importer and `config.LOGS_DIR` read `process.env`
+directly and cannot honour one. A caller that passes `process.env` itself is
+allowed through and therefore leaves `CCXRAY_SESSION_INDEX_NO_FLUSH=1` set on
+that process for every later `flush()`. Harmless in the CLI, which exits
+immediately; a hazard for any future in-process use, which would silently stop
+persisting its own session view. Such a caller must restore the variable, or the
+guard must move to an explicit argument.
+
 **Mitigation**: `test/import-once.test.js` asserts both directions — the guard
 suppresses the write where it lives (`session-index flush guard`), and a real
 `import --once` run leaves neither `sessions.json` nor `sessions.json.tmp`

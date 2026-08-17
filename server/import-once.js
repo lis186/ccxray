@@ -260,23 +260,24 @@ async function importOnce(opts = {}) {
   writeState({
     lastRunAt: now,
     lastImported: result ? result.imported : 0,
-    lastSkipped: result ? result.skipped : 0,
+    lastDuplicatesSkipped: result ? result.skipped : 0,
     indexMtimeMs,
     lastError: null,
   }, env);
 
   // `ran` distinguishes "did the work, found nothing" from "declined to run".
-  // scanAndImport's own `skipped` is a FILE count, so it may not share a key with
-  // the gate's reason — conflating them made a successful run read as a skip.
+  // scanAndImport's own `skipped` counts turns already in the index (importer.js
+  // reports it as "duplicates skipped"), so it may not share a key with the
+  // gate's reason — conflating them made a successful run read as a skip.
   return {
     ok: true,
     ran: true,
     imported: result ? result.imported : 0,
-    filesSkipped: result ? result.skipped : 0,
+    duplicatesSkipped: result ? result.skipped : 0,
   };
 }
 
 module.exports = {
   importOnce, acquireLock, releaseLock, statePath, lockPath, pidAlive,
-  LOCK_PID_REUSE_MS, WATCHDOG_MS,
+  LOCK_PID_REUSE_MS,
 };

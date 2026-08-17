@@ -535,9 +535,11 @@ const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
 // A file mtime is not this: Claude Code appends `system`, `last-prompt`, `mode`,
 // `permission-mode`, `file-history-snapshot` and `attachment` records that never
 // correspond to an API request, so mtime advances on a session ccxray is
-// watching perfectly. Measured over 161 locatable real sessions, an mtime rule
-// fired on 41 while only 4 had turns we had genuinely missed — 37 false
-// positives, including both sessions that first looked like proof of the bug.
+// watching perfectly. Measured over 161 locatable real sessions at the original
+// 512KB bound, an mtime rule fired on 41 while only 4 had turns we had genuinely
+// missed — 37 false positives, including both sessions that first looked like
+// proof of the bug. At the 4MB bound the same corpus gives 8 of 194 locatable,
+// still zero false positives; the ratio is the finding, not the raw counts.
 //
 // The turn rule is core's, verbatim (server/importer.js:165-172): an assistant
 // record carrying usage with a non-zero token total and a parseable timestamp.
@@ -545,10 +547,11 @@ const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
 // clock — it is the very field the importer stores as `receivedAt`.
 //
 // The read is bounded to the file's tail, where the newest records are. A file
-// whose last 512KB holds no turn at all yields null and the badge says nothing —
-// the safe direction, and the common shape behind it is a stub session that
-// never completed a turn (61 of 161 real sessions, all 8-84KB files of
-// queue-operation/attachment/user records).
+// whose tail holds no turn at all yields null and the badge says nothing — the
+// safe direction, and the common shape behind it is a stub session that never
+// completed a turn (measured at a 512KB bound: 61 of 161 sessions, all 8-84KB
+// files of queue-operation/attachment/user records; the bound is 4MB now, so
+// that share is a ceiling rather than a current count).
 function newestTranscriptTurnMs(file) {
   let stat;
   try { stat = fs.statSync(file); } catch { return null; }
@@ -600,10 +603,10 @@ function newestTranscriptTurnMs(file) {
 // The distinguishing fact is on disk, but it has to be read carefully: the file
 // mtime is NOT it (see newestTranscriptTurnMs). Only a completed turn newer than
 // our newest evidence proves we missed something. Measured over 161 locatable
-// real sessions, that fired on 4 — each verified by an independent signal: all
-// four carry a 100%-imported index whose transcript holds 192 to 752 MORE
-// completed turns than ccxray ever logged, which is exactly the failure this
-// exists to surface.
+// real sessions, that fired on 8 of 194 locatable — each verified by an
+// independent signal: every one carries a 100%-imported index whose transcript
+// holds 63 to 639 MORE completed turns than ccxray ever logged, which is exactly
+// the failure this exists to surface. Zero false positives.
 function evidenceStaleness(turns, nowMs, opts = {}) {
   const env = opts.env || process.env;
   const newest = turns.reduce((max, turn) => Math.max(max, Number(turn.receivedAt) || 0), 0);
@@ -1590,7 +1593,6 @@ module.exports = {
   forgetRoutedPane,
   contextBand,
   contextSidebarColumns,
-  evidenceStaleness,
   formatMoney,
   formatPercent,
   formatContextBar,

@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync, spawn } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -232,76 +232,49 @@ describe('ccxray import --once locking', () => {
   // new lock and both proceed. Racers are separate processes because that is the
   // only way to get concurrent unlink/create against one path; they load only
   // import-once (fs/path/os), not the server graph.
-  it('admits exactly one owner when N racers see the same stale lock', async () => {
-    const { lockPath } = require('../server/import-once');
-    const home = tmpdir('ccxray-import-race-');
+  // The fix, asserted directly and deterministically.
+  //
+  // The bug: two racers judge the same stale lock, both unlink, the second
+  // removes the first's fresh lock, and both proceed to import. The fix is that
+  // the takedown is serialized — only the holder of `.reclaim` may delete a lock.
+  //
+  // An N-racer test was tried first and rejected: it reproduced the bug on the
+  // pre-fix lock twice, then stopped reproducing it entirely on an idle machine,
+  // because the interleaving it depends on needs contention to appear. A detector
+  // whose sensitivity tracks machine load is not evidence — it is a coin flip
+  // that also spawned 40 processes into a parallel suite. This asserts the
+  // mechanism instead, which is true or false regardless of timing.
+  it('will not take down a stale lock another reclaimer is holding', () => {
+    const { acquireLock, lockPath } = require('../server/import-once');
+    const home = tmpdir('ccxray-import-reclaim-');
     const env = { CCXRAY_HOME: home };
-    const modulePath = path.join(ROOT, 'server', 'import-once.js');
-    const RACERS = 8;
-    const ROUNDS = 5;
-    let owners = 0;
+    const now = Date.now();
+    const lock = lockPath(env);
 
-    // Three things this test has to get right, each learned by getting it wrong:
-    //
-    // 1. spawn, not spawnSync. A synchronous spawn runs the racers one after
-    //    another, and each then legitimately reclaims the previous — already
-    //    exited — owner's lock, so all 8 "win" against either implementation.
-    // 2. A file barrier to start, not a wall-clock deadline. Spawn latency alone
-    //    can push a racer past a timestamp under load.
-    // 3. A file barrier to STOP. A winner that exits while a starved sibling is
-    //    still running frees its lock, and reclaiming a dead owner's lock is
-    //    correct — so a hold measured in seconds reports violations that are not
-    //    ones. Every racer holds until the parent has read all results.
-    //
-    // What is left is a claim about ordering only, with no timing assumption:
-    // while all 8 are inside acquireLock against one stale lock, at most one may
-    // come out owning it.
-    const race = async (round) => {
-      const dir = path.join(home, `race-${round}`);
-      fs.mkdirSync(dir, { recursive: true });
-      const go = path.join(dir, 'go');
-      const done = path.join(dir, 'done');
-      const children = Array.from({ length: RACERS }, (_, i) => new Promise(resolve => {
-        const child = spawn(process.execPath, ['-e', `
-          const fs = require('fs');
-          const { acquireLock } = require(${JSON.stringify(modulePath)});
-          fs.writeFileSync(${JSON.stringify(dir)} + '/ready-' + ${i}, '');
-          while (!fs.existsSync(${JSON.stringify(go)})) {}
-          const r = acquireLock({ CCXRAY_HOME: ${JSON.stringify(home)} });
-          fs.writeFileSync(${JSON.stringify(dir)} + '/result-' + ${i}, r.ok ? 'OWNER' : 'no');
-          while (!fs.existsSync(${JSON.stringify(done)})) {}
-        `], { stdio: 'ignore' });
-        child.on('close', resolve);
-      }));
+    // A dead owner's lock — reclaimable in principle.
+    fs.writeFileSync(lock, JSON.stringify({ pid: 4194303, startedAt: now }));
+    const before = fs.statSync(lock).ino;
+    // ...but another live process is already taking it down.
+    fs.writeFileSync(`${lock}.reclaim`, JSON.stringify({ pid: process.pid, startedAt: now }));
 
-      const waitFor = async (predicate, what) => {
-        const deadline = Date.now() + 60000;
-        while (!predicate()) {
-          if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-          await new Promise(r => setTimeout(r, 20));
-        }
-      };
-      const count = prefix => fs.readdirSync(dir).filter(f => f.startsWith(prefix)).length;
+    const attempt = acquireLock(env, now);
+    assert.equal(attempt.ok, false, 'must not acquire while another reclaimer works');
+    assert.equal(attempt.reason, 'locked');
+    assert.equal(fs.existsSync(lock), true, 'the stale lock must survive');
+    assert.equal(fs.statSync(lock).ino, before, 'and must be the same file, not a replacement');
+  });
 
-      await waitFor(() => count('ready-') === RACERS, 'racers to be ready');
-      fs.writeFileSync(go, '');
-      await waitFor(() => count('result-') === RACERS, 'racers to finish acquiring');
-      const results = fs.readdirSync(dir).filter(f => f.startsWith('result-'))
-        .map(f => fs.readFileSync(path.join(dir, f), 'utf8'));
-      fs.writeFileSync(done, '');
-      await Promise.all(children);
-      return results;
-    };
-
-    for (let round = 0; round < ROUNDS; round += 1) {
-      fs.writeFileSync(lockPath(env), JSON.stringify({ pid: 4194303, startedAt: Date.now() }));
-      const results = await race(round);
-      const won = results.filter(r => r === 'OWNER').length;
-      assert.ok(won <= 1, `round ${round}: ${won} racers owned the lock at once`);
-      owners += won;
-      try { fs.unlinkSync(lockPath(env)); } catch { /* the winner still holds it */ }
-    }
-    assert.ok(owners > 0, 'the stale lock must actually be reclaimable at all');
+  it('reclaims once the other reclaimer is gone', () => {
+    // The same state minus a live reclaimer: the takedown may proceed, so the
+    // guard above is a real gate rather than a permanent refusal.
+    const { acquireLock, releaseLock, lockPath } = require('../server/import-once');
+    const home = tmpdir('ccxray-import-reclaim-');
+    const env = { CCXRAY_HOME: home };
+    const now = Date.now();
+    fs.writeFileSync(lockPath(env), JSON.stringify({ pid: 4194303, startedAt: now }));
+    const attempt = acquireLock(env, now);
+    assert.equal(attempt.ok, true);
+    releaseLock(attempt);
   });
 
   it('refuses to run the scan under an injected env it cannot honour', async () => {
