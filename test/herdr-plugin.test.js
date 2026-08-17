@@ -475,6 +475,204 @@ describe('Herdr sidebar main-agent anchoring', () => {
   });
 });
 
+// The badge is only as fresh as the newest turn ccxray logged. A session ccxray
+// stopped observing keeps writing its transcript while the index stands still,
+// so the badge pairs a live-ticking age with frozen numbers — measured on real
+// data, a transcript at 89% of 1M rendering 35%.
+//
+// Elapsed time alone cannot separate that from a finished session or a user who
+// stepped away, and marking those would spend the marker on cases whose numbers
+// are correct. Measured over the badge's real 4MB index window (6 sessions):
+// elapsed-only fired on 3 and was wrong about 1; the transcript-ahead rule fired
+// on exactly the 2 whose transcripts ran 11h and 13h past our newest evidence,
+// with the live sessions at 0m — nothing sat near the threshold.
+// The badge is only as fresh as the newest turn ccxray logged. A session ccxray
+// stopped observing keeps writing its transcript while the index stands still,
+// so the badge pairs a live-ticking age with frozen numbers.
+//
+// The signal has to be read carefully. Claude Code appends `system`,
+// `last-prompt`, `mode`, `permission-mode`, `file-history-snapshot` and
+// `attachment` records that never correspond to an API request, so the file
+// mtime advances on a session ccxray is watching perfectly. Measured over 161
+// locatable real sessions: an mtime rule fired on 41, of which only 4 had turns
+// we had genuinely missed — and those 4 were verified independently (each has a
+// 100%-imported index whose transcript holds 192 to 752 MORE completed turns
+// than ccxray logged). Only a completed turn newer than our newest evidence
+// counts, using core's own rule (server/importer.js:165-172).
+describe('Herdr sidebar import freshness', () => {
+  const T = Date.parse('2026-08-17T00:00:00.000Z');
+  const NOW = T + 11 * 3600000;
+  const CWD = '/Users/dev/proj.app';
+  const turn = {
+    id: 'a1', sessionId: 's1', model: 'claude-opus-5', agentKey: 'orchestrator',
+    isSubagent: false, receivedAt: T, cwd: CWD, beta1m: true,
+    maxContext: 1000000, usage: { input_tokens: 319000 },
+  };
+
+  function assistantLine(ms) {
+    return JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(ms).toISOString(),
+      message: { model: 'claude-opus-5', usage: { input_tokens: 1000, output_tokens: 50 } },
+    });
+  }
+
+  // The records Claude Code writes with no API request behind them. These are
+  // what made a file-mtime rule fire on 37 healthy sessions.
+  function metadataLines(ms) {
+    return ['system', 'last-prompt', 'mode', 'permission-mode', 'file-history-snapshot']
+      .map(type => JSON.stringify({ type, timestamp: new Date(ms).toISOString() }));
+  }
+
+  // ISOLATION: staleness stats and reads a scan root outside CCXRAY_HOME (the
+  // ADR 0015 R4 class). CCXRAY_IMPORT_HOMES pins it at a temp projects/ tree so
+  // the suite never touches the developer's real ~/.claude*/projects.
+  // See docs/testing.md.
+  function makeTranscript(opts = {}) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-transcripts-'));
+    if (opts.absent) return root;
+    const sessionId = opts.sessionId || 's1';
+    const cwd = opts.cwd || CWD;
+    const dir = path.join(root, String(cwd).replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${sessionId}.jsonl`);
+    const lines = [];
+    if (opts.turnMs != null) lines.push(assistantLine(opts.turnMs));
+    if (opts.trailingMetadataMs != null) lines.push(...metadataLines(opts.trailingMetadataMs));
+    fs.writeFileSync(file, lines.join('\n') + (lines.length ? '\n' : ''));
+    const mtime = new Date(opts.mtimeMs != null ? opts.mtimeMs : (opts.turnMs || T));
+    fs.utimesSync(file, mtime, mtime);
+    return root;
+  }
+
+  function detailFor(transcriptRoot, extraEnv = {}) {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: {
+        CCXRAY_HOME: makeHome([turn]),
+        CCXRAY_IMPORT_HOMES: transcriptRoot,
+        ...extraEnv,
+      },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    });
+  }
+
+  // FAIL-ON-OLD: pre-fix code has no `stale` field and reports ctxBand 'green'
+  // for this input, because 32% is genuinely under the green threshold — the
+  // number is stale, not high.
+  it('marks the badge when a completed turn is newer than our newest evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: NOW }));
+    assert.ok(detail.stale, 'expected a staleness marker');
+    assert.equal(detail.stale.text, 'stale 11h');
+    assert.match(detail.summary, /· stale 11h$/);
+    assert.match(detail.ctxBar, /stale 11h/);
+    // The percentage survives; only the confident colour is withdrawn.
+    assert.equal(Math.round(detail.ctxPct), 32);
+    assert.equal(detail.ctxBand, 'unknown');
+  });
+
+  // FAIL-ON-OLD against the mtime implementation this replaced: 37 of its 41
+  // real-data firings were exactly this shape — the transcript's newest TURN is
+  // no newer than ours, only its metadata records are.
+  it('ignores metadata-only writes that carry no API turn behind them', () => {
+    const detail = detailFor(makeTranscript({ turnMs: T, trailingMetadataMs: NOW, mtimeMs: NOW }));
+    assert.ok(!detail.stale, 'metadata records must not count as missed turns');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  it('ignores an assistant record that completed no turn', () => {
+    // A zero-token or usage-less assistant record is not a turn by core's rule
+    // (server/importer.js:167-170), so it cannot be evidence we missed one.
+    const root = makeTranscript({ turnMs: T, mtimeMs: NOW });
+    const dir = path.join(root, CWD.replace(/[^a-zA-Z0-9]/g, '-'));
+    const file = path.join(dir, 's1.jsonl');
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'assistant',
+      timestamp: new Date(NOW).toISOString(),
+      message: { usage: { input_tokens: 0, output_tokens: 0 } },
+    }) + '\n');
+    fs.utimesSync(file, new Date(NOW), new Date(NOW));
+    const detail = detailFor(root);
+    assert.ok(!detail.stale, 'a zero-token assistant record is not a completed turn');
+  });
+
+  // GUARD (passes on both sides — the pre-fix code marks nothing at all). This
+  // is the precision half: a session that simply stopped is equally quiet, and
+  // its numbers are still correct.
+  it('leaves a finished session alone, however old its evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: T - 60000, mtimeMs: T - 60000 }));
+    assert.ok(!detail.stale, 'a finished session must not be marked');
+    assert.equal(detail.ctxBand, 'green');
+    assert.doesNotMatch(detail.summary, /stale/);
+  });
+
+  it('leaves a live session alone while the transcript leads by less than the threshold', () => {
+    // A long turn writes its transcript continuously but reaches the index only
+    // when the response completes, so a few minutes of lead is normal.
+    const detail = detailFor(makeTranscript({ turnMs: T + 5 * 60000, mtimeMs: T + 5 * 60000 }));
+    assert.ok(!detail.stale, 'a normal in-flight lead must not be marked');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  it('says nothing when no transcript can be located', () => {
+    // Codex panes and any session whose cwd we never learned land here — 40% of
+    // sessions in the real corpus. A miss degrades to silence, never a guess.
+    const detail = detailFor(makeTranscript({ absent: true }));
+    assert.ok(!detail.stale, 'an unlocatable transcript must stay silent');
+    assert.equal(detail.ctxBand, 'green');
+  });
+
+  it('honours CCXRAY_BADGE_STALE_MS', () => {
+    const detail = detailFor(
+      makeTranscript({ turnMs: T + 5 * 60000, mtimeMs: T + 5 * 60000 }),
+      { CCXRAY_BADGE_STALE_MS: '60000' },
+    );
+    assert.ok(detail.stale, 'a one-minute threshold should fire on a five-minute lead');
+  });
+
+  // Freshness reads every turn, not just the main-agent anchor: a subagent turn
+  // logged a minute ago proves ccxray is still watching, even while the main
+  // conversation is quiet. Anchoring freshness would have marked this stale.
+  it('treats a recent subagent turn as proof the session is still observed', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const subagent = {
+      id: 'b1', sessionId: 's1', model: 'claude-sonnet-5', agentKey: 'agent',
+      isSubagent: true, receivedAt: NOW - 60000, cwd: CWD,
+      maxContext: 200000, usage: { input_tokens: 10000 },
+    };
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: {
+        CCXRAY_HOME: makeHome([turn, subagent]),
+        CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: NOW }),
+      },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    });
+    assert.ok(!detail.stale, 'a recent subagent turn proves the session is observed');
+  });
+
+  // Derived by replaying all 118 cwds in the real index against the 184 project
+  // directories on disk: flattening every non-alphanumeric reproduced 43, while
+  // flattening only '/' and '.' reproduced 41. The two it missed are real — a
+  // cwd with '_' and a worktree branch name with '+' — and each made the whole
+  // feature silently inert for that project.
+  it('resolves a transcript through Claude\'s cwd encoding', () => {
+    const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
+    for (const cwd of ['/Users/dev/proj.app', '/Users/dev/android_shopping', '/w/claude+vehicle-x']) {
+      const env = { CCXRAY_IMPORT_HOMES: makeTranscript({ cwd, turnMs: T }) };
+      assert.equal(Math.round(transcriptFile('s1', cwd, env).mtimeMs), T, `cwd ${cwd}`);
+    }
+    const env = { CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: T }) };
+    assert.equal(transcriptFile('s1', '/other/path', env), null);
+    assert.equal(transcriptFile('missing', CWD, env), null);
+    assert.equal(transcriptFile(null, CWD, env), null);
+    assert.equal(transcriptFile('s1', null, env), null);
+  });
+});
+
 // run-node.sh is the shim every plugin entrypoint goes through. `exec` replaces
 // the shell, so once the mise branch fires the candidate loop below it is
 // unreachable — a mise whose newest installed Node is too old took the process
