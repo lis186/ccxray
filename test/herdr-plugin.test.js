@@ -1016,10 +1016,17 @@ describe('Herdr Quick Start close', () => {
     // stdin is held open far longer than the poll window on purpose: otherwise
     // the process would exit on stdin EOF and the test would pass for the wrong
     // reason. Seeing the marker inside the window means `q` itself ended it.
-    const command = `( printf 'q'; sleep 40 ) | script -q /dev/null `
-      + `env CCXRAY_HOME=${JSON.stringify(home)} HERDR_CONFIG_PATH=${JSON.stringify(cfg)} `
+    // BSD script (macOS) takes the command as positional args after the file;
+    // util-linux script (Linux CI) rejects positional commands and needs -c.
+    const run = `env CCXRAY_HOME=${JSON.stringify(home)} HERDR_CONFIG_PATH=${JSON.stringify(cfg)} `
       + `CCXRAY_PRICING_CACHE=/nonexistent/p.json HERDR_PANE_ID= `
-      + `/bin/sh -c ${JSON.stringify(inner)} >/dev/null 2>&1 &\n`
+      + `/bin/sh -c ${JSON.stringify(inner)}`;
+    const pty = process.platform === 'linux'
+      ? `script -qec ${JSON.stringify(run)} /dev/null`
+      : `script -q /dev/null ${run}`;
+    // The job-level redirect covers the feeder subshell too — its inherited
+    // stderr would otherwise hold spawnSync's pipe open until the sleep ends.
+    const command = `{ ( printf 'q'; sleep 12 ) | ${pty}; } >/dev/null 2>&1 &\n`
       + `for i in $(seq 1 40); do [ -f ${JSON.stringify(marker)} ] && break; sleep 0.2; done\n`
       + `[ -f ${JSON.stringify(marker)} ] && echo EXITED || echo LINGERED\n`
       + `pkill -f ${JSON.stringify(onboarding)} 2>/dev/null; true`;
