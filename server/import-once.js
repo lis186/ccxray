@@ -18,7 +18,15 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const LOCK_TTL_MS = 5 * 60 * 1000;
+// A live owner always holds the lock, however long its scan runs — a full
+// ~/.claude* walk can outlast any timeout we would pick, and reclaiming from a
+// working importer is exactly the double-import this lock exists to prevent.
+// The TTL therefore guards only PID REUSE: a lock this old whose recorded pid is
+// now alive almost certainly belongs to an unrelated process.
+const LOCK_PID_REUSE_MS = 60 * 60 * 1000;
+// Bounds a genuinely wedged scan. Deliberately far above the throttle so a slow
+// but working import is never killed mid-append.
+const WATCHDOG_MS = 30 * 60 * 1000;
 const DEFAULT_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
 function ccxrayHome(env = process.env) {
@@ -66,24 +74,98 @@ function pidAlive(pid) {
   }
 }
 
-// O_EXCL create is the mutex. A lock whose owner is gone, or that is older than
-// LOCK_TTL_MS, is reclaimed — a crashed run must not wedge every later one.
+// Acquisition is a hardlink, which is atomic: only one process's unique file can
+// become `file`, so uncontended and live-holder contention need nothing else.
+//
+// Reclaiming a DEAD holder's lock is the hard part, and two obvious shapes both
+// admit two owners. `wx`-else-unlink-and-retry lets the second unlink remove the
+// first racer's fresh lock. Adding an inode check before the unlink only narrows
+// it: `stat` and `unlink` are separate syscalls, so R1 can stat the stale inode,
+// R2 can replace it with its own live lock in between, and R1's unlink then
+// removes R2's. Measured — an 8-racer test found two owners in round 2.
+//
+// So the takedown itself is serialized by a second hardlink. Only the process
+// holding `.reclaim` may delete a lock, and it re-reads the holder while holding
+// it, so a holder that became live in the meantime is left alone.
+//
+// Residual, accepted: a process that dies between taking `.reclaim` and
+// releasing it leaves it behind, and the staleness bound that clears it is
+// itself check-then-act. A reclaim is a handful of syscalls, so the window is
+// microseconds against a bound of RECLAIM_STALE_MS, and the consequence of
+// getting it wrong is the original race — not a new failure mode.
+const RECLAIM_STALE_MS = 60 * 1000;
+
+function lockPayload(now) {
+  return JSON.stringify({ pid: process.pid, startedAt: now });
+}
+
+// Atomic create-if-absent. `link` fails with EEXIST rather than truncating, and
+// ownership is confirmed by inode identity rather than by the call not throwing.
+function tryClaim(target, payload, suffix) {
+  const unique = `${target}.${process.pid}.${suffix}`;
+  try {
+    fs.writeFileSync(unique, payload, { mode: 0o600 });
+  } catch {
+    return 'error';
+  }
+  try { fs.linkSync(unique, target); } catch (error) {
+    if (error.code !== 'EEXIST') {
+      try { fs.unlinkSync(unique); } catch { /* nothing to clean */ }
+      return 'error';
+    }
+  }
+  let owned = false;
+  try { owned = fs.statSync(target).ino === fs.statSync(unique).ino; } catch { /* not ours */ }
+  try { fs.unlinkSync(unique); } catch { /* already gone */ }
+  return owned ? 'claimed' : 'taken';
+}
+
+function readHolder(target) {
+  try { return JSON.parse(fs.readFileSync(target, 'utf8')); } catch { return null; }
+}
+
+// A live owner is never displaced by age alone; the age bound exists only so a
+// lock whose pid has plausibly been recycled cannot wedge every later run.
+function holderHolds(held, now) {
+  if (!held) return false;
+  const startedAt = Number(held.startedAt) || 0;
+  const recycled = startedAt > 0 && now - startedAt >= LOCK_PID_REUSE_MS;
+  return pidAlive(held.pid) && !recycled;
+}
+
 function acquireLock(env = process.env, now = Date.now()) {
   const file = lockPath(env);
   try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch { /* exists */ }
-  const payload = JSON.stringify({ pid: process.pid, startedAt: now });
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      fs.writeFileSync(file, payload, { flag: 'wx', mode: 0o600 });
-      return { ok: true, file };
-    } catch (error) {
-      if (error.code !== 'EEXIST') return { ok: false, reason: 'lock-error' };
+  const payload = lockPayload(now);
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const claim = tryClaim(file, payload, `l${attempt}`);
+    if (claim === 'claimed') return { ok: true, file };
+    if (claim === 'error') return { ok: false, reason: 'lock-error' };
+
+    const held = readHolder(file);
+    if (holderHolds(held, now)) return { ok: false, reason: 'locked', pid: held.pid };
+
+    const reclaim = `${file}.reclaim`;
+    const gotReclaim = tryClaim(reclaim, payload, `r${attempt}`);
+    if (gotReclaim === 'error') return { ok: false, reason: 'lock-error' };
+    if (gotReclaim === 'taken') {
+      const other = readHolder(reclaim);
+      const started = Number(other && other.startedAt) || 0;
+      if (started > 0 && now - started >= RECLAIM_STALE_MS) {
+        try { fs.unlinkSync(reclaim); } catch { /* somebody cleared it first */ }
+      }
+      continue; // another racer is taking it down; look again
     }
-    let held = {};
-    try { held = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* unreadable = stale */ }
-    const fresh = Number(held.startedAt) > 0 && now - Number(held.startedAt) < LOCK_TTL_MS;
-    if (fresh && pidAlive(held.pid)) return { ok: false, reason: 'locked', pid: held.pid };
-    try { fs.unlinkSync(file); } catch { /* someone else reclaimed it first */ }
+    try {
+      // Re-read under the reclaim lock: the holder may have been replaced by a
+      // live one while we were deciding, and that one must not be deleted.
+      if (!holderHolds(readHolder(file), now)) {
+        try { fs.unlinkSync(file); } catch { /* already gone */ }
+      }
+    } finally {
+      try { fs.unlinkSync(reclaim); } catch { /* already gone */ }
+    }
   }
   return { ok: false, reason: 'locked' };
 }
@@ -122,6 +204,18 @@ async function importOnce(opts = {}) {
     return { ok: benign, ran: false, reason: lock.reason, pid: lock.pid || null };
   }
 
+  // Past this point the work is delegated to modules that read process.env
+  // directly and cache from it: importer.js's discoverHomes() reads
+  // process.env.CCXRAY_IMPORT_HOMES, and config.LOGS_DIR is fixed at first
+  // require. An injected env cannot reach them, so honouring one here would scan
+  // the wrong homes, write the wrong logs, and leave the flush guard set on a
+  // process that never asked for it. The gates above are env-injectable on
+  // purpose (that is what the in-process tests exercise); the scan is not.
+  if (env !== process.env) {
+    releaseLock(lock);
+    return { ok: false, ran: false, reason: 'env-not-supported' };
+  }
+
   // Guard the derived view the hub owns; see the INVARIANT on session-index
   // flush(). Set before the importer is required so nothing can flush early.
   process.env.CCXRAY_SESSION_INDEX_NO_FLUSH = '1';
@@ -132,9 +226,9 @@ async function importOnce(opts = {}) {
   // alive — it cannot by itself delay a clean exit (ADR 0015 R1).
   const watchdog = setTimeout(() => {
     releaseLock(lock);
-    writeState({ ...state, lastRunAt: now, lastError: 'watchdog: scan exceeded LOCK_TTL_MS' }, env);
+    writeState({ ...state, lastRunAt: now, lastError: 'watchdog: scan exceeded WATCHDOG_MS' }, env);
     process.exit(1);
-  }, LOCK_TTL_MS);
+  }, WATCHDOG_MS);
   if (typeof watchdog.unref === 'function') watchdog.unref();
 
   let result;
@@ -182,4 +276,7 @@ async function importOnce(opts = {}) {
   };
 }
 
-module.exports = { importOnce, acquireLock, releaseLock, statePath, lockPath, pidAlive, LOCK_TTL_MS };
+module.exports = {
+  importOnce, acquireLock, releaseLock, statePath, lockPath, pidAlive,
+  LOCK_PID_REUSE_MS, WATCHDOG_MS,
+};

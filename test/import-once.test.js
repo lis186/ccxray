@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -117,12 +117,17 @@ describe('ccxray import --once', () => {
     assert.equal(second.reason, 'throttled');
     assert.ok(second.retryInMs > 0);
 
-    // --force must skip the throttle. Proven without a real scan by holding the
-    // lock: reaching 'locked' means the throttle check was already passed, which
-    // an unforced call in this same state cannot do.
+    // --force must skip the throttle AND still dedup. The lock probe alone would
+    // pass for a --force that ran and re-imported everything, so the real run is
+    // asserted too: already-imported turns must add nothing.
     fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
-    const forced = await importOnce({ env, force: true });
-    assert.equal(forced.reason, 'locked', '--force must get past the throttle');
+    const probe = await importOnce({ env, force: true });
+    assert.equal(probe.reason, 'locked', '--force must get past the throttle');
+    fs.unlinkSync(lockPath(env));
+
+    const forced = runImport(home, projects, {}, ['--once', '--force']);
+    assert.equal(forced.ran, true);
+    assert.equal(forced.imported, 0, 'already-imported turns must dedup, not double');
   });
 
   it('runs again once the throttle window has passed', () => {
@@ -168,7 +173,7 @@ describe('ccxray import --once locking', () => {
   // module (observed: 2175 registered vs 2179).
 
   it('refuses while a live owner holds the lock', () => {
-    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
+    const { acquireLock, releaseLock, pidAlive, lockPath } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
@@ -180,7 +185,7 @@ describe('ccxray import --once locking', () => {
   // A crashed run must not wedge every later one — the two ways an owner can be
   // gone are a dead pid and a lock older than its TTL.
   it('reclaims a lock whose owner is dead', () => {
-    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
+    const { acquireLock, releaseLock, pidAlive, lockPath } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     // pid 1 is alive; a never-allocated high pid is the portable dead case.
@@ -192,19 +197,130 @@ describe('ccxray import --once locking', () => {
     releaseLock(attempt);
   });
 
-  it('reclaims a lock older than its TTL even if the pid is alive', () => {
-    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
+  // A live owner is never displaced by age alone. Reclaiming from a working
+  // importer is the double-import this lock exists to prevent, and a full
+  // ~/.claude* walk can outlast any timeout worth picking.
+  it('never displaces a live owner, however long it has held the lock', () => {
+    const { acquireLock, lockPath, LOCK_PID_REUSE_MS } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     const now = Date.now();
-    fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: now - LOCK_TTL_MS - 1 }));
+    fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: now - LOCK_PID_REUSE_MS + 1000 }));
+    const attempt = acquireLock(env, now);
+    assert.equal(attempt.ok, false, 'a live scanner still holds its lock');
+    assert.equal(attempt.reason, 'locked');
+  });
+
+  // The age bound exists only for pid reuse: a lock this old whose recorded pid
+  // is now alive almost certainly belongs to an unrelated process.
+  it('reclaims a lock old enough that its pid was plausibly recycled', () => {
+    const { acquireLock, releaseLock, lockPath, LOCK_PID_REUSE_MS } = require('../server/import-once');
+    const home = tmpdir('ccxray-import-lock-');
+    const env = { CCXRAY_HOME: home };
+    const now = Date.now();
+    fs.writeFileSync(lockPath(env), JSON.stringify({ pid: process.pid, startedAt: now - LOCK_PID_REUSE_MS - 1 }));
     const attempt = acquireLock(env, now);
     assert.equal(attempt.ok, true);
     releaseLock(attempt);
   });
 
+  // The shape this lock was rewritten for, and the only test here that can tell
+  // the two implementations apart: sequential calls pass either way, because the
+  // second caller reads the first's FRESH payload and backs off. The bug needs
+  // real interleaving — both racers reading the same STALE lock before either
+  // unlinks, after which unlink-then-create lets the second delete the first's
+  // new lock and both proceed. Racers are separate processes because that is the
+  // only way to get concurrent unlink/create against one path; they load only
+  // import-once (fs/path/os), not the server graph.
+  it('admits exactly one owner when N racers see the same stale lock', async () => {
+    const { lockPath } = require('../server/import-once');
+    const home = tmpdir('ccxray-import-race-');
+    const env = { CCXRAY_HOME: home };
+    const modulePath = path.join(ROOT, 'server', 'import-once.js');
+    const RACERS = 8;
+    const ROUNDS = 5;
+    let owners = 0;
+
+    // Three things this test has to get right, each learned by getting it wrong:
+    //
+    // 1. spawn, not spawnSync. A synchronous spawn runs the racers one after
+    //    another, and each then legitimately reclaims the previous — already
+    //    exited — owner's lock, so all 8 "win" against either implementation.
+    // 2. A file barrier to start, not a wall-clock deadline. Spawn latency alone
+    //    can push a racer past a timestamp under load.
+    // 3. A file barrier to STOP. A winner that exits while a starved sibling is
+    //    still running frees its lock, and reclaiming a dead owner's lock is
+    //    correct — so a hold measured in seconds reports violations that are not
+    //    ones. Every racer holds until the parent has read all results.
+    //
+    // What is left is a claim about ordering only, with no timing assumption:
+    // while all 8 are inside acquireLock against one stale lock, at most one may
+    // come out owning it.
+    const race = async (round) => {
+      const dir = path.join(home, `race-${round}`);
+      fs.mkdirSync(dir, { recursive: true });
+      const go = path.join(dir, 'go');
+      const done = path.join(dir, 'done');
+      const children = Array.from({ length: RACERS }, (_, i) => new Promise(resolve => {
+        const child = spawn(process.execPath, ['-e', `
+          const fs = require('fs');
+          const { acquireLock } = require(${JSON.stringify(modulePath)});
+          fs.writeFileSync(${JSON.stringify(dir)} + '/ready-' + ${i}, '');
+          while (!fs.existsSync(${JSON.stringify(go)})) {}
+          const r = acquireLock({ CCXRAY_HOME: ${JSON.stringify(home)} });
+          fs.writeFileSync(${JSON.stringify(dir)} + '/result-' + ${i}, r.ok ? 'OWNER' : 'no');
+          while (!fs.existsSync(${JSON.stringify(done)})) {}
+        `], { stdio: 'ignore' });
+        child.on('close', resolve);
+      }));
+
+      const waitFor = async (predicate, what) => {
+        const deadline = Date.now() + 60000;
+        while (!predicate()) {
+          if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+          await new Promise(r => setTimeout(r, 20));
+        }
+      };
+      const count = prefix => fs.readdirSync(dir).filter(f => f.startsWith(prefix)).length;
+
+      await waitFor(() => count('ready-') === RACERS, 'racers to be ready');
+      fs.writeFileSync(go, '');
+      await waitFor(() => count('result-') === RACERS, 'racers to finish acquiring');
+      const results = fs.readdirSync(dir).filter(f => f.startsWith('result-'))
+        .map(f => fs.readFileSync(path.join(dir, f), 'utf8'));
+      fs.writeFileSync(done, '');
+      await Promise.all(children);
+      return results;
+    };
+
+    for (let round = 0; round < ROUNDS; round += 1) {
+      fs.writeFileSync(lockPath(env), JSON.stringify({ pid: 4194303, startedAt: Date.now() }));
+      const results = await race(round);
+      const won = results.filter(r => r === 'OWNER').length;
+      assert.ok(won <= 1, `round ${round}: ${won} racers owned the lock at once`);
+      owners += won;
+      try { fs.unlinkSync(lockPath(env)); } catch { /* the winner still holds it */ }
+    }
+    assert.ok(owners > 0, 'the stale lock must actually be reclaimable at all');
+  });
+
+  it('refuses to run the scan under an injected env it cannot honour', async () => {
+    // importer.js reads process.env.CCXRAY_IMPORT_HOMES and config.LOGS_DIR is
+    // fixed at first require, so an injected env would silently scan the wrong
+    // homes and leave the flush guard set on a process that never asked for it.
+    const { importOnce, lockPath } = require('../server/import-once');
+    const home = tmpdir('ccxray-import-envguard-');
+    const env = { CCXRAY_HOME: home };
+    const before = process.env.CCXRAY_SESSION_INDEX_NO_FLUSH;
+    const result = await importOnce({ env, force: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'env-not-supported');
+    assert.equal(process.env.CCXRAY_SESSION_INDEX_NO_FLUSH, before, 'must not leak the guard');
+    assert.equal(fs.existsSync(lockPath(env)), false, 'and must release the lock it took');
+  });
+
   it('releases the lock so the next run can take it', () => {
-    const { acquireLock, releaseLock, pidAlive, lockPath, LOCK_TTL_MS } = require('../server/import-once');
+    const { acquireLock, releaseLock, pidAlive, lockPath } = require('../server/import-once');
     const home = tmpdir('ccxray-import-lock-');
     const env = { CCXRAY_HOME: home };
     const first = acquireLock(env);

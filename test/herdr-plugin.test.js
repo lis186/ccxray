@@ -68,6 +68,17 @@ function makeHome(entries = []) {
   return home;
 }
 
+// ISOLATION: sessionSummaryDetails now consults the Claude transcript tree to
+// decide staleness, and server/importer.js's rule is that an unset
+// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one.
+// Measured: one unisolated call statted 7 real paths. It "passed" only because no
+// real transcript is named s1.jsonl, which is the #407 shape (a leak that passes
+// because the real data happens to be empty). Every sessionSummaryDetails call
+// pins this empty root unless it is deliberately providing a transcript.
+// See docs/testing.md and docs/decisions/0015-cost-worker-lifecycle-drain-exit.md R4.
+const NO_TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-no-transcripts-'));
+process.on('exit', () => { try { fs.rmSync(NO_TRANSCRIPTS, { recursive: true, force: true }); } catch {} });
+
 function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
   const shared = path.join(home, 'logs', 'shared');
   fs.mkdirSync(shared, { recursive: true });
@@ -312,7 +323,7 @@ describe('Herdr workspace scope', () => {
     assert.equal(routedPaneKnown('w1:p8', env), false);
 
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { ...env, CCXRAY_HOME: makeHome() },
+      env: { ...env, CCXRAY_HOME: makeHome(), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p9',
       routed: true,
     });
@@ -346,7 +357,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
   it('anchors context% on the main conversation, not the latest turn', () => {
     const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome([mainTurn, backgroundTurn]) },
+      env: { CCXRAY_HOME: makeHome([mainTurn, backgroundTurn]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's1',
       nowMs: T + 2000,
     });
@@ -362,7 +373,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
     const main = { ...mainTurn, usage: { input_tokens: 31900, cache_read_input_tokens: 287100 } };
     const background = { ...backgroundTurn, usage: { input_tokens: 126000 } };
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome([main, background]) },
+      env: { CCXRAY_HOME: makeHome([main, background]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's1',
       nowMs: T + 2000,
       sidebarCols: 32,
@@ -383,7 +394,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 250000 } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(imported) },
+      env: { CCXRAY_HOME: makeHome(imported), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's2',
       nowMs: T + 2000,
     });
@@ -405,7 +416,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
       turnToolFail: false, toolFail: true,
     }));
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(turns) },
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's3',
       nowMs: T + 7000,
       sidebarCols: 32,
@@ -422,7 +433,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
       turnToolFail: i >= 4, toolFail: true,
     }));
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(turns) },
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       sessionId: 's4',
       nowMs: T + 7000,
       sidebarCols: 32,
@@ -445,7 +456,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 950000 }, cost: { cost: 0.07, confidence: 'exact' } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(entries) },
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p4',
       nowMs: T + 1000,
     });
@@ -466,7 +477,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
         maxContext: 1000000, usage: { input_tokens: 400000 } },
     ];
     const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
-      env: { CCXRAY_HOME: makeHome(entries) },
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
       paneId: 'w1:p5',
       nowMs: T + 1000,
     });
@@ -616,6 +627,17 @@ describe('Herdr sidebar import freshness', () => {
     assert.equal(detail.ctxBand, 'green');
   });
 
+  // An append normally sets mtime at or after the record it wrote, so the gate
+  // skips reading when mtime sits in the normal band. A transcript copied without
+  // -p, restored from a backup, or touched to an older time breaks that in the
+  // dangerous direction: mtime behind content that is hours ahead of the index.
+  // The gate must not read such a file as proof of health.
+  it('still reads a transcript whose mtime sits behind our own newest evidence', () => {
+    const detail = detailFor(makeTranscript({ turnMs: NOW, mtimeMs: T - 3600000 }));
+    assert.ok(detail.stale, 'an mtime behind our evidence is unexplained, not reassuring');
+    assert.equal(detail.stale.text, 'stale 11h');
+  });
+
   it('says nothing when no transcript can be located', () => {
     // Codex panes and any session whose cwd we never learned land here — 40% of
     // sessions in the real corpus. A miss degrades to silence, never a guess.
@@ -688,6 +710,42 @@ describe('Herdr sidebar import freshness', () => {
     assert.equal(result.reason, 'disabled');
   });
 
+  // A sidebar row only shows tokens it references. Measured on a real
+  // ~/.config/herdr/config.toml whose row is ["$ctx","$model","$cost"]: neither
+  // `summary` nor any `ctx_bar*` token is referenced, so the marker rendered
+  // NOWHERE and the badge showed a bare confident percentage for a session whose
+  // transcript had moved on. `$ctx` is the channel such a layout does render.
+  it('marks the ctx token too, so a summary-less sidebar still shows the state', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges.js');
+    const status = { parsed: { running: true } };
+    const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+    const opts = {
+      env: { CCXRAY_HOME: makeHome([turn]), CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: NOW }) },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    };
+    const { tokens } = badgeTokens(status, usage, opts);
+    assert.equal(tokens.ctx, '32% stale', 'the rendered percentage must carry the state');
+    assert.equal(tokens.ctx_band, 'unknown');
+    assert.match(tokens.summary, /stale 11h/);
+  });
+
+  it('leaves the ctx token clean when the session is current', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges.js');
+    const status = { parsed: { running: true } };
+    const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+    const opts = {
+      env: { CCXRAY_HOME: makeHome([turn]), CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: T, mtimeMs: T }) },
+      sessionId: 's1',
+      nowMs: NOW,
+      sidebarCols: 40,
+    };
+    const { tokens } = badgeTokens(status, usage, opts);
+    assert.equal(tokens.ctx, '32%');
+    assert.equal(tokens.ctx_band, 'green');
+  });
+
   // Derived by replaying all 118 cwds in the real index against the 184 project
   // directories on disk: flattening every non-alphanumeric reproduced 43, while
   // flattening only '/' and '.' reproduced 41. The two it missed are real — a
@@ -695,10 +753,29 @@ describe('Herdr sidebar import freshness', () => {
   // feature silently inert for that project.
   it('resolves a transcript through Claude\'s cwd encoding', () => {
     const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
-    for (const cwd of ['/Users/dev/proj.app', '/Users/dev/android_shopping', '/w/claude+vehicle-x']) {
-      const env = { CCXRAY_IMPORT_HOMES: makeTranscript({ cwd, turnMs: T }) };
-      assert.equal(Math.round(transcriptFile('s1', cwd, env).mtimeMs), T, `cwd ${cwd}`);
+    // The expected names are written out literally. Building the fixture with
+    // the same regex the production function uses would make this pass for any
+    // rule, including a wrong one — it would only prove the two agree.
+    const cases = [
+      ['/Users/dev/proj.app', '-Users-dev-proj-app'],
+      ['/Users/justinlee/dev/android_shopping', '-Users-justinlee-dev-android-shopping'],
+      ['/w/claude+vehicle-x', '-w-claude-vehicle-x'],
+      ['/Users/x/.claude', '-Users-x--claude'],
+      ['/Users/dev/proj/', '-Users-dev-proj'],
+      ['/Users//dev/proj', '-Users-dev-proj'],
+    ];
+    for (const [cwd, expectedDir] of cases) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slug-'));
+      const dir = path.join(root, expectedDir);
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, 's1.jsonl');
+      fs.writeFileSync(file, assistantLine(T) + '\n');
+      fs.utimesSync(file, new Date(T), new Date(T));
+      const found = transcriptFile('s1', cwd, { CCXRAY_IMPORT_HOMES: root });
+      assert.ok(found, `cwd ${cwd} should resolve to ${expectedDir}`);
+      assert.equal(Math.round(found.mtimeMs), T);
     }
+
     const env = { CCXRAY_IMPORT_HOMES: makeTranscript({ turnMs: T }) };
     assert.equal(transcriptFile('s1', '/other/path', env), null);
     assert.equal(transcriptFile('missing', CWD, env), null);

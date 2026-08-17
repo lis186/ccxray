@@ -66,7 +66,17 @@ function badgeTokens(status, usage, opts = {}) {
     tokens.summary = detail.summary;
     tokens.ctx_bar = detail.ctxBar;
     tokens.ctx_band = detail.ctxBand;
-    tokens.ctx = detail.ctxText;
+    // The stale marker otherwise lives only in `summary` and the ctx_bar colour
+    // band, and a sidebar row shows a token only if it names it. Our own
+    // install-sidebar-summary.js does add those rows — but it is not the only way
+    // a config gets written. A real one observed in the field
+    // (~/.config/herdr/config.toml, rows ["$ctx","$model","$cost"], left behind by
+    // an earlier plugin generation) names neither, so the entire marker rendered
+    // nowhere and the badge showed a bare confident percentage for a session whose
+    // transcript had moved on. `$ctx` is the channel a minimal layout does render,
+    // so the state has to survive there too — and marking the number is ADR 0013's
+    // own convention for a percentage you cannot vouch for.
+    tokens.ctx = detail.stale ? `${detail.ctxText} stale` : detail.ctxText;
     tokens.age = detail.ageText;
     tokens.cost = detail.costText;
     tokens.model = detail.model;
@@ -173,4 +183,8 @@ function main() {
   process.exit(targeted && wrote ? 0 : 1);
 }
 
-main();
+// ADR 0015's two-mode shape: executed mode runs, imported mode is side-effect
+// free so badgeTokens() can be asserted without refreshing anybody's sidebar.
+if (require.main === module) main();
+
+module.exports = { badgeTokens, applyContextColorTokens, eventContext };

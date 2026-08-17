@@ -502,7 +502,11 @@ function claudeProjectRoots(env = process.env) {
 // The mapping is lossy and homes are globbed, so a lookup can still legitimately
 // miss; a miss must degrade to "no marker", never to a guess.
 function transcriptSlug(cwd) {
-  return String(cwd).replace(/[^a-zA-Z0-9]/g, '-');
+  // Collapse duplicate separators and drop a trailing one first: '/a//b/' and
+  // '/a/b' are the same directory to Claude Code but slug to different names,
+  // and the difference is a silent miss rather than a visible error.
+  const normalized = String(cwd).replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+  return normalized.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function transcriptFile(sessionId, cwd, env = process.env) {
@@ -519,7 +523,12 @@ function transcriptFile(sessionId, cwd, env = process.env) {
   return best;
 }
 
-const TRANSCRIPT_TAIL_BYTES = 512 * 1024;
+// Bounded read, taken only when the mtime gate already suspects staleness. The
+// bound is a real false-negative surface: a missed turn followed by more than
+// this much metadata, or a single assistant line larger than it, leaves the
+// newest turn outside the window and the badge stays quiet. Sized well above the
+// largest trailing-metadata run observed on the real corpus rather than tuned.
+const TRANSCRIPT_TAIL_BYTES = 4 * 1024 * 1024;
 
 // The newest COMPLETED turn in a transcript, by the transcript's own clock.
 //
@@ -603,10 +612,22 @@ function evidenceStaleness(turns, nowMs, opts = {}) {
   const found = transcriptFile(latest.sessionId, latest.cwd || opts.cwd, env);
   if (!found) return null;
   const thresholdMs = staleThresholdMs(env);
-  // Cheap gate first: mtime is set when a record is appended, so it is never
-  // older than any record inside the file. An mtime that is not ahead proves no
-  // turn is ahead either, and the common (healthy) case never reads the file.
-  if (found.mtimeMs - newest <= thresholdMs) return null;
+  // Cheap gate: normally an append sets mtime at or after the record it wrote,
+  // so an mtime sitting in [newest, newest+threshold] means nothing can be ahead
+  // and the healthy case never reads the file.
+  //
+  // "Normally" is doing work there, and the exception runs the wrong way: a
+  // transcript that was copied without -p, restored from a backup, rehydrated by
+  // a sync client, or touched to an older time can carry an mtime BEHIND content
+  // that is hours ahead of the index — exactly the session this exists to catch.
+  // So the trusted band is symmetric around our newest evidence: an mtime
+  // MATERIALLY behind it (a restore, a touch, a clock set back) is unexplained
+  // and falls through to the read. The band has to be symmetric rather than
+  // "any negative is suspicious" — measured over 194 locatable real sessions,
+  // 34 sit a few seconds to a few minutes behind for ordinary reasons, and
+  // treating that as anomalous would read 34 extra files to learn nothing.
+  const mtimeAhead = found.mtimeMs - newest;
+  if (Math.abs(mtimeAhead) <= thresholdMs) return null;
   const turnMs = newestTranscriptTurnMs(found.file);
   if (turnMs == null) return null;
   const aheadMs = turnMs - newest;
