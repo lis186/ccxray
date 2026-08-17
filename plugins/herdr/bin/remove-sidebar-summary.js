@@ -1,0 +1,101 @@
+#!/usr/bin/env node
+'use strict';
+
+const fs = require('fs');
+const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
+
+const TOKENS = ['summary', 'ctx_bar', 'ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
+const SECTION_MARKER = '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)';
+// The skeleton install-sidebar-summary writes when it creates the table itself.
+// Removal drops the whole table only when it still matches this exactly, so a
+// table the user wrote (or later edited) keeps its other rows.
+const MANAGED_SKELETON = [
+  '[ui.sidebar.agents]',
+  'row_gap = 0',
+  'rows = [',
+  '["state_icon", "workspace", "tab"],',
+  '["agent"],',
+  ']',
+].join('\n');
+
+function normalizeBlock(block) {
+  return block
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+// Removes the whole managed table (marker included) when this plugin created it
+// and nothing else was added to it; otherwise returns null so the caller falls
+// back to stripping only the ccxray token rows.
+function removeManagedSection(config, stripped) {
+  const marker = stripped.indexOf(SECTION_MARKER);
+  if (marker < 0) return null;
+  const header = /^[ \t]*\[ui\.sidebar\.agents\][ \t]*$/m.exec(stripped.slice(marker));
+  if (!header) return null;
+  const headerStart = marker + header.index;
+  const bodyStart = headerStart + header[0].length;
+  const next = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m.exec(stripped.slice(bodyStart));
+  const end = next ? bodyStart + next.index : stripped.length;
+  if (normalizeBlock(stripped.slice(headerStart, end)) !== MANAGED_SKELETON) return null;
+  const before = stripped.slice(0, marker).replace(/[ \t]*$/, '');
+  return `${before.replace(/\n{3,}$/, '\n\n')}${stripped.slice(end).replace(/^\n+/, '')}`;
+}
+
+function configPath(env = process.env) {
+  return resolveHerdrConfigPath(env);
+}
+
+function tokenRowRegex(token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^[ \\t]*\\[\\{[^\\n]*token\\s*=\\s*"\\$${escaped}"[^\\n]*\\}\\],[ \\t]*\\n?`, 'gm');
+}
+
+function main() {
+  const file = configPath();
+  if (!fs.existsSync(file)) {
+    console.log(`no Herdr config found at ${file}`);
+    return;
+  }
+  const before = fs.readFileSync(file, 'utf8');
+  let next = before;
+  for (const token of TOKENS) next = next.replace(tokenRowRegex(token), '');
+  next = removeManagedSection(before, next) || next;
+  if (next === before) {
+    console.log(`ccxray sidebar summary rows are not installed in ${file}`);
+    return;
+  }
+
+  const backup = backupConfigFile(file);
+  const tmpFile = `${file}.ccxray-tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, next);
+  fs.renameSync(tmpFile, file);
+
+  if (process.env.CCXRAY_HERDR_SKIP_RELOAD === '1') {
+    console.log(`removed ccxray sidebar summary rows from ${file}`);
+    console.log(`backup: ${backup}`);
+    return;
+  }
+
+  const check = runHerdr(['config', 'check'], { timeoutMs: 5000 });
+  process.stdout.write(check.stdout || '');
+  process.stderr.write(check.stderr || '');
+  if (check.status !== 0 || check.error) {
+    fs.copyFileSync(backup, file);
+    console.error(`Herdr config check failed; restored ${backup}`);
+    process.exit(1);
+  }
+
+  const reload = runHerdr(['server', 'reload-config'], { timeoutMs: 5000 });
+  process.stdout.write(reload.stdout || '');
+  process.stderr.write(reload.stderr || '');
+  if (reload.status !== 0 || reload.error) {
+    console.error('Config was updated, but Herdr reload failed. Restart Herdr to apply it.');
+    process.exit(1);
+  }
+  console.log(`removed ccxray sidebar summary rows from ${file}`);
+  console.log(`backup: ${backup}`);
+}
+
+main();

@@ -16,11 +16,12 @@ Produced by `server/sse-broadcast.js` `summarizeEntry()`. The full request/respo
 | `ts` | number | Unix ms, when proxy first received the request |
 | `receivedAt` | number \| null | Alias of `ts` retained for client-side gap timing |
 | `sessionId` | string | Session ID (from request `metadata.user_id`, or inferred) |
+| `parentSessionId` | string \| null | Parent conversation for a distinct child session. Persisted when known so child attribution survives restart |
 | `sessionInferred` | boolean | true if session was attributed by inference (no explicit ID) |
 | `method` | string | HTTP method (always `POST` for /v1/messages) |
 | `url` | string | Request path |
 | `cwd` | string \| null | Working dir extracted from system prompt |
-| `isSubagent` | boolean | true if request has no cwd in system prompt (spawned via Agent tool) |
+| `isSubagent` | boolean | Provider-aware classification that this turn belongs to a subagent execution lane |
 
 ### Request shape
 
@@ -69,6 +70,7 @@ Older `index.ndjson` entries may lack newer fields. Consumers SHOULD use nullish
 const toolFail = entry.toolFail ?? false;
 const duplicateToolCalls = entry.duplicateToolCalls ?? null;
 const hasCredential = entry.hasCredential ?? false;
+const parentSessionId = entry.parentSessionId ?? null;
 ```
 
 ## Where fields are computed
@@ -84,4 +86,4 @@ const hasCredential = entry.hasCredential ?? false;
 | `toolFail` | `server/helpers.js` `hasToolFail()` |
 | `hasCredential` | `server/helpers.js` `entryHasCredential()` |
 | `toolSources` | `server/helpers.js` `buildToolSources()` |
-| `isSubagent`, `cwd` | `server/store.js` `extractCwd()` |
+| `isSubagent`, `cwd`, `parentSessionId` | provider parsers plus `server/store.js` session attribution |

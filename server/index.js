@@ -219,8 +219,8 @@ function buildForwardHeaders(clientHeaders, upstream) {
 
 // Cwd when the wire body has none: hub client cwd, else launcher process cwd
 // for modules that declare cwdFallback (codex, grok, …).
-function getAgentCwdFallback() {
-  return hub.lookupClientCwd()
+function getAgentCwdFallback(req) {
+  return hub.lookupClientCwdForRequest(req)
     || (providers.agentUsesCwdFallback(agentCommand) ? process.cwd() : null);
 }
 // Back-compat alias for call sites / tests
@@ -229,6 +229,7 @@ const getCodexCwdFallback = getAgentCwdFallback;
 
 // ── Server ──────────────────────────────────────────────────────────
 const server = http.createServer((clientReq, clientRes) => {
+  hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
   // Placed before auth: these are local IPC endpoints, not user-facing
@@ -425,7 +426,7 @@ const server = http.createServer((clientReq, clientRes) => {
     // Grok vs Codex share openai wire; set session agent from header/model when available.
     if (parsedBody && reqSessionId) {
       const cwd = parser.getCwd(parsedBody, clientReq.headers)
-        || (provider === 'openai' ? getAgentCwdFallback() : null);
+        || (provider === 'openai' ? getAgentCwdFallback(clientReq) : null);
       if (!store.sessionMeta[reqSessionId]) store.sessionMeta[reqSessionId] = {};
       if (provider === 'anthropic') store.cacheConfigDir(reqSessionId, parsedBody);
       store.sessionMeta[reqSessionId].provider = provider;
@@ -519,7 +520,8 @@ server.keepAliveTimeout = 5_000;   // 5s — idle keep-alive connections
 server.requestTimeout = 300_000;   // 5min — matches Node default; slow POST body = slowloris, body size cap (#152) handles OOM
 
 server.on('upgrade', (req, socket, head) => {
-  handleWebSocketUpgrade(req, socket, head);
+  hub.applyClientRoute(req);
+  handleWebSocketUpgrade(req, socket, head, { cwdFallback: getAgentCwdFallback(req) });
 });
 
 
@@ -637,6 +639,7 @@ function spawnAgent(command, port, args, onExit) {
     });
     process.on('SIGINT', () => {});
     process.on('SIGTERM', () => child.kill('SIGTERM'));
+    process.on('SIGHUP', () => child.kill('SIGHUP'));
   };
 
   if (command === 'claude') {
@@ -686,6 +689,7 @@ function spawnStandaloneAgent(port, command, args) {
 if (process.argv[2] === 'open') {
   const lock = hub.readHubLock();
   const port = lock?.port || config.PORT;
+  const requestedSession = process.argv.find((arg, index) => process.argv[index - 1] === '--session') || null;
 
   (async () => {
     try {
@@ -725,7 +729,7 @@ if (process.argv[2] === 'open') {
         console.error('\x1b[31mHub did not return a token. Run "ccxray status" to check.\x1b[0m');
         process.exit(1);
       }
-      const url = `http://localhost:${port}/#k=${token}`;
+      const url = formatAutoOpenUrl(port, token, { sid: requestedSession });
       console.log(url);
       console.log('\x1b[90mOpen this URL in your browser (one-time, valid 60 seconds).\x1b[0m');
       if (!process.env.BROWSER && process.env.BROWSER !== 'none' && !process.env.CI && !process.env.SSH_TTY) {
@@ -934,8 +938,15 @@ async function startClientMode(lock) {
     _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
   }
 
+  const clientIdentity = {
+    agentId: process.env.CCXRAY_AGENT_ID || '',
+    userEmail: process.env.CCXRAY_USER_EMAIL || '',
+    team: process.env.CCXRAY_TEAM || '',
+    agentType: process.env.CCXRAY_AGENT_TYPE || agentCommand || '',
+  };
+
   try {
-    const reg = await hub.registerClient(lock, process.pid, process.cwd());
+    const reg = await hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
     if (!reg) {
       console.error('\x1b[31mHub rejected client registration.\x1b[0m');
       process.exit(1);
@@ -974,10 +985,11 @@ async function startClientMode(lock) {
   // Monitor hub health and auto-recover
   hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
     // Re-register with new hub (newLock has sockPath from lockfile)
-    hub.registerClient(newLock, process.pid, process.cwd()).catch(() => {});
+    hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
   });
 
   // Spawn agent pointing to hub
+  process.env.CCXRAY_HUB_CLIENT_PID = String(process.pid);
   spawnAgent(agentCommand, lock.port, agentArgs, (code) => {
     hub.unregisterClient(lock, process.pid).finally(() => {
       process.exit(code);

@@ -66,6 +66,11 @@ function resolveChatGPTUpstream(env, proxyPort) {
   };
 }
 
+function resolveChatGPTPlatformUpstream(chatgptUpstream, stripPathPrefix = '/v1') {
+  const basePath = (chatgptUpstream.basePath || '').replace(/\/codex$/, '');
+  return { ...chatgptUpstream, basePath, stripPathPrefix };
+}
+
 // Priority: PROVIDER_TEST_* (test/CI overrides) > PROVIDER_BASE_URL > built-in defaults
 function resolveProviderUpstream(provider, env, proxyPort, opts) {
   const upper = provider.toUpperCase();
@@ -150,6 +155,8 @@ function isGrokClient(headers = {}) {
   }
 }
 
+const openaiChatGPT = resolveChatGPTUpstream(process.env, PORT);
+
 const UPSTREAMS = {
   anthropic: resolveProviderUpstream('anthropic', process.env, PORT, {
     defaultHost: 'api.anthropic.com',
@@ -163,7 +170,9 @@ const UPSTREAMS = {
     defaultProtocol: 'https',
     defaultBasePath: '/v1',
   }),
-  openaiChatGPT: resolveChatGPTUpstream(process.env, PORT),
+  openaiChatGPT,
+  openaiChatGPTPlatform: resolveChatGPTPlatformUpstream(openaiChatGPT),
+  openaiChatGPTAppsMcp: resolveChatGPTPlatformUpstream(openaiChatGPT, '/v1/api/codex'),
   xai: resolveXaiUpstream(process.env, PORT),
 };
 
@@ -203,6 +212,22 @@ function isChatGPTCodexPath(pathname) {
     || pathname.startsWith('/v1/connectors/');
 }
 
+function isChatGPTPlatformPath(pathname) {
+  return pathname === '/v1/plugins'
+    || pathname.startsWith('/v1/plugins/')
+    || pathname === '/v1/ps/plugins'
+    || pathname.startsWith('/v1/ps/plugins/')
+    || pathname === '/v1/connectors'
+    || pathname.startsWith('/v1/connectors/')
+    || pathname === '/v1/codex'
+    || pathname.startsWith('/v1/codex/');
+}
+
+function isChatGPTAppsMcpPath(pathname) {
+  return pathname === '/v1/api/codex/ps/mcp'
+    || pathname.startsWith('/v1/api/codex/ps/mcp/');
+}
+
 // Anthropic Messages must never be re-routed to xAI even if a Grok UA is present.
 function isAnthropicMessagesPath(pathname) {
   return pathname === '/v1/messages' || pathname.startsWith('/v1/messages/');
@@ -213,6 +238,12 @@ function isAnthropicMessagesPath(pathname) {
 // without swapping OPENAI_BASE_URL.
 function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
   const pathname = (urlPath || '').split('?')[0];
+  if (isChatGPTAppsMcpPath(pathname)) {
+    return UPSTREAMS.openaiChatGPTAppsMcp;
+  }
+  if (isChatGPTPlatformPath(pathname)) {
+    return UPSTREAMS.openaiChatGPTPlatform;
+  }
   if (isChatGPTCodexPath(pathname)) {
     return UPSTREAMS.openaiChatGPT;
   }

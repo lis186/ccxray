@@ -363,6 +363,7 @@ async function restoreFromLogs() {
       if (!store.sessionMeta[meta.sessionId]) store.sessionMeta[meta.sessionId] = {};
       if (meta.provider) store.sessionMeta[meta.sessionId].provider = meta.provider;
       if (meta.cwd) store.sessionMeta[meta.sessionId].cwd = meta.cwd;
+      if (meta.parentSessionId) store.sessionMeta[meta.sessionId].parentSessionId = meta.parentSessionId;
       if (meta.receivedAt) store.sessionMeta[meta.sessionId].lastSeenAt = meta.receivedAt;
       // Mark resume-eligibility before any summarizeEntry pass so every entry in
       // the session reports the final (monotonic) resumable value, not the value

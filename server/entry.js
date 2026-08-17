@@ -37,6 +37,9 @@ const INDEX_FIELDS = [
   // request header is persisted) and appended last to keep the field order
   // add-only (test/entry.test.js G1). See docs/decisions/0013-*.
   'ctxBeta',
+  // #531: the parent session of a Herdr-launched agent, appended after ctxBeta to
+  // keep the field order add-only on both sides of the merge.
+  'parentSessionId',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -47,16 +50,22 @@ const INDEX_FIELDS = [
 // the entry-construction paths in forward.js and ws-proxy.js, so assertions must
 // exercise those construction paths.
 const OMIT_IF_NULL = new Set([
-  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
 ]);
 
-function deploymentFields(ts) {
+const DEPLOYMENT_ENV_FIELDS = [
+  ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
+  ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
+];
+
+function deploymentFields(ts, opts = {}) {
+  const env = opts.env || process.env;
+  const identity = opts.identity || {};
+  const useEnvIdentity = opts.useEnvIdentity !== false;
   const fields = {};
-  for (const [key, envName] of [
-    ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
-    ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
-  ]) {
-    if (process.env[envName]) fields[key] = process.env[envName];
+  for (const [key, envName] of DEPLOYMENT_ENV_FIELDS) {
+    const value = identity[key] || (useEnvIdentity ? env[envName] : null);
+    if (value) fields[key] = value;
   }
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   if (tz) fields.tz = tz;

@@ -3,13 +3,14 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const config = require('./config');
+const hub = require('./hub');
 const store = require('./store');
 const helpers = require('./helpers');
 const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
-const { agentForProvider, matchOpenAIWireClient } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
 const {
@@ -100,6 +101,17 @@ function isUpgradeRequest(req) {
 function isOpenAIWebSocket(req, upstream) {
   const pathname = (req.url || '').split('?')[0];
   return upstream?.provider === 'openai' && OPENAI_WS_PATHS.has(pathname) && isUpgradeRequest(req);
+}
+
+function requestDeploymentFields(startTime, req, parsedBody) {
+  const agent = resolveOpenAIWireAgent(req.headers, parsedBody);
+  const identity = hub.lookupClientIdentityForRequest(req, agent);
+  const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
+  const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
+  return deploymentFields(startTime, {
+    identity: identity || {},
+    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+  });
 }
 
 
@@ -342,7 +354,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     status: result.status,
     isSSE: false,
     receivedAt: t.startTime || ctx.startTime,
-    ...deploymentFields(t.startTime || ctx.startTime),
+    ...requestDeploymentFields(t.startTime || ctx.startTime, ctx.req, cr || { model: lastModel }),
     tokens: null,
     duplicateToolCalls: null,
     ...getParser('openai').buildEntryFields({
@@ -358,6 +370,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       wsErrorMessage: result.error?.message || null,
     }),
   };
+  entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
   entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
   entry.toolSources = helpers.buildToolSources(entry) || undefined;
   entry._writePromise = Promise.all([reqWritePromise, resWritePromise]);
@@ -385,7 +398,7 @@ function wsRecordValue(parsed) {
   return null;
 }
 
-function handleWebSocketUpgrade(req, socket, head) {
+function handleWebSocketUpgrade(req, socket, head, opts = {}) {
   const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers);
   if (!isOpenAIWebSocket(req, upstream)) {
     writeSocketResponse(socket, 404, 'Not Found');
@@ -403,7 +416,10 @@ function handleWebSocketUpgrade(req, socket, head) {
   const sessionId = detected.sessionId;
   const turnMetadata = parseCodexTurnMetadata(req.headers);
   const agentType = getOpenAIAgentTypeFromHeaders(req.headers);
-  const cwd = getCodexWorkspaceCwd(turnMetadata?.workspaces);
+  const cwdFallback = typeof opts.cwdFallback === 'string' && opts.cwdFallback
+    ? opts.cwdFallback
+    : null;
+  const cwd = getCodexWorkspaceCwd(turnMetadata?.workspaces) || cwdFallback;
   const endpoint = (req.url || '').split('?')[0];
 
   if (!store.sessionMeta[sessionId]) store.sessionMeta[sessionId] = {};
@@ -450,7 +466,7 @@ function handleWebSocketUpgrade(req, socket, head) {
 
     function applyTurnIdentity(detectedTurn, request, nextAgentType) {
       const nextSessionId = detectedTurn?.sessionId || ctx.sessionId;
-      const nextCwd = getCodexCwd(req.headers, request);
+      const nextCwd = getCodexCwd(req.headers, request) || cwdFallback;
       const client = matchOpenAIWireClient(req.headers, request?.model);
       if (request && (nextSessionId || nextCwd || nextAgentType || client)) {
         request.metadata = fillCodexMetadata(request.metadata, {

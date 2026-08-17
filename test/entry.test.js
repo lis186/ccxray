@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { INDEX_FIELDS, buildIndexLine } = require('../server/entry');
+const { INDEX_FIELDS, buildIndexLine, deploymentFields } = require('../server/entry');
 
 const EXCLUDED = ['req','res','tokens','method','url','_loaded','_writePromise','_loadingPromise'];
 const LEGACY_INDEX_FIELDS = [
@@ -18,8 +18,17 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
-    'ctxBeta',
+    'ctxBeta','parentSessionId',
   ]);
+});
+
+test('buildIndexLine persists child-session parent identity only when known', () => {
+  const child = JSON.parse(buildIndexLine({
+    id: 'child', sessionId: 'child-session', parentSessionId: 'parent-session',
+  }));
+  assert.equal(child.parentSessionId, 'parent-session');
+  const main = JSON.parse(buildIndexLine({ id: 'main', sessionId: 'main-session' }));
+  assert.ok(!('parentSessionId' in main));
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {
@@ -49,6 +58,27 @@ test('buildIndexLine persists responseId when set, omits it when undefined (#333
   assert.equal(withId.responseId, 'msg_01A');
   const withoutId = JSON.parse(buildIndexLine({ id: 'X' }));
   assert.ok(!('responseId' in withoutId), 'undefined responseId must not be emitted');
+});
+
+test('deploymentFields allows request identity to override or suppress process env', () => {
+  const env = {
+    CCXRAY_AGENT_ID: 'hub-pane',
+    CCXRAY_AGENT_TYPE: 'claude',
+    CCXRAY_TEAM: 'hub-team',
+  };
+  const overridden = deploymentFields(1, {
+    env,
+    identity: { agentId: 'codex-pane', agentType: 'codex' },
+  });
+  assert.equal(overridden.agentId, 'codex-pane');
+  assert.equal(overridden.agentType, 'codex');
+  assert.equal(overridden.team, 'hub-team');
+
+  const suppressed = deploymentFields(1, { env, useEnvIdentity: false });
+  assert.ok(!('agentId' in suppressed));
+  assert.ok(!('agentType' in suppressed));
+  assert.ok(!('team' in suppressed));
+  assert.ok('localDate' in suppressed);
 });
 
 // T1 legacy-parity: for each site, compare buildIndexLine(entry) against the GOLDEN

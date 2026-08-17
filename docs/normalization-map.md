@@ -292,7 +292,9 @@ Usage and model are extracted from envelope events **before** the skip filter (`
 
 Forwarded with `skipEntry: true` — response reaches Codex, no dashboard entry.
 
-`/v1/codex/analytics-events/events` (telemetry) is also filtered — it 404s for API-key users, creating garbage dashboard entries.
+Forwarding uses path-scoped ChatGPT profiles: plugin catalogs and connectors go under `/backend-api`, Responses stay under `/backend-api/codex`, and `/v1/codex/*` keeps its existing `codex` segment. The launcher-derived Apps MCP path `/v1/api/codex/ps/mcp` is normalized to `/backend-api/ps/mcp`.
+
+`/v1/codex/analytics-events/events` (telemetry) is also filtered and forwarded as `/backend-api/codex/analytics-events/events`.
 
 ### Anthropic
 

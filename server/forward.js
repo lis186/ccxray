@@ -14,7 +14,7 @@ const { appendSample, collectRatelimitHeaders } = require('./ratelimit-log');
 const hub = require('./hub');
 const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
-const { agentForProvider, matchOpenAIWireClient } = require('./providers');
+const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const path = require('path');
 const { resolveCcxrayHome } = require('./paths');
@@ -120,6 +120,23 @@ function createTunnelAgent(proxyUrl) {
 
   agent._proxyUrl = proxyUrl;
   return agent;
+}
+
+function requestAgentForDeployment(provider, headers, parsedBody) {
+  if (provider === 'openai') return resolveOpenAIWireAgent(headers, parsedBody);
+  return agentForProvider(provider);
+}
+
+function requestDeploymentFields(startTime, provider, req, parsedBody) {
+  const headers = req.headers;
+  const agent = requestAgentForDeployment(provider, headers, parsedBody);
+  const identity = hub.lookupClientIdentityForRequest(req);
+  const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
+  const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
+  return deploymentFields(startTime, {
+    identity: identity || {},
+    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+  });
 }
 
 function resolveProxyAgent(protocol, env) {
@@ -772,7 +789,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
-      ...deploymentFields(startTime),
+      ...requestDeploymentFields(startTime, 'anthropic', ctx.clientReq, parsedBody),
       // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
       responseId: getParser('anthropic').extractResponseId(events),
       turnToolCalls: getParser('anthropic').extractTurnToolCalls(events),
@@ -792,6 +809,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         isSubagent, toolFail: helpers.hasToolFail(parsedBody), startTime,
       }),
     };
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
@@ -926,11 +944,12 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
-      ...deploymentFields(startTime),
+      ...requestDeploymentFields(startTime, 'openai', ctx.clientReq, parsedBody),
       tokens: null,
       duplicateToolCalls: null,
       ...fields,
     };
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));
@@ -1055,7 +1074,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
         receivedAt: startTime,
-        ...deploymentFields(startTime),
+        ...requestDeploymentFields(startTime, 'openai', ctx.clientReq, parsedBody),
         tokens: null,
         duplicateToolCalls: null,
         ...fields,
@@ -1079,7 +1098,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
-        ...deploymentFields(startTime),
+        ...requestDeploymentFields(startTime, 'anthropic', ctx.clientReq, parsedBody),
         // Dedup key for read-time merge (#333) — docs/decisions/0012-response-id-read-time-merge.md
         responseId: getParser('anthropic').extractResponseId(resData),
         turnToolCalls: getParser('anthropic').extractTurnToolCalls(resData),
@@ -1100,6 +1119,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         }),
       };
     }
+    entry.parentSessionId = store.sessionMeta[entry.sessionId]?.parentSessionId || undefined;
     entry.hasCredential = helpers.entryHasCredential(entry) || undefined;
     entry.toolSources = helpers.buildToolSources(entry) || undefined;
     entry._writePromise = Promise.all([ctx.reqWritePromise, resWritePromise].filter(Boolean));

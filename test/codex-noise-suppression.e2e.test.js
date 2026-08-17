@@ -60,8 +60,9 @@ function killAndWait(child) {
 
 // Mock upstream that 404s everything (matches what chatgpt.com does for
 // these endpoints in the real environment).
-function makeMock404Upstream() {
+function makeMock404Upstream(requests) {
   return http.createServer((req, res) => {
+    requests.push({ method: req.method, url: req.url });
     res.writeHead(404, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'not_found', message: 'mock 404' } }));
   });
@@ -111,7 +112,8 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-noise-'));
     tmpDirs.push(home);
 
-    const upstream = makeMock404Upstream();
+    const upstreamRequests = [];
+    const upstream = makeMock404Upstream(upstreamRequests);
     await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
 
     // Route both anthropic and openai upstreams to the same mock 404 server.
@@ -155,6 +157,27 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
         const out = await fireRequest(proxyPort, method, urlPath);
         assert.equal(out.status, 404, `${method} ${urlPath} should be proxied (got ${out.status})`);
       }
+
+      assert.ok(upstreamRequests.some(request =>
+        request.method === 'GET'
+        && request.url === '/backend-api/plugins/featured?platform=codex'
+      ));
+      assert.ok(upstreamRequests.some(request =>
+        request.method === 'GET'
+        && request.url === '/backend-api/ps/plugins/installed?scope=GLOBAL'
+      ));
+      assert.ok(upstreamRequests.some(request =>
+        request.method === 'POST'
+        && request.url === '/backend-api/codex/api/codex/apps'
+      ));
+      assert.ok(upstreamRequests.some(request =>
+        request.method === 'GET'
+        && request.url === '/backend-api/connectors/directory/list?external_logos=true'
+      ));
+      assert.ok(upstreamRequests.some(request =>
+        request.method === 'POST'
+        && request.url === '/backend-api/codex/analytics-events/events'
+      ));
 
       // Give the proxy a moment to settle any async writes.
       await new Promise(r => setTimeout(r, 200));

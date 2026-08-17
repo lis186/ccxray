@@ -1,0 +1,111 @@
+id = "ccxray.herdr"
+name = "ccxray"
+version = "0.4.0"
+min_herdr_version = "0.8.0"
+description = "Live Herdr session triage with context pressure, cost, evidence, and next actions."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["/bin/sh", "bin/install-dependencies.sh"]
+
+[[startup]]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/refresh-all-badges.js\""]
+
+[[startup]]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\" --first-run"]
+
+[[events]]
+on = "workspace.created"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\" --first-run"]
+
+[[events]]
+on = "pane.agent_detected"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/refresh-badges.js\""]
+
+[[events]]
+on = "pane.agent_status_changed"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/refresh-badges.js\""]
+
+[[actions]]
+id = "doctor"
+title = "ccxray doctor"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/doctor.js\""]
+
+[[actions]]
+id = "quick-start"
+title = "Open ccxray Quick Start"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\""]
+
+[[actions]]
+id = "launch-claude"
+title = "Launch Claude via ccxray"
+contexts = ["workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/launch-agent.js\" claude"]
+
+[[actions]]
+id = "launch-codex"
+title = "Launch Codex via ccxray"
+contexts = ["workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/launch-agent.js\" codex"]
+
+[[actions]]
+id = "launch-grok"
+title = "Launch Grok via ccxray"
+contexts = ["workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/launch-agent.js\" grok"]
+
+[[actions]]
+id = "install-sidebar-summary"
+title = "Install ccxray sidebar summary rows"
+contexts = ["global"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/install-sidebar-summary.js\""]
+
+[[actions]]
+id = "remove-sidebar-summary"
+title = "Remove ccxray sidebar summary rows"
+contexts = ["global"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/remove-sidebar-summary.js\""]
+
+[[actions]]
+id = "usage-summary"
+title = "ccxray usage summary"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/usage-summary.js\""]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open ccxray dashboard"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/open-dashboard.js\""]
+
+[[actions]]
+id = "refresh-badges"
+title = "Refresh ccxray badges"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/refresh-badges.js\""]
+
+[[actions]]
+id = "focus-attention"
+title = "Focus highest-priority ccxray agent"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/focus-attention.js\""]
+
+[[panes]]
+id = "mission-control"
+title = "ccxray Mission Control"
+placement = "tab"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/mission-control.js\""]
+
+[[panes]]
+id = "onboarding"
+title = "ccxray Quick Start"
+placement = "tab"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/onboarding.js\""]
+
+[[panes]]
+id = "capability-review"
+title = "ccxray Capability Footprint (Experimental)"
+placement = "tab"
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/capability-review.js\""]

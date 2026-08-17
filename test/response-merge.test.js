@@ -25,7 +25,8 @@ describe('store.mergeByResponseId (#333)', () => {
       id: '2026-07-22T10-00-01-000', ts: '10:00:01', responseId: 'msg_01A',
       receivedAt: 2000, elapsed: '1.0',
       agentKey: null, coreHash: null,
-      sessionId: 'direct-api', sessionInferred: true, isSubagent: false,
+      sessionId: 's-real', sessionInferred: true, isSubagent: false,
+      parentSessionId: 'parent-session',
       usage: { input_tokens: 1200, output_tokens: 42 }, cost: { cost: 0.03 }, maxContext: 200000,
       convId: null,
     };
@@ -62,6 +63,7 @@ describe('store.mergeByResponseId (#333)', () => {
     // Session identity from the real explicit-session copy.
     assert.equal(m.sessionId, 's-real');
     assert.equal(m.sessionInferred, false);
+    assert.equal(m.parentSessionId, 'parent-session', 'known parent relation survives dedup');
 
     // Dropped copy ids recorded for alias registration (Phase 3).
     assert.deepEqual([...m._mergedIds].sort(), [proxyLate.id, importedCopy.id].sort());

@@ -52,6 +52,28 @@ describe('usage analyze', () => {
     assert.equal(r.meta.totalCost, 1);
   });
 
+  it('counts live and imported copies with the same responseId once', () => {
+    const imported = entry({
+      id: 'imported-copy',
+      responseId: 'msg_same_turn',
+      imported: true,
+      cost: { cost: 1.15 },
+    });
+    const live = entry({
+      id: 'live-copy',
+      responseId: 'msg_same_turn',
+      agentKey: 'herdr:w1:p3',
+      cost: { cost: 1.15 },
+    });
+
+    const r = analyze([imported, live]);
+
+    assert.equal(r.meta.totalEntries, 1);
+    assert.equal(r.meta.totalCost, 1.15);
+    assert.equal(r.sessions.topSessions[0].turns, 1);
+    assert.equal(imported.imported, true, 'analyze must not mutate caller entries');
+  });
+
   it('computes model breakdown', () => {
     const r = analyze([entry(), entry({ model: 'claude-sonnet-4-6', cost: { cost: 0.1 } })]);
     assert.equal(r.models.length, 2);
@@ -362,6 +384,27 @@ describe('usage parseArgs', () => {
     const r = JSON.parse(cli('--json', '--session', 'costliest', '--cwd', '/work/project-beta'));
     assert.equal(r.meta.totalSessions, 1);
     assert.equal(r.sessions.topSessions[0].sessionId, 'bbbbbbbb-5555-6666-7777-888888888888');
+  });
+
+  it('--session costliest resolves after responseId deduplication', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-costliest-dedup-'));
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    const lines = [
+      { id: 'imported', responseId: 'msg_duplicate', imported: true, sessionId: 'duplicated-session', receivedAt: 1, cost: { cost: 1 } },
+      { id: 'live', responseId: 'msg_duplicate', agentKey: 'herdr:w1:p1', sessionId: 'duplicated-session', receivedAt: 2, cost: { cost: 1 } },
+      { id: 'actual', responseId: 'msg_actual', sessionId: 'actual-costliest', receivedAt: 3, cost: { cost: 1.5 } },
+    ];
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    try {
+      const r = JSON.parse(execFileSync(
+        process.execPath, ['server/index.js', 'usage', '--json', '--session', 'costliest'],
+        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+      ).toString());
+      assert.equal(r.meta.totalSessions, 1);
+      assert.equal(r.sessions.topSessions[0].sessionId, 'actual-costliest');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
