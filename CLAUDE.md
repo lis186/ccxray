@@ -104,9 +104,24 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/routes/costs.js` | Cost budget endpoints |
 | `server/hub.js` | Multi-project hub: lockfile (`~/.ccxray/hub.json`), discovery (with orphan port probe fallback), client registration, idle shutdown (injectable via setOnShutdown), crash auto-recovery |
 | `server/auth.js` | API key auth middleware (enabled via `AUTH_TOKEN` env) |
-| `server/openai-session.js` | Shared OpenAI/Codex header + session helpers (session id extraction, agent type, turn-metadata sidecar) |
+| `server/openai-response.js` | OpenAI Responses API helpers: response-object detection, field extraction |
 | `server/ws-proxy.js` | OpenAI WebSocket transport proxy for `/v1/responses` and `/v1/realtime` upgrades. Tracks active sessions + pending `recordWebSocketEntry` promises so `drainWebSocketProxy()` can force-finalize stragglers and await writes on shutdown. Tunables: `CCXRAY_WS_IDLE_TIMEOUT_MS` (default 60s), `CCXRAY_WS_MAX_QUEUE_BYTES` (default 4 MiB; caps client→upstream buffer while upstream is connecting) |
+| `server/entry.js` | `INDEX_FIELDS`, `buildIndexLine`, `deploymentFields` — the index-line schema definition. Invariants reference this file |
+| `server/export-sync.js` | Daily + session summary exporter to GCS (#505). Hourly flush + shutdown hook, cross-process lock via `hub.js:tryAcquireForkLock`, cursor-based incremental scan. Env: `CCXRAY_EXPORT_GCS_BUCKET`, `CCXRAY_EXPORT_CWD_ALLOWLIST`, `CCXRAY_USER_EMAIL`, `CCXRAY_TEAM` |
+| `server/importer.js` | Imports Claude/Codex transcripts from `~/.claude*/`/`~/.codex*/` into the index on startup. Does NOT push `store.entries` (only writes index lines) |
+| `server/rebuild-index.js` | `ccxray rebuild-index` CLI — rebuilds `index.ndjson` from surviving `_req/_res` log files |
+| `server/import-once.js` | `ccxray import --once` CLI — throttled, lock-guarded single-shot transcript scan for a dashboard that has noticed the index fell behind. Appends index lines only and sets `CCXRAY_SESSION_INDEX_NO_FLUSH=1`, so it may run beside a live hub (unlike `rebuild-index --reimport`, which refuses). Env: `CCXRAY_IMPORT_ONCE_MIN_INTERVAL_MS` (default 10min) |
+| `server/usage.js` | Per-turn usage extraction and session-level aggregation helpers |
+| `server/local-usage-reader.js` | Reads Claude/Codex local transcript files for the cost-worker |
+| `server/delta-helpers.js` | Shared helpers for delta log storage (live server + restore) |
+| `server/plan-detector.js` | Auto-detect Claude Code subscription plan from response usage data |
+| `server/plans.js` | Known plan definitions (token thresholds, names) |
+| `server/paths.js` | Path resolution helpers (`CCXRAY_HOME`, log dirs) |
+| `server/ratelimit-log.js` | Rate-limit event logging |
+| `server/settings.js` | Server-side settings persistence (`~/.ccxray/settings.json`) |
+| `server/url-sanitize.js` | URL sanitization for logged entries |
 | `server/storage/` | Storage adapters (local filesystem, S3/R2). `statShared()` for file mtime. `supportsDelta` flag gates delta-write eligibility. The factory wraps every adapter with a write-tracker that exposes `drain()` for graceful shutdown |
+| `server/adapters/` | Provider-specific transcript adapters (`claude-adapter.js`, `codex-adapter.js`, `grok-adapter.js`) for the importer |
 
 ### Client (`public/`)
 
@@ -124,6 +139,12 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `public/system-prompt-ui.js` | Multi-agent browsing (3-column Miller), version history, unified diffs |
 | `public/keyboard-nav.js` | Arrow keys, Enter, Escape |
 | `public/quota-ticker.js` | Topbar quota ticker |
+| `public/weather.js` | Session weather score — isomorphic pure function (browser `<script>` + Node `require`). Reads entry objects directly |
+| `public/format.js` | Shared formatting/color helpers (#156). `formatAggCost`/`formatAggCostText` (ADR 0017), `formatCost`/`formatCostText` (per-turn) |
+| `public/session-label.js` | Named session label registry |
+| `public/settings.js` | Client-side settings loader (plan config from `/_api/settings`) |
+| `public/cache-notify.js` | Cache expiration notification — tab-title flash + countdown |
+| `public/countdown-ticker.js` | Cache TTL countdown ticker on session cards |
 
 ### Hub Mode (multi-project)
 
@@ -182,7 +203,7 @@ Logs stored in `~/.ccxray/logs/` (not package-relative). Respects `CCXRAY_HOME` 
 2. Search `LITELLM_LAG_OVERRIDES` or `pricing lag override` to find rows to delete.
 3. Lifecycle tests live in `test/pricing.test.js` (`LITELLM_LAG_OVERRIDES lifecycle`).
 
-`DEFAULT_PRICING` (in `server/default-rates.js`) is the offline safety net (Claude/OpenAI/Grok bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently empty — `grok-build` graduated 2026-08-13).
+`DEFAULT_PRICING` (in `server/default-rates.js`) is the offline safety net (Claude/OpenAI/Grok bare ids). Temporary rates for models LiteLLM still lacks go in `LITELLM_LAG_OVERRIDES` only (currently `grok-build` / `grok-build-0.1`).
 
 ### Delta Log Storage
 
