@@ -171,7 +171,13 @@ process, a throwaway `$HOME` is not an option (it would take the puppeteer cache
 with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
 `server/importer.js` honours, and the plugin treats its value as the `projects/`
 root verbatim. A test that exercises staleness without it silently reads the
-developer's real transcripts. Fixture shape: a `<cwd with every non-alphanumeric
+developer's real transcripts. Two mechanisms enforce this in
+`test/herdr-plugin.test.js`: direct `sessionSummaryDetails` call sites are
+covered by a source-scan audit test (`audit: sessionSummaryDetails call sites
+pin CCXRAY_IMPORT_HOMES` — a `CCXRAY_HOME` in the opts without
+`CCXRAY_IMPORT_HOMES` fails the suite), and spawned scripts are covered by
+`pluginEnv()` defaulting `CCXRAY_IMPORT_HOMES` to the empty `NO_TRANSCRIPTS`
+root (overridable per test). Fixture shape: a `<cwd with every non-alphanumeric
 flattened to '-'>/<sessionId>.jsonl` holding at least one `{type:'assistant',
 timestamp, message.usage}` line — metadata-only records (`system`, `last-prompt`,
 `mode`, `permission-mode`, `file-history-snapshot`) deliberately do NOT count as

@@ -25,6 +25,10 @@ function pluginEnv(overrides = {}) {
     env[key] = value;
   }
   env.CCXRAY_HOME = isolatedHome();
+  // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
+  // sessionSummaryDetails call sees the child's env, where an unset
+  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects.
+  env.CCXRAY_IMPORT_HOMES = NO_TRANSCRIPTS;
   return { ...env, ...overrides };
 }
 
@@ -3150,3 +3154,41 @@ describe('refresh-all-badges shares the pane-independent reports (#543)', () => 
   });
 });
 
+// The E3 audit (handoff 2026-08-17): sessionSummaryDetails consults the Claude
+// transcript tree, and an unset CCXRAY_IMPORT_HOMES means the developer's real
+// $HOME/.claude*/projects (the #407 shape — green only because the real data
+// happens to be empty). The #553 session fixed the call sites and verified
+// 7 → 0 real-path accesses, but that instrumentation was evidence, not
+// enforcement. This is the mechanism: same recursive-source-scan class as
+// test/invariant-encapsulation.test.js. See ADR 0015 R4 and docs/testing.md.
+describe('audit: sessionSummaryDetails call sites pin CCXRAY_IMPORT_HOMES', () => {
+  it('every call whose opts set CCXRAY_HOME also sets CCXRAY_IMPORT_HOMES', () => {
+    const source = fs.readFileSync(__filename, 'utf8');
+    const marker = 'sessionSummaryDetails(';
+    const spans = [];
+    let from = 0;
+    for (;;) {
+      const start = source.indexOf(marker, from);
+      if (start === -1) break;
+      let depth = 0;
+      let end = -1;
+      for (let i = start + marker.length - 1; i < source.length; i++) {
+        if (source[i] === '(') depth++;
+        else if (source[i] === ')') {
+          depth--;
+          if (depth === 0) { end = i; break; }
+        }
+      }
+      assert.notEqual(end, -1, `unbalanced parens after offset ${start}`);
+      spans.push(source.slice(start, end + 1));
+      from = end + 1;
+    }
+    assert.ok(spans.length >= 10, `expected the known call sites, found ${spans.length}`);
+    for (const span of spans) {
+      if (!span.includes('CCXRAY_HOME')) continue;
+      assert.ok(span.includes('CCXRAY_IMPORT_HOMES'),
+        `sessionSummaryDetails call sets CCXRAY_HOME without pinning CCXRAY_IMPORT_HOMES `
+        + `(stats the developer's real transcripts):\n${span.slice(0, 200)}`);
+    }
+  });
+});
