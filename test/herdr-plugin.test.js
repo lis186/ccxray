@@ -3056,15 +3056,25 @@ describe('Herdr plugin commands', () => {
 // for N × cap. The parent now runs both once and shares them; a child killed
 // at the cap is reported as timed out, never folded into "failed" silently.
 describe('refresh-all-badges shares the pane-independent reports (#543)', () => {
-  function makeCountingCcxray() {
+  function makeCountingCcxray({ failFirstUsage = false } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-counting-bin-'));
     const bin = path.join(dir, 'ccxray');
     const log = path.join(dir, 'calls.log');
+    const marker = path.join(dir, 'usage-failed-once');
     fs.writeFileSync(bin, [
       '#!/usr/bin/env node',
-      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
-      "if (process.argv[2] === 'usage') process.stdout.write(JSON.stringify({ meta: { totalEntries: 0 }, sessions: {}, models: [] }) + '\\n');",
-      "else process.stdout.write('No hub running\\n');",
+      "const fs = require('fs');",
+      `fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'usage') {",
+      ...(failFirstUsage ? [
+        `  if (!fs.existsSync(${JSON.stringify(marker)})) {`,
+        `    fs.writeFileSync(${JSON.stringify(marker)}, '1');`,
+        "    process.stderr.write('transient failure\\n');",
+        '    process.exit(1);',
+        '  }',
+      ] : []),
+      "  process.stdout.write(JSON.stringify({ meta: { totalEntries: 0 }, sessions: {}, models: [] }) + '\\n');",
+      "} else process.stdout.write('No hub running\\n');",
       '',
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
@@ -3096,11 +3106,41 @@ describe('refresh-all-badges shares the pane-independent reports (#543)', () => 
     { pane_id: 'w1:p1', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-1' } },
     { pane_id: 'w1:p2', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-2' } },
   ];
+  // The third pane has no native session id — the parent's answer for it is
+  // "none", and the child must trust that instead of re-listing.
+  const threeAgents = [...twoAgents, { pane_id: 'w1:p3', workspace_id: 'w1' }];
 
   // FAIL-ON-OLD: pre-fix, each child runs `ccxray status` + `ccxray usage` and
-  // its own `herdr agent list` — the counts below read 2/2/3 instead of 1/1/1.
+  // its own `herdr agent list` — the counts below read 3/3/4 instead of 1/1/1.
   it('runs status, usage, and agent list once for the whole fan-out', () => {
     const ccxray = makeCountingCcxray();
+    const herdr = makeFanoutHerdr(threeAgents);
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /3 refreshed/);
+    const ccxrayCalls = fs.readFileSync(ccxray.log, 'utf8').trim().split('\n');
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 1,
+      `expected one shared usage run, saw: ${ccxrayCalls.join(' | ')}`);
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('status')).length, 1,
+      `expected one shared status run, saw: ${ccxrayCalls.join(' | ')}`);
+    const herdrCalls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
+    assert.equal(herdrCalls.filter(call => call.startsWith('agent list')).length, 1,
+      `children (including the no-session pane) must reuse the parent's agent list, saw: ${herdrCalls.join(' | ')}`);
+  });
+
+  // A transient parent failure must not be broadcast: the children whose
+  // shared report is missing recompute their own (usage runs 1 failed + 2
+  // recomputed = 3 times) and the badges still render from real data. A
+  // version that shares failed reports runs usage once and paints every pane
+  // "not linked".
+  it('does not poison the fan-out when the parent usage report fails once', () => {
+    const ccxray = makeCountingCcxray({ failFirstUsage: true });
     const herdr = makeFanoutHerdr(twoAgents);
     const result = runScript('refresh-all-badges.js', [], {
       CCXRAY_HOME: makeHome(),
@@ -3112,13 +3152,8 @@ describe('refresh-all-badges shares the pane-independent reports (#543)', () => 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /2 refreshed/);
     const ccxrayCalls = fs.readFileSync(ccxray.log, 'utf8').trim().split('\n');
-    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 1,
-      `expected one shared usage run, saw: ${ccxrayCalls.join(' | ')}`);
-    assert.equal(ccxrayCalls.filter(call => call.startsWith('status')).length, 1,
-      `expected one shared status run, saw: ${ccxrayCalls.join(' | ')}`);
-    const herdrCalls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
-    assert.equal(herdrCalls.filter(call => call.startsWith('agent list')).length, 1,
-      `children must reuse the parent's agent list, saw: ${herdrCalls.join(' | ')}`);
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 3,
+      `each child must recompute the failed shared usage, saw: ${ccxrayCalls.join(' | ')}`);
   });
 
   // FAIL-ON-OLD: pre-fix the summary line had no timed-out bucket — a killed
@@ -3151,6 +3186,7 @@ describe('refresh-all-badges shares the pane-independent reports (#543)', () => 
     assert.match(result.stdout, /ccxray badges refreshed/);
     const calls = fs.readFileSync(ccxray.log, 'utf8');
     assert.match(calls, /usage/, 'a bad shared file must fail open to a self-run usage report');
+    assert.match(calls, /status/, 'a bad shared file must fail open to a self-run status report');
   });
 });
 

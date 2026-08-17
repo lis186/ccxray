@@ -101,9 +101,12 @@ lockfile, so many panes noticing at once still produce one scan.
 
 `refresh-all-badges` (the startup fan-out) runs the pane-independent `ccxray
 status` and `ccxray usage` reports once and shares them with every per-pane
-refresh, so each child only pays for its own sidebar writes. Each child is
-capped at 10 seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides); a child
-killed at the cap is reported as `timed out`, separately from `failed`.
+refresh, so each child's remaining work is its own session matching, layout
+lookup, and sidebar writes. Only reports that succeeded are shared — a child
+that finds its report missing recomputes its own, so a transient failure
+degrades one pane instead of painting all of them. Each child is capped at 10
+seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides); a child killed at the cap
+is reported as `timed out`, separately from `failed`.
 
 The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
 

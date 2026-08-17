@@ -32,28 +32,39 @@ function main() {
   // of raising the cap we run the shared reports once and hand the result to
   // every child. The children's own per-call timeouts remain as defense
   // against a hung CLI, not as a budget.
-  const shared = {
-    status: statusReport(),
-    usage: usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' }),
-  };
-  const sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-badge-shared-'));
-  const sharedFile = path.join(sharedDir, 'report.json');
-  fs.writeFileSync(sharedFile, JSON.stringify(shared));
+  const status = statusReport();
+  const usage = usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
+  // Only usable reports are shared. A transient failure here must not be
+  // broadcast to every pane as "no hub / not linked": a child that finds its
+  // report missing recomputes its own copy — the pre-share behavior, but
+  // confined to that child. The payload is a minimal DTO, not the raw
+  // spawnSync result (whose Error does not survive JSON anyway).
+  const shared = {};
+  if (status.ok) shared.status = { ok: true, parsed: status.parsed };
+  if (usage.ok) shared.usage = { ok: true, data: usage.data };
 
   const timeoutMs = childTimeoutMs();
   let refreshed = 0;
   let failed = 0;
   let timedOut = 0;
+  let sharedDir = null;
   try {
+    sharedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-badge-shared-'));
+    const sharedFile = path.join(sharedDir, 'report.json');
+    fs.writeFileSync(sharedFile, JSON.stringify(shared));
     for (const agent of agents) {
       const context = {
         focused_pane_id: agent.pane_id,
         focused_pane_cwd: agent.foreground_cwd || agent.cwd || null,
         workspace_id: agent.workspace_id || null,
         tab_id: agent.tab_id || null,
-        // We already hold the agent list; passing the session spares each
-        // child its own `herdr agent list` round trip.
+        // We already hold the agent list; passing the resolution (even "this
+        // pane has no session id") spares each child its own
+        // `herdr agent list` round trip. The explicit flag is what the child
+        // trusts — a null agent_session alone could come from any context
+        // author.
         agent_session: agent.agent_session || null,
+        agent_session_known: true,
       };
       const result = spawnSync(process.execPath, [path.join(__dirname, 'refresh-badges.js')], {
         env: {
@@ -75,7 +86,7 @@ function main() {
       else failed++;
     }
   } finally {
-    try { fs.rmSync(sharedDir, { recursive: true, force: true }); } catch {}
+    if (sharedDir) { try { fs.rmSync(sharedDir, { recursive: true, force: true }); } catch {} }
   }
 
   const parts = [`${refreshed} refreshed`];

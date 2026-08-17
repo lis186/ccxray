@@ -44,15 +44,22 @@ function eventContext(env = process.env) {
 // #543: the fan-out parent (refresh-all-badges) precomputes the
 // pane-independent status/usage reports once and shares them via a temp file,
 // because re-running them here costs up to 17s against the parent's 10s cap.
-// Fail open: anything short of a well-formed file means "compute our own", so
-// the event-driven single-pane path is byte-identical to before.
+// Per-report fail open: the parent only shares reports that succeeded, and
+// anything missing or malformed means "compute our own" — so a transient
+// parent failure degrades one report for one child back to the pre-share
+// behavior instead of painting every pane "no hub / not linked". The
+// event-driven single-pane path (no env var) is byte-identical to before.
 function sharedReports(env = process.env) {
-  if (!env.CCXRAY_BADGE_SHARED_REPORT) return null;
+  if (!env.CCXRAY_BADGE_SHARED_REPORT) return {};
   try {
     const parsed = JSON.parse(fs.readFileSync(env.CCXRAY_BADGE_SHARED_REPORT, 'utf8'));
-    if (parsed && parsed.status && parsed.status.parsed && parsed.usage) return parsed;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return {
+      status: parsed.status && parsed.status.ok && parsed.status.parsed ? parsed.status : null,
+      usage: parsed.usage && parsed.usage.ok && parsed.usage.data ? parsed.usage : null,
+    };
   } catch {}
-  return null;
+  return {};
 }
 
 function waitForTelemetry(env = process.env) {
@@ -127,15 +134,18 @@ function main() {
   };
   const runtime = herdrRuntime(env);
   const shared = sharedReports();
-  const status = shared ? shared.status : statusReport();
-  const usage = shared ? shared.usage : usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
+  const status = shared.status || statusReport();
+  const usage = shared.usage || usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
   let nativeSessionId = event.sessionId || null;
   if (!nativeSessionId && context.agent_session?.kind === 'id') {
     nativeSessionId = context.agent_session.value;
   }
-  if (!nativeSessionId && targetPaneId) {
+  // agent_session_known means the context author already consulted the agent
+  // list for this pane — including the "no session id" answer — so re-listing
+  // here could only repeat that answer more slowly.
+  if (!nativeSessionId && targetPaneId && !context.agent_session_known) {
     const report = herdrAgentReport({ env });
     const agent = report.agents.find(item => item.pane_id === targetPaneId);
     if (agent?.agent_session?.kind === 'id') nativeSessionId = agent.agent_session.value;
