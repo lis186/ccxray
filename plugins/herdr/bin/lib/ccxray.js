@@ -1,6 +1,6 @@
 'use strict';
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -761,6 +761,33 @@ function sessionSummaryDetails(data, opts = {}) {
     ...fallback,
     summary: clip(`${shortModel(fallback.model)}, ${fallback.ageText}, ${fallback.costText}`, 80),
   };
+}
+
+// Fire-and-forget `ccxray import --once` for a pane whose badge just went stale.
+//
+// The badge refresh is on Herdr's event path, so this must never join its
+// lifecycle: detached + unref'd + stdio ignored means the child outlives this
+// process and this process does not wait a millisecond for it. All of the
+// throttling, locking and error recording lives in server/import-once.js, which
+// is the only thing that can enforce it across the many refreshes a workspace
+// fires; asking here would race with the other panes.
+function requestImport(opts = {}) {
+  const env = opts.env || process.env;
+  if (env.CCXRAY_BADGE_IMPORT_DISABLE === '1') return { ok: false, reason: 'disabled' };
+  const cmd = resolveCcxrayCommand(env);
+  if (!cmd || !cmd.bin) return { ok: false, reason: 'no-ccxray' };
+  try {
+    const child = spawn(cmd.bin, [...cmd.argsPrefix, 'import', '--once'], {
+      env,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => { /* the badge must not fail because a scan could not start */ });
+    child.unref();
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'spawn-failed' };
+  }
 }
 
 function herdrAgentReport(opts = {}) {
@@ -1557,6 +1584,7 @@ module.exports = {
   recordRoutedPane,
   reportPaneTokens,
   reportWorkspaceTokens,
+  requestImport,
   resolveCcxrayCommand,
   resolveHerdrConfigPath,
   routedPaneKnown,

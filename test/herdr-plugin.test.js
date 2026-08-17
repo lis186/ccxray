@@ -654,6 +654,40 @@ describe('Herdr sidebar import freshness', () => {
     assert.ok(!detail.stale, 'a recent subagent turn proves the session is observed');
   });
 
+  // The badge refresh runs on Herdr's event path, so the rescan it triggers must
+  // be detached: spawned, unref'd, never awaited. A refresh that blocked on a
+  // disk scan would stall the sidebar for every pane in the workspace.
+  it('spawns the rescan without waiting for it', () => {
+    const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-import-'));
+    const marker = path.join(dir, 'ran');
+    const bin = path.join(dir, 'fake-ccxray');
+    // Sleeps well past any reasonable badge refresh, then records that it ran.
+    fs.writeFileSync(bin, `#!/usr/bin/env node\nsetTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' ')), 400);\n`);
+    fs.chmodSync(bin, 0o755);
+
+    const started = Date.now();
+    const result = requestImport({ env: { ...process.env, CCXRAY_BIN: bin } });
+    const elapsed = Date.now() - started;
+    assert.equal(result.ok, true);
+    assert.ok(elapsed < 300, `requestImport must return immediately, took ${elapsed}ms`);
+
+    // And the child really does outlive the call.
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+    assert.equal(fs.existsSync(marker), true, 'the detached child should still run');
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'import --once');
+  });
+
+  it('can be switched off without switching off the marker', () => {
+    const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
+    const result = requestImport({ env: { ...process.env, CCXRAY_BADGE_IMPORT_DISABLE: '1' } });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'disabled');
+  });
+
   // Derived by replaying all 118 cwds in the real index against the 184 project
   // directories on disk: flattening every non-alphanumeric reproduced 43, while
   // flattening only '/' and '.' reproduced 41. The two it missed are real — a

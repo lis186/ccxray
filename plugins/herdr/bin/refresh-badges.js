@@ -8,6 +8,7 @@ const {
   herdrRuntime,
   reportPaneTokens,
   reportWorkspaceTokens,
+  requestImport,
   routedPaneKnown,
   runHerdr,
   sessionSummaryDetails,
@@ -58,8 +59,10 @@ function badgeTokens(status, usage, opts = {}) {
     xray: status.parsed.running ? 'ok' : 'no-hub',
   };
 
+  let stale = null;
   if (usage.ok && usage.data?.meta) {
     const detail = sessionSummaryDetails(usage.data, opts);
+    stale = detail.stale || null;
     tokens.summary = detail.summary;
     tokens.ctx_bar = detail.ctxBar;
     tokens.ctx_band = detail.ctxBand;
@@ -83,6 +86,7 @@ function badgeTokens(status, usage, opts = {}) {
 
   return {
     tokens,
+    stale,
     clearTokens: applyContextColorTokens(tokens, tokens.ctx_band),
   };
 }
@@ -121,6 +125,10 @@ function main() {
     routed: status.parsed.running && routedPaneKnown(targetPaneId, process.env),
   });
   const { tokens, clearTokens } = badge;
+  // A stale badge means completed turns are sitting on disk that ccxray never
+  // logged, which is exactly what a rescan fixes — so the marker doubles as the
+  // trigger. Detached: the badge write below must not wait for a disk scan.
+  const importRequest = badge.stale ? requestImport({ env: process.env }) : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
   const stateLabels = {
     unknown: tokens.summary,
@@ -152,6 +160,7 @@ function main() {
   console.log(`Pane: ${runtime.paneId || 'n/a'} (${pane.ok ? 'ok' : pane.reason})`);
   console.log(`Tokens: ${Object.entries(tokens).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   if (clearTokens.length) console.log(`Clear: ${clearTokens.join(' ')}`);
+  if (importRequest) console.log(`Import: requested (${importRequest.ok ? 'spawned' : importRequest.reason})`);
   if (notificationResult?.status === 0) console.log(`Notification: ${notification.title}`);
   else if (notificationResult) console.log('Notification unavailable: run Doctor for Herdr details.');
 

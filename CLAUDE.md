@@ -106,6 +106,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/auth.js` | API key auth middleware (enabled via `AUTH_TOKEN` env) |
 | `server/openai-session.js` | Shared OpenAI/Codex header + session helpers (session id extraction, agent type, turn-metadata sidecar) |
 | `server/ws-proxy.js` | OpenAI WebSocket transport proxy for `/v1/responses` and `/v1/realtime` upgrades. Tracks active sessions + pending `recordWebSocketEntry` promises so `drainWebSocketProxy()` can force-finalize stragglers and await writes on shutdown. Tunables: `CCXRAY_WS_IDLE_TIMEOUT_MS` (default 60s), `CCXRAY_WS_MAX_QUEUE_BYTES` (default 4 MiB; caps client→upstream buffer while upstream is connecting) |
+| `server/import-once.js` | `ccxray import --once` CLI — throttled, lock-guarded single-shot transcript scan for a dashboard that has noticed the index fell behind. Appends index lines only and sets `CCXRAY_SESSION_INDEX_NO_FLUSH=1`, so it may run beside a live hub (unlike `rebuild-index --reimport`, which refuses). Env: `CCXRAY_IMPORT_ONCE_MIN_INTERVAL_MS` (default 10min) |
 | `server/storage/` | Storage adapters (local filesystem, S3/R2). `statShared()` for file mtime. `supportsDelta` flag gates delta-write eligibility. The factory wraps every adapter with a write-tracker that exposes `drain()` for graceful shutdown |
 
 ### Client (`public/`)
