@@ -3045,3 +3045,108 @@ describe('Herdr plugin commands', () => {
     assert.match(out, /Link a local plugin/);
   });
 });
+
+// #543: statusReport (5s) + usageReport (12s) are pane-independent but were
+// re-run by every fan-out child against the parent's 10s cap — a slow but
+// healthy refresh got killed mid-write and the serial fan-out blocked startup
+// for N × cap. The parent now runs both once and shares them; a child killed
+// at the cap is reported as timed out, never folded into "failed" silently.
+describe('refresh-all-badges shares the pane-independent reports (#543)', () => {
+  function makeCountingCcxray() {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-counting-bin-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'usage') process.stdout.write(JSON.stringify({ meta: { totalEntries: 0 }, sessions: {}, models: [] }) + '\\n');",
+      "else process.stdout.write('No hub running\\n');",
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  }
+
+  function makeFanoutHerdr(agents, { sleepMs = 0 } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fanout-herdr-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'args.log');
+    const agentList = JSON.stringify({ id: 't', result: { type: 'agent_list', agents } });
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'list') {",
+      `  process.stdout.write(${JSON.stringify(agentList + '\n')});`,
+      `} else if (${sleepMs}) {`,
+      `  setTimeout(() => process.exit(0), ${sleepMs});`,
+      '} else {',
+      `  process.stdout.write(${JSON.stringify(JSON.stringify({ id: 't', result: { type: 'ok' } }) + '\n')});`,
+      '}',
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  }
+
+  const twoAgents = [
+    { pane_id: 'w1:p1', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-1' } },
+    { pane_id: 'w1:p2', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-2' } },
+  ];
+
+  // FAIL-ON-OLD: pre-fix, each child runs `ccxray status` + `ccxray usage` and
+  // its own `herdr agent list` — the counts below read 2/2/3 instead of 1/1/1.
+  it('runs status, usage, and agent list once for the whole fan-out', () => {
+    const ccxray = makeCountingCcxray();
+    const herdr = makeFanoutHerdr(twoAgents);
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /2 refreshed/);
+    const ccxrayCalls = fs.readFileSync(ccxray.log, 'utf8').trim().split('\n');
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 1,
+      `expected one shared usage run, saw: ${ccxrayCalls.join(' | ')}`);
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('status')).length, 1,
+      `expected one shared status run, saw: ${ccxrayCalls.join(' | ')}`);
+    const herdrCalls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
+    assert.equal(herdrCalls.filter(call => call.startsWith('agent list')).length, 1,
+      `children must reuse the parent's agent list, saw: ${herdrCalls.join(' | ')}`);
+  });
+
+  // FAIL-ON-OLD: pre-fix the summary line had no timed-out bucket — a killed
+  // child was indistinguishable from an honest non-zero exit.
+  it('reports a child killed at the cap as timed out, not refreshed', () => {
+    const ccxray = makeCountingCcxray();
+    const herdr = makeFanoutHerdr(twoAgents.slice(0, 1), { sleepMs: 3000 });
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+      CCXRAY_BADGE_CHILD_TIMEOUT_MS: '500',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /0 refreshed, 1 timed out \(over 500ms\)/);
+  });
+
+  it('refresh-badges falls back to its own reports when the shared file is bad', () => {
+    const ccxray = makeCountingCcxray();
+    const bogus = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bogus-shared-')), 'report.json');
+    fs.writeFileSync(bogus, 'not json');
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      CCXRAY_BADGE_SHARED_REPORT: bogus,
+    });
+    assert.match(result.stdout, /ccxray badges refreshed/);
+    const calls = fs.readFileSync(ccxray.log, 'utf8');
+    assert.match(calls, /usage/, 'a bad shared file must fail open to a self-run usage report');
+  });
+});
+

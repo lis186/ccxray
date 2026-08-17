@@ -99,6 +99,12 @@ that fixes it: the scan is throttled to once per 10 minutes and guarded by a
 lockfile, so many panes noticing at once still produce one scan.
 `CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the marker but stops the rescan.
 
+`refresh-all-badges` (the startup fan-out) runs the pane-independent `ccxray
+status` and `ccxray usage` reports once and shares them with every per-pane
+refresh, so each child only pays for its own sidebar writes. Each child is
+capped at 10 seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides); a child
+killed at the cap is reported as `timed out`, separately from `failed`.
+
 The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
 
 Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact ccxray identity remains unknown; the plugin never borrows telemetry from another session in the project.

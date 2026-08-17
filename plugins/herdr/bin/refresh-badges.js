@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const {
   contextSidebarColumns,
   formatPercent,
@@ -38,6 +39,20 @@ function eventContext(env = process.env) {
   } catch {
     return {};
   }
+}
+
+// #543: the fan-out parent (refresh-all-badges) precomputes the
+// pane-independent status/usage reports once and shares them via a temp file,
+// because re-running them here costs up to 17s against the parent's 10s cap.
+// Fail open: anything short of a well-formed file means "compute our own", so
+// the event-driven single-pane path is byte-identical to before.
+function sharedReports(env = process.env) {
+  if (!env.CCXRAY_BADGE_SHARED_REPORT) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(env.CCXRAY_BADGE_SHARED_REPORT, 'utf8'));
+    if (parsed && parsed.status && parsed.status.parsed && parsed.usage) return parsed;
+  } catch {}
+  return null;
 }
 
 function waitForTelemetry(env = process.env) {
@@ -111,11 +126,15 @@ function main() {
     HERDR_TAB_ID: process.env.HERDR_TAB_ID || event.tabId || '',
   };
   const runtime = herdrRuntime(env);
-  const status = statusReport();
-  const usage = usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
+  const shared = sharedReports();
+  const status = shared ? shared.status : statusReport();
+  const usage = shared ? shared.usage : usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
   let nativeSessionId = event.sessionId || null;
+  if (!nativeSessionId && context.agent_session?.kind === 'id') {
+    nativeSessionId = context.agent_session.value;
+  }
   if (!nativeSessionId && targetPaneId) {
     const report = herdrAgentReport({ env });
     const agent = report.agents.find(item => item.pane_id === targetPaneId);
