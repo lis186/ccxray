@@ -597,13 +597,48 @@ function promptClaudeStatusline() {
   const declinedPath = path.join(ccxrayHome, '.statusline-declined');
   const hintShownPath = path.join(ccxrayHome, '.statusline-hint-shown');
 
-  if (process.stdin.isTTY && !fs.existsSync(declinedPath)) {
+  // #563: a Herdr-launched pane must not block on an interactive gate — the
+  // user clicked "launch claude" and expects the agent, not a question. Fall
+  // through to the one-line hint; the declined marker is NOT written, so a
+  // later direct TTY launch still gets to answer.
+  const herdrLaunch = (process.env.CCXRAY_AGENT_ID || '').startsWith('herdr:');
+
+  if (process.stdin.isTTY && !herdrLaunch && !fs.existsSync(declinedPath)) {
+    // #563: disclose purpose, impact, and reversibility; the default follows
+    // risk — a pure addition (no statusline configured) defaults to yes, while
+    // wrapping an existing statusline requires a conscious "y".
+    let hasExisting = false;
+    let unparseable = false;
+    try {
+      const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+      try {
+        const cmd = JSON.parse(raw).statusLine?.command || '';
+        hasExisting = Boolean(cmd) && !cmd.includes('claude-adapter');
+      } catch {
+        // A settings.json that exists but does not parse is NOT a pure
+        // addition — installing would overwrite unknown content. Treat it as
+        // wrap-risk so the default stays No (grok review P2, 2026-08-18).
+        hasExisting = true;
+        unparseable = true;
+      }
+    } catch {} // missing file = genuinely nothing configured
+    const impactNote = unparseable
+      ? 'your settings.json exists but could not be parsed — installing would REWRITE it'
+      : hasExisting
+        ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
+        : 'no statusline is configured today, so this only adds one';
+    const defTag = hasExisting ? '[y/N]' : '[Y/n]';
     const readline = require('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     return new Promise(resolve => {
-      rl.question('\x1b[35m📊 Track Claude rate limits on the Usage page? [y/N] \x1b[0m', answer => {
+      rl.question(
+        '\x1b[35m📊 Track Claude subscription limits (5h/weekly) on the Usage page?\x1b[0m\n'
+        + `\x1b[90m   Installs a statusline adapter in ${path.join(claudeHome, 'settings.json')} —\n`
+        + `   ${impactNote}; fully restored on removal (ccxray setup-statusline).\x1b[0m \x1b[35m${defTag}\x1b[0m `,
+        answer => {
         rl.close();
-        if (answer.trim().toLowerCase() === 'y') {
+        const a = String(answer ?? '').trim().toLowerCase();
+        if (a === 'y' || a === 'yes' || (a === '' && !hasExisting)) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
         } else {
