@@ -1300,7 +1300,7 @@ async function startServer() {
         const occ = await hub.probePortOccupant(config.PORT);
         const advice = hub.describePortOccupant(occ, config.PORT);
         if (advice.length) advice.forEach(l => console.error(`\x1b[33mSuggestion: ${l}\x1b[0m`));
-        else console.error(`\x1b[33mSuggestion: port ${config.PORT} was busy but seems free now — retry, or set PROXY_PORT=<other-port>.\x1b[0m`);
+        else console.error(`\x1b[33mSuggestion: port ${config.PORT} was busy but seems free now — retry, or relaunch with PROXY_PORT=<other-port>.\x1b[0m`);
       }
     } catch {}
     process.exit(1);

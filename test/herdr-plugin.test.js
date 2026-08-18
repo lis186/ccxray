@@ -2657,6 +2657,10 @@ describe('Herdr plugin commands', () => {
     assert.equal(parsed.running, false);
     assert.equal(parsed.notes.length, 2);
     assert.match(parsed.notes[0], /held by a standalone/);
+    // The occupant's port/pid live only in Note lines and must not be
+    // reported as the hub's (grok round-2 P3).
+    assert.equal(parsed.port, null);
+    assert.equal(parsed.pid, null);
     const plain = parseStatus('No hub running.\n');
     assert.deepEqual(plain.notes, []);
   });

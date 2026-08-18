@@ -117,14 +117,14 @@ function parseJsonOutput(output) {
 function parseStatus(text) {
   const clean = stripAnsi(text);
   const noHub = /No hub running/i.test(clean);
-  const portMatch = clean.match(/localhost:(\d{2,5})/) || clean.match(/\bport\s+(\d{2,5})\b/i);
-  const pidMatch = clean.match(/\bpid[:\s]+(\d+)\b/i) || clean.match(/\bPID[:\s]+(\d+)\b/);
-  const clientsMatch = clean.match(/\bclients?[:\s]+(\d+)\b/i);
-  // #555: `ccxray status` may append "Note: port N is held by …" lines when
-  // no hub runs but the default port is occupied. Surface them (doctor shows
-  // them) instead of silently dropping the one hint that explains a failed
-  // launch.
-  const notes = clean.split('\n').map(l => l.trim()).filter(l => l.startsWith('Note: '));
+  // #555: Note lines describe the port OCCUPANT, not a hub — scraping their
+  // port/pid would report the occupant's identity as the hub's.
+  const lines = clean.split('\n');
+  const notes = lines.map(l => l.trim()).filter(l => l.startsWith('Note: '));
+  const hubText = lines.filter(l => !l.trim().startsWith('Note: ')).join('\n');
+  const portMatch = hubText.match(/localhost:(\d{2,5})/) || hubText.match(/\bport\s+(\d{2,5})\b/i);
+  const pidMatch = hubText.match(/\bpid[:\s]+(\d+)\b/i) || hubText.match(/\bPID[:\s]+(\d+)\b/);
+  const clientsMatch = hubText.match(/\bclients?[:\s]+(\d+)\b/i);
   return {
     running: !noHub && Boolean(portMatch || pidMatch || /hub/i.test(clean)),
     port: portMatch ? Number(portMatch[1]) : null,
