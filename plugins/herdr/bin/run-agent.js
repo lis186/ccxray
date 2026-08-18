@@ -9,6 +9,11 @@ const { resolveCcxrayCommand } = require('./lib/ccxray');
 const SUPPORTED = new Set(['claude', 'codex', 'grok']);
 
 function parseArgs(argv) {
+  // #555 port escape hatch: launch-agent threads its PROXY_PORT here as an
+  // argument because this runner executes inside the Herdr pane's env, not the
+  // launcher's. A PROXY_PORT already present in the pane env still reaches the
+  // spawned ccxray via launchEnv's spread; the explicit flag wins.
+  const portFlag = argv.find(a => a.startsWith('--proxy-port='));
   const args = {
     agent: argv[0],
     paneId: argv[1],
@@ -16,6 +21,7 @@ function parseArgs(argv) {
     tabId: argv[3],
     sourcePaneId: argv[4],
     dryRun: argv.includes('--dry-run') || process.env.CCXRAY_HERDR_RUNNER_DRY_RUN === '1',
+    proxyPort: portFlag ? portFlag.slice('--proxy-port='.length) : '',
   };
   return args;
 }
@@ -56,6 +62,7 @@ function launchEnv(args) {
     CCXRAY_HERDR_TAB_ID: args.tabId || '',
     CCXRAY_HERDR_SOURCE_PANE_ID: args.sourcePaneId || '',
   };
+  if (args.proxyPort) env.PROXY_PORT = args.proxyPort;
   env.PATH = launchPath(env);
   return env;
 }
@@ -64,6 +71,10 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!SUPPORTED.has(args.agent)) {
     console.error(`Unsupported agent "${args.agent || ''}". Expected claude, codex, or grok.`);
+    process.exit(2);
+  }
+  if (args.proxyPort && !(/^\d{1,5}$/.test(args.proxyPort) && Number(args.proxyPort) >= 1 && Number(args.proxyPort) <= 65535)) {
+    console.error(`Invalid --proxy-port "${args.proxyPort}" — expected a port number (1-65535).`);
     process.exit(2);
   }
 
@@ -82,6 +93,7 @@ function main() {
         CCXRAY_HERDR_PANE_ID: env.CCXRAY_HERDR_PANE_ID,
         CCXRAY_HERDR_TAB_ID: env.CCXRAY_HERDR_TAB_ID,
         CCXRAY_HERDR_SOURCE_PANE_ID: env.CCXRAY_HERDR_SOURCE_PANE_ID,
+        PROXY_PORT: env.PROXY_PORT || null,
         PATH: env.PATH,
       },
     }, null, 2));

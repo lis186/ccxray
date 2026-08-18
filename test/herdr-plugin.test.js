@@ -21,7 +21,9 @@ const MANIFEST = path.join(PLUGIN, 'herdr-plugin.toml');
 function pluginEnv(overrides = {}) {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_')) continue;
+    // PROXY_PORT joined the plugin's env surface in #555 (the launch port
+    // escape hatch): an ambient value would silently retarget every spawn.
+    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_') || key === 'PROXY_PORT') continue;
     env[key] = value;
   }
   env.CCXRAY_HOME = isolatedHome();
@@ -2640,6 +2642,111 @@ describe('Herdr plugin commands', () => {
     assert.equal(plan.env.CCXRAY_HERDR_SOURCE_PANE_ID, 'w1:p1');
     assert.ok(plan.args.includes('--no-browser'));
     assert.ok(plan.args.includes('codex'));
+  });
+
+  // #555: `ccxray status` can append "Note: port N is held by ..." lines; the
+  // plugin's status parser must surface them so doctor can show the one hint
+  // that explains a failed launch (grok review P2, 2026-08-18).
+  it('parseStatus surfaces #555 Note lines without flipping running', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const parsed = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 4701), so it cannot be shared as a hub.',
+      'Note: Leave it running; relaunch with PROXY_PORT=<other-port> (e.g. PROXY_PORT=5600 ccxray claude) to run the hub on a different port.',
+    ].join('\n'));
+    assert.equal(parsed.running, false);
+    assert.equal(parsed.notes.length, 2);
+    assert.match(parsed.notes[0], /held by a standalone/);
+    // The occupant's port/pid live only in Note lines and must not be
+    // reported as the hub's (grok round-2 P3).
+    assert.equal(parsed.port, null);
+    assert.equal(parsed.pid, null);
+    const plain = parseStatus('No hub running.\n');
+    assert.deepEqual(plain.notes, []);
+  });
+
+  // #555 port escape hatch: PROXY_PORT must travel launch-agent → pane runner
+  // → spawned ccxray as an explicit contract, because the runner executes in
+  // the Herdr pane's environment, not the launcher's.
+  it('run-agent forwards --proxy-port into the spawned ccxray env', () => {
+    const result = runScript('run-agent.js', ['codex', 'w1:p9', 'w1', 'w1:t1', 'w1:p1', '--dry-run', '--proxy-port=5678']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).env.PROXY_PORT, '5678');
+  });
+
+  it('run-agent lets an explicit --proxy-port win over the pane env PROXY_PORT', () => {
+    const result = runScript('run-agent.js', ['codex', 'w1:p9', 'w1', 'w1:t1', 'w1:p1', '--dry-run', '--proxy-port=5678'], {
+      PROXY_PORT: '7788',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).env.PROXY_PORT, '5678');
+  });
+
+  it('run-agent still honours a PROXY_PORT already present in the pane env', () => {
+    const result = runScript('run-agent.js', ['codex', 'w1:p9', 'w1', 'w1:t1', 'w1:p1', '--dry-run'], {
+      PROXY_PORT: '7788',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).env.PROXY_PORT, '7788');
+  });
+
+  it('run-agent rejects a malformed --proxy-port loudly', () => {
+    const result = runScript('run-agent.js', ['codex', 'w1:p9', 'w1', 'w1:t1', 'w1:p1', '--dry-run', '--proxy-port=lots']);
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /Invalid --proxy-port/);
+  });
+
+  it('launch-agent surfaces PROXY_PORT in its plan', () => {
+    const result = runScript('launch-agent.js', ['codex', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      PROXY_PORT: '5678',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).proxyPort, 5678);
+  });
+
+  it('launch-agent threads PROXY_PORT into the pane runner command', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-portrun-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'args.log');
+    const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
+      "  process.stdout.write('{}\\n'); process.exit(0);",
+      '}',
+      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '5678',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const calls = fs.readFileSync(log, 'utf8');
+    assert.match(calls, /pane run w1:p7 .*run-agent\.js codex w1:p7 .*--proxy-port=5678/);
+  });
+
+  it('launch-agent rejects an invalid PROXY_PORT before creating any pane', () => {
+    const herdr = makeRecordingHerdr();
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_BIN_PATH: herdr.bin,
+      PROXY_PORT: '70000',
+    });
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /Invalid PROXY_PORT/);
+    assert.equal(fs.existsSync(herdr.log), false, 'must fail before any herdr call');
   });
 
   it('run-agent adds common app CLI directories to PATH for Herdr panes', () => {

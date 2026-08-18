@@ -298,7 +298,7 @@ describe('deprecated HTTP hub routes → 410', () => {
   it('GET /_api/health → still 200', async () => {
     const { status, body } = await httpReq(port, 'GET', '/_api/health');
     assert.equal(status, 200);
-    assert.deepEqual(body, { ok: true });
+    assert.equal(body.ok, true); // #555: health carries occupant identity now
   });
 });
 
