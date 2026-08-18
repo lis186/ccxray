@@ -25,6 +25,10 @@ function pluginEnv(overrides = {}) {
     env[key] = value;
   }
   env.CCXRAY_HOME = isolatedHome();
+  // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
+  // sessionSummaryDetails call sees the child's env, where an unset
+  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects.
+  env.CCXRAY_IMPORT_HOMES = NO_TRANSCRIPTS;
   return { ...env, ...overrides };
 }
 
@@ -3043,5 +3047,184 @@ describe('Herdr plugin commands', () => {
 
     const out = execFileSync('herdr', ['plugin', 'link', '--help'], { encoding: 'utf8', timeout: 5000 });
     assert.match(out, /Link a local plugin/);
+  });
+});
+
+// #543: statusReport (5s) + usageReport (12s) are pane-independent but were
+// re-run by every fan-out child against the parent's 10s cap — a slow but
+// healthy refresh got killed mid-write and the serial fan-out blocked startup
+// for N × cap. The parent now runs both once and shares them; a child killed
+// at the cap is reported as timed out, never folded into "failed" silently.
+describe('refresh-all-badges shares the pane-independent reports (#543)', () => {
+  function makeCountingCcxray({ failFirstUsage = false } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-counting-bin-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'calls.log');
+    const marker = path.join(dir, 'usage-failed-once');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "const fs = require('fs');",
+      `fs.appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'usage') {",
+      ...(failFirstUsage ? [
+        `  if (!fs.existsSync(${JSON.stringify(marker)})) {`,
+        `    fs.writeFileSync(${JSON.stringify(marker)}, '1');`,
+        "    process.stderr.write('transient failure\\n');",
+        '    process.exit(1);',
+        '  }',
+      ] : []),
+      "  process.stdout.write(JSON.stringify({ meta: { totalEntries: 0 }, sessions: {}, models: [] }) + '\\n');",
+      "} else process.stdout.write('No hub running\\n');",
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  }
+
+  function makeFanoutHerdr(agents, { sleepMs = 0 } = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-fanout-herdr-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'args.log');
+    const agentList = JSON.stringify({ id: 't', result: { type: 'agent_list', agents } });
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'list') {",
+      `  process.stdout.write(${JSON.stringify(agentList + '\n')});`,
+      `} else if (${sleepMs}) {`,
+      `  setTimeout(() => process.exit(0), ${sleepMs});`,
+      '} else {',
+      `  process.stdout.write(${JSON.stringify(JSON.stringify({ id: 't', result: { type: 'ok' } }) + '\n')});`,
+      '}',
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  }
+
+  const twoAgents = [
+    { pane_id: 'w1:p1', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-1' } },
+    { pane_id: 'w1:p2', workspace_id: 'w1', agent_session: { kind: 'id', value: 'sess-2' } },
+  ];
+  // The third pane has no native session id — the parent's answer for it is
+  // "none", and the child must trust that instead of re-listing.
+  const threeAgents = [...twoAgents, { pane_id: 'w1:p3', workspace_id: 'w1' }];
+
+  // FAIL-ON-OLD: pre-fix, each child runs `ccxray status` + `ccxray usage` and
+  // its own `herdr agent list` — the counts below read 3/3/4 instead of 1/1/1.
+  it('runs status, usage, and agent list once for the whole fan-out', () => {
+    const ccxray = makeCountingCcxray();
+    const herdr = makeFanoutHerdr(threeAgents);
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /3 refreshed/);
+    const ccxrayCalls = fs.readFileSync(ccxray.log, 'utf8').trim().split('\n');
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 1,
+      `expected one shared usage run, saw: ${ccxrayCalls.join(' | ')}`);
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('status')).length, 1,
+      `expected one shared status run, saw: ${ccxrayCalls.join(' | ')}`);
+    const herdrCalls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
+    assert.equal(herdrCalls.filter(call => call.startsWith('agent list')).length, 1,
+      `children (including the no-session pane) must reuse the parent's agent list, saw: ${herdrCalls.join(' | ')}`);
+  });
+
+  // A transient parent failure must not be broadcast: the children whose
+  // shared report is missing recompute their own (usage runs 1 failed + 2
+  // recomputed = 3 times) and the badges still render from real data. A
+  // version that shares failed reports runs usage once and paints every pane
+  // "not linked".
+  it('does not poison the fan-out when the parent usage report fails once', () => {
+    const ccxray = makeCountingCcxray({ failFirstUsage: true });
+    const herdr = makeFanoutHerdr(twoAgents);
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /2 refreshed/);
+    const ccxrayCalls = fs.readFileSync(ccxray.log, 'utf8').trim().split('\n');
+    assert.equal(ccxrayCalls.filter(call => call.startsWith('usage')).length, 3,
+      `each child must recompute the failed shared usage, saw: ${ccxrayCalls.join(' | ')}`);
+  });
+
+  // FAIL-ON-OLD: pre-fix the summary line had no timed-out bucket — a killed
+  // child was indistinguishable from an honest non-zero exit.
+  it('reports a child killed at the cap as timed out, not refreshed', () => {
+    const ccxray = makeCountingCcxray();
+    const herdr = makeFanoutHerdr(twoAgents.slice(0, 1), { sleepMs: 3000 });
+    const result = runScript('refresh-all-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+      CCXRAY_BADGE_CHILD_TIMEOUT_MS: '500',
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /0 refreshed, 1 timed out \(over 500ms\)/);
+  });
+
+  it('refresh-badges falls back to its own reports when the shared file is bad', () => {
+    const ccxray = makeCountingCcxray();
+    const bogus = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bogus-shared-')), 'report.json');
+    fs.writeFileSync(bogus, 'not json');
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+      CCXRAY_BIN: ccxray.bin,
+      CCXRAY_BADGE_SHARED_REPORT: bogus,
+    });
+    assert.match(result.stdout, /ccxray badges refreshed/);
+    const calls = fs.readFileSync(ccxray.log, 'utf8');
+    assert.match(calls, /usage/, 'a bad shared file must fail open to a self-run usage report');
+    assert.match(calls, /status/, 'a bad shared file must fail open to a self-run status report');
+  });
+});
+
+// The E3 audit (handoff 2026-08-17): sessionSummaryDetails consults the Claude
+// transcript tree, and an unset CCXRAY_IMPORT_HOMES means the developer's real
+// $HOME/.claude*/projects (the #407 shape — green only because the real data
+// happens to be empty). The #553 session fixed the call sites and verified
+// 7 → 0 real-path accesses, but that instrumentation was evidence, not
+// enforcement. This is the mechanism: same recursive-source-scan class as
+// test/invariant-encapsulation.test.js. See ADR 0015 R4 and docs/testing.md.
+describe('audit: sessionSummaryDetails call sites pin CCXRAY_IMPORT_HOMES', () => {
+  it('every call whose opts set CCXRAY_HOME also sets CCXRAY_IMPORT_HOMES', () => {
+    const source = fs.readFileSync(__filename, 'utf8');
+    const marker = 'sessionSummaryDetails(';
+    const spans = [];
+    let from = 0;
+    for (;;) {
+      const start = source.indexOf(marker, from);
+      if (start === -1) break;
+      let depth = 0;
+      let end = -1;
+      for (let i = start + marker.length - 1; i < source.length; i++) {
+        if (source[i] === '(') depth++;
+        else if (source[i] === ')') {
+          depth--;
+          if (depth === 0) { end = i; break; }
+        }
+      }
+      assert.notEqual(end, -1, `unbalanced parens after offset ${start}`);
+      spans.push(source.slice(start, end + 1));
+      from = end + 1;
+    }
+    assert.ok(spans.length >= 10, `expected the known call sites, found ${spans.length}`);
+    for (const span of spans) {
+      if (!span.includes('CCXRAY_HOME')) continue;
+      assert.ok(span.includes('CCXRAY_IMPORT_HOMES'),
+        `sessionSummaryDetails call sets CCXRAY_HOME without pinning CCXRAY_IMPORT_HOMES `
+        + `(stats the developer's real transcripts):\n${span.slice(0, 200)}`);
+    }
   });
 });
