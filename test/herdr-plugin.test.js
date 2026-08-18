@@ -2644,6 +2644,23 @@ describe('Herdr plugin commands', () => {
     assert.ok(plan.args.includes('codex'));
   });
 
+  // #555: `ccxray status` can append "Note: port N is held by ..." lines; the
+  // plugin's status parser must surface them so doctor can show the one hint
+  // that explains a failed launch (grok review P2, 2026-08-18).
+  it('parseStatus surfaces #555 Note lines without flipping running', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const parsed = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 4701), so it cannot be shared as a hub.',
+      'Note: Leave it running; relaunch with PROXY_PORT=<other-port> (e.g. PROXY_PORT=5600 ccxray claude) to run the hub on a different port.',
+    ].join('\n'));
+    assert.equal(parsed.running, false);
+    assert.equal(parsed.notes.length, 2);
+    assert.match(parsed.notes[0], /held by a standalone/);
+    const plain = parseStatus('No hub running.\n');
+    assert.deepEqual(plain.notes, []);
+  });
+
   // #555 port escape hatch: PROXY_PORT must travel launch-agent → pane runner
   // → spawned ccxray as an explicit contract, because the runner executes in
   // the Herdr pane's environment, not the launcher's.

@@ -205,6 +205,18 @@ describe('hub server routes', () => {
     assert.equal(typeof data.hub, 'boolean');
   });
 
+  it('health reports hub:true only after setHubPort (#555)', async () => {
+    hub.setHubPort(4321);
+    try {
+      const data = await httpGet(port, '/_api/health');
+      assert.equal(data.hub, true);
+    } finally {
+      hub.setHubPort(null);
+    }
+    const data = await httpGet(port, '/_api/health');
+    assert.equal(data.hub, false);
+  });
+
   it('GET /_api/hub/status → 410 (moved to socket)', async () => {
     const statusCode = await httpGetStatus(port, '/_api/hub/status');
     assert.equal(statusCode, 410);

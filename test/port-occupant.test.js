@@ -132,6 +132,17 @@ describe('#555 probePortOccupant', () => {
     } finally { srv.close(); }
   });
 
+  it('does not trust an ok-shaped body on a non-200 response', async () => {
+    const srv = await listen((req, res) => {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, app: 'ccxray', pid: 1 }));
+    });
+    try {
+      const occ = await hub.probePortOccupant(srv.address().port);
+      assert.equal(occ.kind, 'foreign-http');
+    } finally { srv.close(); }
+  });
+
   it('classifies a listener that never answers as silent', async () => {
     const srv = await listen(() => { /* accept, never respond */ });
     try {
@@ -168,9 +179,25 @@ describe('#555 describePortOccupant message contract', () => {
 
   it('names a standalone ccxray occupant with its pid and says it is not a hub', () => {
     const lines = hub.describePortOccupant({ kind: 'ccxray-standalone', pid: 4242 }, 5577).join('\n');
-    assert.match(lines, /standalone ccxray \(pid 4242\)/);
-    assert.match(lines, /not a hub/);
+    assert.match(lines, /standalone \(non-hub\) ccxray \(pid 4242\)/);
+    assert.match(lines, /cannot be shared as a hub/);
     assert.match(lines, /Leave it running/);
+    // grok review P2: hub:false also covers dashboard-only servers, so the
+    // message must not claim the occupant was started with --port.
+    assert.doesNotMatch(lines, /--port/);
+  });
+
+  it('describes an undiscoverable hub without prescribing a restart as the only fix', () => {
+    const lines = hub.describePortOccupant({ kind: 'ccxray-hub', pid: 77 }, 5577).join('\n');
+    assert.match(lines, /ccxray hub \(pid 77\)/);
+    assert.match(lines, /cannot discover/);
+    assert.match(lines, /PROXY_PORT/);
+  });
+
+  it('shows a copy-pasteable PROXY_PORT form, not shell `set` syntax', () => {
+    const lines = hub.describePortOccupant({ kind: 'foreign-http' }, 5577).join('\n');
+    assert.match(lines, /PROXY_PORT=5600 ccxray claude/);
+    assert.doesNotMatch(lines, /\bset PROXY_PORT\b/);
   });
 
   it('tells the user not to kill a foreign HTTP service', () => {
@@ -202,7 +229,7 @@ describe('#555 ccxray status names a non-hub occupant', () => {
       const result = await runServer(['status'], isolatedEnv({ PROXY_PORT: String(port) }));
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /No hub running\./);
-      assert.match(result.stdout, new RegExp(`Note: port ${port} is held by a standalone ccxray \\(pid 4242\\)`));
+      assert.match(result.stdout, new RegExp(`Note: port ${port} is held by a standalone \\(non-hub\\) ccxray \\(pid 4242\\)`));
       assert.match(result.stdout, /PROXY_PORT/);
     } finally { srv.close(); }
   });

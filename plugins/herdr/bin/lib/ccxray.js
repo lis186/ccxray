@@ -120,11 +120,17 @@ function parseStatus(text) {
   const portMatch = clean.match(/localhost:(\d{2,5})/) || clean.match(/\bport\s+(\d{2,5})\b/i);
   const pidMatch = clean.match(/\bpid[:\s]+(\d+)\b/i) || clean.match(/\bPID[:\s]+(\d+)\b/);
   const clientsMatch = clean.match(/\bclients?[:\s]+(\d+)\b/i);
+  // #555: `ccxray status` may append "Note: port N is held by …" lines when
+  // no hub runs but the default port is occupied. Surface them (doctor shows
+  // them) instead of silently dropping the one hint that explains a failed
+  // launch.
+  const notes = clean.split('\n').map(l => l.trim()).filter(l => l.startsWith('Note: '));
   return {
     running: !noHub && Boolean(portMatch || pidMatch || /hub/i.test(clean)),
     port: portMatch ? Number(portMatch[1]) : null,
     pid: pidMatch ? Number(pidMatch[1]) : null,
     clients: clientsMatch ? Number(clientsMatch[1]) : null,
+    notes,
   };
 }
 

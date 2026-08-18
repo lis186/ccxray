@@ -625,14 +625,19 @@ function probePortOccupant(port, timeoutMs = 1500) {
       let data = '';
       res.on('data', c => { data += c; if (data.length > 4096) req.destroy(); });
       res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed && parsed.ok === true && parsed.app === 'ccxray') {
-            resolve({ kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone', pid: parsed.pid || null, version: parsed.version || null });
-            return;
-          }
-          if (parsed && parsed.ok === true) { resolve({ kind: 'health-ok', pid: null }); return; }
-        } catch {}
+        // Only a 200 counts as a health answer — a foreign service that
+        // happens to echo { ok: true } on an error page must not be
+        // classified as ccxray (grok review P3, 2026-08-18).
+        if (res.statusCode === 200) {
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed && parsed.ok === true && parsed.app === 'ccxray') {
+              resolve({ kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone', pid: parsed.pid || null, version: parsed.version || null });
+              return;
+            }
+            if (parsed && parsed.ok === true) { resolve({ kind: 'health-ok', pid: null }); return; }
+          } catch {}
+        }
         resolve({ kind: 'foreign-http', pid: null });
       });
       res.on('error', () => resolve({ kind: 'silent', pid: null }));
@@ -653,17 +658,24 @@ function probePortOccupant(port, timeoutMs = 1500) {
 // moves the hub (discovery + fork) rather than opting out of hub mode the way
 // --port does.
 function describePortOccupant(occ, port) {
-  const escape = `set PROXY_PORT=<other-port> to run the hub on a different port`;
+  // Copy-pasteable form: bash/zsh `set X=Y` does not export, so the hint
+  // shows the prefix form a user can actually run (grok review P2).
+  const escape = `relaunch with PROXY_PORT=<other-port> (e.g. PROXY_PORT=5600 ccxray claude) to run the hub on a different port`;
   switch (occ && occ.kind) {
     case 'ccxray-standalone':
+      // hub:false covers both `--port` standalones and dashboard-only
+      // servers — do not over-claim how it was started (grok review P2).
       return [
-        `port ${port} is held by a standalone ccxray${occ.pid ? ` (pid ${occ.pid})` : ''} started with --port — it is not a hub and cannot be shared.`,
+        `port ${port} is held by a standalone (non-hub) ccxray${occ.pid ? ` (pid ${occ.pid})` : ''}, so it cannot be shared as a hub.`,
         `Leave it running; ${escape}.`,
       ];
     case 'ccxray-hub':
+      // The hub may be healthy under a different CCXRAY_HOME — only its
+      // lockfile is unreachable from here; do not prescribe a restart as
+      // the sole fix (grok review P2).
       return [
-        `port ${port} answers as a ccxray hub${occ.pid ? ` (pid ${occ.pid})` : ''} but its lockfile is missing.`,
-        `Restart that hub so it rewrites its lockfile, or ${escape}.`,
+        `port ${port} answers as a ccxray hub${occ.pid ? ` (pid ${occ.pid})` : ''} that this launch cannot discover (no matching lockfile under this CCXRAY_HOME).`,
+        `If it is yours, restart it so it rewrites its lockfile; otherwise ${escape}.`,
       ];
     case 'health-ok':
       return [
