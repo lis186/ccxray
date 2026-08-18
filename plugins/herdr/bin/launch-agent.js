@@ -22,7 +22,19 @@ function parseArgs(argv) {
     placement: process.env.CCXRAY_HERDR_LAUNCH_PLACEMENT === 'split' ? 'split' : 'tab',
     direction: process.env.CCXRAY_HERDR_LAUNCH_DIRECTION || 'right',
     ratio: process.env.CCXRAY_HERDR_LAUNCH_RATIO || '0.5',
+    proxyPort: (process.env.PROXY_PORT || '').trim(),
   };
+}
+
+// PROXY_PORT is the plugin's port escape hatch (#555): it moves the shared
+// hub's port (server/config.js reads it into config.PORT, which feeds hub
+// discovery and the hub fork) without opting the launch out of hub mode the
+// way an explicit --port would. Returns null (unset), a number, or NaN.
+function parseProxyPort(raw) {
+  if (!raw) return null;
+  if (!/^\d{1,5}$/.test(raw)) return NaN;
+  const port = Number(raw);
+  return port >= 1 && port <= 65535 ? port : NaN;
 }
 
 // INVARIANT: the launch directory comes from currentWorkspaceScope(), the same
@@ -56,7 +68,7 @@ function openArgs(args, ctx) {
   return out;
 }
 
-function runnerCommand(agent, paneId, ctx) {
+function runnerCommand(agent, paneId, ctx, proxyPort) {
   const override = process.env.CCXRAY_HERDR_LAUNCH_COMMAND_JSON;
   if (override) {
     try {
@@ -64,7 +76,7 @@ function runnerCommand(agent, paneId, ctx) {
       if (Array.isArray(parsed) && parsed.length && parsed.every(p => typeof p === 'string')) return parsed;
     } catch {}
   }
-  return [
+  const command = [
     process.execPath,
     path.join(pluginRoot(), 'bin', 'run-agent.js'),
     agent,
@@ -73,12 +85,22 @@ function runnerCommand(agent, paneId, ctx) {
     ctx.tabId,
     ctx.sourcePaneId,
   ];
+  // The runner executes inside the new Herdr pane, whose environment is not
+  // this process's — the port must travel as an argument, not be assumed to
+  // arrive via env inheritance.
+  if (proxyPort) command.push(`--proxy-port=${proxyPort}`);
+  return command;
 }
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!SUPPORTED.has(args.agent)) {
     console.error(`Unsupported agent "${args.agent || ''}". Expected claude, codex, or grok.`);
+    process.exit(2);
+  }
+  const proxyPort = parseProxyPort(args.proxyPort);
+  if (Number.isNaN(proxyPort)) {
+    console.error(`Invalid PROXY_PORT "${args.proxyPort}" — expected a port number (1-65535).`);
     process.exit(2);
   }
   const ctx = context();
@@ -97,6 +119,7 @@ function main() {
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
       tabId: ctx.tabId || null,
+      proxyPort: proxyPort || null,
     }, null, 2));
     process.exit(0);
   }
@@ -126,7 +149,7 @@ function main() {
   const command = runnerCommand(args.agent, paneId, {
     ...ctx,
     tabId: openedData?.result?.tab?.tab_id || ctx.tabId,
-  });
+  }, proxyPort);
   recordRoutedPane(paneId, args.agent);
   const run = runHerdr(['pane', 'run', paneId, ...command], { timeoutMs: 3000 });
   // A timeout is an unknown outcome, not a failure: Herdr may already have

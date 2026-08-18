@@ -55,6 +55,9 @@ function main() {
     console.log(`Hub: running${bits.length ? ` (${bits.join(', ')})` : ''}`);
   } else {
     console.log('Hub: not running');
+    // #555: status appends Note lines when the default port is held by a
+    // non-hub process — the one hint that explains why a launch would fail.
+    for (const note of status.parsed.notes || []) console.log(note);
   }
 
   if (usage.ok) {

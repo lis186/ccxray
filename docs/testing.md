@@ -61,9 +61,10 @@ changes, and cwd filtering drops the fixture entries. `HERDR_WORKSPACE_ID` alone
 turned 14 tests red; the full ambient set, 16.
 
 `test/herdr-plugin.test.js` therefore builds every child env through
-`pluginEnv()`, which drops all `HERDR_*` **and** `CCXRAY_*` keys before applying
-the test's own overrides (and defaults `CCXRAY_HOME` to an empty throwaway home,
-per rule 1). Tests that call plugin library functions in-process pass the same
+`pluginEnv()`, which drops all `HERDR_*` **and** `CCXRAY_*` keys — plus
+`PROXY_PORT`, which joined the plugin's env surface with the #555 launch port
+escape hatch — before applying the test's own overrides (and defaults
+`CCXRAY_HOME` to an empty throwaway home, per rule 1). Tests that call plugin library functions in-process pass the same
 `pluginEnv({...})` object rather than `{ ...process.env, ... }`. The guard test
 `ignores the ambient Herdr environment of the shell running the suite` sets those
 variables deliberately and asserts the output is unaffected.
