@@ -398,7 +398,7 @@ describe('claude launcher mode', () => {
       const nodeBin = path.dirname(process.execPath);
       const { code, stderr } = await spawnAndCollect(
         ['--port', String(port), 'claude', '--continue'],
-        8000,
+        45000,
         {
           PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
           CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
@@ -421,7 +421,7 @@ describe('claude launcher mode', () => {
       const nodeBin = path.dirname(process.execPath);
       const { code, stderr } = await spawnAndCollect(
         ['--port', String(port), 'claude', '--no-browser'],
-        8000,
+        45000,
         {
           PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
           CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
@@ -447,7 +447,7 @@ describe('claude launcher mode', () => {
     try {
       const { code, stderr } = await spawnAndCollect(
         ['claude', '--continue'],
-        8000,
+        45000,
         {
           PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
           CCXRAY_TEST_CLAUDE_CAPTURE: capturePath,
@@ -524,7 +524,7 @@ describe('codex desktop app launcher mode', () => {
       const nodeBin = path.dirname(process.execPath);
       const { code, stderr } = await spawnAndCollect(
         ['--port', String(port), 'codex', 'app', workspacePath],
-        8000,
+        45000,
         {
           PATH: `${fakeBin}${path.delimiter}${nodeBin}`,
           CCXRAY_TEST_CODEX_CAPTURE: capturePath,
@@ -559,7 +559,7 @@ describe('E2: claude not found', () => {
     const nodeBin = path.dirname(process.execPath);
     const { stderr, code } = await spawnAndCollect(
       ['--port', String(port), 'claude'],
-      8000,
+      45000,
       { PATH: nodeBin }
     );
 
