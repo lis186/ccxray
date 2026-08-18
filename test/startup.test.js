@@ -143,7 +143,7 @@ describe('S4: standalone mode', () => {
 
   it('serves health endpoint', async () => {
     const data = await httpGet(port, '/_api/health');
-    assert.deepEqual(data, { ok: true });
+    assert.equal(data.ok, true); // #555: health carries occupant identity now
   });
 
   it('serves dashboard HTML at /', async () => {
@@ -244,7 +244,7 @@ describe('S6: hub mode startup', () => {
 
   it('responds to health check', async () => {
     const data = await httpGet(port, '/_api/health');
-    assert.deepEqual(data, { ok: true });
+    assert.equal(data.ok, true); // #555: health carries occupant identity now
   });
 
   it('accepts client registration via socket', async () => {
@@ -370,7 +370,7 @@ describe('R2: hub crash recovery', () => {
 
     // 6. Verify new hub is healthy
     const health = await httpGet(port, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
 
     await killAndWait(child2);
   });
@@ -1319,7 +1319,7 @@ describe('Intercept lifecycle', () => {
 
     // Verify proxy is still healthy
     const health = await httpGet(proxyPort, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
   });
 });
 
@@ -1363,7 +1363,7 @@ describe('Proxy error paths', () => {
   it('E1: proxy survives after upstream error (not crashed)', async () => {
     // Health check still works after error
     const health = await httpGet(proxyPort, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
   });
 });
 
@@ -1493,7 +1493,7 @@ describe('Proxy upstream error responses', () => {
     nextResponse = null;
     await new Promise(r => setTimeout(r, 200));
     const health = await httpGet(proxyPort, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
   });
 
   it('E3b: upstream socket destroyed mid-SSE → proxy handles ECONNRESET', async () => {
@@ -1522,7 +1522,7 @@ describe('Proxy upstream error responses', () => {
   it('E3b: proxy survives socket destroy', async () => {
     await new Promise(r => setTimeout(r, 300));
     const health = await httpGet(proxyPort, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
   });
 });
 
@@ -1764,7 +1764,7 @@ describe('Hub recovery race: two simultaneous forks', () => {
 
     // Only one hub should be listening
     const health = await httpGet(port, '/_api/health');
-    assert.deepEqual(health, { ok: true });
+    assert.equal(health.ok, true); // #555: health carries occupant identity now
 
     // Lockfile should exist with correct port
     const lockPath = path.join(TEST_HOME, 'hub.json');
@@ -1986,7 +1986,7 @@ describe('Proxy loop startup guard', () => {
     try {
       await waitForPort(proxyPort);
       const health = await httpGet(proxyPort, '/_api/health');
-      assert.deepEqual(health, { ok: true });
+      assert.equal(health.ok, true); // #555: health carries occupant identity now
     } finally {
       await killAndWait(proxyChild);
     }
@@ -2001,7 +2001,7 @@ describe('Proxy loop startup guard', () => {
     try {
       await waitForPort(proxyPort);
       const health = await httpGet(proxyPort, '/_api/health');
-      assert.deepEqual(health, { ok: true });
+      assert.equal(health.ok, true); // #555: health carries occupant identity now
     } finally {
       await killAndWait(proxyChild);
     }
@@ -2016,7 +2016,7 @@ describe('Proxy loop startup guard', () => {
     try {
       await waitForPort(proxyPort);
       const health = await httpGet(proxyPort, '/_api/health');
-      assert.deepEqual(health, { ok: true });
+      assert.equal(health.ok, true); // #555: health carries occupant identity now
     } finally {
       await killAndWait(proxyChild);
     }
@@ -2051,7 +2051,7 @@ describe('Proxy loop startup guard', () => {
     try {
       await waitForPort(proxyPort);
       const health = await httpGet(proxyPort, '/_api/health');
-      assert.deepEqual(health, { ok: true });
+      assert.equal(health.ok, true); // #555: health carries occupant identity now
     } finally {
       await killAndWait(proxyChild);
     }
