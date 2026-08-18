@@ -154,6 +154,8 @@ describe('#563 statusline consent prompt', () => {
     const r = await runLaunch(sc, { input: '\\n' });
     assert.match(r.marker, /CLAUDE_RAN/, r.log);
     assert.match(r.log, /\[y\/N\]/, 'unparseable file must not advertise Yes');
+    assert.match(r.log, /could not be parsed/, 'prompt says what y would really do (grok round-2 P3)');
+    assert.doesNotMatch(r.log, /delegated, not replaced/, 'must not borrow the wrap copy');
     assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{ this is not json', 'file left byte-identical');
     assert.equal(r.declined, true);
   });

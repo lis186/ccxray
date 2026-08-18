@@ -608,6 +608,7 @@ function promptClaudeStatusline() {
     // risk — a pure addition (no statusline configured) defaults to yes, while
     // wrapping an existing statusline requires a conscious "y".
     let hasExisting = false;
+    let unparseable = false;
     try {
       const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
       try {
@@ -618,11 +619,14 @@ function promptClaudeStatusline() {
         // addition — installing would overwrite unknown content. Treat it as
         // wrap-risk so the default stays No (grok review P2, 2026-08-18).
         hasExisting = true;
+        unparseable = true;
       }
     } catch {} // missing file = genuinely nothing configured
-    const impactNote = hasExisting
-      ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
-      : 'no statusline is configured today, so this only adds one';
+    const impactNote = unparseable
+      ? 'your settings.json exists but could not be parsed — installing would REWRITE it'
+      : hasExisting
+        ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
+        : 'no statusline is configured today, so this only adds one';
     const defTag = hasExisting ? '[y/N]' : '[Y/n]';
     const readline = require('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
