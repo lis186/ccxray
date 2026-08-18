@@ -881,8 +881,19 @@ if (process.argv[2] === 'setup-statusline') {
 if (process.argv[2] === 'status') {
   const lock = hub.readHubLock();
   if (!lock) {
-    console.log('No hub running.');
-    process.exit(0);
+    // #555: "No hub running" alone is misleading when the hub's default port
+    // is held by something else (e.g. a standalone `ccxray --port 5577`, which
+    // writes no lockfile) — a subsequent hub launch will fail on that port.
+    // Probe and say so.
+    (async () => {
+      const occ = await hub.probePortOccupant(config.PORT, 1000);
+      console.log('No hub running.');
+      if (occ.kind !== 'free') {
+        hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
+      }
+      process.exit(0);
+    })();
+    return; // prevent falling through while the probe runs
   }
   if (!hub.isPidAlive(lock.pid)) {
     console.log('Hub lockfile exists but process is dead. Cleaning up.');
@@ -1141,7 +1152,12 @@ async function startServer() {
           if (err.code === 'EADDRINUSE') {
             // Log the recovery hint to hub.log (console.error → stderr → hub.log).
             // Prefixed with "Error:" so the client's /error|EADDRINUSE/i filter picks it up.
-            console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s — if a previous ccxray is stuck, run: kill $(lsof -t -i:${config.PORT})`);
+            // #555: identify the occupant before advising — the old unconditional
+            // `kill $(lsof …)` hint would have killed a deliberate listener.
+            const occ = await hub.probePortOccupant(config.PORT);
+            const advice = hub.describePortOccupant(occ, config.PORT);
+            if (advice.length) advice.forEach(l => console.error(`Error: ${l}`));
+            else console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s but nothing answered a probe — it may have been released; retry.`);
           }
           throw err;
         }
@@ -1278,7 +1294,13 @@ async function startServer() {
         lastErrors.forEach(l => console.error(`  ${l.replace(/\x1b\[[0-9;]*m/g, '')}`));
       }
       if (lines.some(l => /EADDRINUSE|already in use/i.test(l))) {
-        console.error(`\x1b[33mSuggestion: another process is using port ${config.PORT}. Use --port <other> or kill the process.\x1b[0m`);
+        // #555: probe the occupant instead of the old blanket "kill the
+        // process" advice, and offer PROXY_PORT (which moves the hub) rather
+        // than --port (which would silently opt out of hub mode).
+        const occ = await hub.probePortOccupant(config.PORT);
+        const advice = hub.describePortOccupant(occ, config.PORT);
+        if (advice.length) advice.forEach(l => console.error(`\x1b[33mSuggestion: ${l}\x1b[0m`));
+        else console.error(`\x1b[33mSuggestion: port ${config.PORT} was busy but seems free now — retry, or set PROXY_PORT=<other-port>.\x1b[0m`);
       }
     } catch {}
     process.exit(1);

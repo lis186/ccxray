@@ -197,9 +197,12 @@ describe('hub server routes', () => {
     await new Promise(resolve => server.close(resolve));
   });
 
-  it('GET /_api/health → 200 { ok: true }', async () => {
+  it('GET /_api/health → 200 ok + occupant identity (#555)', async () => {
     const data = await httpGet(port, '/_api/health');
-    assert.deepEqual(data, { ok: true });
+    assert.equal(data.ok, true);
+    assert.equal(data.app, 'ccxray');
+    assert.equal(data.pid, process.pid);
+    assert.equal(typeof data.hub, 'boolean');
   });
 
   it('GET /_api/hub/status → 410 (moved to socket)', async () => {

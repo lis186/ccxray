@@ -583,7 +583,16 @@ function handleHubRoutes(clientReq, clientRes) {
 
   if (pathname === '/_api/health' && clientReq.method === 'GET') {
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({ ok: true }));
+    // app/pid/hub identify the listener to probePortOccupant (#555) so a
+    // port-conflict message can tell a standalone ccxray from a foreign
+    // process. `hub` is true only after setHubPort — i.e. real hub mode.
+    clientRes.end(JSON.stringify({
+      ok: true,
+      app: 'ccxray',
+      pid: process.pid,
+      hub: hubListenPort != null,
+      version: require('../package.json').version,
+    }));
     return true;
   }
 
@@ -596,6 +605,84 @@ function handleHubRoutes(clientReq, clientRes) {
   }
 
   return false;
+}
+
+// ── Port-occupant probe (#555) ──────────────────────────────────────
+// When the hub port is taken, identify WHO holds it before giving advice.
+// The old message unconditionally suggested `kill $(lsof -t -i:PORT)`, which
+// is destructive when the occupant is a deliberate long-running listener
+// (e.g. a standalone `ccxray --port 5577`). Kinds:
+//   'ccxray-hub'        — answers /_api/health with app:'ccxray', hub:true
+//   'ccxray-standalone' — answers with app:'ccxray', hub:false
+//   'health-ok'         — answers { ok: true } without the app tag (older ccxray)
+//   'foreign-http'      — an HTTP server that is not ccxray
+//   'silent'            — something is bound but does not answer HTTP
+//   'free'              — connection refused (nothing listening)
+
+function probePortOccupant(port, timeoutMs = 1500) {
+  return new Promise(resolve => {
+    const req = http.get(`http://localhost:${port}/_api/health`, { timeout: timeoutMs }, res => {
+      let data = '';
+      res.on('data', c => { data += c; if (data.length > 4096) req.destroy(); });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.ok === true && parsed.app === 'ccxray') {
+            resolve({ kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone', pid: parsed.pid || null, version: parsed.version || null });
+            return;
+          }
+          if (parsed && parsed.ok === true) { resolve({ kind: 'health-ok', pid: null }); return; }
+        } catch {}
+        resolve({ kind: 'foreign-http', pid: null });
+      });
+      res.on('error', () => resolve({ kind: 'silent', pid: null }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ kind: 'silent', pid: null }); });
+    req.on('error', err => {
+      resolve({ kind: err && err.code === 'ECONNREFUSED' ? 'free' : 'silent', pid: null });
+    });
+  });
+}
+
+// Message lines for a probed occupant, shared by the hub's bind-failure log,
+// the client's post-mortem suggestion, and `ccxray status` — one composer so
+// the three surfaces cannot drift apart. Never suggests an unconditional kill:
+// only the 'silent' kind (nothing answers HTTP — possibly a genuinely stuck
+// process) mentions kill at all, and only after the user identifies the pid
+// themselves. PROXY_PORT is the escape hatch every branch offers because it
+// moves the hub (discovery + fork) rather than opting out of hub mode the way
+// --port does.
+function describePortOccupant(occ, port) {
+  const escape = `set PROXY_PORT=<other-port> to run the hub on a different port`;
+  switch (occ && occ.kind) {
+    case 'ccxray-standalone':
+      return [
+        `port ${port} is held by a standalone ccxray${occ.pid ? ` (pid ${occ.pid})` : ''} started with --port — it is not a hub and cannot be shared.`,
+        `Leave it running; ${escape}.`,
+      ];
+    case 'ccxray-hub':
+      return [
+        `port ${port} answers as a ccxray hub${occ.pid ? ` (pid ${occ.pid})` : ''} but its lockfile is missing.`,
+        `Restart that hub so it rewrites its lockfile, or ${escape}.`,
+      ];
+    case 'health-ok':
+      return [
+        `port ${port} is held by a server that answers ccxray's health check (likely an older ccxray).`,
+        `Leave it running; ${escape}.`,
+      ];
+    case 'foreign-http':
+      return [
+        `port ${port} is held by another HTTP service that is not ccxray.`,
+        `Do not kill it — ${escape}.`,
+      ];
+    case 'silent':
+      return [
+        `port ${port} is occupied by a process that does not answer HTTP — possibly a stuck ccxray.`,
+        `Inspect it with: lsof -i :${port} — kill it only if you recognise it, or ${escape}.`,
+      ];
+    default:
+      return [];
+  }
 }
 
 // ── Hub pid monitoring (client-side recovery) ───────────────────────
@@ -694,6 +781,8 @@ module.exports = {
   setHubPort,
   getHubStatus,
   handleHubRoutes,
+  probePortOccupant,
+  describePortOccupant,
   startHubMonitor,
   tryListen,
 };
