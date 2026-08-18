@@ -609,9 +609,17 @@ function promptClaudeStatusline() {
     // wrapping an existing statusline requires a conscious "y".
     let hasExisting = false;
     try {
-      const cmd = JSON.parse(fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8')).statusLine?.command || '';
-      hasExisting = Boolean(cmd) && !cmd.includes('claude-adapter');
-    } catch {}
+      const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+      try {
+        const cmd = JSON.parse(raw).statusLine?.command || '';
+        hasExisting = Boolean(cmd) && !cmd.includes('claude-adapter');
+      } catch {
+        // A settings.json that exists but does not parse is NOT a pure
+        // addition — installing would overwrite unknown content. Treat it as
+        // wrap-risk so the default stays No (grok review P2, 2026-08-18).
+        hasExisting = true;
+      }
+    } catch {} // missing file = genuinely nothing configured
     const impactNote = hasExisting
       ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
       : 'no statusline is configured today, so this only adds one';
@@ -625,7 +633,7 @@ function promptClaudeStatusline() {
         + `   ${impactNote}; fully restored on removal (ccxray setup-statusline).\x1b[0m \x1b[35m${defTag}\x1b[0m `,
         answer => {
         rl.close();
-        const a = answer.trim().toLowerCase();
+        const a = String(answer ?? '').trim().toLowerCase();
         if (a === 'y' || a === 'yes' || (a === '' && !hasExisting)) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');

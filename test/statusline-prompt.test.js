@@ -17,7 +17,7 @@
 // nonexistent path, fake `claude` binary on PATH. The pty comes from
 // script(1) with the platform branch from #556 (BSD vs util-linux argv).
 
-const { describe, it } = require('node:test');
+const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('child_process');
 const fs = require('fs');
@@ -27,6 +27,13 @@ const path = require('path');
 
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
 const NO_TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-slp-empty-'));
+const SCENARIO_DIRS = [];
+
+after(() => {
+  for (const d of [...SCENARIO_DIRS, NO_TRANSCRIPTS]) {
+    try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+  }
+});
 
 function findFreePort() {
   return new Promise((resolve, reject) => {
@@ -38,6 +45,7 @@ function findFreePort() {
 
 function makeScenario({ claudeSettings = null } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-slp-home-'));
+  SCENARIO_DIRS.push(home);
   const claudeHome = path.join(home, 'claude-config');
   fs.mkdirSync(claudeHome, { recursive: true });
   if (claudeSettings) fs.writeFileSync(path.join(claudeHome, 'settings.json'), JSON.stringify(claudeSettings));
@@ -61,6 +69,10 @@ async function runLaunch(sc, { input, env = {} }) {
     CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
     CCXRAY_PRICING_CACHE: '/nonexistent/pricing.json',
     BROWSER: 'none',
+    // Pinned empty: an ambient herdr:* id (suite run from a Herdr pane) would
+    // silently skip the prompt in the non-Herdr scenarios — the docs/testing.md
+    // §1b leak class (grok review P2). The Herdr test overrides it.
+    CCXRAY_AGENT_ID: '',
     PATH: `${sc.bin}:/usr/bin:/bin:/usr/sbin:/sbin`,
     ...env,
   }).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(' ');
@@ -75,7 +87,7 @@ async function runLaunch(sc, { input, env = {} }) {
     + `for i in $(seq 1 220); do [ -f ${JSON.stringify(sc.capture)} ] && break; sleep 0.2; done\n`
     + `sleep 1\n`
     + `[ -f ${JSON.stringify(sc.capture)} ] && echo CLAUDE_RAN || echo CLAUDE_NOT_RUN\n`
-    + `pkill -f "server/index.js --port ${port}" 2>/dev/null; true`;
+    + `pkill -f "server/index.js --port ${port} --no-browser" 2>/dev/null; true`;
   const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8', timeout: 60000 });
   let log = '';
   try { log = fs.readFileSync(out, 'utf8'); } catch {}
@@ -120,5 +132,29 @@ describe('#563 statusline consent prompt', () => {
     assert.equal(st.command, 'echo my-custom-line', 'existing statusline untouched');
     assert.equal(st._ccxrayDelegate, undefined, 'no delegation installed');
     assert.equal(r.declined, true, 'Enter records the decline');
+  });
+
+  it('an explicit y on the wrap case installs with delegation preserved', async () => {
+    const sc = makeScenario({ claudeSettings: { statusLine: { command: 'echo my-custom-line' } } });
+    const r = await runLaunch(sc, { input: 'y\\n' });
+    assert.match(r.marker, /CLAUDE_RAN/, r.log);
+    const st = readSettings(sc).statusLine;
+    assert.ok(st.command.includes('claude-adapter'), 'y installs the adapter');
+    assert.equal(st._ccxrayDelegate, 'echo my-custom-line', 'original command preserved as delegate');
+    assert.equal(r.declined, false);
+  });
+
+  // A settings.json that exists but does not parse is NOT a pure addition —
+  // installing would overwrite unknown content, so the default must stay No
+  // (grok review P2).
+  it('treats an unparseable settings.json as wrap-risk — Enter declines, file untouched', async () => {
+    const sc = makeScenario();
+    const settingsPath = path.join(sc.claudeHome, 'settings.json');
+    fs.writeFileSync(settingsPath, '{ this is not json');
+    const r = await runLaunch(sc, { input: '\\n' });
+    assert.match(r.marker, /CLAUDE_RAN/, r.log);
+    assert.match(r.log, /\[y\/N\]/, 'unparseable file must not advertise Yes');
+    assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{ this is not json', 'file left byte-identical');
+    assert.equal(r.declined, true);
   });
 });
