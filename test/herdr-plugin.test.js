@@ -540,6 +540,44 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Herdr model label agrees across surfaces', () => {
+  // The sidebar anchors on mainDisplayTurns (agentKey whitelist, then raw
+  // !isSubagent); Mission Control's turns arrive filtered only by raw
+  // !isSubagent. A Task-tool subagent carries the PARENT's sessionId with
+  // isSubagent false — the documented ADR 0005 miss — so when the label moved
+  // from a session-wide plurality to "the latest turn", the two surfaces began
+  // naming different models for one pane. The plurality had masked it.
+  it('names the same model in the sidebar badge and the Mission Control row', () => {
+    const base = {
+      sessionId: 's-agree', provider: 'anthropic', cwd: '/work/agree',
+      agentId: 'herdr:w1:p1', maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 }, cost: { cost: 0.01 },
+    };
+    const home = makeHome([
+      { ...base, id: 'a1', responseId: 'msg_a1', receivedAt: 1787000001000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
+      { ...base, id: 'a2', responseId: 'msg_a2', receivedAt: 1787000002000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
+      // arrives last, looks like main to a raw flag check, is not main
+      { ...base, id: 'a3', responseId: 'msg_a3', receivedAt: 1787000003000, agentKey: 'general-purpose', isSubagent: false, model: 'claude-haiku-4-5-20251001' },
+    ]);
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000004000' });
+    const { sessionSummaryDetails, missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+
+    const badge = sessionSummaryDetails({}, { env, paneId: 'w1:p1', cwd: '/work/agree' });
+    const snapshot = missionControlSnapshot({
+      env,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+
+    assert.equal(badge.model, 'claude-opus-5', 'badge reads the last MAIN turn');
+    assert.equal(snapshot.rows.length, 1);
+    assert.equal(snapshot.rows[0].model, badge.model,
+      'Mission Control must not name a different model than the badge');
+  });
+});
+
 describe('Herdr sidebar model reports the latest main turn', () => {
   const T = Date.parse('2026-08-19T00:00:00.000Z');
   const turn = (i, model) => ({

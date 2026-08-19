@@ -1204,6 +1204,16 @@ function hasFailureCoverage(turn) {
 
 function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const latest = turns.at(-1) || {};
+  // INVARIANT: the model label must agree with the sidebar badge for the same
+  // pane. The badge reads the last turn of `mainDisplayTurns` (agentKey
+  // whitelist first, raw !isSubagent second); this row's `turns` arrive filtered
+  // only by raw `!isSubagent` (paneSessionTelemetry) or not at all (the
+  // no-agents branch). A Task-tool subagent turn commonly carries the parent's
+  // sessionId with isSubagent false, so the two selections disagree on which
+  // turn is "latest" and named different models — which the plurality this
+  // replaced happened to hide. `latest` is deliberately left alone: freshness
+  // and staleness read EVERY turn, as they do in summarizeTurnGroup.
+  const mainLatest = mainDisplayTurns(turns).at(-1) || latest;
   const first = turns[0] || {};
   const win = turns.length ? sessionWindow(turns) : 0;
   const pcts = win ? contextPercents(turns, win) : [];
@@ -1283,10 +1293,9 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     tabId: agent?.tab_id || null,
     status,
     agent: agent?.display_agent || agent?.agent || latest.agentType || latest.agent || shortModel(latest.model),
-    // Same latest-turn rule as the sidebar badge (summarizeTurnGroup, which
-    // sessionSummaryDetails folds through) — Mission Control and the sidebar
-    // must not name different models for one pane.
-    model: latest.model || 'unknown',
+    // Same latest-MAIN-turn rule as the sidebar badge (summarizeTurnGroup,
+    // which sessionSummaryDetails folds through) — see mainLatest above.
+    model: mainLatest.model || 'unknown',
     sessionId: latest.sessionId || null,
     sessionRole: opts.sessionRole || null,
     sessionSelectedBy: opts.sessionSelectedBy || null,
