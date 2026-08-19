@@ -82,13 +82,20 @@ function runCommand(command, args = [], opts = {}) {
     windowsHide: true,
   });
 
+  const stdout = result.stdout || '';
+  const stderr = result.stderr || '';
   return {
     status: result.status,
     signal: result.signal,
     error: result.error,
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
+    stdout,
+    stderr,
     timedOut: result.error && result.error.code === 'ETIMEDOUT',
+    // herdr CLI puts success JSON on stdout and error JSON on stderr. Callers
+    // that only parsed stdout silently got null on failure and could not read
+    // the error code (E2 retro). This field merges both so every call site
+    // gets the parsed result without remembering which stream to check.
+    parsed: parseJsonOutput(stdout) || parseJsonOutput(stderr),
   };
 }
 

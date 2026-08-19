@@ -2696,6 +2696,25 @@ describe('Herdr plugin commands', () => {
     assert.deepEqual(plain.notes, []);
   });
 
+  // E2 retro: herdr CLI puts error JSON on stderr. runCommand.parsed must
+  // merge both streams so callers don't silently get null on failure.
+  it('runCommand exposes parsed JSON from stdout and stderr', () => {
+    const { runHerdr } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-parsed-'));
+    const bin = path.join(dir, 'herdr');
+    // Success on stdout
+    fs.writeFileSync(bin, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({result:{ok:true}})+"\\n");\n');
+    fs.chmodSync(bin, 0o755);
+    const ok = runHerdr(['test'], { env: { ...process.env, HERDR_BIN_PATH: bin } });
+    assert.deepEqual(ok.parsed?.result, { ok: true });
+
+    // Error on stderr (the E2 pattern)
+    fs.writeFileSync(bin, '#!/usr/bin/env node\nprocess.stderr.write(JSON.stringify({error:{code:"agent_pane_busy"}})+"\\n");process.exit(1);\n');
+    fs.chmodSync(bin, 0o755);
+    const err = runHerdr(['test'], { env: { ...process.env, HERDR_BIN_PATH: bin } });
+    assert.equal(err.parsed?.error?.code, 'agent_pane_busy');
+  });
+
   // #555 port escape hatch: PROXY_PORT must travel launch-agent → pane runner
   // → spawned ccxray as an explicit contract, because the runner executes in
   // the Herdr pane's environment, not the launcher's.

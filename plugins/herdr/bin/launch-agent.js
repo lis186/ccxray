@@ -9,7 +9,6 @@ const {
   currentWorkspaceScope,
   ensureProxy,
   herdrRuntime,
-  parseJsonOutput,
   proxyEnvVars,
   pluginStateDir,
   recordRoutedPane,
@@ -141,8 +140,7 @@ function main() {
 
   // 4. Create a pane with the proxy env vars injected.
   const opened = runHerdr(openArgs(args, ctx, envVars), { timeoutMs: 5000 });
-  const openedData = parseJsonOutput(opened.stdout);
-  const paneId = openedData?.result?.root_pane?.pane_id || openedData?.result?.pane?.pane_id;
+  const paneId = opened.parsed?.result?.root_pane?.pane_id || opened.parsed?.result?.pane?.pane_id;
   if (!paneId) {
     process.stderr.write(opened.stderr || opened.stdout || opened.error?.message || 'Failed to create the Herdr agent pane.\n');
     process.exit(1);
@@ -160,11 +158,10 @@ function main() {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     if (attempt > 0) spawnSync('sleep', [String(attempt < 3 ? 1 : 2)]);
     started = runHerdr(agentArgs, { timeoutMs: 50000 });
-    startedData = parseJsonOutput(started.stdout) || parseJsonOutput(started.stderr);
-    detected = startedData?.result?.agent?.agent;
-    log(`attempt=${attempt} detected=${detected} err=${startedData?.error?.code || ''}`);
+    detected = started.parsed?.result?.agent?.agent;
+    log(`attempt=${attempt} detected=${detected} err=${started.parsed?.error?.code || ''}`);
     if (detected) break;
-    const err = startedData?.error?.code || '';
+    const err = started.parsed?.error?.code || '';
     if (err !== 'agent_pane_busy') break;
   }
 
