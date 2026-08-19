@@ -2,6 +2,10 @@
 
 TL;DR：subagent token/cost **並非「counted nowhere」**——`cost-worker.js` 的遞迴掃描早就把它們算進 Usage tab 且按各自 model 計價；真正的缺口只在 `importer.js`（index → dashboard）。而 issue 指定的「roll up 成 parent index line 的聚合欄位」會**打破**它援引的 count-once invariant，因為聚合值沒有 `responseId`，無法與 proxy 已錄的同一筆 subagent turn 去重。
 
+**Owner 決策（2026-08-20）：採 Option A**（當普通 entry 匯入，歸屬 transcript 自報的
+parent sessionId），含 §5a 的兩項修正。Option C 經實測為空（§5），Option D 為明確不補的
+對照選項。修復型 issue 待 `APPROVE-DESIGN 565-diag-2026-08-20` 於 #565 簽核後生成。
+
 - Issue: [#565](https://github.com/lis186/ccxray/issues/565)
 - 相關：[#546](https://github.com/lis186/ccxray/issues/546)（multi-provider cost attribution data model）、[#508](https://github.com/lis186/ccxray/issues/508)（Codex importer 不設 responseId）、[#507](https://github.com/lis186/ccxray/issues/507)（`tsToId` 10ms 桶碰撞）、[#117](https://github.com/lis186/ccxray/issues/117)（subagent identity）
 - ADR：[0012](../decisions/0012-response-id-read-time-merge.md)（responseId 去重＝count-once 的實作）、[0005](../decisions/0005-agent-key-unreliable-shared-contract.md) / [0008](../decisions/0008-temporal-overlap-overrides-agent-key.md) / [0010](../decisions/0010-corehash-identity-routing.md)（fork vs teammate 身分推論）、[0017](../decisions/0017-aggregate-cost-confidence.md)（aggregate cost fold）、[0016](../decisions/0016-restore-stream-snapshot-byte-bound.md)（index 規模／restore）
@@ -107,7 +111,7 @@ issue 的 Scope 寫：
 
 - `agent-*.jsonl`：**13,175** 檔（flat 11,187 / `workflows/` 下 1,988）
 - usage line：**323,196**；以 `message.id` 聚合後（#428 規則）＝ **70,417 個 turn**
-- 觸及的 parent session：**798**
+- 觸及的 parent session：**799**
 - token 總量（單位：百萬）
 
 | model | input | output | cache read | cache create |
@@ -125,49 +129,140 @@ issue 的 Scope 寫：
 
 index 規模影響：70,417 個新 turn，扣掉與 proxy 副本去重後的淨增未知（見 §6）。以每行 ~700B 估計上界 ≈ 49 MB——對 ADR 0016 的 restore streaming 與 #348 residency 是可承受量級，但不是零。
 
+**per-session 分佈**（決定「畫面會變多少」，2026-08-20 補量）：799 個 parent session
+帶 subagent turn，每 session 的 subagent turn 數 median **31**、p90 **198**、max **5867**。
+其中 **17** 個 session 光 subagent turn 就超過 `SESSION_ENTRY_CAP`（預設 500,
+`server/store.js:13`），會被推進 oversized / cold-load 路徑（`restore.js:311`）——該路徑
+本身是 ADR 0012 的 merge 路徑，行為已定義，但載入方式與現在不同。
+
+**匯入沒有時間窗**：`server/importer.js` 無 `RESTORE_DAYS` / cutoff / mtime 過濾（搜過
+`Date.now|getTime|days|since|cursor`），所以 A 是**一次性全史匯入**，不是漸進式。若要
+分批落地，需要另外設計窗口——本 ADR 不預設它存在。
+
 ---
 
 ## 5. 修法選項
 
-### Option A — 當普通 entry 匯入，歸屬 transcript 自報的 parent sessionId
+### Option A — 當普通 entry 匯入，歸屬 transcript 自報的 parent sessionId 【採用】
 
-- `collectJsonlFiles` 對 Claude 端改為遞迴（或加一個 subagents pass）
+- Claude 端的 `collectJsonlFiles` 改為遞迴（或加一個 subagents pass）
 - `parseSessionFile` 的 sessionId 改取行內 `obj.sessionId`（fallback 才用檔名）
-- `isSubagent: true` 由 `isSidechain` 直接得到（不需推論）
-- `agentKey` / `agentLabel` 由 `.meta.json` 的 `agentType` 映射到 `agent-classification.js` 的鍵空間
-- 每筆自帶 `responseId = message.id` → 去重與 merge 免費
+- 逐筆自帶 `responseId = message.id` → 去重與 merge 免費
 
-**優點**：count-once 沿用現成機制；session 歸屬正確（不產生 13K 假 session）；lane / weather / cost confidence fold 全部沿用；per-model 計價天然正確。
-**成本**：index 淨增（§4）；agentType→agentKey 映射需定義，且 28% 檔案無 meta；與 #507（`tsToId` 10ms 桶）交互——subagent 行密度高，碰撞風險需一併評估。
+**優點**：符合 P1/P2/P6（見 §5b）——去重、lane、weather、cost confidence fold 全部沿用，
+零新機制；per-model 計價天然正確；add-only 可 rebuild；並且**關掉一個跨視圖不一致**——
+今天 dashboard 對這 799 個 session 的成本少報，Usage tab 沒有。
 
-### Option B — issue 現在寫的 roll-up 聚合欄位
+**成本**：70,417 turn 一次性進 index（§4）；799 個 session 的 weather / lane / cost 顯示
+同時位移；17+ 個 session 跨過 500 cap 改走 cold-load；3,739 檔（28%）無 meta 的 fallback
+需明訂。風險集中在**驗收**而非設計：位移是預期的，要證明位移是對的（§9）。
 
-**優點**：index 行數不變。
-**成本**：對 proxied session 雙計（§3）；新增聚合欄位必須併進 ADR 0017 的 confidence fold；dashboard 只多一個數字，subagent 仍不可見；未來要改成 A 時是破壞性 migration。
+### Option B — roll-up 成 parent index line 的聚合欄位
 
-### Option C — 不動 importer，只修 Usage tab 的標示
+**優點**：index 行數不變，是唯一不改變既有 session 規模的做法。
 
-cost 已正確計入，只是 `sid=agent-<id>` 這種 session id 對人無意義。若目標只是「帳對」，C 的成本近乎零。
+**成本**：踩 P2（聚合值無上游 key → proxied session 雙計）、P1（存解讀非事實）、P6（新聚合
+流須併進 ADR 0017 的 confidence fold）；dashboard 仍看不到 subagent；日後轉 A 是破壞性
+migration。
 
-**建議：A。** 它是唯一與 ADR 0012 相容的選項，且 §2 的實測顯示 issue 假設「必須 roll-up 才能避免開新 session」本身不成立。
+**收斂性**：B 唯一能正確去重的版本，必須連 subagent 的 responseId 清單一起存——那已經
+不是聚合，是 A 的低配版。**B 的 coherent 形態會收斂到 A**，所以這不是真正的二選一。
 
----
+### Option C — 修 Usage tab 的 session 標示 【經實測為空】
+
+原始評估是「成本近零的修法」。實測後**沒有東西可修**：
+
+- `cost-budget.js:215` 的日聚合確實輸出 `sessionCount: day.sessions.size`，而該值今天
+  **是被 subagent 假 session 膨脹的**——`cost-worker.js:95` 用 `path.basename(filePath)`
+  當 sessionId，所以每個 `agent-<id>.jsonl` 都算一個 session。
+- 但**沒有任何 client 檔案渲染它**。搜過 `public/`、`server/`、`test/`、`docs/` 全部
+  `sessionCount` 出現處：唯一的 client 消費者 `public/system-prompt-ui.js:286` 讀的是
+  另一個同名欄位（來自 `routes/api.js:266` 的 sysprompt 版本統計），與成本無關。
+
+所以今天 Usage tab 沒有使用者可見的錯誤：金額對、模型對、畫面上沒有 `agent-<id>`。
+**唯一受影響者是直接打 `/_api/costs` 的消費者**，它會拿到膨脹的 `sessionCount`。
+
+→ C 不是一個修法選項。`cost-worker.js:95` 應與 A 同樣改讀行內 `obj.sessionId`，列為
+**獨立 follow-up**（同一個根因、不同的讀取路徑）。
+
+### Option D — 明確不補，把缺口寫成契約
+
+**優點**：零成本零風險，且理由站得住——subagent 請求與 parent 同進程、同
+`ANTHROPIC_BASE_URL`，所以**在 ccxray 底下跑的 session，subagent turn 早就在 index 裡**
+（ADR 0005 / 0008 / 0010 整組存在就是在處理它們）。缺口只涵蓋歷史 session 與不經 proxy
+的 session。
+
+**成本**：dashboard 與 Usage tab 對這 799 個 session 永久不一致，且不一致是靜默的；§8 的
+`isFork` 校準機會一併放掉（雖然校準可用離線腳本讀 transcript 完成，不需進 index）。
+
+**適用條件**：若 importer 被定義為 best-effort backfill 而非完整性保證。
+
+### 5a. Option A 的最終形狀（兩項修正，2026-08-20）
+
+**修正 1：不得覆用 `agentKey` 承載 `meta.agentType`。**
+`public/agent-classification.js` 的值空間只有五個：`WF_MAIN_AGENT_KEYS =
+{orchestrator, sdk-agent, default}`、`AGENT_KEY_UNRELIABLE = {unknown, agent}`，且
+`agentKey` 的契約是**由 system-prompt 內容推導**（ADR 0005）。把 `fork` /
+`general-purpose` / `Explore` / `workflow-subagent` 塞進去會踩兩層：
+
+1. 同一欄位混入兩種推導來源，`isMainTurnByAgentKey` 的語意不再成立（P3）；
+2. 對 `fork` 尤其錯——fork 跑的**就是** orchestrator prompt，標成 `agentKey='fork'` 會讓
+   ADR 0010 的 coreHash 路由整組被繞過，而那正是為 fork 而存在的機制。
+
+→ `agentType` / `isFork` / `spawnDepth` 走**新的 add-only index 欄位**（ADR 0012
+`responseId` 的先例），`agentKey` 保持 prompt 推導或留空。
+
+**修正 2：`isSubagent` 取自 `isSidechain`，不重新推論。**
+transcript 每行都帶 `isSidechain: true`（抽樣 400/400），這是事實而非推論；讓 importer 走
+既有的 subagent 推斷啟發式反而引入不必要的不確定性。
+
+### 5b. 選擇原則（出自本 repo 已有的決策傳統）
+
+| # | 原則 | 出處 |
+|---|---|---|
+| P1 | 存事實，view 用 derive | ADR 0013 |
+| P2 | 去重鍵必須由上游指派，writer 不得自鑄 | ADR 0012（I-confluence） |
+| P3 | 新來源的值不得塞進既有欄位的值空間 | ADR 0005 / 0018 |
+| P4 | classification 讀 raw per-turn，display 才 fold | ADR 0013 |
+| P5 | index 欄位 add-only、可由 log 重建 | ADR 0012 / 0013 |
+| P6 | 用既存機制，不開第二條平行機制 | ADR 0005 / 0012 |
+
+**P2 是決定性的**：`msg.id` 覆蓋率實測 100%（323,196/323,196），去重鍵已由 Anthropic
+指派，A 免費得到 count-once，而 B 必須自鑄一個不存在的鍵。
+
+一個不屬於技術原則、但決定 A vs D 權重的產品問題：**dashboard 要回答「我在 ccxray 底下跑
+的工作」，還是「我所有的 agent 工作」？** 前者選 D，後者選 A。Owner 2026-08-20 選 A。
 
 ## 6. 未量測的部分（誠實邊界）
 
-- **與 proxy 已錄副本的重疊率未量測**——需讀真實 `~/.ccxray/logs/index.ndjson`，本輪依環境安全規則未讀。這個數字決定 §4 的淨增與「本 issue 到底補回多少可見度」，是 owner 決策前**最該補**的一格。owner 可自行跑：把 subagent transcript 的 `message.id` 集合與 index 的 `responseId` 集合取交集。
+- **與 proxy 已錄副本的重疊率未量測**——需讀真實 `~/.ccxray/logs/index.ndjson`，本輪依環境安全規則未讀。這個數字決定 §4 的淨增與「本 issue 到底補回多少可見度」。Owner 已選定 A（§7），所以它現在是**實作前的前提**而非決策前的參考——見 §9.1。做法：把 subagent transcript 的 `message.id` 集合與 index 的 `responseId` 集合取交集。
 - Option A 的 index 淨增只有上界估計，無實測。
-- `agentType` → `agent-classification.js` 鍵空間的映射完整性未逐一比對。
-- 未評估 subagent entry 進 index 後對 swimlane lane 數（ADR 0008/0010）與 weather 的實際影響——798 個 session 的 lane 結構會改變。
+- ~~`agentType` → `agent-classification.js` 鍵空間的映射完整性~~ — 依 §5a 修正 1，`agentType` **不**進 `agentKey`，此項不再適用（改為：新 add-only 欄位的值空間無須與 `agent-classification.js` 對齊）。
+- 未評估 subagent entry 進 index 後對 swimlane lane 數（ADR 0008/0010）與 weather 的實際影響——799 個 session 的 lane 結構會改變。
+- **語料在量測期間仍在增長**：兩次獨立掃描分別得到 798 與 799 個 parent session（同樣的篩選條件），差異來自量測期間本機仍有 subagent 在寫入。本檔一律採較新的 799；任何重跑得到 ±數個 session 屬正常，不是計算錯誤。
 
 ---
 
-## 7. 待 owner 決策
+## 7. 決策狀態
 
-1. **A / B / C 三選一**（建議 A）。
-2. **範圍與 #546 的邊界**——#546 是 multi-provider cost attribution data model；本 issue 若走 A，是否應併入其資料模型而非獨立實作？
-3. **無 `.meta.json` 的 3,739 檔（28%）**：`agentKey` 用什麼？`unknown`（走 ADR 0005 的 `AGENT_KEY_UNRELIABLE` fallback）還是從 parent 的 `tool_use` 反查 `toolUseId`？
-4. **issue body 需重寫**——`issue-lint.sh 565` 目前 `RESULT|fail`（缺 `Blocked-by:`、無可驗收訊號），且 Problem statement 的事實前提須依 §1 更正後才可派工。
+**已決（owner，2026-08-20）**：採 **Option A**，含 §5a 兩項修正。
+
+**仍待 owner**：
+
+1. **範圍與 #546 的邊界**——#546 是 multi-provider cost attribution data model；A 是否應
+   併入其資料模型而非獨立實作？
+2. **無 `.meta.json` 的 3,739 檔（28%）的 `agentType` fallback**：留 null（消費端自行處理
+   缺值），或從 parent transcript 的 `tool_use`／`meta.toolUseId` 反查？（注意：依 §5a
+   修正 1，這裡問的**不是** `agentKey`。）
+3. **一次性全史匯入是否可接受**（§4：無時間窗，70,417 turn 一次進），或需先設計分批窗口。
+4. **修復型 issue 的生成**需 #565 上的 `APPROVE-DESIGN 565-diag-2026-08-20` comment——
+   in-session 的口頭決策不構成 `authorAssociation == OWNER` 的 GitHub artifact，
+   `approve-check.sh` 驗不到。#565 的 body 本身不改（非經 owner 同意不動 issue body）。
+
+**follow-up（獨立於 A）**：
+- `cost-worker.js:95` 同樣用檔名當 sessionId → 日聚合的 `sessionCount` 被假 session 膨脹
+  （§5 Option C）。同根因、不同讀取路徑。
+- `isFork` 離線校準腳本（§8）。
 
 ---
 
@@ -186,3 +281,20 @@ ADR 0008 / 0010 與 [#222](https://github.com/lis186/ccxray/issues/222) 反覆�
 2. **匯入時的直接標註**——走 Option A 時，imported entry 可直接帶 `isFork` / `spawnDepth`，不必經推論。
 
 建議獨立開 issue 追蹤（校準腳本），不要混進本 issue 的匯入範圍。
+
+---
+
+## 9. 驗收條件（Option A）
+
+1. **先量 proxy 副本重疊率**（§6 的未量測格）：subagent `message.id` 集合 ∩ index
+   `responseId` 集合。它決定 index 真實淨增，也決定有多少 session 的畫面真的會變。需
+   owner 授權讀真實 index。**這一項是其餘驗收的前提，不是可選項。**
+2. **差異檢查（fail-on-old）**：合成 home 上舊碼 importer 產 1 行、新碼產 3 行，且三行的
+   `responseId` 各自獨立、`sessionId` 皆為 parent。
+3. **位移證據**：取 3 個 session（median 31 / p90 198 / max 5867 各一），記錄匯入前後的
+   turn 數、cost、weather、lane 數，逐項說明位移為何正確。**這是 A 唯一真正的風險面**——
+   799 個 session 的顯示會同時改變，沒有 before/after 就無法區分「修好了」與「弄壞了」。
+4. **28% 無 meta 的 fallback** 需在測試覆蓋（不是只在文件寫）。
+5. **`agentKey` 未被污染**：斷言匯入的 entry 其 `agentKey` 不含 `fork` /
+   `general-purpose` / `Explore` / `workflow-subagent` 等 spawn-metadata 值（§5a 修正 1
+   的機械化）。
