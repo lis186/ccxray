@@ -475,12 +475,6 @@ function mainDisplayTurns(turns) {
   return notSubagent.length ? notSubagent : turns;
 }
 
-function dominantModel(turns, fallback) {
-  const counts = {};
-  for (const turn of turns) counts[turn.model || fallback || 'unknown'] = (counts[turn.model || fallback || 'unknown'] || 0) + 1;
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || fallback || 'unknown';
-}
-
 const STALE_THRESHOLD_DEFAULT_MS = 600000;
 
 function staleThresholdMs(env = process.env) {
@@ -703,7 +697,13 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
     cost: sorted.length ? cost : fallback.cost,
     costText: formatMoney(sorted.length ? cost : fallback.cost),
-    model: dominantModel(anchor, fallback.model),
+    // The label reports the LATEST main turn, the same turn ctx%/cache% above
+    // read — not a plurality over the session. A plurality kept rendering the
+    // pre-/model model until the new one out-counted the old: measured on the
+    // real 4 MiB badge window, a median of 41 further turns (p90 132, worst
+    // 400). mainDisplayTurns has already dropped subagent turns, so the noise
+    // the plurality was damping is filtered upstream. Owner decision 2026-08-19.
+    model: latest.model || fallback.model || 'unknown',
     turns: sorted.length || fallback.turns || 0,
   };
 }
@@ -1283,7 +1283,10 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     tabId: agent?.tab_id || null,
     status,
     agent: agent?.display_agent || agent?.agent || latest.agentType || latest.agent || shortModel(latest.model),
-    model: dominantModel(turns, latest.model),
+    // Same latest-turn rule as the sidebar badge (summarizeTurnGroup, which
+    // sessionSummaryDetails folds through) — Mission Control and the sidebar
+    // must not name different models for one pane.
+    model: latest.model || 'unknown',
     sessionId: latest.sessionId || null,
     sessionRole: opts.sessionRole || null,
     sessionSelectedBy: opts.sessionSelectedBy || null,

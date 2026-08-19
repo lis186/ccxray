@@ -517,6 +517,55 @@ describe('Herdr sidebar main-agent anchoring', () => {
   });
 });
 
+// The badge's model label read a PLURALITY over the session's main turns while
+// ctx% and cache% next to it read the latest main turn. So `/model sonnet` did
+// not change the label until the new model out-counted the old one. Measured on
+// the real 4 MiB badge window (23 sessions, 2026-08-19): the flip needs a median
+// of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
+// report assumed. Owner decision (2026-08-19): the label reports the latest main
+// turn, matching the fields it sits beside.
+describe('Herdr sidebar model reports the latest main turn', () => {
+  const T = Date.parse('2026-08-19T00:00:00.000Z');
+  const turn = (i, model) => ({
+    id: `s${i}`, sessionId: 'sw', model, agentKey: 'orchestrator', isSubagent: false,
+    convId: 'aaaa', receivedAt: T + i * 1000, maxContext: 200000,
+    usage: { input_tokens: 20000 },
+  });
+
+  it('flips on the first turn after a /model switch, not on plurality', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    // 40 opus turns, then one sonnet turn — the shape of a /model switch mid-session.
+    const entries = [];
+    for (let i = 0; i < 40; i += 1) entries.push(turn(i, 'claude-opus-5'));
+    entries.push(turn(40, 'claude-sonnet-5'));
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'sw',
+      nowMs: T + 60000,
+    });
+    assert.equal(detail.matched, true);
+    // Under the plurality rule this was 'claude-opus-5' (40 vs 1).
+    assert.equal(detail.model, 'claude-sonnet-5');
+  });
+
+  // The plurality rule existed to damp oscillation, but `anchor` is already
+  // main-only (mainDisplayTurns drops subagent turns), so the noise it damped is
+  // filtered upstream — a subagent on another model must still not move the label.
+  it('still ignores a non-main turn that arrives last', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      turn(0, 'claude-opus-5'),
+      { ...turn(1, 'claude-fable-5'), agentKey: 'agent', isSubagent: true, convId: 'bbbb' },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'sw',
+      nowMs: T + 60000,
+    });
+    assert.equal(detail.model, 'claude-opus-5');
+  });
+});
+
 // The badge is only as fresh as the newest turn ccxray logged. A session ccxray
 // stopped observing keeps writing its transcript while the index stands still,
 // so the badge pairs a live-ticking age with frozen numbers — measured on real
