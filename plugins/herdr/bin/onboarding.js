@@ -81,7 +81,16 @@ function installedKeys(env = process.env) {
   }
   const mission = boundKeyFor(config, 'ccxray.herdr.mission-control');
   const quickStart = boundKeyFor(config, 'ccxray.herdr.quick-start');
-  return { mission, quickStart, any: Boolean(mission || quickStart) };
+  // `all` vs `any` is load-bearing: the row's action is chosen by `all`, so a
+  // PARTIAL install (one key free, one already bound by the user) still offers
+  // install. Keying the action on `any` meant Enter removed the one binding
+  // that had succeeded, and the missing one could never be added from the TUI.
+  return {
+    mission,
+    quickStart,
+    any: Boolean(mission || quickStart),
+    all: Boolean(mission && quickStart),
+  };
 }
 
 function snapshot(env = process.env) {
@@ -156,9 +165,11 @@ function menuItems(state) {
       id: 'keybindings',
       key: 'B',
       label: 'Keybindings',
-      detail: keys.any
+      detail: keys.all
         ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · Enter remove`
-        : 'not bound · Enter install',
+        : (keys.any
+          ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · 1 of 2 · Enter install`
+          : 'not bound · Enter install'),
       enabled: true,
     },
     {
@@ -342,12 +353,21 @@ function executeItem(item, state) {
     return { message: `${provider.label} launching in a new pane. Log: ${logFile}` };
   }
   if (item.id === 'keybindings') {
-    const script = state.keys.any ? 'remove-keybindings.js' : 'install-keybindings.js';
+    const removing = state.keys.all;
+    const script = removing ? 'remove-keybindings.js' : 'install-keybindings.js';
     const result = runNode(script);
+    // A partial install exits 0 with the conflict on stderr, so a fixed success
+    // string would report "Keybindings installed." while a key the user had
+    // already bound was silently skipped. Prefer the script's own first line.
+    const spoken = String(result.stdout || '').trim().split('\n').map(v => v.trim()).find(Boolean);
+    const conflict = String(result.stderr || '').trim().split('\n').map(v => v.trim()).find(Boolean);
+    if (result.status === 0 && conflict) {
+      return { message: `${spoken || 'Keybindings updated.'} — ${conflict}` };
+    }
     return {
-      message: resultMessage(result, state.keys.any
+      message: resultMessage(result, removing
         ? 'Keybindings removed; backup retained.'
-        : 'Keybindings installed.'),
+        : (spoken || 'Keybindings installed.')),
     };
   }
   if (item.id === 'sidebar') {

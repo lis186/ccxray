@@ -3347,6 +3347,34 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stderr, /CCXRAY_HERDR_KEY_MISSION/);
     // The free key still installs; only the taken one is skipped.
     assert.match(config, /command = "ccxray\.herdr\.quick-start"/);
+
+    // A partial install exits 0 (something WAS written) and names only what it
+    // wrote on stdout. Quick Start must surface the stderr conflict alongside
+    // it, or the row reports plain success while a key was skipped.
+    assert.equal(result.status, 0, 'a partial install is not a failure');
+    assert.match(result.stdout, /quick-start|prefix\+shift\+m/);
+    assert.doesNotMatch(result.stdout, /prefix\+m →/, 'must not claim the skipped key');
+  });
+
+  // A PARTIAL install must keep offering install. Keying the row's action on
+  // `any` made Enter remove the one binding that had succeeded, so the missing
+  // one could never be added from the TUI.
+  it('Quick Start still offers install when only one keybinding is present', () => {
+    const { menuItems } = require('../plugins/herdr/bin/onboarding');
+    const state = {
+      ccxrayReady: true, hubRunning: true, sessions: 1, sidebar: true, providers: [],
+      keys: { mission: null, quickStart: 'prefix+shift+m', any: true, all: false },
+    };
+    const row = menuItems(state).find(item => item.id === 'keybindings');
+    assert.ok(row, 'the keybindings row exists');
+    assert.match(row.detail, /Enter install/, 'partial state must offer install, not remove');
+    assert.match(row.detail, /1 of 2/, 'and say that it is partial');
+
+    const bothBound = menuItems({
+      ...state,
+      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true, all: true },
+    }).find(item => item.id === 'keybindings');
+    assert.match(bothBound.detail, /Enter remove/, 'only a complete install offers remove');
   });
 
   it('install-keybindings honours a key override', () => {
