@@ -215,7 +215,10 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
-const CCXRAY_INTERNAL_HEADERS = ['x-ccxray-auth', 'x-ccxray-bootstrap'];
+// INVARIANT: the `x-ccxray-*` namespace is default-deny by PREFIX and the rule
+// is shared with ws-proxy.js — see server/internal-headers.js for why an
+// allowlist here leaked the pane-identity header upstream.
+const { isInternalHeader } = require('./internal-headers');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -226,7 +229,9 @@ function buildForwardHeaders(clientHeaders, upstream) {
 
   for (const header of HOP_BY_HOP_HEADERS) delete fwdHeaders[header];
   for (const header of connectionTokens) delete fwdHeaders[header];
-  for (const header of CCXRAY_INTERNAL_HEADERS) delete fwdHeaders[header];
+  for (const header of Object.keys(fwdHeaders)) {
+    if (isInternalHeader(header)) delete fwdHeaders[header];
+  }
   delete fwdHeaders.host;
   delete fwdHeaders['accept-encoding'];
   fwdHeaders.host = upstream.host;

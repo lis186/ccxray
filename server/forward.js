@@ -130,17 +130,25 @@ function requestAgentForDeployment(provider, headers, parsedBody) {
 function requestDeploymentFields(startTime, provider, req, parsedBody) {
   const headers = req.headers;
   const agent = requestAgentForDeployment(provider, headers, parsedBody);
-  let identity = hub.lookupClientIdentityForRequest(req);
-  // env-injection launch: no hub client, but the request carries a header
-  // from ANTHROPIC_CUSTOM_HEADERS so the badge can link the pane.
-  if (!identity && headers['x-ccxray-agent-id']) {
-    identity = { agentId: headers['x-ccxray-agent-id'] };
+  const hubIdentity = hub.lookupClientIdentityForRequest(req);
+  // env-injection launch: no hub client, but the request carries a header from
+  // ANTHROPIC_CUSTOM_HEADERS so the badge can link the pane. Sanitized through
+  // hub's own identity helper (trim + 512 cap) rather than a second sanitizer —
+  // the value is client-supplied and lands in a persisted index field.
+  let identity = hubIdentity;
+  if (!hubIdentity && headers['x-ccxray-agent-id']) {
+    const fromHeader = hub.clientIdentityFromMessage({ agentId: headers['x-ccxray-agent-id'] });
+    if (fromHeader.agentId) identity = fromHeader;
   }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
     identity: identity || {},
-    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+    // INVARIANT: gated on the HUB identity, never on the merged one. The header
+    // supplies agentId only, so letting it flip this flag silently dropped
+    // userEmail/team/agentType — the #505 export attribution — from every
+    // header-identified turn. deploymentFields already falls back per field.
+    useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
   });
 }
 

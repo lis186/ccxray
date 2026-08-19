@@ -10,6 +10,7 @@ const { calculateCost } = require('./pricing');
 const { broadcast, broadcastSessionStatus } = require('./sse-broadcast');
 const { isUpstreamAuthenticated } = require('./auth');
 const { stripAuthParams } = require('./url-sanitize');
+const { isInternalHeader } = require('./internal-headers');
 const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
 const sessionIdx = require('./session-index');
@@ -132,7 +133,8 @@ function isAuthorized(req) {
   return isUpstreamAuthenticated(req);
 }
 
-const CCXRAY_INTERNAL_HEADERS = new Set(['x-ccxray-auth', 'x-ccxray-bootstrap']);
+// INVARIANT: same shared prefix rule as index.js — see server/internal-headers.js.
+// Fixing the HTTP path alone leaves the WS handshake forwarding the namespace.
 
 function buildWebSocketHeaders(clientHeaders, upstream) {
   const headers = {};
@@ -145,7 +147,7 @@ function buildWebSocketHeaders(clientHeaders, upstream) {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lower)) continue;
     if (WS_HANDSHAKE_HEADERS.has(lower)) continue;
-    if (CCXRAY_INTERNAL_HEADERS.has(lower)) continue;
+    if (isInternalHeader(lower)) continue;
     if (connectionTokens.includes(lower)) continue;
     if (lower === 'host') continue;
     headers[name] = value;
