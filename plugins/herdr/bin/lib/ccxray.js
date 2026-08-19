@@ -706,20 +706,27 @@ function sessionSummaryDetails(data, opts = {}) {
   const nowMs = Number(opts.nowMs || opts.env?.CCXRAY_HERDR_NOW_MS) || Date.now();
   const paneId = opts.paneId || null;
   const agentId = opts.agentId || (paneId ? `herdr:${paneId}` : null);
+  // env-injection launch writes agentId from a header (X-Ccxray-Agent-Id),
+  // keyed on a launchId rather than the paneId. Try both.
+  const launchAgentId = opts.launchId ? `herdr:${opts.launchId}` : null;
   const nativeSessionId = opts.sessionId || null;
   const allEntries = readIndexTailEntries({ env: opts.env });
   const entries = allEntries.filter(entry => entry.sessionId);
-  const routed = Boolean(opts.routed) || (agentId && allEntries.some(entry => entry.agentId === agentId));
+  const routed = Boolean(opts.routed)
+    || (agentId && allEntries.some(entry => entry.agentId === agentId))
+    || (launchAgentId && allEntries.some(entry => entry.agentId === launchAgentId));
 
   let turns = [];
   if (nativeSessionId) turns = entries.filter(e => e.sessionId === nativeSessionId);
   if (!turns.length && agentId) turns = entries.filter(e => e.agentId === agentId);
+  if (!turns.length && launchAgentId) turns = entries.filter(e => e.agentId === launchAgentId);
   if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
   if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
 
-  const exactAgentMatch = agentId && turns.some(entry => entry.agentId === agentId);
+  const exactAgentMatch = (agentId && turns.some(entry => entry.agentId === agentId))
+    || (launchAgentId && turns.some(entry => entry.agentId === launchAgentId));
   const nativeSessionMatch = nativeSessionId && turns.some(entry => entry.sessionId === nativeSessionId);
-  if (agentId && !exactAgentMatch && !nativeSessionMatch) {
+  if ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch) {
     const ctxText = '?';
     return {
       matched: false,
@@ -1506,12 +1513,14 @@ function routedPanePath(paneId, env = process.env) {
   return path.join(pluginStateDir(env), 'routed-panes-v1', `${encodeURIComponent(paneId)}.json`);
 }
 
-function recordRoutedPane(paneId, agent, env = process.env) {
+function recordRoutedPane(paneId, agent, env = process.env, opts = {}) {
   const file = routedPanePath(paneId, env);
   if (!file) return false;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const data = { paneId, agent, routedAt: Date.now() };
+  if (opts.launchId) data.launchId = opts.launchId;
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify({ paneId, agent, routedAt: Date.now() })}\n`, { mode: 0o600 });
+  fs.writeFileSync(temp, `${JSON.stringify(data)}\n`, { mode: 0o600 });
   fs.renameSync(temp, file);
   return true;
 }
@@ -1526,6 +1535,16 @@ function routedPaneKnown(paneId, env = process.env, maxAgeMs = 5 * 60000) {
       && Date.now() - saved.routedAt <= maxAgeMs;
   } catch {
     return false;
+  }
+}
+
+function routedPaneLaunchId(paneId, env = process.env) {
+  const file = routedPanePath(paneId, env);
+  if (!file) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).launchId || null;
+  } catch {
+    return null;
   }
 }
 
@@ -1589,8 +1608,142 @@ function reportWorkspaceTokens(tokens, opts = {}) {
   };
 }
 
+// Ensure a ccxray proxy is accepting connections on a known port. Returns the
+// port number or null on failure. Tries (in order): the running hub, a
+// standalone server on the requested PROXY_PORT, then starts one.
+function ensureProxy(opts = {}) {
+  const env = opts.env || process.env;
+  const status = statusReport({ env, timeoutMs: opts.timeoutMs || 5000 });
+  if (status.parsed.running && status.parsed.port) return status.parsed.port;
+
+  // A standalone (non-hub) ccxray on the default port is a perfectly good proxy
+  // even though parseStatus reports running=false (it's not a hub). The Note
+  // line from #555 tells us exactly which port it holds.
+  const standaloneNote = (status.parsed.notes || [])
+    .find(n => /held by a standalone.*ccxray/i.test(n));
+  if (standaloneNote) {
+    const m = standaloneNote.match(/port\s+(\d{2,5})/);
+    if (m) return Number(m[1]);
+  }
+
+  // No hub running — start one. `ccxray --no-browser` without an agent launches
+  // proxy+dashboard only. Hub mode forks detached automatically.
+  const ccxray = resolveCcxrayCommand(env);
+  const startArgs = [...ccxray.argsPrefix, '--no-browser'];
+  const start = spawnSync(ccxray.bin, startArgs, {
+    cwd: opts.cwd || findRepoRoot(env) || pluginRoot(env),
+    env,
+    encoding: 'utf8',
+    timeout: 15000,
+    windowsHide: true,
+  });
+  if (start.status !== 0 && start.status !== null) {
+    process.stderr.write(start.stderr || start.stdout || `ccxray proxy failed to start (exit ${start.status})\n`);
+    return null;
+  }
+
+  // Re-check — hub may take a moment to write its lockfile.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    spawnSync('sleep', ['0.5']);
+    const recheck = statusReport({ env, timeoutMs: 3000 });
+    if (recheck.parsed.running && recheck.parsed.port) return recheck.parsed.port;
+  }
+  process.stderr.write('ccxray proxy started but hub port could not be determined.\n');
+  return null;
+}
+
+// Return the env vars needed to route an agent's API traffic through a ccxray
+// proxy on the given port. These become --env flags on herdr tab create.
+function proxyEnvVars(agent, port, opts = {}) {
+  const base = `http://localhost:${port}`;
+  const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
+  switch (agent) {
+    case 'claude': {
+      const vars = { ANTHROPIC_BASE_URL: base };
+      if (agentIdHeader) vars.ANTHROPIC_CUSTOM_HEADERS = agentIdHeader;
+      return vars;
+    }
+    case 'grok':
+      return { GROK_CLI_CHAT_PROXY_BASE_URL: `${base}/v1` };
+    case 'codex':
+      return { CCXRAY_CODEX_PROXY_BASE_URL: `${base}/v1` };
+    default:
+      return {};
+  }
+}
+
+// Codex-specific argv for herdr agent start's -- passthrough. Codex routing
+// needs -c flags that set the proxy URL, not environment variables.
+function codexAgentArgs(port) {
+  const baseUrl = `http://localhost:${port}/v1`;
+  return ['-c', `openai_base_url="${baseUrl}"`, '-c', `chatgpt_base_url="${baseUrl}"`];
+}
+
+// Analysis panes open as stable new tabs. v0.4 moved them off `split`, which
+// rearranged the layout the user was working in; `overlay` — a temporary
+// zoomed pane that restores the previous focus on close — is the lighter shape
+// most Herdr plugins use, but it has not been through the same acceptance, so
+// it is opt-in. An unrecognized value falls back to the default rather than
+// reaching Herdr and failing the open.
+const PANE_PLACEMENTS = new Set(['tab', 'overlay', 'popup', 'split', 'zoomed']);
+function panePlacement(env = process.env) {
+  const requested = env.CCXRAY_HERDR_PANE_PLACEMENT;
+  return PANE_PLACEMENTS.has(requested) ? requested : 'tab';
+}
+
+// Config writes go through one path: back up, write atomically, let Herdr
+// validate, restore the user's own file if it rejects, then reload. The two
+// sidebar scripts predate this helper and still carry their own copies; a new
+// config writer must call this rather than add a third.
+function writeConfigAndReload(file, before, next, opts = {}) {
+  const env = opts.env || process.env;
+  if (before === next) {
+    if (opts.unchangedMessage) console.log(opts.unchangedMessage);
+    return 0;
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const backup = fs.existsSync(file) ? backupConfigFile(file) : null;
+  const tmpFile = `${file}.ccxray-tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, next);
+  fs.renameSync(tmpFile, file);
+
+  const done = () => {
+    if (opts.successMessage) console.log(opts.successMessage);
+    if (backup) console.log(`backup: ${backup}`);
+    return 0;
+  };
+
+  if (env.CCXRAY_HERDR_SKIP_RELOAD === '1') return done();
+
+  const check = runHerdr(['config', 'check'], { timeoutMs: 5000 });
+  process.stdout.write(check.stdout || '');
+  process.stderr.write(check.stderr || '');
+  if (check.status !== 0 || check.error) {
+    if (backup) {
+      fs.copyFileSync(backup, file);
+      console.error(`Herdr config check failed; restored ${backup}`);
+    } else {
+      fs.rmSync(file, { force: true });
+      console.error('Herdr config check failed; restored the absent config');
+    }
+    return 1;
+  }
+
+  const reload = runHerdr(['server', 'reload-config'], { timeoutMs: 5000 });
+  process.stdout.write(reload.stdout || '');
+  process.stderr.write(reload.stderr || '');
+  if (reload.status !== 0 || reload.error) {
+    console.error('Config was updated, but Herdr reload failed. Restart Herdr to apply it.');
+    return 1;
+  }
+  return done();
+}
+
 module.exports = {
   backupConfigFile,
+  codexAgentArgs,
+  ensureProxy,
   capabilityPortfolio,
   capabilityReview,
   currentWorkspaceScope,
@@ -1605,8 +1758,10 @@ module.exports = {
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
+  panePlacement,
   parseJsonOutput,
   parseStatus,
+  proxyEnvVars,
   pluginStateDir,
   pluginRoot,
   readIndexTailEntries,
@@ -1617,6 +1772,7 @@ module.exports = {
   resolveCcxrayCommand,
   resolveHerdrConfigPath,
   routedPaneKnown,
+  routedPaneLaunchId,
   runCcxray,
   runHerdr,
   sessionSummary,
@@ -1630,4 +1786,5 @@ module.exports = {
   summarizeUsageTiny,
   transcriptFile,
   usageReport,
+  writeConfigAndReload,
 };

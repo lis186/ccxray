@@ -130,7 +130,12 @@ function requestAgentForDeployment(provider, headers, parsedBody) {
 function requestDeploymentFields(startTime, provider, req, parsedBody) {
   const headers = req.headers;
   const agent = requestAgentForDeployment(provider, headers, parsedBody);
-  const identity = hub.lookupClientIdentityForRequest(req);
+  let identity = hub.lookupClientIdentityForRequest(req);
+  // env-injection launch: no hub client, but the request carries a header
+  // from ANTHROPIC_CUSTOM_HEADERS so the badge can link the pane.
+  if (!identity && headers['x-ccxray-agent-id']) {
+    identity = { agentId: headers['x-ccxray-agent-id'] };
+  }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {

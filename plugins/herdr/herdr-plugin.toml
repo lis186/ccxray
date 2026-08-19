@@ -56,6 +56,26 @@ title = "Launch Grok via ccxray"
 contexts = ["workspace", "pane"]
 command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/launch-agent.js\" grok"]
 
+# Keybindings can only point at actions, never at a pane entrypoint, so the
+# pane that deserves a key needs an action that opens it.
+[[actions]]
+id = "mission-control"
+title = "Open ccxray Mission Control"
+contexts = ["global", "workspace", "pane"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/open-mission-control.js\""]
+
+[[actions]]
+id = "install-keybindings"
+title = "Install ccxray keybindings"
+contexts = ["global"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/install-keybindings.js\""]
+
+[[actions]]
+id = "remove-keybindings"
+title = "Remove ccxray keybindings"
+contexts = ["global"]
+command = ["/bin/sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/run-node.sh\" \"$HERDR_PLUGIN_ROOT/bin/remove-keybindings.js\""]
+
 [[actions]]
 id = "install-sidebar-summary"
 title = "Install ccxray sidebar summary rows"

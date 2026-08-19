@@ -1,19 +1,35 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const {
+  codexAgentArgs,
   currentWorkspaceScope,
+  ensureProxy,
   herdrRuntime,
   parseJsonOutput,
-  pluginRoot,
-  forgetRoutedPane,
+  proxyEnvVars,
+  pluginStateDir,
   recordRoutedPane,
   reportPaneTokens,
   runHerdr,
 } = require('./lib/ccxray');
 
+function log(msg) {
+  try {
+    const dir = pluginStateDir();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, 'launch.log'), `${new Date().toISOString()} [${process.pid}] ${msg}\n`);
+  } catch {}
+}
+
 const SUPPORTED = new Set(['claude', 'codex', 'grok']);
+
+// Maps our agent ids to herdr's --kind values. They happen to match today, but
+// herdr's list is theirs to change.
+const HERDR_KIND = { claude: 'claude', codex: 'codex', grok: 'grok' };
 
 function parseArgs(argv) {
   return {
@@ -26,10 +42,6 @@ function parseArgs(argv) {
   };
 }
 
-// PROXY_PORT is the plugin's port escape hatch (#555): it moves the shared
-// hub's port (server/config.js reads it into config.PORT, which feeds hub
-// discovery and the hub fork) without opting the launch out of hub mode the
-// way an explicit --port would. Returns null (unset), a number, or NaN.
 function parseProxyPort(raw) {
   if (!raw) return null;
   if (!/^\d{1,5}$/.test(raw)) return NaN;
@@ -40,8 +52,7 @@ function parseProxyPort(raw) {
 // INVARIANT: the launch directory comes from currentWorkspaceScope(), the same
 // resolver Quick Start displays and every other pane-scoped reader uses. It
 // rejects paths inside the plugin's own checkout and recovers the workspace cwd
-// instead. Falling back to process.cwd() here would start the agent inside the
-// Herdr-managed plugin checkout, which reinstalling replaces.
+// instead.
 function context(env = process.env) {
   const runtime = herdrRuntime(env);
   const ctx = runtime.context || {};
@@ -54,42 +65,25 @@ function context(env = process.env) {
   };
 }
 
-function openArgs(args, ctx) {
-  if (args.placement === 'tab') {
-    const out = ['tab', 'create'];
-    if (ctx.workspaceId) out.push('--workspace', ctx.workspaceId);
-    out.push('--cwd', ctx.cwd, '--label', `ccxray ${args.agent}`, '--focus');
-    return out;
+function openArgs(args, ctx, envVars) {
+  const out = args.placement === 'tab'
+    ? (() => {
+        const a = ['tab', 'create'];
+        if (ctx.workspaceId) a.push('--workspace', ctx.workspaceId);
+        a.push('--cwd', ctx.cwd, '--label', `ccxray ${args.agent}`, '--focus');
+        return a;
+      })()
+    : (() => {
+        const a = ['pane', 'split'];
+        if (ctx.sourcePaneId) a.push('--pane', ctx.sourcePaneId);
+        else a.push('--current');
+        a.push('--direction', args.direction, '--ratio', args.ratio, '--cwd', ctx.cwd, '--focus');
+        return a;
+      })();
+  for (const [key, value] of Object.entries(envVars)) {
+    out.push('--env', `${key}=${value}`);
   }
-  const out = ['pane', 'split'];
-  if (ctx.sourcePaneId) out.push('--pane', ctx.sourcePaneId);
-  else out.push('--current');
-  out.push('--direction', args.direction, '--ratio', args.ratio, '--cwd', ctx.cwd, '--focus');
   return out;
-}
-
-function runnerCommand(agent, paneId, ctx, proxyPort) {
-  const override = process.env.CCXRAY_HERDR_LAUNCH_COMMAND_JSON;
-  if (override) {
-    try {
-      const parsed = JSON.parse(override);
-      if (Array.isArray(parsed) && parsed.length && parsed.every(p => typeof p === 'string')) return parsed;
-    } catch {}
-  }
-  const command = [
-    process.execPath,
-    path.join(pluginRoot(), 'bin', 'run-agent.js'),
-    agent,
-    paneId,
-    ctx.workspaceId,
-    ctx.tabId,
-    ctx.sourcePaneId,
-  ];
-  // The runner executes inside the new Herdr pane, whose environment is not
-  // this process's — the port must travel as an argument, not be assumed to
-  // arrive via env inheritance.
-  if (proxyPort) command.push(`--proxy-port=${proxyPort}`);
-  return command;
 }
 
 function main() {
@@ -98,8 +92,8 @@ function main() {
     console.error(`Unsupported agent "${args.agent || ''}". Expected claude, codex, or grok.`);
     process.exit(2);
   }
-  const proxyPort = parseProxyPort(args.proxyPort);
-  if (Number.isNaN(proxyPort)) {
+  const requestedPort = parseProxyPort(args.proxyPort);
+  if (Number.isNaN(requestedPort)) {
     console.error(`Invalid PROXY_PORT "${args.proxyPort}" — expected a port number (1-65535).`);
     process.exit(2);
   }
@@ -108,23 +102,45 @@ function main() {
     console.error('No project directory for this workspace; focus a pane inside your project, then launch again.');
     process.exit(1);
   }
-  const plannedOpen = openArgs(args, ctx);
+
+  const env = requestedPort
+    ? { ...process.env, PROXY_PORT: String(requestedPort) }
+    : process.env;
 
   if (args.planOnly) {
+    const examplePort = requestedPort || 5577;
     console.log(JSON.stringify({
       agent: args.agent,
-      open: plannedOpen,
       placement: args.placement,
       cwd: ctx.cwd,
+      port: examplePort,
+      envVars: proxyEnvVars(args.agent, examplePort, env),
+      codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort) : null,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
-      tabId: ctx.tabId || null,
-      proxyPort: proxyPort || null,
     }, null, 2));
     process.exit(0);
   }
 
-  const opened = runHerdr(plannedOpen, { timeoutMs: 5000 });
+  log(`start agent=${args.agent} cwd=${ctx.cwd}`);
+  // 1. Ensure a ccxray proxy is running. An explicit port skips discovery
+  //    (testing, or the user knows their proxy is already up).
+  const port = requestedPort || ensureProxy({ env, cwd: ctx.cwd });
+  if (!port) {
+    console.error('Could not start the ccxray proxy. Run `ccxray` in a separate terminal, then try again.');
+    process.exit(1);
+  }
+
+  // 2. Generate a stable launch id for this pane — paneId is not known until
+  //    after tab creation, but the env vars must be set at creation time.
+  const launchId = `herdr-${Date.now().toString(36)}`;
+
+  log(`port=${port} launchId=${launchId}`);
+  // 3. Compute the env vars that route this agent through the proxy.
+  const envVars = proxyEnvVars(args.agent, port, { paneId: launchId });
+
+  // 4. Create a pane with the proxy env vars injected.
+  const opened = runHerdr(openArgs(args, ctx, envVars), { timeoutMs: 5000 });
   const openedData = parseJsonOutput(opened.stdout);
   const paneId = openedData?.result?.root_pane?.pane_id || openedData?.result?.pane?.pane_id;
   if (!paneId) {
@@ -132,48 +148,53 @@ function main() {
     process.exit(1);
   }
 
-  runHerdr(['pane', 'rename', paneId, `ccxray ${args.agent}`], { timeoutMs: 3000 });
-  const summary = `launching ${args.agent} via ccxray`;
-  reportPaneTokens({ xray: 'launching', agent: args.agent, summary }, {
-    env: { ...process.env, HERDR_PANE_ID: paneId },
-    stateLabels: {
-      unknown: summary,
-      idle: summary,
-      working: summary,
-      blocked: summary,
-      done: summary,
-    },
-    ttlMs: 30000,
-  });
+  // 4. Start the agent with retries. `herdr agent start` rejects immediately
+  //    with "not an available shell" when the pane's shell is still running its
+  //    rc file (.zshrc/.bashrc). It does not wait for readiness on its own, so
+  //    we retry with back-off until the shell is idle or we exhaust attempts.
+  const agentName = `ccxray-${args.agent}-${paneId.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
+  const agentArgs = ['agent', 'start', agentName, '--kind', HERDR_KIND[args.agent], '--pane', paneId, '--timeout', '45000'];
+  if (args.agent === 'codex') agentArgs.push('--', ...codexAgentArgs(port));
 
-  const command = runnerCommand(args.agent, paneId, {
-    ...ctx,
-    tabId: openedData?.result?.tab?.tab_id || ctx.tabId,
-  }, proxyPort);
-  recordRoutedPane(paneId, args.agent);
-  const run = runHerdr(['pane', 'run', paneId, ...command], { timeoutMs: 3000 });
-  // A timeout is an unknown outcome, not a failure: Herdr may already have
-  // started the command. Forgetting the routed record here is the harmful
-  // choice — if the pane did start, nothing would recognise it as ours until
-  // its first trace lands. Keep the record, say plainly that we could not
-  // confirm, and still exit non-zero so nothing downstream assumes success.
-  if (run.timedOut) {
+  let started, startedData, detected;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    if (attempt > 0) spawnSync('sleep', [String(attempt < 3 ? 1 : 2)]);
+    started = runHerdr(agentArgs, { timeoutMs: 50000 });
+    startedData = parseJsonOutput(started.stdout) || parseJsonOutput(started.stderr);
+    detected = startedData?.result?.agent?.agent;
+    log(`attempt=${attempt} detected=${detected} err=${startedData?.error?.code || ''}`);
+    if (detected) break;
+    const err = startedData?.error?.code || '';
+    if (err !== 'agent_pane_busy') break;
+  }
+
+  if (!detected) {
     process.stderr.write(
-      `Could not confirm the launcher started in ${paneId} within 3s. `
-      + 'The pane may still come up; its identity is preserved either way.\n',
+      started.stderr || started.stdout || started.error?.message
+      || `herdr agent start did not detect ${args.agent} in ${paneId}.\n`
     );
     process.exit(1);
   }
-  if (run.status !== 0 || run.error) {
-    forgetRoutedPane(paneId);
-    process.stderr.write(run.stderr || run.stdout || run.error?.message || 'Failed to run launcher command.\n');
-    process.exit(1);
-  }
 
-  console.log(`ccxray ${args.agent} launch pane: ${paneId}`);
+  // 5. Record identity for badge linkage + mark the sidebar.
+  log(`recording routed pane=${paneId} launchId=${launchId}`);
+  recordRoutedPane(paneId, args.agent, process.env, { launchId });
+  reportPaneTokens({ xray: 'traced', agent: args.agent, summary: `ccxray: traced · ${args.agent}` }, {
+    env: { ...process.env, HERDR_PANE_ID: paneId },
+    stateLabels: {
+      unknown: `ccxray: traced · ${args.agent}`,
+      idle: `ccxray: traced · send prompt`,
+      working: `ccxray: traced · ${args.agent}`,
+      blocked: `ccxray: traced · ${args.agent}`,
+      done: `ccxray: traced · ${args.agent}`,
+    },
+  });
+
+  console.log(`ccxray ${args.agent} via herdr agent start: ${paneId}`);
   console.log(`placement: ${args.placement}`);
   console.log(`cwd: ${ctx.cwd}`);
-  console.log(`identity: herdr:${paneId}`);
+  console.log(`proxy: localhost:${port}`);
+  console.log(`herdr agent: ${agentName}`);
 }
 
 main();

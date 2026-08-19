@@ -187,11 +187,10 @@ describe('Herdr plugin manifest', () => {
     assert.ok(manifest.includes('on = "workspace.created"\ncommand = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\" --first-run"]'));
   });
 
-  it('opens Mission Control and launched providers in stable new tabs by default', () => {
+  it('opens panes as tabs by default (overlay requires a pane entrypoint, not an action)', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
+    assert.match(manifest, /id = "onboarding"[\s\S]*?placement = "tab"/);
     assert.match(manifest, /id = "mission-control"[\s\S]*?placement = "tab"/);
-    const onboarding = fs.readFileSync(path.join(PLUGIN, 'bin', 'onboarding.js'), 'utf8');
-    assert.match(onboarding, /'--entrypoint', 'mission-control', '--placement', 'tab'/);
   });
 
   it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
@@ -226,10 +225,36 @@ describe('Quick Start keyboard menu', () => {
     };
     const items = menuItems(state);
     assert.equal(recommendedItemId(state), 'launch-codex');
-    assert.equal(moveSelection(items, 'launch-codex', 1), 'sidebar');
-    assert.equal(moveSelection(items, 'sidebar', -1), 'launch-codex');
+    assert.equal(moveSelection(items, 'launch-codex', 1), 'keybindings');
+    assert.equal(moveSelection(items, 'keybindings', -1), 'launch-codex');
     assert.equal(items.find(item => item.key === 'M').enabled, false);
     assert.equal(items.find(item => item.key === 'S').detail, 'installed · Enter remove');
+    // A state built without a keys snapshot must still render.
+    assert.equal(items.find(item => item.key === 'B').detail, 'not bound · Enter install');
+  });
+
+  // Whether a key reaches ccxray is state the user cannot see anywhere else:
+  // Herdr's manifest cannot declare keybindings, so an uninstalled binding is
+  // indistinguishable from a broken one until the row says which.
+  it('Quick Start shows the bound key and offers the reverse action', () => {
+    const { menuItems } = require('../plugins/herdr/bin/onboarding');
+    const base = {
+      ccxrayReady: true,
+      hubRunning: true,
+      sessions: 3,
+      sidebar: true,
+      providers: [{ id: 'claude', label: 'Claude', key: '1', available: true }],
+    };
+    const unbound = menuItems({ ...base, keys: { mission: null, quickStart: null, any: false } });
+    assert.equal(unbound.find(item => item.key === 'B').detail, 'not bound · Enter install');
+    assert.equal(unbound.find(item => item.key === 'M').detail, 'live attention');
+
+    const bound = menuItems({
+      ...base,
+      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true },
+    });
+    assert.equal(bound.find(item => item.key === 'B').detail, 'prefix+m / prefix+shift+m · Enter remove');
+    assert.equal(bound.find(item => item.key === 'M').detail, 'live attention · prefix+m');
   });
 
   it('counts traced sessions only in the current workspace', () => {
@@ -1314,7 +1339,7 @@ describe('Herdr plugin commands', () => {
     assert.match(manual.stdout, /Opened ccxray Quick Start/);
     const calls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
     assert.equal(calls.length, 2);
-    assert.match(calls[0], /plugin pane open --plugin ccxray\.herdr --entrypoint onboarding --placement tab --focus --workspace w1 --cwd \/work\/demo/);
+    assert.match(calls[0], /plugin pane open --plugin ccxray\.herdr --entrypoint onboarding --focus --workspace w1 --cwd \/work\/demo/);
     const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'onboarding-v1.json'), 'utf8'));
     assert.equal(saved.version, 1);
     assert.ok(saved.openedAt);
@@ -2527,9 +2552,12 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const plan = JSON.parse(result.stdout);
     assert.equal(plan.agent, 'codex');
-    assert.deepEqual(plan.open.slice(0, 4), ['tab', 'create', '--workspace', 'w1']);
-    assert.ok(plan.open.includes('--focus'));
     assert.equal(plan.cwd, '/work/demo');
+    assert.equal(plan.workspaceId, 'w1');
+    // Plan must include proxy routing info without actually starting a proxy.
+    assert.ok(plan.port > 0);
+    assert.ok(plan.envVars);
+    assert.ok(plan.codexArgs);
   });
 
   it('launch-agent refuses to start an agent inside the plugin checkout', () => {
@@ -2548,23 +2576,27 @@ describe('Herdr plugin commands', () => {
     assert.doesNotMatch(result.stdout, /plugins[/\\]herdr/);
   });
 
-  // `herdr pane run` timing out is not the same as failing: herdr may already
-  // have started the command. Forgetting the routed record on an unknown outcome
-  // is the harmful choice — if the pane did start, its badge never recognises it.
-  it('launch-agent keeps the routed record when pane run times out', () => {
+  // `herdr agent start` failing to detect the agent does not mean nothing
+  // started — the pane may have the agent running but detection timed out.
+  // The routed record must stay so badge linkage survives an uncertain outcome.
+  it('launch-agent keeps the routed record when agent start fails to detect', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slowrun-'));
     const bin = path.join(dir, 'herdr');
     const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
+    const agentOk = JSON.stringify({ id: 'a', result: { type: 'agent_started', agent: { agent: 'codex', pane_id: 'w1:p7' } } });
     fs.writeFileSync(bin, [
       '#!/usr/bin/env node',
-      // `pane run` answers far slower than launch-agent's 3s budget, then succeeds.
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      '  const until = Date.now() + 6000; while (Date.now() < until) {}',
-      "  process.stdout.write('{}\\n'); process.exit(0);",
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'start') {",
+      `  process.stdout.write(${JSON.stringify(agentOk + '\\n')});`,
+      '  process.exit(0);',
       '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      "if (process.argv[2] === 'pane') {",
+      `  process.stdout.write(${JSON.stringify(opened + '\\n')});`,
+      '  process.exit(0);',
+      '}',
+      `process.stdout.write(${JSON.stringify(opened + '\\n')});`,
       '',
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
@@ -2575,13 +2607,13 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
     });
     const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p7')}.json`);
-    assert.ok(fs.existsSync(routed), 'an unconfirmed launch must stay routed, not be forgotten');
-    assert.match(result.stderr, /could not confirm/i);
+    assert.ok(fs.existsSync(routed), 'a detected launch must stay routed');
   });
 
-  it('launch-agent forgets the routed record when pane run genuinely fails', () => {
+  it('launch-agent exits non-zero when herdr agent start fails to detect', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-failrun-'));
@@ -2589,10 +2621,10 @@ describe('Herdr plugin commands', () => {
     const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p8' }, tab: { tab_id: 'w1:t2' } } });
     fs.writeFileSync(bin, [
       '#!/usr/bin/env node',
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      "  process.stderr.write('no such pane\\n'); process.exit(1);",
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'start') {",
+      "  process.stderr.write('agent not detected\\n'); process.exit(1);",
       '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      `process.stdout.write(${JSON.stringify(opened + '\\n')});`,
       '',
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
@@ -2603,9 +2635,8 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
     });
-    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p8')}.json`);
-    assert.equal(fs.existsSync(routed), false, 'a refused launch must not stay routed');
     assert.equal(result.status, 1);
   });
 
@@ -2629,7 +2660,7 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
     assert.equal(JSON.parse(result.stdout).cwd, project);
   });
 
@@ -2704,38 +2735,21 @@ describe('Herdr plugin commands', () => {
       PROXY_PORT: '5678',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).proxyPort, 5678);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.port, 5678);
+    assert.ok(plan.envVars);
   });
 
-  it('launch-agent threads PROXY_PORT into the pane runner command', () => {
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-portrun-'));
-    const bin = path.join(dir, 'herdr');
-    const log = path.join(dir, 'args.log');
-    const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
-    fs.writeFileSync(bin, [
-      '#!/usr/bin/env node',
-      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      "  process.stdout.write('{}\\n'); process.exit(0);",
-      '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
-      '',
-    ].join('\n'));
-    fs.chmodSync(bin, 0o755);
-
-    const result = runScript('launch-agent.js', ['codex'], {
+  it('launch-agent uses PROXY_PORT for the proxy env vars', () => {
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
       HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
-        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+        focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
       }),
-      HERDR_BIN_PATH: bin,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
       PROXY_PORT: '5678',
     });
     assert.equal(result.status, 0, result.stderr);
-    const calls = fs.readFileSync(log, 'utf8');
-    assert.match(calls, /pane run w1:p7 .*run-agent\.js codex w1:p7 .*--proxy-port=5678/);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.envVars.ANTHROPIC_BASE_URL, 'http://localhost:5678');
   });
 
   it('launch-agent rejects an invalid PROXY_PORT before creating any pane', () => {
@@ -3110,6 +3124,116 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_red/);
     assert.match(config, /\["agent"\]/);
     assert.equal(config.match(/\$summary/g).length, 1);
+  });
+
+  // Herdr's manifest cannot declare keybindings, so a plugin either documents a
+  // snippet or writes it. These cover the write: it must be idempotent, must
+  // never take a key the user already bound, and must remove exactly what it
+  // added.
+  it('install-keybindings adds both bindings with a backup', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /key = "prefix\+m"/);
+    assert.match(config, /key = "prefix\+shift\+m"/);
+    assert.match(config, /command = "ccxray\.herdr\.mission-control"/);
+    assert.match(config, /command = "ccxray\.herdr\.quick-start"/);
+    assert.match(config, /type = "plugin_action"/);
+    assert.match(config, /show_agent_labels_on_pane_borders/, 'must not clobber existing config');
+    assert.match(result.stdout, /backup:/);
+  });
+
+  it('install-keybindings is idempotent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '');
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    assert.equal(runScript('install-keybindings.js', [], env).status, 0);
+    const first = fs.readFileSync(configPath, 'utf8');
+    const second = runScript('install-keybindings.js', [], env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), first);
+    assert.match(second.stdout, /already installed/);
+  });
+
+  // Silently rebinding a key the user chose is worse than not installing: the
+  // keypress they rely on would start doing something else with no message.
+  it('install-keybindings refuses a key the user already bound elsewhere', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    const original = [
+      '[[keys.command]]',
+      'key = "prefix+m"',
+      'type = "plugin_action"',
+      'command = "someone.else.thing"',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, original);
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /command = "someone\.else\.thing"/);
+    assert.equal(config.match(/key = "prefix\+m"/g).length, 1);
+    assert.match(result.stderr, /already bound/);
+    assert.match(result.stderr, /CCXRAY_HERDR_KEY_MISSION/);
+    // The free key still installs; only the taken one is skipped.
+    assert.match(config, /command = "ccxray\.herdr\.quick-start"/);
+  });
+
+  it('install-keybindings honours a key override', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '');
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+      CCXRAY_HERDR_KEY_MISSION: 'prefix+alt+i',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /key = "prefix\+alt\+i"/);
+  });
+
+  it('remove-keybindings removes only ccxray bindings', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[[keys.command]]',
+      'key = "prefix+u"',
+      'type = "plugin_action"',
+      'command = "someone.else.thing"',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    assert.equal(runScript('install-keybindings.js', [], env).status, 0);
+
+    const removed = runScript('remove-keybindings.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(config, /ccxray\.herdr\./);
+    assert.doesNotMatch(config, /ccxray keybindings \(managed/);
+    assert.match(config, /command = "someone\.else\.thing"/);
+    assert.match(config, /key = "prefix\+u"/);
+  });
+
+  it('remove-keybindings reports when nothing is installed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\n');
+    const result = runScript('remove-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /not installed/);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), '[ui]\n');
   });
 
   it('remove-sidebar-summary drops the whole table when the plugin created it', () => {

@@ -44,7 +44,6 @@ function openArgs(env = process.env) {
     'plugin', 'pane', 'open',
     '--plugin', 'ccxray.herdr',
     '--entrypoint', 'onboarding',
-    '--placement', 'tab',
     '--focus',
   ];
   const workspaceId = runtime.workspaceId || context.workspace_id;
