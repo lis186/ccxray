@@ -209,8 +209,26 @@ migration。
 2. 對 `fork` 尤其錯——fork 跑的**就是** orchestrator prompt，標成 `agentKey='fork'` 會讓
    ADR 0010 的 coreHash 路由整組被繞過，而那正是為 fork 而存在的機制。
 
-→ `agentType` / `isFork` / `spawnDepth` 走**新的 add-only index 欄位**（ADR 0012
-`responseId` 的先例），`agentKey` 保持 prompt 推導或留空。
+→ spawn metadata 走**新的 add-only index 欄位**（ADR 0012 `responseId` 的先例），
+`agentKey` 保持 prompt 推導或留空。
+
+**修正 1b：新欄位不得叫 `agentType`／`agentId`／`parentSessionId`——三者都已被佔用。**
+這是修正 1 的同一個錯誤降一層：把 spawn metadata 塞進既有欄位的值空間（P3）。實際核對
+`server/entry.js` 的 `INDEX_FIELDS`：
+
+| transcript 欄位 | 直覺名稱 | 已被佔用於 | 該用 |
+|---|---|---|---|
+| `meta.agentType` | `agentType` | **#504 deployment identity**（`CCXRAY_AGENT_TYPE` env，經 `deploymentFields` 展開，且列在 `OMIT_IF_NULL`） | `spawnType` |
+| `meta.isFork` | `isFork` | free | `isFork` |
+| `meta.spawnDepth` | `spawnDepth` | free | `spawnDepth` |
+| line `agentId` | `agentId` | **#504 deployment identity** | `spawnAgentId`（若需要） |
+| `fork-context-ref.parentSessionId` | `parentSessionId` | **#531 Herdr-launched agent 的 parent** | 不需要——Option A 之下 parent session 就是 `sessionId` 本身 |
+
+**實作義務（`server/entry.js` 的 INDEX_FIELDS 不變式）**：新欄位若 no-value 狀態是
+`null`（而非 `undefined`），必須註冊進 `OMIT_IF_NULL`，否則**每一行 index 都會多出
+`"key":null`**。且該不變式明言「只把 entry 餵進 `buildIndexLine` 的測試抓不到 caller
+omission」——importer 是一條獨立的 entry 建構路徑，斷言必須跑 importer 那條路徑，不是
+只跑 `buildIndexLine`。
 
 **修正 2：`isSubagent` 取自 `isSidechain`，不重新推論。**
 transcript 每行都帶 `isSidechain: true`（抽樣 400/400），這是事實而非推論；讓 importer 走
