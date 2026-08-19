@@ -106,6 +106,20 @@ function main() {
     ? { ...process.env, PROXY_PORT: String(requestedPort) }
     : process.env;
 
+  // The pane-identity token this launch will stamp on its traffic. Minted here
+  // rather than after tab creation because `--env` is fixed at `herdr tab
+  // create` time and paneId is what that command RETURNS.
+  //
+  // INVARIANT: the token carries the workspace id, because the reader side
+  // (`filterEntriesToWorkspace`) treats any `herdr:`-prefixed agentId as
+  // already attributed and keeps it only when it starts with
+  // `herdr:<workspaceId>:` — the `startsWith('herdr:')` branch skips the cwd
+  // fallback entirely, so a workspace-less stamp is dropped rather than
+  // recovered, and Quick Start / Mission Control see no turns at all.
+  // The pid suffix keeps two launches in the same millisecond distinct.
+  const launchToken = [ctx.workspaceId, `herdr-${Date.now().toString(36)}-${process.pid.toString(36)}`]
+    .filter(Boolean).join(':');
+
   if (args.planOnly) {
     const examplePort = requestedPort || 5577;
     console.log(JSON.stringify({
@@ -113,7 +127,8 @@ function main() {
       placement: args.placement,
       cwd: ctx.cwd,
       port: examplePort,
-      envVars: proxyEnvVars(args.agent, examplePort, env),
+      launchToken,
+      envVars: proxyEnvVars(args.agent, examplePort, { paneId: launchToken }),
       codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort) : null,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
@@ -130,13 +145,9 @@ function main() {
     process.exit(1);
   }
 
-  // 2. Generate a stable launch id for this pane — paneId is not known until
-  //    after tab creation, but the env vars must be set at creation time.
-  const launchId = `herdr-${Date.now().toString(36)}`;
-
-  log(`port=${port} launchId=${launchId}`);
+  log(`port=${port} launchToken=${launchToken}`);
   // 3. Compute the env vars that route this agent through the proxy.
-  const envVars = proxyEnvVars(args.agent, port, { paneId: launchId });
+  const envVars = proxyEnvVars(args.agent, port, { paneId: launchToken });
 
   // 4. Create a pane with the proxy env vars injected.
   const opened = runHerdr(openArgs(args, ctx, envVars), { timeoutMs: 5000 });
@@ -174,8 +185,10 @@ function main() {
   }
 
   // 5. Record identity for badge linkage + mark the sidebar.
-  log(`recording routed pane=${paneId} launchId=${launchId}`);
-  recordRoutedPane(paneId, args.agent, process.env, { launchId });
+  log(`recording routed pane=${paneId} launchToken=${launchToken}`);
+  // Store the SAME token the header carried: sessionSummaryDetails rebuilds the
+  // agentId as `herdr:${launchId}`, so the two must be byte-identical.
+  recordRoutedPane(paneId, args.agent, process.env, { launchId: launchToken });
   reportPaneTokens({ xray: 'traced', agent: args.agent, summary: `ccxray: traced · ${args.agent}` }, {
     env: { ...process.env, HERDR_PANE_ID: paneId },
     stateLabels: {

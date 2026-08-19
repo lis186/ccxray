@@ -91,13 +91,30 @@ function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
   fs.writeFileSync(path.join(shared, `${prefix}${hash}.json`), JSON.stringify(tools));
 }
 
+// A mock `herdr` that starts in ~5ms instead of ~150ms+.
+//
+// `#!/usr/bin/env node` mocks are spawned INSIDE runHerdr's timeout budget
+// (herdrAgentReport uses 1500ms), and a cold Node startup on a loaded machine
+// can exceed it. The timeout does not surface as a timeout: herdrOk flips to
+// false, or currentWorkspaceScope falls back to the plugin cwd, and the failure
+// appears as an unrelated string/path assertion in a different suite. Two tests
+// in this file were flaky for exactly that reason — always on the first run
+// after files changed on disk, never in isolation.
+//
+// The remaining `#!/usr/bin/env node` mocks in this file carry real logic
+// (argv logging, timers, exit codes); convert them the same way if they start
+// flaking.
+function writeShMock(bin, stdout) {
+  fs.writeFileSync(bin, `#!/bin/sh\ncat <<'CCXRAY_MOCK_EOF'\n${stdout}\nCCXRAY_MOCK_EOF\n`);
+  fs.chmodSync(bin, 0o755);
+  return bin;
+}
+
 function makeHerdr(agents = []) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-bin-'));
   const bin = path.join(dir, 'herdr');
   const response = JSON.stringify({ id: 'test', result: { type: 'agent_list', agents } });
-  fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(response)} + '\\n');\n`);
-  fs.chmodSync(bin, 0o755);
-  return bin;
+  return writeShMock(bin, response);
 }
 
 function makeRecordingHerdr({ status = 0 } = {}) {
@@ -325,8 +342,7 @@ describe('Herdr workspace scope', () => {
         ],
       },
     };
-    fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(response) + '\n')});\n`);
-    fs.chmodSync(bin, 0o755);
+    writeShMock(bin, JSON.stringify(response));
 
     const scope = currentWorkspaceScope(pluginEnv({
       HERDR_WORKSPACE_ID: 'w1',
@@ -2818,6 +2834,45 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const plan = JSON.parse(result.stdout);
     assert.equal(plan.envVars.ANTHROPIC_BASE_URL, 'http://localhost:5678');
+  });
+
+  // The launch stamp must carry the workspace id, because the reader side
+  // (filterEntriesToWorkspace) treats any `herdr:`-prefixed agentId as already
+  // attributed and keeps it only under `herdr:<workspaceId>:`. A workspace-less
+  // stamp is DROPPED rather than recovered by cwd, so Quick Start's session
+  // count stays 0 and Mission Control reports the pane unlinked.
+  it('launch-agent stamps the workspace id into the pane identity header', () => {
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      PROXY_PORT: '5678',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const plan = JSON.parse(result.stdout);
+    assert.match(plan.launchToken, /^w1:herdr-/, 'token starts with the workspace id');
+    assert.equal(
+      plan.envVars.ANTHROPIC_CUSTOM_HEADERS,
+      `X-Ccxray-Agent-Id: herdr:${plan.launchToken}`,
+      '--plan must report the header a real launch injects',
+    );
+
+    // The reader side keeps it. This is the assertion the old shape failed.
+    const { filterEntriesToWorkspace } = require('../plugins/herdr/bin/lib/ccxray');
+    const stamped = { sessionId: 's1', cwd: '/work/demo', agentId: `herdr:${plan.launchToken}` };
+    const kept = filterEntriesToWorkspace([stamped], pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/demo' }),
+    })).entries;
+    assert.equal(kept.length, 1, 'a workspace-stamped launch id survives the workspace filter');
+
+    // ...and the pre-fix shape does not, which is why this test exists.
+    const legacy = { sessionId: 's1', cwd: '/work/demo', agentId: 'herdr:herdr-m9x' };
+    const keptLegacy = filterEntriesToWorkspace([legacy], pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/demo' }),
+    })).entries;
+    assert.equal(keptLegacy.length, 0, 'workspace-less herdr: ids are dropped, not cwd-recovered');
   });
 
   it('launch-agent rejects an invalid PROXY_PORT before creating any pane', () => {
