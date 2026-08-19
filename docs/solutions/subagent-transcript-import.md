@@ -4,7 +4,12 @@ TL;DR：subagent token/cost **並非「counted nowhere」**——`cost-worker.js
 
 **Owner 決策（2026-08-20）：採 Option A**（當普通 entry 匯入，歸屬 transcript 自報的
 parent sessionId），含 §5a 的兩項修正。Option C 經實測為空（§5），Option D 為明確不補的
-對照選項。修復型 issue 待 `APPROVE-DESIGN 565-diag-2026-08-20` 於 #565 簽核後生成。
+對照選項。Owner 已於 #565 簽核（`approve-check.sh` 驗證：`APPROVE-DESIGN by OWNER token=565A`），
+修復型 issue = **#570**。
+
+> 簽核 token 為 `565A` 而非 runId `565-diag-2026-08-20`：`approve-check.sh --exclude-run`
+> 會略過 body 含該 runId 的任何 comment，若 token 等於 runId 則簽核本身被排除（以 `--input`
+> 三組對照驗證）。**sign-off token 不得等於該輪 runId。**
 
 - Issue: [#565](https://github.com/lis186/ccxray/issues/565)
 - 相關：[#546](https://github.com/lis186/ccxray/issues/546)（multi-provider cost attribution data model）、[#508](https://github.com/lis186/ccxray/issues/508)（Codex importer 不設 responseId）、[#507](https://github.com/lis186/ccxray/issues/507)（`tsToId` 10ms 桶碰撞）、[#117](https://github.com/lis186/ccxray/issues/117)（subagent identity）
