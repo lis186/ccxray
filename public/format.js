@@ -173,3 +173,18 @@ function escapeHtml(s) {
   if (typeof s !== 'string') s = JSON.stringify(s, null, 2);
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
+
+// Isomorphic, same shape as agent-classification.js (#381): the Herdr plugin is
+// a SEPARATE PROCESS that renders aggregate costs, and ADR 0017 says these
+// helpers are the only way an aggregate cost reaches a screen. Exporting them is
+// what lets that hold across the process boundary instead of the plugin
+// hand-rolling the thresholds. No top-level DOM access, so require() is safe.
+if (typeof module !== 'undefined') {
+  module.exports = {
+    AGG_FB_MARK_SHARE,
+    AGG_FB_DEGRADE_SHARE,
+    formatAggCost,
+    formatAggCostText,
+    formatCostText,
+  };
+}

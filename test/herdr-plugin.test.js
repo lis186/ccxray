@@ -540,6 +540,75 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Herdr aggregate cost confidence (ADR 0017)', () => {
+  const costTurn = (i, confidence, cost) => ({
+    id: `c${i}`, sessionId: 's-agg', provider: 'anthropic', cwd: '/work/agg',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: 1787000000000 + i * 1000, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence }, responseId: `msg_c${i}`,
+  });
+  const badgeFor = turns => {
+    const home = makeHome(turns);
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000900000' }),
+      paneId: 'w1:p1', cwd: '/work/agg',
+    });
+  };
+
+  // The rejected alternative marked ANY non-exact total `~`. On a lightly
+  // contaminated total that overstates by ~357x, which is why ADR 0017 gates on
+  // share instead. One fallback turn in 20 is 5% — below both thresholds.
+  it('leaves a lightly contaminated total unmarked', () => {
+    const turns = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 20; i += 1) turns.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(turns).costText, '$2.00');
+  });
+
+  it('marks at the 10% share threshold and degrades precision past 50%', () => {
+    const marked = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 10; i += 1) marked.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(marked).costText, '~$1.00', '10% of count marks');
+
+    const degraded = [];
+    for (let i = 1; i <= 9; i += 1) degraded.push(costTurn(i, 'fallback', 2));
+    degraded.push(costTurn(10, 'exact', 2));
+    // 18/20 of cost is fabricated: the displayed digits must not outrun the
+    // known digits, so the total renders to two significant figures.
+    assert.equal(badgeFor(degraded).costText, '~$20');
+  });
+
+  it('suffixes + when unpriced turns are excluded, and — when nothing is priced', () => {
+    const partial = [costTurn(1, 'unknown', null)];
+    for (let i = 2; i <= 10; i += 1) partial.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(partial).costText, '$0.90+');
+
+    const nothing = [1, 2, 3].map(i => costTurn(i, 'unknown', null));
+    assert.equal(badgeFor(nothing).costText, '—');
+  });
+
+  it('Mission Control uses the same fold, not worst-of', () => {
+    const turns = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 20; i += 1) turns.push(costTurn(i, 'exact', 0.1));
+    const home = makeHome(turns);
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000900000' }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    assert.deepEqual(snapshot.rows[0].costAgg,
+      { count: 20, fallbackCount: 1, fallbackCost: 0.1, unknownCount: 0 });
+    const { aggCostText } = require('../plugins/herdr/bin/lib/ccxray');
+    assert.equal(aggCostText(snapshot.rows[0].cost, snapshot.rows[0].costAgg), '$2.00',
+      'a 5%-contaminated row total must not be marked');
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used

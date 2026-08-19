@@ -451,6 +451,76 @@ function sessionWindow(turns) {
 // defensive because `findRepoRoot()` already contemplates a plugin installed
 // outside a ccxray checkout, where core's file is simply absent; that degrades
 // to the raw-flag tier rather than embedding a copy that would silently rot.
+// ADR 0017 says formatAggCost/formatAggCostText are the ONLY way an aggregate
+// cost reaches a screen. The badge and Mission Control are a separate PROCESS,
+// so honouring that means requiring core's helper rather than re-deriving the
+// thresholds here — the same defensive require as mainAgentKeys() below, for the
+// same reason (a plugin installed outside a ccxray checkout has no core file).
+//
+// Degraded mode is deliberately NOT the old worst-of `~`: marking every
+// non-exact total is the shape ADR 0017's panel rejected (inverted Lie Factor
+// ≈357 on a 0.28%-contaminated total). Without the calibrated thresholds we
+// render the number unmarked and keep only the two claims that need no
+// calibration — `—` for nothing priced, `+` for an under-count.
+let _sharedFormat = null;
+function sharedFormat() {
+  if (_sharedFormat !== null) return _sharedFormat;
+  try {
+    _sharedFormat = require('../../../../public/format.js');
+  } catch {
+    _sharedFormat = false;
+  }
+  return _sharedFormat;
+}
+
+// The confidence fold ADR 0017 requires. A component stream left out of this
+// silently reverts the site to unmarked fabrication, so it is computed in ONE
+// place and passed around whole.
+function costFold(turns) {
+  const fold = { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 };
+  for (const turn of turns || []) {
+    fold.count += 1;
+    const conf = turn.cost?.confidence;
+    const value = Number(turn.cost?.cost);
+    if (conf === 'unknown' || !Number.isFinite(value)) {
+      fold.unknownCount += 1;
+      continue;
+    }
+    if (conf === 'fallback') {
+      fold.fallbackCount += 1;
+      fold.fallbackCost += value;
+    }
+    // exact / prefix / legacy-undefined contribute nothing: a legacy aggregate
+    // renders clean, matching pre-#420 behaviour.
+  }
+  return fold;
+}
+
+function mergeCostFolds(...folds) {
+  const out = { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 };
+  for (const f of folds) {
+    if (!f) continue;
+    out.count += Number(f.count || 0);
+    out.fallbackCount += Number(f.fallbackCount || 0);
+    out.fallbackCost += Number(f.fallbackCost || 0);
+    out.unknownCount += Number(f.unknownCount || 0);
+  }
+  return out;
+}
+
+function aggCostText(cost, fold) {
+  const shared = sharedFormat();
+  if (shared && typeof shared.formatAggCostText === 'function') {
+    return shared.formatAggCostText(cost, fold || {});
+  }
+  const f = fold || {};
+  const count = Number(f.count || 0);
+  const unknown = Number(f.unknownCount || 0);
+  if (cost == null) return '—';
+  if (unknown > 0 && count - unknown === 0) return '—';
+  return formatMoney(cost) + (unknown >= 1 ? '+' : '');
+}
+
 let _mainAgentKeys;
 function mainAgentKeys() {
   if (_mainAgentKeys) return _mainAgentKeys;
@@ -696,7 +766,11 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     }),
     ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
     cost: sorted.length ? cost : fallback.cost,
-    costText: formatMoney(sorted.length ? cost : fallback.cost),
+    // INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
+    // helper, never a bare formatMoney — see costFold/aggCostText above.
+    costAgg: sorted.length ? costFold(sorted) : (fallback.costAgg || {}),
+    costText: aggCostText(sorted.length ? cost : fallback.cost,
+      sorted.length ? costFold(sorted) : fallback.costAgg),
     // The label reports the LATEST main turn, the same turn ctx%/cache% above
     // read — not a plurality over the session. A plurality kept rendering the
     // pre-/model model until the new one out-counted the old: measured on the
@@ -940,8 +1014,10 @@ function subagentSummary(turns, nowMs) {
     turns: turns.length,
     cost: turns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
     exactCost: turns.every(turn => turn.cost?.confidence === 'exact'),
+    costAgg: costFold(turns),
     recentCost: recentTurns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
     exactRecentCost: recentTurns.every(turn => turn.cost?.confidence === 'exact'),
+    recentCostAgg: costFold(recentTurns),
     toolCalls: Object.values(observedToolCalls(turns))
       .reduce((sum, count) => sum + Number(count || 0), 0),
     failures: turns.filter(turnFailed).length,
@@ -1287,6 +1363,12 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const totalRecentCost = recentCost + Number(subagents?.recentCost || 0);
   const exactRecentCost = recentTurns.every(turn => turn.cost?.confidence === 'exact')
     && (!subagents || subagents.exactRecentCost);
+  // ADR 0017 folds, carried alongside the sums. `total*` folds include the
+  // subagent rollup because the rendered number does — omitting a component
+  // stream is the documented way this silently reverts to unmarked fabrication.
+  const mainCostAgg = costFold(turns);
+  const totalCostAgg = mergeCostFolds(mainCostAgg, subagents?.costAgg);
+  const totalRecentCostAgg = mergeCostFolds(costFold(recentTurns), subagents?.recentCostAgg);
   return {
     paneId,
     workspaceId: agent?.workspace_id || null,
@@ -1309,8 +1391,11 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     ctxDelta,
     cost,
     totalCost,
+    costAgg: mainCostAgg,
+    totalCostAgg,
     recentCost,
     totalRecentCost,
+    totalRecentCostAgg,
     exactRecentCost,
     exactCost,
     unknownCost,
@@ -1393,6 +1478,7 @@ function missionControlSnapshot(opts = {}) {
     recentCost: rows.reduce((sum, row) => sum + row.totalRecentCost, 0),
     exactRecentCost: rows.every(row => row.exactRecentCost),
     unknownRecentCost: rows.length > 0 && rows.every(row => row.unknownCost),
+    recentCostAgg: mergeCostFolds(...rows.map(row => row.totalRecentCostAgg)),
     nowMs,
     scope: scoped.scope,
   };
@@ -1801,6 +1887,8 @@ module.exports = {
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
+  aggCostText,
+  costFold,
   panePlacement,
   parseJsonOutput,
   parseStatus,
