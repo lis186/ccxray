@@ -540,6 +540,57 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('ensureProxy cold start', () => {
+  // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
+  // is forked only by `ccxray <agent>` without --port). ensureProxy used
+  // spawnSync with a 15s timeout, so it blocked for the full timeout and then
+  // SIGTERM'd the very server it had started; the readiness probe then looked
+  // only for a hub, which never existed. The cold-start path could not succeed.
+  //
+  // Asserted by STATE, not timing: the fake server records the signal it
+  // receives, so "we killed what we started" is directly observable.
+  it('leaves the server it started alive and accepts a standalone port', () => {
+    const { ensureProxy } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ensure-'));
+    const fake = path.join(dir, 'ccxray');
+    fs.writeFileSync(fake, [
+      '#!/bin/sh',
+      'if [ "$1" = "status" ]; then',
+      '  echo "No hub running"',
+      '  if [ -f "$CCXRAY_FAKE_DIR/listening" ]; then',
+      '    echo "Note: port 5999 is held by a standalone ccxray"',
+      '  fi',
+      '  exit 0',
+      'fi',
+      '# the --no-browser foreground server',
+      'echo $$ > "$CCXRAY_FAKE_DIR/pid"',
+      'trap \'echo TERM > "$CCXRAY_FAKE_DIR/killed"; exit 0\' TERM',
+      'touch "$CCXRAY_FAKE_DIR/listening"',
+      'while true; do sleep 0.2; done',
+    ].join('\n'));
+    fs.chmodSync(fake, 0o755);
+
+    let port = null;
+    try {
+      port = ensureProxy({
+        env: pluginEnv({ CCXRAY_BIN: fake, CCXRAY_FAKE_DIR: dir }),
+        cwd: dir,
+      });
+      assert.equal(port, 5999, 'the readiness probe must accept a standalone port');
+      assert.equal(fs.existsSync(path.join(dir, 'killed')), false,
+        'must not SIGTERM the server it just started');
+      assert.ok(fs.existsSync(path.join(dir, 'pid')), 'the server should have started');
+    } finally {
+      // Never leave the fake behind — an orphaned proxy is the failure mode this
+      // whole path is about.
+      try {
+        const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8').trim());
+        if (Number.isFinite(pid) && pid > 0) process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  });
+});
+
 describe('Herdr model label agrees across surfaces', () => {
   // The sidebar anchors on mainDisplayTurns (agentKey whitelist, then raw
   // !isSubagent); Mission Control's turns arrive filtered only by raw

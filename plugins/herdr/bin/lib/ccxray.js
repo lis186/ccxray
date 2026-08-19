@@ -1627,6 +1627,18 @@ function reportWorkspaceTokens(tokens, opts = {}) {
   };
 }
 
+// The port a standalone (non-hub) ccxray holds, read from `ccxray status`'s
+// human-readable Note line (#555). Scraping English is fragile; it is here in
+// ONE place so the pre-check and the readiness probe cannot disagree, and so a
+// future machine-readable status field has a single site to replace.
+function standalonePortFromStatus(parsed) {
+  const note = ((parsed && parsed.notes) || [])
+    .find(n => /held by a standalone.*ccxray/i.test(n));
+  if (!note) return null;
+  const m = note.match(/port\s+(\d{2,5})/);
+  return m ? Number(m[1]) : null;
+}
+
 // Ensure a ccxray proxy is accepting connections on a known port. Returns the
 // port number or null on failure. Tries (in order): the running hub, a
 // standalone server on the requested PROXY_PORT, then starts one.
@@ -1635,39 +1647,51 @@ function ensureProxy(opts = {}) {
   const status = statusReport({ env, timeoutMs: opts.timeoutMs || 5000 });
   if (status.parsed.running && status.parsed.port) return status.parsed.port;
 
-  // A standalone (non-hub) ccxray on the default port is a perfectly good proxy
-  // even though parseStatus reports running=false (it's not a hub). The Note
-  // line from #555 tells us exactly which port it holds.
-  const standaloneNote = (status.parsed.notes || [])
-    .find(n => /held by a standalone.*ccxray/i.test(n));
-  if (standaloneNote) {
-    const m = standaloneNote.match(/port\s+(\d{2,5})/);
-    if (m) return Number(m[1]);
-  }
+  // A standalone (non-hub) ccxray is a perfectly good proxy even though
+  // parseStatus reports running=false (it's not a hub). The Note line from #555
+  // tells us which port it holds. Both the pre-check and the post-start recheck
+  // must consult this — recognising standalone only BEFORE starting meant a
+  // freshly started one was reported as "port could not be determined".
+  const standalone = standalonePortFromStatus(status.parsed);
+  if (standalone) return standalone;
 
-  // No hub running — start one. `ccxray --no-browser` without an agent launches
-  // proxy+dashboard only. Hub mode forks detached automatically.
+  // Start one, DETACHED. `ccxray --no-browser` with no agent is a FOREGROUND
+  // standalone server: per CLAUDE.md, a hub is forked only by `ccxray <agent>`
+  // without an explicit --port, and `hubMode` comes solely from the internal
+  // `--hub-mode` flag the hub gives itself. So spawnSync blocked for its whole
+  // 15s timeout and then SIGTERM'd the very server it had just started, and the
+  // recheck then probed for a hub that never existed — the cold-start path
+  // could not succeed, and took ~17.5s to say so.
+  //
+  // TRADE-OFF, deliberate: a standalone has no idle shutdown (that is a hub
+  // behaviour), so this leaves a proxy running after the agent exits — the same
+  // thing `ccxray` in a terminal does. The pre-check above reuses it, and the
+  // port is the mutex for a concurrent second launch, so at most one exists.
   const ccxray = resolveCcxrayCommand(env);
-  const startArgs = [...ccxray.argsPrefix, '--no-browser'];
-  const start = spawnSync(ccxray.bin, startArgs, {
-    cwd: opts.cwd || findRepoRoot(env) || pluginRoot(env),
-    env,
-    encoding: 'utf8',
-    timeout: 15000,
-    windowsHide: true,
-  });
-  if (start.status !== 0 && start.status !== null) {
-    process.stderr.write(start.stderr || start.stdout || `ccxray proxy failed to start (exit ${start.status})\n`);
+  try {
+    const child = spawn(ccxray.bin, [...ccxray.argsPrefix, '--no-browser'], {
+      cwd: opts.cwd || findRepoRoot(env) || pluginRoot(env),
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    child.unref();
+  } catch (error) {
+    process.stderr.write(`ccxray proxy failed to start: ${error.message}\n`);
     return null;
   }
 
-  // Re-check — hub may take a moment to write its lockfile.
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  // Readiness probe: a hub writes its lockfile, a standalone only starts
+  // listening, so accept either.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     spawnSync('sleep', ['0.5']);
     const recheck = statusReport({ env, timeoutMs: 3000 });
     if (recheck.parsed.running && recheck.parsed.port) return recheck.parsed.port;
+    const port = standalonePortFromStatus(recheck.parsed);
+    if (port) return port;
   }
-  process.stderr.write('ccxray proxy started but hub port could not be determined.\n');
+  process.stderr.write('ccxray proxy was started but no listening port could be determined.\n');
   return null;
 }
 
