@@ -50,6 +50,35 @@ fallback) and fall back to the raw `isSubagent` flag otherwise:
 | coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
 | coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
 
+## Exception — the Herdr plugin badge (PROPOSED (awaiting owner sign-off, 2026-08-20))
+
+The Decision above says *every* site that branches on `entry.agentKey` must call
+`isMainTurnByAgentKey()`. That sentence is now false for a site inside this
+repository, and the site is right to be an exception.
+
+`plugins/herdr/bin/lib/ccxray.js` `mainDisplayTurns` branches on `agentKey` and
+must NOT use the shared predicate: `isMainTurnByAgentKey` returns TRUE for
+exactly the shape the badge exists to exclude. `agentKey: 'agent'` is in
+`AGENT_KEY_UNRELIABLE`, so the predicate degrades to the raw `isSubagent` flag,
+which a background conversation carries as `false` — importing it there would be
+a no-op. The two rules answer different questions: core's is recall-oriented
+(never misfile a possibly-new main variant as a subagent), the badge's is
+precision-oriented (an unrecognized key must not SET the displayed number).
+
+What the plugin DOES share is the drift-prone datum: it requires
+`WF_MAIN_AGENT_KEYS` from this ADR's module (defensively — a plugin installed
+outside a ccxray checkout has no core file, and degrades to the raw-flag tier).
+The predicate stays local. Recording this so a later reader does not "unify"
+a deliberate divergence away; it is not a new consumer row.
+
+**Consistency obligation this creates inside the plugin.** Having two rules
+means the plugin's own sites must agree with each other. They did not:
+`paneSessionTelemetry` selected "main" with raw `!isSubagent` while
+`summarizeTurnGroup` used `mainDisplayTurns`, so the sidebar badge and the
+Mission Control row named different models for one pane (fixed 2026-08-20; the
+in-tree comment had asserted this was impossible). Any further main-selection
+site in the plugin must route through `mainDisplayTurns`.
+
 ## Consequences
 
 **Good**: the turn list and the workflow swimlanes can no longer disagree on

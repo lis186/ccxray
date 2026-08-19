@@ -131,7 +131,35 @@ exists today on 42 real sessions becomes visible; all folds are rebuildable.
 (e.g. forgetting `overlapEntries`), silently reverts that site to unmarked
 fabrication. Guard comments at every site in the table name this ADR.
 
-## Alternatives considered
+## Extended across the process boundary — the Herdr plugin (PROPOSED (awaiting owner sign-off, 2026-08-20))
+
+The site table above lists in-page sites only, so the Herdr plugin — a separate
+process that renders aggregate costs into the Herdr sidebar and its own Mission
+Control pane — sat outside this ADR entirely. It did not merely omit the helper:
+`mission-control.js` `rowCost`/`confidenceCost` implemented **Alternative A**,
+the worst-of `~` this ADR rejected 3/3/3, and the sidebar badge rendered a bare
+`formatMoney` total (unmarked fabrication, the other failure mode). Neither had
+a `+`, so the under-count was invisible unless every turn was unpriced.
+
+Resolution (2026-08-20): `public/format.js` is now isomorphic — the #381
+`agent-classification.js` shape, `typeof module !== 'undefined'` guard, no
+top-level DOM — so the plugin requires the real helper instead of re-deriving
+thresholds that would then drift. Added sites:
+
+| Site | Fold source |
+|------|-------------|
+| Sidebar badge total | `plugins/herdr/bin/lib/ccxray.js` `summarizeTurnGroup` → `costFold(sorted)`, exposed as `costAgg` |
+| Mission Control row / hover / 5m rate | `missionControlRow` → `costAgg`, `totalCostAgg`, `totalRecentCostAgg` (subagent rollup merged in, because the rendered number includes it) |
+| Mission Control header 5m rate | `missionControlSnapshot` → `recentCostAgg` (merge of every row's fold) |
+
+**Degraded mode.** A plugin installed without a ccxray checkout cannot require
+core. It then renders the number UNMARKED and keeps only the two claims that
+need no calibration — `—` for nothing priced, `+` for an under-count.
+Deliberately not the old worst-of: without the thresholds, marking everything is
+the rejected shape, and this ADR's own reasoning says an always-firing marker
+carries no information. Recorded as an accepted limit, not a gap to close.
+
+## Alternatives considered## Alternatives considered
 
 - **A worst-of** — rejected, scores 3/3/3 (habituation, inverted Lie Factor
   ≈357, back-contamination of the per-turn marker).

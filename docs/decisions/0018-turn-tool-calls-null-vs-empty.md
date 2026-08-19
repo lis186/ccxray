@@ -52,6 +52,7 @@ The fallback sites covered by this contract are:
 | `public/entry-rendering.js` recompute path (~line 852) | Same preference and legacy fold as the hot path. |
 | `public/workflow-timeline.js` lane totals (~line 2802) | Sum response deltas; put only nullish turns into the legacy per-tool max fold. |
 | `server/usage.js` legacy fold (~line 237) | Skip response-parsed turns, including `{}`, from the cumulative per-session max fold. |
+| `plugins/herdr/bin/lib/ccxray.js` `observedToolCalls` | Honors null-vs-`{}` correctly, but the nullish branch applies per-tool MAX for every provider — it does not check `provider`, so Codex/Grok panes hit the Anthropic-only fallback and under-count repeated same-tool calls. Same defect as the accepted limit below, in a second process. — PROPOSED (awaiting owner sign-off, 2026-08-20) |
 
 Guard comments at each site name this ADR. The distinction is part of the
 stored/indexed field contract and must survive transport, restore, and cold-load.

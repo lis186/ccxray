@@ -345,6 +345,34 @@ Deltas from the proposal, discovered during implementation:
   lockstep. See the "Session-card turn count is deduped" consequence for why all
   three sites must change together.
 
+## Second implementation in the Herdr plugin — PROPOSED (awaiting owner sign-off, 2026-08-20)
+
+`plugins/herdr/bin/lib/ccxray.js` `dedupeObservedEntries` is a SECOND
+responseId dedup, in a different process, reached by every badge and Mission
+Control render (it runs inside `filterEntriesToWorkspace`). It differs from this
+ADR's rules in two ways that matter:
+
+- **It suppresses by score instead of merging fields.** The score is
+  `agentId ? 4 : 0` + `!imported ? 2 : 0` + `responseMetadata ? 1 : 0`, and the
+  losing copy is discarded. That is the mechanism this ADR's panel scored
+  1.5/10 and superseded — the copies carry complementary partial metadata, so
+  discarding one can drop exactly the field the winner lacks. The blast radius
+  is bounded to what the plugin renders (it never writes), and the winner is
+  usually the same copy `store._identityScore` would pick, but the two can
+  disagree, so the badge and the dashboard can show different canonicals.
+- **Its key includes the session id** (`${sessionId}:${responseId}`), so the
+  #329 importer-vs-proxy pair — same `msg_01…` under `direct-api` and under the
+  real session — is NOT deduped. Because the dedup runs before
+  `groupSessions`, the two copies land in different groups: a single badge does
+  not double-count, but Mission Control renders two rows for one logical turn
+  and any cross-session total is inflated.
+
+Proposed classification: **exempt with known loss**, like the WS exemption
+above, rather than a bug to fix now — the plugin cannot require `store.js`
+(separate process, and it is installed without a ccxray checkout). If it is ever
+made to share the merge, the natural vehicle is the isomorphic-require pattern
+`public/format.js` now uses for ADR 0017.
+
 ## Amended by #420 Phase 3 / ADR 0017 (2026-08-03)
 
 The usage/cost unit-move rule gains a tie-break: on EQUAL usage richness, a

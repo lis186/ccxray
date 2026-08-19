@@ -106,7 +106,31 @@ comments at `sessionCtxWindow`, `_wfWinByTurn`, `entry-rendering.js` (the raw
 numerator store), `server/entry.js`, and `anthropic.buildEntryFields` name this
 ADR.
 
-## Panel record (independent assessments, 2026-07-24)
+## Open breach — the Herdr badge asserts pressure without provenance (PROPOSED (awaiting owner sign-off, 2026-08-20))
+
+`plugins/herdr/bin/lib/ccxray.js` `sessionWindow` folds the window with the same
+three arms `sessionCtxWindow` still uses (`beta1m` → 1M, else max `maxContext`,
+else 200K), so the FORMULA is current — it is not a "pre-amendment" fold, and
+the plugin is another partial-view injector of the kind the #377 amendment
+already contemplates.
+
+The breach is on the other side of the 2026-08-16 amendment: that work made an
+assumed denominator VISIBLE (`sessionCtxWindowSource`, `60% of 200K?`,
+`130% of 200K✗`), on the ground that a display asserting pressure must say
+whether its denominator was measured. The badge asserts pressure with no such
+qualifier: `contextBand` picks green/yellow/red from the percentage alone, and
+`formatWholePercent` emits a bare `N%` (clamped at 999, so a contradicted
+denominator renders as a confident three-digit number with no `✗`). Zero
+`ctxBeta` / provenance references exist under `plugins/`.
+
+Note the badge already documents a channel-INVERSE for staleness — colour
+withdrawn, text carries the reason — for the narrower case of stale evidence.
+That precedent is the likely shape of a fix, but the choice is a display
+decision with a real trade-off (the ctx bar is ~18 columns and already spends
+its tail on the cache/fail signal), so it is recorded here rather than guessed
+at. No code change was made for this.
+
+## Panel record (independent assessments, 2026-07-24)## Panel record (independent assessments, 2026-07-24)
 
 Kleppmann / Hickey / Helland / Bailis — **all four ranked S′ first**, each
 independently identifying "beta1m is never persisted" as the root cause. 3/4
