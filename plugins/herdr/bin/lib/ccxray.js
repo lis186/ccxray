@@ -72,8 +72,27 @@ function resolveCcxrayCommand(env = process.env) {
   return { bin: 'ccxray', argsPrefix: [], label: 'ccxray' };
 }
 
+// A FLOOR for every CLI budget in this module, off by default.
+//
+// The per-call budgets (1200ms for `pane list`, 1500ms for `agent list`) are
+// generous for the real herdr — a Rust binary that answers in single-digit ms —
+// and deliberately tight so a hung CLI does not freeze a TUI. Under `node
+// --test`, which saturates every core, a mock can miss them, and the timeout
+// does NOT surface as a timeout: `herdrOk` flips false, or
+// `currentWorkspaceScope` falls back to the plugin cwd, so it lands as an
+// unrelated string/path assertion in another suite. Same class as the 45s load
+// budget the launcher tests were given in #542.
+//
+// Tests set this generously (see pluginEnv in test/herdr-plugin.test.js);
+// production leaves it unset and keeps the tight per-call budgets.
+function timeoutFloor(env) {
+  const raw = Number((env || process.env).CCXRAY_HERDR_CMD_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
 function runCommand(command, args = [], opts = {}) {
-  const timeout = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const env = opts.env || process.env;
+  const timeout = Math.max(opts.timeoutMs || DEFAULT_TIMEOUT_MS, timeoutFloor(env));
   const result = spawnSync(command.bin, [...(command.argsPrefix || []), ...args], {
     cwd: opts.cwd || findRepoRoot(opts.env || process.env) || pluginRoot(opts.env || process.env),
     env: opts.env || process.env,

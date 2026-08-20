@@ -26,6 +26,14 @@ function pluginEnv(overrides = {}) {
     if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_') || key === 'PROXY_PORT') continue;
     env[key] = value;
   }
+  // Load budget: the plugin's CLI calls have deliberately tight per-call
+  // budgets (1200ms / 1500ms) that a mock can miss when `node --test` saturates
+  // the machine. A missed budget does not report as a timeout — it degrades a
+  // value and fails an unrelated assertion in another suite, which is how two
+  // tests in this file flaked for weeks. Same remedy as #542's launcher budget.
+  // 10s: comfortably above any load spike, and below runScript's own 15s kill
+  // so a genuinely hung mock still fails as a spawn timeout rather than hanging.
+  env.CCXRAY_HERDR_CMD_TIMEOUT_MS = '10000';
   env.CCXRAY_HOME = isolatedHome();
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
   // sessionSummaryDetails call sees the child's env, where an unset
@@ -552,7 +560,14 @@ describe('Herdr aggregate cost confidence (ADR 0017)', () => {
     const home = makeHome(turns);
     const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
     return sessionSummaryDetails({}, {
-      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000900000' }),
+      // CCXRAY_IMPORT_HOMES is pinned explicitly even though pluginEnv() already
+      // sets it: the audit below is a TEXTUAL check on this call site, and the
+      // convention it enforces is worth more than the redundancy it costs.
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
       paneId: 'w1:p1', cwd: '/work/agg',
     });
   };
@@ -2393,7 +2408,14 @@ describe('Herdr plugin commands', () => {
         agentId: 'herdr:w1:p3',
         receivedAt: now,
         isSubagent: true,
-        cost: { cost: 0.07, confidence: 'estimated' },
+        // 'fallback', not 'estimated': the server writes only exact / prefix /
+        // fallback / unknown (`calculateCost`), and the plugin's `'estimated'`
+        // is a capability-analysis field, not a cost confidence. The old
+        // worst-of marked ANY non-exact value, so an invented one still
+        // rendered `~`; ADR 0017's fold keys strictly on 'fallback', exactly as
+        // core's does. 0.07 of 0.27 is a 26% cost share — above the 10% mark
+        // threshold, below the 50% degrade threshold, so `~$0.27` still holds.
+        cost: { cost: 0.07, confidence: 'fallback' },
       },
     ];
     const agents = [{
@@ -3483,7 +3505,7 @@ describe('Herdr plugin commands', () => {
     const { menuItems } = require('../plugins/herdr/bin/onboarding');
     const state = {
       ccxrayReady: true, hubRunning: true, sessions: 1, sidebar: true, providers: [],
-      keys: { mission: null, quickStart: 'prefix+shift+m', any: true, all: false },
+      keys: { mission: null, quickStart: 'prefix+shift+m', any: true },
     };
     const row = menuItems(state).find(item => item.id === 'keybindings');
     assert.ok(row, 'the keybindings row exists');
@@ -3492,7 +3514,7 @@ describe('Herdr plugin commands', () => {
 
     const bothBound = menuItems({
       ...state,
-      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true, all: true },
+      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true },
     }).find(item => item.id === 'keybindings');
     assert.match(bothBound.detail, /Enter remove/, 'only a complete install offers remove');
   });

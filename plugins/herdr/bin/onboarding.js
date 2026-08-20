@@ -81,16 +81,15 @@ function installedKeys(env = process.env) {
   }
   const mission = boundKeyFor(config, 'ccxray.herdr.mission-control');
   const quickStart = boundKeyFor(config, 'ccxray.herdr.quick-start');
-  // `all` vs `any` is load-bearing: the row's action is chosen by `all`, so a
-  // PARTIAL install (one key free, one already bound by the user) still offers
-  // install. Keying the action on `any` meant Enter removed the one binding
-  // that had succeeded, and the missing one could never be added from the TUI.
-  return {
-    mission,
-    quickStart,
-    any: Boolean(mission || quickStart),
-    all: Boolean(mission && quickStart),
-  };
+  return { mission, quickStart, any: Boolean(mission || quickStart) };
+}
+
+// Whether BOTH bindings are present. Derived, never a field on the state:
+// menuItems is called with hand-built state objects (tests, and any future
+// caller), so a required `keys.all` silently reads undefined there and a fully
+// bound pair renders as partial. Derive from the two keys that are the facts.
+function bothKeysBound(keys) {
+  return Boolean(keys && keys.mission && keys.quickStart);
 }
 
 function snapshot(env = process.env) {
@@ -165,7 +164,10 @@ function menuItems(state) {
       id: 'keybindings',
       key: 'B',
       label: 'Keybindings',
-      detail: keys.all
+      // A PARTIAL install must keep offering install: keying this on `any` meant
+      // Enter removed the one binding that had succeeded, and the missing one
+      // could never be added from the TUI.
+      detail: bothKeysBound(keys)
         ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · Enter remove`
         : (keys.any
           ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · 1 of 2 · Enter install`
@@ -353,7 +355,7 @@ function executeItem(item, state) {
     return { message: `${provider.label} launching in a new pane. Log: ${logFile}` };
   }
   if (item.id === 'keybindings') {
-    const removing = state.keys.all;
+    const removing = bothKeysBound(state.keys);
     const script = removing ? 'remove-keybindings.js' : 'install-keybindings.js';
     const result = runNode(script);
     // A partial install exits 0 with the conflict on stderr, so a fixed success
