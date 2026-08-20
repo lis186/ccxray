@@ -6,6 +6,11 @@ const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
+// INVARIANT(ADR 0017): the human aggregate below must render through the shared
+// fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
+// top-level DOM), so the server reads the SAME thresholds the dashboard and the
+// Herdr plugin do rather than re-deriving them.
+const { formatAggCostText } = require('../public/format.js');
 
 const HELP = `Usage: ccxray usage [options]
 
@@ -528,7 +533,7 @@ function printHuman(r) {
     for (const s of r.sessions.topSessions) {
       const id = s.sessionId.length > 16 ? s.sessionId.slice(0, 8) + '…' : s.sessionId;
       const title = s.title ? `  ${D}${s.title}${R}` : '';
-      console.log(`  ${id.padEnd(10)} $${String(s.cost).padEnd(9)} ${String(s.turns).padStart(5)} turns  ${fmtDur(s.durationMin).padStart(7)}  ${s.model}${title}`);
+      console.log(`  ${id.padEnd(10)} ${formatAggCostText(s.cost, s.costAgg).padEnd(10)} ${String(s.turns).padStart(5)} turns  ${fmtDur(s.durationMin).padStart(7)}  ${s.model}${title}`);
     }
   }
   console.log();

@@ -610,3 +610,39 @@ describe('usage --json shape contract', () => {
     assert.equal(typeof err.hint, 'string');
   });
 });
+
+// INVARIANT(ADR 0017): the human `costliest sessions` row is an aggregate cost
+// display, so it renders through the shared fold-aware helper. It used to print
+// a bare `$2` beside a --json payload that carried the fold — the same number,
+// one honest and one not.
+describe('usage human output marks aggregate cost confidence', () => {
+  const homeWith = entries => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-usage-human-'));
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'),
+      entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+    return home;
+  };
+  const humanCli = (home, ...args) => execFileSync(
+    process.execPath, ['server/index.js', 'usage', ...args],
+    { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+  ).toString();
+
+  it('marks an all-fallback session with ~ and an unpriced one with +', () => {
+    const fallbackHome = homeWith([1, 2, 3, 4].map(i => entry({
+      id: `fb-${i}`, responseId: `msg_fb_${i}`, sessionId: 's-fallback',
+      receivedAt: 1717236000000 + i * 1000, cost: { cost: 0.5, confidence: 'fallback' },
+    })));
+    assert.match(humanCli(fallbackHome, '--last', '9999d'), /~\$/,
+      'an all-fallback costliest-session row must carry the fabrication marker');
+
+    // One priced turn plus one that contributed nothing: the total is a lower
+    // bound, which `+` is the only thing on the row that says.
+    const unknownHome = homeWith([
+      entry({ id: 'uk-1', responseId: 'msg_uk_1', sessionId: 's-unknown', receivedAt: 1717236001000, cost: { cost: 0.5, confidence: 'exact' } }),
+      entry({ id: 'uk-2', responseId: 'msg_uk_2', sessionId: 's-unknown', receivedAt: 1717236002000, cost: { cost: null, confidence: 'unknown' } }),
+    ]);
+    assert.match(humanCli(unknownHome, '--last', '9999d'), /\$0\.50\+/,
+      'an excluded turn must show the total is a lower bound');
+  });
+});

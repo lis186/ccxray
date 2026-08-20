@@ -1434,8 +1434,16 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const first = turns[0] || {};
   const win = anchor.length ? sessionWindow(anchor) : 0;
   const pcts = win ? contextPercents(anchor, win) : [];
-  const ctxPct = pcts.at(-1) ?? null;
-  const previousPct = pcts.length > 1 ? pcts.at(-2) : null;
+  // Read the LATEST ANCHORED TURN, not the last finite percentage:
+  // `contextPercents` drops turns with no usage, so `pcts.at(-1)` silently
+  // reports an OLDER turn's context whenever the newest main turn carries no
+  // usage. The badge reads `contextUsed(latest)` directly and shows `?` there,
+  // so the two disagreed again — same class as the anchoring fix itself.
+  const latestUsed = contextUsed(mainLatest);
+  const ctxPct = win && latestUsed ? latestUsed / win * 100 : null;
+  // Only meaningful when the latest turn has its own value: if ctxPct is null
+  // there is no "current" to subtract a previous from.
+  const previousPct = ctxPct != null && pcts.length > 1 ? pcts.at(-2) : null;
   const ctxDelta = Number.isFinite(ctxPct) && Number.isFinite(previousPct)
     ? ctxPct - previousPct
     : null;
@@ -1815,7 +1823,14 @@ function paneStateSnapshot(paneId, env) {
     tokens: pane.tokens || {},
     stateLabels: pane.state_labels || {},
     scroll: pane.scroll || {},
+    // All three of the non-token args `report-metadata` accepts. `title` and
+    // `display_agent` are ABSENT from the pane object until something sets them,
+    // which is why a single observation of an unset pane looked like "herdr does
+    // not report these" — measured 2026-08-20 by setting each through
+    // `report-metadata` and reading it back, both appear.
     agent: pane.agent ?? null,
+    title: pane.title ?? null,
+    displayAgent: pane.display_agent ?? null,
   };
 }
 
@@ -1836,17 +1851,17 @@ function paneStateSnapshot(paneId, env) {
 // written and never compared, so `refresh-badges` supplying a new
 // `agent: event.agent` on identical tokens was silently skipped and Herdr kept
 // the stale one — the exact sigParts failure the comment says deriving avoids.
-// `agent` is now compared against the pane's own field.
 //
-// `title` and `displayAgent` remain UNCOMPARED, and that is a real hole rather
-// than a decision: `herdr pane get` exposes no field for either (it reports
-// `terminal_title`, which the agent itself sets, and nothing for the display
-// agent), so there is nothing to compare against. No caller passes them today.
-// A caller that starts to must either force the write or extend
-// `paneStateSnapshot` with a field Herdr actually reports.
+// All three are compared now. An earlier pass compared only `agent` on the
+// stated ground that `pane get` reports nothing for the other two; that was a
+// negative claim drawn from ONE reading of a pane where neither was set, and it
+// was wrong — both appear once something sets them. Absence in a sample is not
+// absence from the schema.
 function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
   if (!snapshot) return false;
-  if (opts.agent != null && String(snapshot.agent ?? '') !== String(opts.agent)) return false;
+  for (const [arg, field] of [['agent', 'agent'], ['title', 'title'], ['displayAgent', 'displayAgent']]) {
+    if (opts[arg] != null && String(snapshot[field] ?? '') !== String(opts[arg])) return false;
+  }
   for (const [name, value] of Object.entries(tokens || {})) {
     if (String(snapshot.tokens[name] ?? '') !== String(value)) return false;
   }
@@ -2070,15 +2085,23 @@ function upstreamAuthToken(env = process.env) {
 function proxyEnvVars(agent, port, opts = {}) {
   const base = `http://localhost:${port}`;
   const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
-  // `createLaunch` in server/providers.js appends this for the wrapped launch
-  // path; the env-injection path does not go through it, so without this a pane
-  // launched here gets 401s from its own proxy whenever
-  // CCXRAY_LOOPBACK_REQUIRE_AUTH=1. Absent token → omit the header rather than
-  // send an empty one; loopback is trusted by default, so that stays working.
-  const authToken = opts.skipAuth ? null : upstreamAuthToken(opts.env || process.env);
-  const authHeader = authToken ? `X-Ccxray-Auth: ${authToken}` : '';
   switch (agent) {
     case 'claude': {
+      // `createLaunch` in server/providers.js appends this for the wrapped
+      // launch path; the env-injection path does not go through it, so without
+      // it a pane launched here gets 401s from its own proxy whenever
+      // CCXRAY_LOOPBACK_REQUIRE_AUTH=1. Absent token → omit the header rather
+      // than send an empty one; loopback is trusted by default, so that keeps
+      // working.
+      //
+      // Resolved INSIDE this branch: the lookup spawns `ccxray secret upstream`,
+      // which can derive and persist a secret and carries a 4s timeout. Only
+      // this branch consumes the token — grok has no header mechanism at all
+      // and codex carries it in a model_providers block (`codexAgentArgs`) — so
+      // resolving it before the switch made every grok and codex launch pay for
+      // a value it then discarded.
+      const authToken = opts.skipAuth ? null : upstreamAuthToken(opts.env || process.env);
+      const authHeader = authToken ? `X-Ccxray-Auth: ${authToken}` : '';
       const vars = { ANTHROPIC_BASE_URL: base };
       // Same comma-joined form providers.js uses for this variable — and, like
       // providers.js, the user's own value is PREPENDED rather than replaced.

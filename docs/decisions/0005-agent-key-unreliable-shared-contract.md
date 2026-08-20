@@ -87,18 +87,32 @@ the sidebar and 60% in Mission Control (`test/herdr-plugin.test.js`, "names the
 same model in the sidebar badge and the Mission Control row", now asserts ctx%
 agreement as well; fail-on-old verified 60 vs 1).
 
-The obligation is therefore stated as an enumerated SPLIT that both surfaces
-must implement identically, not as a blanket rule:
+The obligation is therefore stated as an enumerated list of the figures that
+must AGREE, not as a blanket rule:
 
-| Figure | Set |
-|---|---|
-| model label, context window + ctx%, cache%, tool failures, prompt-change | `mainDisplayTurns(turns)` |
-| cost, turn count, age / 5m rate, `latest` + `first` (freshness) | every turn |
+| Figure | Both surfaces read | Must agree? |
+|---|---|---|
+| model label, context window + ctx%, cache%, tool failures, prompt-change | `mainDisplayTurns(turns)` | **yes** |
+| freshness / session age | every turn (badge `evidenceStaleness(sorted)`; row `observedStartedAt`/`observedLatestAt` over `turns` + `subagentTurns`) | **yes** |
+| cost, turn count | different sources by design — see below | **no** |
 
 Freshness is whole-session on purpose: a subagent turn logged a minute ago
-proves ccxray is still watching the pane just as well as a main turn does. A new
-figure added to either surface must be placed in this table, and a figure that
-appears on both must land on the same side in both.
+proves ccxray is still watching the pane just as well as a main turn does.
+
+**Cost and turn count are deliberately NOT comparable, and must not be
+"aligned".** The badge reports the hub's per-session aggregate (`sessions.json`)
+because the plugin's own window is a 4 MiB tail of a much larger index — its sum
+is a SAMPLE, and reporting it made the badge disagree with the dashboard about
+the same session. The Mission Control row instead reports the **main-agent** sum
+over that tail (`cost`, `turns`) plus a separately labelled subagent rollup
+(`subagents N, total $X`), and keeps `totalCost`/`totalCostAgg` for the combined
+figure. So the row's headline cost is main-only by design while the badge's is
+whole-session from a different source; an earlier revision of this table claimed
+both were whole-session, which was false in two ways at once.
+
+A new figure added to either surface must be placed in this table. A figure that
+must agree has to read the same set in both; a figure that cannot agree has to
+say why here.
 
 ## Consequences
 

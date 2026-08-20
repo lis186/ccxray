@@ -4399,9 +4399,10 @@ describe('codex round 2 fixes', () => {
     const original = '# the user own config\n[[keys.command]]\nkey = "prefix+z"\ncommand = "mine"\n';
     fs.writeFileSync(configPath, original);
     const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
     // Rejects `config check`; anything else succeeds.
     fs.writeFileSync(bin, [
-      '#!/bin/sh',
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
       'if [ "$1" = "config" ] && [ "$2" = "check" ]; then',
       '  echo "invalid keybinding" 1>&2; exit 1',
       'fi',
@@ -4413,8 +4414,134 @@ describe('codex round 2 fixes', () => {
     const status = writeConfigAndReload(configPath, original, `${original}\n[[keys.command]]\nkey = "bad"\n`, {
       env: pluginEnv({ HERDR_BIN_PATH: bin }),
     });
+    // Assert the FAKE was reached, not just that a restore happened: with the
+    // pre-fix code (env never passed to runHerdr) the real herdr ran instead,
+    // and on a machine where it is missing or its own config is invalid the
+    // check also fails, the file is also restored, and both assertions below
+    // pass for entirely the wrong reason.
+    assert.ok(fs.existsSync(log), 'HERDR_BIN_PATH must be the binary that ran');
+    assert.match(fs.readFileSync(log, 'utf8'), /config check/,
+      'the injected herdr must be the one asked to validate');
     assert.equal(status, 1, 'a rejected config must not report success');
     assert.equal(fs.readFileSync(configPath, 'utf8'), original,
       'the user config must be byte-identical after a rejection');
+  });
+});
+
+describe('codex round 3 fixes', () => {
+  const TOKEN = 'GMe19yT9nI3t6-8mYyCbTgCJJmUZlP3YPcfgDAVgZrY';
+  // Records every invocation so a test can assert a lookup did NOT happen.
+  const recordingCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-secret-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$1" = "secret" ]; then', `echo "${TOKEN}"`, 'exit 0', 'fi', 'exit 1',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '') };
+  };
+
+  // `contextPercents` DROPS turns with no usage, so the last finite percentage
+  // can belong to an older turn. The badge reads the latest anchored turn
+  // directly and shows `?`; Mission Control reported the stale number.
+  it('reports no ctx% when the latest main turn carries no usage', () => {
+    const base = {
+      sessionId: 's-nousage', provider: 'anthropic', cwd: '/work/nousage',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', maxContext: 200000, cost: { cost: 0.01, confidence: 'exact' },
+    };
+    const home = makeHome([
+      { ...base, id: 'n1', responseId: 'msg_n1', receivedAt: 1787000001000, usage: { input_tokens: 2000, output_tokens: 10 } },
+      // Latest main turn, no usage at all — a real shape for an errored turn.
+      { ...base, id: 'n2', responseId: 'msg_n2', receivedAt: 1787000002000 },
+    ]);
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000003000' });
+    const { sessionSummaryDetails, missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+
+    const badge = sessionSummaryDetails({}, { env, paneId: 'w1:p1', cwd: '/work/nousage' });
+    const snapshot = missionControlSnapshot({
+      env,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(badge.ctxPct, null, 'the badge cannot know this turn context');
+    assert.equal(snapshot.rows[0].ctxPct, null,
+      'Mission Control must not substitute an older turn percentage');
+  });
+
+  // The comparison set must cover every non-token arg report-metadata accepts.
+  // `title` and `display_agent` are absent from `pane get` until set, which is
+  // why one reading of an unset pane looked like herdr reported neither.
+  it('re-writes pane metadata when only the title or display agent changed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-meta-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      result: {
+        pane: {
+          pane_id: 'w1:p1', agent: 'claude', title: 'old title',
+          display_agent: 'Claude Code', tokens: { ctx: '9%' }, state_labels: {}, scroll: {},
+        },
+      },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const env = pluginEnv({
+      HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-meta-state-')),
+    });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+    const opts = { env, agent: 'claude', title: 'old title', displayAgent: 'Claude Code' };
+
+    assert.equal(reportPaneTokens({ ctx: '9%' }, opts).skipped, 'unchanged',
+      'everything matching the pane must still skip');
+    assert.equal(writes(), 0);
+    reportPaneTokens({ ctx: '9%' }, { ...opts, title: 'new title' });
+    assert.equal(writes(), 1, 'a changed title must reach Herdr');
+    reportPaneTokens({ ctx: '9%' }, { ...opts, displayAgent: 'Codex' });
+    assert.equal(writes(), 2, 'a changed display agent must reach Herdr');
+  });
+
+  // The lookup spawns `ccxray secret upstream`, which can derive and persist a
+  // secret and carries a 4s timeout. Only the claude branch consumes it.
+  it('does not look up the upstream secret for agents that cannot carry it', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    for (const agent of ['grok', 'codex']) {
+      const rec = recordingCcxray();
+      proxyEnvVars(agent, 5577, { paneId: 'w1:p1', env: pluginEnv({ CCXRAY_BIN: rec.bin }) });
+      assert.doesNotMatch(rec.calls(), /secret/,
+        `${agent} has no header to put the token in, so it must not fetch one`);
+    }
+    // The claude branch still does.
+    const rec = recordingCcxray();
+    proxyEnvVars('claude', 5577, { paneId: 'w1:p1', env: pluginEnv({ CCXRAY_BIN: rec.bin }) });
+    assert.match(rec.calls(), /secret upstream/, 'claude carries it in a header');
+  });
+
+  // `--plan` must stay a pure描述 of what a launch WOULD do: no secret derived,
+  // nothing written. skipAuth is what guarantees that, and nothing pinned it.
+  it('the --plan path derives no secret', () => {
+    const rec = recordingCcxray();
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        focused_pane_cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-plan-')),
+        workspace_id: 'w1',
+        tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: makeHerdr([]),
+      CCXRAY_BIN: rec.bin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(rec.calls(), /secret/, 'planning must not mint a credential');
   });
 });
