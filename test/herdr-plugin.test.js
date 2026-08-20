@@ -4545,3 +4545,36 @@ describe('codex round 3 fixes', () => {
     assert.doesNotMatch(rec.calls(), /secret/, 'planning must not mint a credential');
   });
 });
+
+describe('codex round 4 fixes', () => {
+  // "seen" is EVIDENCE freshness. Built from main-only `latestAt`, the Mission
+  // Control row called a pane stale while its subagent was actively working,
+  // while the badge's evidenceStaleness (which reads every turn) called it
+  // fresh — the ADR 0005 contract says this figure must agree.
+  it('a recent subagent turn keeps the Mission Control row fresh', () => {
+    const T = 1787000000000;
+    const base = {
+      sessionId: 's-fresh', provider: 'anthropic', cwd: '/work/fresh',
+      agentId: 'herdr:w1:p1', model: 'claude-opus-5', maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 }, cost: { cost: 0.01, confidence: 'exact' },
+    };
+    const home = makeHome([
+      // Main turn two hours ago.
+      { ...base, id: 'f1', responseId: 'msg_f1', receivedAt: T, agentKey: 'orchestrator', isSubagent: false },
+      // Subagent turn one minute ago — ccxray is plainly still watching.
+      { ...base, id: 'f2', responseId: 'msg_f2', receivedAt: T + 7140000, agentKey: 'general-purpose', isSubagent: true },
+    ]);
+    const nowMs = T + 7200000; // 2h after the main turn, 1m after the subagent
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: String(nowMs) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    assert.doesNotMatch(snapshot.rows[0].freshness, /h$/,
+      `seen must not report hours while a subagent ran a minute ago (got ${snapshot.rows[0].freshness})`);
+  });
+});

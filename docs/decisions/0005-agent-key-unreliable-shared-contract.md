@@ -93,11 +93,25 @@ must AGREE, not as a blanket rule:
 | Figure | Both surfaces read | Must agree? |
 |---|---|---|
 | model label, context window + ctx%, cache%, tool failures, prompt-change | `mainDisplayTurns(turns)` | **yes** |
-| freshness / session age | every turn (badge `evidenceStaleness(sorted)`; row `observedStartedAt`/`observedLatestAt` over `turns` + `subagentTurns`) | **yes** |
+| evidence freshness ("seen") | every turn — badge `evidenceStaleness(sorted)`, row `freshness` from `observedLatestAt` over `turns` + `subagentTurns` | **yes** |
 | cost, turn count | different sources by design — see below | **no** |
+| badge `ageText` vs row `sessionAge` | different QUANTITIES — see below | **no** |
 
 Freshness is whole-session on purpose: a subagent turn logged a minute ago
-proves ccxray is still watching the pane just as well as a main turn does.
+proves ccxray is still watching the pane just as well as a main turn does. The
+row's `freshness` was built from main-only `latestAt` and so reported a pane
+stale while its subagent was working; it reads `observedLatestAt` now. Note that
+`latestAt` remains main-only for the row SORT, which is a separate question.
+
+**The two time figures are not the same measurement, so requiring agreement was
+a category error.** The badge's `ageText` is a DURATION (`lastReceivedAt −
+firstReceivedAt`, how long the session ran); the row's `sessionAge` is ELAPSED
+SINCE START (`now − observedStartedAt`). They differ by however long the session
+has been idle — for a session that started 10 minutes ago and ran 5, by 2× — and
+the badge reports duration deliberately (4060eb: printing "how long ago it
+started" in the same terse `9.9h` shape made the badge look like it disagreed
+with the dashboard about the same number). An earlier revision of this table put
+both in one "must agree" row.
 
 **Cost and turn count are deliberately NOT comparable, and must not be
 "aligned".** The badge reports the hub's per-session aggregate (`sessions.json`)
