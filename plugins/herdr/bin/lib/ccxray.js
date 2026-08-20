@@ -151,7 +151,16 @@ function parseStatus(text) {
   const portMatch = hubText.match(/localhost:(\d{2,5})/) || hubText.match(/\bport\s+(\d{2,5})\b/i);
   const pidMatch = hubText.match(/\bpid[:\s]+(\d+)\b/i) || hubText.match(/\bPID[:\s]+(\d+)\b/);
   const clientsMatch = hubText.match(/\bclients?[:\s]+(\d+)\b/i);
+  // One machine-readable line beats scraping prose. Kept OPTIONAL: the plugin
+  // can be driven by a globally-installed `ccxray` older than the line, so the
+  // text fallbacks below must survive.
+  let machine = null;
+  const machineLine = lines.find(l => l.trim().startsWith('Machine: '));
+  if (machineLine) {
+    try { machine = JSON.parse(machineLine.trim().slice('Machine: '.length)); } catch { machine = null; }
+  }
   return {
+    machine,
     running: !noHub && Boolean(portMatch || pidMatch || /hub/i.test(clean)),
     port: portMatch ? Number(portMatch[1]) : null,
     pid: pidMatch ? Number(pidMatch[1]) : null,
@@ -840,7 +849,16 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
       sidebarCols: opts.sidebarCols,
       signal,
     }),
-    ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
+    // The DURATION this session ran (last turn - first), not how long ago it
+    // started. The two differ by however long the session has been idle — for a
+    // session that started 9.9h ago and ran 2.2h, they differ by 4x — and both
+    // were printed in the same terse `9.9h` / `2.2h` shape, so the badge looked
+    // like it disagreed with the dashboard about the same number. Reporting the
+    // duration puts every figure on this badge (cost, turns, ctx%, time) on the
+    // same footing as the dashboard's session card.
+    ageText: agg && Number(agg.lastReceivedAt) && Number(agg.firstReceivedAt)
+      ? formatAge(Math.max(0, Number(agg.lastReceivedAt) - Number(agg.firstReceivedAt)))
+      : (firstTs ? formatAge(nowMs - firstTs) : '?'),
     cost: (agg || sorted.length) ? cost : fallback.cost,
     // INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
     // helper, never a bare formatMoney — see costFold/aggCostText above.
@@ -1863,6 +1881,9 @@ function reportWorkspaceTokens(tokens, opts = {}) {
 // ONE place so the pre-check and the readiness probe cannot disagree, and so a
 // future machine-readable status field has a single site to replace.
 function standalonePortFromStatus(parsed) {
+  const machine = parsed && parsed.machine;
+  if (machine && machine.proxy && Number(machine.port)) return Number(machine.port);
+  // Fallback for a `ccxray` that predates the Machine line.
   const note = ((parsed && parsed.notes) || [])
     .find(n => /held by a standalone.*ccxray/i.test(n));
   if (!note) return null;

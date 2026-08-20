@@ -345,7 +345,7 @@ Deltas from the proposal, discovered during implementation:
   lockstep. See the "Session-card turn count is deduped" consequence for why all
   three sites must change together.
 
-## Second implementation in the Herdr plugin — PROPOSED (awaiting owner sign-off, 2026-08-20)
+## Second implementation in the Herdr plugin — Accepted 2026-08-20
 
 `plugins/herdr/bin/lib/ccxray.js` `dedupeObservedEntries` is a SECOND
 responseId dedup, in a different process, reached by every badge and Mission

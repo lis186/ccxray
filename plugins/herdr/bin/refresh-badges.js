@@ -80,7 +80,9 @@ function applyContextColorTokens(tokens, ctxBand) {
 // A standalone (non-hub) ccxray is a perfectly good proxy — the user's traffic
 // is being traced, it just didn't fork a hub. Mirror ensureProxy's recognition.
 function proxyAvailable(parsed) {
+  if (parsed.machine) return Boolean(parsed.machine.proxy);
   if (parsed.running) return true;
+  // Fallback for a `ccxray` that predates the Machine line.
   return (parsed.notes || []).some(n => /held by a standalone.*ccxray/i.test(n));
 }
 

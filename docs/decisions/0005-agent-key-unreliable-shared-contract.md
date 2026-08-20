@@ -50,7 +50,7 @@ fallback) and fall back to the raw `isSubagent` flag otherwise:
 | coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
 | coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
 
-## Exception — the Herdr plugin badge (PROPOSED (awaiting owner sign-off, 2026-08-20))
+## Exception — the Herdr plugin badge (Accepted 2026-08-20)
 
 The Decision above says *every* site that branches on `entry.agentKey` must call
 `isMainTurnByAgentKey()`. That sentence is now false for a site inside this

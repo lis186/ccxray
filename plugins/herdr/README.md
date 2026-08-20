@@ -70,7 +70,7 @@ Analysis panes open as stable new tabs. `CCXRAY_HERDR_PANE_PLACEMENT=overlay` sw
 - `Open ccxray Quick Start` reports setup progress, launches installed providers, installs the optional sidebar with consent, and reveals analysis panes as their data becomes useful.
 - `ccxray doctor` checks the Herdr runtime context, ccxray command resolution, hub status, and recent usage.
 - `Launch Claude/Codex/Grok via ccxray` opens a stable new Herdr tab and starts the selected agent through ccxray with Herdr identity exported. Set `CCXRAY_HERDR_LAUNCH_PLACEMENT=split` only when a split is intentional.
-- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): it moves the shared ccxray hub — discovery, the forked hub, and its dashboard — to that port, without switching to the standalone `--port` mode. Use it when the default port 5577 is held by something you want to keep running.
+- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): discovery, the proxy the plugin starts, and its dashboard all move to that port. Use it when the default port 5577 is held by something you want to keep running. Note what the plugin starts there is a standalone proxy, not a hub — a hub is forked only by `ccxray <agent>` run directly, and a standalone has no idle shutdown, so it stays up until you stop it.
 - `ccxray usage summary` prints a compact cost/session/tool summary.
 - `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
 - Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.

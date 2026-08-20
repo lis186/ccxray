@@ -137,9 +137,18 @@ function main() {
   }
 
   log(`start agent=${args.agent} cwd=${ctx.cwd}`);
-  // 1. Ensure a ccxray proxy is running. An explicit port skips discovery
-  //    (testing, or the user knows their proxy is already up).
-  const port = requestedPort || ensureProxy({ env, cwd: ctx.cwd });
+  // 1. Ensure a ccxray proxy is running.
+  //
+  // PROXY_PORT does NOT skip this. Its documented meaning — and the meaning
+  // every port-occupant hint in server/hub.js offers it as — is "move the hub
+  // to this port", i.e. discovery AND fork happen there; `--port` is the flag
+  // that opts out of hub mode. Skipping ensureProxy turned it into "point the
+  // agent at this port and hope", so `PROXY_PORT=5600` handed the agent
+  // ANTHROPIC_BASE_URL=localhost:5600 with nothing listening and reported
+  // success. The port is already plumbed: config.PORT reads PROXY_PORT, and
+  // `env` carries it, so both `ccxray status` and the server we start resolve
+  // to it without a second parameter.
+  const port = ensureProxy({ env, cwd: ctx.cwd });
   if (!port) {
     console.error('Could not start the ccxray proxy. Run `ccxray` in a separate terminal, then try again.');
     process.exit(1);

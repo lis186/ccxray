@@ -131,7 +131,7 @@ exists today on 42 real sessions becomes visible; all folds are rebuildable.
 (e.g. forgetting `overlapEntries`), silently reverts that site to unmarked
 fabrication. Guard comments at every site in the table name this ADR.
 
-## Extended across the process boundary — the Herdr plugin (PROPOSED (awaiting owner sign-off, 2026-08-20))
+## Extended across the process boundary — the Herdr plugin (Accepted 2026-08-20)
 
 The site table above lists in-page sites only, so the Herdr plugin — a separate
 process that renders aggregate costs into the Herdr sidebar and its own Mission

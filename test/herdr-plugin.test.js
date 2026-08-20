@@ -548,6 +548,99 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Quick Start honours the documented placement', () => {
+  // The README said CCXRAY_HERDR_PANE_PLACEMENT applied to Quick Start, Mission
+  // Control and Capability Footprint. The other two passed it; Quick Start did
+  // not, so the manifest's `placement = "tab"` always won and the env var
+  // silently did nothing there.
+  it('passes the placement, defaulting to tab', () => {
+    const { openArgs } = require('../plugins/herdr/bin/open-onboarding.js');
+    const dflt = openArgs(pluginEnv({ HERDR_WORKSPACE_ID: 'w1' }));
+    assert.ok(dflt.includes('--placement'), 'placement must be passed at all');
+    assert.equal(dflt[dflt.indexOf('--placement') + 1], 'tab', 'default unchanged');
+
+    const overlay = openArgs(pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1', CCXRAY_HERDR_PANE_PLACEMENT: 'overlay',
+    }));
+    assert.equal(overlay[overlay.indexOf('--placement') + 1], 'overlay');
+  });
+
+  // Requiring this module used to run main() — which opened a real pane, and
+  // meant openArgs could not be tested at all. ADR 0015's two-mode shape.
+  it('is side-effect free when imported', () => {
+    const herdr = makeRecordingHerdr();
+    const before = fs.existsSync(herdr.log);
+    delete require.cache[require.resolve('../plugins/herdr/bin/open-onboarding.js')];
+    require('../plugins/herdr/bin/open-onboarding.js');
+    assert.equal(fs.existsSync(herdr.log), before, 'import must not invoke herdr');
+  });
+});
+
+describe('Herdr badge time is the session duration', () => {
+  // `now - first turn` (how long ago it started) and `last - first` (how long it
+  // ran) differ by however long the session has been idle, and both printed as a
+  // bare `9.9h` / `2.2h`. Measured on a real session: 9.9h vs 2.2h for the same
+  // pane, which read as the badge disagreeing with the dashboard rather than as
+  // two different quantities.
+  it('reports how long the session ran, not how long ago it started', () => {
+    const t0 = 1787000000000;
+    const home = makeHome([{
+      id: 'dur1', sessionId: 's-dur', provider: 'anthropic', cwd: '/work/dur',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', receivedAt: t0, maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 },
+      cost: { cost: 1, confidence: 'exact' }, responseId: 'msg_dur1',
+    }]);
+    // ran 2h, but started 10h ago
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-dur', count: 5, totalCost: 5,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: t0, lastReceivedAt: t0 + 2 * 3600 * 1000,
+    }) + '\n');
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const badge = sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: String(t0 + 10 * 3600 * 1000),
+      }),
+      paneId: 'w1:p1', cwd: '/work/dur',
+    });
+    assert.equal(badge.ageText, '2.0h', 'the duration, not the 10h since it started');
+  });
+});
+
+describe('ccxray status carries a machine-readable line', () => {
+  // Two plugin sites used to decide "is a proxy usable" by regexing an English
+  // sentence. The line is OPTIONAL by design — a globally installed `ccxray`
+  // can be older than it — so both the parse and the text fallback are pinned.
+  it('parseStatus surfaces the Machine line and prefers it', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const withMachine = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 1), so it cannot be shared as a hub.',
+      'Machine: {"proxy":true,"hub":false,"port":5601,"occupant":"ccxray-standalone"}',
+    ].join('\n'));
+    assert.equal(withMachine.machine.proxy, true);
+    // 5601 comes only from the Machine line; the prose says 5577. Proving which
+    // one wins is the point of the test.
+    assert.equal(withMachine.machine.port, 5601);
+
+    const legacy = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 1), so it cannot be shared as a hub.',
+    ].join('\n'));
+    assert.equal(legacy.machine, null, 'an older ccxray still parses');
+    assert.ok(legacy.notes.length, 'and the text fallback survives');
+  });
+
+  it('a malformed Machine line does not throw or poison the parse', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const parsed = parseStatus('No hub running.\nMachine: not-json\n');
+    assert.equal(parsed.machine, null);
+  });
+});
+
 describe('Herdr pane writes skip when nothing changed', () => {
   // Writing pane metadata makes Herdr re-publish it, and a full-screen agent
   // TUI repaints when it does. `pane.agent_status_changed` fires twice per turn,
@@ -1767,7 +1860,10 @@ describe('Herdr plugin commands', () => {
     assert.match(manual.stdout, /Opened ccxray Quick Start/);
     const calls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
     assert.equal(calls.length, 2);
-    assert.match(calls[0], /plugin pane open --plugin ccxray\.herdr --entrypoint onboarding --focus --workspace w1 --cwd \/work\/demo/);
+    // `--placement tab` is explicit now: this assertion previously encoded its
+    // ABSENCE, which was the bug — the manifest's placement always won and
+    // CCXRAY_HERDR_PANE_PLACEMENT did nothing for Quick Start.
+    assert.match(calls[0], /plugin pane open --plugin ccxray\.herdr --entrypoint onboarding --placement tab --focus --workspace w1 --cwd \/work\/demo/);
     const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'onboarding-v1.json'), 'utf8'));
     assert.equal(saved.version, 1);
     assert.ok(saved.openedAt);

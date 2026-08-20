@@ -106,7 +106,7 @@ comments at `sessionCtxWindow`, `_wfWinByTurn`, `entry-rendering.js` (the raw
 numerator store), `server/entry.js`, and `anthropic.buildEntryFields` name this
 ADR.
 
-## Open breach — the Herdr badge asserts pressure without provenance (PROPOSED (awaiting owner sign-off, 2026-08-20))
+## Open breach — the Herdr badge asserts pressure without provenance (Accepted 2026-08-20)
 
 `plugins/herdr/bin/lib/ccxray.js` `sessionWindow` folds the window with the same
 three arms `sessionCtxWindow` still uses (`beta1m` → 1M, else max `maxContext`,
