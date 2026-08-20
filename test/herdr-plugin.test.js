@@ -548,6 +548,42 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Herdr badge dedups by responseId', () => {
+  // The same logical response lands as several index lines (ADR 0012), so a raw
+  // sum inflates cost and the turn count together. Mission Control already
+  // deduped (it goes through filterEntriesToWorkspace); the badge read the index
+  // directly and did not, so the two surfaces disagreed on the same session
+  // while ctx% matched — ctx% reads ONE latest turn, not a sum, which is what
+  // made a double count look like a rendering quirk. Measured on real session
+  // 9ea7a6d4: 297 lines / $46.35 raw vs 156 / $26.27 deduped.
+  it('counts one turn and one cost per responseId', () => {
+    const line = (i, rid, cost) => ({
+      id: `d${i}`, sessionId: 's-dedup', provider: 'anthropic', cwd: '/work/dedup',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', receivedAt: 1787000000000 + i * 1000, maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 },
+      cost: { cost, confidence: 'exact' }, responseId: rid,
+    });
+    // three logical responses, each written twice
+    const home = makeHome([
+      line(1, 'msg_a', 1), line(2, 'msg_a', 1),
+      line(3, 'msg_b', 1), line(4, 'msg_b', 1),
+      line(5, 'msg_c', 1), line(6, 'msg_c', 1),
+    ]);
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const badge = sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/dedup',
+    });
+    assert.equal(badge.turns, 3, 'six lines carrying three responseIds are three turns');
+    assert.equal(badge.costText, '$3.00', 'and three dollars, not six');
+  });
+});
+
 describe('Herdr aggregate cost confidence (ADR 0017)', () => {
   const costTurn = (i, confidence, cost) => ({
     id: `c${i}`, sessionId: 's-agg', provider: 'anthropic', cwd: '/work/agg',

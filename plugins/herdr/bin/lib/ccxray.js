@@ -810,7 +810,16 @@ function sessionSummaryDetails(data, opts = {}) {
   // keyed on a launchId rather than the paneId. Try both.
   const launchAgentId = opts.launchId ? `herdr:${opts.launchId}` : null;
   const nativeSessionId = opts.sessionId || null;
-  const allEntries = readIndexTailEntries({ env: opts.env });
+  // INVARIANT: dedup by responseId BEFORE anything sums. The same logical
+  // response appears as several index lines (multi-instance / importer-vs-proxy,
+  // ADR 0012), so a raw sum inflates cost and the turn count together. Measured
+  // on session 9ea7a6d4: 297 lines / $46.35 raw vs 156 / $26.27 deduped — 1.90x
+  // and 1.76x. Mission Control already dedups (it goes through
+  // filterEntriesToWorkspace); this path read the index directly and did not, so
+  // the sidebar badge and the dashboard disagreed on the same session while ctx%
+  // — which reads ONE latest turn, not a sum — matched, making it look like a
+  // rendering quirk instead of a double count.
+  const allEntries = dedupeObservedEntries(readIndexTailEntries({ env: opts.env }));
   const entries = allEntries.filter(entry => entry.sessionId);
   const routed = Boolean(opts.routed)
     || (agentId && allEntries.some(entry => entry.agentId === agentId))
