@@ -1749,10 +1749,65 @@ function forgetRoutedPane(paneId, env = process.env) {
   try { fs.unlinkSync(file); } catch {}
 }
 
+// What Herdr currently holds for a pane. `pane get` returns metadata only — it
+// is not the pane's content — so this is cheap and does not touch the terminal.
+function paneStateSnapshot(paneId, env) {
+  if (!paneId) return null;
+  const herdr = env.HERDR_BIN_PATH || 'herdr';
+  const result = runCommand({ bin: herdr, argsPrefix: [] }, ['pane', 'get', paneId], {
+    env,
+    timeoutMs: 1500,
+  });
+  const pane = (parseJsonOutput(result.stdout) || parseJsonOutput(result.stderr))?.result?.pane;
+  if (!pane) return null;
+  return {
+    tokens: pane.tokens || {},
+    stateLabels: pane.state_labels || {},
+    scroll: pane.scroll || {},
+  };
+}
+
+// Whether a write would change anything Herdr already holds.
+//
+// The comparison set is DERIVED from the payload — every key we are about to
+// send, plus every key we are about to clear, plus the state labels — rather
+// than taken from a list of token names kept alongside it. A hand-maintained
+// list is the same failure mode as ADR 0002's `sigParts`: adding a token and
+// forgetting the list makes the comparison silently stop covering it, and the
+// only symptom is that writes quietly resume. Deriving it cannot go stale.
+//
+// A snapshot we could not read means "write" — never let a failed read suppress
+// a real update.
+function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
+  if (!snapshot) return false;
+  for (const [name, value] of Object.entries(tokens || {})) {
+    if (String(snapshot.tokens[name] ?? '') !== String(value)) return false;
+  }
+  for (const name of opts.clearTokens || []) {
+    if (snapshot.tokens[String(name)] !== undefined) return false;
+  }
+  for (const [status, label] of Object.entries(opts.stateLabels || {})) {
+    if (String(snapshot.stateLabels[status] ?? '') !== String(label)) return false;
+  }
+  return true;
+}
+
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
   const herdr = env.HERDR_BIN_PATH || 'herdr';
+  // Writing pane metadata is not free: Herdr re-publishes it to the pane, and a
+  // full-screen agent TUI repaints when it does. `pane.agent_status_changed`
+  // fires twice per turn (idle->working on submit, working->idle on completion),
+  // and refresh-badges recomputes the same tokens most of the time, so an
+  // unconditional write means the user pays a repaint twice per prompt for no
+  // new information. Compare first; skip when nothing moved.
+  if (!opts.force) {
+    const snapshot = paneStateSnapshot(env.HERDR_PANE_ID, env);
+    if (paneMetadataUnchanged(snapshot, tokens, opts)) {
+      return { ok: true, skipped: 'unchanged' };
+    }
+  }
   const args = ['pane', 'report-metadata', env.HERDR_PANE_ID, '--source', 'ccxray'];
   if (opts.agent) args.push('--agent', String(opts.agent));
   for (const name of opts.clearTokens || []) {

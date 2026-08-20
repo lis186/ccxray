@@ -190,6 +190,8 @@ function main() {
   // agentId as `herdr:${launchId}`, so the two must be byte-identical.
   recordRoutedPane(paneId, args.agent, process.env, { launchId: launchToken });
   reportPaneTokens({ xray: 'traced', agent: args.agent, summary: `ccxray: traced · ${args.agent}` }, {
+    // A pane created seconds ago holds nothing to compare against.
+    force: true,
     env: { ...process.env, HERDR_PANE_ID: paneId },
     stateLabels: {
       unknown: `ccxray: traced · ${args.agent}`,

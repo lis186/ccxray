@@ -548,6 +548,94 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Herdr pane writes skip when nothing changed', () => {
+  // Writing pane metadata makes Herdr re-publish it, and a full-screen agent
+  // TUI repaints when it does. `pane.agent_status_changed` fires twice per turn,
+  // and the recomputed tokens are usually identical, so an unconditional write
+  // charges the user a repaint twice per prompt for no new information.
+  const makeHerdrPane = (tokens, stateLabels = {}) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-pane-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      id: 'cli:pane:get',
+      result: { pane: { pane_id: 'w1:p1', tokens, state_labels: stateLabels, scroll: {} } },
+    });
+    // sh, not node: this is spawned inside runCommand's budget (see writeShMock).
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then',
+      "cat <<'CCXRAY_PANE_EOF'",
+      pane,
+      'CCXRAY_PANE_EOF',
+      '  exit 0',
+      'fi',
+      'echo \'{"result":{"ok":true}}\'',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  };
+  const writes = log => (fs.existsSync(log)
+    ? fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length
+    : 0);
+
+  it('does not write when every token and state label already matches', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', cost: '$1.00' }, { idle: 'x' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const res = reportPaneTokens({ ctx: '32%', cost: '$1.00' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      stateLabels: { idle: 'x' },
+    });
+    assert.equal(res.skipped, 'unchanged');
+    assert.equal(writes(log), 0, 'an identical payload must not reach report-metadata');
+  });
+
+  it('writes when a single token moved', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', cost: '$1.00' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '33%', cost: '$1.00' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+    });
+    assert.equal(writes(log), 1);
+  });
+
+  it('writes when a token that should be cleared is still present', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', stale: 'yes' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      clearTokens: ['stale'],
+    });
+    assert.equal(writes(log), 1, 'a pending clear is a change');
+  });
+
+  it('writes when the pane state cannot be read — a failed read must not suppress an update', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-pane-bad-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> "${log}"\nif [ "$2" = "get" ]; then exit 1; fi\necho '{"result":{"ok":true}}'\n`);
+    fs.chmodSync(bin, 0o755);
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+    });
+    assert.equal(writes(log), 1);
+  });
+
+  it('force skips the comparison entirely', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      force: true,
+    });
+    assert.equal(writes(log), 1);
+    assert.equal(fs.readFileSync(log, 'utf8').includes('pane get'), false,
+      'force must not even read the pane');
+  });
+});
+
 describe('Herdr badge totals come from the hub aggregate', () => {
   // The badge reads a 4 MiB tail of an index that is currently 338 MiB, so its
   // own sum is a SAMPLE and disagrees with the dashboard even when perfectly
