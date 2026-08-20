@@ -548,6 +548,72 @@ describe('Herdr sidebar main-agent anchoring', () => {
 // of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
 // report assumed. Owner decision (2026-08-19): the label reports the latest main
 // turn, matching the fields it sits beside.
+describe('Herdr badge totals come from the hub aggregate', () => {
+  // The badge reads a 4 MiB tail of an index that is currently 338 MiB, so its
+  // own sum is a SAMPLE and disagrees with the dashboard even when perfectly
+  // deduped (measured: 135 of 156 responses, $23.63 of $26.27). sessions.json
+  // carries the hub's per-session count, total and ADR 0017 fold, so reading it
+  // makes the two surfaces agree by construction. ADR 0019 permits a non-hub
+  // process to READ a derived view; it must never write one.
+  const writeAggregate = (home, row) => {
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify(row) + '\n');
+  };
+  const turn = (i, cost, ts) => ({
+    id: `agg${i}`, sessionId: 's-agg-hub', provider: 'anthropic', cwd: '/work/agghub',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: ts, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence: 'exact' }, responseId: `msg_agg${i}`,
+  });
+  const badgeFor = home => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/agghub',
+    });
+  };
+
+  it('reports the hub total, not the truncated window sum', () => {
+    // The window holds 2 turns worth $2; the hub knows the session is 157/$26.27.
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    writeAggregate(home, {
+      sid: 's-agg-hub', count: 157, totalCost: 26.27,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      lastReceivedAt: 1787000002000, firstReceivedAt: 1787000000000,
+    });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 157, 'turn count comes from the aggregate');
+    assert.equal(badge.costText, '$26.27', 'so does the total');
+  });
+
+  it('adds turns newer than the last flush so a live session is not stuck', () => {
+    const home = makeHome([
+      turn(1, 1, 1787000001000),          // already folded
+      turn(2, 5, 1787000009000),          // arrived after the flush
+    ]);
+    writeAggregate(home, {
+      sid: 's-agg-hub', count: 10, totalCost: 10,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      lastReceivedAt: 1787000005000, firstReceivedAt: 1787000000000,
+    });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 11, '10 folded + 1 post-flush');
+    assert.equal(badge.costText, '$15.00', '$10 folded + $5 post-flush');
+  });
+
+  it('falls back to the window when the session has no aggregate yet', () => {
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    writeAggregate(home, { sid: 'some-other-session', count: 99, totalCost: 99 });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 2, 'a brand-new session still renders from the window');
+    assert.equal(badge.costText, '$2.00');
+  });
+});
+
 describe('Herdr badge dedups by responseId', () => {
   // The same logical response lands as several index lines (ADR 0012), so a raw
   // sum inflates cost and the turn count together. Mission Control already

@@ -197,6 +197,41 @@ function resolveCcxrayLogsDir(env = process.env) {
   return env.LOGS_DIR || path.join(env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'logs');
 }
 
+// The hub's per-session aggregate, read (never written — ADR 0019 allows a
+// non-hub process to READ a derived view).
+//
+// Why the badge should not re-derive totals from raw index lines: it reads a
+// 4 MiB tail of what is currently a 338 MiB index, so its sum is a sample, and
+// even a perfectly deduped sample disagrees with the dashboard. Measured on
+// session 9ea7a6d4: 135 of 156 responses in the window, $23.63 of $26.27. This
+// file carries `count`, `totalCost` AND the complete ADR 0017 confidence fold
+// for the session, so reading it makes the badge agree with the dashboard by
+// CONSTRUCTION rather than by re-implementation — and it is O(1) in the number
+// of turns instead of O(window).
+//
+// Despite the name it is NDJSON, one session per line. Only the matching line is
+// parsed: the file is ~4 MB and the badge refresh path is hot.
+function readSessionAggregate(sessionId, env = process.env) {
+  if (!sessionId) return null;
+  const file = path.join(resolveCcxrayLogsDir(env), 'sessions.json');
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const at = text.indexOf(`"${sessionId}"`);
+  if (at === -1) return null;
+  const from = text.lastIndexOf('\n', at) + 1;
+  const to = text.indexOf('\n', at);
+  try {
+    const row = JSON.parse(text.slice(from, to === -1 ? undefined : to));
+    return row && row.sid === sessionId ? row : null;
+  } catch {
+    return null;
+  }
+}
+
 function readIndexTailEntries(opts = {}) {
   const env = opts.env || process.env;
   const indexPath = path.join(resolveCcxrayLogsDir(env), 'index.ndjson');
@@ -748,7 +783,29 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   const anchor = mainDisplayTurns(sorted);
   const latest = anchor.at(-1) || {};
   const firstTs = sorted.find(t => Number.isFinite(t.receivedAt))?.receivedAt;
-  const cost = sorted.reduce((sum, t) => sum + (t.cost?.cost || 0), 0);
+  const windowCost = sorted.reduce((sum, t) => sum + (t.cost?.cost || 0), 0);
+  // Prefer the hub's per-session aggregate over this window's sum: the window is
+  // a 4 MiB tail of a much larger index, so its sum is a SAMPLE and disagrees
+  // with the dashboard even when perfectly deduped. Turns newer than the last
+  // flushed one are added on top so a live session is not stuck at the last
+  // flush; they cannot double-count, being newer than everything the aggregate
+  // folded. Absent aggregate (new session, missing file) → previous behaviour.
+  const agg = opts.aggregate || null;
+  const flushedAt = agg ? Number(agg.lastReceivedAt) || 0 : 0;
+  const postFlush = agg ? sorted.filter(t => Number(t.receivedAt || 0) > flushedAt) : [];
+  const cost = agg
+    ? Number(agg.totalCost || 0) + postFlush.reduce((sum, t) => sum + (t.cost?.cost || 0), 0)
+    : windowCost;
+  const turnCount = agg ? Number(agg.count || 0) + postFlush.length : sorted.length;
+  const foldFromAgg = agg ? {
+    count: Number(agg.count || 0),
+    fallbackCount: Number(agg.fallbackCount || 0),
+    fallbackCost: Number(agg.fallbackCost || 0),
+    unknownCount: Number(agg.unknownCount || 0),
+  } : null;
+  const fold = agg
+    ? mergeCostFolds(foldFromAgg, costFold(postFlush))
+    : (sorted.length ? costFold(sorted) : (fallback.costAgg || {}));
   const win = sessionWindow(anchor);
   const used = contextUsed(latest);
   const ctxPct = used && win ? used / win * 100 : null;
@@ -784,12 +841,11 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
       signal,
     }),
     ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
-    cost: sorted.length ? cost : fallback.cost,
+    cost: (agg || sorted.length) ? cost : fallback.cost,
     // INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
     // helper, never a bare formatMoney — see costFold/aggCostText above.
-    costAgg: sorted.length ? costFold(sorted) : (fallback.costAgg || {}),
-    costText: aggCostText(sorted.length ? cost : fallback.cost,
-      sorted.length ? costFold(sorted) : fallback.costAgg),
+    costAgg: fold,
+    costText: aggCostText(agg || sorted.length ? cost : fallback.cost, fold),
     // The label reports the LATEST main turn, the same turn ctx%/cache% above
     // read — not a plurality over the session. A plurality kept rendering the
     // pre-/model model until the new one out-counted the old: measured on the
@@ -797,7 +853,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     // 400). mainDisplayTurns has already dropped subagent turns, so the noise
     // the plurality was damping is filtered upstream. Owner decision 2026-08-19.
     model: latest.model || fallback.model || 'unknown',
-    turns: sorted.length || fallback.turns || 0,
+    turns: turnCount || fallback.turns || 0,
   };
 }
 
@@ -879,7 +935,13 @@ function sessionSummaryDetails(data, opts = {}) {
       && turn.parentSessionId !== (turn.sessionId || 'unknown')
       && known.has(turn.parentSessionId)
     )));
-    const detail = summarizeTurnGroup((roots.length ? roots : groups)[0], top, nowMs, opts);
+    const group = (roots.length ? roots : groups)[0];
+    // The session this badge is actually about — look its hub-maintained
+    // aggregate up so the totals match the dashboard by construction instead of
+    // being re-derived from a 4 MiB sample of the index.
+    const groupSid = group.at(-1)?.sessionId || group[0]?.sessionId || null;
+    const aggregate = readSessionAggregate(groupSid, opts.env);
+    const detail = summarizeTurnGroup(group, top, nowMs, { ...opts, aggregate });
     // The sidebar is often narrower than the signal slot, so ctx_bar drops the
     // stale text and only the dimmed band survives there. The summary has 80
     // columns and is the one place the reason is always spelled out.
