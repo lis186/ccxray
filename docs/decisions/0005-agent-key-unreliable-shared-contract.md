@@ -76,8 +76,29 @@ means the plugin's own sites must agree with each other. They did not:
 `paneSessionTelemetry` selected "main" with raw `!isSubagent` while
 `summarizeTurnGroup` used `mainDisplayTurns`, so the sidebar badge and the
 Mission Control row named different models for one pane (fixed 2026-08-20; the
-in-tree comment had asserted this was impossible). Any further main-selection
-site in the plugin must route through `mainDisplayTurns`.
+in-tree comment had asserted this was impossible).
+
+That first fix moved only the model label, and "any further main-selection site
+must route through `mainDisplayTurns`" turned out to be the wrong shape of
+obligation — sweeping enough to sound satisfied while `missionControlRow` still
+computed ctx%, cache%, failures, and the prompt-change signals from raw turns.
+The badge anchored those; Mission Control did not, so one pane rendered 1% on
+the sidebar and 60% in Mission Control (`test/herdr-plugin.test.js`, "names the
+same model in the sidebar badge and the Mission Control row", now asserts ctx%
+agreement as well; fail-on-old verified 60 vs 1).
+
+The obligation is therefore stated as an enumerated SPLIT that both surfaces
+must implement identically, not as a blanket rule:
+
+| Figure | Set |
+|---|---|
+| model label, context window + ctx%, cache%, tool failures, prompt-change | `mainDisplayTurns(turns)` |
+| cost, turn count, age / 5m rate, `latest` + `first` (freshness) | every turn |
+
+Freshness is whole-session on purpose: a subagent turn logged a minute ago
+proves ccxray is still watching the pane just as well as a main turn does. A new
+figure added to either surface must be placed in this table, and a figure that
+appears on both must land on the same side in both.
 
 ## Consequences
 

@@ -129,7 +129,7 @@ function main() {
       port: examplePort,
       launchToken,
       envVars: proxyEnvVars(args.agent, examplePort, { paneId: launchToken, skipAuth: true }),
-      codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort) : null,
+      codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort, { skipAuth: true }) : null,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
     }, null, 2));
@@ -166,13 +166,29 @@ function main() {
     process.exit(1);
   }
 
-  // 4. Start the agent with retries. `herdr agent start` rejects immediately
+  // 5. Record identity for badge linkage — BEFORE starting the agent, not
+  //    after. The pane now exists with the identity header already injected, so
+  //    anything it sends carries this launch token; the record is what lets the
+  //    badge and Mission Control attribute that traffic to this pane.
+  //
+  //    Recording after `agent start` meant the `!detected` exit below dropped
+  //    it, which is the worst case to drop it in: detection timing out does NOT
+  //    mean nothing started — the agent may be running and tracing fine — and
+  //    without the record that pane renders as "no ccxray telemetry" forever.
+  //    If the agent genuinely never starts, no traffic ever carries the token
+  //    and the record is inert.
+  log(`recording routed pane=${paneId} launchToken=${launchToken}`);
+  // Store the SAME token the header carried: sessionSummaryDetails rebuilds the
+  // agentId as `herdr:${launchId}`, so the two must be byte-identical.
+  recordRoutedPane(paneId, args.agent, process.env, { launchId: launchToken });
+
+  // 6. Start the agent with retries. `herdr agent start` rejects immediately
   //    with "not an available shell" when the pane's shell is still running its
   //    rc file (.zshrc/.bashrc). It does not wait for readiness on its own, so
   //    we retry with back-off until the shell is idle or we exhaust attempts.
   const agentName = `ccxray-${args.agent}-${paneId.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
   const agentArgs = ['agent', 'start', agentName, '--kind', HERDR_KIND[args.agent], '--pane', paneId, '--timeout', '45000'];
-  if (args.agent === 'codex') agentArgs.push('--', ...codexAgentArgs(port));
+  if (args.agent === 'codex') agentArgs.push('--', ...codexAgentArgs(port, { env }));
 
   let started, startedData, detected;
   for (let attempt = 0; attempt < 8; attempt += 1) {
@@ -193,11 +209,9 @@ function main() {
     process.exit(1);
   }
 
-  // 5. Record identity for badge linkage + mark the sidebar.
-  log(`recording routed pane=${paneId} launchToken=${launchToken}`);
-  // Store the SAME token the header carried: sessionSummaryDetails rebuilds the
-  // agentId as `herdr:${launchId}`, so the two must be byte-identical.
-  recordRoutedPane(paneId, args.agent, process.env, { launchId: launchToken });
+  // 7. Mark the sidebar. Unlike the routed record above this stays on the
+  //    success path: it claims the agent is up, which is exactly what a failed
+  //    detection leaves in doubt.
   reportPaneTokens({ xray: 'traced', agent: args.agent, summary: `ccxray: traced · ${args.agent}` }, {
     // A pane created seconds ago holds nothing to compare against.
     force: true,

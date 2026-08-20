@@ -349,8 +349,13 @@ Deltas from the proposal, discovered during implementation:
 
 `plugins/herdr/bin/lib/ccxray.js` `dedupeObservedEntries` is a SECOND
 responseId dedup, in a different process, reached by every badge and Mission
-Control render (it runs inside `filterEntriesToWorkspace`). It differs from this
-ADR's rules in two ways that matter:
+Control render. It has **two** call sites, and a reader who believes there is
+one will change dedup in the wrong place: Mission Control reaches it through
+`filterEntriesToWorkspace`, while `sessionSummaryDetails` (the sidebar badge)
+calls it directly on `readIndexTailEntries`, because that path reads the index
+without going through workspace filtering at all. Changing only the filter would
+leave the badge and Mission Control deduping by different rules. It differs from
+this ADR's rules in two ways that matter:
 
 - **It suppresses by score instead of merging fields.** The score is
   `agentId ? 4 : 0` + `!imported ? 2 : 0` + `responseMetadata ? 1 : 0`, and the

@@ -1412,19 +1412,28 @@ function hasFailureCoverage(turn) {
 
 function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const latest = turns.at(-1) || {};
-  // INVARIANT: the model label must agree with the sidebar badge for the same
-  // pane. The badge reads the last turn of `mainDisplayTurns` (agentKey
-  // whitelist first, raw !isSubagent second); this row's `turns` arrive filtered
+  // INVARIANT(ADR 0005): this row must split main-agent figures from
+  // whole-session ones exactly as `summarizeTurnGroup` does, or the two surfaces
+  // report different numbers for one pane. This row's `turns` arrive filtered
   // only by raw `!isSubagent` (paneSessionTelemetry) or not at all (the
-  // no-agents branch). A Task-tool subagent turn commonly carries the parent's
-  // sessionId with isSubagent false, so the two selections disagree on which
-  // turn is "latest" and named different models — which the plurality this
-  // replaced happened to hide. `latest` is deliberately left alone: freshness
-  // and staleness read EVERY turn, as they do in summarizeTurnGroup.
-  const mainLatest = mainDisplayTurns(turns).at(-1) || latest;
+  // no-agents branch), and a Task-tool subagent turn commonly carries the
+  // parent's sessionId with isSubagent false — so raw `turns` is NOT the main
+  // agent. `anchor` is the same set the badge anchors on.
+  //
+  // ANCHORED (main agent only, must match the badge): model label, context
+  // window + ctx%, cache%, tool failures, prompt-change signals.
+  // WHOLE-SESSION (deliberate, also matches the badge): cost, turn count, the
+  // 5m rate, and `latest`/`first` — freshness proves ccxray is still watching
+  // the pane, which a subagent turn does just as well as a main one.
+  //
+  // Fixing only the model label (the first pass here) left ctx% reading raw
+  // turns, so a `general-purpose` turn carrying isSubagent:false still moved
+  // the percentage the badge refused to move.
+  const anchor = mainDisplayTurns(turns);
+  const mainLatest = anchor.at(-1) || latest;
   const first = turns[0] || {};
-  const win = turns.length ? sessionWindow(turns) : 0;
-  const pcts = win ? contextPercents(turns, win) : [];
+  const win = anchor.length ? sessionWindow(anchor) : 0;
+  const pcts = win ? contextPercents(anchor, win) : [];
   const ctxPct = pcts.at(-1) ?? null;
   const previousPct = pcts.length > 1 ? pcts.at(-2) : null;
   const ctxDelta = Number.isFinite(ctxPct) && Number.isFinite(previousPct)
@@ -1436,10 +1445,10 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     .filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo)
     .reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
   const recentTurns = turns.filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo);
-  const failures = turns.slice(-6).filter(turnFailed).length;
-  const failureCoverage = turns.slice(-6).filter(hasFailureCoverage).length;
-  const hashChanged = promptChanged(turns);
-  const cacheDropped = cacheDroppedAfterPromptChange(turns);
+  const failures = anchor.slice(-6).filter(turnFailed).length;
+  const failureCoverage = anchor.slice(-6).filter(hasFailureCoverage).length;
+  const hashChanged = promptChanged(anchor);
+  const cacheDropped = cacheDroppedAfterPromptChange(anchor);
   const status = agent?.agent_status || 'recent';
   const paneId = agent?.pane_id || null;
   const latestAt = Number(latest.receivedAt || 0) || null;
@@ -1532,7 +1541,7 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     exactCost,
     unknownCost,
     exactTotalCost,
-    cachePct: sessionCachePercent(turns),
+    cachePct: sessionCachePercent(anchor),
     mainToolCalls,
     toolCalls: mainToolCalls + Number(subagents?.toolCalls || 0),
     failures,
@@ -1806,6 +1815,7 @@ function paneStateSnapshot(paneId, env) {
     tokens: pane.tokens || {},
     stateLabels: pane.state_labels || {},
     scroll: pane.scroll || {},
+    agent: pane.agent ?? null,
   };
 }
 
@@ -1820,8 +1830,23 @@ function paneStateSnapshot(paneId, env) {
 //
 // A snapshot we could not read means "write" — never let a failed read suppress
 // a real update.
+//
+// The "derived from the payload" claim above was false for three of the args
+// this function's caller sends: `--agent`, `--title`, `--display-agent` were
+// written and never compared, so `refresh-badges` supplying a new
+// `agent: event.agent` on identical tokens was silently skipped and Herdr kept
+// the stale one — the exact sigParts failure the comment says deriving avoids.
+// `agent` is now compared against the pane's own field.
+//
+// `title` and `displayAgent` remain UNCOMPARED, and that is a real hole rather
+// than a decision: `herdr pane get` exposes no field for either (it reports
+// `terminal_title`, which the agent itself sets, and nothing for the display
+// agent), so there is nothing to compare against. No caller passes them today.
+// A caller that starts to must either force the write or extend
+// `paneStateSnapshot` with a field Herdr actually reports.
 function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
   if (!snapshot) return false;
+  if (opts.agent != null && String(snapshot.agent ?? '') !== String(opts.agent)) return false;
   for (const [name, value] of Object.entries(tokens || {})) {
     if (String(snapshot.tokens[name] ?? '') !== String(value)) return false;
   }
@@ -2055,8 +2080,13 @@ function proxyEnvVars(agent, port, opts = {}) {
   switch (agent) {
     case 'claude': {
       const vars = { ANTHROPIC_BASE_URL: base };
-      // Same comma-joined form providers.js uses for this variable.
-      const headers = [agentIdHeader, authHeader].filter(Boolean).join(', ');
+      // Same comma-joined form providers.js uses for this variable — and, like
+      // providers.js, the user's own value is PREPENDED rather than replaced.
+      // These become `--env KEY=VALUE` on `herdr tab create`, which overrides
+      // the inherited variable outright, so assigning ours dropped an existing
+      // `ANTHROPIC_CUSTOM_HEADERS="X-Existing: foo"` on the floor.
+      const existing = String((opts.env || process.env).ANTHROPIC_CUSTOM_HEADERS || '').trim();
+      const headers = [existing, agentIdHeader, authHeader].filter(Boolean).join(', ');
       if (headers) vars.ANTHROPIC_CUSTOM_HEADERS = headers;
       return vars;
     }
@@ -2071,8 +2101,25 @@ function proxyEnvVars(agent, port, opts = {}) {
 
 // Codex-specific argv for herdr agent start's -- passthrough. Codex routing
 // needs -c flags that set the proxy URL, not environment variables.
-function codexAgentArgs(port) {
+//
+// Codex carries `X-Ccxray-Auth` through a model_providers block, NOT through a
+// header env var — this mirrors `createLaunch` in server/providers.js exactly,
+// including its `OPENAI_API_KEY` gate: in ChatGPT-OAuth mode codex resolves its
+// provider differently, so the legacy base-url form stays the fallback there.
+// Emitting only the legacy form meant a codex pane launched here got 401s from
+// its own proxy whenever CCXRAY_LOOPBACK_REQUIRE_AUTH=1, while the wrapped
+// launch path worked — the same env-injection gap the claude branch had.
+function codexAgentArgs(port, opts = {}) {
+  const env = opts.env || process.env;
   const baseUrl = `http://localhost:${port}/v1`;
+  if (!opts.skipAuth && env.OPENAI_API_KEY) {
+    const token = upstreamAuthToken(env);
+    if (token) {
+      const provider = `model_providers.ccxray={name="ccxray", base_url="${baseUrl}", `
+        + `wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
+      return ['-c', provider, '-c', 'model_provider="ccxray"'];
+    }
+  }
   return ['-c', `openai_base_url="${baseUrl}"`, '-c', `chatgpt_base_url="${baseUrl}"`];
 }
 
@@ -2113,7 +2160,12 @@ function writeConfigAndReload(file, before, next, opts = {}) {
 
   if (env.CCXRAY_HERDR_SKIP_RELOAD === '1') return done();
 
-  const check = runHerdr(['config', 'check'], { timeoutMs: 5000 });
+  // env must reach runHerdr: without it these two calls resolve HERDR_BIN_PATH from
+  // process.env, so a caller-supplied env was honoured for the SKIP_RELOAD gate
+  // above and ignored for the binary it actually runs. That is why every
+  // keybinding test set CCXRAY_HERDR_SKIP_RELOAD=1 — the reject-and-restore path
+  // below could not be reached with a fake herdr, so it had no coverage at all.
+  const check = runHerdr(['config', 'check'], { env, timeoutMs: 5000 });
   process.stdout.write(check.stdout || '');
   process.stderr.write(check.stderr || '');
   if (check.status !== 0 || check.error) {
@@ -2127,7 +2179,7 @@ function writeConfigAndReload(file, before, next, opts = {}) {
     return 1;
   }
 
-  const reload = runHerdr(['server', 'reload-config'], { timeoutMs: 5000 });
+  const reload = runHerdr(['server', 'reload-config'], { env, timeoutMs: 5000 });
   process.stdout.write(reload.stdout || '');
   process.stderr.write(reload.stderr || '');
   if (reload.status !== 0 || reload.error) {

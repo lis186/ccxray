@@ -567,12 +567,28 @@ describe('Quick Start honours the documented placement', () => {
 
   // Requiring this module used to run main() — which opened a real pane, and
   // meant openArgs could not be tested at all. ADR 0015's two-mode shape.
+  //
+  // The fake MUST be wired into the ambient env: `main()` resolves its binary
+  // from `process.env.HERDR_BIN_PATH`, so a version of this test that only
+  // built a fake and checked its log could not fail — a regression that ran
+  // main() would invoke the REAL herdr (and write real plugin state) while the
+  // untouched fake log kept the assertion green.
   it('is side-effect free when imported', () => {
     const herdr = makeRecordingHerdr();
-    const before = fs.existsSync(herdr.log);
-    delete require.cache[require.resolve('../plugins/herdr/bin/open-onboarding.js')];
-    require('../plugins/herdr/bin/open-onboarding.js');
-    assert.equal(fs.existsSync(herdr.log), before, 'import must not invoke herdr');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-state-'));
+    withAmbientEnv({
+      HERDR_ENV: '1',
+      HERDR_BIN_PATH: herdr.bin,
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: stateDir }),
+      CCXRAY_HOME: isolatedHome(),
+    }, () => {
+      delete require.cache[require.resolve('../plugins/herdr/bin/open-onboarding.js')];
+      require('../plugins/herdr/bin/open-onboarding.js');
+    });
+    assert.equal(fs.existsSync(herdr.log), false, 'import must not invoke herdr');
+    assert.deepEqual(fs.readdirSync(stateDir), [], 'import must not write plugin state');
   });
 });
 
@@ -639,6 +655,11 @@ describe('codex round 1 fixes', () => {
       cwd: dir,
     });
     assert.notEqual(port, 5577, 'must not hand back the port PROXY_PORT moved away from');
+    // `notEqual` alone also passes for a broken implementation that returns the
+    // dead 5600 it never reached. This fake never becomes ready there, so the
+    // only honest answer is "no port" — the caller must be told to fail rather
+    // than routing the agent at an unavailable proxy.
+    assert.equal(port, null, 'an unreachable requested port must resolve to null');
   });
 
   // Skipping identical writes cannot be unconditional when the write carries a
@@ -1073,8 +1094,14 @@ describe('Herdr model label agrees across surfaces', () => {
     const home = makeHome([
       { ...base, id: 'a1', responseId: 'msg_a1', receivedAt: 1787000001000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
       { ...base, id: 'a2', responseId: 'msg_a2', receivedAt: 1787000002000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
-      // arrives last, looks like main to a raw flag check, is not main
-      { ...base, id: 'a3', responseId: 'msg_a3', receivedAt: 1787000003000, agentKey: 'general-purpose', isSubagent: false, model: 'claude-haiku-4-5-20251001' },
+      // Arrives last, looks like main to a raw flag check, is not main. Its
+      // context is deliberately ~60% against a2's ~0.5% so an unanchored
+      // percentage cannot coincide with the anchored one by accident.
+      {
+        ...base, id: 'a3', responseId: 'msg_a3', receivedAt: 1787000003000,
+        agentKey: 'general-purpose', isSubagent: false, model: 'claude-haiku-4-5-20251001',
+        usage: { input_tokens: 120000, output_tokens: 10 },
+      },
     ]);
     const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000004000' });
     const { sessionSummaryDetails, missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
@@ -1092,6 +1119,13 @@ describe('Herdr model label agrees across surfaces', () => {
     assert.equal(snapshot.rows.length, 1);
     assert.equal(snapshot.rows[0].model, badge.model,
       'Mission Control must not name a different model than the badge');
+    // The model label was the first symptom, not the whole divergence: ctx% and
+    // cache% read the same anchored set, so a `general-purpose` turn carrying
+    // isSubagent:false must not move them on one surface and not the other.
+    // a3's context is deliberately far from a2's so an unanchored percentage
+    // cannot coincide with the anchored one.
+    assert.equal(Math.round(snapshot.rows[0].ctxPct), Math.round(badge.ctxPct),
+      'Mission Control must not report a different ctx% than the badge');
   });
 });
 
@@ -3206,10 +3240,11 @@ describe('Herdr plugin commands', () => {
     assert.doesNotMatch(result.stdout, /plugins[/\\]herdr/);
   });
 
-  // `herdr agent start` failing to detect the agent does not mean nothing
-  // started — the pane may have the agent running but detection timed out.
-  // The routed record must stay so badge linkage survives an uncertain outcome.
-  it('launch-agent keeps the routed record when agent start fails to detect', () => {
+  // The detected path. Its name used to claim it covered a FAILED detection
+  // while the mock returned `agent_started`, so it asserted nothing about the
+  // failure it named — and the code did not in fact keep the record there. The
+  // real failure case is pinned in 'codex round 2 fixes'.
+  it('launch-agent records the routed pane on a detected launch', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slowrun-'));
@@ -4173,5 +4208,213 @@ describe('audit: sessionSummaryDetails call sites pin CCXRAY_IMPORT_HOMES', () =
         `sessionSummaryDetails call sets CCXRAY_HOME without pinning CCXRAY_IMPORT_HOMES `
         + `(stats the developer's real transcripts):\n${span.slice(0, 200)}`);
     }
+  });
+});
+
+describe('codex round 2 fixes', () => {
+  const TOKEN = 'GMe19yT9nI3t6-8mYyCbTgCJJmUZlP3YPcfgDAVgZrY';
+  // A fake `ccxray` that answers `secret upstream`. sh, not node: these mocks
+  // are spawned inside the plugin's tight per-call budget.
+  const fakeCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-secret-'));
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = "secret" ]; then echo "${TOKEN}"; exit 0; fi\nexit 1\n`);
+    fs.chmodSync(bin, 0o755);
+    return bin;
+  };
+
+  // `--env KEY=VALUE` on `herdr tab create` OVERRIDES the inherited variable, so
+  // assigning our headers dropped the user's. providers.js prepends; so must we.
+  it('keeps the user own ANTHROPIC_CUSTOM_HEADERS when adding its own', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    const vars = proxyEnvVars('claude', 5577, {
+      paneId: 'w1:p1',
+      skipAuth: true,
+      env: pluginEnv({ ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo' }),
+    });
+    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, /X-Existing: foo/,
+      'the user header must survive');
+    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Agent-Id: herdr:w1:p1/);
+    assert.ok(vars.ANTHROPIC_CUSTOM_HEADERS.indexOf('X-Existing')
+      < vars.ANTHROPIC_CUSTOM_HEADERS.indexOf('X-Ccxray-Agent-Id'),
+      'the user value is prepended, matching server/providers.js');
+  });
+
+  it('injects X-Ccxray-Auth into a claude launch', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    const vars = proxyEnvVars('claude', 5577, {
+      paneId: 'w1:p1',
+      env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }),
+    });
+    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Ccxray-Auth: ${TOKEN}`),
+      'CCXRAY_LOOPBACK_REQUIRE_AUTH=1 returns 401 without this');
+  });
+
+  // Codex carries the credential in a model_providers block, not a header env
+  // var — the shape server/providers.js uses, including its OPENAI_API_KEY gate.
+  it('routes codex through a model_providers block carrying X-Ccxray-Auth', () => {
+    const { codexAgentArgs } = require('../plugins/herdr/bin/lib/ccxray');
+    const withKey = codexAgentArgs(5577, {
+      env: pluginEnv({ CCXRAY_BIN: fakeCcxray(), OPENAI_API_KEY: 'sk-test' }),
+    });
+    assert.ok(withKey.some(a => a.includes(`http_headers={"X-Ccxray-Auth"="${TOKEN}"}`)),
+      'an API-key codex launch must carry the credential');
+    assert.ok(withKey.includes('model_provider="ccxray"'));
+
+    // ChatGPT-OAuth mode (no OPENAI_API_KEY) resolves its provider differently,
+    // so the legacy base-url form stays the fallback — same as providers.js.
+    const noKey = codexAgentArgs(5577, { env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }) });
+    assert.ok(noKey.some(a => a.startsWith('openai_base_url=')), 'legacy fallback');
+    assert.ok(!noKey.some(a => a.includes('X-Ccxray-Auth')));
+  });
+
+  // `--agent` was sent and never compared, so a changed agent on identical
+  // tokens was skipped and Herdr kept the stale one.
+  it('re-writes pane metadata when only the agent changed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-agentchg-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      result: { pane: { pane_id: 'w1:p1', agent: 'claude', tokens: { ctx: '9%' }, state_labels: {}, scroll: {} } },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const env = pluginEnv({
+      HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-agentchg-state-')),
+    });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+
+    // Same agent as the pane reports, identical tokens → nothing moved.
+    const same = reportPaneTokens({ ctx: '9%' }, { env, agent: 'claude' });
+    assert.equal(same.skipped, 'unchanged', 'an unchanged agent must still skip');
+    assert.equal(writes(), 0);
+    // A different agent with the same tokens must NOT be skipped.
+    reportPaneTokens({ ctx: '9%' }, { env, agent: 'codex' });
+    assert.equal(writes(), 1, 'a changed agent must reach Herdr');
+  });
+
+  // `[[keys.command]] # comment` is legal TOML. Missing it made the installer
+  // believe the key was free and append a colliding duplicate.
+  it('sees an existing binding whose header carries a TOML comment', () => {
+    const { addBindings, boundKeyFor } = require('../plugins/herdr/bin/lib/keybindings');
+    const config = [
+      '[[keys.command]] # my own binding',
+      'key = "prefix+m"',
+      'command = "workspace.switch"',
+      '',
+    ].join('\n');
+    assert.equal(boundKeyFor(config, 'workspace.switch'), 'prefix+m',
+      'the commented block must parse');
+    const result = addBindings(config, [
+      { key: 'prefix+m', command: 'plugin.ccxray.mission-control', description: 'x' },
+    ]);
+    assert.equal(result.added.length, 0, 'must not append a duplicate prefix+m');
+    assert.equal(result.conflicts.length, 1, 'the collision must be reported');
+    assert.equal(result.conflicts[0].boundTo, 'workspace.switch');
+  });
+
+  // Detection timing out does not mean nothing started, so the routed record —
+  // the only thing that links this pane's traffic to it — must survive.
+  it('keeps the routed record when herdr agent start never detects', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-routed-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-failrun-'));
+    const bin = path.join(dir, 'herdr');
+    const opened = JSON.stringify({
+      id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p9' }, tab: { tab_id: 'w1:t2' } },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      'if [ "$1" = "agent" ] && [ "$2" = "start" ]; then',
+      '  echo "agent not detected" 1>&2; exit 1',
+      'fi',
+      "cat <<'O_EOF'", opened, 'O_EOF',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
+    });
+    assert.equal(result.status, 1, 'an undetected agent is still a failed launch');
+    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p9')}.json`);
+    assert.ok(fs.existsSync(routed),
+      'the pane already carries the identity header, so its record must survive');
+  });
+
+  // INVARIANT(ADR 0017): the fallback badge renders an aggregate, so it needs
+  // the fold. usage.js emitted none, so a wholly fallback-priced session
+  // printed a clean number indistinguishable from an exact one.
+  it('marks a fallback-priced session on the usage fallback path', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const data = {
+      sessions: {
+        topSessions: [{
+          sessionId: 'fb-1', turns: 4, cost: 2, durationMin: 10, model: 'claude-opus-5',
+          costAgg: { count: 4, fallbackCount: 4, fallbackCost: 2, unknownCount: 0 },
+        }],
+      },
+      meta: { totalCost: 2, totalEntries: 4 },
+    };
+    const badge = sessionSummaryDetails(data, {
+      env: pluginEnv({ CCXRAY_HOME: makeHome([]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      cwd: '/work/nowhere',
+    });
+    assert.match(badge.costText, /~/, 'an all-fallback total must carry the marker');
+  });
+
+  it('server/usage.js emits the confidence fold beside every top-session cost', () => {
+    const { analyze } = require('../server/usage.js');
+    const base = {
+      sessionId: 's-fold', model: 'claude-opus-5', provider: 'anthropic',
+      receivedAt: 1787000000000, usage: { input_tokens: 10, output_tokens: 1 },
+    };
+    const summary = analyze([
+      { ...base, id: 'f1', cost: { cost: 1, confidence: 'fallback' } },
+      { ...base, id: 'f2', cost: { cost: null, confidence: 'unknown' } },
+      { ...base, id: 'f3', cost: { cost: 1, confidence: 'exact' } },
+    ]);
+    const top = summary.sessions.topSessions.find(s => s.sessionId === 's-fold');
+    assert.ok(top, 'the session must be in topSessions');
+    assert.deepEqual(top.costAgg,
+      { count: 3, fallbackCount: 1, fallbackCost: 1, unknownCount: 1 },
+      'a consumer cannot re-derive this — it cannot see the turns');
+  });
+
+  // Every keybinding test sets CCXRAY_HERDR_SKIP_RELOAD=1, which returns before
+  // `config check`, so the restore-on-reject path had no coverage at all.
+  it('restores the user config when Herdr rejects the written one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-reject-'));
+    const configPath = path.join(dir, 'herdr.toml');
+    const original = '# the user own config\n[[keys.command]]\nkey = "prefix+z"\ncommand = "mine"\n';
+    fs.writeFileSync(configPath, original);
+    const bin = path.join(dir, 'herdr');
+    // Rejects `config check`; anything else succeeds.
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      'if [ "$1" = "config" ] && [ "$2" = "check" ]; then',
+      '  echo "invalid keybinding" 1>&2; exit 1',
+      'fi',
+      'echo "{}"',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const { writeConfigAndReload } = require('../plugins/herdr/bin/lib/ccxray');
+    const status = writeConfigAndReload(configPath, original, `${original}\n[[keys.command]]\nkey = "bad"\n`, {
+      env: pluginEnv({ HERDR_BIN_PATH: bin }),
+    });
+    assert.equal(status, 1, 'a rejected config must not report success');
+    assert.equal(fs.readFileSync(configPath, 'utf8'), original,
+      'the user config must be byte-identical after a rejection');
   });
 });

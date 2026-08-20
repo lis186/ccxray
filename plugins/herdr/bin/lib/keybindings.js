@@ -31,7 +31,13 @@ function defaultBindings(env = process.env) {
 }
 
 const TABLE_START_RE = /^\[/;
-const KEYS_COMMAND_HEADER_RE = /^\[\[keys\.command\]\][ \t]*$/;
+// A trailing comment is legal TOML on a table header, and a hand-maintained
+// config has them. Anchoring on end-of-line meant `[[keys.command]] # mine`
+// matched TABLE_START_RE (so it closed the previous block) without matching
+// here (so it opened none) — the block's key/command were skipped entirely, the
+// installer concluded the binding was absent, and appended a duplicate that
+// collides with the user's own.
+const KEYS_COMMAND_HEADER_RE = /^\[\[keys\.command\]\][ \t]*(?:#.*)?$/;
 
 function stringField(body, name) {
   const match = new RegExp(`^[ \\t]*${name}[ \\t]*=[ \\t]*"([^"]*)"`, 'm').exec(body);
