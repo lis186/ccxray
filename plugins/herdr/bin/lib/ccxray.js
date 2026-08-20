@@ -800,12 +800,23 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   // flush; they cannot double-count, being newer than everything the aggregate
   // folded. Absent aggregate (new session, missing file) → previous behaviour.
   const agg = opts.aggregate || null;
-  const flushedAt = agg ? Number(agg.lastReceivedAt) || 0 : 0;
-  const postFlush = agg ? sorted.filter(t => Number(t.receivedAt || 0) > flushedAt) : [];
+  // A row without a usable flush cursor must NOT be topped up. `|| 0` would make
+  // every tail turn look post-flush and add it to a total that already counts
+  // it — a legacy or partially written row would double the number rather than
+  // merely lag it. No cursor → trust the aggregate alone.
+  const flushedAt = agg ? Number(agg.lastReceivedAt) : NaN;
+  const canTopUp = Number.isFinite(flushedAt) && flushedAt > 0;
+  const postFlush = canTopUp ? sorted.filter(t => Number(t.receivedAt || 0) > flushedAt) : [];
   const cost = agg
     ? Number(agg.totalCost || 0) + postFlush.reduce((sum, t) => sum + (t.cost?.cost || 0), 0)
     : windowCost;
   const turnCount = agg ? Number(agg.count || 0) + postFlush.length : sorted.length;
+  // Duration has to move with the top-up too, or a post-flush turn shows its
+  // cost and its count while the elapsed time stays frozen at the last flush.
+  const aggLastAt = agg
+    ? Math.max(Number(agg.lastReceivedAt) || 0,
+      ...postFlush.map(t => Number(t.receivedAt) || 0))
+    : 0;
   const foldFromAgg = agg ? {
     count: Number(agg.count || 0),
     fallbackCount: Number(agg.fallbackCount || 0),
@@ -856,8 +867,8 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     // like it disagreed with the dashboard about the same number. Reporting the
     // duration puts every figure on this badge (cost, turns, ctx%, time) on the
     // same footing as the dashboard's session card.
-    ageText: agg && Number(agg.lastReceivedAt) && Number(agg.firstReceivedAt)
-      ? formatAge(Math.max(0, Number(agg.lastReceivedAt) - Number(agg.firstReceivedAt)))
+    ageText: agg && aggLastAt && Number(agg.firstReceivedAt)
+      ? formatAge(Math.max(0, aggLastAt - Number(agg.firstReceivedAt)))
       : (firstTs ? formatAge(nowMs - firstTs) : '?'),
     cost: (agg || sorted.length) ? cost : fallback.cost,
     // INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
@@ -974,7 +985,11 @@ function sessionSummaryDetails(data, opts = {}) {
     ctxText: '?',
     ageText: top.durationMin ? formatAge(top.durationMin * 60000) : '?',
     cost: top.cost ?? data?.meta?.totalCost ?? 0,
-    costText: formatMoney(top.cost ?? data?.meta?.totalCost),
+    // INVARIANT(ADR 0017): even with no fold to show, the aggregate goes through
+    // the shared helper — a bare formatMoney here is the unmarked-fabrication
+    // path the ADR exists to close. An empty fold renders clean, which is the
+    // honest output when no confidence data reached us.
+    costText: aggCostText(top.cost ?? data?.meta?.totalCost, top.costAgg || {}),
     model: top.model || data?.models?.[0]?.model || 'unknown',
     turns: top.turns || data?.meta?.totalEntries || 0,
     ctxBar: emptyContextBar(opts),
@@ -1079,10 +1094,19 @@ function paneSessionTelemetry(entries, agent) {
   };
 }
 
-function paneTelemetryCandidates(entries, agent) {
+function paneTelemetryCandidates(entries, agent, env = process.env) {
   const linkedEntries = entries.filter(entry => entry.sessionId);
   const agentId = `herdr:${agent.pane_id}`;
-  const exact = linkedEntries.filter(entry => entry.agentId === agentId);
+  // A pane launched through the env-injection path stamps its traffic with a
+  // launch token, not `herdr:<pane_id>` — recorded per pane in routed-panes when
+  // the launch succeeds. Without matching it, such a pane has no exact match,
+  // and when Herdr also reports no native session id it lands on `unlinked`:
+  // "no ccxray telemetry" for a session that is being traced fine.
+  const launchToken = routedPaneLaunchId(agent.pane_id, env);
+  const launchAgentId = launchToken ? `herdr:${launchToken}` : null;
+  const exact = linkedEntries.filter(entry => (
+    entry.agentId === agentId || (launchAgentId && entry.agentId === launchAgentId)
+  ));
   const nativeSessionId = agent?.agent_session?.kind === 'id'
     ? agent.agent_session.value
     : null;
@@ -1548,7 +1572,7 @@ function missionControlSnapshot(opts = {}) {
 
   if (agents.length) {
     for (const agent of agents) {
-      const candidates = paneTelemetryCandidates(entries, agent);
+      const candidates = paneTelemetryCandidates(entries, agent, env);
       const telemetry = paneSessionTelemetry(candidates.entries, agent);
       rows.push(missionControlRow(telemetry.turns, agent, nowMs, candidates.mapping, {
         env,
@@ -1810,6 +1834,35 @@ function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
   return true;
 }
 
+// When we last wrote this pane's metadata. Skipping a write is only safe while
+// the previous one has not expired.
+function lastPaneWritePath(paneId, env) {
+  const dir = pluginStateDir(env);
+  if (!dir || !paneId) return null;
+  return path.join(dir, 'pane-write-v1', `${encodeURIComponent(paneId)}.json`);
+}
+
+function readLastPaneWrite(paneId, env) {
+  const file = lastPaneWritePath(paneId, env);
+  if (!file) return 0;
+  try {
+    return Number(JSON.parse(fs.readFileSync(file, 'utf8')).at) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function recordPaneWrite(paneId, env) {
+  const file = lastPaneWritePath(paneId, env);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, `${JSON.stringify({ at: Date.now() })}\n`);
+    fs.renameSync(temp, file);
+  } catch {}
+}
+
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
@@ -1823,7 +1876,16 @@ function reportPaneTokens(tokens, opts = {}) {
   if (!opts.force) {
     const snapshot = paneStateSnapshot(env.HERDR_PANE_ID, env);
     if (paneMetadataUnchanged(snapshot, tokens, opts)) {
-      return { ok: true, skipped: 'unchanged' };
+      // Identical is not enough when the write carries a TTL: Herdr drops the
+      // tokens when it lapses, so skipping every identical refresh would make
+      // the badge VANISH while the agent is still working — a worse regression
+      // than the repaint this guard avoids. Re-write once past half the TTL:
+      // one write per half-window instead of one per event.
+      const ttl = Number(opts.ttlMs) || 0;
+      const since = Date.now() - readLastPaneWrite(env.HERDR_PANE_ID, env);
+      if (!ttl || since < ttl / 2) {
+        return { ok: true, skipped: 'unchanged' };
+      }
     }
   }
   const args = ['pane', 'report-metadata', env.HERDR_PANE_ID, '--source', 'ccxray'];
@@ -1846,6 +1908,7 @@ function reportPaneTokens(tokens, opts = {}) {
     env,
     timeoutMs: opts.timeoutMs || 2000,
   });
+  if (result.status === 0) recordPaneWrite(env.HERDR_PANE_ID, env);
   return {
     ok: result.status === 0,
     result,
@@ -1896,8 +1959,17 @@ function standalonePortFromStatus(parsed) {
 // standalone server on the requested PROXY_PORT, then starts one.
 function ensureProxy(opts = {}) {
   const env = opts.env || process.env;
+  // With PROXY_PORT set the caller asked for a SPECIFIC port. `ccxray status`
+  // reads the hub lockfile, which is keyed on CCXRAY_HOME rather than on a port,
+  // so a hub listening on 5577 is reported even when PROXY_PORT=5600 — and
+  // returning it would route the agent to a port the user deliberately moved
+  // away from. Accept a discovered proxy only when it is the requested one.
+  const wanted = Number(String(env.PROXY_PORT || '').trim()) || null;
+  const acceptable = port => !wanted || Number(port) === wanted;
   const status = statusReport({ env, timeoutMs: opts.timeoutMs || 5000 });
-  if (status.parsed.running && status.parsed.port) return status.parsed.port;
+  if (status.parsed.running && status.parsed.port && acceptable(status.parsed.port)) {
+    return status.parsed.port;
+  }
 
   // A standalone (non-hub) ccxray is a perfectly good proxy even though
   // parseStatus reports running=false (it's not a hub). The Note line from #555
@@ -1905,7 +1977,7 @@ function ensureProxy(opts = {}) {
   // must consult this — recognising standalone only BEFORE starting meant a
   // freshly started one was reported as "port could not be determined".
   const standalone = standalonePortFromStatus(status.parsed);
-  if (standalone) return standalone;
+  if (standalone && acceptable(standalone)) return standalone;
 
   // Start one, DETACHED. `ccxray --no-browser` with no agent is a FOREGROUND
   // standalone server: per CLAUDE.md, a hub is forked only by `ccxray <agent>`
@@ -1928,6 +2000,14 @@ function ensureProxy(opts = {}) {
       stdio: 'ignore',
       windowsHide: true,
     });
+    // spawn reports a missing/non-executable binary ASYNCHRONOUSLY; without a
+    // listener that 'error' event becomes an uncaught exception and takes the
+    // launcher down instead of returning a controlled failure. The readiness
+    // loop below is what actually decides success, so swallowing it here is
+    // correct rather than lossy.
+    child.on('error', error => {
+      process.stderr.write(`ccxray proxy failed to start: ${error.message}\n`);
+    });
     child.unref();
   } catch (error) {
     process.stderr.write(`ccxray proxy failed to start: ${error.message}\n`);
@@ -1939,9 +2019,11 @@ function ensureProxy(opts = {}) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     spawnSync('sleep', ['0.5']);
     const recheck = statusReport({ env, timeoutMs: 3000 });
-    if (recheck.parsed.running && recheck.parsed.port) return recheck.parsed.port;
+    if (recheck.parsed.running && recheck.parsed.port && acceptable(recheck.parsed.port)) {
+      return recheck.parsed.port;
+    }
     const port = standalonePortFromStatus(recheck.parsed);
-    if (port) return port;
+    if (port && acceptable(port)) return port;
   }
   process.stderr.write('ccxray proxy was started but no listening port could be determined.\n');
   return null;
@@ -1949,13 +2031,33 @@ function ensureProxy(opts = {}) {
 
 // Return the env vars needed to route an agent's API traffic through a ccxray
 // proxy on the given port. These become --env flags on herdr tab create.
+// The upstream auth token, asked of the CLI rather than derived here — the
+// derivation lives in server/auth.js, which this plugin must not require (it can
+// be installed without a ccxray checkout, and reaching into server internals
+// would couple the two release cycles).
+function upstreamAuthToken(env = process.env) {
+  const result = runCcxray(['secret', 'upstream'], { env, timeoutMs: 4000 });
+  if (result.status !== 0) return null;
+  const token = String(result.stdout || '').trim().split('\n').pop().trim();
+  return /^[A-Za-z0-9_-]{16,}$/.test(token) ? token : null;
+}
+
 function proxyEnvVars(agent, port, opts = {}) {
   const base = `http://localhost:${port}`;
   const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
+  // `createLaunch` in server/providers.js appends this for the wrapped launch
+  // path; the env-injection path does not go through it, so without this a pane
+  // launched here gets 401s from its own proxy whenever
+  // CCXRAY_LOOPBACK_REQUIRE_AUTH=1. Absent token → omit the header rather than
+  // send an empty one; loopback is trusted by default, so that stays working.
+  const authToken = opts.skipAuth ? null : upstreamAuthToken(opts.env || process.env);
+  const authHeader = authToken ? `X-Ccxray-Auth: ${authToken}` : '';
   switch (agent) {
     case 'claude': {
       const vars = { ANTHROPIC_BASE_URL: base };
-      if (agentIdHeader) vars.ANTHROPIC_CUSTOM_HEADERS = agentIdHeader;
+      // Same comma-joined form providers.js uses for this variable.
+      const headers = [agentIdHeader, authHeader].filter(Boolean).join(', ');
+      if (headers) vars.ANTHROPIC_CUSTOM_HEADERS = headers;
       return vars;
     }
     case 'grok':

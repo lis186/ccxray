@@ -128,7 +128,7 @@ function main() {
       cwd: ctx.cwd,
       port: examplePort,
       launchToken,
-      envVars: proxyEnvVars(args.agent, examplePort, { paneId: launchToken }),
+      envVars: proxyEnvVars(args.agent, examplePort, { paneId: launchToken, skipAuth: true }),
       codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort) : null,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
@@ -156,7 +156,7 @@ function main() {
 
   log(`port=${port} launchToken=${launchToken}`);
   // 3. Compute the env vars that route this agent through the proxy.
-  const envVars = proxyEnvVars(args.agent, port, { paneId: launchToken });
+  const envVars = proxyEnvVars(args.agent, port, { paneId: launchToken, env });
 
   // 4. Create a pane with the proxy env vars injected.
   const opened = runHerdr(openArgs(args, ctx, envVars), { timeoutMs: 5000 });

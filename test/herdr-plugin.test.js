@@ -576,6 +576,105 @@ describe('Quick Start honours the documented placement', () => {
   });
 });
 
+describe('codex round 1 fixes', () => {
+  const turn = (i, cost, ts) => ({
+    id: `cx${i}`, sessionId: 's-cx', provider: 'anthropic', cwd: '/work/cx',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: ts, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence: 'exact' }, responseId: `msg_cx${i}`,
+  });
+  const badgeFor = home => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/cx',
+    });
+  };
+
+  // An aggregate row with no usable flush cursor must not be topped up: `|| 0`
+  // made every tail turn look post-flush, so its cost was ADDED to a total that
+  // already counted it — doubling the number rather than merely lagging it.
+  it('does not top up an aggregate that has no flush cursor', () => {
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-cx', count: 10, totalCost: 10,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: 1787000000000, // lastReceivedAt deliberately absent
+    }) + '\n');
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 10, 'aggregate alone');
+    assert.equal(badge.costText, '$10.00', 'not $12.00');
+  });
+
+  // A post-flush turn used to show its cost and count while the elapsed time
+  // stayed frozen at the last flush.
+  it('extends the duration with post-flush turns', () => {
+    const t0 = 1787000000000;
+    const home = makeHome([turn(1, 1, t0 + 3 * 3600 * 1000)]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-cx', count: 1, totalCost: 1,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: t0, lastReceivedAt: t0 + 3600 * 1000,
+    }) + '\n');
+    assert.equal(badgeFor(home).ageText, '3.0h', 'not the 1h the flush knew about');
+  });
+
+  // `ccxray status` reads a CCXRAY_HOME-keyed lockfile, so a hub on 5577 is
+  // reported even when PROXY_PORT names 5600 — returning it would route the
+  // agent to the port the user deliberately moved away from.
+  it('ensureProxy refuses a discovered port that is not the requested one', () => {
+    const { ensureProxy } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-port-'));
+    const fake = path.join(dir, 'ccxray');
+    // Always reports a hub on 5577, and never becomes ready on 5600.
+    fs.writeFileSync(fake, '#!/bin/sh\nif [ "$1" = "status" ]; then echo "Hub: http://localhost:5577 (pid 1, uptime 1s, v1)"; exit 0; fi\nexit 0\n');
+    fs.chmodSync(fake, 0o755);
+    const port = ensureProxy({
+      env: pluginEnv({ CCXRAY_BIN: fake, PROXY_PORT: '5600' }),
+      cwd: dir,
+    });
+    assert.notEqual(port, 5577, 'must not hand back the port PROXY_PORT moved away from');
+  });
+
+  // Skipping identical writes cannot be unconditional when the write carries a
+  // TTL: Herdr drops the tokens when it lapses, so the badge would VANISH while
+  // the agent is still working.
+  it('re-writes identical tokens once past half the TTL', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ttl-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({ result: { pane: { pane_id: 'w1:p1', tokens: { ctx: '9%' }, state_labels: {}, scroll: {} } } });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ttl-state-'));
+    const env = pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin, HERDR_PLUGIN_STATE_DIR: state });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+
+    // No record of a previous write → must write, even though tokens match.
+    reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(writes(), 1, 'no prior write recorded means write');
+    // Immediately after, the TTL is fresh → skip.
+    const again = reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(again.skipped, 'unchanged');
+    assert.equal(writes(), 1);
+    // Age the record past half the TTL → write again.
+    const rec = path.join(state, 'pane-write-v1', `${encodeURIComponent('w1:p1')}.json`);
+    fs.writeFileSync(rec, JSON.stringify({ at: Date.now() - 45000 }) + '\n');
+    reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(writes(), 2, 'past half the TTL the pane must be refreshed');
+  });
+});
+
 describe('Herdr badge time is the session duration', () => {
   // `now - first turn` (how long ago it started) and `last - first` (how long it
   // ran) differ by however long the session has been idle, and both printed as a
