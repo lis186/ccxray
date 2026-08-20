@@ -50,6 +50,105 @@ fallback) and fall back to the raw `isSubagent` flag otherwise:
 | coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
 | coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
 
+## Exception — the Herdr plugin badge (Accepted 2026-08-20)
+
+The Decision above says *every* site that branches on `entry.agentKey` must call
+`isMainTurnByAgentKey()`. That sentence is now false for a site inside this
+repository, and the site is right to be an exception.
+
+`plugins/herdr/bin/lib/ccxray.js` `mainDisplayTurns` branches on `agentKey` and
+must NOT use the shared predicate: `isMainTurnByAgentKey` returns TRUE for
+exactly the shape the badge exists to exclude. `agentKey: 'agent'` is in
+`AGENT_KEY_UNRELIABLE`, so the predicate degrades to the raw `isSubagent` flag,
+which a background conversation carries as `false` — importing it there would be
+a no-op. The two rules answer different questions: core's is recall-oriented
+(never misfile a possibly-new main variant as a subagent), the badge's is
+precision-oriented (an unrecognized key must not SET the displayed number).
+
+What the plugin DOES share is the drift-prone datum: it requires
+`WF_MAIN_AGENT_KEYS` from this ADR's module (defensively — a plugin installed
+outside a ccxray checkout has no core file, and degrades to the raw-flag tier).
+The predicate stays local. Recording this so a later reader does not "unify"
+a deliberate divergence away; it is not a new consumer row.
+
+**Consistency obligation this creates inside the plugin.** Having two rules
+means the plugin's own sites must agree with each other. They did not:
+`paneSessionTelemetry` selected "main" with raw `!isSubagent` while
+`summarizeTurnGroup` used `mainDisplayTurns`, so the sidebar badge and the
+Mission Control row named different models for one pane (fixed 2026-08-20; the
+in-tree comment had asserted this was impossible).
+
+That first fix moved only the model label, and "any further main-selection site
+must route through `mainDisplayTurns`" turned out to be the wrong shape of
+obligation — sweeping enough to sound satisfied while `missionControlRow` still
+computed ctx%, cache%, failures, and the prompt-change signals from raw turns.
+The badge anchored those; Mission Control did not, so one pane rendered 1% on
+the sidebar and 60% in Mission Control (`test/herdr-plugin.test.js`, "names the
+same model in the sidebar badge and the Mission Control row", now asserts ctx%
+agreement as well; fail-on-old verified 60 vs 1).
+
+The obligation is therefore stated as an enumerated list of the figures that
+must AGREE, not as a blanket rule:
+
+| Figure | Both surfaces read | Must agree? |
+|---|---|---|
+| model label, context window + ctx%, cache%, tool failures, prompt-change | `mainDisplayTurns(turns)` | **yes** |
+| evidence freshness ("seen") | every turn IN EACH SURFACE'S OWN SET — badge `evidenceStaleness(sorted)` over the selected session group, row `freshness` from `observedLatestAt` over `turns` + `subagentTurns` | **yes, for a same-session subagent** (see the scope note) |
+| cost, turn count | different sources by design — see below | **no** |
+| badge `ageText` vs row `sessionAge` | different QUANTITIES — see below | **no** |
+
+Freshness is whole-session on purpose: a subagent turn logged a minute ago
+proves ccxray is still watching the pane just as well as a main turn does. The
+row's `freshness` was built from main-only `latestAt` and so reported a pane
+stale while its subagent was working; it reads `observedLatestAt` now.
+
+**Scope note — the two "every turn" sets are not identical.** The badge folds
+the selected session GROUP; the row additionally folds child sessions (groups
+whose turns carry `parentSessionId` of the selected session, via
+`paneSessionTelemetry`'s `subagentTurns`). So the agreement holds for a
+same-session subagent — the case the fix addressed and the case the test pins —
+and a subagent that runs under its OWN session id can still refresh the row
+while the badge, which never sees that group, reports the older main turn.
+Closing that would mean giving the badge the child-session turns too, which is a
+change to what "this session" means on the badge; recorded here as a bounded
+residual rather than claimed as agreement.
+
+`latestAt` also remains main-only for the row SORT — but only on the
+agents branch: the no-agent fallback (`missionControlSnapshot`'s `else`) passes
+every turn of a session straight to `missionControlRow` with no `subagentTurns`,
+so there `latestAt` is already whole-session. Sort ordering is a separate
+question this ADR does not settle either way.
+
+**The two time figures are not the same measurement, so requiring agreement was
+a category error.** With a `sessions.json` aggregate the badge's `ageText` is a
+DURATION (`lastReceivedAt − firstReceivedAt`, how long the session ran), while
+the row's `sessionAge` is ELAPSED SINCE START (`now − observedStartedAt`). They
+differ by however long the session has been idle — for a session that started 10
+minutes ago and ran 5, by 2× — and the badge reports duration deliberately
+(4060eb: printing "how long ago it started" in the same terse `9.9h` shape made
+the badge look like it disagreed with the dashboard about the same number).
+
+Without an aggregate the badge falls back to `now − firstTs`, which is the row's
+quantity rather than a duration, so on that path the two coincide. Neither path
+is required to agree: the figure means different things depending on whether the
+hub has flushed this session, which is itself a reason not to put it in a
+"must agree" row. An earlier revision of this table did.
+
+**Cost and turn count are deliberately NOT comparable, and must not be
+"aligned".** The badge reports the hub's per-session aggregate (`sessions.json`)
+because the plugin's own window is a 4 MiB tail of a much larger index — its sum
+is a SAMPLE, and reporting it made the badge disagree with the dashboard about
+the same session. The Mission Control row instead reports the **main-agent** sum
+over that tail (`cost`, `turns`) plus a separately labelled subagent rollup
+(`subagents N, total $X`), and keeps `totalCost`/`totalCostAgg` for the combined
+figure. So the row's headline cost is main-only by design while the badge's is
+whole-session from a different source; an earlier revision of this table claimed
+both were whole-session, which was false in two ways at once.
+
+A new figure added to either surface must be placed in this table. A figure that
+must agree has to read the same set in both; a figure that cannot agree has to
+say why here.
+
 ## Consequences
 
 **Good**: the turn list and the workflow swimlanes can no longer disagree on

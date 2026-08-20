@@ -2,7 +2,7 @@
 'use strict';
 
 const {
-  formatMoney,
+  aggCostText,
   missionControlSnapshot,
   reportPaneTokens,
   runCcxray,
@@ -86,16 +86,19 @@ function signedPercent(value) {
   return `${rounded > 0 ? '+' : ''}${rounded}%`;
 }
 
+// INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
+// helper. What was here was worst-of — any non-`exact` turn marked the WHOLE
+// total `~` — which is the alternative ADR 0017's panel explicitly rejected
+// (3/3/3: habituation, an inverted Lie Factor of ~357 on a lightly contaminated
+// total, and back-contamination of the per-turn marker). It also had no `+`, so
+// the under-count from unpriced turns was invisible unless EVERY turn was
+// unpriced. `aggCostText` applies the calibrated 10%/50% thresholds.
 function rowCost(row) {
-  if (row.unknownCost) return '—';
-  const cost = formatMoney(row.cost);
-  return row.exactCost || row.cost === 0 ? cost : `~${cost}`;
+  return aggCostText(row.cost, row.costAgg);
 }
 
-function confidenceCost(value, exact, unknown) {
-  if (unknown) return '—';
-  const cost = formatMoney(value);
-  return exact || value === 0 ? cost : `~${cost}`;
+function confidenceCost(value, agg) {
+  return aggCostText(value, agg);
 }
 
 function rowIdentity(row) {
@@ -114,7 +117,7 @@ function rowMetrics(row, opts = {}) {
   }
   parts.push(`main ${rowCost(row)}`);
   if (opts.includeRecent !== false && row.totalRecentCost > 0) {
-    parts.push(`+${confidenceCost(row.totalRecentCost, row.exactRecentCost)}/5m`);
+    parts.push(`+${confidenceCost(row.totalRecentCost, row.totalRecentCostAgg)}/5m`);
   }
   return parts.join(' · ');
 }
@@ -125,7 +128,7 @@ function rowSignals(row) {
   if (row.subagents) {
     const seen = `, seen 5m ${row.subagents.seenRecently}`;
     const cost = row.subagents.cost > 0
-      ? `, total ${confidenceCost(row.subagents.cost, row.subagents.exactCost)}`
+      ? `, total ${confidenceCost(row.subagents.cost, row.subagents.costAgg)}`
       : '';
     parts.push(`subagents ${row.subagents.count}${seen}${cost}`);
   }
@@ -259,7 +262,7 @@ function render(args, uiState = {}, message = '') {
       : (tiny ? 'recent' : 'recent sessions');
   const summary = compact
     ? `${snapshot.totalRows} ${sourceLabel} / ${snapshot.attention} alert`
-    : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.exactRecentCost, snapshot.unknownRecentCost)}/5m`;
+    : `${snapshot.totalRows} ${sourceLabel} · ${snapshot.attention} attention · +${confidenceCost(snapshot.recentCost, snapshot.recentCostAgg)}/5m`;
   output.push(fit(summary, max));
   const hubLabel = status.parsed.running ? 'ok' : (tiny ? 'no' : 'unavailable');
   output.push(fit(tiny ? `Hub ${hubLabel}` : `Updated ${now} · Hub ${hubLabel}`, max));

@@ -96,6 +96,7 @@ Each `topSessions[]` element:
 | `sessionId` | string | Full session id. |
 | `turns` | number | Turns in the session. |
 | `cost` | number | USD, **2 dp**. |
+| `costAgg` | object | Confidence fold for `cost`, always present: `{count, fallbackCount, fallbackCost, unknownCount}`, all numbers. `fallbackCount`/`fallbackCost` cover turns priced from a default rate; `unknownCount` counts turns that contributed **nothing** to `cost`, so a non-zero value means `cost` is a lower bound. Render `cost` through this fold (`formatAggCost`/`formatAggCostText`, ADR 0017) — a consumer of this JSON cannot see the turns, so it cannot re-derive the fold, and printing `cost` alone reports a fabricated or under-counted total as an exact one. |
 | `durationMin` | number | First→last `receivedAt` span in minutes, **1 dp**. `0` if fewer than 2 timestamped turns. |
 | `title` | string \| null | Best non-continuation title, truncated to 40 chars. `null` if none. |
 | `model` | string | The session's **dominant** model (most turns), as a single string — not a map. `"unknown"` if absent. |

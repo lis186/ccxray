@@ -11,6 +11,7 @@ const {
   reportWorkspaceTokens,
   requestImport,
   routedPaneKnown,
+  routedPaneLaunchId,
   runHerdr,
   sessionSummaryDetails,
   statusReport,
@@ -76,9 +77,18 @@ function applyContextColorTokens(tokens, ctxBand) {
   return CTX_BAR_COLOR_TOKENS.filter(name => name !== activeToken);
 }
 
+// A standalone (non-hub) ccxray is a perfectly good proxy — the user's traffic
+// is being traced, it just didn't fork a hub. Mirror ensureProxy's recognition.
+function proxyAvailable(parsed) {
+  if (parsed.machine) return Boolean(parsed.machine.proxy);
+  if (parsed.running) return true;
+  // Fallback for a `ccxray` that predates the Machine line.
+  return (parsed.notes || []).some(n => /held by a standalone.*ccxray/i.test(n));
+}
+
 function badgeTokens(status, usage, opts = {}) {
   const tokens = {
-    xray: status.parsed.running ? 'ok' : 'no-hub',
+    xray: proxyAvailable(status.parsed) ? 'ok' : 'no-hub',
   };
 
   let stale = null;
@@ -106,7 +116,7 @@ function badgeTokens(status, usage, opts = {}) {
     tokens.cache = detail.matched === false ? '?' : formatPercent(usage.data.cache?.hitRate);
     tokens.fail = detail.matched === false ? '?' : formatPercent(usage.data.tools?.failRate);
   } else {
-    tokens.summary = status.parsed.running ? 'ccxray: not linked' : 'ccxray: no hub';
+    tokens.summary = proxyAvailable(status.parsed) ? 'ccxray: not linked' : 'ccxray: no hub';
     tokens.ctx_bar = '▁▁▁▁ ?';
     tokens.ctx = '?';
     tokens.age = '?';
@@ -161,7 +171,8 @@ function main() {
     sessionId: nativeSessionId,
     cwd: event.cwd || context.focused_pane_cwd || context.workspace_cwd || null,
     sidebarCols,
-    routed: status.parsed.running && routedPaneKnown(targetPaneId, process.env),
+    routed: proxyAvailable(status.parsed) && routedPaneKnown(targetPaneId, process.env),
+    launchId: routedPaneLaunchId(targetPaneId, process.env),
   });
   const { tokens, clearTokens } = badge;
   // A stale badge means completed turns are sitting on disk that ccxray never

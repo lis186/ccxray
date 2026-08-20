@@ -9,12 +9,14 @@ const {
   pluginRoot,
   filterEntriesToWorkspace,
   readIndexTailEntries,
+  panePlacement,
   resolveCcxrayCommand,
   resolveHerdrConfigPath,
   runHerdr,
   statusReport,
 } = require('./lib/ccxray');
 const { displayWidth, restoreFrameCursor, truncateText, writeFrame, wrapText } = require('./lib/tui');
+const { boundKeyFor } = require('./lib/keybindings');
 
 const PROVIDERS = [
   { id: 'claude', label: 'Claude', key: '1' },
@@ -66,6 +68,30 @@ function sidebarInstalled(env = process.env) {
   }
 }
 
+// Which Herdr keys actually reach ccxray right now. Read from the config
+// rather than assumed from the defaults, so a user who rebound a key sees
+// their own key and one who never installed them sees that it is missing —
+// the gap that made this plugin feel like a CLI instead of a Herdr feature.
+function installedKeys(env = process.env) {
+  let config = '';
+  try {
+    config = fs.readFileSync(resolveHerdrConfigPath(env), 'utf8');
+  } catch {
+    return { mission: null, quickStart: null, any: false };
+  }
+  const mission = boundKeyFor(config, 'ccxray.herdr.mission-control');
+  const quickStart = boundKeyFor(config, 'ccxray.herdr.quick-start');
+  return { mission, quickStart, any: Boolean(mission || quickStart) };
+}
+
+// Whether BOTH bindings are present. Derived, never a field on the state:
+// menuItems is called with hand-built state objects (tests, and any future
+// caller), so a required `keys.all` silently reads undefined there and a fully
+// bound pair renders as partial. Derive from the two keys that are the facts.
+function bothKeysBound(keys) {
+  return Boolean(keys && keys.mission && keys.quickStart);
+}
+
 function snapshot(env = process.env) {
   const status = statusReport({ env, timeoutMs: 4000 });
   const ccxrayReady = !status.result.error;
@@ -78,6 +104,7 @@ function snapshot(env = process.env) {
     ccxrayCommand: resolveCcxrayCommand(env).label,
     hubRunning: status.parsed.running,
     sidebar: sidebarInstalled(env),
+    keys: installedKeys(env),
     providers: availableProviders(env),
     sessions: linkedSessionIds.size,
     scope: scoped.scope,
@@ -102,6 +129,7 @@ function recommendationText(state) {
 }
 
 function menuItems(state) {
+  const keys = state.keys || { mission: null, quickStart: null, any: false };
   return [
     { type: 'section', label: 'Start an agent' },
     ...state.providers.map(provider => ({
@@ -117,7 +145,9 @@ function menuItems(state) {
       id: 'mission-control',
       key: 'M',
       label: 'Mission Control',
-      detail: state.sessions > 0 ? 'live attention' : 'needs 1 session',
+      detail: state.sessions > 0
+        ? (keys.mission ? `live attention · ${keys.mission}` : 'live attention')
+        : 'needs 1 session',
       enabled: state.sessions > 0,
       unavailableMessage: 'Launch a traced session before opening Mission Control.',
     },
@@ -130,6 +160,20 @@ function menuItems(state) {
       unavailableMessage: 'Capability Footprint needs at least five traced sessions.',
     },
     { type: 'section', label: 'Setup' },
+    {
+      id: 'keybindings',
+      key: 'B',
+      label: 'Keybindings',
+      // A PARTIAL install must keep offering install: keying this on `any` meant
+      // Enter removed the one binding that had succeeded, and the missing one
+      // could never be added from the TUI.
+      detail: bothKeysBound(keys)
+        ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · Enter remove`
+        : (keys.any
+          ? `${[keys.mission, keys.quickStart].filter(Boolean).join(' / ')} · 1 of 2 · Enter install`
+          : 'not bound · Enter install'),
+      enabled: true,
+    },
     {
       id: 'sidebar',
       key: 'S',
@@ -147,7 +191,8 @@ function keyIntent(key) {
   if (key === '\x1b[B' || key === '\x1bOB' || key === 'j' || key === 'J') return { type: 'move', delta: 1 };
   if (key === '\r' || key === '\n') return { type: 'activate' };
   if (key === '\u0003' || key === '\x1b' || key === 'q' || key === 'Q') return { type: 'close' };
-  if (/^[123smrd]$/i.test(key)) return { type: 'hotkey', key: key.toLowerCase() };
+  // `k` is taken by cursor movement, so the keybindings row answers to `b`.
+  if (/^[123bsmrd]$/i.test(key)) return { type: 'hotkey', key: key.toLowerCase() };
   return { type: 'ignore' };
 }
 
@@ -214,7 +259,12 @@ function render(state, message = '', selectedId = recommendedItemId(state)) {
     output.push('');
   }
   output.push(line(`ccxray       ${state.ccxrayReady ? 'READY' : 'FIX'}${state.hubRunning ? ' · hub running' : ''}`));
-  output.push(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
+  // The Setup rows carry their own state ("installed · Enter remove"), so this
+  // status line is a duplicate. In a short pane it is the first thing to go —
+  // an action the user can press outranks a restatement of it.
+  if (!veryShort) {
+    output.push(line(`sidebar      ${state.sidebar ? 'READY · installed' : 'SETUP · optional'}`));
+  }
   const sessionScope = state.scope?.kind === 'workspace' ? 'traced here' : 'observed';
   output.push(line(`sessions     ${state.sessions ? 'READY' : 'START'} · ${state.sessions} ${sessionScope}`));
   // Launching starts an agent in this directory, so name it before the user
@@ -259,12 +309,12 @@ function render(state, message = '', selectedId = recommendedItemId(state)) {
   writeFrame(output, { clear: interactive, interactive });
 }
 
-function runNode(script, args = []) {
+function runNode(script, args = [], opts = {}) {
   return spawnSync(process.execPath, [path.join(pluginRoot(), 'bin', script), ...args], {
     cwd: pluginRoot(),
     env: process.env,
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: opts.timeout || 15000,
   });
 }
 
@@ -285,8 +335,42 @@ function executeItem(item, state) {
 
   if (item.id.startsWith('launch-')) {
     const provider = state.providers.find(value => `launch-${value.id}` === item.id);
-    const result = runNode('launch-agent.js', [provider.id]);
-    return { message: resultMessage(result, `${provider.label} launched in a traced pane.`) };
+    // launch-agent.js waits for shell init + herdr agent start detection (up to
+    // ~50s). Running it synchronously freezes Quick Start's TUI, so the user
+    // sees an empty pane and quits — killing the subprocess chain. Detach it.
+    const { spawn } = require('child_process');
+    const fs = require('fs');
+    const logDir = require('./lib/ccxray').pluginStateDir();
+    fs.mkdirSync(logDir, { recursive: true });
+    const logFile = require('path').join(logDir, 'launch.log');
+    const fd = fs.openSync(logFile, 'a');
+    const child = spawn(process.execPath, [path.join(pluginRoot(), 'bin', 'launch-agent.js'), provider.id], {
+      cwd: pluginRoot(),
+      env: process.env,
+      stdio: ['ignore', fd, fd],
+      detached: true,
+    });
+    child.unref();
+    fs.closeSync(fd);
+    return { message: `${provider.label} launching in a new pane. Log: ${logFile}` };
+  }
+  if (item.id === 'keybindings') {
+    const removing = bothKeysBound(state.keys);
+    const script = removing ? 'remove-keybindings.js' : 'install-keybindings.js';
+    const result = runNode(script);
+    // A partial install exits 0 with the conflict on stderr, so a fixed success
+    // string would report "Keybindings installed." while a key the user had
+    // already bound was silently skipped. Prefer the script's own first line.
+    const spoken = String(result.stdout || '').trim().split('\n').map(v => v.trim()).find(Boolean);
+    const conflict = String(result.stderr || '').trim().split('\n').map(v => v.trim()).find(Boolean);
+    if (result.status === 0 && conflict) {
+      return { message: `${spoken || 'Keybindings updated.'} — ${conflict}` };
+    }
+    return {
+      message: resultMessage(result, removing
+        ? 'Keybindings removed; backup retained.'
+        : (spoken || 'Keybindings installed.')),
+    };
   }
   if (item.id === 'sidebar') {
     const script = state.sidebar ? 'remove-sidebar-summary.js' : 'install-sidebar-summary.js';
@@ -300,14 +384,14 @@ function executeItem(item, state) {
   if (item.id === 'mission-control') {
     const result = runHerdr([
       'plugin', 'pane', 'open', '--plugin', 'ccxray.herdr',
-      '--entrypoint', 'mission-control', '--placement', 'tab', '--focus',
+      '--entrypoint', 'mission-control', '--placement', panePlacement(), '--focus',
     ], { timeoutMs: 5000 });
     return { message: resultMessage(result, 'Mission Control opened.') };
   }
   if (item.id === 'capability-review') {
     const result = runHerdr([
       'plugin', 'pane', 'open', '--plugin', 'ccxray.herdr',
-      '--entrypoint', 'capability-review', '--placement', 'tab', '--focus',
+      '--entrypoint', 'capability-review', '--placement', panePlacement(), '--focus',
     ], { timeoutMs: 5000 });
     return { message: resultMessage(result, 'Capability Footprint opened.') };
   }

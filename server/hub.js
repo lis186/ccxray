@@ -757,6 +757,7 @@ function tryListen(srv, port, maxAttempts) {
 }
 
 module.exports = {
+  clientIdentityFromMessage,
   HUB_DIR,
   HUB_LOCK_PATH,
   HUB_LOG_PATH,

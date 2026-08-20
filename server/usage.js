@@ -6,6 +6,11 @@ const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
+// INVARIANT(ADR 0017): the human aggregate below must render through the shared
+// fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
+// top-level DOM), so the server reads the SAME thresholds the dashboard and the
+// Herdr plugin do rather than re-deriving them.
+const { formatAggCostText } = require('../public/format.js');
 
 const HELP = `Usage: ccxray usage [options]
 
@@ -301,8 +306,23 @@ function analyze(entries, opts = {}) {
       const dur = ts.length >= 2 ? (ts.at(-1) - ts[0]) / 1000 : 0;
       const rawTitle = turns.reduce((t, e) => e.title && !e.title.startsWith('↩') ? e.title : t, null);
       const title = rawTitle ? rawTitle.slice(0, 40) : null;
+      // INVARIANT(ADR 0017): a consumer that renders this `cost` as an
+      // aggregate needs the confidence fold with it. Without `costAgg` the only
+      // honest render is an unmarked number, so a wholly fallback-priced session
+      // printed `$2.00` — indistinguishable from an exact one — and an
+      // all-unknown session printed a total that excluded every turn with no
+      // `+` to say so. The fold travels WITH the sum; a consumer must not
+      // re-derive it, because it cannot see the turns from here.
+      const costAgg = turns.reduce((fold, e) => {
+        fold.count += 1;
+        const conf = e.cost?.confidence;
+        const value = Number(e.cost?.cost);
+        if (conf === 'unknown' || !Number.isFinite(value)) fold.unknownCount += 1;
+        else if (conf === 'fallback') { fold.fallbackCount += 1; fold.fallbackCost += value; }
+        return fold;
+      }, { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 });
       return {
-        sessionId: sid, turns: turns.length, cost: +cost.toFixed(2),
+        sessionId: sid, turns: turns.length, cost: +cost.toFixed(2), costAgg,
         durationMin: +((dur) / 60).toFixed(1), title,
         model: turns.reduce((m, e) => { m[e.model || 'unknown'] = (m[e.model || 'unknown'] || 0) + 1; return m; }, {}),
         provider: turns[0]?.provider || 'unknown',
@@ -513,7 +533,7 @@ function printHuman(r) {
     for (const s of r.sessions.topSessions) {
       const id = s.sessionId.length > 16 ? s.sessionId.slice(0, 8) + '…' : s.sessionId;
       const title = s.title ? `  ${D}${s.title}${R}` : '';
-      console.log(`  ${id.padEnd(10)} $${String(s.cost).padEnd(9)} ${String(s.turns).padStart(5)} turns  ${fmtDur(s.durationMin).padStart(7)}  ${s.model}${title}`);
+      console.log(`  ${id.padEnd(10)} ${formatAggCostText(s.cost, s.costAgg).padEnd(10)} ${String(s.turns).padStart(5)} turns  ${fmtDur(s.durationMin).padStart(7)}  ${s.model}${title}`);
     }
   }
   console.log();
