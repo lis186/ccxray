@@ -2,7 +2,8 @@
 
 - Status: Accepted — **batch routing rule REWRITTEN by #350 (2026-07-24), see
   "## Rewritten by #350" below**; the live path (`wfAddEntry`) + turn-list
-  (`entry-rendering.js`) still use the original per-turn early-exit pending A2.
+  (`entry-rendering.js`) keep the original per-turn early-exit as an ACCEPTED
+  bounded divergence — see "A1/A2 boundary" below; no open issue tracks a mirror.
 - Date: 2026-07-16
 - Related: #258 / #257 / #350 / ADR 0005 / ADR 0008
 
@@ -227,8 +228,9 @@ fix any *completed* session on cold-load+rebuild, which is how the dashboard
 renders `4b15c248`. `wfBuildState` re-derives `mainCoreHash`/`mainConvIds` from
 the now-correctly-composed final main lane, so the live `wfAddEntry` and
 turn-list `entry-rendering.js` paths inherit a correct main identity for new
-turns; their per-turn early-exit is left in place. A2 (#350) mirrors the
+turns; their per-turn early-exit is left in place. Mirroring the
 per-conversation rule + dominant-coreHash flip/trunk rebuild into those two
-sites. Until A2, the only residual divergence is a *live* seed turn arriving on
-an actively-viewed session — bounded and self-correcting on the next full
-rebuild. See `docs/solutions/same-convid-lane-classification.md`.
+sites — once tracked as "A2" — was never implemented, and #350 is closed, so
+nothing tracks it. The residual divergence is therefore ACCEPTED, not pending:
+a *live* seed turn arriving on an actively-viewed session — bounded and
+self-correcting on the next full rebuild. See `docs/solutions/same-convid-lane-classification.md`.
