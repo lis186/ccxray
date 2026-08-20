@@ -65,7 +65,14 @@ assistant        | ['agentId','cwd','effort','entrypoint','gitBranch','isSidecha
                     'userType','uuid','version']
 ```
 
-抽樣 400 檔：`sessionId == 上兩層目錄名`（＝parent session id）**400/400**，`isSidechain: true` **400/400**，mismatch 0，missing 0。
+抽樣 400 檔（**僅 flat 層** `<sid>/subagents/agent-*.jsonl`，glob 未含 `**`）：
+`sessionId == 上兩層目錄名`（＝parent session id）**400/400**，`isSidechain: true`
+**400/400**，mismatch 0，missing 0。
+
+> ⚠️ 「上兩層目錄名」只對 flat 層成立。`workflows/wf_*/agent-*.jsonl` 的 parent session
+> 在**上三層**（`wf_* → workflows → subagents → <sid>` 之外一層）。實作**不應**用路徑深度
+> 推導 parent，而要一律讀行內 `obj.sessionId`——該欄位本身與路徑深度無關。workflow 層的
+> `sessionId` 一致性**未單獨抽樣驗證**（1,988 個檔）,列入 §6。
 
 這一點推翻了 issue 的架構前提：**不需要**把 subagent 當「separate sessions」也不需要 roll-up——transcript 自己就宣告了 parent sessionId。目前 `importer.js:121` 的 `const sessionId = path.basename(filePath, '.jsonl')` 是唯一會產生 `agent-<id>` 這種假 session id 的地方；改讀行內 `obj.sessionId` 即自然歸屬 parent。
 
@@ -116,7 +123,7 @@ issue 的 Scope 寫：
 
 - `agent-*.jsonl`：**13,175** 檔（flat 11,187 / `workflows/` 下 1,988）
 - usage line：**323,196**；以 `message.id` 聚合後（#428 規則）＝ **70,417 個 turn**
-- 觸及的 parent session：**799**
+- 帶 subagent turn 的 parent session：**799**（這是語料規模，**不等於**受本改動影響的 session 數——見 §5A 的 ⚠️ 註）
 - token 總量（單位：百萬）
 
 | model | input | output | cache read | cache create |
@@ -134,7 +141,8 @@ issue 的 Scope 寫：
 
 index 規模影響：70,417 個新 turn，扣掉與 proxy 副本去重後的淨增未知（見 §6）。以每行 ~700B 估計上界 ≈ 49 MB——對 ADR 0016 的 restore streaming 與 #348 residency 是可承受量級，但不是零。
 
-**per-session 分佈**（決定「畫面會變多少」，2026-08-20 補量）：799 個 parent session
+**per-session 分佈**（決定「每個受影響 session 會變多少」——受影響的**是哪些**由 §6 的
+未量測交集決定，2026-08-20 補量）：799 個 parent session
 帶 subagent turn，每 session 的 subagent turn 數 median **31**、p90 **198**、max **5867**。
 其中 **17** 個 session 光 subagent turn 就超過 `SESSION_ENTRY_CAP`（預設 500,
 `server/store.js:13`），會被推進 oversized / cold-load 路徑（`restore.js:311`）——該路徑
@@ -156,10 +164,15 @@ index 規模影響：70,417 個新 turn，扣掉與 proxy 副本去重後的淨�
 
 **優點**：符合 P1/P2/P6（見 §5b）——去重、lane、weather、cost confidence fold 全部沿用，
 零新機制；per-model 計價天然正確；add-only 可 rebuild；並且**關掉一個跨視圖不一致**——
-今天 dashboard 對這 799 個 session 的成本少報，Usage tab 沒有。
+今天 dashboard 對其中**未經 proxy 記錄**的部分少報，Usage tab 沒有。
 
-**成本**：70,417 turn 一次性進 index（§4）；799 個 session 的 weather / lane / cost 顯示
-同時位移；17+ 個 session 跨過 500 cap 改走 cold-load；3,739 檔（28%）無 meta 的 fallback
+> ⚠️ 這裡不能寫成「799 個 session 都少報」。799 是**帶 subagent turn 的 parent session
+> 總數**，而 §5D 指出經過 proxy 的 session 其 subagent turn 早已在 index 裡。真正少報的
+> 子集 = 799 減去已被 proxy 覆蓋者，其大小正是 §6 明載**未量測**的那一格。同理，A 的
+> 「畫面會變的 session 數」也是這個未知子集，不是 799。
+
+**成本**：70,417 turn 一次性進 index（§4）；受影響 session（799 的未量測子集，見上註）的
+weather / lane / cost 顯示同時位移；17+ 個 session 跨過 500 cap 改走 cold-load；3,739 檔（28%）無 meta 的 fallback
 需明訂。風險集中在**驗收**而非設計：位移是預期的，要證明位移是對的（§9）。
 
 ### Option B — roll-up 成 parent index line 的聚合欄位
@@ -197,7 +210,7 @@ migration。
 （ADR 0005 / 0008 / 0010 整組存在就是在處理它們）。缺口只涵蓋歷史 session 與不經 proxy
 的 session。
 
-**成本**：dashboard 與 Usage tab 對這 799 個 session 永久不一致，且不一致是靜默的；§8 的
+**成本**：dashboard 與 Usage tab 對上述未經 proxy 覆蓋的子集永久不一致，且不一致是靜默的；§8 的
 `isFork` 校準機會一併放掉（雖然校準可用離線腳本讀 transcript 完成，不需進 index）。
 
 **適用條件**：若 importer 被定義為 best-effort backfill 而非完整性保證。
@@ -261,7 +274,12 @@ transcript 每行都帶 `isSidechain: true`（抽樣 400/400），這是事實�
 - **與 proxy 已錄副本的重疊率未量測**——需讀真實 `~/.ccxray/logs/index.ndjson`，本輪依環境安全規則未讀。這個數字決定 §4 的淨增與「本 issue 到底補回多少可見度」。Owner 已選定 A（§7），所以它現在是**實作前的前提**而非決策前的參考——見 §9.1。做法：把 subagent transcript 的 `message.id` 集合與 index 的 `responseId` 集合取交集。
 - Option A 的 index 淨增只有上界估計，無實測。
 - ~~`agentType` → `agent-classification.js` 鍵空間的映射完整性~~ — 依 §5a 修正 1，`agentType` **不**進 `agentKey`，此項不再適用（改為：新 add-only 欄位的值空間無須與 `agent-classification.js` 對齊）。
-- 未評估 subagent entry 進 index 後對 swimlane lane 數（ADR 0008/0010）與 weather 的實際影響——799 個 session 的 lane 結構會改變。
+- 未評估 subagent entry 進 index 後對 swimlane lane 數（ADR 0008/0010）與 weather 的實際影響。
+  受影響的 session 數本身也未知——上界 799（帶 subagent turn 的 parent session 總數），實際值
+  是扣除已被 proxy 覆蓋者後的子集。
+- **workflow 層（1,988 檔）的 `sessionId == parent` 未單獨抽樣**：400 檔抽樣只涵蓋 flat 層。
+  實作讀行內 `obj.sessionId` 不依賴路徑深度，所以風險是「workflow 檔的該欄位語意可能不同」，
+  而非路徑推導錯誤——但這一點沒有證據，需在實作時補驗。
 - **語料在量測期間仍在增長**：兩次獨立掃描分別得到 798 與 799 個 parent session（同樣的篩選條件），差異來自量測期間本機仍有 subagent 在寫入。本檔一律採較新的 799；任何重跑得到 ±數個 session 屬正常，不是計算錯誤。
 
 ---
@@ -278,9 +296,10 @@ transcript 每行都帶 `isSidechain: true`（抽樣 400/400），這是事實�
    缺值），或從 parent transcript 的 `tool_use`／`meta.toolUseId` 反查？（注意：依 §5a
    修正 1，這裡問的**不是** `agentKey`。）
 3. **一次性全史匯入是否可接受**（§4：無時間窗，70,417 turn 一次進），或需先設計分批窗口。
-4. **修復型 issue 的生成**需 #565 上的 `APPROVE-DESIGN 565-diag-2026-08-20` comment——
-   in-session 的口頭決策不構成 `authorAssociation == OWNER` 的 GitHub artifact，
-   `approve-check.sh` 驗不到。#565 的 body 本身不改（非經 owner 同意不動 issue body）。
+4. ~~修復型 issue 的生成需 owner 簽核~~ — **已完成**：owner 於 #565 留 `APPROVE-DESIGN 565A`，
+   `approve-check.sh` 驗證通過（`by OWNER token=565A`，`--exclude-run` 防自簽仍生效），
+   修復型 issue = #570。#565 的 body 未改（非經 owner 同意不動 issue body），故其
+   `issue-lint` 仍為 fail；#570 另寫合規 body。
 
 **follow-up（獨立於 A）**：
 - `cost-worker.js:95` 同樣用檔名當 sessionId → 日聚合的 `sessionCount` 被假 session 膨脹
@@ -316,7 +335,9 @@ ADR 0008 / 0010 與 [#222](https://github.com/lis186/ccxray/issues/222) 反覆�
    `responseId` 各自獨立、`sessionId` 皆為 parent。
 3. **位移證據**：取 3 個 session（median 31 / p90 198 / max 5867 各一），記錄匯入前後的
    turn 數、cost、weather、lane 數，逐項說明位移為何正確。**這是 A 唯一真正的風險面**——
-   799 個 session 的顯示會同時改變，沒有 before/after 就無法區分「修好了」與「弄壞了」。
+   受影響的 session（上界 799）顯示會同時改變，沒有 before/after 就無法區分「修好了」與
+   「弄壞了」。若前置量測（§9.1）顯示受影響集合遠小於 799，取樣的三個 session 必須從
+   **該子集**中取，不是從 799 全體。
 4. **28% 無 meta 的 fallback** 需在測試覆蓋（不是只在文件寫）。
 5. **`agentKey` 未被污染**：斷言匯入的 entry 其 `agentKey` 不含 `fork` /
    `general-purpose` / `Explore` / `workflow-subagent` 等 spawn-metadata 值（§5a 修正 1
