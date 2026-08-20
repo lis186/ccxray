@@ -1572,9 +1572,13 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     // logged a minute ago proves ccxray is still watching this pane just as well
     // as a main turn does, which is the reason the badge's `evidenceStaleness`
     // reads the whole session. Built from main-only `latestAt`, this row called a
-    // pane stale while its subagent was actively working. (`latestAt` stays
-    // main-only for the row SORT below — ordering panes by main-agent activity is
-    // a separate question this does not settle.)
+    // pane stale while its subagent was actively working.
+    //
+    // `latestAt` is left alone for the row SORT below — a separate question this
+    // does not settle. Note it is main-only only when this row came from the
+    // agents branch: the no-agent fallback hands over every turn of a session
+    // with no `subagentTurns`, so there `latestAt` and `observedLatestAt` are
+    // the same value.
     freshness: observedLatestAt ? formatAge(nowMs - observedLatestAt) : 'none',
   };
 }
