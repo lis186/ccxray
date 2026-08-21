@@ -87,6 +87,17 @@ function isolatedHome() {
   return emptyHome;
 }
 
+function paneAlertFor(detail) {
+  const { paneAlert } = require('../plugins/herdr/bin/lib/ccxray');
+  return paneAlert({
+    hasTelemetry: true,
+    refusedCount: detail.refusedCount,
+    staleText: detail.stale?.text,
+    failures: detail.failures,
+    cacheDropped: detail.cacheDropped,
+  });
+}
+
 function makeHome(entries = []) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-plugin-'));
   fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
@@ -490,7 +501,11 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.doesNotMatch(detail.ctxBar, /fail/, 'no turn failed; the badge must not claim one did');
+    assert.equal(detail.failures, 0, 'no turn failed; the badge must not claim one did');
+    // Asserted on the raw count, not row 2's tail: row 3 owns alerts now, so
+    // `doesNotMatch(ctxBar, /fail/)` would hold for every input and protect
+    // nothing. paneAlert is the channel a failure actually reaches.
+    assert.equal(paneAlertFor(detail), null);
   });
 
   it('still reports a genuine per-turn tool failure', () => {
@@ -507,7 +522,8 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.match(detail.ctxBar, /fail 2x/);
+    assert.equal(detail.failures, 2);
+    assert.equal(paneAlertFor(detail).text, 'fail 2x');
   });
 
   // Every turn from a pane carries that pane's agentId, including turns from a
@@ -1044,7 +1060,7 @@ describe('Herdr aggregate cost confidence (ADR 0017)', () => {
 // INVARIANT(ADR 0005 shape): ONE ranked list answers "what is the most important
 // thing about this pane right now", for both the sidebar badge's row-3 $alert and
 // Mission Control's action. Two orderings used to contradict each other:
-// contextSignal ranked context above every tool failure, while the MC action
+// the now-removed contextSignal ranked context above every tool failure, while
 // chain ranked `fail >= 2` above context and `cache dropped` above `fail == 1`.
 describe('Herdr pane concerns are ranked once (ADR 0005 shape)', () => {
   const {
@@ -1515,7 +1531,11 @@ describe('Herdr sidebar import freshness', () => {
     assert.ok(detail.stale, 'expected a staleness marker');
     assert.equal(detail.stale.text, 'stale 11h');
     assert.match(detail.summary, /· stale 11h$/);
-    assert.match(detail.ctxBar, /stale 11h/);
+    // The reason moved to row 3's $alert. Row 2 keeps the withdrawn colour (the
+    // assertion below) and the cache fact, so it no longer repeats the word —
+    // `21% · stal…` beside `21% stale` is the duplication being removed.
+    assert.doesNotMatch(detail.ctxBar, /stale/);
+    assert.equal(paneAlertFor(detail).text, 'stale 11h');
     // The percentage survives; only the confident colour is withdrawn.
     assert.equal(Math.round(detail.ctxPct), 32);
     assert.equal(detail.ctxBand, 'unknown');
@@ -3416,7 +3436,7 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=90%/);
     assert.match(result.stdout, /ctx_band=red/);
-    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · full/);
+    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · cache 0%/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_green ctx_bar_yellow/);
   });
 
@@ -3452,7 +3472,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '36',
     });
     assert.equal(wide.status, 1);
-    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · near full/);
+    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · cache 0%/);
   });
 
   it('launch-agent can produce a stable new-tab plan without side effects', () => {

@@ -403,8 +403,8 @@ function quotaRefusalCount(turns) {
 // INVARIANT(ADR 0005 shape): every surface that answers "what is the most
 // important thing about this pane right now" ranks the answers HERE. Two
 // surfaces used to answer it with orderings that contradicted each other:
-// contextSignal put context above every tool failure, while the Mission Control
-// action chain put `fail >= 2` above context and `cache dropped` above
+// the now-removed contextSignal put context above every tool failure, while the
+// Mission Control action chain put `fail >= 2` above context and `cache dropped` above
 // `fail == 1`. The same pane therefore read "near full" on the sidebar and
 // "inspect last error" in Mission Control. A third ordering written for the
 // sidebar's row-3 $alert is exactly the failure shape ADR 0005 exists to stop.
@@ -511,14 +511,6 @@ function paneAction(signals = {}) {
 function paneAlert(signals = {}) {
   const concern = paneConcerns(signals).find(item => !item.sidebarOwned && item.text);
   return concern ? { kind: concern.kind, text: concern.brief } : null;
-}
-
-function contextSignal(turns, detail) {
-  if (detail.ctxPct >= 90) return 'full';
-  if (detail.ctxPct >= 80) return 'near full';
-  const failures = toolFailureCount(turns);
-  if (failures) return `fail ${failures}x`;
-  return cacheHitText(turns);
 }
 
 function formatContextBar(turns, win, ctxText, opts = {}) {
@@ -971,10 +963,22 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   //
   // Note this is the channel-INVERSE of ADR 0013's provenance markers, which
   // mark the number ('60% of 200K?') and keep colour as saturation. The badge
-  // has no room for a marked number — ctx_bar is ~18 columns and already spends
-  // its tail on the cache/fail signal — so the colour is the only channel wide
+  // has no room for a marked number, so the colour is the only channel wide
   // enough to carry the doubt here. Do not cite ADR 0013 as endorsing this.
-  const signal = stale ? stale.text : contextSignal(anchor, detail);
+  //
+  // Row 2 owns context and nothing else. This tail used to carry whichever alert
+  // ranked highest: 'full'/'near full', which is a FOURTH encoding of the
+  // percentage sitting right beside it (percentage + sparkline + colour band +
+  // text), or the stale text, which row 3's $alert now carries. Both were the
+  // duplication the three-row layout removes — the reported screenshot showed
+  // `21% · stal…` on one row and `21% stale` on another. What stays is the one
+  // context fact no other row shows: how much of it came from cache.
+  //
+  // A config that renders ONLY $ctx_bar therefore loses the stale WORD from this
+  // tail and keeps the withdrawn colour. The reason is not lost from the token
+  // set — $ctx still carries `21% stale` (refresh-badges) and $alert carries it
+  // in full — but such a config must be migrated to see it as text.
+  const signal = cacheHitText(anchor);
   return {
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
