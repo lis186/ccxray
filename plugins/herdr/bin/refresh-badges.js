@@ -247,11 +247,40 @@ function main() {
     done: tokens.summary,
   };
 
-  const pane = reportPaneTokens(tokens, {
+  // Herdr caps pane metadata at 16 unique token names (set + clear combined).
+  // The plugin produces ~12 tokens internally (ctx, model, cost, age, turns,
+  // cache, fail, summary, ctx_bar, ctx_band, plus the 4 ctx_bar colours rotated
+  // through clearTokens), and the new $facts/$alert pair pushed the total to 17.
+  // Not every token needs to reach the pane: `summary` is read locally by
+  // stateLabels and notifications but the config never renders it (the row was
+  // migrated away), and `ctx_band` is an internal signal only. Strip them from
+  // the object sent to report-metadata while keeping them readable in this scope.
+  // Herdr caps pane metadata at 16 unique token names (set + clear combined).
+  // The plugin produces ~17 internal tokens, but only 7 ever reach a config row:
+  // xray (Quick Start / MC status), the four ctx_bar colours (row 2), and
+  // facts/alert (row 3). Atomic tokens from the pre-migration layout ($ctx,
+  // $model, $cost, etc.) are not cleared because an un-migrated config may
+  // still render them, and herdr retains values a report does not mention; the
+  // installer migration removes those rows, after which the retained values
+  // are inert. summary/ctx_band/ctx_bar are cleared as a one-time cleanup —
+  // they were sent by previous badge writes but never reached a config row.
+  const PANE_REPORT_TOKENS = new Set([
+    'xray',
+    // ctx_bar colour variants — applyContextColorTokens writes the active one
+    'ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red',
+    // row 3
+    'facts', 'alert',
+  ]);
+  const paneTokens = {};
+  for (const [name, value] of Object.entries(tokens)) {
+    if (PANE_REPORT_TOKENS.has(name)) paneTokens[name] = value;
+  }
+  clearTokens.push('summary', 'ctx_band', 'ctx_bar');
+  const pane = reportPaneTokens(paneTokens, {
     env, ttlMs, stateLabels, clearTokens, agent: event.agent,
     clearStateLabels: !stateLabels,
   });
-  const workspace = reportWorkspaceTokens(tokens, { env, ttlMs, clearTokens });
+  const workspace = reportWorkspaceTokens(paneTokens, { env, ttlMs, clearTokens });
   const notification = process.env.HERDR_PLUGIN_EVENT === 'pane.agent_status_changed'
     ? agentNotification(event, tokens.summary, {
       env,
