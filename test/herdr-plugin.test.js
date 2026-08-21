@@ -1142,6 +1142,98 @@ describe('Herdr pane concerns are ranked once (ADR 0005 shape)', () => {
   });
 });
 
+// Row 3 of the three-row sidebar: `$facts` (grey) and `$alert` (warning colour),
+// exactly one non-empty per refresh, the other returned in clearTokens — the
+// mechanism `ctx_bar_*` already ships with.
+describe('Herdr sidebar row 3 fills exactly one token', () => {
+  const { badgeTokens, applyRow3Tokens } = require('../plugins/herdr/bin/refresh-badges.js');
+  const T = 1787000000000;
+  const status = { ok: true, parsed: { running: true, machine: { proxy: true, port: 5577 } } };
+  const usage = {
+    ok: true,
+    data: {
+      meta: { totalCost: 999.99, totalEntries: 1234 },
+      sessions: { topSessions: [{ sessionId: 'sTOP', cost: 42.5, turns: 77, model: 'claude-opus-5', durationMin: 60 }] },
+      models: [{ model: 'claude-fable-5' }],
+      cache: { hitRate: 0.91 },
+      tools: { failRate: 0.07 },
+    },
+  };
+  const turn = extra => ({
+    sessionId: 'r3', agentId: 'herdr:w1:p1', model: 'claude-opus-5',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    provider: 'anthropic', cwd: '/work/r3', receivedAt: T,
+    cost: { cost: 42.08, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const render = turns => badgeTokens(status, usage, {
+    env: pluginEnv({ CCXRAY_HOME: makeHome(turns) }),
+    paneId: 'w1:p1',
+    nowMs: T + 3600000,
+    sidebarCols: 40,
+  });
+
+  it('shows the facts when nothing is wrong and the alert when something is', () => {
+    const healthy = render([turn({ id: 'h1', usage: { input_tokens: 50000 } })]);
+    assert.equal(healthy.tokens.facts, '$42.08 · 60m');
+    assert.equal(healthy.tokens.alert, undefined);
+    assert.ok(healthy.clearTokens.includes('alert'));
+    assert.equal(healthy.clearTokens.includes('facts'), false);
+
+    const failed = render([turn({ id: 'f1', usage: { input_tokens: 50000 }, turnToolFail: true })]);
+    assert.equal(failed.tokens.alert, 'fail 1x');
+    assert.equal(failed.tokens.facts, undefined);
+    assert.ok(failed.clearTokens.includes('facts'));
+    assert.equal(failed.clearTokens.includes('alert'), false);
+  });
+
+  it('leaves context pressure to row 2 instead of repeating it', () => {
+    // 190K/200K = 95%. Row 2 already renders the percentage, the sparkline AND
+    // the colour band, so an alert saying "full" would be the fourth encoding of
+    // one fact — the duplication this layout exists to remove.
+    const full = render([turn({ id: 'c1', usage: { input_tokens: 190000 } })]);
+    assert.equal(full.tokens.alert, undefined);
+    assert.equal(full.tokens.facts, '$42.08 · 60m');
+  });
+
+  it('fills neither token for a pane whose session it cannot locate', () => {
+    // NOT a fail-on-old: `$facts` did not exist before, so the old code would
+    // fail this for a missing token rather than for a behaviour difference. The
+    // claim is only that row 1 keeps sole ownership of "not linked" — rendering
+    // the detail's honest-but-useless `n/a · ?` beside it is the duplication.
+    const elsewhere = render([turn({ id: 'x1', agentId: 'herdr:w1:pOTHER' })]);
+    assert.equal(elsewhere.tokens.facts, undefined);
+    assert.equal(elsewhere.tokens.alert, undefined);
+    assert.ok(elsewhere.clearTokens.includes('facts'));
+    assert.ok(elsewhere.clearTokens.includes('alert'));
+  });
+
+  it('fills neither token when there is no hub to report', () => {
+    const dark = badgeTokens({ ok: true, parsed: { running: false, notes: [] } }, { ok: false }, {
+      env: pluginEnv({ CCXRAY_HOME: makeHome([]) }),
+      paneId: 'w1:p1',
+      sidebarCols: 40,
+    });
+    assert.equal(dark.tokens.facts, undefined);
+    assert.equal(dark.tokens.alert, undefined);
+  });
+
+  it('keeps every alert label inside a narrow sidebar', () => {
+    // The spelled-out 'cache dropped after prompt change' is 33 columns; the
+    // sidebar brief must fit a realistic row, and anything longer is clipped by
+    // us rather than cut by Herdr.
+    const dropped = render([
+      turn({ id: 'd1', sysHash: 'h1', usage: { input_tokens: 10000, cache_read_input_tokens: 90000 } }),
+      turn({ id: 'd2', sysHash: 'h2', receivedAt: T + 1000, usage: { input_tokens: 100000, cache_read_input_tokens: 0 } }),
+    ]);
+    assert.equal(dropped.tokens.alert, 'cache dropped');
+    assert.ok(dropped.tokens.alert.length <= 14, 'must fit a 14-column sidebar');
+
+    const wide = {};
+    applyRow3Tokens(wide, { matched: true, costText: '$1234.56', ageText: '12.3h' }, { sidebarCols: 14 });
+    assert.equal(wide.facts, '$1234.56 · 12…');
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used

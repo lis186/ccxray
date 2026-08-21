@@ -7,6 +7,7 @@ const {
   formatPercent,
   herdrAgentReport,
   herdrRuntime,
+  paneAlert,
   reportPaneTokens,
   reportWorkspaceTokens,
   requestImport,
@@ -20,6 +21,7 @@ const {
 const { agentNotification, recordAgentStatus } = require('./lib/notifications');
 
 const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
+const ROW3_TOKENS = ['facts', 'alert'];
 
 function eventContext(env = process.env) {
   if (!env.HERDR_PLUGIN_EVENT_JSON) return {};
@@ -77,6 +79,50 @@ function applyContextColorTokens(tokens, ctxBand) {
   return CTX_BAR_COLOR_TOKENS.filter(name => name !== activeToken);
 }
 
+function clampCols(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 8 ? Math.min(n, 96) : 18;
+}
+
+function clipToCols(text, cols) {
+  const value = String(text);
+  return value.length <= cols ? value : `${value.slice(0, Math.max(1, cols - 1))}…`;
+}
+
+// Row 3 is TWO tokens with one meaning each, and exactly one of them carries
+// content per refresh — the mechanism `ctx_bar_*` above has already shipped with.
+// One token holding either a fact or a warning would have to change colour with
+// its meaning, which is the Channel Discipline violation docs/design-principles.md
+// exists to stop; here each token keeps a fixed colour and what changes is which
+// one is non-empty.
+//
+// A pane whose session could not be located fills NEITHER. Row 1's state_labels
+// already says "not linked", and `$facts` would render the detail's honest but
+// useless `n/a · ?` beside it — the duplication this three-row layout exists to
+// remove. Row height never changes, only content, which
+// docs/design-principles.md:60 permits explicitly ("Content inside containers
+// may change freely").
+function applyRow3Tokens(tokens, detail, opts = {}) {
+  const located = Boolean(detail) && detail.matched !== false;
+  // ctx, blocked and no-telemetry are `sidebarOwned` in the shared ranking, so
+  // they cannot reach row 3 — rows 2 and 1 render them. Passing hasTelemetry
+  // true is therefore not a claim: the unlocated case returned above.
+  const alert = located ? paneAlert({
+    hasTelemetry: true,
+    refusedCount: detail.refusedCount,
+    staleText: detail.stale?.text,
+    failures: detail.failures,
+    cacheDropped: detail.cacheDropped,
+  }) : null;
+  // Clip to the measured sidebar width here rather than letting Herdr cut the
+  // row: an alert we chose to show must be legible, and the caller knows the
+  // width. `cols` falls back to ctx_bar's own default when unmeasured.
+  const cols = clampCols(opts.sidebarCols);
+  if (alert) tokens.alert = clipToCols(alert.text, cols);
+  else if (located) tokens.facts = clipToCols(`${detail.costText} · ${detail.ageText}`, cols);
+  return ROW3_TOKENS.filter(name => tokens[name] === undefined);
+}
+
 // A standalone (non-hub) ccxray is a perfectly good proxy — the user's traffic
 // is being traced, it just didn't fork a hub. Mirror ensureProxy's recognition.
 function proxyAvailable(parsed) {
@@ -92,8 +138,9 @@ function badgeTokens(status, usage, opts = {}) {
   };
 
   let stale = null;
+  let detail = null;
   if (usage.ok && usage.data?.meta) {
-    const detail = sessionSummaryDetails(usage.data, opts);
+    detail = sessionSummaryDetails(usage.data, opts);
     stale = detail.stale || null;
     tokens.summary = detail.summary;
     tokens.ctx_bar = detail.ctxBar;
@@ -112,7 +159,12 @@ function badgeTokens(status, usage, opts = {}) {
     tokens.age = detail.ageText;
     tokens.cost = detail.costText;
     tokens.model = detail.model;
-    tokens.turns = String(detail.turns ?? usage.data.meta.totalEntries ?? 0);
+    // Never fall back to usage.data.meta.totalEntries: that is every session's
+    // line count, and a per-agent row rendering it claims the whole index as one
+    // pane's turn count. Dead today (no path returns a nullish detail.turns) and
+    // therefore removed without a differential test — it is a loaded landmine,
+    // not a live defect, and the moment an unlocated path returns null it fires.
+    tokens.turns = detail.turns == null ? '?' : String(detail.turns);
     tokens.cache = detail.matched === false ? '?' : formatPercent(usage.data.cache?.hitRate);
     tokens.fail = detail.matched === false ? '?' : formatPercent(usage.data.tools?.failRate);
   } else {
@@ -129,7 +181,10 @@ function badgeTokens(status, usage, opts = {}) {
   return {
     tokens,
     stale,
-    clearTokens: applyContextColorTokens(tokens, tokens.ctx_band),
+    clearTokens: [
+      ...applyContextColorTokens(tokens, tokens.ctx_band),
+      ...applyRow3Tokens(tokens, detail, opts),
+    ],
   };
 }
 
@@ -227,4 +282,4 @@ function main() {
 // free so badgeTokens() can be asserted without refreshing anybody's sidebar.
 if (require.main === module) main();
 
-module.exports = { badgeTokens, applyContextColorTokens, eventContext };
+module.exports = { badgeTokens, applyContextColorTokens, applyRow3Tokens, eventContext };

@@ -463,6 +463,11 @@ const PANE_CONCERN_TIERS = [
     kind: 'cache-dropped',
     match: s => Boolean(s.cacheDropped),
     text: () => 'cache dropped after prompt change',
+    // `brief` is the sidebar form. The spelled-out reason is 33 columns and the
+    // row is 18-40, so shipping only `text` would truncate it — and truncation
+    // is one of the symptoms this layout exists to remove. Mission Control has
+    // the width for the full sentence and keeps using `text`.
+    brief: () => 'cache dropped',
     action: () => 'inspect prompt/tool diff',
   },
   {
@@ -492,6 +497,7 @@ function paneConcerns(signals = {}) {
       kind: tier.kind,
       sidebarOwned: Boolean(tier.sidebarOwned),
       text: tier.text(signals),
+      brief: tier.brief ? tier.brief(signals) : tier.text(signals),
       action: tier.action(signals),
     }));
 }
@@ -504,7 +510,7 @@ function paneAction(signals = {}) {
 // Row 3's $alert: the top concern the sidebar does not already render elsewhere.
 function paneAlert(signals = {}) {
   const concern = paneConcerns(signals).find(item => !item.sidebarOwned && item.text);
-  return concern ? { kind: concern.kind, text: concern.text } : null;
+  return concern ? { kind: concern.kind, text: concern.brief } : null;
 }
 
 function contextSignal(turns, detail) {
@@ -975,6 +981,13 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ctxText,
     ctxBand: stale ? 'unknown' : detail.ctxBand,
     stale,
+    // Raw alert signals, exposed so row 3's $alert ranks them through the one
+    // shared list (paneConcerns) rather than re-deriving a third ordering. All
+    // three read `anchor`, the same main-agent turns ctx%/cache%/model read, so
+    // a subagent's failure cannot raise an alert about the main conversation.
+    failures: toolFailureCount(anchor),
+    cacheDropped: cacheDroppedAfterPromptChange(anchor),
+    refusedCount: quotaRefusalCount(anchor),
     ctxBar: formatContextBar(anchor, win, ctxText, {
       sidebarCols: opts.sidebarCols,
       signal,
