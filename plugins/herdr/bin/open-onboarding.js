@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   herdrRuntime,
-  parseJsonOutput,
+  panePlacement,
   pluginStateDir,
   runHerdr,
 } = require('./lib/ccxray');
@@ -44,7 +44,12 @@ function openArgs(env = process.env) {
     'plugin', 'pane', 'open',
     '--plugin', 'ccxray.herdr',
     '--entrypoint', 'onboarding',
-    '--placement', 'tab',
+    // Quick Start is the one pane that did not pass this, so the manifest's
+    // `placement = "tab"` always won and CCXRAY_HERDR_PANE_PLACEMENT silently
+    // did nothing here — while the README said it applied to Quick Start,
+    // Mission Control and Capability Footprint alike. The other two did honour
+    // it; this makes the documented behaviour true rather than trimming the doc.
+    '--placement', panePlacement(env),
     '--focus',
   ];
   const workspaceId = runtime.workspaceId || context.workspace_id;
@@ -92,8 +97,7 @@ function main() {
     if (firstRun && alreadyOpened()) return;
     const opened = runHerdr(openArgs(), { timeoutMs: 5000 });
     if (opened.status !== 0 || opened.error) {
-      const response = parseJsonOutput(`${opened.stdout}\n${opened.stderr}`);
-      if (firstRun && response?.error?.code === 'no_active_workspace') {
+      if (firstRun && opened.parsed?.error?.code === 'no_active_workspace') {
         console.log('ccxray Quick Start deferred until a workspace is created.');
         return;
       }
@@ -109,4 +113,9 @@ function main() {
   }
 }
 
-main();
+// ADR 0015's two-mode shape: executed mode runs, imported mode is side-effect
+// free. Without the guard, `require`-ing this file OPENED A PANE — which is how
+// this was found, and which also means no test could ever exercise openArgs.
+if (require.main === module) main();
+
+module.exports = { openArgs };

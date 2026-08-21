@@ -215,7 +215,10 @@ const HOP_BY_HOP_HEADERS = new Set([
   'upgrade',
 ]);
 
-const CCXRAY_INTERNAL_HEADERS = ['x-ccxray-auth', 'x-ccxray-bootstrap'];
+// INVARIANT: the `x-ccxray-*` namespace is default-deny by PREFIX and the rule
+// is shared with ws-proxy.js — see server/internal-headers.js for why an
+// allowlist here leaked the pane-identity header upstream.
+const { isInternalHeader } = require('./internal-headers');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -226,7 +229,9 @@ function buildForwardHeaders(clientHeaders, upstream) {
 
   for (const header of HOP_BY_HOP_HEADERS) delete fwdHeaders[header];
   for (const header of connectionTokens) delete fwdHeaders[header];
-  for (const header of CCXRAY_INTERNAL_HEADERS) delete fwdHeaders[header];
+  for (const header of Object.keys(fwdHeaders)) {
+    if (isInternalHeader(header)) delete fwdHeaders[header];
+  }
   delete fwdHeaders.host;
   delete fwdHeaders['accept-encoding'];
   fwdHeaders.host = upstream.host;
@@ -926,6 +931,16 @@ if (process.argv[2] === 'status') {
       if (occ.kind !== 'free') {
         hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
       }
+      // One machine-readable line so a consumer does not have to scrape the
+      // English above. `proxy` answers the only question a launcher actually
+      // has — is something here that will trace my traffic — which is true for
+      // a standalone too, even though it is not a hub.
+      console.log(`Machine: ${JSON.stringify({
+        proxy: occ.kind === 'ccxray-standalone' || occ.kind === 'ccxray-hub',
+        hub: false,
+        port: config.PORT,
+        occupant: occ.kind,
+      })}`);
       process.exit(0);
     })();
     return; // prevent falling through while the probe runs
@@ -965,6 +980,9 @@ if (process.argv[2] === 'status') {
         });
       }
       console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
+      console.log(`Machine: ${JSON.stringify({
+        proxy: true, hub: true, port: s.port, occupant: 'ccxray-hub',
+      })}`);
       if (s.clients.length === 0) {
         console.log('No connected clients.');
       } else {

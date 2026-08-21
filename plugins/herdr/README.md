@@ -35,16 +35,48 @@ Reopen it at any time with the action below. To suppress only the automatic firs
 herdr plugin action invoke ccxray.herdr.quick-start
 ```
 
+## Keybindings
+
+Herdr's plugin manifest cannot declare keybindings — `[[keys.command]]` is user configuration — so until you bind a key, every ccxray action costs a full `herdr plugin action invoke` line. Quick Start's `Keybindings` row installs two, and the same row removes them:
+
+| Key | Opens |
+|-----|-------|
+| `prefix+m` | ccxray Mission Control |
+| `prefix+shift+m` | ccxray Quick Start |
+
+```bash
+herdr plugin action invoke ccxray.herdr.install-keybindings
+herdr plugin action invoke ccxray.herdr.remove-keybindings
+```
+
+Installing backs up `config.toml`, validates the result with `herdr config check`, restores your file if Herdr rejects it, and reloads. A key you have already bound to something else is reported and left alone, never overwritten; set `CCXRAY_HERDR_KEY_MISSION` or `CCXRAY_HERDR_KEY_QUICK_START` to a different `prefix+…` combination and run the action again. Removal deletes only the bindings whose command belongs to this plugin.
+
+To write them yourself instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
+
+```toml
+[[keys.command]]
+key = "prefix+m"
+type = "plugin_action"
+command = "ccxray.herdr.mission-control"
+description = "ccxray: Mission Control"
+```
+
+Quick Start's Mission Control row shows the key it is actually bound to, so a binding that never took effect is visible rather than silent.
+
+Analysis panes open as stable new tabs. `CCXRAY_HERDR_PANE_PLACEMENT=overlay` switches Quick Start, Mission Control, and Capability Footprint to a temporary zoomed pane that restores your previous focus when closed — the lighter shape most Herdr plugins use, offered as opt-in because the tab default is what this plugin's releases have been accepted against. `popup`, `split`, and `zoomed` are also accepted; an unrecognized value falls back to `tab`. Agent panes are unaffected: a launched agent always gets a real tab.
+
 ## What it adds
 
 - `Open ccxray Quick Start` reports setup progress, launches installed providers, installs the optional sidebar with consent, and reveals analysis panes as their data becomes useful.
 - `ccxray doctor` checks the Herdr runtime context, ccxray command resolution, hub status, and recent usage.
 - `Launch Claude/Codex/Grok via ccxray` opens a stable new Herdr tab and starts the selected agent through ccxray with Herdr identity exported. Set `CCXRAY_HERDR_LAUNCH_PLACEMENT=split` only when a split is intentional.
-- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): it moves the shared ccxray hub — discovery, the forked hub, and its dashboard — to that port, without switching to the standalone `--port` mode. Use it when the default port 5577 is held by something you want to keep running.
+- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): discovery, the proxy the plugin starts, and its dashboard all move to that port. Use it when the default port 5577 is held by something you want to keep running. Note what the plugin starts there is a standalone proxy, not a hub — a hub is forked only by `ccxray <agent>` run directly, and a standalone has no idle shutdown, so it stays up until you stop it.
 - `ccxray usage summary` prints a compact cost/session/tool summary.
 - `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
 - Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.
 - Background panes notify once when an agent becomes done or blocked. Done uses Herdr's done sound; blocked uses the request sound. Set `CCXRAY_HERDR_NOTIFICATIONS=blocked` to suppress completion notices or `off` to disable both.
+- `Install ccxray keybindings` binds `prefix+m` and `prefix+shift+m` with a backup and a config check; `Remove ccxray keybindings` reverses it.
+- `Open ccxray Mission Control` opens the Mission Control pane, so a key can be bound to it — keybindings can only target actions.
 - `Install ccxray sidebar summary rows` renders a two-line model/age/cost and width-aware context summary under each agent.
 - `Open ccxray dashboard` delegates to `ccxray open`.
 - `Focus highest-priority ccxray agent` jumps to the first actionable Mission Control row.
@@ -62,8 +94,9 @@ herdr plugin install lis186/ccxray/plugins/herdr
 herdr plugin disable ccxray.herdr
 herdr plugin enable ccxray.herdr
 
-# Remove the sidebar rows before uninstalling the plugin
+# Remove the sidebar rows and keybindings before uninstalling the plugin
 herdr plugin action invoke ccxray.herdr.remove-sidebar-summary
+herdr plugin action invoke ccxray.herdr.remove-keybindings
 herdr plugin uninstall ccxray.herdr
 ```
 

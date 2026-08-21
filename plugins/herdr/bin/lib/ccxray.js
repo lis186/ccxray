@@ -72,8 +72,27 @@ function resolveCcxrayCommand(env = process.env) {
   return { bin: 'ccxray', argsPrefix: [], label: 'ccxray' };
 }
 
+// A FLOOR for every CLI budget in this module, off by default.
+//
+// The per-call budgets (1200ms for `pane list`, 1500ms for `agent list`) are
+// generous for the real herdr — a Rust binary that answers in single-digit ms —
+// and deliberately tight so a hung CLI does not freeze a TUI. Under `node
+// --test`, which saturates every core, a mock can miss them, and the timeout
+// does NOT surface as a timeout: `herdrOk` flips false, or
+// `currentWorkspaceScope` falls back to the plugin cwd, so it lands as an
+// unrelated string/path assertion in another suite. Same class as the 45s load
+// budget the launcher tests were given in #542.
+//
+// Tests set this generously (see pluginEnv in test/herdr-plugin.test.js);
+// production leaves it unset and keeps the tight per-call budgets.
+function timeoutFloor(env) {
+  const raw = Number((env || process.env).CCXRAY_HERDR_CMD_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
 function runCommand(command, args = [], opts = {}) {
-  const timeout = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const env = opts.env || process.env;
+  const timeout = Math.max(opts.timeoutMs || DEFAULT_TIMEOUT_MS, timeoutFloor(env));
   const result = spawnSync(command.bin, [...(command.argsPrefix || []), ...args], {
     cwd: opts.cwd || findRepoRoot(opts.env || process.env) || pluginRoot(opts.env || process.env),
     env: opts.env || process.env,
@@ -82,13 +101,20 @@ function runCommand(command, args = [], opts = {}) {
     windowsHide: true,
   });
 
+  const stdout = result.stdout || '';
+  const stderr = result.stderr || '';
   return {
     status: result.status,
     signal: result.signal,
     error: result.error,
-    stdout: result.stdout || '',
-    stderr: result.stderr || '',
+    stdout,
+    stderr,
     timedOut: result.error && result.error.code === 'ETIMEDOUT',
+    // herdr CLI puts success JSON on stdout and error JSON on stderr. Callers
+    // that only parsed stdout silently got null on failure and could not read
+    // the error code (E2 retro). This field merges both so every call site
+    // gets the parsed result without remembering which stream to check.
+    parsed: parseJsonOutput(stdout) || parseJsonOutput(stderr),
   };
 }
 
@@ -125,7 +151,16 @@ function parseStatus(text) {
   const portMatch = hubText.match(/localhost:(\d{2,5})/) || hubText.match(/\bport\s+(\d{2,5})\b/i);
   const pidMatch = hubText.match(/\bpid[:\s]+(\d+)\b/i) || hubText.match(/\bPID[:\s]+(\d+)\b/);
   const clientsMatch = hubText.match(/\bclients?[:\s]+(\d+)\b/i);
+  // One machine-readable line beats scraping prose. Kept OPTIONAL: the plugin
+  // can be driven by a globally-installed `ccxray` older than the line, so the
+  // text fallbacks below must survive.
+  let machine = null;
+  const machineLine = lines.find(l => l.trim().startsWith('Machine: '));
+  if (machineLine) {
+    try { machine = JSON.parse(machineLine.trim().slice('Machine: '.length)); } catch { machine = null; }
+  }
   return {
+    machine,
     running: !noHub && Boolean(portMatch || pidMatch || /hub/i.test(clean)),
     port: portMatch ? Number(portMatch[1]) : null,
     pid: pidMatch ? Number(pidMatch[1]) : null,
@@ -169,6 +204,41 @@ function usageReport(opts = {}) {
 
 function resolveCcxrayLogsDir(env = process.env) {
   return env.LOGS_DIR || path.join(env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray'), 'logs');
+}
+
+// The hub's per-session aggregate, read (never written — ADR 0019 allows a
+// non-hub process to READ a derived view).
+//
+// Why the badge should not re-derive totals from raw index lines: it reads a
+// 4 MiB tail of what is currently a 338 MiB index, so its sum is a sample, and
+// even a perfectly deduped sample disagrees with the dashboard. Measured on
+// session 9ea7a6d4: 135 of 156 responses in the window, $23.63 of $26.27. This
+// file carries `count`, `totalCost` AND the complete ADR 0017 confidence fold
+// for the session, so reading it makes the badge agree with the dashboard by
+// CONSTRUCTION rather than by re-implementation — and it is O(1) in the number
+// of turns instead of O(window).
+//
+// Despite the name it is NDJSON, one session per line. Only the matching line is
+// parsed: the file is ~4 MB and the badge refresh path is hot.
+function readSessionAggregate(sessionId, env = process.env) {
+  if (!sessionId) return null;
+  const file = path.join(resolveCcxrayLogsDir(env), 'sessions.json');
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  const at = text.indexOf(`"${sessionId}"`);
+  if (at === -1) return null;
+  const from = text.lastIndexOf('\n', at) + 1;
+  const to = text.indexOf('\n', at);
+  try {
+    const row = JSON.parse(text.slice(from, to === -1 ? undefined : to));
+    return row && row.sid === sessionId ? row : null;
+  } catch {
+    return null;
+  }
 }
 
 function readIndexTailEntries(opts = {}) {
@@ -444,6 +514,76 @@ function sessionWindow(turns) {
 // defensive because `findRepoRoot()` already contemplates a plugin installed
 // outside a ccxray checkout, where core's file is simply absent; that degrades
 // to the raw-flag tier rather than embedding a copy that would silently rot.
+// ADR 0017 says formatAggCost/formatAggCostText are the ONLY way an aggregate
+// cost reaches a screen. The badge and Mission Control are a separate PROCESS,
+// so honouring that means requiring core's helper rather than re-deriving the
+// thresholds here — the same defensive require as mainAgentKeys() below, for the
+// same reason (a plugin installed outside a ccxray checkout has no core file).
+//
+// Degraded mode is deliberately NOT the old worst-of `~`: marking every
+// non-exact total is the shape ADR 0017's panel rejected (inverted Lie Factor
+// ≈357 on a 0.28%-contaminated total). Without the calibrated thresholds we
+// render the number unmarked and keep only the two claims that need no
+// calibration — `—` for nothing priced, `+` for an under-count.
+let _sharedFormat = null;
+function sharedFormat() {
+  if (_sharedFormat !== null) return _sharedFormat;
+  try {
+    _sharedFormat = require('../../../../public/format.js');
+  } catch {
+    _sharedFormat = false;
+  }
+  return _sharedFormat;
+}
+
+// The confidence fold ADR 0017 requires. A component stream left out of this
+// silently reverts the site to unmarked fabrication, so it is computed in ONE
+// place and passed around whole.
+function costFold(turns) {
+  const fold = { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 };
+  for (const turn of turns || []) {
+    fold.count += 1;
+    const conf = turn.cost?.confidence;
+    const value = Number(turn.cost?.cost);
+    if (conf === 'unknown' || !Number.isFinite(value)) {
+      fold.unknownCount += 1;
+      continue;
+    }
+    if (conf === 'fallback') {
+      fold.fallbackCount += 1;
+      fold.fallbackCost += value;
+    }
+    // exact / prefix / legacy-undefined contribute nothing: a legacy aggregate
+    // renders clean, matching pre-#420 behaviour.
+  }
+  return fold;
+}
+
+function mergeCostFolds(...folds) {
+  const out = { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 };
+  for (const f of folds) {
+    if (!f) continue;
+    out.count += Number(f.count || 0);
+    out.fallbackCount += Number(f.fallbackCount || 0);
+    out.fallbackCost += Number(f.fallbackCost || 0);
+    out.unknownCount += Number(f.unknownCount || 0);
+  }
+  return out;
+}
+
+function aggCostText(cost, fold) {
+  const shared = sharedFormat();
+  if (shared && typeof shared.formatAggCostText === 'function') {
+    return shared.formatAggCostText(cost, fold || {});
+  }
+  const f = fold || {};
+  const count = Number(f.count || 0);
+  const unknown = Number(f.unknownCount || 0);
+  if (cost == null) return '—';
+  if (unknown > 0 && count - unknown === 0) return '—';
+  return formatMoney(cost) + (unknown >= 1 ? '+' : '');
+}
+
 let _mainAgentKeys;
 function mainAgentKeys() {
   if (_mainAgentKeys) return _mainAgentKeys;
@@ -466,12 +606,6 @@ function mainDisplayTurns(turns) {
   if (positive.length) return positive;
   const notSubagent = turns.filter(turn => !turn.isSubagent);
   return notSubagent.length ? notSubagent : turns;
-}
-
-function dominantModel(turns, fallback) {
-  const counts = {};
-  for (const turn of turns) counts[turn.model || fallback || 'unknown'] = (counts[turn.model || fallback || 'unknown'] || 0) + 1;
-  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || fallback || 'unknown';
 }
 
 const STALE_THRESHOLD_DEFAULT_MS = 600000;
@@ -658,7 +792,40 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   const anchor = mainDisplayTurns(sorted);
   const latest = anchor.at(-1) || {};
   const firstTs = sorted.find(t => Number.isFinite(t.receivedAt))?.receivedAt;
-  const cost = sorted.reduce((sum, t) => sum + (t.cost?.cost || 0), 0);
+  const windowCost = sorted.reduce((sum, t) => sum + (t.cost?.cost || 0), 0);
+  // Prefer the hub's per-session aggregate over this window's sum: the window is
+  // a 4 MiB tail of a much larger index, so its sum is a SAMPLE and disagrees
+  // with the dashboard even when perfectly deduped. Turns newer than the last
+  // flushed one are added on top so a live session is not stuck at the last
+  // flush; they cannot double-count, being newer than everything the aggregate
+  // folded. Absent aggregate (new session, missing file) → previous behaviour.
+  const agg = opts.aggregate || null;
+  // A row without a usable flush cursor must NOT be topped up. `|| 0` would make
+  // every tail turn look post-flush and add it to a total that already counts
+  // it — a legacy or partially written row would double the number rather than
+  // merely lag it. No cursor → trust the aggregate alone.
+  const flushedAt = agg ? Number(agg.lastReceivedAt) : NaN;
+  const canTopUp = Number.isFinite(flushedAt) && flushedAt > 0;
+  const postFlush = canTopUp ? sorted.filter(t => Number(t.receivedAt || 0) > flushedAt) : [];
+  const cost = agg
+    ? Number(agg.totalCost || 0) + postFlush.reduce((sum, t) => sum + (t.cost?.cost || 0), 0)
+    : windowCost;
+  const turnCount = agg ? Number(agg.count || 0) + postFlush.length : sorted.length;
+  // Duration has to move with the top-up too, or a post-flush turn shows its
+  // cost and its count while the elapsed time stays frozen at the last flush.
+  const aggLastAt = agg
+    ? Math.max(Number(agg.lastReceivedAt) || 0,
+      ...postFlush.map(t => Number(t.receivedAt) || 0))
+    : 0;
+  const foldFromAgg = agg ? {
+    count: Number(agg.count || 0),
+    fallbackCount: Number(agg.fallbackCount || 0),
+    fallbackCost: Number(agg.fallbackCost || 0),
+    unknownCount: Number(agg.unknownCount || 0),
+  } : null;
+  const fold = agg
+    ? mergeCostFolds(foldFromAgg, costFold(postFlush))
+    : (sorted.length ? costFold(sorted) : (fallback.costAgg || {}));
   const win = sessionWindow(anchor);
   const used = contextUsed(latest);
   const ctxPct = used && win ? used / win * 100 : null;
@@ -693,11 +860,29 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
       sidebarCols: opts.sidebarCols,
       signal,
     }),
-    ageText: firstTs ? formatAge(nowMs - firstTs) : '?',
-    cost: sorted.length ? cost : fallback.cost,
-    costText: formatMoney(sorted.length ? cost : fallback.cost),
-    model: dominantModel(anchor, fallback.model),
-    turns: sorted.length || fallback.turns || 0,
+    // The DURATION this session ran (last turn - first), not how long ago it
+    // started. The two differ by however long the session has been idle — for a
+    // session that started 9.9h ago and ran 2.2h, they differ by 4x — and both
+    // were printed in the same terse `9.9h` / `2.2h` shape, so the badge looked
+    // like it disagreed with the dashboard about the same number. Reporting the
+    // duration puts every figure on this badge (cost, turns, ctx%, time) on the
+    // same footing as the dashboard's session card.
+    ageText: agg && aggLastAt && Number(agg.firstReceivedAt)
+      ? formatAge(Math.max(0, aggLastAt - Number(agg.firstReceivedAt)))
+      : (firstTs ? formatAge(nowMs - firstTs) : '?'),
+    cost: (agg || sorted.length) ? cost : fallback.cost,
+    // INVARIANT(ADR 0017): aggregate cost goes through the shared fold-aware
+    // helper, never a bare formatMoney — see costFold/aggCostText above.
+    costAgg: fold,
+    costText: aggCostText(agg || sorted.length ? cost : fallback.cost, fold),
+    // The label reports the LATEST main turn, the same turn ctx%/cache% above
+    // read — not a plurality over the session. A plurality kept rendering the
+    // pre-/model model until the new one out-counted the old: measured on the
+    // real 4 MiB badge window, a median of 41 further turns (p90 132, worst
+    // 400). mainDisplayTurns has already dropped subagent turns, so the noise
+    // the plurality was damping is filtered upstream. Owner decision 2026-08-19.
+    model: latest.model || fallback.model || 'unknown',
+    turns: turnCount || fallback.turns || 0,
   };
 }
 
@@ -706,20 +891,36 @@ function sessionSummaryDetails(data, opts = {}) {
   const nowMs = Number(opts.nowMs || opts.env?.CCXRAY_HERDR_NOW_MS) || Date.now();
   const paneId = opts.paneId || null;
   const agentId = opts.agentId || (paneId ? `herdr:${paneId}` : null);
+  // env-injection launch writes agentId from a header (X-Ccxray-Agent-Id),
+  // keyed on a launchId rather than the paneId. Try both.
+  const launchAgentId = opts.launchId ? `herdr:${opts.launchId}` : null;
   const nativeSessionId = opts.sessionId || null;
-  const allEntries = readIndexTailEntries({ env: opts.env });
+  // INVARIANT: dedup by responseId BEFORE anything sums. The same logical
+  // response appears as several index lines (multi-instance / importer-vs-proxy,
+  // ADR 0012), so a raw sum inflates cost and the turn count together. Measured
+  // on session 9ea7a6d4: 297 lines / $46.35 raw vs 156 / $26.27 deduped — 1.90x
+  // and 1.76x. Mission Control already dedups (it goes through
+  // filterEntriesToWorkspace); this path read the index directly and did not, so
+  // the sidebar badge and the dashboard disagreed on the same session while ctx%
+  // — which reads ONE latest turn, not a sum — matched, making it look like a
+  // rendering quirk instead of a double count.
+  const allEntries = dedupeObservedEntries(readIndexTailEntries({ env: opts.env }));
   const entries = allEntries.filter(entry => entry.sessionId);
-  const routed = Boolean(opts.routed) || (agentId && allEntries.some(entry => entry.agentId === agentId));
+  const routed = Boolean(opts.routed)
+    || (agentId && allEntries.some(entry => entry.agentId === agentId))
+    || (launchAgentId && allEntries.some(entry => entry.agentId === launchAgentId));
 
   let turns = [];
   if (nativeSessionId) turns = entries.filter(e => e.sessionId === nativeSessionId);
   if (!turns.length && agentId) turns = entries.filter(e => e.agentId === agentId);
+  if (!turns.length && launchAgentId) turns = entries.filter(e => e.agentId === launchAgentId);
   if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
   if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
 
-  const exactAgentMatch = agentId && turns.some(entry => entry.agentId === agentId);
+  const exactAgentMatch = (agentId && turns.some(entry => entry.agentId === agentId))
+    || (launchAgentId && turns.some(entry => entry.agentId === launchAgentId));
   const nativeSessionMatch = nativeSessionId && turns.some(entry => entry.sessionId === nativeSessionId);
-  if (agentId && !exactAgentMatch && !nativeSessionMatch) {
+  if ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch) {
     const ctxText = '?';
     return {
       matched: false,
@@ -763,7 +964,13 @@ function sessionSummaryDetails(data, opts = {}) {
       && turn.parentSessionId !== (turn.sessionId || 'unknown')
       && known.has(turn.parentSessionId)
     )));
-    const detail = summarizeTurnGroup((roots.length ? roots : groups)[0], top, nowMs, opts);
+    const group = (roots.length ? roots : groups)[0];
+    // The session this badge is actually about — look its hub-maintained
+    // aggregate up so the totals match the dashboard by construction instead of
+    // being re-derived from a 4 MiB sample of the index.
+    const groupSid = group.at(-1)?.sessionId || group[0]?.sessionId || null;
+    const aggregate = readSessionAggregate(groupSid, opts.env);
+    const detail = summarizeTurnGroup(group, top, nowMs, { ...opts, aggregate });
     // The sidebar is often narrower than the signal slot, so ctx_bar drops the
     // stale text and only the dimmed band survives there. The summary has 80
     // columns and is the one place the reason is always spelled out.
@@ -778,7 +985,11 @@ function sessionSummaryDetails(data, opts = {}) {
     ctxText: '?',
     ageText: top.durationMin ? formatAge(top.durationMin * 60000) : '?',
     cost: top.cost ?? data?.meta?.totalCost ?? 0,
-    costText: formatMoney(top.cost ?? data?.meta?.totalCost),
+    // INVARIANT(ADR 0017): even with no fold to show, the aggregate goes through
+    // the shared helper — a bare formatMoney here is the unmarked-fabrication
+    // path the ADR exists to close. An empty fold renders clean, which is the
+    // honest output when no confidence data reached us.
+    costText: aggCostText(top.cost ?? data?.meta?.totalCost, top.costAgg || {}),
     model: top.model || data?.models?.[0]?.model || 'unknown',
     turns: top.turns || data?.meta?.totalEntries || 0,
     ctxBar: emptyContextBar(opts),
@@ -883,10 +1094,19 @@ function paneSessionTelemetry(entries, agent) {
   };
 }
 
-function paneTelemetryCandidates(entries, agent) {
+function paneTelemetryCandidates(entries, agent, env = process.env) {
   const linkedEntries = entries.filter(entry => entry.sessionId);
   const agentId = `herdr:${agent.pane_id}`;
-  const exact = linkedEntries.filter(entry => entry.agentId === agentId);
+  // A pane launched through the env-injection path stamps its traffic with a
+  // launch token, not `herdr:<pane_id>` — recorded per pane in routed-panes when
+  // the launch succeeds. Without matching it, such a pane has no exact match,
+  // and when Herdr also reports no native session id it lands on `unlinked`:
+  // "no ccxray telemetry" for a session that is being traced fine.
+  const launchToken = routedPaneLaunchId(agent.pane_id, env);
+  const launchAgentId = launchToken ? `herdr:${launchToken}` : null;
+  const exact = linkedEntries.filter(entry => (
+    entry.agentId === agentId || (launchAgentId && entry.agentId === launchAgentId)
+  ));
   const nativeSessionId = agent?.agent_session?.kind === 'id'
     ? agent.agent_session.value
     : null;
@@ -926,8 +1146,10 @@ function subagentSummary(turns, nowMs) {
     turns: turns.length,
     cost: turns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
     exactCost: turns.every(turn => turn.cost?.confidence === 'exact'),
+    costAgg: costFold(turns),
     recentCost: recentTurns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0),
     exactRecentCost: recentTurns.every(turn => turn.cost?.confidence === 'exact'),
+    recentCostAgg: costFold(recentTurns),
     toolCalls: Object.values(observedToolCalls(turns))
       .reduce((sum, count) => sum + Number(count || 0), 0),
     failures: turns.filter(turnFailed).length,
@@ -1190,11 +1412,38 @@ function hasFailureCoverage(turn) {
 
 function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const latest = turns.at(-1) || {};
+  // INVARIANT(ADR 0005): this row must split main-agent figures from
+  // whole-session ones exactly as `summarizeTurnGroup` does, or the two surfaces
+  // report different numbers for one pane. This row's `turns` arrive filtered
+  // only by raw `!isSubagent` (paneSessionTelemetry) or not at all (the
+  // no-agents branch), and a Task-tool subagent turn commonly carries the
+  // parent's sessionId with isSubagent false — so raw `turns` is NOT the main
+  // agent. `anchor` is the same set the badge anchors on.
+  //
+  // ANCHORED (main agent only, must match the badge): model label, context
+  // window + ctx%, cache%, tool failures, prompt-change signals.
+  // WHOLE-SESSION (deliberate, also matches the badge): cost, turn count, the
+  // 5m rate, and `latest`/`first` — freshness proves ccxray is still watching
+  // the pane, which a subagent turn does just as well as a main one.
+  //
+  // Fixing only the model label (the first pass here) left ctx% reading raw
+  // turns, so a `general-purpose` turn carrying isSubagent:false still moved
+  // the percentage the badge refused to move.
+  const anchor = mainDisplayTurns(turns);
+  const mainLatest = anchor.at(-1) || latest;
   const first = turns[0] || {};
-  const win = turns.length ? sessionWindow(turns) : 0;
-  const pcts = win ? contextPercents(turns, win) : [];
-  const ctxPct = pcts.at(-1) ?? null;
-  const previousPct = pcts.length > 1 ? pcts.at(-2) : null;
+  const win = anchor.length ? sessionWindow(anchor) : 0;
+  const pcts = win ? contextPercents(anchor, win) : [];
+  // Read the LATEST ANCHORED TURN, not the last finite percentage:
+  // `contextPercents` drops turns with no usage, so `pcts.at(-1)` silently
+  // reports an OLDER turn's context whenever the newest main turn carries no
+  // usage. The badge reads `contextUsed(latest)` directly and shows `?` there,
+  // so the two disagreed again — same class as the anchoring fix itself.
+  const latestUsed = contextUsed(mainLatest);
+  const ctxPct = win && latestUsed ? latestUsed / win * 100 : null;
+  // Only meaningful when the latest turn has its own value: if ctxPct is null
+  // there is no "current" to subtract a previous from.
+  const previousPct = ctxPct != null && pcts.length > 1 ? pcts.at(-2) : null;
   const ctxDelta = Number.isFinite(ctxPct) && Number.isFinite(previousPct)
     ? ctxPct - previousPct
     : null;
@@ -1204,10 +1453,10 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     .filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo)
     .reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
   const recentTurns = turns.filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo);
-  const failures = turns.slice(-6).filter(turnFailed).length;
-  const failureCoverage = turns.slice(-6).filter(hasFailureCoverage).length;
-  const hashChanged = promptChanged(turns);
-  const cacheDropped = cacheDroppedAfterPromptChange(turns);
+  const failures = anchor.slice(-6).filter(turnFailed).length;
+  const failureCoverage = anchor.slice(-6).filter(hasFailureCoverage).length;
+  const hashChanged = promptChanged(anchor);
+  const cacheDropped = cacheDroppedAfterPromptChange(anchor);
   const status = agent?.agent_status || 'recent';
   const paneId = agent?.pane_id || null;
   const latestAt = Number(latest.receivedAt || 0) || null;
@@ -1263,13 +1512,21 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const totalRecentCost = recentCost + Number(subagents?.recentCost || 0);
   const exactRecentCost = recentTurns.every(turn => turn.cost?.confidence === 'exact')
     && (!subagents || subagents.exactRecentCost);
+  // ADR 0017 folds, carried alongside the sums. `total*` folds include the
+  // subagent rollup because the rendered number does — omitting a component
+  // stream is the documented way this silently reverts to unmarked fabrication.
+  const mainCostAgg = costFold(turns);
+  const totalCostAgg = mergeCostFolds(mainCostAgg, subagents?.costAgg);
+  const totalRecentCostAgg = mergeCostFolds(costFold(recentTurns), subagents?.recentCostAgg);
   return {
     paneId,
     workspaceId: agent?.workspace_id || null,
     tabId: agent?.tab_id || null,
     status,
     agent: agent?.display_agent || agent?.agent || latest.agentType || latest.agent || shortModel(latest.model),
-    model: dominantModel(turns, latest.model),
+    // Same latest-MAIN-turn rule as the sidebar badge (summarizeTurnGroup,
+    // which sessionSummaryDetails folds through) — see mainLatest above.
+    model: mainLatest.model || 'unknown',
     sessionId: latest.sessionId || null,
     sessionRole: opts.sessionRole || null,
     sessionSelectedBy: opts.sessionSelectedBy || null,
@@ -1283,13 +1540,16 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     ctxDelta,
     cost,
     totalCost,
+    costAgg: mainCostAgg,
+    totalCostAgg,
     recentCost,
     totalRecentCost,
+    totalRecentCostAgg,
     exactRecentCost,
     exactCost,
     unknownCost,
     exactTotalCost,
-    cachePct: sessionCachePercent(turns),
+    cachePct: sessionCachePercent(anchor),
     mainToolCalls,
     toolCalls: mainToolCalls + Number(subagents?.toolCalls || 0),
     failures,
@@ -1308,7 +1568,18 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     durationMs: allTurns.length > 1 && observedStartedAt && observedLatestAt
       ? Math.max(0, observedLatestAt - observedStartedAt)
       : 0,
-    freshness: latestAt ? formatAge(nowMs - latestAt) : 'none',
+    // "seen" is EVIDENCE freshness, so it folds every turn: a subagent turn
+    // logged a minute ago proves ccxray is still watching this pane just as well
+    // as a main turn does, which is the reason the badge's `evidenceStaleness`
+    // reads the whole session. Built from main-only `latestAt`, this row called a
+    // pane stale while its subagent was actively working.
+    //
+    // `latestAt` is left alone for the row SORT below — a separate question this
+    // does not settle. Note it is main-only only when this row came from the
+    // agents branch: the no-agent fallback hands over every turn of a session
+    // with no `subagentTurns`, so there `latestAt` and `observedLatestAt` are
+    // the same value.
+    freshness: observedLatestAt ? formatAge(nowMs - observedLatestAt) : 'none',
   };
 }
 
@@ -1329,7 +1600,7 @@ function missionControlSnapshot(opts = {}) {
 
   if (agents.length) {
     for (const agent of agents) {
-      const candidates = paneTelemetryCandidates(entries, agent);
+      const candidates = paneTelemetryCandidates(entries, agent, env);
       const telemetry = paneSessionTelemetry(candidates.entries, agent);
       rows.push(missionControlRow(telemetry.turns, agent, nowMs, candidates.mapping, {
         env,
@@ -1367,6 +1638,7 @@ function missionControlSnapshot(opts = {}) {
     recentCost: rows.reduce((sum, row) => sum + row.totalRecentCost, 0),
     exactRecentCost: rows.every(row => row.exactRecentCost),
     unknownRecentCost: rows.length > 0 && rows.every(row => row.unknownCost),
+    recentCostAgg: mergeCostFolds(...rows.map(row => row.totalRecentCostAgg)),
     nowMs,
     scope: scoped.scope,
   };
@@ -1506,12 +1778,14 @@ function routedPanePath(paneId, env = process.env) {
   return path.join(pluginStateDir(env), 'routed-panes-v1', `${encodeURIComponent(paneId)}.json`);
 }
 
-function recordRoutedPane(paneId, agent, env = process.env) {
+function recordRoutedPane(paneId, agent, env = process.env, opts = {}) {
   const file = routedPanePath(paneId, env);
   if (!file) return false;
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const data = { paneId, agent, routedAt: Date.now() };
+  if (opts.launchId) data.launchId = opts.launchId;
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, `${JSON.stringify({ paneId, agent, routedAt: Date.now() })}\n`, { mode: 0o600 });
+  fs.writeFileSync(temp, `${JSON.stringify(data)}\n`, { mode: 0o600 });
   fs.renameSync(temp, file);
   return true;
 }
@@ -1529,16 +1803,142 @@ function routedPaneKnown(paneId, env = process.env, maxAgeMs = 5 * 60000) {
   }
 }
 
+function routedPaneLaunchId(paneId, env = process.env) {
+  const file = routedPanePath(paneId, env);
+  if (!file) return null;
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8')).launchId || null;
+  } catch {
+    return null;
+  }
+}
+
 function forgetRoutedPane(paneId, env = process.env) {
   const file = routedPanePath(paneId, env);
   if (!file) return;
   try { fs.unlinkSync(file); } catch {}
 }
 
+// What Herdr currently holds for a pane. `pane get` returns metadata only — it
+// is not the pane's content — so this is cheap and does not touch the terminal.
+function paneStateSnapshot(paneId, env) {
+  if (!paneId) return null;
+  const herdr = env.HERDR_BIN_PATH || 'herdr';
+  const result = runCommand({ bin: herdr, argsPrefix: [] }, ['pane', 'get', paneId], {
+    env,
+    timeoutMs: 1500,
+  });
+  const pane = (parseJsonOutput(result.stdout) || parseJsonOutput(result.stderr))?.result?.pane;
+  if (!pane) return null;
+  return {
+    tokens: pane.tokens || {},
+    stateLabels: pane.state_labels || {},
+    scroll: pane.scroll || {},
+    // All three of the non-token args `report-metadata` accepts. `title` and
+    // `display_agent` are ABSENT from the pane object until something sets them,
+    // which is why a single observation of an unset pane looked like "herdr does
+    // not report these" — measured 2026-08-20 by setting each through
+    // `report-metadata` and reading it back, both appear.
+    agent: pane.agent ?? null,
+    title: pane.title ?? null,
+    displayAgent: pane.display_agent ?? null,
+  };
+}
+
+// Whether a write would change anything Herdr already holds.
+//
+// The comparison set is DERIVED from the payload — every key we are about to
+// send, plus every key we are about to clear, plus the state labels — rather
+// than taken from a list of token names kept alongside it. A hand-maintained
+// list is the same failure mode as ADR 0002's `sigParts`: adding a token and
+// forgetting the list makes the comparison silently stop covering it, and the
+// only symptom is that writes quietly resume. Deriving it cannot go stale.
+//
+// A snapshot we could not read means "write" — never let a failed read suppress
+// a real update.
+//
+// The "derived from the payload" claim above was false for three of the args
+// this function's caller sends: `--agent`, `--title`, `--display-agent` were
+// written and never compared, so `refresh-badges` supplying a new
+// `agent: event.agent` on identical tokens was silently skipped and Herdr kept
+// the stale one — the exact sigParts failure the comment says deriving avoids.
+//
+// All three are compared now. An earlier pass compared only `agent` on the
+// stated ground that `pane get` reports nothing for the other two; that was a
+// negative claim drawn from ONE reading of a pane where neither was set, and it
+// was wrong — both appear once something sets them. Absence in a sample is not
+// absence from the schema.
+function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
+  if (!snapshot) return false;
+  for (const [arg, field] of [['agent', 'agent'], ['title', 'title'], ['displayAgent', 'displayAgent']]) {
+    if (opts[arg] != null && String(snapshot[field] ?? '') !== String(opts[arg])) return false;
+  }
+  for (const [name, value] of Object.entries(tokens || {})) {
+    if (String(snapshot.tokens[name] ?? '') !== String(value)) return false;
+  }
+  for (const name of opts.clearTokens || []) {
+    if (snapshot.tokens[String(name)] !== undefined) return false;
+  }
+  for (const [status, label] of Object.entries(opts.stateLabels || {})) {
+    if (String(snapshot.stateLabels[status] ?? '') !== String(label)) return false;
+  }
+  return true;
+}
+
+// When we last wrote this pane's metadata. Skipping a write is only safe while
+// the previous one has not expired.
+function lastPaneWritePath(paneId, env) {
+  const dir = pluginStateDir(env);
+  if (!dir || !paneId) return null;
+  return path.join(dir, 'pane-write-v1', `${encodeURIComponent(paneId)}.json`);
+}
+
+function readLastPaneWrite(paneId, env) {
+  const file = lastPaneWritePath(paneId, env);
+  if (!file) return 0;
+  try {
+    return Number(JSON.parse(fs.readFileSync(file, 'utf8')).at) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function recordPaneWrite(paneId, env) {
+  const file = lastPaneWritePath(paneId, env);
+  if (!file) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const temp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(temp, `${JSON.stringify({ at: Date.now() })}\n`);
+    fs.renameSync(temp, file);
+  } catch {}
+}
+
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
   const herdr = env.HERDR_BIN_PATH || 'herdr';
+  // Writing pane metadata is not free: Herdr re-publishes it to the pane, and a
+  // full-screen agent TUI repaints when it does. `pane.agent_status_changed`
+  // fires twice per turn (idle->working on submit, working->idle on completion),
+  // and refresh-badges recomputes the same tokens most of the time, so an
+  // unconditional write means the user pays a repaint twice per prompt for no
+  // new information. Compare first; skip when nothing moved.
+  if (!opts.force) {
+    const snapshot = paneStateSnapshot(env.HERDR_PANE_ID, env);
+    if (paneMetadataUnchanged(snapshot, tokens, opts)) {
+      // Identical is not enough when the write carries a TTL: Herdr drops the
+      // tokens when it lapses, so skipping every identical refresh would make
+      // the badge VANISH while the agent is still working — a worse regression
+      // than the repaint this guard avoids. Re-write once past half the TTL:
+      // one write per half-window instead of one per event.
+      const ttl = Number(opts.ttlMs) || 0;
+      const since = Date.now() - readLastPaneWrite(env.HERDR_PANE_ID, env);
+      if (!ttl || since < ttl / 2) {
+        return { ok: true, skipped: 'unchanged' };
+      }
+    }
+  }
   const args = ['pane', 'report-metadata', env.HERDR_PANE_ID, '--source', 'ccxray'];
   if (opts.agent) args.push('--agent', String(opts.agent));
   for (const name of opts.clearTokens || []) {
@@ -1559,6 +1959,7 @@ function reportPaneTokens(tokens, opts = {}) {
     env,
     timeoutMs: opts.timeoutMs || 2000,
   });
+  if (result.status === 0) recordPaneWrite(env.HERDR_PANE_ID, env);
   return {
     ok: result.status === 0,
     result,
@@ -1589,8 +1990,243 @@ function reportWorkspaceTokens(tokens, opts = {}) {
   };
 }
 
+// The port a standalone (non-hub) ccxray holds, read from `ccxray status`'s
+// human-readable Note line (#555). Scraping English is fragile; it is here in
+// ONE place so the pre-check and the readiness probe cannot disagree, and so a
+// future machine-readable status field has a single site to replace.
+function standalonePortFromStatus(parsed) {
+  const machine = parsed && parsed.machine;
+  if (machine && machine.proxy && Number(machine.port)) return Number(machine.port);
+  // Fallback for a `ccxray` that predates the Machine line.
+  const note = ((parsed && parsed.notes) || [])
+    .find(n => /held by a standalone.*ccxray/i.test(n));
+  if (!note) return null;
+  const m = note.match(/port\s+(\d{2,5})/);
+  return m ? Number(m[1]) : null;
+}
+
+// Ensure a ccxray proxy is accepting connections on a known port. Returns the
+// port number or null on failure. Tries (in order): the running hub, a
+// standalone server on the requested PROXY_PORT, then starts one.
+function ensureProxy(opts = {}) {
+  const env = opts.env || process.env;
+  // With PROXY_PORT set the caller asked for a SPECIFIC port. `ccxray status`
+  // reads the hub lockfile, which is keyed on CCXRAY_HOME rather than on a port,
+  // so a hub listening on 5577 is reported even when PROXY_PORT=5600 — and
+  // returning it would route the agent to a port the user deliberately moved
+  // away from. Accept a discovered proxy only when it is the requested one.
+  const wanted = Number(String(env.PROXY_PORT || '').trim()) || null;
+  const acceptable = port => !wanted || Number(port) === wanted;
+  const status = statusReport({ env, timeoutMs: opts.timeoutMs || 5000 });
+  if (status.parsed.running && status.parsed.port && acceptable(status.parsed.port)) {
+    return status.parsed.port;
+  }
+
+  // A standalone (non-hub) ccxray is a perfectly good proxy even though
+  // parseStatus reports running=false (it's not a hub). The Note line from #555
+  // tells us which port it holds. Both the pre-check and the post-start recheck
+  // must consult this — recognising standalone only BEFORE starting meant a
+  // freshly started one was reported as "port could not be determined".
+  const standalone = standalonePortFromStatus(status.parsed);
+  if (standalone && acceptable(standalone)) return standalone;
+
+  // Start one, DETACHED. `ccxray --no-browser` with no agent is a FOREGROUND
+  // standalone server: per CLAUDE.md, a hub is forked only by `ccxray <agent>`
+  // without an explicit --port, and `hubMode` comes solely from the internal
+  // `--hub-mode` flag the hub gives itself. So spawnSync blocked for its whole
+  // 15s timeout and then SIGTERM'd the very server it had just started, and the
+  // recheck then probed for a hub that never existed — the cold-start path
+  // could not succeed, and took ~17.5s to say so.
+  //
+  // TRADE-OFF, deliberate: a standalone has no idle shutdown (that is a hub
+  // behaviour), so this leaves a proxy running after the agent exits — the same
+  // thing `ccxray` in a terminal does. The pre-check above reuses it, and the
+  // port is the mutex for a concurrent second launch, so at most one exists.
+  const ccxray = resolveCcxrayCommand(env);
+  try {
+    const child = spawn(ccxray.bin, [...ccxray.argsPrefix, '--no-browser'], {
+      cwd: opts.cwd || findRepoRoot(env) || pluginRoot(env),
+      env,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+    // spawn reports a missing/non-executable binary ASYNCHRONOUSLY; without a
+    // listener that 'error' event becomes an uncaught exception and takes the
+    // launcher down instead of returning a controlled failure. The readiness
+    // loop below is what actually decides success, so swallowing it here is
+    // correct rather than lossy.
+    child.on('error', error => {
+      process.stderr.write(`ccxray proxy failed to start: ${error.message}\n`);
+    });
+    child.unref();
+  } catch (error) {
+    process.stderr.write(`ccxray proxy failed to start: ${error.message}\n`);
+    return null;
+  }
+
+  // Readiness probe: a hub writes its lockfile, a standalone only starts
+  // listening, so accept either.
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    spawnSync('sleep', ['0.5']);
+    const recheck = statusReport({ env, timeoutMs: 3000 });
+    if (recheck.parsed.running && recheck.parsed.port && acceptable(recheck.parsed.port)) {
+      return recheck.parsed.port;
+    }
+    const port = standalonePortFromStatus(recheck.parsed);
+    if (port && acceptable(port)) return port;
+  }
+  process.stderr.write('ccxray proxy was started but no listening port could be determined.\n');
+  return null;
+}
+
+// Return the env vars needed to route an agent's API traffic through a ccxray
+// proxy on the given port. These become --env flags on herdr tab create.
+// The upstream auth token, asked of the CLI rather than derived here — the
+// derivation lives in server/auth.js, which this plugin must not require (it can
+// be installed without a ccxray checkout, and reaching into server internals
+// would couple the two release cycles).
+function upstreamAuthToken(env = process.env) {
+  const result = runCcxray(['secret', 'upstream'], { env, timeoutMs: 4000 });
+  if (result.status !== 0) return null;
+  const token = String(result.stdout || '').trim().split('\n').pop().trim();
+  return /^[A-Za-z0-9_-]{16,}$/.test(token) ? token : null;
+}
+
+function proxyEnvVars(agent, port, opts = {}) {
+  const base = `http://localhost:${port}`;
+  const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
+  switch (agent) {
+    case 'claude': {
+      // `createLaunch` in server/providers.js appends this for the wrapped
+      // launch path; the env-injection path does not go through it, so without
+      // it a pane launched here gets 401s from its own proxy whenever
+      // CCXRAY_LOOPBACK_REQUIRE_AUTH=1. Absent token → omit the header rather
+      // than send an empty one; loopback is trusted by default, so that keeps
+      // working.
+      //
+      // Resolved INSIDE this branch: the lookup spawns `ccxray secret upstream`,
+      // which can derive and persist a secret and carries a 4s timeout. Only
+      // this branch consumes the token — grok has no header mechanism at all
+      // and codex carries it in a model_providers block (`codexAgentArgs`) — so
+      // resolving it before the switch made every grok and codex launch pay for
+      // a value it then discarded.
+      const authToken = opts.skipAuth ? null : upstreamAuthToken(opts.env || process.env);
+      const authHeader = authToken ? `X-Ccxray-Auth: ${authToken}` : '';
+      const vars = { ANTHROPIC_BASE_URL: base };
+      // Same comma-joined form providers.js uses for this variable — and, like
+      // providers.js, the user's own value is PREPENDED rather than replaced.
+      // These become `--env KEY=VALUE` on `herdr tab create`, which overrides
+      // the inherited variable outright, so assigning ours dropped an existing
+      // `ANTHROPIC_CUSTOM_HEADERS="X-Existing: foo"` on the floor.
+      const existing = String((opts.env || process.env).ANTHROPIC_CUSTOM_HEADERS || '').trim();
+      const headers = [existing, agentIdHeader, authHeader].filter(Boolean).join(', ');
+      if (headers) vars.ANTHROPIC_CUSTOM_HEADERS = headers;
+      return vars;
+    }
+    case 'grok':
+      return { GROK_CLI_CHAT_PROXY_BASE_URL: `${base}/v1` };
+    case 'codex':
+      return { CCXRAY_CODEX_PROXY_BASE_URL: `${base}/v1` };
+    default:
+      return {};
+  }
+}
+
+// Codex-specific argv for herdr agent start's -- passthrough. Codex routing
+// needs -c flags that set the proxy URL, not environment variables.
+//
+// Codex carries `X-Ccxray-Auth` through a model_providers block, NOT through a
+// header env var — this mirrors `createLaunch` in server/providers.js exactly,
+// including its `OPENAI_API_KEY` gate: in ChatGPT-OAuth mode codex resolves its
+// provider differently, so the legacy base-url form stays the fallback there.
+// Emitting only the legacy form meant a codex pane launched here got 401s from
+// its own proxy whenever CCXRAY_LOOPBACK_REQUIRE_AUTH=1, while the wrapped
+// launch path worked — the same env-injection gap the claude branch had.
+function codexAgentArgs(port, opts = {}) {
+  const env = opts.env || process.env;
+  const baseUrl = `http://localhost:${port}/v1`;
+  if (!opts.skipAuth && env.OPENAI_API_KEY) {
+    const token = upstreamAuthToken(env);
+    if (token) {
+      const provider = `model_providers.ccxray={name="ccxray", base_url="${baseUrl}", `
+        + `wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
+      return ['-c', provider, '-c', 'model_provider="ccxray"'];
+    }
+  }
+  return ['-c', `openai_base_url="${baseUrl}"`, '-c', `chatgpt_base_url="${baseUrl}"`];
+}
+
+// Analysis panes open as stable new tabs. v0.4 moved them off `split`, which
+// rearranged the layout the user was working in; `overlay` — a temporary
+// zoomed pane that restores the previous focus on close — is the lighter shape
+// most Herdr plugins use, but it has not been through the same acceptance, so
+// it is opt-in. An unrecognized value falls back to the default rather than
+// reaching Herdr and failing the open.
+const PANE_PLACEMENTS = new Set(['tab', 'overlay', 'popup', 'split', 'zoomed']);
+function panePlacement(env = process.env) {
+  const requested = env.CCXRAY_HERDR_PANE_PLACEMENT;
+  return PANE_PLACEMENTS.has(requested) ? requested : 'tab';
+}
+
+// Config writes go through one path: back up, write atomically, let Herdr
+// validate, restore the user's own file if it rejects, then reload. The two
+// sidebar scripts predate this helper and still carry their own copies; a new
+// config writer must call this rather than add a third.
+function writeConfigAndReload(file, before, next, opts = {}) {
+  const env = opts.env || process.env;
+  if (before === next) {
+    if (opts.unchangedMessage) console.log(opts.unchangedMessage);
+    return 0;
+  }
+
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const backup = fs.existsSync(file) ? backupConfigFile(file) : null;
+  const tmpFile = `${file}.ccxray-tmp-${process.pid}`;
+  fs.writeFileSync(tmpFile, next);
+  fs.renameSync(tmpFile, file);
+
+  const done = () => {
+    if (opts.successMessage) console.log(opts.successMessage);
+    if (backup) console.log(`backup: ${backup}`);
+    return 0;
+  };
+
+  if (env.CCXRAY_HERDR_SKIP_RELOAD === '1') return done();
+
+  // env must reach runHerdr: without it these two calls resolve HERDR_BIN_PATH from
+  // process.env, so a caller-supplied env was honoured for the SKIP_RELOAD gate
+  // above and ignored for the binary it actually runs. That is why every
+  // keybinding test set CCXRAY_HERDR_SKIP_RELOAD=1 — the reject-and-restore path
+  // below could not be reached with a fake herdr, so it had no coverage at all.
+  const check = runHerdr(['config', 'check'], { env, timeoutMs: 5000 });
+  process.stdout.write(check.stdout || '');
+  process.stderr.write(check.stderr || '');
+  if (check.status !== 0 || check.error) {
+    if (backup) {
+      fs.copyFileSync(backup, file);
+      console.error(`Herdr config check failed; restored ${backup}`);
+    } else {
+      fs.rmSync(file, { force: true });
+      console.error('Herdr config check failed; restored the absent config');
+    }
+    return 1;
+  }
+
+  const reload = runHerdr(['server', 'reload-config'], { env, timeoutMs: 5000 });
+  process.stdout.write(reload.stdout || '');
+  process.stderr.write(reload.stderr || '');
+  if (reload.status !== 0 || reload.error) {
+    console.error('Config was updated, but Herdr reload failed. Restart Herdr to apply it.');
+    return 1;
+  }
+  return done();
+}
+
 module.exports = {
   backupConfigFile,
+  codexAgentArgs,
+  ensureProxy,
   capabilityPortfolio,
   capabilityReview,
   currentWorkspaceScope,
@@ -1605,8 +2241,12 @@ module.exports = {
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
+  aggCostText,
+  costFold,
+  panePlacement,
   parseJsonOutput,
   parseStatus,
+  proxyEnvVars,
   pluginStateDir,
   pluginRoot,
   readIndexTailEntries,
@@ -1617,6 +2257,7 @@ module.exports = {
   resolveCcxrayCommand,
   resolveHerdrConfigPath,
   routedPaneKnown,
+  routedPaneLaunchId,
   runCcxray,
   runHerdr,
   sessionSummary,
@@ -1630,4 +2271,5 @@ module.exports = {
   summarizeUsageTiny,
   transcriptFile,
   usageReport,
+  writeConfigAndReload,
 };

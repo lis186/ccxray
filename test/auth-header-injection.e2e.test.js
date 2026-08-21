@@ -455,4 +455,91 @@ describe('Auth header injection E2E (1.4)', () => {
       await killAndWait(child);
     }
   });
+  // The allowlist that used to govern this strip shipped `x-ccxray-agent-id`
+  // straight to Anthropic: the header was added in one place, the two strip
+  // lists (index.js + ws-proxy.js) were never updated, and the assertions above
+  // only named auth/bootstrap so nothing went red. The rule is now default-deny
+  // by prefix (server/internal-headers.js); this test asserts the RULE, not a
+  // member, so a future `x-ccxray-<anything>` cannot leak the same way.
+  it('forwards no x-ccxray-* header upstream, and keeps env identity on a header-identified turn', async () => {
+    const upstreamPort = await findFreePort();
+    const proxyPort = await findFreePort();
+    const home = makeTmpHome();
+
+    const upstreamRequests = [];
+    const upstream = http.createServer((req, res) => {
+      upstreamRequests.push({ headers: { ...req.headers } });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'msg_prefix_rule', type: 'message', role: 'assistant',
+        model: 'claude-3-haiku-20240307', stop_reason: 'end_turn', stop_sequence: null,
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }));
+    });
+    await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
+
+    const child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(proxyPort), '--no-browser'], {
+      env: {
+        ...process.env,
+        ANTHROPIC_TEST_HOST: '127.0.0.1',
+        ANTHROPIC_TEST_PORT: String(upstreamPort),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+        CCXRAY_HOME: home,
+        BROWSER: 'none',
+        RESTORE_DAYS: '0',
+        // The #505 export attribution fields. A header-identified turn used to
+        // lose all three because the header made `identity` truthy, which
+        // turned useEnvIdentity off wholesale.
+        CCXRAY_USER_EMAIL: 'someone@example.com',
+        CCXRAY_TEAM: 'platform',
+        CCXRAY_AGENT_TYPE: 'claude',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', () => {});
+    child.stderr.on('data', () => {});
+
+    try {
+      await waitForPort(proxyPort);
+
+      const resp = await postJson(proxyPort, '/v1/messages', {
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hello' }],
+      }, {
+        'x-ccxray-auth': deriveUpstreamToken({ home }),
+        'x-ccxray-agent-id': 'herdr:wY:herdr-abc123',
+        // A namespace member nothing strips by name — the point of the prefix rule.
+        'x-ccxray-future-thing': 'must-not-leak',
+      });
+      assert.equal(resp.statusCode, 200);
+      assert.equal(upstreamRequests.length, 1);
+
+      const leaked = Object.keys(upstreamRequests[0].headers)
+        .filter(name => name.toLowerCase().startsWith('x-ccxray-'));
+      assert.deepEqual(leaked, [], `no x-ccxray-* may reach upstream, saw: ${leaked.join(', ')}`);
+
+      // Give the index append a moment, then read the persisted line.
+      const indexPath = path.join(home, 'logs', 'index.ndjson');
+      for (let i = 0; i < 40 && !fs.existsSync(indexPath); i += 1) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      let meta = null;
+      for (let i = 0; i < 40; i += 1) {
+        const lines = fs.existsSync(indexPath)
+          ? fs.readFileSync(indexPath, 'utf8').split('\n').filter(Boolean)
+          : [];
+        if (lines.length) { meta = JSON.parse(lines[lines.length - 1]); break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      assert.ok(meta, 'an index line should be written');
+      assert.equal(meta.agentId, 'herdr:wY:herdr-abc123', 'header should supply agentId');
+      assert.equal(meta.userEmail, 'someone@example.com', 'env userEmail must survive a header identity');
+      assert.equal(meta.team, 'platform', 'env team must survive a header identity');
+    } finally {
+      upstream.close();
+      await killAndWait(child);
+    }
+  });
 });
