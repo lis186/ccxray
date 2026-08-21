@@ -1405,6 +1405,83 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
   });
 });
 
+// The standalone dashboard action ran a bare `ccxray open`, throwing away the one
+// thing its caller knew: which pane they were looking at. Mission Control's `d`
+// has passed --session since it shipped.
+describe('Herdr dashboard action deep-links the pane session', () => {
+  const recordingCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-open-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'argv.log');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      // parseStatus needs a JSON Machine line and something that reads as a live
+      // hub; `port=5577` matches neither of its patterns.
+      'if [ "$1" = "status" ]; then',
+      '  echo "Hub running on http://localhost:5577 (pid 4242, clients 1)"',
+      '  echo \'Machine: {"proxy":true,"hub":true,"port":5577}\''
+      ,
+      'fi',
+      'exit 0',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  };
+  const argvFor = extraEnv => {
+    const ccxray = recordingCcxray();
+    const result = runScript('open-dashboard.js', [], {
+      CCXRAY_BIN: ccxray.bin,
+      CCXRAY_HERDR_NO_BROWSER: '1',
+      ...extraEnv,
+    });
+    const argv = fs.existsSync(ccxray.log) ? fs.readFileSync(ccxray.log, 'utf8') : '';
+    return { result, argv };
+  };
+
+  it('passes the focused pane session to ccxray open', () => {
+    // fail-on-old: the old action emitted a bare `open` for this same input.
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        agent_session: { kind: 'id', value: 'sess-abc-123' },
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open --session sess-abc-123$/m);
+    assert.match(result.stdout, /opening the dashboard on session sess-abc-123/);
+  });
+
+  it('falls back to a plain open when the pane has no session id', () => {
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        // agent_session_known means the context author already asked and the
+        // answer was "none", so the resolver must not re-list the agents.
+        agent_session_known: true,
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open$/m);
+    assert.match(result.stdout, /no session id yet/);
+  });
+
+  it('resolves the session the same way the badge does', () => {
+    // One helper, so `prefix+m` -> d and the standalone action cannot open
+    // different sessions for the same pane.
+    const { resolvePaneSessionId } = require('../plugins/herdr/bin/lib/ccxray');
+    const context = { agent_session: { kind: 'id', value: 'sess-xyz' } };
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context }), 'sess-xyz');
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context, eventSessionId: 'from-event' }),
+      'from-event', 'an event id wins, as it does in the badge');
+    assert.equal(resolvePaneSessionId({
+      env: pluginEnv({}), paneId: 'w1:p1', context: { agent_session_known: true },
+    }), null);
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used

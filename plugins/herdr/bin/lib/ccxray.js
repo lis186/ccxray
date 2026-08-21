@@ -2061,6 +2061,27 @@ function recordPaneWrite(paneId, env) {
   } catch {}
 }
 
+// The session id a pane's agent is on, resolved the way the badge resolves it.
+// Extracted from refresh-badges so the dashboard deep link cannot drift from the
+// badge: they must agree about which session a pane IS, or `prefix+m` and the
+// standalone action open different sessions for the same pane.
+//
+// `agent_session_known` means the context author already consulted the agent
+// list for this pane — including the "no session id" answer — so re-listing
+// could only repeat that answer more slowly.
+function resolvePaneSessionId(opts = {}) {
+  const env = opts.env || process.env;
+  const context = opts.context || {};
+  if (opts.eventSessionId) return opts.eventSessionId;
+  if (context.agent_session?.kind === 'id') return context.agent_session.value;
+  if (opts.paneId && !context.agent_session_known) {
+    const report = herdrAgentReport({ env });
+    const agent = report.agents.find(item => item.pane_id === opts.paneId);
+    if (agent?.agent_session?.kind === 'id') return agent.agent_session.value;
+  }
+  return null;
+}
+
 function reportPaneTokens(tokens, opts = {}) {
   const env = opts.env || process.env;
   if (!env.HERDR_PANE_ID) return { ok: false, reason: 'HERDR_PANE_ID is not set' };
@@ -2408,6 +2429,7 @@ module.exports = {
   readIndexTailEntries,
   recordRoutedPane,
   reportPaneTokens,
+  resolvePaneSessionId,
   reportWorkspaceTokens,
   requestImport,
   resolveCcxrayCommand,

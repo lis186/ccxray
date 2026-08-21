@@ -5,10 +5,10 @@ const fs = require('fs');
 const {
   contextSidebarColumns,
   formatPercent,
-  herdrAgentReport,
   herdrRuntime,
   paneAlert,
   reportPaneTokens,
+  resolvePaneSessionId,
   reportWorkspaceTokens,
   requestImport,
   routedPaneKnown,
@@ -204,18 +204,14 @@ function main() {
   const usage = shared.usage || usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
-  let nativeSessionId = event.sessionId || null;
-  if (!nativeSessionId && context.agent_session?.kind === 'id') {
-    nativeSessionId = context.agent_session.value;
-  }
-  // agent_session_known means the context author already consulted the agent
-  // list for this pane — including the "no session id" answer — so re-listing
-  // here could only repeat that answer more slowly.
-  if (!nativeSessionId && targetPaneId && !context.agent_session_known) {
-    const report = herdrAgentReport({ env });
-    const agent = report.agents.find(item => item.pane_id === targetPaneId);
-    if (agent?.agent_session?.kind === 'id') nativeSessionId = agent.agent_session.value;
-  }
+  // Shared with open-dashboard so the badge and the deep link cannot disagree
+  // about which session this pane is on.
+  const nativeSessionId = resolvePaneSessionId({
+    env,
+    paneId: targetPaneId,
+    context,
+    eventSessionId: event.sessionId,
+  });
   const sidebarCols = contextSidebarColumns({
     env,
     paneId: targetPaneId,
