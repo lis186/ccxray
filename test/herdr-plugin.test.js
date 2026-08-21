@@ -23,7 +23,21 @@ function pluginEnv(overrides = {}) {
   for (const [key, value] of Object.entries(process.env)) {
     // PROXY_PORT joined the plugin's env surface in #555 (the launch port
     // escape hatch): an ambient value would silently retarget every spawn.
-    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_') || key === 'PROXY_PORT') continue;
+    //
+    // ANTHROPIC_CUSTOM_HEADERS joined it in #575 (native launch with header
+    // identity). It leaks where ANTHROPIC_BASE_URL does not, and the difference
+    // is the merge: launchEnvVars OVERWRITES the base url but deliberately
+    // PREPENDS the user's existing headers (lib/ccxray.js, "the user's own value
+    // is PREPENDED rather than replaced"), so a developer whose own shell was
+    // launched by this plugin hands every spawned launch-agent a header to
+    // prepend. The exact-equality assertion in 'launch-agent stamps the
+    // workspace id into the pane identity header' then sees three headers. It
+    // shipped green because it only fails for that developer. Rule for the next
+    // variable: an overwritten one is safe here, a merged one is not.
+    if (key.startsWith('HERDR_')
+      || key.startsWith('CCXRAY_')
+      || key === 'PROXY_PORT'
+      || key === 'ANTHROPIC_CUSTOM_HEADERS') continue;
     env[key] = value;
   }
   // Load budget: the plugin's CLI calls have deliberately tight per-call
