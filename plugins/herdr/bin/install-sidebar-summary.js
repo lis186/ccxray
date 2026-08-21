@@ -142,8 +142,13 @@ function migrateRowsArray(config, rows) {
   // our rows, not the user's — replace them with the new shape. Without this, a
   // table emitted by the previous installer keeps two legacy rows and renders
   // four visible lines instead of three. codex round 1, P1.
+  //
+  // ONLY when the config carries the SECTION_MARKER: a user-authored table may
+  // have `["agent"]` as their own row and we must not touch it. The marker
+  // proves this table was created by the plugin. codex round 2, P1.
+  const hasMarker = config.includes(SECTION_MARKER);
   {
-    const isLegacyDefault = line => LEGACY_DEFAULT_ROWS_RE.some(re => re.test(line));
+    const isLegacyDefault = line => hasMarker && LEGACY_DEFAULT_ROWS_RE.some(re => re.test(line));
     const keptLines = kept.filter(line => !isLegacyDefault(line));
     if (keptLines.length < kept.length) {
       const firstRemoved = kept.findIndex(isLegacyDefault);

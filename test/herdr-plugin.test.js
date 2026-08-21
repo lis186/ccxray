@@ -1453,6 +1453,24 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
       'the user table must survive');
   });
 
+  // codex round 2 P1: a user-authored table (no SECTION_MARKER) that happens to
+  // contain `["agent"]` must NOT have it replaced — it is the user's row.
+  it('preserves legacy-looking rows in a user-authored table', () => {
+    const { result, after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(after, /\["state_icon", "workspace", "tab"\]/,
+      'without the marker these are the user\'s own rows');
+    assert.match(after, /\["agent"\]/);
+    assert.match(after, /\$facts/);
+  });
+
   it('Quick Start and the installer agree on what installed means', () => {
     const { configHasManagedRows } = require('../plugins/herdr/bin/install-sidebar-summary');
     assert.equal(configHasManagedRows(ACCUMULATED), false, 'the old generation is not installed');
@@ -4265,8 +4283,8 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_red/);
     assert.match(config, /\$facts/);
     assert.match(config, /\$alert/);
-    // The old `["agent"]` is one of our legacy rows, so it gets replaced.
-    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
+    // No marker → the old `["agent"]` is treated as user's own row.
+    assert.match(config, /\["agent"\]/);
     assert.match(result.stdout, /superseded row removed: \$summary/);
     assert.match(result.stdout, /migrated sidebar summary rows/);
   });
@@ -4370,9 +4388,9 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
-    // Legacy default rows are ours and get replaced. The user's content is
-    // the [terminal] section below the sidebar table.
-    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
+    // No marker → legacy-looking rows are treated as user's own.
+    assert.match(config, /\["state_icon", "workspace", "tab"\]/);
+    assert.match(config, /\["agent"\]/);
     assert.match(config, /\[terminal\]/);
     assert.equal(config.match(/\[ui\.sidebar\.agents\]/g).length, 1);
   });
@@ -4405,7 +4423,9 @@ describe('Herdr plugin commands', () => {
     const config = fs.readFileSync(configPath, 'utf8');
     assert.match(config, /\$facts/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
+    // No marker: `["agent"]` is treated as user's own and survives both
+    // removal and reinstall.
+    assert.match(config, /\["agent"\]/);
     // One row each: a reinstall must not stack a second copy, which is the
     // add-only behaviour the migration replaced.
     assert.equal(config.match(/\$facts/g).length, 1);
