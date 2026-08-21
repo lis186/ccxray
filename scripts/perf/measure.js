@@ -261,6 +261,8 @@ async function run({ homeDir, runs }) {
     ANTHROPIC_BASE_URL: 'https://api.anthropic.com', // ponytail: suppress self-loop warning; no real traffic
     RESTORE_DAYS: '9999',         // ponytail: don't filter fixture entries by date
     LOG_RETENTION_DAYS: '9999',   // ponytail: don't prune fixture files
+    CCXRAY_EXPORT_DISABLE: '1',   // fixture data must never reach the real GCS bucket;
+                                  // CCXRAY_HOME does not isolate CCXRAY_EXPORT_GCS_BUCKET
   };
 
   const serverPath = path.join(__dirname, '../../server/index.js');

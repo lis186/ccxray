@@ -50,12 +50,13 @@ These constraints are enforced by structural encapsulation where possible, and g
 UI or server changes must be verified in a real browser, not just unit tests. Unit tests verify logic; they don't catch lazy-load, SSE, or render pipeline failures.
 
 ```bash
-CCXRAY_HOME=/tmp/ccxray-smoke-$$ ccxray --port 5602 --no-browser
+CCXRAY_HOME=/tmp/ccxray-smoke-$$ CCXRAY_EXPORT_DISABLE=1 ccxray --port 5602 --no-browser
 ```
 
 - Loopback is trusted by default (dashboard + upstream + WS) — no env var needed
 - Set `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` to re-gate loopback (e.g. behind a reverse proxy)
 - `CCXRAY_HOME` — isolates logs/hub/secrets from the user's real data
+- `CCXRAY_EXPORT_DISABLE=1` — **required**. `CCXRAY_EXPORT_GCS_BUCKET` is exported globally in `~/.zshrc` (so a hub inherits it and `index.js:1108`'s sync-before-prune actually runs), and `CCXRAY_HOME` does **not** isolate it — without this flag a smoke run ships synthetic summaries to the company bucket. Same flag is set by `scripts/boot-smoke.sh`, `scripts/perf/measure.js` and `test/*.sh`; `node --test` is covered automatically.
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
 - `BU_CDP_URL=http://127.0.0.1:<port>` — point browser-harness at a self-launched Chrome with `--remote-debugging-port=<port>` to skip the manual "Allow remote debugging" dialog

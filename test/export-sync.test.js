@@ -43,7 +43,11 @@ function makeEntry(overrides = {}) {
 }
 
 // Set up env + uploader mock before each test
-let _home, _uploads;
+// Save ambient suppression state at module load, before any test clears it.
+// Without this, the first test's afterEach(cleanup) deletes an inherited
+// CCXRAY_EXPORT_DISABLE without knowing its original value.
+const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
+let _home, _uploads, _savedFlags = { disable: _ambientDisable };
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
@@ -57,6 +61,14 @@ function setup(entries, envOverrides = {}) {
   delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
   delete process.env.CCXRAY_EXPORT_GCS_PREFIX;
   delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
+  // Ambient suppression flags must not leak in: layer 1 (CCXRAY_EXPORT_DISABLE)
+  // deliberately overrides an injected seam, so running the safety-conscious
+  // `CCXRAY_EXPORT_DISABLE=1 npm test` would turn every flush below into a no-op and
+  // fail this suite for the wrong reason (codex review round 2, 2026-08-21).
+  // Saved into _savedFlags and restored in cleanup(): under --test-isolation=none a later
+  // file would otherwise inherit weakened safety settings (codex review round 5).
+  _savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE };
+  delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = 'test-agent-001';
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
   process.env.CCXRAY_TEAM = 'test-team';
@@ -87,6 +99,11 @@ function cleanup() {
   delete process.env.CCXRAY_AGENT_ID;
   delete process.env.CCXRAY_USER_EMAIL;
   delete process.env.CCXRAY_TEAM;
+  // Restore what setup() cleared, so a later file under --test-isolation=none does not
+  // inherit weakened safety settings.
+  if (_savedFlags.disable === undefined) delete process.env.CCXRAY_EXPORT_DISABLE;
+  else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
+  _savedFlags = {};
   _setUploader(null);
   // Bust require cache for config (it caches LOGS_DIR at require time)
   for (const k of Object.keys(require.cache)) {
@@ -105,7 +122,6 @@ describe('export-sync', () => {
     delete process.env.CCXRAY_EXPORT_GCS_BUCKET;
     _setUploader(async () => { throw new Error('should not upload'); });
     await flushExport(); // must not throw
-    cleanup();
   });
 
   it('first-run: cursor init to tail, no upload', async () => {
@@ -115,7 +131,6 @@ describe('export-sync', () => {
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
     assert.equal(cursor.lastId, '2026-08-12T10-00-00-000');
     assert.equal(cursor.partial, true);
-    cleanup();
   });
 
   it('daily schema: all required fields present', async () => {
@@ -140,7 +155,6 @@ describe('export-sync', () => {
     assert.equal(daily.dt, '2026-08-12');
     assert.equal(daily.turn_count, 1);
     assert.equal(daily.session_count, 1);
-    cleanup();
   });
 
   it('session schema: all required fields + model_primary', async () => {
@@ -159,7 +173,6 @@ describe('export-sync', () => {
       'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id']) {
       assert.ok(f in sess, `missing field: ${f}`);
     }
-    cleanup();
   });
 
   it('payload canary: no prompt/credential/path in output', async () => {
@@ -189,7 +202,6 @@ describe('export-sync', () => {
     assert.ok(!payload.includes('def456'), 'no toolsHash leaked');
     assert.ok(!payload.includes('ghi789'), 'no coreHash leaked');
     assert.ok(!payload.includes('conv-secret'), 'no convId leaked');
-    cleanup();
   });
 
   it('no timestamp leak: only dt and upload_seq', async () => {
@@ -202,7 +214,6 @@ describe('export-sync', () => {
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.ok(daily.dt);
     assert.equal(typeof daily.upload_seq, 'number');
-    cleanup();
   });
 
   it('session flags: credential_leak, runaway, tool_fail_spike', async () => {
@@ -222,7 +233,6 @@ describe('export-sync', () => {
     await flushExport();
     sess = _uploads[0].records.find(r => r.type === 'session');
     assert.ok(sess.flags.includes('tool_fail_spike'));
-    cleanup();
   });
 
   it('cursor continuation: upload_seq increments, no upload if no new data', async () => {
@@ -243,7 +253,6 @@ describe('export-sync', () => {
     assert.equal(_uploads.length, 1);
     const seq2 = _uploads[0].records.find(r => r.type === 'daily').upload_seq;
     assert.ok(seq2 > seq1, `upload_seq must increment: ${seq2} > ${seq1}`);
-    cleanup();
   });
 
   it('configDir whitelist: entries outside excluded, unknown included', async () => {
@@ -256,7 +265,6 @@ describe('export-sync', () => {
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.session_count, 2, 'only .claude + unknown sessions');
     assert.equal(daily.turn_count, 2);
-    cleanup();
   });
 
   it('name truncation + email filter', async () => {
@@ -271,7 +279,6 @@ describe('export-sync', () => {
     assert.ok(!keys.some(k => k.includes('@')), 'no email-like names');
     assert.ok(keys.includes('normal-tool'));
     assert.equal(daily.tool_usage['normal-tool'], 2);
-    cleanup();
   });
 
   it('context utilization buckets with cache tokens in numerator', async () => {
@@ -283,7 +290,6 @@ describe('export-sync', () => {
     assert.equal(daily.context_utilization['40-80'], 1);
     assert.equal(daily.context_utilization['0-40'], 0);
     assert.equal(daily.context_utilization['80+'], 0);
-    cleanup();
   });
 
   it('compaction count via msgCount drop', async () => {
@@ -296,7 +302,6 @@ describe('export-sync', () => {
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.compaction_count, 1);
-    cleanup();
   });
 
   it('cost confidence fold: mixed when some fallback', async () => {
@@ -307,7 +312,6 @@ describe('export-sync', () => {
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.cost_confidence, 'mixed');
-    cleanup();
   });
 
   it('lock: concurrent flush skipped', async () => {
@@ -318,7 +322,6 @@ describe('export-sync', () => {
     await flushExport();
     assert.equal(_uploads.length, 0, 'skipped due to lock');
     fs.unlinkSync(lockPath);
-    cleanup();
   });
 
   it('turnToolCalls null-vs-empty: {} contributes zero, null uses fallback', async () => {
@@ -335,7 +338,6 @@ describe('export-sync', () => {
     assert.ok(!('Bash' in daily.tool_usage), 'Bash from {} entry should not appear');
     assert.equal(daily.tool_usage.Read, 3, 'Read from legacy fallback');
     assert.equal(daily.tool_usage.Edit, 2, 'Edit from real turnToolCalls');
-    cleanup();
   });
 
   it('per-model breakdown includes cost', async () => {
@@ -349,7 +351,6 @@ describe('export-sync', () => {
     assert.equal(daily.models['claude-sonnet-4-6'].cost, 0.15);
     assert.equal(daily.models['claude-opus-4-6'].cost, 1.20);
     assert.ok(Math.abs(daily.cost_total - 1.35) < 0.001);
-    cleanup();
   });
 
   it('OpenAI entries: toolCalls summed directly (not per-tool max)', async () => {
@@ -360,7 +361,6 @@ describe('export-sync', () => {
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.tool_usage.shell, 5, 'OpenAI toolCalls summed directly');
-    cleanup();
   });
 
   it('partial_day flag on first flush after cursor init', async () => {
@@ -369,6 +369,12 @@ describe('export-sync', () => {
     process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
     process.env.CCXRAY_AGENT_ID = 'test-agent-001';
     delete process.env.LOGS_DIR;
+    // Save and restore ambient DISABLE — this test bypasses setup()/cleanup() and manages
+    // its own env, but afterEach(cleanup) still runs. Without saving, cleanup deletes the
+    // ambient value and later files under --test-isolation=none lose the safety flag.
+    const savedDisable = process.env.CCXRAY_EXPORT_DISABLE;
+    _savedFlags = { disable: savedDisable };
+    delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {
       _uploads.push({ bucket, name, body, records: body.trim().split('\n').map(l => JSON.parse(l)) });
@@ -389,7 +395,6 @@ describe('export-sync', () => {
     assert.equal(_uploads.length, 1);
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.partial_day, true);
-    cleanup();
   });
 
   it('multi-date aggregation: separate uploads per date', async () => {
@@ -412,7 +417,6 @@ describe('export-sync', () => {
     assert.equal(cursor.seq['2026-08-12'], 1);
     // GCS path includes dt= partition
     assert.ok(_uploads[0].name.includes('dt='));
-    cleanup();
   });
 
   it('lock staleness recovery: stale lock from dead pid is cleaned up', async () => {
@@ -424,7 +428,6 @@ describe('export-sync', () => {
     }), { flag: 'wx' });
     await flushExport();
     assert.equal(_uploads.length, 1, 'stale lock was recovered');
-    cleanup();
   });
 
   it('#1 responseId dedup: duplicate entries counted once', async () => {
@@ -488,7 +491,6 @@ describe('export-sync', () => {
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily.cost_confidence, 'mixed', 'prefix-only is not exact');
-    cleanup();
   });
 
   it('#1 responseId field-wise merge enriches canonical', async () => {
@@ -506,7 +508,6 @@ describe('export-sync', () => {
     assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost from enriching copy');
     assert.equal(daily.models['claude-sonnet-4-6']?.turns, 1, 'model from canonical');
     assert.ok(daily.tool_sources.local >= 1, 'toolSources from canonical');
-    cleanup();
   });
 
   it('#6 malformed lock file is recovered', async () => {
@@ -515,7 +516,6 @@ describe('export-sync', () => {
     fs.writeFileSync(lockPath, 'NOT VALID JSON{{{{', { flag: 'wx' });
     await flushExport();
     assert.equal(_uploads.length, 1, 'malformed lock recovered');
-    cleanup();
   });
 
   it('#2 cross-midnight cumulative fields fold into home date only', async () => {
@@ -536,6 +536,5 @@ describe('export-sync', () => {
     if (day2) {
       assert.equal(day2.skill_usage?.mySkill || 0, 0, 'no double-count on day2');
     }
-    cleanup();
   });
 });

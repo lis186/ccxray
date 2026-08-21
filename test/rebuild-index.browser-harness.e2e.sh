@@ -13,6 +13,13 @@
 # dialog, and cleans up server + Chrome + temp dirs on exit.
 set -euo pipefail
 
+# This script boots a real server (below) but is NOT run by `node --test`, so the
+# NODE_TEST_CONTEXT guard in server/export-sync.js does not apply here. CCXRAY_HOME
+# isolates storage paths but NOT the export bucket, so without this line a developer
+# with CCXRAY_EXPORT_GCS_BUCKET exported in their shell ships synthetic summaries to
+# the real bucket. Exported at the top so every node invocation below inherits it.
+export CCXRAY_EXPORT_DISABLE=1
+
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 PORT=5614
 CDP_PORT=9334

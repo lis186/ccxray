@@ -29,6 +29,50 @@ let _runningFlush = null; // in-flight flush promise for graceful shutdown
 
 function _setUploader(fn) { _uploader = fn; }
 
+// INVARIANT: one predicate, two callers (flushExport + startExportSync). Under
+// `node --test` a real upload must be structurally impossible: the suite has no
+// shared env-scrub helper and CCXRAY_HOME does NOT isolate the bucket, so any e2e
+// that boots a full server inherits a developer's exported CCXRAY_EXPORT_GCS_BUCKET
+// and ships synthetic summaries to it. Measured 2026-08-21:
+// test/multi-agent-proxy.e2e.test.js pushed one 3-turn fake-provider daily row to
+// the company bucket (GCS objects 136 -> 137). NODE_TEST_CONTEXT is set by node's
+// test runner and inherited by spawned children; a real user never has it. A
+// non-null `_uploader` means a test injected the seam and is asserting on
+// aggregation rather than uploading — those tests must still run.
+// If these two callers drift, startExportSync() announces an exporter that
+// flushExport() then refuses to run — a false positive worse than no message.
+function isExportSuppressed() {
+  // TWO layers, in precedence. A third layer that inferred "this run is synthetic" from
+  // configuration was tried and DELETED: it keyed on CCXRAY_HOME/LOGS_DIR being set, but
+  // ccxray-ops/scripts/deploy-stable.sh launches the REAL hub with
+  // CCXRAY_HOME="$HOME/.ccxray", so it would have switched off production exports while
+  // pruneLogs kept running (codex review round 5, 2026-08-21). An earlier variant sniffed
+  // for temp directories and was wrong in the other direction. There is no reliable
+  // ambient signal for "synthetic" — launchers have to say so.
+  //
+  // CCXRAY_EXPORT_FORCE was removed with that layer: it existed only to lift it, and an
+  // inherited FORCE was itself a hazard (a detached hub inherits its environment).
+
+  // 1. Explicit opt-out. Set by every synthetic launcher: scripts/boot-smoke.sh,
+  //    scripts/perf/measure.js, test/*.sh, the four full-server .test.js spawns, the
+  //    command printed by scripts/generate-screenshot-fixtures.js, shoot-spiral.mjs, the
+  //    smoke command in CLAUDE.md, and the documented boot commands under docs/.
+  //    A new launcher MUST set it — test/export-sync-test-guard.test.js has an
+  //    enumeration check so a missing one fails the suite rather than leaking silently.
+  if (process.env.CCXRAY_EXPORT_DISABLE === '1') return true;
+
+  // 2. Automatic net for `node --test`, which is what `npm test` runs — this is where the
+  //    measured leak happened (GCS objects 136 -> 137 from a synthetic daily row). It is
+  //    deliberately NOT liftable by any env flag. Not sufficient alone: `node
+  //    test/foo.test.js` and `--test-isolation=none` leave NODE_TEST_CONTEXT unset, which
+  //    is why layer 1 is on the launchers too. A non-null `_uploader` means a test injected
+  //    the seam and is asserting on aggregation rather than uploading.
+  if (process.env.NODE_TEST_CONTEXT && !_uploader) return true;
+
+  return false;
+}
+
+
 // ── Agent ID ───────────────────────────────────────────────────────────
 function getAgentId(home) {
   if (process.env.CCXRAY_AGENT_ID) return process.env.CCXRAY_AGENT_ID;
@@ -730,6 +774,16 @@ async function flushExport() {
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
   if (!bucket) return;
 
+  // INVARIANT: see isExportSuppressed — a real upload must be impossible
+  // under `node --test`, and startExportSync must agree with this same predicate.
+  if (isExportSuppressed()) return;
+
+  // Snapshot the seam ONCE. The suppression check above and the upload call below are
+  // separated by async index traversal; a test's `_setUploader(null)` cleanup landing in
+  // that window would otherwise let an already-permitted flush switch to the real GCS
+  // uploader (codex review, 2026-08-21).
+  const uploaderAtEntry = _uploader;
+
   const home = resolveCcxrayHome();
   const lockPath = path.join(home, 'export.lock');
   const cursorPath = path.join(home, 'export-cursor.json');
@@ -836,7 +890,7 @@ async function flushExport() {
         .join('\n') + '\n';
 
       const objectName = `${prefix}/dt=${dt}/${agentId}--${dtSeq}--${uuid8}.jsonl`;
-      const upload = _uploader || (async (b, name, body) => {
+      const upload = uploaderAtEntry || (async (b, name, body) => {
         const accessToken = await getAccessToken(keyFile);
         return uploadToGcs(b, name, body, accessToken);
       });
@@ -857,7 +911,15 @@ async function flushExport() {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
-  if (!process.env.CCXRAY_EXPORT_GCS_BUCKET) return;
+  const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
+  if (!bucket) return;
+  // INVARIANT: must share isExportSuppressed with flushExport, or this announces an
+  // exporter that never flushes.
+  if (isExportSuppressed()) return;
+  // Until 2026-08-21 the exporter started with NO positive signal — only failures
+  // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
+  // told people to look for "exporter active", which did not exist. It does now.
+  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
@@ -880,4 +942,4 @@ async function awaitPendingFlush() {
   }
 }
 
-module.exports = { startExportSync, stopExportSync, flushExport, awaitPendingFlush, _setUploader };
+module.exports = { startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
