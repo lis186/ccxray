@@ -43,7 +43,11 @@ function makeEntry(overrides = {}) {
 }
 
 // Set up env + uploader mock before each test
-let _home, _uploads, _savedFlags = {};
+// Save ambient suppression state at module load, before any test clears it.
+// Without this, the first test's afterEach(cleanup) deletes an inherited
+// CCXRAY_EXPORT_DISABLE without knowing its original value.
+const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
+let _home, _uploads, _savedFlags = { disable: _ambientDisable };
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
@@ -365,6 +369,7 @@ describe('export-sync', () => {
     process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
     process.env.CCXRAY_AGENT_ID = 'test-agent-001';
     delete process.env.LOGS_DIR;
+    delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {
       _uploads.push({ bucket, name, body, records: body.trim().split('\n').map(l => JSON.parse(l)) });

@@ -47,18 +47,15 @@ function withEnv(fn) {
     home: process.env.CCXRAY_HOME,
     bucket: process.env.CCXRAY_EXPORT_GCS_BUCKET,
     disable: process.env.CCXRAY_EXPORT_DISABLE,
-    force: process.env.CCXRAY_EXPORT_FORCE,
     logs: process.env.LOGS_DIR,
   };
   // No test may inherit ambient suppression state; each sets what it needs.
   delete process.env.CCXRAY_EXPORT_DISABLE;
-  delete process.env.CCXRAY_EXPORT_FORCE;
   delete process.env.LOGS_DIR;
   const restore = () => {
     for (const [k, v] of [['CCXRAY_HOME', saved.home],
                           ['CCXRAY_EXPORT_GCS_BUCKET', saved.bucket],
                           ['CCXRAY_EXPORT_DISABLE', saved.disable],
-                          ['CCXRAY_EXPORT_FORCE', saved.force],
                           ['LOGS_DIR', saved.logs]]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
