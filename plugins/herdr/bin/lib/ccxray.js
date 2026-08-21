@@ -388,12 +388,129 @@ function toolFailureCount(turns) {
   return turns.slice(-6).filter(turnFailed).length;
 }
 
-function contextSignal(turns, detail) {
-  if (detail.ctxPct >= 90) return 'full';
-  if (detail.ctxPct >= 80) return 'near full';
-  const failures = toolFailureCount(turns);
-  if (failures) return `fail ${failures}x`;
-  return cacheHitText(turns);
+// A quota/rate-limit REFUSAL that actually happened, counted over the same
+// last-6-turn window as toolFailureCount. `status` is an index field written at
+// every forward.js push site from `proxyRes.statusCode`, and a non-2xx response
+// is not short-circuited before the push, so a refused turn reaches the index as
+// `status: 429`. This is deliberately an OBSERVED event, not the prediction that
+// `~/.ccxray/usage-status/*.json` would support: quota forecasting and reset ETAs
+// are #571's surface, and mixing a forecast into an alert channel would make the
+// alert fire for something that has not gone wrong yet.
+function quotaRefusalCount(turns) {
+  return turns.slice(-6).filter(turn => Number(turn.status) === 429).length;
+}
+
+// INVARIANT(ADR 0005 shape): every surface that answers "what is the most
+// important thing about this pane right now" ranks the answers HERE. Two
+// surfaces used to answer it with orderings that contradicted each other:
+// the now-removed contextSignal put context above every tool failure, while the
+// Mission Control action chain put `fail >= 2` above context and `cache dropped` above
+// `fail == 1`. The same pane therefore read "near full" on the sidebar and
+// "inspect last error" in Mission Control. A third ordering written for the
+// sidebar's row-3 $alert is exactly the failure shape ADR 0005 exists to stop.
+//
+// `sidebarOwned` marks a tier the three-row sidebar renders in a DIFFERENT row,
+// so row 3 must skip it or the layout repeats itself — the duplication this
+// refactor exists to remove (row 1 owns process state, row 2 owns context).
+// Mission Control is a single row with no such split, so it renders every tier.
+const PANE_CONCERN_TIERS = [
+  {
+    kind: 'no-telemetry',
+    sidebarOwned: true,
+    match: s => !s.hasTelemetry,
+    text: () => 'no ccxray telemetry',
+    action: () => 'relaunch via ccxray',
+  },
+  {
+    kind: 'quota-refused',
+    match: s => Number(s.refusedCount) > 0,
+    text: s => (Number(s.refusedCount) > 1 ? `quota refused ${s.refusedCount}x` : 'quota refused'),
+    action: () => 'wait for quota reset',
+  },
+  {
+    kind: 'blocked',
+    sidebarOwned: true,
+    match: s => s.status === 'blocked',
+    text: () => 'blocked',
+    action: () => 'inspect last error',
+  },
+  {
+    kind: 'stale',
+    match: s => Boolean(s.staleText),
+    text: s => s.staleText,
+    action: () => 'rescan transcripts',
+  },
+  {
+    kind: 'fail-multi',
+    match: s => Number(s.failures) >= 2,
+    text: s => `fail ${Number(s.failures)}x`,
+    action: () => 'inspect last error',
+  },
+  {
+    kind: 'ctx-high',
+    sidebarOwned: true,
+    match: s => Number.isFinite(s.ctxPct) && s.ctxPct > 80,
+    text: s => (s.ctxPct >= 90 ? 'full' : 'near full'),
+    action: () => 'compact or start fresh',
+  },
+  {
+    kind: 'fail-single',
+    match: s => Number(s.failures) === 1,
+    text: () => 'fail 1x',
+    action: () => 'inspect failed tool',
+  },
+  {
+    kind: 'cache-dropped',
+    match: s => Boolean(s.cacheDropped),
+    text: () => 'cache dropped after prompt change',
+    // `brief` is the sidebar form. The spelled-out reason is 33 columns and the
+    // row is 18-40, so shipping only `text` would truncate it — and truncation
+    // is one of the symptoms this layout exists to remove. Mission Control has
+    // the width for the full sentence and keeps using `text`.
+    brief: () => 'cache dropped',
+    action: () => 'inspect prompt/tool diff',
+  },
+  {
+    kind: 'ctx-mid',
+    sidebarOwned: true,
+    match: s => Number.isFinite(s.ctxPct) && s.ctxPct > 40,
+    text: () => null,
+    action: () => 'checkpoint soon',
+  },
+  {
+    kind: 'ready',
+    sidebarOwned: true,
+    match: s => Boolean(s.ready),
+    text: () => null,
+    action: () => 'review output',
+  },
+];
+
+// A signal a caller does not have is absent, never false: Mission Control has no
+// transcript comparison, so it passes no `staleText` and the stale tier is
+// skipped there rather than asserted absent. Documented residual — the badge can
+// report `stale` for a pane whose Mission Control row cannot.
+function paneConcerns(signals = {}) {
+  return PANE_CONCERN_TIERS
+    .filter(tier => tier.match(signals))
+    .map(tier => ({
+      kind: tier.kind,
+      sidebarOwned: Boolean(tier.sidebarOwned),
+      text: tier.text(signals),
+      brief: tier.brief ? tier.brief(signals) : tier.text(signals),
+      action: tier.action(signals),
+    }));
+}
+
+// The single imperative for a surface that renders every tier (Mission Control).
+function paneAction(signals = {}) {
+  return paneConcerns(signals)[0]?.action || null;
+}
+
+// Row 3's $alert: the top concern the sidebar does not already render elsewhere.
+function paneAlert(signals = {}) {
+  const concern = paneConcerns(signals).find(item => !item.sidebarOwned && item.text);
+  return concern ? { kind: concern.kind, text: concern.brief } : null;
 }
 
 function formatContextBar(turns, win, ctxText, opts = {}) {
@@ -846,16 +963,35 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   //
   // Note this is the channel-INVERSE of ADR 0013's provenance markers, which
   // mark the number ('60% of 200K?') and keep colour as saturation. The badge
-  // has no room for a marked number — ctx_bar is ~18 columns and already spends
-  // its tail on the cache/fail signal — so the colour is the only channel wide
+  // has no room for a marked number, so the colour is the only channel wide
   // enough to carry the doubt here. Do not cite ADR 0013 as endorsing this.
-  const signal = stale ? stale.text : contextSignal(anchor, detail);
+  //
+  // Row 2 owns context and nothing else. This tail used to carry whichever alert
+  // ranked highest: 'full'/'near full', which is a FOURTH encoding of the
+  // percentage sitting right beside it (percentage + sparkline + colour band +
+  // text), or the stale text, which row 3's $alert now carries. Both were the
+  // duplication the three-row layout removes — the reported screenshot showed
+  // `21% · stal…` on one row and `21% stale` on another. What stays is the one
+  // context fact no other row shows: how much of it came from cache.
+  //
+  // A config that renders ONLY $ctx_bar therefore loses the stale WORD from this
+  // tail and keeps the withdrawn colour. The reason is not lost from the token
+  // set — $ctx still carries `21% stale` (refresh-badges) and $alert carries it
+  // in full — but such a config must be migrated to see it as text.
+  const signal = cacheHitText(anchor);
   return {
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
     ctxText,
     ctxBand: stale ? 'unknown' : detail.ctxBand,
     stale,
+    // Raw alert signals, exposed so row 3's $alert ranks them through the one
+    // shared list (paneConcerns) rather than re-deriving a third ordering. All
+    // three read `anchor`, the same main-agent turns ctx%/cache%/model read, so
+    // a subagent's failure cannot raise an alert about the main conversation.
+    failures: toolFailureCount(anchor),
+    cacheDropped: cacheDroppedAfterPromptChange(anchor),
+    refusedCount: quotaRefusalCount(anchor),
     ctxBar: formatContextBar(anchor, win, ctxText, {
       sidebarCols: opts.sidebarCols,
       signal,
@@ -1488,15 +1624,30 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     if (severity === 'green') severity = 'yellow';
     reasons.push('cache dropped after prompt change');
   }
+  // codex round 1, P2b: quota refusal must update severity/reasons, not just
+  // action — otherwise MC shows a green row with `action: 'wait for quota reset'`
+  // and excludes it from its attention filter.
+  const refusedCount = quotaRefusalCount(anchor);
+  if (refusedCount > 0) {
+    severity = 'red';
+    reasons.push(refusedCount > 1 ? `quota refused ${refusedCount}x` : 'quota refused');
+  }
 
-  let action = null;
-  if (!turns.length) action = 'relaunch via ccxray';
-  else if (status === 'blocked' || failures >= 2) action = 'inspect last error';
-  else if (Number.isFinite(ctxPct) && ctxPct > 80) action = 'compact or start fresh';
-  else if (cacheDropped) action = 'inspect prompt/tool diff';
-  else if (failures === 1) action = 'inspect failed tool';
-  else if (Number.isFinite(ctxPct) && ctxPct > 40) action = 'checkpoint soon';
-  else if (severity === 'ready') action = 'review output';
+  // INVARIANT(ADR 0005 shape): the ordering lives in paneConcerns, shared with
+  // the sidebar badge's row-3 $alert — see PANE_CONCERN_TIERS. This chain used to
+  // rank `cache dropped` above `fail == 1` while the badge ranked every failure
+  // above context, so one pane could read "near full" on the sidebar and
+  // "inspect last error" here. The shared list ranks any failure above a dropped
+  // cache; that swap is this chain's only behaviour change.
+  const action = paneAction({
+    hasTelemetry: turns.length > 0,
+    refusedCount: quotaRefusalCount(anchor),
+    status,
+    failures,
+    ctxPct,
+    cacheDropped,
+    ready: severity === 'ready',
+  });
 
   const exactCost = turns.length > 0 && turns.every(turn => turn.cost?.confidence === 'exact');
   const unknownCost = turns.length > 0 && !turns.some(turn => turn.cost?.cost != null && turn.cost.confidence !== 'unknown');
@@ -1882,6 +2033,10 @@ function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
   for (const [status, label] of Object.entries(opts.stateLabels || {})) {
     if (String(snapshot.stateLabels[status] ?? '') !== String(label)) return false;
   }
+  // A pending clear is a change. Without this the skip-write optimisation reads
+  // "no token moved" and suppresses the very write that would hand row 1 back to
+  // Herdr's own state text.
+  if (opts.clearStateLabels && Object.keys(snapshot.stateLabels || {}).length) return false;
   return true;
 }
 
@@ -1912,6 +2067,27 @@ function recordPaneWrite(paneId, env) {
     fs.writeFileSync(temp, `${JSON.stringify({ at: Date.now() })}\n`);
     fs.renameSync(temp, file);
   } catch {}
+}
+
+// The session id a pane's agent is on, resolved the way the badge resolves it.
+// Extracted from refresh-badges so the dashboard deep link cannot drift from the
+// badge: they must agree about which session a pane IS, or `prefix+m` and the
+// standalone action open different sessions for the same pane.
+//
+// `agent_session_known` means the context author already consulted the agent
+// list for this pane — including the "no session id" answer — so re-listing
+// could only repeat that answer more slowly.
+function resolvePaneSessionId(opts = {}) {
+  const env = opts.env || process.env;
+  const context = opts.context || {};
+  if (opts.eventSessionId) return opts.eventSessionId;
+  if (context.agent_session?.kind === 'id') return context.agent_session.value;
+  if (opts.paneId && !context.agent_session_known) {
+    const report = herdrAgentReport({ env });
+    const agent = report.agents.find(item => item.pane_id === opts.paneId);
+    if (agent?.agent_session?.kind === 'id') return agent.agent_session.value;
+  }
+  return null;
 }
 
 function reportPaneTokens(tokens, opts = {}) {
@@ -1949,6 +2125,11 @@ function reportPaneTokens(tokens, opts = {}) {
   }
   if (opts.title) args.push('--title', String(opts.title));
   if (opts.displayAgent) args.push('--display-agent', String(opts.displayAgent));
+  // Clearing is not the same as omitting: a label Herdr already holds survives a
+  // report that simply does not mention it, so a pane that recovered from "not
+  // linked" would keep showing it forever. Row 1's native idle/working can only
+  // come back if we actively give the state text back.
+  if (opts.clearStateLabels) args.push('--clear-state-labels');
   if (opts.stateLabels) {
     for (const [status, label] of Object.entries(opts.stateLabels)) {
       args.push('--state-label', `${status}=${String(label)}`);
@@ -2224,34 +2405,39 @@ function writeConfigAndReload(file, before, next, opts = {}) {
 }
 
 module.exports = {
+  aggCostText,
   backupConfigFile,
-  codexAgentArgs,
-  ensureProxy,
   capabilityPortfolio,
   capabilityReview,
-  currentWorkspaceScope,
-  findRepoRoot,
-  filterEntriesToWorkspace,
-  forgetRoutedPane,
+  codexAgentArgs,
   contextBand,
   contextSidebarColumns,
+  costFold,
+  currentWorkspaceScope,
+  ensureProxy,
+  filterEntriesToWorkspace,
+  findRepoRoot,
+  forgetRoutedPane,
+  formatContextBar,
   formatMoney,
   formatPercent,
-  formatContextBar,
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
-  aggCostText,
-  costFold,
+  paneAction,
+  paneAlert,
+  paneConcerns,
   panePlacement,
   parseJsonOutput,
   parseStatus,
-  proxyEnvVars,
-  pluginStateDir,
   pluginRoot,
+  pluginStateDir,
+  proxyEnvVars,
+  quotaRefusalCount,
   readIndexTailEntries,
   recordRoutedPane,
   reportPaneTokens,
+  resolvePaneSessionId,
   reportWorkspaceTokens,
   requestImport,
   resolveCcxrayCommand,

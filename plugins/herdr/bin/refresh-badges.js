@@ -5,9 +5,10 @@ const fs = require('fs');
 const {
   contextSidebarColumns,
   formatPercent,
-  herdrAgentReport,
   herdrRuntime,
+  paneAlert,
   reportPaneTokens,
+  resolvePaneSessionId,
   reportWorkspaceTokens,
   requestImport,
   routedPaneKnown,
@@ -20,6 +21,7 @@ const {
 const { agentNotification, recordAgentStatus } = require('./lib/notifications');
 
 const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
+const ROW3_TOKENS = ['facts', 'alert'];
 
 function eventContext(env = process.env) {
   if (!env.HERDR_PLUGIN_EVENT_JSON) return {};
@@ -77,6 +79,50 @@ function applyContextColorTokens(tokens, ctxBand) {
   return CTX_BAR_COLOR_TOKENS.filter(name => name !== activeToken);
 }
 
+function clampCols(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 8 ? Math.min(n, 96) : 18;
+}
+
+function clipToCols(text, cols) {
+  const value = String(text);
+  return value.length <= cols ? value : `${value.slice(0, Math.max(1, cols - 1))}…`;
+}
+
+// Row 3 is TWO tokens with one meaning each, and exactly one of them carries
+// content per refresh — the mechanism `ctx_bar_*` above has already shipped with.
+// One token holding either a fact or a warning would have to change colour with
+// its meaning, which is the Channel Discipline violation docs/design-principles.md
+// exists to stop; here each token keeps a fixed colour and what changes is which
+// one is non-empty.
+//
+// A pane whose session could not be located fills NEITHER. Row 1's state_labels
+// already says "not linked", and `$facts` would render the detail's honest but
+// useless `n/a · ?` beside it — the duplication this three-row layout exists to
+// remove. Row height never changes, only content, which
+// docs/design-principles.md:60 permits explicitly ("Content inside containers
+// may change freely").
+function applyRow3Tokens(tokens, detail, opts = {}) {
+  const located = Boolean(detail) && detail.matched !== false;
+  // ctx, blocked and no-telemetry are `sidebarOwned` in the shared ranking, so
+  // they cannot reach row 3 — rows 2 and 1 render them. Passing hasTelemetry
+  // true is therefore not a claim: the unlocated case returned above.
+  const alert = located ? paneAlert({
+    hasTelemetry: true,
+    refusedCount: detail.refusedCount,
+    staleText: detail.stale?.text,
+    failures: detail.failures,
+    cacheDropped: detail.cacheDropped,
+  }) : null;
+  // Clip to the measured sidebar width here rather than letting Herdr cut the
+  // row: an alert we chose to show must be legible, and the caller knows the
+  // width. `cols` falls back to ctx_bar's own default when unmeasured.
+  const cols = clampCols(opts.sidebarCols);
+  if (alert) tokens.alert = clipToCols(alert.text, cols);
+  else if (located) tokens.facts = clipToCols(`${detail.costText} · ${detail.ageText}`, cols);
+  return ROW3_TOKENS.filter(name => tokens[name] === undefined);
+}
+
 // A standalone (non-hub) ccxray is a perfectly good proxy — the user's traffic
 // is being traced, it just didn't fork a hub. Mirror ensureProxy's recognition.
 function proxyAvailable(parsed) {
@@ -92,8 +138,9 @@ function badgeTokens(status, usage, opts = {}) {
   };
 
   let stale = null;
+  let detail = null;
   if (usage.ok && usage.data?.meta) {
-    const detail = sessionSummaryDetails(usage.data, opts);
+    detail = sessionSummaryDetails(usage.data, opts);
     stale = detail.stale || null;
     tokens.summary = detail.summary;
     tokens.ctx_bar = detail.ctxBar;
@@ -112,7 +159,12 @@ function badgeTokens(status, usage, opts = {}) {
     tokens.age = detail.ageText;
     tokens.cost = detail.costText;
     tokens.model = detail.model;
-    tokens.turns = String(detail.turns ?? usage.data.meta.totalEntries ?? 0);
+    // Never fall back to usage.data.meta.totalEntries: that is every session's
+    // line count, and a per-agent row rendering it claims the whole index as one
+    // pane's turn count. Dead today (no path returns a nullish detail.turns) and
+    // therefore removed without a differential test — it is a loaded landmine,
+    // not a live defect, and the moment an unlocated path returns null it fires.
+    tokens.turns = detail.turns == null ? '?' : String(detail.turns);
     tokens.cache = detail.matched === false ? '?' : formatPercent(usage.data.cache?.hitRate);
     tokens.fail = detail.matched === false ? '?' : formatPercent(usage.data.tools?.failRate);
   } else {
@@ -129,7 +181,11 @@ function badgeTokens(status, usage, opts = {}) {
   return {
     tokens,
     stale,
-    clearTokens: applyContextColorTokens(tokens, tokens.ctx_band),
+    located: Boolean(detail) && detail.matched !== false,
+    clearTokens: [
+      ...applyContextColorTokens(tokens, tokens.ctx_band),
+      ...applyRow3Tokens(tokens, detail, opts),
+    ],
   };
 }
 
@@ -148,18 +204,14 @@ function main() {
   const usage = shared.usage || usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
-  let nativeSessionId = event.sessionId || null;
-  if (!nativeSessionId && context.agent_session?.kind === 'id') {
-    nativeSessionId = context.agent_session.value;
-  }
-  // agent_session_known means the context author already consulted the agent
-  // list for this pane — including the "no session id" answer — so re-listing
-  // here could only repeat that answer more slowly.
-  if (!nativeSessionId && targetPaneId && !context.agent_session_known) {
-    const report = herdrAgentReport({ env });
-    const agent = report.agents.find(item => item.pane_id === targetPaneId);
-    if (agent?.agent_session?.kind === 'id') nativeSessionId = agent.agent_session.value;
-  }
+  // Shared with open-dashboard so the badge and the deep link cannot disagree
+  // about which session this pane is on.
+  const nativeSessionId = resolvePaneSessionId({
+    env,
+    paneId: targetPaneId,
+    context,
+    eventSessionId: event.sessionId,
+  });
   const sidebarCols = contextSidebarColumns({
     env,
     paneId: targetPaneId,
@@ -180,7 +232,14 @@ function main() {
   // trigger. Detached: the badge write below must not wait for a disk scan.
   const importRequest = badge.stale ? requestImport({ env: process.env }) : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
-  const stateLabels = {
+  // Row 1 is `state_icon · agent · state_text`, and a state label REPLACES the
+  // native state_text. Setting it unconditionally to the summary made row 1 read
+  // `claude · ccxray: traced · claude`: the agent name twice, and the model a
+  // third time once row 3 shows the cost. Herdr's own idle/working is the right
+  // content for a located pane — it is the one thing on this row Herdr knows
+  // better than we do — so the label is reserved for the states it cannot know
+  // ("not linked", "no hub"), and actively cleared otherwise.
+  const stateLabels = badge.located ? null : {
     unknown: tokens.summary,
     idle: tokens.summary,
     working: tokens.summary,
@@ -188,8 +247,40 @@ function main() {
     done: tokens.summary,
   };
 
-  const pane = reportPaneTokens(tokens, { env, ttlMs, stateLabels, clearTokens, agent: event.agent });
-  const workspace = reportWorkspaceTokens(tokens, { env, ttlMs, clearTokens });
+  // Herdr caps pane metadata at 16 unique token names (set + clear combined).
+  // The plugin produces ~12 tokens internally (ctx, model, cost, age, turns,
+  // cache, fail, summary, ctx_bar, ctx_band, plus the 4 ctx_bar colours rotated
+  // through clearTokens), and the new $facts/$alert pair pushed the total to 17.
+  // Not every token needs to reach the pane: `summary` is read locally by
+  // stateLabels and notifications but the config never renders it (the row was
+  // migrated away), and `ctx_band` is an internal signal only. Strip them from
+  // the object sent to report-metadata while keeping them readable in this scope.
+  // Herdr caps pane metadata at 16 unique token names (set + clear combined).
+  // The plugin produces ~17 internal tokens, but only 7 ever reach a config row:
+  // xray (Quick Start / MC status), the four ctx_bar colours (row 2), and
+  // facts/alert (row 3). Atomic tokens from the pre-migration layout ($ctx,
+  // $model, $cost, etc.) are not cleared because an un-migrated config may
+  // still render them, and herdr retains values a report does not mention; the
+  // installer migration removes those rows, after which the retained values
+  // are inert. summary/ctx_band/ctx_bar are cleared as a one-time cleanup —
+  // they were sent by previous badge writes but never reached a config row.
+  const PANE_REPORT_TOKENS = new Set([
+    'xray',
+    // ctx_bar colour variants — applyContextColorTokens writes the active one
+    'ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red',
+    // row 3
+    'facts', 'alert',
+  ]);
+  const paneTokens = {};
+  for (const [name, value] of Object.entries(tokens)) {
+    if (PANE_REPORT_TOKENS.has(name)) paneTokens[name] = value;
+  }
+  clearTokens.push('summary', 'ctx_band', 'ctx_bar');
+  const pane = reportPaneTokens(paneTokens, {
+    env, ttlMs, stateLabels, clearTokens, agent: event.agent,
+    clearStateLabels: !stateLabels,
+  });
+  const workspace = reportWorkspaceTokens(paneTokens, { env, ttlMs, clearTokens });
   const notification = process.env.HERDR_PLUGIN_EVENT === 'pane.agent_status_changed'
     ? agentNotification(event, tokens.summary, {
       env,
@@ -227,4 +318,4 @@ function main() {
 // free so badgeTokens() can be asserted without refreshing anybody's sidebar.
 if (require.main === module) main();
 
-module.exports = { badgeTokens, applyContextColorTokens, eventContext };
+module.exports = { badgeTokens, applyContextColorTokens, applyRow3Tokens, eventContext };

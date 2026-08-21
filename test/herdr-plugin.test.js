@@ -23,7 +23,21 @@ function pluginEnv(overrides = {}) {
   for (const [key, value] of Object.entries(process.env)) {
     // PROXY_PORT joined the plugin's env surface in #555 (the launch port
     // escape hatch): an ambient value would silently retarget every spawn.
-    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_') || key === 'PROXY_PORT') continue;
+    //
+    // ANTHROPIC_CUSTOM_HEADERS joined it in #575 (native launch with header
+    // identity). It leaks where ANTHROPIC_BASE_URL does not, and the difference
+    // is the merge: launchEnvVars OVERWRITES the base url but deliberately
+    // PREPENDS the user's existing headers (lib/ccxray.js, "the user's own value
+    // is PREPENDED rather than replaced"), so a developer whose own shell was
+    // launched by this plugin hands every spawned launch-agent a header to
+    // prepend. The exact-equality assertion in 'launch-agent stamps the
+    // workspace id into the pane identity header' then sees three headers. It
+    // shipped green because it only fails for that developer. Rule for the next
+    // variable: an overwritten one is safe here, a merged one is not.
+    if (key.startsWith('HERDR_')
+      || key.startsWith('CCXRAY_')
+      || key === 'PROXY_PORT'
+      || key === 'ANTHROPIC_CUSTOM_HEADERS') continue;
     env[key] = value;
   }
   // Load budget: the plugin's CLI calls have deliberately tight per-call
@@ -71,6 +85,17 @@ let emptyHome = null;
 function isolatedHome() {
   if (!emptyHome) emptyHome = makeHome();
   return emptyHome;
+}
+
+function paneAlertFor(detail) {
+  const { paneAlert } = require('../plugins/herdr/bin/lib/ccxray');
+  return paneAlert({
+    hasTelemetry: true,
+    refusedCount: detail.refusedCount,
+    staleText: detail.stale?.text,
+    failures: detail.failures,
+    cacheDropped: detail.cacheDropped,
+  });
 }
 
 function makeHome(entries = []) {
@@ -476,7 +501,11 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.doesNotMatch(detail.ctxBar, /fail/, 'no turn failed; the badge must not claim one did');
+    assert.equal(detail.failures, 0, 'no turn failed; the badge must not claim one did');
+    // Asserted on the raw count, not row 2's tail: row 3 owns alerts now, so
+    // `doesNotMatch(ctxBar, /fail/)` would hold for every input and protect
+    // nothing. paneAlert is the channel a failure actually reaches.
+    assert.equal(paneAlertFor(detail), null);
   });
 
   it('still reports a genuine per-turn tool failure', () => {
@@ -493,7 +522,8 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.match(detail.ctxBar, /fail 2x/);
+    assert.equal(detail.failures, 2);
+    assert.equal(paneAlertFor(detail).text, 'fail 2x');
   });
 
   // Every turn from a pane carries that pane's agentId, including turns from a
@@ -1027,6 +1057,537 @@ describe('Herdr aggregate cost confidence (ADR 0017)', () => {
   });
 });
 
+// INVARIANT(ADR 0005 shape): ONE ranked list answers "what is the most important
+// thing about this pane right now", for both the sidebar badge's row-3 $alert and
+// Mission Control's action. Two orderings used to contradict each other:
+// the now-removed contextSignal ranked context above every tool failure, while
+// chain ranked `fail >= 2` above context and `cache dropped` above `fail == 1`.
+describe('Herdr pane concerns are ranked once (ADR 0005 shape)', () => {
+  const {
+    paneAction,
+    paneAlert,
+    paneConcerns,
+    quotaRefusalCount,
+  } = require('../plugins/herdr/bin/lib/ccxray');
+
+  it('ranks any tool failure above a dropped cache', () => {
+    const signals = { hasTelemetry: true, failures: 1, cacheDropped: true };
+    assert.equal(paneAction(signals), 'inspect failed tool');
+    assert.equal(paneAlert(signals).kind, 'fail-single');
+  });
+
+  it('row 3 skips the tiers rows 1 and 2 already render', () => {
+    // Repeating context on row 3 while row 2 shows the percentage, or repeating
+    // process state while row 1 shows it, is the duplication this layout exists
+    // to remove. Mission Control is a single row and still acts on both.
+    const ctxOnly = { hasTelemetry: true, ctxPct: 95 };
+    assert.equal(paneAlert(ctxOnly), null);
+    assert.equal(paneAction(ctxOnly), 'compact or start fresh');
+
+    const blocked = { hasTelemetry: true, status: 'blocked' };
+    assert.equal(paneAlert(blocked), null);
+    assert.equal(paneAction(blocked), 'inspect last error');
+
+    const dark = { hasTelemetry: false };
+    assert.equal(paneAlert(dark), null);
+    assert.equal(paneAction(dark), 'relaunch via ccxray');
+  });
+
+  it('keeps the signed-off $alert order once row-owned tiers are dropped', () => {
+    const signals = {
+      hasTelemetry: true,
+      refusedCount: 2,
+      staleText: 'stale 3m',
+      failures: 3,
+      cacheDropped: true,
+      ctxPct: 95,
+      status: 'blocked',
+    };
+    assert.deepEqual(
+      paneConcerns(signals).filter(concern => !concern.sidebarOwned).map(concern => concern.kind),
+      ['quota-refused', 'stale', 'fail-multi', 'cache-dropped'],
+      'quota > stale > fail > cache-dropped is owner-signed-off');
+    assert.equal(paneAlert(signals).text, 'quota refused 2x');
+  });
+
+  it('counts a quota refusal as an observed 429, never a forecast', () => {
+    assert.equal(quotaRefusalCount([{ status: 200 }, { status: 429 }, { status: 200 }]), 1);
+    assert.equal(quotaRefusalCount([{ status: 200 }]), 0);
+    // Same last-six window as toolFailureCount, so an old refusal ages out.
+    const aged = [{ status: 429 }].concat(Array.from({ length: 6 }, () => ({ status: 200 })));
+    assert.equal(quotaRefusalCount(aged), 0);
+  });
+
+  // Asserted through the pre-existing missionControlSnapshot API on purpose: the
+  // old code answers this one (with the other ordering) instead of throwing on a
+  // missing export, so the red it produces is the ordering change and nothing else.
+  it('Mission Control acts on the failure, not the dropped cache', () => {
+    const T = 1787000000000;
+    const base = {
+      sessionId: 'mc-order-1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'aaaa', maxContext: 200000,
+      // The pane's own agentId is what attributes a turn to its row.
+      agentId: 'herdr:w1:p1', cwd: '/work/mc-order', provider: 'anthropic',
+    };
+    const turns = [
+      {
+        ...base, id: 'mo1', receivedAt: T, sysHash: 'h1', turnToolFail: false,
+        usage: { input_tokens: 10000, cache_read_input_tokens: 90000 },
+      },
+      {
+        ...base, id: 'mo2', receivedAt: T + 1000, sysHash: 'h2', turnToolFail: true,
+        usage: { input_tokens: 100000, cache_read_input_tokens: 0 },
+      },
+    ];
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome(turns), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    // Pin the fixture before trusting the verdict: a fixture that stopped
+    // dropping the cache would make this pass for the wrong reason.
+    assert.equal(row.cacheDropped, true, 'fixture must actually drop the cache');
+    assert.equal(row.failures, 1, 'fixture must carry exactly one failure');
+    assert.ok(row.ctxPct <= 80, 'context must stay below the tier that outranks both');
+    assert.equal(row.action, 'inspect failed tool');
+  });
+});
+
+// Row 3 of the three-row sidebar: `$facts` (grey) and `$alert` (warning colour),
+// exactly one non-empty per refresh, the other returned in clearTokens — the
+// mechanism `ctx_bar_*` already ships with.
+describe('Herdr sidebar row 3 fills exactly one token', () => {
+  const { badgeTokens, applyRow3Tokens } = require('../plugins/herdr/bin/refresh-badges.js');
+  const T = 1787000000000;
+  const status = { ok: true, parsed: { running: true, machine: { proxy: true, port: 5577 } } };
+  const usage = {
+    ok: true,
+    data: {
+      meta: { totalCost: 999.99, totalEntries: 1234 },
+      sessions: { topSessions: [{ sessionId: 'sTOP', cost: 42.5, turns: 77, model: 'claude-opus-5', durationMin: 60 }] },
+      models: [{ model: 'claude-fable-5' }],
+      cache: { hitRate: 0.91 },
+      tools: { failRate: 0.07 },
+    },
+  };
+  const turn = extra => ({
+    sessionId: 'r3', agentId: 'herdr:w1:p1', model: 'claude-opus-5',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    provider: 'anthropic', cwd: '/work/r3', receivedAt: T,
+    cost: { cost: 42.08, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const render = turns => badgeTokens(status, usage, {
+    env: pluginEnv({ CCXRAY_HOME: makeHome(turns) }),
+    paneId: 'w1:p1',
+    nowMs: T + 3600000,
+    sidebarCols: 40,
+  });
+
+  it('shows the facts when nothing is wrong and the alert when something is', () => {
+    const healthy = render([turn({ id: 'h1', usage: { input_tokens: 50000 } })]);
+    assert.equal(healthy.tokens.facts, '$42.08 · 60m');
+    assert.equal(healthy.tokens.alert, undefined);
+    assert.ok(healthy.clearTokens.includes('alert'));
+    assert.equal(healthy.clearTokens.includes('facts'), false);
+
+    const failed = render([turn({ id: 'f1', usage: { input_tokens: 50000 }, turnToolFail: true })]);
+    assert.equal(failed.tokens.alert, 'fail 1x');
+    assert.equal(failed.tokens.facts, undefined);
+    assert.ok(failed.clearTokens.includes('facts'));
+    assert.equal(failed.clearTokens.includes('alert'), false);
+  });
+
+  it('leaves context pressure to row 2 instead of repeating it', () => {
+    // 190K/200K = 95%. Row 2 already renders the percentage, the sparkline AND
+    // the colour band, so an alert saying "full" would be the fourth encoding of
+    // one fact — the duplication this layout exists to remove.
+    const full = render([turn({ id: 'c1', usage: { input_tokens: 190000 } })]);
+    assert.equal(full.tokens.alert, undefined);
+    assert.equal(full.tokens.facts, '$42.08 · 60m');
+  });
+
+  it('fills neither token for a pane whose session it cannot locate', () => {
+    // NOT a fail-on-old: `$facts` did not exist before, so the old code would
+    // fail this for a missing token rather than for a behaviour difference. The
+    // claim is only that row 1 keeps sole ownership of "not linked" — rendering
+    // the detail's honest-but-useless `n/a · ?` beside it is the duplication.
+    const elsewhere = render([turn({ id: 'x1', agentId: 'herdr:w1:pOTHER' })]);
+    assert.equal(elsewhere.tokens.facts, undefined);
+    assert.equal(elsewhere.tokens.alert, undefined);
+    assert.ok(elsewhere.clearTokens.includes('facts'));
+    assert.ok(elsewhere.clearTokens.includes('alert'));
+  });
+
+  it('fills neither token when there is no hub to report', () => {
+    const dark = badgeTokens({ ok: true, parsed: { running: false, notes: [] } }, { ok: false }, {
+      env: pluginEnv({ CCXRAY_HOME: makeHome([]) }),
+      paneId: 'w1:p1',
+      sidebarCols: 40,
+    });
+    assert.equal(dark.tokens.facts, undefined);
+    assert.equal(dark.tokens.alert, undefined);
+  });
+
+  it('keeps every alert label inside a narrow sidebar', () => {
+    // The spelled-out 'cache dropped after prompt change' is 33 columns; the
+    // sidebar brief must fit a realistic row, and anything longer is clipped by
+    // us rather than cut by Herdr.
+    const dropped = render([
+      turn({ id: 'd1', sysHash: 'h1', usage: { input_tokens: 10000, cache_read_input_tokens: 90000 } }),
+      turn({ id: 'd2', sysHash: 'h2', receivedAt: T + 1000, usage: { input_tokens: 100000, cache_read_input_tokens: 0 } }),
+    ]);
+    assert.equal(dropped.tokens.alert, 'cache dropped');
+    assert.ok(dropped.tokens.alert.length <= 14, 'must fit a 14-column sidebar');
+
+    const wide = {};
+    applyRow3Tokens(wide, { matched: true, costText: '$1234.56', ageText: '12.3h' }, { sidebarCols: 14 });
+    assert.equal(wide.facts, '$1234.56 · 12…');
+  });
+});
+
+// Row 1 is `state_icon · agent · state_text`, and a ccxray state label REPLACES
+// the native state_text. Setting it unconditionally made row 1 read
+// `claude · ccxray: traced · claude`.
+describe('Herdr row 1 keeps Herdr own state text when the pane is located', () => {
+  const T = 1787000000000;
+  const paneTurn = extra => ({
+    id: 'r1a', sessionId: 'row1', model: 'claude-opus-5', provider: 'anthropic',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    receivedAt: T, cwd: '/work/row1', usage: { input_tokens: 40000 },
+    cost: { cost: 1.5, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const run = turns => {
+    const herdr = makeRecordingHerdr();
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(turns),
+      CCXRAY_HERDR_LAST: '9999d',
+      CCXRAY_HERDR_NOW_MS: String(T + 60000),
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    const args = fs.existsSync(herdr.log) ? fs.readFileSync(herdr.log, 'utf8') : '';
+    return { result, args };
+  };
+
+  it('clears the state labels instead of overwriting the state text', () => {
+    // fail-on-old: the old code emitted --state-label on every refresh and never
+    // emitted --clear-state-labels, so both assertions below invert.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:p1' })]);
+    assert.match(args, /report-metadata/);
+    assert.match(args, /--clear-state-labels/,
+      'a located pane must hand row 1 back to Herdr');
+    assert.equal(/--state-label/.test(args), false,
+      'and must not overwrite the native state text');
+  });
+
+  it('still labels a pane whose session it cannot locate', () => {
+    // The label is reserved for what Herdr cannot know: that ccxray is not
+    // seeing this pane at all.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:pOTHER' })]);
+    assert.match(args, /--state-label idle=ccxray: not linked/);
+    assert.equal(/--clear-state-labels/.test(args), false);
+  });
+});
+
+// The reported config, verbatim in shape: eight rows accumulated across three
+// installer generations, rendering the model three times, the cost twice and the
+// percentage twice, with four truncations. The old installer could only APPEND,
+// so running it here made the card worse, not better.
+describe('Herdr sidebar installer migrates accumulated generations', () => {
+  const ACCUMULATED = [
+    'onboarding = false',
+    '',
+    '[ui.sidebar.agents]',
+    'rows = [',
+    '  ["state_icon", "agent", "state_text"],',
+    '  ["$ctx", "$model", "$cost"],',
+    '  [{ token = "$tg", fg = "#50c878" }, { token = "$ty", fg = "#e0b040" }, { token = "$tr", fg = "#e05050" }],',
+    '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+    '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+    '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+    '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+    '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+    ']',
+    '',
+    '[ui]',
+    'agent_panel_sort = "spaces"',
+    '',
+  ].join('\n');
+
+  const install = config => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-migrate-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, config);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('install-sidebar-summary.js', [], env);
+    return { result, configPath, env, after: fs.readFileSync(configPath, 'utf8') };
+  };
+  // Line-scan to the array's own closing bracket: indexOf(']') would stop at the
+  // first row's own bracket.
+  const sidebarRows = (config) => {
+    const lines = config.split('\n');
+    const start = lines.findIndex(line => /^\s*rows\s*=\s*\[/.test(line));
+    const rows = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^\s*\]/.test(line)) break;
+      if (/^\s*\[/.test(line)) rows.push(line);
+    }
+    return rows;
+  };
+
+  // FAIL-ON-OLD: the previous installer appended, so `$summary` and the atomic
+  // row both survive and the array grows instead of shrinking.
+  it('replaces every superseded generation instead of stacking on top', () => {
+    const { result, after } = install(ACCUMULATED);
+    assert.equal(result.status, 0, result.stderr);
+    for (const dead of ['$summary', '$tg', '$ty', '$tr']) {
+      assert.equal(after.includes(dead), false, `${dead} must be gone`);
+    }
+    // `$ctx`/`$model`/`$cost` are gone as a ROW; $ctx_bar_* legitimately contains
+    // the substring `$ctx`, so assert on the row rather than on the text.
+    assert.equal(sidebarRows(after).some(row => /"\$ctx"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$model"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$cost"/.test(row)), false);
+
+    assert.match(after, /\$facts/);
+    assert.match(after, /\$alert/);
+    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
+    // Seven config rows: row 1, four ctx_bar colour variants, and row 3's pair.
+    // Herdr skips rows whose tokens are all empty, so this renders three lines.
+    assert.equal(sidebarRows(after).length, 7);
+    // The user's other tables are untouched.
+    assert.match(after, /agent_panel_sort = "spaces"/);
+    assert.equal(after.match(/\[ui\.sidebar\.agents\]/g).length, 1);
+  });
+
+  it('is idempotent', () => {
+    const first = install(ACCUMULATED);
+    const second = runScript('install-sidebar-summary.js', [], first.env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(fs.readFileSync(first.configPath, 'utf8'), first.after,
+      'a second run must not change the file');
+    assert.match(second.stdout, /already installed/);
+  });
+
+  it('keeps a superseded row the user extended, because we cannot know which half they wanted', () => {
+    const { after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["$summary", "$mine"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.match(after, /\["\$summary", "\$mine"\]/);
+    assert.match(after, /\$facts/);
+  });
+
+  it('reports what it deleted, so a surprising removal is visible', () => {
+    const { result } = install(ACCUMULATED);
+    assert.match(result.stdout, /superseded row removed: \$ctx \$model \$cost/);
+    assert.match(result.stdout, /superseded row removed: \$tg \$ty \$tr/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+  });
+
+  // codex round 1, P1: a table emitted by the previous installer carries legacy
+  // default rows (`state_icon workspace tab` + `agent`) that must be replaced,
+  // not just left behind — otherwise the card renders four lines.
+  it('replaces the legacy default rows from a plugin-managed table', () => {
+    const { result, after } = install([
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+      '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+      '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    // Legacy rows are gone, new row 1 is in place.
+    assert.equal(after.includes('"workspace"'), false, 'old workspace column must go');
+    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
+    // Seven config rows → three visible lines.
+    assert.equal(sidebarRows(after).length, 7);
+    assert.match(result.stdout, /legacy default rows/);
+  });
+
+  // codex round 1, P2a: removal must recognize a table emitted by the previous
+  // installer, or stripping its token rows leaves an empty table behind.
+  it('removes the whole section when it carries the legacy skeleton', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-legacy-remove-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui]',
+      'show_agent_labels_on_pane_borders = true',
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(result.status, 0, result.stderr);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(after, /\[ui\.sidebar\.agents\]/,
+      'the whole managed section must go');
+    assert.match(after, /show_agent_labels_on_pane_borders/,
+      'the user table must survive');
+  });
+
+  // codex round 2 P1: a user-authored table (no SECTION_MARKER) that happens to
+  // contain `["agent"]` must NOT have it replaced — it is the user's row.
+  it('preserves legacy-looking rows in a user-authored table', () => {
+    const { result, after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(after, /\["state_icon", "workspace", "tab"\]/,
+      'without the marker these are the user\'s own rows');
+    assert.match(after, /\["agent"\]/);
+    assert.match(after, /\$facts/);
+  });
+
+  it('Quick Start and the installer agree on what installed means', () => {
+    const { configHasManagedRows } = require('../plugins/herdr/bin/install-sidebar-summary');
+    assert.equal(configHasManagedRows(ACCUMULATED), false, 'the old generation is not installed');
+    const { after } = install(ACCUMULATED);
+    assert.equal(configHasManagedRows(after), true);
+    // A commented-out example row is not an installation.
+    const commented = after.split('\n').map(l => (l.includes('$facts') ? `#${l}` : l)).join('\n');
+    assert.equal(configHasManagedRows(commented), false);
+  });
+});
+
+// The standalone dashboard action ran a bare `ccxray open`, throwing away the one
+// thing its caller knew: which pane they were looking at. Mission Control's `d`
+// has passed --session since it shipped.
+describe('Herdr dashboard action deep-links the pane session', () => {
+  const recordingCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-open-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'argv.log');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      // parseStatus needs a JSON Machine line and something that reads as a live
+      // hub; `port=5577` matches neither of its patterns.
+      'if [ "$1" = "status" ]; then',
+      '  echo "Hub running on http://localhost:5577 (pid 4242, clients 1)"',
+      '  echo \'Machine: {"proxy":true,"hub":true,"port":5577}\''
+      ,
+      'fi',
+      'exit 0',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  };
+  const argvFor = extraEnv => {
+    const ccxray = recordingCcxray();
+    const result = runScript('open-dashboard.js', [], {
+      CCXRAY_BIN: ccxray.bin,
+      CCXRAY_HERDR_NO_BROWSER: '1',
+      ...extraEnv,
+    });
+    const argv = fs.existsSync(ccxray.log) ? fs.readFileSync(ccxray.log, 'utf8') : '';
+    return { result, argv };
+  };
+
+  it('passes the focused pane session to ccxray open', () => {
+    // fail-on-old: the old action emitted a bare `open` for this same input.
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        agent_session: { kind: 'id', value: 'sess-abc-123' },
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open --session sess-abc-123$/m);
+    assert.match(result.stdout, /opening the dashboard on session sess-abc-123/);
+  });
+
+  it('falls back to a plain open when the pane has no session id', () => {
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        // agent_session_known means the context author already asked and the
+        // answer was "none", so the resolver must not re-list the agents.
+        agent_session_known: true,
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open$/m);
+    assert.match(result.stdout, /no session id yet/);
+  });
+
+  it('resolves the session the same way the badge does', () => {
+    // One helper, so `prefix+m` -> d and the standalone action cannot open
+    // different sessions for the same pane.
+    const { resolvePaneSessionId } = require('../plugins/herdr/bin/lib/ccxray');
+    const context = { agent_session: { kind: 'id', value: 'sess-xyz' } };
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context }), 'sess-xyz');
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context, eventSessionId: 'from-event' }),
+      'from-event', 'an event id wins, as it does in the badge');
+    assert.equal(resolvePaneSessionId({
+      env: pluginEnv({}), paneId: 'w1:p1', context: { agent_session_known: true },
+    }), null);
+  });
+});
+
+// codex round 1, P2b: a quota refusal must not leave Mission Control severity
+// green. The attention filter hides green rows, so a pane that got 429'd would
+// be invisible to the operator.
+describe('Herdr Mission Control marks a quota refusal red', () => {
+  it('updates severity and reasons when status 429 is observed', () => {
+    const T = 1787000000000;
+    const turn = {
+      id: 'q1', sessionId: 'sq1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'c1', maxContext: 200000, provider: 'anthropic',
+      agentId: 'herdr:w1:p1', cwd: '/work/quota', receivedAt: T,
+      usage: { input_tokens: 50000 }, cost: { cost: 1, confidence: 'exact' },
+      turnToolFail: false, status: 429,
+    };
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome([turn]), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    assert.equal(row.severity, 'red', 'a quota refusal must not stay green');
+    assert.ok(row.reasons.some(r => /quota refused/.test(r)));
+    assert.equal(row.action, 'wait for quota reset');
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used
@@ -1263,7 +1824,11 @@ describe('Herdr sidebar import freshness', () => {
     assert.ok(detail.stale, 'expected a staleness marker');
     assert.equal(detail.stale.text, 'stale 11h');
     assert.match(detail.summary, /· stale 11h$/);
-    assert.match(detail.ctxBar, /stale 11h/);
+    // The reason moved to row 3's $alert. Row 2 keeps the withdrawn colour (the
+    // assertion below) and the cache fact, so it no longer repeats the word —
+    // `21% · stal…` beside `21% stale` is the duplication being removed.
+    assert.doesNotMatch(detail.ctxBar, /stale/);
+    assert.equal(paneAlertFor(detail).text, 'stale 11h');
     // The percentage survives; only the confident colour is withdrawn.
     assert.equal(Math.round(detail.ctxPct), 32);
     assert.equal(detail.ctxBand, 'unknown');
@@ -3164,7 +3729,7 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=90%/);
     assert.match(result.stdout, /ctx_band=red/);
-    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · full/);
+    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · cache 0%/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_green ctx_bar_yellow/);
   });
 
@@ -3200,7 +3765,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '36',
     });
     assert.equal(wide.status, 1);
-    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · near full/);
+    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · cache 0%/);
   });
 
   it('launch-agent can produce a stable new-tab plan without side effects', () => {
@@ -3598,11 +4163,15 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
     assert.match(config, /\[ui\.sidebar\.agents\]/);
-    assert.match(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
+    // Row 3 replaced $summary: every field the one-line summary carried now has
+    // an owning row, so a fresh install must not write it back.
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    assert.doesNotMatch(config, /\$summary/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
     assert.match(result.stdout, /backup:/);
   });
@@ -3675,7 +4244,7 @@ describe('Herdr plugin commands', () => {
 
     const install = runScript('install-sidebar-summary.js', [], env);
     assert.equal(install.status, 0, install.stderr);
-    assert.match(fs.readFileSync(configPath, 'utf8'), /\$summary/);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /\$facts/);
     assert.equal(fs.existsSync(path.join(home, '.config', 'herdr', 'config.toml')), false);
 
     const quickStart = runScript('onboarding.js', ['--once'], {
@@ -3704,13 +4273,20 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    // The old installer could only APPEND, so this config came back with the new
+    // rows stacked on the old ones and rendered MORE duplication. The $summary
+    // row is now removed, which is the whole point of the migration.
+    assert.doesNotMatch(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
-    assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    // No marker → the old `["agent"]` is treated as user's own row.
+    assert.match(config, /\["agent"\]/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('install-sidebar-summary upgrades the uncolored ctx_bar row to color rows', () => {
@@ -3736,7 +4312,7 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('remove-sidebar-summary removes only ccxray rows and keeps the Herdr layout valid', () => {
@@ -3806,11 +4382,13 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
+    // No marker → legacy-looking rows are treated as user's own.
     assert.match(config, /\["state_icon", "workspace", "tab"\]/);
     assert.match(config, /\["agent"\]/);
     assert.match(config, /\[terminal\]/);
@@ -3843,10 +4421,15 @@ describe('Herdr plugin commands', () => {
     const reinstalled = runScript('install-sidebar-summary.js', [], env);
     assert.equal(reinstalled.status, 0, reinstalled.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
     assert.match(config, /\$ctx_bar_red/);
+    // No marker: `["agent"]` is treated as user's own and survives both
+    // removal and reinstall.
     assert.match(config, /\["agent"\]/);
-    assert.equal(config.match(/\$summary/g).length, 1);
+    // One row each: a reinstall must not stack a second copy, which is the
+    // add-only behaviour the migration replaced.
+    assert.equal(config.match(/\$facts/g).length, 1);
+    assert.equal(config.match(/\$alert/g).length, 1);
   });
 
   // Herdr's manifest cannot declare keybindings, so a plugin either documents a
@@ -4012,7 +4595,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
 
     const extended = fs.readFileSync(configPath, 'utf8')
-      .replace('  ["agent"],', '  ["agent"],\n  ["cwd"],');
+      .replace('  ["state_icon", "agent", "state_text"],',
+        '  ["state_icon", "agent", "state_text"],\n  ["cwd"],');
     fs.writeFileSync(configPath, extended);
 
     assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);

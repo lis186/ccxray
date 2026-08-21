@@ -15,6 +15,7 @@ const {
   runHerdr,
   statusReport,
 } = require('./lib/ccxray');
+const { configHasManagedRows } = require('./install-sidebar-summary');
 const { displayWidth, restoreFrameCursor, truncateText, writeFrame, wrapText } = require('./lib/tui');
 const { boundKeyFor } = require('./lib/keybindings');
 
@@ -62,7 +63,7 @@ function sidebarInstalled(env = process.env) {
   const file = resolveHerdrConfigPath(env);
   try {
     const config = fs.readFileSync(file, 'utf8');
-    return /token\s*=\s*"\$summary"/.test(config) && /token\s*=\s*"\$ctx_bar_(?:green|yellow|red)"/.test(config);
+    return configHasManagedRows(config);
   } catch {
     return false;
   }
