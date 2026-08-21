@@ -178,6 +178,7 @@ test('every synthetic launcher declares CCXRAY_EXPORT_DISABLE', () => {
     'docs/site/slides/coscup2026/tools/shoot-spiral.mjs',
     'CLAUDE.md',
     'docs/grok-testing.md',
+    'docs/site/slides/coscup2026/README.md',
   ];
   // Look only at NON-COMMENT lines. A first version asserted merely that the file
   // contained the string, which the explanatory comments themselves satisfied — removing
