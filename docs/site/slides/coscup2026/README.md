@@ -31,7 +31,7 @@
   點**新 session 的 turn #1** → 左面板 Cost(Turn $1.02)→ 左側導覽點 **Cost** 分頁看稅單。
 - **操作**:第一段跑指令時 dashboard 自動開啟;LIVE 段切回該分頁即可(備用:`D` 鍵重開 `http://localhost:5577`)。
   會前跑 demo 資料包:
-  `node tools/gen-fixture.mjs /tmp/demo /tmp/demo-home && HOME=/tmp/demo-home CCXRAY_PLAN=max5x CCXRAY_HOME=/tmp/demo ccxray --port 5577 --no-browser`
+  `node tools/gen-fixture.mjs /tmp/demo /tmp/demo-home && HOME=/tmp/demo-home CCXRAY_PLAN=max5x CCXRAY_HOME=/tmp/demo CCXRAY_EXPORT_DISABLE=1 ccxray --port 5577 --no-browser`
   (side-quest 專案的 c0ffee99 session 就是裝好裝滿的示範;要用自己真實的 `~/.ccxray` 也行,但數字就不是講稿上那組)。
 - **Fallback**:demo 任何一步卡住,直接翻下一頁——STEP 5 十二頁導覽就是同畫面截圖的操作路徑回放,講稿照走,零損傷。
 - **清理敘事邊界**:只點名使用者可控項(MCP、skills、CLAUDE.md、記憶);system prompt 與內建 tools 不在清理清單。
@@ -96,7 +96,7 @@ STEP 1 架構分鏡×5(FLIP)| 2–4 dashboard 導覽分鏡×7(全圖→圈選→
 
 ```bash
 node tools/gen-fixture.mjs /tmp/ccxray-demo /tmp/ccxray-demo-home
-HOME=/tmp/ccxray-demo-home CCXRAY_PLAN=max5x CCXRAY_HOME=/tmp/ccxray-demo ccxray --port 5602 --no-browser
+HOME=/tmp/ccxray-demo-home CCXRAY_PLAN=max5x CCXRAY_HOME=/tmp/ccxray-demo CCXRAY_EXPORT_DISABLE=1 ccxray --port 5602 --no-browser
 node tools/gen-spiral.mjs /tmp/ccxray-spiral && node tools/shoot-spiral.mjs
 node tools/measure-tax.mjs      # turn1-tax.png(稅單第一段)+ tax tour 區域座標
 node tools/measure-eff.mjs      # cost-eff.png / cost-eff2.png(Cost 分頁兩段)+ 區域座標

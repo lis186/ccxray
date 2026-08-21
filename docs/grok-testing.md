@@ -106,7 +106,7 @@ open "http://127.0.0.1:$PORT"
 ### One-shot launcher
 
 ```bash
-CCXRAY_HOME=$(mktemp -d) node server/index.js --port 5613 grok
+CCXRAY_HOME=$(mktemp -d) CCXRAY_EXPORT_DISABLE=1 node server/index.js --port 5613 grok
 ```
 
 ## 3. Acceptance criteria (product)

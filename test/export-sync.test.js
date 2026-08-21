@@ -43,7 +43,7 @@ function makeEntry(overrides = {}) {
 }
 
 // Set up env + uploader mock before each test
-let _home, _uploads;
+let _home, _uploads, _savedFlags = {};
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
@@ -57,6 +57,14 @@ function setup(entries, envOverrides = {}) {
   delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
   delete process.env.CCXRAY_EXPORT_GCS_PREFIX;
   delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
+  // Ambient suppression flags must not leak in: layer 1 (CCXRAY_EXPORT_DISABLE)
+  // deliberately overrides an injected seam, so running the safety-conscious
+  // `CCXRAY_EXPORT_DISABLE=1 npm test` would turn every flush below into a no-op and
+  // fail this suite for the wrong reason (codex review round 2, 2026-08-21).
+  // Saved into _savedFlags and restored in cleanup(): under --test-isolation=none a later
+  // file would otherwise inherit weakened safety settings (codex review round 5).
+  _savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE };
+  delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = 'test-agent-001';
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
   process.env.CCXRAY_TEAM = 'test-team';
@@ -87,6 +95,11 @@ function cleanup() {
   delete process.env.CCXRAY_AGENT_ID;
   delete process.env.CCXRAY_USER_EMAIL;
   delete process.env.CCXRAY_TEAM;
+  // Restore what setup() cleared, so a later file under --test-isolation=none does not
+  // inherit weakened safety settings.
+  if (_savedFlags.disable === undefined) delete process.env.CCXRAY_EXPORT_DISABLE;
+  else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
+  _savedFlags = {};
   _setUploader(null);
   // Bust require cache for config (it caches LOGS_DIR at require time)
   for (const k of Object.keys(require.cache)) {
