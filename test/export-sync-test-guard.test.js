@@ -180,20 +180,37 @@ test('every synthetic launcher declares CCXRAY_EXPORT_DISABLE', () => {
     'test/rebuild-index.browser-harness.e2e.sh',
     'docs/site/slides/coscup2026/tools/shoot-spiral.mjs',
     'CLAUDE.md',
+    'docs/grok-testing.md',
   ];
   // Look only at NON-COMMENT lines. A first version asserted merely that the file
   // contained the string, which the explanatory comments themselves satisfied — removing
   // the actual flag from boot-smoke.sh still passed. The assertion has to be about the
   // setting taking effect, not about the word appearing.
-  const setsFlag = (text) => text.split('\n').some((line) => {
-    const t = line.trim();
-    if (t.startsWith('#') || t.startsWith('//') || t.startsWith('*')) return false;
-    return /CCXRAY_EXPORT_DISABLE\s*[:=]\s*['"]?1/.test(line);
-  });
+  // For shell/JS files, a non-comment line with the assignment is enough. For Markdown
+  // files, the flag must appear inside a code fence — prose that DESCRIBES the flag
+  // (e.g. CLAUDE.md line 58) must not satisfy the check, or removing it from the actual
+  // command would go undetected (codex review, same class as the "grep catches comments"
+  // bug hit three times during development).
+  const setsFlag = (text, filePath) => {
+    const isMd = filePath.endsWith('.md');
+    if (isMd) {
+      let inFence = false;
+      for (const line of text.split('\n')) {
+        if (line.trimStart().startsWith('```')) { inFence = !inFence; continue; }
+        if (inFence && /CCXRAY_EXPORT_DISABLE\s*[:=]\s*['"]?1/.test(line)) return true;
+      }
+      return false;
+    }
+    return text.split('\n').some((line) => {
+      const t = line.trim();
+      if (t.startsWith('#') || t.startsWith('//') || t.startsWith('*')) return false;
+      return /CCXRAY_EXPORT_DISABLE\s*[:=]\s*['"]?1/.test(line);
+    });
+  };
   const missing = launchers.filter(rel => {
     const abs = path.join(repo, rel);
     if (!fs.existsSync(abs)) return false;   // moved/renamed is not this test's business
-    return !setsFlag(fs.readFileSync(abs, 'utf8'));
+    return !setsFlag(fs.readFileSync(abs, 'utf8'), abs);
   });
   assert.deepStrictEqual(missing, [],
     'these synthetic launchers no longer neutralize exports: ' + missing.join(', '));

@@ -79,7 +79,7 @@ cd .claude/worktrees/grok-wire-experiment
 export CCXRAY_HOME=$(mktemp -d)
 PORT=5612
 
-node server/index.js --port $PORT --no-browser &
+CCXRAY_EXPORT_DISABLE=1 node server/index.js --port $PORT --no-browser &
 # wait for listen…
 
 mkdir -p /tmp/grok-ccxray-smoke && cd /tmp/grok-ccxray-smoke
