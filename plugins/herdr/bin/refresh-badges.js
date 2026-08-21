@@ -181,6 +181,7 @@ function badgeTokens(status, usage, opts = {}) {
   return {
     tokens,
     stale,
+    located: Boolean(detail) && detail.matched !== false,
     clearTokens: [
       ...applyContextColorTokens(tokens, tokens.ctx_band),
       ...applyRow3Tokens(tokens, detail, opts),
@@ -235,7 +236,14 @@ function main() {
   // trigger. Detached: the badge write below must not wait for a disk scan.
   const importRequest = badge.stale ? requestImport({ env: process.env }) : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
-  const stateLabels = {
+  // Row 1 is `state_icon · agent · state_text`, and a state label REPLACES the
+  // native state_text. Setting it unconditionally to the summary made row 1 read
+  // `claude · ccxray: traced · claude`: the agent name twice, and the model a
+  // third time once row 3 shows the cost. Herdr's own idle/working is the right
+  // content for a located pane — it is the one thing on this row Herdr knows
+  // better than we do — so the label is reserved for the states it cannot know
+  // ("not linked", "no hub"), and actively cleared otherwise.
+  const stateLabels = badge.located ? null : {
     unknown: tokens.summary,
     idle: tokens.summary,
     working: tokens.summary,
@@ -243,7 +251,10 @@ function main() {
     done: tokens.summary,
   };
 
-  const pane = reportPaneTokens(tokens, { env, ttlMs, stateLabels, clearTokens, agent: event.agent });
+  const pane = reportPaneTokens(tokens, {
+    env, ttlMs, stateLabels, clearTokens, agent: event.agent,
+    clearStateLabels: !stateLabels,
+  });
   const workspace = reportWorkspaceTokens(tokens, { env, ttlMs, clearTokens });
   const notification = process.env.HERDR_PLUGIN_EVENT === 'pane.agent_status_changed'
     ? agentNotification(event, tokens.summary, {

@@ -1234,6 +1234,51 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
   });
 });
 
+// Row 1 is `state_icon · agent · state_text`, and a ccxray state label REPLACES
+// the native state_text. Setting it unconditionally made row 1 read
+// `claude · ccxray: traced · claude`.
+describe('Herdr row 1 keeps Herdr own state text when the pane is located', () => {
+  const T = 1787000000000;
+  const paneTurn = extra => ({
+    id: 'r1a', sessionId: 'row1', model: 'claude-opus-5', provider: 'anthropic',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    receivedAt: T, cwd: '/work/row1', usage: { input_tokens: 40000 },
+    cost: { cost: 1.5, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const run = turns => {
+    const herdr = makeRecordingHerdr();
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(turns),
+      CCXRAY_HERDR_LAST: '9999d',
+      CCXRAY_HERDR_NOW_MS: String(T + 60000),
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+    });
+    const args = fs.existsSync(herdr.log) ? fs.readFileSync(herdr.log, 'utf8') : '';
+    return { result, args };
+  };
+
+  it('clears the state labels instead of overwriting the state text', () => {
+    // fail-on-old: the old code emitted --state-label on every refresh and never
+    // emitted --clear-state-labels, so both assertions below invert.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:p1' })]);
+    assert.match(args, /report-metadata/);
+    assert.match(args, /--clear-state-labels/,
+      'a located pane must hand row 1 back to Herdr');
+    assert.equal(/--state-label/.test(args), false,
+      'and must not overwrite the native state text');
+  });
+
+  it('still labels a pane whose session it cannot locate', () => {
+    // The label is reserved for what Herdr cannot know: that ccxray is not
+    // seeing this pane at all.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:pOTHER' })]);
+    assert.match(args, /--state-label idle=ccxray: not linked/);
+    assert.equal(/--clear-state-labels/.test(args), false);
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used

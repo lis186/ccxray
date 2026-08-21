@@ -2021,6 +2021,10 @@ function paneMetadataUnchanged(snapshot, tokens, opts = {}) {
   for (const [status, label] of Object.entries(opts.stateLabels || {})) {
     if (String(snapshot.stateLabels[status] ?? '') !== String(label)) return false;
   }
+  // A pending clear is a change. Without this the skip-write optimisation reads
+  // "no token moved" and suppresses the very write that would hand row 1 back to
+  // Herdr's own state text.
+  if (opts.clearStateLabels && Object.keys(snapshot.stateLabels || {}).length) return false;
   return true;
 }
 
@@ -2088,6 +2092,11 @@ function reportPaneTokens(tokens, opts = {}) {
   }
   if (opts.title) args.push('--title', String(opts.title));
   if (opts.displayAgent) args.push('--display-agent', String(opts.displayAgent));
+  // Clearing is not the same as omitting: a label Herdr already holds survives a
+  // report that simply does not mention it, so a pane that recovered from "not
+  // linked" would keep showing it forever. Row 1's native idle/working can only
+  // come back if we actively give the state text back.
+  if (opts.clearStateLabels) args.push('--clear-state-labels');
   if (opts.stateLabels) {
     for (const [status, label] of Object.entries(opts.stateLabels)) {
       args.push('--state-label', `${status}=${String(label)}`);
