@@ -1295,6 +1295,116 @@ describe('Herdr row 1 keeps Herdr own state text when the pane is located', () =
   });
 });
 
+// The reported config, verbatim in shape: eight rows accumulated across three
+// installer generations, rendering the model three times, the cost twice and the
+// percentage twice, with four truncations. The old installer could only APPEND,
+// so running it here made the card worse, not better.
+describe('Herdr sidebar installer migrates accumulated generations', () => {
+  const ACCUMULATED = [
+    'onboarding = false',
+    '',
+    '[ui.sidebar.agents]',
+    'rows = [',
+    '  ["state_icon", "agent", "state_text"],',
+    '  ["$ctx", "$model", "$cost"],',
+    '  [{ token = "$tg", fg = "#50c878" }, { token = "$ty", fg = "#e0b040" }, { token = "$tr", fg = "#e05050" }],',
+    '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+    '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+    '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+    '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+    '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+    ']',
+    '',
+    '[ui]',
+    'agent_panel_sort = "spaces"',
+    '',
+  ].join('\n');
+
+  const install = config => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-migrate-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, config);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('install-sidebar-summary.js', [], env);
+    return { result, configPath, env, after: fs.readFileSync(configPath, 'utf8') };
+  };
+  // Line-scan to the array's own closing bracket: indexOf(']') would stop at the
+  // first row's own bracket.
+  const sidebarRows = (config) => {
+    const lines = config.split('\n');
+    const start = lines.findIndex(line => /^\s*rows\s*=\s*\[/.test(line));
+    const rows = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^\s*\]/.test(line)) break;
+      if (/^\s*\[/.test(line)) rows.push(line);
+    }
+    return rows;
+  };
+
+  // FAIL-ON-OLD: the previous installer appended, so `$summary` and the atomic
+  // row both survive and the array grows instead of shrinking.
+  it('replaces every superseded generation instead of stacking on top', () => {
+    const { result, after } = install(ACCUMULATED);
+    assert.equal(result.status, 0, result.stderr);
+    for (const dead of ['$summary', '$tg', '$ty', '$tr']) {
+      assert.equal(after.includes(dead), false, `${dead} must be gone`);
+    }
+    // `$ctx`/`$model`/`$cost` are gone as a ROW; $ctx_bar_* legitimately contains
+    // the substring `$ctx`, so assert on the row rather than on the text.
+    assert.equal(sidebarRows(after).some(row => /"\$ctx"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$model"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$cost"/.test(row)), false);
+
+    assert.match(after, /\$facts/);
+    assert.match(after, /\$alert/);
+    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
+    // Seven config rows: row 1, four ctx_bar colour variants, and row 3's pair.
+    // Herdr skips rows whose tokens are all empty, so this renders three lines.
+    assert.equal(sidebarRows(after).length, 7);
+    // The user's other tables are untouched.
+    assert.match(after, /agent_panel_sort = "spaces"/);
+    assert.equal(after.match(/\[ui\.sidebar\.agents\]/g).length, 1);
+  });
+
+  it('is idempotent', () => {
+    const first = install(ACCUMULATED);
+    const second = runScript('install-sidebar-summary.js', [], first.env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(fs.readFileSync(first.configPath, 'utf8'), first.after,
+      'a second run must not change the file');
+    assert.match(second.stdout, /already installed/);
+  });
+
+  it('keeps a superseded row the user extended, because we cannot know which half they wanted', () => {
+    const { after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["$summary", "$mine"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.match(after, /\["\$summary", "\$mine"\]/);
+    assert.match(after, /\$facts/);
+  });
+
+  it('reports what it deleted, so a surprising removal is visible', () => {
+    const { result } = install(ACCUMULATED);
+    assert.match(result.stdout, /superseded row removed: \$ctx \$model \$cost/);
+    assert.match(result.stdout, /superseded row removed: \$tg \$ty \$tr/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+  });
+
+  it('Quick Start and the installer agree on what installed means', () => {
+    const { configHasManagedRows } = require('../plugins/herdr/bin/install-sidebar-summary');
+    assert.equal(configHasManagedRows(ACCUMULATED), false, 'the old generation is not installed');
+    const { after } = install(ACCUMULATED);
+    assert.equal(configHasManagedRows(after), true);
+    // A commented-out example row is not an installation.
+    const commented = after.split('\n').map(l => (l.includes('$facts') ? `#${l}` : l)).join('\n');
+    assert.equal(configHasManagedRows(commented), false);
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used
@@ -3870,11 +3980,15 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
     assert.match(config, /\[ui\.sidebar\.agents\]/);
-    assert.match(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
+    // Row 3 replaced $summary: every field the one-line summary carried now has
+    // an owning row, so a fresh install must not write it back.
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    assert.doesNotMatch(config, /\$summary/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
     assert.match(result.stdout, /backup:/);
   });
@@ -3947,7 +4061,7 @@ describe('Herdr plugin commands', () => {
 
     const install = runScript('install-sidebar-summary.js', [], env);
     assert.equal(install.status, 0, install.stderr);
-    assert.match(fs.readFileSync(configPath, 'utf8'), /\$summary/);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /\$facts/);
     assert.equal(fs.existsSync(path.join(home, '.config', 'herdr', 'config.toml')), false);
 
     const quickStart = runScript('onboarding.js', ['--once'], {
@@ -3976,13 +4090,20 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    // The old installer could only APPEND, so this config came back with the new
+    // rows stacked on the old ones and rendered MORE duplication. The $summary
+    // row is now removed, which is the whole point of the migration.
+    assert.doesNotMatch(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
-    assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    // The user's own row is not ours to delete.
+    assert.match(config, /\["agent"\]/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('install-sidebar-summary upgrades the uncolored ctx_bar row to color rows', () => {
@@ -4008,7 +4129,7 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('remove-sidebar-summary removes only ccxray rows and keeps the Herdr layout valid', () => {
@@ -4078,7 +4199,8 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
@@ -4115,10 +4237,13 @@ describe('Herdr plugin commands', () => {
     const reinstalled = runScript('install-sidebar-summary.js', [], env);
     assert.equal(reinstalled.status, 0, reinstalled.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
     assert.match(config, /\$ctx_bar_red/);
     assert.match(config, /\["agent"\]/);
-    assert.equal(config.match(/\$summary/g).length, 1);
+    // One row each: a reinstall must not stack a second copy, which is the
+    // add-only behaviour the migration replaced.
+    assert.equal(config.match(/\$facts/g).length, 1);
+    assert.equal(config.match(/\$alert/g).length, 1);
   });
 
   // Herdr's manifest cannot declare keybindings, so a plugin either documents a
@@ -4284,7 +4409,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
 
     const extended = fs.readFileSync(configPath, 'utf8')
-      .replace('  ["agent"],', '  ["agent"],\n  ["cwd"],');
+      .replace('  ["state_icon", "agent", "state_text"],',
+        '  ["state_icon", "agent", "state_text"],\n  ["cwd"],');
     fs.writeFileSync(configPath, extended);
 
     assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);

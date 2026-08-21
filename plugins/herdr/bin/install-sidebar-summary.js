@@ -5,17 +5,45 @@ const fs = require('fs');
 const path = require('path');
 const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
 
+// Every row this installer manages, and the ONE place its colours are written.
+// The colours used to be declared twice — once here and once inline in
+// addMissingCtxBarRows — so a repaired config could disagree with a fresh one.
+const MANAGED_ROW_BY_TOKEN = {
+  ctx_bar_unknown: '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+  ctx_bar_green: '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+  ctx_bar_yellow: '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+  ctx_bar_red: '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+  facts: '  [{ token = "$facts", fg = "#a6adc8", dim = true }],',
+  alert: '  [{ token = "$alert", fg = "#f9e2af" }],',
+};
 const CTX_BAR_COLOR_TOKENS = ['ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
-const CTX_BAR_ROWS = [
-  '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
-  '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
-  '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
-  '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
-].join('\n');
+const CTX_BAR_ROWS = CTX_BAR_COLOR_TOKENS.map(token => MANAGED_ROW_BY_TOKEN[token]).join('\n');
 const OLD_CTX_BAR_ROW_RE = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$ctx_bar"[^\n]*\}\],[ \t]*$/m;
-const SUMMARY_ROW = '  [{ token = "$summary", fg = "#89b4fa", dim = true }],';
-const CCXRAY_ROWS = `${SUMMARY_ROW}\n${CTX_BAR_ROWS}`;
-const DEFAULT_ROWS = '  ["state_icon", "workspace", "tab"],\n  ["agent"],';
+// Row 3: two tokens, one meaning each, only one non-empty per refresh (see
+// refresh-badges applyRow3Tokens). Herdr skips a row whose tokens are all empty
+// — the four ctx_bar colour rows above have relied on that in production since
+// they shipped, rendering one visible line out of four config rows — so this
+// pair costs two rows and shows one line.
+const ROW3_TOKENS = ['facts', 'alert'];
+const ROW3_ROWS = ROW3_TOKENS.map(token => MANAGED_ROW_BY_TOKEN[token]).join('\n');
+const MANAGED_TOKENS = [...CTX_BAR_COLOR_TOKENS, ...ROW3_TOKENS];
+// Rows that earlier generations of this installer wrote, plus one no generation
+// ever wrote. Each entry is the COMPLETE token set of a row we may delete: a row
+// carrying anything else is the user's, and is left for them to edit.
+//
+//  - ctx/model/cost: the atomic-token generation. Its three facts are now row 2
+//    (ctx) and row 3 (cost), and printing them beside $summary is what made the
+//    model appear three times in one card.
+//  - summary: the pre-assembled line. Every field in it now has an owning row.
+//  - tg/ty/tr: this plugin has never provided these tokens. Dead config that
+//    rendered nothing, which is why it survived unnoticed.
+const SUPERSEDED_ROW_TOKENS = [
+  ['ctx', 'model', 'cost'],
+  ['summary'],
+  ['tg', 'ty', 'tr'],
+];
+const DEFAULT_ROWS = '  ["state_icon", "agent", "state_text"],';
+const CCXRAY_ROWS = `${CTX_BAR_ROWS}\n${ROW3_ROWS}`;
 // Written only when this script creates the section itself, so
 // remove-sidebar-summary can tell "ccxray added this whole table" from
 // "the user already had a sidebar table and ccxray added rows to it".
@@ -43,7 +71,7 @@ function tokenRegex(token) {
 
 // Row detection must not see commented-out examples. Herdr's own documentation
 // shows sidebar rows in comments, and a config carrying one dead-ended the
-// install: `hasToken` matched the commented `$summary`, so the script reported
+// install: the token test matched the commented `$summary`, so the script reported
 // "Herdr already has a $summary sidebar row", while the row regexes — which
 // require a real `[{ … }],` line — found nothing to insert below, leaving the
 // user with a manual-add message and no way to proceed.
@@ -53,50 +81,74 @@ function stripCommentLines(config) {
   return String(config).replace(/^[ \t]*#.*$/gm, '');
 }
 
-function hasToken(config, token) {
-  return tokenRegex(token).test(stripCommentLines(config));
+// What "installed" means, defined once. onboarding.js used to spell out its own
+// regex over `$summary` + one ctx_bar colour, so this file could change the row
+// set and Quick Start would keep reporting on the old one — it did exactly that
+// when $summary was retired. It also did not strip comments, so a commented-out
+// example row counted as installed, the same trap stripCommentLines exists for.
+function configHasManagedRows(config) {
+  const body = stripCommentLines(String(config || ''));
+  return MANAGED_TOKENS.every(token => tokenRegex(token).test(body));
 }
 
-function hasColorRows(config) {
-  return CTX_BAR_COLOR_TOKENS.every(token => hasToken(config, token));
+// The tokens a rows-array line names, or null when the line is not a row at all.
+// A line-leading comment is not a row: Herdr's own docs show example rows in
+// comments, and one of them already dead-ended this installer once.
+function rowLineTokens(line) {
+  if (/^[ \t]*#/.test(line)) return null;
+  if (!/^[ \t]*\[/.test(line)) return null;
+  return [...line.matchAll(/\$([A-Za-z0-9_]+)/g)].map(match => match[1]);
 }
 
-function addCtxBarRows(config) {
-  const summaryRow = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$summary"[^\n]*\}\],[ \t]*$/m;
-  if (!summaryRow.test(config)) return null;
-  return config.replace(summaryRow, match => `${match}\n${CTX_BAR_ROWS}`);
+function sameTokenSet(a, b) {
+  return a.length === b.length
+    && a.slice().sort().join(',') === b.slice().sort().join(',');
 }
 
-function addMissingCtxBarRows(config) {
-  const missing = CTX_BAR_COLOR_TOKENS.filter(token => !hasToken(config, token));
-  if (!missing.length) return config;
-  const rows = missing.map(token => {
-    const colors = {
-      ctx_bar_unknown: '#a6adc8',
-      ctx_bar_green: '#a6e3a1',
-      ctx_bar_yellow: '#f9e2af',
-      ctx_bar_red: '#f38ba8',
-    };
-    return `  [{ token = "$${token}", fg = "${colors[token]}", dim = true }],`;
-  }).join('\n');
-  const summaryRow = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$summary"[^\n]*\}\],[ \t]*$/m;
-  if (!summaryRow.test(config)) return null;
-  return config.replace(summaryRow, match => `${match}\n${rows}`);
-}
-
-function ensureColorCtxBarRows(config) {
-  if (hasColorRows(config) && !OLD_CTX_BAR_ROW_RE.test(config)) return { changed: false, config };
-
-  if (OLD_CTX_BAR_ROW_RE.test(config)) {
-    return {
-      changed: true,
-      config: config.replace(OLD_CTX_BAR_ROW_RE, CTX_BAR_ROWS),
-    };
+// Migrate the rows array of an existing [ui.sidebar.agents] to the three-row
+// layout. This REPLACES the previous add-only behaviour: the old installer could
+// only append, so a config carrying an earlier generation's rows got the new
+// ones stacked on top and rendered MORE duplication, not less. The migration
+// mechanism itself is not new — OLD_CTX_BAR_ROW_RE has been migrating the single
+// $ctx_bar generation to the four colour variants — this widens it to the
+// generations that shipped around it.
+//
+// Deletion is conservative in two ways: it only ever touches lines inside this
+// one rows array, and only lines whose COMPLETE token set matches a superseded
+// generation. A row where the user added something of their own is kept, because
+// we cannot know which half they wanted.
+function migrateRowsArray(config, rows) {
+  const inner = config.slice(rows.open + 1, rows.close);
+  const removed = [];
+  const kept = [];
+  for (const line of inner.split('\n')) {
+    const tokens = rowLineTokens(line);
+    if (tokens && tokens.length
+      && SUPERSEDED_ROW_TOKENS.some(set => sameTokenSet(set, tokens))) {
+      removed.push(tokens.map(token => `$${token}`).join(' '));
+      continue;
+    }
+    kept.push(line);
   }
 
-  const added = addMissingCtxBarRows(config);
-  if (!added) return null;
-  return { changed: true, config: added };
+  let body = kept.join('\n');
+  // The single-$ctx_bar generation becomes the four colour variants in place, so
+  // row 2 keeps its position rather than jumping below row 3.
+  if (OLD_CTX_BAR_ROW_RE.test(body)) body = body.replace(OLD_CTX_BAR_ROW_RE, CTX_BAR_ROWS);
+
+  const present = token => tokenRegex(token).test(stripCommentLines(body));
+  const missing = MANAGED_TOKENS.filter(token => !present(token));
+  if (missing.length) {
+    const trimmed = body.replace(/[ \t\r\n]*$/, '');
+    const separator = trimmed.trim() && !trimmed.trim().endsWith(',') ? ',' : '';
+    body = `${trimmed}${separator}\n${missing.map(token => MANAGED_ROW_BY_TOKEN[token]).join('\n')}\n`;
+  }
+
+  return {
+    config: `${config.slice(0, rows.open + 1)}${body}${config.slice(rows.close)}`,
+    removed,
+    added: missing,
+  };
 }
 
 // A TOML table header is a bare dotted key in brackets at column 0, so an
@@ -166,21 +218,15 @@ function main() {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 
-  if (hasToken(before, 'summary')) {
-    const ensured = ensureColorCtxBarRows(before);
-    if (!ensured) {
-      console.error('Herdr already has a $summary sidebar row. Add these rows below it manually:');
-      console.error(CTX_BAR_ROWS);
-      process.exit(1);
-    }
-    if (!ensured.changed) {
-      console.log(`ccxray color sidebar summary rows already installed in ${file}`);
-      process.exit(0);
-    }
-    return writeAndReload(file, before, ensured.config, 'updated');
+  // No section of ours at all — write the whole three-row layout.
+  if (!/^\s*\[ui\.sidebar\.agents\]\s*$/m.test(before)) {
+    return writeAndReload(file, before, before.replace(/\s*$/, '') + SIDEBAR_SUMMARY_SECTION + '\n', 'installed');
   }
 
-  if (/^\s*\[ui\.sidebar\.agents\]\s*$/m.test(before)) {
+  const bounds = sidebarSectionBounds(before);
+  const rows = bounds && rowsArrayBounds(before, bounds);
+  if (!rows) {
+    // The section exists but its rows array is missing or unparseable.
     const merged = addRowsToExistingSection(before);
     if (!merged) {
       console.error(`Could not parse [ui.sidebar.agents] in ${file}; add these rows to its rows array manually:`);
@@ -190,7 +236,9 @@ function main() {
     return writeAndReload(file, before, merged, 'installed');
   }
 
-  return writeAndReload(file, before, before.replace(/\s*$/, '') + SIDEBAR_SUMMARY_SECTION + '\n', 'installed');
+  const migrated = migrateRowsArray(before, rows);
+  for (const row of migrated.removed) console.log(`superseded row removed: ${row}`);
+  return writeAndReload(file, before, migrated.config, migrated.removed.length ? 'migrated' : 'updated');
 }
 
 function writeAndReload(file, before, next, action) {
@@ -242,4 +290,26 @@ function writeAndReload(file, before, next, action) {
   if (backup) console.log(`backup: ${backup}`);
 }
 
-main();
+// ADR 0015's two-mode shape: executed mode installs, imported mode is
+// side-effect free so remove-sidebar-summary can read the managed-row constants
+// from the one file that defines them, and tests can drive the migration without
+// touching anybody's config. The uninstaller used to re-declare the skeleton it
+// deletes, and this change already caught that drift: row 1 became
+// `state_icon · agent · state_text` here while the uninstaller still matched the
+// old two-row default, so removal would have left the table behind.
+if (require.main === module) main();
+
+module.exports = {
+  CCXRAY_ROWS,
+  DEFAULT_ROWS,
+  MANAGED_ROW_BY_TOKEN,
+  MANAGED_TOKENS,
+  SECTION_MARKER,
+  SUPERSEDED_ROW_TOKENS,
+  configHasManagedRows,
+  migrateRowsArray,
+  rowLineTokens,
+  rowsArrayBounds,
+  sameTokenSet,
+  sidebarSectionBounds,
+};

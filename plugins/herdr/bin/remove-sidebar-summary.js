@@ -4,17 +4,29 @@
 const fs = require('fs');
 const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/ccxray');
 
-const TOKENS = ['summary', 'ctx_bar', 'ctx_bar_unknown', 'ctx_bar_green', 'ctx_bar_yellow', 'ctx_bar_red'];
-const SECTION_MARKER = '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)';
+const {
+  DEFAULT_ROWS,
+  MANAGED_TOKENS,
+  SECTION_MARKER,
+} = require('./install-sidebar-summary');
+
+// Every token the installer manages, plus the generations it migrates away from.
+// `summary` and the single `ctx_bar` are gone from fresh installs but still sit
+// in configs written before the three-row layout, and uninstall has to clean
+// those too.
+const TOKENS = [...MANAGED_TOKENS, 'summary', 'ctx_bar'];
 // The skeleton install-sidebar-summary writes when it creates the table itself.
 // Removal drops the whole table only when it still matches this exactly, so a
 // table the user wrote (or later edited) keeps its other rows.
+//
+// Derived from the installer's own DEFAULT_ROWS rather than re-typed: these two
+// files disagreed the moment row 1 changed shape, and the symptom would have
+// been an uninstall that silently leaves an empty table behind.
 const MANAGED_SKELETON = [
   '[ui.sidebar.agents]',
   'row_gap = 0',
   'rows = [',
-  '["state_icon", "workspace", "tab"],',
-  '["agent"],',
+  ...DEFAULT_ROWS.split('\n').map(line => line.trim()),
   ']',
 ].join('\n');
 
