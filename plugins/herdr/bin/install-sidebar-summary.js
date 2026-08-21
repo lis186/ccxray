@@ -42,6 +42,13 @@ const SUPERSEDED_ROW_TOKENS = [
   ['summary'],
   ['tg', 'ty', 'tr'],
 ];
+// The row 1 shape earlier installers wrote. These are bare-string arrays
+// (no `$` prefix), so rowLineTokens returns `[]` for them — we match on the
+// normalized text content instead.
+const LEGACY_DEFAULT_ROWS_RE = [
+  /^\s*\["state_icon",\s*"workspace",\s*"tab"\],?\s*$/,
+  /^\s*\["agent"\],?\s*$/,
+];
 const DEFAULT_ROWS = '  ["state_icon", "agent", "state_text"],';
 const CCXRAY_ROWS = `${CTX_BAR_ROWS}\n${ROW3_ROWS}`;
 // Written only when this script creates the section itself, so
@@ -129,6 +136,22 @@ function migrateRowsArray(config, rows) {
       continue;
     }
     kept.push(line);
+  }
+
+  // The old installer's DEFAULT_ROWS (`state_icon workspace tab` + `agent`) are
+  // our rows, not the user's — replace them with the new shape. Without this, a
+  // table emitted by the previous installer keeps two legacy rows and renders
+  // four visible lines instead of three. codex round 1, P1.
+  {
+    const isLegacyDefault = line => LEGACY_DEFAULT_ROWS_RE.some(re => re.test(line));
+    const keptLines = kept.filter(line => !isLegacyDefault(line));
+    if (keptLines.length < kept.length) {
+      const firstRemoved = kept.findIndex(isLegacyDefault);
+      keptLines.splice(firstRemoved, 0, DEFAULT_ROWS);
+      removed.push('legacy default rows');
+    }
+    kept.length = 0;
+    kept.push(...keptLines);
   }
 
   let body = kept.join('\n');
@@ -305,6 +328,7 @@ module.exports = {
   MANAGED_ROW_BY_TOKEN,
   MANAGED_TOKENS,
   SECTION_MARKER,
+  LEGACY_DEFAULT_ROWS_RE,
   SUPERSEDED_ROW_TOKENS,
   configHasManagedRows,
   migrateRowsArray,

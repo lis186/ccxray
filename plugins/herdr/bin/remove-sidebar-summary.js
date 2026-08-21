@@ -22,13 +22,17 @@ const TOKENS = [...MANAGED_TOKENS, 'summary', 'ctx_bar'];
 // Derived from the installer's own DEFAULT_ROWS rather than re-typed: these two
 // files disagreed the moment row 1 changed shape, and the symptom would have
 // been an uninstall that silently leaves an empty table behind.
-const MANAGED_SKELETON = [
-  '[ui.sidebar.agents]',
-  'row_gap = 0',
-  'rows = [',
-  ...DEFAULT_ROWS.split('\n').map(line => line.trim()),
-  ']',
-].join('\n');
+// Both the new and legacy managed row-1 shapes, so removal recognizes any
+// table this installer ever created. codex round 1, P2a.
+const LEGACY_DEFAULT_ROWS = [
+  '["state_icon", "workspace", "tab"],',
+  '["agent"],',
+];
+const NEW_DEFAULT_ROWS = DEFAULT_ROWS.split('\n').map(line => line.trim());
+function makeSkeleton(defaults) {
+  return ['[ui.sidebar.agents]', 'row_gap = 0', 'rows = [', ...defaults, ']'].join('\n');
+}
+const MANAGED_SKELETONS = [makeSkeleton(NEW_DEFAULT_ROWS), makeSkeleton(LEGACY_DEFAULT_ROWS)];
 
 function normalizeBlock(block) {
   return block
@@ -50,7 +54,8 @@ function removeManagedSection(config, stripped) {
   const bodyStart = headerStart + header[0].length;
   const next = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m.exec(stripped.slice(bodyStart));
   const end = next ? bodyStart + next.index : stripped.length;
-  if (normalizeBlock(stripped.slice(headerStart, end)) !== MANAGED_SKELETON) return null;
+  const normalized = normalizeBlock(stripped.slice(headerStart, end));
+  if (!MANAGED_SKELETONS.some(skel => normalized === skel)) return null;
   const before = stripped.slice(0, marker).replace(/[ \t]*$/, '');
   return `${before.replace(/\n{3,}$/, '\n\n')}${stripped.slice(end).replace(/^\n+/, '')}`;
 }

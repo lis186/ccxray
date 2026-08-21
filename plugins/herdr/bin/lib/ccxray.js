@@ -1624,6 +1624,14 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     if (severity === 'green') severity = 'yellow';
     reasons.push('cache dropped after prompt change');
   }
+  // codex round 1, P2b: quota refusal must update severity/reasons, not just
+  // action — otherwise MC shows a green row with `action: 'wait for quota reset'`
+  // and excludes it from its attention filter.
+  const refusedCount = quotaRefusalCount(anchor);
+  if (refusedCount > 0) {
+    severity = 'red';
+    reasons.push(refusedCount > 1 ? `quota refused ${refusedCount}x` : 'quota refused');
+  }
 
   // INVARIANT(ADR 0005 shape): the ordering lives in paneConcerns, shared with
   // the sidebar badge's row-3 $alert — see PANE_CONCERN_TIERS. This chain used to

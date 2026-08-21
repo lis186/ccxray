@@ -1394,6 +1394,65 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
     assert.match(result.stdout, /superseded row removed: \$summary/);
   });
 
+  // codex round 1, P1: a table emitted by the previous installer carries legacy
+  // default rows (`state_icon workspace tab` + `agent`) that must be replaced,
+  // not just left behind — otherwise the card renders four lines.
+  it('replaces the legacy default rows from a plugin-managed table', () => {
+    const { result, after } = install([
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+      '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+      '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    // Legacy rows are gone, new row 1 is in place.
+    assert.equal(after.includes('"workspace"'), false, 'old workspace column must go');
+    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
+    // Seven config rows → three visible lines.
+    assert.equal(sidebarRows(after).length, 7);
+    assert.match(result.stdout, /legacy default rows/);
+  });
+
+  // codex round 1, P2a: removal must recognize a table emitted by the previous
+  // installer, or stripping its token rows leaves an empty table behind.
+  it('removes the whole section when it carries the legacy skeleton', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-legacy-remove-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui]',
+      'show_agent_labels_on_pane_borders = true',
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(result.status, 0, result.stderr);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(after, /\[ui\.sidebar\.agents\]/,
+      'the whole managed section must go');
+    assert.match(after, /show_agent_labels_on_pane_borders/,
+      'the user table must survive');
+  });
+
   it('Quick Start and the installer agree on what installed means', () => {
     const { configHasManagedRows } = require('../plugins/herdr/bin/install-sidebar-summary');
     assert.equal(configHasManagedRows(ACCUMULATED), false, 'the old generation is not installed');
@@ -1479,6 +1538,35 @@ describe('Herdr dashboard action deep-links the pane session', () => {
     assert.equal(resolvePaneSessionId({
       env: pluginEnv({}), paneId: 'w1:p1', context: { agent_session_known: true },
     }), null);
+  });
+});
+
+// codex round 1, P2b: a quota refusal must not leave Mission Control severity
+// green. The attention filter hides green rows, so a pane that got 429'd would
+// be invisible to the operator.
+describe('Herdr Mission Control marks a quota refusal red', () => {
+  it('updates severity and reasons when status 429 is observed', () => {
+    const T = 1787000000000;
+    const turn = {
+      id: 'q1', sessionId: 'sq1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'c1', maxContext: 200000, provider: 'anthropic',
+      agentId: 'herdr:w1:p1', cwd: '/work/quota', receivedAt: T,
+      usage: { input_tokens: 50000 }, cost: { cost: 1, confidence: 'exact' },
+      turnToolFail: false, status: 429,
+    };
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome([turn]), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    assert.equal(row.severity, 'red', 'a quota refusal must not stay green');
+    assert.ok(row.reasons.some(r => /quota refused/.test(r)));
+    assert.equal(row.action, 'wait for quota reset');
   });
 });
 
@@ -4177,8 +4265,8 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_red/);
     assert.match(config, /\$facts/);
     assert.match(config, /\$alert/);
-    // The user's own row is not ours to delete.
-    assert.match(config, /\["agent"\]/);
+    // The old `["agent"]` is one of our legacy rows, so it gets replaced.
+    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
     assert.match(result.stdout, /superseded row removed: \$summary/);
     assert.match(result.stdout, /migrated sidebar summary rows/);
   });
@@ -4282,8 +4370,9 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(config, /\["state_icon", "workspace", "tab"\]/);
-    assert.match(config, /\["agent"\]/);
+    // Legacy default rows are ours and get replaced. The user's content is
+    // the [terminal] section below the sidebar table.
+    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
     assert.match(config, /\[terminal\]/);
     assert.equal(config.match(/\[ui\.sidebar\.agents\]/g).length, 1);
   });
@@ -4316,7 +4405,7 @@ describe('Herdr plugin commands', () => {
     const config = fs.readFileSync(configPath, 'utf8');
     assert.match(config, /\$facts/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(config, /\["agent"\]/);
+    assert.match(config, /\["state_icon", "agent", "state_text"\]/);
     // One row each: a reinstall must not stack a second copy, which is the
     // add-only behaviour the migration replaced.
     assert.equal(config.match(/\$facts/g).length, 1);
