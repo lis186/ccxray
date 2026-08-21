@@ -137,7 +137,18 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
   // the value is client-supplied and lands in a persisted index field.
   let identity = hubIdentity;
   if (!hubIdentity && headers['x-ccxray-agent-id']) {
-    const fromHeader = hub.clientIdentityFromMessage({ agentId: headers['x-ccxray-agent-id'] });
+    // Node joins duplicate HTTP headers with ', '. A ccxray-launched shell that
+    // itself launches another agent prepends its own header value, so the raw
+    // string can be 'herdr:wY:old, X-Ccxray-Auth: ..., X-Ccxray-Agent-Id: herdr:w1D:new'.
+    // The LAST herdr:-prefixed segment is the innermost (newest) launch — take it.
+    const rawAgentId = String(headers['x-ccxray-agent-id']);
+    const segments = rawAgentId.split(',').map(s => {
+      const trimmed = s.trim();
+      const colonIdx = trimmed.indexOf(': ');
+      return colonIdx >= 0 && /^[A-Za-z]/.test(trimmed) ? trimmed.slice(colonIdx + 2) : trimmed;
+    });
+    const lastHerdr = [...segments].reverse().find(s => s.startsWith('herdr:')) || rawAgentId.trim();
+    const fromHeader = hub.clientIdentityFromMessage({ agentId: lastHerdr });
     if (fromHeader.agentId) identity = fromHeader;
   }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
