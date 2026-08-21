@@ -388,6 +388,125 @@ function toolFailureCount(turns) {
   return turns.slice(-6).filter(turnFailed).length;
 }
 
+// A quota/rate-limit REFUSAL that actually happened, counted over the same
+// last-6-turn window as toolFailureCount. `status` is an index field written at
+// every forward.js push site from `proxyRes.statusCode`, and a non-2xx response
+// is not short-circuited before the push, so a refused turn reaches the index as
+// `status: 429`. This is deliberately an OBSERVED event, not the prediction that
+// `~/.ccxray/usage-status/*.json` would support: quota forecasting and reset ETAs
+// are #571's surface, and mixing a forecast into an alert channel would make the
+// alert fire for something that has not gone wrong yet.
+function quotaRefusalCount(turns) {
+  return turns.slice(-6).filter(turn => Number(turn.status) === 429).length;
+}
+
+// INVARIANT(ADR 0005 shape): every surface that answers "what is the most
+// important thing about this pane right now" ranks the answers HERE. Two
+// surfaces used to answer it with orderings that contradicted each other:
+// contextSignal put context above every tool failure, while the Mission Control
+// action chain put `fail >= 2` above context and `cache dropped` above
+// `fail == 1`. The same pane therefore read "near full" on the sidebar and
+// "inspect last error" in Mission Control. A third ordering written for the
+// sidebar's row-3 $alert is exactly the failure shape ADR 0005 exists to stop.
+//
+// `sidebarOwned` marks a tier the three-row sidebar renders in a DIFFERENT row,
+// so row 3 must skip it or the layout repeats itself — the duplication this
+// refactor exists to remove (row 1 owns process state, row 2 owns context).
+// Mission Control is a single row with no such split, so it renders every tier.
+const PANE_CONCERN_TIERS = [
+  {
+    kind: 'no-telemetry',
+    sidebarOwned: true,
+    match: s => !s.hasTelemetry,
+    text: () => 'no ccxray telemetry',
+    action: () => 'relaunch via ccxray',
+  },
+  {
+    kind: 'quota-refused',
+    match: s => Number(s.refusedCount) > 0,
+    text: s => (Number(s.refusedCount) > 1 ? `quota refused ${s.refusedCount}x` : 'quota refused'),
+    action: () => 'wait for quota reset',
+  },
+  {
+    kind: 'blocked',
+    sidebarOwned: true,
+    match: s => s.status === 'blocked',
+    text: () => 'blocked',
+    action: () => 'inspect last error',
+  },
+  {
+    kind: 'stale',
+    match: s => Boolean(s.staleText),
+    text: s => s.staleText,
+    action: () => 'rescan transcripts',
+  },
+  {
+    kind: 'fail-multi',
+    match: s => Number(s.failures) >= 2,
+    text: s => `fail ${Number(s.failures)}x`,
+    action: () => 'inspect last error',
+  },
+  {
+    kind: 'ctx-high',
+    sidebarOwned: true,
+    match: s => Number.isFinite(s.ctxPct) && s.ctxPct > 80,
+    text: s => (s.ctxPct >= 90 ? 'full' : 'near full'),
+    action: () => 'compact or start fresh',
+  },
+  {
+    kind: 'fail-single',
+    match: s => Number(s.failures) === 1,
+    text: () => 'fail 1x',
+    action: () => 'inspect failed tool',
+  },
+  {
+    kind: 'cache-dropped',
+    match: s => Boolean(s.cacheDropped),
+    text: () => 'cache dropped after prompt change',
+    action: () => 'inspect prompt/tool diff',
+  },
+  {
+    kind: 'ctx-mid',
+    sidebarOwned: true,
+    match: s => Number.isFinite(s.ctxPct) && s.ctxPct > 40,
+    text: () => null,
+    action: () => 'checkpoint soon',
+  },
+  {
+    kind: 'ready',
+    sidebarOwned: true,
+    match: s => Boolean(s.ready),
+    text: () => null,
+    action: () => 'review output',
+  },
+];
+
+// A signal a caller does not have is absent, never false: Mission Control has no
+// transcript comparison, so it passes no `staleText` and the stale tier is
+// skipped there rather than asserted absent. Documented residual — the badge can
+// report `stale` for a pane whose Mission Control row cannot.
+function paneConcerns(signals = {}) {
+  return PANE_CONCERN_TIERS
+    .filter(tier => tier.match(signals))
+    .map(tier => ({
+      kind: tier.kind,
+      sidebarOwned: Boolean(tier.sidebarOwned),
+      text: tier.text(signals),
+      action: tier.action(signals),
+    }));
+}
+
+// The single imperative for a surface that renders every tier (Mission Control).
+function paneAction(signals = {}) {
+  return paneConcerns(signals)[0]?.action || null;
+}
+
+// Row 3's $alert: the top concern the sidebar does not already render elsewhere.
+function paneAlert(signals = {}) {
+  const concern = paneConcerns(signals).find(item => !item.sidebarOwned && item.text);
+  return concern ? { kind: concern.kind, text: concern.text } : null;
+}
+
 function contextSignal(turns, detail) {
   if (detail.ctxPct >= 90) return 'full';
   if (detail.ctxPct >= 80) return 'near full';
@@ -1489,14 +1608,21 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     reasons.push('cache dropped after prompt change');
   }
 
-  let action = null;
-  if (!turns.length) action = 'relaunch via ccxray';
-  else if (status === 'blocked' || failures >= 2) action = 'inspect last error';
-  else if (Number.isFinite(ctxPct) && ctxPct > 80) action = 'compact or start fresh';
-  else if (cacheDropped) action = 'inspect prompt/tool diff';
-  else if (failures === 1) action = 'inspect failed tool';
-  else if (Number.isFinite(ctxPct) && ctxPct > 40) action = 'checkpoint soon';
-  else if (severity === 'ready') action = 'review output';
+  // INVARIANT(ADR 0005 shape): the ordering lives in paneConcerns, shared with
+  // the sidebar badge's row-3 $alert — see PANE_CONCERN_TIERS. This chain used to
+  // rank `cache dropped` above `fail == 1` while the badge ranked every failure
+  // above context, so one pane could read "near full" on the sidebar and
+  // "inspect last error" here. The shared list ranks any failure above a dropped
+  // cache; that swap is this chain's only behaviour change.
+  const action = paneAction({
+    hasTelemetry: turns.length > 0,
+    refusedCount: quotaRefusalCount(anchor),
+    status,
+    failures,
+    ctxPct,
+    cacheDropped,
+    ready: severity === 'ready',
+  });
 
   const exactCost = turns.length > 0 && turns.every(turn => turn.cost?.confidence === 'exact');
   const unknownCost = turns.length > 0 && !turns.some(turn => turn.cost?.cost != null && turn.cost.confidence !== 'unknown');
@@ -2224,31 +2350,35 @@ function writeConfigAndReload(file, before, next, opts = {}) {
 }
 
 module.exports = {
+  aggCostText,
   backupConfigFile,
-  codexAgentArgs,
-  ensureProxy,
   capabilityPortfolio,
   capabilityReview,
-  currentWorkspaceScope,
-  findRepoRoot,
-  filterEntriesToWorkspace,
-  forgetRoutedPane,
+  codexAgentArgs,
   contextBand,
   contextSidebarColumns,
+  costFold,
+  currentWorkspaceScope,
+  ensureProxy,
+  filterEntriesToWorkspace,
+  findRepoRoot,
+  forgetRoutedPane,
+  formatContextBar,
   formatMoney,
   formatPercent,
-  formatContextBar,
   herdrAgentReport,
   herdrRuntime,
   missionControlSnapshot,
-  aggCostText,
-  costFold,
+  paneAction,
+  paneAlert,
+  paneConcerns,
   panePlacement,
   parseJsonOutput,
   parseStatus,
-  proxyEnvVars,
-  pluginStateDir,
   pluginRoot,
+  pluginStateDir,
+  proxyEnvVars,
+  quotaRefusalCount,
   readIndexTailEntries,
   recordRoutedPane,
   reportPaneTokens,

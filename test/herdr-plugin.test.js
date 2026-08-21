@@ -1027,6 +1027,107 @@ describe('Herdr aggregate cost confidence (ADR 0017)', () => {
   });
 });
 
+// INVARIANT(ADR 0005 shape): ONE ranked list answers "what is the most important
+// thing about this pane right now", for both the sidebar badge's row-3 $alert and
+// Mission Control's action. Two orderings used to contradict each other:
+// contextSignal ranked context above every tool failure, while the MC action
+// chain ranked `fail >= 2` above context and `cache dropped` above `fail == 1`.
+describe('Herdr pane concerns are ranked once (ADR 0005 shape)', () => {
+  const {
+    paneAction,
+    paneAlert,
+    paneConcerns,
+    quotaRefusalCount,
+  } = require('../plugins/herdr/bin/lib/ccxray');
+
+  it('ranks any tool failure above a dropped cache', () => {
+    const signals = { hasTelemetry: true, failures: 1, cacheDropped: true };
+    assert.equal(paneAction(signals), 'inspect failed tool');
+    assert.equal(paneAlert(signals).kind, 'fail-single');
+  });
+
+  it('row 3 skips the tiers rows 1 and 2 already render', () => {
+    // Repeating context on row 3 while row 2 shows the percentage, or repeating
+    // process state while row 1 shows it, is the duplication this layout exists
+    // to remove. Mission Control is a single row and still acts on both.
+    const ctxOnly = { hasTelemetry: true, ctxPct: 95 };
+    assert.equal(paneAlert(ctxOnly), null);
+    assert.equal(paneAction(ctxOnly), 'compact or start fresh');
+
+    const blocked = { hasTelemetry: true, status: 'blocked' };
+    assert.equal(paneAlert(blocked), null);
+    assert.equal(paneAction(blocked), 'inspect last error');
+
+    const dark = { hasTelemetry: false };
+    assert.equal(paneAlert(dark), null);
+    assert.equal(paneAction(dark), 'relaunch via ccxray');
+  });
+
+  it('keeps the signed-off $alert order once row-owned tiers are dropped', () => {
+    const signals = {
+      hasTelemetry: true,
+      refusedCount: 2,
+      staleText: 'stale 3m',
+      failures: 3,
+      cacheDropped: true,
+      ctxPct: 95,
+      status: 'blocked',
+    };
+    assert.deepEqual(
+      paneConcerns(signals).filter(concern => !concern.sidebarOwned).map(concern => concern.kind),
+      ['quota-refused', 'stale', 'fail-multi', 'cache-dropped'],
+      'quota > stale > fail > cache-dropped is owner-signed-off');
+    assert.equal(paneAlert(signals).text, 'quota refused 2x');
+  });
+
+  it('counts a quota refusal as an observed 429, never a forecast', () => {
+    assert.equal(quotaRefusalCount([{ status: 200 }, { status: 429 }, { status: 200 }]), 1);
+    assert.equal(quotaRefusalCount([{ status: 200 }]), 0);
+    // Same last-six window as toolFailureCount, so an old refusal ages out.
+    const aged = [{ status: 429 }].concat(Array.from({ length: 6 }, () => ({ status: 200 })));
+    assert.equal(quotaRefusalCount(aged), 0);
+  });
+
+  // Asserted through the pre-existing missionControlSnapshot API on purpose: the
+  // old code answers this one (with the other ordering) instead of throwing on a
+  // missing export, so the red it produces is the ordering change and nothing else.
+  it('Mission Control acts on the failure, not the dropped cache', () => {
+    const T = 1787000000000;
+    const base = {
+      sessionId: 'mc-order-1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'aaaa', maxContext: 200000,
+      // The pane's own agentId is what attributes a turn to its row.
+      agentId: 'herdr:w1:p1', cwd: '/work/mc-order', provider: 'anthropic',
+    };
+    const turns = [
+      {
+        ...base, id: 'mo1', receivedAt: T, sysHash: 'h1', turnToolFail: false,
+        usage: { input_tokens: 10000, cache_read_input_tokens: 90000 },
+      },
+      {
+        ...base, id: 'mo2', receivedAt: T + 1000, sysHash: 'h2', turnToolFail: true,
+        usage: { input_tokens: 100000, cache_read_input_tokens: 0 },
+      },
+    ];
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome(turns), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    // Pin the fixture before trusting the verdict: a fixture that stopped
+    // dropping the cache would make this pass for the wrong reason.
+    assert.equal(row.cacheDropped, true, 'fixture must actually drop the cache');
+    assert.equal(row.failures, 1, 'fixture must carry exactly one failure');
+    assert.ok(row.ctxPct <= 80, 'context must stay below the tier that outranks both');
+    assert.equal(row.action, 'inspect failed tool');
+  });
+});
+
 describe('ensureProxy cold start', () => {
   // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
   // is forked only by `ccxray <agent>` without --port). ensureProxy used
