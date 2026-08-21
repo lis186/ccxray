@@ -369,6 +369,11 @@ describe('export-sync', () => {
     process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
     process.env.CCXRAY_AGENT_ID = 'test-agent-001';
     delete process.env.LOGS_DIR;
+    // Save and restore ambient DISABLE — this test bypasses setup()/cleanup() and manages
+    // its own env, but afterEach(cleanup) still runs. Without saving, cleanup deletes the
+    // ambient value and later files under --test-isolation=none lose the safety flag.
+    const savedDisable = process.env.CCXRAY_EXPORT_DISABLE;
+    _savedFlags = { disable: savedDisable };
     delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {
