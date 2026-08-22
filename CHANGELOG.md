@@ -68,7 +68,7 @@
 ### Architecture
 
 - **ADR 0013** — persist the `beta1m` fact, derive the session window (expert-panel design: Kleppmann/Hickey/Helland/Bailis).
-- **ADR 0010 rewritten by #350** — per-conversation coreHash ownership replaces per-turn early-exit.
+- **ADR 0010 rewritten by #350** — per-conversation coreHash ownership replaces the per-turn early-exit in the **batch** path (`wfInferLanes`) only; the live path and turn list keep the per-turn form.
 
 ## 2.0.0
 
