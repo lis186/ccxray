@@ -219,6 +219,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 // is shared with ws-proxy.js — see server/internal-headers.js for why an
 // allowlist here leaked the pane-identity header upstream.
 const { isInternalHeader } = require('./internal-headers');
+const { armClientShutdown } = require('./client-shutdown');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -662,7 +663,7 @@ function promptClaudeStatusline() {
   }
 }
 
-function spawnAgent(command, port, args, onExit) {
+function spawnAgent(command, port, args, onExit, opts = {}) {
   const doSpawn = () => {
     const { spawn } = require('child_process');
     const launch = providers.getAgentLaunch(command, port, args);
@@ -681,6 +682,7 @@ function spawnAgent(command, port, args, onExit) {
       stdio: 'inherit',
       env: launch.env,
     });
+    if (opts.onChild) opts.onChild(child);
     child.on('error', (err) => {
       if (err.code === 'ENOENT') {
         console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
@@ -694,8 +696,14 @@ function spawnAgent(command, port, args, onExit) {
       finish(code ?? (signal === 'SIGINT' ? 130 : 1));
     });
     process.on('SIGINT', () => {});
-    process.on('SIGTERM', () => child.kill('SIGTERM'));
-    process.on('SIGHUP', () => child.kill('SIGHUP'));
+    // INVARIANT (hub client mode): when the caller armed its own handlers
+    // BEFORE registering with the hub, installing a second pair here would
+    // double-forward the signal. The caller's handlers read the child through
+    // opts.onChild, so they cover this window too. See armClientShutdown.
+    if (!opts.signalsOwnedByCaller) {
+      process.on('SIGTERM', () => child.kill('SIGTERM'));
+      process.on('SIGHUP', () => child.kill('SIGHUP'));
+    }
   };
 
   if (command === 'claude') {
@@ -1025,6 +1033,12 @@ async function startClientMode(lock) {
     agentType: process.env.CCXRAY_AGENT_TYPE || agentCommand || '',
   };
 
+  // INVARIANT: armed before registerClient so no SIGHUP/SIGTERM can land on a
+  // registered-but-unarmed process — see server/client-shutdown.js for why
+  // reordering these two lines silently reintroduces the phantom-client window.
+  let agentChild = null;
+  const clientShuttingDown = armClientShutdown(lock, () => agentChild);
+
   try {
     const reg = await hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
     if (!reg) {
@@ -1068,12 +1082,21 @@ async function startClientMode(lock) {
     hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
   });
 
+  // INVARIANT: a signal that landed in the register→spawn window already began
+  // the unregister-and-exit path, and the two are racing — spawning now orphans
+  // the agent. Both this gate and the spawn are synchronous from here, so no
+  // signal can be delivered between them. See server/client-shutdown.js.
+  if (clientShuttingDown()) return;
+
   // Spawn agent pointing to hub
   process.env.CCXRAY_HUB_CLIENT_PID = String(process.pid);
   spawnAgent(agentCommand, lock.port, agentArgs, (code) => {
     hub.unregisterClient(lock, process.pid).finally(() => {
       process.exit(code);
     });
+  }, {
+    onChild: (child) => { agentChild = child; },
+    signalsOwnedByCaller: true,
   });
 }
 

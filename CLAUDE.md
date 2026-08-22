@@ -107,6 +107,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/routes/costs.js` | Cost budget endpoints |
 | `server/hub.js` | Multi-project hub: lockfile (`~/.ccxray/hub.json`), discovery (with orphan port probe fallback), client registration, idle shutdown (injectable via setOnShutdown), crash auto-recovery |
 | `server/auth.js` | API key auth middleware (enabled via `AUTH_TOKEN` env) |
+| `server/client-shutdown.js` | Hub-client graceful shutdown. `armClientShutdown` must be armed BEFORE `hub.registerClient()` — an unarmed SIGHUP/SIGTERM keeps its OS default disposition and kills the process without unregistering, leaving a phantom client until the hub's 30s dead-client sweep |
 | `server/openai-response.js` | OpenAI Responses API helpers: response-object detection, field extraction |
 | `server/ws-proxy.js` | OpenAI WebSocket transport proxy for `/v1/responses` and `/v1/realtime` upgrades. Tracks active sessions + pending `recordWebSocketEntry` promises so `drainWebSocketProxy()` can force-finalize stragglers and await writes on shutdown. Tunables: `CCXRAY_WS_IDLE_TIMEOUT_MS` (default 60s), `CCXRAY_WS_MAX_QUEUE_BYTES` (default 4 MiB; caps client→upstream buffer while upstream is connecting) |
 | `server/entry.js` | `INDEX_FIELDS`, `buildIndexLine`, `deploymentFields` — the index-line schema definition. Invariants reference this file |
