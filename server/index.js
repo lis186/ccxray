@@ -219,7 +219,7 @@ const HOP_BY_HOP_HEADERS = new Set([
 // is shared with ws-proxy.js — see server/internal-headers.js for why an
 // allowlist here leaked the pane-identity header upstream.
 const { isInternalHeader } = require('./internal-headers');
-const { armClientShutdown } = require('./client-shutdown');
+const { armClientShutdown, signalExitCode } = require('./client-shutdown');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -665,6 +665,11 @@ function promptClaudeStatusline() {
 
 function spawnAgent(command, port, args, onExit, opts = {}) {
   const doSpawn = () => {
+    // INVARIANT: re-checked HERE, not only at the call site. On the interactive
+    // path this function runs after promptClaudeStatusline()'s promise settles,
+    // so a signal can have begun the caller's shutdown while the prompt was
+    // waiting — spawning then orphans the agent. See server/client-shutdown.js.
+    if (opts.isShuttingDown && opts.isShuttingDown()) return;
     const { spawn } = require('child_process');
     const launch = providers.getAgentLaunch(command, port, args);
     let finished = false;
@@ -693,14 +698,15 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
       finish(1);
     });
     child.on('exit', (code, signal) => {
-      finish(code ?? (signal === 'SIGINT' ? 130 : 1));
+      finish(code ?? signalExitCode(signal));
     });
-    process.on('SIGINT', () => {});
-    // INVARIANT (hub client mode): when the caller armed its own handlers
-    // BEFORE registering with the hub, installing a second pair here would
-    // double-forward the signal. The caller's handlers read the child through
-    // opts.onChild, so they cover this window too. See armClientShutdown.
+    // INVARIANT (hub client mode): when the caller armed its own handlers BEFORE
+    // registering with the hub, installing these would double-handle the signal.
+    // The caller's handlers read the child through opts.onChild, so they cover
+    // this window too — including SIGINT, which they no-op while the agent owns
+    // the terminal exactly as this does. See server/client-shutdown.js.
     if (!opts.signalsOwnedByCaller) {
+      process.on('SIGINT', () => {});
       process.on('SIGTERM', () => child.kill('SIGTERM'));
       process.on('SIGHUP', () => child.kill('SIGHUP'));
     }
@@ -1033,17 +1039,28 @@ async function startClientMode(lock) {
     agentType: process.env.CCXRAY_AGENT_TYPE || agentCommand || '',
   };
 
-  // INVARIANT: armed before registerClient so no SIGHUP/SIGTERM can land on a
+  // INVARIANT: armed before registerClient so no signal can land on a
   // registered-but-unarmed process — see server/client-shutdown.js for why
-  // reordering these two lines silently reintroduces the phantom-client window.
+  // reordering these lines silently reintroduces the phantom-client window.
+  // `registration` is handed to the shutdown path so it waits for an in-flight
+  // register before unregistering; the two are unordered socket round trips.
   let agentChild = null;
-  const clientShuttingDown = armClientShutdown(lock, () => agentChild);
+  let registration = null;
+  let currentLock = lock;
+  const clientShutdown = armClientShutdown(() => currentLock, () => agentChild, {
+    getRegistration: () => registration,
+  });
 
   try {
-    const reg = await hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
+    registration = hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
+    const reg = await registration;
     if (!reg) {
       console.error('\x1b[31mHub rejected client registration.\x1b[0m');
-      process.exit(1);
+      // Through the shutdown path, not process.exit: the hub may have applied
+      // the registration and lost only the reply, and a bare exit here would
+      // leave that slot held until the 30s sweep.
+      clientShutdown.shutdown(1);
+      return;
     }
 
     // Auto-open browser for the first client connecting to this hub
@@ -1073,29 +1090,43 @@ async function startClientMode(lock) {
     }
   } catch (err) {
     console.error(`\x1b[31mFailed to register with hub: ${err.message}\x1b[0m`);
-    process.exit(1);
+    // Same reason as the !reg branch above. This continuation was attached
+    // before any shutdown's, so a bare exit here wins the race against it.
+    clientShutdown.shutdown(1);
+    return;
   }
 
   // Monitor hub health and auto-recover
   hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
-    // Re-register with new hub (newLock has sockPath from lockfile)
-    hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
+    // Re-register with new hub (newLock has sockPath from lockfile).
+    // Both are published to the shutdown path: unregistering from the DEAD hub
+    // releases nothing, and a shutdown racing this re-registration would let the
+    // new hub apply the register after the unregister — a phantom on the new
+    // hub. See server/client-shutdown.js.
+    // A shutdown that already captured the previous registration will never see
+    // a promise created after it, so re-registering now would hand the new hub a
+    // pid that is on its way out.
+    if (clientShutdown.isShuttingDown()) return;
+    currentLock = newLock;
+    registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
   });
 
-  // INVARIANT: a signal that landed in the register→spawn window already began
-  // the unregister-and-exit path, and the two are racing — spawning now orphans
-  // the agent. Both this gate and the spawn are synchronous from here, so no
-  // signal can be delivered between them. See server/client-shutdown.js.
-  if (clientShuttingDown()) return;
+  // A signal that landed in the register→spawn window already began the
+  // unregister-and-exit path — spawning now orphans the agent. spawnAgent
+  // re-checks this immediately before spawn() as well, because the interactive
+  // path defers the spawn behind a prompt. See server/client-shutdown.js.
+  if (clientShutdown.isShuttingDown()) return;
 
   // Spawn agent pointing to hub
   process.env.CCXRAY_HUB_CLIENT_PID = String(process.pid);
+  // The agent's exit routes through the SAME shutdown path as a signal, so a
+  // signal arriving while this unregister is in flight cannot replace the
+  // agent's exit code with its own.
   spawnAgent(agentCommand, lock.port, agentArgs, (code) => {
-    hub.unregisterClient(lock, process.pid).finally(() => {
-      process.exit(code);
-    });
+    clientShutdown.shutdown(code);
   }, {
     onChild: (child) => { agentChild = child; },
+    isShuttingDown: clientShutdown.isShuttingDown,
     signalsOwnedByCaller: true,
   });
 }
