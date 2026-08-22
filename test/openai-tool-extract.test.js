@@ -6,6 +6,7 @@ const {
   extractOpenAIToolCallIds,
   extractMcpFromExecInput,
   extractMcpFromUseToolArgs,
+  OPENAI_TOOL_CALL_TYPES,
 } = require('../server/helpers');
 
 // #577: extractOpenAIToolCalls missed custom_tool_call, causing 98.9% of
@@ -151,5 +152,35 @@ describe('#577 wrapped event format', () => {
     ];
     const counts = extractOpenAIToolCalls(events);
     assert.equal(counts['Bash'], 1);
+  });
+});
+
+describe('#577 fable review fixes', () => {
+  it('both extractors use the same OPENAI_TOOL_CALL_TYPES set', () => {
+    // Pin: adding a new type to the Set covers both extractors
+    assert.ok(OPENAI_TOOL_CALL_TYPES.has('custom_tool_call'));
+    assert.ok(OPENAI_TOOL_CALL_TYPES.has('function_call'));
+    assert.ok(OPENAI_TOOL_CALL_TYPES.has('tool_call'));
+  });
+
+  it('duplicate mcp name in one exec input counts each occurrence', () => {
+    const events = [
+      {
+        type: 'custom_tool_call',
+        call_id: 'c1',
+        name: 'exec',
+        input: 'await tools.mcp__a({x:1}); await tools.mcp__a({x:2});',
+      },
+    ];
+    const counts = extractOpenAIToolCalls(events);
+    assert.equal(counts['mcp__a'], 2, 'two calls to same MCP tool = count 2');
+    assert.equal(counts['Bash'], 1);
+  });
+
+  it('extractMcpFromExecInput is safe across sequential calls (no /g/ state leak)', () => {
+    const a = extractMcpFromExecInput('tools.mcp__x({})');
+    const b = extractMcpFromExecInput('tools.mcp__y({})');
+    assert.deepEqual(a, ['mcp__x']);
+    assert.deepEqual(b, ['mcp__y']);
   });
 });

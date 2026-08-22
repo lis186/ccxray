@@ -852,16 +852,13 @@ function buildToolSources(entry) {
 // Server-side alias map for Codex tool names (mirrors client CODEX_TOOL_ALIASES).
 const OPENAI_TOOL_ALIASES = { exec_command: 'Bash', shell: 'Bash', read_mcp_resource: 'Read', apply_patch: 'Edit' };
 const OPENAI_PROCESS_TOOLS = new Set(['exec', 'exec_command', 'shell', 'run_terminal_command', 'process']);
+// #577: shared predicate — both extractors use this, so new types are added once
+const OPENAI_TOOL_CALL_TYPES = new Set(['function_call', 'custom_tool_call', 'tool_call']);
 
 // #577: extract embedded MCP tool names from Codex exec input (JavaScript code string)
-const MCP_EXEC_RE = /tools\.(mcp__\w+)/g;
 function extractMcpFromExecInput(input) {
   if (typeof input !== 'string') return [];
-  const names = [];
-  let m;
-  while ((m = MCP_EXEC_RE.exec(input)) !== null) names.push(m[1]);
-  MCP_EXEC_RE.lastIndex = 0;
-  return names;
+  return [...input.matchAll(/tools\.(mcp__\w+)/g)].map(m => m[1]);
 }
 
 // #577: extract MCP tool name from Grok use_tool arguments (JSON with tool_name field)
@@ -883,8 +880,7 @@ function extractOpenAIToolCalls(responseEventsOrOutput) {
     const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
     const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
-    // #577 fix 1: add custom_tool_call (aligns with extractOpenAIToolCallIds)
-    if (item.type !== 'function_call' && item.type !== 'custom_tool_call' && item.type !== 'tool_call') continue;
+    if (!OPENAI_TOOL_CALL_TYPES.has(item.type)) continue;
     const itemKey = item.call_id || item.id || '';
     if (itemKey && seen.has(itemKey)) continue;
     if (itemKey) seen.add(itemKey);
@@ -922,7 +918,7 @@ function extractOpenAIToolCallIds(responseEventsOrOutput) {
     const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
     const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
-    if (item.type !== 'function_call' && item.type !== 'custom_tool_call' && item.type !== 'tool_call') continue;
+    if (!OPENAI_TOOL_CALL_TYPES.has(item.type)) continue;
     const callId = item.call_id || item.id;
     if (!callId || seen.has(callId)) continue;
     seen.add(callId);
@@ -1217,7 +1213,7 @@ module.exports = {
   extractOpenAIToolCallIds,
   extractOpenAITurnToolFail, extractOpenAITurnToolResults,
   decodeCodexToolOutput, CODEX_ASYNC_START, aggregateToolFailResults,
-  OPENAI_TOOL_ALIASES, OPENAI_PROCESS_TOOLS,
+  OPENAI_TOOL_ALIASES, OPENAI_PROCESS_TOOLS, OPENAI_TOOL_CALL_TYPES,
   extractMcpFromExecInput, extractMcpFromUseToolArgs,
   extractDuplicateToolCalls,
   scanCredentials,
