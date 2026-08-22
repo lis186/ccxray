@@ -79,8 +79,12 @@ describe('hub client signal lifecycle', () => {
     const claude = path.join(binDir, 'claude');
     fs.writeFileSync(claude, [
       '#!/bin/sh',
-      `echo $$ > ${JSON.stringify(agentPidFile)}`,
+      // Trap BEFORE publishing the pid: the test treats the pid file as proof
+      // the agent is ready to be closed, and a pid published ahead of the trap
+      // would let SIGHUP kill the shell outright — which the client reports as
+      // exit 1 rather than the agent's own 0.
       "trap 'exit 0' HUP TERM INT",
+      `echo $$ > ${JSON.stringify(agentPidFile)}`,
       'while :; do sleep 1; done',
       '',
     ].join('\n'));
@@ -117,8 +121,25 @@ describe('hub client signal lifecycle', () => {
       }
       hubPid = before.pid;
 
+      // The premise is "a pane RUNNING AN AGENT is closed". Without this wait
+      // the kill lands while the client is still between registerClient() and
+      // its signal handlers, so the assertion below was measuring that window
+      // rather than the unregister path (and the fake agent never even ran).
+      await waitFor(() => {
+        const pid = Number(fs.readFileSync(agentPidFile, 'utf8').trim());
+        return pid > 0 && pidAlive(pid);
+      });
+
       client.kill('SIGHUP');
       await waitForExit(client);
+
+      // Half of a pair with test/client-shutdown.test.js: with an agent running
+      // the client passes through the agent's exit code, and the agent handles
+      // SIGHUP and exits 0. The other half asserts the no-agent path exits 0
+      // too, so closing a pane reports the same code on both sides of the
+      // register→spawn window.
+      assert.equal(client.exitCode, 0);
+      assert.equal(client.signalCode, null);
 
       const after = await waitFor(async () => {
         const status = await hubStatus(home);
