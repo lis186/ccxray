@@ -184,3 +184,33 @@ describe('#577 fable review fixes', () => {
     assert.deepEqual(b, ['mcp__y']);
   });
 });
+
+describe('#577 codex review P2 fixes', () => {
+  // P2-1: .done must win over .added when both carry the same call_id
+  it('prefers .done over .added so MCP names in input are extracted', () => {
+    const events = [
+      // .added arrives first with empty input
+      {
+        type: 'response.output_item.added',
+        item: { type: 'custom_tool_call', call_id: 'c1', name: 'exec', input: '' },
+      },
+      // .done arrives later with real input
+      {
+        type: 'response.output_item.done',
+        item: { type: 'custom_tool_call', call_id: 'c1', name: 'exec', input: 'const r = await tools.mcp__node_repl__js({code:"1"});' },
+      },
+    ];
+    const counts = extractOpenAIToolCalls(events);
+    assert.equal(counts['Bash'], 1);
+    assert.equal(counts['mcp__node_repl__js'], 1, '.done input should be used, not .added empty input');
+  });
+
+  // P2-2: tool_name fallback for custom_tool_call items
+  it('reads tool_name when name is absent (custom_tool_call shape)', () => {
+    const events = [
+      { type: 'custom_tool_call', call_id: 'c1', tool_name: 'exec_command' },
+    ];
+    const counts = extractOpenAIToolCalls(events);
+    assert.equal(counts['Bash'], 1, 'tool_name should be read and aliased');
+  });
+});

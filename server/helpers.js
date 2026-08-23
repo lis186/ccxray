@@ -873,18 +873,27 @@ function extractMcpFromUseToolArgs(args) {
 function extractOpenAIToolCalls(responseEventsOrOutput) {
   const counts = {};
   if (!Array.isArray(responseEventsOrOutput)) return counts;
-  const seen = new Set();
+  // codex-review P2-1: .done carries the complete payload (input/arguments);
+  // .added arrives first with empty fields and poisons `seen`. Process .done
+  // first so the complete item wins; .added is the fallback only.
+  const sorted = [];
   for (const ev of responseEventsOrOutput) {
-    // WS events: wrapped in { type: 'response.output_item.done', item: {...} }
-    // HTTP output[]: flat items { type: 'function_call', name: '...', ... }
     const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
+    sorted.push({ ev, done: isEvent && ev.type === 'response.output_item.done' });
+  }
+  sorted.sort((a, b) => (b.done ? 1 : 0) - (a.done ? 1 : 0));
+
+  const seen = new Set();
+  for (const { ev } of sorted) {
+    const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
     if (!OPENAI_TOOL_CALL_TYPES.has(item.type)) continue;
     const itemKey = item.call_id || item.id || '';
     if (itemKey && seen.has(itemKey)) continue;
     if (itemKey) seen.add(itemKey);
-    const rawName = item.name || item.function?.name;
+    // codex-review P2-2: include item.tool_name (aligns with extractOpenAIToolCallIds + importer)
+    const rawName = item.name || item.function?.name || item.tool_name;
     if (!rawName) continue;
 
     // #577 fix 3: Grok use_tool gateway — extract real MCP tool name
