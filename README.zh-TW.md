@@ -33,6 +33,8 @@ npx ccxray grok
 
 launcher 參數由 provider registry 管理。目前支援 `claude`、`codex` 與 `grok`；未知的 provider command 會直接失敗，避免靜默啟動未設定的 proxy。
 
+若要在 Herdr 中使用 ccxray，請看 [`plugins/herdr`](plugins/herdr) 的安裝與操作說明，以及 [Herdr 支援說明](docs/herdr-support.md) 的完整 Provider 功能矩陣與已知限制。
+
 ### 其他執行方式
 
 ```bash
