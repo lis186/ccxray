@@ -1,6 +1,6 @@
-# Wire Protocol Reference: Claude Code vs Codex
+# Wire Protocol Reference: Claude Code, Codex, and Grok
 
-> This document records observable wire-level behavior of two AI coding agents
+> This document records observable wire-level behavior of Claude Code, Codex, and Grok
 > as seen by the ccxray proxy. It is **not a spec** — it documents what each
 > agent actually sends on the wire, which may differ from official documentation
 > and may change without notice.

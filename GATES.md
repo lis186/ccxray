@@ -1,62 +1,46 @@
-# Gates: Herdr sidebar three-row layout — live verification
+# Gates: Herdr release-level support documentation
 
-Scope: prove the three-row layout works on real traffic from all three providers (claude/codex/grok), end-to-end through the actual Herdr sidebar rendering path.
+Scope: repair the three-language Herdr support documentation and README navigation until the independent Fable judge accepts the release contract.
 
-## Pre-conditions
+- [x] G1: The working tree is based on the merged Herdr parser baseline used by the support claims.
+  CHECK: git merge-base --is-ancestor d8176cc HEAD && git grep -q "custom_tool_call" server/helpers.js && git grep -q "use_tool" server/helpers.js && echo baseline-ok
+  EXPECT: baseline-ok
+  EVIDENCE: baseline-ok
 
-- [x] G0: plugin root switched to this worktree
-  EVIDENCE: `herdr plugin link` output confirmed `plugin_root: herdr-sidebar-ux/plugins/herdr`
+- [x] G2: English, Traditional Chinese, and Japanese guides each define the complete support legend and use the same four status meanings.
+  CHECK: node -e "const fs=require('fs'); const files=['docs/herdr-support.md','docs/herdr-support.zh-TW.md','docs/herdr-support.ja.md']; const ok=files.every(f=>fs.existsSync(f)&&/✅/.test(fs.readFileSync(f,'utf8'))&&/△/.test(fs.readFileSync(f,'utf8'))&&/❌/.test(fs.readFileSync(f,'utf8'))&&/—/.test(fs.readFileSync(f,'utf8'))); if(!ok) process.exit(1); console.log('legend-ok')"
+  EXPECT: legend-ok
+  EVIDENCE: legend-ok
 
-## Row 3 token production (badge path, all providers)
+- [x] G3: All three guides carry the same semantic support contract, including notifications, not-linked identity safety, Weather/default-off behavior, reversible sidebar changes, context-window provenance, reset-time qualification, source-of-truth references, and the known plugin limitations.
+  CHECK: node -e "const fs=require('fs'); const terms=['Notifications','not linked','Weather','reversible','Context window','Reset time','source of truth','lower bound','duplicate']; const files=['docs/herdr-support.md','docs/herdr-support.zh-TW.md','docs/herdr-support.ja.md']; const isGlossaryLine=line=>{const s=line.toLowerCase(); return terms.every(t=>s.includes(t.toLowerCase()))}; const ok=files.every(f=>{const lines=fs.readFileSync(f,'utf8').split(/\r?\n/); const glossaryLines=lines.filter(isGlossaryLine); const body=lines.filter(line=>!isGlossaryLine(line)).join('\n').toLowerCase(); return glossaryLines.length===1&&terms.every(t=>body.includes(t.toLowerCase()))}); if(!ok) process.exit(1); console.log('semantic-parity-ok')"
+  EXPECT: semantic-parity-ok
+  EVIDENCE: semantic-parity-ok
 
-- [x] G1: claude pane renders $facts when healthy
-  EVIDENCE: real index session d30c3337 → `facts: $53.47 · 2.8h`, model opus-4-6, band green
+- [x] G4: Capability claims distinguish complete support from observation-dependent or heuristic support, and every such limitation points to the wire/confidence evidence.
+  CHECK: node -e "const fs=require('fs'); const files=['docs/herdr-support.md','docs/herdr-support.zh-TW.md','docs/herdr-support.ja.md']; const ok=files.every(f=>{const s=fs.readFileSync(f,'utf8'); return s.includes('wire-protocol-reference.md')&&s.includes('△')}); if(!ok) process.exit(1); console.log('confidence-claims-ok')"
+  EXPECT: confidence-claims-ok
+  EVIDENCE: confidence-claims-ok
 
-- [x] G2: codex pane renders $facts when healthy (WS status 101 does NOT trigger alert)
-  EVIDENCE: real index session 01a022ed → `facts: $0.25+ · 43m`, model gpt-5.6-sol, no false alert
+- [x] G5: The three guides expose a symmetric language switch at the top, and all README entry points target the matching guide.
+  CHECK: node -e "const fs=require('fs'); const files=['docs/herdr-support.md','docs/herdr-support.zh-TW.md','docs/herdr-support.ja.md']; const ok=files.every(f=>{const s=fs.readFileSync(f,'utf8'); return files.every(g=>s.includes(g.replace('docs/','')))}); if(!ok) process.exit(1); console.log('language-switch-ok')"
+  EXPECT: language-switch-ok
+  EVIDENCE: language-switch-ok
 
-- [x] G3: grok pane renders $facts
-  EVIDENCE: real index session 01a022e9 → `facts: $0.33 · 47m`, model grok-4.6-build
+- [x] G6: README.md and README.zh-TW.md use `### Herdr plugin`, README.ja.md uses `### Herdr プラグイン`, and all four README entry points have parallel Herdr installation/quick-start structure and language-appropriate links.
+  CHECK: node -e "const fs=require('fs'); const specs=[['README.md','### Herdr plugin',['docs/herdr-support.md']],['README.zh-TW.md','### Herdr plugin',['docs/herdr-support.zh-TW.md']],['README.ja.md','### Herdr プラグイン',['docs/herdr-support.ja.md']],['plugins/herdr/README.md',null,['../../docs/herdr-support.md','../../docs/herdr-support.zh-TW.md','../../docs/herdr-support.ja.md']]]; const install=/herdr plugin install[\s\S]*herdr plugin action invoke/; const ok=specs.every(([file,heading,targets])=>{const s=fs.readFileSync(file,'utf8'); return (!heading||s.split(/\r?\n/).includes(heading))&&install.test(s)&&targets.every(target=>s.includes(target))}); if(!ok) process.exit(1); console.log('readme-entry-ok')"
+  EXPECT: readme-entry-ok
+  EVIDENCE: readme-entry-ok
 
-- [x] G4: alert token produced when a tool failure exists
-  EVIDENCE: smoke test `codex with fail` → `alert: fail 1x`, `facts: undefined`
+- [x] G7: All relative Markdown links in the changed documentation resolve, every resolved relative Markdown target is git-tracked, the two localized guides are explicitly git-tracked, and the diff has no whitespace errors.
+  CHECK: git diff --check && git ls-files --error-unmatch docs/herdr-support.zh-TW.md docs/herdr-support.ja.md >/dev/null && node -e "const fs=require('fs'),path=require('path'),{execFileSync}=require('child_process'); const files=['README.md','README.zh-TW.md','README.ja.md','plugins/herdr/README.md','docs/herdr-support.md','docs/herdr-support.zh-TW.md','docs/herdr-support.ja.md','docs/wire-protocol-reference.md']; const re=/\]\(([^)#]+)(?:#[^)]+)?\)/g; for(const f of files){const s=fs.readFileSync(f,'utf8'); let m; while((m=re.exec(s))){const target=m[1]; if(/^(https?:|mailto:|#)/.test(target)) continue; const p=path.resolve(path.dirname(f),target); if(!fs.existsSync(p)) throw new Error(f+' -> '+target); if(path.extname(p).toLowerCase()==='.md'){const rel=path.relative(process.cwd(),p); try{execFileSync('git',['ls-files','--error-unmatch','--',rel],{stdio:'ignore'})}catch{throw new Error('untracked Markdown target: '+f+' -> '+target)}}}} console.log('links-and-tracked-ok')"
+  EXPECT: links-and-tracked-ok
+  EVIDENCE: links-and-tracked-ok
 
-## Row 1 state_labels
+- [x] G8: An independent Fable review has checked every finding against the gates and explicitly says either CONTINUE or RELEASE.
+  EVIDENCE: Native Fable current-diff review explicitly returned `VERDICT: RELEASE`; Claude independently verified the cited current-tree evidence.
 
-- [x] G5: located pane clears state_labels; unlocated pane sets them
-  EVIDENCE: `herdr pane get wY:p35` shows `state_labels: {blocked/done/idle/unknown/working: "ccxray: not linked"}` (correct for unlocated); located pane test → `--clear-state-labels` in args
-
-## Row 2 context-only tail
-
-- [x] G6: ctx_bar tail shows cache%, not 'full'/'stale'/alert text
-  EVIDENCE: smoke test `claude near-full` (85%) → `facts: $5.00 · 60m`, NO `full` in ctx_bar; `ctx_bar_red` contains sparkline + pct + cache, not `near full`
-
-## Installer migration
-
-- [x] G7: running install on user's actual config produces exactly 7 config rows / 3 visible lines
-  EVIDENCE: real config migrated: 3 superseded rows removed ($ctx $model $cost, $tg $ty $tr, $summary), result has 7 rows (state_icon/agent/state_text + 4 ctx_bar colours + facts + alert). `herdr config check` passed, `reload-config` applied.
-
-## Token budget
-
-- [x] G7.1: badge refresh stays within Herdr's 16-token pane metadata cap
-  EVIDENCE: pane report-metadata returns `ok` (not `invalid_metadata_token`). Worst case: 3 set + 7 clear = 10 unique names. Discovered during live verification — unit tests could not catch this because `reportPaneTokens` is mocked.
-
-## Visual verification
-
-- [x] G8: pane tokens on real herdr pane contain only the whitelisted set
-  EVIDENCE: `herdr pane get wY:p35` after fix shows 10 tokens (xray, agent, age, cache, cost, ctx, ctx_bar_unknown, fail, model, turns). summary/ctx_band/ctx_bar cleared. facts/alert correctly absent (unlocated pane).
-
-## Dashboard deep-link
-
-- [x] G9: open-dashboard passes --session to ccxray open
-  EVIDENCE: unit test with recording mock: `open --session sess-abc-123` in args log. Live verification deferred — standalone ccxray on this pane has no hub to serve the dashboard.
-  NOTE: MC's `d` → dashboard (already shipped) covers the same path via `resolvePaneSessionId`.
-
-## Full test suite
-
-- [x] G10: npm test 2302 pass, 0 fail
-  EVIDENCE: `# tests 2302 / # pass 2302 / # fail 0` (CCXRAY_HOME=$(mktemp -d), env scrubbed)
-
-## Discovered issues fixed during verification
-
-- Token budget overflow (G7.1) — herdr 16-token cap breached. Fixed by whitelisting only config-rendered tokens in `report-metadata`. Committed as a separate fix.
+- [x] G9: Final verification was run after the last Fable response, with every automated gate passing and no unresolved manual finding.
+  CHECK: node -e "const fs=require('fs'); const lines=fs.readFileSync('GATES.md','utf8').split(/\r?\n/); const gates=[]; for(let i=0;i<lines.length;i++){const match=lines[i].match(/^- \[([ xX])\] G(\d+):/); if(!match) continue; let evidence=''; for(let j=i+1;j<lines.length&&!/^- \[/.test(lines[j]);j++){const found=lines[j].match(/^  EVIDENCE:\s*(.*)$/); if(found) evidence=found[1].trim()} gates.push({id:Number(match[2]),checked:/x/i.test(match[1]),evidence})} const preceding=gates.filter(gate=>gate.id<9); const bad=preceding.filter(gate=>!gate.checked||!gate.evidence||/^pending\b/i.test(gate.evidence)); if(preceding.length!==8||!preceding.every((gate,index)=>gate.id===index+1)||bad.length){console.error('final gates not ready: '+(bad.map(gate=>'G'+gate.id).join(', ')||'missing preceding gate')); process.exit(1)} console.log('final-gates-ok')"
+  EXPECT: final-gates-ok
+  EVIDENCE: final-gates-ok

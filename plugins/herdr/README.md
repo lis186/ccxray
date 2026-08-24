@@ -2,7 +2,9 @@
 
 Live session triage for Claude, Codex, and Grok in Herdr: see what needs attention, why, what to do next, and how certain the evidence is.
 
-For the complete Provider capability matrix, live-vs-local data coverage, and known limitations, see the [Herdr support guide](../../docs/herdr-support.md).
+Guides: [English](../../docs/herdr-support.md) · [繁體中文](../../docs/herdr-support.zh-TW.md) · [日本語](../../docs/herdr-support.ja.md)
+
+The guides contain the complete Provider capability matrix, live-vs-local data coverage, and known limitations.
 
 ## Install
 
