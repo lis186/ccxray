@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('fs');
+const { spawn } = require('child_process');
 const {
   contextSidebarColumns,
   formatPercent,
@@ -132,6 +133,23 @@ function proxyAvailable(parsed) {
   return (parsed.notes || []).some(n => /held by a standalone.*ccxray/i.test(n));
 }
 
+function startWorkingRefreshLoop(event, env) {
+  if (env.CCXRAY_BADGE_LOOP_CHILD === '1') return null;
+  if (!['working', 'running', 'active'].includes(String(event.status || '').toLowerCase())) return null;
+  try {
+    const child = spawn(process.execPath, [require('path').join(__dirname, 'badge-refresh-loop.js')], {
+      env: { ...env },
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => {});
+    child.unref();
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: 'spawn-failed' };
+  }
+}
+
 function badgeTokens(status, usage, opts = {}) {
   const tokens = {
     xray: proxyAvailable(status.parsed) ? 'ok' : 'no-hub',
@@ -155,7 +173,10 @@ function badgeTokens(status, usage, opts = {}) {
     // transcript had moved on. `$ctx` is the channel a minimal layout does render,
     // so the state has to survive there too — and marking the number is ADR 0013's
     // own convention for a percentage you cannot vouch for.
-    tokens.ctx = detail.stale ? `${detail.ctxText} stale` : detail.ctxText;
+    const ctxMarker = detail.ctxWindowMarker || '';
+    tokens.ctx = detail.stale
+      ? `${detail.ctxText}${ctxMarker} stale`
+      : `${detail.ctxText}${ctxMarker}`;
     tokens.age = detail.ageText;
     tokens.cost = detail.costText;
     tokens.model = detail.model;
@@ -181,6 +202,8 @@ function badgeTokens(status, usage, opts = {}) {
   return {
     tokens,
     stale,
+    ctxPct: detail?.ctxPct ?? null,
+    ctxWindowSource: detail?.ctxWindowSource || null,
     located: Boolean(detail) && detail.matched !== false,
     clearTokens: [
       ...applyContextColorTokens(tokens, tokens.ctx_band),
@@ -278,6 +301,10 @@ function main() {
   clearTokens.push('summary', 'ctx_band', 'ctx_bar');
   const pane = reportPaneTokens(paneTokens, {
     env, ttlMs, stateLabels, clearTokens, agent: event.agent,
+    // A loop child uses a short TTL to keep a working badge honest. The next
+    // non-working event must renew it with the normal TTL even when tokens are
+    // unchanged, otherwise an idle pane can lose its badge after one loop TTL.
+    force: Boolean(event.status && !['working', 'running', 'active'].includes(String(event.status).toLowerCase())),
     clearStateLabels: !stateLabels,
   });
   const workspace = reportWorkspaceTokens(paneTokens, { env, ttlMs, clearTokens });
@@ -296,6 +323,11 @@ function main() {
     : null;
   if (notificationResult?.status === 0) recordAgentStatus(event, env);
 
+  // Herdr does not emit another status event for every transcript turn. Keep a
+  // bounded loop alive only while this event says the agent is working; the
+  // loop rechecks Herdr state and exits on idle, pane removal, or max age.
+  const refreshLoop = startWorkingRefreshLoop(event, env);
+
   console.log('ccxray badges refreshed');
   console.log(`Workspace: ${runtime.workspaceId || 'n/a'} (${workspace.ok ? 'ok' : workspace.reason})`);
   console.log(`Pane: ${runtime.paneId || 'n/a'} (${pane.ok ? 'ok' : pane.reason})`);
@@ -304,6 +336,7 @@ function main() {
   if (importRequest) console.log(`Import: requested (${importRequest.ok ? 'spawned' : importRequest.reason})`);
   if (notificationResult?.status === 0) console.log(`Notification: ${notification.title}`);
   else if (notificationResult) console.log('Notification unavailable: run Doctor for Herdr details.');
+  if (refreshLoop) console.log(`Refresh loop: ${refreshLoop.ok ? 'started' : refreshLoop.reason}`);
 
   // refresh-all-badges counts a child that exited 0 as refreshed. Exiting 0 on a
   // failed `herdr pane report-metadata` made the fan-out report "N refreshed"
@@ -318,4 +351,4 @@ function main() {
 // free so badgeTokens() can be asserted without refreshing anybody's sidebar.
 if (require.main === module) main();
 
-module.exports = { badgeTokens, applyContextColorTokens, applyRow3Tokens, eventContext };
+module.exports = { badgeTokens, applyContextColorTokens, applyRow3Tokens, eventContext, startWorkingRefreshLoop };

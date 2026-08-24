@@ -46,6 +46,16 @@ describe('sse-broadcast', () => {
       const noB = summarizeEntry({ id: 'b2', sessionId: 'b1m-sid', provider: 'anthropic', usage: { input_tokens: 1 }, isSubagent: false });
       assert.equal(noB.beta1m, undefined, 'no beta1m key when the turn had no 1M signal');
     });
+
+    it('carries an explicit compaction boundary through live and cold summaries', () => {
+      const entry = {
+        id: 'compact-boundary', sessionId: 'compact-sid', provider: 'openai',
+        usage: { input_tokens: 1 }, isSubagent: false, compacted: true,
+      };
+      assert.equal(summarizeEntry(entry).compacted, true);
+      assert.equal(normalizeIndexEntry({ ...entry }).compacted, true);
+      assert.equal(summarizeEntry({ ...entry, compacted: undefined }).compacted, undefined);
+    });
   });
 
   describe('summarizeEntry', () => {

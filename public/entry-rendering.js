@@ -640,7 +640,9 @@ function addEntry(e) {
   // Compression detection: compare message count AND context tokens vs previous main turn.
   // True compaction = msgCount drops significantly (messages got summarized/removed).
   // Token-only drops can happen from cache eviction or normal conversation flow.
-  let isCompacted = false;
+  // Codex can now give us an explicit boundary. Keep the historical shape
+  // heuristic as a fallback for providers that do not emit one.
+  let isCompacted = e.compacted === true;
   if (!isSubagent && ctxUsed > 0 && msgCount > 0) {
     for (let i = allEntries.length - 1; i >= 0; i--) {
       const prev = allEntries[i];
@@ -648,7 +650,7 @@ function addEntry(e) {
         const msgDrop = (prev.msgCount || 0) - msgCount;
         const tokenDrop = prev.ctxUsed - ctxUsed;
         // Require both: msgCount dropped by 5+ AND tokens dropped by >15% of window
-        if (msgDrop >= 5 && tokenDrop / (prev.maxContext || DEFAULT_MAX_CTX) > 0.15) isCompacted = true;
+        if (!isCompacted && msgDrop >= 5 && tokenDrop / (prev.maxContext || DEFAULT_MAX_CTX) > 0.15) isCompacted = true;
         break;
       }
     }

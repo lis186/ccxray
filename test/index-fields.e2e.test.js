@@ -40,7 +40,7 @@ const LEGACY_INDEX_FIELDS = [
   'edited','editSummary','imported','importSource','responseId','turnToolCalls','turnToolFail',
   'turnToolCallIds','turnToolResults','beta1m',
 ];
-const NEW_504_FIELDS = ['agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls'];
+const NEW_504_FIELDS = ['agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted'];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
 const IDENTITY_VALUES = {
   agentId: 'machine-7', team: 'platform',

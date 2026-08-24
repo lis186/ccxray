@@ -612,6 +612,23 @@ function sessionWindow(turns) {
   return turns.reduce((max, t) => Math.max(max, t.maxContext || 0), 0) || 200000;
 }
 
+// Keep the badge's denominator provenance aligned with the dashboard's
+// sessionCtxWindowSource four-state contract. A bare 200K window is an
+// assumption for an unknown Claude deployment; an observed overflow is an
+// explicit contradiction until a later import records the larger fossil.
+function sessionWindowSource(turns, win = sessionWindow(turns)) {
+  const used = turns.reduce((max, turn) => Math.max(max, contextUsed(turn)), 0);
+  if (used > win) return 'contradicted';
+  if (turns.some(turn => turn.beta1m === true)) return 'declared';
+  return win === 200000 ? 'default' : 'observed';
+}
+
+function contextWindowMarker(source) {
+  if (source === 'contradicted') return '✗';
+  if (source === 'default') return '?';
+  return '';
+}
+
 // INVARIANT: this selection deliberately DIVERGES from core's
 // `isMainTurnByAgentKey()` — do not "unify" them. That predicate returns TRUE for
 // exactly the shape this exists to exclude: `agentKey: 'agent'` is in
@@ -944,13 +961,19 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ? mergeCostFolds(foldFromAgg, costFold(postFlush))
     : (sorted.length ? costFold(sorted) : (fallback.costAgg || {}));
   const win = sessionWindow(anchor);
+  const ctxWindowSource = sessionWindowSource(anchor, win);
+  const ctxWindowMarker = contextWindowMarker(ctxWindowSource);
   const used = contextUsed(latest);
   const ctxPct = used && win ? used / win * 100 : null;
   const ctxText = ctxPct == null ? '?' : formatWholePercent(ctxPct);
   const detail = {
     ctxPct,
     ctxText,
-    ctxBand: contextBand(ctxPct),
+    ctxWindowSource,
+    ctxWindowMarker,
+    ctxBand: ctxWindowSource === 'default' || ctxWindowSource === 'contradicted'
+      ? 'unknown'
+      : contextBand(ctxPct),
   };
   // Freshness reads EVERY turn, not just the anchored ones: a subagent turn
   // logged a minute ago proves ccxray is still watching this session, even when
@@ -983,6 +1006,8 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
     ctxText,
+    ctxWindowSource,
+    ctxWindowMarker,
     ctxBand: stale ? 'unknown' : detail.ctxBand,
     stale,
     // Raw alert signals, exposed so row 3's $alert ranks them through the one
@@ -992,7 +1017,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     failures: toolFailureCount(anchor),
     cacheDropped: cacheDroppedAfterPromptChange(anchor),
     refusedCount: quotaRefusalCount(anchor),
-    ctxBar: formatContextBar(anchor, win, ctxText, {
+    ctxBar: formatContextBar(anchor, win, `${ctxText}${ctxWindowMarker}`, {
       sidebarCols: opts.sidebarCols,
       signal,
     }),
@@ -1569,6 +1594,9 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const mainLatest = anchor.at(-1) || latest;
   const first = turns[0] || {};
   const win = anchor.length ? sessionWindow(anchor) : 0;
+  const ctxWindowSource = anchor.length ? sessionWindowSource(anchor, win) : null;
+  const ctxWindowMarker = contextWindowMarker(ctxWindowSource);
+  const measuredCtx = ctxWindowSource === 'declared' || ctxWindowSource === 'observed';
   const pcts = win ? contextPercents(anchor, win) : [];
   // Read the LATEST ANCHORED TURN, not the last finite percentage:
   // `contextPercents` drops turns with no usage, so `pcts.at(-1)` silently
@@ -1603,9 +1631,14 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     severity = 'yellow';
     reasons.push('no ccxray telemetry');
   }
-  if (Number.isFinite(ctxPct)) {
+  if (Number.isFinite(ctxPct) && measuredCtx) {
     if (ctxPct > 80) severity = 'red';
     else if (ctxPct > 40 && severity === 'green') severity = 'yellow';
+  }
+  if (Number.isFinite(ctxPct) && ctxWindowMarker && ctxPct > 40) {
+    reasons.push(ctxWindowSource === 'contradicted'
+      ? `context window contradicted ${Math.round(ctxPct)}%${ctxWindowMarker}`
+      : `context window assumed ${Math.round(ctxPct)}%${ctxWindowMarker}`);
   }
   if (failures >= 2) {
     severity = 'red';
@@ -1644,7 +1677,7 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     refusedCount: quotaRefusalCount(anchor),
     status,
     failures,
-    ctxPct,
+    ctxPct: measuredCtx ? ctxPct : null,
     cacheDropped,
     ready: severity === 'ready',
   });
@@ -1688,6 +1721,8 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
     action,
     turns: turns.length,
     ctxPct,
+    ctxWindowSource,
+    ctxWindowMarker,
     ctxDelta,
     cost,
     totalCost,
@@ -2448,6 +2483,7 @@ module.exports = {
   runHerdr,
   sessionSummary,
   sessionSummaryDetails,
+  sessionWindowSource,
   shortId,
   shortModel,
   statusReport,

@@ -18,7 +18,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
-    'ctxBeta','parentSessionId',
+    'ctxBeta','parentSessionId','compacted',
   ]);
 });
 
@@ -29,6 +29,13 @@ test('buildIndexLine persists child-session parent identity only when known', ()
   assert.equal(child.parentSessionId, 'parent-session');
   const main = JSON.parse(buildIndexLine({ id: 'main', sessionId: 'main-session' }));
   assert.ok(!('parentSessionId' in main));
+});
+
+test('buildIndexLine persists an explicit compaction boundary', () => {
+  const compacted = JSON.parse(buildIndexLine({ id: 'compact-next', compacted: true }));
+  assert.equal(compacted.compacted, true);
+  const ordinary = JSON.parse(buildIndexLine({ id: 'ordinary' }));
+  assert.ok(!('compacted' in ordinary));
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {
