@@ -2034,6 +2034,111 @@ describe('Herdr sidebar import freshness', () => {
   });
 });
 
+describe('Herdr context window provenance', () => {
+  const T = Date.parse('2026-08-24T09:00:00.000Z');
+  const status = { parsed: { running: true, machine: { proxy: true } } };
+  const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+  const turn = (id, used, maxContext) => ({
+    id, sessionId: 'fable-window', model: 'claude-fable-5', agentKey: 'orchestrator',
+    isSubagent: false, receivedAt: T, cwd: '/work/fable-window', maxContext,
+    usage: { input_tokens: used }, imported: true,
+  });
+  const render = turns => require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+    env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+    sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+  });
+
+  it('marks a default 200K denominator as unverified', () => {
+    const badge = render([turn('f6a', 192182, 200000)]);
+    assert.equal(badge.ctxWindowSource, 'default');
+    assert.equal(Math.round(badge.ctxPct), 96);
+    assert.equal(badge.tokens.ctx, '96%?');
+    assert.equal(badge.tokens.ctx_band, 'unknown');
+  });
+
+  it('uses an observed 1M fossil after the importer usage hatch', () => {
+    const badge = render([
+      turn('f6a', 192182, 200000),
+      turn('f6b', 232659, 1000000),
+    ]);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(Math.round(badge.ctxPct), 23);
+    assert.equal(badge.tokens.ctx, '23%');
+    assert.equal(badge.tokens.ctx_band, 'green');
+  });
+
+  it('marks an overflowing raw row as contradicted instead of clamping it cleanly', () => {
+    const badge = render([turn('f6c', 232659, 200000)]);
+    assert.equal(badge.ctxWindowSource, 'contradicted');
+    assert.equal(Math.round(badge.ctxPct), 116);
+    assert.equal(badge.tokens.ctx, '116%✗');
+    assert.equal(badge.tokens.ctx_band, 'unknown');
+  });
+
+  it('keeps Mission Control numeric parity while withdrawing confident pressure', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [turn('f6a', 192182, 200000)];
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      entries,
+      nowMs: T + 1000,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working',
+        agent_session: { kind: 'id', value: 'fable-window' },
+      }] },
+    });
+    const row = snapshot.rows[0];
+    assert.ok(Math.abs(row.ctxPct - 96.091) < 1e-9);
+    assert.equal(row.ctxWindowSource, 'default');
+    assert.equal(row.ctxWindowMarker, '?');
+    assert.equal(row.severity, 'green');
+    assert.equal(row.action, null);
+    assert.ok(row.reasons.some(reason => reason.includes('assumed 96%?')));
+  });
+});
+
+describe('Herdr working badge refresh loop', () => {
+  it('refreshes on the interval and exits at the lifecycle boundaries', () => {
+    const { loopTick } = require('../plugins/herdr/bin/badge-refresh-loop');
+    const config = { intervalMs: 100, maxAgeMs: 500, paneId: 'w1:p1' };
+    let state = { startedAt: 1000 };
+    let tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 1, now: 1000, config,
+    });
+    assert.equal(tick.refresh, true);
+    state = tick.nextState;
+    tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 1, now: 1050, config,
+    });
+    assert.equal(tick.refresh, false);
+    tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 2, now: 1100, config,
+    });
+    assert.equal(tick.refresh, true, 'a working pane must be refreshed without another status event');
+    assert.equal(loopTick(state, { agents: [], now: 1100, config }).exit, 'pane-gone');
+    assert.equal(loopTick(state, { agents: [{ pane_id: 'w1:p1', agent_status: 'idle' }], now: 1100, config }).exit, 'idle');
+    assert.equal(loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'idle' }], indexMtime: 2, now: 1100, config,
+    }).refresh, true, 'idle transition must flush the final index change before exit');
+    assert.equal(loopTick(state, { agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], now: 1600, config }).exit, 'max-age');
+  });
+
+  it('deduplicates live loops with an atomic pane pidfile', () => {
+    const { claimPid, releasePid } = require('../plugins/herdr/bin/badge-refresh-loop');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-loop-state-'));
+    try {
+      const env = pluginEnv({ HERDR_PANE_ID: 'w1:p2', HERDR_PLUGIN_STATE_DIR: stateDir });
+      const first = claimPid('w1:p2', env);
+      const second = claimPid('w1:p2', env);
+      assert.equal(first.owned, true);
+      assert.equal(second.reason, 'already-running');
+      releasePid(first);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
 // run-node.sh is the shim every plugin entrypoint goes through. `exec` replaces
 // the shell, so once the mise branch fires the candidate loop below it is
 // unreachable — a mise whose newest installed Node is too old took the process

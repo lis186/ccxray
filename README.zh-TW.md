@@ -33,6 +33,17 @@ npx ccxray grok
 
 launcher 參數由 provider registry 管理。目前支援 `claude`、`codex` 與 `grok`；未知的 provider command 會直接失敗，避免靜默啟動未設定的 proxy。
 
+### Herdr plugin
+
+在 Herdr 裡執行 ccxray session，可直接在 sidebar 看到 context、cost 與 health，並用 Mission Control 和 dashboard 追查每個 turn：
+
+```bash
+herdr plugin install lis186/ccxray/plugins/herdr
+herdr plugin action invoke ccxray.herdr.quick-start
+```
+
+第二個命令會因為安裝到已在執行的 Herdr 不會觸發 startup hooks，而立即開啟可用游標操作的 Quick Start。請用方向鍵或 `j`/`k` 移動、按 `Enter` 執行；數字與字母快捷鍵仍可用。如果 onboarding 尚未完成，plugin 也會在下一次完整啟動 Herdr 時提供一次 Quick Start。它會偵測已安裝的 provider，並啟動第一個 traced session；sidebar 變更仍是 optional、explicit 且 reversible。第一次 traced session 後會提供 Mission Control，累積足夠樣本後才提供 experimental Capability Footprint。請參閱 [`plugins/herdr`](plugins/herdr) 的安裝、信任、更新與解除安裝說明，以及 [Herdr 支援說明](docs/herdr-support.zh-TW.md) 的完整 Provider 功能矩陣與已知限制。
+
 ### 其他執行方式
 
 ```bash

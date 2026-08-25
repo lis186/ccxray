@@ -491,6 +491,22 @@ describe('codex importer', () => {
   });
 
   describe('parseCodexSessionFile', () => {
+    it('attaches an explicit compaction boundary to the next emitted turn', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-compacted.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-compacted' }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:01.000Z', type: 'compacted' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:02.000Z', input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.equal(entries.length, 1, 'zero-token boundaries must remain skipped');
+      assert.equal(entries[0].compacted, true, 'the marker belongs to the next emitted turn');
+    });
+
     it('extracts entries from token_count events', async () => {
       const sessDir = path.join(codexDir, '2026', '07', '15');
       fs.mkdirSync(sessDir, { recursive: true });

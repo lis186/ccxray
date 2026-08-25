@@ -48,6 +48,10 @@ function summarizeEntry(entry) {
     // #339: carry the authoritative 1M fact to the client + cold-load so the render-time
     // per-session context% denominator (sessionWindow) can fold it. Only when true.
     beta1m: entry.beta1m || undefined,
+    // Codex's explicit compaction boundary is a per-turn fact. Preserve it on
+    // both live SSE entries and cold index normalization so the client can use
+    // it before falling back to its historical heuristic.
+    compacted: entry.compacted || undefined,
     model: entry.model || null,
     msgCount: entry.msgCount || 0,
     toolCount: entry.toolCount || 0,

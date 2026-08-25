@@ -256,6 +256,7 @@ async function parseCodexSessionFile(filePath) {
   let pendingCalls = {};
   let pendingResults = [];
   let prevResults = [];
+  let pendingCompacted = false;
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -263,6 +264,13 @@ async function parseCodexSessionFile(filePath) {
   for await (const line of rl) {
     let obj;
     try { obj = JSON.parse(line); } catch { continue; }
+    // Codex emits this marker without a token_count payload. Keep it latched
+    // across zero-token boundaries: the fact belongs to the next entry that
+    // actually reaches the index, not to an entry that will be skipped.
+    if (obj.type === 'compacted') {
+      pendingCompacted = true;
+      continue;
+    }
     const payload = obj.payload;
     if (!payload) continue;
 
@@ -341,6 +349,7 @@ async function parseCodexSessionFile(filePath) {
       stopReason: null,
       imported: true,
       importSource: 'codex',
+      ...(pendingCompacted ? { compacted: true } : {}),
       provider: 'openai',
       cwd,
       usage,
@@ -348,6 +357,7 @@ async function parseCodexSessionFile(filePath) {
     pendingCalls = {};
     prevResults = pendingResults;
     pendingResults = [];
+    pendingCompacted = false;
   }
   return entries;
 }

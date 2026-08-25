@@ -111,9 +111,10 @@ function rowMetrics(row, opts = {}) {
   const parts = [];
   if (Number.isFinite(row.ctxPct)) {
     const delta = signedPercent(row.ctxDelta);
-    parts.push(`ctx ${Math.round(row.ctxPct)}%${delta ? ` (${delta}/turn)` : ''}`);
+    const marker = row.ctxWindowMarker || '';
+    parts.push(`ctx ${Math.round(row.ctxPct)}%${marker}${delta ? ` (${delta}/turn)` : ''}`);
   } else {
-    parts.push('ctx ?');
+    parts.push(row.ctxWindowMarker ? `ctx ?${row.ctxWindowMarker}` : 'ctx ?');
   }
   parts.push(`main ${rowCost(row)}`);
   if (opts.includeRecent !== false && row.totalRecentCost > 0) {
@@ -171,7 +172,9 @@ function filteredMissionRows(rows, filter) {
 
 function rowReasonText(row) {
   const reasons = [];
-  if (Number.isFinite(row.ctxPct) && row.ctxPct > 40) reasons.push(`context pressure ${Math.round(row.ctxPct)}%`);
+  if (Number.isFinite(row.ctxPct) && row.ctxPct > 40 && !row.ctxWindowMarker) {
+    reasons.push(`context pressure ${Math.round(row.ctxPct)}%`);
+  }
   for (const reason of row.reasons || []) {
     if (reason !== row.status && !reasons.includes(reason)) reasons.push(reason);
   }
@@ -286,7 +289,9 @@ function render(args, uiState = {}, message = '') {
       const selected = index === state.selectedIndex;
       const cursor = selected ? '›' : ' ';
       const identity = `${cursor} ${rowIdentity(row)} · ${row.status}`;
-      const ctx = Number.isFinite(row.ctxPct) ? `ctx ${Math.round(row.ctxPct)}%` : 'ctx ?';
+      const ctx = Number.isFinite(row.ctxPct)
+        ? `ctx ${Math.round(row.ctxPct)}%${row.ctxWindowMarker || ''}`
+        : (row.ctxWindowMarker ? `ctx ?${row.ctxWindowMarker}` : 'ctx ?');
       const line = fitColumns(identity, `${ctx} · ${rowCost(row)}`, max);
       if (!args.once && selected) output.push(`\x1b[7m${line}\x1b[0m`);
       else output.push(line);

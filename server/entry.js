@@ -40,6 +40,9 @@ const INDEX_FIELDS = [
   // #531: the parent session of a Herdr-launched agent, appended after ctxBeta to
   // keep the field order add-only on both sides of the merge.
   'parentSessionId',
+  // #606: an upstream Codex `compacted` boundary, attached to the next emitted
+  // turn. Append-only so existing index rows remain byte/order compatible.
+  'compacted',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
