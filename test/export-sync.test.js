@@ -42,18 +42,34 @@ function makeEntry(overrides = {}) {
   };
 }
 
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoUtc(days) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function entryForDt(dt, overrides = {}) {
+  return makeEntry({ id: `${dt}T10-00-00-000`, ...overrides });
+}
+
 // Set up env + uploader mock before each test
 // Save ambient suppression state at module load, before any test clears it.
 // Without this, the first test's afterEach(cleanup) deletes an inherited
 // CCXRAY_EXPORT_DISABLE without knowing its original value.
 const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
-let _home, _uploads, _savedFlags = { disable: _ambientDisable };
+const _ambientTz = process.env.TZ;
+let _home, _uploads, _savedFlags = { disable: _ambientDisable, tz: _ambientTz };
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
   writeIndex(_home, entries);
 
   // Env — TZ must match the server that generates entry ids (Asia/Taipei)
+  const savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE, tz: process.env.TZ };
   process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = _home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
@@ -67,7 +83,7 @@ function setup(entries, envOverrides = {}) {
   // fail this suite for the wrong reason (codex review round 2, 2026-08-21).
   // Saved into _savedFlags and restored in cleanup(): under --test-isolation=none a later
   // file would otherwise inherit weakened safety settings (codex review round 5).
-  _savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE };
+  _savedFlags = savedFlags;
   delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = 'test-agent-001';
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
@@ -85,11 +101,13 @@ function setup(entries, envOverrides = {}) {
   // Pre-create cursor so it's not a first-run (unless test wants first-run)
   if (!envOverrides._skipCursor) {
     fs.writeFileSync(path.join(_home, 'export-cursor.json'),
-      JSON.stringify({ lastId: null, seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lastId: null, seq: {}, partial: false, cutoffDt: '2026-01-01', floorV: 1 }) + '\n');
   }
 }
 
 function cleanup() {
+  const home = _home;
+  _home = null;
   delete process.env.CCXRAY_HOME;
   delete process.env.CCXRAY_EXPORT_GCS_BUCKET;
   delete process.env.LOGS_DIR;
@@ -103,8 +121,11 @@ function cleanup() {
   // inherit weakened safety settings.
   if (_savedFlags.disable === undefined) delete process.env.CCXRAY_EXPORT_DISABLE;
   else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
+  if (_savedFlags.tz === undefined) delete process.env.TZ;
+  else process.env.TZ = _savedFlags.tz;
   _savedFlags = {};
   _setUploader(null);
+  if (home) fs.rmSync(home, { recursive: true, force: true });
   // Bust require cache for config (it caches LOGS_DIR at require time)
   for (const k of Object.keys(require.cache)) {
     if (k.includes('/server/config')) delete require.cache[k];
@@ -125,12 +146,220 @@ describe('export-sync', () => {
   });
 
   it('first-run: cursor init to tail, no upload', async () => {
-    setup([makeEntry()], { _skipCursor: true });
+    const liveDt = daysAgoUtc(14);
+    setup([entryForDt(liveDt)], { _skipCursor: true });
+    const before = todayUtc();
     await flushExport();
+    const after = todayUtc();
     assert.equal(_uploads.length, 0, 'no upload on first run');
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
-    assert.equal(cursor.lastId, '2026-08-12T10-00-00-000');
+    assert.equal(cursor.lastId, `${liveDt}T10-00-00-000`);
     assert.equal(cursor.partial, true);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('first-run: empty index writes today UTC as the cutoff floor', async () => {
+    setup([], { _skipCursor: true });
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, null);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('first-run: old imported tail still writes today UTC as the cutoff floor', async () => {
+    const oldDt = daysAgoUtc(170);
+    const oldId = `${oldDt}T10-00-00-000`;
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, oldId);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('missing cursor.lastId rescans but uploads only dates at or above the floor', async () => {
+    setup([
+      makeEntry({ id: '2026-07-31T10-00-00-000' }),
+      makeEntry({ id: '2026-08-01T10-00-00-000', msgCount: 11 }),
+      makeEntry({ id: '2026-08-02T10-00-00-000', msgCount: 12 }),
+    ], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: 'cursor-id-no-longer-in-index', seq: {}, partial: false,
+      cutoffDt: '2026-08-01', floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt).sort();
+    assert.deepEqual(dts, ['2026-08-01', '2026-08-02']);
+  });
+
+  it('date equal to cutoffDt remains eligible for upload', async () => {
+    setup([
+      makeEntry({ id: '2026-07-31T10-00-00-000' }),
+      makeEntry({ id: '2026-08-01T10-00-00-000', msgCount: 11 }),
+    ], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '2026-08-01', floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt);
+    assert.deepEqual(dts, ['2026-08-01']);
+  });
+
+  it('legacy cursor migrates to today UTC and skips older dates', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const migrated = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(migrated.cutoffDt));
+    assert.equal(migrated.floorV, 1);
+    assert.equal(_uploads.length, 0, 'older dates are skipped during migration');
+
+    fs.appendFileSync(path.join(_home, 'logs', 'index.ndjson'),
+      JSON.stringify(makeEntry({ id: `${migrated.cutoffDt}T10-00-00-000`, msgCount: 11 })) + '\n');
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt);
+    assert.deepEqual(dts, [migrated.cutoffDt]);
+  });
+
+  it('legacy cursor with an old derived cutoffDt is re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: oldDt,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old derived date remains below the repaired floor');
+  });
+
+  it('malformed cutoffDt is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: 'garbage', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('non-string cutoffDt is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: 123, floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('impossible cutoffDt 2026-99-99 is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '2026-99-99', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('impossible cutoffDt 0000-00-00 is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '0000-00-00', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('corrupt cursor is moved aside before first-run re-initialization', async () => {
+    const oldDt = daysAgoUtc(170);
+    const oldId = `${oldDt}T10-00-00-000`;
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    const corruptBody = '{not-json\n';
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), corruptBody);
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const sidecars = fs.readdirSync(_home)
+      .filter(name => /^export-cursor\.json\.corrupt-\d+$/.test(name));
+    assert.equal(sidecars.length, 1);
+    assert.equal(fs.readFileSync(path.join(_home, sidecars[0]), 'utf8'), corruptBody);
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, oldId);
+    assert.equal(cursor.partial, true);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('seq entries below the floor are pruned on the next cursor write', async () => {
+    setup([entryForDt('2026-08-02')], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null,
+      seq: { '2026-07-31': 7, '2026-08-02': 3 },
+      partial: false,
+      cutoffDt: '2026-08-01',
+      floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.deepEqual(cursor.seq, { '2026-08-02': 4 });
   });
 
   it('daily schema: all required fields present', async () => {
@@ -205,10 +434,11 @@ describe('export-sync', () => {
   });
 
   it('no timestamp leak: only dt and upload_seq', async () => {
-    setup([makeEntry({ receivedAt: 1723449600000, elapsed: '5.2' })]);
+    const receivedAt = new Date('2026-08-12T00:00:00Z').getTime();
+    setup([makeEntry({ receivedAt, elapsed: '5.2' })]);
     await flushExport();
     const payload = _uploads[0].body;
-    assert.ok(!payload.includes('1723449600'), 'no receivedAt epoch');
+    assert.ok(!payload.includes(String(receivedAt)), 'no receivedAt epoch');
     assert.ok(!payload.includes('receivedAt'), 'no receivedAt field name');
     // dt and upload_seq are allowed
     const daily = _uploads[0].records.find(r => r.type === 'daily');
@@ -373,7 +603,7 @@ describe('export-sync', () => {
     // its own env, but afterEach(cleanup) still runs. Without saving, cleanup deletes the
     // ambient value and later files under --test-isolation=none lose the safety flag.
     const savedDisable = process.env.CCXRAY_EXPORT_DISABLE;
-    _savedFlags = { disable: savedDisable };
+    _savedFlags = { disable: savedDisable, tz: process.env.TZ };
     delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {
@@ -385,10 +615,11 @@ describe('export-sync', () => {
     // First run: init cursor
     await flushExport();
     assert.equal(_uploads.length, 0);
+    const cutoffDt = JSON.parse(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8')).cutoffDt;
 
     // Add new entry
     fs.appendFileSync(path.join(home, 'logs', 'index.ndjson'),
-      JSON.stringify(makeEntry({ id: '2026-08-12T11-00-00-000', msgCount: 12 })) + '\n');
+      JSON.stringify(makeEntry({ id: `${cutoffDt}T11-00-00-000`, msgCount: 12 })) + '\n');
 
     // Second flush: should have partial_day = true for the first date
     await flushExport();

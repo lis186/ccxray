@@ -13,6 +13,8 @@ const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
 const SCHEMA_VERSION = 1;
+const FLOOR_VERSION = 1;
+const CUTOFF_DT_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Session flag thresholds
 const RUNAWAY_TURNS = 200;
@@ -126,13 +128,51 @@ function releaseLock(lockPath, token) {
 
 // ── Cursor (temp + rename) ─────────────────────────────────────────────
 function readCursor(cursorPath) {
-  try { return JSON.parse(fs.readFileSync(cursorPath, 'utf8')); } catch { return null; }
+  let raw;
+  try {
+    raw = fs.readFileSync(cursorPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const corruptPath = `${cursorPath}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(cursorPath, corruptPath);
+      console.warn(`[ccxray export] Corrupt cursor moved aside to ${corruptPath}; starting first run.`);
+    } catch (renameErr) {
+      console.warn(`[ccxray export] Corrupt cursor could not be moved aside (${renameErr.message}); starting first run.`);
+    }
+    return null;
+  }
 }
 
 function writeCursor(cursorPath, data) {
   const tmp = cursorPath + `.tmp.${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(data) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, cursorPath);
+}
+
+function pruneSeqBeforeFloor(seq, cutoffDt) {
+  if (!seq || typeof seq !== 'object' || Array.isArray(seq)) return {};
+  const kept = {};
+  for (const [dt, value] of Object.entries(seq)) {
+    if (dt >= cutoffDt) kept[dt] = value;
+  }
+  return kept;
+}
+
+function hasValidFloor(cursor) {
+  const cutoffDt = cursor.cutoffDt;
+  if (typeof cutoffDt !== 'string'
+    || !CUTOFF_DT_RE.test(cutoffDt)
+    || cursor.floorV !== FLOOR_VERSION) return false;
+  const parsed = new Date(`${cutoffDt}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime())
+    && parsed.toISOString().slice(0, 10) === cutoffDt;
 }
 
 // ── Name sanitization ──────────────────────────────────────────────────
@@ -260,17 +300,6 @@ function utcDateFromEntry(entry) {
   }
   const m = entry.id && entry.id.match(/^(\d{4}-\d{2}-\d{2})T/);
   return m ? m[1] : null;
-}
-
-function utcDateFromLastLine(lines) {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const entry = JSON.parse(lines[i]);
-      const dt = utcDateFromEntry(entry);
-      if (dt) return dt;
-    } catch {}
-  }
-  return null;
 }
 
 function addMap(target, source) {
@@ -811,11 +840,28 @@ async function flushExport() {
     }
 
     if (isFirstRun) {
-      const cutoffDt = lines.length > 0 ? utcDateFromLastLine(lines) : null;
-      writeCursor(cursorPath, { lastId: currentLastId, seq: {}, partial: true, cutoffDt });
+      const cutoffDt = new Date().toISOString().slice(0, 10);
+      // Permanent no-backfill promise: the first-run floor is today's UTC date,
+      // independent of the index contents.
+      writeCursor(cursorPath, {
+        lastId: currentLastId, seq: {}, partial: true, cutoffDt, floorV: FLOOR_VERSION,
+      });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
       return;
     }
+
+    if (!hasValidFloor(cursor)) {
+      // Preserve the permanent no-backfill promise when repairing a legacy or malformed floor.
+      const cutoffDt = new Date().toISOString().slice(0, 10);
+      cursor = {
+        ...cursor,
+        seq: pruneSeqBeforeFloor(cursor.seq, cutoffDt),
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      };
+      writeCursor(cursorPath, cursor);
+    }
+    const cutoffDt = cursor.cutoffDt;
 
     // #4: nothing new if last entry id unchanged
     if (!currentLastId || currentLastId === cursor.lastId) return;
@@ -826,7 +872,14 @@ async function flushExport() {
     const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId, configDirAllowlist);
 
     if (dailyByDt.size === 0) {
-      writeCursor(cursorPath, { lastId: currentLastId, seq: cursor.seq || {}, partial: false });
+      // Persist the no-backfill floor even when there is no aggregate to upload.
+      writeCursor(cursorPath, {
+        lastId: currentLastId,
+        seq: pruneSeqBeforeFloor(cursor.seq, cutoffDt),
+        partial: false,
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      });
       return;
     }
 
@@ -860,8 +913,6 @@ async function flushExport() {
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
     const seq = { ...(cursor.seq || {}) };
 
-    const cutoffDt = cursor.partial ? (cursor.cutoffDt || null) : null;
-
     // #3: completedDts bound to snapshot — clear if index changed since they were recorded
     const completedDts = new Set(
       cursor.snapshotLastId === currentLastId ? (cursor.completedDts || []) : []
@@ -869,6 +920,8 @@ async function flushExport() {
 
     for (const [dt, daily] of dailyByDt) {
       if (!datesWithNewData.has(dt)) continue;
+      // Permanent no-backfill promise: dates before the cursor floor never upload.
+      if (dt < cutoffDt) continue;
       if (completedDts.has(dt) && seq[dt] && seq[dt] === cursor.seq?.[dt]) continue;
 
       const dtSeq = (seq[dt] || 0) + 1;
@@ -898,12 +951,27 @@ async function flushExport() {
 
       // #3: per-date checkpoint bound to current snapshot
       completedDts.add(dt);
-      writeCursor(cursorPath, { lastId: cursor.lastId, seq, partial: false,
-        completedDts: [...completedDts], snapshotLastId: currentLastId });
+      // Persist cutoffDt so the permanent no-backfill promise survives checkpoints.
+      writeCursor(cursorPath, {
+        lastId: cursor.lastId,
+        seq: pruneSeqBeforeFloor(seq, cutoffDt),
+        partial: false,
+        completedDts: [...completedDts],
+        snapshotLastId: currentLastId,
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      });
     }
 
     // All dates uploaded — advance lastId to current tail, clear completedDts
-    writeCursor(cursorPath, { lastId: currentLastId, seq, partial: false });
+    // Persist cutoffDt so the permanent no-backfill promise survives cursor advance.
+    writeCursor(cursorPath, {
+      lastId: currentLastId,
+      seq: pruneSeqBeforeFloor(seq, cutoffDt),
+      partial: false,
+      cutoffDt,
+      floorV: FLOOR_VERSION,
+    });
   } finally {
     releaseLock(lockPath, token);
   }

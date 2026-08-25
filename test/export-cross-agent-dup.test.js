@@ -13,17 +13,15 @@
 //      cross-agent dedup CAN recover the true total — asserted here as the
 //      contract the BQ-side fix depends on.
 //
-//   B. No-backfill breach via the importer race — first flush initializes the
-//      cursor to the index tail ("No backfill"), but any historical lines
-//      appended AFTER that (an importer scan still in flight, a later importer
-//      wave, `import --once`) land past the cursor and are treated as new data:
-//      their historical dts are uploaded wholesale. Real evidence: d0763ef3
-//      uploaded 124 dts spanning 2026-03-01..08-21 all at seq 1.
+//   B. Permanent no-backfill floor — first flush initializes the cursor to the
+//      index tail and stamps today's UTC date, so historical lines appended
+//      AFTER that (an importer scan still in flight, a later importer wave,
+//      `import --once`) cannot upload dates before the floor. Real evidence:
+//      d0763ef3 uploaded 124 dts spanning 2026-03-01..08-21 all at seq 1.
 //
-// These are CHARACTERIZATION tests: they pin today's (defective) behavior with
-// `assert` so the defect is mechanically demonstrated. When the fix lands, the
-// two assertions marked DEFECT must be flipped — that flip is the fail-on-old /
-// pass-on-new evidence required by docs/verification-principles.md.
+// The cross-agent assertion remains a CHARACTERIZATION test for the BQ-side
+// contract. The no-backfill assertion is the fail-on-old / pass-on-new evidence
+// required by docs/verification-principles.md.
 
 const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
@@ -32,12 +30,14 @@ const path = require('path');
 const os = require('os');
 
 const { flushExport, _setUploader } = require('../server/export-sync');
+const _testHomes = new Set();
 
 // ── Harness (test/export-sync.test.js shape) ───────────────────────────
 
 function mkHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-export-dup-test-'));
   fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+  _testHomes.add(home);
   return home;
 }
 
@@ -70,10 +70,26 @@ function makeEntry(overrides = {}) {
   };
 }
 
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoUtc(days) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function entryForDt(dt, overrides = {}) {
+  return makeEntry({ id: `${dt}T10-00-00-000`, ...overrides });
+}
+
 const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
-let _savedFlags = { disable: _ambientDisable };
+const _ambientTz = process.env.TZ;
+let _savedFlags = { disable: _ambientDisable, tz: _ambientTz };
 
 function setupEnv(home, agentId) {
+  const savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE, tz: process.env.TZ };
   process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
@@ -82,7 +98,7 @@ function setupEnv(home, agentId) {
   delete process.env.CCXRAY_EXPORT_GCS_PREFIX;
   delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
   delete process.env.CCXRAY_EXPORT_CWD_ALLOWLIST;
-  _savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE };
+  _savedFlags = savedFlags;
   delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = agentId;
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
@@ -97,6 +113,7 @@ function bustConfigCache() {
 }
 
 function cleanupEnv() {
+  const home = process.env.CCXRAY_HOME;
   delete process.env.CCXRAY_HOME;
   delete process.env.CCXRAY_EXPORT_GCS_BUCKET;
   delete process.env.CCXRAY_AGENT_ID;
@@ -104,8 +121,14 @@ function cleanupEnv() {
   delete process.env.CCXRAY_TEAM;
   if (_savedFlags.disable === undefined) delete process.env.CCXRAY_EXPORT_DISABLE;
   else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
+  if (_savedFlags.tz === undefined) delete process.env.TZ;
+  else process.env.TZ = _savedFlags.tz;
   _savedFlags = {};
   _setUploader(null);
+  if (_testHomes.has(home)) {
+    fs.rmSync(home, { recursive: true, force: true });
+    _testHomes.delete(home);
+  }
   bustConfigCache();
 }
 
@@ -177,7 +200,7 @@ describe('cross-agent_id duplication (GCS audit 2026-08-25)', () => {
     setupEnv(homeA, 'agent-A');
     // non-first-run cursor with a null lastId → whole index counts as new
     fs.writeFileSync(path.join(homeA, 'export-cursor.json'),
-      JSON.stringify({ lastId: null, seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lastId: null, seq: {}, partial: false, cutoffDt: '2026-08-01', floorV: 1 }) + '\n');
     _setUploader(collector(uploads));
     await flushExport();
     cleanupEnv();
@@ -188,7 +211,7 @@ describe('cross-agent_id duplication (GCS audit 2026-08-25)', () => {
     writeIndex(homeB, sharedTurns);
     setupEnv(homeB, 'agent-B');
     fs.writeFileSync(path.join(homeB, 'export-cursor.json'),
-      JSON.stringify({ lastId: null, seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lastId: null, seq: {}, partial: false, cutoffDt: '2026-08-01', floorV: 1 }) + '\n');
     _setUploader(collector(uploads));
     await flushExport();
 
@@ -211,39 +234,45 @@ describe('cross-agent_id duplication (GCS audit 2026-08-25)', () => {
   });
 });
 
-describe('no-backfill breach: historical lines appended after cursor init', () => {
+describe('permanent no-backfill floor: historical lines appended after cursor init', () => {
   afterEach(cleanupEnv);
 
-  it('an importer wave landing after first-run cursor init is uploaded wholesale (historical dts leak)', async () => {
+  it('an importer wave landing after first-run cursor init cannot upload historical dts', async () => {
     const home = mkHome();
+    const liveDt = daysAgoUtc(14);
+    const oldDt = daysAgoUtc(170);
     // Live traffic present at first flush
     writeIndex(home, [
-      makeEntry({ id: '2026-08-12T10-00-00-000', responseId: 'msg_live1', sessionId: 'sess-live' }),
+      entryForDt(liveDt, { responseId: 'msg_live1', sessionId: 'sess-live' }),
     ]);
     setupEnv(home, 'agent-fresh');
     const uploads = [];
     _setUploader(collector(uploads));
 
-    // First flush: initializes cursor to index tail, uploads nothing ("No backfill")
+    // First flush: initializes cursor to index tail, stamps today's UTC floor,
+    // and uploads nothing ("No backfill")
+    const before = todayUtc();
     await flushExport();
+    const after = todayUtc();
     assert.equal(uploads.length, 0, 'first run must not upload');
+    const firstCursor = JSON.parse(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(firstCursor.cutoffDt));
+    assert.equal(firstCursor.floorV, 1);
 
     // Importer wave arrives AFTER cursor init: months-old transcripts appended
-    // to the index (append order, ids carry their original historical dates)
+    // to the index (append order, ids carry their original historical dates).
     appendIndex(home, [
-      makeEntry({ id: '2026-03-05T10-00-00-000', responseId: 'msg_old1', sessionId: 'sess-old', imported: true }),
-      makeEntry({ id: '2026-03-05T11-00-00-000', responseId: 'msg_old2', sessionId: 'sess-old', imported: true }),
+      entryForDt(oldDt, { responseId: 'msg_old1', sessionId: 'sess-old', imported: true }),
+      makeEntry({ id: `${oldDt}T11-00-00-000`, responseId: 'msg_old2', sessionId: 'sess-old', imported: true }),
     ]);
 
     await flushExport();
 
     const dts = new Set();
     for (const u of uploads) for (const r of u.records) if (r.type === 'daily') dts.add(r.dt);
-    // DEFECT (characterization): the no-backfill promise is breached — the
-    // historical dt is exported because the cursor only knows line position,
-    // not a date floor. A fix must keep 2026-03-05 OUT of this set — flip this
-    // assertion when it lands.
-    assert.ok(dts.has('2026-03-05'),
-      `historical dt leaks today (defect shape); uploaded dts: ${[...dts].join(', ')}`);
+    // FAIL-ON-OLD / PASS-ON-NEW: the permanent no-backfill promise excludes
+    // historical dates appended after cursor initialization.
+    assert.ok(!dts.has(oldDt),
+      `historical dt must stay out of uploads; uploaded dts: ${[...dts].join(', ')}`);
   });
 });
