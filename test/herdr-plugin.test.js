@@ -2125,12 +2125,17 @@ describe('Herdr working badge refresh loop', () => {
 
   it('deduplicates live loops with an atomic pane pidfile', () => {
     const { claimPid, releasePid } = require('../plugins/herdr/bin/badge-refresh-loop');
-    const env = pluginEnv({ HERDR_PANE_ID: 'w1:p2', HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-loop-state-')) });
-    const first = claimPid('w1:p2', env);
-    const second = claimPid('w1:p2', env);
-    assert.equal(first.owned, true);
-    assert.equal(second.reason, 'already-running');
-    releasePid(first);
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-loop-state-'));
+    try {
+      const env = pluginEnv({ HERDR_PANE_ID: 'w1:p2', HERDR_PLUGIN_STATE_DIR: stateDir });
+      const first = claimPid('w1:p2', env);
+      const second = claimPid('w1:p2', env);
+      assert.equal(first.owned, true);
+      assert.equal(second.reason, 'already-running');
+      releasePid(first);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
