@@ -4,12 +4,14 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const {
+  completedRepairEvidenceForAgent,
   contextSidebarColumns,
   displayWidth,
   emptyContextBar,
   formatPercent,
   herdrRuntime,
   herdrAgentReport,
+  linkEvidence,
   paneAlert,
   reportPaneTokens,
   resolvePaneSessionId,
@@ -67,6 +69,8 @@ function sharedReports(env = process.env) {
       usage: parsed.usage && parsed.usage.ok && parsed.usage.data ? parsed.usage : null,
       agents: Array.isArray(parsed.agents) ? parsed.agents : null,
       linkedPaneIds: Array.isArray(parsed.linkedPaneIds) ? parsed.linkedPaneIds : null,
+      linkedSessionIds: Array.isArray(parsed.linkedSessionIds) ? parsed.linkedSessionIds : null,
+      historySessionIds: Array.isArray(parsed.historySessionIds) ? parsed.historySessionIds : null,
     };
   } catch {}
   return {};
@@ -117,6 +121,7 @@ function compactRoute(status, opts = {}) {
   const suffix = pane ? ` ${pane}` : '';
   let variants;
   if (!opts.proxy) variants = ['!hub', '!'];
+  else if (opts.historyOnly) variants = ['history · live off', 'history/off', 'hist/off'];
   else if (state === 'blocked') variants = [`!block${suffix}`, '!block', '!'];
   else if (!opts.located && !opts.routed) variants = [`?link${suffix}`, '?link', '?'];
   else if (!opts.located) variants = [`+ready${suffix}`, '+ready', '+'];
@@ -257,15 +262,26 @@ function badgeTokens(status, usage, opts = {}) {
     paneId: opts.paneId,
     proxy: proxyAvailable(status.parsed),
     located: Boolean(detail) && detail.matched !== false,
-    routed: Boolean(opts.routed),
+    // A routed launch record is readiness evidence only before Herdr has a
+    // native session. Once native identity exists, missing exact index evidence
+    // is `?link`, never `+ready`.
+    routed: Boolean(opts.routed) && !opts.sessionId,
+    historyOnly: Boolean(detail?.historyOnly),
   });
+
+  const located = Boolean(detail) && detail.matched !== false;
+  const liveLinked = located && detail.liveLinked !== false;
 
   return {
     tokens,
     stale,
     ctxPct: detail?.ctxPct ?? null,
     ctxWindowSource: detail?.ctxWindowSource || null,
-    located: Boolean(detail) && detail.matched !== false,
+    located,
+    liveLinked,
+    repairCandidate: proxyAvailable(status.parsed) && !opts.identityConflict
+      ? (detail?.repairCandidate || null)
+      : null,
     clearTokens: [
       ...applyContextColorTokens(tokens, tokens.ctx_band),
       ...applyRow3Tokens(tokens, detail, opts),
@@ -286,21 +302,40 @@ function workspaceXrayToken(status, env = process.env, sharedAgents = null, shar
   const workspaceId = env.HERDR_WORKSPACE_ID;
   const scoped = agents.filter(agent => !workspaceId || agent.workspace_id === workspaceId);
   const observedEntries = Array.isArray(sharedLinkedPaneIds) ? [] : readIndexTailEntries({ env });
-  const observedPaneIds = new Set(Array.isArray(sharedLinkedPaneIds)
-    ? sharedLinkedPaneIds
-    : observedEntries.flatMap(entry => {
-      const match = String(entry.agentId || '').match(/^herdr:(.+)$/);
-      return match ? [match[1]] : [];
-    }));
-  const observedSessionIds = new Set(observedEntries.map(entry => entry.sessionId).filter(Boolean));
+  const evidence = linkEvidence(observedEntries);
+  const observedSessionIds = new Set(Array.isArray(opts.linkedSessionIds)
+    ? opts.linkedSessionIds
+    : evidence.liveSessionIds);
+  const historySessionIds = new Set(Array.isArray(opts.historySessionIds)
+    ? opts.historySessionIds
+    : evidence.historySessionIds);
+  // A targeted repair may find the exact session earlier than the bounded
+  // Sidebar tail and cache its newest index row. Fold that same evidence into
+  // the aggregate so a pane and workspace cannot disagree about live/history.
+  for (const agent of scoped) {
+    const sessionId = agent.agent_session?.kind === 'id' ? agent.agent_session.value : null;
+    if (!sessionId || observedSessionIds.has(sessionId) || historySessionIds.has(sessionId)) continue;
+    const cached = completedRepairEvidenceForAgent(agent, env);
+    if (!cached) continue;
+    if (cached.imported === true) historySessionIds.add(sessionId);
+    else observedSessionIds.add(sessionId);
+  }
   const linked = scoped.filter(agent => {
     const labels = agent.state_labels && typeof agent.state_labels === 'object' ? agent.state_labels : {};
     const label = Object.values(labels).join(' ').toLowerCase();
     if (/not linked|no hub/.test(label)) return false;
-    if (/linked|traced/.test(label)) return true;
-    if (agent.pane_id && observedPaneIds.has(agent.pane_id)) return true;
     const sessionId = agent.agent_session?.kind === 'id' ? agent.agent_session.value : null;
-    return Boolean(sessionId && observedSessionIds.has(sessionId));
+    if (sessionId) {
+      if (observedSessionIds.has(sessionId)) return true;
+      if (historySessionIds.has(sessionId)) return false;
+      // Native identity exists but exact session evidence does not. An older
+      // exact pane agentId or compatibility label is not allowed to fill it in.
+      return false;
+    }
+    // Pane ids and old labels are not session identities. In particular they
+    // survive agent restart/session rotation, so using either when Herdr has no
+    // native session makes the workspace aggregate contradict the pane's ?link.
+    return false;
   }).length;
   return fitVariant([`xray ${linked}/${scoped.length}`, `${linked}/${scoped.length}`, `${linked}+`, '?'], cols);
 }
@@ -320,6 +355,16 @@ function main() {
   const usage = shared.usage || usageReport({ last: process.env.CCXRAY_HERDR_LAST || '24h' });
   const context = runtime.context || {};
   const targetPaneId = runtime.paneId || context.focused_pane_id || null;
+  const reportedSessionId = event.sessionId
+    || (context.agent_session?.kind === 'id' ? context.agent_session.value : null);
+  let agents = Array.isArray(shared.agents) ? shared.agents : null;
+  // Native-session repair is allowed only after one live Herdr owner is
+  // observed. This one list also serves session resolution when the event did
+  // not carry an id, avoiding two independent snapshots of agent ownership.
+  if (!agents && (reportedSessionId || (targetPaneId && !context.agent_session_known))) {
+    const report = herdrAgentReport({ env });
+    if (report.ok) agents = report.agents;
+  }
   // Shared with open-dashboard so the badge and the deep link cannot disagree
   // about which session this pane is on.
   const nativeSessionId = resolvePaneSessionId({
@@ -327,7 +372,17 @@ function main() {
     paneId: targetPaneId,
     context,
     eventSessionId: event.sessionId,
+    agents,
   });
+  const paneAgent = agents?.find(agent => agent.pane_id === targetPaneId) || null;
+  const nativeOwners = nativeSessionId && agents
+    ? agents.filter(agent => (
+      agent.agent_session?.kind === 'id'
+      && agent.agent_session.value === nativeSessionId
+    ))
+    : [];
+  const identityConflict = nativeOwners.length > 1;
+  const allowRepair = Boolean(nativeSessionId && agents && nativeOwners.length === 1);
   const sidebarCols = contextSidebarColumns({
     env,
     paneId: targetPaneId,
@@ -339,16 +394,19 @@ function main() {
     sessionId: nativeSessionId,
     cwd: event.cwd || context.focused_pane_cwd || context.workspace_cwd || null,
     sidebarCols,
-    agent: event.agent,
+    agent: event.agent || paneAgent?.agent || paneAgent?.display_agent || null,
     status: event.status,
     routed: proxyAvailable(status.parsed) && routedPaneKnown(targetPaneId, process.env),
     launchId: routedPaneLaunchId(targetPaneId, process.env),
+    identityConflict,
+    allowRepair,
   });
   const { tokens, clearTokens } = badge;
-  // A stale badge means completed turns are sitting on disk that ccxray never
-  // logged, which is exactly what a rescan fixes — so the marker doubles as the
-  // trigger. Detached: the badge write below must not wait for a disk scan.
-  const importRequest = badge.stale ? requestImport({ env: process.env }) : null;
+  // The candidate is already exact to provider + native session + cwd + one
+  // located transcript. Detached: the badge write below never waits for it.
+  const importRequest = badge.repairCandidate
+    ? requestImport({ env: process.env, target: badge.repairCandidate, paneId: targetPaneId })
+    : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
   // Row 1 is state_icon + $who. Linkage and activity are explicit compact
   // tokens on rows 1/2; native state labels are cleared so they cannot append a
@@ -383,7 +441,11 @@ function main() {
     force: Boolean(event.status && !['working', 'running', 'active'].includes(String(event.status).toLowerCase())),
     clearStateLabels: true,
   });
-  const workspaceTokens = { xray: workspaceXrayToken(status, env, shared.agents, shared.linkedPaneIds, { sidebarCols }) };
+  const workspaceTokens = { xray: workspaceXrayToken(status, env, shared.agents, shared.linkedPaneIds, {
+    sidebarCols,
+    linkedSessionIds: shared.linkedSessionIds,
+    historySessionIds: shared.historySessionIds,
+  }) };
   const workspace = reportWorkspaceTokens(workspaceTokens, {
     env,
     ttlMs,

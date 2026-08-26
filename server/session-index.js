@@ -477,6 +477,10 @@ function setFirstPrompt(sid, text) {
 
 function _scheduleDirtyFlush() {
   dirty = true;
+  // An append-only importer deliberately leaves the hub-owned derived view
+  // untouched. Do not keep that detached process alive for a timer whose flush
+  // is guaranteed to return immediately under the same guard.
+  if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (flushTimer) return;
   flushTimer = setTimeout(() => { flushTimer = null; flush().catch(e => console.error('[session-index] flush error:', e.message)); }, FLUSH_DELAY_MS);
 }

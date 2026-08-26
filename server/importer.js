@@ -364,7 +364,7 @@ async function parseCodexSessionFile(filePath) {
 
 const _pendingIndexWrites = [];
 
-function pushImportedEntry(entry, existingIds) {
+function pushImportedEntry(entry, existingIds, opts = {}) {
   if (existingIds.has(entry.id)) return false;
   existingIds.add(entry.id);
   // Write to index.ndjson + session index only — skip store.entries and SSE
@@ -372,9 +372,15 @@ function pushImportedEntry(entry, existingIds) {
   // are cold; their entries load on-demand via /_api/session/:sid/entries.
   const indexLine = buildIndexLine(entry);
   // Log-first: only update session index after index.ndjson write succeeds (#309)
-  _pendingIndexWrites.push(config.storage.appendIndex(indexLine + '\n').then(() => {
+  let pending = config.storage.appendIndex(indexLine + '\n').then(() => {
     sessionIdx.updateFromEntry(entry);
-  }).catch(e => console.error('Write import index failed:', e.message)));
+  });
+  // The full best-effort importer has historically continued past a bad file.
+  // A targeted Sidebar repair has a stronger contract: claiming success would
+  // permanently mark this exact transcript fingerprint as repaired, so its
+  // append failure must reach the worker and leave the link visibly missing.
+  if (!opts.strict) pending = pending.catch(e => console.error('Write import index failed:', e.message));
+  _pendingIndexWrites.push(pending);
   return true;
 }
 
@@ -455,8 +461,117 @@ async function scanAndImport() {
   return { imported, skipped };
 }
 
+function pathInside(file, roots) {
+  let resolvedFile;
+  try { resolvedFile = fs.realpathSync(file); } catch { return null; }
+  for (const root of roots) {
+    let resolvedRoot;
+    try { resolvedRoot = fs.realpathSync(root.dir); } catch { continue; }
+    if (resolvedFile === resolvedRoot || resolvedFile.startsWith(`${resolvedRoot}${path.sep}`)) {
+      return resolvedFile;
+    }
+  }
+  return null;
+}
+
+async function scanAndImportTranscript(target = {}) {
+  if (process.env.CCXRAY_IMPORT_DISABLE === '1') return { imported: 0, skipped: 0 };
+  const provider = String(target.provider || '').toLowerCase();
+  if (provider !== 'claude' && provider !== 'codex') throw new Error('unsupported transcript provider');
+  if (!target.file || !target.sessionId || !target.cwd) throw new Error('incomplete transcript target');
+
+  const roots = provider === 'claude' ? discoverHomes() : discoverCodexHomes();
+  const file = pathInside(target.file, roots);
+  if (!file || path.extname(file) !== '.jsonl') throw new Error('transcript is outside the provider import roots');
+  if (provider === 'claude' && path.basename(file, '.jsonl') !== target.sessionId) {
+    throw new Error('transcript session identity conflict');
+  }
+
+  const existingIds = new Set();
+  const ownersById = new Map();
+  const rememberOwner = entry => {
+    if (!entry?.id) return;
+    existingIds.add(entry.id);
+    if (!ownersById.has(entry.id)) ownersById.set(entry.id, new Set());
+    if (entry.sessionId) ownersById.get(entry.id).add(entry.sessionId);
+  };
+  store.entries.forEach(rememberOwner);
+  const metas = [];
+  let exactEvidence = null;
+  for await (const line of config.storage.readIndexLines()) {
+    let meta;
+    try { meta = JSON.parse(line); } catch { continue; }
+    rememberOwner(meta);
+    metas.push(meta);
+    if (meta?.sessionId !== target.sessionId) continue;
+    if (meta.cwd && path.resolve(meta.cwd) !== path.resolve(target.cwd)) {
+      throw new Error('indexed session cwd identity conflict');
+    }
+    const metaAt = Number(meta.receivedAt) || 0;
+    const evidenceAt = Number(exactEvidence?.receivedAt) || 0;
+    if (!exactEvidence || metaAt > evidenceAt
+      || (metaAt === evidenceAt && exactEvidence.imported === true && meta.imported !== true)) {
+      exactEvidence = meta;
+    }
+  }
+  sessionIdx.seedDedupFromMetas(metas);
+
+  const entries = provider === 'claude'
+    ? await parseSessionFile(file, path.basename(path.dirname(file)))
+    : await parseCodexSessionFile(file);
+  if (entries.some(entry => entry.sessionId !== target.sessionId)) {
+    throw new Error('transcript session identity conflict');
+  }
+  const targetCwd = path.resolve(target.cwd);
+  if (entries.some(entry => entry.cwd && path.resolve(entry.cwd) !== targetCwd)) {
+    throw new Error('transcript cwd identity conflict');
+  }
+
+  let imported = 0;
+  let skipped = 0;
+  const appendedEntries = [];
+  for (const entry of entries) {
+    if (existingIds.has(entry.id)) {
+      const owners = ownersById.get(entry.id) || new Set();
+      if (!owners.has(entry.sessionId)) throw new Error('transcript entry id identity collision');
+      skipped += 1;
+      continue;
+    }
+    if (pushImportedEntry(entry, existingIds, { strict: true })) {
+      rememberOwner(entry);
+      appendedEntries.push(entry);
+      imported += 1;
+    } else {
+      skipped += 1;
+    }
+  }
+  if (imported > 0) {
+    try {
+      await Promise.all(_pendingIndexWrites);
+    } finally {
+      _pendingIndexWrites.length = 0;
+    }
+    await sessionIdx.flush();
+    broadcastRaw({ _type: 'sessions_updated' });
+    console.log(`[importer] Imported ${imported} turns from targeted ${provider} transcript (${skipped} duplicates skipped)`);
+  }
+  // Cache only evidence that was already in the exact index, or whose strict
+  // append above completed. A parsed-but-skipped entry is not index evidence;
+  // in particular timestamp-derived ids can collide across sessions.
+  for (const entry of appendedEntries) {
+    const entryAt = Number(entry.receivedAt) || 0;
+    const evidenceAt = Number(exactEvidence?.receivedAt) || 0;
+    if (!exactEvidence || entryAt > evidenceAt
+      || (entryAt === evidenceAt && exactEvidence.imported === true && entry.imported !== true)) {
+      exactEvidence = entry;
+    }
+  }
+  return { imported, skipped, exactEvidence };
+}
+
 module.exports = {
   scanAndImport,
+  scanAndImportTranscript,
   parseSessionFile,
   parseCodexSessionFile,
   discoverHomes,

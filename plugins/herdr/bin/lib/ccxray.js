@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -833,15 +834,92 @@ function transcriptSlug(cwd) {
 function transcriptFile(sessionId, cwd, env = process.env) {
   if (!sessionId || !cwd) return null;
   const slug = transcriptSlug(cwd);
-  let best = null;
+  const matches = new Map();
   for (const root of claudeProjectRoots(env)) {
     const file = path.join(root, slug, `${sessionId}.jsonl`);
     try {
       const stat = fs.statSync(file);
-      if (!best || stat.mtimeMs > best.mtimeMs) best = { file, mtimeMs: stat.mtimeMs };
+      if (!stat.isFile()) continue;
+      // Named homes can be symlinks to the same transcript tree. Collapse those
+      // aliases, but never choose between two distinct files claiming one native
+      // session identity merely because one is newer.
+      const real = fs.realpathSync(file);
+      if (!matches.has(real)) matches.set(real, { file: real, mtimeMs: stat.mtimeMs });
     } catch { /* this home does not hold the session */ }
   }
-  return best;
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
+function codexSessionRoots(env = process.env) {
+  if (env.CCXRAY_IMPORT_CODEX_HOMES) return [env.CCXRAY_IMPORT_CODEX_HOMES];
+  const home = os.homedir();
+  const roots = [];
+  let items = [];
+  try { items = fs.readdirSync(home); } catch { return roots; }
+  for (const name of items) {
+    if (!name.startsWith('.codex') || name.includes('.bak')) continue;
+    if (name !== '.codex' && !name.startsWith('.codex-')) continue;
+    roots.push(path.join(home, name, 'sessions'));
+  }
+  return roots;
+}
+
+function codexTranscriptFile(sessionId, env = process.env) {
+  const compact = String(sessionId || '').replace(/-/g, '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(compact)) return null;
+  const createdAt = Number.parseInt(compact.slice(0, 12), 16);
+  const min = Date.parse('2000-01-01T00:00:00.000Z');
+  const max = Date.parse('2100-01-01T00:00:00.000Z');
+  if (!Number.isFinite(createdAt) || createdAt < min || createdAt > max) return null;
+
+  const days = new Set();
+  for (const offset of [-86400000, 0, 86400000]) {
+    const date = new Date(createdAt + offset);
+    days.add([
+      String(date.getUTCFullYear()),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+      String(date.getUTCDate()).padStart(2, '0'),
+    ].join(path.sep));
+  }
+  const matches = [];
+  for (const root of codexSessionRoots(env)) {
+    for (const day of days) {
+      const dir = path.join(root, day);
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch { continue; }
+      for (const name of names) {
+        if (!name.endsWith('.jsonl') || !name.includes(sessionId)) continue;
+        const file = path.join(dir, name);
+        try {
+          const stat = fs.statSync(file);
+          if (stat.isFile()) matches.push({ file, mtimeMs: stat.mtimeMs });
+        } catch { /* disappeared during the bounded lookup */ }
+      }
+    }
+  }
+  // Multiple provider homes claiming the same native identity are ambiguous.
+  // The targeted importer must not choose one by recency and attach its history
+  // to the wrong pane.
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function repairTranscript(sessionId, cwd, agent, env = process.env) {
+  const kind = String(agent || '').trim().toLowerCase();
+  if (!sessionId || !cwd) return null;
+  const provider = kind === 'codex' || kind.includes('codex') ? 'codex'
+    : (kind === 'claude' || kind.includes('claude') ? 'claude' : null);
+  if (!provider) return null;
+  const found = provider === 'claude'
+    ? transcriptFile(sessionId, cwd, env)
+    : codexTranscriptFile(sessionId, env);
+  if (!found) return null;
+  return {
+    provider,
+    sessionId,
+    cwd,
+    file: found.file,
+    mtimeMs: found.mtimeMs,
+  };
 }
 
 // Bounded read, taken only when the mtime gate already suspects staleness. The
@@ -1119,33 +1197,67 @@ function sessionSummaryDetails(data, opts = {}) {
     || (agentId && allEntries.some(entry => entry.agentId === agentId))
     || (launchAgentId && allEntries.some(entry => entry.agentId === launchAgentId));
 
+  const unlinked = (summary, repairCandidate = null, linkReason = 'not-linked') => ({
+    matched: false,
+    liveLinked: false,
+    historyOnly: false,
+    sessionId: null,
+    ctxPct: null,
+    ctxText: '?',
+    ctxBand: contextBand(null),
+    ctxBar: emptyContextBar(opts),
+    stale: null,
+    ageText: '?',
+    cost: null,
+    costText: 'n/a',
+    model: 'unknown',
+    turns: 0,
+    summary,
+    repairCandidate,
+    linkReason,
+  });
+  if (opts.identityConflict) {
+    return unlinked('ccxray: identity conflict', null, 'identity-conflict');
+  }
+
   let turns = [];
-  if (nativeSessionId) turns = entries.filter(e => e.sessionId === nativeSessionId);
-  if (!turns.length && agentId) turns = entries.filter(e => e.agentId === agentId);
-  if (!turns.length && launchAgentId) turns = entries.filter(e => e.agentId === launchAgentId);
-  if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
-  if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
+  if (nativeSessionId) {
+    // Herdr's native session is the pane's current identity. Once it exists,
+    // every fallback below is historical or ambiguous: the same pane agentId
+    // survives session rotation, cwd is shared by parallel panes, and `top` is
+    // global usage. None is allowed to answer for a missing native session.
+    turns = entries.filter(e => e.sessionId === nativeSessionId);
+  } else {
+    if (agentId) turns = entries.filter(e => e.agentId === agentId);
+    if (!turns.length && launchAgentId) turns = entries.filter(e => e.agentId === launchAgentId);
+    if (!turns.length && top.sessionId) turns = entries.filter(e => e.sessionId === top.sessionId);
+    if (!turns.length && opts.cwd) turns = entries.filter(e => e.cwd === opts.cwd);
+  }
 
   const exactAgentMatch = (agentId && turns.some(entry => entry.agentId === agentId))
     || (launchAgentId && turns.some(entry => entry.agentId === launchAgentId));
   const nativeSessionMatch = nativeSessionId && turns.some(entry => entry.sessionId === nativeSessionId);
-  if ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch) {
-    const ctxText = '?';
-    return {
-      matched: false,
-      sessionId: null,
-      ctxPct: null,
-      ctxText,
-      ctxBand: contextBand(null),
-      ctxBar: emptyContextBar(opts),
-      stale: null,
-      ageText: '?',
-      cost: null,
-      costText: 'n/a',
-      model: 'unknown',
-      turns: 0,
-      summary: routed ? 'ccxray: ready · send prompt' : 'ccxray: not linked',
-    };
+  if ((nativeSessionId && !nativeSessionMatch)
+    || ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch)) {
+    const repairCandidate = nativeSessionId && opts.allowRepair !== false
+      ? repairTranscript(nativeSessionId, opts.cwd, opts.agent, opts.env)
+      : null;
+    // The 4 MiB Sidebar read is intentionally bounded. A targeted worker may
+    // discover that this exact session is already indexed earlier in a large
+    // file; its completed fingerprint caches the newest exact index row so the
+    // next refresh can finish classification without rescanning the whole index.
+    const repairedEvidence = repairCandidate
+      ? completedRepairEvidence(repairCandidate, opts.env)
+      : null;
+    if (repairedEvidence) {
+      turns = [repairedEvidence];
+    } else {
+      const summary = nativeSessionId
+        ? 'ccxray: not linked'
+        : (routed ? 'ccxray: ready · send prompt' : 'ccxray: not linked');
+      return unlinked(summary, repairCandidate,
+        repairCandidate ? 'repairable-transcript' : 'native-session-missing');
+    }
   }
 
   if (turns.length) {
@@ -1174,6 +1286,12 @@ function sessionSummaryDetails(data, opts = {}) {
       && known.has(turn.parentSessionId)
     )));
     const group = (roots.length ? roots : groups)[0];
+    const newestEvidenceAt = Math.max(...group.map(turn => Number(turn.receivedAt) || 0));
+    const newestEvidence = group.filter(turn => (Number(turn.receivedAt) || 0) === newestEvidenceAt);
+    // A resumed session may contain old proxy-observed turns followed by newer
+    // transcript imports. "Has ever been live" is not "is live now": only the
+    // newest exact evidence may classify the current linkage.
+    const historyOnly = newestEvidence.every(turn => turn.imported === true);
     // The session this badge is actually about — look its hub-maintained
     // aggregate up so the totals match the dashboard by construction instead of
     // being re-derived from a 4 MiB sample of the index.
@@ -1184,8 +1302,21 @@ function sessionSummaryDetails(data, opts = {}) {
     // stale text and only the dimmed band survives there. The summary has 80
     // columns and is the one place the reason is always spelled out.
     const base = `${shortModel(detail.model)}, ${detail.ageText}, ${detail.costText}`;
-    const summary = detail.stale ? `${base} · ${detail.stale.text}` : base;
-    return { ...detail, matched: true, summary: clip(summary, 80) };
+    const observedSummary = detail.stale ? `${base} · ${detail.stale.text}` : base;
+    const summary = historyOnly
+      ? `history-only · live off · ${observedSummary}`
+      : observedSummary;
+    return {
+      ...detail,
+      matched: true,
+      historyOnly,
+      liveLinked: !historyOnly,
+      // Exact index evidence has already answered the linkage question. A stale
+      // metric remains visibly stale, but this short-term repair is deliberately
+      // limited to missing exact evidence and does not start another importer.
+      repairCandidate: null,
+      summary: clip(summary, 80),
+    };
   }
 
   const fallback = {
@@ -1213,29 +1344,160 @@ function sessionSummaryDetails(data, opts = {}) {
   };
 }
 
-// Fire-and-forget `ccxray import --once` for a pane whose badge just went stale.
+// Fire-and-forget a single-transcript repair for a pane whose native session has
+// no exact index evidence.
 //
 // The badge refresh is on Herdr's event path, so this must never join its
 // lifecycle: detached + unref'd + stdio ignored means the child outlives this
-// process and this process does not wait a millisecond for it. All of the
-// throttling, locking and error recording lives in server/import-once.js, which
-// is the only thing that can enforce it across the many refreshes a workspace
-// fires; asking here would race with the other panes.
+// process and this process does not wait for transcript parsing or index I/O.
+function linkRepairRetryMs(env = process.env) {
+  const raw = Number(env.CCXRAY_LINK_REPAIR_RETRY_MS);
+  return Number.isFinite(raw) && raw >= 0 ? Math.min(raw, 10 * 60 * 1000) : 30000;
+}
+
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
+}
+
+function retryableRepairState(state, now, env) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.status === 'failed') {
+    return now >= (Number(state.retryAfter) || Number(state.finishedAt) + linkRepairRetryMs(env));
+  }
+  if (state.status !== 'requested' && state.status !== 'running') return false;
+  const startedAt = Number(state.startedAt || state.requestedAt) || now;
+  // The worker's own command timeout is 35s. Two minutes is therefore a hard
+  // upper bound even if its pid has since been reused by an unrelated process.
+  return now - startedAt >= 2 * 60 * 1000;
+}
+
+function repairFingerprint(target, stat = null) {
+  let fileStat = stat;
+  try { fileStat = fileStat || fs.statSync(target.file); } catch { return null; }
+  return crypto.createHash('sha256').update(JSON.stringify({
+    provider: target.provider,
+    sessionId: target.sessionId,
+    cwd: target.cwd,
+    file: path.resolve(target.file),
+    size: fileStat.size,
+    mtimeMs: fileStat.mtimeMs,
+  })).digest('hex');
+}
+
+function repairStateFile(target, env, stat = null) {
+  const fingerprint = repairFingerprint(target, stat);
+  return fingerprint
+    ? path.join(pluginStateDir(env), 'link-repair-v1', `${fingerprint}.json`)
+    : null;
+}
+
+function completedRepairEvidence(target, env = process.env) {
+  const file = repairStateFile(target, env);
+  if (!file) return null;
+  let state;
+  try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
+  const evidence = state?.status === 'complete' ? state.exactEvidence : null;
+  if (!evidence || evidence.sessionId !== target.sessionId) return null;
+  if (evidence.cwd && path.resolve(evidence.cwd) !== path.resolve(target.cwd)) return null;
+  return evidence;
+}
+
+function completedRepairEvidenceForAgent(agent, env = process.env) {
+  const sessionId = agent?.agent_session?.kind === 'id' ? agent.agent_session.value : null;
+  const cwd = agent?.foreground_cwd || agent?.cwd || null;
+  const kind = agent?.agent || agent?.display_agent || null;
+  if (!sessionId || !cwd || !kind) return null;
+  const target = repairTranscript(sessionId, cwd, kind, env);
+  return target ? completedRepairEvidence(target, env) : null;
+}
+
+function claimRepairState(stateFile, value, env) {
+  const write = () => fs.writeFileSync(stateFile, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
+  try {
+    write();
+    return { ok: true };
+  } catch (error) {
+    if (error.code !== 'EEXIST') return { ok: false, reason: 'claim-failed' };
+  }
+
+  let prior = null;
+  try { prior = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* fail closed below */ }
+  const now = Date.now();
+  if (!retryableRepairState(prior, now, env)) return { ok: false, reason: 'already-requested' };
+
+  // Serialize expiry/retry. Without this small reclaim file, two Sidebar event
+  // processes can both unlink an expired claim and one can then unlink the
+  // other's fresh replacement.
+  const reclaim = `${stateFile}.reclaim`;
+  try { fs.writeFileSync(reclaim, JSON.stringify({ pid: process.pid, at: now }), { flag: 'wx', mode: 0o600 }); }
+  catch {
+    let owner = null;
+    try { owner = JSON.parse(fs.readFileSync(reclaim, 'utf8')); } catch { /* fail closed */ }
+    const ownerAt = Number(owner?.at) || now;
+    if (owner && (!processAlive(Number(owner.pid)) || now - ownerAt >= 2 * 60 * 1000)) {
+      // Only clear on this attempt. A later Sidebar event may claim it; not
+      // recreating here prevents two stale-reclaim observers from deleting a
+      // fresh reclaim file belonging to one another.
+      try { fs.unlinkSync(reclaim); } catch { /* somebody else cleared it */ }
+    }
+    return { ok: false, reason: 'already-requested' };
+  }
+  try {
+    try { prior = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { prior = null; }
+    if (!retryableRepairState(prior, Date.now(), env)) return { ok: false, reason: 'already-requested' };
+    try { fs.unlinkSync(stateFile); } catch { return { ok: false, reason: 'claim-failed' }; }
+    try { write(); return { ok: true }; }
+    catch { return { ok: false, reason: 'claim-failed' }; }
+  } finally {
+    try { fs.unlinkSync(reclaim); } catch { /* another process cannot own ours */ }
+  }
+}
+
 function requestImport(opts = {}) {
   const env = opts.env || process.env;
   if (env.CCXRAY_BADGE_IMPORT_DISABLE === '1') return { ok: false, reason: 'disabled' };
-  const cmd = resolveCcxrayCommand(env);
-  if (!cmd || !cmd.bin) return { ok: false, reason: 'no-ccxray' };
+  const target = opts.target || {};
+  if (!target.file || !target.provider || !target.sessionId || !target.cwd) {
+    return { ok: false, reason: 'no-target' };
+  }
+  let stat;
+  try { stat = fs.statSync(target.file); } catch { return { ok: false, reason: 'transcript-missing' }; }
+  if (!stat.isFile()) return { ok: false, reason: 'transcript-missing' };
+
+  const stateFile = repairStateFile(target, env, stat);
+  if (!stateFile) return { ok: false, reason: 'claim-failed' };
   try {
-    const child = spawn(cmd.bin, [...cmd.argsPrefix, 'import', '--once'], {
-      env,
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  } catch { return { ok: false, reason: 'claim-failed' }; }
+  const claimed = claimRepairState(stateFile, {
+    status: 'requested',
+    requestedAt: Date.now(),
+    paneId: opts.paneId || null,
+    provider: target.provider,
+    sessionId: target.sessionId,
+  }, env);
+  if (!claimed.ok) return claimed;
+
+  const worker = path.resolve(__dirname, '..', 'repair-session-link.js');
+  try {
+    const child = spawn(process.execPath, [worker], {
+      env: {
+        ...env,
+        CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+        CCXRAY_LINK_REPAIR_STATE: stateFile,
+        CCXRAY_BADGE_IMPORT_DISABLE: '1',
+      },
       detached: true,
       stdio: 'ignore',
     });
-    child.on('error', () => { /* the badge must not fail because a scan could not start */ });
+    child.on('error', () => {
+      try { fs.unlinkSync(stateFile); } catch { /* a later transcript version can retry */ }
+    });
     child.unref();
     return { ok: true };
   } catch {
+    try { fs.unlinkSync(stateFile); } catch { /* nothing to release */ }
     return { ok: false, reason: 'spawn-failed' };
   }
 }
@@ -1974,6 +2236,31 @@ function dedupeObservedEntries(entries) {
   return unique;
 }
 
+function linkEvidence(entries) {
+  const deduped = dedupeObservedEntries(entries || []);
+  const livePaneIds = new Set();
+  const sessions = new Map();
+  for (const entry of deduped) {
+    if (entry.imported !== true) {
+      const match = String(entry.agentId || '').match(/^herdr:(.+)$/);
+      if (match) livePaneIds.add(match[1]);
+    }
+    if (!entry.sessionId) continue;
+    if (!sessions.has(entry.sessionId)) sessions.set(entry.sessionId, []);
+    sessions.get(entry.sessionId).push(entry);
+  }
+
+  const liveSessionIds = new Set();
+  const historySessionIds = new Set();
+  for (const [sessionId, turns] of sessions) {
+    const newestAt = Math.max(...turns.map(turn => Number(turn.receivedAt) || 0));
+    const newest = turns.filter(turn => (Number(turn.receivedAt) || 0) === newestAt);
+    if (newest.some(turn => turn.imported !== true)) liveSessionIds.add(sessionId);
+    else historySessionIds.add(sessionId);
+  }
+  return { livePaneIds, liveSessionIds, historySessionIds };
+}
+
 function filterEntriesToWorkspace(entries, env = process.env) {
   const scope = currentWorkspaceScope(env);
   if (scope.kind === 'global') return { entries: dedupeObservedEntries(entries), scope };
@@ -2166,8 +2453,10 @@ function resolvePaneSessionId(opts = {}) {
   if (opts.eventSessionId) return opts.eventSessionId;
   if (context.agent_session?.kind === 'id') return context.agent_session.value;
   if (opts.paneId && !context.agent_session_known) {
-    const report = herdrAgentReport({ env });
-    const agent = report.agents.find(item => item.pane_id === opts.paneId);
+    const agents = Array.isArray(opts.agents)
+      ? opts.agents
+      : herdrAgentReport({ env }).agents;
+    const agent = agents.find(item => item.pane_id === opts.paneId);
     if (agent?.agent_session?.kind === 'id') return agent.agent_session.value;
   }
   return null;
@@ -2492,6 +2781,7 @@ module.exports = {
   backupConfigFile,
   capabilityPortfolio,
   capabilityReview,
+  completedRepairEvidenceForAgent,
   codexAgentArgs,
   contextBand,
   contextSidebarColumns,
@@ -2508,6 +2798,7 @@ module.exports = {
   formatPercent,
   herdrAgentReport,
   herdrRuntime,
+  linkEvidence,
   missionControlSnapshot,
   paneAction,
   paneAlert,
