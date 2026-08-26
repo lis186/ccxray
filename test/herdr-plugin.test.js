@@ -460,7 +460,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
     });
     // cacheHitText folds only the anchored turns, so the background turn's
     // uncached 126K must not dilute the ratio: 287100/319000 = 90%.
-    assert.match(detail.ctxBar, /cache 90%/);
+    assert.match(detail.cacheText, /cache 90%/);
   });
 
   it('falls back to every turn when no turn is positively a main agent', () => {
@@ -479,6 +479,27 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 2000,
     });
     assert.equal(Math.round(detail.ctxPct), 25);
+  });
+
+  it('keeps newer unclassified main turns after a classified turn', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const turns = [
+      { ...mainTurn, id: 'c1', sessionId: 's-codex', receivedAt: T,
+        beta1m: false, maxContext: 400000, usage: { input_tokens: 80000 } },
+      // Codex can omit agentKey after the session has already emitted
+      // classified turns. This is still a main turn when isSubagent=false.
+      { ...mainTurn, id: 'c2', sessionId: 's-codex', receivedAt: T + 1000,
+        agentKey: null, beta1m: false, model: 'gpt-5.6-luna', maxContext: 400000,
+        usage: { input_tokens: 160000 } },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 's-codex',
+      nowMs: T + 2000,
+    });
+    assert.equal(Math.round(detail.ctxPct), 40,
+      'the latest unclassified main turn must drive current ctx%');
+    assert.equal(detail.model, 'gpt-5.6-luna');
   });
 
   // `toolFail` is the cumulative request-side flag; `turnToolFail` is the
@@ -1190,7 +1211,7 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
 
   it('shows the facts when nothing is wrong and the alert when something is', () => {
     const healthy = render([turn({ id: 'h1', usage: { input_tokens: 50000 } })]);
-    assert.equal(healthy.tokens.facts, '$42.08 · 60m');
+    assert.equal(healthy.tokens.facts, '$42.08 · c0% · 60m');
     assert.equal(healthy.tokens.alert, undefined);
     assert.ok(healthy.clearTokens.includes('alert'));
     assert.equal(healthy.clearTokens.includes('facts'), false);
@@ -1208,7 +1229,7 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
     // one fact — the duplication this layout exists to remove.
     const full = render([turn({ id: 'c1', usage: { input_tokens: 190000 } })]);
     assert.equal(full.tokens.alert, undefined);
-    assert.equal(full.tokens.facts, '$42.08 · 60m');
+    assert.equal(full.tokens.facts, '$42.08 · c0% · 60m');
   });
 
   it('fills neither token for a pane whose session it cannot locate', () => {
@@ -1235,8 +1256,7 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
 
   it('keeps every alert label inside a narrow sidebar', () => {
     // The spelled-out 'cache dropped after prompt change' is 33 columns; the
-    // sidebar brief must fit a realistic row, and anything longer is clipped by
-    // us rather than cut by Herdr.
+    // sidebar chooses a complete compact variant rather than cutting it.
     const dropped = render([
       turn({ id: 'd1', sysHash: 'h1', usage: { input_tokens: 10000, cache_read_input_tokens: 90000 } }),
       turn({ id: 'd2', sysHash: 'h2', receivedAt: T + 1000, usage: { input_tokens: 100000, cache_read_input_tokens: 0 } }),
@@ -1246,14 +1266,83 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
 
     const wide = {};
     applyRow3Tokens(wide, { matched: true, costText: '$1234.56', ageText: '12.3h' }, { sidebarCols: 14 });
-    assert.equal(wide.facts, '$1234.56 · 12…');
+    assert.equal(wide.facts, '$1234.56');
   });
 });
 
-// Row 1 is `state_icon · agent · state_text`, and a ccxray state label REPLACES
-// the native state_text. Setting it unconditionally made row 1 read
-// `claude · ccxray: traced · claude`.
-describe('Herdr row 1 keeps Herdr own state text when the pane is located', () => {
+describe('Herdr sidebar observability contract', () => {
+  const {
+    displayWidth,
+    formatContextBar,
+  } = require('../plugins/herdr/bin/lib/ccxray');
+  const {
+    compactRoute,
+    compactWho,
+    workspaceXrayToken,
+  } = require('../plugins/herdr/bin/refresh-badges');
+
+  it('keeps context history and percentage inside every supported width without ellipsis', () => {
+    const turns = Array.from({ length: 12 }, (_, index) => ({
+      usage: { input_tokens: (index + 1) * 700 },
+      maxContext: 10000,
+    }));
+    for (const cols of [8, 10, 14, 18, 26, 36]) {
+      const value = formatContextBar(turns, 10000, '80%', { sidebarCols: cols });
+      assert.ok(displayWidth(value) <= cols, `${cols}: ${value}`);
+      assert.doesNotMatch(value, /…|~/, `${cols}: partial display marker is forbidden`);
+      assert.match(value, /80%/, `${cols}: context percentage must remain visible`);
+    }
+  });
+
+  it('suppresses small unmarked reversals but preserves an explicit compaction reset', () => {
+    const jitter = [90, 75, 90].map(input_tokens => ({ usage: { input_tokens }, maxContext: 100 }));
+    const smoothed = formatContextBar(jitter, 100, '90%', { sidebarCols: 18 });
+    assert.doesNotMatch(smoothed, /█▆█/, 'a small sawtooth must not be presented as history');
+
+    const compacted = [
+      { usage: { input_tokens: 90 }, maxContext: 100 },
+      { usage: { input_tokens: 75 }, maxContext: 100, isCompacted: true },
+      { usage: { input_tokens: 90 }, maxContext: 100 },
+    ];
+    const reset = formatContextBar(compacted, 100, '90%', { sidebarCols: 18 });
+    assert.match(reset, /█▆█/, 'an explicit compaction boundary must remain visible');
+  });
+
+  it('uses complete identity and route variants at narrow widths', () => {
+    assert.equal(compactWho('claude', 8), 'C');
+    assert.equal(compactWho('gpt-5.6-luna', 8), 'L');
+    for (const cols of [8, 10, 14, 18, 26, 36]) {
+      const route = compactRoute('working', {
+        sidebarCols: cols,
+        paneId: 'w1:p3V',
+        proxy: true,
+        located: true,
+      });
+      assert.ok(displayWidth(route) <= cols, `${cols}: ${route}`);
+      assert.doesNotMatch(route, /…|~/, `${cols}: route was clipped`);
+    }
+  });
+
+  it('reports workspace linkage as an aggregate, with explicit off/unknown states', () => {
+    const agents = [
+      { pane_id: 'w1:p1', workspace_id: 'w1', state_labels: { idle: 'ccxray: linked' } },
+      { pane_id: 'w1:p2', workspace_id: 'w1', state_labels: { idle: 'ccxray: not linked' } },
+      { pane_id: 'w1:p3', workspace_id: 'w1', state_labels: { idle: 'ccxray: linked' } },
+      { pane_id: 'w2:p4', workspace_id: 'w2', state_labels: { idle: 'ccxray: linked' } },
+    ];
+    const bin = makeHerdr(agents);
+    const env = pluginEnv({ HERDR_BIN_PATH: bin, HERDR_WORKSPACE_ID: 'w1' });
+    assert.equal(workspaceXrayToken({ parsed: { running: true, machine: { proxy: true } } }, env), 'xray 2/3');
+    assert.equal(workspaceXrayToken({ parsed: { running: false, notes: [] } }, env), 'xray off');
+    assert.equal(workspaceXrayToken({ parsed: { running: true, machine: { proxy: true } } }, {
+      ...env,
+      HERDR_BIN_PATH: path.join(os.tmpdir(), 'missing-herdr-for-ctx-contract'),
+    }), 'xray ?');
+  });
+});
+
+// Row 1 is `state_icon · $who`; route and context are separate owned tokens.
+describe('Herdr row 1 keeps the native icon and compact identity', () => {
   const T = 1787000000000;
   const paneTurn = extra => ({
     id: 'r1a', sessionId: 'row1', model: 'claude-opus-5', provider: 'anthropic',
@@ -1270,6 +1359,7 @@ describe('Herdr row 1 keeps Herdr own state text when the pane is located', () =
       HERDR_PANE_ID: 'w1:p1',
       HERDR_BIN_PATH: herdr.bin,
       CCXRAY_HERDR_NO_LAYOUT: '1',
+      PROXY_PORT: '5999',
     });
     const args = fs.existsSync(herdr.log) ? fs.readFileSync(herdr.log, 'utf8') : '';
     return { result, args };
@@ -1286,12 +1376,12 @@ describe('Herdr row 1 keeps Herdr own state text when the pane is located', () =
       'and must not overwrite the native state text');
   });
 
-  it('still labels a pane whose session it cannot locate', () => {
-    // The label is reserved for what Herdr cannot know: that ccxray is not
-    // seeing this pane at all.
+  it('also clears labels for a pane whose session it cannot locate', () => {
+    // Linkage is rendered by the compact $route token, not by a long state label.
     const { args } = run([paneTurn({ agentId: 'herdr:w1:pOTHER' })]);
-    assert.match(args, /--state-label idle=ccxray: not linked/);
-    assert.equal(/--clear-state-labels/.test(args), false);
+    assert.match(args, /--clear-state-labels/);
+    assert.equal(/--state-label/.test(args), false);
+    assert.match(args, /--token route=!hub/);
   });
 });
 
@@ -1357,10 +1447,11 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
 
     assert.match(after, /\$facts/);
     assert.match(after, /\$alert/);
-    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
-    // Seven config rows: row 1, four ctx_bar colour variants, and row 3's pair.
-    // Herdr skips rows whose tokens are all empty, so this renders three lines.
-    assert.equal(sidebarRows(after).length, 7);
+    assert.match(after, /\["state_icon", \{ token = "\$who"/);
+    assert.match(after, /\$route/);
+    // Eight config rows: row 1, route, four ctx_bar colour variants, and row 3's pair.
+    // Herdr skips rows whose tokens are all empty, so this renders four lines.
+    assert.equal(sidebarRows(after).length, 8);
     // The user's other tables are untouched.
     assert.match(after, /agent_panel_sort = "spaces"/);
     assert.equal(after.match(/\[ui\.sidebar\.agents\]/g).length, 1);
@@ -1417,9 +1508,9 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
     assert.equal(result.status, 0, result.stderr);
     // Legacy rows are gone, new row 1 is in place.
     assert.equal(after.includes('"workspace"'), false, 'old workspace column must go');
-    assert.match(after, /\["state_icon", "agent", "state_text"\]/);
-    // Seven config rows → three visible lines.
-    assert.equal(sidebarRows(after).length, 7);
+    assert.match(after, /\["state_icon", \{ token = "\$who"/);
+    // Eight config rows → four visible lines.
+    assert.equal(sidebarRows(after).length, 8);
     assert.match(result.stdout, /legacy default rows/);
   });
 
@@ -3579,9 +3670,9 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /model=claude-sonnet-4-6/);
     assert.match(result.stdout, /turns=1/);
     assert.match(result.stdout, /summary=sonnet-4-6, 5m, \$0\.12/);
-    assert.match(result.stdout, /ctx_bar=▁▁▁▂ 20%/);
+    assert.match(result.stdout, /ctx_bar=▂ 20%/);
     assert.match(result.stdout, /ctx_band=green/);
-    assert.match(result.stdout, /ctx_bar_green=▁▁▁▂ 20%/);
+    assert.match(result.stdout, /ctx_bar_green=▂ 20%/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_yellow ctx_bar_red/);
   });
 
@@ -3620,7 +3711,7 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=\?/);
     assert.match(result.stdout, /ctx_band=unknown/);
-    assert.match(result.stdout, /ctx_bar_unknown=▁▁▁▁ \?/);
+    assert.match(result.stdout, /ctx_bar_unknown=\?/);
     assert.match(result.stdout, /Clear: ctx_bar_green ctx_bar_yellow ctx_bar_red/);
   });
 
@@ -3834,7 +3925,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=90%/);
     assert.match(result.stdout, /ctx_band=red/);
-    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · cache 0%/);
+    assert.match(result.stdout, /ctx_bar_red=█ 90%/);
+    assert.doesNotMatch(result.stdout, /ctx_bar_red=.*…/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_green ctx_bar_yellow/);
   });
 
@@ -3870,7 +3962,8 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '36',
     });
     assert.equal(wide.status, 1);
-    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · cache 0%/);
+    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80%/);
+    assert.doesNotMatch(wide.stdout, /ctx_bar=.*…/);
   });
 
   it('launch-agent can produce a stable new-tab plan without side effects', () => {
@@ -4388,8 +4481,9 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_red/);
     assert.match(config, /\$facts/);
     assert.match(config, /\$alert/);
-    // No marker → the old `["agent"]` is treated as user's own row.
-    assert.match(config, /\["agent"\]/);
+    // `$summary` identifies the previous plugin contract, so its old default
+    // `["agent"]` row is migrated along with that contract.
+    assert.doesNotMatch(config, /\["agent"\]/);
     assert.match(result.stdout, /superseded row removed: \$summary/);
     assert.match(result.stdout, /migrated sidebar summary rows/);
   });
@@ -4688,6 +4782,7 @@ describe('Herdr plugin commands', () => {
     assert.equal(removed.status, 0, removed.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
     assert.doesNotMatch(config, /\[ui\.sidebar\.agents\]/);
+    assert.doesNotMatch(config, /\[ui\.sidebar\.spaces\]/);
     assert.doesNotMatch(config, /ccxray sidebar summary rows/);
     assert.match(config, /show_agent_labels_on_pane_borders = true/);
   });
@@ -4700,8 +4795,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
 
     const extended = fs.readFileSync(configPath, 'utf8')
-      .replace('  ["state_icon", "agent", "state_text"],',
-        '  ["state_icon", "agent", "state_text"],\n  ["cwd"],');
+      .replace('  ["state_icon", { token = "$who", fg = "#cdd6f4" }],',
+        '  ["state_icon", { token = "$who", fg = "#cdd6f4" }],\n  ["cwd"],');
     fs.writeFileSync(configPath, extended);
 
     assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);

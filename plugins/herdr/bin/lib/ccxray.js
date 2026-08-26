@@ -312,6 +312,31 @@ function shortModel(value) {
     .replace(/-20\d\d\d\d\d\d$/, '');
 }
 
+// Herdr measures sidebar content in terminal cells, not JavaScript code units.
+// Keep this deliberately dependency-free: the plugin runs from an installed
+// bundle where adding a wcwidth package would make the launcher less portable.
+function displayWidth(value) {
+  let width = 0;
+  for (const char of String(value ?? '')) {
+    const codePoint = char.codePointAt(0);
+    if (codePoint === 0x200d || (codePoint >= 0xfe00 && codePoint <= 0xfe0f)) continue;
+    if (/\p{Mark}/u.test(char) || codePoint < 0x20) continue;
+    if ((codePoint >= 0x1100 && codePoint <= 0x115f)
+      || (codePoint >= 0x2329 && codePoint <= 0x232a)
+      || (codePoint >= 0x2e80 && codePoint <= 0xa4cf)
+      || (codePoint >= 0xac00 && codePoint <= 0xd7a3)
+      || (codePoint >= 0xf900 && codePoint <= 0xfaff)
+      || (codePoint >= 0xfe10 && codePoint <= 0xfe6f)
+      || (codePoint >= 0xff01 && codePoint <= 0xff60)
+      || (codePoint >= 0x1f300 && codePoint <= 0x1faff)) {
+      width += 2;
+    } else {
+      width += 1;
+    }
+  }
+  return width;
+}
+
 function clip(value, max) {
   const text = String(value || '');
   if (text.length <= max) return text;
@@ -343,10 +368,25 @@ function contextBand(pct) {
 
 function contextPercents(turns, win) {
   if (!win) return [];
+  let previous = null;
   return turns
     .map(turn => {
       const used = contextUsed(turn);
-      return used && win ? used / win * 100 : null;
+      if (!used || !win) return null;
+      const raw = used / win * 100;
+      // Prompt/cache accounting can move by a few tokens between adjacent
+      // turns even though the conversation context has not reset. Drawing
+      // those tiny reversals creates a false sawtooth (for example 90 → 88 →
+      // 91) and makes the recent-history rail look less trustworthy. The
+      // importer marks real compaction boundaries; for an unmarked sample a
+      // drop of <=15 percentage points is treated as measurement jitter and
+      // held at the preceding level. Larger drops remain visible as a genuine
+      // reset. This mirrors the existing compaction detector's 15% token-drop
+      // threshold and preserves the important compaction/reset edge case.
+      const stabilized = previous != null && raw < previous && !turn.isCompacted
+        && previous - raw <= 15 ? previous : raw;
+      previous = stabilized;
+      return stabilized;
     })
     .filter(Number.isFinite);
 }
@@ -355,11 +395,11 @@ function contextSparkline(turns, win, opts = {}) {
   const pcts = turns
     ? contextPercents(turns, win)
     : [];
+  if (!pcts.length) return '';
   const maxBars = clampNumber(opts.maxBars, 3, 32) || 4;
-  const targetBars = pcts.length >= 4 ? Math.min(pcts.length, maxBars) : Math.min(4, maxBars);
+  const targetBars = Math.min(pcts.length, maxBars);
   const recent = pcts.slice(-targetBars);
-  const padded = Array(Math.max(0, targetBars - recent.length)).fill(0).concat(recent);
-  return padded.map(contextBlock).join('');
+  return recent.map(contextBlock).join('');
 }
 
 function cacheHitText(turns) {
@@ -515,18 +555,14 @@ function paneAlert(signals = {}) {
 
 function formatContextBar(turns, win, ctxText, opts = {}) {
   const sidebarCols = clampNumber(opts.sidebarCols, 8, 96) || 18;
-  const minSparkBars = sidebarCols < 10 ? 3 : 4;
-  const pctText = ` ${ctxText || '?'}`;
-  const rawSignal = opts.signal || null;
-  let signalText = rawSignal ? ` · ${rawSignal}` : '';
-  let maxBars = sidebarCols - pctText.length - signalText.length;
-  if (!rawSignal || sidebarCols < 22 || maxBars < 6) {
-    signalText = '';
-    maxBars = sidebarCols - pctText.length;
-  }
-  maxBars = Math.max(minSparkBars, maxBars);
+  const pctText = String(ctxText || '?');
+  const available = sidebarCols - displayWidth(pctText) - 1;
+  if (available < 1) return '?';
+  const maxBars = Math.max(1, Math.min(32, available));
   const spark = contextSparkline(turns, win, { maxBars });
-  return clip(`${spark}${pctText}${signalText}`, sidebarCols);
+  if (!spark) return pctText;
+  const result = `${spark} ${pctText}`;
+  return displayWidth(result) <= sidebarCols ? result : pctText;
 }
 
 function emptyContextBar(opts = {}) {
@@ -737,7 +773,18 @@ function mainAgentKeys() {
 function mainDisplayTurns(turns) {
   const keys = mainAgentKeys();
   const positive = turns.filter(turn => keys[turn.agentKey]);
-  if (positive.length) return positive;
+  if (positive.length) {
+    // A live Codex session can begin emitting turns without an agentKey after
+    // earlier turns were classified (the current index has this exact shape).
+    // Keep those explicitly non-subagent turns in the main fold; otherwise the
+    // latest current turn disappears and ctx% falls back to an older turn or ?.
+    // Explicit non-main keys such as `agent` and `general-purpose` remain out.
+    const mixed = turns.filter(turn => (
+      keys[turn.agentKey]
+      || (turn.agentKey == null && !turn.isSubagent)
+    ));
+    return mixed.length ? mixed : positive;
+  }
   const notSubagent = turns.filter(turn => !turn.isSubagent);
   return notSubagent.length ? notSubagent : turns;
 }
@@ -1021,6 +1068,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
       sidebarCols: opts.sidebarCols,
       signal,
     }),
+    cacheText: signal,
     // The DURATION this session ran (last turn - first), not how long ago it
     // started. The two differ by however long the session has been idle — for a
     // session that started 9.9h ago and ran 2.2h, they differ by 4x — and both
@@ -2448,11 +2496,13 @@ module.exports = {
   contextBand,
   contextSidebarColumns,
   costFold,
+  displayWidth,
   currentWorkspaceScope,
   ensureProxy,
   filterEntriesToWorkspace,
   findRepoRoot,
   forgetRoutedPane,
+  emptyContextBar,
   formatContextBar,
   formatMoney,
   formatPercent,

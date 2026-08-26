@@ -5,7 +5,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { herdrAgentReport, statusReport, usageReport } = require('./lib/ccxray');
+const { herdrAgentReport, readIndexTailEntries, statusReport, usageReport } = require('./lib/ccxray');
 
 function childTimeoutMs(env = process.env) {
   const value = Number(env.CCXRAY_BADGE_CHILD_TIMEOUT_MS);
@@ -39,7 +39,11 @@ function main() {
   // report missing recomputes its own copy — the pre-share behavior, but
   // confined to that child. The payload is a minimal DTO, not the raw
   // spawnSync result (whose Error does not survive JSON anyway).
-  const shared = {};
+  const linkedPaneIds = new Set(readIndexTailEntries({ env: process.env }).flatMap(entry => {
+    const match = String(entry.agentId || '').match(/^herdr:(.+)$/);
+    return match ? [match[1]] : [];
+  }));
+  const shared = { agents, linkedPaneIds: [...linkedPaneIds] };
   if (status.ok) shared.status = { ok: true, parsed: status.parsed };
   if (usage.ok) shared.usage = { ok: true, data: usage.data };
 

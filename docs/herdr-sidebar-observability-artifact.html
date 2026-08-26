@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herdr Sidebar Observability — Verified Interactive Mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #11141b;
+      --panel: #1b1f29;
+      --panel-2: #242a35;
+      --sidebar: #282d37;
+      --sidebar-deep: #20242d;
+      --line: #3a414e;
+      --text: #d8dee9;
+      --muted: #8992a3;
+      --faint: #939caf;
+      --green: #a6e3a1;
+      --yellow: #f9e2af;
+      --red: #f38ba8;
+      --blue: #89b4fa;
+      --purple: #cba6f7;
+      --cyan: #94e2d5;
+      --cols: 26;
+    }
+    * { box-sizing: border-box; }
+    html, body { max-inline-size: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    button, select { max-inline-size: 100%; font: inherit; }
+    button { color: inherit; }
+    .page { inline-size: min(100%, 1440px); margin: 0 auto; padding: 28px; }
+    .eyebrow { color: var(--cyan); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 4px 0 8px; color: #f5f7fb; font-size: 25px; line-height: 1.2; }
+    h2 { margin: 34px 0 12px; color: #f5f7fb; font-size: 17px; }
+    h3 { margin: 0; color: #f5f7fb; font-size: 13px; }
+    p { max-inline-size: 980px; color: var(--muted); }
+    code { color: var(--cyan); }
+    .intro { margin: 0 0 20px; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin: 18px 0;
+      padding: 12px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .control { display: inline-flex; flex-wrap: wrap; gap: 7px; align-items: center; color: var(--muted); }
+    select { padding: 5px 8px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; }
+    .contract { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-inline-start: auto; color: var(--muted); font-size: 12px; }
+    .pass { color: var(--green); }
+    .fail { color: var(--red); }
+    .workspace-preview { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 24px; align-items: start; }
+    .sidebar-wrap, .inspect { min-inline-size: 0; }
+    .sidebar-label { margin: 0 0 7px; color: var(--muted); font-size: 11px; }
+    .herdr-sidebar, .mini-sidebar {
+      inline-size: calc((var(--cols) + 2) * 1ch + 2px);
+      background: var(--sidebar);
+      border: 1px solid #414957;
+      border-radius: 5px;
+      box-shadow: 0 16px 38px #0006;
+      font-size: 14px;
+      line-height: 1.08;
+    }
+    .herdr-brand {
+      display: flex;
+      align-items: center;
+      min-block-size: 34px;
+      color: #a0a7b8;
+      border-block-end: 1px solid #303641;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .04em;
+    }
+    .display-row {
+      display: block;
+      inline-size: calc(var(--cols) * 1ch);
+      margin-inline: 1ch;
+      min-block-size: 17px;
+      white-space: pre;
+      letter-spacing: 0;
+    }
+    .herdr-mode { padding-block: 8px 4px; color: #a0a7b8; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .space-row { padding-block: 4px 6px; color: var(--text); font-weight: 700; border-block-end: 1px solid #343b48; }
+    .agent-list { padding-block-end: 7px; }
+    .agent {
+      position: relative;
+      display: block;
+      inline-size: 100%;
+      min-inline-size: 0;
+      margin: 0;
+      padding: 7px 0 8px;
+      color: var(--text);
+      text-align: start;
+      background: transparent;
+      border: 0;
+      border-block-start: 1px solid transparent;
+      cursor: pointer;
+    }
+    .agent:hover, .agent.selected { background: #303642; border-block-start-color: #414957; }
+    .agent.selected::before { position: absolute; inset: 0 auto 0 0; inline-size: 2px; background: var(--cyan); content: ""; }
+    .agent .display-row + .display-row, .mini-agent .display-row + .display-row { margin-block-start: 4px; }
+    .native { color: var(--text); }
+    .route { color: var(--muted); }
+    .route.ready { color: var(--blue); }
+    .route.idle, .route.done { color: var(--muted); }
+    .route.unlinked, .route.unknown { color: var(--muted); }
+    .route.nohub, .route.blocked { color: var(--red); }
+    .ctx.green { color: var(--green); }
+    .ctx.yellow { color: var(--yellow); }
+    .ctx.red { color: var(--red); }
+    .ctx.unknown { color: var(--muted); }
+    .facts { color: var(--muted); }
+    .alert { color: var(--red); }
+    .inspect { block-size: 460px; min-inline-size: 0; padding: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .inspect__title { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; margin-block-end: 13px; }
+    .inspect__title span { color: var(--cyan); font-size: 12px; }
+    .inspect-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+    .kv { min-inline-size: 0; padding: 9px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; }
+    .kv b { display: block; margin-block-end: 3px; color: var(--muted); font-size: 11px; font-weight: 400; }
+    .kv span { color: #f5f7fb; overflow-wrap: anywhere; }
+    .kv .good { color: var(--green); }
+    .kv .warn { color: var(--yellow); }
+    .kv .bad { color: var(--red); }
+    .kv .info { color: var(--blue); }
+    .note, .trace { margin-block-start: 12px; padding: 10px; color: var(--muted); background: #292337; }
+    .note { border-inline-start: 3px solid var(--purple); }
+    .trace { border-inline-start: 3px solid var(--blue); font-size: 12px; overflow-wrap: anywhere; }
+    .note, .trace { min-block-size: 56px; }
+    .legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+    .chip { padding: 3px 7px; color: var(--muted); border: 1px solid currentColor; border-radius: 999px; font-size: 11px; }
+    .chip.green { color: var(--green); }
+    .chip.yellow { color: var(--yellow); }
+    .chip.red { color: var(--red); }
+    .chip.blue { color: var(--blue); }
+    .chip.purple { color: var(--purple); }
+    .catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 10px; }
+    .case { min-inline-size: 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; }
+    .case__head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+    .case__head small { color: var(--faint); }
+    .mini-sidebar { margin-block-start: 10px; background: var(--sidebar-deep); box-shadow: none; }
+    .mini-agent { padding-block: 8px; }
+    .mini-space { padding-block: 8px; }
+    .case__rule { margin: 9px 0 0; color: var(--muted); font-size: 12px; }
+    .case__trace { margin-block-start: 7px; color: var(--blue); font-size: 11px; overflow-wrap: anywhere; }
+    .matrix-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 8px; margin-block-start: 12px; }
+    .matrix-cell { padding: 9px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 5px; }
+    .matrix-cell b { color: #f5f7fb; }
+    .footer { margin-block-start: 28px; color: var(--faint); font-size: 12px; }
+    .geometry-probe { position: fixed; inset: 0 auto auto 0; visibility: hidden; pointer-events: none; }
+    @media (max-width: 860px) {
+      .page { padding: 18px 12px; }
+      .workspace-preview { grid-template-columns: 1fr; }
+      .contract { inline-size: 100%; margin-inline-start: 0; }
+    }
+    @media (max-width: 500px) {
+      .inspect-grid { grid-template-columns: 1fr; }
+      .inspect { block-size: 720px; }
+      .herdr-sidebar, .mini-sidebar { font-size: 12px; }
+    }
+    @media (max-width: 340px) {
+      .page { padding-inline: 8px; }
+      .inspect { block-size: 900px; }
+      .herdr-sidebar, .mini-sidebar { font-size: 11px; }
+    }
+  </style>
+</head>
+<body>
+<main class="page">
+  <div class="eyebrow">ccxray / herdr / verified design preview</div>
+  <h1>Compact Observability Rail</h1>
+  <p class="intro">主預覽保留 Herdr 的 grouped agent shell、workspace hierarchy、原生狀態點與選取列；plugin 欄位只會選擇完整可容納的 variant。下方 catalogue 會以相同 renderer 顯示全部 lifecycle、evidence 與 failure fixtures。</p>
+
+  <section class="controls" aria-label="Mock controls">
+    <label class="control">sidebar width
+      <select id="widthSelect">
+        <option value="8">8 cols · stress</option>
+        <option value="10">10 cols · stress</option>
+        <option value="14">14 cols · stress</option>
+        <option value="18">18 cols · Herdr minimum / fallback</option>
+        <option value="26" selected>26 cols · Herdr default</option>
+        <option value="36">36 cols · Herdr maximum</option>
+      </select>
+    </label>
+    <label class="control">agent set
+      <select id="groupSelect">
+        <option value="mixed" selected>mixed working set</option>
+        <option value="lifecycle">route and lifecycle</option>
+        <option value="context">context evidence</option>
+        <option value="failures">facts and alerts</option>
+        <option value="operations">refresh edge cases</option>
+      </select>
+    </label>
+    <label class="control">workspace state
+      <select id="workspaceSelect"></select>
+    </label>
+    <div class="contract" aria-live="polite">
+      <span>effective width: <b id="widthReadout">26</b></span>
+      <span>matrix rows: <b id="matrixReadout">checking</b></span>
+      <span>visible rows: <b id="visibleReadout">checking</b></span>
+      <span>ellipsis: <b id="ellipsisReadout">checking</b></span>
+      <span>page geometry: <b id="pageReadout">checking</b></span>
+    </div>
+  </section>
+
+  <section class="workspace-preview" aria-label="Herdr sidebar simulation">
+    <div class="sidebar-wrap">
+      <div class="sidebar-label">HERDR SIDEBAR · grouped by workspace · select an agent</div>
+      <aside class="herdr-sidebar" id="sidebar" aria-label="Simulated Herdr agent sidebar"></aside>
+    </div>
+    <section class="inspect" id="inspect" aria-live="polite"></section>
+  </section>
+
+  <h2>Workspace fixtures</h2>
+  <p>每一種 workspace summary 都由同一個 width-aware renderer 產生；窄版只縮成完整 alias，不裁切名稱或 summary。</p>
+  <section class="catalog" id="workspaceCatalog"></section>
+
+  <h2>Agent state catalogue</h2>
+  <p>這些不是文字清單，而是所有規格狀態的實際 mini-sidebar 輸出。切換寬度時，每張卡片會同步重新渲染與驗證。</p>
+  <div class="legend">
+    <span class="chip green">fresh evidence</span>
+    <span class="chip yellow">idle / warning</span>
+    <span class="chip red">action required</span>
+    <span class="chip">unknown / unlinked</span>
+    <span class="chip blue">ready / informational</span>
+    <span class="chip purple">provenance retained</span>
+  </div>
+  <section class="catalog" id="agentCatalog"></section>
+
+  <h2>Width matrix</h2>
+  <p>純函式矩陣會交叉驗證所有 workspace、agent fixtures 與六個 canonical widths。瀏覽器開啟此檔時，另會檢查每個可見 row 的 terminal-cell width 與 DOM 幾何。</p>
+  <section class="matrix-summary" id="matrixSummary"></section>
+
+  <div class="footer">Design-only artifact · no production code, Herdr configuration, or telemetry is changed by this file.</div>
+</main>
+
+<script>
+  'use strict';
+
+  const WIDTHS = [8, 10, 14, 18, 26, 36];
+  const BLOCKS = '▁▂▃▄▅▆▇█';
+  const AMBIGUOUS_WIDE_GLYPHS = new Set(Array.from('●○✗▁▂▃▄▅▆▇█·'));
+  const ALERT_PRIORITY = { quota: 0, stale: 1, failure: 2, cache: 3, context: 4, write: 5, metadata: 6 };
+
+  const workspaceFixtures = [
+    { id: 'workspace-all', title: 'ALL LINKED', name: 'observability', aliases: ['$space', '$sp', 'S'], summary: 'xray 6/6', shortSummary: '6/6', tone: 'green', rule: 'Known inventory and every pane is conservatively linked.' },
+    { id: 'workspace-partial', title: 'PARTIAL LINKAGE', name: 'research-observability-with-a-long-name', aliases: ['$space', '$sp', 'S'], summary: 'xray 1/6', shortSummary: '1/6', tone: 'yellow', rule: 'Long workspace names use a complete alias; unlinked panes remain local unknowns.' },
+    { id: 'workspace-unknown', title: 'INVENTORY UNKNOWN', name: 'observability', aliases: ['$space', '$sp', 'S'], summary: 'xray ?', shortSummary: '?', tone: 'unknown', rule: 'Missing inventory is unknown and never guessed from provider names.' },
+    { id: 'workspace-off', title: 'HUB OFFLINE', name: 'observability', aliases: ['$space', '$sp', 'S'], summary: 'xray off', shortSummary: 'off', tone: 'red', rule: 'Offline state withdraws current telemetry claims.' },
+    { id: 'workspace-zero', title: 'ZERO AGENTS', name: 'observability', aliases: ['$space', '$sp', 'S'], summary: 'xray 0/0', shortSummary: '0/0', tone: 'unknown', rule: 'A known empty workspace is distinct from unknown inventory.' }
+  ];
+
+  function alert(kind, code, detail) { return { kind: kind, code: code, detail: detail }; }
+  function context(value, history, band, basis) { return { value: value, history: history, band: band, basis: basis || 'observed' }; }
+
+  const agentFixtures = [
+    { id: 'fresh-history', title: 'LIVE · HISTORY', label: 'luna live session', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'live', session: 'p3V', ctx: context(37, [7, 15, 28, 37], 'green'), facts: { cost: '$14.96', compactCost: '$15', cache: 'c92%', age: '29m' }, rule: 'Fresh multi-sample context and complete healthy facts.' },
+    { id: 'ctx-zero', title: 'VALID 0%', label: 'fresh zero context', model: 'codex', aliases: ['codex', 'C'], state: 'active', route: 'live', session: 'z0A', ctx: context(0, [0], 'green'), facts: { cost: '$0.02', compactCost: '$0', age: '1m' }, rule: 'Zero is valid when the denominator is known.' },
+    { id: 'ctx-hundred', title: 'VALID 100%', label: 'fresh full context', model: 'opus', aliases: ['opus', 'X'], state: 'active', route: 'live', session: 'f1L', ctx: context(100, [82, 94, 100], 'red'), alerts: [alert('failure', '!fail2', 'two tool failures')], rule: 'A valid 100% remains red and is not clamped or hidden.' },
+    { id: 'one-sample', title: 'ONE SAMPLE', label: 'one main-agent sample', model: 'sol', aliases: ['sol', 'X'], state: 'active', route: 'live', session: 'o1S', ctx: context(23, [23], 'green'), facts: { cost: '$1.20', compactCost: '$1', age: '2m' }, rule: 'One complete history block is a valid history.' },
+    { id: 'default-window', title: 'DEFAULT DENOMINATOR', label: 'default context denominator', model: 'opus', aliases: ['opus', 'X'], state: 'active', route: 'live', session: 'd1D', ctx: context(96, [38, 62, 81, 96], 'unknown', 'default'), facts: { cost: '$42.08', compactCost: '$42', age: '8m' }, rule: 'The value remains visible with a provenance marker and neutral tone.' },
+    { id: 'contradicted-window', title: 'CONTRADICTED', label: 'contradicted context evidence', model: 'opus', aliases: ['opus', 'X'], state: 'active', route: 'live', session: 'c9X', ctx: context(100, [44, 76, 100], 'unknown', 'contradicted'), alerts: [alert('context', '!ctx', 'window conflict')], rule: 'Contradicted evidence carries a cross marker and no confident band.' },
+    { id: 'stale-ttl', title: 'TTL EXPIRED', label: 'stale imported session', model: 'fable', aliases: ['fable', 'X'], state: 'idle', route: 'idle', session: 'f4B', ctx: context(41, [11, 24, 41], 'unknown', 'stale'), alerts: [alert('stale', '!stale', 'expired after 11m')], operation: 'TTL expired: last safe history retained, confident color withdrawn', rule: 'TTL expiry is a rendered neutral state, not stale green.' },
+    { id: 'invalid-context', title: 'INVALID · NEGATIVE', label: 'negative numeric context', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'unknown', ctx: { value: -1, history: [-1], basis: 'invalid', band: 'unknown' }, alerts: [alert('context', '!ctx', 'negative context value')], rule: 'A negative raw value runs through the numeric guard and becomes unknown.' },
+    { id: 'invalid-overflow', title: 'INVALID · ABOVE 100', label: 'above-range numeric context', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'unknown', ctx: { value: 112, history: [112], basis: 'invalid', band: 'unknown' }, alerts: [alert('context', '!ctx', 'context above 100')], rule: 'An above-range raw value is rejected rather than clamped.' },
+    { id: 'invalid-nan', title: 'INVALID · NaN', label: 'non-finite numeric context', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'unknown', ctx: { value: NaN, history: [], basis: 'invalid', band: 'unknown' }, alerts: [alert('context', '!ctx', 'non-finite context')], rule: 'A non-finite raw value becomes unknown and never reaches the history.' },
+    { id: 'context-mismatch', title: 'SESSION MISMATCH', label: 'pane session mismatch', model: 'sonnet', aliases: ['sonnet', 'X'], state: 'idle', route: 'unknown', ctx: { mismatch: true, basis: 'mismatch', band: 'unknown' }, alerts: [alert('context', '!ctx', 'pane session mismatch')], rule: 'Telemetry from another pane is never borrowed.' },
+    { id: 'ready-no-turn', title: 'READY · NO TURN', label: 'routed and waiting for first turn', model: 'claude', aliases: ['claude', 'C'], state: 'ready', route: 'ready', ctx: null, rule: 'Ready has unknown context, not an invented 0%.' },
+    { id: 'unlinked', title: 'UNLINKED', label: 'no safe pane match', model: 'sonnet', aliases: ['sonnet', 'X'], state: 'idle', route: 'unlinked', ctx: null, rule: 'One compact linkage state and no borrowed facts.' },
+    { id: 'no-hub', title: 'NO HUB', label: 'observer unavailable', model: 'claude', aliases: ['claude', 'C'], state: 'idle', route: 'nohub', ctx: null, alerts: [alert('context', '!hub', 'observer offline')], rule: 'No hub means no current context or cache claim.' },
+    { id: 'idle-linked', title: 'IDLE · LINKED', label: 'idle linked session', model: 'fable', aliases: ['fable', 'X'], state: 'idle', route: 'idle', session: 'i4D', ctx: context(18, [8, 18], 'green'), facts: { cost: '$2.18', compactCost: '$2', age: '3m' }, rule: 'Lifecycle and evidence freshness remain separate.' },
+    { id: 'done-linked', title: 'DONE · FINAL SAMPLE', label: 'completed linked session', model: 'opus', aliases: ['opus', 'X'], state: 'done', route: 'done', session: 'd8Q', ctx: context(22, [9, 22], 'green'), facts: { cost: '$3.42', compactCost: '$3', age: '8m' }, rule: 'The final valid sample remains until TTL.' },
+    { id: 'blocked-quota', title: 'BLOCKED · QUOTA', label: 'blocked quota refusal', model: 'opus', aliases: ['opus', 'X'], state: 'blocked', route: 'blocked', session: 'q7K', ctx: context(63, [29, 47, 63], 'yellow'), alerts: [alert('quota', '!quota', 'quota refused')], rule: 'Quota owns the final row while route owns blocked state.' },
+    { id: 'unknown-lifecycle', title: 'UNKNOWN STATE', label: 'unknown lifecycle', model: 'agent-provider-with-a-very-long-name', aliases: ['agent', 'X'], state: 'unknown', route: 'unknown', ctx: null, rule: 'Missing lifecycle and long provider names use safe complete aliases.' },
+    { id: 'alert-priority', title: 'ALERT PRIORITY', label: 'multiple simultaneous concerns', model: 'sol', aliases: ['sol', 'X'], state: 'blocked', route: 'blocked', session: 'a9P', ctx: context(72, [51, 64, 72], 'yellow'), alerts: [alert('cache', '!cache', 'cache regression'), alert('failure', '!fail3', 'three failures'), alert('stale', '!stale', 'stale import'), alert('quota', '!quota', 'quota refused')], rule: 'Quota wins over stale, repeated failures, and cache regression.' },
+    { id: 'failure-multi', title: 'REPEATED FAILURES', label: 'multiple tool failures', model: 'codex', aliases: ['codex', 'C'], state: 'active', route: 'live', session: 'e2R', ctx: context(34, [20, 34], 'green'), alerts: [alert('failure', '!fail2', 'two tool failures')], rule: 'Repeated failure is a complete compact alert.' },
+    { id: 'cache-drop', title: 'CACHE DROP', label: 'cache regression after prompt change', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'live', session: 'k4C', ctx: context(38, [22, 38], 'green'), alerts: [alert('cache', '!cache', 'cache dropped')], rule: 'Cache alert stays out of the context row.' },
+    { id: 'lower-bound', title: 'LOWER-BOUND COST', label: 'sampled aggregate cost', model: 'sol', aliases: ['sol', 'X'], state: 'active', route: 'live', session: 'l2B', ctx: context(28, [9, 17, 28], 'green'), facts: { cost: '$14.96+', compactCost: '$15+', cache: 'c88%', age: '41m' }, rule: 'Every compact cost variant preserves the lower-bound marker.' },
+    { id: 'empty-final-row', title: 'NO FACT OR ALERT', label: 'linked without final-row data', model: 'haiku', aliases: ['haiku', 'X'], state: 'active', route: 'live', session: 'n0F', ctx: context(12, [12], 'green'), rule: 'The final row is structurally omitted, not left blank.' },
+    { id: 'write-failure', title: 'WRITE FAILURE', label: 'metadata write rejected', model: 'luna', aliases: ['luna', 'X'], state: 'active', route: 'live', session: 'w5F', ctx: context(31, [18, 31], 'green'), facts: { cost: '$7.10', compactCost: '$7', age: '6m' }, operation: 'Write failed: sidebar still renders the last acknowledged safe payload', rule: 'Failure does not fabricate acceptance or partially install fields.' },
+    { id: 'race-ordering', title: 'RACE · NEWEST WINS', label: 'out-of-order refresh reports', model: 'opus', aliases: ['opus', 'X'], state: 'active', route: 'live', session: 'r8C', ctx: context(68, [44, 68], 'yellow'), facts: { cost: '$18.00', compactCost: '$18', age: '1m' }, operation: 'Report 104 accepted; delayed report 103 ignored; visible value remains 68%', rule: 'An older report cannot overwrite the newer payload.' },
+    { id: 'metadata-limit', title: 'METADATA LIMIT', label: 'metadata property limit rejected', model: 'codex', aliases: ['codex', 'C'], state: 'idle', route: 'idle', session: 'm6L', ctx: context(26, [14, 26], 'green'), facts: { cost: '$5.40', compactCost: '$5', age: '4m' }, operation: 'Over-limit update rejected atomically; previous seven-token payload remains visible', rule: 'No partial configuration or fabricated success is shown.' },
+    { id: 'missing-model', title: 'MISSING MODEL', label: 'provider identity unavailable', model: null, aliases: ['X'], state: 'active', route: 'live', session: 'u0K', ctx: context(19, [19], 'green'), facts: { cost: '$0.40', compactCost: '$0', age: '1m' }, rule: 'Unknown identity uses a generic alias and never copies a neighbor.' }
+  ];
+
+  const groups = {
+    mixed: ['fresh-history', 'blocked-quota', 'stale-ttl', 'ready-no-turn', 'unlinked'],
+    lifecycle: ['fresh-history', 'idle-linked', 'ready-no-turn', 'unlinked', 'no-hub', 'blocked-quota', 'done-linked', 'unknown-lifecycle'],
+    context: ['ctx-zero', 'ctx-hundred', 'one-sample', 'fresh-history', 'default-window', 'contradicted-window', 'stale-ttl', 'invalid-context', 'invalid-overflow', 'invalid-nan', 'context-mismatch'],
+    failures: ['fresh-history', 'alert-priority', 'failure-multi', 'cache-drop', 'lower-bound', 'empty-final-row'],
+    operations: ['stale-ttl', 'write-failure', 'race-ordering', 'metadata-limit', 'missing-model']
+  };
+
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (character) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character];
+    });
+  }
+
+  function isZeroWidth(codePoint, character) {
+    if (codePoint === 0x200d || codePoint === 0x200c || codePoint === 0xfe0e || codePoint === 0xfe0f) return true;
+    if (codePoint >= 0xe0100 && codePoint <= 0xe01ef) return true;
+    return /\p{Mark}/u.test(character);
+  }
+
+  function isWide(codePoint) {
+    return codePoint >= 0x1100 && (
+      codePoint <= 0x115f || codePoint === 0x2329 || codePoint === 0x232a ||
+      (codePoint >= 0x2e80 && codePoint <= 0x303e) ||
+      (codePoint >= 0x3040 && codePoint <= 0xa4cf && codePoint !== 0x303f) ||
+      (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+      (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+      (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+      (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+      (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+      (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
+      (codePoint >= 0x1f000 && codePoint <= 0x1faff) ||
+      (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    );
+  }
+
+  function graphemes(value) {
+    const text = String(value == null ? '' : value);
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+      const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+      return Array.from(segmenter.segment(text), function (part) { return part.segment; });
+    }
+    return Array.from(text);
+  }
+
+  function graphemeCells(grapheme) {
+    let width = 0;
+    let emojiPresentation = false;
+    if (grapheme.includes('\u20e3')) return 2;
+    for (const character of Array.from(grapheme)) {
+      const codePoint = character.codePointAt(0);
+      if (codePoint < 32 || (codePoint >= 0x7f && codePoint < 0xa0) || isZeroWidth(codePoint, character)) continue;
+      if (/\p{Extended_Pictographic}/u.test(character) || (codePoint >= 0x1f1e6 && codePoint <= 0x1f1ff)) emojiPresentation = true;
+      width = Math.max(width, isWide(codePoint) || AMBIGUOUS_WIDE_GLYPHS.has(character) ? 2 : 1);
+    }
+    return emojiPresentation ? 2 : width;
+  }
+
+  function displayCells(value) {
+    return graphemes(value).reduce(function (total, grapheme) { return total + graphemeCells(grapheme); }, 0);
+  }
+
+  function hasEllipsis(value) {
+    const text = String(value);
+    return /\.{3}/.test(text) || text.includes('\u2026');
+  }
+
+  function fitVariant(candidates, width, fallback) {
+    for (const candidate of candidates) {
+      if (!candidate || hasEllipsis(candidate)) continue;
+      if (displayCells(candidate) <= width) return candidate;
+    }
+    const safe = fallback || '?';
+    if (displayCells(safe) > width) throw new Error('No complete fit variant for width ' + width);
+    return safe;
+  }
+
+  function nativeIcon(state) { return state === 'active' || state === 'blocked' ? '●' : '○'; }
+
+  function identityLine(agent, width) {
+    const icon = nativeIcon(agent.state);
+    const names = [];
+    if (agent.model) names.push(agent.model);
+    for (const alias of agent.aliases || []) if (!names.includes(alias)) names.push(alias);
+    const candidates = names.map(function (name) { return icon + ' ' + name; });
+    candidates.push(icon + ' X', icon);
+    return fitVariant(candidates, width, icon);
+  }
+
+  function routeLine(agent, width) {
+    const session = agent.session ? ' ' + agent.session : '';
+    const variants = {
+      live: ['>live' + session, '>live', '>'],
+      idle: ['=idle' + session, '=idle', '='],
+      ready: ['+ready', '+'],
+      unlinked: ['?link', '?'],
+      nohub: ['!hub', '!'],
+      blocked: ['!block', '!'],
+      done: ['=done', '='],
+      unknown: ['?state', '?']
+    };
+    return fitVariant(variants[agent.route] || ['?state', '?'], width, '?');
+  }
+
+  function historyBlocks(ctx) {
+    if (!ctx || !Array.isArray(ctx.history)) return '';
+    return ctx.history.map(function (value) {
+      if (typeof value === 'string' && BLOCKS.includes(value)) return value;
+      const numeric = Math.max(0, Math.min(100, Number(value) || 0));
+      return BLOCKS[Math.min(BLOCKS.length - 1, Math.floor(numeric / 12.5))];
+    }).join('');
+  }
+
+  function contextLine(agent, width) {
+    const ctx = agent.ctx;
+    if (!ctx || ctx.invalid || ctx.mismatch || !Number.isFinite(ctx.value) || ctx.value < 0 || ctx.value > 100) return { text: '?', tone: 'unknown' };
+    const marker = ctx.basis === 'default' || ctx.basis === 'stale' ? '?' : ctx.basis === 'contradicted' ? '✗' : '';
+    const percent = Math.round(ctx.value) + '%' + marker;
+    const history = historyBlocks(ctx) || BLOCKS[Math.min(BLOCKS.length - 1, Math.floor(ctx.value / 12.5))];
+    const candidates = [];
+    for (let count = history.length; count >= 1; count -= 1) candidates.push(history.slice(history.length - count) + ' ' + percent);
+    candidates.push(percent, '?');
+    const confident = ctx.basis === 'observed' || ctx.basis === 'declared';
+    return { text: fitVariant(candidates, width, '?'), tone: confident ? (ctx.band || 'unknown') : 'unknown' };
+  }
+
+  function selectAlert(agent) {
+    if (!agent.alerts || !agent.alerts.length) return null;
+    return agent.alerts.slice().sort(function (a, b) {
+      return (ALERT_PRIORITY[a.kind] == null ? 99 : ALERT_PRIORITY[a.kind]) - (ALERT_PRIORITY[b.kind] == null ? 99 : ALERT_PRIORITY[b.kind]);
+    })[0];
+  }
+
+  function alertLine(agent, width) {
+    const concern = selectAlert(agent);
+    if (!concern) return '';
+    return fitVariant([concern.code + ' · ' + concern.detail, concern.code], width, '!');
+  }
+
+  function factsLine(agent, width) {
+    if (!agent.facts) return '';
+    const facts = agent.facts;
+    const compact = facts.compactCost || facts.cost;
+    return fitVariant([
+      [facts.cost, facts.cache, facts.age].filter(Boolean).join(' · '),
+      [compact, facts.age].filter(Boolean).join(' · '),
+      facts.cost,
+      compact
+    ], width, '$?');
+  }
+
+  function agentRows(agent, width) {
+    const ctx = contextLine(agent, width);
+    const concern = alertLine(agent, width);
+    const facts = concern ? '' : factsLine(agent, width);
+    const rows = [
+      { kind: 'native', text: identityLine(agent, width), tone: '' },
+      { kind: 'route', text: routeLine(agent, width), tone: agent.route || 'unknown' },
+      { kind: 'ctx', text: ctx.text, tone: ctx.tone }
+    ];
+    if (concern) rows.push({ kind: 'alert', text: concern, tone: 'alert' });
+    else if (facts) rows.push({ kind: 'facts', text: facts, tone: 'facts' });
+    return rows;
+  }
+
+  function headerLine(width) { return fitVariant(['AGENTS · GROUPED', 'AGENTS GROUPED', 'agents grp', 'agt grp', 'A grp'], width, 'A'); }
+  function brandLine(width) { return fitVariant(['HERDR', 'HDR', 'H'], width, 'H'); }
+
+  function workspaceLine(workspace, width) {
+    const names = [workspace.name].concat(workspace.aliases || []);
+    const summaries = [workspace.summary, workspace.shortSummary];
+    const candidates = [];
+    for (const name of names) for (const summary of summaries) candidates.push(name + ' ' + summary);
+    candidates.push(workspace.shortSummary);
+    return fitVariant(candidates, width, '?');
+  }
+
+  function rowMarkup(row, width) {
+    const classes = ['display-row', row.kind || ''];
+    if (row.tone) classes.push(row.tone);
+    return '<span class="' + classes.join(' ') + '" data-display-row="true" data-cols="' + width + '">' + esc(row.text) + '</span>';
+  }
+
+  function agentMarkup(agent, width, selected, mini) {
+    const rows = agentRows(agent, width).map(function (row) { return rowMarkup(row, width); }).join('');
+    if (mini) return '<div class="mini-agent" data-state="' + esc(agent.state) + '">' + rows + '</div>';
+    return '<button class="agent' + (selected ? ' selected' : '') + '" data-id="' + esc(agent.id) + '" data-state="' + esc(agent.state) + '" aria-pressed="' + (selected ? 'true' : 'false') + '">' + rows + '</button>';
+  }
+
+  function workspaceMarkup(workspace, width, includeChrome) {
+    const chrome = includeChrome
+      ? '<div class="herdr-brand">' + rowMarkup({ kind: 'brand', text: brandLine(width) }, width) + '</div><div class="herdr-mode">' + rowMarkup({ kind: 'mode', text: headerLine(width) }, width) + '</div>'
+      : '';
+    return chrome + '<div class="space-row">' + rowMarkup({ kind: 'workspace', text: workspaceLine(workspace, width), tone: workspace.tone }, width) + '</div>';
+  }
+
+  function fixtureById(id) { return agentFixtures.find(function (item) { return item.id === id; }); }
+  function workspaceById(id) { return workspaceFixtures.find(function (item) { return item.id === id; }); }
+
+  function validateRow(owner, row, width, failures) {
+    const cells = displayCells(row.text);
+    if (cells > width) failures.push(owner + ': ' + cells + ' cells at width ' + width + ' [' + row.text + ']');
+    if (hasEllipsis(row.text)) failures.push(owner + ': forbidden ellipsis [' + row.text + ']');
+  }
+
+  function validateMatrix() {
+    const failures = [];
+    let totalRows = 0;
+    for (const width of WIDTHS) {
+      validateRow('brand', { text: brandLine(width) }, width, failures);
+      validateRow('header', { text: headerLine(width) }, width, failures);
+      totalRows += 2;
+      for (const workspace of workspaceFixtures) {
+        validateRow(workspace.id, { text: workspaceLine(workspace, width) }, width, failures);
+        totalRows += 1;
+      }
+      for (const agent of agentFixtures) {
+        const rows = agentRows(agent, width);
+        const finalRows = rows.filter(function (row) { return row.kind === 'facts' || row.kind === 'alert'; });
+        if (finalRows.length > 1) failures.push(agent.id + ': facts and alert are not exclusive');
+        for (const row of rows) {
+          validateRow(agent.id + '/' + row.kind, row, width, failures);
+          totalRows += 1;
+        }
+      }
+    }
+    const priority = selectAlert(fixtureById('alert-priority'));
+    if (!priority || priority.code !== '!quota') failures.push('alert-priority: quota did not win');
+    if (!agentRows(fixtureById('ctx-zero'), 8).some(function (row) { return row.text.includes('0%'); })) failures.push('ctx-zero: valid zero missing');
+    if (!agentRows(fixtureById('ctx-hundred'), 8).some(function (row) { return row.text.includes('100%'); })) failures.push('ctx-hundred: valid hundred missing');
+    for (const id of ['invalid-context', 'invalid-overflow', 'invalid-nan']) {
+      const ctxRow = agentRows(fixtureById(id), 26).find(function (row) { return row.kind === 'ctx'; });
+      if (!ctxRow || ctxRow.text !== '?') failures.push(id + ': numeric guard did not produce unknown context');
+    }
+    if (agentRows(fixtureById('empty-final-row'), 26).length !== 3) failures.push('empty-final-row: structural omission failed');
+    return { ok: failures.length === 0, failures: failures, totalRows: totalRows, widths: WIDTHS.slice(), agents: agentFixtures.length, workspaces: workspaceFixtures.length };
+  }
+
+  function runDomChecks(expectedMainAgents) {
+    const rows = Array.from(document.querySelectorAll('[data-display-row="true"]'));
+    const failures = [];
+    let ellipsisCount = 0;
+    const currentWidth = Number(document.getElementById('widthSelect').value);
+    const currentAgentIds = groups[document.getElementById('groupSelect').value] || groups.mixed;
+    const expectedMainRows = 3 + currentAgentIds.reduce(function (total, id) { return total + agentRows(fixtureById(id), currentWidth).length; }, 0);
+    const expectedAgentFixtureRows = agentFixtures.reduce(function (total, agent) { return total + agentRows(agent, currentWidth).length; }, 0);
+    const surfaceCounts = [
+      ['main brand', document.querySelectorAll('#sidebar .herdr-brand [data-display-row]').length, 1],
+      ['main grouped header', document.querySelectorAll('#sidebar .herdr-mode [data-display-row]').length, 1],
+      ['main workspace', document.querySelectorAll('#sidebar .space-row [data-display-row]').length, 1],
+      ['main agents', document.querySelectorAll('#sidebar .agent').length, expectedMainAgents],
+      ['main rendered rows', document.querySelectorAll('#sidebar [data-display-row]').length, expectedMainRows],
+      ['workspace fixture cards', document.querySelectorAll('#workspaceCatalog .case').length, workspaceFixtures.length],
+      ['workspace fixture rows', document.querySelectorAll('#workspaceCatalog [data-display-row]').length, workspaceFixtures.length],
+      ['agent fixture cards', document.querySelectorAll('#agentCatalog .case').length, agentFixtures.length],
+      ['agent fixture rows', document.querySelectorAll('#agentCatalog [data-display-row]').length, expectedAgentFixtureRows]
+    ];
+    for (const check of surfaceCounts) if (check[1] !== check[2]) failures.push(check[0] + ': expected ' + check[2] + ', got ' + check[1]);
+    for (const card of Array.from(document.querySelectorAll('#agentCatalog .case'))) {
+      if (!card.querySelector('[data-display-row]')) failures.push('agent fixture card has no rendered row');
+    }
+    for (const row of rows) {
+      const width = Number(row.dataset.cols);
+      const cells = displayCells(row.textContent);
+      if (cells > width) failures.push('cell width ' + cells + '/' + width + ': ' + row.textContent);
+      if (hasEllipsis(row.textContent)) ellipsisCount += 1;
+      if (row.scrollWidth - row.clientWidth > 1) failures.push('DOM geometry: ' + row.textContent);
+    }
+    const pageOverflow = document.documentElement.scrollWidth - document.documentElement.clientWidth > 1;
+    return { rows: rows.length, failures: failures, ellipsisCount: ellipsisCount, pageOverflow: pageOverflow };
+  }
+
+  function runGeometryMatrix() {
+    const failures = [];
+    let rowsChecked = 0;
+    let expectedRows = 0;
+    for (const width of WIDTHS) {
+      const probe = document.createElement('div');
+      probe.className = 'geometry-probe';
+      probe.style.setProperty('--cols', width);
+      probe.innerHTML = '<div class="mini-sidebar">' +
+        workspaceFixtures.map(function (workspace) { return workspaceMarkup(workspace, width, true); }).join('') +
+        agentFixtures.map(function (agent) { return agentMarkup(agent, width, false, true); }).join('') + '</div>';
+      document.body.appendChild(probe);
+      for (const row of Array.from(probe.querySelectorAll('[data-display-row]'))) {
+        rowsChecked += 1;
+        if (row.scrollWidth - row.clientWidth > 1) failures.push(width + ' cols DOM geometry: ' + row.textContent);
+        if (hasEllipsis(row.textContent)) failures.push(width + ' cols forbidden ellipsis: ' + row.textContent);
+      }
+      expectedRows += workspaceFixtures.length * 3;
+      expectedRows += agentFixtures.reduce(function (total, agent) { return total + agentRows(agent, width).length; }, 0);
+      probe.remove();
+    }
+    if (rowsChecked !== expectedRows) failures.push('geometry matrix: expected ' + expectedRows + ' rows, got ' + rowsChecked);
+    return { rows: rowsChecked, failures: failures };
+  }
+
+  function setResult(element, ok, text) { element.textContent = text; element.className = ok ? 'pass' : 'fail'; }
+
+  function init() {
+    const widthSelect = document.getElementById('widthSelect');
+    const groupSelect = document.getElementById('groupSelect');
+    const workspaceSelect = document.getElementById('workspaceSelect');
+    const sidebar = document.getElementById('sidebar');
+    const inspect = document.getElementById('inspect');
+    const workspaceCatalog = document.getElementById('workspaceCatalog');
+    const agentCatalog = document.getElementById('agentCatalog');
+    const matrixSummary = document.getElementById('matrixSummary');
+    const widthReadout = document.getElementById('widthReadout');
+    const matrixReadout = document.getElementById('matrixReadout');
+    const visibleReadout = document.getElementById('visibleReadout');
+    const ellipsisReadout = document.getElementById('ellipsisReadout');
+    const pageReadout = document.getElementById('pageReadout');
+    let selectedId = groups.mixed[0];
+
+    workspaceSelect.innerHTML = workspaceFixtures.map(function (workspace) {
+      return '<option value="' + esc(workspace.id) + '">' + esc(workspace.title.toLowerCase()) + '</option>';
+    }).join('');
+    workspaceSelect.value = 'workspace-partial';
+
+    function inspectorMarkup(agent, width) {
+      const ctx = contextLine(agent, width);
+      const concern = selectAlert(agent);
+      const final = concern ? alertLine(agent, width) : factsLine(agent, width) || 'row omitted';
+      const provenance = agent.ctx ? agent.ctx.basis || 'observed' : 'none';
+      const operation = '<div class="trace">' + esc(agent.operation || 'No refresh transition; current acknowledged payload is rendered directly.') + '</div>';
+      return '<div class="inspect__title"><h3>' + esc(agent.label) + '</h3><span>' + esc(agent.id) + '</span></div>' +
+        '<div class="inspect-grid">' +
+        '<div class="kv"><b>native identity</b><span class="info">' + esc(identityLine(agent, width)) + '</span></div>' +
+        '<div class="kv"><b>route / lifecycle</b><span>' + esc(routeLine(agent, width)) + ' · ' + esc(agent.state) + '</span></div>' +
+        '<div class="kv"><b>context</b><span class="' + (ctx.tone === 'green' ? 'good' : ctx.tone === 'red' ? 'bad' : 'warn') + '">' + esc(ctx.text) + '</span></div>' +
+        '<div class="kv"><b>provenance</b><span>' + esc(provenance) + '</span></div>' +
+        '<div class="kv"><b>facts / alert owner</b><span class="' + (concern ? 'bad' : 'good') + '">' + esc(final) + '</span></div>' +
+        '<div class="kv"><b>display width</b><span>' + width + ' terminal cells</span></div>' +
+        '</div><div class="note">' + esc(agent.rule) + '</div>' + operation;
+    }
+
+    function renderSidebar(width) {
+      const workspace = workspaceById(workspaceSelect.value) || workspaceFixtures[0];
+      const ids = groups[groupSelect.value] || groups.mixed;
+      const agents = ids.map(fixtureById).filter(Boolean);
+      if (!agents.some(function (agent) { return agent.id === selectedId; })) selectedId = agents[0].id;
+      sidebar.innerHTML = workspaceMarkup(workspace, width, true) + '<div class="agent-list">' + agents.map(function (agent) {
+        return agentMarkup(agent, width, agent.id === selectedId, false);
+      }).join('') + '</div>';
+      for (const button of Array.from(sidebar.querySelectorAll('.agent'))) {
+        button.addEventListener('click', function () {
+          selectedId = button.dataset.id;
+          for (const peer of Array.from(sidebar.querySelectorAll('.agent'))) {
+            const selected = peer === button;
+            peer.classList.toggle('selected', selected);
+            peer.setAttribute('aria-pressed', String(selected));
+          }
+          inspect.innerHTML = inspectorMarkup(fixtureById(selectedId), width);
+          button.focus();
+        });
+      }
+      inspect.innerHTML = inspectorMarkup(fixtureById(selectedId), width);
+    }
+
+    function renderCatalogs(width) {
+      workspaceCatalog.innerHTML = workspaceFixtures.map(function (workspace, index) {
+        return '<article class="case"><div class="case__head"><h3>' + String(index + 1).padStart(2, '0') + ' · ' + esc(workspace.title) + '</h3><small>' + width + ' cols</small></div>' +
+          '<div class="mini-sidebar"><div class="mini-space">' + workspaceMarkup(workspace, width, false) + '</div></div>' +
+          '<p class="case__rule">' + esc(workspace.rule) + '</p></article>';
+      }).join('');
+      agentCatalog.innerHTML = agentFixtures.map(function (agent, index) {
+        const operation = agent.operation ? '<div class="case__trace">' + esc(agent.operation) + '</div>' : '';
+        return '<article class="case"><div class="case__head"><h3>' + String(index + 1).padStart(2, '0') + ' · ' + esc(agent.title) + '</h3><small>' + width + ' cols</small></div>' +
+          '<div class="mini-sidebar">' + agentMarkup(agent, width, false, true) + '</div>' +
+          '<p class="case__rule">' + esc(agent.rule) + '</p>' + operation + '</article>';
+      }).join('');
+    }
+
+    function renderMatrix(matrix) {
+      matrixSummary.innerHTML = WIDTHS.map(function (width) {
+        const widthFailures = matrix.failures.filter(function (failure) { return failure.includes('width ' + width); });
+        return '<div class="matrix-cell"><b>' + width + ' cols</b><br><span class="' + (widthFailures.length ? 'fail' : 'pass') + '">' + (widthFailures.length ? widthFailures.length + ' failures' : 'all complete variants fit') + '</span></div>';
+      }).join('');
+    }
+
+    let checkGeneration = 0;
+    let firstCheckFrame = null;
+    let secondCheckFrame = null;
+
+    function updateChecks(matrix) {
+      checkGeneration += 1;
+      const generation = checkGeneration;
+      if (firstCheckFrame != null) cancelAnimationFrame(firstCheckFrame);
+      if (secondCheckFrame != null) cancelAnimationFrame(secondCheckFrame);
+      setResult(matrixReadout, matrix.ok, matrix.ok ? matrix.totalRows + ' PASS' : matrix.failures.length + ' FAIL');
+      firstCheckFrame = requestAnimationFrame(function () {
+        firstCheckFrame = null;
+        secondCheckFrame = requestAnimationFrame(function () {
+          secondCheckFrame = null;
+          if (generation !== checkGeneration) return;
+          const expectedMainAgents = (groups[groupSelect.value] || groups.mixed).length;
+          const dom = runDomChecks(expectedMainAgents);
+          const geometry = runGeometryMatrix();
+          const combinedFailures = dom.failures.concat(geometry.failures);
+          setResult(visibleReadout, combinedFailures.length === 0, combinedFailures.length ? combinedFailures.length + ' FAIL' : (dom.rows + geometry.rows) + ' PASS');
+          setResult(ellipsisReadout, dom.ellipsisCount === 0, dom.ellipsisCount ? dom.ellipsisCount + ' FAIL' : 'OFF');
+          setResult(pageReadout, !dom.pageOverflow, dom.pageOverflow ? 'FAIL' : 'PASS');
+        });
+      });
+    }
+
+    function renderAll() {
+      const width = Number(widthSelect.value);
+      document.documentElement.style.setProperty('--cols', width);
+      widthReadout.textContent = width;
+      renderSidebar(width);
+      renderCatalogs(width);
+      const matrix = validateMatrix();
+      renderMatrix(matrix);
+      updateChecks(matrix);
+    }
+
+    widthSelect.addEventListener('change', renderAll);
+    groupSelect.addEventListener('change', function () { selectedId = (groups[groupSelect.value] || groups.mixed)[0]; renderAll(); });
+    workspaceSelect.addEventListener('change', renderAll);
+    let resizeTimer = null;
+    window.addEventListener('resize', function () {
+      if (resizeTimer != null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        resizeTimer = null;
+        updateChecks(validateMatrix());
+      }, 140);
+    });
+    renderAll();
+  }
+
+  globalThis.__HERDR_ARTIFACT__ = {
+    WIDTHS: WIDTHS,
+    displayCells: displayCells,
+    fitVariant: fitVariant,
+    workspaceFixtures: workspaceFixtures,
+    agentFixtures: agentFixtures,
+    workspaceLine: workspaceLine,
+    agentRows: agentRows,
+    selectAlert: selectAlert,
+    validateMatrix: validateMatrix
+  };
+
+  if (typeof document !== 'undefined') init();
+</script>
+</body>
+</html>
