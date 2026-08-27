@@ -383,6 +383,10 @@ function main() {
     : [];
   const identityConflict = nativeOwners.length > 1;
   const allowRepair = Boolean(nativeSessionId && agents && nativeOwners.length === 1);
+  // Startup fan-out has no pane.agent_status event payload. Reuse the native
+  // status from the same agent snapshot so a working pane does not receive the
+  // compact route's idle default during that refresh.
+  const agentStatus = event.status || paneAgent?.agent_status || null;
   const sidebarCols = contextSidebarColumns({
     env,
     paneId: targetPaneId,
@@ -395,7 +399,7 @@ function main() {
     cwd: event.cwd || context.focused_pane_cwd || context.workspace_cwd || null,
     sidebarCols,
     agent: event.agent || paneAgent?.agent || paneAgent?.display_agent || null,
-    status: event.status,
+    status: agentStatus,
     routed: proxyAvailable(status.parsed) && routedPaneKnown(targetPaneId, process.env),
     launchId: routedPaneLaunchId(targetPaneId, process.env),
     identityConflict,

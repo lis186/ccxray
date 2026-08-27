@@ -157,7 +157,7 @@ function writeShMock(bin, stdout) {
 }
 
 function makeHerdr(agents = []) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-bin-'));
+  const dir = tempDir('ccxray-herdr-bin-');
   const bin = path.join(dir, 'herdr');
   const response = JSON.stringify({ id: 'test', result: { type: 'agent_list', agents } });
   return writeShMock(bin, response);
@@ -766,6 +766,57 @@ describe('Herdr workspace scope', () => {
     assert.match(args, /^import --target-transcript /);
     assert.match(args, /--session-id sidebar-native-session/);
     assert.doesNotMatch(args, /--once/);
+  });
+
+  // FAIL-ON-OLD: startup fan-out has no pane.agent_status event payload. The
+  // native Herdr agent list is still authoritative, so a working Claude pane
+  // must not receive the default idle route during the refresh.
+  it('uses the native pane status during startup refresh when no event status exists', () => {
+    const cwd = '/work/sidebar-working-status';
+    const sessionId = 'sidebar-working-session';
+    const home = makeHome([{
+      ...sampleEntry,
+      id: 'sidebar-working-turn',
+      sessionId,
+      agentId: 'herdr:w1:p16',
+      cwd,
+      receivedAt: Date.now(),
+      imported: false,
+    }]);
+    const dir = tempDir('ccxray-sidebar-working-status-bin-');
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'status') process.stdout.write('Machine: {\"proxy\":true,\"hub\":true}\\n');",
+      "else if (args[0] === 'usage') process.stdout.write(JSON.stringify({ meta: {}, sessions: {}, models: [], cache: {}, tools: {} }) + '\\n');",
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const agents = [{
+      pane_id: 'w1:p16', workspace_id: 'w1', tab_id: 'w1:t1',
+      foreground_cwd: cwd, agent_status: 'working', agent: 'claude',
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: bin,
+      HERDR_BIN_PATH: makeHerdr(agents),
+      HERDR_PANE_ID: 'w1:p16',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_TAB_ID: 'w1:t1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p16',
+        focused_pane_cwd: cwd,
+        workspace_id: 'w1',
+        tab_id: 'w1:t1',
+        agent_session: { kind: 'id', value: sessionId },
+      }),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /route=>live p16/);
   });
 
   it('does not offer repair without native identity, a supported importer, or a live proxy', () => {
