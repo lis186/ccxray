@@ -440,6 +440,9 @@ function extractCwd(req) {
   return null;
 }
 
+// Local observational metadata only: configDir is deliberately not an export
+// control. CCXRAY_EXPORT_CONFIG_DIRS was inert and is now a fail-stop tombstone;
+// keep this extraction for local session observation, not account separation.
 function configDirFromText(text) {
   const m = text.match(/Contents of ([^\n]+)[\\/]CLAUDE\.md \(user's private global instructions/);
   if (!m) return null;

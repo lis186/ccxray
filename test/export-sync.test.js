@@ -145,6 +145,13 @@ describe('export-sync', () => {
     await flushExport(); // must not throw
   });
 
+  it('T4: unset config-dir control leaves normal export unchanged', async () => {
+    setup([makeEntry()]);
+    await flushExport();
+    assert.equal(_uploads.length, 1, 'unset tombstone variable must not suppress export');
+    assert.ok(_uploads[0].records.some(r => r.type === 'daily'));
+  });
+
   it('first-run: cursor init to tail, no upload', async () => {
     const liveDt = daysAgoUtc(14);
     setup([entryForDt(liveDt)], { _skipCursor: true });
@@ -483,18 +490,6 @@ describe('export-sync', () => {
     assert.equal(_uploads.length, 1);
     const seq2 = _uploads[0].records.find(r => r.type === 'daily').upload_seq;
     assert.ok(seq2 > seq1, `upload_seq must increment: ${seq2} > ${seq1}`);
-  });
-
-  it('configDir whitelist: entries outside excluded, unknown included', async () => {
-    setup([
-      makeEntry({ configDir: '.claude' }),
-      makeEntry({ id: '2026-08-12T10-01-00-000', sessionId: 'sess-002', configDir: '.codex', msgCount: 5 }),
-      makeEntry({ id: '2026-08-12T10-02-00-000', sessionId: 'sess-003', msgCount: 5 }), // no configDir → include
-    ], { CCXRAY_EXPORT_CONFIG_DIRS: '.claude' });
-    await flushExport();
-    const daily = _uploads[0].records.find(r => r.type === 'daily');
-    assert.equal(daily.session_count, 2, 'only .claude + unknown sessions');
-    assert.equal(daily.turn_count, 2);
   });
 
   it('name truncation + email filter', async () => {

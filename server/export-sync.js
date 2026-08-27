@@ -22,6 +22,7 @@ const RUNAWAY_COST = 50;
 const HIGH_COST_ABS = 30;
 const HIGH_COST_FACTOR = 3;
 const TOOL_FAIL_SPIKE_PCT = 0.5;
+const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
 
 // ── Module state ───────────────────────────────────────────────────────
 let _interval = null;
@@ -70,6 +71,19 @@ function isExportSuppressed() {
   //    is why layer 1 is on the launchers too. A non-null `_uploader` means a test injected
   //    the seam and is asserting on aggregation rather than uploading.
   if (process.env.NODE_TEST_CONTEXT && !_uploader) return true;
+
+  // 3. Tombstone for a control that never worked. Deliberately LAST: layers 1-2 answer
+  //    "is this run synthetic", which is a different question, and putting this first
+  //    made a smoke run that happens to carry the var print "Export is disabled until
+  //    you unset it" — true, but naming the wrong cause. Anyone who set this believed
+  //    personal sessions were excluded; continuing to upload would preserve exactly
+  //    that false belief, so refusal chooses under-reporting over unintended
+  //    disclosure. Loud on the same channel as the positive signal, so it cannot join
+  //    the "exporter silently went quiet" failure class.
+  if (process.env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined) {
+    console.log(CONFIG_DIRS_REFUSAL);
+    return true;
+  }
 
   return false;
 }
@@ -382,7 +396,7 @@ function mergeEntry(a, b) {
   return merged;
 }
 
-function aggregate(lines, agentId, configDirAllowlist) {
+function aggregate(lines, agentId) {
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
   const sessionPrevMsg = new Map(); // sid → last msgCount for compaction detection
@@ -425,13 +439,6 @@ function aggregate(lines, agentId, configDirAllowlist) {
   for (const entry of dedupedEntries) {
     const dt = utcDateFromEntry(entry);
     if (!dt) continue;
-
-    // configDir filter: unknown → include.
-    // ponytail: configDir is in sessionMeta (runtime), not INDEX_FIELDS (disk).
-    if (configDirAllowlist) {
-      const cd = entry.configDir;
-      if (cd && !configDirAllowlist.has(cd)) continue;
-    }
 
     // ── Daily aggregate ────────────────────────────────────────────
     let daily = dailyByDt.get(dt);
@@ -800,12 +807,12 @@ function foldConfidence(counts) {
 
 // ── Flush ──────────────────────────────────────────────────────────────
 async function flushExport() {
-  const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
-  if (!bucket) return;
-
   // INVARIANT: see isExportSuppressed — a real upload must be impossible
   // under `node --test`, and startExportSync must agree with this same predicate.
   if (isExportSuppressed()) return;
+
+  const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
+  if (!bucket) return;
 
   // Snapshot the seam ONCE. The suppression check above and the upload call below are
   // separated by async index traversal; a test's `_setUploader(null)` cleanup landing in
@@ -866,10 +873,7 @@ async function flushExport() {
     // #4: nothing new if last entry id unchanged
     if (!currentLastId || currentLastId === cursor.lastId) return;
 
-    const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
-    const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
-
-    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId, configDirAllowlist);
+    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId);
 
     if (dailyByDt.size === 0) {
       // Persist the no-backfill floor even when there is no aggregate to upload.
@@ -979,15 +983,16 @@ async function flushExport() {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
-  const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
-  if (!bucket) return;
   // INVARIANT: must share isExportSuppressed with flushExport, or this announces an
   // exporter that never flushes.
   if (isExportSuppressed()) return;
+
+  const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
+  if (!bucket) return;
   // Until 2026-08-21 the exporter started with NO positive signal — only failures
   // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
   // told people to look for "exporter active", which did not exist. It does now.
-  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min\x1b[0m`);
+  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — exporting ALL sessions this machine observes (live + imported)\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
