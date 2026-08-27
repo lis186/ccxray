@@ -51,7 +51,8 @@ function pluginEnv(overrides = {}) {
   env.CCXRAY_HOME = isolatedHome();
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
   // sessionSummaryDetails call sees the child's env, where an unset
-  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects.
+  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects;
+  // configured values are the actual Claude projects/ scan root(s).
   env.CCXRAY_IMPORT_HOMES = NO_TRANSCRIPTS;
   return { ...env, ...overrides };
 }
@@ -109,7 +110,8 @@ function makeHome(entries = []) {
 
 // ISOLATION: sessionSummaryDetails now consults the Claude transcript tree to
 // decide staleness, and server/importer.js's rule is that an unset
-// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one.
+// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one;
+// configured values must be actual Claude projects/ scan root(s).
 // Measured: one unisolated call statted 7 real paths. It "passed" only because no
 // real transcript is named s1.jsonl, which is the #407 shape (a leak that passes
 // because the real data happens to be empty). Every sessionSummaryDetails call
@@ -2031,6 +2033,52 @@ describe('Herdr sidebar import freshness', () => {
     assert.equal(transcriptFile('missing', CWD, env), null);
     assert.equal(transcriptFile(null, CWD, env), null);
     assert.equal(transcriptFile('s1', null, env), null);
+  });
+
+  // GENUINE fail-on-old evidence for the comma list. transcriptFile was already
+  // exported before this change, so old code CAN run this and fails on BEHAVIOUR —
+  // it stats one directory literally named "rootA,rootB". The T6 unit test below
+  // cannot show that: claudeProjectRoots is newly exported, so on old code it dies
+  // with "not a function", which is a missing symbol, not a behaviour difference.
+  // See docs/verification-principles.md and the fail-on-old-for-an-unrelated-reason
+  // trap it warns about.
+  it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
+    const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-t6a-a-'));
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-t6a-b-'));
+    const cwd = path.join(os.tmpdir(), 'ccxray-t6a-proj');
+    const slug = cwd.replace(/\/+/g, '/').replace(/(.)\/$/, '$1').replace(/[^a-zA-Z0-9]/g, '-');
+    fs.mkdirSync(path.join(rootB, slug), { recursive: true });
+    const target = path.join(rootB, slug, 's-t6a.jsonl');
+    fs.writeFileSync(target, '{}\n');
+
+    const env = { CCXRAY_IMPORT_HOMES: `${rootA},${rootB}` };
+    const found = transcriptFile('s-t6a', cwd, env);
+    assert.ok(found, 'old code stats the literal path "rootA,rootB" and finds nothing');
+    // realpathSync on the expectation, not the actual: the parser canonicalizes roots
+    // (so two aliases of one store dedupe), and on macOS os.tmpdir() is /var -> /private/var.
+    assert.equal(found.file, fs.realpathSync(target));
+  });
+
+  it('T6: Herdr parses every comma-separated Claude projects root', () => {
+    const { claudeProjectRoots } = require('../plugins/herdr/bin/lib/ccxray');
+    const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-root-a-'));
+    const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-root-b-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-alias-'));
+    const aliasRoot = path.join(aliasParent, 'projects');
+    fs.symlinkSync(firstRoot, aliasRoot);
+    try {
+      assert.deepStrictEqual(
+        claudeProjectRoots(pluginEnv({
+          CCXRAY_IMPORT_HOMES: ` ${firstRoot}, , ${aliasRoot}, ${secondRoot} `,
+        })),
+        [fs.realpathSync(firstRoot), fs.realpathSync(secondRoot)],
+      );
+    } finally {
+      fs.rmSync(aliasParent, { recursive: true, force: true });
+      fs.rmSync(firstRoot, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
   });
 });
 

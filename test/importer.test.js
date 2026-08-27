@@ -15,7 +15,10 @@ fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 const store = require('../server/store');
 const config = require('../server/config');
 const sessionIdx = require('../server/session-index');
-const { scanAndImport, parseSessionFile, parseCodexSessionFile, slugToProject, tsToId } = require('../server/importer');
+const {
+  scanAndImport, parseSessionFile, parseCodexSessionFile,
+  discoverHomes, discoverCodexHomes, slugToProject, tsToId,
+} = require('../server/importer');
 // The importer now derives maxContext, so these assertions depend on the LiteLLM
 // capability table. It is read from a package-relative pricing-cache.json, which
 // CCXRAY_HOME does not isolate — pin it (docs/testing.md, ADR 0015 R4 class).
@@ -362,6 +365,42 @@ describe('importer', () => {
   });
 
   describe('scanAndImport', () => {
+    it('T5: imports from every comma-separated configured Claude projects root', async () => {
+      const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-second-'));
+      const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-alias-'));
+      const aliasRoot = path.join(aliasParent, 'projects');
+      fs.symlinkSync(importDir, aliasRoot);
+      try {
+        const firstProject = path.join(importDir, '-tmp-first');
+        const secondProject = path.join(secondRoot, '-tmp-second');
+        fs.mkdirSync(firstProject, { recursive: true });
+        fs.mkdirSync(secondProject, { recursive: true });
+        fs.writeFileSync(path.join(firstProject, 'session-first.jsonl'), [
+          makeUser('first'),
+          makeAssistant({ timestamp: '2026-07-15T10:31:00.000Z' }),
+        ].join('\n'));
+        fs.writeFileSync(path.join(secondProject, 'session-second.jsonl'), [
+          makeUser('second'),
+          makeAssistant({ timestamp: '2026-07-15T10:32:00.000Z' }),
+        ].join('\n'));
+
+        process.env.CCXRAY_IMPORT_HOMES = ` ${importDir}, , ${aliasRoot}, ${secondRoot} `;
+        assert.deepStrictEqual(discoverHomes().map(({ dir }) => dir), [
+          fs.realpathSync(importDir), fs.realpathSync(secondRoot),
+        ]);
+        const result = await scanAndImport();
+        await config.storage.drain();
+        assert.strictEqual(result.imported, 2);
+        assert.deepStrictEqual(
+          readIndexLines().map(entry => entry.sessionId).sort(),
+          ['session-first', 'session-second'],
+        );
+      } finally {
+        fs.rmSync(aliasParent, { recursive: true, force: true });
+        fs.rmSync(secondRoot, { recursive: true, force: true });
+      }
+    });
+
     it('imports entries from project directories', async () => {
       const projectDir = path.join(importDir, '-tmp-myproject');
       fs.mkdirSync(projectDir, { recursive: true });
@@ -488,6 +527,22 @@ describe('codex importer', () => {
     delete process.env.CCXRAY_IMPORT_HOMES;
     fs.rmSync(codexDir, { recursive: true, force: true });
     fs.rmSync(claudeHomeDir, { recursive: true, force: true });
+  });
+
+  it('accepts comma-separated configured Codex sessions roots', () => {
+    const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-second-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-alias-'));
+    const aliasRoot = path.join(aliasParent, 'sessions');
+    fs.symlinkSync(codexDir, aliasRoot);
+    try {
+      process.env.CCXRAY_IMPORT_CODEX_HOMES = ` ${codexDir}, , ${aliasRoot}, ${secondRoot} `;
+      assert.deepStrictEqual(discoverCodexHomes().map(({ dir }) => dir), [
+        fs.realpathSync(codexDir), fs.realpathSync(secondRoot),
+      ]);
+    } finally {
+      fs.rmSync(aliasParent, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
   });
 
   describe('parseCodexSessionFile', () => {

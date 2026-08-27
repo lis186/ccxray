@@ -28,9 +28,28 @@ function slugToProject(slug) {
   return slug.replace(/^-/, '/').replace(/-/g, '/').replace(/\/\//g, '/-');
 }
 
+// CCXRAY_IMPORT_HOMES is named like a config home, but each comma-separated
+// value is the Claude `projects/` scan root itself, not `~/.claude`. Resolve
+// configured roots so symlink aliases of one store are scanned only once.
+function configuredImportRoots(rawValue) {
+  const results = [];
+  const seen = new Set();
+  for (const raw of String(rawValue).split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    const absolute = path.resolve(value);
+    let resolved = absolute;
+    try { resolved = fs.realpathSync(absolute); } catch {}
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    results.push({ dir: resolved });
+  }
+  return results;
+}
+
 function discoverHomes() {
-  if (process.env.CCXRAY_IMPORT_HOMES) {
-    return [{ dir: process.env.CCXRAY_IMPORT_HOMES }];
+  if (process.env.CCXRAY_IMPORT_HOMES !== undefined) {
+    return configuredImportRoots(process.env.CCXRAY_IMPORT_HOMES);
   }
   const home = os.homedir();
   const results = [];
@@ -58,8 +77,8 @@ function discoverHomes() {
 }
 
 function discoverCodexHomes() {
-  if (process.env.CCXRAY_IMPORT_CODEX_HOMES) {
-    return [{ dir: process.env.CCXRAY_IMPORT_CODEX_HOMES }];
+  if (process.env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
+    return configuredImportRoots(process.env.CCXRAY_IMPORT_CODEX_HOMES);
   }
   const home = os.homedir();
   const results = [];

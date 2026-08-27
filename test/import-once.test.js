@@ -10,9 +10,10 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 // ISOLATION (docs/testing.md): CCXRAY_HOME for ccxray's own data, and
-// CCXRAY_IMPORT_HOMES for the transcript scan root — server/importer.js reads
-// $HOME/.claude*/projects when the latter is unset, so a test without it scans
-// the developer's real transcripts. This is the ADR 0015 R4 root table applied
+// CCXRAY_IMPORT_HOMES for the transcript scan root — its value is the actual
+// Claude projects/ directory (or comma-separated list of such roots), while
+// server/importer.js reads $HOME/.claude*/projects when it is unset, so a test
+// without it scans the developer's real transcripts. This is the ADR 0015 R4 root table applied
 // to a new CLI entry point.
 function tmpdir(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));

@@ -751,10 +751,31 @@ function staleThresholdMs(env = process.env) {
 
 // ISOLATION: this is a scan root derived from the ambient $HOME, OUTSIDE
 // CCXRAY_HOME — the ADR 0015 R4 class. A test that exercises staleness must set
-// CCXRAY_IMPORT_HOMES (the same knob core's importer honours) or it reads the
+// CCXRAY_IMPORT_HOMES (the same knob core's importer honours) to the actual
+// Claude `projects/` scan root(s), not a `.claude` config home, or it reads the
 // developer's real transcripts. See docs/testing.md.
+// Keep this tiny parser local instead of requiring server/importer.js: Herdr is
+// a separate process and this library must remain independent of core modules.
+function configuredClaudeProjectRoots(rawValue) {
+  const roots = [];
+  const seen = new Set();
+  for (const raw of String(rawValue).split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    const absolute = path.resolve(value);
+    let resolved = absolute;
+    try { resolved = fs.realpathSync(absolute); } catch {}
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    roots.push(resolved);
+  }
+  return roots;
+}
+
 function claudeProjectRoots(env = process.env) {
-  if (env.CCXRAY_IMPORT_HOMES) return [env.CCXRAY_IMPORT_HOMES];
+  if (env.CCXRAY_IMPORT_HOMES !== undefined) {
+    return configuredClaudeProjectRoots(env.CCXRAY_IMPORT_HOMES);
+  }
   const home = os.homedir();
   const roots = [];
   let items = [];
@@ -2444,6 +2465,7 @@ module.exports = {
   backupConfigFile,
   capabilityPortfolio,
   capabilityReview,
+  claudeProjectRoots,
   codexAgentArgs,
   contextBand,
   contextSidebarColumns,

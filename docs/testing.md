@@ -170,9 +170,11 @@ to decide whether a transcript holds turns ccxray never logged — a scan root
 outside `CCXRAY_HOME`, the ADR 0015 R4 class. Because it runs in the test
 process, a throwaway `$HOME` is not an option (it would take the puppeteer cache
 with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
-`server/importer.js` honours, and the plugin treats its value as the `projects/`
-root verbatim. A test that exercises staleness without it silently reads the
-developer's real transcripts. Two mechanisms guard this in
+`server/importer.js` honours, and its value is a comma-separated list of actual
+Claude `projects/` scan roots (the `projects/` directory itself, not a config
+home such as `~/.claude`); setting `~/.claude` imports zero and reports no error.
+The plugin treats those roots the same way. A test that exercises staleness
+without it silently reads the developer's real transcripts. Two mechanisms guard this in
 `test/herdr-plugin.test.js`. The structural one is `pluginEnv()` defaulting
 `CCXRAY_IMPORT_HOMES` to the empty `NO_TRANSCRIPTS` root for every spawned
 script (overridable per test). The second is a lint-class audit test (`audit:

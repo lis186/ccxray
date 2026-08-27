@@ -206,7 +206,8 @@ async function importOnce(opts = {}) {
 
   // Past this point the work is delegated to modules that read process.env
   // directly and cache from it: importer.js's discoverHomes() reads
-  // process.env.CCXRAY_IMPORT_HOMES, and config.LOGS_DIR is fixed at first
+  // process.env.CCXRAY_IMPORT_HOMES (a comma-separated list of actual Claude
+  // `projects/` scan roots, not config homes), and config.LOGS_DIR is fixed at first
   // require. An injected env cannot reach them, so honouring one here would scan
   // the wrong homes, write the wrong logs, and leave the flush guard set on a
   // process that never asked for it. The gates above are env-injectable on
