@@ -1,15 +1,27 @@
-# Making the export configDir allowlist actually apply — design, for sign-off
+# Making the export configDir allowlist actually apply — **REJECTED**
 
-- Status: **awaiting owner sign-off. Not implemented.**
-- Review: adversarial sign-off pass by fork A (2026-08-27) returned **SHIP-WITH-CHANGES**;
-  its two blockers are folded in below (§2#1 canonicalization level, §2#3 rationale) plus
-  one surfaced limitation (§7 codex OAuth). Fork B's pass was lost to a runtime state reset
-  and has not been re-run.
-- Date: 2026-08-27
-- Scope: make the allowlist filter what it claims to. **Not** distinguishing company vs
-  personal *account* inside an allowed directory — the owner accepts that loss (#549).
-- Method: one brief → two independent proposals (fork A = Fable, fork B = Codex) →
-  coordinator adjudication, every countable claim re-verified against source.
+- Status: **REJECTED 2026-08-27. Not implemented, and deliberately not implemented.**
+  Superseded by the remediation in `1035219` / `493c1cf`, which retires the control
+  instead of building it.
+- Why rejected: the feature can only help someone with two **physically separate**
+  config stores. A personal account switched with `/login` writes to the same store
+  (#549, out of scope), and the only measured machine has `~/.claude-work/projects`
+  symlinked to `~/.claude-personal/projects` — one store, so the allowlist is
+  all-or-nothing there. Protective population: **0 of 1 measured**, asserted for 37
+  unmeasured. A second reviewer pass also found that exclusion is per-exporter, not
+  per-bucket: a second ccxray home with a laxer allowlist re-uploads the same session
+  under its own `agent_id`, and the signed-off cross-agent dedup view resurrects it.
+- **What is still true and worth keeping**: §1's fact base (the two opposite-facing
+  bugs, the 0/297,750 measurement, the volume distribution), §4's verified date-floor
+  interaction, and §4a's finding that openai has no `responseId` so no group key exists
+  for it. The remediation relies on all of these.
+- **What is void**: §2's decision table, §3's group predicate, §5's implementation
+  sites, and §6's tests. None of it was built.
+- Reading order for anyone arriving here: this document explains *why the obvious fix
+  is wrong*. For what was actually done, see `docs/export-onboarding.md` and the two
+  commits above.
+
+The original analysis follows unchanged, so the reasoning can be audited.
 
 ## 1. The defect: two bugs pointing in opposite directions
 
