@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 const { resolveCcxrayHome } = require('./paths');
+const { listRawSessionBuckets } = require('./providers');
 
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
@@ -12,7 +13,7 @@ const LOCK_STALE_MS = 5 * 60_000;
 const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5s, at-least-once retries next flush
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const FLOOR_VERSION = 1;
 const CUTOFF_DT_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -392,7 +393,7 @@ function mergeEntry(a, b) {
   for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
     'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
     'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider',
-    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash']) {
+    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash', 'imported', 'importSource']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
   }
   // ADR 0012: prefer non-inferred session identity
@@ -407,6 +408,7 @@ function mergeEntry(a, b) {
 }
 
 function aggregate(lines, agentId) {
+  const rawSessionBuckets = listRawSessionBuckets();
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
   const sessionPrevMsg = new Map(); // sid → last msgCount for compaction detection
@@ -650,6 +652,10 @@ function aggregate(lines, agentId) {
         flags: [],
         summary_id: null,
         _models: Object.create(null),
+        imported_turn_count: 0,
+        inferred_turn_count: 0,
+        _importSources: new Set(),
+        session_id_kind: rawSessionBuckets.has(sid) ? 'sentinel' : 'explicit',
         _costConfidence: { exact: 0, prefix: 0, fallback: 0, unknown: 0 },
         _hasCredential: false,
         _toolFailCount: 0,
@@ -657,7 +663,23 @@ function aggregate(lines, agentId) {
       dtSessions.set(sid, sess);
     }
     sess.turn_count++;
-    sess._models[model] = (sess._models[model] || 0) + 1;
+    let modelStats = sess._models[model];
+    if (!modelStats) {
+      modelStats = {
+        turns: 0,
+        cost: 0,
+        fallback_cost: 0,
+        fallback_count: 0,
+        unknown_count: 0,
+      };
+      sess._models[model] = modelStats;
+    }
+    modelStats.turns++;
+    if (entry.imported === true) sess.imported_turn_count++;
+    if (entry.sessionInferred === true) sess.inferred_turn_count++;
+    if (typeof entry.importSource === 'string' && entry.importSource) {
+      sess._importSources.add(entry.importSource);
+    }
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);
 
     if (costObj && typeof costObj === 'object') {
@@ -665,15 +687,27 @@ function aggregate(lines, agentId) {
       const conf = costObj.confidence || 'unknown';
       if (c != null && Number.isFinite(c)) {
         sess.cost_total += c;
+        modelStats.cost += c;
         sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
+        if (conf === 'fallback') {
+          modelStats.fallback_cost += c;
+          modelStats.fallback_count++;
+        } else if (conf === 'unknown' && Object.prototype.hasOwnProperty.call(costObj, 'confidence')) {
+          modelStats.unknown_count++;
+        }
       } else {
         sess._costConfidence.unknown++;
+        modelStats.unknown_count++;
       }
     } else if (typeof costObj === 'number') {
       sess.cost_total += costObj;
+      modelStats.cost += costObj;
       sess._costConfidence.unknown++;
+      // ADR 0017: legacy numeric costs have no confidence evidence and
+      // therefore do not contribute to the per-model confidence fold.
     } else {
       sess._costConfidence.unknown++;
+      modelStats.unknown_count++;
     }
 
     if (entry.hasCredential === true) sess._hasCredential = true;
@@ -779,12 +813,15 @@ function finishSession(sess, daily, summaryId) {
   sess.summary_id = summaryId;
 
   let best = null, bestCount = 0;
-  for (const [m, c] of Object.entries(sess._models)) {
+  for (const [m, stats] of Object.entries(sess._models)) {
+    const c = stats.turns;
     if (c > bestCount || (c === bestCount && (!best || m < best))) {
       best = m; bestCount = c;
     }
   }
   sess.model_primary = best;
+  sess.models = sess._models;
+  sess.import_sources = [...sess._importSources].sort();
   sess.cost_confidence = foldConfidence(sess._costConfidence);
 
   const flags = [];
@@ -800,6 +837,7 @@ function finishSession(sess, daily, summaryId) {
   sess.flags = flags;
 
   delete sess._models;
+  delete sess._importSources;
   delete sess._costConfidence;
   delete sess._hasCredential;
   delete sess._toolFailCount;

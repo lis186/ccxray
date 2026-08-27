@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const Module = require('module');
 
 const { flushExport, _setUploader } = require('../server/export-sync');
 
@@ -54,6 +55,17 @@ function daysAgoUtc(days) {
 
 function entryForDt(dt, overrides = {}) {
   return makeEntry({ id: `${dt}T10-00-00-000`, ...overrides });
+}
+
+function loadMergeEntryForTest() {
+  const filename = path.join(__dirname, '../server/export-sync.js');
+  const source = fs.readFileSync(filename, 'utf8') +
+    '\nmodule.exports.__testMergeEntry = mergeEntry;\n';
+  const localModule = { exports: {} };
+  const localRequire = Module.createRequire(filename);
+  const run = new Function('exports', 'require', 'module', '__filename', '__dirname', source);
+  run(localModule.exports, localRequire, localModule, filename, path.dirname(filename));
+  return localModule.exports.__testMergeEntry;
 }
 
 // Set up env + uploader mock before each test
@@ -386,7 +398,7 @@ describe('export-sync', () => {
     ]) {
       assert.ok(f in daily, `missing field: ${f}`);
     }
-    assert.equal(daily._summary_schema_version, 1);
+    assert.equal(daily._summary_schema_version, 2);
     assert.equal(daily.agent_id, 'test-agent-001');
     assert.equal(daily.dt, '2026-08-12');
     assert.equal(daily.turn_count, 1);
@@ -406,9 +418,11 @@ describe('export-sync', () => {
     assert.equal(sess.model_primary, 'claude-sonnet-4-6'); // 2 sonnet vs 1 opus
     assert.equal(sess.turn_count, 3);
     for (const f of ['type', '_summary_schema_version', 'agent_id', 'dt', 'session_id',
-      'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id']) {
+      'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id', 'models',
+      'imported_turn_count', 'inferred_turn_count', 'import_sources', 'session_id_kind']) {
       assert.ok(f in sess, `missing field: ${f}`);
     }
+    assert.equal(sess._summary_schema_version, 2);
   });
 
   it('payload canary: no prompt/credential/path in output', async () => {
@@ -576,6 +590,89 @@ describe('export-sync', () => {
     assert.equal(daily.models['claude-sonnet-4-6'].cost, 0.15);
     assert.equal(daily.models['claude-opus-4-6'].cost, 1.20);
     assert.ok(Math.abs(daily.cost_total - 1.35) < 0.001);
+  });
+
+  it('session per-model breakdown includes the complete ADR 0017 confidence fold', async () => {
+    setup([
+      makeEntry({ model: 'model-a', cost: { cost: 0.10, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', model: 'model-a', msgCount: 12,
+        cost: { cost: 0.20, confidence: 'fallback' } }),
+      makeEntry({ id: '2026-08-12T10-02-00-000', model: 'model-a', msgCount: 14,
+        cost: { cost: null, confidence: 'unknown' } }),
+      makeEntry({ id: '2026-08-12T10-03-00-000', model: 'model-b', msgCount: 16,
+        cost: { cost: 0.30, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-04-00-000', model: 'model-c', msgCount: 18,
+        cost: { cost: 0.40, confidence: 'unknown' } }),
+      makeEntry({ id: '2026-08-12T10-05-00-000', model: 'model-d', msgCount: 20,
+        cost: 0.50 }),
+    ]);
+    await flushExport();
+
+    const sess = _uploads[0].records.find(r => r.type === 'session');
+    assert.ok(sess.models, 'session models breakdown exists');
+    assert.equal(sess.models['model-a'].turns, 3);
+    assert.ok(Math.abs(sess.models['model-a'].cost - 0.30) < 0.000001);
+    assert.equal(sess.models['model-a'].fallback_cost, 0.20);
+    assert.equal(sess.models['model-a'].fallback_count, 1);
+    assert.equal(sess.models['model-a'].unknown_count, 1);
+    assert.deepEqual(sess.models['model-b'], {
+      turns: 1,
+      cost: 0.30,
+      fallback_cost: 0,
+      fallback_count: 0,
+      unknown_count: 0,
+    });
+    assert.equal(sess.models['model-c'].unknown_count, 1);
+    assert.equal(sess.models['model-d'].unknown_count, 0);
+  });
+
+  it('session provenance counts and classifies sentinel ids from the shared provider helper', async () => {
+    setup([
+      makeEntry({ sessionId: 'sess-provenance', imported: true, importSource: 'claude-code' }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', sessionId: 'sess-provenance', msgCount: 12,
+        imported: true, importSource: 'codex', sessionInferred: true }),
+      makeEntry({ id: '2026-08-12T10-02-00-000', sessionId: 'sess-provenance', msgCount: 14,
+        imported: false, sessionInferred: false }),
+      makeEntry({ id: '2026-08-12T10-03-00-000', sessionId: 'grok-raw', msgCount: 16 }),
+    ]);
+    await flushExport();
+
+    const sessions = _uploads[0].records.filter(r => r.type === 'session');
+    const provenance = sessions.find(r => r.session_id === 'sess-provenance');
+    const sentinel = sessions.find(r => r.session_id === 'grok-raw');
+    assert.equal(provenance.imported_turn_count, 2);
+    assert.equal(provenance.inferred_turn_count, 1);
+    assert.deepEqual(provenance.import_sources, ['claude-code', 'codex']);
+    assert.equal(provenance.session_id_kind, 'explicit');
+    assert.equal(sentinel.session_id_kind, 'sentinel');
+  });
+
+  it('responseId merge preserves provenance regardless of copy order', () => {
+    const mergeEntry = loadMergeEntryForTest();
+    const proxyCopy = makeEntry({
+      responseId: 'msg_provenance_order',
+      imported: undefined,
+      importSource: undefined,
+    });
+    const importedCopy = makeEntry({
+      id: '2026-08-12T10-00-01-000',
+      responseId: 'msg_provenance_order',
+      imported: true,
+      importSource: 'claude-code',
+    });
+
+    const forward = mergeEntry(proxyCopy, importedCopy);
+    const reverse = mergeEntry(importedCopy, proxyCopy);
+
+    const provenance = entry => ({
+      imported: entry.imported,
+      importSource: entry.importSource,
+    });
+    assert.deepEqual(provenance(forward), provenance(reverse));
+    assert.deepEqual(provenance(forward), {
+      imported: true,
+      importSource: 'claude-code',
+    });
   });
 
   it('OpenAI entries: toolCalls summed directly (not per-tool max)', async () => {
