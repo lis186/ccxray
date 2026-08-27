@@ -29,8 +29,13 @@ let _interval = null;
 let _uploader = null; // test seam
 let _cachedToken = null; // { accessToken, expiresAt }
 let _runningFlush = null; // in-flight flush promise for graceful shutdown
+let _configDirsWarned = false; // the tombstone message is about static config — say it once per process
 
 function _setUploader(fn) { _uploader = fn; }
+
+// Test seam: the warn-once flag is process-global, so a suite asserting the message
+// must clear it or only the first test in the file can see it.
+function _resetExportWarnings() { _configDirsWarned = false; }
 
 // INVARIANT: one predicate, two callers (flushExport + startExportSync). Under
 // `node --test` a real upload must be structurally impossible: the suite has no
@@ -81,7 +86,12 @@ function isExportSuppressed() {
   //    disclosure. Loud on the same channel as the positive signal, so it cannot join
   //    the "exporter silently went quiet" failure class.
   if (process.env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined) {
-    console.log(CONFIG_DIRS_REFUSAL);
+    // Once per process, not once per call. Smoke-measured: a real boot calls this
+    // three times (startExportSync, its initial flush, and index.js's
+    // sync-before-prune), so an unguarded log printed the same paragraph three times
+    // before the first request — noise that reads like three separate faults. The
+    // message describes static configuration, so repeating it carries no information.
+    if (!_configDirsWarned) { console.log(CONFIG_DIRS_REFUSAL); _configDirsWarned = true; }
     return true;
   }
 
@@ -1015,4 +1025,5 @@ async function awaitPendingFlush() {
   }
 }
 
-module.exports = { startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
+module.exports = {
+  _resetExportWarnings, startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };

@@ -32,7 +32,7 @@ const path = require('node:path');
 
 const {
   flushExport, startExportSync, stopExportSync, awaitPendingFlush,
-  isExportSuppressed, _setUploader,
+  isExportSuppressed, _setUploader, _resetExportWarnings,
 } = require('../server/export-sync');
 
 const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
@@ -45,6 +45,10 @@ function freshHome() {
 }
 
 function withEnv(fn) {
+  // The tombstone message is warn-once per process (a real boot calls the predicate
+  // three times), so it is suppression state in exactly the sense the comment below
+  // means: without this, only the first test in the file could observe the refusal.
+  _resetExportWarnings();
   const saved = {
     home: process.env.CCXRAY_HOME,
     bucket: process.env.CCXRAY_EXPORT_GCS_BUCKET,
