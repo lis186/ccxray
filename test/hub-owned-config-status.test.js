@@ -99,9 +99,14 @@ describe('hub-owned export/config status', () => {
         expected: 'hub',
       },
       {
-        name: 'ccxray claude (2nd): existing hub carrier',
+        name: 'ccxray claude (1st): client after discovering a detached hub',
         signals: { hubMode: false, explicitPort: false, agentNamed: true, platform: 'darwin' },
-        expected: 'hub',
+        expected: 'client',
+      },
+      {
+        name: 'ccxray claude (2nd): client after reusing an existing hub',
+        signals: { hubMode: false, explicitPort: false, agentNamed: true, platform: 'darwin' },
+        expected: 'client',
       },
       {
         name: 'ccxray standalone: no agent',
@@ -125,6 +130,62 @@ describe('hub-owned export/config status', () => {
       assert.equal(hub.assembleExportReport({ CCXRAY_HOME: testHome }).identity.kind,
         mode.expected, mode.name);
     }
+
+    const clientSignals = {
+      hubMode: false,
+      explicitPort: false,
+      agentNamed: true,
+      platform: 'darwin',
+    };
+    assert.notEqual(hub.kindFromLaunchSignals(clientSignals), 'hub',
+      'the client signal set must never yield hub');
+    assert.equal(hub.kindFromLaunchSignals(clientSignals), 'client');
+
+    hub.setLaunchSignals({
+      hubMode: true,
+      explicitPort: true,
+      agentNamed: false,
+      platform: process.platform,
+    });
+  });
+
+  it('does not report client-environment exporter facts through either carrier', async () => {
+    const pid = 31050;
+    hub.setLaunchSignals({
+      hubMode: false,
+      explicitPort: false,
+      agentNamed: true,
+      platform: 'darwin',
+    });
+
+    await withEnv({
+      CCXRAY_HOME: testHome,
+      CCXRAY_EXPORT_CONFIG_DIRS: '/retired-config-dir',
+      CCXRAY_IMPORT_HOMES: 'relative-root',
+      CCXRAY_EXPORT_GCS_BUCKET: 'status-test-bucket',
+    }, async () => {
+      const assembled = hub.assembleExportReport();
+      const statusPayload = reportFields(hub.getHubStatus());
+      const registration = await socketCommand({ cmd: 'register', pid, cwd: '/status-test' });
+      const replyPayload = reportFields(registration);
+
+      assert.deepEqual(assembled, {
+        exportState: null,
+        exportReason: null,
+        configWarnings: [],
+        identity: {
+          kind: 'client',
+          pid: process.pid,
+          port: 5577,
+          home: testHome,
+        },
+      });
+      assert.deepEqual(statusPayload, assembled, 'getHubStatus uses the shared client payload');
+      assert.deepEqual(replyPayload, assembled, 'register uses the shared client payload');
+      assert.equal('cursor' in registration, false, 'client reply has no cursor facts');
+
+      await unregister(pid);
+    });
 
     hub.setLaunchSignals({
       hubMode: true,

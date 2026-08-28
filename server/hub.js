@@ -39,7 +39,7 @@ function setLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = 
 function kindFromLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
   if (hubMode) return 'hub';
   if (explicitPort && agentNamed) return 'agent-port';
-  if (!explicitPort && agentNamed && platform !== 'win32') return 'hub';
+  if (!explicitPort && agentNamed && platform !== 'win32') return 'client';
   return 'standalone';
 }
 
@@ -588,13 +588,16 @@ function currentHubPort() {
 }
 
 function assembleExportReport(env = process.env) {
-  const { exportState, exportReason } = exportStatus(env);
+  const kind = kindFromLaunchSignals(launchSignals);
+  const { exportState, exportReason } = kind === 'client'
+    ? { exportState: null, exportReason: null }
+    : exportStatus(env);
   return {
     exportState,
     exportReason,
-    configWarnings: relativeRootComplaints(env),
+    configWarnings: kind === 'client' ? [] : relativeRootComplaints(env),
     identity: {
-      kind: kindFromLaunchSignals(launchSignals),
+      kind,
       pid: process.pid,
       port: currentHubPort() ?? null,
       home: resolveCcxrayHome(env),
