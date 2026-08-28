@@ -868,7 +868,7 @@ function staleThresholdMs(env = process.env) {
 // developer's real transcripts. See docs/testing.md.
 // Keep this tiny parser local instead of requiring server/importer.js: Herdr is
 // a separate process and this library must remain independent of core modules.
-function configuredClaudeProjectRoots(rawValue) {
+function configuredScanRoots(rawValue) {
   const roots = [];
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
@@ -886,7 +886,7 @@ function configuredClaudeProjectRoots(rawValue) {
 
 function claudeProjectRoots(env = process.env) {
   if (env.CCXRAY_IMPORT_HOMES !== undefined) {
-    return configuredClaudeProjectRoots(env.CCXRAY_IMPORT_HOMES);
+    return configuredScanRoots(env.CCXRAY_IMPORT_HOMES);
   }
   const home = os.homedir();
   const roots = [];
@@ -936,7 +936,17 @@ function transcriptFile(sessionId, cwd, env = process.env) {
 }
 
 function codexSessionRoots(env = process.env) {
-  if (env.CCXRAY_IMPORT_CODEX_HOMES) return [env.CCXRAY_IMPORT_CODEX_HOMES];
+  // Same parser and same presence test as the Claude side, because core's
+  // discoverCodexHomes honours the same comma-list contract for CCXRAY_IMPORT_CODEX_HOMES.
+  // Two differences used to live here and both were silent: the whole value was taken
+  // as ONE path, so a configured list resolved to a directory literally named
+  // "rootA,rootB"; and the truthy test let an explicitly EMPTY value fall through to
+  // ambient discovery of $HOME/.codex*, while core reads an empty value as "import
+  // nothing". An empty value is a deliberate choice by whoever set it, so it must not
+  // reopen the developer's real transcripts.
+  if (env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
+    return configuredScanRoots(env.CCXRAY_IMPORT_CODEX_HOMES);
+  }
   const home = os.homedir();
   const roots = [];
   let items = [];

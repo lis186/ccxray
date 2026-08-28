@@ -668,8 +668,28 @@ describe('export-sync', () => {
       imported: entry.imported,
       importSource: entry.importSource,
     });
+    // Order-independence is the property under test, and it still holds — but the
+    // value it converges on is CLEARED, not inherited. ADR 0012's field table
+    // (line 155) says imported/importSource are "cleared when merging a proxy copy
+    // in (a real observation supersedes an import reconstruction)", so a turn the
+    // proxy actually observed must not be counted as import-reconstructed just
+    // because a transcript twin also exists. An earlier revision of this test
+    // asserted `imported: true` here and so pinned the ADR violation in place.
     assert.deepEqual(provenance(forward), provenance(reverse));
     assert.deepEqual(provenance(forward), {
+      imported: undefined,
+      importSource: undefined,
+    });
+
+    // The other half of the AND: two import copies stay imported, so
+    // imported_turn_count still counts turns nobody observed live.
+    const secondImport = makeEntry({
+      id: '2026-08-12T10-00-02-000',
+      responseId: 'msg_provenance_order',
+      imported: true,
+      importSource: 'claude-code',
+    });
+    assert.deepEqual(provenance(mergeEntry(importedCopy, secondImport)), {
       imported: true,
       importSource: 'claude-code',
     });

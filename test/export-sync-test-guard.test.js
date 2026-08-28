@@ -59,6 +59,11 @@ function withEnv(fn) {
   // No test may inherit ambient suppression state; each sets what it needs.
   delete process.env.CCXRAY_EXPORT_DISABLE;
   delete process.env.LOGS_DIR;
+  // Including the tombstone variable itself. Saved above and restored below, but it
+  // must be CLEARED for the run: a developer or rollout machine that still carries a
+  // stale CCXRAY_EXPORT_CONFIG_DIRS would otherwise fail the injected-uploader and
+  // positive-startup tests for an environmental reason, not a code one.
+  delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
   const restore = () => {
     for (const [k, v] of [['CCXRAY_HOME', saved.home],
                           ['CCXRAY_EXPORT_GCS_BUCKET', saved.bucket],

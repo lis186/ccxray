@@ -542,7 +542,10 @@ describe('Herdr workspace scope', () => {
 
     assert.equal(detail.matched, false);
     assert.equal(detail.repairCandidate?.provider, 'codex');
-    assert.equal(detail.repairCandidate?.file, file);
+    // realpathSync on the expectation: codexSessionRoots now canonicalizes its
+    // configured roots (so two aliases of one store dedupe, matching core), and on
+    // macOS os.tmpdir() is /var -> /private/var. The candidate is the same file.
+    assert.equal(detail.repairCandidate?.file, fs.realpathSync(file));
   });
 
   // FAIL-ON-OLD: duplicate live owners of one native session are an identity

@@ -1052,6 +1052,14 @@ async function startClientMode(lock) {
     _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
   }
 
+  // The hub this client just attached to inherits this env, so if the tombstone
+  // variable is set the hub will refuse to export -- and say so only into hub.log,
+  // which nobody reads. This is the one surface the user is actually looking at.
+  {
+    const refusal = require('./export-sync').configDirsRefusal();
+    if (refusal) _origLog(`\x1b[33m   ${refusal}\x1b[0m`);
+  }
+
   const clientIdentity = {
     agentId: process.env.CCXRAY_AGENT_ID || '',
     userEmail: process.env.CCXRAY_USER_EMAIL || '',

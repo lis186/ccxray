@@ -38,6 +38,16 @@ function _setUploader(fn) { _uploader = fn; }
 // must clear it or only the first test in the file can see it.
 function _resetExportWarnings() { _configDirsWarned = false; }
 
+// The refusal as a VALUE, for callers that are not the exporter. A detached hub's
+// stdout goes to hub.log (hub.js `stdio: ['ignore', fd, fd]`) and the foreground
+// client deliberately prints no hub output ("Hub runs silently"), so under
+// `ccxray <agent>` — the common path — logging from inside the exporter reaches
+// nobody. The client shares the same env as the hub it forks, so it can and must
+// say this itself.
+function configDirsRefusal() {
+  return process.env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined ? CONFIG_DIRS_REFUSAL : null;
+}
+
 // INVARIANT: one predicate, two callers (flushExport + startExportSync). Under
 // `node --test` a real upload must be structurally impossible: the suite has no
 // shared env-scrub helper and CCXRAY_HOME does NOT isolate the bucket, so any e2e
@@ -393,9 +403,25 @@ function mergeEntry(a, b) {
   for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
     'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
     'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider',
-    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash', 'imported', 'importSource']) {
+    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
   }
+  // ADR 0012 (field table, line 155): `imported`/`importSource` are CLEARED when a
+  // proxy copy merges in — a real observation supersedes an import reconstruction.
+  // So the fold is AND, not fill-if-null: the merged turn is imported only when every
+  // copy of it was import-reconstructed. AND is commutative, which is what makes the
+  // result order-independent; an earlier revision put these two fields in the
+  // fill-if-null list above, which both inverted the ADR and let a proxy observation
+  // inherit `imported: true` from its import twin, corrupting imported_turn_count and
+  // import_sources.
+  if (a.imported === true && b.imported === true) {
+    merged.imported = true;
+    if (merged.importSource == null && b.importSource != null) merged.importSource = b.importSource;
+  } else {
+    delete merged.imported;
+    delete merged.importSource;
+  }
+
   // ADR 0012: prefer non-inferred session identity
   if (b.sessionInferred === false && a.sessionInferred !== false) {
     if (b.sessionId) merged.sessionId = b.sessionId;
@@ -655,6 +681,7 @@ function aggregate(lines, agentId) {
         imported_turn_count: 0,
         inferred_turn_count: 0,
         _importSources: new Set(),
+        _responseIds: new Set(),
         session_id_kind: rawSessionBuckets.has(sid) ? 'sentinel' : 'explicit',
         _costConfidence: { exact: 0, prefix: 0, fallback: 0, unknown: 0 },
         _hasCredential: false,
@@ -680,6 +707,7 @@ function aggregate(lines, agentId) {
     if (typeof entry.importSource === 'string' && entry.importSource) {
       sess._importSources.add(entry.importSource);
     }
+    if (entry.responseId) sess._responseIds.add(entry.responseId);
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);
 
     if (costObj && typeof costObj === 'object') {
@@ -822,6 +850,26 @@ function finishSession(sess, daily, summaryId) {
   sess.model_primary = best;
   sess.models = sess._models;
   sess.import_sources = [...sess._importSources].sort();
+
+  // Design section 4, decision 1: the shard discriminator. turn_count alone cannot
+  // tell "identical" from "disjoint, same size" — two 3-turn views of different
+  // halves of one session tie and merge silently. This hashes the SET of
+  // provider-assigned response ids, so two observers of the same turns agree and two
+  // observers of different turns do not, without either of them needing to agree on
+  // anything they derived locally (which is why cost is not in it, and must never be).
+  //
+  // turn_set_basis states what the hash actually covers, because coverage is partial
+  // and a consumer must not read a hash as if it were complete: responseId is absent
+  // on OpenAI/WS entries entirely (ADR 0012 exempts them) and on pre-#333 Anthropic
+  // rows. A reader comparing two hashes must first check that both bases are
+  // 'responseId' and both sizes equal turn_count; anything else is a partial view.
+  const rids = [...sess._responseIds].sort();
+  sess.turn_set_size = rids.length;
+  sess.turn_set_hash = rids.length
+    ? crypto.createHash('sha256').update(rids.join('\n')).digest('hex').slice(0, 16)
+    : null;
+  sess.turn_set_basis = rids.length === 0 ? null
+    : (rids.length === sess.turn_count ? 'responseId' : 'responseId-partial');
   sess.cost_confidence = foldConfidence(sess._costConfidence);
 
   const flags = [];
@@ -838,6 +886,7 @@ function finishSession(sess, daily, summaryId) {
 
   delete sess._models;
   delete sess._importSources;
+  delete sess._responseIds;
   delete sess._costConfidence;
   delete sess._hasCredential;
   delete sess._toolFailCount;
@@ -1064,4 +1113,4 @@ async function awaitPendingFlush() {
 }
 
 module.exports = {
-  _resetExportWarnings, startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
+  _resetExportWarnings, configDirsRefusal, startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
