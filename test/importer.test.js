@@ -148,6 +148,44 @@ describe('importer', () => {
       assert.strictEqual(entries[0].tokens.output, 200);
       assert.strictEqual(entries[0].model, 'claude-sonnet-4-5-20250514');
       assert.strictEqual(entries[0].stopReason, 'end_turn');
+      assert.strictEqual(entries[0].contextUsageKnown, true);
+    });
+
+    it('marks an explicit zero context numerator as known', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-zero-context.jsonl');
+      fs.writeFileSync(file, [
+        makeAssistant({ input: 0, output: 10, cacheRead: 0, cacheCreate: 0 }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].contextUsageKnown, true);
+      assert.strictEqual(entries[0].usage.input_tokens, 0);
+    });
+
+    it('keeps output-only transcript usage unknown', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-output-only.jsonl');
+      fs.writeFileSync(file, [
+        makeLine('assistant', {
+          message: {
+            id: 'msg-output-only',
+            model: 'claude-sonnet-4-5-20250514',
+            role: 'assistant',
+            content: [{ type: 'text', text: 'Hello' }],
+            stop_reason: 'end_turn',
+            usage: { output_tokens: 10 },
+          },
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].contextUsageKnown, false);
+      assert.strictEqual(entries[0].usage.input_tokens, 0);
     });
 
     it('writes maxContext, and observation alone recovers a window above the default (fail-on-old)', async () => {
@@ -532,6 +570,7 @@ describe('codex importer', () => {
       assert.strictEqual(entries[0].tokens.contextWindow, 258400);
       // #384: maxContext must be written to the entry (was missing before fix)
       assert.strictEqual(entries[0].maxContext, 258400);
+      assert.strictEqual(entries[0].contextUsageKnown, true);
     });
 
     it('#384: writes maxContext from model_context_window', async () => {

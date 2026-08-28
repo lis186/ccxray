@@ -360,6 +360,13 @@ function contextBlock(pct) {
   return '█';
 }
 
+function orderedTurns(turns) {
+  return (Array.isArray(turns) ? turns : []).slice().sort((a, b) => (
+    Number(a?.receivedAt || 0) - Number(b?.receivedAt || 0)
+    || String(a?.id || '').localeCompare(String(b?.id || ''))
+  ));
+}
+
 function contextBand(pct) {
   if (!Number.isFinite(pct)) return 'unknown';
   if (pct <= 40) return 'green';
@@ -370,10 +377,10 @@ function contextBand(pct) {
 function contextPercents(turns, win) {
   if (!win) return [];
   let previous = null;
-  return turns
+  return orderedTurns(turns)
     .map(turn => {
       const used = contextUsed(turn);
-      if (!used || !win) return null;
+      if (used == null || !Number.isFinite(used) || !win) return null;
       const raw = used / win * 100;
       // Prompt/cache accounting can move by a few tokens between adjacent
       // turns even though the conversation context has not reset. Drawing
@@ -388,19 +395,33 @@ function contextPercents(turns, win) {
         && previous - raw <= 15 ? previous : raw;
       previous = stabilized;
       return stabilized;
-    })
-    .filter(Number.isFinite);
+    });
+}
+
+// The glyph buckets are intentionally coarse: they are a compact trend, not a
+// second percentage readout. When several samples move materially while still
+// landing in the same bucket, make the direction explicit in the scalar slot.
+// Require three known samples and an 8-point net move so ordinary token-count
+// jitter does not turn the badge into a noisy ticker.
+function contextTrendDirection(turns, win) {
+  const pcts = contextPercents(turns, win);
+  const finite = pcts.filter(Number.isFinite);
+  if (finite.length < 3 || !Number.isFinite(pcts.at(-1))) return '';
+  const delta = finite.at(-1) - finite[0];
+  if (delta >= 8) return '↑';
+  if (delta <= -8) return '↓';
+  return '';
 }
 
 function contextSparkline(turns, win, opts = {}) {
   const pcts = turns
     ? contextPercents(turns, win)
     : [];
-  if (!pcts.length) return '';
+  if (!pcts.some(Number.isFinite)) return '';
   const maxBars = clampNumber(opts.maxBars, 3, 32) || 4;
   const targetBars = Math.min(pcts.length, maxBars);
   const recent = pcts.slice(-targetBars);
-  return recent.map(contextBlock).join('');
+  return recent.map(pct => Number.isFinite(pct) ? contextBlock(pct) : '░').join('');
 }
 
 function cacheHitText(turns) {
@@ -556,14 +577,20 @@ function paneAlert(signals = {}) {
 
 function formatContextBar(turns, win, ctxText, opts = {}) {
   const sidebarCols = clampNumber(opts.sidebarCols, 8, 96) || 18;
-  const pctText = String(ctxText || '?');
-  const available = sidebarCols - displayWidth(pctText) - 1;
-  if (available < 1) return '?';
-  const maxBars = Math.max(1, Math.min(32, available));
-  const spark = contextSparkline(turns, win, { maxBars });
-  if (!spark) return pctText;
-  const result = `${spark} ${pctText}`;
-  return displayWidth(result) <= sidebarCols ? result : pctText;
+  const pctText = String(ctxText ?? '?');
+  // The scalar is a fixed, right-aligned slot. Keep room for the full
+  // formatted range (0–999%) plus the optional window marker so a scalar
+  // width change never moves the trend endpoint.
+  const scalarSlotWidth = displayWidth('999%↑✗');
+  const viewportWidth = sidebarCols - scalarSlotWidth - 1;
+  if (viewportWidth < 1) return pctText;
+  const pcts = contextPercents(turns || [], win);
+  if (!pcts.some(Number.isFinite)) return '?';
+  const recent = pcts.slice(-viewportWidth);
+  const trend = '░'.repeat(Math.max(0, viewportWidth - recent.length))
+    + recent.map(pct => Number.isFinite(pct) ? contextBlock(pct) : '░').join('');
+  const scalarPadding = ' '.repeat(Math.max(0, scalarSlotWidth - displayWidth(pctText)));
+  return `${trend} ${scalarPadding}${pctText}`;
 }
 
 function emptyContextBar(opts = {}) {
@@ -636,27 +663,64 @@ function sessionSummary(data) {
   return sessionSummaryDetails(data).summary;
 }
 
-function contextUsed(entry) {
-  if (Number.isFinite(entry?.ctxUsed)) return entry.ctxUsed;
-  const usage = entry?.usage || {};
-  return (usage.input_tokens || 0)
-    + (usage.cache_creation_input_tokens || 0)
-    + (usage.cache_read_input_tokens || 0);
+function knownContextSampleCount(turns) {
+  return mainDisplayTurns(turns).filter(turn => contextUsed(turn) != null).length;
 }
 
-function sessionWindow(turns) {
-  if (turns.some(t => t.beta1m)) return 1000000;
-  return turns.reduce((max, t) => Math.max(max, t.maxContext || 0), 0) || 200000;
+// The aggregate is complete, while the Sidebar's index read is deliberately a
+// tail. If the tail contains fewer than three usable main-agent samples even
+// though the persisted session is larger, ask the already-existing targeted
+// repair path for its bounded sample ring. This also catches a tail containing
+// only a contextless subagent row: the session is technically matched, but its
+// context answer is not.
+function sessionHistoryNeedsRepair(turns, aggregate) {
+  const count = Number(aggregate?.count);
+  const contextlessSubagent = knownContextSampleCount(turns) === 0
+    && turns.some(turn => turn?.isSubagent === true);
+  return contextlessSubagent || (Number.isFinite(count)
+    && count > turns.length
+    && knownContextSampleCount(turns) < 3);
+}
+
+function mergeRecoveredSessionSamples(turns, samples, sessionId, cwd) {
+  const filtered = (Array.isArray(samples) ? samples : [])
+    .filter(entry => entry?.sessionId === sessionId)
+    .filter(entry => !cwd || !entry.cwd || path.resolve(entry.cwd) === path.resolve(cwd));
+  return dedupeObservedEntries([...(turns || []), ...filtered]);
+}
+
+function contextUsed(entry) {
+  if (entry?.contextUsageKnown === false) return null;
+  if (entry?.contextUsageKnown === true
+      && Number.isFinite(entry?.ctxUsed) && entry.ctxUsed >= 0) return entry.ctxUsed;
+  if (Number.isFinite(entry?.ctxUsed)) return entry.ctxUsed >= 0 && entry.ctxUsed > 0 ? entry.ctxUsed : null;
+  const usage = entry?.usage || {};
+  const used = Number(usage.input_tokens || 0)
+    + Number(usage.cache_creation_input_tokens || 0)
+    + Number(usage.cache_read_input_tokens || 0);
+  if (!Number.isFinite(used) || used < 0) return null;
+  return used > 0 || entry?.contextUsageKnown === true ? used : null;
+}
+
+function sessionWindow(turns, aggregate = null) {
+  if (turns.some(t => t.beta1m) || aggregate?.beta1m === true) return 1000000;
+  return Math.max(
+    turns.reduce((max, t) => Math.max(max, Number(t.maxContext) || 0), 0),
+    Number(aggregate?.maxContext) || 0,
+  ) || 200000;
 }
 
 // Keep the badge's denominator provenance aligned with the dashboard's
 // sessionCtxWindowSource four-state contract. A bare 200K window is an
 // assumption for an unknown Claude deployment; an observed overflow is an
 // explicit contradiction until a later import records the larger fossil.
-function sessionWindowSource(turns, win = sessionWindow(turns)) {
-  const used = turns.reduce((max, turn) => Math.max(max, contextUsed(turn)), 0);
+function sessionWindowSource(turns, win = sessionWindow(turns), aggregate = null) {
+  const used = turns.reduce((max, turn) => {
+    const value = contextUsed(turn);
+    return value == null || !Number.isFinite(value) ? max : Math.max(max, value);
+  }, 0);
   if (used > win) return 'contradicted';
-  if (turns.some(turn => turn.beta1m === true)) return 'declared';
+  if (turns.some(turn => turn.beta1m === true) || aggregate?.beta1m === true) return 'declared';
   return win === 200000 ? 'default' : 'observed';
 }
 
@@ -1042,7 +1106,7 @@ function evidenceStaleness(turns, nowMs, opts = {}) {
 }
 
 function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {}) {
-  const sorted = turns.slice().sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
+  const sorted = orderedTurns(turns);
   // Context%, cache%, and the model label read the main agent only; a second
   // conversation riding the same sessionId otherwise sets them whenever it
   // happens to finish last, so the badge oscillates with no compaction.
@@ -1085,15 +1149,17 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
   const fold = agg
     ? mergeCostFolds(foldFromAgg, costFold(postFlush))
     : (sorted.length ? costFold(sorted) : (fallback.costAgg || {}));
-  const win = sessionWindow(anchor);
-  const ctxWindowSource = sessionWindowSource(anchor, win);
+  const win = sessionWindow(anchor, agg);
+  const ctxWindowSource = sessionWindowSource(anchor, win, agg);
   const ctxWindowMarker = contextWindowMarker(ctxWindowSource);
+  const ctxDirection = contextTrendDirection(anchor, win);
   const used = contextUsed(latest);
-  const ctxPct = used && win ? used / win * 100 : null;
+  const ctxPct = used != null && win ? used / win * 100 : null;
   const ctxText = ctxPct == null ? '?' : formatWholePercent(ctxPct);
   const detail = {
     ctxPct,
     ctxText,
+    ctxDirection,
     ctxWindowSource,
     ctxWindowMarker,
     ctxBand: ctxWindowSource === 'default' || ctxWindowSource === 'contradicted'
@@ -1131,6 +1197,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     sessionId: latest.sessionId || fallback.sessionId || null,
     ctxPct,
     ctxText,
+    ctxDirection,
     ctxWindowSource,
     ctxWindowMarker,
     ctxBand: stale ? 'unknown' : detail.ctxBand,
@@ -1142,7 +1209,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     failures: toolFailureCount(anchor),
     cacheDropped: cacheDroppedAfterPromptChange(anchor),
     refusedCount: quotaRefusalCount(anchor),
-    ctxBar: formatContextBar(anchor, win, `${ctxText}${ctxWindowMarker}`, {
+    ctxBar: formatContextBar(anchor, win, `${ctxText}${ctxDirection}${ctxWindowMarker}`, {
       sidebarCols: opts.sidebarCols,
       signal,
     }),
@@ -1237,21 +1304,46 @@ function sessionSummaryDetails(data, opts = {}) {
   const exactAgentMatch = (agentId && turns.some(entry => entry.agentId === agentId))
     || (launchAgentId && turns.some(entry => entry.agentId === launchAgentId));
   const nativeSessionMatch = nativeSessionId && turns.some(entry => entry.sessionId === nativeSessionId);
-  if ((nativeSessionId && !nativeSessionMatch)
-    || ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch)) {
-    const repairCandidate = nativeSessionId && opts.allowRepair !== false
+  const nativeAggregate = nativeSessionId ? readSessionAggregate(nativeSessionId, opts.env) : null;
+  const nativeSessionMissing = nativeSessionId && !nativeSessionMatch;
+  const linkMissing = Boolean(nativeSessionMissing
+    || ((agentId || launchAgentId) && !exactAgentMatch && !nativeSessionMatch));
+  const historyIncomplete = nativeSessionId
+    && opts.allowRepair !== false
+    && sessionHistoryNeedsRepair(turns, nativeAggregate);
+  let repairCandidate = null;
+  let repairedEvidence = null;
+  let repairedSamples = null;
+  let repairNeedsSamples = false;
+  if (linkMissing || historyIncomplete) {
+    repairCandidate = nativeSessionId && opts.allowRepair !== false
       ? repairTranscript(nativeSessionId, opts.cwd, opts.agent, opts.env)
       : null;
     // The 4 MiB Sidebar read is intentionally bounded. A targeted worker may
     // discover that this exact session is already indexed earlier in a large
-    // file; its completed fingerprint caches the newest exact index row so the
-    // next refresh can finish classification without rescanning the whole index.
-    const repairedEvidence = repairCandidate
+    // file; its completed fingerprint caches both the newest exact row and a
+    // bounded context history for this hot path.
+    repairedEvidence = repairCandidate
       ? completedRepairEvidence(repairCandidate, opts.env)
       : null;
-    if (repairedEvidence) {
+    repairedSamples = repairCandidate
+      ? completedRepairSamples(repairCandidate, opts.env)
+      : null;
+    if (repairedSamples?.length) {
+      turns = mergeRecoveredSessionSamples(turns, repairedSamples, nativeSessionId, opts.cwd);
+    } else if (repairedEvidence && nativeSessionMissing) {
+      // Backward compatibility for link-repair state written before the sample
+      // ring existed. It still repairs linkage, while a history-incomplete
+      // match below requests a one-time refresh of that old state.
       turns = [repairedEvidence];
-    } else {
+    } else if (repairCandidate && repairedSamples === null
+      && (historyIncomplete || repairedEvidence)) {
+      // A completed pre-ring state proved linkage but cannot render a recovered
+      // trend yet. Mark it for one migration import even when the exact row is
+      // currently outside the tail and would otherwise be sufficient to link.
+      repairNeedsSamples = true;
+    }
+    if (linkMissing && !repairedEvidence && !repairedSamples?.length) {
       const summary = nativeSessionId
         ? 'ccxray: not linked'
         : (routed ? 'ccxray: ready · send prompt' : 'ccxray: not linked');
@@ -1286,8 +1378,12 @@ function sessionSummaryDetails(data, opts = {}) {
       && known.has(turn.parentSessionId)
     )));
     const group = (roots.length ? roots : groups)[0];
-    const newestEvidenceAt = Math.max(...group.map(turn => Number(turn.receivedAt) || 0));
-    const newestEvidence = group.filter(turn => (Number(turn.receivedAt) || 0) === newestEvidenceAt);
+    const sortedGroup = group.slice().sort((a, b) => (
+      Number(a.receivedAt || 0) - Number(b.receivedAt || 0)
+      || String(a.id || '').localeCompare(String(b.id || ''))
+    ));
+    const newestEvidenceAt = Math.max(...sortedGroup.map(turn => Number(turn.receivedAt) || 0));
+    const newestEvidence = sortedGroup.filter(turn => (Number(turn.receivedAt) || 0) === newestEvidenceAt);
     // A resumed session may contain old proxy-observed turns followed by newer
     // transcript imports. "Has ever been live" is not "is live now": only the
     // newest exact evidence may classify the current linkage.
@@ -1295,9 +1391,9 @@ function sessionSummaryDetails(data, opts = {}) {
     // The session this badge is actually about — look its hub-maintained
     // aggregate up so the totals match the dashboard by construction instead of
     // being re-derived from a 4 MiB sample of the index.
-    const groupSid = group.at(-1)?.sessionId || group[0]?.sessionId || null;
-    const aggregate = readSessionAggregate(groupSid, opts.env);
-    const detail = summarizeTurnGroup(group, top, nowMs, { ...opts, aggregate });
+    const groupSid = sortedGroup.at(-1)?.sessionId || sortedGroup[0]?.sessionId || null;
+    const aggregate = readSessionAggregate(groupSid, opts.env) || nativeAggregate;
+    const detail = summarizeTurnGroup(sortedGroup, top, nowMs, { ...opts, aggregate });
     // The sidebar is often narrower than the signal slot, so ctx_bar drops the
     // stale text and only the dimmed band survives there. The summary has 80
     // columns and is the one place the reason is always spelled out.
@@ -1312,9 +1408,13 @@ function sessionSummaryDetails(data, opts = {}) {
       historyOnly,
       liveLinked: !historyOnly,
       // Exact index evidence has already answered the linkage question. A stale
-      // metric remains visibly stale, but this short-term repair is deliberately
-      // limited to missing exact evidence and does not start another importer.
-      repairCandidate: null,
+      // metric remains visibly stale. The short-term repair may still be
+      // pending when the tail matched the session but did not contain enough
+      // usable context samples; its detached importer is requested once.
+      repairCandidate: repairCandidate && (repairNeedsSamples || (!repairedEvidence && !repairedSamples?.length))
+        ? repairCandidate
+        : null,
+      repairNeedsSamples,
       summary: clip(summary, 80),
     };
   }
@@ -1392,15 +1492,28 @@ function repairStateFile(target, env, stat = null) {
     : null;
 }
 
-function completedRepairEvidence(target, env = process.env) {
+function completedRepairState(target, env = process.env) {
   const file = repairStateFile(target, env);
   if (!file) return null;
   let state;
   try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }
-  const evidence = state?.status === 'complete' ? state.exactEvidence : null;
+  if (state?.status !== 'complete') return null;
+  const evidence = state.exactEvidence;
   if (!evidence || evidence.sessionId !== target.sessionId) return null;
   if (evidence.cwd && path.resolve(evidence.cwd) !== path.resolve(target.cwd)) return null;
-  return evidence;
+  return state;
+}
+
+function completedRepairEvidence(target, env = process.env) {
+  return completedRepairState(target, env)?.exactEvidence || null;
+}
+
+function completedRepairSamples(target, env = process.env) {
+  const state = completedRepairState(target, env);
+  if (!Array.isArray(state?.contextSamples)) return null;
+  return state.contextSamples
+    .filter(entry => entry?.sessionId === target.sessionId)
+    .filter(entry => !entry.cwd || path.resolve(entry.cwd) === path.resolve(target.cwd));
 }
 
 function completedRepairEvidenceForAgent(agent, env = process.env) {
@@ -1412,7 +1525,7 @@ function completedRepairEvidenceForAgent(agent, env = process.env) {
   return target ? completedRepairEvidence(target, env) : null;
 }
 
-function claimRepairState(stateFile, value, env) {
+function claimRepairState(stateFile, value, env, opts = {}) {
   const write = () => fs.writeFileSync(stateFile, JSON.stringify(value), { flag: 'wx', mode: 0o600 });
   try {
     write();
@@ -1424,7 +1537,12 @@ function claimRepairState(stateFile, value, env) {
   let prior = null;
   try { prior = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* fail closed below */ }
   const now = Date.now();
-  if (!retryableRepairState(prior, now, env)) return { ok: false, reason: 'already-requested' };
+  const missingSamples = opts.refreshSamples
+    && prior?.status === 'complete'
+    && !Array.isArray(prior.contextSamples);
+  if (!missingSamples && !retryableRepairState(prior, now, env)) {
+    return { ok: false, reason: 'already-requested' };
+  }
 
   // Serialize expiry/retry. Without this small reclaim file, two Sidebar event
   // processes can both unlink an expired claim and one can then unlink the
@@ -1445,7 +1563,12 @@ function claimRepairState(stateFile, value, env) {
   }
   try {
     try { prior = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { prior = null; }
-    if (!retryableRepairState(prior, Date.now(), env)) return { ok: false, reason: 'already-requested' };
+    const stillMissingSamples = opts.refreshSamples
+      && prior?.status === 'complete'
+      && !Array.isArray(prior.contextSamples);
+    if (!stillMissingSamples && !retryableRepairState(prior, Date.now(), env)) {
+      return { ok: false, reason: 'already-requested' };
+    }
     try { fs.unlinkSync(stateFile); } catch { return { ok: false, reason: 'claim-failed' }; }
     try { write(); return { ok: true }; }
     catch { return { ok: false, reason: 'claim-failed' }; }
@@ -1476,7 +1599,7 @@ function requestImport(opts = {}) {
     paneId: opts.paneId || null,
     provider: target.provider,
     sessionId: target.sessionId,
-  }, env);
+  }, env, { refreshSamples: Boolean(opts.refreshSamples) });
   if (!claimed.ok) return claimed;
 
   const worker = path.resolve(__dirname, '..', 'repair-session-link.js');
@@ -1882,7 +2005,8 @@ function hasFailureCoverage(turn) {
 }
 
 function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
-  const latest = turns.at(-1) || {};
+  const sortedTurns = orderedTurns(turns);
+  const latest = sortedTurns.at(-1) || {};
   // INVARIANT(ADR 0005): this row must split main-agent figures from
   // whole-session ones exactly as `summarizeTurnGroup` does, or the two surfaces
   // report different numbers for one pane. This row's `turns` arrive filtered
@@ -1900,9 +2024,9 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   // Fixing only the model label (the first pass here) left ctx% reading raw
   // turns, so a `general-purpose` turn carrying isSubagent:false still moved
   // the percentage the badge refused to move.
-  const anchor = mainDisplayTurns(turns);
+  const anchor = mainDisplayTurns(sortedTurns);
   const mainLatest = anchor.at(-1) || latest;
-  const first = turns[0] || {};
+  const first = sortedTurns[0] || {};
   const win = anchor.length ? sessionWindow(anchor) : 0;
   const ctxWindowSource = anchor.length ? sessionWindowSource(anchor, win) : null;
   const ctxWindowMarker = contextWindowMarker(ctxWindowSource);
@@ -1914,19 +2038,21 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   // usage. The badge reads `contextUsed(latest)` directly and shows `?` there,
   // so the two disagreed again — same class as the anchoring fix itself.
   const latestUsed = contextUsed(mainLatest);
-  const ctxPct = win && latestUsed ? latestUsed / win * 100 : null;
+  const ctxPct = win && latestUsed != null ? latestUsed / win * 100 : null;
   // Only meaningful when the latest turn has its own value: if ctxPct is null
   // there is no "current" to subtract a previous from.
-  const previousPct = ctxPct != null && pcts.length > 1 ? pcts.at(-2) : null;
+  const previousPct = ctxPct != null
+    ? pcts.slice(0, Math.max(0, anchor.length - 1)).reverse().find(Number.isFinite)
+    : null;
   const ctxDelta = Number.isFinite(ctxPct) && Number.isFinite(previousPct)
     ? ctxPct - previousPct
     : null;
-  const cost = turns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
+  const cost = sortedTurns.reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
   const fiveMinAgo = nowMs - 5 * 60000;
-  const recentCost = turns
+  const recentCost = sortedTurns
     .filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo)
     .reduce((sum, turn) => sum + Number(turn.cost?.cost || 0), 0);
-  const recentTurns = turns.filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo);
+  const recentTurns = sortedTurns.filter(turn => Number(turn.receivedAt || 0) >= fiveMinAgo);
   const failures = anchor.slice(-6).filter(turnFailed).length;
   const failureCoverage = anchor.slice(-6).filter(hasFailureCoverage).length;
   const hashChanged = promptChanged(anchor);
@@ -2140,6 +2266,10 @@ function missionControlSnapshot(opts = {}) {
   };
 }
 
+// `pane layout.area.x` is the outer Sidebar edge, while custom agent-row
+// tokens begin after Herdr's native icon/indent chrome.
+const HERDR_SIDEBAR_CHROME_COLS = 4;
+
 function contextSidebarColumns(opts = {}) {
   const env = opts.env || process.env;
   const context = opts.context || readHerdrContext(env) || {};
@@ -2166,7 +2296,12 @@ function contextSidebarColumns(opts = {}) {
   if (result.status !== 0 || result.error) return 18;
   const data = parseJsonOutput(result.stdout);
   const inferred = data?.result?.layout?.area?.x;
-  return clampNumber(inferred, 8, 96) || 18;
+  // Herdr's layout x is the outer Sidebar width. Agent rows reserve four
+  // cells for the native icon, indentation, and right-side breathing room;
+  // custom tokens are rendered inside that content area. Passing the outer
+  // width through makes a fixed trend fill the row and lets Herdr truncate
+  // its right-aligned scalar (the percentage becomes the invisible part).
+  return clampNumber(Number(inferred) - HERDR_SIDEBAR_CHROME_COLS, 8, 96) || 18;
 }
 
 function readHerdrContext(env = process.env) {

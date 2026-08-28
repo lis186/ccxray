@@ -228,6 +228,7 @@ async function parseSessionFile(filePath, projectSlug) {
       sessionInferred: false,
       provider: 'anthropic',
       cwd: obj.cwd || cwd || slugToProject(projectSlug),
+      contextUsageKnown: helpers.hasContextUsage(usage),
       usage: {
         input_tokens: usage.input_tokens || 0,
         output_tokens: usage.output_tokens || 0,
@@ -352,6 +353,7 @@ async function parseCodexSessionFile(filePath) {
       ...(pendingCompacted ? { compacted: true } : {}),
       provider: 'openai',
       cwd,
+      contextUsageKnown: true,
       usage,
     });
     pendingCalls = {};
@@ -566,7 +568,35 @@ async function scanAndImportTranscript(target = {}) {
       exactEvidence = entry;
     }
   }
-  return { imported, skipped, exactEvidence };
+
+  // A targeted repair has already paid the cost of reading the complete index
+  // and transcript. Preserve a small, display-oriented history alongside the
+  // newest exact evidence so a bounded Sidebar refresh can recover the context
+  // trend without rescanning the global index. Keep the payload deliberately
+  // free of request/response bodies: this state is a cache for the Sidebar,
+  // not a second transcript store.
+  const targetEntries = metas.concat(appendedEntries)
+    .filter(entry => entry?.sessionId === target.sessionId)
+    .filter(entry => !entry.cwd || path.resolve(entry.cwd) === targetCwd)
+    .sort((left, right) => (
+      Number(left.receivedAt || 0) - Number(right.receivedAt || 0)
+      || String(left.id || '').localeCompare(String(right.id || ''))
+    ));
+  const contextSamples = targetEntries.slice(-64).map(entry => {
+    const sample = {};
+    for (const key of [
+      'id', 'sessionId', 'responseId', 'receivedAt', 'cwd', 'agentId',
+      'agentKey', 'agentLabel', 'isSubagent', 'parentSessionId', 'model',
+      'maxContext', 'beta1m', 'ctxBeta', 'contextUsageKnown', 'ctxUsed',
+      'usage', 'cost', 'imported', 'importSource', 'isCompacted', 'compacted',
+      'turnToolFail', 'toolFail', 'title', 'status', 'provider', 'agent',
+      'convId', 'responseMetadata',
+    ]) {
+      if (entry[key] !== undefined) sample[key] = entry[key];
+    }
+    return sample;
+  });
+  return { imported, skipped, exactEvidence, contextSamples };
 }
 
 module.exports = {

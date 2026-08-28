@@ -114,7 +114,7 @@ width 26
 │● opus                    │
 │>live p3V                 │
 │▁▂▃▅▆ 37%?               │
-│$14.96 · c92% · 29m      │
+│$14.96 · hit 92% · 29m   │
 └──────────────────────────┘
 
 width 36
@@ -122,7 +122,7 @@ width 36
 │● opus                              │
 │>live p3V                           │
 │▁▂▃▅▆▇ 37%                         │
-│$14.96 · c92% · 29m                │
+│$14.96 · hit 92% · 29m             │
 └────────────────────────────────────┘
 ```
 
@@ -135,7 +135,7 @@ healthy.
 Field-fit policy for the facts row:
 
 ```text
-W >= 24   $14.96 · c92% · 29m
+W >= 24   $14.96 · hit 92% · 29m
 W >= 12   $15 · 29m
 W <= 11   $15
 ```
@@ -264,7 +264,7 @@ The final row is either healthy facts or exactly one alert. It is not a second
 status row.
 
 ```text
-healthy facts       $14.96 · c92% · 29m
+healthy facts       $14.96 · hit 92% · 29m
 rounded facts       $15 · 29m
 lower-bound facts   $15+
 no facts/no alert   (row omitted)

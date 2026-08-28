@@ -68,6 +68,10 @@ function main(env = process.env) {
     imported: Number(report.imported || 0),
     duplicatesSkipped: Number(report.duplicatesSkipped || 0),
     exactEvidence: report.exactEvidence,
+    // Targeted import already walked the complete session history. Keep its
+    // bounded display samples with the linkage proof so the next Sidebar
+    // refresh does not depend on the global index tail still containing them.
+    contextSamples: Array.isArray(report.contextSamples) ? report.contextSamples : null,
   } : {
     status: 'failed',
     finishedAt,

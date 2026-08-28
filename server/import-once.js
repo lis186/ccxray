@@ -322,6 +322,7 @@ async function importTargeted(opts = {}) {
       imported: result.imported,
       duplicatesSkipped: result.skipped,
       exactEvidence: result.exactEvidence || null,
+      contextSamples: Array.isArray(result.contextSamples) ? result.contextSamples : [],
     };
   } catch (error) {
     return {

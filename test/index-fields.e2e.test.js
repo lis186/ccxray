@@ -40,7 +40,13 @@ const LEGACY_INDEX_FIELDS = [
   'edited','editSummary','imported','importSource','responseId','turnToolCalls','turnToolFail',
   'turnToolCallIds','turnToolResults','beta1m',
 ];
-const NEW_504_FIELDS = ['agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted'];
+// Append-only fields added after the frozen legacy shape. The original group
+// came from #504; later fields stay here so the projection guard keeps treating
+// them as additive rather than reporting a legacy regression.
+const NEW_504_FIELDS = [
+  'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted',
+  'contextUsageKnown',
+];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
 const IDENTITY_VALUES = {
   agentId: 'machine-7', team: 'platform',
@@ -687,9 +693,11 @@ describe('importer does not stamp current deployment metadata onto imported turn
       const imported = lines[0];
       assert.equal(imported.obj.imported, true, 'line came from the importer');
       assertProjection(imported, 'importer', 'importer');
-      for (const key of NEW_504_FIELDS) {
+      for (const key of NEW_504_FIELDS.filter(key => key !== 'contextUsageKnown')) {
         assert.ok(!(key in imported.obj), `importer: imported turn must not gain ${key}`);
       }
+      assert.equal(imported.obj.contextUsageKnown, true,
+        'importer: positive context usage must carry provenance');
       console.log(`[index-fields keys] importer: ${Object.keys(imported.obj).join(',')}`);
     } finally {
       await killAndWait(proxy.child);

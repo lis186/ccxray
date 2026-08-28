@@ -171,7 +171,10 @@ function applyRow3Tokens(tokens, detail, opts = {}) {
   } else if (located) {
     const cost = detail.costText || '$?';
     const age = detail.ageText || '?';
-    const cache = detail.cacheText ? String(detail.cacheText).replace(/^cache\s+/i, 'c') : '';
+    // Keep the compact cache metric distinguishable from the context percentage
+    // shown on the row above. `c53%` is ambiguous because both labels begin with
+    // c; `hit 53%` remains short enough for the narrowest facts row.
+    const cache = detail.cacheText ? String(detail.cacheText).replace(/^cache\s+/i, 'hit ') : '';
     const full = `${cost} · ${age}`;
     const withCache = `${cost} · ${cache} · ${age}`;
     const variants = cols >= 24 && cache ? [withCache, full, cost] : [full, cost];
@@ -189,11 +192,13 @@ function proxyAvailable(parsed) {
   return (parsed.notes || []).some(n => /held by a standalone.*ccxray/i.test(n));
 }
 
-function startWorkingRefreshLoop(event, env) {
+function startWorkingRefreshLoop(event, env, opts = {}) {
   if (env.CCXRAY_BADGE_LOOP_CHILD === '1') return null;
-  if (!['working', 'running', 'active'].includes(String(event.status || '').toLowerCase())) return null;
+  const status = opts.status || event.status;
+  if (!['working', 'running', 'active'].includes(String(status || '').toLowerCase())) return null;
   try {
-    const child = spawn(process.execPath, [require('path').join(__dirname, 'badge-refresh-loop.js')], {
+    const spawnImpl = opts.spawnImpl || spawn;
+    const child = spawnImpl(process.execPath, [require('path').join(__dirname, 'badge-refresh-loop.js')], {
       env: { ...env },
       detached: true,
       stdio: 'ignore',
@@ -229,7 +234,7 @@ function badgeTokens(status, usage, opts = {}) {
     // transcript had moved on. `$ctx` is the channel a minimal layout does render,
     // so the state has to survive there too — and marking the number is ADR 0013's
     // own convention for a percentage you cannot vouch for.
-    const ctxMarker = detail.ctxWindowMarker || '';
+    const ctxMarker = `${detail.ctxDirection || ''}${detail.ctxWindowMarker || ''}`;
     tokens.ctx = detail.stale
       ? `${detail.ctxText}${ctxMarker} stale`
       : `${detail.ctxText}${ctxMarker}`;
@@ -282,6 +287,7 @@ function badgeTokens(status, usage, opts = {}) {
     repairCandidate: proxyAvailable(status.parsed) && !opts.identityConflict
       ? (detail?.repairCandidate || null)
       : null,
+    repairNeedsSamples: Boolean(detail?.repairNeedsSamples),
     clearTokens: [
       ...applyContextColorTokens(tokens, tokens.ctx_band),
       ...applyRow3Tokens(tokens, detail, opts),
@@ -409,7 +415,12 @@ function main() {
   // The candidate is already exact to provider + native session + cwd + one
   // located transcript. Detached: the badge write below never waits for it.
   const importRequest = badge.repairCandidate
-    ? requestImport({ env: process.env, target: badge.repairCandidate, paneId: targetPaneId })
+    ? requestImport({
+      env: process.env,
+      target: badge.repairCandidate,
+      paneId: targetPaneId,
+      refreshSamples: badge.repairNeedsSamples,
+    })
     : null;
   const ttlMs = Number(process.env.CCXRAY_BADGE_TTL_MS || 600000);
   // Row 1 is state_icon + $who. Linkage and activity are explicit compact
@@ -473,7 +484,10 @@ function main() {
   // Herdr does not emit another status event for every transcript turn. Keep a
   // bounded loop alive only while this event says the agent is working; the
   // loop rechecks Herdr state and exits on idle, pane removal, or max age.
-  const refreshLoop = startWorkingRefreshLoop(event, env);
+  const refreshLoop = startWorkingRefreshLoop({
+    ...event,
+    paneId: targetPaneId || event.paneId || null,
+  }, env, { status: agentStatus });
 
   console.log('ccxray badges refreshed');
   console.log(`Workspace: ${runtime.workspaceId || 'n/a'} (${workspace.ok ? 'ok' : workspace.reason})`);

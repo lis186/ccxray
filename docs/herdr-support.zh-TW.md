@@ -107,6 +107,28 @@ OpenAI wire 的 cached input 會正規化成 cache-read，沒有 Claude ephemera
 
 Herdr plugin 有 `public/format.js` 時會使用 shared aggregate-cost confidence fold。若安裝環境缺少該 helper，成本數字會不加 marker，只保留 `—`（沒有已定價資料）或 `+`（已知 lower bound），不會套用 worst-of `~`；這是 degraded display，不代表數字已完整校準（[ADR 0017](decisions/0017-aggregate-cost-confidence.md)）。
 
+### Sidebar context trend 契約
+
+Sidebar 的 context trend 是固定寬度、由 refresh 重新計算的 viewport。若寬度來自
+`herdr pane layout`，plugin 會先扣除 Herdr Sidebar 原生四格 chrome，再計算
+custom token 寬度，確保 scalar 留在實際 row 內，不會被 Herdr 截斷。時間由左向右
+流動，因此最新 sample 永遠在最右側；不加入動畫。scalar percentage
+保留固定、靠右對齊的 slot，所以從 `9%` 變成 `100%` 時不會推動 chart endpoint。
+
+```
+older ------------------------------------------------------> newest
+[░][░][▂][▃][▆][░] [  ?]
+ ^ 缺少前段 history       ^ 最新未知       固定 scalar slot
+```
+
+`░`（U+2591 LIGHT SHADE）表示該 chart cell 沒有有效 sample，不是 0。它用
+來填補缺少的前段 history；如果有較舊的有效 history，但最新 turn 的 context
+usage unknown，則保留舊 history，在最右側放 `░`，scalar 顯示 `?`。完全沒有
+有效 context history 時只顯示 `?`。明確回報的 context-input usage 0% 是有效
+資料，會顯示最低的 block；缺少 usage 或只有 output usage 仍是 unknown。趨勢沿用
+active context band 顏色，stale 或 denominator 不確定時維持 neutral。持久化
+provenance 與 legacy policy 見 [ADR 0020](decisions/0020-herdr-fixed-context-trend.md)。Startup refresh 也會依 Herdr 原生 working 狀態啟動有界 refresh loop，讓 working pane 的 metadata 在 token TTL 到期前持續更新。
+
 ### Tools、MCP attribution、thinking 與 prompt
 
 | 能力 | Claude | Codex | Grok |
@@ -198,7 +220,7 @@ Import 與 live proxy record 可能代表同一個 turn。index／session merge 
 - Codex／Grok MCP name 可能包在 gateway tool 裡。baseline 處理已知 `exec`／`use_tool` shape；未知或版本改變的 gateway event 可能只保留外層名稱（[wire reference](wire-protocol-reference.md)）。
 - Codex／Grok tool count 可能是 **lower bound**：parser 採防禦式處理，未來 gateway event 可能未知，且 badge 只讀最多 4 MiB 的 index tail。tail-based cost／turn summary 是 sample，不是完整歷史總和。
 - Mission Control 可能在 local import 與 live proxy 證據尚未合併時顯示 duplicate import×proxy turn。
-- Sidebar badge 的 ctx% 缺少 dashboard denominator provenance：它報告 badge selected-session value，不是 dashboard denominator 的引用（[ADR 0013](decisions/0013-beta1m-persist-session-window-derive.md)）。
+- Sidebar badge 的 ctx% 缺少 dashboard denominator provenance：它報告 badge selected-session value，不是 dashboard denominator 的引用（[ADR 0013](decisions/0013-beta1m-persist-session-window-derive.md)）。context trend 本身是固定寬度且最新值靠右；`░` 表示 unknown sample，不是 0（[ADR 0020](decisions/0020-herdr-fixed-context-trend.md)）。
 - 缺少 shared `public/format.js` 時，degraded aggregate cost 會刻意不加 marker，只保留 `—`／`+`；這不是已校準的完整總額，也不會使用被否決的 worst-of `~` marker（[ADR 0017](decisions/0017-aggregate-cost-confidence.md)）。
 - Codex 仍標示 Beta；Grok 的 title-generation 與 non-main session attribution 有 conditional edge cases，且 Grok `Reset time` 取決於 upstream 是否提供欄位。
 
@@ -217,3 +239,4 @@ Import 與 live proxy record 可能代表同一個 turn。index／session merge 
 - [`docs/decisions/0005-agent-key-unreliable-shared-contract.md`](decisions/0005-agent-key-unreliable-shared-contract.md)：identity fallback 與 badge classification 限制。
 - [`docs/decisions/0013-beta1m-persist-session-window-derive.md`](decisions/0013-beta1m-persist-session-window-derive.md)：Context window denominator provenance。
 - [`docs/decisions/0017-aggregate-cost-confidence.md`](decisions/0017-aggregate-cost-confidence.md)：aggregate cost confidence 與 degraded plugin wording。
+- [`docs/decisions/0020-herdr-fixed-context-trend.md`](decisions/0020-herdr-fixed-context-trend.md)：固定寬度 context trend、usage provenance 與 legacy policy。

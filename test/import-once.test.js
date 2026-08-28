@@ -117,6 +117,9 @@ describe('ccxray import --once', () => {
     });
     assert.equal(result.ok, true);
     assert.equal(result.imported, 2);
+    assert.equal(result.contextSamples.length, 2,
+      'targeted import must return bounded context samples for Sidebar repair');
+    assert.ok(result.contextSamples.every(sample => sample.sessionId === targetSession));
 
     const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
       .trim().split('\n').map(line => JSON.parse(line));

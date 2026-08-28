@@ -687,6 +687,9 @@ describe('Herdr workspace scope', () => {
     }
     assert.equal(state?.status, 'complete', JSON.stringify(state));
     assert.equal(state.exactEvidence?.sessionId, sessionId);
+    assert.ok(Array.isArray(state.contextSamples));
+    assert.equal(state.contextSamples.length, 1,
+      'targeted repair state must retain its bounded session history');
 
     const after = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
       ...opts, env: requestEnv,
@@ -704,6 +707,115 @@ describe('Herdr workspace scope', () => {
       { parsed: { machine: { proxy: true } } },
       { ...requestEnv, HERDR_WORKSPACE_ID: 'w1' }, agents, null, { sidebarCols: 24 },
     ), 'xray 1/1', 'workspace aggregate must consume the same cached live evidence as the pane');
+  });
+
+  // FAIL-ON-OLD: an exact native-session row in the 4 MiB tail used to suppress
+  // repair even when that row was a contextless subagent. The pane was matched,
+  // but its main context history had already fallen out of the bounded read.
+  it('recovers main context history when the matching tail row has no context', () => {
+    const { requestImport, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const home = makeHome();
+    const projects = tempDir('ccxray-context-history-projects-');
+    const cwd = '/work/context-history';
+    const sessionId = 'context-history-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    const timestamps = [
+      '2026-08-26T04:00:00.000Z',
+      '2026-08-26T04:00:01.000Z',
+      '2026-08-26T04:00:02.000Z',
+    ];
+    fs.writeFileSync(path.join(project, `${sessionId}.jsonl`), timestamps.map((timestamp, i) => JSON.stringify({
+      type: 'assistant', cwd, timestamp,
+      message: {
+        id: `context-history-msg-${i}`,
+        model: 'claude-opus-5',
+        usage: { input_tokens: (i + 1) * 200000, output_tokens: 1 },
+      },
+    })).join('\n') + '\n');
+
+    const baseAt = Date.parse(timestamps[0]);
+    const mainRows = timestamps.map((timestamp, i) => ({
+      id: timestamp.replace(/[:.]/g, '-').slice(0, -2),
+      sessionId,
+      provider: 'anthropic',
+      agent: 'claude',
+      model: 'claude-opus-5',
+      agentId: 'herdr:w1:p20',
+      agentKey: 'orchestrator',
+      isSubagent: false,
+      cwd,
+      receivedAt: baseAt + i * 1000,
+      maxContext: 200000,
+      contextUsageKnown: true,
+      usage: { input_tokens: (i + 1) * 200000, output_tokens: 1 },
+      cost: { cost: 0.1 },
+      imported: false,
+    }));
+    const subagentTail = {
+      id: 'context-history-subagent-tail', sessionId, provider: 'anthropic', agent: 'claude',
+      agentId: 'herdr:w1:p20', agentKey: 'agent', isSubagent: true, cwd,
+      receivedAt: baseAt + 3000, contextUsageKnown: false, usage: null,
+      imported: false,
+    };
+    fs.writeFileSync(
+      path.join(home, 'logs', 'index.ndjson'),
+      `${mainRows.map(row => JSON.stringify(row)).join('\n')}\n`
+        + `${JSON.stringify({ id: 'context-history-filler', pad: 'x'.repeat(4 * 1024 * 1024 + 1024) })}\n`
+        + `${JSON.stringify(subagentTail)}\n`,
+    );
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), `${JSON.stringify({
+      sid: sessionId, count: 4, totalCost: 0.3, fallbackCost: 0, fallbackCount: 0,
+      unknownCount: 0, maxContext: 1000000, beta1m: true,
+      firstReceivedAt: baseAt, lastReceivedAt: baseAt + 3000,
+    })}\n`);
+
+    const coreEnv = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      CCXRAY_IMPORT_DISABLE: '0',
+    });
+    const opts = {
+      env: coreEnv, paneId: 'w1:p20', sessionId, cwd, agent: 'claude', allowRepair: true,
+      sidebarCols: 24,
+    };
+    const before = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, opts);
+    assert.equal(before.matched, true, 'the tail row still identifies the native session');
+    assert.equal(before.ctxPct, null, 'the tail row itself has no context usage');
+    assert.equal(before.repairCandidate?.sessionId, sessionId,
+      'a contextless tail must request targeted history recovery');
+
+    const requestEnv = {
+      ...coreEnv,
+      CCXRAY_BIN_JSON: JSON.stringify([process.execPath, path.join(ROOT, 'server', 'index.js')]),
+      HERDR_BIN_PATH: makeHerdr([]),
+    };
+    assert.equal(requestImport({
+      env: requestEnv, target: before.repairCandidate, paneId: 'w1:p20',
+    }).ok, true);
+    const stateDir = path.join(home, 'herdr-plugin', 'link-repair-v1');
+    let state = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && state?.status !== 'complete') {
+      const name = fs.existsSync(stateDir)
+        ? fs.readdirSync(stateDir).find(item => item.endsWith('.json'))
+        : null;
+      if (name) state = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
+      if (state?.status !== 'complete') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    assert.equal(state?.status, 'complete', JSON.stringify(state));
+    assert.equal(state.contextSamples.length, 4);
+
+    const after = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      ...opts, env: requestEnv,
+    });
+    assert.equal(after.matched, true);
+    assert.equal(Math.round(after.ctxPct), 60,
+      'the newest main context sample must survive a contextless tail row');
+    assert.equal(after.ctxDirection, '↑', 'a recovered rising history must expose direction');
+    assert.match(after.ctxBar, /↑/);
+    assert.equal(after.repairCandidate, null, 'a complete sample ring needs no repeat repair');
   });
 
   // Full Sidebar seam: Herdr native identity -> exact transcript candidate ->
@@ -850,6 +962,42 @@ describe('Herdr workspace scope', () => {
     });
     assert.equal(noHub.repairCandidate, null);
     assert.equal(noHub.tokens.route, '!hub');
+  });
+});
+
+describe('Herdr Sidebar geometry and lifecycle', () => {
+  it('reserves the native Sidebar chrome when layout is the width source', () => {
+    const { contextSidebarColumns } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = tempDir('ccxray-herdr-layout-width-');
+    const bin = path.join(dir, 'herdr');
+    writeShMock(bin, JSON.stringify({
+      id: 'test',
+      result: {
+        type: 'pane_layout',
+        layout: { area: { x: 36, width: 339, height: 94, y: 1 } },
+      },
+    }));
+    const cols = contextSidebarColumns({
+      env: { HERDR_BIN_PATH: bin, HERDR_PANE_ID: 'w1:p1' },
+      paneId: 'w1:p1',
+    });
+    assert.equal(cols, 32, 'layout x includes four cells of Herdr Sidebar chrome');
+  });
+
+  it('starts the working refresh loop from native status during startup fan-out', () => {
+    const { startWorkingRefreshLoop } = require('../plugins/herdr/bin/refresh-badges');
+    let spawned = 0;
+    const spawnImpl = () => {
+      spawned += 1;
+      return { on() {}, unref() {} };
+    };
+    const result = startWorkingRefreshLoop(
+      { paneId: 'w1:p1', status: null },
+      { CCXRAY_BADGE_LOOP_CHILD: '0' },
+      { status: 'working', spawnImpl },
+    );
+    assert.equal(result?.ok, true);
+    assert.equal(spawned, 1);
   });
 });
 
@@ -1652,7 +1800,7 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
 
   it('shows the facts when nothing is wrong and the alert when something is', () => {
     const healthy = render([turn({ id: 'h1', usage: { input_tokens: 50000 } })]);
-    assert.equal(healthy.tokens.facts, '$42.08 · c0% · 60m');
+    assert.equal(healthy.tokens.facts, '$42.08 · hit 0% · 60m');
     assert.equal(healthy.tokens.alert, undefined);
     assert.ok(healthy.clearTokens.includes('alert'));
     assert.equal(healthy.clearTokens.includes('facts'), false);
@@ -1670,7 +1818,7 @@ describe('Herdr sidebar row 3 fills exactly one token', () => {
     // one fact — the duplication this layout exists to remove.
     const full = render([turn({ id: 'c1', usage: { input_tokens: 190000 } })]);
     assert.equal(full.tokens.alert, undefined);
-    assert.equal(full.tokens.facts, '$42.08 · c0% · 60m');
+    assert.equal(full.tokens.facts, '$42.08 · hit 0% · 60m');
   });
 
   it('fills neither token for a pane whose session it cannot locate', () => {
@@ -1722,17 +1870,94 @@ describe('Herdr sidebar observability contract', () => {
     workspaceXrayToken,
   } = require('../plugins/herdr/bin/refresh-badges');
 
-  it('keeps context history and percentage inside every supported width without ellipsis', () => {
+  it('keeps a fixed trend viewport and right-aligned scalar at every supported width', () => {
     const turns = Array.from({ length: 12 }, (_, index) => ({
       usage: { input_tokens: (index + 1) * 700 },
       maxContext: 10000,
     }));
     for (const cols of [8, 10, 14, 18, 26, 36]) {
       const value = formatContextBar(turns, 10000, '80%', { sidebarCols: cols });
-      assert.ok(displayWidth(value) <= cols, `${cols}: ${value}`);
+      assert.equal(displayWidth(value), cols, `${cols}: ${value}`);
       assert.doesNotMatch(value, /…|~/, `${cols}: partial display marker is forbidden`);
-      assert.match(value, /80%/, `${cols}: context percentage must remain visible`);
+      assert.ok(value.endsWith('80%'), `${cols}: context percentage must remain visible`);
     }
+  });
+
+  it('keeps a fixed right-anchored trend viewport when the scalar width changes', () => {
+    const turns = [1000, 2000].map((input_tokens, index) => ({
+      id: `fixed-${index}`,
+      receivedAt: index + 1,
+      contextUsageKnown: true,
+      usage: { input_tokens },
+      maxContext: 10000,
+    }));
+    const nine = formatContextBar(turns, 10000, '9%', { sidebarCols: 18 });
+    const hundred = formatContextBar(turns, 10000, '100%', { sidebarCols: 18 });
+
+    assert.equal(displayWidth(nine), 18);
+    assert.equal(displayWidth(hundred), 18);
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    // The chart is a fixed cell viewport: missing prefix history is explicit light
+    // shade, and the newest sample is the shared rightmost chart cell.
+    assert.equal(nine.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▂▂');
+    assert.equal(hundred.slice(0, chartWidth), nine.slice(0, chartWidth));
+    assert.equal(nine[chartWidth - 1], '▂');
+    assert.equal(hundred[chartWidth - 1], '▂');
+  });
+
+  it('treats an explicit zero context report as valid history', () => {
+    const value = formatContextBar([{
+      contextUsageKnown: true,
+      usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      maxContext: 10000,
+    }], 10000, '0%', { sidebarCols: 18 });
+    assert.equal(displayWidth(value), 18);
+    assert.match(value, /▁ +0%$/);
+  });
+
+  it('marks an unknown latest turn at the right edge while preserving valid history', () => {
+    const turns = [
+      {
+        id: 'known', receivedAt: 1, contextUsageKnown: true,
+        usage: { input_tokens: 3000 }, maxContext: 10000,
+      },
+      {
+        id: 'unknown', receivedAt: 2, contextUsageKnown: false,
+        usage: { input_tokens: 0, output_tokens: 10 }, maxContext: 10000,
+      },
+    ];
+    const value = formatContextBar(turns, 10000, '?', { sidebarCols: 18 });
+    assert.equal(displayWidth(value), 18);
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    assert.equal(value.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▃░');
+    assert.equal(value[chartWidth - 1], '░', 'the latest unknown sample owns the rightmost cell');
+    assert.equal(value.at(-1), '?');
+  });
+
+  it('orders the trend by received time even when input turns arrive out of order', () => {
+    const value = formatContextBar([
+      {
+        id: 'latest-unknown', receivedAt: 20, contextUsageKnown: false,
+        usage: { input_tokens: 0, output_tokens: 1 }, maxContext: 10000,
+      },
+      {
+        id: 'older-known', receivedAt: 10, contextUsageKnown: true,
+        usage: { input_tokens: 3000 }, maxContext: 10000,
+      },
+    ], 10000, '?', { sidebarCols: 18 });
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    assert.equal(value.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▃░');
+    assert.equal(value[chartWidth - 1], '░', 'newest turn must own the rightmost cell');
+  });
+
+  it('does not treat a negative context numerator as valid history', () => {
+    const value = formatContextBar([{
+      contextUsageKnown: true,
+      ctxUsed: -1,
+      usage: { input_tokens: -1 },
+      maxContext: 10000,
+    }], 10000, '?', { sidebarCols: 18 });
+    assert.equal(value, '?');
   });
 
   it('suppresses small unmarked reversals but preserves an explicit compaction reset', () => {
@@ -4196,9 +4421,9 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /model=claude-sonnet-4-6/);
     assert.match(result.stdout, /turns=1/);
     assert.match(result.stdout, /summary=sonnet-4-6, 5m, \$0\.12/);
-    assert.match(result.stdout, /ctx_bar=▂ 20%/);
+    assert.match(result.stdout, /ctx_bar=░{10}▂ +20%/);
     assert.match(result.stdout, /ctx_band=green/);
-    assert.match(result.stdout, /ctx_bar_green=▂ 20%/);
+    assert.match(result.stdout, /ctx_bar_green=░{10}▂ +20%/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_yellow ctx_bar_red/);
   });
 
@@ -4422,9 +4647,9 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stdout, /summary=opus-5, 15m, \$0\.51/);
-    assert.match(result.stdout, /ctx_bar=▂▃▅▆ 80%/);
+    assert.match(result.stdout, /ctx_bar=░{7}▂▃▅▆ +80%↑/);
     assert.match(result.stdout, /ctx_band=yellow/);
-    assert.match(result.stdout, /ctx_bar_yellow=▂▃▅▆ 80%/);
+    assert.match(result.stdout, /ctx_bar_yellow=░{7}▂▃▅▆ +80%↑/);
     assert.doesNotMatch(result.stdout, /ctx_bar_red=/);
   });
 
@@ -4451,12 +4676,12 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=90%/);
     assert.match(result.stdout, /ctx_band=red/);
-    assert.match(result.stdout, /ctx_bar_red=█ 90%/);
+    assert.match(result.stdout, /ctx_bar_red=░+█ +90%/);
     assert.doesNotMatch(result.stdout, /ctx_bar_red=.*…/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_green ctx_bar_yellow/);
   });
 
-  it('refresh-badges sizes ctx_bar by available sidebar columns', () => {
+  it('refresh-badges keeps ctx_bar viewport fixed as sidebar width changes', () => {
     const receivedAt = Date.now() - 20 * 60000;
     const usagePoints = [100, 200, 300, 400, 500, 600, 700, 800, 700, 600, 700, 800];
     const entries = usagePoints.map((tokens, i) => ({
@@ -4479,7 +4704,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '10',
     });
     assert.equal(narrow.status, 1);
-    assert.match(narrow.stdout, /ctx_bar=▆▆▆▅▆▆ 80%/);
+    assert.match(narrow.stdout, /ctx_bar=▅▆▆ +80%↑/);
 
     const wide = runScript('refresh-badges.js', [], {
       CCXRAY_HOME: home,
@@ -4488,7 +4713,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '36',
     });
     assert.equal(wide.status, 1);
-    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80%/);
+    assert.match(wide.stdout, /ctx_bar=░{17}▂▂▃▃▅▅▆▆▆▅▆▆ +80%↑/);
     assert.doesNotMatch(wide.stdout, /ctx_bar=.*…/);
   });
 

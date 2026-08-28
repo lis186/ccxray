@@ -372,6 +372,28 @@ function totalContextTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
+// A provider can return a usage object without any context-input accounting
+// (or omit usage entirely). Presence of a numeric context-bearing field is the
+// only reliable distinction between an explicit zero and an unknown value.
+// Keep this predicate small and provider-neutral: parsers normalize the
+// provider-specific names before consumers use the marker.
+function hasContextUsage(usage) {
+  if (!usage || typeof usage !== 'object') return false;
+  const hasFinite = key => Object.prototype.hasOwnProperty.call(usage, key)
+    && Number.isFinite(Number(usage[key]));
+  if (['input_tokens', 'prompt_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']
+    .some(hasFinite)) return true;
+  const cacheCreation = usage.cache_creation;
+  if (cacheCreation && typeof cacheCreation === 'object'
+      && ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens'].some(key => (
+        Object.prototype.hasOwnProperty.call(cacheCreation, key)
+        && Number.isFinite(Number(cacheCreation[key]))
+      ))) return true;
+  const cached = usage.input_tokens_details?.cached_tokens
+    ?? usage.prompt_tokens_details?.cached_tokens;
+  return Number.isFinite(Number(cached));
+}
+
 // #142: one named threshold source for the server-side context bands.
 const CTX_RED_PCT = 80, CTX_YELLOW_PCT = 40;
 function ctxBarColor(pct) {
@@ -1201,6 +1223,7 @@ module.exports = {
   computeTurnStep,
   renderAttributionPrefix,
   totalContextTokens,
+  hasContextUsage,
   printContextBar,
   ctxBarColor,
   CTX_RED_PCT,

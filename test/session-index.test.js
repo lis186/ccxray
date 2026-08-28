@@ -53,6 +53,24 @@ describe('session-index', () => {
     assert.equal(weather.score, 0);
   });
 
+  it('keeps an explicit zero context report as the latest known value', () => {
+    const si = require('../server/session-index');
+    const base = {
+      sessionId: 'known-zero', id: 'zero-turn', agentKey: 'orchestrator',
+      isSubagent: false, maxContext: 200000, receivedAt: 1,
+      usage: { input_tokens: 0, output_tokens: 0 }, contextUsageKnown: true,
+    };
+    si.updateFromEntry(base);
+    assert.equal(si.get('known-zero').latestCtxPct, 0);
+
+    si.updateFromEntry({
+      ...base, id: 'unknown-turn', receivedAt: 2,
+      usage: { input_tokens: 0, output_tokens: 5 }, contextUsageKnown: false,
+    });
+    assert.equal(si.get('known-zero').latestCtxPct, 0,
+      'a later missing report must not replace a known zero');
+  });
+
   it('#377 slice 2: partial store weather uses the session-index 1M fold', async () => {
     const si = require('../server/session-index');
     const store = require('../server/store');

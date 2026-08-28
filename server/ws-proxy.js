@@ -240,6 +240,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
   const cr = t.clientRequest ?? ctx.clientRequest;
   const events = t.responseEvents ?? ctx.responseEvents;
   const lastUsage = t.lastUsage ?? ctx.lastUsage;
+  const contextUsageKnown = t.contextUsageKnown ?? ctx.contextUsageKnown;
   const lastModel = t.lastModel ?? ctx.lastModel;
   const lastResponseStatus = t.lastResponseStatus ?? ctx.lastResponseStatus;
   const sessionId = t.sessionId || ctx.sessionId;
@@ -363,6 +364,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       provider: 'openai', transport: 'websocket',
       parsedBody: cr || {}, responseEvents: events,
       responseMetadata, lastUsage, lastModel, lastResponseStatus,
+      contextUsageKnown,
       proxyRes: { statusCode: result.status },
       sysHash, toolsHash, coreHash, agentKey, agentLabel,
       sessionId, sessionInferred,
@@ -452,6 +454,7 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
       byteCounts: { clientToUpstream: 0, upstreamToClient: 0 },
       responseEvents: [],
       lastUsage: null,
+      contextUsageKnown: false,
       lastModel: null,
       lastResponseStatus: null,
       clientRequest: null,
@@ -505,6 +508,7 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
         clientRequest: request,
         responseEvents: [],
         lastUsage: null,
+        contextUsageKnown: false,
         lastModel: null,
         lastResponseStatus: null,
         sessionId: ctx.sessionId,
@@ -623,11 +627,13 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
           if (parsed.type) {
             const r = parsed.response || parsed;
             const usage = r.usage ? (extractOpenAIUsage({ usage: r.usage }) || r.usage) : null;
+            const contextUsageKnown = helpers.hasContextUsage(r.usage);
             const model = r.model || null;
             const isTerminal = typeof r.status === 'string' && WS_TERMINAL_STATUSES.has(r.status);
 
             if (currentTurn) {
               if (usage) currentTurn.lastUsage = usage;
+              if (contextUsageKnown) currentTurn.contextUsageKnown = true;
               if (model) currentTurn.lastModel = model;
               if (isTerminal) currentTurn.lastResponseStatus = r.status;
               const rec = wsRecordValue(parsed);
@@ -635,6 +641,7 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
             }
 
             if (usage) ctx.lastUsage = usage;
+            if (contextUsageKnown) ctx.contextUsageKnown = true;
             if (model) ctx.lastModel = model;
             if (isTerminal) ctx.lastResponseStatus = r.status;
             if (!turnEmitted) {
