@@ -2861,6 +2861,44 @@ describe('Herdr sidebar import freshness', () => {
   // with "not a function", which is a missing symbol, not a behaviour difference.
   // See docs/verification-principles.md and the fail-on-old-for-an-unrelated-reason
   // trap it warns about.
+  // Parity, BOTH pairs, in one table. The shape matters: an earlier check tested
+  // "the parser" and silently covered only the Claude pair, because the same mental
+  // model chose what to change and what to verify. Iterating the pairs makes omitting
+  // one impossible rather than merely unlikely.
+  it('core and Herdr resolve both import-root variables identically', () => {
+    const herdrLib = require('../plugins/herdr/bin/lib/ccxray');
+    const importer = require('../server/importer');
+    const a = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-a-'));
+    const b = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-b-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-alias-'));
+    const alias = path.join(aliasParent, 'x');
+    fs.symlinkSync(a, alias);
+    const cases = [`${a},${b}`, `${a},${b},`, `${a},,${b}`, ` ${a} , ${b} `,
+      `${a},${alias}`, ',,,', `${a},/no/such/xyz`, '', a];
+    const pairs = [
+      ['CCXRAY_IMPORT_HOMES', () => importer.discoverHomes().map(x => x.dir),
+        v => herdrLib.claudeProjectRoots({ CCXRAY_IMPORT_HOMES: v })],
+      ['CCXRAY_IMPORT_CODEX_HOMES', () => importer.discoverCodexHomes().map(x => x.dir),
+        v => herdrLib.codexSessionRoots({ CCXRAY_IMPORT_CODEX_HOMES: v })],
+    ];
+    try {
+      for (const [envVar, core, plugin] of pairs) {
+        const saved = process.env[envVar];
+        try {
+          for (const value of cases) {
+            process.env[envVar] = value;
+            assert.deepStrictEqual(core(), plugin(value),
+              `${envVar} disagrees on ${JSON.stringify(value)}`);
+          }
+        } finally {
+          if (saved === undefined) delete process.env[envVar]; else process.env[envVar] = saved;
+        }
+      }
+    } finally {
+      [aliasParent, a, b].forEach(d => fs.rmSync(d, { recursive: true, force: true }));
+    }
+  });
+
   it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
     const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
     const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-t6a-a-'));

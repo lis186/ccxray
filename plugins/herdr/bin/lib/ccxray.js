@@ -2948,6 +2948,7 @@ module.exports = {
   capabilityPortfolio,
   capabilityReview,
   claudeProjectRoots,
+  codexSessionRoots,
   completedRepairEvidenceForAgent,
   codexAgentArgs,
   contextBand,
