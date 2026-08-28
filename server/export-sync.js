@@ -194,35 +194,37 @@ function readExportCursorFacts(home) {
     unreadable: false,
   };
 
-  let stat;
+  let fd = null;
+  let stat = null;
   try {
-    stat = fs.statSync(cursorPath);
+    fd = fs.openSync(cursorPath, 'r');
+    stat = fs.fstatSync(fd);
+    const cursor = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
+      return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
+    }
+
+    return {
+      ...base,
+      present: true,
+      mtimeMs: stat.mtimeMs,
+      lastId: typeof cursor.lastId === 'string' ? cursor.lastId : null,
+      partial: typeof cursor.partial === 'boolean' ? cursor.partial : null,
+      cutoffDt: typeof cursor.cutoffDt === 'string' ? cursor.cutoffDt : null,
+    };
   } catch (err) {
     if (err.code === 'ENOENT') return base;
-    return { ...base, present: true, unreadable: true };
-  }
-
-  let cursor;
-  try {
-    cursor = JSON.parse(fs.readFileSync(cursorPath, 'utf8'));
-  } catch {
     // This is a read-only status path. In particular, do not call readCursor(): its
     // recovery policy renames corrupt state, which could make a concurrent flush start
     // a first run after the status reader destroyed the cursor it was reporting on.
-    return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
+    return { ...base, present: true, mtimeMs: stat?.mtimeMs ?? null, unreadable: true };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
   }
-  if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
-    return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
-  }
-
-  return {
-    ...base,
-    present: true,
-    mtimeMs: stat.mtimeMs,
-    lastId: cursor.lastId ?? null,
-    partial: cursor.partial ?? null,
-    cutoffDt: cursor.cutoffDt ?? null,
-  };
 }
 
 function writeCursor(cursorPath, data) {

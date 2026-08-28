@@ -220,7 +220,7 @@ describe('hub-owned config status value producers', () => {
     }
   });
 
-  it('D4: iterates absent, present-valid, and present-corrupt cursor facts without renaming', () => {
+  it('D4: iterates absent, present-valid, present-corrupt, and wrong-typed cursor facts without renaming', () => {
     const cases = [
       {
         name: 'absent',
@@ -242,6 +242,38 @@ describe('hub-owned config status value producers', () => {
         body: '{not-json\n',
         expected: {
           present: true, mtimeMs: 'file', lastId: null, partial: null, cutoffDt: null, unreadable: true,
+        },
+      },
+      {
+        name: 'lastId-wrong-type',
+        body: JSON.stringify({ lastId: 7, partial: false, cutoffDt: '2026-08-29' }),
+        expected: {
+          present: true, mtimeMs: 'file', lastId: null, partial: false,
+          cutoffDt: '2026-08-29', unreadable: false,
+        },
+      },
+      {
+        name: 'partial-wrong-type',
+        body: JSON.stringify({ lastId: 'valid-id', partial: 'false', cutoffDt: '2026-08-29' }),
+        expected: {
+          present: true, mtimeMs: 'file', lastId: 'valid-id', partial: null,
+          cutoffDt: '2026-08-29', unreadable: false,
+        },
+      },
+      {
+        name: 'cutoffDt-wrong-type',
+        body: JSON.stringify({ lastId: 'valid-id', partial: false, cutoffDt: 123 }),
+        expected: {
+          present: true, mtimeMs: 'file', lastId: 'valid-id', partial: false,
+          cutoffDt: null, unreadable: false,
+        },
+      },
+      {
+        name: 'all-surfaced-fields-wrong-type',
+        body: JSON.stringify({ lastId: 7, partial: 'false', cutoffDt: 123 }),
+        expected: {
+          present: true, mtimeMs: 'file', lastId: null, partial: null,
+          cutoffDt: null, unreadable: false,
         },
       },
     ];
@@ -266,6 +298,57 @@ describe('hub-owned config status value producers', () => {
           'corrupt cursor must not be renamed aside');
       }
     }
+
+    const descriptorHome = makeHome(JSON.stringify({
+      lastId: 'descriptor-id', partial: false, cutoffDt: '2026-08-29',
+    }));
+    const originalFs = {
+      openSync: fs.openSync,
+      fstatSync: fs.fstatSync,
+      readFileSync: fs.readFileSync,
+      closeSync: fs.closeSync,
+    };
+    const descriptorCalls = [];
+    fs.openSync = (...args) => {
+      const fd = originalFs.openSync(...args);
+      descriptorCalls.push({ operation: 'open', fd });
+      return fd;
+    };
+    fs.fstatSync = fd => {
+      const stats = originalFs.fstatSync(fd);
+      descriptorCalls.push({ operation: 'fstat', fd, mtimeMs: stats.mtimeMs });
+      return stats;
+    };
+    fs.readFileSync = (file, ...args) => {
+      descriptorCalls.push({ operation: 'read', fd: file });
+      return originalFs.readFileSync(file, ...args);
+    };
+    fs.closeSync = fd => {
+      descriptorCalls.push({ operation: 'close', fd });
+      return originalFs.closeSync(fd);
+    };
+
+    let descriptorFacts;
+    try {
+      descriptorFacts = exportSync.readExportCursorFacts(descriptorHome);
+    } finally {
+      fs.openSync = originalFs.openSync;
+      fs.fstatSync = originalFs.fstatSync;
+      fs.readFileSync = originalFs.readFileSync;
+      fs.closeSync = originalFs.closeSync;
+    }
+
+    assert.deepEqual(descriptorCalls.map(call => call.operation), ['open', 'fstat', 'read', 'close'],
+      'cursor facts must open, fstat, read, and close one descriptor');
+    assert.equal(descriptorCalls[0].fd, descriptorCalls[1].fd,
+      'fstat must use the descriptor opened for the cursor');
+    assert.equal(descriptorCalls[1].fd, descriptorCalls[2].fd,
+      'cursor content must be read from the descriptor that was fstat');
+    assert.equal(descriptorCalls[2].fd, descriptorCalls[3].fd,
+      'the content descriptor must be closed');
+    assert.equal(descriptorFacts.mtimeMs, descriptorCalls[1].mtimeMs,
+      'reported mtime must come from the descriptor whose content was read');
+    assert.equal(descriptorFacts.lastId, 'descriptor-id');
   });
 
   it('renders known and unknown warnings, while preserving the existing importer call-site string', () => {
