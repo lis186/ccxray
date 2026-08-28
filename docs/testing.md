@@ -173,6 +173,14 @@ with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
 `server/importer.js` honours, and its value is a comma-separated list of actual
 Claude `projects/` scan roots (the `projects/` directory itself, not a config
 home such as `~/.claude`); setting `~/.claude` imports zero and reports no error.
+**Entries must be ABSOLUTE paths.** A relative entry is rejected rather than resolved,
+because the same string is read by the hub and by the Herdr plugin, whose working
+directories differ by construction — resolving it would silently mean two different
+directories in the two processes. Rejected entries are reported once per distinct value
+on stderr, and the foreground client repeats the complaint because a detached hub's
+stderr goes to `hub.log`. `test/herdr-plugin.test.js` pins the contract by running both
+parsers in child processes with different CWDs; a single-process check cannot observe
+the divergence at all.
 The plugin parses it the same way. A test that exercises staleness
 without it silently reads the developer's real transcripts. Codex repair uses the parallel
 **`CCXRAY_IMPORT_CODEX_HOMES`** override: its value is the `sessions/` root, and

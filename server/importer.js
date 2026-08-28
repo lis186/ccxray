@@ -39,21 +39,48 @@ function slugToProject(slug) {
 // operator who mistypes a root would otherwise see imports quietly go to zero. The
 // warning goes to stderr because `console.log` is muted in agent and hub mode
 // (server/index.js), and it fires once per process because the value is static config.
-let _warnedRelativeRoots = false;
-function warnRelativeRoot(envName, value) {
-  if (_warnedRelativeRoots) return;
-  _warnedRelativeRoots = true;
-  console.error(`[ccxray] ${envName}: ignoring non-absolute path ${JSON.stringify(value)} — `
-    + 'entries must be absolute scan roots (the projects/ or sessions/ directory itself).');
+// Suppression is keyed by (variable, raw value), not a single process-wide boolean:
+// one flag would swallow a second bad entry, the other variable's bad value, and any
+// later correction, while re-warning on every scan would be noise. A changed value is
+// news and warns again. `_resetRootWarnings` exists because the key set outlives a
+// single test in a shared process.
+const _warnedRoots = new Set();
+function _resetRootWarnings() { _warnedRoots.clear(); }
+function warnRelativeRoots(envName, values) {
+  if (!values.length) return;
+  const key = `${envName}\u0000${values.join('\u0000')}`;
+  if (_warnedRoots.has(key)) return;
+  _warnedRoots.add(key);
+  console.error(`[ccxray] ${envName}: ignoring non-absolute ${values.length === 1 ? 'path' : 'paths'} `
+    + `${values.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
+    + '(the projects/ or sessions/ directory itself).');
+}
+
+// The refusal as a VALUE, for the foreground client. warnRelativeRoots writes to
+// stderr, which is correct for a standalone run but NOT sufficient under `ccxray
+// <agent>`: hub.js spawns the hub with `stdio: ['ignore', fd, fd]`, so both streams go
+// to hub.log and no one reads it. Not being muted is not the same as being reachable —
+// the same gap that made the CCXRAY_EXPORT_CONFIG_DIRS refusal invisible.
+function relativeRootComplaints(env = process.env) {
+  const out = [];
+  for (const name of ['CCXRAY_IMPORT_HOMES', 'CCXRAY_IMPORT_CODEX_HOMES']) {
+    const raw = env[name];
+    if (raw === undefined) continue;
+    const bad = String(raw).split(',').map(v => v.trim())
+      .filter(v => v && !path.isAbsolute(v));
+    if (bad.length) out.push(`${name}: ${bad.map(v => JSON.stringify(v)).join(', ')}`);
+  }
+  return out;
 }
 
 function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
   const results = [];
+  const rejected = [];
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
     if (!value) continue;
-    if (!path.isAbsolute(value)) { warnRelativeRoot(envName, value); continue; }
+    if (!path.isAbsolute(value)) { rejected.push(value); continue; }
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
@@ -61,6 +88,7 @@ function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
     seen.add(resolved);
     results.push({ dir: resolved });
   }
+  warnRelativeRoots(envName, rejected);
   return results;
 }
 
@@ -636,6 +664,8 @@ async function scanAndImportTranscript(target = {}) {
 }
 
 module.exports = {
+  relativeRootComplaints,
+  _resetRootWarnings,
   scanAndImport,
   scanAndImportTranscript,
   parseSessionFile,

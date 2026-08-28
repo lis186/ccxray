@@ -1058,6 +1058,11 @@ async function startClientMode(lock) {
   {
     const refusal = require('./export-sync').configDirsRefusal();
     if (refusal) _origLog(`\x1b[33m   ${refusal}\x1b[0m`);
+    // Same reason, same channel: the importer rejects non-absolute scan roots and says
+    // so on stderr, which under a detached hub lands in hub.log where nobody looks.
+    for (const complaint of require('./importer').relativeRootComplaints()) {
+      _origLog(`\x1b[33m   [ccxray] ignoring non-absolute scan root — ${complaint}\x1b[0m`);
+    }
   }
 
   const clientIdentity = {

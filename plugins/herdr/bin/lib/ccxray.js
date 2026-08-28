@@ -872,21 +872,31 @@ function staleThresholdMs(env = process.env) {
 // would resolve against this process's CWD, which differs from the hub's, so the same
 // configured string would mean two different directories. Rejected and reported once
 // per process on stderr rather than dropped in silence.
-let _warnedRelativeRoots = false;
-function warnRelativeRoot(envName, value) {
-  if (_warnedRelativeRoots) return;
-  _warnedRelativeRoots = true;
-  console.error(`[ccxray] ${envName}: ignoring non-absolute path ${JSON.stringify(value)} — `
-    + 'entries must be absolute scan roots (the projects/ or sessions/ directory itself).');
+// Suppression is keyed by (variable, raw value), not a single process-wide boolean:
+// one flag would swallow a second bad entry, the other variable's bad value, and any
+// later correction, while re-warning on every scan would be noise. A changed value is
+// news and warns again. `_resetRootWarnings` exists because the key set outlives a
+// single test in a shared process.
+const _warnedRoots = new Set();
+function _resetRootWarnings() { _warnedRoots.clear(); }
+function warnRelativeRoots(envName, values) {
+  if (!values.length) return;
+  const key = `${envName}\u0000${values.join('\u0000')}`;
+  if (_warnedRoots.has(key)) return;
+  _warnedRoots.add(key);
+  console.error(`[ccxray] ${envName}: ignoring non-absolute ${values.length === 1 ? 'path' : 'paths'} `
+    + `${values.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
+    + '(the projects/ or sessions/ directory itself).');
 }
 
 function configuredScanRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
   const roots = [];
+  const rejected = [];
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
     if (!value) continue;
-    if (!path.isAbsolute(value)) { warnRelativeRoot(envName, value); continue; }
+    if (!path.isAbsolute(value)) { rejected.push(value); continue; }
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
@@ -894,6 +904,7 @@ function configuredScanRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
     seen.add(resolved);
     roots.push(resolved);
   }
+  warnRelativeRoots(envName, rejected);
   return roots;
 }
 

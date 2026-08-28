@@ -2986,8 +2986,23 @@ describe('Herdr sidebar import freshness', () => {
       timeout: 10000,
     });
     assert.equal(lookup.status, 0, `alias lookup exited ${lookup.status}: ${lookup.stderr}`);
-    assert.ok(JSON.parse(lookup.stdout),
-      'an aliased Codex home must not make its own transcript ambiguous');
+    // Assert the resolved FILE, not truthiness: `[]` and any unrelated object are both
+    // truthy, so `assert.ok` would pass on a lookup that found the wrong thing or
+    // nothing useful. realpath on the expectation because the roots are canonicalized.
+    let resolved;
+    try {
+      resolved = JSON.parse(lookup.stdout);
+    } catch (err) {
+      throw new Error(`alias lookup produced unparseable stdout (${err.message}): `
+        + `${JSON.stringify(lookup.stdout.slice(0, 200))}`);
+    }
+    assert.ok(resolved && typeof resolved === 'object' && resolved.file,
+      `an aliased Codex home must not make its own transcript ambiguous (got ${lookup.stdout})`);
+    // NOT realpath on the expectation here, unlike the Claude sibling test: matching
+    // core means identity by inode with the ORIGINAL path pushed, so the ambient Codex
+    // path deliberately no longer canonicalizes what it returns. The configured path
+    // still does. Asserting the raw fixture path is what pins that difference.
+    assert.equal(resolved.file, rollout);
   });
 
   it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
