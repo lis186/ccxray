@@ -873,7 +873,7 @@ function configuredScanRoots(rawValue) {
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
-    if (!value) continue;
+    if (!value || !path.isAbsolute(value)) continue;
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
@@ -949,12 +949,18 @@ function codexSessionRoots(env = process.env) {
   }
   const home = os.homedir();
   const roots = [];
+  const seen = new Set();
   let items = [];
   try { items = fs.readdirSync(home); } catch { return roots; }
   for (const name of items) {
     if (!name.startsWith('.codex') || name.includes('.bak')) continue;
     if (name !== '.codex' && !name.startsWith('.codex-')) continue;
-    roots.push(path.join(home, name, 'sessions'));
+    const root = path.join(home, name, 'sessions');
+    let resolved = root;
+    try { resolved = fs.realpathSync(root); } catch {}
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    roots.push(resolved);
   }
   return roots;
 }

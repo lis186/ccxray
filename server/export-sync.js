@@ -416,7 +416,18 @@ function mergeEntry(a, b) {
   // import_sources.
   if (a.imported === true && b.imported === true) {
     merged.imported = true;
-    if (merged.importSource == null && b.importSource != null) merged.importSource = b.importSource;
+    // Carry a sorted array so repeated folds union every source without relying
+    // on delimiter escaping; finishSession still emits the existing sorted,
+    // distinct `import_sources` export shape.
+    const sources = new Set();
+    for (const importSource of [a.importSource, b.importSource]) {
+      const values = Array.isArray(importSource) ? importSource : [importSource];
+      for (const source of values) {
+        if (typeof source === 'string' && source) sources.add(source);
+      }
+    }
+    if (sources.size) merged.importSource = [...sources].sort();
+    else delete merged.importSource;
   } else {
     delete merged.imported;
     delete merged.importSource;
@@ -704,8 +715,11 @@ function aggregate(lines, agentId) {
     modelStats.turns++;
     if (entry.imported === true) sess.imported_turn_count++;
     if (entry.sessionInferred === true) sess.inferred_turn_count++;
-    if (typeof entry.importSource === 'string' && entry.importSource) {
-      sess._importSources.add(entry.importSource);
+    const importSources = Array.isArray(entry.importSource)
+      ? entry.importSource
+      : [entry.importSource];
+    for (const importSource of importSources) {
+      if (typeof importSource === 'string' && importSource) sess._importSources.add(importSource);
     }
     if (entry.responseId) sess._responseIds.add(entry.responseId);
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);

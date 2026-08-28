@@ -647,52 +647,83 @@ describe('export-sync', () => {
     assert.equal(sentinel.session_id_kind, 'sentinel');
   });
 
-  it('responseId merge preserves provenance regardless of copy order', () => {
+  it('responseId merge makes importSource a commutative, associative set union', () => {
     const mergeEntry = loadMergeEntryForTest();
-    const proxyCopy = makeEntry({
-      responseId: 'msg_provenance_order',
+    const sourceSet = entry => {
+      const source = entry.importSource;
+      const values = Array.isArray(source) ? source : [source];
+      return [...new Set(values.filter(value => typeof value === 'string' && value))].sort();
+    };
+    const provenance = entry => ({ imported: entry.imported, importSources: sourceSet(entry) });
+    const importedCopy = (source, responseId = 'msg_provenance_algebra') => makeEntry({
+      responseId,
+      imported: true,
+      importSource: source,
+    });
+
+    // Different values are deliberate: identical sources cannot detect the old
+    // first-spread-wins implementation. This matrix keeps the assertion about
+    // the merge algebra while exercising both source orders.
+    for (const [leftSource, rightSource] of [
+      ['claude-code', 'codex'],
+      ['codex', 'other-importer'],
+      ['other-importer', 'claude-code'],
+    ]) {
+      const left = importedCopy(leftSource);
+      const right = importedCopy(rightSource);
+      const forward = mergeEntry(left, right);
+      const reverse = mergeEntry(right, left);
+      const expected = { imported: true, importSources: [leftSource, rightSource].sort() };
+      assert.deepEqual(provenance(forward), expected);
+      assert.deepEqual(provenance(reverse), expected);
+      assert.deepEqual(provenance(forward), provenance(reverse));
+    }
+
+    const a = importedCopy('claude-code', 'msg_provenance_associative');
+    const b = importedCopy('codex', 'msg_provenance_associative');
+    const c = importedCopy('other-importer', 'msg_provenance_associative');
+    const leftFold = mergeEntry(mergeEntry(a, b), c);
+    const rightFold = mergeEntry(a, mergeEntry(b, c));
+    assert.deepEqual(provenance(leftFold), provenance(rightFold));
+    assert.deepEqual(provenance(leftFold), {
+      imported: true,
+      importSources: ['claude-code', 'codex', 'other-importer'],
+    });
+
+    // Idempotence is checked after one normalization into the carried sorted
+    // array shape, so a second fold cannot add a duplicate source.
+    assert.deepEqual(mergeEntry(leftFold, leftFold), leftFold);
+
+    // ADR 0012: a real proxy observation clears both provenance fields in either
+    // argument order, even when the imported twin came from a different source.
+    const proxy = makeEntry({
+      responseId: 'msg_provenance_proxy',
       imported: undefined,
       importSource: undefined,
     });
-    const importedCopy = makeEntry({
-      id: '2026-08-12T10-00-01-000',
-      responseId: 'msg_provenance_order',
-      imported: true,
-      importSource: 'claude-code',
-    });
+    for (const imported of [importedCopy('claude-code', 'msg_provenance_proxy'),
+      importedCopy('codex', 'msg_provenance_proxy')]) {
+      assert.deepEqual(provenance(mergeEntry(proxy, imported)), {
+        imported: undefined,
+        importSources: [],
+      });
+      assert.deepEqual(provenance(mergeEntry(imported, proxy)), {
+        imported: undefined,
+        importSources: [],
+      });
+    }
+  });
 
-    const forward = mergeEntry(proxyCopy, importedCopy);
-    const reverse = mergeEntry(importedCopy, proxyCopy);
-
-    const provenance = entry => ({
-      imported: entry.imported,
-      importSource: entry.importSource,
-    });
-    // Order-independence is the property under test, and it still holds — but the
-    // value it converges on is CLEARED, not inherited. ADR 0012's field table
-    // (line 155) says imported/importSource are "cleared when merging a proxy copy
-    // in (a real observation supersedes an import reconstruction)", so a turn the
-    // proxy actually observed must not be counted as import-reconstructed just
-    // because a transcript twin also exists. An earlier revision of this test
-    // asserted `imported: true` here and so pinned the ADR violation in place.
-    assert.deepEqual(provenance(forward), provenance(reverse));
-    assert.deepEqual(provenance(forward), {
-      imported: undefined,
-      importSource: undefined,
-    });
-
-    // The other half of the AND: two import copies stay imported, so
-    // imported_turn_count still counts turns nobody observed live.
-    const secondImport = makeEntry({
-      id: '2026-08-12T10-00-02-000',
-      responseId: 'msg_provenance_order',
-      imported: true,
-      importSource: 'claude-code',
-    });
-    assert.deepEqual(provenance(mergeEntry(importedCopy, secondImport)), {
-      imported: true,
-      importSource: 'claude-code',
-    });
+  it('export aggregate counts an imported response id once while preserving both sources', async () => {
+    setup([
+      makeEntry({ responseId: 'msg_import_sources_once', imported: true, importSource: 'claude-code' }),
+      makeEntry({ id: '2026-08-12T10-00-01-000', responseId: 'msg_import_sources_once',
+        imported: true, importSource: 'codex' }),
+    ]);
+    await flushExport();
+    const session = _uploads[0].records.find(r => r.type === 'session');
+    assert.equal(session.imported_turn_count, 1);
+    assert.deepEqual(session.import_sources, ['claude-code', 'codex']);
   });
 
   it('OpenAI entries: toolCalls summed directly (not per-tool max)', async () => {

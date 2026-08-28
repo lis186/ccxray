@@ -36,7 +36,7 @@ function configuredImportRoots(rawValue) {
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
-    if (!value) continue;
+    if (!value || !path.isAbsolute(value)) continue;
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}

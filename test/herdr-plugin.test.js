@@ -2854,49 +2854,94 @@ describe('Herdr sidebar import freshness', () => {
     assert.equal(transcriptFile('s1', null, env), null);
   });
 
-  // GENUINE fail-on-old evidence for the comma list. transcriptFile was already
-  // exported before this change, so old code CAN run this and fails on BEHAVIOUR —
-  // it stats one directory literally named "rootA,rootB". The T6 unit test below
-  // cannot show that: claudeProjectRoots is newly exported, so on old code it dies
-  // with "not a function", which is a missing symbol, not a behaviour difference.
-  // See docs/verification-principles.md and the fail-on-old-for-an-unrelated-reason
-  // trap it warns about.
-  // Parity, BOTH pairs, in one table. The shape matters: an earlier check tested
-  // "the parser" and silently covered only the Claude pair, because the same mental
-  // model chose what to change and what to verify. Iterating the pairs makes omitting
-  // one impossible rather than merely unlikely.
-  it('core and Herdr resolve both import-root variables identically', () => {
-    const herdrLib = require('../plugins/herdr/bin/lib/ccxray');
-    const importer = require('../server/importer');
-    const a = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-a-'));
-    const b = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-b-'));
-    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-parity-alias-'));
-    const alias = path.join(aliasParent, 'x');
-    fs.symlinkSync(a, alias);
-    const cases = [`${a},${b}`, `${a},${b},`, `${a},,${b}`, ` ${a} , ${b} `,
-      `${a},${alias}`, ',,,', `${a},/no/such/xyz`, '', a];
-    const pairs = [
-      ['CCXRAY_IMPORT_HOMES', () => importer.discoverHomes().map(x => x.dir),
-        v => herdrLib.claudeProjectRoots({ CCXRAY_IMPORT_HOMES: v })],
-      ['CCXRAY_IMPORT_CODEX_HOMES', () => importer.discoverCodexHomes().map(x => x.dir),
-        v => herdrLib.codexSessionRoots({ CCXRAY_IMPORT_CODEX_HOMES: v })],
+  // Differential evidence must cross the process boundary: the root parsers
+  // resolve relative entries against process.cwd(), so an in-process comparison
+  // cannot observe the defect. Keep both provider pairs in the same table so a
+  // passing Claude-only check cannot silently leave Codex uncovered.
+  it('core and Herdr resolve both import-root variables identically across processes', () => {
+    const coreCwd = tempDir('ccxray-parity-core-cwd-');
+    const herdrCwd = tempDir('ccxray-parity-herdr-cwd-');
+    const configuredA = tempDir('ccxray-parity-a-');
+    const configuredB = tempDir('ccxray-parity-b-');
+    const aliasParent = tempDir('ccxray-parity-alias-');
+    const configuredAlias = path.join(aliasParent, 'alias');
+    fs.symlinkSync(configuredA, configuredAlias, 'dir');
+
+    const singleHome = tempDir('ccxray-parity-home-');
+    fs.mkdirSync(path.join(singleHome, '.claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(singleHome, '.config', 'claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(singleHome, '.codex', 'sessions'), { recursive: true });
+    const aliasHome = tempDir('ccxray-parity-alias-home-');
+    fs.mkdirSync(path.join(aliasHome, '.claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(aliasHome, '.config', 'claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(aliasHome, '.codex', 'sessions'), { recursive: true });
+    fs.symlinkSync(path.join(aliasHome, '.codex'), path.join(aliasHome, '.codex-alias'), 'dir');
+
+    const script = [
+      "'use strict';",
+      "const mod = require(process.env.CCXRAY_PARITY_MODULE);",
+      "const fs = require('fs');",
+      "const provider = process.env.CCXRAY_PARITY_PROVIDER;",
+      "const method = process.env.CCXRAY_PARITY_KIND === 'core'",
+      "  ? (provider === 'claude' ? 'discoverHomes' : 'discoverCodexHomes')",
+      "  : (provider === 'claude' ? 'claudeProjectRoots' : 'codexSessionRoots');",
+      "const roots = mod[method]();",
+      "const dirs = roots.map(root => root.dir || root).map(dir => {",
+      "  try { return fs.realpathSync(dir); } catch { return dir; }",
+      "});",
+      "process.stdout.write(JSON.stringify(dirs));",
+    ].join('\n');
+    const run = ({ kind, provider, raw, cwd, home }) => {
+      const envVar = provider === 'claude' ? 'CCXRAY_IMPORT_HOMES' : 'CCXRAY_IMPORT_CODEX_HOMES';
+      const env = pluginEnv({
+        HOME: home,
+        CCXRAY_PARITY_KIND: kind,
+        CCXRAY_PARITY_MODULE: kind === 'core'
+          ? path.join(ROOT, 'server', 'importer.js')
+          : path.join(PLUGIN, 'bin', 'lib', 'ccxray.js'),
+        CCXRAY_PARITY_PROVIDER: provider,
+      });
+      // An omitted variable is different from an explicitly empty variable:
+      // the former exercises ambient discovery, the latter means no roots.
+      delete env.CCXRAY_IMPORT_HOMES;
+      delete env.CCXRAY_IMPORT_CODEX_HOMES;
+      if (raw !== undefined) env[envVar] = raw;
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+      assert.equal(result.status, 0,
+        `${kind}/${provider}/${JSON.stringify(raw)} failed: ${result.stderr}`);
+      return JSON.parse(result.stdout).sort();
+    };
+
+    const cases = [
+      { name: 'absolute list', raw: configuredA, home: singleHome },
+      { name: 'relative entry', raw: 'relative-import-root', home: singleHome },
+      { name: 'empty string', raw: '', home: singleHome },
+      { name: 'unset', raw: undefined, home: singleHome },
+      { name: 'comma-list', raw: `${configuredA},${configuredB}`, home: singleHome },
+      { name: 'trailing comma', raw: `${configuredA},${configuredB},`, home: singleHome },
+      { name: 'empty middle entry', raw: `${configuredA},,${configuredB}`, home: singleHome },
+      { name: 'whitespace', raw: ` ${configuredA} , ${configuredB} `, home: singleHome },
+      { name: 'configured symlink alias', raw: `${configuredA},${configuredAlias}`, home: singleHome },
+      // The Codex roots below are the same inode. Core already collapses them;
+      // this case makes Herdr's former ambiguous-two-candidate behavior visible.
+      { name: 'ambient symlink alias', raw: undefined, home: aliasHome },
     ];
-    try {
-      for (const [envVar, core, plugin] of pairs) {
-        const saved = process.env[envVar];
-        try {
-          for (const value of cases) {
-            process.env[envVar] = value;
-            assert.deepStrictEqual(core(), plugin(value),
-              `${envVar} disagrees on ${JSON.stringify(value)}`);
-          }
-        } finally {
-          if (saved === undefined) delete process.env[envVar]; else process.env[envVar] = saved;
+    const mismatches = [];
+    for (const provider of ['claude', 'codex']) {
+      for (const testCase of cases) {
+        const core = run({ kind: 'core', provider, ...testCase, cwd: coreCwd });
+        const herdr = run({ kind: 'herdr', provider, ...testCase, cwd: herdrCwd });
+        if (JSON.stringify(core) !== JSON.stringify(herdr)) {
+          mismatches.push({ provider, case: testCase.name, core, herdr });
         }
       }
-    } finally {
-      [aliasParent, a, b].forEach(d => fs.rmSync(d, { recursive: true, force: true }));
     }
+    assert.deepEqual(mismatches, []);
   });
 
   it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
