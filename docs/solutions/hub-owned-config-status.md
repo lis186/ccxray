@@ -1,14 +1,22 @@
 # Hub-owned export/config status — design, for adversarial review
 
-- Status: **draft rev 3, not signed off. Not implemented.**
+- Status: **draft rev 4, not signed off. Not implemented.**
+- Rev 4 (2026-08-29): the shared export level is the `CCXRAY_HOME`, not the machine. Rev 3
+  asserted the sharing as an unconditional property; it was measured and is false across
+  homes (§2.3, third correction). Renames the level, adds `home` to the identity tuple,
+  adds matrix rows 13c and 14. Owner measured the seven-process evidence; the process
+  liveness, home distinctness, and cursor presence in that table were re-verified
+  independently here rather than relayed.
 - Review: two adversarial rounds, two independent reviewers each (2026-08-28). Round 1
   returned NEED-EXPERIMENT-FIRST; round 2 returned DON'T SHIP and "not ready to
   implement", with five majors between them, all complementary rather than conflicting.
   Round 2's corrections are folded in and marked. One reviewer correction was itself
   wrong and is recorded as such in §9 — a review finding is an input, not a verdict.
 - Date: 2026-08-28
-- Scope: give the hub one authoritative answer to "is this machine exporting, and is its
-  config sane", and make every surface read that answer instead of guessing locally.
+- Scope: give the hub one authoritative answer to "is this `CCXRAY_HOME` exporting, and is
+  this exporter's config sane", and make every surface read that answer instead of
+  guessing locally. (Rev 3 scoped this to "this machine"; see §2.3's third correction for
+  the measurement that narrowed it.)
 - Not in scope: PR #592's contents. This is deliberately a separate unit — see §6.
 
 ## 1. The defect, stated as a mechanism
@@ -109,31 +117,93 @@ hub only.
 
 **Second correction (reviewer A, round 2).** Rev 2 answered this by going per-process:
 "every exporter reports its own state". That is also wrong, in the opposite direction.
-Export is **machine-level**, not process-level: every exporter serializes through one
-`export.lock` and advances one shared `export-cursor.json` (`export-sync.js:936-941`).
-So a hub honestly reporting `refused` while a clean `--port N` server flushes normally
-means summaries ARE reaching GCS — and an operator reading that per-process answer
-escalates or restarts against a pipeline that is working. Rev 1 claimed to know more than
-it could; rev 2 claimed to know less. Both got the LEVEL of the report wrong.
+Export is not process-level: exporters serialize through one `export.lock` and advance one
+shared `export-cursor.json` (`export-sync.js:936-941`). So a hub honestly reporting
+`refused` while a clean `--port N` server flushes normally means summaries ARE reaching
+GCS — and an operator reading that per-process answer escalates or restarts against a
+pipeline that is working. Rev 1 claimed to know more than it could; rev 2 claimed to know
+less. Both got the LEVEL of the report wrong.
 
-The design therefore reports **two levels, labelled as such**:
+**Third correction (rev 4, 2026-08-29 — measured, not reasoned).** Rev 3 named that
+shared level **machine**, and asserted the sharing as an unconditional property. It is
+not. Both paths are derived from the caller's own environment:
+
+```
+export-sync.js:934   const home = resolveCcxrayHome();              // no argument
+export-sync.js:935   const lockPath   = path.join(home, 'export.lock');
+export-sync.js:936   const cursorPath = path.join(home, 'export-cursor.json');
+paths.js:16          resolveCcxrayHome(env = process.env) => env.CCXRAY_HOME || ~/.ccxray
+```
+
+`CCXRAY_HOME` is exactly the kind of variable §1 is about: frozen into a detached hub at
+fork, carried independently by each `--port N` server, and re-resolved from scratch by
+whatever shell runs `ccxray status`. So the sharing holds **within one `CCXRAY_HOME` and
+not across them**.
+
+Measured on the author's machine, 2026-08-29, `ps eww` over the live server processes —
+seven processes, seven distinct homes:
+
+| pid | `CCXRAY_HOME` | bucket set | `export-cursor.json` present |
+|---|---|---|---|
+| 1376 / 1385 / 1393 / 1404 | four distinct `…/T/ccxray-ws-test-*` | yes | no |
+| 19218 | `…/T/ccxray-herdr-plugin-*` | no | no |
+| 61573 | `…/T/ccxray-index-fields-rebuild-*` | no | no |
+| 89700 | unset → `~/.ccxray` | yes | **yes** (2033 B, mtime 2026-08-28 19:05) |
+
+Two things follow, and the second was not anticipated:
+
+1. These are **seven independent export domains**, not one contended one. The four
+   ws-test processes do not serialize against each other or against the real home; they
+   have separate locks and separate cursors. A report that called any of them "the
+   machine" would be claiming authority over six domains it cannot see.
+2. A home can have **no cursor at all**. The suppressed test homes never complete a flush
+   (`flushExport` returns at `export-sync.js:923` before any cursor write), so the file is
+   never created. The home-level read therefore has **three** outcomes — fresh, stale, and
+   never-flushed — and `never` must not be rendered as `stale`: for an `unconfigured` or
+   `suppressed` home it is the correct and expected state, while for an `enabled` home it
+   is the strongest signal available that nothing is reaching GCS.
+
+The correct unit is therefore the `CCXRAY_HOME`, and the level is named for it:
 
 | Level | Question it answers | Source |
 |---|---|---|
-| machine | is this machine exporting at all? | `export-cursor.json` — its mtime and last id. A persisted fact, independent of which process wrote it, and readable without asking any process |
+| home | is **this `CCXRAY_HOME`** exporting at all? | `export-cursor.json` under that home — present/absent, mtime, last id. A persisted fact, independent of which process wrote it, and readable without asking any process |
 | process | does THIS exporter have a config problem? | `exportState` + `configWarnings`, carried with an identity tuple |
 
-`ccxray status` prints both and never lets one stand for the other. The machine line is
-what answers "is my data flowing"; the process lines are what answer "why is this one
-complaining". A `--port N` exporter nobody asked about still does not appear in the
-process list — but it cannot make the machine line wrong, because it advances the same
-cursor. That is the part rev 2 could not offer.
+`ccxray status` prints both and never lets one stand for the other, **and the home line
+names the home path it read**. Naming it is not cosmetic: without the path, a status run
+from a shell carrying a test `CCXRAY_HOME` would report that home's (absent) cursor in
+the exact tone the operator reads as "this machine is not exporting" — the wrong-subject
+defect of §1, reintroduced by the fix's own new level. A reader who sees
+`home ~/.ccxray` knows which question was answered.
 
-**Identity tuple (reviewer B).** Every process-level report carries
-`{kind: 'hub' | 'standalone' | 'agent-port', pid, port}`. "Names its exporter" was not a
-specification, and `ccxray status`'s `Machine:` JSON omits `pid` today
+Within one home the rev 3 argument survives intact: a `--port N` exporter nobody asked
+about still does not appear in the process list, but it cannot make that home's line
+wrong, because it advances that home's cursor. That is the part rev 2 could not offer.
+Across homes there is no shared fact and none is invented — which is the same restraint
+§4 already applies to non-hub multi-process setups.
+
+In practice the operator's real home is the one that matters: `~/.ccxray` is the only
+domain that ships to the company bucket, and every other home in the measurement above is
+an isolated test or smoke run. "Is this home exporting" is answerable; "is this machine
+exporting" was not.
+
+**Identity tuple (reviewer B; `home` added in rev 4).** Every process-level report carries
+`{kind: 'hub' | 'standalone' | 'agent-port', pid, port, home}`. "Names its exporter" was
+not a specification, and `ccxray status`'s `Machine:` JSON omits `pid` today
 (`server/index.js:1017-1019`) while the human line above it has one — so a machine
 consumer cannot distinguish two exporters at all.
+
+`home` is the exporter's resolved `CCXRAY_HOME` (`resolveCcxrayHome(env)` in that
+process), and it is load-bearing rather than descriptive. The home-level cursor read is
+the one part of this design that does not go over the socket — it reads a file — so
+without the hub telling the reader WHICH home it exports into, `ccxray status` would
+resolve the path from its own shell's env and report a different domain's cursor under
+the hub's name. That is §1's defect with a file substituted for an env var. The rule:
+**the home line is read from the home the reporting process names, never from the
+reader's own env.** Where no process can be reached (§8's "exporter state unavailable"),
+status may read its own home but must print the path, so the reader can see which
+question was answered.
 
 ### 2.4 Wire compatibility
 
@@ -198,15 +268,21 @@ the half the author had in mind. So the matrix is fixed before the code:
 | 7 | **reverse divergence** | hub forked clean, client has a bad value ⇒ NOTHING is shown |
 | 8 | old client × new hub, new client × old hub | no crash; new client is silent against an old hub. **Same-major skew on first attach only.** `checkVersionCompat` (`hub.js:158-171`) runs at first attach (`index.js:1039-1043`) and exits fatally on a major mismatch — but reviewer A found the recovery re-register (`index.js:1144`) runs NO version check, and `forkHub` re-spawns from on-disk code that may have been upgraded under a live client. So cross-major replies ARE reachable, on row 9's path precisely. Test them there. Cover BOTH the socket and the HTTP register fallback (`discoverHub`), which reviewer A found returns `null` via the 410 tombstone rather than a reply |
 | 9 | **hub crashes, re-forks from a client with a different env** | the re-rendered state describes the NEW hub (§2.5). On current code the reply is discarded, so nothing is re-rendered at all — this row is the differential evidence for §2.5 |
-| 10 | hub + one `--port N` server, different envs | each names itself; `ccxray status` does not present the hub's state as the machine's (§2.3) |
+| 10 | hub + one `--port N` server, different envs | each names itself; `ccxray status` does not present the hub's state as the home's (§2.3) |
 | 11 | two `--port N` servers, no hub | each reports itself; no cross-process authority is claimed |
 | 12 | Windows / `ccxray` with no agent | hub mode is unavailable on Windows (`index.js:55-57`) so the agent path falls back to standalone — same delivery class as row 2, different reason |
 | 13a | each `exportState` value renders | `unconfigured` (silent or stated?), `suppressed/explicitly-disabled`, `suppressed/test-run`, `refused`, `enabled` — reviewer A: the matrix covered modes x surfaces and no states, which is the other half of the very blind spot §1 diagnoses |
-| 13b | machine level vs process level disagree | hub `refused`, a `--port N` server flushing: the machine line must show a fresh cursor while the process line shows the refusal, and neither may be printed as the other (§2.3) |
+| 13b | home level vs process level disagree | hub `refused`, a `--port N` server flushing **in the same `CCXRAY_HOME`**: the home line must show a fresh cursor while the process line shows the refusal, and neither may be printed as the other (§2.3). The shared home is what makes the two levels disagree about one subject; in different homes they are separate domains and the row is vacuous — that is row 14, not this one |
+| 14 | **two exporters, two `CCXRAY_HOME`s** | each reports its own home's cursor and neither is presented as the other's or as the machine's. The home line names the home path it read (§2.3). Assert the negative explicitly: a status run whose env points at home A must not report home B's cursor state, in either direction — including the case where A has never flushed and B has, which on a single-cursor reading would render as "exporting" for a home that is not |
+| 13c | each home-level cursor outcome renders | `fresh`, `stale`, `never-flushed` — the third exists because a suppressed or unconfigured home never creates the file at all (§2.3, measured). `never` must render as itself, not as `stale`, and its meaning is read against the process state: expected under `unconfigured`/`suppressed`, and the strongest available "nothing is reaching GCS" signal under `enabled`. Same rule as 13a: a state set gets an iterating table, not one example |
 | 13 | `ccxray status` with no discoverable lock | reviewer B: it probes `/_api/health`, which carries no export state and reports `hub:false` for a live hub. Either the probe learns the state or status must say it could not determine it — silence here is the same wrong-subject failure |
 
 **Non-vacuity conditions** (both reviewers; a row that can pass without exercising its
-subject is worse than no row). Row 7 must still assert the hub's own state is shown, not
+subject is worse than no row). Row 14 must use two homes whose cursor states DIFFER — one
+flushed, one never — or it passes on identical output either way; and it must assert the
+negative (home A's status never reports home B) rather than only that each line exists.
+Row 13b must put both exporters in the SAME home, or its disagreement is an artefact of
+partitioning rather than of the two levels. Row 7 must still assert the hub's own state is shown, not
 merely that no client-derived warning appears — under the two-level model "NOTHING is
 shown" is stale. Row 9 must use explicitly DIVERGENT environments or it passes with
 identical output either way. Row 11 must use distinct ports. Row 12 must separate the
@@ -228,6 +304,13 @@ the same trap that made an earlier ambient-discovery assertion inert (it read
   hub, and the status line should say so.
 - Non-hub multi-process setups (`ccxray --port N` twice) each report themselves. There is
   no cross-process authority there and this design does not invent one.
+- **Nothing reports across `CCXRAY_HOME`s.** Seven live export domains were measured on
+  one machine (§2.3); a surface can answer for the home it names and no other. An operator
+  who wants "is anything on this box exporting" is asking a question this design
+  deliberately does not answer, because answering it would mean enumerating homes from
+  processes whose envs are exactly the thing that cannot be trusted. The actionable form
+  is: run `ccxray status` in the shell whose home you care about, and read the printed
+  path to confirm it is the one you meant.
 
 ## 5. Alternatives considered
 
