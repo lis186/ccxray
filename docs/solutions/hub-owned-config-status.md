@@ -225,6 +225,18 @@ empty `configWarnings`: this process is not an exporter and has nothing to say a
 That composes with §2.4, which already requires a reader to treat absent state as "cannot
 tell" and stay silent rather than fall back to local env.
 
+**`port` is the reporting process's OWN listening port, never a lockfile read (rev 4,
+found by the Unit 2 gate).** `currentHubPort()` is `hubListenPort || readHubLock()?.port`,
+and `hubListenPort` is set only in real hub mode — so in any non-hub exporter the fallback
+reads the HUB's lockfile and the tuple reports a port belonging to a different process.
+Measured: with a hub lockfile naming port 59999, an `agent-port` report came back
+`{kind:'agent-port', pid:<its own>, port:59999, home:<from the passed env>}` — three fields
+resolved against three different sources, naming a process that does not exist. Since the
+tuple exists precisely because "a machine consumer cannot distinguish two exporters at
+all", a tuple that can name the wrong one defeats its own purpose. The port must come from
+the same place the process got its own listener, and a process with no listener (a
+`client`) reports `null`.
+
 `home` is the exporter's resolved `CCXRAY_HOME` (`resolveCcxrayHome(env)` in that
 process), and it is load-bearing rather than descriptive. The home-level cursor read is
 the one part of this design that does not go over the socket — it reads a file — so
