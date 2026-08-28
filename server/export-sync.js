@@ -44,11 +44,36 @@ function _resetExportWarnings() { _configDirsWarned = false; }
 // `ccxray <agent>` — the common path — logging from inside the exporter reaches
 // nobody. The client shares the same env as the hub it forks, so it can and must
 // say this itself.
-function configDirsRefusal() {
-  return process.env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined ? CONFIG_DIRS_REFUSAL : null;
+function configDirsRefusal(env = process.env) {
+  return env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined ? CONFIG_DIRS_REFUSAL : null;
 }
 
-// INVARIANT: one predicate, two callers (flushExport + startExportSync). Under
+// Suppression is deliberately separate from the retired config control: the former is
+// a reason for the 'suppressed' headline state, while the latter is a 'refused' config
+// fault. The node-test layer also consults _uploader, which is module state rather than
+// an env field; injected uploaders must keep aggregation tests running.
+function exportSuppressionReason(env = process.env) {
+  if (env.CCXRAY_EXPORT_DISABLE === '1') return 'explicitly-disabled';
+  if (env.NODE_TEST_CONTEXT && !_uploader) return 'test-run';
+  return null;
+}
+
+function exportStatus(env = process.env) {
+  // Pinned precedence: suppression > refusal > unconfigured > enabled. Suppression is
+  // total and deliberate, so a config fault is not promoted to the headline on a run
+  // that was never going to export; the fault remains available through configWarnings.
+  const suppression = exportSuppressionReason(env);
+  if (suppression) return { exportState: 'suppressed', exportReason: suppression };
+  if (configDirsRefusal(env) !== null) {
+    return { exportState: 'refused', exportReason: 'config-dirs-retired' };
+  }
+  if (!env.CCXRAY_EXPORT_GCS_BUCKET) {
+    return { exportState: 'unconfigured', exportReason: null };
+  }
+  return { exportState: 'enabled', exportReason: null };
+}
+
+// INVARIANT: one block predicate, two callers (flushExport + startExportSync). Under
 // `node --test` a real upload must be structurally impossible: the suite has no
 // shared env-scrub helper and CCXRAY_HOME does NOT isolate the bucket, so any e2e
 // that boots a full server inherits a developer's exported CCXRAY_EXPORT_GCS_BUCKET
@@ -60,53 +85,24 @@ function configDirsRefusal() {
 // aggregation rather than uploading — those tests must still run.
 // If these two callers drift, startExportSync() announces an exporter that
 // flushExport() then refuses to run — a false positive worse than no message.
-function isExportSuppressed() {
-  // TWO layers, in precedence. A third layer that inferred "this run is synthetic" from
-  // configuration was tried and DELETED: it keyed on CCXRAY_HOME/LOGS_DIR being set, but
-  // ccxray-ops/scripts/deploy-stable.sh launches the REAL hub with
-  // CCXRAY_HOME="$HOME/.ccxray", so it would have switched off production exports while
-  // pruneLogs kept running (codex review round 5, 2026-08-21). An earlier variant sniffed
-  // for temp directories and was wrong in the other direction. There is no reliable
-  // ambient signal for "synthetic" — launchers have to say so.
-  //
-  // CCXRAY_EXPORT_FORCE was removed with that layer: it existed only to lift it, and an
-  // inherited FORCE was itself a hazard (a detached hub inherits its environment).
-
-  // 1. Explicit opt-out. Set by every synthetic launcher: scripts/boot-smoke.sh,
-  //    scripts/perf/measure.js, test/*.sh, the four full-server .test.js spawns, the
-  //    command printed by scripts/generate-screenshot-fixtures.js, shoot-spiral.mjs, the
-  //    smoke command in CLAUDE.md, and the documented boot commands under docs/.
-  //    A new launcher MUST set it — test/export-sync-test-guard.test.js has an
-  //    enumeration check so a missing one fails the suite rather than leaking silently.
-  if (process.env.CCXRAY_EXPORT_DISABLE === '1') return true;
-
-  // 2. Automatic net for `node --test`, which is what `npm test` runs — this is where the
-  //    measured leak happened (GCS objects 136 -> 137 from a synthetic daily row). It is
-  //    deliberately NOT liftable by any env flag. Not sufficient alone: `node
-  //    test/foo.test.js` and `--test-isolation=none` leave NODE_TEST_CONTEXT unset, which
-  //    is why layer 1 is on the launchers too. A non-null `_uploader` means a test injected
-  //    the seam and is asserting on aggregation rather than uploading.
-  if (process.env.NODE_TEST_CONTEXT && !_uploader) return true;
-
-  // 3. Tombstone for a control that never worked. Deliberately LAST: layers 1-2 answer
-  //    "is this run synthetic", which is a different question, and putting this first
-  //    made a smoke run that happens to carry the var print "Export is disabled until
-  //    you unset it" — true, but naming the wrong cause. Anyone who set this believed
-  //    personal sessions were excluded; continuing to upload would preserve exactly
-  //    that false belief, so refusal chooses under-reporting over unintended
-  //    disclosure. Loud on the same channel as the positive signal, so it cannot join
-  //    the "exporter silently went quiet" failure class.
-  if (process.env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined) {
+function shouldBlockExport(env = process.env) {
+  const status = exportStatus(env);
+  if (status.exportReason === 'config-dirs-retired') {
     // Once per process, not once per call. Smoke-measured: a real boot calls this
     // three times (startExportSync, its initial flush, and index.js's
     // sync-before-prune), so an unguarded log printed the same paragraph three times
     // before the first request — noise that reads like three separate faults. The
     // message describes static configuration, so repeating it carries no information.
     if (!_configDirsWarned) { console.log(CONFIG_DIRS_REFUSAL); _configDirsWarned = true; }
-    return true;
   }
+  return status.exportState !== 'enabled';
+}
 
-  return false;
+// Public suppression view: config-dir retirement is a refused config fault, not one of
+// the two suppression reasons. The shared export gate above still preserves the old
+// hard-block and one-time warning behavior for flushExport and startExportSync.
+function isExportSuppressed(env = process.env) {
+  return exportSuppressionReason(env) !== null;
 }
 
 
@@ -183,6 +179,50 @@ function readCursor(cursorPath) {
     }
     return null;
   }
+}
+
+function readExportCursorFacts(home) {
+  const cursorPath = path.join(home, 'export-cursor.json');
+  const base = {
+    home,
+    cursorPath,
+    present: false,
+    mtimeMs: null,
+    lastId: null,
+    partial: null,
+    cutoffDt: null,
+    unreadable: false,
+  };
+
+  let stat;
+  try {
+    stat = fs.statSync(cursorPath);
+  } catch (err) {
+    if (err.code === 'ENOENT') return base;
+    return { ...base, present: true, unreadable: true };
+  }
+
+  let cursor;
+  try {
+    cursor = JSON.parse(fs.readFileSync(cursorPath, 'utf8'));
+  } catch {
+    // This is a read-only status path. In particular, do not call readCursor(): its
+    // recovery policy renames corrupt state, which could make a concurrent flush start
+    // a first run after the status reader destroyed the cursor it was reporting on.
+    return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
+  }
+  if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
+    return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
+  }
+
+  return {
+    ...base,
+    present: true,
+    mtimeMs: stat.mtimeMs,
+    lastId: cursor.lastId ?? null,
+    partial: cursor.partial ?? null,
+    cutoffDt: cursor.cutoffDt ?? null,
+  };
 }
 
 function writeCursor(cursorPath, data) {
@@ -918,9 +958,9 @@ function foldConfidence(counts) {
 
 // ── Flush ──────────────────────────────────────────────────────────────
 async function flushExport() {
-  // INVARIANT: see isExportSuppressed — a real upload must be impossible
+  // INVARIANT: see shouldBlockExport — a real upload must be impossible
   // under `node --test`, and startExportSync must agree with this same predicate.
-  if (isExportSuppressed()) return;
+  if (shouldBlockExport()) return;
 
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
   if (!bucket) return;
@@ -1094,9 +1134,9 @@ async function flushExport() {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
-  // INVARIANT: must share isExportSuppressed with flushExport, or this announces an
+  // INVARIANT: must share shouldBlockExport with flushExport, or this announces an
   // exporter that never flushes.
-  if (isExportSuppressed()) return;
+  if (shouldBlockExport()) return;
 
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
   if (!bucket) return;
@@ -1127,4 +1167,15 @@ async function awaitPendingFlush() {
 }
 
 module.exports = {
-  _resetExportWarnings, configDirsRefusal, startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
+  _resetExportWarnings,
+  configDirsRefusal,
+  exportSuppressionReason,
+  exportStatus,
+  readExportCursorFacts,
+  startExportSync,
+  stopExportSync,
+  flushExport,
+  awaitPendingFlush,
+  isExportSuppressed,
+  _setUploader,
+};

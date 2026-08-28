@@ -35,6 +35,11 @@ Server tests that do not exercise transcript importing must also set
 `$HOME/.claude*` and `$HOME/.codex*/sessions`; isolating `CCXRAY_HOME` alone
 does not stop an active local agent session from contaminating a proxy test.
 
+Exporter status tests may create `export-cursor.json` fixtures under the isolated
+home. The absent, valid, and corrupt cursor shapes are intentional test data; a
+corrupt-cursor status read must leave the original file and directory entries
+unchanged.
+
 For in-process tests, set it before requiring any module that captures it at
 load time:
 

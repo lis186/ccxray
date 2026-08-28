@@ -67,7 +67,40 @@ function rejectedRootValues(rawValue) {
   return String(rawValue).split(',').map(v => v.trim()).filter(v => v && !path.isAbsolute(v));
 }
 
-// The refusal as a VALUE, for the foreground client. warnRelativeRoots writes to
+function rawWarningArgs(args) {
+  try {
+    const encoded = JSON.stringify(args);
+    return encoded === undefined ? String(args) : encoded;
+  } catch {
+    return String(args);
+  }
+}
+
+function renderConfigWarning(warning) {
+  const code = typeof warning?.code === 'string' ? warning.code : String(warning?.code);
+  if (code === 'relative-import-root'
+    && typeof warning?.args?.variable === 'string'
+    && Array.isArray(warning.args.values)) {
+    return warning.args.variable + ': '
+      + warning.args.values.map(value => JSON.stringify(value)).join(', ');
+  }
+  // Unknown codes must remain visible to an older surface. Dropping them would turn
+  // producer/surface skew into silent loss of a configuration diagnostic.
+  return code + ': ' + rawWarningArgs(warning?.args);
+}
+
+function codedConfigWarning(code, args) {
+  const warning = { code, args };
+  // server/index.js predates coded warnings and interpolates each complaint directly.
+  // Keep that call site's rendered bytes stable without putting prose in the producer;
+  // the compatibility coercion delegates to the single renderer above.
+  Object.defineProperty(warning, 'toString', {
+    value() { return renderConfigWarning(this); },
+  });
+  return warning;
+}
+
+// The complaint as a VALUE, for the foreground client. warnRelativeRoots writes to
 // stderr, which is correct for a standalone run but NOT sufficient under `ccxray
 // <agent>`: hub.js spawns the hub with `stdio: ['ignore', fd, fd]`, so both streams go
 // to hub.log and no one reads it. Not being muted is not the same as being reachable —
@@ -78,7 +111,9 @@ function relativeRootComplaints(env = process.env) {
     const raw = env[name];
     if (raw === undefined) continue;
     const bad = rejectedRootValues(raw);
-    if (bad.length) out.push(`${name}: ${bad.map(v => JSON.stringify(v)).join(', ')}`);
+    if (bad.length) {
+      out.push(codedConfigWarning('relative-import-root', { variable: name, values: bad }));
+    }
   }
   return out;
 }
@@ -675,6 +710,7 @@ async function scanAndImportTranscript(target = {}) {
 
 module.exports = {
   relativeRootComplaints,
+  renderConfigWarning,
   _resetRootWarnings,
   scanAndImport,
   scanAndImportTranscript,
