@@ -2998,11 +2998,18 @@ describe('Herdr sidebar import freshness', () => {
     }
     assert.ok(resolved && typeof resolved === 'object' && resolved.file,
       `an aliased Codex home must not make its own transcript ambiguous (got ${lookup.stdout})`);
-    // NOT realpath on the expectation here, unlike the Claude sibling test: matching
-    // core means identity by inode with the ORIGINAL path pushed, so the ambient Codex
-    // path deliberately no longer canonicalizes what it returns. The configured path
-    // still does. Asserting the raw fixture path is what pins that difference.
-    assert.equal(resolved.file, rollout);
+    // Which of `.codex` / `.codex-alias` wins depends on readdirSync order, which is
+    // not guaranteed — so assert IDENTITY (same inode as the fixture), not one spelling
+    // of the path. That is also the property the fix is about: one store must resolve
+    // to one transcript however its aliases are ordered. The path shape is pinned
+    // separately below.
+    assert.equal(fs.statSync(resolved.file).ino, fs.statSync(rollout).ino,
+      'the alias and the real home must resolve to the same transcript');
+    // Ambient Codex roots deliberately do NOT canonicalize (matching core's inode
+    // identity, which pushes the original path), unlike the configured path and unlike
+    // the Claude sibling. Pinning this keeps that asymmetry visible if it ever changes.
+    assert.ok(!resolved.file.startsWith('/private/'),
+      'ambient Codex roots return the un-canonicalized path');
   });
 
   it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {

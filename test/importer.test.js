@@ -826,3 +826,40 @@ describe('codex importer', () => {
     });
   });
 });
+
+describe('import root contract', () => {
+  it('rejects relative roots and reports once per distinct value', () => {
+  const importer = require('../server/importer');
+  const saved = process.env.CCXRAY_IMPORT_HOMES;
+  const errs = [];
+  const origErr = console.error;
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    importer._resetRootWarnings();
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-one,rel-two';
+    assert.deepEqual(importer.discoverHomes(), [], 'no absolute entry means no roots');
+    assert.equal(errs.length, 1, 'both bad values in one message');
+    assert.match(errs[0], /rel-one/);
+    assert.match(errs[0], /rel-two/);
+
+    // Same values again, in the other order: already seen, so silent. Keying the
+    // joined list instead of each value made a reorder re-warn.
+    importer.discoverHomes();
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-two,rel-one';
+    importer.discoverHomes();
+    assert.equal(errs.length, 1, 'a reorder of seen values is not news');
+
+    // A genuinely new bad value IS news, and only that value is named.
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-one,rel-three';
+    importer.discoverHomes();
+    assert.equal(errs.length, 2);
+    assert.match(errs[1], /rel-three/);
+    assert.ok(!errs[1].includes('rel-one'), 'an already-reported value is not repeated');
+  } finally {
+    console.error = origErr;
+    if (saved === undefined) delete process.env.CCXRAY_IMPORT_HOMES;
+    else process.env.CCXRAY_IMPORT_HOMES = saved;
+    importer._resetRootWarnings();
+  }
+});
+});

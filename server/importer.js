@@ -47,13 +47,24 @@ function slugToProject(slug) {
 const _warnedRoots = new Set();
 function _resetRootWarnings() { _warnedRoots.clear(); }
 function warnRelativeRoots(envName, values) {
-  if (!values.length) return;
-  const key = `${envName}\u0000${values.join('\u0000')}`;
-  if (_warnedRoots.has(key)) return;
-  _warnedRoots.add(key);
-  console.error(`[ccxray] ${envName}: ignoring non-absolute ${values.length === 1 ? 'path' : 'paths'} `
-    + `${values.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
+  // Keyed per (variable, VALUE), not per rejected-list: keying the joined list meant
+  // `bad1,bad2` -> `bad1,bad3` re-reported bad1, and merely reordering the same two
+  // values warned again. Only genuinely unseen values are news.
+  const unseen = values.filter(v => {
+    const key = `${envName}\u0000${v}`;
+    if (_warnedRoots.has(key)) return false;
+    _warnedRoots.add(key);
+    return true;
+  });
+  if (!unseen.length) return;
+  console.error(`[ccxray] ${envName}: ignoring non-absolute ${unseen.length === 1 ? 'path' : 'paths'} `
+    + `${unseen.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
     + '(the projects/ or sessions/ directory itself).');
+}
+
+// One predicate, so what the client reports and what the parser rejects cannot drift.
+function rejectedRootValues(rawValue) {
+  return String(rawValue).split(',').map(v => v.trim()).filter(v => v && !path.isAbsolute(v));
 }
 
 // The refusal as a VALUE, for the foreground client. warnRelativeRoots writes to
@@ -66,8 +77,7 @@ function relativeRootComplaints(env = process.env) {
   for (const name of ['CCXRAY_IMPORT_HOMES', 'CCXRAY_IMPORT_CODEX_HOMES']) {
     const raw = env[name];
     if (raw === undefined) continue;
-    const bad = String(raw).split(',').map(v => v.trim())
-      .filter(v => v && !path.isAbsolute(v));
+    const bad = rejectedRootValues(raw);
     if (bad.length) out.push(`${name}: ${bad.map(v => JSON.stringify(v)).join(', ')}`);
   }
   return out;
