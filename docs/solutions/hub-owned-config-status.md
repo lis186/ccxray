@@ -198,10 +198,32 @@ an isolated test or smoke run. "Is this home exporting" is answerable; "is this 
 exporting" was not.
 
 **Identity tuple (reviewer B; `home` added in rev 4).** Every process-level report carries
-`{kind: 'hub' | 'standalone' | 'agent-port', pid, port, home}`. "Names its exporter" was
+`{kind: 'hub' | 'standalone' | 'agent-port' | 'client', pid, port, home}`. "Names its exporter" was
 not a specification, and `ccxray status`'s `Machine:` JSON omits `pid` today
 (`server/index.js:1017-1019`) while the human line above it has one — so a machine
 consumer cannot distinguish two exporters at all.
+
+**A fourth kind, and why three was a lie (rev 4, found implementing Unit 2).** `kind` is
+`'hub' | 'standalone' | 'agent-port' | 'client'`. The first three enumerate EXPORTERS; the
+fourth exists because the hub-client process is not one, and the three-value set forced it
+to claim it was.
+
+The signal combination that reaches the client path is exactly
+`!hubMode && !explicitPort && agentNamed && platform !== 'win32'` — that is the negation of
+`server/index.js`'s `if (hubMode || explicitPort || !agentMode) { await startServer(); }`,
+plus the Windows branch below it. A three-value mapping has nowhere to put it and lands it
+on `hub`. But `startExportSync()` is called inside `startServer()` (`index.js:1223`), which
+that process never reaches, so it exports nothing — while `assembleExportReport` would fill
+`pid` from `process.pid` and `home` from its own env. The result is a hub identity
+FABRICATED FROM CLIENT DATA: this document's defect, reproduced inside the mechanism built
+to remove it.
+
+Naming the kind is necessary but not sufficient, because a client's `exportState` would
+still be computed from the client's environment — the §2.3 prohibition, one field over. So
+for `kind: 'client'` the report carries `exportState: null`, `exportReason: null`, and an
+empty `configWarnings`: this process is not an exporter and has nothing to say about one.
+That composes with §2.4, which already requires a reader to treat absent state as "cannot
+tell" and stay silent rather than fall back to local env.
 
 `home` is the exporter's resolved `CCXRAY_HOME` (`resolveCcxrayHome(env)` in that
 process), and it is load-bearing rather than descriptive. The home-level cursor read is
