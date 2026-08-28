@@ -361,7 +361,7 @@ function handleSocketCommand(msg, socket) {
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
       addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
-      socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty, ...assembleExportReport() }) + '\n');
+      socket.write(JSON.stringify({ ...assembleExportReport(), ok: true, firstClient: wasEmpty }) + '\n');
       break;
     }
     case 'unregister':
@@ -486,6 +486,7 @@ const clients = new Map(); // pid → { cwd, connectedAt, agentId?, userEmail?, 
 let idleTimer = null;
 let deadCheckInterval = null;
 let hubListenPort = null; // set once at startup, survives lockfile deletion
+let identityPort = null; // this process's own listener, never read from the hub lockfile
 let onShutdown = null; // injectable shutdown handler (default: process.exit)
 
 function clientIdentityFromMessage(msg) {
@@ -583,6 +584,8 @@ function startDeadClientCheck() {
 
 function setHubPort(port) { hubListenPort = port; }
 
+function setIdentityPort(port) { identityPort = port; }
+
 function currentHubPort() {
   return hubListenPort || readHubLock()?.port;
 }
@@ -599,7 +602,7 @@ function assembleExportReport(env = process.env) {
     identity: {
       kind,
       pid: process.pid,
-      port: currentHubPort() ?? null,
+      port: kind === 'client' ? null : identityPort,
       home: resolveCcxrayHome(env),
     },
   };
@@ -841,6 +844,7 @@ module.exports = {
   shutdownHub,
   startDeadClientCheck,
   setHubPort,
+  setIdentityPort,
   getHubStatus,
   handleHubRoutes,
   probePortOccupant,

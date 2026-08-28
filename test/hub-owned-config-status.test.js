@@ -27,14 +27,16 @@ const hub = require('../server/hub');
 
 hub.setOnShutdown(() => {});
 hub.setHubPort(5577);
+hub.setIdentityPort(5577);
 
 function reportFields(value) {
-  return {
-    exportState: value.exportState,
-    exportReason: value.exportReason,
-    configWarnings: value.configWarnings,
-    identity: value.identity,
-  };
+  const protocolKeys = new Set([
+    'app', 'port', 'pid', 'version', 'uptime', 'clients',
+    'ok', 'firstClient',
+  ]);
+  return Object.fromEntries(
+    Object.entries(value).filter(([key]) => !protocolKeys.has(key))
+  );
 }
 
 function setEnv(env) {
@@ -83,6 +85,7 @@ after(async () => {
   clearClients();
   if (socketServer) await new Promise(resolve => socketServer.close(resolve));
   hub.setHubPort(null);
+  hub.setIdentityPort(null);
   for (const [key, value] of Object.entries(originalEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -149,6 +152,36 @@ describe('hub-owned export/config status', () => {
     });
   });
 
+  it('does not borrow the hub lock port for a non-hub identity', () => {
+    const lockPort = 59999;
+    const ownPort = 45555;
+    fs.writeFileSync(hub.HUB_LOCK_PATH, JSON.stringify({ port: lockPort }));
+    hub.setLaunchSignals({
+      hubMode: false,
+      explicitPort: true,
+      agentNamed: true,
+      platform: 'darwin',
+    });
+    hub.setIdentityPort(ownPort);
+
+    try {
+      const report = hub.assembleExportReport({ CCXRAY_HOME: testHome });
+      assert.equal(report.identity.kind, 'agent-port');
+      assert.equal(report.identity.port, ownPort);
+      assert.notEqual(report.identity.port, lockPort,
+        'a non-hub identity must not name the hub lockfile port');
+    } finally {
+      fs.rmSync(hub.HUB_LOCK_PATH, { force: true });
+      hub.setIdentityPort(5577);
+      hub.setLaunchSignals({
+        hubMode: true,
+        explicitPort: true,
+        agentNamed: false,
+        platform: process.platform,
+      });
+    }
+  });
+
   it('does not report client-environment exporter facts through either carrier', async () => {
     const pid = 31050;
     hub.setLaunchSignals({
@@ -176,7 +209,7 @@ describe('hub-owned export/config status', () => {
         identity: {
           kind: 'client',
           pid: process.pid,
-          port: 5577,
+          port: null,
           home: testHome,
         },
       });

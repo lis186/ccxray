@@ -1313,6 +1313,7 @@ async function startServer() {
   } else {
     actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
   }
+  hub.setIdentityPort(actualPort);
   rebuildIndexHTML(actualPort);
 
   runPostListenStartupTasks();
