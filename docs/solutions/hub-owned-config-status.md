@@ -353,9 +353,42 @@ yet no flush has ever completed.
 
 **Panel record.** sol: do not compare — grounds (a) the `LOGS_DIR` domain mismatch and
 (b) cost. Fable: compare, with the state set above, refuting (b) with the bounded-tail
-precedent. Verified here: (b) is refuted, (a) is real and Fable never engaged it (the
-challenge was put to it explicitly and its reply did not mention `LOGS_DIR`). The shipped
-answer takes Fable's mechanism under sol's constraint. Fable additionally caught an
+precedent. (b) is refuted and was never load-bearing: sol's full-scan figure describes the
+EXISTING interface, which Fable had already rejected, and sol's own mitigation is Fable's
+proposal verbatim.
+
+(a) is real. Fable's first answer did not mention it; on an explicit re-ask it conceded (a)
+as a defect in its own stated design ("read the tail from the home") and then showed the
+concession does not reach the conclusion sol drew from it. **(a) indicts every design on
+the table equally** — sol's replacement ("render an honest historical cursor line", and
+alarm on no-cursor + enabled) also reads a cursor from a home somebody resolved, and
+`LOGS_DIR` is frozen into a detached hub at fork exactly like `CCXRAY_HOME` (§1). So (a)
+selects for NAMING the domain, not for dropping the comparison.
+
+**Why dropping it loses, and this is the argument that settled it.** sol's alarm covers
+only the no-cursor case, which per the crossing above fires when `flushExport` dies before
+its FIRST write — seconds after first boot. The dominant mid-life failure is different:
+credentials die after months of working, `await upload(...)` throws at
+`export-sync.js:1107` BEFORE the cursor write at `:1112`, and the cursor is left PRESENT
+with a frozen `lastId` while the tail advances. Under sol's design that home renders
+identically to a healthy idle home, permanently — §2.1's own dead-ADC worry ("would have
+reported `active` forever") reintroduced as permanent silence instead of a wrong word.
+Under the shipped design it is state `behind-overdue`, hardened to "uploads are failing"
+when a same-domain report says `enabled`. Verified against source here (`:1107` precedes
+`:1112`).
+
+The shipped answer takes Fable's mechanism under sol's constraint. Neither model proposed
+it: sol found the hazard and over-generalised from it, Fable built the mechanism and
+initially resolved the domain the reader's way.
+
+**Residuals Fable named and this design accepts.** (i) With no reachable process the
+fallback resolves both paths from the reader's env and can name the wrong domain — the
+mitigation is printing both paths it read, the same accepted residual §2.3/§4 already
+carries for `home`. (ii) Two exporters sharing one home with different `LOGS_DIR` values
+share one cursor across two indexes; that is already incoherent inside the exporter
+(`lastId` from index A is never found in index B → `cursorLineIdx = -1` → `startIdx = 0`
+→ full re-aggregate, `export-sync.js:1047-1052`), a pre-existing hazard this line inherits
+and cannot cause. Fable additionally caught an
 inverted mechanism citation in §2.3 above, now corrected — the conclusion was unaffected
 but the cited lines said the opposite of the code.
 
