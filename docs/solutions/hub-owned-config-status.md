@@ -184,9 +184,12 @@ Across homes there is no shared fact and none is invented — which is the same 
 §4 already applies to non-hub multi-process setups.
 
 **What a cursor advance does and does not attest**, in the same spirit as `enabled` not
-being `active` (§2.1). The cursor is written on the first run, and again when the index
-tail has not moved (`export-sync.js:960-995`), so a fresh mtime proves *the exporter ran
-and consumed the index* — not that an object reached GCS. That is the strongest fact
+being `active` (§2.1). The cursor is written on the first run (`export-sync.js:1002-1010`),
+on floor repair (`:1013-1023`), and when the tail HAS moved but produced no aggregate
+(`:1031-1041`) — and NOT written at all when the tail is unchanged, because `:1027`
+returns first. So a fresh mtime proves *the exporter ran and consumed new index entries*
+— not that an object reached GCS — and a stale mtime proves nothing whatsoever, because
+an idle home legitimately never writes. That is the strongest fact
 available without asking the network, and it is worth exactly what it says. The home line
 must not be phrased as "data is reaching the bucket"; `first run — no backfill` is
 carried as `partial` in the cursor and belongs in the rendered line rather than being
@@ -294,6 +297,68 @@ Reviewer A added the sharper form: if the render is not shared, a separate `stat
 trip the client can repeat is the safer carrier than the register reply. Shared render is
 the cheaper of the two and is what §2.1 assumes; if implementation finds the recovery path
 cannot cleanly reach it, fall back to the separate call rather than duplicating the render.
+
+### 2.6 The home-level line: what it compares, and when it may compare at all
+
+Decided 2026-08-29 by an adversarial pair — Fable and gpt-5.6-sol at high effort, each
+answering the same question independently. They disagreed, each was right about a
+different half, and neither proposal is what ships.
+
+**The mechanism is a comparison, not a threshold.** `cursor.lastId` is compared against
+the index tail id. This is the same equality the flush itself evaluates (`:1027`), so
+`lastId === tailId` states precisely "the next flush would no-op" — a positive claim mtime
+cannot express. mtime survives only inside the `behind` branch, as a qualifier
+distinguishing `pending` (younger than 2× `FLUSH_INTERVAL_MS`, the interval plus one
+skipped-tick's slack for a flush that lost `export.lock`) from `overdue`, and `overdue` is
+worded as a conditional with a re-check horizon, never as a verdict.
+
+States: `cursor-unreadable` · `no-index` · `never-flushed` · `current` (with a `partial`
+qualifier that must not be smoothed away) · `behind-pending` · `behind-overdue`. The
+naive mtime threshold cried wolf on every idle home, unbounded; here idle homes are
+`current` and structurally exempt, and the residual false positive is a just-resumed home
+for at most one interval, self-healing.
+
+**The precondition, which is the part neither model had whole.** The cursor lives at
+`<home>/export-cursor.json`, but the index lives at `resolveLogsDir(env)` =
+`LOGS_DIR || <home>/logs` (`server/paths.js:16-22`; the exporter reads it through
+`config.LOGS_DIR`, `server/config.js:280` → `server/storage/local.js:29`). `LOGS_DIR` is
+independent of `CCXRAY_HOME`, so a reader that resolves the index from its OWN
+environment can compare a cursor against an index the exporter never read — §1's
+wrong-subject defect, re-entering through the fix for it. The in-repo bounded-tail
+precedent demonstrates the hazard rather than avoiding it:
+`plugins/herdr/bin/lib/ccxray.js:247` resolves its path from `opts.env || process.env`.
+
+So the identity tuple gains `logsDir` beside `home`, and **the comparison is attempted
+only against a domain the reporting process named**, whose `home` matches the home being
+reported on. With no reachable report naming both, the reader does not compare and does
+not guess: it renders the non-determination state that already exists for this case
+("never flushed; no exporter process reachable — cannot tell whether export is configured
+for this home"), the §8 shape. This adds no state to the set; it adds a precondition to
+one branch.
+
+**Cost is not an objection.** Reading the tail the way the flush does is a full scan —
+`export-sync.js:991-993` materializes every line and `readIndexLines` streams from the
+start (`server/storage/local.js:108`) against an index measured at hundreds of MB. The
+tail id needs only `open` + `fstat` + the last ~64 KB scanned backwards, size-independent;
+the bounded-read pattern is already in-repo and blessed by ADR 0019. A torn final line is
+tolerated the way `:998-1000` tolerates it: widen once, then render `index tail unreadable`
+rather than guess.
+
+**No cursor × process state.** `startExportSync` fires an immediate flush (`:1149`) and the
+first run writes the cursor even on an empty index, so an `enabled` exporter creates it
+within seconds of boot. `unconfigured` and `suppressed` crossed with never-flushed are
+expected and healthy; `refused` is already its own alarm and never-flushed merely
+corroborates it; **`enabled` × never-flushed is the real cross-layer alarm** — configured,
+yet no flush has ever completed.
+
+**Panel record.** sol: do not compare — grounds (a) the `LOGS_DIR` domain mismatch and
+(b) cost. Fable: compare, with the state set above, refuting (b) with the bounded-tail
+precedent. Verified here: (b) is refuted, (a) is real and Fable never engaged it (the
+challenge was put to it explicitly and its reply did not mention `LOGS_DIR`). The shipped
+answer takes Fable's mechanism under sol's constraint. Fable additionally caught an
+inverted mechanism citation in §2.3 above, now corrected — the conclusion was unaffected
+but the cited lines said the opposite of the code.
+
 
 ## 3. Test matrix — the part the last three rounds died on
 
