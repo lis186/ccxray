@@ -94,8 +94,28 @@ if (process.argv[2] === 'secret') {
 // index has fallen behind. Appends index lines only; see server/import-once.js
 // for why it does not refuse while a hub is running.
 if (process.argv[2] === 'import') {
+  const targetAt = process.argv.indexOf('--target-transcript');
+  const argValue = name => {
+    const at = process.argv.indexOf(name);
+    return at >= 0 ? process.argv[at + 1] : null;
+  };
+  if (targetAt >= 0) {
+    const target = {
+      file: process.argv[targetAt + 1],
+      provider: argValue('--provider'),
+      sessionId: argValue('--session-id'),
+      cwd: argValue('--cwd'),
+    };
+    require('./import-once').importTargeted({ target })
+      // Let Node drain piped stdout. The detached repair worker consumes this
+      // JSON; process.exit() can truncate it and turn a successful import into
+      // an apparent failure.
+      .then(r => { console.log(JSON.stringify(r)); process.exitCode = r.ok && r.ran ? 0 : 1; })
+      .catch(err => { console.error(`targeted import failed: ${err.message}`); process.exitCode = 1; });
+    return;
+  }
   if (!process.argv.includes('--once')) {
-    console.error('\x1b[31mError: unknown import mode. Supported: ccxray import --once\x1b[0m');
+    console.error('\x1b[31mError: unknown import mode. Supported: ccxray import --once or --target-transcript\x1b[0m');
     process.exit(1);
   }
   require('./import-once').importOnce({ force: process.argv.includes('--force') })

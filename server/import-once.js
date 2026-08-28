@@ -27,6 +27,7 @@ const LOCK_PID_REUSE_MS = 60 * 60 * 1000;
 // Bounds a genuinely wedged scan. Deliberately far above the throttle so a slow
 // but working import is never killed mid-append.
 const WATCHDOG_MS = 30 * 60 * 1000;
+const TARGET_WATCHDOG_MS = 30 * 1000;
 const DEFAULT_MIN_INTERVAL_MS = 10 * 60 * 1000;
 
 function ccxrayHome(env = process.env) {
@@ -277,7 +278,66 @@ async function importOnce(opts = {}) {
   };
 }
 
+async function importTargeted(opts = {}) {
+  const env = opts.env || process.env;
+  if (env !== process.env) return { ok: false, ran: false, reason: 'env-not-supported' };
+
+  const rawWatchdog = Number(env.CCXRAY_IMPORT_TARGET_WATCHDOG_MS);
+  const watchdogMs = Number.isFinite(rawWatchdog) && rawWatchdog >= 1000
+    ? Math.min(rawWatchdog, 2 * 60 * 1000)
+    : TARGET_WATCHDOG_MS;
+  const deadline = Date.now() + watchdogMs;
+  let lock = null;
+  const watchdog = setTimeout(() => {
+    releaseLock(lock);
+    process.exit(1);
+  }, watchdogMs);
+  if (typeof watchdog.unref === 'function') watchdog.unref();
+
+  try {
+    // refresh-all fans pane workers out close together. A held lock means one
+    // of those exact targeted imports is already appending, not that this target
+    // is redundant. Wait inside the same overall watchdog rather than dropping
+    // every repair except the first or launching concurrent appenders.
+    while (Date.now() < deadline) {
+      lock = acquireLock(env, Date.now());
+      if (lock.ok || lock.reason !== 'locked') break;
+      await new Promise(resolve => setTimeout(resolve, Math.min(50, deadline - Date.now())));
+    }
+    if (!lock?.ok) {
+      return {
+        ok: false,
+        ran: false,
+        reason: lock?.reason === 'locked' || !lock ? 'lock-timeout' : lock.reason,
+        pid: lock?.pid || null,
+      };
+    }
+
+    process.env.CCXRAY_SESSION_INDEX_NO_FLUSH = '1';
+    await require('./config').storage.init();
+    const result = await require('./importer').scanAndImportTranscript(opts.target);
+    return {
+      ok: true,
+      ran: true,
+      imported: result.imported,
+      duplicatesSkipped: result.skipped,
+      exactEvidence: result.exactEvidence || null,
+      contextSamples: Array.isArray(result.contextSamples) ? result.contextSamples : [],
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      ran: true,
+      reason: 'target-import-failed',
+      error: String(error && error.message || error),
+    };
+  } finally {
+    clearTimeout(watchdog);
+    releaseLock(lock);
+  }
+}
+
 module.exports = {
-  importOnce, acquireLock, releaseLock, statePath, lockPath, pidAlive,
+  importOnce, importTargeted, acquireLock, releaseLock, statePath, lockPath, pidAlive,
   LOCK_PID_REUSE_MS,
 };

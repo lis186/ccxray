@@ -163,7 +163,7 @@ also writes two tiny child-process entrypoints (a surrogate parent and a
 fixtures, not tests; generating them outside `test/` keeps them invisible to
 `node --test` auto-discovery.
 
-The Herdr badge's staleness check is a second reader of that layer, and it runs
+The Herdr badge's staleness/link-repair check is a second reader of that layer, and it runs
 **in-process** rather than in a fork. `evidenceStaleness` (`plugins/herdr/bin/
 lib/ccxray.js`) stats and reads `$HOME/.claude*/projects/<slug>/<sessionId>.jsonl`
 to decide whether a transcript holds turns ccxray never logged — a scan root
@@ -172,9 +172,15 @@ process, a throwaway `$HOME` is not an option (it would take the puppeteer cache
 with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
 `server/importer.js` honours, and the plugin treats its value as the `projects/`
 root verbatim. A test that exercises staleness without it silently reads the
-developer's real transcripts. Two mechanisms guard this in
+developer's real transcripts. Codex repair uses the parallel
+**`CCXRAY_IMPORT_CODEX_HOMES`** override: its value is the `sessions/` root, and
+the plugin inspects only the UUIDv7 session's UTC date plus the adjacent two
+date directories. It never recursively scans that root. `pluginEnv()` defaults
+both variables to separate empty roots; a direct Codex repair fixture must set
+both explicitly. Two mechanisms guard the Claude path in
 `test/herdr-plugin.test.js`. The structural one is `pluginEnv()` defaulting
-`CCXRAY_IMPORT_HOMES` to the empty `NO_TRANSCRIPTS` root for every spawned
+`CCXRAY_IMPORT_HOMES` and `CCXRAY_IMPORT_CODEX_HOMES` to the empty
+`NO_TRANSCRIPTS` / `NO_CODEX_TRANSCRIPTS` roots for every spawned
 script (overridable per test). The second is a lint-class audit test (`audit:
 sessionSummaryDetails call sites pin CCXRAY_IMPORT_HOMES`): any
 `sessionSummaryDetails` call span that literally contains `CCXRAY_HOME`

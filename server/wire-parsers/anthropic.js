@@ -24,20 +24,37 @@ function extractUsage(resData) {
   if (!Array.isArray(resData)) return null;
   const msgStart = resData.find(e => e.type === 'message_start');
   const msgDelta = resData.find(e => e.type === 'message_delta');
-  const u = msgStart?.message?.usage || {};
+  const rawUsage = msgStart?.message?.usage ?? msgDelta?.usage;
+  if (rawUsage == null) return null;
+  const u = rawUsage;
   const result = {
-    input_tokens: u.input_tokens || 0,
-    output_tokens: msgDelta?.usage?.output_tokens || u.output_tokens || 0,
-    cache_creation_input_tokens: u.cache_creation_input_tokens || 0,
-    cache_read_input_tokens: u.cache_read_input_tokens || 0,
+    input_tokens: Number.isFinite(Number(u.input_tokens)) ? Number(u.input_tokens) : 0,
+    output_tokens: Number.isFinite(Number(msgDelta?.usage?.output_tokens))
+      ? Number(msgDelta.usage.output_tokens)
+      : (Number.isFinite(Number(u.output_tokens)) ? Number(u.output_tokens) : 0),
+    cache_creation_input_tokens: Number.isFinite(Number(u.cache_creation_input_tokens))
+      ? Number(u.cache_creation_input_tokens) : 0,
+    cache_read_input_tokens: Number.isFinite(Number(u.cache_read_input_tokens))
+      ? Number(u.cache_read_input_tokens) : 0,
   };
   if (u.cache_creation && typeof u.cache_creation === 'object') {
     result.cache_creation = {
-      ephemeral_5m_input_tokens: u.cache_creation.ephemeral_5m_input_tokens || 0,
-      ephemeral_1h_input_tokens: u.cache_creation.ephemeral_1h_input_tokens || 0,
+      ephemeral_5m_input_tokens: Number.isFinite(Number(u.cache_creation.ephemeral_5m_input_tokens))
+        ? Number(u.cache_creation.ephemeral_5m_input_tokens) : 0,
+      ephemeral_1h_input_tokens: Number.isFinite(Number(u.cache_creation.ephemeral_1h_input_tokens))
+        ? Number(u.cache_creation.ephemeral_1h_input_tokens) : 0,
     };
   }
   return result;
+}
+
+function hasContextUsage(resData) {
+  if (!resData) return false;
+  if (!Array.isArray(resData)) return helpers.hasContextUsage(resData.usage || resData);
+  const msgStart = resData.find(e => e.type === 'message_start');
+  const msgDelta = resData.find(e => e.type === 'message_delta');
+  return helpers.hasContextUsage(msgStart?.message?.usage)
+    || helpers.hasContextUsage(msgDelta?.usage);
 }
 
 // ── extractResponseId ───────────────────────────────────────
@@ -80,7 +97,10 @@ function computeConvId(parsedBody) {
 
 function buildEntryFields(ctx) {
   const { parsedBody } = ctx;
-  const usage = ctx.usage || extractUsage(ctx.events) || null;
+  const usage = ctx.usage ?? extractUsage(ctx.events) ?? null;
+  const contextUsageKnown = typeof ctx.contextUsageKnown === 'boolean'
+    ? ctx.contextUsageKnown
+    : (ctx.usage != null ? helpers.hasContextUsage(ctx.usage) : hasContextUsage(ctx.events));
   const model = parsedBody?.model || null;
   const isSubagent = ctx.isSubagent != null ? ctx.isSubagent : store.isAnthropicSubagent(parsedBody);
   return {
@@ -95,6 +115,7 @@ function buildEntryFields(ctx) {
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
     usage,
+    contextUsageKnown,
     cost: calculateCost(usage, model),
     maxContext: config.inferMaxContext(model, parsedBody?.system, usage, { beta1m: ctx.beta1m }),
     // #339: persist the authoritative 1M signal (not just its effect on maxContext) so
@@ -242,6 +263,7 @@ function extractAnthropicToolCallIds(resData) {
 module.exports = {
   isNoiseRequest,
   extractUsage,
+  hasContextUsage,
   extractResponseId,
   extractTurnToolCalls,
   extractAnthropicToolCallIds,

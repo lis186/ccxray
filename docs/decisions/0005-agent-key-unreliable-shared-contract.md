@@ -71,6 +71,16 @@ outside a ccxray checkout has no core file, and degrades to the raw-flag tier).
 The predicate stays local. Recording this so a later reader does not "unify"
 a deliberate divergence away; it is not a new consumer row.
 
+`mainDisplayTurns` has one additional fallback for provider records that omit
+`agentKey` after a session has already emitted classified main turns:
+`agentKey == null && isSubagent === false` is included in the mixed main fold.
+A null key is missing classification data, not an authoritative subagent
+classification. Explicit non-main keys (including `agent` and
+`general-purpose`, as well as other non-null keys outside
+`WF_MAIN_AGENT_KEYS`) remain excluded when a positive main key is present.
+This preserves the badge's precision rule while keeping the latest Codex main
+turn from being replaced by an older classified turn.
+
 **Consistency obligation this creates inside the plugin.** Having two rules
 means the plugin's own sites must agree with each other. They did not:
 `paneSessionTelemetry` selected "main" with raw `!isSubagent` while

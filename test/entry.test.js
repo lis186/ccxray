@@ -18,7 +18,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
-    'ctxBeta','parentSessionId','compacted',
+    'ctxBeta','parentSessionId','compacted','contextUsageKnown',
   ]);
 });
 
@@ -36,6 +36,11 @@ test('buildIndexLine persists an explicit compaction boundary', () => {
   assert.equal(compacted.compacted, true);
   const ordinary = JSON.parse(buildIndexLine({ id: 'ordinary' }));
   assert.ok(!('compacted' in ordinary));
+});
+
+test('buildIndexLine persists false context usage provenance', () => {
+  const line = JSON.parse(buildIndexLine({ id: 'unknown-context', contextUsageKnown: false }));
+  assert.equal(line.contextUsageKnown, false);
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {

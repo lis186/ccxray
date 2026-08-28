@@ -131,6 +131,18 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.equal(mergeByResponseId([a, b])[0].ctxBeta, 'context-1m-2025-08-07');
   });
 
+  it('preserves explicit context usage provenance across a duplicate merge', () => {
+    const canonical = { id: 'p1', responseId: 'R-context', receivedAt: 1, contextUsageKnown: false, usage: null };
+    const usageCopy = {
+      id: 'p2', responseId: 'R-context', receivedAt: 2,
+      contextUsageKnown: true, usage: { input_tokens: 0, output_tokens: 2 },
+      cost: { cost: 0.01 },
+    };
+    const out = mergeByResponseId([canonical, usageCopy]);
+    assert.equal(out[0].contextUsageKnown, true);
+    assert.deepEqual(out[0].usage, usageCopy.usage);
+  });
+
   it('#420 codex R2 M2: on equal usage a priced cost beats an unpriced canonical', () => {
     // Chained-proxy shape: an outdated hop has no rate (unknown, cost null),
     // the updated hop priced the same response. Identical usage tuples tied the

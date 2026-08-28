@@ -7,6 +7,7 @@ const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/cc
 const {
   DEFAULT_ROWS,
   MANAGED_TOKENS,
+  SPACES_SECTION_MARKER,
   SECTION_MARKER,
 } = require('./install-sidebar-summary');
 
@@ -14,7 +15,7 @@ const {
 // `summary` and the single `ctx_bar` are gone from fresh installs but still sit
 // in configs written before the three-row layout, and uninstall has to clean
 // those too.
-const TOKENS = [...MANAGED_TOKENS, 'summary', 'ctx_bar'];
+const TOKENS = [...MANAGED_TOKENS, 'xray', 'summary', 'ctx_bar'];
 // The skeleton install-sidebar-summary writes when it creates the table itself.
 // Removal drops the whole table only when it still matches this exactly, so a
 // table the user wrote (or later edited) keeps its other rows.
@@ -29,10 +30,14 @@ const LEGACY_DEFAULT_ROWS = [
   '["agent"],',
 ];
 const NEW_DEFAULT_ROWS = DEFAULT_ROWS.split('\n').map(line => line.trim());
+const NEW_IDENTITY_ROW_RE = /^[ \t]*(\["state_icon",\s*\{\s*token\s*=\s*"\$who"[^\n]*\}\],?)[ \t]*$/gm;
+const RESTORED_IDENTITY_ROW = '  ["state_icon", "agent", "state_text"],';
 function makeSkeleton(defaults) {
   return ['[ui.sidebar.agents]', 'row_gap = 0', 'rows = [', ...defaults, ']'].join('\n');
 }
 const MANAGED_SKELETONS = [makeSkeleton(NEW_DEFAULT_ROWS), makeSkeleton(LEGACY_DEFAULT_ROWS)];
+const WORKSPACE_SKELETON = ['[ui.sidebar.spaces]', 'row_gap = 0', 'rows = [', '  [{ token = "$xray", fg = "#a6e3a1" }],', ']'].join('\n');
+const EMPTY_WORKSPACE_SKELETON = ['[ui.sidebar.spaces]', 'row_gap = 0', 'rows = [', ']'].join('\n');
 
 function normalizeBlock(block) {
   return block
@@ -54,8 +59,23 @@ function removeManagedSection(config, stripped) {
   const bodyStart = headerStart + header[0].length;
   const next = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m.exec(stripped.slice(bodyStart));
   const end = next ? bodyStart + next.index : stripped.length;
-  const normalized = normalizeBlock(stripped.slice(headerStart, end));
+  const normalized = normalizeBlock(stripped.slice(headerStart, end).replace(/^[ \t]*#.*$/gm, ''));
   if (!MANAGED_SKELETONS.some(skel => normalized === skel)) return null;
+  const before = stripped.slice(0, marker).replace(/[ \t]*$/, '');
+  return `${before.replace(/\n{3,}$/, '\n\n')}${stripped.slice(end).replace(/^\n+/, '')}`;
+}
+
+function removeManagedWorkspaceSection(config, stripped) {
+  const marker = stripped.indexOf(SPACES_SECTION_MARKER);
+  if (marker < 0) return null;
+  const header = /^[ \t]*\[ui\.sidebar\.spaces\][ \t]*$/m.exec(stripped.slice(marker));
+  if (!header) return null;
+  const headerStart = marker + header.index;
+  const bodyStart = headerStart + header[0].length;
+  const next = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m.exec(stripped.slice(bodyStart));
+  const end = next ? bodyStart + next.index : stripped.length;
+  const normalized = normalizeBlock(stripped.slice(headerStart, end).replace(/^[ \t]*#.*$/gm, ''));
+  if (normalized !== WORKSPACE_SKELETON && normalized !== EMPTY_WORKSPACE_SKELETON) return null;
   const before = stripped.slice(0, marker).replace(/[ \t]*$/, '');
   return `${before.replace(/\n{3,}$/, '\n\n')}${stripped.slice(end).replace(/^\n+/, '')}`;
 }
@@ -78,7 +98,15 @@ function main() {
   const before = fs.readFileSync(file, 'utf8');
   let next = before;
   for (const token of TOKENS) next = next.replace(tokenRowRegex(token), '');
-  next = removeManagedSection(before, next) || next;
+  // Remove the workspace block first. The agents block's next-table boundary
+  // would otherwise consume the workspace marker comment while deleting a
+  // freshly-created agents section, leaving an orphaned empty spaces table.
+  next = removeManagedWorkspaceSection(before, next) || next;
+  const managedSection = removeManagedSection(before, next);
+  if (managedSection !== null) next = managedSection;
+  if (managedSection === null) {
+    next = next.replace(NEW_IDENTITY_ROW_RE, RESTORED_IDENTITY_ROW);
+  }
   if (next === before) {
     console.log(`ccxray sidebar summary rows are not installed in ${file}`);
     return;

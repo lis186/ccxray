@@ -55,6 +55,35 @@ The legend applies to every matrix below:
 
 The provider launcher registry in [`server/providers.js`](../server/providers.js) is the launcher **source of truth**. The three Herdr launch actions are declared in [`plugins/herdr/herdr-plugin.toml`](../plugins/herdr/herdr-plugin.toml). The plugin README is the installation and trust source of truth; this guide is the support-contract source of truth.
 
+### Sidebar context trend contract
+
+The Sidebar context trend is a fixed-width, refresh-driven viewport. When width
+comes from `herdr pane layout`, the plugin subtracts Herdr's four-cell native
+Sidebar chrome before sizing the custom token; this keeps the scalar visible
+inside the actual row instead of letting Herdr truncate it. Time runs from left
+to right, so the newest sample is always at the right edge; there is
+no animation. The scalar percentage has a fixed, right-aligned slot, which
+keeps the chart endpoint stable when the value changes from `9%` to `100%`.
+
+```
+older ------------------------------------------------------> newest
+[░][░][▂][▃][▆][░] [  ?]
+ ^ missing history       ^ latest unknown    fixed scalar slot
+```
+
+`░` (U+2591 LIGHT SHADE) is an unknown chart cell, not zero. It fills missing
+prefix history and an unknown latest turn when older valid history exists. If
+there is no valid context history, the row shows only `?`. Explicit
+context-input usage of zero is valid and renders as the lowest block; absent or
+output-only usage remains unknown. The active context-band colour applies to
+the trend, while stale or denominator-uncertain data remains neutral. If the
+tail contains a contextless subagent or fewer than three usable samples, a
+detached targeted repair caches up to 64 samples from that exact transcript;
+the refresh path never scans the global index. A material recovered rise or
+fall may add `↑` or `↓` to the scalar. The badge also uses the hub's persisted
+`beta1m` session fact when the declaring turn is outside the tail. The
+persisted provenance and legacy policy are specified in [ADR 0020](decisions/0020-herdr-fixed-context-trend.md). Startup refresh also starts the bounded working-pane loop from native Herdr status, so a working pane's metadata is renewed before its token TTL expires.
+
 ## Provider support matrix
 
 ### Launch, routing, and identity
@@ -198,7 +227,7 @@ Import and live proxy records can also represent the same turn. Mission Control 
 - Codex/Grok MCP names can be wrapped in gateway tools. The baseline handles known `exec`/`use_tool` shapes; unknown or changed gateway events can leave only the outer name ([wire reference](wire-protocol-reference.md)).
 - Codex and Grok tool counts can be a **lower bound** because the parser is defensive, future gateway events may be unknown, and the badge reads a maximum 4 MiB index tail. Tail-based cost/turn summaries are samples, not complete historical totals.
 - Mission Control can show a duplicate import×proxy turn when local import and live proxy evidence have not merged.
-- The sidebar badge's ctx% lacks dashboard denominator provenance: it reports the badge's selected-session value, not a citation for the dashboard's denominator ([ADR 0013](decisions/0013-beta1m-persist-session-window-derive.md)).
+- The sidebar badge's ctx% uses the selected session's persisted `beta1m` denominator when available; legacy/import-only rows without that provenance remain marked with `?` or `✗` rather than being silently upgraded. The context trend itself is fixed-width and right-anchored; `░` marks unknown samples and is not a zero ([ADR 0020](decisions/0020-herdr-fixed-context-trend.md)).
 - Without shared `public/format.js`, degraded aggregate cost is intentionally unmarked and can retain only `—`/`+`; it is not a calibrated complete total and never uses the rejected worst-of `~` marker ([ADR 0017](decisions/0017-aggregate-cost-confidence.md)).
 - Codex remains marked Beta. Grok title-generation and non-main-session attribution have conditional edge cases, and Grok `Reset time` is conditional on an upstream field.
 
@@ -217,3 +246,4 @@ The 2026-08-24 workspace live smoke recorded Codex `toolCalls: {mcp__node_repl__
 - [`docs/decisions/0005-agent-key-unreliable-shared-contract.md`](decisions/0005-agent-key-unreliable-shared-contract.md): identity fallback and badge classification limits.
 - [`docs/decisions/0013-beta1m-persist-session-window-derive.md`](decisions/0013-beta1m-persist-session-window-derive.md): Context window denominator provenance.
 - [`docs/decisions/0017-aggregate-cost-confidence.md`](decisions/0017-aggregate-cost-confidence.md): aggregate cost confidence and degraded plugin wording.
+- [`docs/decisions/0020-herdr-fixed-context-trend.md`](decisions/0020-herdr-fixed-context-trend.md): fixed-width context trend, usage provenance, and legacy policy.

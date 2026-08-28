@@ -57,6 +57,12 @@ describe('wire-parsers/openai', () => {
       assert.equal(openai.extractUsage(null), null);
       assert.equal(openai.extractUsage({}), null);
       assert.equal(openai.extractUsage({ id: 'resp_01' }), null);
+      assert.equal(openai.hasContextUsage({ id: 'resp_01' }), false);
+    });
+
+    it('recognizes explicit zero context usage', () => {
+      assert.equal(openai.hasContextUsage({ usage: { input_tokens: 0 } }), true);
+      assert.equal(openai.hasContextUsage({ usage: {} }), false);
     });
   });
 
