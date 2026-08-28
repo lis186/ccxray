@@ -5,6 +5,8 @@ const path = require('path');
 const net = require('net');
 const http = require('http');
 const { resolveCcxrayHome } = require('./paths');
+const { exportStatus } = require('./export-sync');
+const { relativeRootComplaints } = require('./importer');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -19,6 +21,27 @@ const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
 const HUB_LOG_MAX_BYTES = 1 * 1024 * 1024; // 1 MB
 const HUB_LOG_KEEP_BYTES = 100 * 1024;     // 100 KB
+
+// These are the same launch signals that server/index.js already derives before
+// it starts a server. A client-side `ccxray <agent>` launch receives its report
+// from the detached hub; the hub process itself is launched with --hub-mode.
+let launchSignals = {
+  hubMode: false,
+  explicitPort: false,
+  agentNamed: false,
+  platform: process.platform,
+};
+
+function setLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  launchSignals = { hubMode, explicitPort, agentNamed, platform };
+}
+
+function kindFromLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  if (hubMode) return 'hub';
+  if (explicitPort && agentNamed) return 'agent-port';
+  if (!explicitPort && agentNamed && platform !== 'win32') return 'hub';
+  return 'standalone';
+}
 
 // ── Lockfile operations ─────────────────────────────────────────────
 
@@ -338,7 +361,7 @@ function handleSocketCommand(msg, socket) {
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
       addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
-      socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty }) + '\n');
+      socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty, ...assembleExportReport() }) + '\n');
       break;
     }
     case 'unregister':
@@ -560,13 +583,33 @@ function startDeadClientCheck() {
 
 function setHubPort(port) { hubListenPort = port; }
 
+function currentHubPort() {
+  return hubListenPort || readHubLock()?.port;
+}
+
+function assembleExportReport(env = process.env) {
+  const { exportState, exportReason } = exportStatus(env);
+  return {
+    exportState,
+    exportReason,
+    configWarnings: relativeRootComplaints(env),
+    identity: {
+      kind: kindFromLaunchSignals(launchSignals),
+      pid: process.pid,
+      port: currentHubPort() ?? null,
+      home: resolveCcxrayHome(env),
+    },
+  };
+}
+
 function getHubStatus() {
   return {
     app: 'ccxray',
-    port: hubListenPort || readHubLock()?.port,
+    port: currentHubPort(),
     pid: process.pid,
     version: require('../package.json').version,
     uptime: Math.floor(process.uptime()),
+    ...assembleExportReport(),
     clients: [...clients.entries()].map(([pid, info]) => ({ pid, ...info })),
   };
 }
@@ -758,6 +801,9 @@ function tryListen(srv, port, maxAttempts) {
 
 module.exports = {
   clientIdentityFromMessage,
+  kindFromLaunchSignals,
+  setLaunchSignals,
+  assembleExportReport,
   HUB_DIR,
   HUB_LOCK_PATH,
   HUB_LOG_PATH,

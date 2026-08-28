@@ -174,6 +174,12 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+hub.setLaunchSignals({
+  hubMode,
+  explicitPort,
+  agentNamed: agentMode,
+  platform: process.platform,
+});
 
 // ── Web UI: Static files from public/ ────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
