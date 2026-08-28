@@ -31,12 +31,29 @@ function slugToProject(slug) {
 // CCXRAY_IMPORT_HOMES is named like a config home, but each comma-separated
 // value is the Claude `projects/` scan root itself, not `~/.claude`. Resolve
 // configured roots so symlink aliases of one store are scanned only once.
-function configuredImportRoots(rawValue) {
+//
+// CONTRACT: entries must be ABSOLUTE paths. A relative entry is rejected, not
+// resolved, because the same string reaches a hub and a Herdr plugin whose working
+// directories differ by construction — resolving it would silently mean two different
+// directories in the two processes. Rejection is only safe if it is audible: an
+// operator who mistypes a root would otherwise see imports quietly go to zero. The
+// warning goes to stderr because `console.log` is muted in agent and hub mode
+// (server/index.js), and it fires once per process because the value is static config.
+let _warnedRelativeRoots = false;
+function warnRelativeRoot(envName, value) {
+  if (_warnedRelativeRoots) return;
+  _warnedRelativeRoots = true;
+  console.error(`[ccxray] ${envName}: ignoring non-absolute path ${JSON.stringify(value)} — `
+    + 'entries must be absolute scan roots (the projects/ or sessions/ directory itself).');
+}
+
+function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
   const results = [];
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
-    if (!value || !path.isAbsolute(value)) continue;
+    if (!value) continue;
+    if (!path.isAbsolute(value)) { warnRelativeRoot(envName, value); continue; }
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
@@ -78,7 +95,7 @@ function discoverHomes() {
 
 function discoverCodexHomes() {
   if (process.env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
-    return configuredImportRoots(process.env.CCXRAY_IMPORT_CODEX_HOMES);
+    return configuredImportRoots(process.env.CCXRAY_IMPORT_CODEX_HOMES, 'CCXRAY_IMPORT_CODEX_HOMES');
   }
   const home = os.homedir();
   const results = [];

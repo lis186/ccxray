@@ -868,12 +868,25 @@ function staleThresholdMs(env = process.env) {
 // developer's real transcripts. See docs/testing.md.
 // Keep this tiny parser local instead of requiring server/importer.js: Herdr is
 // a separate process and this library must remain independent of core modules.
-function configuredScanRoots(rawValue) {
+// CONTRACT (mirrors server/importer.js): entries must be ABSOLUTE. A relative entry
+// would resolve against this process's CWD, which differs from the hub's, so the same
+// configured string would mean two different directories. Rejected and reported once
+// per process on stderr rather than dropped in silence.
+let _warnedRelativeRoots = false;
+function warnRelativeRoot(envName, value) {
+  if (_warnedRelativeRoots) return;
+  _warnedRelativeRoots = true;
+  console.error(`[ccxray] ${envName}: ignoring non-absolute path ${JSON.stringify(value)} — `
+    + 'entries must be absolute scan roots (the projects/ or sessions/ directory itself).');
+}
+
+function configuredScanRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
   const roots = [];
   const seen = new Set();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
-    if (!value || !path.isAbsolute(value)) continue;
+    if (!value) continue;
+    if (!path.isAbsolute(value)) { warnRelativeRoot(envName, value); continue; }
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
@@ -945,7 +958,7 @@ function codexSessionRoots(env = process.env) {
   // nothing". An empty value is a deliberate choice by whoever set it, so it must not
   // reopen the developer's real transcripts.
   if (env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
-    return configuredScanRoots(env.CCXRAY_IMPORT_CODEX_HOMES);
+    return configuredScanRoots(env.CCXRAY_IMPORT_CODEX_HOMES, 'CCXRAY_IMPORT_CODEX_HOMES');
   }
   const home = os.homedir();
   const roots = [];
@@ -955,12 +968,19 @@ function codexSessionRoots(env = process.env) {
   for (const name of items) {
     if (!name.startsWith('.codex') || name.includes('.bak')) continue;
     if (name !== '.codex' && !name.startsWith('.codex-')) continue;
+    // Identity by INODE, and skip on failure — byte-for-byte what core's
+    // discoverCodexHomes does (server/importer.js). An earlier fix used realpath here,
+    // which agrees with inode for symlinks but not for bind mounts or across devices,
+    // and it kept a root whose sessions/ dir does not exist while core drops it. Two
+    // dedup rules that agree on the tested cases are still two rules; matching core's
+    // exactly removes the divergence class rather than narrowing it.
     const root = path.join(home, name, 'sessions');
-    let resolved = root;
-    try { resolved = fs.realpathSync(root); } catch {}
-    if (seen.has(resolved)) continue;
-    seen.add(resolved);
-    roots.push(resolved);
+    try {
+      const ino = fs.statSync(root).ino;
+      if (seen.has(ino)) continue;
+      seen.add(ino);
+      roots.push(root);
+    } catch { /* no sessions dir here */ }
   }
   return roots;
 }
@@ -2955,6 +2975,7 @@ module.exports = {
   capabilityReview,
   claudeProjectRoots,
   codexSessionRoots,
+  codexTranscriptFile,
   completedRepairEvidenceForAgent,
   codexAgentArgs,
   contextBand,

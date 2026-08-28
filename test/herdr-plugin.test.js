@@ -2891,7 +2891,7 @@ describe('Herdr sidebar import freshness', () => {
       "});",
       "process.stdout.write(JSON.stringify(dirs));",
     ].join('\n');
-    const run = ({ kind, provider, raw, cwd, home }) => {
+    const run = ({ kind, provider, raw, cwd, home, name }) => {
       const envVar = provider === 'claude' ? 'CCXRAY_IMPORT_HOMES' : 'CCXRAY_IMPORT_CODEX_HOMES';
       const env = pluginEnv({
         HOME: home,
@@ -2912,9 +2912,16 @@ describe('Herdr sidebar import freshness', () => {
         encoding: 'utf8',
         timeout: 10000,
       });
-      assert.equal(result.status, 0,
-        `${kind}/${provider}/${JSON.stringify(raw)} failed: ${result.stderr}`);
-      return JSON.parse(result.stdout).sort();
+      // The case NAME, not just the raw value: `unset` and `ambient symlink alias`
+      // both carry raw === undefined, so without it the two collapse to one message.
+      const where = `${kind}/${provider}/${name}/${JSON.stringify(raw)}`;
+      assert.equal(result.status, 0, `${where} exited ${result.status}: ${result.stderr}`);
+      try {
+        return JSON.parse(result.stdout).sort();
+      } catch (err) {
+        throw new Error(`${where} produced unparseable stdout (${err.message}): `
+          + `${JSON.stringify(result.stdout.slice(0, 200))}`);
+      }
     };
 
     const cases = [
@@ -2942,6 +2949,45 @@ describe('Herdr sidebar import freshness', () => {
       }
     }
     assert.deepEqual(mismatches, []);
+
+    // Root-list parity is necessary but not sufficient: it never exercises the symptom
+    // the alias fix exists for. With `.codex-alias` symlinked to `.codex`, the old code
+    // returned the same store twice, codexTranscriptFile saw two matching candidates,
+    // and rejected the transcript as ambiguous — so a user with an aliased home lost
+    // their pane's link while every root-list assertion above still passed.
+    const sessionId = '01a03df1-0200-7abc-8def-0123456789ab';
+    const day = path.join(aliasHome, '.codex', 'sessions', '2026', '08', '26');
+    fs.mkdirSync(day, { recursive: true });
+    const rollout = path.join(day, `rollout-2026-08-26T12-00-00-${sessionId}.jsonl`);
+    fs.writeFileSync(rollout, `${JSON.stringify({
+      timestamp: '2026-08-26T12:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, cwd: '/work/alias' },
+    })}\n`);
+    // Must run in a CHILD with HOME set: ambient discovery reads os.homedir(), not the
+    // env object it is handed, so an in-process assertion cannot exercise this path at
+    // all — it would silently consult the developer's real ~/.codex instead.
+    const lookup = spawnSync(process.execPath, ['-e',
+      "const m = require(process.env.CCXRAY_PARITY_MODULE);"
+      + "process.stdout.write(JSON.stringify(m.codexTranscriptFile(process.env.SID) || null));",
+    ], {
+      cwd: coreCwd,
+      env: (() => {
+        const e = pluginEnv({
+          HOME: aliasHome,
+          SID: sessionId,
+          CCXRAY_PARITY_MODULE: path.join(PLUGIN, 'bin', 'lib', 'ccxray.js'),
+        });
+        // Ambient discovery is the path under test, so the override must be absent.
+        delete e.CCXRAY_IMPORT_CODEX_HOMES;
+        return e;
+      })(),
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(lookup.status, 0, `alias lookup exited ${lookup.status}: ${lookup.stderr}`);
+    assert.ok(JSON.parse(lookup.stdout),
+      'an aliased Codex home must not make its own transcript ambiguous');
   });
 
   it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
