@@ -183,6 +183,15 @@ wrong, because it advances that home's cursor. That is the part rev 2 could not 
 Across homes there is no shared fact and none is invented — which is the same restraint
 §4 already applies to non-hub multi-process setups.
 
+**What a cursor advance does and does not attest**, in the same spirit as `enabled` not
+being `active` (§2.1). The cursor is written on the first run, and again when the index
+tail has not moved (`export-sync.js:960-995`), so a fresh mtime proves *the exporter ran
+and consumed the index* — not that an object reached GCS. That is the strongest fact
+available without asking the network, and it is worth exactly what it says. The home line
+must not be phrased as "data is reaching the bucket"; `first run — no backfill` is
+carried as `partial` in the cursor and belongs in the rendered line rather than being
+smoothed into "fresh".
+
 In practice the operator's real home is the one that matters: `~/.ccxray` is the only
 domain that ships to the company bucket, and every other home in the measurement above is
 an isolated test or smoke run. "Is this home exporting" is answerable; "is this machine
