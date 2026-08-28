@@ -107,6 +107,31 @@ OpenAI の cached input は cache-read に正規化され、Claude の ephemeral
 
 Herdr plugin は `public/format.js` が利用できる場合、共有の aggregate-cost confidence fold を使います。helper がない degraded install では、数値を unmarked のまま表示し、`—`（価格データなし）または `+`（既知の lower bound）だけを残します。worst-of `~` は使いません。これは degraded display であり、数値が完全に校正済みという意味ではありません（[ADR 0017](decisions/0017-aggregate-cost-confidence.md)）。
 
+### Sidebar context trend の契約
+
+Sidebar の context trend は固定幅の refresh-driven viewport です。幅を
+`herdr pane layout` から取得する場合、plugin は Herdr 固有の 4 セル分の
+Sidebar chrome を先に差し引いて custom token を計算します。これにより scalar が
+実際の row 内に残り、Herdr の truncation で消えません。時間は左から右へ進み、
+最新の sample は常に右端に置かれます。アニメーションは行いません。
+scalar percentage には固定の右寄せ slot があるため、`9%` から `100%` に変わっても
+chart endpoint は移動しません。
+
+```
+older ------------------------------------------------------> newest
+[░][░][▂][▃][▆][░] [  ?]
+ ^ 不足している履歴       ^ 最新が unknown   固定 scalar slot
+```
+
+`░`（U+2591 LIGHT SHADE）は有効な sample がない chart cell を表し、0 では
+ありません。古い有効な履歴がある状態で最新 turn の context usage が unknown
+なら、古い履歴を残して右端を `░`、scalar を `?` にします。有効な context
+履歴が一つもない場合は `?` だけを表示します。明示的な context-input usage 0% は
+有効な履歴として最低 block を表示しますが、usage がない場合や output usage
+だけの場合は unknown です。active context band の色を使い、stale または
+denominator が不確かな場合は neutral 色を維持します。永続化 provenance と
+legacy policy は [ADR 0020](decisions/0020-herdr-fixed-context-trend.md) に定義します。Startup refresh は Herdr の native working 状態から bounded refresh loop も開始し、token TTL の前に working pane の metadata を更新します。
+
 ### Tool、MCP attribution、thinking、prompt
 
 | 機能 | Claude | Codex | Grok |
@@ -198,7 +223,7 @@ Import と live proxy の record が同じ turn を表す場合があります�
 - Codex／Grok の MCP name は gateway tool に包まれる場合があります。baseline は既知の `exec`／`use_tool` shape を扱いますが、未知または変更された gateway event では外側の name だけになる場合があります（[wire reference](wire-protocol-reference.md)）。
 - Codex／Grok の tool count は **lower bound** になる場合があります。parser は defensive で、将来の gateway event が unknown になる可能性があり、badge は最大 4 MiB の index tail だけを読みます。tail-based cost／turn summary は sample で、完全な履歴合計ではありません。
 - local import と live proxy の evidence が merge される前は、Mission Control に duplicate import×proxy turn が表示される場合があります。
-- Sidebar badge の ctx% には dashboard denominator provenance がありません。badge の selected-session value は表示しますが、dashboard denominator の citation ではありません（[ADR 0013](decisions/0013-beta1m-persist-session-window-derive.md)）。
+- Sidebar badge の ctx% には dashboard denominator provenance がありません。badge の selected-session value は表示しますが、dashboard denominator の citation ではありません（[ADR 0013](decisions/0013-beta1m-persist-session-window-derive.md)）。context trend 自体は固定幅で右端が最新であり、`░` は unknown sample で 0 ではありません（[ADR 0020](decisions/0020-herdr-fixed-context-trend.md)）。
 - shared `public/format.js` がない degraded aggregate cost は意図的に unmarked で、`—`／`+` だけを残します。校正済みの完全な total ではなく、却下された worst-of `~` marker も使用しません（[ADR 0017](decisions/0017-aggregate-cost-confidence.md)）。
 - Codex は引き続き Beta 表記です。Grok の title-generation と non-main session attribution には conditional edge case があり、Grok の `Reset time` は upstream field がある場合に限られます。
 
@@ -217,3 +242,4 @@ Import と live proxy の record が同じ turn を表す場合があります�
 - [`docs/decisions/0005-agent-key-unreliable-shared-contract.md`](decisions/0005-agent-key-unreliable-shared-contract.md)：identity fallback と badge classification の制限。
 - [`docs/decisions/0013-beta1m-persist-session-window-derive.md`](decisions/0013-beta1m-persist-session-window-derive.md)：Context window denominator provenance。
 - [`docs/decisions/0017-aggregate-cost-confidence.md`](decisions/0017-aggregate-cost-confidence.md)：aggregate cost confidence と degraded plugin wording。
+- [`docs/decisions/0020-herdr-fixed-context-trend.md`](decisions/0020-herdr-fixed-context-trend.md)：固定幅 context trend、usage provenance、legacy policy。

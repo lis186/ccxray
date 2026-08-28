@@ -43,6 +43,11 @@ const INDEX_FIELDS = [
   // #606: an upstream Codex `compacted` boundary, attached to the next emitted
   // turn. Append-only so existing index rows remain byte/order compatible.
   'compacted',
+  // #607: distinguishes an explicit context-input usage report (including 0)
+  // from a response whose usage is absent or lacks context-input accounting.
+  // Append-only: legacy rows omit this field and retain their compatibility
+  // inference in Herdr's nullable contextUsed reader.
+  'contextUsageKnown',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than

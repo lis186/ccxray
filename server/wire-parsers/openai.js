@@ -245,6 +245,14 @@ function extractUsage(resData) {
   return normalizeUsageForProvider('openai', result);
 }
 
+function hasContextUsage(resData) {
+  if (!resData) return false;
+  const usage = resData.usage || (Array.isArray(resData)
+    ? resData.find(e => e?.usage)?.usage
+    : null);
+  return helpers.hasContextUsage(usage);
+}
+
 // From openai-session.js:58-70
 function detectSession(_req, headers, parsedBody) {
   const sessionId = getCodexSessionId(headers, parsedBody);
@@ -300,6 +308,10 @@ function buildEntryFields(ctx) {
   const isWS = ctx.transport === 'websocket';
   const response = isWS ? null : (ctx.response || getOpenAIResponseFromEvents(ctx.events || []));
   const usage = ctx.lastUsage || extractUsage(response);
+  const contextUsageKnown = typeof ctx.contextUsageKnown === 'boolean'
+    ? ctx.contextUsageKnown
+    : (hasContextUsage(response)
+      || (ctx.lastUsage != null && helpers.hasContextUsage(ctx.lastUsage)));
   const model = ctx.lastModel || response?.model || parsedBody?.model || null;
 
   let responseMetadata;
@@ -326,6 +338,7 @@ function buildEntryFields(ctx) {
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
     usage,
+    contextUsageKnown,
     cost: calculateCost(usage, model),
     // instructions (Codex) or input[role=system] (other OpenAI-wire modules)
     maxContext: model ? config.inferMaxContext(model, getOpenAIInstructionsText(parsedBody), usage) : null,
@@ -416,6 +429,7 @@ module.exports = {
   // WIRE_PARSERS interface
   isNoiseRequest,
   extractUsage,
+  hasContextUsage,
   detectSession,
   preprocessBody,
   buildEntryFields,

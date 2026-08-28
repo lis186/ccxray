@@ -54,11 +54,23 @@ describe('wire-parsers/anthropic', () => {
       assert.equal(anthropic.extractUsage({}), null);
     });
 
-    it('returns zeros when usage fields missing', () => {
+    it('keeps an explicit empty usage object distinguishable from absent usage', () => {
       const events = [{ type: 'message_start', message: { usage: {} } }];
       const usage = anthropic.extractUsage(events);
       assert.equal(usage.input_tokens, 0);
       assert.equal(usage.output_tokens, 0);
+      assert.equal(anthropic.hasContextUsage(events), false);
+    });
+
+    it('returns null when no usage event exists', () => {
+      assert.equal(anthropic.extractUsage([{ type: 'message_start', message: {} }]), null);
+      assert.equal(anthropic.hasContextUsage([{ type: 'message_start', message: {} }]), false);
+    });
+
+    it('recognizes explicit zero context usage', () => {
+      const events = [{ type: 'message_start', message: { usage: { input_tokens: 0 } } }];
+      assert.equal(anthropic.hasContextUsage(events), true);
+      assert.equal(anthropic.hasContextUsage({ usage: { input_tokens: 0 } }), true);
     });
   });
 

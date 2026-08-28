@@ -825,6 +825,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
       ...getParser('anthropic').buildEntryFields({
         provider: 'anthropic', transport: 'sse', parsedBody, events, usage,
+        contextUsageKnown: getParser('anthropic').hasContextUsage(events),
         proxyRes, sessionId, sessionInferred: ctx.sessionInferred,
         sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
@@ -1133,7 +1134,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
         ...getParser('anthropic').buildEntryFields({
           provider: 'anthropic', transport: 'http', parsedBody,
-          usage: nonSSEUsage, proxyRes,
+          usage: nonSSEUsage, contextUsageKnown: getParser('anthropic').hasContextUsage(resData), proxyRes,
           sessionId, sessionInferred: ctx.sessionInferred,
           sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,

@@ -140,13 +140,17 @@ lockfile, so many panes noticing at once still produce one scan.
 `refresh-all-badges` (the startup fan-out) runs the pane-independent `ccxray
 status` and `ccxray usage` reports once and shares them with every per-pane
 refresh, so each child's remaining work is its own session matching, layout
-lookup, and sidebar writes. Only reports that succeeded are shared — a child
-that finds its report missing recomputes its own, so a transient failure
-degrades one pane instead of painting all of them. Each child is capped at 10
-seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides); a child killed at the cap
-is reported as `timed out`, separately from `failed`.
+lookup, and sidebar writes. A pane whose native status is already `working`
+also starts the same bounded refresh loop as an event-driven pane, so its
+metadata is renewed before the Herdr token TTL removes it. Only reports that
+succeeded are shared — a child that finds its report missing recomputes its
+own, so a transient failure degrades one pane instead of painting all of them.
+Each child is capped at 10 seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides);
+a child killed at the cap is reported as `timed out`, separately from `failed`.
 
-The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
+The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. The layout fallback subtracts Herdr's four-cell native Sidebar chrome before sizing the custom token, so the scalar remains visible instead of being replaced by Herdr's truncation marker. Its trend has a fixed viewport for the available width, with the newest context sample on the right. `░` means that a chart cell has no valid usage sample; it is not a zero. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`; a recovered history with a material net move may show `60%↑` or `60%↓`.
+
+The scalar percentage has a fixed, right-aligned slot, so `9%` and `100%` do not move the trend endpoint. An explicit context-input usage of zero is valid and renders as the lowest block; output-only or absent usage is unknown. If older valid history exists, an unknown latest turn keeps that history and places `░` at the right edge with scalar `?`. If no valid context history exists, the row shows only `?`. This is a stateless refresh convention, not an animation. The persisted provenance and legacy policy are defined in [ADR 0020](../../docs/decisions/0020-herdr-fixed-context-trend.md).
 
 Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact or native ccxray/session evidence remains unknown; the plugin never borrows telemetry from another session in the project.
 

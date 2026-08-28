@@ -443,7 +443,12 @@ function _upsert(sid, entry) {
     var input = u.input_tokens || 0;
     var ctxUsed = input + cacheRead + cacheCreate;
     var ctxInputTotal = cacheRead + cacheCreate + input;
-    if (ctxUsed > 0) {
+    // New entries carry provenance so an explicit zero is a real observation,
+    // while a missing report stays unknown. Legacy rows remain inferable only
+    // when their positive context sum proves usage was present.
+    var contextKnown = entry.contextUsageKnown === true
+      || (entry.contextUsageKnown !== false && ctxUsed > 0);
+    if (contextKnown) {
       s.maxContext = Math.max(s.maxContext || 0, entry.maxContext || 0) || null;
       s.latestCtxPct = s.maxContext ? Math.round(ctxUsed / s.maxContext * 1000) / 10 : null;
       s.latestCacheHitRatio = ctxInputTotal > 0 ? Math.round(cacheRead / ctxInputTotal * 1000) / 1000 : 0;
@@ -477,6 +482,10 @@ function setFirstPrompt(sid, text) {
 
 function _scheduleDirtyFlush() {
   dirty = true;
+  // An append-only importer deliberately leaves the hub-owned derived view
+  // untouched. Do not keep that detached process alive for a timer whose flush
+  // is guaranteed to return immediately under the same guard.
+  if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (flushTimer) return;
   flushTimer = setTimeout(() => { flushTimer = null; flush().catch(e => console.error('[session-index] flush error:', e.message)); }, FLUSH_DELAY_MS);
 }

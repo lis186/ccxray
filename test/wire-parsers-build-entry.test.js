@@ -55,6 +55,33 @@ test('openai entry → buildIndexLine → parsed-back keeps cost/maxContext/stop
   assert.ok('responseMetadata' in back);
 });
 
+test('wire parsers persist context usage provenance, including explicit zero', () => {
+  const anthropic = getParser('anthropic');
+  const base = {
+    provider: 'anthropic', transport: 'sse',
+    parsedBody: { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hello' }] },
+    proxyRes: { statusCode: 200 }, sessionId: 's',
+  };
+  const explicitZero = anthropic.buildEntryFields({
+    ...base, usage: { input_tokens: 0, output_tokens: 0 }, contextUsageKnown: true,
+  });
+  assert.equal(explicitZero.contextUsageKnown, true);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'zero', ...explicitZero })).contextUsageKnown, true);
+
+  const absent = anthropic.buildEntryFields({ ...base, usage: null, contextUsageKnown: false });
+  assert.equal(absent.contextUsageKnown, false);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'absent', ...absent })).contextUsageKnown, false);
+
+  const openai = getParser('openai');
+  const openaiZero = openai.buildEntryFields({
+    provider: 'openai', transport: 'http', parsedBody: { model: 'gpt-5.5', input: [] },
+    response: { model: 'gpt-5.5', usage: { input_tokens: 0, output_tokens: 0 } },
+    proxyRes: { statusCode: 200 }, sessionId: 's',
+  });
+  assert.equal(openaiZero.contextUsageKnown, true);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'openai-zero', ...openaiZero })).contextUsageKnown, true);
+});
+
 test('#475 OpenAI parser and index carry call/result facts for read-time pairing (fail-on-old)', () => {
   const parsedBody = {
     model: 'gpt-5.5',

@@ -9,6 +9,8 @@ const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/cc
 // The colours used to be declared twice — once here and once inline in
 // addMissingCtxBarRows — so a repaired config could disagree with a fresh one.
 const MANAGED_ROW_BY_TOKEN = {
+  who: '  [{ token = "$who", fg = "#cdd6f4" }],',
+  route: '  [{ token = "$route", fg = "#a6e3a1" }],',
   ctx_bar_unknown: '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
   ctx_bar_green: '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
   ctx_bar_yellow: '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
@@ -26,7 +28,7 @@ const OLD_CTX_BAR_ROW_RE = /^[ \t]*\[\{[^\n]*token\s*=\s*"\$ctx_bar"[^\n]*\}\],[
 // pair costs two rows and shows one line.
 const ROW3_TOKENS = ['facts', 'alert'];
 const ROW3_ROWS = ROW3_TOKENS.map(token => MANAGED_ROW_BY_TOKEN[token]).join('\n');
-const MANAGED_TOKENS = [...CTX_BAR_COLOR_TOKENS, ...ROW3_TOKENS];
+const MANAGED_TOKENS = ['who', 'route', ...CTX_BAR_COLOR_TOKENS, ...ROW3_TOKENS];
 // Rows that earlier generations of this installer wrote, plus one no generation
 // ever wrote. Each entry is the COMPLETE token set of a row we may delete: a row
 // carrying anything else is the user's, and is left for them to edit.
@@ -48,13 +50,16 @@ const SUPERSEDED_ROW_TOKENS = [
 const LEGACY_DEFAULT_ROWS_RE = [
   /^\s*\["state_icon",\s*"workspace",\s*"tab"\],?\s*$/,
   /^\s*\["agent"\],?\s*$/,
+  /^\s*\["state_icon",\s*"agent",\s*"state_text"\],?\s*$/,
 ];
-const DEFAULT_ROWS = '  ["state_icon", "agent", "state_text"],';
-const CCXRAY_ROWS = `${CTX_BAR_ROWS}\n${ROW3_ROWS}`;
+const DEFAULT_ROWS = '  ["state_icon", { token = "$who", fg = "#cdd6f4" }],';
+const CCXRAY_ROWS = `${MANAGED_ROW_BY_TOKEN.route}\n${CTX_BAR_ROWS}\n${ROW3_ROWS}`;
 // Written only when this script creates the section itself, so
 // remove-sidebar-summary can tell "ccxray added this whole table" from
 // "the user already had a sidebar table and ccxray added rows to it".
 const SECTION_MARKER = '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)';
+const SPACES_SECTION_MARKER = '# ccxray workspace observability row (managed by the ccxray Herdr plugin)';
+const WORKSPACE_ROW = '  [{ token = "$xray", fg = "#a6e3a1" }],';
 
 const SIDEBAR_SUMMARY_SECTION = `
 
@@ -64,6 +69,16 @@ row_gap = 0
 rows = [
 ${DEFAULT_ROWS}
 ${CCXRAY_ROWS}
+]
+`;
+
+const SIDEBAR_WORKSPACE_SECTION = `
+
+${SPACES_SECTION_MARKER}
+[ui.sidebar.spaces]
+row_gap = 0
+rows = [
+${WORKSPACE_ROW}
 ]
 `;
 
@@ -126,6 +141,9 @@ function sameTokenSet(a, b) {
 // we cannot know which half they wanted.
 function migrateRowsArray(config, rows) {
   const inner = config.slice(rows.open + 1, rows.close);
+  const hasMarker = config.includes(SECTION_MARKER);
+  const hasPluginGeneration = hasMarker
+    || /\$(?:summary|ctx_bar|ctx_bar_unknown|ctx_bar_green|ctx_bar_yellow|ctx_bar_red|facts|alert)/.test(stripCommentLines(inner));
   const removed = [];
   const kept = [];
   for (const line of inner.split('\n')) {
@@ -143,12 +161,12 @@ function migrateRowsArray(config, rows) {
   // table emitted by the previous installer keeps two legacy rows and renders
   // four visible lines instead of three. codex round 1, P1.
   //
-  // ONLY when the config carries the SECTION_MARKER: a user-authored table may
-  // have `["agent"]` as their own row and we must not touch it. The marker
-  // proves this table was created by the plugin. codex round 2, P1.
-  const hasMarker = config.includes(SECTION_MARKER);
+  // Only when the config carries the SECTION_MARKER or recognizable ccxray
+  // tokens: a user-authored table may
+  // have `["agent"]` as their own row and we must not touch it. A marker or
+  // managed token proves this table was created by the plugin. codex round 2, P1.
   {
-    const isLegacyDefault = line => hasMarker && LEGACY_DEFAULT_ROWS_RE.some(re => re.test(line));
+    const isLegacyDefault = line => hasPluginGeneration && LEGACY_DEFAULT_ROWS_RE.some(re => re.test(line));
     const keptLines = kept.filter(line => !isLegacyDefault(line));
     if (keptLines.length < kept.length) {
       const firstRemoved = kept.findIndex(isLegacyDefault);
@@ -185,7 +203,19 @@ function migrateRowsArray(config, rows) {
 const TABLE_HEADER_RE = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m;
 
 function sidebarSectionBounds(config) {
-  const header = /^[ \t]*\[ui\.sidebar\.agents\][ \t]*$/m.exec(config);
+  const header = /^[ \t]*\[ui\.sidebar\.(agents|spaces)\][ \t]*$/m.exec(config);
+  if (!header) return null;
+  const bodyStart = header.index + header[0].length;
+  const next = TABLE_HEADER_RE.exec(config.slice(bodyStart));
+  return {
+    headerStart: header.index,
+    bodyStart,
+    bodyEnd: next ? bodyStart + next.index : config.length,
+  };
+}
+
+function namedSidebarSectionBounds(config, name) {
+  const header = new RegExp(`^[ \\t]*\\[ui\\.sidebar\\.${name}\\][ \\t]*$`, 'm').exec(config);
   if (!header) return null;
   const bodyStart = header.index + header[0].length;
   const next = TABLE_HEADER_RE.exec(config.slice(bodyStart));
@@ -229,7 +259,7 @@ function rowsArrayBounds(config, bounds) {
 // remove action left behind — must still be able to install. Refusing here made
 // remove/install a one-way door.
 function addRowsToExistingSection(config) {
-  const bounds = sidebarSectionBounds(config);
+  const bounds = namedSidebarSectionBounds(config, 'agents');
   if (!bounds) return null;
   const rows = rowsArrayBounds(config, bounds);
   if (!rows) {
@@ -241,32 +271,55 @@ function addRowsToExistingSection(config) {
   return `${config.slice(0, rows.open + 1)}${inner}${separator}\n${CCXRAY_ROWS}\n${config.slice(rows.close)}`;
 }
 
+function addWorkspaceRow(config) {
+  const bounds = namedSidebarSectionBounds(config, 'spaces');
+  if (!bounds) return `${config.replace(/\s*$/, '')}${SIDEBAR_WORKSPACE_SECTION}\n`;
+  const rows = rowsArrayBounds(config, bounds);
+  if (!rows) {
+    const insertion = `\nrows = [\n${WORKSPACE_ROW}\n]`;
+    return config.slice(0, bounds.bodyStart) + insertion + config.slice(bounds.bodyStart);
+  }
+  const inner = config.slice(rows.open + 1, rows.close);
+  if (tokenRegex('xray').test(stripCommentLines(inner))) return config;
+  const trimmed = inner.replace(/[ \t\r\n]*$/, '');
+  const separator = trimmed.trim() && !trimmed.trim().endsWith(',') ? ',' : '';
+  return `${config.slice(0, rows.open + 1)}${trimmed}${separator}\n${WORKSPACE_ROW}\n${config.slice(rows.close)}`;
+}
+
 function main() {
   const file = configPath();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const before = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 
-  // No section of ours at all — write the whole three-row layout.
+  let next;
+  let action = 'updated';
+  // No agents section at all — write the whole compact layout.
   if (!/^\s*\[ui\.sidebar\.agents\]\s*$/m.test(before)) {
-    return writeAndReload(file, before, before.replace(/\s*$/, '') + SIDEBAR_SUMMARY_SECTION + '\n', 'installed');
-  }
-
-  const bounds = sidebarSectionBounds(before);
-  const rows = bounds && rowsArrayBounds(before, bounds);
-  if (!rows) {
-    // The section exists but its rows array is missing or unparseable.
-    const merged = addRowsToExistingSection(before);
-    if (!merged) {
-      console.error(`Could not parse [ui.sidebar.agents] in ${file}; add these rows to its rows array manually:`);
-      console.error(CCXRAY_ROWS);
-      process.exit(1);
+    next = before.replace(/\s*$/, '') + SIDEBAR_SUMMARY_SECTION + '\n';
+    action = 'installed';
+  } else {
+    const bounds = namedSidebarSectionBounds(before, 'agents');
+    const rows = bounds && rowsArrayBounds(before, bounds);
+    if (!rows) {
+      // The section exists but its rows array is missing or unparseable.
+      const merged = addRowsToExistingSection(before);
+      if (!merged) {
+        console.error(`Could not parse [ui.sidebar.agents] in ${file}; add these rows to its rows array manually:`);
+        console.error(CCXRAY_ROWS);
+        process.exit(1);
+      }
+      next = merged;
+      action = 'installed';
+    } else {
+      const migrated = migrateRowsArray(before, rows);
+      for (const row of migrated.removed) console.log(`superseded row removed: ${row}`);
+      next = migrated.config;
+      action = migrated.removed.length ? 'migrated' : 'updated';
     }
-    return writeAndReload(file, before, merged, 'installed');
   }
-
-  const migrated = migrateRowsArray(before, rows);
-  for (const row of migrated.removed) console.log(`superseded row removed: ${row}`);
-  return writeAndReload(file, before, migrated.config, migrated.removed.length ? 'migrated' : 'updated');
+  const withWorkspace = addWorkspaceRow(next);
+  if (withWorkspace !== next && action === 'updated') action = 'installed';
+  return writeAndReload(file, before, withWorkspace, action);
 }
 
 function writeAndReload(file, before, next, action) {
@@ -332,7 +385,9 @@ module.exports = {
   DEFAULT_ROWS,
   MANAGED_ROW_BY_TOKEN,
   MANAGED_TOKENS,
+  SPACES_SECTION_MARKER,
   SECTION_MARKER,
+  WORKSPACE_ROW,
   LEGACY_DEFAULT_ROWS_RE,
   SUPERSEDED_ROW_TOKENS,
   configHasManagedRows,

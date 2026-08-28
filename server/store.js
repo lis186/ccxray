@@ -80,6 +80,13 @@ function _usageRichness(u) {
     + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
 }
 
+function _contextUsageValue(u) {
+  if (!u || typeof u !== 'object') return 0;
+  return Number(u.input_tokens || 0)
+    + Number(u.cache_read_input_tokens || 0)
+    + Number(u.cache_creation_input_tokens || 0);
+}
+
 // Fold `other` into `canonical` in place. `canonical` keeps its id/ts/receivedAt/
 // elapsed as a unit (the log timestamp lazy-load and date logic depend on) and
 // its own req/res references; only complementary fields are pulled from `other`.
@@ -160,6 +167,15 @@ function _foldEntry(canonical, other) {
     canonical.cost = other.cost;
     if (other.maxContext != null) canonical.maxContext = other.maxContext;
     if (other.responseMetadata != null) canonical.responseMetadata = other.responseMetadata;
+  }
+  // Context provenance is monotone across copies of one response. Explicit
+  // usage (including zero) wins over unknown; a legacy positive context sum is
+  // inferable evidence; only then may an explicit missing marker remain false.
+  if (canonical.contextUsageKnown === true || other.contextUsageKnown === true
+      || _contextUsageValue(canonical.usage) > 0 || _contextUsageValue(other.usage) > 0) {
+    canonical.contextUsageKnown = true;
+  } else if (canonical.contextUsageKnown === false || other.contextUsageKnown === false) {
+    canonical.contextUsageKnown = false;
   }
   // Terminal signals: a set value beats null/empty.
   if (canonical.status == null && other.status != null) canonical.status = other.status;
