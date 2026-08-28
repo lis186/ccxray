@@ -17,6 +17,8 @@ const ENV_KEYS = [
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-owned-status-'));
+fs.mkdirSync(path.join(testHome, 'logs'), { recursive: true });
+fs.writeFileSync(path.join(testHome, 'logs', 'index.ndjson'), '');
 
 process.env.CCXRAY_HOME = testHome;
 process.env.CCXRAY_IMPORT_DISABLE = '1';
@@ -162,6 +164,7 @@ describe('hub-owned export/config status', () => {
       agentNamed: true,
       platform: 'darwin',
     });
+    hub.setHubPort(null);
     hub.setIdentityPort(ownPort);
 
     try {
@@ -172,6 +175,7 @@ describe('hub-owned export/config status', () => {
         'a non-hub identity must not name the hub lockfile port');
     } finally {
       fs.rmSync(hub.HUB_LOCK_PATH, { force: true });
+      hub.setHubPort(5577);
       hub.setIdentityPort(5577);
       hub.setLaunchSignals({
         hubMode: true,
