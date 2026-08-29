@@ -48,6 +48,12 @@ process.env.CCXRAY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-foo-'));
 // ...then require the modules under test
 ```
 
+The hub recovery differential harness (`test/hub-recovery-outcomes.test.js`)
+uses the same throwaway home and a synthetic `logs/index.ndjson`. Its launch
+failure case runs the VM-loaded hub in a short-lived worker so the old
+unhandled-child-error behavior can be observed as a process failure without
+putting the test runner at risk.
+
 For tests that spawn the CLI, pass it in the child env instead of mutating the
 parent process:
 
