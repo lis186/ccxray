@@ -283,6 +283,20 @@ async function runDivergence({ badFirst }) {
     const firstReady = await waitForRegisteredClient(home, first.child.pid);
     hubPid = firstReady.lock.pid;
     await waitForFakeAgent(first, firstMarker);
+    const firstBannerMarker = badFirst
+      ? `configWarnings=CCXRAY_IMPORT_HOMES: "${badValue}"`
+      : 'exportState=suppressed exportReason=explicitly-disabled';
+    await waitForHubStatusBanner(first, firstBannerMarker);
+    const firstOutput = first.stdout;
+    if (badFirst) {
+      assert.ok(firstOutput.includes(`configWarnings=CCXRAY_IMPORT_HOMES: "${badValue}"`),
+        `row 3 first client must show the hub warning; stdout:\n${firstOutput}`);
+    } else {
+      assert.ok(firstOutput.includes('exportState=suppressed exportReason=explicitly-disabled'),
+        `row 3 first client must show the clean hub state; stdout:\n${firstOutput}`);
+      assert.equal(firstOutput.includes(badValue), false,
+        `row 3 first client must not show the later client's bad value; stdout:\n${firstOutput}`);
+    }
 
     const second = spawnClient({
       home,
@@ -294,6 +308,23 @@ async function runDivergence({ badFirst }) {
     clients.push(second);
     const secondReady = await waitForRegisteredClient(home, second.child.pid);
     assert.equal(secondReady.lock.pid, hubPid, 'both clients must attach to one hub');
+    assert.equal(secondReady.status.exportState, 'suppressed',
+      'row 5 status must report the hub export state');
+    assert.equal(secondReady.status.exportReason, 'explicitly-disabled',
+      'row 5 status must report the hub export reason');
+    assert.equal(secondReady.status.identity?.kind, 'hub',
+      'row 5 status must identify the hub');
+    assert.equal(secondReady.status.identity?.pid, hubPid,
+      'row 5 status must name the hub pid');
+    const statusWarnings = secondReady.status.configWarnings;
+    if (badFirst) {
+      assert.ok(Array.isArray(statusWarnings) && statusWarnings.some(warning =>
+        JSON.stringify(warning).includes(badValue)),
+      `row 5 status must carry the hub warning; status: ${JSON.stringify(secondReady.status)}`);
+    } else {
+      assert.ok(!Array.isArray(statusWarnings) || statusWarnings.length === 0,
+        `row 5 clean status must not carry the later client's warning; status: ${JSON.stringify(secondReady.status)}`);
+    }
     const bannerMarker = badFirst
       ? `configWarnings=CCXRAY_IMPORT_HOMES: "${badValue}"`
       : 'exportState=suppressed exportReason=explicitly-disabled';
