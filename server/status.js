@@ -182,8 +182,21 @@ function describeHomeState(report, cursor, tail, nowMs) {
   return ageMs < (2 * FLUSH_INTERVAL_MS) ? 'behind-pending' : 'behind-overdue';
 }
 
-function renderDetermination(paths) {
-  return `Home: ${paths.home} — exporter state unavailable; no exporter process reachable — cannot tell whether export is configured for this home`
+function renderDetermination(paths, cursor, nowMs) {
+  let cursorDetail;
+  if (cursor.unreadable) {
+    cursorDetail = 'cursor unreadable';
+  } else if (!cursor.present) {
+    cursorDetail = 'cursor absent (never flushed)';
+  } else {
+    const lastId = cursor.lastId ?? 'unavailable';
+    const age = Number.isFinite(cursor.mtimeMs)
+      ? ageText(Math.max(0, nowMs - cursor.mtimeMs))
+      : 'an unknown age';
+    const partial = cursor.partial === true ? ' (partial)' : '';
+    cursorDetail = `cursor present${partial} — lastId=${lastId}; cursor age ${age}`;
+  }
+  return `Home: ${paths.home} — ${cursorDetail}; exporter state unavailable; no exporter process reachable — cannot tell whether export is configured for this home`
     + ` (read cursor ${paths.cursorPath}; index ${paths.indexPath})`;
 }
 
@@ -224,7 +237,7 @@ function inspectHomeStatus(report, options = {}) {
       paths,
       cursor,
       tail,
-      line: renderDetermination(paths),
+      line: renderDetermination(paths, cursor, nowMs),
     };
   }
 

@@ -230,7 +230,75 @@ describe('ccxray status home level', () => {
     }
   });
 
-  it('D4: an unreported status reads and names only the requested home', () => {
+  it('D4: an unreported status reports the read cursor fact without comparing it to the index', () => {
+    const now = Date.now();
+    const rows = [
+      {
+        name: 'cursor absent',
+        setup: domain => writeIndex(domain, ['index-tail']),
+        assertLine: line => {
+          assert.match(line, /cursor absent/);
+          assert.match(line, /never flushed/);
+        },
+        neverFlushed: true,
+      },
+      {
+        name: 'cursor present',
+        setup: domain => {
+          writeIndex(domain, ['index-tail']);
+          writeCursor(domain, 'real-id', false, now - (3 * FLUSH_INTERVAL_MS));
+        },
+        assertLine: line => {
+          assert.match(line, /cursor present/);
+          assert.match(line, /lastId=real-id/);
+          assert.match(line, /cursor age 3h/);
+        },
+        neverFlushed: false,
+      },
+      {
+        name: 'cursor present partial',
+        setup: domain => {
+          writeIndex(domain, ['index-tail']);
+          writeCursor(domain, 'partial-id', true, now - (2 * FLUSH_INTERVAL_MS));
+        },
+        assertLine: line => {
+          assert.match(line, /cursor present \(partial\)/);
+          assert.match(line, /lastId=partial-id/);
+          assert.match(line, /cursor age 2h/);
+          assert.match(line, /partial/);
+        },
+        neverFlushed: false,
+      },
+      {
+        name: 'cursor unreadable',
+        setup: domain => {
+          writeIndex(domain, ['index-tail']);
+          fs.writeFileSync(path.join(domain.home, 'export-cursor.json'), '{torn cursor\n');
+        },
+        assertLine: line => assert.match(line, /cursor unreadable/),
+        neverFlushed: false,
+      },
+    ];
+
+    for (const row of rows) {
+      const domain = makeDomain();
+      try {
+        row.setup(domain);
+        const result = inspectHomeStatus(null, {
+          env: { CCXRAY_HOME: domain.home, LOGS_DIR: domain.logsDir },
+          nowMs: now,
+        });
+        assert.equal(result.state, 'undetermined', row.name);
+        assert.equal(/never flushed/.test(result.line), row.neverFlushed, row.name);
+        row.assertLine(result.line);
+        assert.match(result.line, new RegExp(domain.home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+        assert.match(result.line, /read cursor .*export-cursor\.json/);
+        assert.match(result.line, /index .*index\.ndjson/);
+      } finally {
+        fs.rmSync(domain.home, { recursive: true, force: true });
+      }
+    }
+
     const a = makeDomain();
     const b = makeDomain();
     try {
@@ -240,8 +308,8 @@ describe('ccxray status home level', () => {
       const fromB = inspectHomeStatus(null, { env: { CCXRAY_HOME: b.home, LOGS_DIR: b.logsDir } });
       assert.equal(fromA.state, 'undetermined');
       assert.equal(fromB.state, 'undetermined');
-      assert.match(fromA.line, new RegExp(a.home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.doesNotMatch(fromA.line, /b-tail/);
+      assert.doesNotMatch(fromA.line, new RegExp(b.home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(fromB.line, new RegExp(b.home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.doesNotMatch(fromB.line, new RegExp(a.home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     } finally {
