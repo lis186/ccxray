@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
 const { resolveCcxrayHome } = require('./paths');
+const { listRawSessionBuckets } = require('./providers');
 
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
@@ -12,7 +13,9 @@ const LOCK_STALE_MS = 5 * 60_000;
 const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5s, at-least-once retries next flush
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const FLOOR_VERSION = 1;
+const CUTOFF_DT_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Session flag thresholds
 const RUNAWAY_TURNS = 200;
@@ -20,16 +23,67 @@ const RUNAWAY_COST = 50;
 const HIGH_COST_ABS = 30;
 const HIGH_COST_FACTOR = 3;
 const TOOL_FAIL_SPIKE_PCT = 0.5;
+const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
 
 // ── Module state ───────────────────────────────────────────────────────
 let _interval = null;
 let _uploader = null; // test seam
 let _cachedToken = null; // { accessToken, expiresAt }
 let _runningFlush = null; // in-flight flush promise for graceful shutdown
+let _configDirsWarned = false; // the tombstone message is about static config — say it once per process
+// The default remains dynamic so direct callers and tests that replace console.log
+// still observe the refusal. server/index.js swaps this for _origLog on local
+// exporter paths, where agent mode has muted console.log.
+let _configDirsWarningLogger = (...args) => console.log(...args);
 
 function _setUploader(fn) { _uploader = fn; }
 
-// INVARIANT: one predicate, two callers (flushExport + startExportSync). Under
+function _setConfigDirsWarningLogger(fn) {
+  _configDirsWarningLogger = typeof fn === 'function'
+    ? fn
+    : (...args) => console.log(...args);
+}
+
+// Test seam: the warn-once flag is process-global, so a suite asserting the message
+// must clear it or only the first test in the file can see it.
+function _resetExportWarnings() { _configDirsWarned = false; }
+
+// The refusal as a VALUE, for callers that are not the exporter. A detached hub's
+// stdout goes to hub.log (hub.js `stdio: ['ignore', fd, fd]`) and the foreground
+// client deliberately prints no hub output ("Hub runs silently"), so under
+// `ccxray <agent>` — the common path — logging from inside the exporter reaches
+// nobody. The client shares the same env as the hub it forks, so it can and must
+// say this itself.
+function configDirsRefusal(env = process.env) {
+  return env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined ? CONFIG_DIRS_REFUSAL : null;
+}
+
+// Suppression is deliberately separate from the retired config control: the former is
+// a reason for the 'suppressed' headline state, while the latter is a 'refused' config
+// fault. The node-test layer also consults _uploader, which is module state rather than
+// an env field; injected uploaders must keep aggregation tests running.
+function exportSuppressionReason(env = process.env) {
+  if (env.CCXRAY_EXPORT_DISABLE === '1') return 'explicitly-disabled';
+  if (env.NODE_TEST_CONTEXT && !_uploader) return 'test-run';
+  return null;
+}
+
+function exportStatus(env = process.env) {
+  // Pinned precedence: suppression > refusal > unconfigured > enabled. Suppression is
+  // total and deliberate, so a config fault is not promoted to the headline on a run
+  // that was never going to export; the fault remains available through configWarnings.
+  const suppression = exportSuppressionReason(env);
+  if (suppression) return { exportState: 'suppressed', exportReason: suppression };
+  if (configDirsRefusal(env) !== null) {
+    return { exportState: 'refused', exportReason: 'config-dirs-retired' };
+  }
+  if (!env.CCXRAY_EXPORT_GCS_BUCKET) {
+    return { exportState: 'unconfigured', exportReason: null };
+  }
+  return { exportState: 'enabled', exportReason: null };
+}
+
+// INVARIANT: one block predicate, two callers (flushExport + startExportSync). Under
 // `node --test` a real upload must be structurally impossible: the suite has no
 // shared env-scrub helper and CCXRAY_HOME does NOT isolate the bucket, so any e2e
 // that boots a full server inherits a developer's exported CCXRAY_EXPORT_GCS_BUCKET
@@ -41,35 +95,28 @@ function _setUploader(fn) { _uploader = fn; }
 // aggregation rather than uploading — those tests must still run.
 // If these two callers drift, startExportSync() announces an exporter that
 // flushExport() then refuses to run — a false positive worse than no message.
-function isExportSuppressed() {
-  // TWO layers, in precedence. A third layer that inferred "this run is synthetic" from
-  // configuration was tried and DELETED: it keyed on CCXRAY_HOME/LOGS_DIR being set, but
-  // ccxray-ops/scripts/deploy-stable.sh launches the REAL hub with
-  // CCXRAY_HOME="$HOME/.ccxray", so it would have switched off production exports while
-  // pruneLogs kept running (codex review round 5, 2026-08-21). An earlier variant sniffed
-  // for temp directories and was wrong in the other direction. There is no reliable
-  // ambient signal for "synthetic" — launchers have to say so.
-  //
-  // CCXRAY_EXPORT_FORCE was removed with that layer: it existed only to lift it, and an
-  // inherited FORCE was itself a hazard (a detached hub inherits its environment).
+function shouldBlockExport(env = process.env) {
+  const status = exportStatus(env);
+  if (status.exportReason === 'config-dirs-retired') {
+    const refusal = configDirsRefusal(env);
+    // Once per process, not once per call. Smoke-measured: a real boot calls this
+    // three times (startExportSync, its initial flush, and index.js's
+    // sync-before-prune), so an unguarded log printed the same paragraph three times
+    // before the first request — noise that reads like three separate faults. The
+    // message describes static configuration, so repeating it carries no information.
+    if (!_configDirsWarned && refusal !== null) {
+      _configDirsWarningLogger(refusal);
+      _configDirsWarned = true;
+    }
+  }
+  return status.exportState !== 'enabled';
+}
 
-  // 1. Explicit opt-out. Set by every synthetic launcher: scripts/boot-smoke.sh,
-  //    scripts/perf/measure.js, test/*.sh, the four full-server .test.js spawns, the
-  //    command printed by scripts/generate-screenshot-fixtures.js, shoot-spiral.mjs, the
-  //    smoke command in CLAUDE.md, and the documented boot commands under docs/.
-  //    A new launcher MUST set it — test/export-sync-test-guard.test.js has an
-  //    enumeration check so a missing one fails the suite rather than leaking silently.
-  if (process.env.CCXRAY_EXPORT_DISABLE === '1') return true;
-
-  // 2. Automatic net for `node --test`, which is what `npm test` runs — this is where the
-  //    measured leak happened (GCS objects 136 -> 137 from a synthetic daily row). It is
-  //    deliberately NOT liftable by any env flag. Not sufficient alone: `node
-  //    test/foo.test.js` and `--test-isolation=none` leave NODE_TEST_CONTEXT unset, which
-  //    is why layer 1 is on the launchers too. A non-null `_uploader` means a test injected
-  //    the seam and is asserting on aggregation rather than uploading.
-  if (process.env.NODE_TEST_CONTEXT && !_uploader) return true;
-
-  return false;
+// Public suppression view: config-dir retirement is a refused config fault, not one of
+// the two suppression reasons. The shared export gate above still preserves the old
+// hard-block and one-time warning behavior for flushExport and startExportSync.
+function isExportSuppressed(env = process.env) {
+  return exportSuppressionReason(env) !== null;
 }
 
 
@@ -126,13 +173,97 @@ function releaseLock(lockPath, token) {
 
 // ── Cursor (temp + rename) ─────────────────────────────────────────────
 function readCursor(cursorPath) {
-  try { return JSON.parse(fs.readFileSync(cursorPath, 'utf8')); } catch { return null; }
+  let raw;
+  try {
+    raw = fs.readFileSync(cursorPath, 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const corruptPath = `${cursorPath}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(cursorPath, corruptPath);
+      console.warn(`[ccxray export] Corrupt cursor moved aside to ${corruptPath}; starting first run.`);
+    } catch (renameErr) {
+      console.warn(`[ccxray export] Corrupt cursor could not be moved aside (${renameErr.message}); starting first run.`);
+    }
+    return null;
+  }
+}
+
+function readExportCursorFacts(home) {
+  const cursorPath = path.join(home, 'export-cursor.json');
+  const base = {
+    home,
+    cursorPath,
+    present: false,
+    mtimeMs: null,
+    lastId: null,
+    partial: null,
+    cutoffDt: null,
+    unreadable: false,
+  };
+
+  let fd = null;
+  let stat = null;
+  try {
+    fd = fs.openSync(cursorPath, 'r');
+    stat = fs.fstatSync(fd);
+    const cursor = JSON.parse(fs.readFileSync(fd, 'utf8'));
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) {
+      return { ...base, present: true, mtimeMs: stat.mtimeMs, unreadable: true };
+    }
+
+    return {
+      ...base,
+      present: true,
+      mtimeMs: stat.mtimeMs,
+      lastId: typeof cursor.lastId === 'string' ? cursor.lastId : null,
+      partial: typeof cursor.partial === 'boolean' ? cursor.partial : null,
+      cutoffDt: typeof cursor.cutoffDt === 'string' ? cursor.cutoffDt : null,
+    };
+  } catch (err) {
+    if (err.code === 'ENOENT') return base;
+    // This is a read-only status path. In particular, do not call readCursor(): its
+    // recovery policy renames corrupt state, which could make a concurrent flush start
+    // a first run after the status reader destroyed the cursor it was reporting on.
+    return { ...base, present: true, mtimeMs: stat?.mtimeMs ?? null, unreadable: true };
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
 }
 
 function writeCursor(cursorPath, data) {
   const tmp = cursorPath + `.tmp.${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(data) + '\n', { mode: 0o600 });
   fs.renameSync(tmp, cursorPath);
+}
+
+function pruneSeqBeforeFloor(seq, cutoffDt) {
+  if (!seq || typeof seq !== 'object' || Array.isArray(seq)) return {};
+  const kept = {};
+  for (const [dt, value] of Object.entries(seq)) {
+    if (dt >= cutoffDt) kept[dt] = value;
+  }
+  return kept;
+}
+
+function hasValidFloor(cursor) {
+  const cutoffDt = cursor.cutoffDt;
+  if (typeof cutoffDt !== 'string'
+    || !CUTOFF_DT_RE.test(cutoffDt)
+    || cursor.floorV !== FLOOR_VERSION) return false;
+  const parsed = new Date(`${cutoffDt}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime())
+    && parsed.toISOString().slice(0, 10) === cutoffDt;
 }
 
 // ── Name sanitization ──────────────────────────────────────────────────
@@ -262,17 +393,6 @@ function utcDateFromEntry(entry) {
   return m ? m[1] : null;
 }
 
-function utcDateFromLastLine(lines) {
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const entry = JSON.parse(lines[i]);
-      const dt = utcDateFromEntry(entry);
-      if (dt) return dt;
-    } catch {}
-  }
-  return null;
-}
-
 function addMap(target, source) {
   if (!source || typeof source !== 'object') return;
   for (const [k, v] of Object.entries(source)) {
@@ -342,6 +462,33 @@ function mergeEntry(a, b) {
     'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
   }
+  // ADR 0012 (field table, line 155): `imported`/`importSource` are CLEARED when a
+  // proxy copy merges in — a real observation supersedes an import reconstruction.
+  // So the fold is AND, not fill-if-null: the merged turn is imported only when every
+  // copy of it was import-reconstructed. AND is commutative, which is what makes the
+  // result order-independent; an earlier revision put these two fields in the
+  // fill-if-null list above, which both inverted the ADR and let a proxy observation
+  // inherit `imported: true` from its import twin, corrupting imported_turn_count and
+  // import_sources.
+  if (a.imported === true && b.imported === true) {
+    merged.imported = true;
+    // Carry a sorted array so repeated folds union every source without relying
+    // on delimiter escaping; finishSession still emits the existing sorted,
+    // distinct `import_sources` export shape.
+    const sources = new Set();
+    for (const importSource of [a.importSource, b.importSource]) {
+      const values = Array.isArray(importSource) ? importSource : [importSource];
+      for (const source of values) {
+        if (typeof source === 'string' && source) sources.add(source);
+      }
+    }
+    if (sources.size) merged.importSource = [...sources].sort();
+    else delete merged.importSource;
+  } else {
+    delete merged.imported;
+    delete merged.importSource;
+  }
+
   // ADR 0012: prefer non-inferred session identity
   if (b.sessionInferred === false && a.sessionInferred !== false) {
     if (b.sessionId) merged.sessionId = b.sessionId;
@@ -353,7 +500,8 @@ function mergeEntry(a, b) {
   return merged;
 }
 
-function aggregate(lines, agentId, configDirAllowlist) {
+function aggregate(lines, agentId) {
+  const rawSessionBuckets = listRawSessionBuckets();
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
   const sessionPrevMsg = new Map(); // sid → last msgCount for compaction detection
@@ -396,13 +544,6 @@ function aggregate(lines, agentId, configDirAllowlist) {
   for (const entry of dedupedEntries) {
     const dt = utcDateFromEntry(entry);
     if (!dt) continue;
-
-    // configDir filter: unknown → include.
-    // ponytail: configDir is in sessionMeta (runtime), not INDEX_FIELDS (disk).
-    if (configDirAllowlist) {
-      const cd = entry.configDir;
-      if (cd && !configDirAllowlist.has(cd)) continue;
-    }
 
     // ── Daily aggregate ────────────────────────────────────────────
     let daily = dailyByDt.get(dt);
@@ -604,6 +745,11 @@ function aggregate(lines, agentId, configDirAllowlist) {
         flags: [],
         summary_id: null,
         _models: Object.create(null),
+        imported_turn_count: 0,
+        inferred_turn_count: 0,
+        _importSources: new Set(),
+        _responseIds: new Set(),
+        session_id_kind: rawSessionBuckets.has(sid) ? 'sentinel' : 'explicit',
         _costConfidence: { exact: 0, prefix: 0, fallback: 0, unknown: 0 },
         _hasCredential: false,
         _toolFailCount: 0,
@@ -611,7 +757,27 @@ function aggregate(lines, agentId, configDirAllowlist) {
       dtSessions.set(sid, sess);
     }
     sess.turn_count++;
-    sess._models[model] = (sess._models[model] || 0) + 1;
+    let modelStats = sess._models[model];
+    if (!modelStats) {
+      modelStats = {
+        turns: 0,
+        cost: 0,
+        fallback_cost: 0,
+        fallback_count: 0,
+        unknown_count: 0,
+      };
+      sess._models[model] = modelStats;
+    }
+    modelStats.turns++;
+    if (entry.imported === true) sess.imported_turn_count++;
+    if (entry.sessionInferred === true) sess.inferred_turn_count++;
+    const importSources = Array.isArray(entry.importSource)
+      ? entry.importSource
+      : [entry.importSource];
+    for (const importSource of importSources) {
+      if (typeof importSource === 'string' && importSource) sess._importSources.add(importSource);
+    }
+    if (entry.responseId) sess._responseIds.add(entry.responseId);
     if (entry.cwd && !sess.cwd) sess.cwd = repoRoot(entry.cwd);
 
     if (costObj && typeof costObj === 'object') {
@@ -619,15 +785,27 @@ function aggregate(lines, agentId, configDirAllowlist) {
       const conf = costObj.confidence || 'unknown';
       if (c != null && Number.isFinite(c)) {
         sess.cost_total += c;
+        modelStats.cost += c;
         sess._costConfidence[conf] = (sess._costConfidence[conf] || 0) + 1;
+        if (conf === 'fallback') {
+          modelStats.fallback_cost += c;
+          modelStats.fallback_count++;
+        } else if (conf === 'unknown' && Object.prototype.hasOwnProperty.call(costObj, 'confidence')) {
+          modelStats.unknown_count++;
+        }
       } else {
         sess._costConfidence.unknown++;
+        modelStats.unknown_count++;
       }
     } else if (typeof costObj === 'number') {
       sess.cost_total += costObj;
+      modelStats.cost += costObj;
       sess._costConfidence.unknown++;
+      // ADR 0017: legacy numeric costs have no confidence evidence and
+      // therefore do not contribute to the per-model confidence fold.
     } else {
       sess._costConfidence.unknown++;
+      modelStats.unknown_count++;
     }
 
     if (entry.hasCredential === true) sess._hasCredential = true;
@@ -733,12 +911,35 @@ function finishSession(sess, daily, summaryId) {
   sess.summary_id = summaryId;
 
   let best = null, bestCount = 0;
-  for (const [m, c] of Object.entries(sess._models)) {
+  for (const [m, stats] of Object.entries(sess._models)) {
+    const c = stats.turns;
     if (c > bestCount || (c === bestCount && (!best || m < best))) {
       best = m; bestCount = c;
     }
   }
   sess.model_primary = best;
+  sess.models = sess._models;
+  sess.import_sources = [...sess._importSources].sort();
+
+  // Design section 4, decision 1: the shard discriminator. turn_count alone cannot
+  // tell "identical" from "disjoint, same size" — two 3-turn views of different
+  // halves of one session tie and merge silently. This hashes the SET of
+  // provider-assigned response ids, so two observers of the same turns agree and two
+  // observers of different turns do not, without either of them needing to agree on
+  // anything they derived locally (which is why cost is not in it, and must never be).
+  //
+  // turn_set_basis states what the hash actually covers, because coverage is partial
+  // and a consumer must not read a hash as if it were complete: responseId is absent
+  // on OpenAI/WS entries entirely (ADR 0012 exempts them) and on pre-#333 Anthropic
+  // rows. A reader comparing two hashes must first check that both bases are
+  // 'responseId' and both sizes equal turn_count; anything else is a partial view.
+  const rids = [...sess._responseIds].sort();
+  sess.turn_set_size = rids.length;
+  sess.turn_set_hash = rids.length
+    ? crypto.createHash('sha256').update(rids.join('\n')).digest('hex').slice(0, 16)
+    : null;
+  sess.turn_set_basis = rids.length === 0 ? null
+    : (rids.length === sess.turn_count ? 'responseId' : 'responseId-partial');
   sess.cost_confidence = foldConfidence(sess._costConfidence);
 
   const flags = [];
@@ -754,6 +955,8 @@ function finishSession(sess, daily, summaryId) {
   sess.flags = flags;
 
   delete sess._models;
+  delete sess._importSources;
+  delete sess._responseIds;
   delete sess._costConfidence;
   delete sess._hasCredential;
   delete sess._toolFailCount;
@@ -771,12 +974,12 @@ function foldConfidence(counts) {
 
 // ── Flush ──────────────────────────────────────────────────────────────
 async function flushExport() {
+  // INVARIANT: see shouldBlockExport — a real upload must be impossible
+  // under `node --test`, and startExportSync must agree with this same predicate.
+  if (shouldBlockExport()) return;
+
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
   if (!bucket) return;
-
-  // INVARIANT: see isExportSuppressed — a real upload must be impossible
-  // under `node --test`, and startExportSync must agree with this same predicate.
-  if (isExportSuppressed()) return;
 
   // Snapshot the seam ONCE. The suppression check above and the upload call below are
   // separated by async index traversal; a test's `_setUploader(null)` cleanup landing in
@@ -811,22 +1014,43 @@ async function flushExport() {
     }
 
     if (isFirstRun) {
-      const cutoffDt = lines.length > 0 ? utcDateFromLastLine(lines) : null;
-      writeCursor(cursorPath, { lastId: currentLastId, seq: {}, partial: true, cutoffDt });
+      const cutoffDt = new Date().toISOString().slice(0, 10);
+      // Permanent no-backfill promise: the first-run floor is today's UTC date,
+      // independent of the index contents.
+      writeCursor(cursorPath, {
+        lastId: currentLastId, seq: {}, partial: true, cutoffDt, floorV: FLOOR_VERSION,
+      });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
       return;
     }
 
+    if (!hasValidFloor(cursor)) {
+      // Preserve the permanent no-backfill promise when repairing a legacy or malformed floor.
+      const cutoffDt = new Date().toISOString().slice(0, 10);
+      cursor = {
+        ...cursor,
+        seq: pruneSeqBeforeFloor(cursor.seq, cutoffDt),
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      };
+      writeCursor(cursorPath, cursor);
+    }
+    const cutoffDt = cursor.cutoffDt;
+
     // #4: nothing new if last entry id unchanged
     if (!currentLastId || currentLastId === cursor.lastId) return;
 
-    const rawDirs = process.env.CCXRAY_EXPORT_CONFIG_DIRS || '.claude';
-    const configDirAllowlist = new Set(rawDirs.split(',').map(s => s.trim()).filter(Boolean));
-
-    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId, configDirAllowlist);
+    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId);
 
     if (dailyByDt.size === 0) {
-      writeCursor(cursorPath, { lastId: currentLastId, seq: cursor.seq || {}, partial: false });
+      // Persist the no-backfill floor even when there is no aggregate to upload.
+      writeCursor(cursorPath, {
+        lastId: currentLastId,
+        seq: pruneSeqBeforeFloor(cursor.seq, cutoffDt),
+        partial: false,
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      });
       return;
     }
 
@@ -860,8 +1084,6 @@ async function flushExport() {
     const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
     const seq = { ...(cursor.seq || {}) };
 
-    const cutoffDt = cursor.partial ? (cursor.cutoffDt || null) : null;
-
     // #3: completedDts bound to snapshot — clear if index changed since they were recorded
     const completedDts = new Set(
       cursor.snapshotLastId === currentLastId ? (cursor.completedDts || []) : []
@@ -869,6 +1091,8 @@ async function flushExport() {
 
     for (const [dt, daily] of dailyByDt) {
       if (!datesWithNewData.has(dt)) continue;
+      // Permanent no-backfill promise: dates before the cursor floor never upload.
+      if (dt < cutoffDt) continue;
       if (completedDts.has(dt) && seq[dt] && seq[dt] === cursor.seq?.[dt]) continue;
 
       const dtSeq = (seq[dt] || 0) + 1;
@@ -898,12 +1122,27 @@ async function flushExport() {
 
       // #3: per-date checkpoint bound to current snapshot
       completedDts.add(dt);
-      writeCursor(cursorPath, { lastId: cursor.lastId, seq, partial: false,
-        completedDts: [...completedDts], snapshotLastId: currentLastId });
+      // Persist cutoffDt so the permanent no-backfill promise survives checkpoints.
+      writeCursor(cursorPath, {
+        lastId: cursor.lastId,
+        seq: pruneSeqBeforeFloor(seq, cutoffDt),
+        partial: false,
+        completedDts: [...completedDts],
+        snapshotLastId: currentLastId,
+        cutoffDt,
+        floorV: FLOOR_VERSION,
+      });
     }
 
     // All dates uploaded — advance lastId to current tail, clear completedDts
-    writeCursor(cursorPath, { lastId: currentLastId, seq, partial: false });
+    // Persist cutoffDt so the permanent no-backfill promise survives cursor advance.
+    writeCursor(cursorPath, {
+      lastId: currentLastId,
+      seq: pruneSeqBeforeFloor(seq, cutoffDt),
+      partial: false,
+      cutoffDt,
+      floorV: FLOOR_VERSION,
+    });
   } finally {
     releaseLock(lockPath, token);
   }
@@ -911,15 +1150,16 @@ async function flushExport() {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
 function startExportSync() {
+  // INVARIANT: must share shouldBlockExport with flushExport, or this announces an
+  // exporter that never flushes.
+  if (shouldBlockExport()) return;
+
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
   if (!bucket) return;
-  // INVARIANT: must share isExportSuppressed with flushExport, or this announces an
-  // exporter that never flushes.
-  if (isExportSuppressed()) return;
   // Until 2026-08-21 the exporter started with NO positive signal — only failures
   // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
   // told people to look for "exporter active", which did not exist. It does now.
-  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min\x1b[0m`);
+  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — exporting ALL sessions this machine observes (live + imported)\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
@@ -942,4 +1182,17 @@ async function awaitPendingFlush() {
   }
 }
 
-module.exports = { startExportSync, stopExportSync, flushExport, awaitPendingFlush, isExportSuppressed, _setUploader };
+module.exports = {
+  _resetExportWarnings,
+  _setConfigDirsWarningLogger,
+  configDirsRefusal,
+  exportSuppressionReason,
+  exportStatus,
+  readExportCursorFacts,
+  startExportSync,
+  stopExportSync,
+  flushExport,
+  awaitPendingFlush,
+  isExportSuppressed,
+  _setUploader,
+};

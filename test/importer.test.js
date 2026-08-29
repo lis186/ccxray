@@ -15,7 +15,10 @@ fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 const store = require('../server/store');
 const config = require('../server/config');
 const sessionIdx = require('../server/session-index');
-const { scanAndImport, parseSessionFile, parseCodexSessionFile, slugToProject, tsToId } = require('../server/importer');
+const {
+  scanAndImport, parseSessionFile, parseCodexSessionFile,
+  discoverHomes, discoverCodexHomes, slugToProject, tsToId,
+} = require('../server/importer');
 // The importer now derives maxContext, so these assertions depend on the LiteLLM
 // capability table. It is read from a package-relative pricing-cache.json, which
 // CCXRAY_HOME does not isolate — pin it (docs/testing.md, ADR 0015 R4 class).
@@ -400,6 +403,42 @@ describe('importer', () => {
   });
 
   describe('scanAndImport', () => {
+    it('T5: imports from every comma-separated configured Claude projects root', async () => {
+      const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-second-'));
+      const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-alias-'));
+      const aliasRoot = path.join(aliasParent, 'projects');
+      fs.symlinkSync(importDir, aliasRoot);
+      try {
+        const firstProject = path.join(importDir, '-tmp-first');
+        const secondProject = path.join(secondRoot, '-tmp-second');
+        fs.mkdirSync(firstProject, { recursive: true });
+        fs.mkdirSync(secondProject, { recursive: true });
+        fs.writeFileSync(path.join(firstProject, 'session-first.jsonl'), [
+          makeUser('first'),
+          makeAssistant({ timestamp: '2026-07-15T10:31:00.000Z' }),
+        ].join('\n'));
+        fs.writeFileSync(path.join(secondProject, 'session-second.jsonl'), [
+          makeUser('second'),
+          makeAssistant({ timestamp: '2026-07-15T10:32:00.000Z' }),
+        ].join('\n'));
+
+        process.env.CCXRAY_IMPORT_HOMES = ` ${importDir}, , ${aliasRoot}, ${secondRoot} `;
+        assert.deepStrictEqual(discoverHomes().map(({ dir }) => dir), [
+          fs.realpathSync(importDir), fs.realpathSync(secondRoot),
+        ]);
+        const result = await scanAndImport();
+        await config.storage.drain();
+        assert.strictEqual(result.imported, 2);
+        assert.deepStrictEqual(
+          readIndexLines().map(entry => entry.sessionId).sort(),
+          ['session-first', 'session-second'],
+        );
+      } finally {
+        fs.rmSync(aliasParent, { recursive: true, force: true });
+        fs.rmSync(secondRoot, { recursive: true, force: true });
+      }
+    });
+
     it('imports entries from project directories', async () => {
       const projectDir = path.join(importDir, '-tmp-myproject');
       fs.mkdirSync(projectDir, { recursive: true });
@@ -526,6 +565,22 @@ describe('codex importer', () => {
     delete process.env.CCXRAY_IMPORT_HOMES;
     fs.rmSync(codexDir, { recursive: true, force: true });
     fs.rmSync(claudeHomeDir, { recursive: true, force: true });
+  });
+
+  it('accepts comma-separated configured Codex sessions roots', () => {
+    const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-second-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-alias-'));
+    const aliasRoot = path.join(aliasParent, 'sessions');
+    fs.symlinkSync(codexDir, aliasRoot);
+    try {
+      process.env.CCXRAY_IMPORT_CODEX_HOMES = ` ${codexDir}, , ${aliasRoot}, ${secondRoot} `;
+      assert.deepStrictEqual(discoverCodexHomes().map(({ dir }) => dir), [
+        fs.realpathSync(codexDir), fs.realpathSync(secondRoot),
+      ]);
+    } finally {
+      fs.rmSync(aliasParent, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
   });
 
   describe('parseCodexSessionFile', () => {
@@ -770,4 +825,41 @@ describe('codex importer', () => {
       assert.strictEqual(readIndexLines().length, 1);
     });
   });
+});
+
+describe('import root contract', () => {
+  it('rejects relative roots and reports once per distinct value', () => {
+  const importer = require('../server/importer');
+  const saved = process.env.CCXRAY_IMPORT_HOMES;
+  const errs = [];
+  const origErr = console.error;
+  console.error = (...a) => errs.push(a.join(' '));
+  try {
+    importer._resetRootWarnings();
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-one,rel-two';
+    assert.deepEqual(importer.discoverHomes(), [], 'no absolute entry means no roots');
+    assert.equal(errs.length, 1, 'both bad values in one message');
+    assert.match(errs[0], /rel-one/);
+    assert.match(errs[0], /rel-two/);
+
+    // Same values again, in the other order: already seen, so silent. Keying the
+    // joined list instead of each value made a reorder re-warn.
+    importer.discoverHomes();
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-two,rel-one';
+    importer.discoverHomes();
+    assert.equal(errs.length, 1, 'a reorder of seen values is not news');
+
+    // A genuinely new bad value IS news, and only that value is named.
+    process.env.CCXRAY_IMPORT_HOMES = 'rel-one,rel-three';
+    importer.discoverHomes();
+    assert.equal(errs.length, 2);
+    assert.match(errs[1], /rel-three/);
+    assert.ok(!errs[1].includes('rel-one'), 'an already-reported value is not repeated');
+  } finally {
+    console.error = origErr;
+    if (saved === undefined) delete process.env.CCXRAY_IMPORT_HOMES;
+    else process.env.CCXRAY_IMPORT_HOMES = saved;
+    importer._resetRootWarnings();
+  }
+});
 });

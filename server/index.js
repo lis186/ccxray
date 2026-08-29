@@ -24,7 +24,8 @@ const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
-const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = require('./export-sync');
+const exportSync = require('./export-sync');
+const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = exportSync;
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
@@ -35,6 +36,8 @@ const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const sessionIdx = require('./session-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
+const { renderHubClientStatus } = require('./hub-client-status');
+const { renderProcessStatus, inspectHomeStatus } = require('./status');
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -149,6 +152,13 @@ const DISPLAY_NAME = providers.getDisplayName(agentCommand, process.env);
 // In agent/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
 if (agentMode || hubMode) console.log = () => {};
+// startServer() is the exporter in standalone, --port agent, and Windows fallback
+// modes. Those paths may have console.log muted because an agent is attached, so
+// keep the refusal on the same original channel as the agent startup banner. A hub
+// has its own status/reporting path and must retain the existing hub-log behavior.
+const localExporterMode = !hubMode
+  && (explicitPort || !agentMode || process.platform === 'win32');
+if (localExporterMode) exportSync._setConfigDirsWarningLogger(_origLog);
 
 // ── Delta log storage ────────────────────────────────────────────────
 // sessionLastReq tracks the most recent req per session for delta writes.
@@ -174,6 +184,12 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+hub.setLaunchSignals({
+  hubMode,
+  explicitPort,
+  agentNamed: agentMode,
+  platform: process.platform,
+});
 
 // ── Web UI: Static files from public/ ────────────────────────────────
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -962,6 +978,8 @@ if (process.argv[2] === 'status') {
     (async () => {
       const occ = await hub.probePortOccupant(config.PORT, 1000);
       console.log('No hub running.');
+      console.log(renderProcessStatus(null));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
       if (occ.kind !== 'free') {
         hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
       }
@@ -972,6 +990,7 @@ if (process.argv[2] === 'status') {
       console.log(`Machine: ${JSON.stringify({
         proxy: occ.kind === 'ccxray-standalone' || occ.kind === 'ccxray-hub',
         hub: false,
+        pid: occ.pid || null,
         port: config.PORT,
         occupant: occ.kind,
       })}`);
@@ -982,6 +1001,8 @@ if (process.argv[2] === 'status') {
   if (!hub.isPidAlive(lock.pid)) {
     console.log('Hub lockfile exists but process is dead. Cleaning up.');
     hub.deleteHubLock();
+    console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
+    console.log(inspectHomeStatus(null, { env: process.env }).line);
     process.exit(1);
   }
 
@@ -993,6 +1014,9 @@ if (process.argv[2] === 'status') {
         if (!health || !health.ok) {
           console.log(`Hub pid ${lock.pid} alive but socket not responding.`);
           console.log(`Check ${hub.HUB_LOG_PATH}`);
+          console.log(renderProcessStatus(null,
+            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+          console.log(inspectHomeStatus(null, { env: process.env }).line);
           process.exit(1);
         }
         s = await hub.hubSocketRequest(lock.sockPath, { cmd: 'status' });
@@ -1001,6 +1025,9 @@ if (process.argv[2] === 'status') {
         if (!ok) {
           console.log(`Hub pid ${lock.pid} alive but not responding on port ${lock.port}.`);
           console.log(`Check ${hub.HUB_LOG_PATH}`);
+          console.log(renderProcessStatus(null,
+            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+          console.log(inspectHomeStatus(null, { env: process.env }).line);
           process.exit(1);
         }
         s = await new Promise((resolve, reject) => {
@@ -1014,20 +1041,29 @@ if (process.argv[2] === 'status') {
         });
       }
       console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
+      console.log(renderProcessStatus(
+        s.exportState === undefined ? null : s,
+        `hub detected (pid ${s.pid}, port ${s.port}) — exporter state unavailable`,
+      ));
+      console.log(inspectHomeStatus(s, { env: process.env }).line);
       console.log(`Machine: ${JSON.stringify({
-        proxy: true, hub: true, port: s.port, occupant: 'ccxray-hub',
+        proxy: true, hub: true, pid: s.pid, port: s.port, occupant: 'ccxray-hub',
       })}`);
-      if (s.clients.length === 0) {
+      const clients = Array.isArray(s.clients) ? s.clients : [];
+      if (clients.length === 0) {
         console.log('No connected clients.');
       } else {
-        console.log(`Connected clients (${s.clients.length}):`);
-        s.clients.forEach((c, i) => {
+        console.log(`Connected clients (${clients.length}):`);
+        clients.forEach((c, i) => {
           console.log(`  [${i + 1}] pid ${c.pid} — ${c.cwd} (since ${c.connectedAt})`);
         });
       }
       process.exit(0);
     } catch (err) {
       console.error(`Failed to query hub: ${err.message}`);
+      console.log(renderProcessStatus(null,
+        `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
       process.exit(1);
     }
   })();
@@ -1035,6 +1071,19 @@ if (process.argv[2] === 'status') {
 }
 
 // ── Client mode: connect to existing hub ──
+function reportHubRegistrationStatus(reply, lifecycle) {
+  const rendered = renderHubClientStatus(
+    reply?.identity || null,
+    lifecycle,
+    reply && {
+      exportState: reply.exportState,
+      exportReason: reply.exportReason,
+      configWarnings: reply.configWarnings,
+    },
+  );
+  if (rendered) _origLog(rendered);
+}
+
 async function startClientMode(lock) {
   const compat = hub.checkVersionCompat(lock.version);
   if (compat.fatal) {
@@ -1083,6 +1132,8 @@ async function startClientMode(lock) {
       return;
     }
 
+    reportHubRegistrationStatus(reg, 'attached');
+
     // Auto-open browser for the first client connecting to this hub
     if (reg.firstClient) {
       const noOpen = noBrowser
@@ -1117,7 +1168,7 @@ async function startClientMode(lock) {
   }
 
   // Monitor hub health and auto-recover
-  hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
+  hub.startHubMonitor(lock.pid, lock.port, async (newLock) => {
     // Re-register with new hub (newLock has sockPath from lockfile).
     // Both are published to the shutdown path: unregistering from the DEAD hub
     // releases nothing, and a shutdown racing this re-registration would let the
@@ -1128,8 +1179,17 @@ async function startClientMode(lock) {
     // pid that is on its way out.
     if (clientShutdown.isShuttingDown()) return;
     currentLock = newLock;
-    registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
-  });
+    try {
+      registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity);
+      const reg = await registration;
+      // This is best-effort notification: recovery happens while the agent's TUI
+      // owns the terminal, so the banner may not be read.
+      if (reg) reportHubRegistrationStatus(reg, 'recovered');
+      else reportHubRegistrationStatus(null, 'recovery-failed');
+    } catch {
+      reportHubRegistrationStatus(null, 'recovery-failed');
+    }
+  }, () => reportHubRegistrationStatus(null, 'recovery-failed'));
 
   // A signal that landed in the register→spawn window already began the
   // unregister-and-exit path — spawning now orphans the agent. spawnAgent
@@ -1294,6 +1354,7 @@ async function startServer() {
   } else {
     actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
   }
+  hub.setIdentityPort(actualPort);
   rebuildIndexHTML(actualPort);
 
   runPostListenStartupTasks();
@@ -1398,13 +1459,20 @@ async function startServer() {
     return;
   }
 
-  // No hub found: acquire fork lock to prevent duplicate hub forks
-  const acquired = hub.tryAcquireForkLock();
-  if (acquired) {
-    hub.forkHub(config.PORT);
-  }
+  // No hub found: acquire fork lock to prevent duplicate hub forks. A spawn
+  // failure is asynchronous, so race it against readiness instead of relying
+  // on the detached child to make the failure observable by itself.
+  let acquired = false;
+  let launchFailure = null;
   try {
-    const lock = await hub.waitForHubReady();
+    acquired = hub.tryAcquireForkLock();
+    if (acquired) {
+      let rejectLaunch;
+      launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+      hub.forkHub(config.PORT, { onError: rejectLaunch });
+    }
+    const readiness = hub.waitForHubReady();
+    const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
     if (acquired) hub.releaseForkLock();
     await startClientMode(lock);
   } catch (err) {

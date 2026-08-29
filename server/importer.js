@@ -28,9 +28,118 @@ function slugToProject(slug) {
   return slug.replace(/^-/, '/').replace(/-/g, '/').replace(/\/\//g, '/-');
 }
 
+// CCXRAY_IMPORT_HOMES is named like a config home, but each comma-separated
+// value is the Claude `projects/` scan root itself, not `~/.claude`. Resolve
+// configured roots so symlink aliases of one store are scanned only once.
+//
+// CONTRACT: entries must be ABSOLUTE paths. A relative entry is rejected, not
+// resolved, because the same string reaches a hub and a Herdr plugin whose working
+// directories differ by construction — resolving it would silently mean two different
+// directories in the two processes. Rejection is only safe if it is audible: an
+// operator who mistypes a root would otherwise see imports quietly go to zero. The
+// warning goes to stderr because `console.log` is muted in agent and hub mode
+// (server/index.js), and it fires once per process because the value is static config.
+// Suppression is keyed by (variable, raw value), not a single process-wide boolean:
+// one flag would swallow a second bad entry, the other variable's bad value, and any
+// later correction, while re-warning on every scan would be noise. A changed value is
+// news and warns again. `_resetRootWarnings` exists because the key set outlives a
+// single test in a shared process.
+const _warnedRoots = new Set();
+function _resetRootWarnings() { _warnedRoots.clear(); }
+function warnRelativeRoots(envName, values) {
+  // Keyed per (variable, VALUE), not per rejected-list: keying the joined list meant
+  // `bad1,bad2` -> `bad1,bad3` re-reported bad1, and merely reordering the same two
+  // values warned again. Only genuinely unseen values are news.
+  const unseen = values.filter(v => {
+    const key = `${envName}\u0000${v}`;
+    if (_warnedRoots.has(key)) return false;
+    _warnedRoots.add(key);
+    return true;
+  });
+  if (!unseen.length) return;
+  console.error(`[ccxray] ${envName}: ignoring non-absolute ${unseen.length === 1 ? 'path' : 'paths'} `
+    + `${unseen.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
+    + '(the projects/ or sessions/ directory itself).');
+}
+
+// One predicate, so what the client reports and what the parser rejects cannot drift.
+function rejectedRootValues(rawValue) {
+  return String(rawValue).split(',').map(v => v.trim()).filter(v => v && !path.isAbsolute(v));
+}
+
+function rawWarningArgs(args) {
+  try {
+    const encoded = JSON.stringify(args);
+    return encoded === undefined ? String(args) : encoded;
+  } catch {
+    return String(args);
+  }
+}
+
+function renderConfigWarning(warning) {
+  const code = typeof warning?.code === 'string' ? warning.code : String(warning?.code);
+  if (code === 'relative-import-root'
+    && typeof warning?.args?.variable === 'string'
+    && Array.isArray(warning.args.values)) {
+    return warning.args.variable + ': '
+      + warning.args.values.map(value => JSON.stringify(value)).join(', ');
+  }
+  // Unknown codes must remain visible to an older surface. Dropping them would turn
+  // producer/surface skew into silent loss of a configuration diagnostic.
+  return code + ': ' + rawWarningArgs(warning?.args);
+}
+
+function codedConfigWarning(code, args) {
+  const warning = { code, args };
+  // server/index.js predates coded warnings and interpolates each complaint directly.
+  // Keep that call site's rendered bytes stable without putting prose in the producer;
+  // the compatibility coercion delegates to the single renderer above.
+  Object.defineProperty(warning, 'toString', {
+    value() { return renderConfigWarning(this); },
+  });
+  return warning;
+}
+
+// The complaint as a VALUE, for the foreground client. warnRelativeRoots writes to
+// stderr, which is correct for a standalone run but NOT sufficient under `ccxray
+// <agent>`: hub.js spawns the hub with `stdio: ['ignore', fd, fd]`, so both streams go
+// to hub.log and no one reads it. Not being muted is not the same as being reachable —
+// the same gap that made the CCXRAY_EXPORT_CONFIG_DIRS refusal invisible.
+function relativeRootComplaints(env = process.env) {
+  const out = [];
+  for (const name of ['CCXRAY_IMPORT_HOMES', 'CCXRAY_IMPORT_CODEX_HOMES']) {
+    const raw = env[name];
+    if (raw === undefined) continue;
+    const bad = rejectedRootValues(raw);
+    if (bad.length) {
+      out.push(codedConfigWarning('relative-import-root', { variable: name, values: bad }));
+    }
+  }
+  return out;
+}
+
+function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
+  const results = [];
+  const rejected = [];
+  const seen = new Set();
+  for (const raw of String(rawValue).split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    if (!path.isAbsolute(value)) { rejected.push(value); continue; }
+    const absolute = path.resolve(value);
+    let resolved = absolute;
+    try { resolved = fs.realpathSync(absolute); } catch {}
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    results.push({ dir: resolved });
+  }
+  warnRelativeRoots(envName, rejected);
+  return results;
+}
+
 function discoverHomes() {
-  if (process.env.CCXRAY_IMPORT_HOMES) {
-    return [{ dir: process.env.CCXRAY_IMPORT_HOMES }];
+  if (process.env.CCXRAY_IMPORT_HOMES !== undefined) {
+    return configuredImportRoots(process.env.CCXRAY_IMPORT_HOMES);
   }
   const home = os.homedir();
   const results = [];
@@ -58,8 +167,8 @@ function discoverHomes() {
 }
 
 function discoverCodexHomes() {
-  if (process.env.CCXRAY_IMPORT_CODEX_HOMES) {
-    return [{ dir: process.env.CCXRAY_IMPORT_CODEX_HOMES }];
+  if (process.env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
+    return configuredImportRoots(process.env.CCXRAY_IMPORT_CODEX_HOMES, 'CCXRAY_IMPORT_CODEX_HOMES');
   }
   const home = os.homedir();
   const results = [];
@@ -600,6 +709,9 @@ async function scanAndImportTranscript(target = {}) {
 }
 
 module.exports = {
+  relativeRootComplaints,
+  renderConfigWarning,
+  _resetRootWarnings,
   scanAndImport,
   scanAndImportTranscript,
   parseSessionFile,

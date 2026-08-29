@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const Module = require('module');
 
 const { flushExport, _setUploader } = require('../server/export-sync');
 
@@ -42,18 +43,45 @@ function makeEntry(overrides = {}) {
   };
 }
 
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysAgoUtc(days) {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() - days);
+  return date.toISOString().slice(0, 10);
+}
+
+function entryForDt(dt, overrides = {}) {
+  return makeEntry({ id: `${dt}T10-00-00-000`, ...overrides });
+}
+
+function loadMergeEntryForTest() {
+  const filename = path.join(__dirname, '../server/export-sync.js');
+  const source = fs.readFileSync(filename, 'utf8') +
+    '\nmodule.exports.__testMergeEntry = mergeEntry;\n';
+  const localModule = { exports: {} };
+  const localRequire = Module.createRequire(filename);
+  const run = new Function('exports', 'require', 'module', '__filename', '__dirname', source);
+  run(localModule.exports, localRequire, localModule, filename, path.dirname(filename));
+  return localModule.exports.__testMergeEntry;
+}
+
 // Set up env + uploader mock before each test
 // Save ambient suppression state at module load, before any test clears it.
 // Without this, the first test's afterEach(cleanup) deletes an inherited
 // CCXRAY_EXPORT_DISABLE without knowing its original value.
 const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
-let _home, _uploads, _savedFlags = { disable: _ambientDisable };
+const _ambientTz = process.env.TZ;
+let _home, _uploads, _savedFlags = { disable: _ambientDisable, tz: _ambientTz };
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
   writeIndex(_home, entries);
 
   // Env — TZ must match the server that generates entry ids (Asia/Taipei)
+  const savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE, tz: process.env.TZ };
   process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = _home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
@@ -67,7 +95,7 @@ function setup(entries, envOverrides = {}) {
   // fail this suite for the wrong reason (codex review round 2, 2026-08-21).
   // Saved into _savedFlags and restored in cleanup(): under --test-isolation=none a later
   // file would otherwise inherit weakened safety settings (codex review round 5).
-  _savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE };
+  _savedFlags = savedFlags;
   delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = 'test-agent-001';
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
@@ -85,11 +113,13 @@ function setup(entries, envOverrides = {}) {
   // Pre-create cursor so it's not a first-run (unless test wants first-run)
   if (!envOverrides._skipCursor) {
     fs.writeFileSync(path.join(_home, 'export-cursor.json'),
-      JSON.stringify({ lastId: null, seq: {}, partial: false }) + '\n');
+      JSON.stringify({ lastId: null, seq: {}, partial: false, cutoffDt: '2026-01-01', floorV: 1 }) + '\n');
   }
 }
 
 function cleanup() {
+  const home = _home;
+  _home = null;
   delete process.env.CCXRAY_HOME;
   delete process.env.CCXRAY_EXPORT_GCS_BUCKET;
   delete process.env.LOGS_DIR;
@@ -103,8 +133,11 @@ function cleanup() {
   // inherit weakened safety settings.
   if (_savedFlags.disable === undefined) delete process.env.CCXRAY_EXPORT_DISABLE;
   else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
+  if (_savedFlags.tz === undefined) delete process.env.TZ;
+  else process.env.TZ = _savedFlags.tz;
   _savedFlags = {};
   _setUploader(null);
+  if (home) fs.rmSync(home, { recursive: true, force: true });
   // Bust require cache for config (it caches LOGS_DIR at require time)
   for (const k of Object.keys(require.cache)) {
     if (k.includes('/server/config')) delete require.cache[k];
@@ -124,13 +157,251 @@ describe('export-sync', () => {
     await flushExport(); // must not throw
   });
 
-  it('first-run: cursor init to tail, no upload', async () => {
-    setup([makeEntry()], { _skipCursor: true });
+  it('T4: unset config-dir control leaves normal export unchanged', async () => {
+    setup([makeEntry()]);
     await flushExport();
+    assert.equal(_uploads.length, 1, 'unset tombstone variable must not suppress export');
+    assert.ok(_uploads[0].records.some(r => r.type === 'daily'));
+  });
+
+  it('first-run: cursor init to tail, no upload', async () => {
+    const liveDt = daysAgoUtc(14);
+    setup([entryForDt(liveDt)], { _skipCursor: true });
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
     assert.equal(_uploads.length, 0, 'no upload on first run');
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
-    assert.equal(cursor.lastId, '2026-08-12T10-00-00-000');
+    assert.equal(cursor.lastId, `${liveDt}T10-00-00-000`);
     assert.equal(cursor.partial, true);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  // 13b bridge: the row-13b render test (test/status.test.js D3) hand-writes its cursor,
+  // so a schema drift in the production writer would leave it green while the real
+  // cross-level scenario breaks. This test closes that seam: the cursor is written by
+  // the PRODUCTION flush and read by the PRODUCTION status reader.
+  it('13b bridge: the status home line reads a cursor the production flush wrote', async () => {
+    const liveDt = daysAgoUtc(14);
+    setup([entryForDt(liveDt)], { _skipCursor: true });
+    await flushExport(); // first run: production writeCursor initializes to the index tail
+    const { inspectHomeStatus, renderProcessStatus } = require('../server/status');
+    const report = {
+      exportState: 'refused',
+      exportReason: 'config-dirs-retired',
+      configWarnings: [],
+      identity: { kind: 'hub', pid: process.pid, port: 5577, home: _home, logsDir: path.join(_home, 'logs') },
+    };
+    const homeLine = inspectHomeStatus(report).line;
+    assert.match(homeLine, /current \(partial/, `production-written cursor must read as current; line: ${homeLine}`);
+    assert.doesNotMatch(homeLine, /refused/);
+    const processLine = renderProcessStatus(report);
+    assert.match(processLine, /refused/);
+    assert.doesNotMatch(processLine, /current/);
+  });
+
+  it('first-run: empty index writes today UTC as the cutoff floor', async () => {
+    setup([], { _skipCursor: true });
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, null);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('first-run: old imported tail still writes today UTC as the cutoff floor', async () => {
+    const oldDt = daysAgoUtc(170);
+    const oldId = `${oldDt}T10-00-00-000`;
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, oldId);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('missing cursor.lastId rescans but uploads only dates at or above the floor', async () => {
+    setup([
+      makeEntry({ id: '2026-07-31T10-00-00-000' }),
+      makeEntry({ id: '2026-08-01T10-00-00-000', msgCount: 11 }),
+      makeEntry({ id: '2026-08-02T10-00-00-000', msgCount: 12 }),
+    ], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: 'cursor-id-no-longer-in-index', seq: {}, partial: false,
+      cutoffDt: '2026-08-01', floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt).sort();
+    assert.deepEqual(dts, ['2026-08-01', '2026-08-02']);
+  });
+
+  it('date equal to cutoffDt remains eligible for upload', async () => {
+    setup([
+      makeEntry({ id: '2026-07-31T10-00-00-000' }),
+      makeEntry({ id: '2026-08-01T10-00-00-000', msgCount: 11 }),
+    ], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '2026-08-01', floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt);
+    assert.deepEqual(dts, ['2026-08-01']);
+  });
+
+  it('legacy cursor migrates to today UTC and skips older dates', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const migrated = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(migrated.cutoffDt));
+    assert.equal(migrated.floorV, 1);
+    assert.equal(_uploads.length, 0, 'older dates are skipped during migration');
+
+    fs.appendFileSync(path.join(_home, 'logs', 'index.ndjson'),
+      JSON.stringify(makeEntry({ id: `${migrated.cutoffDt}T10-00-00-000`, msgCount: 11 })) + '\n');
+    await flushExport();
+
+    const dts = _uploads.map(u => u.records.find(r => r.type === 'daily').dt);
+    assert.deepEqual(dts, [migrated.cutoffDt]);
+  });
+
+  it('legacy cursor with an old derived cutoffDt is re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: oldDt,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old derived date remains below the repaired floor');
+  });
+
+  it('malformed cutoffDt is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: 'garbage', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('non-string cutoffDt is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: 123, floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('impossible cutoffDt 2026-99-99 is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '2026-99-99', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('impossible cutoffDt 0000-00-00 is fail-closed and re-stamped to today', async () => {
+    const oldDt = daysAgoUtc(170);
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null, seq: {}, partial: false, cutoffDt: '0000-00-00', floorV: 1,
+    }) + '\n');
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+    assert.equal(_uploads.length, 0, 'the old date remains below the repaired floor');
+  });
+
+  it('corrupt cursor is moved aside before first-run re-initialization', async () => {
+    const oldDt = daysAgoUtc(170);
+    const oldId = `${oldDt}T10-00-00-000`;
+    setup([entryForDt(oldDt, { imported: true })], { _skipCursor: true });
+    const corruptBody = '{not-json\n';
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), corruptBody);
+
+    const before = todayUtc();
+    await flushExport();
+    const after = todayUtc();
+
+    const sidecars = fs.readdirSync(_home)
+      .filter(name => /^export-cursor\.json\.corrupt-\d+$/.test(name));
+    assert.equal(sidecars.length, 1);
+    assert.equal(fs.readFileSync(path.join(_home, sidecars[0]), 'utf8'), corruptBody);
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, oldId);
+    assert.equal(cursor.partial, true);
+    assert.ok([before, after].includes(cursor.cutoffDt));
+    assert.equal(cursor.floorV, 1);
+  });
+
+  it('seq entries below the floor are pruned on the next cursor write', async () => {
+    setup([entryForDt('2026-08-02')], { _skipCursor: true });
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'), JSON.stringify({
+      lastId: null,
+      seq: { '2026-07-31': 7, '2026-08-02': 3 },
+      partial: false,
+      cutoffDt: '2026-08-01',
+      floorV: 1,
+    }) + '\n');
+
+    await flushExport();
+
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.deepEqual(cursor.seq, { '2026-08-02': 4 });
   });
 
   it('daily schema: all required fields present', async () => {
@@ -150,7 +421,7 @@ describe('export-sync', () => {
     ]) {
       assert.ok(f in daily, `missing field: ${f}`);
     }
-    assert.equal(daily._summary_schema_version, 1);
+    assert.equal(daily._summary_schema_version, 2);
     assert.equal(daily.agent_id, 'test-agent-001');
     assert.equal(daily.dt, '2026-08-12');
     assert.equal(daily.turn_count, 1);
@@ -170,9 +441,11 @@ describe('export-sync', () => {
     assert.equal(sess.model_primary, 'claude-sonnet-4-6'); // 2 sonnet vs 1 opus
     assert.equal(sess.turn_count, 3);
     for (const f of ['type', '_summary_schema_version', 'agent_id', 'dt', 'session_id',
-      'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id']) {
+      'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id', 'models',
+      'imported_turn_count', 'inferred_turn_count', 'import_sources', 'session_id_kind']) {
       assert.ok(f in sess, `missing field: ${f}`);
     }
+    assert.equal(sess._summary_schema_version, 2);
   });
 
   it('payload canary: no prompt/credential/path in output', async () => {
@@ -205,10 +478,11 @@ describe('export-sync', () => {
   });
 
   it('no timestamp leak: only dt and upload_seq', async () => {
-    setup([makeEntry({ receivedAt: 1723449600000, elapsed: '5.2' })]);
+    const receivedAt = new Date('2026-08-12T00:00:00Z').getTime();
+    setup([makeEntry({ receivedAt, elapsed: '5.2' })]);
     await flushExport();
     const payload = _uploads[0].body;
-    assert.ok(!payload.includes('1723449600'), 'no receivedAt epoch');
+    assert.ok(!payload.includes(String(receivedAt)), 'no receivedAt epoch');
     assert.ok(!payload.includes('receivedAt'), 'no receivedAt field name');
     // dt and upload_seq are allowed
     const daily = _uploads[0].records.find(r => r.type === 'daily');
@@ -253,18 +527,6 @@ describe('export-sync', () => {
     assert.equal(_uploads.length, 1);
     const seq2 = _uploads[0].records.find(r => r.type === 'daily').upload_seq;
     assert.ok(seq2 > seq1, `upload_seq must increment: ${seq2} > ${seq1}`);
-  });
-
-  it('configDir whitelist: entries outside excluded, unknown included', async () => {
-    setup([
-      makeEntry({ configDir: '.claude' }),
-      makeEntry({ id: '2026-08-12T10-01-00-000', sessionId: 'sess-002', configDir: '.codex', msgCount: 5 }),
-      makeEntry({ id: '2026-08-12T10-02-00-000', sessionId: 'sess-003', msgCount: 5 }), // no configDir → include
-    ], { CCXRAY_EXPORT_CONFIG_DIRS: '.claude' });
-    await flushExport();
-    const daily = _uploads[0].records.find(r => r.type === 'daily');
-    assert.equal(daily.session_count, 2, 'only .claude + unknown sessions');
-    assert.equal(daily.turn_count, 2);
   });
 
   it('name truncation + email filter', async () => {
@@ -353,6 +615,140 @@ describe('export-sync', () => {
     assert.ok(Math.abs(daily.cost_total - 1.35) < 0.001);
   });
 
+  it('session per-model breakdown includes the complete ADR 0017 confidence fold', async () => {
+    setup([
+      makeEntry({ model: 'model-a', cost: { cost: 0.10, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', model: 'model-a', msgCount: 12,
+        cost: { cost: 0.20, confidence: 'fallback' } }),
+      makeEntry({ id: '2026-08-12T10-02-00-000', model: 'model-a', msgCount: 14,
+        cost: { cost: null, confidence: 'unknown' } }),
+      makeEntry({ id: '2026-08-12T10-03-00-000', model: 'model-b', msgCount: 16,
+        cost: { cost: 0.30, confidence: 'exact' } }),
+      makeEntry({ id: '2026-08-12T10-04-00-000', model: 'model-c', msgCount: 18,
+        cost: { cost: 0.40, confidence: 'unknown' } }),
+      makeEntry({ id: '2026-08-12T10-05-00-000', model: 'model-d', msgCount: 20,
+        cost: 0.50 }),
+    ]);
+    await flushExport();
+
+    const sess = _uploads[0].records.find(r => r.type === 'session');
+    assert.ok(sess.models, 'session models breakdown exists');
+    assert.equal(sess.models['model-a'].turns, 3);
+    assert.ok(Math.abs(sess.models['model-a'].cost - 0.30) < 0.000001);
+    assert.equal(sess.models['model-a'].fallback_cost, 0.20);
+    assert.equal(sess.models['model-a'].fallback_count, 1);
+    assert.equal(sess.models['model-a'].unknown_count, 1);
+    assert.deepEqual(sess.models['model-b'], {
+      turns: 1,
+      cost: 0.30,
+      fallback_cost: 0,
+      fallback_count: 0,
+      unknown_count: 0,
+    });
+    assert.equal(sess.models['model-c'].unknown_count, 1);
+    assert.equal(sess.models['model-d'].unknown_count, 0);
+  });
+
+  it('session provenance counts and classifies sentinel ids from the shared provider helper', async () => {
+    setup([
+      makeEntry({ sessionId: 'sess-provenance', imported: true, importSource: 'claude-code' }),
+      makeEntry({ id: '2026-08-12T10-01-00-000', sessionId: 'sess-provenance', msgCount: 12,
+        imported: true, importSource: 'codex', sessionInferred: true }),
+      makeEntry({ id: '2026-08-12T10-02-00-000', sessionId: 'sess-provenance', msgCount: 14,
+        imported: false, sessionInferred: false }),
+      makeEntry({ id: '2026-08-12T10-03-00-000', sessionId: 'grok-raw', msgCount: 16 }),
+    ]);
+    await flushExport();
+
+    const sessions = _uploads[0].records.filter(r => r.type === 'session');
+    const provenance = sessions.find(r => r.session_id === 'sess-provenance');
+    const sentinel = sessions.find(r => r.session_id === 'grok-raw');
+    assert.equal(provenance.imported_turn_count, 2);
+    assert.equal(provenance.inferred_turn_count, 1);
+    assert.deepEqual(provenance.import_sources, ['claude-code', 'codex']);
+    assert.equal(provenance.session_id_kind, 'explicit');
+    assert.equal(sentinel.session_id_kind, 'sentinel');
+  });
+
+  it('responseId merge makes importSource a commutative, associative set union', () => {
+    const mergeEntry = loadMergeEntryForTest();
+    const sourceSet = entry => {
+      const source = entry.importSource;
+      const values = Array.isArray(source) ? source : [source];
+      return [...new Set(values.filter(value => typeof value === 'string' && value))].sort();
+    };
+    const provenance = entry => ({ imported: entry.imported, importSources: sourceSet(entry) });
+    const importedCopy = (source, responseId = 'msg_provenance_algebra') => makeEntry({
+      responseId,
+      imported: true,
+      importSource: source,
+    });
+
+    // Different values are deliberate: identical sources cannot detect the old
+    // first-spread-wins implementation. This matrix keeps the assertion about
+    // the merge algebra while exercising both source orders.
+    for (const [leftSource, rightSource] of [
+      ['claude-code', 'codex'],
+      ['codex', 'other-importer'],
+      ['other-importer', 'claude-code'],
+    ]) {
+      const left = importedCopy(leftSource);
+      const right = importedCopy(rightSource);
+      const forward = mergeEntry(left, right);
+      const reverse = mergeEntry(right, left);
+      const expected = { imported: true, importSources: [leftSource, rightSource].sort() };
+      assert.deepEqual(provenance(forward), expected);
+      assert.deepEqual(provenance(reverse), expected);
+      assert.deepEqual(provenance(forward), provenance(reverse));
+    }
+
+    const a = importedCopy('claude-code', 'msg_provenance_associative');
+    const b = importedCopy('codex', 'msg_provenance_associative');
+    const c = importedCopy('other-importer', 'msg_provenance_associative');
+    const leftFold = mergeEntry(mergeEntry(a, b), c);
+    const rightFold = mergeEntry(a, mergeEntry(b, c));
+    assert.deepEqual(provenance(leftFold), provenance(rightFold));
+    assert.deepEqual(provenance(leftFold), {
+      imported: true,
+      importSources: ['claude-code', 'codex', 'other-importer'],
+    });
+
+    // Idempotence is checked after one normalization into the carried sorted
+    // array shape, so a second fold cannot add a duplicate source.
+    assert.deepEqual(mergeEntry(leftFold, leftFold), leftFold);
+
+    // ADR 0012: a real proxy observation clears both provenance fields in either
+    // argument order, even when the imported twin came from a different source.
+    const proxy = makeEntry({
+      responseId: 'msg_provenance_proxy',
+      imported: undefined,
+      importSource: undefined,
+    });
+    for (const imported of [importedCopy('claude-code', 'msg_provenance_proxy'),
+      importedCopy('codex', 'msg_provenance_proxy')]) {
+      assert.deepEqual(provenance(mergeEntry(proxy, imported)), {
+        imported: undefined,
+        importSources: [],
+      });
+      assert.deepEqual(provenance(mergeEntry(imported, proxy)), {
+        imported: undefined,
+        importSources: [],
+      });
+    }
+  });
+
+  it('export aggregate counts an imported response id once while preserving both sources', async () => {
+    setup([
+      makeEntry({ responseId: 'msg_import_sources_once', imported: true, importSource: 'claude-code' }),
+      makeEntry({ id: '2026-08-12T10-00-01-000', responseId: 'msg_import_sources_once',
+        imported: true, importSource: 'codex' }),
+    ]);
+    await flushExport();
+    const session = _uploads[0].records.find(r => r.type === 'session');
+    assert.equal(session.imported_turn_count, 1);
+    assert.deepEqual(session.import_sources, ['claude-code', 'codex']);
+  });
+
   it('OpenAI entries: toolCalls summed directly (not per-tool max)', async () => {
     setup([
       makeEntry({ provider: 'openai', toolCalls: { shell: 3 } }),
@@ -373,7 +769,7 @@ describe('export-sync', () => {
     // its own env, but afterEach(cleanup) still runs. Without saving, cleanup deletes the
     // ambient value and later files under --test-isolation=none lose the safety flag.
     const savedDisable = process.env.CCXRAY_EXPORT_DISABLE;
-    _savedFlags = { disable: savedDisable };
+    _savedFlags = { disable: savedDisable, tz: process.env.TZ };
     delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {
@@ -385,10 +781,11 @@ describe('export-sync', () => {
     // First run: init cursor
     await flushExport();
     assert.equal(_uploads.length, 0);
+    const cutoffDt = JSON.parse(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8')).cutoffDt;
 
     // Add new entry
     fs.appendFileSync(path.join(home, 'logs', 'index.ndjson'),
-      JSON.stringify(makeEntry({ id: '2026-08-12T11-00-00-000', msgCount: 12 })) + '\n');
+      JSON.stringify(makeEntry({ id: `${cutoffDt}T11-00-00-000`, msgCount: 12 })) + '\n');
 
     // Second flush: should have partial_day = true for the first date
     await flushExport();

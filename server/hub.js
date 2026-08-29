@@ -4,7 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const http = require('http');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
+const { exportStatus } = require('./export-sync');
+const { relativeRootComplaints } = require('./importer');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -19,6 +21,27 @@ const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
 const HUB_LOG_MAX_BYTES = 1 * 1024 * 1024; // 1 MB
 const HUB_LOG_KEEP_BYTES = 100 * 1024;     // 100 KB
+
+// These are the same launch signals that server/index.js already derives before
+// it starts a server. A client-side `ccxray <agent>` launch receives its report
+// from the detached hub; the hub process itself is launched with --hub-mode.
+let launchSignals = {
+  hubMode: false,
+  explicitPort: false,
+  agentNamed: false,
+  platform: process.platform,
+};
+
+function setLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  launchSignals = { hubMode, explicitPort, agentNamed, platform };
+}
+
+function kindFromLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  if (hubMode) return 'hub';
+  if (explicitPort && agentNamed) return 'agent-port';
+  if (!explicitPort && agentNamed && platform !== 'win32') return 'client';
+  return 'standalone';
+}
 
 // ── Lockfile operations ─────────────────────────────────────────────
 
@@ -234,15 +257,21 @@ function forkHub(port, opts = {}) {
   const env = { ...process.env };
   if (opts.displayName && !env.CCXRAY_DISPLAY_NAME) env.CCXRAY_DISPLAY_NAME = opts.displayName;
 
-  const child = spawn(process.execPath, [hubScript, ...args], {
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    windowsHide: true,
-    env,
-  });
-  child.unref();
-  fs.closeSync(fd);
-  return child.pid;
+  try {
+    const child = spawn(process.execPath, [hubScript, ...args], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      windowsHide: true,
+      env,
+    });
+    child.once('error', opts.onError || (err => {
+      console.error(`\x1b[31mHub launch failed: ${err.message}\x1b[0m`);
+    }));
+    child.unref();
+    return child.pid;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ── Wait for hub readiness (poll lockfile) ──────────────────────────
@@ -338,7 +367,7 @@ function handleSocketCommand(msg, socket) {
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
       addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
-      socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty }) + '\n');
+      socket.write(JSON.stringify({ ...assembleExportReport(), ok: true, firstClient: wasEmpty }) + '\n');
       break;
     }
     case 'unregister':
@@ -463,6 +492,7 @@ const clients = new Map(); // pid → { cwd, connectedAt, agentId?, userEmail?, 
 let idleTimer = null;
 let deadCheckInterval = null;
 let hubListenPort = null; // set once at startup, survives lockfile deletion
+let identityPort = null; // this process's own listener, never read from the hub lockfile
 let onShutdown = null; // injectable shutdown handler (default: process.exit)
 
 function clientIdentityFromMessage(msg) {
@@ -560,13 +590,43 @@ function startDeadClientCheck() {
 
 function setHubPort(port) { hubListenPort = port; }
 
+function setIdentityPort(port) { identityPort = port; }
+
+function currentHubPort() {
+  return hubListenPort || readHubLock()?.port;
+}
+
+function assembleExportReport(env = process.env) {
+  const kind = kindFromLaunchSignals(launchSignals);
+  const { exportState, exportReason } = kind === 'client'
+    ? { exportState: null, exportReason: null }
+    : exportStatus(env);
+  return {
+    exportState,
+    exportReason,
+    configWarnings: kind === 'client' ? [] : relativeRootComplaints(env),
+    identity: {
+      kind,
+      pid: process.pid,
+      port: kind === 'client' ? null : identityPort,
+      home: resolveCcxrayHome(env),
+      logsDir: resolveLogsDir(env),
+    },
+  };
+}
+
 function getHubStatus() {
+  // `port` is the HUB's listener (what `ccxray status` means by "the hub is on port N");
+  // `identity.port` is the REPORTING process's own listener. They coincide in the hub and
+  // can diverge in any other process that calls this helper; later surfaces must choose deliberately
+  // (see docs/solutions/hub-owned-config-status.md §2.3).
   return {
     app: 'ccxray',
-    port: hubListenPort || readHubLock()?.port,
+    port: currentHubPort(),
     pid: process.pid,
     version: require('../package.json').version,
     uptime: Math.floor(process.uptime()),
+    ...assembleExportReport(),
     clients: [...clients.entries()].map(([pid, info]) => ({ pid, ...info })),
   };
 }
@@ -699,7 +759,13 @@ function describePortOccupant(occ, port) {
 
 // ── Hub pid monitoring (client-side recovery) ───────────────────────
 
-function startHubMonitor(hubPid, hubPort, onRecovery) {
+function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
+  // Recovery failure is a separate required channel so a caller cannot omit
+  // the failure path and mistake a failed recovery for a successful one.
+  if (typeof onRecovery !== 'function' || typeof onRecoveryFailure !== 'function') {
+    throw new TypeError('startHubMonitor requires success and failure callbacks');
+  }
+
   const interval = setInterval(async () => {
     if (isPidAlive(hubPid)) return;
 
@@ -710,21 +776,29 @@ function startHubMonitor(hubPid, hubPort, onRecovery) {
     let acquired = false;
     try {
       acquired = tryAcquireForkLock();
-      if (acquired) forkHub(hubPort);
-      const lock = await waitForHubReady();
+      let launchFailure = null;
+      if (acquired) {
+        let rejectLaunch;
+        launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+        forkHub(hubPort, { onError: rejectLaunch });
+      }
+      const readiness = waitForHubReady();
+      const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
       if (acquired) releaseForkLock();
       if (lock.port !== hubPort) {
         if (acquired) releaseForkLock();
         console.error(`\x1b[31mHub recovered on port ${lock.port} but Claude is using port ${hubPort}. Cannot recover.\x1b[0m`);
         try { process.kill(lock.pid, 'SIGTERM'); } catch {}
+        onRecoveryFailure();
         return;
       }
       console.error(`\x1b[32mHub recovered (pid ${lock.pid}, port ${lock.port})\x1b[0m`);
       if (onRecovery) onRecovery(lock);
-      startHubMonitor(lock.pid, lock.port, onRecovery);
+      startHubMonitor(lock.pid, lock.port, onRecovery, onRecoveryFailure);
     } catch (err) {
       if (acquired) releaseForkLock();
       console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
+      onRecoveryFailure();
     }
   }, HUB_HEALTH_CHECK_MS);
   interval.unref();
@@ -758,6 +832,9 @@ function tryListen(srv, port, maxAttempts) {
 
 module.exports = {
   clientIdentityFromMessage,
+  kindFromLaunchSignals,
+  setLaunchSignals,
+  assembleExportReport,
   HUB_DIR,
   HUB_LOCK_PATH,
   HUB_LOG_PATH,
@@ -792,6 +869,7 @@ module.exports = {
   shutdownHub,
   startDeadClientCheck,
   setHubPort,
+  setIdentityPort,
   getHubStatus,
   handleHubRoutes,
   probePortOccupant,

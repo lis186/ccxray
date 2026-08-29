@@ -863,10 +863,66 @@ function staleThresholdMs(env = process.env) {
 
 // ISOLATION: this is a scan root derived from the ambient $HOME, OUTSIDE
 // CCXRAY_HOME — the ADR 0015 R4 class. A test that exercises staleness must set
-// CCXRAY_IMPORT_HOMES (the same knob core's importer honours) or it reads the
+// CCXRAY_IMPORT_HOMES (the same knob core's importer honours) to the actual
+// Claude `projects/` scan root(s), not a `.claude` config home, or it reads the
 // developer's real transcripts. See docs/testing.md.
+// Keep this tiny parser local instead of requiring server/importer.js: Herdr is
+// a separate process and this library must remain independent of core modules.
+// CONTRACT (mirrors server/importer.js): entries must be ABSOLUTE. A relative entry
+// would resolve against this process's CWD, which differs from the hub's, so the same
+// configured string would mean two different directories. Rejected and reported once
+// per process on stderr rather than dropped in silence.
+// Suppression is keyed by (variable, raw value), not a single process-wide boolean:
+// one flag would swallow a second bad entry, the other variable's bad value, and any
+// later correction, while re-warning on every scan would be noise. A changed value is
+// news and warns again. `_resetRootWarnings` exists because the key set outlives a
+// single test in a shared process.
+const _warnedRoots = new Set();
+function _resetRootWarnings() { _warnedRoots.clear(); }
+function warnRelativeRoots(envName, values) {
+  // Keyed per (variable, VALUE), not per rejected-list: keying the joined list meant
+  // `bad1,bad2` -> `bad1,bad3` re-reported bad1, and merely reordering the same two
+  // values warned again. Only genuinely unseen values are news.
+  const unseen = values.filter(v => {
+    const key = `${envName}\u0000${v}`;
+    if (_warnedRoots.has(key)) return false;
+    _warnedRoots.add(key);
+    return true;
+  });
+  if (!unseen.length) return;
+  console.error(`[ccxray] ${envName}: ignoring non-absolute ${unseen.length === 1 ? 'path' : 'paths'} `
+    + `${unseen.map(v => JSON.stringify(v)).join(', ')} — entries must be absolute scan roots `
+    + '(the projects/ or sessions/ directory itself).');
+}
+
+// One predicate, so what the client reports and what the parser rejects cannot drift.
+function rejectedRootValues(rawValue) {
+  return String(rawValue).split(',').map(v => v.trim()).filter(v => v && !path.isAbsolute(v));
+}
+
+function configuredScanRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
+  const roots = [];
+  const rejected = [];
+  const seen = new Set();
+  for (const raw of String(rawValue).split(',')) {
+    const value = raw.trim();
+    if (!value) continue;
+    if (!path.isAbsolute(value)) { rejected.push(value); continue; }
+    const absolute = path.resolve(value);
+    let resolved = absolute;
+    try { resolved = fs.realpathSync(absolute); } catch {}
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    roots.push(resolved);
+  }
+  warnRelativeRoots(envName, rejected);
+  return roots;
+}
+
 function claudeProjectRoots(env = process.env) {
-  if (env.CCXRAY_IMPORT_HOMES) return [env.CCXRAY_IMPORT_HOMES];
+  if (env.CCXRAY_IMPORT_HOMES !== undefined) {
+    return configuredScanRoots(env.CCXRAY_IMPORT_HOMES);
+  }
   const home = os.homedir();
   const roots = [];
   let items = [];
@@ -915,15 +971,38 @@ function transcriptFile(sessionId, cwd, env = process.env) {
 }
 
 function codexSessionRoots(env = process.env) {
-  if (env.CCXRAY_IMPORT_CODEX_HOMES) return [env.CCXRAY_IMPORT_CODEX_HOMES];
+  // Same parser and same presence test as the Claude side, because core's
+  // discoverCodexHomes honours the same comma-list contract for CCXRAY_IMPORT_CODEX_HOMES.
+  // Two differences used to live here and both were silent: the whole value was taken
+  // as ONE path, so a configured list resolved to a directory literally named
+  // "rootA,rootB"; and the truthy test let an explicitly EMPTY value fall through to
+  // ambient discovery of $HOME/.codex*, while core reads an empty value as "import
+  // nothing". An empty value is a deliberate choice by whoever set it, so it must not
+  // reopen the developer's real transcripts.
+  if (env.CCXRAY_IMPORT_CODEX_HOMES !== undefined) {
+    return configuredScanRoots(env.CCXRAY_IMPORT_CODEX_HOMES, 'CCXRAY_IMPORT_CODEX_HOMES');
+  }
   const home = os.homedir();
   const roots = [];
+  const seen = new Set();
   let items = [];
   try { items = fs.readdirSync(home); } catch { return roots; }
   for (const name of items) {
     if (!name.startsWith('.codex') || name.includes('.bak')) continue;
     if (name !== '.codex' && !name.startsWith('.codex-')) continue;
-    roots.push(path.join(home, name, 'sessions'));
+    // Identity by INODE, and skip on failure — byte-for-byte what core's
+    // discoverCodexHomes does (server/importer.js). An earlier fix used realpath here,
+    // which agrees with inode for symlinks but not for bind mounts or across devices,
+    // and it kept a root whose sessions/ dir does not exist while core drops it. Two
+    // dedup rules that agree on the tested cases are still two rules; matching core's
+    // exactly removes the divergence class rather than narrowing it.
+    const root = path.join(home, name, 'sessions');
+    try {
+      const ino = fs.statSync(root).ino;
+      if (seen.has(ino)) continue;
+      seen.add(ino);
+      roots.push(root);
+    } catch { /* no sessions dir here */ }
   }
   return roots;
 }
@@ -2916,6 +2995,10 @@ module.exports = {
   backupConfigFile,
   capabilityPortfolio,
   capabilityReview,
+  claudeProjectRoots,
+  codexSessionRoots,
+  codexTranscriptFile,
+  _resetRootWarnings,
   completedRepairEvidenceForAgent,
   codexAgentArgs,
   contextBand,

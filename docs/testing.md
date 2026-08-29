@@ -35,6 +35,11 @@ Server tests that do not exercise transcript importing must also set
 `$HOME/.claude*` and `$HOME/.codex*/sessions`; isolating `CCXRAY_HOME` alone
 does not stop an active local agent session from contaminating a proxy test.
 
+Exporter status tests may create `export-cursor.json` fixtures under the isolated
+home. The absent, valid, and corrupt cursor shapes are intentional test data; a
+corrupt-cursor status read must leave the original file and directory entries
+unchanged.
+
 For in-process tests, set it before requiring any module that captures it at
 load time:
 
@@ -42,6 +47,12 @@ load time:
 process.env.CCXRAY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-foo-'));
 // ...then require the modules under test
 ```
+
+The hub recovery differential harness (`test/hub-recovery-outcomes.test.js`)
+uses the same throwaway home and a synthetic `logs/index.ndjson`. Its launch
+failure case runs the VM-loaded hub in a short-lived worker so the old
+unhandled-child-error behavior can be observed as a process failure without
+putting the test runner at risk.
 
 For tests that spawn the CLI, pass it in the child env instead of mutating the
 parent process:
@@ -170,9 +181,19 @@ to decide whether a transcript holds turns ccxray never logged — a scan root
 outside `CCXRAY_HOME`, the ADR 0015 R4 class. Because it runs in the test
 process, a throwaway `$HOME` is not an option (it would take the puppeteer cache
 with it). Set **`CCXRAY_IMPORT_HOMES`** instead: it is the same knob
-`server/importer.js` honours, and the plugin treats its value as the `projects/`
-root verbatim. A test that exercises staleness without it silently reads the
-developer's real transcripts. Codex repair uses the parallel
+`server/importer.js` honours, and its value is a comma-separated list of actual
+Claude `projects/` scan roots (the `projects/` directory itself, not a config
+home such as `~/.claude`); setting `~/.claude` imports zero and reports no error.
+**Entries must be ABSOLUTE paths.** A relative entry is rejected rather than resolved,
+because the same string is read by the hub and by the Herdr plugin, whose working
+directories differ by construction — resolving it would silently mean two different
+directories in the two processes. Rejected entries are reported once per distinct value
+on stderr, and the foreground client repeats the complaint because a detached hub's
+stderr goes to `hub.log`. `test/herdr-plugin.test.js` pins the contract by running both
+parsers in child processes with different CWDs; a single-process check cannot observe
+the divergence at all.
+The plugin parses it the same way. A test that exercises staleness
+without it silently reads the developer's real transcripts. Codex repair uses the parallel
 **`CCXRAY_IMPORT_CODEX_HOMES`** override: its value is the `sessions/` root, and
 the plugin inspects only the UUIDv7 session's UTC date plus the adjacent two
 date directories. It never recursively scans that root. `pluginEnv()` defaults

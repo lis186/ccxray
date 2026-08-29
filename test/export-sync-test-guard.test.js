@@ -32,8 +32,10 @@ const path = require('node:path');
 
 const {
   flushExport, startExportSync, stopExportSync, awaitPendingFlush,
-  isExportSuppressed, _setUploader,
+  isExportSuppressed, _setUploader, _resetExportWarnings,
 } = require('../server/export-sync');
+
+const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
 
 // Returns { root, home } where home does NOT exist yet — its creation is the signal.
 // root is removed by the caller's finally (repo test-hygiene rule).
@@ -43,25 +45,87 @@ function freshHome() {
 }
 
 function withEnv(fn) {
+  // The tombstone message is warn-once per process (a real boot calls the predicate
+  // three times), so it is suppression state in exactly the sense the comment below
+  // means: without this, only the first test in the file could observe the refusal.
+  _resetExportWarnings();
   const saved = {
     home: process.env.CCXRAY_HOME,
     bucket: process.env.CCXRAY_EXPORT_GCS_BUCKET,
     disable: process.env.CCXRAY_EXPORT_DISABLE,
     logs: process.env.LOGS_DIR,
+    configDirs: process.env.CCXRAY_EXPORT_CONFIG_DIRS,
   };
   // No test may inherit ambient suppression state; each sets what it needs.
   delete process.env.CCXRAY_EXPORT_DISABLE;
   delete process.env.LOGS_DIR;
+  // Including the tombstone variable itself. Saved above and restored below, but it
+  // must be CLEARED for the run: a developer or rollout machine that still carries a
+  // stale CCXRAY_EXPORT_CONFIG_DIRS would otherwise fail the injected-uploader and
+  // positive-startup tests for an environmental reason, not a code one.
+  delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
   const restore = () => {
     for (const [k, v] of [['CCXRAY_HOME', saved.home],
                           ['CCXRAY_EXPORT_GCS_BUCKET', saved.bucket],
                           ['CCXRAY_EXPORT_DISABLE', saved.disable],
-                          ['LOGS_DIR', saved.logs]]) {
+                          ['LOGS_DIR', saved.logs],
+                          ['CCXRAY_EXPORT_CONFIG_DIRS', saved.configDirs]]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   };
   return fn(restore);
 }
+
+function writeExportFixture(home) {
+  fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+  const entry = {
+    id: '2026-08-12T10-00-00-000',
+    ts: '2026-08-12T10-00-00-000',
+    sessionId: 'tombstone-session',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    msgCount: 1,
+    usage: { input_tokens: 10, output_tokens: 2 },
+    cost: { cost: 0.01, confidence: 'exact' },
+    cwd: '/tmp/tombstone-project',
+  };
+  fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), JSON.stringify(entry) + '\n');
+  fs.writeFileSync(path.join(home, 'export-cursor.json'), JSON.stringify({
+    lastId: null, seq: {}, partial: false, cutoffDt: '2026-01-01', floorV: 1,
+  }) + '\n');
+}
+
+async function captureExportRefusal({ configDirs }) {
+  const { root, home } = freshHome();
+  const lines = [];
+  const origLog = console.log;
+  await withEnv(async (restore) => {
+    try {
+      writeExportFixture(home);
+      process.env.CCXRAY_HOME = home;
+      process.env.CCXRAY_EXPORT_GCS_BUCKET = 'tombstone-bucket';
+      process.env.CCXRAY_EXPORT_CONFIG_DIRS = configDirs;
+      console.log = (...args) => lines.push(args.join(' '));
+      const beforeCursor = fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8');
+      let uploads = 0;
+      _setUploader(async () => { uploads++; });
+      await flushExport();
+      assert.equal(uploads, 0, 'tombstone must refuse before uploading');
+      assert.equal(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8'), beforeCursor,
+        'tombstone must not advance the cursor');
+      assert.equal(fs.existsSync(path.join(home, 'export.lock')), false,
+        'tombstone must refuse before acquiring the lock');
+      assert.deepEqual(lines, [CONFIG_DIRS_REFUSAL]);
+    } finally {
+      console.log = origLog;
+      _setUploader(null); restore(); fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test('T1: set config-dir control disables flush before any export work', async () => {
+  await captureExportRefusal({ configDirs: '.claude' });
+});
 
 test('layer 2: flushExport is inert under node --test with no uploader seam', async () => {
   const { root, home } = freshHome();
@@ -97,6 +161,57 @@ test('layer 1: CCXRAY_EXPORT_DISABLE=1 suppresses even with a seam injected', as
       assert.strictEqual(fs.existsSync(home), false, 'explicit disable must return before any fs work');
       assert.strictEqual(uploads, 0);
     } finally {
+      _setUploader(null); restore(); fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test('T3: empty config-dir control is still a tombstone', async () => {
+  await captureExportRefusal({ configDirs: '' });
+});
+
+test('suppression precedence keeps the tombstone refusal silent', async () => {
+  const { root, home } = freshHome();
+  const lines = [];
+  const origLog = console.log;
+  await withEnv(async (restore) => {
+    try {
+      process.env.CCXRAY_HOME = home;
+      process.env.CCXRAY_EXPORT_DISABLE = '1';
+      process.env.CCXRAY_EXPORT_CONFIG_DIRS = '.claude';
+      console.log = (...args) => lines.push(args.join(' '));
+      _setUploader(async () => { throw new Error('must not upload'); });
+      await flushExport();
+      assert.deepEqual(lines, [], 'suppression must win over the config-dir refusal');
+      assert.equal(fs.existsSync(home), false, 'suppression must return before export work');
+    } finally {
+      console.log = origLog;
+      _setUploader(null); restore(); fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+test('T2: set config-dir control logs refusal and no exporter-active signal', async () => {
+  const { root, home } = freshHome();
+  const lines = [];
+  const origLog = console.log;
+  await withEnv(async (restore) => {
+    try {
+      writeExportFixture(home);
+      process.env.CCXRAY_HOME = home;
+      process.env.CCXRAY_EXPORT_GCS_BUCKET = 'tombstone-bucket';
+      process.env.CCXRAY_EXPORT_CONFIG_DIRS = '.claude';
+      console.log = (...args) => lines.push(args.join(' '));
+      _setUploader(async () => { throw new Error('must not upload'); });
+      startExportSync();
+      stopExportSync();
+      await awaitPendingFlush();
+      assert.equal(lines.filter(line => line.includes('exporter active')).length, 0,
+        'tombstone must not announce an active exporter');
+      assert.deepEqual(lines, [CONFIG_DIRS_REFUSAL]);
+    } finally {
+      console.log = origLog;
+      stopExportSync(); await awaitPendingFlush();
       _setUploader(null); restore(); fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -156,6 +271,7 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       const hit = lines.filter(l => l.includes('exporter active'));
       assert.strictEqual(hit.length, 1, 'exporter startup must emit exactly one positive signal');
       assert.match(hit[0], /announce-bucket/, 'the message must name the bucket it will write to');
+      assert.match(hit[0], /exporting ALL sessions this machine observes \(live \+ imported\)/);
     } finally {
       console.log = origLog;
       stopExportSync();
