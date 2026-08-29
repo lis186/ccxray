@@ -14,6 +14,7 @@ const ENV_KEYS = [
   'CCXRAY_IMPORT_HOMES',
   'CCXRAY_IMPORT_CODEX_HOMES',
   'CCXRAY_HOME',
+  'LOGS_DIR',
 ];
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-owned-status-'));
@@ -96,44 +97,84 @@ after(async () => {
 });
 
 describe('hub-owned export/config status', () => {
-  it('maps every launch mode to kind by iterating modes, not kinds', () => {
+  it('maps every launch mode to kind and paired identity paths by iterating modes, not kinds', async () => {
+    const identityHome = suffix => path.join(testHome, `launch-${suffix}`);
+    const externalLogsDir = path.join(os.tmpdir(), 'ccxray-hub-owned-status-external-logs');
+    const identityPaths = (home, logsDir = path.join(home, 'logs')) => ({ home, logsDir });
+    const ambientIdentity = {
+      CCXRAY_HOME: identityHome('ambient'),
+      LOGS_DIR: path.join(os.tmpdir(), 'ccxray-hub-owned-status-ambient-logs'),
+    };
     const launchModes = [
       {
         name: 'ccxray claude (1st): the detached hub',
         signals: { hubMode: true, explicitPort: true, agentNamed: false, platform: 'darwin' },
         expected: 'hub',
+        env: { CCXRAY_HOME: identityHome('hub') },
+        expectedIdentity: identityPaths(identityHome('hub')),
       },
       {
         name: 'ccxray claude (1st): client after discovering a detached hub',
         signals: { hubMode: false, explicitPort: false, agentNamed: true, platform: 'darwin' },
         expected: 'client',
+        env: { CCXRAY_HOME: identityHome('client-first'), LOGS_DIR: externalLogsDir },
+        expectedIdentity: identityPaths(identityHome('client-first'), externalLogsDir),
+        logsDirOutsideHome: true,
       },
       {
         name: 'ccxray claude (2nd): client after reusing an existing hub',
         signals: { hubMode: false, explicitPort: false, agentNamed: true, platform: 'darwin' },
         expected: 'client',
+        env: { CCXRAY_HOME: identityHome('client-reuse') },
+        expectedIdentity: identityPaths(identityHome('client-reuse')),
       },
       {
         name: 'ccxray standalone: no agent',
         signals: { hubMode: false, explicitPort: false, agentNamed: false, platform: 'darwin' },
         expected: 'standalone',
+        env: { CCXRAY_HOME: identityHome('standalone') },
+        expectedIdentity: identityPaths(identityHome('standalone')),
       },
       {
         name: 'ccxray --port N <agent>: independent agent server',
         signals: { hubMode: false, explicitPort: true, agentNamed: true, platform: 'darwin' },
         expected: 'agent-port',
+        env: { CCXRAY_HOME: identityHome('agent-port') },
+        expectedIdentity: identityPaths(identityHome('agent-port')),
       },
       {
         name: 'Windows ccxray <agent>: hub unavailable, standalone fallback',
         signals: { hubMode: false, explicitPort: false, agentNamed: true, platform: 'win32' },
         expected: 'standalone',
+        env: { CCXRAY_HOME: identityHome('windows') },
+        expectedIdentity: identityPaths(identityHome('windows')),
       },
     ];
 
-    for (const mode of launchModes) {
-      hub.setLaunchSignals(mode.signals);
-      assert.equal(hub.assembleExportReport({ CCXRAY_HOME: testHome }).identity.kind,
-        mode.expected, mode.name);
+    try {
+      for (const mode of launchModes) {
+        hub.setLaunchSignals(mode.signals);
+        await withEnv(ambientIdentity, () => {
+          const identity = hub.assembleExportReport(mode.env).identity;
+          assert.equal(identity.kind, mode.expected, mode.name);
+          assert.deepEqual(
+            { home: identity.home, logsDir: identity.logsDir },
+            mode.expectedIdentity,
+            `${mode.name}: home/logsDir must come from the reporting env`,
+          );
+          if (mode.logsDirOutsideHome) {
+            assert.notEqual(identity.logsDir, path.join(identity.home, 'logs'),
+              `${mode.name}: explicit LOGS_DIR must not fall back to <home>/logs`);
+          }
+        });
+      }
+    } finally {
+      hub.setLaunchSignals({
+        hubMode: true,
+        explicitPort: true,
+        agentNamed: false,
+        platform: process.platform,
+      });
     }
 
     const clientSignals = {
@@ -146,12 +187,6 @@ describe('hub-owned export/config status', () => {
       'the client signal set must never yield hub');
     assert.equal(hub.kindFromLaunchSignals(clientSignals), 'client');
 
-    hub.setLaunchSignals({
-      hubMode: true,
-      explicitPort: true,
-      agentNamed: false,
-      platform: process.platform,
-    });
   });
 
   it('does not borrow the hub lock port for a non-hub identity', () => {
@@ -215,6 +250,7 @@ describe('hub-owned export/config status', () => {
           pid: process.pid,
           port: null,
           home: testHome,
+          logsDir: path.join(testHome, 'logs'),
         },
       });
       assert.deepEqual(statusPayload, assembled, 'getHubStatus uses the shared client payload');

@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const http = require('http');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 
@@ -604,11 +604,16 @@ function assembleExportReport(env = process.env) {
       pid: process.pid,
       port: kind === 'client' ? null : identityPort,
       home: resolveCcxrayHome(env),
+      logsDir: resolveLogsDir(env),
     },
   };
 }
 
 function getHubStatus() {
+  // `port` is the HUB's listener (what `ccxray status` means by "the hub is on port N");
+  // `identity.port` is the REPORTING process's own listener. They coincide in the hub and
+  // can diverge in any other process that calls this helper; later surfaces must choose deliberately
+  // (see docs/solutions/hub-owned-config-status.md §2.3).
   return {
     app: 'ccxray',
     port: currentHubPort(),
