@@ -61,6 +61,9 @@ async function runScenario(kind) {
   const rendered = [];
 
   try {
+    process.env.CCXRAY_IMPORT_DISABLE = '1';
+    fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+    fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
     fs.writeFileSync(forkLockPath, JSON.stringify({ pid: process.pid, at: Date.now() }));
     const hub = loadHub(home);
     hub.startHubMonitor(
@@ -88,9 +91,7 @@ async function runScenario(kind) {
   }
 }
 
-const expected = process.env.CCXRAY_HUB_SOURCE === 'parent'
-  ? []
-  : [recoveryBanner()];
+const expected = [recoveryBanner()];
 
 describe('hub recovery terminal outcomes (behavioral differential)', () => {
   const missingOutcomes = [
@@ -102,10 +103,30 @@ describe('hub recovery terminal outcomes (behavioral differential)', () => {
     it(`${label} reaches the client status render`, async () => {
       const rendered = await runScenario(kind);
       assert.deepEqual(rendered, expected);
-      if (process.env.CCXRAY_HUB_SOURCE !== 'parent') {
-        assert.equal(rendered[0], recoveryBanner());
-        assert.match(rendered[0], new RegExp(EXPECTED_FAILURE_BANNER));
-      }
+      assert.equal(rendered[0], recoveryBanner());
+      assert.match(rendered[0], new RegExp(EXPECTED_FAILURE_BANNER));
     });
   }
+
+  it('requires an explicit failure callback instead of permitting omission', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-recovery-callback-test-'));
+    let interval = null;
+    let thrown = null;
+    try {
+      process.env.CCXRAY_IMPORT_DISABLE = '1';
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+      const hub = loadHub(home);
+      try {
+        interval = hub.startHubMonitor(1, 40001, () => {});
+      } catch (error) {
+        thrown = error;
+      }
+    } finally {
+      if (interval) clearInterval(interval);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+
+    assert.match(String(thrown), /requires success and failure callbacks/);
+  });
 });

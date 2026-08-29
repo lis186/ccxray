@@ -233,7 +233,5 @@ describe('hub client export/config status render', () => {
       'recovery rejection/null reply must render unavailability');
     assert.doesNotMatch(body, /registerClient\(newLock[\s\S]*?\.catch\(\(\) => \{\}\)/,
       'recovery must not discard the reply');
-    assert.match(body, /\}, \(\) => reportHubRegistrationStatus\(null, 'recovery-failed'\)\)/,
-      'fork/readiness recovery failures must render unavailability');
   });
 });

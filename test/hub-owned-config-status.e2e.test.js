@@ -249,6 +249,7 @@ async function runDivergence({ badFirst }) {
       ? `configWarnings=CCXRAY_IMPORT_HOMES: "${badValue}"`
       : 'exportState=suppressed exportReason=explicitly-disabled';
     await waitForHubStatusBanner(second, bannerMarker);
+    await waitForFakeAgent(second, secondMarker);
 
     return { badValue, home, hubPid, hubPort: firstReady.lock.port, second };
   } finally {
