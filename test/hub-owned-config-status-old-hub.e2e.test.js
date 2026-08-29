@@ -65,6 +65,9 @@ function isolatedEnv(home) {
   for (const key of Object.keys(env)) {
     if (key.startsWith('CCXRAY_')) delete env[key];
   }
+  // LOGS_DIR outranks CCXRAY_HOME in resolveLogsDir; an ambient value would point
+  // the home-level line at a real external index (ADR 0015 R4 class).
+  delete env.LOGS_DIR;
   return {
     ...env,
     HOME: home,
@@ -90,6 +93,7 @@ function legacyStatus(port) {
 }
 
 function createSocketMock(socketPath, port) {
+  const served = [];
   const server = net.createServer(socket => {
     let input = '';
     socket.on('error', () => {});
@@ -98,15 +102,18 @@ function createSocketMock(socketPath, port) {
       const newline = input.indexOf('\n');
       if (newline === -1) return;
       const request = JSON.parse(input.slice(0, newline));
+      served.push(request.cmd);
       const payload = request.cmd === 'health' ? { ok: true } : legacyStatus(port);
       socket.end(JSON.stringify(payload) + '\n');
     });
   });
-  return { server, address: socketPath, port };
+  return { server, address: socketPath, port, served };
 }
 
 function createHttpMock() {
+  const served = [];
   const server = http.createServer((request, response) => {
+    served.push(request.url);
     const payload = request.url === '/_api/health'
       ? { ok: true }
       : legacyStatus(server.address().port);
@@ -114,7 +121,7 @@ function createHttpMock() {
       { 'Content-Type': 'application/json' });
     response.end(JSON.stringify(payload));
   });
-  return { server };
+  return { server, served };
 }
 
 function writeRenderProbe(home) {
@@ -208,6 +215,10 @@ async function runLegacyStatus(t, carrier) {
     const renderObservation = JSON.parse(fs.readFileSync(probe.marker, 'utf8'));
     assert.equal(renderObservation.reportIsNull, true,
       `${carrier} legacy hub status must pass null to renderProcessStatus`);
+
+    const expectedRequest = carrier === 'socket' ? 'status' : '/_api/hub/status';
+    assert.ok(mock.served.includes(expectedRequest),
+      `${carrier} mock must have served the legacy status reply; served: ${JSON.stringify(mock.served)}`);
   } finally {
     if (statusRun) {
       if (statusRun.child.exitCode == null && statusRun.child.signalCode == null) {

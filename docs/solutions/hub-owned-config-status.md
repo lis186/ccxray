@@ -258,11 +258,19 @@ warning shown, behaves as today. New client × old hub: fields absent — the cl
 treat `undefined` as "this hub cannot tell me" and stay silent rather than fall back to
 its own env, because falling back is precisely the defect being removed. Hub version skew
 is real on a machine where several worktrees run their own servers. The new-client ×
-old-hub direction is tested (row 8, status-CLI surface). The old-client × new-hub
-direction is deferred with an argument, not reasoned away: this branch cannot alter the
-old client's reading paths, so the guard is pinning the legacy reply fields an old client
-does read — see §3's deferred rows. (Amended 2026-08-29; the original sentence demanded
-both directions as e2e, which the deferral argument supersedes.)
+old-hub direction is tested at both surfaces it exists on: the status-CLI surface as a
+spawned e2e over both carriers (socket status reply and the HTTP `/_api/hub/status`
+fallback — `test/hub-owned-config-status-old-hub.e2e.test.js`), and the register-reply
+surface in-process (`test/hub-client-status.test.js` iterates full / old-hub /
+null-tombstone reply shapes, including the loud-client-env non-fallback negative). A
+register-carrier e2e against a genuinely old hub binary is not built — it needs the same
+cross-version spawn machinery as the old-client half, and the wiring it would pin is
+already held by rows 6/7's real-socket attach e2e plus the in-process shape table. The
+old-client × new-hub direction is deferred with an argument, not reasoned away: this
+branch cannot alter the old client's reading paths, so the guard is pinning the legacy
+reply fields an old client does read — see §3's deferred rows. (Amended 2026-08-29; the
+original sentence demanded both directions as e2e, which the deferral arguments
+supersede.)
 
 ## 2.5 Crash recovery re-forks a different hub, and nobody re-reads the reply
 
@@ -484,9 +492,12 @@ it was decided.
   binary from a second checkout — cross-version machinery the suite does not have. What
   this branch CAN break is the shape of the EXISTING reply fields an old client does read;
   that is guarded by pinning `firstClient` (and the other legacy reply fields) in the
-  register-reply tests. The pin is the honest substitute for this half. The new-client ×
-  old-hub half stays BUILT (the `s.exportState === undefined` fallback at the status-CLI
-  surface). §2.4's original "both directions must be tested" is amended to match.
+  register-reply tests (`test/hub.test.js`, firstClient flag suite, over the real
+  socket). The pin is the honest substitute for this half. The new-client × old-hub half
+  stays BUILT at both of its surfaces: the `s.exportState === undefined` fallback at the
+  status-CLI surface (spawned e2e, both carriers) and the register-reply shapes
+  in-process (`test/hub-client-status.test.js`). §2.4's original "both directions must
+  be tested" is amended to match, and row 8's cell reads with this disposition.
 - **Row 9 (crash re-fork from a client with a divergent env).** Composition is proven at
   both joints: recovery renders through the same shared render function as first attach,
   rows 6/7 prove that render shows the hub's env against a real forked hub, and all six
