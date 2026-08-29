@@ -200,6 +200,60 @@ describe('ccxray status home level', () => {
     }
   });
 
+  it('D2b: iterates every never-flushed process-state branch, including unknown', () => {
+    const rows = [
+      {
+        name: 'unconfigured',
+        state: 'unconfigured',
+        reason: null,
+        detail: 'never-flushed — expected: exporter is unconfigured',
+      },
+      {
+        name: 'suppressed with reason',
+        state: 'suppressed',
+        reason: 'explicitly-disabled',
+        detail: 'never-flushed — expected: exporter is suppressed (explicitly-disabled)',
+      },
+      {
+        name: 'suppressed without reason',
+        state: 'suppressed',
+        reason: null,
+        detail: 'never-flushed — expected: exporter is suppressed',
+      },
+      {
+        name: 'refused',
+        state: 'refused',
+        reason: 'config-dirs-retired',
+        detail: 'never-flushed — exporter refusal (config-dirs-retired) corroborates the process state',
+      },
+      {
+        name: 'enabled',
+        state: 'enabled',
+        reason: null,
+        detail: 'never-flushed — alarm: enabled exporter has not completed a flush',
+      },
+      {
+        name: 'unknown',
+        state: null,
+        reason: null,
+        detail: 'never flushed; no exporter process reachable — cannot tell whether export is configured for this home',
+      },
+    ];
+
+    for (const row of rows) {
+      const domain = makeDomain();
+      try {
+        writeIndex(domain, ['tail']);
+        const result = inspectHomeStatus(reportFor(domain, row.state, row.reason), { nowMs: Date.now() });
+        assert.equal(result.state, 'never-flushed', row.name);
+        assert.ok(result.line.includes(row.detail),
+          `${row.name}: expected line to include ${row.detail}; actual: ${result.line}`);
+      } finally {
+        fs.rmSync(domain.home, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('B4: reads only a bounded tail, widens once, and never guesses past a torn final line', () => {
     const domain = makeDomain();
     try {
