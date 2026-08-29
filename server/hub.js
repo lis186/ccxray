@@ -257,15 +257,21 @@ function forkHub(port, opts = {}) {
   const env = { ...process.env };
   if (opts.displayName && !env.CCXRAY_DISPLAY_NAME) env.CCXRAY_DISPLAY_NAME = opts.displayName;
 
-  const child = spawn(process.execPath, [hubScript, ...args], {
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    windowsHide: true,
-    env,
-  });
-  child.unref();
-  fs.closeSync(fd);
-  return child.pid;
+  try {
+    const child = spawn(process.execPath, [hubScript, ...args], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      windowsHide: true,
+      env,
+    });
+    child.once('error', opts.onError || (err => {
+      console.error(`\x1b[31mHub launch failed: ${err.message}\x1b[0m`);
+    }));
+    child.unref();
+    return child.pid;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ── Wait for hub readiness (poll lockfile) ──────────────────────────
@@ -770,8 +776,14 @@ function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
     let acquired = false;
     try {
       acquired = tryAcquireForkLock();
-      if (acquired) forkHub(hubPort);
-      const lock = await waitForHubReady();
+      let launchFailure = null;
+      if (acquired) {
+        let rejectLaunch;
+        launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+        forkHub(hubPort, { onError: rejectLaunch });
+      }
+      const readiness = waitForHubReady();
+      const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
       if (acquired) releaseForkLock();
       if (lock.port !== hubPort) {
         if (acquired) releaseForkLock();

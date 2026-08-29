@@ -1430,13 +1430,20 @@ async function startServer() {
     return;
   }
 
-  // No hub found: acquire fork lock to prevent duplicate hub forks
-  const acquired = hub.tryAcquireForkLock();
-  if (acquired) {
-    hub.forkHub(config.PORT);
-  }
+  // No hub found: acquire fork lock to prevent duplicate hub forks. A spawn
+  // failure is asynchronous, so race it against readiness instead of relying
+  // on the detached child to make the failure observable by itself.
+  let acquired = false;
+  let launchFailure = null;
   try {
-    const lock = await hub.waitForHubReady();
+    acquired = hub.tryAcquireForkLock();
+    if (acquired) {
+      let rejectLaunch;
+      launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+      hub.forkHub(config.PORT, { onError: rejectLaunch });
+    }
+    const readiness = hub.waitForHubReady();
+    const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
     if (acquired) hub.releaseForkLock();
     await startClientMode(lock);
   } catch (err) {

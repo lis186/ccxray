@@ -68,16 +68,21 @@ describe('hub client export/config status render', () => {
       callback: 'onRecoveryFailure',
       lifecycle: 'recovery-failed',
     },
+    {
+      outcome: 'fork launch emits an asynchronous error',
+      callback: 'onRecoveryFailure',
+      lifecycle: 'recovery-failed',
+    },
   ];
 
-  it('keeps the five terminal recovery outcomes on the status-render path', () => {
+  it('keeps the six terminal recovery outcomes on the status-render path', () => {
     assert.deepEqual(
       recoveryOutcomes.map(row => row.lifecycle),
-      ['recovered', 'recovery-failed', 'recovery-failed', 'recovery-failed', 'recovery-failed'],
+      ['recovered', 'recovery-failed', 'recovery-failed', 'recovery-failed', 'recovery-failed', 'recovery-failed'],
     );
     assert.deepEqual(
       recoveryOutcomes.map(row => row.callback),
-      ['onRecovery', 'onRecovery', 'onRecovery', 'onRecoveryFailure', 'onRecoveryFailure'],
+      ['onRecovery', 'onRecovery', 'onRecovery', 'onRecoveryFailure', 'onRecoveryFailure', 'onRecoveryFailure'],
     );
 
     for (const row of recoveryOutcomes) {
