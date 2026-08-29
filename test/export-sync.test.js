@@ -178,6 +178,29 @@ describe('export-sync', () => {
     assert.equal(cursor.floorV, 1);
   });
 
+  // 13b bridge: the row-13b render test (test/status.test.js D3) hand-writes its cursor,
+  // so a schema drift in the production writer would leave it green while the real
+  // cross-level scenario breaks. This test closes that seam: the cursor is written by
+  // the PRODUCTION flush and read by the PRODUCTION status reader.
+  it('13b bridge: the status home line reads a cursor the production flush wrote', async () => {
+    const liveDt = daysAgoUtc(14);
+    setup([entryForDt(liveDt)], { _skipCursor: true });
+    await flushExport(); // first run: production writeCursor initializes to the index tail
+    const { inspectHomeStatus, renderProcessStatus } = require('../server/status');
+    const report = {
+      exportState: 'refused',
+      exportReason: 'config-dirs-retired',
+      configWarnings: [],
+      identity: { kind: 'hub', pid: process.pid, port: 5577, home: _home, logsDir: path.join(_home, 'logs') },
+    };
+    const homeLine = inspectHomeStatus(report).line;
+    assert.match(homeLine, /current \(partial/, `production-written cursor must read as current; line: ${homeLine}`);
+    assert.doesNotMatch(homeLine, /refused/);
+    const processLine = renderProcessStatus(report);
+    assert.match(processLine, /refused/);
+    assert.doesNotMatch(processLine, /current/);
+  });
+
   it('first-run: empty index writes today UTC as the cutoff floor', async () => {
     setup([], { _skipCursor: true });
     const before = todayUtc();

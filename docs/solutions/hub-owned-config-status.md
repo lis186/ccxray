@@ -427,7 +427,7 @@ the half the author had in mind. So the matrix is fixed before the code:
 | 13a | each `exportState` value renders | `unconfigured` (silent or stated?), `suppressed/explicitly-disabled`, `suppressed/test-run`, `refused`, `enabled` — reviewer A: the matrix covered modes x surfaces and no states, which is the other half of the very blind spot §1 diagnoses |
 | 13b | home level vs process level disagree | hub `refused`, a `--port N` server flushing **in the same `CCXRAY_HOME`**: the home line must show a fresh cursor while the process line shows the refusal, and neither may be printed as the other (§2.3). The shared home is what makes the two levels disagree about one subject; in different homes they are separate domains and the row is vacuous — that is row 14, not this one |
 | 14 | **two exporters, two `CCXRAY_HOME`s** | each reports its own home's cursor and neither is presented as the other's or as the machine's. The home line names the home path it read (§2.3). Assert the negative explicitly: a status run whose env points at home A must not report home B's cursor state, in either direction — including the case where A has never flushed and B has, which on a single-cursor reading would render as "exporting" for a home that is not |
-| 13c | each home-level cursor outcome renders | `fresh`, `stale`, `never-flushed` — the third exists because a suppressed or unconfigured home never creates the file at all (§2.3, measured). `never` must render as itself, not as `stale`, and its meaning is read against the process state: expected under `unconfigured`/`suppressed`, and the strongest available "nothing is reaching GCS" signal under `enabled`. Same rule as 13a: a state set gets an iterating table, not one example |
+| 13c | each home-level cursor outcome renders | `current` / `current (partial)`, `behind-pending`, `behind-overdue`, `never-flushed` (implementation tokens; an earlier revision said `fresh`/`stale`) — the last exists because a suppressed or unconfigured home never creates the file at all (§2.3, measured). `never-flushed` must render as itself, not as a behind state, and its meaning is read against the process state: expected under `unconfigured`/`suppressed`, and the strongest available "nothing is reaching GCS" signal under `enabled`. Same rule as 13a: a state set gets an iterating table, not one example |
 | 13 | `ccxray status` with no discoverable lock | reviewer B: it probes `/_api/health`, which carries no export state and reports `hub:false` for a live hub. Either the probe learns the state or status must say it could not determine it — silence here is the same wrong-subject failure |
 
 **Non-vacuity conditions** (both reviewers; a row that can pass without exercising its
@@ -500,11 +500,19 @@ it was decided.
   be tested" is amended to match, and row 8's cell reads with this disposition.
 - **Row 9 (crash re-fork from a client with a divergent env).** Composition is proven at
   both joints: recovery renders through the same shared render function as first attach,
-  rows 6/7 prove that render shows the hub's env against a real forked hub, and all six
-  terminal recovery outcomes have behavioural differential coverage. The remaining e2e
-  would pass or fail on a 5s health-interval timing rather than on its subject — a flake
-  generator asserting an already-pinned composition. (This was the one row the
-  adversarial pair split on; deferral chosen on the grounds above.)
+  and rows 6/7 prove that render shows the hub's env against a real forked hub. The six
+  terminal recovery outcomes split by coverage kind — stated precisely because an earlier
+  revision of this entry overclaimed "behavioural differential" for all six: the three
+  monitor-side outcomes (wrong-port, readiness-timeout, fork-launch-failure) ARE
+  behavioural-differential (`test/hub-recovery-outcomes.test.js` drives the real
+  `startHubMonitor`, and can replay against the parent commit via `CCXRAY_HUB_SOURCE`);
+  the three register outcomes (resolves / resolves null / rejects) are covered as
+  render-shape tables plus source-pinned wiring (`test/hub-client-status.test.js`) — the
+  callback bodies are one-line calls into the shared render, so executing them
+  behaviourally IS the row 9 e2e being deferred. That remaining e2e would pass or fail
+  on a 5s health-interval timing rather than on its subject — a flake generator
+  asserting an already-pinned composition. (This was the one row the adversarial pair
+  split on; deferral chosen on the grounds above.)
 - **Rows 10/11 (hub + `--port N` server / two `--port N` servers).** No cross-process
   authority exists to mis-claim (§4): each process reports itself, and the design
   deliberately invents no machine-level authority whose misattribution these rows would

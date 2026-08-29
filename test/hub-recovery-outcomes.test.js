@@ -138,6 +138,7 @@ async function runLaunchSubprocess() {
   let stdout = '';
   let child;
   let closeTimer;
+  let killTimer;
   try {
     child = spawn(process.execPath, [__filename], {
       cwd: REPO_ROOT,
@@ -151,6 +152,7 @@ async function runLaunchSubprocess() {
       child.once('error', error => resolve({ code: null, signal: null, error }));
     });
     closeTimer = setTimeout(() => child.kill('SIGTERM'), 3000);
+    killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 4500);
     const [status, forkLock] = await Promise.all([
       closed,
       waitForForkLock(forkLockPath),
@@ -166,6 +168,7 @@ async function runLaunchSubprocess() {
     };
   } finally {
     if (closeTimer) clearTimeout(closeTimer);
+    if (killTimer) clearTimeout(killTimer);
     fs.rmSync(home, { recursive: true, force: true });
   }
 }
