@@ -35,6 +35,7 @@ const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const sessionIdx = require('./session-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
+const { renderHubClientStatus } = require('./hub-client-status');
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -1041,6 +1042,19 @@ if (process.argv[2] === 'status') {
 }
 
 // ── Client mode: connect to existing hub ──
+function reportHubRegistrationStatus(reply, lifecycle) {
+  const rendered = renderHubClientStatus(
+    reply?.identity || null,
+    lifecycle,
+    reply && {
+      exportState: reply.exportState,
+      exportReason: reply.exportReason,
+      configWarnings: reply.configWarnings,
+    },
+  );
+  if (rendered) _origLog(rendered);
+}
+
 async function startClientMode(lock) {
   const compat = hub.checkVersionCompat(lock.version);
   if (compat.fatal) {
@@ -1056,19 +1070,6 @@ async function startClientMode(lock) {
       ? `  →  ${config.ANTHROPIC_PROTOCOL}://${config.ANTHROPIC_HOST}:${config.ANTHROPIC_PORT} (from ANTHROPIC_BASE_URL)`
       : '';
     _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${lock.port} (hub)${upstreamSuffix}\x1b[0m`);
-  }
-
-  // The hub this client just attached to inherits this env, so if the tombstone
-  // variable is set the hub will refuse to export -- and say so only into hub.log,
-  // which nobody reads. This is the one surface the user is actually looking at.
-  {
-    const refusal = require('./export-sync').configDirsRefusal();
-    if (refusal) _origLog(`\x1b[33m   ${refusal}\x1b[0m`);
-    // Same reason, same channel: the importer rejects non-absolute scan roots and says
-    // so on stderr, which under a detached hub lands in hub.log where nobody looks.
-    for (const complaint of require('./importer').relativeRootComplaints()) {
-      _origLog(`\x1b[33m   [ccxray] ignoring non-absolute scan root — ${complaint}\x1b[0m`);
-    }
   }
 
   const clientIdentity = {
@@ -1101,6 +1102,8 @@ async function startClientMode(lock) {
       clientShutdown.shutdown(1);
       return;
     }
+
+    reportHubRegistrationStatus(reg, 'attached');
 
     // Auto-open browser for the first client connecting to this hub
     if (reg.firstClient) {
@@ -1136,7 +1139,7 @@ async function startClientMode(lock) {
   }
 
   // Monitor hub health and auto-recover
-  hub.startHubMonitor(lock.pid, lock.port, (newLock) => {
+  hub.startHubMonitor(lock.pid, lock.port, async (newLock) => {
     // Re-register with new hub (newLock has sockPath from lockfile).
     // Both are published to the shutdown path: unregistering from the DEAD hub
     // releases nothing, and a shutdown racing this re-registration would let the
@@ -1147,7 +1150,16 @@ async function startClientMode(lock) {
     // pid that is on its way out.
     if (clientShutdown.isShuttingDown()) return;
     currentLock = newLock;
-    registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity).catch(() => {});
+    try {
+      registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity);
+      const reg = await registration;
+      // This is best-effort notification: recovery happens while the agent's TUI
+      // owns the terminal, so the banner may not be read.
+      if (reg) reportHubRegistrationStatus(reg, 'recovered');
+      else reportHubRegistrationStatus(null, 'recovery-failed');
+    } catch {
+      reportHubRegistrationStatus(null, 'recovery-failed');
+    }
   });
 
   // A signal that landed in the register→spawn window already began the
