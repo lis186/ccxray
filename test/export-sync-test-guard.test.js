@@ -170,6 +170,27 @@ test('T3: empty config-dir control is still a tombstone', async () => {
   await captureExportRefusal({ configDirs: '' });
 });
 
+test('suppression precedence keeps the tombstone refusal silent', async () => {
+  const { root, home } = freshHome();
+  const lines = [];
+  const origLog = console.log;
+  await withEnv(async (restore) => {
+    try {
+      process.env.CCXRAY_HOME = home;
+      process.env.CCXRAY_EXPORT_DISABLE = '1';
+      process.env.CCXRAY_EXPORT_CONFIG_DIRS = '.claude';
+      console.log = (...args) => lines.push(args.join(' '));
+      _setUploader(async () => { throw new Error('must not upload'); });
+      await flushExport();
+      assert.deepEqual(lines, [], 'suppression must win over the config-dir refusal');
+      assert.equal(fs.existsSync(home), false, 'suppression must return before export work');
+    } finally {
+      console.log = origLog;
+      _setUploader(null); restore(); fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 test('T2: set config-dir control logs refusal and no exporter-active signal', async () => {
   const { root, home } = freshHome();
   const lines = [];
