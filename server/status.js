@@ -183,7 +183,7 @@ function describeHomeState(report, cursor, tail, nowMs) {
 }
 
 function renderDetermination(paths) {
-  return `Home: ${paths.home} — never flushed; no exporter process reachable — cannot tell whether export is configured for this home`
+  return `Home: ${paths.home} — exporter state unavailable; no exporter process reachable — cannot tell whether export is configured for this home`
     + ` (read cursor ${paths.cursorPath}; index ${paths.indexPath})`;
 }
 

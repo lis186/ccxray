@@ -268,6 +268,8 @@ describe('ccxray status home level', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /Process: exporter state unavailable/);
       assert.match(result.stdout, /cannot tell whether export is configured/);
+      assert.doesNotMatch(result.stdout, /never[- ]flushed/,
+        'unreachable process state must not fabricate a never-flushed claim');
       assert.doesNotMatch(result.stdout, /exportState=enabled/);
       assert.match(result.stdout, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     } finally {
