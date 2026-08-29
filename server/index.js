@@ -36,6 +36,7 @@ const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const sessionIdx = require('./session-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const { renderHubClientStatus } = require('./hub-client-status');
+const { renderProcessStatus, inspectHomeStatus } = require('./status');
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -969,6 +970,8 @@ if (process.argv[2] === 'status') {
     (async () => {
       const occ = await hub.probePortOccupant(config.PORT, 1000);
       console.log('No hub running.');
+      console.log(renderProcessStatus(null));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
       if (occ.kind !== 'free') {
         hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
       }
@@ -979,6 +982,7 @@ if (process.argv[2] === 'status') {
       console.log(`Machine: ${JSON.stringify({
         proxy: occ.kind === 'ccxray-standalone' || occ.kind === 'ccxray-hub',
         hub: false,
+        pid: occ.pid || null,
         port: config.PORT,
         occupant: occ.kind,
       })}`);
@@ -989,6 +993,8 @@ if (process.argv[2] === 'status') {
   if (!hub.isPidAlive(lock.pid)) {
     console.log('Hub lockfile exists but process is dead. Cleaning up.');
     hub.deleteHubLock();
+    console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
+    console.log(inspectHomeStatus(null, { env: process.env }).line);
     process.exit(1);
   }
 
@@ -1000,6 +1006,9 @@ if (process.argv[2] === 'status') {
         if (!health || !health.ok) {
           console.log(`Hub pid ${lock.pid} alive but socket not responding.`);
           console.log(`Check ${hub.HUB_LOG_PATH}`);
+          console.log(renderProcessStatus(null,
+            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+          console.log(inspectHomeStatus(null, { env: process.env }).line);
           process.exit(1);
         }
         s = await hub.hubSocketRequest(lock.sockPath, { cmd: 'status' });
@@ -1008,6 +1017,9 @@ if (process.argv[2] === 'status') {
         if (!ok) {
           console.log(`Hub pid ${lock.pid} alive but not responding on port ${lock.port}.`);
           console.log(`Check ${hub.HUB_LOG_PATH}`);
+          console.log(renderProcessStatus(null,
+            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+          console.log(inspectHomeStatus(null, { env: process.env }).line);
           process.exit(1);
         }
         s = await new Promise((resolve, reject) => {
@@ -1021,20 +1033,29 @@ if (process.argv[2] === 'status') {
         });
       }
       console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
+      console.log(renderProcessStatus(
+        s.exportState === undefined ? null : s,
+        `hub detected (pid ${s.pid}, port ${s.port}) — exporter state unavailable`,
+      ));
+      console.log(inspectHomeStatus(s, { env: process.env }).line);
       console.log(`Machine: ${JSON.stringify({
-        proxy: true, hub: true, port: s.port, occupant: 'ccxray-hub',
+        proxy: true, hub: true, pid: s.pid, port: s.port, occupant: 'ccxray-hub',
       })}`);
-      if (s.clients.length === 0) {
+      const clients = Array.isArray(s.clients) ? s.clients : [];
+      if (clients.length === 0) {
         console.log('No connected clients.');
       } else {
-        console.log(`Connected clients (${s.clients.length}):`);
-        s.clients.forEach((c, i) => {
+        console.log(`Connected clients (${clients.length}):`);
+        clients.forEach((c, i) => {
           console.log(`  [${i + 1}] pid ${c.pid} — ${c.cwd} (since ${c.connectedAt})`);
         });
       }
       process.exit(0);
     } catch (err) {
       console.error(`Failed to query hub: ${err.message}`);
+      console.log(renderProcessStatus(null,
+        `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
       process.exit(1);
     }
   })();
