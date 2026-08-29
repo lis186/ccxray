@@ -24,7 +24,8 @@ const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
 const { warmUp: warmUpCosts } = require('./cost-budget');
-const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = require('./export-sync');
+const exportSync = require('./export-sync');
+const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = exportSync;
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
@@ -151,6 +152,13 @@ const DISPLAY_NAME = providers.getDisplayName(agentCommand, process.env);
 // In agent/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
 if (agentMode || hubMode) console.log = () => {};
+// startServer() is the exporter in standalone, --port agent, and Windows fallback
+// modes. Those paths may have console.log muted because an agent is attached, so
+// keep the refusal on the same original channel as the agent startup banner. A hub
+// has its own status/reporting path and must retain the existing hub-log behavior.
+const localExporterMode = !hubMode
+  && (explicitPort || !agentMode || process.platform === 'win32');
+if (localExporterMode) exportSync._setConfigDirsWarningLogger(_origLog);
 
 // ── Delta log storage ────────────────────────────────────────────────
 // sessionLastReq tracks the most recent req per session for delta writes.

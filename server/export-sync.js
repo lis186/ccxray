@@ -31,8 +31,18 @@ let _uploader = null; // test seam
 let _cachedToken = null; // { accessToken, expiresAt }
 let _runningFlush = null; // in-flight flush promise for graceful shutdown
 let _configDirsWarned = false; // the tombstone message is about static config — say it once per process
+// The default remains dynamic so direct callers and tests that replace console.log
+// still observe the refusal. server/index.js swaps this for _origLog on local
+// exporter paths, where agent mode has muted console.log.
+let _configDirsWarningLogger = (...args) => console.log(...args);
 
 function _setUploader(fn) { _uploader = fn; }
+
+function _setConfigDirsWarningLogger(fn) {
+  _configDirsWarningLogger = typeof fn === 'function'
+    ? fn
+    : (...args) => console.log(...args);
+}
 
 // Test seam: the warn-once flag is process-global, so a suite asserting the message
 // must clear it or only the first test in the file can see it.
@@ -88,12 +98,16 @@ function exportStatus(env = process.env) {
 function shouldBlockExport(env = process.env) {
   const status = exportStatus(env);
   if (status.exportReason === 'config-dirs-retired') {
+    const refusal = configDirsRefusal(env);
     // Once per process, not once per call. Smoke-measured: a real boot calls this
     // three times (startExportSync, its initial flush, and index.js's
     // sync-before-prune), so an unguarded log printed the same paragraph three times
     // before the first request — noise that reads like three separate faults. The
     // message describes static configuration, so repeating it carries no information.
-    if (!_configDirsWarned) { console.log(CONFIG_DIRS_REFUSAL); _configDirsWarned = true; }
+    if (!_configDirsWarned && refusal !== null) {
+      _configDirsWarningLogger(refusal);
+      _configDirsWarned = true;
+    }
   }
   return status.exportState !== 'enabled';
 }
@@ -1170,6 +1184,7 @@ async function awaitPendingFlush() {
 
 module.exports = {
   _resetExportWarnings,
+  _setConfigDirsWarningLogger,
   configDirsRefusal,
   exportSuppressionReason,
   exportStatus,

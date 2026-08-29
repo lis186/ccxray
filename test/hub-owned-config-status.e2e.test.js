@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const SERVER = path.resolve(__dirname, '..', 'server', 'index.js');
+const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -143,9 +144,40 @@ function clientEnv({ home, binDir, port, marker, importHomes }) {
   };
 }
 
+function standaloneAgentEnv({ home, binDir, port, marker, configDirs }) {
+  const env = clientEnv({ home, binDir, port, marker });
+  if (configDirs === undefined) return env;
+
+  // This row deliberately does not use CCXRAY_EXPORT_DISABLE=1: that suppression
+  // wins over the refusal branch. With the tombstone set, removing the bucket makes
+  // upload impossible while still exercising exportStatus='refused'.
+  delete env.CCXRAY_EXPORT_DISABLE;
+  delete env.CCXRAY_EXPORT_GCS_BUCKET;
+  env.CCXRAY_EXPORT_CONFIG_DIRS = configDirs;
+  return env;
+}
+
 function spawnClient(options) {
   const child = spawn(process.execPath, [SERVER, '--no-browser', 'claude'], {
     env: clientEnv(options),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  return {
+    child,
+    get stdout() { return stdout; },
+    get stderr() { return stderr; },
+  };
+}
+
+function spawnStandaloneClient(options) {
+  const child = spawn(process.execPath, [SERVER, '--port', String(options.port), '--no-browser', 'claude'], {
+    env: standaloneAgentEnv(options),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -207,6 +239,23 @@ async function stopClient(client, marker) {
       clientError && `client cleanup: ${clientError.message}`,
       agentError && `agent cleanup: ${agentError.message}`,
     ].filter(Boolean).join('; '));
+  }
+}
+
+async function assertPidGone(pid, label) {
+  if (!pid || pid === process.pid) return;
+  try {
+    await waitFor(() => {
+      try {
+        process.kill(pid, 0);
+        return null;
+      } catch (error) {
+        if (error.code === 'ESRCH') return true;
+        throw error;
+      }
+    }, 5000);
+  } catch (error) {
+    throw new Error(`${label} pid ${pid} survived cleanup: ${error.message}`);
   }
 }
 
@@ -310,5 +359,64 @@ describe('hub-owned config status divergence', () => {
       `row 7 must name the hub home ${result.home}; stdout:\n${output}`);
     assert.ok(output.includes(`"logsDir":"${path.join(result.home, 'logs')}"`),
       `row 7 must name the hub logs directory; stdout:\n${output}`);
+  });
+
+  it('row 2: local agent-port refusal reaches stdout, while clean env stays silent', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-agent-port-config-e2e-'));
+    const entries = [];
+
+    try {
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+      const binDir = makeFakeClaude(home);
+      const refusalMarker = path.join(home, 'refusal-agent.pid');
+      const refusal = spawnStandaloneClient({
+        home,
+        binDir,
+        port: await freePort(),
+        marker: refusalMarker,
+        configDirs: '.claude',
+      });
+      entries.push({ client: refusal, marker: refusalMarker });
+
+      await waitForFakeAgent(refusal, refusalMarker);
+      await waitFor(() => refusal.stdout.includes(CONFIG_DIRS_REFUSAL) ? true : null);
+      assert.equal(
+        refusal.stdout.split(CONFIG_DIRS_REFUSAL).length - 1,
+        1,
+        `row 2 refusal must be printed exactly once; stdout:\n${refusal.stdout}`,
+      );
+      await stopClient(refusal, refusalMarker);
+
+      const cleanMarker = path.join(home, 'clean-agent.pid');
+      const clean = spawnStandaloneClient({
+        home,
+        binDir,
+        port: await freePort(),
+        marker: cleanMarker,
+      });
+      entries.push({ client: clean, marker: cleanMarker });
+
+      await waitForFakeAgent(clean, cleanMarker);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      assert.equal(
+        clean.stdout.includes(CONFIG_DIRS_REFUSAL),
+        false,
+        `row 2 clean env must not print the refusal; stdout:\n${clean.stdout}`,
+      );
+    } finally {
+      const childPids = entries.map(entry => entry.client.child.pid);
+      for (const entry of entries) {
+        try { await stopClient(entry.client, entry.marker); } catch {}
+      }
+      const cleanupErrors = [];
+      for (const pid of childPids) {
+        try { await assertPidGone(pid, 'row 2 server'); } catch (error) { cleanupErrors.push(error); }
+      }
+      fs.rmSync(home, { recursive: true, force: true });
+      if (cleanupErrors.length) {
+        throw new Error('process cleanup failed: ' + cleanupErrors.map(error => error.message).join(' | '));
+      }
+    }
   });
 });
