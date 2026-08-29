@@ -432,6 +432,27 @@ they reach standalone for different reasons. Every row needs an isolated `CCXRAY
 `CCXRAY_EXPORT_DISABLE=1` where a server boots, and a readiness wait; "it really forks"
 is not hermeticity.
 
+**Rows 6/7 diverge on `configWarnings`, not on `exportState` — and that is forced, not
+chosen (found building them, 2026-08-29).** Every spawned server must set
+`CCXRAY_EXPORT_DISABLE=1` (`CCXRAY_HOME` does not isolate the GCS bucket, and
+`test/export-sync-test-guard.test.js` fails the suite if a launcher omits it). But
+`exportStatus` evaluates `exportSuppressionReason` FIRST, so that flag pins every spawned
+process to `{suppressed, explicitly-disabled}` and no other `exportState` is reachable in
+a spawned-process test. The two requirements are jointly unsatisfiable for `exportState`.
+
+The divergence therefore rides a non-absolute `CCXRAY_IMPORT_HOMES`, which reaches
+`configWarnings` — gated only on `kind` (`server/hub.js:601`), never on `exportState`. The
+precedence paragraph in §2.1 anticipated exactly this without knowing it: "the fault
+remains available through `configWarnings`."
+
+Accepted residual: `exportState` divergence is not exercised by any spawned-process test.
+Its five values stay covered by the in-process tables of Units 1-2, which prove the
+producer is injectable but cannot prove whose environment the hub read. So the
+hub-reads-its-own-env claim is established for `configWarnings` and inferred for
+`exportState` — they are assembled by one function from one env object
+(`assembleExportReport`), which is the reason the inference is sound, and which is a
+weaker warrant than a test.
+
 Rows 6 and 7 are the differential evidence for this change: on current code, 6 shows
 nothing and 7 shows a warning — both exactly backwards. Rows 3, 4, 6, 7 require really
 forking a hub; an in-process simulation cannot exercise env divergence at all, which is
