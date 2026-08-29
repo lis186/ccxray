@@ -256,9 +256,13 @@ question was answered.
 The `register` reply gains fields. Old client × new hub: unknown fields ignored, no
 warning shown, behaves as today. New client × old hub: fields absent — the client must
 treat `undefined` as "this hub cannot tell me" and stay silent rather than fall back to
-its own env, because falling back is precisely the defect being removed. Both directions
-must be tested, not reasoned about: hub version skew is real on a machine where several
-worktrees run their own servers.
+its own env, because falling back is precisely the defect being removed. Hub version skew
+is real on a machine where several worktrees run their own servers. The new-client ×
+old-hub direction is tested (row 8, status-CLI surface). The old-client × new-hub
+direction is deferred with an argument, not reasoned away: this branch cannot alter the
+old client's reading paths, so the guard is pinning the legacy reply fields an old client
+does read — see §3's deferred rows. (Amended 2026-08-29; the original sentence demanded
+both directions as e2e, which the deferral argument supersedes.)
 
 ## 2.5 Crash recovery re-forks a different hub, and nobody re-reads the reply
 
@@ -458,6 +462,47 @@ nothing and 7 shows a warning — both exactly backwards. Rows 3, 4, 6, 7 requir
 forking a hub; an in-process simulation cannot exercise env divergence at all, which is
 the same trap that made an earlier ambient-discovery assertion inert (it read
 `os.homedir()` regardless of the env object it was handed).
+
+### Deferred rows — the arguments, not just the verdicts (owner-approved 2026-08-29)
+
+The adversarial pair's stop-line condition (sol): if these deferrals are not written into
+the matrix with their arguments, the objection wins and the only honest reading is "write
+the full matrix". So each row below states why NOT testing it is sound, not merely that
+it was decided.
+
+- **Row 1 (standalone).** Its claim — local env is the source, state reported — has no
+  regression surface independent of row 2. The producers are covered by Units 1-2's
+  in-process tables (explicit env arguments). The delivery claim is proven by row 2 on a
+  strictly harder path: `localExporterMode` includes both `!agentMode` (standalone) and
+  `explicitPort` (row 2), routing through the same `_setConfigDirsWarningLogger(_origLog)`
+  swap — and in standalone, `console.log` is never muted, so `_origLog` IS `console.log`
+  and the swap is an identity. A standalone e2e would spawn a process to prove a strict
+  subset of what row 2 already proves.
+- **Row 8, old-client half (old client × new hub).** "An old client ignores unknown reply
+  fields" is a property of the OLD code: it has no path that reads the new fields, so this
+  branch cannot break it by adding them. Exercising it would mean spawning a pre-branch
+  binary from a second checkout — cross-version machinery the suite does not have. What
+  this branch CAN break is the shape of the EXISTING reply fields an old client does read;
+  that is guarded by pinning `firstClient` (and the other legacy reply fields) in the
+  register-reply tests. The pin is the honest substitute for this half. The new-client ×
+  old-hub half stays BUILT (the `s.exportState === undefined` fallback at the status-CLI
+  surface). §2.4's original "both directions must be tested" is amended to match.
+- **Row 9 (crash re-fork from a client with a divergent env).** Composition is proven at
+  both joints: recovery renders through the same shared render function as first attach,
+  rows 6/7 prove that render shows the hub's env against a real forked hub, and all six
+  terminal recovery outcomes have behavioural differential coverage. The remaining e2e
+  would pass or fail on a 5s health-interval timing rather than on its subject — a flake
+  generator asserting an already-pinned composition. (This was the one row the
+  adversarial pair split on; deferral chosen on the grounds above.)
+- **Rows 10/11 (hub + `--port N` server / two `--port N` servers).** No cross-process
+  authority exists to mis-claim (§4): each process reports itself, and the design
+  deliberately invents no machine-level authority whose misattribution these rows would
+  detect. A test can only re-assert per-process reporting, which rows 1/2's coverage
+  class already carries.
+- **Row 12 (Windows).** There is no Windows test lane; the branch's completion claim is
+  explicitly Unix-only. The Windows fallback shares row 2's delivery class through the
+  same `localExporterMode` predicate (`process.platform === 'win32'` disjunct), which is
+  code-reviewed but untested on its platform — recorded as a platform gap, not covered.
 
 ## 4. What this does NOT fix
 
