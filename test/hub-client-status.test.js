@@ -42,6 +42,56 @@ function renderReply(reply, lifecycle = 'attached') {
 }
 
 describe('hub client export/config status render', () => {
+  const recoveryOutcomes = [
+    {
+      outcome: 'success → register resolves a reply',
+      callback: 'onRecovery',
+      lifecycle: 'recovered',
+    },
+    {
+      outcome: 'success → register resolves null',
+      callback: 'onRecovery',
+      lifecycle: 'recovery-failed',
+    },
+    {
+      outcome: 'success → register rejects',
+      callback: 'onRecovery',
+      lifecycle: 'recovery-failed',
+    },
+    {
+      outcome: 'replacement hub on the wrong port',
+      callback: 'onRecoveryFailure',
+      lifecycle: 'recovery-failed',
+    },
+    {
+      outcome: 'fork/readiness throws or times out',
+      callback: 'onRecoveryFailure',
+      lifecycle: 'recovery-failed',
+    },
+  ];
+
+  it('keeps the five terminal recovery outcomes on the status-render path', () => {
+    assert.deepEqual(
+      recoveryOutcomes.map(row => row.lifecycle),
+      ['recovered', 'recovery-failed', 'recovery-failed', 'recovery-failed', 'recovery-failed'],
+    );
+    assert.deepEqual(
+      recoveryOutcomes.map(row => row.callback),
+      ['onRecovery', 'onRecovery', 'onRecovery', 'onRecoveryFailure', 'onRecoveryFailure'],
+    );
+
+    for (const row of recoveryOutcomes) {
+      const output = renderHubClientStatus(
+        row.lifecycle === 'recovered' ? hubIdentity : null,
+        row.lifecycle,
+        row.lifecycle === 'recovered' ? stateFor('enabled') : null,
+      );
+      assert.ok(output, `${row.outcome} must render a status banner`);
+      if (row.lifecycle === 'recovered') assert.match(output, /status \(recovered\)/, row.outcome);
+      else assert.match(output, /state unavailable after recovery/, row.outcome);
+    }
+  });
+
   it('iterates all lifecycles and makes recovery visibly identify a hub change', () => {
     const rows = [
       ['attached', stateFor('enabled')],
@@ -146,7 +196,7 @@ describe('hub client export/config status render', () => {
     const reportCalls = [...clientMode.matchAll(/reportHubRegistrationStatus\([^)]*\)/g)]
       .map(match => match[0]);
 
-    assert.equal(reportCalls.length, 4, 'attach and every recovery outcome must use the same report helper');
+    assert.equal(reportCalls.length, 5, 'attach and every recovery outcome must use the same report helper');
     assert.ok(reportCalls.some(call => call.includes("'attached'")), 'attach call missing');
     assert.ok(reportCalls.some(call => call.includes("'recovered'")), 'recovery call missing');
     assert.ok(reportCalls.some(call => call.includes("'recovery-failed'")), 'recovery failure call missing');
@@ -183,5 +233,7 @@ describe('hub client export/config status render', () => {
       'recovery rejection/null reply must render unavailability');
     assert.doesNotMatch(body, /registerClient\(newLock[\s\S]*?\.catch\(\(\) => \{\}\)/,
       'recovery must not discard the reply');
+    assert.match(body, /\}, \(\) => reportHubRegistrationStatus\(null, 'recovery-failed'\)\)/,
+      'fork/readiness recovery failures must render unavailability');
   });
 });

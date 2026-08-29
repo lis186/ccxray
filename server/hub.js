@@ -753,7 +753,13 @@ function describePortOccupant(occ, port) {
 
 // ── Hub pid monitoring (client-side recovery) ───────────────────────
 
-function startHubMonitor(hubPid, hubPort, onRecovery) {
+function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
+  // Recovery failure is a separate required channel so a caller cannot omit
+  // the failure path and mistake a failed recovery for a successful one.
+  if (typeof onRecovery !== 'function' || typeof onRecoveryFailure !== 'function') {
+    throw new TypeError('startHubMonitor requires success and failure callbacks');
+  }
+
   const interval = setInterval(async () => {
     if (isPidAlive(hubPid)) return;
 
@@ -771,14 +777,16 @@ function startHubMonitor(hubPid, hubPort, onRecovery) {
         if (acquired) releaseForkLock();
         console.error(`\x1b[31mHub recovered on port ${lock.port} but Claude is using port ${hubPort}. Cannot recover.\x1b[0m`);
         try { process.kill(lock.pid, 'SIGTERM'); } catch {}
+        onRecoveryFailure();
         return;
       }
       console.error(`\x1b[32mHub recovered (pid ${lock.pid}, port ${lock.port})\x1b[0m`);
       if (onRecovery) onRecovery(lock);
-      startHubMonitor(lock.pid, lock.port, onRecovery);
+      startHubMonitor(lock.pid, lock.port, onRecovery, onRecoveryFailure);
     } catch (err) {
       if (acquired) releaseForkLock();
       console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
+      onRecoveryFailure();
     }
   }, HUB_HEALTH_CHECK_MS);
   interval.unref();

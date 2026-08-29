@@ -183,6 +183,10 @@ async function waitForFakeAgent(client, marker) {
   });
 }
 
+async function waitForHubStatusBanner(client, marker) {
+  return waitFor(() => client.stdout.includes(marker) ? marker : null);
+}
+
 async function killAndConfirm(pid, label) {
   if (!pid || pid === process.pid) return;
   try { process.kill(pid, 'SIGKILL'); } catch {}
@@ -241,7 +245,10 @@ async function runDivergence({ badFirst }) {
     clients.push(second);
     const secondReady = await waitForRegisteredClient(home, second.child.pid);
     assert.equal(secondReady.lock.pid, hubPid, 'both clients must attach to one hub');
-    await waitForFakeAgent(second, secondMarker);
+    const bannerMarker = badFirst
+      ? `configWarnings=CCXRAY_IMPORT_HOMES: "${badValue}"`
+      : 'exportState=suppressed exportReason=explicitly-disabled';
+    await waitForHubStatusBanner(second, bannerMarker);
 
     return { badValue, home, hubPid, hubPort: firstReady.lock.port, second };
   } finally {

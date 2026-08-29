@@ -1160,7 +1160,7 @@ async function startClientMode(lock) {
     } catch {
       reportHubRegistrationStatus(null, 'recovery-failed');
     }
-  });
+  }, () => reportHubRegistrationStatus(null, 'recovery-failed'));
 
   // A signal that landed in the register→spawn window already began the
   // unregister-and-exit path — spawning now orphans the agent. spawnAgent
