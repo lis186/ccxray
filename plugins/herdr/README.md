@@ -132,10 +132,18 @@ in measurement. A session whose transcript cannot be located (codex panes, or a
 cwd ccxray never recorded) is never marked. `CCXRAY_BADGE_STALE_MS` sets the
 threshold (default 10 minutes).
 
-A marked badge also fires `ccxray import --once` detached, which is the thing
-that fixes it: the scan is throttled to once per 10 minutes and guarded by a
-lockfile, so many panes noticing at once still produce one scan.
-`CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the marker but stops the rescan.
+A badge refresh with an exact, repairable transcript for the pane's native
+session requests a detached `bin/repair-session-link.js` worker for that session;
+the badge refresh does not wait for transcript parsing or index I/O. The worker
+runs a targeted
+`ccxray import --target-transcript ... --provider ... --session-id ... --cwd ...`
+and records per-session repair state under
+`~/.ccxray/herdr-plugin/link-repair-v1/` by default, or under the configured
+`HERDR_PLUGIN_STATE_DIR`. Failed attempts write `retryAfter`, so a later refresh
+can retry after that time; the default delay is 30 seconds and can be changed
+with `CCXRAY_LINK_REPAIR_RETRY_MS`. `CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the
+stale marker but prevents new repair workers; after a successful repair, the
+worker's follow-up refresh also uses it to prevent recursive repair requests.
 
 `refresh-all-badges` (the startup fan-out) runs the pane-independent `ccxray
 status` and `ccxray usage` reports once and shares them with every per-pane
