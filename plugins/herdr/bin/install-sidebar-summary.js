@@ -59,6 +59,10 @@ const CCXRAY_ROWS = `${MANAGED_ROW_BY_TOKEN.route}\n${CTX_BAR_ROWS}\n${ROW3_ROWS
 // "the user already had a sidebar table and ccxray added rows to it".
 const SECTION_MARKER = '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)';
 const SPACES_SECTION_MARKER = '# ccxray workspace observability row (managed by the ccxray Herdr plugin)';
+const DEFAULT_SPACES_ROWS = [
+  '  ["state_icon", "workspace"],',
+  '  ["branch", "git_status"],',
+].join('\n');
 const WORKSPACE_ROW = '  [{ token = "$xray", fg = "#a6e3a1" }],';
 
 const SIDEBAR_SUMMARY_SECTION = `
@@ -78,6 +82,7 @@ ${SPACES_SECTION_MARKER}
 [ui.sidebar.spaces]
 row_gap = 0
 rows = [
+${DEFAULT_SPACES_ROWS}
 ${WORKSPACE_ROW}
 ]
 `;
@@ -280,7 +285,18 @@ function addWorkspaceRow(config) {
     return config.slice(0, bounds.bodyStart) + insertion + config.slice(bounds.bodyStart);
   }
   const inner = config.slice(rows.open + 1, rows.close);
-  if (tokenRegex('xray').test(stripCommentLines(inner))) return config;
+  if (tokenRegex('xray').test(stripCommentLines(inner))) {
+    // The previous installer's from-scratch section carried only the $xray row,
+    // which replaces Herdr's built-in spaces rows and hides workspace names.
+    // Upgrade exactly that shape, and only when the ownership marker directly
+    // precedes this section — a marker elsewhere proves nothing about it.
+    const innerRows = stripCommentLines(inner).split('\n').map(line => line.trim()).filter(Boolean);
+    const ownsSection = config.slice(0, bounds.headerStart).trimEnd().endsWith(SPACES_SECTION_MARKER);
+    if (ownsSection && innerRows.length === 1 && innerRows[0] === WORKSPACE_ROW.trim()) {
+      return `${config.slice(0, rows.open + 1)}\n${DEFAULT_SPACES_ROWS}\n${WORKSPACE_ROW}\n${config.slice(rows.close)}`;
+    }
+    return config;
+  }
   const trimmed = inner.replace(/[ \t\r\n]*$/, '');
   const separator = trimmed.trim() && !trimmed.trim().endsWith(',') ? ',' : '';
   return `${config.slice(0, rows.open + 1)}${trimmed}${separator}\n${WORKSPACE_ROW}\n${config.slice(rows.close)}`;
@@ -385,6 +401,7 @@ module.exports = {
   DEFAULT_ROWS,
   MANAGED_ROW_BY_TOKEN,
   MANAGED_TOKENS,
+  DEFAULT_SPACES_ROWS,
   SPACES_SECTION_MARKER,
   SECTION_MARKER,
   WORKSPACE_ROW,
