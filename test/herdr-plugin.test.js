@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -119,6 +120,56 @@ function makeHome(entries = []) {
     fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), entries.map(e => JSON.stringify(e)).join('\n') + '\n');
   }
   return home;
+}
+
+function makeEmptyHome() {
+  const home = makeHome();
+  fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+  return home;
+}
+
+function repairStatePathForTest(home, target) {
+  const stat = fs.statSync(target.file);
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    provider: target.provider,
+    sessionId: target.sessionId,
+    cwd: target.cwd,
+    file: path.resolve(fs.realpathSync(target.file)),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  })).digest('hex');
+  return path.join(home, 'herdr-plugin', 'link-repair-v1', `${fingerprint}.json`);
+}
+
+function makeCcxrayMock({ stdout = '', stderr = '', status = 0 } = {}) {
+  const dir = tempDir('ccxray-herdr-repair-command-');
+  const bin = path.join(dir, 'ccxray');
+  fs.writeFileSync(bin, [
+    '#!/usr/bin/env node',
+    `process.stdout.write(${JSON.stringify(stdout)});`,
+    `process.stderr.write(${JSON.stringify(stderr)});`,
+    `process.exit(${status});`,
+    '',
+  ].join('\n'));
+  fs.chmodSync(bin, 0o755);
+  return bin;
+}
+
+function makeTargetedImportWrapper() {
+  const dir = tempDir('ccxray-herdr-repair-wrapper-');
+  const bin = path.join(dir, 'ccxray');
+  const server = path.join(ROOT, 'server', 'index.js');
+  fs.writeFileSync(bin, [
+    '#!/usr/bin/env node',
+    "const { spawnSync } = require('child_process');",
+    `const result = spawnSync(process.execPath, [${JSON.stringify(server)}, ...process.argv.slice(2)], { env: process.env, encoding: 'utf8' });`,
+    "process.stdout.write(result.stdout || '');",
+    "process.stderr.write((result.stderr || '') + ' synthetic stderr diagnostic \\n');",
+    'process.exit(result.status == null ? 1 : result.status);',
+    '',
+  ].join('\n'));
+  fs.chmodSync(bin, 0o755);
+  return bin;
 }
 
 // ISOLATION: sessionSummaryDetails now consults the Claude transcript tree to
@@ -691,6 +742,9 @@ describe('Herdr workspace scope', () => {
       if (state?.status !== 'complete') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
     assert.equal(state?.status, 'complete', JSON.stringify(state));
+    assert.deepEqual(Object.keys(state).sort(), [
+      'contextSamples', 'duplicatesSkipped', 'exactEvidence', 'finishedAt', 'imported', 'status',
+    ], 'targeted repair success state shape must remain unchanged');
     assert.equal(state.exactEvidence?.sessionId, sessionId);
     assert.ok(Array.isArray(state.contextSamples));
     assert.equal(state.contextSamples.length, 1,
@@ -2502,6 +2556,202 @@ describe('Herdr sidebar model reports the latest main turn', () => {
       nowMs: T + 60000,
     });
     assert.equal(detail.model, 'claude-opus-5');
+  });
+});
+
+describe('Herdr repair worker state', () => {
+  it('persists no-evidence diagnostics and target identity after a zero-row import', () => {
+    const home = makeEmptyHome();
+    const projects = tempDir('ccxray-herdr-repair-no-evidence-');
+    const cwd = '/work/repair-no-evidence';
+    const sessionId = 'repair-no-evidence-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(transcript, [
+      {
+        type: 'system', subtype: 'init', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:00.000Z',
+      },
+      {
+        type: 'user', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Resume the session' }] },
+      },
+      {
+        type: 'file-history-snapshot', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:02.000Z',
+        snapshot: { messageId: 'snapshot-1', trackedFileBackups: {} },
+      },
+      {
+        type: 'assistant', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:03.000Z',
+        message: {
+          id: 'msg-zero-token', role: 'assistant', model: 'claude-opus-5',
+          content: [], usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      },
+    ].map(line => JSON.stringify(line)).join('\n') + '\n');
+
+    const target = { file: transcript, provider: 'claude', sessionId, cwd };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      CCXRAY_IMPORT_DISABLE: '0',
+      CCXRAY_BIN: makeTargetedImportWrapper(),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.status, 'failed');
+    assert.equal(state.reason, 'no-exact-evidence');
+    assert.equal(state.error, 'synthetic stderr diagnostic');
+    assert.equal(state.provider, target.provider);
+    assert.equal(state.sessionId, target.sessionId);
+  });
+
+  it('prefers importer JSON error detail over stderr in a failed state', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-error-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'reported-error-session', cwd: '/work/error',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: makeCcxrayMock({
+        stdout: `${JSON.stringify({
+          ok: false, ran: true, reason: 'target-import-failed', error: 'importer detail',
+        })}\n`,
+        stderr: 'stderr detail\n',
+      }),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.reason, 'target-import-failed');
+    assert.equal(state.error, 'importer detail');
+    assert.equal(state.provider, target.provider);
+    assert.equal(state.sessionId, target.sessionId);
+  });
+
+  it('keeps the spawn error message when the command never produced output', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-enoent-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'enoent-session', cwd: '/work/enoent',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: path.join(dir, 'no-such-ccxray-binary'),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.reason, 'ENOENT');
+    assert.match(state.error, /ENOENT/);
+  });
+
+  it('caps a runaway stderr diagnostic in the failed state', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-truncate-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'truncate-session', cwd: '/work/truncate',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: makeCcxrayMock({ stderr: 'x'.repeat(100000), status: 1 }),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(state.error.length < 3000, `diagnostic must be capped, got ${state.error.length}`);
+    assert.match(state.error, /\[truncated\]$/);
+  });
+
+  it('refresh-badges parses legacy complete and diagnostic repair state shapes', () => {
+    const { workspaceXrayToken } = require('../plugins/herdr/bin/refresh-badges');
+    const home = makeEmptyHome();
+    const projects = tempDir('ccxray-herdr-repair-reader-');
+    const cwd = '/work/repair-reader';
+    const sessionId = 'repair-reader-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(transcript, [
+      {
+        type: 'system', subtype: 'init', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T02:00:00.000Z',
+      },
+      {
+        type: 'assistant', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T02:00:01.000Z',
+        message: {
+          id: 'msg-reader-shape', model: 'claude-opus-5',
+          usage: { input_tokens: 10, output_tokens: 1 },
+        },
+      },
+    ].map(line => JSON.stringify(line)).join('\n') + '\n');
+
+    const target = { file: transcript, provider: 'claude', sessionId, cwd };
+    const stateFile = repairStatePathForTest(home, target);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const evidence = { sessionId, cwd, imported: false, receivedAt: 1788055200000 };
+    const env = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      HERDR_WORKSPACE_ID: 'w1',
+    });
+    const status = { parsed: { machine: { proxy: true } } };
+    const agents = [{
+      pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', foreground_cwd: cwd,
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+
+    for (const state of [
+      { status: 'complete', exactEvidence: evidence },
+      { status: 'complete', exactEvidence: evidence, contextSamples: [evidence] },
+    ]) {
+      fs.writeFileSync(stateFile, JSON.stringify(state));
+      assert.equal(
+        workspaceXrayToken(status, env, agents, null, { sidebarCols: 24 }),
+        'xray 1/1',
+        `complete repair state should link: ${JSON.stringify(state)}`,
+      );
+    }
+
+    fs.writeFileSync(stateFile, JSON.stringify({
+      status: 'failed', finishedAt: 1788055200000, retryAfter: 1788055230000,
+      reason: 'no-exact-evidence', error: 'synthetic stderr diagnostic',
+      provider: target.provider, sessionId: target.sessionId,
+    }));
+    assert.equal(
+      workspaceXrayToken(status, env, agents, null, { sidebarCols: 24 }),
+      'xray 0/1',
+      'a failed diagnostic state must not be rendered as linked evidence',
+    );
   });
 });
 

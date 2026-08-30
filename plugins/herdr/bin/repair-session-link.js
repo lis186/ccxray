@@ -17,6 +17,15 @@ function writeState(file, value) {
   }
 }
 
+// Retained per-session state must stay small: stderr is unbounded.
+const DIAGNOSTIC_LIMIT = 2000;
+function truncateDiagnostic(text) {
+  const value = String(text || '');
+  return value.length > DIAGNOSTIC_LIMIT
+    ? `${value.slice(0, DIAGNOSTIC_LIMIT)} [truncated]`
+    : value;
+}
+
 function lastJson(text) {
   const lines = String(text || '').trim().split('\n').reverse();
   for (const line of lines) {
@@ -76,7 +85,18 @@ function main(env = process.env) {
     status: 'failed',
     finishedAt,
     retryAfter: finishedAt + retryMs,
-    reason: result.error?.code || report?.reason || `exit-${result.status}`,
+    reason: result.status === 0 && report?.ok && report?.ran && !report?.exactEvidence
+      ? 'no-exact-evidence'
+      : (result.error?.code || report?.reason || `exit-${result.status}`),
+    // Spawn failures (ENOENT) produce no stderr; result.error.message is the
+    // only diagnostic left. Cap the persisted text — stderr is unbounded and
+    // these fingerprinted state files are retained per session.
+    error: truncateDiagnostic(report?.error
+      || String(result.stderr || '').trim()
+      || result.error?.message
+      || ''),
+    provider: target.provider,
+    sessionId: target.sessionId,
   });
   if (!imported) return 1;
 
