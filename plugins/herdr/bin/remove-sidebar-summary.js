@@ -6,6 +6,7 @@ const { backupConfigFile, resolveHerdrConfigPath, runHerdr } = require('./lib/cc
 
 const {
   DEFAULT_ROWS,
+  DEFAULT_SPACES_ROWS,
   MANAGED_TOKENS,
   SPACES_SECTION_MARKER,
   SECTION_MARKER,
@@ -36,7 +37,15 @@ function makeSkeleton(defaults) {
   return ['[ui.sidebar.agents]', 'row_gap = 0', 'rows = [', ...defaults, ']'].join('\n');
 }
 const MANAGED_SKELETONS = [makeSkeleton(NEW_DEFAULT_ROWS), makeSkeleton(LEGACY_DEFAULT_ROWS)];
-const WORKSPACE_SKELETON = ['[ui.sidebar.spaces]', 'row_gap = 0', 'rows = [', '  [{ token = "$xray", fg = "#a6e3a1" }],', ']'].join('\n');
+// `stripped` has already had the plugin's `$xray` row removed when this
+// skeleton is compared, so the fresh section's built-in rows are what remain.
+const WORKSPACE_SKELETON = [
+  '[ui.sidebar.spaces]',
+  'row_gap = 0',
+  'rows = [',
+  ...DEFAULT_SPACES_ROWS.split('\n').map(line => line.trim()),
+  ']',
+].join('\n');
 const EMPTY_WORKSPACE_SKELETON = ['[ui.sidebar.spaces]', 'row_gap = 0', 'rows = [', ']'].join('\n');
 
 function normalizeBlock(block) {
@@ -71,6 +80,12 @@ function removeManagedWorkspaceSection(config, stripped) {
   const header = /^[ \t]*\[ui\.sidebar\.spaces\][ \t]*$/m.exec(stripped.slice(marker));
   if (!header) return null;
   const headerStart = marker + header.index;
+  // The skeleton now equals Herdr's own default rows — a shape a user could
+  // write by hand — so ownership additionally requires the marker to sit
+  // directly above this header, or a stale marker would claim a user table
+  // (and everything between them).
+  const between = stripped.slice(marker + SPACES_SECTION_MARKER.length, headerStart);
+  if (between.trim() !== '') return null;
   const bodyStart = headerStart + header[0].length;
   const next = /^\[[A-Za-z0-9_.-]+\][ \t]*$/m.exec(stripped.slice(bodyStart));
   const end = next ? bodyStart + next.index : stripped.length;

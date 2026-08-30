@@ -2242,7 +2242,8 @@ describe('Herdr sidebar installer migrates accumulated generations', () => {
     ].join('\n'));
     assert.equal(result.status, 0, result.stderr);
     // Legacy rows are gone, new row 1 is in place.
-    assert.equal(after.includes('"workspace"'), false, 'old workspace column must go');
+    assert.equal(sidebarRows(after).some(row => /"workspace"/.test(row)), false,
+      'old workspace column must go');
     assert.match(after, /\["state_icon", \{ token = "\$who"/);
     // Eight config rows → four visible lines.
     assert.equal(sidebarRows(after).length, 8);
@@ -5577,6 +5578,123 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /backup:/);
   });
 
+  // FAIL-ON-OLD: defining `rows` replaces Herdr's built-in spaces rows, so a
+  // fresh section must carry those defaults before the plugin's row.
+  it('install-sidebar-summary keeps Herdr default spaces rows on a fresh section', () => {
+    const dir = tempDir('herdr-spaces-config-');
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const result = runScript('install-sidebar-summary.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    const spaces = config.slice(config.indexOf('[ui.sidebar.spaces]'));
+    assert.match(spaces, /\n  \["state_icon", "workspace"\],\n  \["branch", "git_status"\],\n  \[\{ token = "\$xray", fg = "#a6e3a1" \}\],/);
+  });
+
+  // A section the previous installer wrote carries only the $xray row and hides
+  // the workspace names. Reinstall must upgrade exactly that marker-owned shape,
+  // stay idempotent, and removal must still take the whole plugin-owned table.
+  it('install-sidebar-summary upgrades the previous installer\'s spaces section', () => {
+    const dir = tempDir('herdr-spaces-legacy-config-');
+    const configPath = path.join(dir, 'config.toml');
+    const legacy = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, legacy);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const upgraded = fs.readFileSync(configPath, 'utf8');
+    assert.match(upgraded, /\n  \["state_icon", "workspace"\],\n  \["branch", "git_status"\],\n  \[\{ token = "\$xray", fg = "#a6e3a1" \}\],/);
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), upgraded);
+
+    assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
+    assert.doesNotMatch(fs.readFileSync(configPath, 'utf8'), /\[ui\.sidebar\.spaces\]/);
+  });
+
+  it('install-sidebar-summary leaves a spaces section whose marker is elsewhere', () => {
+    const dir = tempDir('herdr-spaces-stale-marker-');
+    const configPath = path.join(dir, 'config.toml');
+    const misplaced = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, misplaced);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    const spaces = after.slice(after.indexOf('[ui.sidebar.spaces]'));
+    assert.doesNotMatch(spaces, /\["state_icon", "workspace"\]/);
+  });
+
+  it('remove-sidebar-summary keeps a default-shaped user table under a stale marker', () => {
+    const dir = tempDir('herdr-spaces-stale-marker-remove-');
+    const configPath = path.join(dir, 'config.toml');
+    const misplaced = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace"],',
+      '  ["branch", "git_status"],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, misplaced);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.match(after, /\[terminal\]/);
+    assert.match(after, /\[ui\.sidebar\.spaces\]/);
+    assert.match(after, /\["state_icon", "workspace"\]/);
+  });
+
+  it('install-sidebar-summary keeps a user-extended legacy spaces section', () => {
+    const dir = tempDir('herdr-spaces-legacy-extended-');
+    const configPath = path.join(dir, 'config.toml');
+    const extended = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      '  ["cwd"],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, extended);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(after, /\["state_icon", "workspace"\]/);
+    assert.match(after, /\["cwd"\]/);
+  });
+
   // remove-sidebar-summary restores its backup when `herdr config check` rejects
   // the result; install did not, so a rejected merge left the user's own herdr
   // config in the broken state and only printed where the backup was.
@@ -5797,6 +5915,40 @@ describe('Herdr plugin commands', () => {
     assert.equal(config.match(/\[ui\.sidebar\.agents\]/g).length, 1);
   });
 
+  it('keeps user-owned spaces rows append-only across install and remove', () => {
+    const dir = tempDir('herdr-spaces-user-config-');
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["cwd"],',
+      ']',
+      '',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    const installed = runScript('install-sidebar-summary.js', [], env);
+    assert.equal(installed.status, 0, installed.stderr);
+    const afterInstall = fs.readFileSync(configPath, 'utf8');
+    const spacesAfterInstall = afterInstall.slice(afterInstall.indexOf('[ui.sidebar.spaces]'));
+    assert.match(spacesAfterInstall, /\["cwd"\]/);
+    assert.match(spacesAfterInstall, /\$xray/);
+    assert.doesNotMatch(spacesAfterInstall, /\["state_icon", "workspace"\]/);
+    assert.doesNotMatch(spacesAfterInstall, /\["branch", "git_status"\]/);
+
+    const removed = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    const afterRemove = fs.readFileSync(configPath, 'utf8');
+    assert.match(afterRemove, /\[ui\.sidebar\.spaces\]/);
+    assert.match(afterRemove, /\["cwd"\]/);
+    assert.doesNotMatch(afterRemove, /\$xray/);
+    assert.match(afterRemove, /\[terminal\]/);
+  });
+
   it('sidebar summary survives a remove and install round trip', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-config-'));
     const configPath = path.join(dir, 'config.toml');
@@ -5979,7 +6131,11 @@ describe('Herdr plugin commands', () => {
     const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
 
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
-    assert.match(fs.readFileSync(configPath, 'utf8'), /\[ui\.sidebar\.agents\]/);
+    const installed = fs.readFileSync(configPath, 'utf8');
+    assert.match(installed, /\[ui\.sidebar\.agents\]/);
+    assert.match(installed, /\["state_icon", "workspace"\]/);
+    assert.match(installed, /\["branch", "git_status"\]/);
+    assert.match(installed, /\$xray/);
 
     const removed = runScript('remove-sidebar-summary.js', [], env);
     assert.equal(removed.status, 0, removed.stderr);
