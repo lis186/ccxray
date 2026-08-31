@@ -188,19 +188,23 @@ function wfCtxPct(e) {
 // with a 1M one over-scales the 200K turns to 1M, so their ctx% is under-reported
 // and a `ctx80` badge could be suppressed. Under-warning is the safe failure;
 // there is no per-turn wire signal to do better client-side.
-// #339: beta1m-aware context window for a lane — 1M if any turn authoritatively ran 1M
-// (beta1m, server-gated on SUPPORTS_1M), else the largest maxContext fossil. This is the
-// ONE fold both the swimlane % (via _wfWinByTurn) AND the lane / agent-card window LABELS
-// read, so a lane can never render "20%" next to a "200K" window label. Falls back to the
-// lane's stored ctxWindow only when the lane has no turns yet.
+// #339/#603: context window for a lane — 1M if any turn authoritatively ran 1M
+// (beta1m, server-gated on SUPPORTS_1M) or carries a positive imported 1M fact;
+// otherwise the largest maxContext fossil. Imported facts are display-only and
+// remain unverified; classification keeps reading raw maxContext. This is the
+// ONE fold both the swimlane % (via _wfWinByTurn) AND the lane / agent-card
+// window LABELS read, so a lane can never render "20%" next to a "200K" window
+// label. Falls back to the lane's stored ctxWindow only when the lane has no
+// turns yet.
 function _wfLaneWindow(lane) {
   var turns = (lane && lane.turns) || [];
-  var win = 0, has1m = false;
+  var win = 0, has1m = false, hasImported1m = false;
   for (var i = 0; i < turns.length; i++) {
     if (turns[i].beta1m === true) has1m = true;
+    if (turns[i].imported1mCostState === true || turns[i].imported1mSettings === true) hasImported1m = true;
     if ((turns[i].maxContext || 0) > win) win = turns[i].maxContext;
   }
-  return has1m ? 1000000 : (win || (lane && lane.ctxWindow) || 0);
+  return has1m || hasImported1m ? 1000000 : (win || (lane && lane.ctxWindow) || 0);
 }
 function _wfWinByTurn() {
   if (!wfState) return null;

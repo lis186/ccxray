@@ -112,10 +112,13 @@ describe('ccxray import --once', () => {
     writeTranscript(projects, targetSession, cwd, 2);
     writeTranscript(projects, 'bbbbbbbb-1111-2222-3333-444444444444', '/work/unrelated', 3);
     const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${targetSession}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'cost-state', modelUsage: { 'claude-opus-4-6[1m]': { costUSD: 0.01 } },
+    }) + '\n');
 
     const result = runTargetImport(home, projects, {
       file, provider: 'claude', sessionId: targetSession, cwd,
-    });
+    }, { CCXRAY_PRICING_CACHE: '/tmp/ccxray-603-no-pricing-cache' });
     assert.equal(result.ok, true);
     assert.equal(result.imported, 2);
     assert.equal(result.contextSamples.length, 2,
@@ -125,6 +128,8 @@ describe('ccxray import --once', () => {
     const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
       .trim().split('\n').map(line => JSON.parse(line));
     assert.deepEqual(new Set(lines.map(line => line.sessionId)), new Set([targetSession]));
+    assert.ok(lines.every(line => line.imported1mCostState === true),
+      'targeted repair shares the importer cost-state declaration path');
     assert.equal(fs.existsSync(path.join(home, 'logs', 'sessions.json')), false,
       'a targeted detached importer must remain append-only');
   });

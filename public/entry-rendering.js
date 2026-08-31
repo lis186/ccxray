@@ -944,6 +944,11 @@ function mergeColdSessions(sessions) {
         existing.beta1m = true;
         windowWidened = true;
       }
+      // #603: importer declarations feed the display-only fold but deliberately
+      // do NOT set windowWidened. Recomputing weather here would turn the weaker
+      // provenance tier into context-pressure alert authority.
+      if (s.imported1mCostState === true) existing.imported1mCostState = true;
+      if (s.imported1mSettings === true) existing.imported1mSettings = true;
       if ((s.maxContext || 0) > (existing.maxContext || 0)) {
         existing.maxContext = s.maxContext;
         windowWidened = true;
@@ -968,6 +973,8 @@ function mergeColdSessions(sessions) {
       cwd: s.cwd || null,
       title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       maxContext: s.maxContext || 0, beta1m: s.beta1m || false,
+      imported1mCostState: s.imported1mCostState === true,
+      imported1mSettings: s.imported1mSettings === true,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
       // #367: derived fields from session index for cold card rendering
       latestMainCtxUsed: s.latestCtxPct != null ? Math.round(s.latestCtxPct / 100 * (s.maxContext || 200000)) : 0,

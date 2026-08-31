@@ -3362,6 +3362,41 @@ describe('Herdr context window provenance', () => {
     assert.equal(badge.tokens.ctx_band, 'green');
   });
 
+  it('#603 shares the imported 1M window with Mission Control without granting alert authority', () => {
+    // Exercise the session-index aggregate specifically: a cold card / badge
+    // can have the fact even when its short tail has none. MC must consume the
+    // same aggregate or #588's cross-surface denominator split returns.
+    const imported = turn('f6-imported', 192182, 200000);
+    const home = makeHome([imported]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 200000, imported1mCostState: true,
+    }) + '\n');
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env: { CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    assert.equal(badge.ctxWindowSource, 'imported');
+    assert.equal(Math.round(badge.ctxPct), 19);
+    assert.equal(badge.tokens.ctx, '19%?');
+    assert.equal(badge.tokens.ctx_band, 'unknown', 'the weaker declaration keeps the badge neutral');
+
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      entries: [imported],
+      nowMs: T + 1000,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working',
+        agent_session: { kind: 'id', value: 'fable-window' },
+      }] },
+    });
+    const row = snapshot.rows[0];
+    assert.equal(Math.round(row.ctxPct), 19);
+    assert.equal(row.ctxWindowSource, 'imported');
+    assert.equal(row.ctxWindowMarker, '?');
+    assert.equal(row.severity, 'green', 'a changed ctx% alone cannot escalate Mission Control');
+  });
+
   it('marks an overflowing raw row as contradicted instead of clamping it cleanly', () => {
     const badge = render([turn('f6c', 232659, 200000)]);
     assert.equal(badge.ctxWindowSource, 'contradicted');

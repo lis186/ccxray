@@ -8,8 +8,11 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
+
+const { missionControlSnapshot, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
 
 const publicDir = path.join(__dirname, '..', 'public');
 
@@ -266,6 +269,66 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
   });
 
+  it('#603 folds positive imported declarations to 1M but keeps their provenance unverified', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mCostState: true });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'imported');
+    assert.equal(ctx.ctxWindowUnverified('s1'), true, 'an imported declaration does not grant alarm authority');
+  });
+
+  it('#603 gives dashboard, Sidebar, and Mission Control one imported aggregate fixture', () => {
+    const sid = 'imported-parity';
+    const nowMs = Date.parse('2026-08-31T12:00:00.000Z');
+    const entry = {
+      id: 'imported-parity-turn', sessionId: sid, model: 'claude-fable-5',
+      agentKey: 'orchestrator', isSubagent: false, imported: true,
+      receivedAt: nowMs - 1000, maxContext: 200000,
+      usage: { input_tokens: 192182, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    };
+    // The fact lives only in the aggregate, the #588 cold-session shape.
+    const aggregate = { sid, maxContext: 200000, imported1mSettings: true };
+    ctx.allEntries.push(entry);
+    ctx.sessionsMap.set(sid, aggregate);
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-603-parity-'));
+    const roots = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-603-no-transcripts-'));
+    try {
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), JSON.stringify(entry) + '\n');
+      fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify(aggregate) + '\n');
+      const env = { ...process.env, CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: roots, CCXRAY_IMPORT_CODEX_HOMES: roots };
+      for (const key of Object.keys(env)) {
+        if (key.startsWith('HERDR_')) delete env[key];
+      }
+
+      const sidebar = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+        env, sessionId: sid, nowMs, allowRepair: false, sidebarCols: 40,
+      });
+      const row = missionControlSnapshot({
+        env, entries: [entry], nowMs, agentReport: { ok: true, agents: [] },
+      }).rows[0];
+
+      assert.equal(ctx.sessionCtxWindow(sid), 1000000);
+      assert.equal(ctx.sessionCtxWindowSource(sid), 'imported');
+      assert.equal(Math.round(sidebar.ctxPct), 19);
+      assert.equal(sidebar.ctxWindowSource, 'imported');
+      assert.equal(sidebar.ctxWindowMarker, '?');
+      assert.equal(Math.round(row.ctxPct), 19);
+      assert.equal(row.ctxWindowSource, 'imported');
+      assert.equal(row.ctxWindowMarker, '?');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(roots, { recursive: true, force: true });
+    }
+  });
+
+  it('#603 orders observed and declared evidence above an imported declaration', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mSettings: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
   it('a header the gate refused must NOT count as declared (fail-on-old)', () => {
     // The header rides every request on a beta account, including turns whose
     // declaration was refused — a haiku title-gen turn, or the next model the
@@ -354,5 +417,11 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s2'), 'declared');
     ctx.sessionsMap.set('s3', { beta1m: false, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s3'), 'observed');
+  });
+
+  it('#603 reads an imported declaration from the cold session aggregate', () => {
+    ctx.sessionsMap.set('s8', { maxContext: 200000, imported1mSettings: true });
+    assert.equal(ctx.sessionCtxWindow('s8'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s8'), 'imported');
   });
 });

@@ -121,7 +121,7 @@ function relativeRootComplaints(env = process.env) {
 function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
   const results = [];
   const rejected = [];
-  const seen = new Set();
+  const seen = new Map();
   for (const raw of String(rawValue).split(',')) {
     const value = raw.trim();
     if (!value) continue;
@@ -129,9 +129,17 @@ function configuredImportRoots(rawValue, envName = 'CCXRAY_IMPORT_HOMES') {
     const absolute = path.resolve(value);
     let resolved = absolute;
     try { resolved = fs.realpathSync(absolute); } catch {}
-    if (seen.has(resolved)) continue;
-    seen.add(resolved);
-    results.push({ dir: resolved });
+    // The same physical projects directory can be reached by two Claude config
+    // homes. Scan the transcript once, but retain BOTH settings.json locations:
+    // their positive-only hints are independently relevant to this import.
+    const existing = seen.get(resolved);
+    if (existing) {
+      existing.settingsDirs.push(path.dirname(absolute));
+      continue;
+    }
+    const home = { dir: resolved, settingsDirs: [path.dirname(absolute)] };
+    seen.set(resolved, home);
+    results.push(home);
   }
   warnRelativeRoots(envName, rejected);
   return results;
@@ -143,7 +151,7 @@ function discoverHomes() {
   }
   const home = os.homedir();
   const results = [];
-  const inodes = new Set();
+  const inodes = new Map();
   let items;
   try { items = fs.readdirSync(home); } catch { return results; }
   for (const d of items) {
@@ -153,15 +161,26 @@ function discoverHomes() {
     const subdir = path.join(home, d, 'projects');
     try {
       const ino = fs.statSync(subdir).ino;
-      if (inodes.has(ino)) continue;
-      inodes.add(ino);
-      results.push({ dir: subdir });
+      const existing = inodes.get(ino);
+      if (existing) {
+        existing.settingsDirs.push(path.dirname(subdir));
+        continue;
+      }
+      const found = { dir: subdir, settingsDirs: [path.dirname(subdir)] };
+      inodes.set(ino, found);
+      results.push(found);
     } catch {}
   }
   const xdg = path.join(home, '.config', 'claude', 'projects');
   try {
     const ino = fs.statSync(xdg).ino;
-    if (!inodes.has(ino)) results.push({ dir: xdg });
+    const existing = inodes.get(ino);
+    if (existing) existing.settingsDirs.push(path.dirname(xdg));
+    else {
+      const found = { dir: xdg, settingsDirs: [path.dirname(xdg)] };
+      inodes.set(ino, found);
+      results.push(found);
+    }
   } catch {}
   return results;
 }
@@ -226,7 +245,36 @@ function buildTokens(usage, contextWindow = DEFAULT_CONTEXT_WINDOW) {
   return { input, output, cacheRead, cacheCreate, contextPct, contextWindow };
 }
 
-async function parseSessionFile(filePath, projectSlug) {
+function oneMillionBase(model) {
+  const value = typeof model === 'string' ? model.trim() : '';
+  return /\[1m\]$/i.test(value) ? value.slice(0, -4) : null;
+}
+
+function oneMillionSettingsModels(importHome) {
+  const models = new Set();
+  const dirs = importHome?.settingsDirs || (importHome?.dir ? [path.dirname(importHome.dir)] : []);
+  for (const dir of dirs) {
+    try {
+      const model = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'))?.model;
+      const base = oneMillionBase(model);
+      if (base) models.add(base);
+    } catch {}
+  }
+  return models;
+}
+
+function attachImported1mFacts(entries, costStateModels, settingsModels) {
+  for (const entry of entries) {
+    const base = typeof entry.model === 'string' ? entry.model.replace(/\[1m\]$/i, '') : '';
+    // Reuse the #211 capability gate. A transcript/settings declaration on a
+    // model that cannot serve 1M is retained nowhere as a window claim.
+    if (!config.modelSupports1M(base)) continue;
+    if (costStateModels.has(base)) entry.imported1mCostState = true;
+    if (settingsModels.has(base)) entry.imported1mSettings = true;
+  }
+}
+
+async function parseSessionFile(filePath, projectSlug, opts = {}) {
   const sessionId = path.basename(filePath, '.jsonl');
   let lastUserText = null;
   let cwd = null;
@@ -237,6 +285,8 @@ async function parseSessionFile(filePath, projectSlug) {
   // Key = msg.id; value = entry object. Last-seen line wins (richest usage).
   // Lines without msg.id pass through keyed by their timestamp-derived id.
   const byResponseId = new Map();
+  const costStateModels = new Set();
+  const settingsModels = opts.settingsModels || new Set();
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -246,6 +296,17 @@ async function parseSessionFile(filePath, projectSlug) {
     try { obj = JSON.parse(line); } catch { continue; }
 
     if (obj.cwd && !cwd) cwd = obj.cwd;
+
+    // `cost-state` arrives late and is often after every assistant record, so
+    // collect its positive declaration across the complete transcript then
+    // attach it to imported turns only after the stream ends. A bare key is
+    // deliberately neither evidence nor a denial.
+    if (obj.type === 'cost-state' && obj.modelUsage && typeof obj.modelUsage === 'object') {
+      for (const key of Object.keys(obj.modelUsage)) {
+        const base = oneMillionBase(key);
+        if (base) costStateModels.add(base);
+      }
+    }
 
     if (obj.type === 'user' && obj.message) {
       const content = obj.message.content;
@@ -348,7 +409,9 @@ async function parseSessionFile(filePath, projectSlug) {
     byResponseId.set(dedupKey, entry);
     pendingToolResults = [];
   }
-  return [...byResponseId.values()];
+  const entries = [...byResponseId.values()];
+  attachImported1mFacts(entries, costStateModels, settingsModels);
+  return entries;
 }
 
 // Codex transcript lines are {timestamp, type, payload}. `payload.model` and
@@ -526,7 +589,9 @@ async function scanAndImport() {
     sessionIdx.seedDedupFromMetas(metas);
   } catch {}
 
-  for (const { dir } of homes) {
+  for (const importHome of homes) {
+    const { dir } = importHome;
+    const settingsModels = oneMillionSettingsModels(importHome);
     let projectDirs;
     try { projectDirs = await fs.promises.readdir(dir); } catch { continue; }
 
@@ -538,7 +603,7 @@ async function scanAndImport() {
 
       const jsonlFiles = await collectJsonlFiles(projectPath);
       for (const filePath of jsonlFiles) {
-        const entries = await parseSessionFile(filePath, slug);
+        const entries = await parseSessionFile(filePath, slug, { settingsModels });
         for (const entry of entries) {
           if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
         }
@@ -627,8 +692,11 @@ async function scanAndImportTranscript(target = {}) {
   }
   sessionIdx.seedDedupFromMetas(metas);
 
+  const importHome = provider === 'claude'
+    ? roots.find(root => pathInside(file, [root]) === file)
+    : null;
   const entries = provider === 'claude'
-    ? await parseSessionFile(file, path.basename(path.dirname(file)))
+    ? await parseSessionFile(file, path.basename(path.dirname(file)), { settingsModels: oneMillionSettingsModels(importHome) })
     : await parseCodexSessionFile(file);
   if (entries.some(entry => entry.sessionId !== target.sessionId)) {
     throw new Error('transcript session identity conflict');

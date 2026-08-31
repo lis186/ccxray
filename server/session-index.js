@@ -468,6 +468,11 @@ function _upsert(sid, entry) {
   // docs/decisions/0005-agent-key-unreliable-shared-contract.md
   if (_isMain && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
   if (_isMain && entry.beta1m === true) s.beta1m = true;
+  // #603: retain importer-only positive declarations for cold consumers. These
+  // facts are intentionally separate from beta1m/maxContext: they widen only
+  // the render fold, never weather or context-pressure classification.
+  if (_isMain && entry.imported1mCostState === true) s.imported1mCostState = true;
+  if (_isMain && entry.imported1mSettings === true) s.imported1mSettings = true;
 }
 
 function setTitle(sid, title) {

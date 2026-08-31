@@ -185,6 +185,15 @@ describe('workflow-timeline data layer', () => {
     ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'p2', maxContext: 1000000, ctxUsed: 500000 }, importedAbsent] }] };
     assert.equal(Math.round(ctx.wfCtxPctRender(importedAbsent)), 50); // 500K/1M
 
+    // #603: a history-only import persists a positive declaration separately
+    // from maxContext. The render lane must consume that fact without teaching
+    // prefix-local lane classification a new denominator.
+    const declaredImport = { id: 'i3', maxContext: 200000, ctxUsed: 199000, imported1mCostState: true };
+    const declaredImportPeer = { id: 'i4', maxContext: 200000, ctxUsed: 199000 };
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [declaredImport, declaredImportPeer] }] };
+    assert.equal(Math.round(ctx.wfCtxPctRender(declaredImportPeer)), 20);
+    assert.equal(Math.round(ctx.wfCtxPct(declaredImportPeer)), 100, 'classification still uses raw per-turn maxContext');
+
     // A lane whose turns are all ≤200K keeps 200K (no wider signal to rescope to).
     ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'x1', maxContext: 200000, ctxUsed: 100000 }] }] };
     assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', maxContext: 200000, ctxUsed: 100000 })), 50); // 100K/200K

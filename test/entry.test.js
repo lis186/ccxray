@@ -19,6 +19,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
     'ctxBeta','parentSessionId','compacted','contextUsageKnown',
+    'imported1mCostState','imported1mSettings',
   ]);
 });
 

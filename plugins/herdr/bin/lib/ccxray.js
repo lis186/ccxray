@@ -703,7 +703,10 @@ function contextUsed(entry) {
 }
 
 function sessionWindow(turns, aggregate = null) {
-  if (turns.some(t => t.beta1m) || aggregate?.beta1m === true) return 1000000;
+  if (turns.some(t => t.beta1m || t.imported1mCostState === true || t.imported1mSettings === true)
+      || aggregate?.beta1m === true
+      || aggregate?.imported1mCostState === true
+      || aggregate?.imported1mSettings === true) return 1000000;
   return Math.max(
     turns.reduce((max, t) => Math.max(max, Number(t.maxContext) || 0), 0),
     Number(aggregate?.maxContext) || 0,
@@ -711,7 +714,8 @@ function sessionWindow(turns, aggregate = null) {
 }
 
 // Keep the badge's denominator provenance aligned with the dashboard's
-// sessionCtxWindowSource four-state contract. A bare 200K window is an
+// sessionCtxWindowSource's four provenance tiers plus the contradicted state.
+// A bare 200K window is an
 // assumption for an unknown Claude deployment; an observed overflow is an
 // explicit contradiction until a later import records the larger fossil.
 function sessionWindowSource(turns, win = sessionWindow(turns), aggregate = null) {
@@ -721,12 +725,18 @@ function sessionWindowSource(turns, win = sessionWindow(turns), aggregate = null
   }, 0);
   if (used > win) return 'contradicted';
   if (turns.some(turn => turn.beta1m === true) || aggregate?.beta1m === true) return 'declared';
+  const observed = turns.some(turn => (Number(turn.maxContext) || 0) > 0 && Number(turn.maxContext) !== 200000)
+    || ((Number(aggregate?.maxContext) || 0) > 0 && Number(aggregate?.maxContext) !== 200000);
+  if (observed) return 'observed';
+  if (turns.some(turn => turn.imported1mCostState === true || turn.imported1mSettings === true)
+      || aggregate?.imported1mCostState === true
+      || aggregate?.imported1mSettings === true) return 'imported';
   return win === 200000 ? 'default' : 'observed';
 }
 
 function contextWindowMarker(source) {
   if (source === 'contradicted') return '✗';
-  if (source === 'default') return '?';
+  if (source === 'default' || source === 'imported') return '?';
   return '';
 }
 
@@ -1241,7 +1251,7 @@ function summarizeTurnGroup(turns, fallback = {}, nowMs = Date.now(), opts = {})
     ctxDirection,
     ctxWindowSource,
     ctxWindowMarker,
-    ctxBand: ctxWindowSource === 'default' || ctxWindowSource === 'contradicted'
+    ctxBand: ctxWindowSource === 'default' || ctxWindowSource === 'imported' || ctxWindowSource === 'contradicted'
       ? 'unknown'
       : contextBand(ctxPct),
   };
@@ -2106,8 +2116,9 @@ function missionControlRow(turns, agent, nowMs, mapping, opts = {}) {
   const anchor = mainDisplayTurns(sortedTurns);
   const mainLatest = anchor.at(-1) || latest;
   const first = sortedTurns[0] || {};
-  const win = anchor.length ? sessionWindow(anchor) : 0;
-  const ctxWindowSource = anchor.length ? sessionWindowSource(anchor, win) : null;
+  const aggregate = opts.aggregate || null;
+  const win = anchor.length ? sessionWindow(anchor, aggregate) : 0;
+  const ctxWindowSource = anchor.length ? sessionWindowSource(anchor, win, aggregate) : null;
   const ctxWindowMarker = contextWindowMarker(ctxWindowSource);
   const measuredCtx = ctxWindowSource === 'declared' || ctxWindowSource === 'observed';
   const pcts = win ? contextPercents(anchor, win) : [];
@@ -2303,9 +2314,11 @@ function missionControlSnapshot(opts = {}) {
     for (const agent of agents) {
       const candidates = paneTelemetryCandidates(entries, agent, env);
       const telemetry = paneSessionTelemetry(candidates.entries, agent);
+      const aggregate = readSessionAggregate(telemetry.turns.at(-1)?.sessionId, env);
       rows.push(missionControlRow(telemetry.turns, agent, nowMs, candidates.mapping, {
         env,
         toolSchemaCache,
+        aggregate,
         subagentTurns: telemetry.subagentTurns,
         sessionRole: telemetry.sessionRole,
         sessionSelectedBy: telemetry.selectedBy,
@@ -2320,7 +2333,11 @@ function missionControlSnapshot(opts = {}) {
     }
     for (const turns of bySession.values()) {
       turns.sort((a, b) => (a.receivedAt || 0) - (b.receivedAt || 0));
-      rows.push(missionControlRow(turns, null, nowMs, 'recent', { env, toolSchemaCache }));
+      rows.push(missionControlRow(turns, null, nowMs, 'recent', {
+        env,
+        toolSchemaCache,
+        aggregate: readSessionAggregate(turns.at(-1)?.sessionId, env),
+      }));
     }
   }
 
