@@ -97,7 +97,7 @@ function sessionCtxWindowSource(sid) {
   return win === DEF ? 'default' : 'observed';
 }
 
-function sessionCtxWindow(sid) {
+function sessionCtxWindow(sid, includeImported) {
   let win = 0, has1m = false, hasImported1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
@@ -118,7 +118,11 @@ function sessionCtxWindow(sid) {
   }
   // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
   // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
-  return has1m || hasImported1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));
+  if (has1m) return 1000000;
+  // Imported declarations are an inference, not an observation. Keep a larger
+  // maxContext fossil intact instead of narrowing it back to 1M.
+  return Math.max(win, includeImported === false || !hasImported1m ? 0 : 1000000)
+    || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
 }
 
 // #339: the context% denominator for ONE turn's timeline minimap. A main turn uses the
@@ -142,7 +146,8 @@ function turnCtxWindow(e) {
     if (hasImported1mFact(x)) hasImported1m = true;
     if ((x.maxContext || 0) > win) win = x.maxContext;
   }
-  return has1m || hasImported1m ? 1000000 : (win || e.maxContext || DEF);
+  if (has1m) return 1000000;
+  return Math.max(win, hasImported1m ? 1000000 : 0) || e.maxContext || DEF;
 }
 const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, fallbackCost, fallbackCount, unknownCount, cwd }
 const projectsMap = new Map(); // projectName → { name, totalCost, fallbackCost, fallbackCount, unknownCount, count, sessionIds, firstId, lastId }

@@ -893,7 +893,9 @@ function recomputeSessionStats(sid) {
     for (var wi = 0; wi < allEntries.length; wi++) {
       if (allEntries[wi].sessionId === sid && !allEntries[wi].isSubagent && !allEntries[wi].isRetry) weatherTurns.push(allEntries[wi]);
     }
-    sess.weather = assessWeather(weatherTurns, { sessionWindow: sessionCtxWindow(sid) });
+    // #603: imported 1M facts correct the displayed denominator but must never
+    // mute weather/attention. This fold acts as if the import-time hint is absent.
+    sess.weather = assessWeather(weatherTurns, { sessionWindow: sessionCtxWindow(sid, false) });
   }
 }
 

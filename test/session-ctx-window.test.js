@@ -230,6 +230,19 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
   });
 
+  it('#603 keeps hot-session weather on the observed window when display has only an imported 1M hint', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-weather';
+    seed(ctx, [{ ...weatherTurn(sid), imported1mSettings: true }]);
+    ctx.sessionsMap.set(sid, { _cold: false, beta1m: false, maxContext: 200000 });
+
+    assert.equal(ctx.sessionCtxWindow(sid), 1000000, 'display still widens to the imported 1M tier');
+    ctx.recomputeSessionStats(sid);
+
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy',
+      'the imported display hint cannot suppress hot-session weather');
+  });
+
   it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
     const ctx = loadCtx(true);
     const sid = 'hot-monotone';
@@ -327,6 +340,13 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
     ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
+  it('#603 lets a 1.5M observed fossil outrank an imported 1M declaration', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mCostState: true, maxContext: 200000 });
+    ctx.allEntries.push({ ...turn(false), maxContext: 1500000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1500000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
   });
 
   it('a header the gate refused must NOT count as declared (fail-on-old)', () => {

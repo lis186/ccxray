@@ -242,6 +242,28 @@ function readSessionAggregate(sessionId, env = process.env) {
   }
 }
 
+// Mission Control renders up to 200 rows per snapshot. Unlike the single-pane
+// Sidebar lookup above, build one complete sessionId lookup so every row shares
+// one bounded read of the derived aggregate file.
+function readSessionAggregates(env = process.env) {
+  const rows = new Map();
+  const file = path.join(resolveCcxrayLogsDir(env), 'sessions.json');
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return rows;
+  }
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    try {
+      const row = JSON.parse(line);
+      if (row?.sid) rows.set(row.sid, row);
+    } catch {}
+  }
+  return rows;
+}
+
 function readIndexTailEntries(opts = {}) {
   const env = opts.env || process.env;
   const indexPath = path.join(resolveCcxrayLogsDir(env), 'index.ndjson');
@@ -703,14 +725,15 @@ function contextUsed(entry) {
 }
 
 function sessionWindow(turns, aggregate = null) {
-  if (turns.some(t => t.beta1m || t.imported1mCostState === true || t.imported1mSettings === true)
-      || aggregate?.beta1m === true
-      || aggregate?.imported1mCostState === true
-      || aggregate?.imported1mSettings === true) return 1000000;
-  return Math.max(
+  if (turns.some(t => t.beta1m) || aggregate?.beta1m === true) return 1000000;
+  const observed = Math.max(
     turns.reduce((max, t) => Math.max(max, Number(t.maxContext) || 0), 0),
     Number(aggregate?.maxContext) || 0,
-  ) || 200000;
+  );
+  const imported = turns.some(t => t.imported1mCostState === true || t.imported1mSettings === true)
+    || aggregate?.imported1mCostState === true
+    || aggregate?.imported1mSettings === true;
+  return Math.max(observed, imported ? 1000000 : 0) || 200000;
 }
 
 // Keep the badge's denominator provenance aligned with the dashboard's
@@ -2308,13 +2331,14 @@ function missionControlSnapshot(opts = {}) {
     : reportedAgents;
   const maxRows = clampNumber(opts.maxRows || env.CCXRAY_MISSION_MAX_ROWS, 1, 200) || 100;
   const toolSchemaCache = new Map();
+  const sessionAggregates = readSessionAggregates(env);
   const rows = [];
 
   if (agents.length) {
     for (const agent of agents) {
       const candidates = paneTelemetryCandidates(entries, agent, env);
       const telemetry = paneSessionTelemetry(candidates.entries, agent);
-      const aggregate = readSessionAggregate(telemetry.turns.at(-1)?.sessionId, env);
+      const aggregate = sessionAggregates.get(telemetry.turns.at(-1)?.sessionId) || null;
       rows.push(missionControlRow(telemetry.turns, agent, nowMs, candidates.mapping, {
         env,
         toolSchemaCache,
@@ -2336,7 +2360,7 @@ function missionControlSnapshot(opts = {}) {
       rows.push(missionControlRow(turns, null, nowMs, 'recent', {
         env,
         toolSchemaCache,
-        aggregate: readSessionAggregate(turns.at(-1)?.sessionId, env),
+        aggregate: sessionAggregates.get(turns.at(-1)?.sessionId) || null,
       }));
     }
   }

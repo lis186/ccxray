@@ -764,7 +764,8 @@ async function scanAndImportTranscript(target = {}) {
     for (const key of [
       'id', 'sessionId', 'responseId', 'receivedAt', 'cwd', 'agentId',
       'agentKey', 'agentLabel', 'isSubagent', 'parentSessionId', 'model',
-      'maxContext', 'beta1m', 'ctxBeta', 'contextUsageKnown', 'ctxUsed',
+      'maxContext', 'beta1m', 'imported1mCostState', 'imported1mSettings',
+      'ctxBeta', 'contextUsageKnown', 'ctxUsed',
       'usage', 'cost', 'imported', 'importSource', 'isCompacted', 'compacted',
       'turnToolFail', 'toolFail', 'title', 'status', 'provider', 'agent',
       'convId', 'responseMetadata',

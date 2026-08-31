@@ -111,6 +111,9 @@ describe('ccxray import --once', () => {
     const targetSession = 'aaaaaaaa-1111-2222-3333-444444444444';
     writeTranscript(projects, targetSession, cwd, 2);
     writeTranscript(projects, 'bbbbbbbb-1111-2222-3333-444444444444', '/work/unrelated', 3);
+    fs.writeFileSync(path.join(path.dirname(projects), 'settings.json'), JSON.stringify({
+      model: 'claude-opus-4-6[1m]',
+    }));
     const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${targetSession}.jsonl`);
     fs.appendFileSync(file, JSON.stringify({
       type: 'cost-state', modelUsage: { 'claude-opus-4-6[1m]': { costUSD: 0.01 } },
@@ -118,12 +121,15 @@ describe('ccxray import --once', () => {
 
     const result = runTargetImport(home, projects, {
       file, provider: 'claude', sessionId: targetSession, cwd,
-    }, { CCXRAY_PRICING_CACHE: '/tmp/ccxray-603-no-pricing-cache' });
+    }, { CCXRAY_PRICING_CACHE: path.join(home, 'pricing-cache.json') });
     assert.equal(result.ok, true);
     assert.equal(result.imported, 2);
     assert.equal(result.contextSamples.length, 2,
       'targeted import must return bounded context samples for Sidebar repair');
     assert.ok(result.contextSamples.every(sample => sample.sessionId === targetSession));
+    assert.ok(result.contextSamples.every(sample => sample.imported1mCostState === true
+      && sample.imported1mSettings === true),
+    'targeted repair samples retain both imported-window facts outside the Sidebar tail');
 
     const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
       .trim().split('\n').map(line => JSON.parse(line));

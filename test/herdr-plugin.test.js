@@ -3397,6 +3397,27 @@ describe('Herdr context window provenance', () => {
     assert.equal(row.severity, 'green', 'a changed ctx% alone cannot escalate Mission Control');
   });
 
+  it('#603 lets a larger observed fossil outrank the imported 1M hint in Sidebar and Mission Control', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const imported = turn('f6-observed', 300000, 200000);
+    const home = makeHome([imported]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 1500000, imported1mSettings: true,
+    }) + '\n');
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env, sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    const row = missionControlSnapshot({
+      env, entries: [imported], nowMs: T + 1000, agentReport: { ok: true, agents: [] },
+    }).rows[0];
+
+    assert.equal(Math.round(badge.ctxPct), 20);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(Math.round(row.ctxPct), 20);
+    assert.equal(row.ctxWindowSource, 'observed');
+  });
+
   it('marks an overflowing raw row as contradicted instead of clamping it cleanly', () => {
     const badge = render([turn('f6c', 232659, 200000)]);
     assert.equal(badge.ctxWindowSource, 'contradicted');
@@ -3424,6 +3445,50 @@ describe('Herdr context window provenance', () => {
     assert.equal(row.severity, 'green');
     assert.equal(row.action, null);
     assert.ok(row.reasons.some(reason => reason.includes('assumed 96%?')));
+  });
+});
+
+describe('#603 Mission Control aggregate snapshot cache', () => {
+  const nowMs = Date.parse('2026-08-31T12:00:00.000Z');
+  const entry = (sid, paneId, offset) => ({
+    id: `${sid}-turn`, sessionId: sid, agentId: `herdr:${paneId}`,
+    agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-4-6',
+    cwd: '/work/snapshot-cache', receivedAt: nowMs + offset, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 1 },
+    cost: { cost: 0.01, confidence: 'exact' },
+  });
+
+  it('reads sessions.json once for each Mission Control snapshot in both row paths', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [entry('snapshot-a', 'w1:p1', 1), entry('snapshot-b', 'w1:p2', 2)];
+    const home = makeHome(entries);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), [
+      JSON.stringify({ sid: 'snapshot-a', count: 1, totalCost: 0.01, maxContext: 200000 }),
+      JSON.stringify({ sid: 'snapshot-b', count: 1, totalCost: 0.01, maxContext: 200000 }),
+      '',
+    ].join('\n'));
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const countSessionReads = run => {
+      const original = fs.readFileSync;
+      let reads = 0;
+      fs.readFileSync = function(file, ...args) {
+        if (String(file).endsWith(`${path.sep}sessions.json`)) reads += 1;
+        return original.call(this, file, ...args);
+      };
+      try { run(); } finally { fs.readFileSync = original; }
+      return reads;
+    };
+    const agents = [
+      { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working', agent_session: { kind: 'id', value: 'snapshot-a' } },
+      { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t2', agent: 'claude', agent_status: 'working', agent_session: { kind: 'id', value: 'snapshot-b' } },
+    ];
+
+    assert.equal(countSessionReads(() => missionControlSnapshot({
+      env, entries, nowMs, agentReport: { ok: true, agents },
+    })), 1, 'agent rows share one sessions.json read');
+    assert.equal(countSessionReads(() => missionControlSnapshot({
+      env, entries, nowMs, agentReport: { ok: true, agents: [] },
+    })), 1, 'recent-session rows share the same snapshot-level read');
   });
 });
 
