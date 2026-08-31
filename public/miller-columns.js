@@ -1619,6 +1619,13 @@ function renderSessionItem(sess, sid, sessEl) {
   // inequality to the one the evidence supports.
   const ctxRatio = sess.latestMainCtxUsed ? sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100 : 0;
   const ctxPct = Math.min(100, ctxRatio);
+  // #603: an imported 1M declaration widens the marked display denominator, but
+  // remains an unverified provenance tier and cannot grant attention authority.
+  // Keep the shown value above on the imported window; choose alert colour and
+  // compact pressure from the same no-importer fold used by workflow/weather.
+  const attentionCtxPct = sess.latestMainCtxUsed
+    ? Math.min(100, sess.latestMainCtxUsed / sessionCtxWindow(sid, false) * 100)
+    : 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
   // light up red/yellow — prevents sea-of-red when scanning the session list.
@@ -1630,9 +1637,9 @@ function renderSessionItem(sess, sid, sessEl) {
   // Historical sessions stay dim regardless.
   let ctxPctClass = 'ctx-alert-historical';
   if (recent) {
-    ctxPctClass = ctxPct >= compactPct ? 'ctx-alert-red'
-                : ctxPct >= 75         ? 'ctx-alert-yellow'
-                                       : 'ctx-alert-dim';
+    ctxPctClass = attentionCtxPct >= compactPct ? 'ctx-alert-red'
+                : attentionCtxPct >= 75         ? 'ctx-alert-yellow'
+                                                : 'ctx-alert-dim';
   }
   const ctxAlertHtml = ctxPct > 0
     ? '<span class="ctx-alert ' + ctxPctClass + '"' +
@@ -1647,7 +1654,7 @@ function renderSessionItem(sess, sid, sessEl) {
     : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.
   const ctxBarInner = ctxPct > 0
-    ? '<div class="si-ctx-bar' + (recent && ctxPct > compactPct ? ' over-compact' : '') +
+    ? '<div class="si-ctx-bar' + (recent && attentionCtxPct > compactPct ? ' over-compact' : '') +
       (!recent ? ' historical' : '') + '"' +
       ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%"' +
       ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'

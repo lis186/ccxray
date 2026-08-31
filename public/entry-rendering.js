@@ -930,6 +930,7 @@ window.recomputeProjectCost = recomputeProjectCost;
 // ── Merge cold sessions from session index into sessionsMap + DOM + projectsMap ──
 function mergeColdSessions(sessions) {
   const widenedSessionIds = new Set();
+  const cardRedrawSessionIds = new Set();
   for (const s of sessions) {
     if (!s || !s.sid) continue;
     if (s.importedOnly && window.ccxraySettings?.hideImported) continue;
@@ -952,9 +953,16 @@ function mergeColdSessions(sessions) {
       }
       // #603: importer declarations feed the display-only fold but deliberately
       // do NOT set windowWidened. Recomputing weather here would turn the weaker
-      // provenance tier into context-pressure alert authority.
-      if (s.imported1mCostState === true) existing.imported1mCostState = true;
-      if (s.imported1mSettings === true) existing.imported1mSettings = true;
+      // provenance tier into context-pressure alert authority. They do change the
+      // card's marked display window, so redraw an already-rendered card below.
+      if (s.imported1mCostState === true && existing.imported1mCostState !== true) {
+        existing.imported1mCostState = true;
+        cardRedrawSessionIds.add(s.sid);
+      }
+      if (s.imported1mSettings === true && existing.imported1mSettings !== true) {
+        existing.imported1mSettings = true;
+        cardRedrawSessionIds.add(s.sid);
+      }
       if ((s.maxContext || 0) > (existing.maxContext || 0)) {
         existing.maxContext = s.maxContext;
         windowWidened = true;
@@ -1018,6 +1026,11 @@ function mergeColdSessions(sessions) {
     const s = sessionsMap.get(sid);
     if (!s || s._cold) continue;
     recomputeSessionStats(sid);
+  }
+  for (const sid of cardRedrawSessionIds) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    const sess = sessionsMap.get(sid);
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
   }
   // #308: derive project costs from session costs (idempotent)
   for (const [name] of projectsMap) recomputeProjectCost(name);

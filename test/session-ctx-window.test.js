@@ -68,6 +68,7 @@ function loadCtx(includeEntryRendering) {
     this.sessionCtxWindowSource = sessionCtxWindowSource;
     this.ctxWindowUnverified = ctxWindowUnverified;
     this.turnCtxWindow = turnCtxWindow;
+    this.renderSessionItem = renderSessionItem;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
       this.recomputeSessionStats = recomputeSessionStats;
@@ -182,6 +183,26 @@ describe('#603 imported 1M facts survive the cold-load entry pipeline', () => {
     assert.equal(ctx._wfLaneWindow(lane), 1000000, 'the swimlane display fold widens to 1M');
     assert.equal(ctx._wfLaneWindowSource(lane), 'imported', 'the swimlane retains the unverified ? provenance');
   });
+
+  it('keeps the imported 1M display + marker, but styles a session card from its verified 200K window', () => {
+    const ctx = loadCtx();
+    const sid = 'imported-card-attention';
+    seed(ctx, [{
+      sessionId: sid, isSubagent: false, maxContext: 200000,
+      imported1mSettings: true,
+    }]);
+    ctx.sessionsMap.set(sid, {
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    });
+
+    const html = ctx.renderSessionItem(ctx.sessionsMap.get(sid), sid, { title: '' });
+
+    assert.match(html, /ctx-alert ctx-alert-red/, '170K / verified 200K reaches the red threshold');
+    assert.match(html, /si-ctx-bar over-compact/, 'the compact line uses the verified 85%');
+    assert.match(html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
+      'the displayed percentage keeps the imported 1M denominator and its ? marker');
+  });
 });
 
 describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, subagent=own conv)', () => {
@@ -274,6 +295,30 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
 
     assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy',
       'the imported display hint cannot suppress hot-session weather');
+  });
+
+  it('#603 re-renders a hot session card when its imported window fact arrives', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-card';
+    const sess = {
+      _cold: false, beta1m: false, maxContext: 200000,
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    };
+    ctx.sessionsMap.set(sid, sess);
+
+    const card = { title: '', renders: 0, html: '' };
+    Object.defineProperty(card, 'innerHTML', {
+      set(html) { this.renders++; this.html = html; },
+    });
+    ctx.document.getElementById = (id) => id === 'sess-' + sid.slice(0, 8) ? card : null;
+
+    ctx.mergeColdSessions([{ sid, imported1mSettings: true }]);
+
+    assert.equal(sess.imported1mSettings, true, 'the aggregate retains the monotone imported fact');
+    assert.equal(card.renders, 1, 'the already-visible hot card is redrawn');
+    assert.match(card.html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
+      'the redraw exposes the newly imported display window');
   });
 
   it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
