@@ -241,6 +241,20 @@ anyway.
 O4 is not recommended; O3 only as a stopgap if O1's index-schema cost is
 deferred — but it re-splits surfaces #588 just unified.
 
+## Known limits
+
+### Follow-up — cold aggregate loses a narrow observed window
+
+For a mixed-model orchestrator session with a non-default observed narrow
+window (for example, 128K) and an imported 1M fact, a cold card can temporarily
+select 1M. `sessions.json` aggregates only `max(maxContext)` plus the imported
+fact, so it cannot express that the observed non-default window takes category
+precedence over the 200K default. This is under-reporting: the wider temporary
+denominator makes displayed context pressure too low. Loading the session's
+entries restores the per-turn observation and self-heals the card to 128K. The
+follow-up fix is an add-only `sessions.json` observed-window aggregate field;
+no schema change is made in this work.
+
 ## Signoff
 
 Owner: comment `APPROVE-DESIGN 601-diag-0830` on #601 to approve a fix issue

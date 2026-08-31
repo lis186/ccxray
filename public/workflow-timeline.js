@@ -173,12 +173,11 @@ function wfCtxPct(e) {
 // #342: RENDER-time context%. Turns in one session can carry DIFFERENT
 // maxContext values though they share one real context window: the server
 // infers maxContext per-turn (config.inferMaxContext) and returns the 200K base
-// for a turn whose usage stayed under 200K, but the stored 1M for a turn that
-// exceeded it. So two adjacent main turns with the same ~199K ctxUsed render
-// 100% (÷200K) next to 20% (÷1M) — the context% sawtooth. Fix: divide by the
-// LANE's context window (the max maxContext among the lane's turns — the >200K
-// turns supply the real 1M) whenever it EXCEEDS the turn's own inferred value.
-// A lane whose turns are all ≤200K keeps 200K.
+// for a turn whose usage stayed under 200K, while another turn carries an
+// observed or declared window. So two adjacent turns can render against
+// different denominators. Fix: display uses the LANE's resolved context window
+// exactly — including a non-default observed window narrower than 200K. A lane
+// whose turns are all default keeps 200K.
 // INVARIANT: classification (wfInferLanes ~L540/L550) deliberately keeps the
 // plain wfCtxPct 200K default so lane decisions never shift with this render
 // rescope — only rendering reads the lane window. The turnId→laneWindow map is
@@ -249,15 +248,17 @@ function _wfWinByTurn(includeImported) {
   wfState[cacheKey] = map;
   return map;
 }
-// #377 slice 2: the window a single turn should be measured against —
-// its own maxContext, widened by the lane fold. Returns 0 when nothing is
-// known, so callers decide their own fallback.
+// #377 slice 2: display must use the lane's resolved window exactly. The
+// known-evidence alert caller passes false and retains its established
+// widening-only raw-turn behavior; alert/classification do not inherit a
+// narrower display fold. Returns 0 when nothing is known, so callers decide
+// their own fallback.
 function _wfTurnWindow(e, includeImported) {
   var win = e.maxContext || 0;
   var m = _wfWinByTurn(includeImported);
   var laneWin = (m && m.get(e.id)) || 0;
-  if (laneWin > win) win = laneWin;
-  return win;
+  if (includeImported === false) return laneWin > win ? laneWin : win;
+  return laneWin || win;
 }
 function wfCtxPctRender(e) {
   var win = _wfTurnWindow(e);

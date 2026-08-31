@@ -199,6 +199,47 @@ describe('workflow-timeline data layer', () => {
     assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', maxContext: 200000, ctxUsed: 100000 })), 50); // 100K/200K
   });
 
+  it('codex round 5 P2-a: every swimlane render surface uses a narrower observed lane window', () => {
+    const ctx = loadWfModule();
+    const default200k = mkEntry('default-200k', 's1', 'claude-opus-4-6', 1000, 1, {
+      maxContext: 200000,
+      ctxUsed: 102400,
+      usage: { input_tokens: 102400, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    const observed128k = mkEntry('observed-128k', 's1', 'claude-opus-4-6', 3000, 1, {
+      maxContext: 128000,
+      ctxUsed: 102400,
+      usage: { input_tokens: 102400, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    const lane = { key: 'main', name: 'main', turns: [default200k, observed128k] };
+    ctx.wfState = { lanes: [lane], selectedLane: lane, selectedSection: 'timeline', viewT0: 0, viewT1: 5000 };
+
+    assert.equal(ctx._wfLaneWindow(lane), 128000, 'the observed 128K window wins over the 200K default');
+    assert.equal(ctx._wfTurnWindow(default200k), 128000, 'default 200K turn resolves to its lane window');
+    assert.equal(ctx._wfTurnWindow(observed128k), 128000, 'observed turn resolves to that same lane window');
+    assert.equal(ctx.wfCtxPctRender(default200k), 80);
+    assert.equal(ctx.wfCtxPctRender(observed128k), 80);
+    assert.equal(Math.round(ctx.wfCtxPctAlert(default200k)), 51, 'alert retains the raw 200K denominator');
+    assert.equal(Math.round(ctx.wfCtxPct(default200k)), 51, 'classification remains raw per-turn');
+
+    const svg = ctx.wfRenderLaneSvg(lane, 0, 600, t => t, new Set());
+    assert.match(svg, / · 128K<\//, 'swimlane label uses the same observed window');
+    for (const id of [default200k.id, observed128k.id]) {
+      const bar = svg.match(new RegExp('<g class="wf-b[^\"]*" data-i="\\d+" data-turn-id="' + id + '"[^>]*>([\\s\\S]*?)<\\/g>'));
+      assert.ok(bar, id + ' renders a context bar');
+      assert.match(bar[1], /height="35"/, id + ' bar is 80% of 44px');
+    }
+
+    const panel = { innerHTML: '' };
+    ctx.document.getElementById = id => id === 'wf-agent-card-panel' ? panel : null;
+    ctx.wfRenderAgentCard(lane);
+    assert.match(panel.innerHTML, /Window<\/span><span class="wf-ac-val">128K<\//, 'lane card label stays at 128K');
+    ctx.wfRenderTurnCard(default200k);
+    assert.match(panel.innerHTML, /80\.0%/, 'turn card uses the 128K render denominator');
+    ctx._wfShowTooltip({ clientX: 0, clientY: 0 }, default200k, lane);
+    assert.match(ctx._wfTooltipEl.innerHTML, /80\.0%/, 'tooltip uses the 128K render denominator');
+  });
+
   it('#377 slice 2: single-turn weather matches the lane-fold context window in tooltip and turn card', () => {
     const ctx = loadWfModule({ weather: true, weatherDisplay: true });
     const turn = mkEntry('t1', 's1', 'claude-opus-4-6', 1000, 5, {
