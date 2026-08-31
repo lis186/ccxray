@@ -1097,7 +1097,8 @@ function wfAddEntry(entry) {
   // derived from the (now correctly composed) final main lane — so a fresh
   // cold-load/rebuild of a completed session is already correct, and the only
   // residual divergence is a *live* seed turn on an actively-viewed session.
-  // A2 mirrors the per-conversation rule + dominant-coreHash flip/rebuild here.
+  // Mirroring the per-conversation rule here (once "A2") was never implemented
+  // and #350 is closed — this per-turn form is the accepted bounded divergence.
   if (entry.agentKey && WF_MAIN_AGENT_KEYS[entry.agentKey] &&
       wfState.mainCoreHash && entry.coreHash && entry.coreHash !== wfState.mainCoreHash &&
       entry.convId && wfState.mainConvIds && !wfState.mainConvIds.has(entry.convId)) {
