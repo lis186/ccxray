@@ -11,35 +11,101 @@
 Recovering 1M requires evidence: the `context-1m-*` beta header (live wire),
 the `[1m]` system-prompt marker (live wire), or observed usage climbing past
 the assumed window. **A transcript-import-only ("history-only") session has
-none of the first two**, so a genuine 1M session renders against a 200K
-denominator until its usage crosses 200K — over-reporting context pressure up
-to 5x in the badge and Mission Control. Reproduced: a fable-5 session whose
+none of the first two, and the import path today consumes no window-variant
+DECLARATION signal — its only recovery is the usage hatch** — so a genuine 1M
+session renders against a 200K denominator until its usage crosses 200K,
+over-reporting context pressure up to 5x in the badge and Mission Control.
+(Scope, per the corrected F1a/F4: declaration signals DO exist on disk for
+some sessions — cost-state's `[1m]` key, settings.json — but the importer
+does not read them yet, so TODAY the over-report hits every history-only 1M
+session below the usage hatch regardless of what sits on disk. Only after O1
+lands does it narrow to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
 ## Verified facts (2026-08-30)
 
-### F1 — transcript schema carries no window signal (scope 1)
+### F1 — transcript schema inventory (scope 1) — **corrected 2026-08-31**
+
+> **Correction.** The first revision of this section claimed "no window-bearing
+> field in any record type" from a four-file sample. A full scan of all 91
+> fable-5 transcripts found record types the sample missed — including one
+> that DOES carry a positive window signal (`cost-state`, F1a below). The
+> sampled negative claim was wrong in scope; what follows is the full-corpus
+> result.
 
 Searched locations (negative claim scope, per the issue's requirement):
 
 - Homes: `~/.claude/projects/`, `~/.claude-personal/projects/`
   (`~/.claude-work/projects` is a **symlink** to `-personal` — see F4 caveat).
-- Files inventoried in full (streamed, every line JSON-parsed, keys unioned to
-  depth 4): four transcripts spanning Jun 23 → Aug 30 CC versions, including
-  a 22.9 MB / 390-assistant-record fable-5 session written today.
-- Record types seen (13): `assistant`, `user`, `system`, `attachment`,
+- **All 91 fable-5 transcripts** (mtime ≥ 2026-08-05, >300KB) streamed with
+  every line JSON-parsed and keys unioned to depth 4.
+- Record types seen (21): `assistant`, `user`, `system`, `attachment`,
   `last-prompt`, `mode`, `permission-mode`, `atis-latch`,
   `file-history-snapshot`, `queue-operation`, `ai-title`, `pr-link`,
-  `agent-name`.
+  `agent-name`, `cost-state`, `fork-context-ref`, `file-history-delta`,
+  `frame-link`, `relocated`, `worktree-state`, `artifact-autoreact-ledger`,
+  `artifact-comment-monitor`.
 - Key regex `/context|window|beta|1m|maxcontext|budget|tier|serving/i` over
-  every key path: hits only `message.usage.service_tier` (value `"standard"`
-  — priority-tier, not window) and `message.usage.speed` (`"standard"` —
-  fast-mode flag). No window-bearing field in any record type.
-- `message.model` is the bare `claude-fable-5` in **440/440** assistant
-  records checked (no `[1m]` suffix anywhere outside quoted conversation
-  content). System prompt is not stored. Confirms the issue's two-path
-  finding.
+  every key path. Non-signal hits: `message.usage.service_tier` /
+  `message.usage.speed` (both `"standard"` — priority tier and fast-mode, not
+  window), `message.context_management` (observed value `null`),
+  `fork-context-ref.contextLength` (fork metadata, ~1100-scale counts, not a
+  window), plus content-derived key names inside `toolUseResult`/snapshot
+  maps. **Signal hit: `cost-state.modelUsage` — see F1a.**
+- `message.model` is the bare `claude-fable-5` in every assistant record
+  (13,288 across the corpus; no `[1m]` suffix outside quoted conversation
+  content). System prompt is not stored. The issue's two named paths are
+  confirmed empty — but the issue's overall "the import path has no signal"
+  conclusion is superseded by F1a and F4.
+
+### F1a — `cost-state.modelUsage` keys carry the `[1m]` variant (positive-only, partial coverage)
+
+`cost-state` records (new — present only in transcripts with mtime ≥
+2026-08-27, 15/91 files) aggregate per-model usage under `modelUsage`, keyed
+by the **client-internal model id, `[1m]` suffix included** when the pane ran
+the 1M variant (`claude-fable-5[1m]`, `claude-opus-4-6[1m]`,
+`claude-opus-4-8[1m]` all observed). Reliability, measured against the
+usage ground truth (a session whose main-chain context exceeded 200K provably
+ran 1M):
+
+| cost-state files | peak > 200K | `[1m]`-keyed | verdict |
+|---|---|---|---|
+| 15 | 13 | 6 | 6/6 verifiable positives confirmed; **7 false negatives** (bare or empty keys on sessions peaking up to 510K) |
+| — | ≤ 200K: 2 | 1 | the `[1m]` hit at peak 115K is exactly the case the usage hatch cannot heal — but it is **unverifiable by usage** (see below) |
+
+Measurement boundary (codex review, 2026-08-31): the usage ground truth can
+only CONFIRM 1M (peak > 200K); it can never confirm that a ≤200K session ran
+a 200K window, so **the false-positive rate is unmeasured** — there is no
+known-200K control in this corpus. The 115K `[1m]` hit is consistent with the
+pane's settings but not independently confirmed. What bounds the risk is
+semantics, not measurement: the key records the client-internal model id the
+pane ran, so a false positive requires cost-state to record a variant the
+pane did not run. The fix design must still contain it (capability gate + no
+alarm authority), not assume it away.
+
+So the key is trustworthy in ONE direction only, and that trust is
+semantic-plus-6/6-verified, not exhaustively measured: **presence of a
+`[1m]`-suffixed key is per-session, in-transcript evidence of the 1M window;
+absence proves nothing** (bare keys occur on provably-1M sessions written the
+same week — mechanism undetermined).
+
+**Enrichment-timing limitation (codex R3)**: `cost-state` is written late in
+a session's life, and the importer dedups by assistant id — a later scan
+rebuilds `existingIds` from `index.ndjson` and skips already-imported entries
+(`server/importer.js:504-543`). A transcript imported before its `cost-state`
+record lands will therefore never pick up the `[1m]` evidence through the
+normal import path. O1 must add an enrichment path for this case (or accept
+the coverage loss explicitly): candidates are a session-level re-check on
+rescan, the ADR 0020 targeted-repair worker (which already re-reads the exact
+transcript), or `rebuild-index --reimport` (the destructive transcript-rescan
+variant — plain `rebuild-index` only replays `index.ndjson` + surviving
+`_req/_res` and preserves imported rows, so it cannot recover
+transcript-only evidence; codex R4). "Wherever cost-state carries the key" holds
+only once one of these ships. This is the same asymmetric shape as
+`beta1m`'s monotone OR semantics, and must be consumed the same way: positive
+fact, never a deny. Coverage is new-transcripts-only; legacy sessions are
+irrecoverable by it (ADR 0013 no-backfill class).
 
 ### F2 — fable-5 serving-tier facts (scope 2)
 
@@ -134,7 +200,7 @@ resulting number can/cannot answer.
 | | Option | Fixes | Costs / risks | The badge % may then be used for |
 |---|---|---|---|---|
 | O0 | Status quo + README known limitation | nothing (documents it) | history-only 1M sessions keep a ~5x-high number with `?`; colour/severity already honest (#588) | attention triage via colour: **yes** (gated); reading the number as pressure: **no** for `?`-marked sessions |
-| O1 | Persist a settings-derived window **fact** at import: importer reads the scanned home's `settings.json`, and when the model base matches, writes an add-only index field (e.g. `settingsCtx1m: true`) — display fold treats it as a **new provenance tier** between `observed` and `default` (own marker, not bare, not `?`-free) | the number, for the dominant real case (user pins `[1m]`) | ADR 0013 discipline: persist the *fact* ("settings declared [1m] at import time"), never launder `maxContext=1M`; marker semantics decision (a third glyph or keep `?`); retroactive misattribution on model switches; **symlinked-homes ambiguity is real on this machine** (may need "any scanned home's settings match" OR-rule, which widens false 1M); touches importer + entry.js INDEX_FIELDS + fold sites (badge, dashboard `sessionCtxWindow`) | pressure triage: **mostly** (marked as assumed-from-settings; wrong across model-switch boundaries) |
+| O1 *(amended 2026-08-31)* | Persist import-path window **facts** at import, two sources OR'd, both positive-only: **(a) primary — `cost-state.modelUsage` `[1m]`-suffixed key** (F1a: per-session, in-transcript provenance; 6/6 verifiable positives confirmed, false-positive rate unmeasured — no known-200K control) and **(b) fallback — the scanned home's `settings.json` model** (F4: home-level, mutable). Write an add-only index field; display fold treats it as a **new provenance tier** between `observed` and `default` (own marker, not bare, not `?`-free) | the number — (a) alone fixes it with real per-session provenance wherever cost-state carries the key (new transcripts); (b) covers the rest of the dominant real case (user pins `[1m]`) | ADR 0013 discipline: persist the *fact*, never launder `maxContext=1M`; (a) has measured false negatives (7/13) so (b) or the usage hatch must back it; (a) also needs an enrichment path for cost-state records written after the transcript was first imported (F1a enrichment-timing note); marker semantics decision (a third glyph or keep `?`); (b) risks retroactive misattribution on model switches and **symlinked-homes ambiguity is real on this machine**; touches importer + entry.js INDEX_FIELDS + fold sites (badge, dashboard `sessionCtxWindow`) | pressure triage: **mostly** — (a)-sourced numbers carry per-session evidence; (b)-sourced stay assumed-from-settings |
 | O2 | Upstream ask: Claude Code persists the session's context window (or model-with-variant) in the transcript | root cause, permanently, with true per-session provenance | not in our control; timeline unknown; still needs O0/O1 meanwhile | pressure triage: **yes**, once shipped |
 | O3 | Herdr-only: the ADR 0020 targeted-repair worker reads `settings.json` when it scans the exact transcript, caching the window hint in its linkage state | the badge number, plugin-scope only, no index schema change | dashboard cold-load still divides by 200K (surfaces disagree — the exact class #588 existed to kill); same provenance caveats as O1 | badge yes / dashboard no — **splits the two surfaces**, not recommended alone |
 | O4 | Suppress the number when `ctxWindowSource === 'default'` (render `?` alone, keep trend cells) | removes the misleading 51% | destroys real information for genuinely-200K default sessions (opus-4-x etc.) where the number is right; ADR 0020 chose visible-but-marked over hidden | attention: colour only; number withheld |
@@ -148,10 +214,14 @@ the exact #211 regression, in the dangerous direction.
 
 O1 (+ file O2 upstream as a tracking issue). O1 is the only option that fixes
 the number on both surfaces without laundering an assumption into
-`maxContext`: the persisted fact is honest ("the scanned home's settings
-declared [1m] for this model at import time"), the fold stays
-stateless-at-render, and the marker keeps telling the truth that the
-denominator is inferred. The symlinked-homes ambiguity is the main design
+`maxContext`: each persisted fact is honest ("this transcript's cost-state
+declared the [1m] variant" / "the scanned home's settings declared [1m] for
+this model at import time"), the fold stays stateless-at-render, and the
+marker keeps telling the truth about the denominator's provenance. The
+2026-08-31 amendment makes `cost-state` the primary source — it is the only
+per-session signal — with settings as the weaker fallback; fix issue #603's
+spec predates this amendment and needs the (a)-primary pivot confirmed by the
+owner before dispatch. The symlinked-homes ambiguity is the main design
 question for the fix issue: scanning **every** discovered home's settings and
 applying the OR widens false-1M risk, and a false 1M hides pressure — the
 #211 danger direction. Two containments must therefore ship together:
