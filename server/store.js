@@ -105,6 +105,11 @@ function _foldEntry(canonical, other) {
   // header (e.g. an imported copy, #329) inherits it from a proxy copy that saw it. Never
   // downgrades (monotone), matching the sessionCtxWindow fold that consumes it.
   if (other.beta1m === true) canonical.beta1m = true;
+  // #603: imported 1M declarations are independently sourced positive facts.
+  // Keep each provenance tier distinct, but OR each one so a partial duplicate
+  // cannot wash true back to absent during either batch or live response-id merge.
+  if (other.imported1mCostState === true) canonical.imported1mCostState = true;
+  if (other.imported1mSettings === true) canonical.imported1mSettings = true;
   // ctxBeta is the OBSERVATION behind beta1m (the raw context-* header). Fill it the
   // same way: an imported canonical never saw the header, and losing it while keeping
   // the interpretation would discard the more fundamental fact — and with it any tier

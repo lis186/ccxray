@@ -752,9 +752,23 @@ async function scanAndImportTranscript(target = {}) {
   // trend without rescanning the global index. Keep the payload deliberately
   // free of request/response bodies: this state is a cache for the Sidebar,
   // not a second transcript store.
+  // A late cost-state can add a positive fact to every parsed assistant turn
+  // after those ids were already imported. Those turns are rightly skipped (no
+  // duplicate index line), but the repair has just parsed fresher provenance,
+  // so OR it into the returned sample view by the already identity-checked id.
+  // This remains cache-only: old index rows are not rewritten here.
+  const parsedById = new Map(entries.map(entry => [entry.id, entry]));
   const targetEntries = metas.concat(appendedEntries)
     .filter(entry => entry?.sessionId === target.sessionId)
     .filter(entry => !entry.cwd || path.resolve(entry.cwd) === targetCwd)
+    .map(entry => {
+      const parsed = parsedById.get(entry.id);
+      if (parsed?.imported1mCostState !== true) return entry;
+      return {
+        ...entry,
+        imported1mCostState: true,
+      };
+    })
     .sort((left, right) => (
       Number(left.receivedAt || 0) - Number(right.receivedAt || 0)
       || String(left.id || '').localeCompare(String(right.id || ''))

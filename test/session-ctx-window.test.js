@@ -13,6 +13,7 @@ const path = require('path');
 const vm = require('vm');
 
 const { missionControlSnapshot, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+const { normalizeIndexEntry } = require('../server/routes/api');
 
 const publicDir = path.join(__dirname, '..', 'public');
 
@@ -28,7 +29,7 @@ function loadCtx(includeEntryRendering) {
     };
   }
   const context = {
-    console, window: {},
+    console, window: { addEventListener() {} },
     document: {
       getElementById: () => el(), createElement: () => el(),
       querySelector: () => el(), querySelectorAll: () => [],
@@ -52,7 +53,9 @@ function loadCtx(includeEntryRendering) {
     function _apiQ(url) { return url; }
     function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
   `, context);
-  const scripts = ['session-label.js', 'format.js', 'weather.js', 'miller-columns.js'];
+  const scripts = ['session-label.js', 'format.js', 'weather.js'];
+  if (includeEntryRendering) scripts.push('agent-classification.js', 'workflow-timeline.js');
+  scripts.push('miller-columns.js');
   if (includeEntryRendering) scripts.push('entry-rendering.js');
   for (const f of scripts) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
@@ -68,6 +71,10 @@ function loadCtx(includeEntryRendering) {
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
       this.recomputeSessionStats = recomputeSessionStats;
+      this.addEntry = addEntry;
+      this.wfInferLanes = wfInferLanes;
+      this._wfLaneWindow = _wfLaneWindow;
+      this._wfLaneWindowSource = _wfLaneWindowSource;
     ` : ''}
   `, context);
   return context;
@@ -148,6 +155,32 @@ describe('#339 sessionCtxWindow — per-session context% denominator fold', () =
   it('guard does not throw when DEFAULT_MAX_CTX is absent and there is no main turn (win===0)', () => {
     seed(ctx, [{ sessionId: 's5', isSubagent: true, maxContext: 1000000 }]);
     assert.equal(ctx.sessionCtxWindow('s5'), 200000); // typeof guard → literal 200000 fallback
+  });
+});
+
+describe('#603 imported 1M facts survive the cold-load entry pipeline', () => {
+  it('normalizes through summarizeEntry, copies through addEntry, then gives the swimlane an unverified 1M', () => {
+    const ctx = loadCtx(true);
+    const cold = normalizeIndexEntry({
+      id: 'cold-imported-1m', sessionId: 'cold-imported-session',
+      provider: 'anthropic', model: 'claude-opus-4-6', isSubagent: false,
+      receivedAt: 1000, elapsed: '1', status: 200,
+      usage: { input_tokens: 170000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      maxContext: 200000, imported1mCostState: true, imported1mSettings: true,
+    });
+
+    assert.equal(cold.imported1mCostState, true, 'cold summary keeps the transcript cost-state fact');
+    assert.equal(cold.imported1mSettings, true, 'cold summary keeps the settings fact');
+
+    ctx.addEntry(cold);
+    const rendered = ctx.allEntries[0];
+    assert.equal(rendered.imported1mCostState, true, 'addEntry keeps cost-state evidence for the client');
+    assert.equal(rendered.imported1mSettings, true, 'addEntry keeps settings evidence for the client');
+
+    const lane = ctx.wfInferLanes(ctx.allEntries, [])[0];
+    ctx.wfState = { lanes: [lane] };
+    assert.equal(ctx._wfLaneWindow(lane), 1000000, 'the swimlane display fold widens to 1M');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'imported', 'the swimlane retains the unverified ? provenance');
   });
 });
 

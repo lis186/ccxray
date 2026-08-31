@@ -147,6 +147,7 @@ body). The old `_dedupId` is removed with the superseded mechanism.
 | `sysHash`, `toolsHash` | canonical copy's value; on conflict (an intercept-edit hop changed the bytes) keep canonical and set `edited` |
 | `msgCount`, `toolCount`, `toolCalls`, `skillCalls` | prefer non-null; on conflict take max (same response ⇒ equal in practice; rewind/compaction is a *different* responseId so it never lands in one group) |
 | `receivedAt`, `elapsed` (+ the `ts` pairing above) | take the earliest-`receivedAt` copy's `(receivedAt, elapsed)` **as a unit** — never mix one copy's start with another's duration |
+| `beta1m`, `imported1mCostState`, `imported1mSettings` | positive facts use monotone OR independently per field; a `true` from any partial copy is never washed back to absent, while the authoritative and imported provenance tiers stay distinct |
 | `usage`, `cost`, `maxContext`, `responseMetadata` | prefer the copy with `usage.output_tokens > 0` / richest usage tuple; **cost counted once** — dedup `sessionCosts` (`restore.js:281`); `sessionIdx` turn count is deduped the same way (see the count section in Consequences) |
 | `isSubagent`, `sessionInferred` | value from the supplied-`agentKey` copy |
 | `status`, `stopReason` | prefer a terminal/success value over null |

@@ -671,6 +671,10 @@ function addEntry(e) {
     // #339: beta1m rides the client entry so sessionCtxWindow() + the swimlane lane fold
     // can derive a per-session 1M denominator. Only true carries meaning (monotone OR).
     beta1m: e.beta1m === true,
+    // #603: preserve positive importer declarations through the client entry
+    // record so the display-only, marked 1M lane/session folds can read them.
+    imported1mCostState: e.imported1mCostState === true,
+    imported1mSettings: e.imported1mSettings === true,
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, costConfidence, sessionId: sid,
     severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
