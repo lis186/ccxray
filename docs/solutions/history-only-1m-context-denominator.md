@@ -11,13 +11,14 @@
 Recovering 1M requires evidence: the `context-1m-*` beta header (live wire),
 the `[1m]` system-prompt marker (live wire), or observed usage climbing past
 the assumed window. **A transcript-import-only ("history-only") session has
-none of the first two, and the import path today consumes no import-side
-signal at all** — so a genuine 1M session renders against a 200K denominator
-until its usage crosses 200K, over-reporting context pressure up to 5x in the
-badge and Mission Control. (Scope, per the corrected F1a/F4: positive
-import-side signals DO exist on disk for some sessions — the importer just
+none of the first two, and the import path today consumes no window-variant
+DECLARATION signal — its only recovery is the usage hatch** — so a genuine 1M
+session renders against a 200K denominator until its usage crosses 200K,
+over-reporting context pressure up to 5x in the badge and Mission Control.
+(Scope, per the corrected F1a/F4: declaration signals DO exist on disk for
+some sessions — cost-state's `[1m]` key, settings.json — the importer just
 does not read them yet. The over-report is unavoidable only for sessions
-lacking any positive signal.) Reproduced: a fable-5 session whose
+lacking any such positive declaration.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
