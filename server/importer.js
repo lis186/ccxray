@@ -763,10 +763,11 @@ async function scanAndImportTranscript(target = {}) {
     .filter(entry => !entry.cwd || path.resolve(entry.cwd) === targetCwd)
     .map(entry => {
       const parsed = parsedById.get(entry.id);
-      if (parsed?.imported1mCostState !== true) return entry;
+      if (parsed?.imported1mCostState !== true && parsed?.imported1mSettings !== true) return entry;
       return {
         ...entry,
-        imported1mCostState: true,
+        ...(parsed.imported1mCostState === true ? { imported1mCostState: true } : {}),
+        ...(parsed.imported1mSettings === true ? { imported1mSettings: true } : {}),
       };
     })
     .sort((left, right) => (

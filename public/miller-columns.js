@@ -98,13 +98,16 @@ function sessionCtxWindowSource(sid) {
 }
 
 function sessionCtxWindow(sid, includeImported) {
-  let win = 0, has1m = false, hasImported1m = false;
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  let win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.sessionId !== sid || e.isSubagent) continue;
     if (e.beta1m === true) has1m = true;
     if (hasImported1mFact(e)) hasImported1m = true;
-    if ((e.maxContext || 0) > win) win = e.maxContext;
+    const entryWin = e.maxContext || 0;
+    if (entryWin > win) win = entryWin;
+    if (entryWin && entryWin !== DEF && entryWin > observedWin) observedWin = entryWin;
   }
   // #377: allEntries may be truncated by restore age/cap limits, so always merge the
   // server session-index fold. This max/OR merge is monotone (the denominator can only
@@ -114,15 +117,19 @@ function sessionCtxWindow(sid, includeImported) {
   if (sess) {
     if (sess.beta1m === true) has1m = true;
     if (hasImported1mFact(sess)) hasImported1m = true;
-    if ((sess.maxContext || 0) > win) win = sess.maxContext;
+    const sessionWin = sess.maxContext || 0;
+    if (sessionWin > win) win = sessionWin;
+    if (sessionWin && sessionWin !== DEF && sessionWin > observedWin) observedWin = sessionWin;
   }
-  // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
-  // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
   if (has1m) return 1000000;
-  // Imported declarations are an inference, not an observation. Keep a larger
-  // maxContext fossil intact instead of narrowing it back to 1M.
-  return Math.max(win, includeImported === false || !hasImported1m ? 0 : 1000000)
-    || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  // Imported declarations are an inference, not an observation. A non-default
+  // maxContext is measured evidence, so category priority wins even when the
+  // observed window (for example Codex's 400K) is numerically below 1M.
+  if (observedWin) return observedWin;
+  if (includeImported !== false && hasImported1m) return 1000000;
+  // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays
+  // robust when evaluated before app.js loads or in a vm test harness.
+  return win || DEF;
 }
 
 // #339: the context% denominator for ONE turn's timeline minimap. A main turn uses the
@@ -135,7 +142,7 @@ function turnCtxWindow(e) {
   if (!e) return DEF;
   if (!e.isSubagent) return sessionCtxWindow(e.sessionId);
   if (!e.convId) return e.maxContext || DEF;
-  let win = 0, has1m = false, hasImported1m = false;
+  let win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const x = allEntries[i];
     // Match sessionId too: an 8-char convId hash can collide across unrelated sessions
@@ -144,10 +151,36 @@ function turnCtxWindow(e) {
     if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
     if (x.beta1m === true) has1m = true;
     if (hasImported1mFact(x)) hasImported1m = true;
-    if ((x.maxContext || 0) > win) win = x.maxContext;
+    const entryWin = x.maxContext || 0;
+    if (entryWin > win) win = entryWin;
+    if (entryWin && entryWin !== DEF && entryWin > observedWin) observedWin = entryWin;
   }
   if (has1m) return 1000000;
-  return Math.max(win, hasImported1m ? 1000000 : 0) || e.maxContext || DEF;
+  // Same evidence-tier priority as sessionCtxWindow: an observed non-default
+  // subagent window must not be overwritten by the weaker imported 1M hint.
+  if (observedWin) return observedWin;
+  if (hasImported1m) return 1000000;
+  return win || e.maxContext || DEF;
+}
+
+// The classic minimap owns one turn, rather than a session card, so it needs a
+// turn-local marker. Imported evidence is the only provenance tier its compact
+// label needs to surface: the marker keeps an inferred 1M from reading like a
+// verified context window.
+function turnCtxWindowMarker(e) {
+  if (!e) return '';
+  if (!e.isSubagent) return sessionCtxWindowSource(e.sessionId) === 'imported' ? '?' : '';
+  if (!e.convId) return '';
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  let observed = false, declared = false, imported = false;
+  for (let i = 0; i < allEntries.length; i++) {
+    const x = allEntries[i];
+    if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
+    if (x.beta1m === true) declared = true;
+    if (hasImported1mFact(x)) imported = true;
+    if ((x.maxContext || 0) > 0 && (x.maxContext || 0) !== DEF) observed = true;
+  }
+  return !declared && !observed && imported ? '?' : '';
 }
 const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, fallbackCost, fallbackCount, unknownCount, cwd }
 const projectsMap = new Map(); // projectName → { name, totalCost, fallbackCost, fallbackCount, unknownCount, count, sessionIds, firstId, lastId }
@@ -3010,7 +3043,7 @@ function renderDetailCol() {
           + '</div>';
         const previewStepsHtml = renderStepListHtml(currentSteps, getActiveStepKey(), e.toolSources);
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
-          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
+          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage, turnCtxWindowMarker(e))
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
@@ -3043,7 +3076,7 @@ function renderDetailCol() {
       const stepsHtml = renderStepListHtml(currentSteps, activeKey, e.toolSources);
 
       const minimapHtml = (typeof renderMinimapHtml === 'function')
-        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
+        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage, turnCtxWindowMarker(e))
         : '';
 
       // Split pane: left minimap + list + right detail

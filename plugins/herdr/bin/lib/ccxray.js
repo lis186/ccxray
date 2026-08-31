@@ -726,14 +726,27 @@ function contextUsed(entry) {
 
 function sessionWindow(turns, aggregate = null) {
   if (turns.some(t => t.beta1m) || aggregate?.beta1m === true) return 1000000;
+  const aggregateWin = Number(aggregate?.maxContext) || 0;
   const observed = Math.max(
     turns.reduce((max, t) => Math.max(max, Number(t.maxContext) || 0), 0),
-    Number(aggregate?.maxContext) || 0,
+    aggregateWin,
+  );
+  const observedNonDefault = Math.max(
+    turns.reduce((max, t) => {
+      const turnWin = Number(t.maxContext) || 0;
+      return turnWin && turnWin !== 200000 ? Math.max(max, turnWin) : max;
+    }, 0),
+    aggregateWin && aggregateWin !== 200000 ? aggregateWin : 0,
   );
   const imported = turns.some(t => t.imported1mCostState === true || t.imported1mSettings === true)
     || aggregate?.imported1mCostState === true
     || aggregate?.imported1mSettings === true;
-  return Math.max(observed, imported ? 1000000 : 0) || 200000;
+  // Imported is a weaker declaration tier, never a numeric competitor with an
+  // observed fossil: Codex can report a measured 400K window, which must not
+  // become an inferred 1M merely because 1M is larger.
+  if (observedNonDefault) return observedNonDefault;
+  if (imported) return 1000000;
+  return observed || 200000;
 }
 
 // Keep the badge's denominator provenance aligned with the dashboard's

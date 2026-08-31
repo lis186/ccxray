@@ -168,6 +168,36 @@ describe('ccxray import --once', () => {
     assert.equal(indexLines.length, 1, 'the repair remains append-free while returning the new fact');
   });
 
+  it('returns late settings evidence in repair samples even when every assistant turn already exists', () => {
+    const home = tmpdir('ccxray-target-late-settings-home-');
+    const configHome = tmpdir('ccxray-target-late-settings-config-');
+    const projects = path.join(configHome, 'projects');
+    fs.mkdirSync(projects, { recursive: true });
+    const cwd = '/work/late-settings';
+    const sessionId = 'late-settings-1111-2222-3333-444444444444';
+    writeTranscript(projects, sessionId, cwd, 1);
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+    const target = { file, provider: 'claude', sessionId, cwd };
+    const env = { CCXRAY_PRICING_CACHE: path.join(home, 'pricing-cache.json') };
+
+    const first = runTargetImport(home, projects, target, env);
+    assert.equal(first.imported, 1, 'setup imports the assistant turn before the settings declaration arrives');
+
+    fs.writeFileSync(path.join(configHome, 'settings.json'), JSON.stringify({
+      model: 'claude-opus-4-6[1m]',
+    }));
+
+    const repaired = runTargetImport(home, projects, target, env);
+    assert.equal(repaired.ok, true);
+    assert.equal(repaired.imported, 0, 'the second repair appends no duplicate assistant entry');
+    assert.equal(repaired.contextSamples.length, 1);
+    assert.equal(repaired.contextSamples[0].imported1mSettings, true,
+      'a parsed late settings fact overlays the returned Sidebar sample');
+
+    const indexLines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').trim().split('\n');
+    assert.equal(indexLines.length, 1, 'the repair remains append-free while returning the new fact');
+  });
+
   it('imports one explicitly targeted Codex rollout with matching identity', () => {
     const home = tmpdir('ccxray-target-codex-home-');
     const claudeProjects = tmpdir('ccxray-target-codex-noclaude-');

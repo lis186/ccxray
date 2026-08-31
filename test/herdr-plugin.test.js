@@ -3397,12 +3397,12 @@ describe('Herdr context window provenance', () => {
     assert.equal(row.severity, 'green', 'a changed ctx% alone cannot escalate Mission Control');
   });
 
-  it('#603 lets a larger observed fossil outrank the imported 1M hint in Sidebar and Mission Control', () => {
+  it('#603 gives an observed 400K fossil category priority over the imported 1M hint in Sidebar and Mission Control', () => {
     const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
     const imported = turn('f6-observed', 300000, 200000);
     const home = makeHome([imported]);
     fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
-      sid: 'fable-window', maxContext: 1500000, imported1mSettings: true,
+      sid: 'fable-window', maxContext: 400000, imported1mSettings: true,
     }) + '\n');
     const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
     const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
@@ -3412,10 +3412,38 @@ describe('Herdr context window provenance', () => {
       env, entries: [imported], nowMs: T + 1000, agentReport: { ok: true, agents: [] },
     }).rows[0];
 
-    assert.equal(Math.round(badge.ctxPct), 20);
+    assert.equal(Math.round(badge.ctxPct), 75);
     assert.equal(badge.ctxWindowSource, 'observed');
-    assert.equal(Math.round(row.ctxPct), 20);
+    assert.equal(badge.tokens.ctx, '75%', 'the measured 400K denominator has no imported ? marker');
+    assert.equal(Math.round(row.ctxPct), 75);
     assert.equal(row.ctxWindowSource, 'observed');
+    assert.equal(row.ctxWindowMarker, '');
+  });
+
+  it('#603 keeps a 128K observed fossil ahead of an imported hint even beside default 200K turns', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      turn('f6-default', 96000, 200000),
+      { ...turn('f6-observed-small', 96000, 128000), receivedAt: T + 1 },
+    ];
+    const home = makeHome(entries);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 200000, imported1mSettings: true,
+    }) + '\n');
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env, sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    const row = missionControlSnapshot({
+      env, entries, nowMs: T + 1000, agentReport: { ok: true, agents: [] },
+    }).rows[0];
+
+    assert.equal(Math.round(badge.ctxPct), 75);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(badge.tokens.ctx, '75%');
+    assert.equal(Math.round(row.ctxPct), 75);
+    assert.equal(row.ctxWindowSource, 'observed');
+    assert.equal(row.ctxWindowMarker, '');
   });
 
   it('marks an overflowing raw row as contradicted instead of clamping it cleanly', () => {

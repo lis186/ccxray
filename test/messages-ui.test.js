@@ -411,6 +411,14 @@ describe('buildMinimapBlocks — current-turn token estimate', () => {
     assert.ok(m, 'data-total-tokens attribute should exist');
     assert.equal(Number(m[1]), 1500);
   });
+
+  it('carries imported-window provenance into the classic minimap label', () => {
+    const context = loadMessagesContext();
+    const html = context.renderMinimapHtml(curSteps(), null, -1, 1000000,
+      { input_tokens: 170000, output_tokens: 0 }, '?');
+    assert.match(html, /minimap-usage">17% · 1M\?<\/div>/,
+      'an imported-only 1M denominator must retain the same ? marker as its session card');
+  });
 });
 
 describe('renderEditedBanner — intercept-edited badge (client render)', () => {

@@ -192,26 +192,46 @@ function wfCtxPct(e) {
 // pass false so they behave exactly as if the unverified hint did not exist.
 function _wfLaneWindowFacts(lane) {
   var turns = (lane && lane.turns) || [];
-  var win = 0, has1m = false, hasImported1m = false;
+  var win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (var i = 0; i < turns.length; i++) {
     if (turns[i].beta1m === true) has1m = true;
     if (turns[i].imported1mCostState === true || turns[i].imported1mSettings === true) hasImported1m = true;
-    if ((turns[i].maxContext || 0) > win) win = turns[i].maxContext;
+    var turnWin = turns[i].maxContext || 0;
+    if (turnWin > win) win = turnWin;
+    if (turnWin && turnWin !== 200000 && turnWin > observedWin) observedWin = turnWin;
   }
-  return { win: win, has1m: has1m, hasImported1m: hasImported1m, fallback: (lane && lane.ctxWindow) || 0 };
+  // A main/child lane is the display surface for one session, so it may fold
+  // that session's server aggregate when the client no longer has every entry.
+  // Never apply it to an in-session subagent lane: that would borrow the main
+  // conversation's window and violate the #211 guard.
+  var aggregateSid = lane && lane.childSessionId
+    ? lane.childSessionId
+    : (_wfIsMainLane(lane) && typeof wfState !== 'undefined' && wfState ? wfState.sessionId : null);
+  var aggregate = aggregateSid && typeof sessionsMap !== 'undefined' && sessionsMap.get
+    ? sessionsMap.get(aggregateSid)
+    : null;
+  if (aggregate) {
+    if (aggregate.beta1m === true) has1m = true;
+    if (aggregate.imported1mCostState === true || aggregate.imported1mSettings === true) hasImported1m = true;
+    var aggregateWin = aggregate.maxContext || 0;
+    if (aggregateWin > win) win = aggregateWin;
+    if (aggregateWin && aggregateWin !== 200000 && aggregateWin > observedWin) observedWin = aggregateWin;
+  }
+  return { win: win, observedWin: observedWin, has1m: has1m, hasImported1m: hasImported1m, fallback: (lane && lane.ctxWindow) || 0 };
 }
 function _wfLaneWindow(lane, includeImported) {
   var facts = _wfLaneWindowFacts(lane);
   if (facts.has1m) return 1000000;
-  // Observation outranks the import-time inference: a future larger window must
-  // never be folded back down to the imported 1M declaration.
-  var importedWin = includeImported === false || !facts.hasImported1m ? 0 : 1000000;
-  return Math.max(facts.win, importedWin) || facts.fallback;
+  // Observation outranks the import-time inference by category, not magnitude:
+  // a measured 400K fossil must remain 400K rather than becoming a guessed 1M.
+  if (facts.observedWin) return facts.observedWin;
+  if (includeImported !== false && facts.hasImported1m) return 1000000;
+  return facts.win || facts.fallback;
 }
 function _wfLaneWindowSource(lane) {
   var facts = _wfLaneWindowFacts(lane);
   if (facts.has1m) return 'declared';
-  if (facts.win && facts.win !== 200000) return 'observed';
+  if (facts.observedWin) return 'observed';
   if (facts.hasImported1m) return 'imported';
   return 'default';
 }

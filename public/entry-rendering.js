@@ -1034,6 +1034,7 @@ function mergeColdSessions(sessions) {
   }
   // #308: derive project costs from session costs (idempotent)
   for (const [name] of projectsMap) recomputeProjectCost(name);
+  return cardRedrawSessionIds;
 }
 
 // Initialize badge on load
@@ -1197,7 +1198,15 @@ evtSource.onmessage = (ev) => {
     } else if (data._type === 'sessions_updated') {
       // Importer finished — re-fetch session index to pick up new cold sessions
       fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).then(sd => {
-        mergeColdSessions((sd && sd.sessions) || []);
+        const importedFactSessionIds = mergeColdSessions((sd && sd.sessions) || []);
+        // The main/child lane fold reads its session aggregate so a bounded hot
+        // entry list can still show imported provenance. Invalidate its cached
+        // turn windows and rerender when this open workflow gained such a fact.
+        if (wfState && importedFactSessionIds?.has(wfState.sessionId)) {
+          wfState._winByTurn = null;
+          wfState._knownWinByTurn = null;
+          if (typeof wfRenderTimeline === 'function') wfRenderTimeline();
+        }
         renderProjectsCol();
         applySessionFilter();
       }).catch(() => {});

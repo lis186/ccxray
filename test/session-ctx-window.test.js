@@ -46,12 +46,12 @@ function loadCtx(includeEntryRendering) {
   vm.runInContext(`
     function updateSysPromptBadge() {}
     function startQuotaTicker() {}
-    function EventSource() { this.onmessage = null; }
+    function EventSource() { this.onmessage = null; window.__eventSource = this; }
     function setInterval() { return 0; }
     function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
     function _apiQ(url) { return url; }
-    function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
+    function fetch() { return Promise.resolve({ ok: true, json() { return Promise.resolve(window.__sessionsPayload || {}); } }); }
   `, context);
   const scripts = ['session-label.js', 'format.js', 'weather.js'];
   if (includeEntryRendering) scripts.push('agent-classification.js', 'workflow-timeline.js');
@@ -68,6 +68,7 @@ function loadCtx(includeEntryRendering) {
     this.sessionCtxWindowSource = sessionCtxWindowSource;
     this.ctxWindowUnverified = ctxWindowUnverified;
     this.turnCtxWindow = turnCtxWindow;
+    this.turnCtxWindowMarker = turnCtxWindowMarker;
     this.renderSessionItem = renderSessionItem;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
@@ -178,7 +179,7 @@ describe('#603 imported 1M facts survive the cold-load entry pipeline', () => {
     assert.equal(rendered.imported1mCostState, true, 'addEntry keeps cost-state evidence for the client');
     assert.equal(rendered.imported1mSettings, true, 'addEntry keeps settings evidence for the client');
 
-    const lane = ctx.wfInferLanes(ctx.allEntries, [])[0];
+    const lane = { key: 'main', turns: ctx.allEntries };
     ctx.wfState = { lanes: [lane] };
     assert.equal(ctx._wfLaneWindow(lane), 1000000, 'the swimlane display fold widens to 1M');
     assert.equal(ctx._wfLaneWindowSource(lane), 'imported', 'the swimlane retains the unverified ? provenance');
@@ -203,6 +204,34 @@ describe('#603 imported 1M facts survive the cold-load entry pipeline', () => {
     assert.match(html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
       'the displayed percentage keeps the imported 1M denominator and its ? marker');
   });
+
+  it('gives a 400K observed fossil category priority over an imported 1M hint in session and lane folds', () => {
+    const ctx = loadCtx(true);
+    const sid = 'observed-400k-imported-1m';
+    seed(ctx, [
+      { id: 'imported', sessionId: sid, isSubagent: false, maxContext: 200000, imported1mSettings: true },
+      { id: 'observed', sessionId: sid, isSubagent: false, maxContext: 400000 },
+    ]);
+
+    const lane = { key: 'main', turns: ctx.allEntries };
+
+    assert.equal(ctx.sessionCtxWindow(sid), 400000, 'a non-default observed window wins as a category, not by magnitude');
+    assert.equal(ctx.sessionCtxWindowSource(sid), 'observed');
+    assert.equal(ctx.ctxWindowUnverified(sid), false, 'the measured 400K denominator has no ? marker');
+    assert.equal(ctx._wfLaneWindow(lane), 400000, 'the swimlane mirrors the session fold');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'observed');
+
+    // A default 200K turn may coexist with a model-specific smaller fossil;
+    // the latter is still observed evidence and must keep imported out entirely.
+    seed(ctx, [
+      { id: 'default', sessionId: sid, isSubagent: false, maxContext: 200000, imported1mSettings: true },
+      { id: 'observed-small', sessionId: sid, isSubagent: false, maxContext: 128000 },
+    ]);
+    assert.equal(ctx.sessionCtxWindow(sid), 128000, 'any observed non-default fossil wins even below the 200K default');
+    assert.equal(ctx.sessionCtxWindowSource(sid), 'observed');
+    assert.equal(ctx._wfLaneWindow(lane), 128000, 'the lane preserves the smaller observed fossil too');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'observed');
+  });
 });
 
 describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, subagent=own conv)', () => {
@@ -216,6 +245,12 @@ describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, sub
     ]);
     const mainTurn = ctx.allEntries[1];
     assert.equal(ctx.turnCtxWindow(mainTurn), 1000000, 'main turn uses the 1M session fold, not its own 200K');
+  });
+
+  it('marks an imported-only main minimap denominator without treating it as measured', () => {
+    seed(ctx, [{ sessionId: 'minimap-imported', isSubagent: false, maxContext: 200000, imported1mSettings: true }]);
+    assert.equal(ctx.turnCtxWindow(ctx.allEntries[0]), 1000000);
+    assert.equal(ctx.turnCtxWindowMarker(ctx.allEntries[0]), '?');
   });
 
   it('a subagent uses its OWN conversation window, not the session 1M (#211 guard, one level down)', () => {
@@ -319,6 +354,30 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     assert.equal(card.renders, 1, 'the already-visible hot card is redrawn');
     assert.match(card.html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
       'the redraw exposes the newly imported display window');
+  });
+
+  it('#603 refreshes an open swimlane when sessions_updated supplies an imported window fact', async () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-swimlane';
+    const turn = { ...weatherTurn(sid), id: 'swimlane-turn', receivedAt: 1000, elapsed: '1', status: 200 };
+    seed(ctx, [turn]);
+    ctx.sessionsMap.set(sid, {
+      _cold: false, beta1m: false, maxContext: 200000,
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    });
+    ctx.wfState = ctx.wfBuildState(sid);
+    assert.equal(ctx._wfLaneWindow(ctx.wfState.lanes[0]), 200000, 'setup starts at the verified 200K fold');
+
+    let renders = 0;
+    ctx.wfRenderTimeline = () => { renders += 1; };
+    ctx.window.__sessionsPayload = { sessions: [{ sid, imported1mSettings: true }] };
+    ctx.window.__eventSource.onmessage({ data: JSON.stringify({ _type: 'sessions_updated' }) });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(ctx._wfLaneWindow(ctx.wfState.lanes[0]), 1000000, 'the open lane reads the newly merged imported fact');
+    assert.equal(ctx._wfLaneWindowSource(ctx.wfState.lanes[0]), 'imported');
+    assert.equal(renders, 1, 'the active workflow view rerenders after its fact changes');
   });
 
   it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
