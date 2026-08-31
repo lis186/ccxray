@@ -98,7 +98,10 @@ record lands will therefore never pick up the `[1m]` evidence through the
 normal import path. O1 must add an enrichment path for this case (or accept
 the coverage loss explicitly): candidates are a session-level re-check on
 rescan, the ADR 0020 targeted-repair worker (which already re-reads the exact
-transcript), or `rebuild-index`. "Wherever cost-state carries the key" holds
+transcript), or `rebuild-index --reimport` (the destructive transcript-rescan
+variant — plain `rebuild-index` only replays `index.ndjson` + surviving
+`_req/_res` and preserves imported rows, so it cannot recover
+transcript-only evidence; codex R4). "Wherever cost-state carries the key" holds
 only once one of these ships. This is the same asymmetric shape as
 `beta1m`'s monotone OR semantics, and must be consumed the same way: positive
 fact, never a deny. Coverage is new-transcripts-only; legacy sessions are
