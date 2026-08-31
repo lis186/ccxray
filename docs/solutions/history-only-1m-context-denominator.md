@@ -16,9 +16,10 @@ DECLARATION signal — its only recovery is the usage hatch** — so a genuine 1
 session renders against a 200K denominator until its usage crosses 200K,
 over-reporting context pressure up to 5x in the badge and Mission Control.
 (Scope, per the corrected F1a/F4: declaration signals DO exist on disk for
-some sessions — cost-state's `[1m]` key, settings.json — the importer just
-does not read them yet. The over-report is unavoidable only for sessions
-lacking any such positive declaration.) Reproduced: a fable-5 session whose
+some sessions — cost-state's `[1m]` key, settings.json — but the importer
+does not read them yet, so TODAY the over-report hits every history-only 1M
+session below the usage hatch regardless of what sits on disk. Only after O1
+lands does it narrow to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
@@ -87,7 +88,18 @@ So the key is trustworthy in ONE direction only, and that trust is
 semantic-plus-6/6-verified, not exhaustively measured: **presence of a
 `[1m]`-suffixed key is per-session, in-transcript evidence of the 1M window;
 absence proves nothing** (bare keys occur on provably-1M sessions written the
-same week — mechanism undetermined). This is the same asymmetric shape as
+same week — mechanism undetermined).
+
+**Enrichment-timing limitation (codex R3)**: `cost-state` is written late in
+a session's life, and the importer dedups by assistant id — a later scan
+rebuilds `existingIds` from `index.ndjson` and skips already-imported entries
+(`server/importer.js:504-543`). A transcript imported before its `cost-state`
+record lands will therefore never pick up the `[1m]` evidence through the
+normal import path. O1 must add an enrichment path for this case (or accept
+the coverage loss explicitly): candidates are a session-level re-check on
+rescan, the ADR 0020 targeted-repair worker (which already re-reads the exact
+transcript), or `rebuild-index`. "Wherever cost-state carries the key" holds
+only once one of these ships. This is the same asymmetric shape as
 `beta1m`'s monotone OR semantics, and must be consumed the same way: positive
 fact, never a deny. Coverage is new-transcripts-only; legacy sessions are
 irrecoverable by it (ADR 0013 no-backfill class).
@@ -185,7 +197,7 @@ resulting number can/cannot answer.
 | | Option | Fixes | Costs / risks | The badge % may then be used for |
 |---|---|---|---|---|
 | O0 | Status quo + README known limitation | nothing (documents it) | history-only 1M sessions keep a ~5x-high number with `?`; colour/severity already honest (#588) | attention triage via colour: **yes** (gated); reading the number as pressure: **no** for `?`-marked sessions |
-| O1 *(amended 2026-08-31)* | Persist import-path window **facts** at import, two sources OR'd, both positive-only: **(a) primary — `cost-state.modelUsage` `[1m]`-suffixed key** (F1a: per-session, in-transcript provenance; 6/6 verifiable positives confirmed, false-positive rate unmeasured — no known-200K control) and **(b) fallback — the scanned home's `settings.json` model** (F4: home-level, mutable). Write an add-only index field; display fold treats it as a **new provenance tier** between `observed` and `default` (own marker, not bare, not `?`-free) | the number — (a) alone fixes it with real per-session provenance wherever cost-state carries the key (new transcripts); (b) covers the rest of the dominant real case (user pins `[1m]`) | ADR 0013 discipline: persist the *fact*, never launder `maxContext=1M`; (a) has measured false negatives (7/13) so (b) or the usage hatch must back it; marker semantics decision (a third glyph or keep `?`); (b) risks retroactive misattribution on model switches and **symlinked-homes ambiguity is real on this machine**; touches importer + entry.js INDEX_FIELDS + fold sites (badge, dashboard `sessionCtxWindow`) | pressure triage: **mostly** — (a)-sourced numbers carry per-session evidence; (b)-sourced stay assumed-from-settings |
+| O1 *(amended 2026-08-31)* | Persist import-path window **facts** at import, two sources OR'd, both positive-only: **(a) primary — `cost-state.modelUsage` `[1m]`-suffixed key** (F1a: per-session, in-transcript provenance; 6/6 verifiable positives confirmed, false-positive rate unmeasured — no known-200K control) and **(b) fallback — the scanned home's `settings.json` model** (F4: home-level, mutable). Write an add-only index field; display fold treats it as a **new provenance tier** between `observed` and `default` (own marker, not bare, not `?`-free) | the number — (a) alone fixes it with real per-session provenance wherever cost-state carries the key (new transcripts); (b) covers the rest of the dominant real case (user pins `[1m]`) | ADR 0013 discipline: persist the *fact*, never launder `maxContext=1M`; (a) has measured false negatives (7/13) so (b) or the usage hatch must back it; (a) also needs an enrichment path for cost-state records written after the transcript was first imported (F1a enrichment-timing note); marker semantics decision (a third glyph or keep `?`); (b) risks retroactive misattribution on model switches and **symlinked-homes ambiguity is real on this machine**; touches importer + entry.js INDEX_FIELDS + fold sites (badge, dashboard `sessionCtxWindow`) | pressure triage: **mostly** — (a)-sourced numbers carry per-session evidence; (b)-sourced stay assumed-from-settings |
 | O2 | Upstream ask: Claude Code persists the session's context window (or model-with-variant) in the transcript | root cause, permanently, with true per-session provenance | not in our control; timeline unknown; still needs O0/O1 meanwhile | pressure triage: **yes**, once shipped |
 | O3 | Herdr-only: the ADR 0020 targeted-repair worker reads `settings.json` when it scans the exact transcript, caching the window hint in its linkage state | the badge number, plugin-scope only, no index schema change | dashboard cold-load still divides by 200K (surfaces disagree — the exact class #588 existed to kill); same provenance caveats as O1 | badge yes / dashboard no — **splits the two surfaces**, not recommended alone |
 | O4 | Suppress the number when `ctxWindowSource === 'default'` (render `?` alone, keep trend cells) | removes the misleading 51% | destroys real information for genuinely-200K default sessions (opus-4-x etc.) where the number is right; ADR 0020 chose visible-but-marked over hidden | attention: colour only; number withheld |
