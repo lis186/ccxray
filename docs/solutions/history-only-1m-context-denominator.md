@@ -260,7 +260,10 @@ end-of-session `cost-state` write (ordinary incremental import does not enrich
 an already-imported turn's index line or session aggregate — but the Herdr
 targeted-repair path DOES overlay a late `cost-state` onto its returned
 `contextSamples`, per ADR 0020, so do not rebuild that route), the
-`[1m]`-key false negatives (7/13 measured), no legacy backfill, and a marker
+`[1m]`-key false negatives (7/13 measured), no AUTOMATIC or incremental legacy
+backfill (an operator-run `rebuild-index --reimport` does reimport those rows
+and attach a now-available declaration — see the enrichment-timing note above;
+what is absent is anything that heals them unattended), and a marker
 that never graduates to `declared` for history-only sessions. Nothing upstream
 is coming to remove them.
 
