@@ -1,25 +1,28 @@
 # History-only 1M sessions over-report context pressure ~5x — diagnosis and design options
 
-- Status: **Diagnostic** — awaiting owner `APPROVE-DESIGN 601-diag-0830` on #601
-- Date: 2026-08-30
+- Status: **Complete** — signed off 2026-08-30 (`APPROVE-DESIGN 601-diag-0830`);
+  O1 shipped in #605, O2 declined (#608 closed not planned), #601 closed. The
+  Problem and Verified-facts sections below are the state AS DIAGNOSED on
+  2026-08-30/31 and are kept as evidence; see "Outcome" for what shipped.
+- Date: 2026-08-30 (outcome recorded 2026-09-01)
 - Related: #601 (this) / #211 (capability ≠ serving window) / #588 (badge/dashboard sync — landed stopgap) / ADR 0013 (persist-fact-derive-view) / ADR 0020 (Herdr fixed context trend, targeted repair)
 
-## Problem
+## Problem (as diagnosed, before #605)
 
 `getMaxContext` clamps Claude models' LiteLLM capability value to 200K
 (`server/config.js` #211 — correct: capability is not the serving window).
 Recovering 1M requires evidence: the `context-1m-*` beta header (live wire),
 the `[1m]` system-prompt marker (live wire), or observed usage climbing past
 the assumed window. **A transcript-import-only ("history-only") session has
-none of the first two, and the import path today consumes no window-variant
-DECLARATION signal — its only recovery is the usage hatch** — so a genuine 1M
-session renders against a 200K denominator until its usage crosses 200K,
+none of the first two, and the import path consumed no window-variant
+DECLARATION signal — its only recovery was the usage hatch** — so a genuine 1M
+session rendered against a 200K denominator until its usage crossed 200K,
 over-reporting context pressure up to 5x in the badge and Mission Control.
 (Scope, per the corrected F1a/F4: declaration signals DO exist on disk for
-some sessions — cost-state's `[1m]` key, settings.json — but the importer
-does not read them yet, so TODAY the over-report hits every history-only 1M
-session below the usage hatch regardless of what sits on disk. Only after O1
-lands does it narrow to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
+some sessions — cost-state's `[1m]` key, settings.json — but at diagnosis time
+the importer did not read them, so the over-report hit every history-only 1M
+session below the usage hatch regardless of what sat on disk. Since #605 it is
+narrowed to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
