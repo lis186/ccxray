@@ -65,6 +65,13 @@ preserve this provenance. Renderers treat `contextUsed()` as nullable and share
 the same received-time ordering and main-turn anchor for Sidebar and Mission
 Control.
 
+The targeted-repair `contextSamples` ring also carries the #603 importer
+window declarations (`imported1mCostState` / `imported1mSettings`) — including
+a late `cost-state` parsed when no new index line is appended — so a pane whose
+entries fell outside the 4 MiB tail keeps its marked imported denominator
+instead of falling back to an unmarked 200K. The facts obey ADR 0013's
+`imported` tier rules (display + `?` marker only, no band/severity authority).
+
 The Sidebar also reads the hub's per-session `beta1m` aggregate when the visible
 tail has lost the declaring turn. This preserves the authoritative 1M
 denominator without guessing from a model name or hardcoding 1M for every

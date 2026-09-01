@@ -82,6 +82,24 @@ particular, a hot/cold aggregate merge of these weak facts must **not** trigger
 weather/stats recomputation; the existing recomputation requirement continues
 to cover merges that change `beta1m` or `maxContext`.
 
+**Precedence is categorical, never numeric (codex R4, PR #605).** Any observed
+non-default window — even one SMALLER than 1M, e.g. a 400K `ctxBeta` fossil —
+excludes importer declarations from window selection entirely. A `Math.max`
+over the two tiers looks equivalent on the common 200K-vs-1M case and silently
+converts a measured 400K into an unmarked, measured-looking 1M the moment a
+mid-tier fossil exists; the fold must branch on tier, not compare magnitudes.
+Mirrored in all three folds (dashboard, lane, Herdr). Within the swimlane, the
+RENDER path (`_wfTurnWindow`, bars/turn cards/tooltips) follows the resolved
+lane denominator so one lane tells one story, while alert/classification paths
+keep raw per-turn windows — the same display/classification boundary this ADR
+owns, applied lane-locally (codex R5).
+
+**Known limit (#606)**: `sessions.json` stores only `max(maxContext)` plus the
+imported facts, so a COLD card cannot reconstruct the categorical precedence
+when a session mixes a non-default observed window with an imported fact — it
+temporarily widens to 1M (under-report direction) and heals once entries load.
+Fix is an observed-window aggregate field; tracked in #606, not solved here.
+
 ### Classification is NOT derived from this
 `isCompacted`, per-turn `severity`, and lane placement keep reading raw
 per-turn `maxContext`. This preserves the ADR 0005 / a1dfe5c invariant
