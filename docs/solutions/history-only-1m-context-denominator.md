@@ -256,7 +256,10 @@ deferred — but it re-splits surfaces #588 just unified.
 The consequence is the part that matters for future readers: **the `imported`
 tier is the permanent answer, not a bridge held open until upstream fixes the
 transcript.** Every limit listed below and in #605 therefore stays — the
-end-of-session `cost-state` write (already-imported turns are not enriched), the
+end-of-session `cost-state` write (ordinary incremental import does not enrich
+an already-imported turn's index line or session aggregate — but the Herdr
+targeted-repair path DOES overlay a late `cost-state` onto its returned
+`contextSamples`, per ADR 0020, so do not rebuild that route), the
 `[1m]`-key false negatives (7/13 measured), no legacy backfill, and a marker
 that never graduates to `declared` for history-only sessions. Nothing upstream
 is coming to remove them.
@@ -283,7 +286,16 @@ no schema change is made in this work.
 
 ## Signoff — complete
 
-Owner signed off with `APPROVE-DESIGN 601-diag-0830` on #601 (2026-08-30),
-choosing O1's two-source form (cost-state primary, settings fallback); #601 is
-closed. Per `docs/issue-authoring.md`, the token deliberately did not contain
-that pipeline round's runId.
+Two separate owner decisions, in order — conflating them would misdate the
+source pivot:
+
+1. **2026-08-30** — `APPROVE-DESIGN 601-diag-0830` on #601 approved O1's
+   direction as specced at that time, i.e. the `settings.json` declaration as
+   the signal.
+2. **2026-08-31** — after the F1 correction (#604) surfaced
+   `cost-state.modelUsage` as a stronger per-session signal, the owner
+   confirmed the two-source pivot (cost-state primary, settings fallback) on
+   #603; that is the form #605 shipped.
+
+#601 is closed. Per `docs/issue-authoring.md`, the signoff token deliberately
+did not contain that pipeline round's runId.
