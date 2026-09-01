@@ -217,16 +217,16 @@ the exact #211 regression, in the dangerous direction.
 
 ## Recommendation
 
-O1 (+ file O2 upstream as a tracking issue). O1 is the only option that fixes
+O1 (+ file O2 upstream as a tracking issue). **Superseded by the outcome below
+— O2 was declined; read that section before acting on this one.** O1 is the only option that fixes
 the number on both surfaces without laundering an assumption into
 `maxContext`: each persisted fact is honest ("this transcript's cost-state
 declared the [1m] variant" / "the scanned home's settings declared [1m] for
 this model at import time"), the fold stays stateless-at-render, and the
 marker keeps telling the truth about the denominator's provenance. The
 2026-08-31 amendment makes `cost-state` the primary source — it is the only
-per-session signal — with settings as the weaker fallback; fix issue #603's
-spec predates this amendment and needs the (a)-primary pivot confirmed by the
-owner before dispatch. The symlinked-homes ambiguity is the main design
+per-session signal — with settings as the weaker fallback; the (a)-primary
+pivot was confirmed by the owner on 2026-08-31 and shipped in #605. The symlinked-homes ambiguity is the main design
 question for the fix issue: scanning **every** discovered home's settings and
 applying the OR widens false-1M risk, and a false 1M hides pressure — the
 #211 danger direction. Two containments must therefore ship together:
@@ -240,6 +240,29 @@ anyway.
 
 O4 is not recommended; O3 only as a stopgap if O1's index-schema cost is
 deferred — but it re-splits surfaces #588 just unified.
+
+## Outcome (2026-09-01) — O1 shipped, O2 declined by the owner
+
+- **O1 shipped**: #603 / PR #605. Both facts are persisted positive-only under
+  the capability gate, and the `imported` provenance tier corrects the displayed
+  denominator while keeping the `?` marker and no alarm authority.
+- **O2 declined**: filed as #608 and closed `not planned` — the owner chose not
+  to pursue an upstream request. The evidence needed to reopen it is recorded on
+  that issue.
+
+The consequence is the part that matters for future readers: **the `imported`
+tier is the permanent answer, not a bridge held open until upstream fixes the
+transcript.** Every limit listed below and in #605 therefore stays — the
+end-of-session `cost-state` write (already-imported turns are not enriched), the
+`[1m]`-key false negatives (7/13 measured), no legacy backfill, and a marker
+that never graduates to `declared` for history-only sessions. Nothing upstream
+is coming to remove them.
+
+That also removes the cheapest argument for deferring the cold-aggregate
+follow-up (#606): it can no longer be postponed on the grounds that an upstream
+fix would make it moot, so it has to be judged on its own trigger rate — which
+is a three-way intersection (mixed models × an observed non-default window × an
+imported declaration), self-heals on entry load, and has no observed instance.
 
 ## Known limits
 
@@ -255,9 +278,9 @@ entries restores the per-turn observation and self-heals the card to 128K. The
 follow-up fix is an add-only `sessions.json` observed-window aggregate field;
 no schema change is made in this work.
 
-## Signoff
+## Signoff — complete
 
-Owner: comment `APPROVE-DESIGN 601-diag-0830` on #601 to approve a fix issue
-per the recommendation (or name a different option). Per
-`docs/issue-authoring.md`, the token deliberately does not contain this
-pipeline round's runId.
+Owner signed off with `APPROVE-DESIGN 601-diag-0830` on #601 (2026-08-30),
+choosing O1's two-source form (cost-state primary, settings fallback); #601 is
+closed. Per `docs/issue-authoring.md`, the token deliberately did not contain
+that pipeline round's runId.
