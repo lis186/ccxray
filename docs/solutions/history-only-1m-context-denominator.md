@@ -22,7 +22,10 @@ over-reporting context pressure up to 5x in the badge and Mission Control.
 some sessions — cost-state's `[1m]` key, settings.json — but at diagnosis time
 the importer did not read them, so the over-report hit every history-only 1M
 session below the usage hatch regardless of what sat on disk. Since #605 it is
-narrowed to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
+narrowed to sessions whose declaration the import path actually ATTACHED — a
+session whose `cost-state` landed after its turns were imported has a positive
+declaration on disk and still renders 200K until targeted repair or
+`rebuild-index --reimport`; see the enrichment-timing note in §F1a.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
