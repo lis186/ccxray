@@ -1,25 +1,31 @@
 # History-only 1M sessions over-report context pressure ~5x — diagnosis and design options
 
-- Status: **Diagnostic** — awaiting owner `APPROVE-DESIGN 601-diag-0830` on #601
-- Date: 2026-08-30
+- Status: **Complete** — signed off 2026-08-30 (`APPROVE-DESIGN 601-diag-0830`);
+  O1 shipped in #605, O2 declined (#608 closed not planned), #601 closed. The
+  Problem and Verified-facts sections below are the state AS DIAGNOSED on
+  2026-08-30/31 and are kept as evidence; see "Outcome" for what shipped.
+- Date: 2026-08-30 (outcome recorded 2026-09-01)
 - Related: #601 (this) / #211 (capability ≠ serving window) / #588 (badge/dashboard sync — landed stopgap) / ADR 0013 (persist-fact-derive-view) / ADR 0020 (Herdr fixed context trend, targeted repair)
 
-## Problem
+## Problem (as diagnosed, before #605)
 
 `getMaxContext` clamps Claude models' LiteLLM capability value to 200K
 (`server/config.js` #211 — correct: capability is not the serving window).
 Recovering 1M requires evidence: the `context-1m-*` beta header (live wire),
 the `[1m]` system-prompt marker (live wire), or observed usage climbing past
 the assumed window. **A transcript-import-only ("history-only") session has
-none of the first two, and the import path today consumes no window-variant
-DECLARATION signal — its only recovery is the usage hatch** — so a genuine 1M
-session renders against a 200K denominator until its usage crosses 200K,
+none of the first two, and the import path consumed no window-variant
+DECLARATION signal — its only recovery was the usage hatch** — so a genuine 1M
+session rendered against a 200K denominator until its usage crossed 200K,
 over-reporting context pressure up to 5x in the badge and Mission Control.
 (Scope, per the corrected F1a/F4: declaration signals DO exist on disk for
-some sessions — cost-state's `[1m]` key, settings.json — but the importer
-does not read them yet, so TODAY the over-report hits every history-only 1M
-session below the usage hatch regardless of what sits on disk. Only after O1
-lands does it narrow to sessions lacking any positive declaration.) Reproduced: a fable-5 session whose
+some sessions — cost-state's `[1m]` key, settings.json — but at diagnosis time
+the importer did not read them, so the over-report hit every history-only 1M
+session below the usage hatch regardless of what sat on disk. Since #605 it is
+narrowed to sessions whose declaration the import path actually ATTACHED — a
+session whose `cost-state` landed after its turns were imported has a positive
+declaration on disk and still renders 200K until targeted repair or
+`rebuild-index --reimport`; see the enrichment-timing note in §F1a.) Reproduced: a fable-5 session whose
 Claude Code statusline showed **ctx 9%** rendered **`51%↑?`** in the Herdr
 sidebar (same numerator ~100K; denominator 1M vs 200K).
 
@@ -217,16 +223,16 @@ the exact #211 regression, in the dangerous direction.
 
 ## Recommendation
 
-O1 (+ file O2 upstream as a tracking issue). O1 is the only option that fixes
+O1 (+ file O2 upstream as a tracking issue). **Superseded by the outcome below
+— O2 was declined; read that section before acting on this one.** O1 is the only option that fixes
 the number on both surfaces without laundering an assumption into
 `maxContext`: each persisted fact is honest ("this transcript's cost-state
 declared the [1m] variant" / "the scanned home's settings declared [1m] for
 this model at import time"), the fold stays stateless-at-render, and the
 marker keeps telling the truth about the denominator's provenance. The
 2026-08-31 amendment makes `cost-state` the primary source — it is the only
-per-session signal — with settings as the weaker fallback; fix issue #603's
-spec predates this amendment and needs the (a)-primary pivot confirmed by the
-owner before dispatch. The symlinked-homes ambiguity is the main design
+per-session signal — with settings as the weaker fallback; the (a)-primary
+pivot was confirmed by the owner on 2026-08-31 and shipped in #605. The symlinked-homes ambiguity is the main design
 question for the fix issue: scanning **every** discovered home's settings and
 applying the OR widens false-1M risk, and a false 1M hides pressure — the
 #211 danger direction. Two containments must therefore ship together:
@@ -240,6 +246,35 @@ anyway.
 
 O4 is not recommended; O3 only as a stopgap if O1's index-schema cost is
 deferred — but it re-splits surfaces #588 just unified.
+
+## Outcome (2026-09-01) — O1 shipped, O2 declined by the owner
+
+- **O1 shipped**: #603 / PR #605. Both facts are persisted positive-only under
+  the capability gate, and the `imported` provenance tier corrects the displayed
+  denominator while keeping the `?` marker and no alarm authority.
+- **O2 declined**: filed as #608 and closed `not planned` — the owner chose not
+  to pursue an upstream request. The evidence needed to reopen it is recorded on
+  that issue.
+
+The consequence is the part that matters for future readers: **the `imported`
+tier is the permanent answer, not a bridge held open until upstream fixes the
+transcript.** Every limit listed below and in #605 therefore stays — the
+end-of-session `cost-state` write (ordinary incremental import does not enrich
+an already-imported turn's index line or session aggregate — but the Herdr
+targeted-repair path DOES overlay a late `cost-state` onto its returned
+`contextSamples`, per ADR 0020, so do not rebuild that route), the
+`[1m]`-key false negatives (7/13 measured), no AUTOMATIC or incremental legacy
+backfill (an operator-run `rebuild-index --reimport` does reimport those rows
+and attach a now-available declaration — see the enrichment-timing note above;
+what is absent is anything that heals them unattended), and a marker
+that never graduates to `declared` for history-only sessions. Nothing upstream
+is coming to remove them.
+
+That also removes the cheapest argument for deferring the cold-aggregate
+follow-up (#606): it can no longer be postponed on the grounds that an upstream
+fix would make it moot, so it has to be judged on its own trigger rate — which
+is a three-way intersection (mixed models × an observed non-default window × an
+imported declaration), self-heals on entry load, and has no observed instance.
 
 ## Known limits
 
@@ -255,9 +290,18 @@ entries restores the per-turn observation and self-heals the card to 128K. The
 follow-up fix is an add-only `sessions.json` observed-window aggregate field;
 no schema change is made in this work.
 
-## Signoff
+## Signoff — complete
 
-Owner: comment `APPROVE-DESIGN 601-diag-0830` on #601 to approve a fix issue
-per the recommendation (or name a different option). Per
-`docs/issue-authoring.md`, the token deliberately does not contain this
-pipeline round's runId.
+Two separate owner decisions, in order — conflating them would misdate the
+source pivot:
+
+1. **2026-08-30** — `APPROVE-DESIGN 601-diag-0830` on #601 approved O1's
+   direction as specced at that time, i.e. the `settings.json` declaration as
+   the signal.
+2. **2026-08-31** — after the F1 correction (#604) surfaced
+   `cost-state.modelUsage` as a stronger per-session signal, the owner
+   confirmed the two-source pivot (cost-state primary, settings fallback) on
+   #603; that is the form #605 shipped.
+
+#601 is closed. Per `docs/issue-authoring.md`, the signoff token deliberately
+did not contain that pipeline round's runId.
