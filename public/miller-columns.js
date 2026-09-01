@@ -11,10 +11,13 @@ let entryCount = 0;
 // (severity / isCompacted / lane placement) deliberately keeps raw per-turn maxContext —
 // this is display only. See docs/decisions/0013-beta1m-persist-session-window-derive.md
 // Where the window above came from, so a display site can tell a measured
-// denominator from an assumed one. Three states, in descending strength:
+// denominator from an assumed one. Four provenance states, in descending strength:
 //   'declared' — a turn carried the anthropic-beta context-* header (beta1m).
 //   'observed' — no declaration, but a turn's own context exceeded the default,
 //                which is physical proof of a larger window.
+//   'imported' — the importer found a positive [1m] declaration in cost-state
+//                or the scanned Claude home's mutable settings.json. It corrects
+//                the number but remains unverified for alert authority.
 //   'default'  — no evidence at all; 200K is an assumption, and a context% built
 //                on it is an assumption too. Sites that assert pressure (colour,
 //                "compact soon") must not treat this like the other two.
@@ -32,7 +35,11 @@ let entryCount = 0;
 // See docs/decisions/0013-beta1m-persist-session-window-derive.md.
 function ctxWindowUnverified(sid) {
   const src = sessionCtxWindowSource(sid);
-  return src === 'default' || src === 'contradicted';
+  return src === 'default' || src === 'imported' || src === 'contradicted';
+}
+
+function hasImported1mFact(entry) {
+  return entry?.imported1mCostState === true || entry?.imported1mSettings === true;
 }
 
 function sessionCtxWindowSource(sid) {
@@ -49,6 +56,8 @@ function sessionCtxWindowSource(sid) {
   const foldUsed = sessionsMap.get(sid)?.latestMainCtxUsed || 0;
   if (foldUsed > win) return 'contradicted';
   let declared = false;
+  let observed = false;
+  let imported = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.sessionId !== sid || e.isSubagent) continue;
@@ -72,8 +81,14 @@ function sessionCtxWindowSource(sid) {
     // rendering "76% of 200K" when it is really a 1M session. beta1m is the
     // declaration that actually resolved the window.
     if (e.beta1m === true) declared = true;
+    if (hasImported1mFact(e)) imported = true;
+    if ((e.maxContext || 0) > 0 && (e.maxContext || 0) !== DEF) observed = true;
   }
   if (declared || sessionsMap.get(sid)?.beta1m === true) return 'declared';
+  const aggregate = sessionsMap.get(sid);
+  if ((aggregate?.maxContext || 0) > 0 && (aggregate?.maxContext || 0) !== DEF) observed = true;
+  if (observed) return 'observed';
+  if (imported || hasImported1mFact(aggregate)) return 'imported';
   // A window that differs from the default came from a real per-turn derivation —
   // a fossil above it (the header at write time, or the usage hatch) or a smaller
   // model-specific capability below it. Exactly the default is indistinguishable
@@ -82,13 +97,17 @@ function sessionCtxWindowSource(sid) {
   return win === DEF ? 'default' : 'observed';
 }
 
-function sessionCtxWindow(sid) {
-  let win = 0, has1m = false;
+function sessionCtxWindow(sid, includeImported) {
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  let win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const e = allEntries[i];
     if (e.sessionId !== sid || e.isSubagent) continue;
     if (e.beta1m === true) has1m = true;
-    if ((e.maxContext || 0) > win) win = e.maxContext;
+    if (hasImported1mFact(e)) hasImported1m = true;
+    const entryWin = e.maxContext || 0;
+    if (entryWin > win) win = entryWin;
+    if (entryWin && entryWin !== DEF && entryWin > observedWin) observedWin = entryWin;
   }
   // #377: allEntries may be truncated by restore age/cap limits, so always merge the
   // server session-index fold. This max/OR merge is monotone (the denominator can only
@@ -97,11 +116,20 @@ function sessionCtxWindow(sid) {
   const sess = sessionsMap.get(sid);
   if (sess) {
     if (sess.beta1m === true) has1m = true;
-    if ((sess.maxContext || 0) > win) win = sess.maxContext;
+    if (hasImported1mFact(sess)) hasImported1m = true;
+    const sessionWin = sess.maxContext || 0;
+    if (sessionWin > win) win = sessionWin;
+    if (sessionWin && sessionWin !== DEF && sessionWin > observedWin) observedWin = sessionWin;
   }
-  // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays robust when
-  // evaluated before app.js loads or in a vm test harness that omits it (win === 0 path).
-  return has1m ? 1000000 : (win || (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000));
+  if (has1m) return 1000000;
+  // Imported declarations are an inference, not an observation. A non-default
+  // maxContext is measured evidence, so category priority wins even when the
+  // observed window (for example Codex's 400K) is numerically below 1M.
+  if (observedWin) return observedWin;
+  if (includeImported !== false && hasImported1m) return 1000000;
+  // DEFAULT_MAX_CTX comes from app.js; guard the free reference so this stays
+  // robust when evaluated before app.js loads or in a vm test harness.
+  return win || DEF;
 }
 
 // #339: the context% denominator for ONE turn's timeline minimap. A main turn uses the
@@ -114,7 +142,7 @@ function turnCtxWindow(e) {
   if (!e) return DEF;
   if (!e.isSubagent) return sessionCtxWindow(e.sessionId);
   if (!e.convId) return e.maxContext || DEF;
-  let win = 0, has1m = false;
+  let win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (let i = 0; i < allEntries.length; i++) {
     const x = allEntries[i];
     // Match sessionId too: an 8-char convId hash can collide across unrelated sessions
@@ -122,9 +150,37 @@ function turnCtxWindow(e) {
     // another session's 200K subagent (codex round 3).
     if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
     if (x.beta1m === true) has1m = true;
-    if ((x.maxContext || 0) > win) win = x.maxContext;
+    if (hasImported1mFact(x)) hasImported1m = true;
+    const entryWin = x.maxContext || 0;
+    if (entryWin > win) win = entryWin;
+    if (entryWin && entryWin !== DEF && entryWin > observedWin) observedWin = entryWin;
   }
-  return has1m ? 1000000 : (win || e.maxContext || DEF);
+  if (has1m) return 1000000;
+  // Same evidence-tier priority as sessionCtxWindow: an observed non-default
+  // subagent window must not be overwritten by the weaker imported 1M hint.
+  if (observedWin) return observedWin;
+  if (hasImported1m) return 1000000;
+  return win || e.maxContext || DEF;
+}
+
+// The classic minimap owns one turn, rather than a session card, so it needs a
+// turn-local marker. Imported evidence is the only provenance tier its compact
+// label needs to surface: the marker keeps an inferred 1M from reading like a
+// verified context window.
+function turnCtxWindowMarker(e) {
+  if (!e) return '';
+  if (!e.isSubagent) return sessionCtxWindowSource(e.sessionId) === 'imported' ? '?' : '';
+  if (!e.convId) return '';
+  const DEF = (typeof DEFAULT_MAX_CTX !== 'undefined' ? DEFAULT_MAX_CTX : 200000);
+  let observed = false, declared = false, imported = false;
+  for (let i = 0; i < allEntries.length; i++) {
+    const x = allEntries[i];
+    if (!x.isSubagent || x.sessionId !== e.sessionId || x.convId !== e.convId) continue;
+    if (x.beta1m === true) declared = true;
+    if (hasImported1mFact(x)) imported = true;
+    if ((x.maxContext || 0) > 0 && (x.maxContext || 0) !== DEF) observed = true;
+  }
+  return !declared && !observed && imported ? '?' : '';
 }
 const sessionsMap = new Map(); // sid → { id, firstTs, firstId, count, model, totalCost, fallbackCost, fallbackCount, unknownCount, cwd }
 const projectsMap = new Map(); // projectName → { name, totalCost, fallbackCost, fallbackCount, unknownCount, count, sessionIds, firstId, lastId }
@@ -1550,7 +1606,7 @@ function renderSessionItem(sess, sid, sessEl) {
     // Mark the denominator rather than the number: the tokens are measured, only
     // what they are divided by is a guess.
     const ctxSource = sessionCtxWindowSource(sid);
-    windowAssumed = ctxSource === 'default';
+    windowAssumed = ctxWindowUnverified(sid) && ctxSource !== 'contradicted';
     // A window the session's own usage exceeded is not merely unverified — it is
     // known to be too small, so the ratio built on it is a floor, not a reading.
     windowContradicted = ctxSource === 'contradicted';
@@ -1596,6 +1652,13 @@ function renderSessionItem(sess, sid, sessEl) {
   // inequality to the one the evidence supports.
   const ctxRatio = sess.latestMainCtxUsed ? sess.latestMainCtxUsed / sessionCtxWindow(sid) * 100 : 0;
   const ctxPct = Math.min(100, ctxRatio);
+  // #603: an imported 1M declaration widens the marked display denominator, but
+  // remains an unverified provenance tier and cannot grant attention authority.
+  // Keep the shown value above on the imported window; choose alert colour and
+  // compact pressure from the same no-importer fold used by workflow/weather.
+  const attentionCtxPct = sess.latestMainCtxUsed
+    ? Math.min(100, sess.latestMainCtxUsed / sessionCtxWindow(sid, false) * 100)
+    : 0;
   const compactPct = (window.ccxraySettings?.autoCompactPct || 0.835) * 100;
   // Recent-gate: historical sessions (no turn within last hour) should not
   // light up red/yellow — prevents sea-of-red when scanning the session list.
@@ -1607,9 +1670,9 @@ function renderSessionItem(sess, sid, sessEl) {
   // Historical sessions stay dim regardless.
   let ctxPctClass = 'ctx-alert-historical';
   if (recent) {
-    ctxPctClass = ctxPct >= compactPct ? 'ctx-alert-red'
-                : ctxPct >= 75         ? 'ctx-alert-yellow'
-                                       : 'ctx-alert-dim';
+    ctxPctClass = attentionCtxPct >= compactPct ? 'ctx-alert-red'
+                : attentionCtxPct >= 75         ? 'ctx-alert-yellow'
+                                                : 'ctx-alert-dim';
   }
   const ctxAlertHtml = ctxPct > 0
     ? '<span class="ctx-alert ' + ctxPctClass + '"' +
@@ -1624,7 +1687,7 @@ function renderSessionItem(sess, sid, sessEl) {
     : '';
   // Thin ctx bar with auto-compact reference line; shown only once session has real context.
   const ctxBarInner = ctxPct > 0
-    ? '<div class="si-ctx-bar' + (recent && ctxPct > compactPct ? ' over-compact' : '') +
+    ? '<div class="si-ctx-bar' + (recent && attentionCtxPct > compactPct ? ' over-compact' : '') +
       (!recent ? ' historical' : '') + '"' +
       ' style="--pct:' + Math.min(100, ctxPct).toFixed(1) + '%"' +
       ' title="ctx ' + ctxPct.toFixed(1) + '% · auto-compact at ~' + compactPct.toFixed(1) + '%"></div>'
@@ -2980,7 +3043,7 @@ function renderDetailCol() {
           + '</div>';
         const previewStepsHtml = renderStepListHtml(currentSteps, getActiveStepKey(), e.toolSources);
         const previewMinimapHtml = (typeof renderMinimapHtml === 'function')
-          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
+          ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage, turnCtxWindowMarker(e))
           : '';
         inner = summaryPreview
           + '<div class="tl-with-minimap" style="flex:1;overflow:hidden">'
@@ -3013,7 +3076,7 @@ function renderDetailCol() {
       const stepsHtml = renderStepListHtml(currentSteps, activeKey, e.toolSources);
 
       const minimapHtml = (typeof renderMinimapHtml === 'function')
-        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage)
+        ? renderMinimapHtml(currentSteps, tok?.perMessage || null, -1, turnCtxWindow(e), e.usage, turnCtxWindowMarker(e))
         : '';
 
       // Split pane: left minimap + list + right detail

@@ -671,6 +671,10 @@ function addEntry(e) {
     // #339: beta1m rides the client entry so sessionCtxWindow() + the swimlane lane fold
     // can derive a per-session 1M denominator. Only true carries meaning (monotone OR).
     beta1m: e.beta1m === true,
+    // #603: preserve positive importer declarations through the client entry
+    // record so the display-only, marked 1M lane/session folds can read them.
+    imported1mCostState: e.imported1mCostState === true,
+    imported1mSettings: e.imported1mSettings === true,
     tokens: tok, usage, ts: e.ts, model, maxContext: e.maxContext, cost: turnCost, costConfidence, sessionId: sid,
     severity,
     req: e.req || null, res: e.res || null, reqLoaded: !!(e.req || e.res),
@@ -893,7 +897,9 @@ function recomputeSessionStats(sid) {
     for (var wi = 0; wi < allEntries.length; wi++) {
       if (allEntries[wi].sessionId === sid && !allEntries[wi].isSubagent && !allEntries[wi].isRetry) weatherTurns.push(allEntries[wi]);
     }
-    sess.weather = assessWeather(weatherTurns, { sessionWindow: sessionCtxWindow(sid) });
+    // #603: imported 1M facts correct the displayed denominator but must never
+    // mute weather/attention. This fold acts as if the import-time hint is absent.
+    sess.weather = assessWeather(weatherTurns, { sessionWindow: sessionCtxWindow(sid, false) });
   }
 }
 
@@ -924,6 +930,7 @@ window.recomputeProjectCost = recomputeProjectCost;
 // ── Merge cold sessions from session index into sessionsMap + DOM + projectsMap ──
 function mergeColdSessions(sessions) {
   const widenedSessionIds = new Set();
+  const cardRedrawSessionIds = new Set();
   for (const s of sessions) {
     if (!s || !s.sid) continue;
     if (s.importedOnly && window.ccxraySettings?.hideImported) continue;
@@ -943,6 +950,18 @@ function mergeColdSessions(sessions) {
       if (s.beta1m === true && existing.beta1m !== true) {
         existing.beta1m = true;
         windowWidened = true;
+      }
+      // #603: importer declarations feed the display-only fold but deliberately
+      // do NOT set windowWidened. Recomputing weather here would turn the weaker
+      // provenance tier into context-pressure alert authority. They do change the
+      // card's marked display window, so redraw an already-rendered card below.
+      if (s.imported1mCostState === true && existing.imported1mCostState !== true) {
+        existing.imported1mCostState = true;
+        cardRedrawSessionIds.add(s.sid);
+      }
+      if (s.imported1mSettings === true && existing.imported1mSettings !== true) {
+        existing.imported1mSettings = true;
+        cardRedrawSessionIds.add(s.sid);
       }
       if ((s.maxContext || 0) > (existing.maxContext || 0)) {
         existing.maxContext = s.maxContext;
@@ -968,6 +987,8 @@ function mergeColdSessions(sessions) {
       cwd: s.cwd || null,
       title: s.title || null, firstPrompt: s.firstPrompt || null, titleReqTs: 0, lastAssistantText: null,
       maxContext: s.maxContext || 0, beta1m: s.beta1m || false,
+      imported1mCostState: s.imported1mCostState === true,
+      imported1mSettings: s.imported1mSettings === true,
       agent: s.agent || 'claude', provider: s.provider || 'anthropic',
       // #367: derived fields from session index for cold card rendering
       latestMainCtxUsed: s.latestCtxPct != null ? Math.round(s.latestCtxPct / 100 * (s.maxContext || 200000)) : 0,
@@ -1006,8 +1027,14 @@ function mergeColdSessions(sessions) {
     if (!s || s._cold) continue;
     recomputeSessionStats(sid);
   }
+  for (const sid of cardRedrawSessionIds) {
+    const sessEl = document.getElementById('sess-' + sid.slice(0, 8));
+    const sess = sessionsMap.get(sid);
+    if (sessEl && sess) sessEl.innerHTML = renderSessionItem(sess, sid, sessEl);
+  }
   // #308: derive project costs from session costs (idempotent)
   for (const [name] of projectsMap) recomputeProjectCost(name);
+  return cardRedrawSessionIds;
 }
 
 // Initialize badge on load
@@ -1171,7 +1198,15 @@ evtSource.onmessage = (ev) => {
     } else if (data._type === 'sessions_updated') {
       // Importer finished — re-fetch session index to pick up new cold sessions
       fetch('/_api/sessions', { cache: 'no-store' }).then(r => r.json()).then(sd => {
-        mergeColdSessions((sd && sd.sessions) || []);
+        const importedFactSessionIds = mergeColdSessions((sd && sd.sessions) || []);
+        // The main/child lane fold reads its session aggregate so a bounded hot
+        // entry list can still show imported provenance. Invalidate its cached
+        // turn windows and rerender when this open workflow gained such a fact.
+        if (wfState && importedFactSessionIds?.has(wfState.sessionId)) {
+          wfState._winByTurn = null;
+          wfState._knownWinByTurn = null;
+          if (typeof wfRenderTimeline === 'function') wfRenderTimeline();
+        }
         renderProjectsCol();
         applySessionFilter();
       }).catch(() => {});

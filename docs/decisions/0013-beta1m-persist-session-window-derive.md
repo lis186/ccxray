@@ -65,6 +65,41 @@ they are genuinely two things and live in two fields.
   and the timeline minimap divide by it; the swimlane lane fold
   (`_wfWinByTurn`, #342) prefers `beta1m` over the fossil.
 
+### Amendment — importer declarations are a weaker display-only input (#603, 2026-08-31)
+
+History imports can persist two additional **positive-only** add-only facts:
+`imported1mCostState` for an in-transcript `cost-state.modelUsage` `[1m]`
+key, and `imported1mSettings` for the scanned home's current
+`settings.json` model. Both require an exact bare-model match and the same
+`modelSupports1M()` gate as `beta1m`; neither writes or changes `maxContext`.
+They OR into the stateless display fold after an authoritative declaration or
+an observed `maxContext` fossil, but before the 200K default.
+
+These facts deliberately remain a distinct, unverified `imported` provenance
+tier: the rendered percentage retains the `?` marker and it must not feed
+weather, context bands, severity, compaction, or lane placement. In
+particular, a hot/cold aggregate merge of these weak facts must **not** trigger
+weather/stats recomputation; the existing recomputation requirement continues
+to cover merges that change `beta1m` or `maxContext`.
+
+**Precedence is categorical, never numeric (codex R4, PR #605).** Any observed
+non-default window — even one SMALLER than 1M, e.g. a 400K `ctxBeta` fossil —
+excludes importer declarations from window selection entirely. A `Math.max`
+over the two tiers looks equivalent on the common 200K-vs-1M case and silently
+converts a measured 400K into an unmarked, measured-looking 1M the moment a
+mid-tier fossil exists; the fold must branch on tier, not compare magnitudes.
+Mirrored in all three folds (dashboard, lane, Herdr). Within the swimlane, the
+RENDER path (`_wfTurnWindow`, bars/turn cards/tooltips) follows the resolved
+lane denominator so one lane tells one story, while alert/classification paths
+keep raw per-turn windows — the same display/classification boundary this ADR
+owns, applied lane-locally (codex R5).
+
+**Known limit (#606)**: `sessions.json` stores only `max(maxContext)` plus the
+imported facts, so a COLD card cannot reconstruct the categorical precedence
+when a session mixes a non-default observed window with an imported fact — it
+temporarily widens to 1M (under-report direction) and heals once entries load.
+Fix is an observed-window aggregate field; tracked in #606, not solved here.
+
 ### Classification is NOT derived from this
 `isCompacted`, per-turn `severity`, and lane placement keep reading raw
 per-turn `maxContext`. This preserves the ADR 0005 / a1dfe5c invariant
@@ -109,8 +144,9 @@ ADR.
 ## Open breach — the Herdr badge asserts pressure without provenance (Accepted 2026-08-20)
 
 `plugins/herdr/bin/lib/ccxray.js` `sessionWindow` folds the window with the same
-three arms `sessionCtxWindow` still uses (`beta1m` → 1M, else max `maxContext`,
-else 200K), so the FORMULA is current — it is not a "pre-amendment" fold, and
+inputs `sessionCtxWindow` uses (authoritative `beta1m` → 1M, else max
+`maxContext`, else positive importer declaration → 1M, else 200K), so the
+FORMULA is current — it is not a "pre-amendment" fold, and
 the plugin is another partial-view injector of the kind the #377 amendment
 already contemplates.
 
@@ -219,10 +255,12 @@ never feeds classification — `isCompacted`, per-turn `severity`, and lane
 placement do not read it. If any premise stops holding, the latch must be
 re-evaluated.
 
-**New consistency contract:** any monotone merge into a hot session's window
-fields (`mergeColdSessions`) must trigger weather/stats recomputation for every
-affected session; otherwise it repeats `8b6789f` blocker 2's stale stored
-severity failure.
+**New consistency contract:** any monotone merge into a hot session's measured
+window fields (`beta1m` / `maxContext`, `mergeColdSessions`) must trigger
+weather/stats recomputation for every affected session; otherwise it repeats
+`8b6789f` blocker 2's stale stored severity failure. The #603
+`imported1m*` fields are an explicit exception: they widen only the marked,
+unverified display denominator and must not feed weather/stats or severity.
 
 One known seam remains in the live merge path. In `server/forward.js`,
 `if (!merged) sessionIdx.updateFromEntry(entry)` means `beta1m` enrichment

@@ -45,7 +45,7 @@ const LEGACY_INDEX_FIELDS = [
 // them as additive rather than reporting a legacy regression.
 const NEW_504_FIELDS = [
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted',
-  'contextUsageKnown',
+  'contextUsageKnown','imported1mCostState','imported1mSettings',
 ];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
 const IDENTITY_VALUES = {

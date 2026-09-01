@@ -403,6 +403,94 @@ describe('importer', () => {
   });
 
   describe('scanAndImport', () => {
+    it('#603 persists separate positive 1M facts from cost-state and home settings without changing maxContext', async () => {
+      const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-1m-home-'));
+      const projects = path.join(configHome, 'projects');
+      const priorHomes = process.env.CCXRAY_IMPORT_HOMES;
+      try {
+        process.env.CCXRAY_IMPORT_HOMES = projects;
+        fs.mkdirSync(projects, { recursive: true });
+        fs.writeFileSync(path.join(configHome, 'settings.json'), JSON.stringify({
+          model: 'claude-fable-5[1m]',
+        }));
+
+        const costStateDir = path.join(projects, 'cost-state-source');
+        fs.mkdirSync(costStateDir, { recursive: true });
+        fs.writeFileSync(path.join(costStateDir, 'cost-state-session.jsonl'), [
+          makeAssistant({ timestamp: '2026-08-31T10:00:00.000Z', model: 'claude-opus-4-6' }),
+          JSON.stringify({ type: 'cost-state', modelUsage: { 'claude-opus-4-6[1m]': { costUSD: 0.01 } } }),
+        ].join('\n'));
+
+        const settingsDir = path.join(projects, 'settings-source');
+        fs.mkdirSync(settingsDir, { recursive: true });
+        fs.writeFileSync(path.join(settingsDir, 'settings-session.jsonl'), [
+          makeAssistant({ timestamp: '2026-08-31T10:01:00.000Z', model: 'claude-fable-5' }),
+          JSON.stringify({ type: 'cost-state', modelUsage: { 'claude-fable-5': { costUSD: 0.01 } } }),
+        ].join('\n'));
+
+        const mismatchDir = path.join(projects, 'mismatch-source');
+        fs.mkdirSync(mismatchDir, { recursive: true });
+        fs.writeFileSync(path.join(mismatchDir, 'mismatch-session.jsonl'), [
+          makeAssistant({ timestamp: '2026-08-31T10:02:00.000Z', model: 'claude-opus-4-6' }),
+          JSON.stringify({ type: 'cost-state', modelUsage: { 'claude-fable-5[1m]': { costUSD: 0.01 } } }),
+        ].join('\n'));
+
+        const result = await scanAndImport();
+        await config.storage.drain();
+        assert.equal(result.imported, 3);
+
+        const indexed = new Map(readIndexLines().map(entry => [entry.sessionId, entry]));
+        const costState = indexed.get('cost-state-session');
+        const settings = indexed.get('settings-session');
+        const mismatch = indexed.get('mismatch-session');
+        assert.equal(costState.imported1mCostState, true, 'cost-state [1m] key is persisted as its own fact');
+        assert.ok(!('imported1mSettings' in costState), 'unmatched home setting does not claim the opus session');
+        assert.equal(settings.imported1mSettings, true, 'matching home settings [1m] model is persisted as its own fact');
+        assert.ok(!('imported1mCostState' in settings), 'bare cost-state key never acts as a negative or positive signal');
+        assert.equal(costState.maxContext, 200000, 'the fact must not launder maxContext into 1M');
+        assert.equal(settings.maxContext, 200000, 'the fact must not launder maxContext into 1M');
+        assert.ok(!('imported1mCostState' in mismatch) && !('imported1mSettings' in mismatch),
+          'base-mismatched cost-state/settings declarations have no effect (#211 guard A)');
+        assert.equal(mismatch.maxContext, 200000, 'a mismatched declaration must not change maxContext');
+
+        const costStateAggregate = sessionIdx.get('cost-state-session');
+        const settingsAggregate = sessionIdx.get('settings-session');
+        assert.equal(costStateAggregate.imported1mCostState, true, 'cold-session aggregate retains cost-state fact');
+        assert.equal(settingsAggregate.imported1mSettings, true, 'cold-session aggregate retains settings fact');
+      } finally {
+        if (priorHomes === undefined) process.env.CCXRAY_IMPORT_HOMES = importDir;
+        else process.env.CCXRAY_IMPORT_HOMES = priorHomes;
+        fs.rmSync(configHome, { recursive: true, force: true });
+      }
+    });
+
+    it('#603 capability gate refuses [1m] declarations for a model that cannot serve 1M', async () => {
+      const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-1m-capability-'));
+      const projects = path.join(configHome, 'projects');
+      const priorHomes = process.env.CCXRAY_IMPORT_HOMES;
+      try {
+        process.env.CCXRAY_IMPORT_HOMES = projects;
+        fs.mkdirSync(path.join(projects, 'capability-source'), { recursive: true });
+        fs.writeFileSync(path.join(configHome, 'settings.json'), JSON.stringify({ model: 'claude-haiku-4-5[1m]' }));
+        fs.writeFileSync(path.join(projects, 'capability-source', 'capability-session.jsonl'), [
+          makeAssistant({ timestamp: '2026-08-31T10:03:00.000Z', model: 'claude-haiku-4-5' }),
+          JSON.stringify({ type: 'cost-state', modelUsage: { 'claude-haiku-4-5[1m]': { costUSD: 0.01 } } }),
+        ].join('\n'));
+
+        await scanAndImport();
+        await config.storage.drain();
+        const line = readIndexLines().find(entry => entry.sessionId === 'capability-session');
+        assert.ok(line, 'fixture session imported');
+        assert.ok(!('imported1mCostState' in line) && !('imported1mSettings' in line),
+          'the shared modelSupports1M gate rejects both importer sources (#211 guard B)');
+        assert.equal(line.maxContext, 200000);
+      } finally {
+        if (priorHomes === undefined) process.env.CCXRAY_IMPORT_HOMES = importDir;
+        else process.env.CCXRAY_IMPORT_HOMES = priorHomes;
+        fs.rmSync(configHome, { recursive: true, force: true });
+      }
+    });
+
     it('T5: imports from every comma-separated configured Claude projects root', async () => {
       const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-second-'));
       const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-alias-'));

@@ -48,6 +48,12 @@ const INDEX_FIELDS = [
   // Append-only: legacy rows omit this field and retain their compatibility
   // inference in Herdr's nullable contextUsed reader.
   'contextUsageKnown',
+  // #603: positive-only 1M declarations found while importing a Claude
+  // transcript. These are facts about where the importer's hint came from,
+  // never a rewritten maxContext or an authority to classify context pressure.
+  // Keep the sources distinct: cost-state is session-local; settings is a
+  // mutable home-level fallback. Both are omitted when absent.
+  'imported1mCostState','imported1mSettings',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than

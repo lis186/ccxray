@@ -173,12 +173,11 @@ function wfCtxPct(e) {
 // #342: RENDER-time context%. Turns in one session can carry DIFFERENT
 // maxContext values though they share one real context window: the server
 // infers maxContext per-turn (config.inferMaxContext) and returns the 200K base
-// for a turn whose usage stayed under 200K, but the stored 1M for a turn that
-// exceeded it. So two adjacent main turns with the same ~199K ctxUsed render
-// 100% (÷200K) next to 20% (÷1M) — the context% sawtooth. Fix: divide by the
-// LANE's context window (the max maxContext among the lane's turns — the >200K
-// turns supply the real 1M) whenever it EXCEEDS the turn's own inferred value.
-// A lane whose turns are all ≤200K keeps 200K.
+// for a turn whose usage stayed under 200K, while another turn carries an
+// observed or declared window. So two adjacent turns can render against
+// different denominators. Fix: display uses the LANE's resolved context window
+// exactly — including a non-default observed window narrower than 200K. A lane
+// whose turns are all default keeps 200K.
 // INVARIANT: classification (wfInferLanes ~L540/L550) deliberately keeps the
 // plain wfCtxPct 200K default so lane decisions never shift with this render
 // rescope — only rendering reads the lane window. The turnId→laneWindow map is
@@ -188,45 +187,89 @@ function wfCtxPct(e) {
 // with a 1M one over-scales the 200K turns to 1M, so their ctx% is under-reported
 // and a `ctx80` badge could be suppressed. Under-warning is the safe failure;
 // there is no per-turn wire signal to do better client-side.
-// #339: beta1m-aware context window for a lane — 1M if any turn authoritatively ran 1M
-// (beta1m, server-gated on SUPPORTS_1M), else the largest maxContext fossil. This is the
-// ONE fold both the swimlane % (via _wfWinByTurn) AND the lane / agent-card window LABELS
-// read, so a lane can never render "20%" next to a "200K" window label. Falls back to the
-// lane's stored ctxWindow only when the lane has no turns yet.
-function _wfLaneWindow(lane) {
+// #339/#603: imported declarations widen display only. Alert-producing consumers
+// pass false so they behave exactly as if the unverified hint did not exist.
+function _wfLaneWindowFacts(lane) {
   var turns = (lane && lane.turns) || [];
-  var win = 0, has1m = false;
+  var win = 0, observedWin = 0, has1m = false, hasImported1m = false;
   for (var i = 0; i < turns.length; i++) {
     if (turns[i].beta1m === true) has1m = true;
-    if ((turns[i].maxContext || 0) > win) win = turns[i].maxContext;
+    if (turns[i].imported1mCostState === true || turns[i].imported1mSettings === true) hasImported1m = true;
+    var turnWin = turns[i].maxContext || 0;
+    if (turnWin > win) win = turnWin;
+    if (turnWin && turnWin !== 200000 && turnWin > observedWin) observedWin = turnWin;
   }
-  return has1m ? 1000000 : (win || (lane && lane.ctxWindow) || 0);
+  // A main/child lane is the display surface for one session, so it may fold
+  // that session's server aggregate when the client no longer has every entry.
+  // Never apply it to an in-session subagent lane: that would borrow the main
+  // conversation's window and violate the #211 guard.
+  var aggregateSid = lane && lane.childSessionId
+    ? lane.childSessionId
+    : (_wfIsMainLane(lane) && typeof wfState !== 'undefined' && wfState ? wfState.sessionId : null);
+  var aggregate = aggregateSid && typeof sessionsMap !== 'undefined' && sessionsMap.get
+    ? sessionsMap.get(aggregateSid)
+    : null;
+  if (aggregate) {
+    if (aggregate.beta1m === true) has1m = true;
+    if (aggregate.imported1mCostState === true || aggregate.imported1mSettings === true) hasImported1m = true;
+    var aggregateWin = aggregate.maxContext || 0;
+    if (aggregateWin > win) win = aggregateWin;
+    if (aggregateWin && aggregateWin !== 200000 && aggregateWin > observedWin) observedWin = aggregateWin;
+  }
+  return { win: win, observedWin: observedWin, has1m: has1m, hasImported1m: hasImported1m, fallback: (lane && lane.ctxWindow) || 0 };
 }
-function _wfWinByTurn() {
+function _wfLaneWindow(lane, includeImported) {
+  var facts = _wfLaneWindowFacts(lane);
+  if (facts.has1m) return 1000000;
+  // Observation outranks the import-time inference by category, not magnitude:
+  // a measured 400K fossil must remain 400K rather than becoming a guessed 1M.
+  if (facts.observedWin) return facts.observedWin;
+  if (includeImported !== false && facts.hasImported1m) return 1000000;
+  return facts.win || facts.fallback;
+}
+function _wfLaneWindowSource(lane) {
+  var facts = _wfLaneWindowFacts(lane);
+  if (facts.has1m) return 'declared';
+  if (facts.observedWin) return 'observed';
+  if (facts.hasImported1m) return 'imported';
+  return 'default';
+}
+function _wfWinByTurn(includeImported) {
   if (!wfState) return null;
-  if (wfState._winByTurn) return wfState._winByTurn;
+  var cacheKey = includeImported === false ? '_knownWinByTurn' : '_winByTurn';
+  if (wfState[cacheKey]) return wfState[cacheKey];
   var map = new Map();
   var lanes = wfState.lanes || [];
   for (var i = 0; i < lanes.length; i++) {
-    var laneWin = _wfLaneWindow(lanes[i]);
+    var laneWin = _wfLaneWindow(lanes[i], includeImported);
     var turns = lanes[i].turns || [];
     for (var k = 0; k < turns.length; k++) map.set(turns[k].id, laneWin);
   }
-  wfState._winByTurn = map;
+  wfState[cacheKey] = map;
   return map;
 }
-// #377 slice 2: the window a single turn should be measured against —
-// its own maxContext, widened by the lane fold. Returns 0 when nothing is
-// known, so callers decide their own fallback.
-function _wfTurnWindow(e) {
+// #377 slice 2: display must use the lane's resolved window exactly. The
+// known-evidence alert caller passes false and retains its established
+// widening-only raw-turn behavior; alert/classification do not inherit a
+// narrower display fold. Returns 0 when nothing is known, so callers decide
+// their own fallback.
+function _wfTurnWindow(e, includeImported) {
   var win = e.maxContext || 0;
-  var m = _wfWinByTurn();
+  var m = _wfWinByTurn(includeImported);
   var laneWin = (m && m.get(e.id)) || 0;
-  if (laneWin > win) win = laneWin;
-  return win;
+  if (includeImported === false) return laneWin > win ? laneWin : win;
+  return laneWin || win;
 }
 function wfCtxPctRender(e) {
   var win = _wfTurnWindow(e);
+  if (!win) win = 200000;
+  return Math.min(100, (e.ctxUsed || 0) / win * 100);
+}
+// Keep context-band colours and other attention signals independent of an
+// imported display hint. The visible percentage may use the wider inferred
+// denominator (and carries `?`), but the alert meaning remains raw/observed.
+function wfCtxPctAlert(e) {
+  var win = _wfTurnWindow(e, false);
   if (!win) win = 200000;
   return Math.min(100, (e.ctxUsed || 0) / win * 100);
 }
@@ -246,7 +289,7 @@ function wfDetectEvents(t, prev) {
   else if ((t.status && !isHttpStatusOk(t.status)) || t.toolFail) evts.push('error');
   if (t.isCompacted) evts.push('compaction');
   if (inT > 1000 && (u.cache_read_input_tokens || 0) / inT < 0.5) evts.push('cache-miss');
-  if (wfCtxPctRender(t) >= 80 && (!prev || wfCtxPctRender(prev) < 80)) evts.push('ctx80');
+  if (wfCtxPctAlert(t) >= 80 && (!prev || wfCtxPctAlert(prev) < 80)) evts.push('ctx80');
   var tc = t.turnToolCalls || t.toolCalls || {};
   if (tc.Write || tc.Edit || tc.MultiEdit || tc.NotebookEdit) evts.push('file-write');
   if (t.hasCredential) evts.push('credential');
@@ -1034,6 +1077,7 @@ function _wfFollowTail(oldTMax) {
 function wfAddEntry(entry) {
   if (!wfState) return { lanesChanged: false };
   wfState._winByTurn = null; // #342: lanes about to change — invalidate the render ctx-window memo
+  wfState._knownWinByTurn = null;
   var prevCount = wfState.lanes.length;
 
   var ts = Number(entry.receivedAt) || 0;
@@ -1554,16 +1598,17 @@ function wfRenderLaneSvg(lane, laneIdx, W, xFn, mainConvs) {
   // Label block: agent name / model·ctx window / sysprompt version chips
   var prefix = isSel ? '▶ ' : '';
   var ctxK = Math.round(_wfLaneWindow(lane) / 1000); // #339: beta1m-aware, matches the swimlane %
+  var ctxMarker = _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
   var dispName = _wfLaneDispName(lane, laneIdx, mainConvs);
   var modelLbl = _wfLaneModelLabel(lane);
-  var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (modelLbl.title || '?') + ' · ' + ctxK + 'K');
+  var fullTitle = wfEsc(lane.name + ' · ' + (lane.agentLabel || '?') + ' · ' + (modelLbl.title || '?') + ' · ' + ctxK + 'K' + ctxMarker);
   svg += '<text x="8" y="12" fill="var(--text)" style="font-size:11px;font-family:' + WF_MONO + '"><title>' + fullTitle + '</title>' + wfEsc(prefix + dispName) + '</text>';
   svg += wfGlyphSvg(wfLaneShape(lane), 14, 23, 6, wfLaneColor(lane));
   // #238 P3: <title> on the model text itself — hovering the abbreviated
   // "opus-4-6 +2" form must reveal the full model list, same as the name
   // text above; the fullTitle <title> only covers the name row's box.
   var _lw = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
-  svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K') + '</text>';
+  svg += '<text x="20" y="26" fill="var(--dim)" style="font-size:10px;font-family:' + WF_MONO + '"><title>' + wfEsc(modelLbl.title) + '</title><tspan fill="' + wfLaneColor(lane) + '">' + wfEsc(modelLbl.text) + '</tspan>' + wfEsc(' · ' + ctxK + 'K' + ctxMarker) + '</text>';
   if (_lw && weatherDisplayEnabled()) svg += '<foreignObject x="' + (WF_LABEL_W - 22) + '" y="16" width="20" height="14"><span xmlns="http://www.w3.org/1999/xhtml" style="font-size:11px;cursor:default" data-weather=\'' + wfEsc(JSON.stringify(_lw)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + _lw.emoji + '</span></foreignObject>';
   // sysprompt versions: distinct coreHash in first-seen order; chip click = jump
   // to the turn where that version first appeared; ↗ opens the System Prompt page
@@ -2222,7 +2267,7 @@ function wfRenderOverview(canvas) {
       var t = lanes[li].turns[ti];
       var ts = Number(t.receivedAt) || 0;
       var dur = (parseFloat(t.elapsed) || 0) * 1000;
-      ctx.fillStyle = ctxZone(wfCtxPctRender(t)).hex;
+      ctx.fillStyle = ctxZone(wfCtxPctAlert(t)).hex;
       // 0.5 alpha sank into the dark bg (lesson: low-luminance signals drown)
       ctx.globalAlpha = isSel ? 0.9 : 0.65;
       ctx.fillRect(x(ts), ly, Math.max(1, (dur / totalRange) * MW), barH);
@@ -2575,7 +2620,8 @@ function _wfShowTooltip(e, t, lane) {
   var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
   var inT = (u.input_tokens || 0) + cr + cc;
   var pct = wfCtxPctRender(t);
-  var cz = ctxZone(pct);
+  var pctMarker = lane && _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
+  var cz = ctxZone(wfCtxPctAlert(t));
   var zone = cz.zone;
   var zoneCls = 'wf-tt-' + (zone === 'safe' ? 'good' : zone);
   var median = lane ? wfLaneCostMedian(lane) : 0;
@@ -2586,11 +2632,11 @@ function _wfShowTooltip(e, t, lane) {
   var lockLbl = (lock && lane && lock.lane === lane && lock.lane.turns[lock.tidx] !== t)
     ? ' <span class="wf-tt-lock">🔒#' + wfEsc(String(lock.lane.turns[lock.tidx].displayNum || lock.tidx + 1)) + '</span>' : '';
   var row = function(l, v) { return '<div class="r"><span class="l">' + l + '</span><span class="v">' + v + '</span></div>'; };
-  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t], { sessionWindow: _wfTurnWindow(t) }) : null;
+  var ttWeather = typeof assessWeather === 'function' ? assessWeather([t], { sessionWindow: _wfTurnWindow(t, false) }) : null;
   _wfTooltipEl.innerHTML =
     row('#' + wfEsc(String(t.displayNum || '?')), wfEsc(wfShortModel(t.model)) + (t._wfSeqStitched ? ' · seq-stitched' : '') + lockLbl)
     + (ttWeather && weatherDisplayEnabled() ? row('Health', ttWeather.emoji + ' ' + (ttWeather.tooltip || ttWeather.level).replace(/\n/g, ' · ')) : '')
-    + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%</span> (' + zone + ')')
+    + row('Context', '<span class="' + zoneCls + '">' + pct.toFixed(1) + '%' + pctMarker + '</span> (' + zone + ')')
     + row('Cache', _wfFmtTok(cr) + ' read / ' + _wfFmtTok(cc) + ' write')
     // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
     + row('Cost', formatCostText(t.cost || 0, t.costConfidence) + outlier)
@@ -2817,6 +2863,7 @@ function wfRenderAgentCard(lane) {
   var topTools = Object.entries(toolTotals).sort(function(a, b) { return b[1] - a[1]; }).slice(0, 6);
 
   var laneWeather = typeof assessWeather === 'function' ? assessWeather(lane.turns) : null;
+  var laneWindowMarker = _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
   var html = '<div class="wf-agent-card" style="border-left:2px solid ' + color + '">';
   var acModelLbl = _wfLaneModelLabel(lane);
   html += '<div class="wf-ac-name">' + wfGlyphHtml(wfLaneShape(lane), 10, color) + ' ' + wfEsc(lane.name) + ' <span class="wf-ac-model" title="' + wfEsc(acModelLbl.title) + '" style="background:' + color + '22;color:' + color + '">' + wfEsc(acModelLbl.text) + '</span></div>';
@@ -2825,8 +2872,8 @@ function wfRenderAgentCard(lane) {
   html += '<div class="wf-ac-meta">' + summary.turnCount + ' turns · ' + wfFmtDur(summary.duration) + ' · ' + (isOrchestrator ? 'orchestrator' : 'subagent') + (laneWeather && weatherDisplayEnabled() ? ' · <span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(laneWeather)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + laneWeather.emoji + '</span>' : '') + '</div>';
 
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
-  html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%</span></div>';
-  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round(_wfLaneWindow(lane) / 1000) + 'K</span></div>';
+  html += '<div class="wf-ac-row"><span>Peak</span><span class="wf-ac-val">' + summary.peakCtx.toFixed(1) + '%' + laneWindowMarker + '</span></div>';
+  html += '<div class="wf-ac-row"><span>Window</span><span class="wf-ac-val">' + Math.round(_wfLaneWindow(lane) / 1000) + 'K' + laneWindowMarker + '</span></div>';
   if (sess) html += '<div class="wf-ac-row"><span>Compacts</span><span class="wf-ac-val">' + (sess.compactCount || 0) + '</span></div>';
   html += '</div>';
 
@@ -2928,13 +2975,14 @@ function wfRenderTurnCard(turnEntry) {
   var cacheCreate = u.cache_creation_input_tokens || 0;
   var cachePct = inTok > 0 ? (cacheRead / inTok * 100).toFixed(1) : '0.0';
   var pct = wfCtxPctRender(turnEntry);
-  var cz = ctxZone(pct);
+  var pctMarker = lane && _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
+  var cz = ctxZone(wfCtxPctAlert(turnEntry));
   var dur = parseFloat(turnEntry.elapsed) || 0;
   var thinkDur = turnEntry.thinkingDuration || 0;
 
   var html = '<div class="wf-agent-card wf-turn-card" style="border-left:2px solid ' + color + '">';
   html += '<div class="wf-tc-back" onclick="wfBackToLane()">&#8592; back</div>';
-  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry], { sessionWindow: _wfTurnWindow(turnEntry) }) : null;
+  var turnW = typeof assessWeather === 'function' ? assessWeather([turnEntry], { sessionWindow: _wfTurnWindow(turnEntry, false) }) : null;
   html += '<div class="wf-tc-title">' + (turnW && turnW.level !== 'sunny' && weatherDisplayEnabled() ? '<span style="cursor:default" data-weather=\'' + wfEsc(JSON.stringify(turnW)) + '\' onmouseenter="showWeatherOverlay(event,JSON.parse(this.dataset.weather))" onmouseleave="hideWeatherOverlay()">' + turnW.emoji + '</span> ' : '') + '#' + displayNum + '  ' + wfEsc(wfShortModel(turnEntry.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
 
   // Breadcrumb
@@ -2945,7 +2993,7 @@ function wfRenderTurnCard(turnEntry) {
 
   // Context
   html += '<div class="wf-ac-section"><div class="wf-ac-section-title">Context</div>';
-  html += '<div class="wf-ac-row"><span>Usage</span><span class="wf-ac-val" style="color:' + cz.hex + '">' + pct.toFixed(1) + '%</span></div>';
+  html += '<div class="wf-ac-row"><span>Usage</span><span class="wf-ac-val" style="color:' + cz.hex + '">' + pct.toFixed(1) + '%' + pctMarker + '</span></div>';
   html += '<div class="wf-tc-ctx-bar"><div style="width:' + Math.min(100, pct) + '%;background:' + cz.hex + ';height:4px;border-radius:2px"></div></div>';
   html += '</div>';
 
@@ -3053,14 +3101,15 @@ function _wfRenderHoverPreview(turn, lane) {
   var inTok = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
   var outTok = u.output_tokens || 0;
   var pct = wfCtxPctRender(turn);
-  var cz = ctxZone(pct);
+  var pctMarker = lane && _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
+  var cz = ctxZone(wfCtxPctAlert(turn));
   var dur = parseFloat(turn.elapsed) || 0;
   var laneSummary = wfLaneSummary(lane);
   var turnShare = laneSummary.totalCost > 0 ? ((turn.cost || 0) / laneSummary.totalCost * 100).toFixed(1) : '0.0';
 
   var html = '<div class="wf-hover-preview" style="border-left:2px dashed ' + color + '">';
   html += '<div class="wf-hp-title" style="background:' + color + '08">#' + displayNum + '  ' + wfEsc(wfShortModel(turn.model)) + ' · ' + wfFmtDur(dur * 1000) + '</div>';
-  html += '<div class="wf-hp-row"><span>Context</span><span style="color:' + cz.hex + '">' + pct.toFixed(1) + '%</span></div>';
+  html += '<div class="wf-hp-row"><span>Context</span><span style="color:' + cz.hex + '">' + pct.toFixed(1) + '%' + pctMarker + '</span></div>';
   // INVARIANT(#420): per-turn cost must use formatCost/formatCostText(cost, confidence)
   html += '<div class="wf-hp-row"><span>Cost</span><span>' + formatCostText(turn.cost || 0, turn.costConfidence) + '</span></div>';
   html += '<div class="wf-hp-row"><span>Tokens</span><span>' + _wfFmtSessTok(inTok) + ' in / ' + _wfFmtSessTok(outTok) + ' out</span></div>';
@@ -3217,6 +3266,7 @@ function wfRenderSteps(scrollToId) {
     var tools = Object.entries(t.turnToolCalls || t.toolCalls || {});
     var mc = wfModelColor(t.model);
     var pct = wfCtxPctRender(t);
+    var pctMarker = _wfLaneWindowSource(lane) === 'imported' ? '?' : '';
     var u = t.usage || {};
     var cr = u.cache_read_input_tokens || 0, cc = u.cache_creation_input_tokens || 0;
     var cacheRate = (cr + cc) > 0 ? cr / (cr + cc) * 100 : 0;
@@ -3236,7 +3286,7 @@ function wfRenderSteps(scrollToId) {
       if (tools.length > 4) html += '<span style="color:var(--dim)">+' + (tools.length - 4) + ' more</span>';
     }
     html += '</span>';
-    html += '<span style="text-align:right;color:' + pctLabelColor + '">' + pct.toFixed(1) + '%</span>';
+    html += '<span style="text-align:right;color:' + pctLabelColor + '">' + pct.toFixed(1) + '%' + pctMarker + '</span>';
     html += '<span style="text-align:right;color:var(--dim)">' + wfFmtDur(dur) + '</span>';
     html += '</div>';
   }

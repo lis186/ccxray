@@ -1047,7 +1047,7 @@ function buildMinimapBlocks(steps, perMessage, usage) {
 }
 
 // Render minimap HTML — cache bar + blocks + viewport + usage label
-function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) {
+function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage, windowMarker) {
   const blocks = buildMinimapBlocks(steps, perMessage, usage);
   if (!blocks.length) return '';
 
@@ -1102,7 +1102,7 @@ function renderMinimapHtml(steps, perMessage, activeStepIdx, maxContext, usage) 
 
   // Usage label (hover only)
   var ctxLabel = ctxWindow >= 1000000 ? (ctxWindow / 1000000).toFixed(0) + 'M' : Math.round(ctxWindow / 1000) + 'K';
-  html += '<div class="minimap-usage">' + usedPct + '% · ' + ctxLabel + '</div>';
+  html += '<div class="minimap-usage">' + usedPct + '% · ' + ctxLabel + (windowMarker || '') + '</div>';
 
   return html;
 }

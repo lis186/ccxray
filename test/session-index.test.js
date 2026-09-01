@@ -108,6 +108,21 @@ describe('session-index', () => {
     }
   });
 
+  it('#603 retains an imported 1M fact for cold consumers without promoting server weather', async () => {
+    const si = require('../server/session-index');
+    const sid = 'imported-1m-cold';
+    si.updateFromEntry({
+      id: 'imported-1m-fact', sessionId: sid, agentKey: 'orchestrator', isSubagent: false,
+      maxContext: 200000, imported1mCostState: true,
+      usage: { input_tokens: 180000, output_tokens: 0 }, contextUsageKnown: true,
+    });
+
+    assert.equal(si.get(sid).imported1mCostState, true, 'sessions.json aggregate keeps the add-only fact');
+    assert.equal(si.sessionWindow(sid), 200000,
+      'the server weather fold must not turn weak import provenance into alarm authority');
+    await si.flush();
+  });
+
   it('updateFromEntry + flush + load round-trip', async () => {
     const si = require('../server/session-index');
     si.updateFromEntry({

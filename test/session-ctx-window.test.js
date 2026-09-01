@@ -8,8 +8,12 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const vm = require('vm');
+
+const { missionControlSnapshot, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+const { normalizeIndexEntry } = require('../server/routes/api');
 
 const publicDir = path.join(__dirname, '..', 'public');
 
@@ -25,7 +29,7 @@ function loadCtx(includeEntryRendering) {
     };
   }
   const context = {
-    console, window: {},
+    console, window: { addEventListener() {} },
     document: {
       getElementById: () => el(), createElement: () => el(),
       querySelector: () => el(), querySelectorAll: () => [],
@@ -42,14 +46,16 @@ function loadCtx(includeEntryRendering) {
   vm.runInContext(`
     function updateSysPromptBadge() {}
     function startQuotaTicker() {}
-    function EventSource() { this.onmessage = null; }
+    function EventSource() { this.onmessage = null; window.__eventSource = this; }
     function setInterval() { return 0; }
     function clearInterval() {}
     window.ccxraySettings = { visibleProviders: [] };
     function _apiQ(url) { return url; }
-    function fetch() { return Promise.resolve({ ok: false, json() { return Promise.resolve({}); } }); }
+    function fetch() { return Promise.resolve({ ok: true, json() { return Promise.resolve(window.__sessionsPayload || {}); } }); }
   `, context);
-  const scripts = ['session-label.js', 'format.js', 'weather.js', 'miller-columns.js'];
+  const scripts = ['session-label.js', 'format.js', 'weather.js'];
+  if (includeEntryRendering) scripts.push('agent-classification.js', 'workflow-timeline.js');
+  scripts.push('miller-columns.js');
   if (includeEntryRendering) scripts.push('entry-rendering.js');
   for (const f of scripts) {
     vm.runInContext(fs.readFileSync(path.join(publicDir, f), 'utf8'), context);
@@ -62,9 +68,15 @@ function loadCtx(includeEntryRendering) {
     this.sessionCtxWindowSource = sessionCtxWindowSource;
     this.ctxWindowUnverified = ctxWindowUnverified;
     this.turnCtxWindow = turnCtxWindow;
+    this.turnCtxWindowMarker = turnCtxWindowMarker;
+    this.renderSessionItem = renderSessionItem;
     ${includeEntryRendering ? `
       this.mergeColdSessions = mergeColdSessions;
       this.recomputeSessionStats = recomputeSessionStats;
+      this.addEntry = addEntry;
+      this.wfInferLanes = wfInferLanes;
+      this._wfLaneWindow = _wfLaneWindow;
+      this._wfLaneWindowSource = _wfLaneWindowSource;
     ` : ''}
   `, context);
   return context;
@@ -148,6 +160,80 @@ describe('#339 sessionCtxWindow — per-session context% denominator fold', () =
   });
 });
 
+describe('#603 imported 1M facts survive the cold-load entry pipeline', () => {
+  it('normalizes through summarizeEntry, copies through addEntry, then gives the swimlane an unverified 1M', () => {
+    const ctx = loadCtx(true);
+    const cold = normalizeIndexEntry({
+      id: 'cold-imported-1m', sessionId: 'cold-imported-session',
+      provider: 'anthropic', model: 'claude-opus-4-6', isSubagent: false,
+      receivedAt: 1000, elapsed: '1', status: 200,
+      usage: { input_tokens: 170000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      maxContext: 200000, imported1mCostState: true, imported1mSettings: true,
+    });
+
+    assert.equal(cold.imported1mCostState, true, 'cold summary keeps the transcript cost-state fact');
+    assert.equal(cold.imported1mSettings, true, 'cold summary keeps the settings fact');
+
+    ctx.addEntry(cold);
+    const rendered = ctx.allEntries[0];
+    assert.equal(rendered.imported1mCostState, true, 'addEntry keeps cost-state evidence for the client');
+    assert.equal(rendered.imported1mSettings, true, 'addEntry keeps settings evidence for the client');
+
+    const lane = { key: 'main', turns: ctx.allEntries };
+    ctx.wfState = { lanes: [lane] };
+    assert.equal(ctx._wfLaneWindow(lane), 1000000, 'the swimlane display fold widens to 1M');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'imported', 'the swimlane retains the unverified ? provenance');
+  });
+
+  it('keeps the imported 1M display + marker, but styles a session card from its verified 200K window', () => {
+    const ctx = loadCtx();
+    const sid = 'imported-card-attention';
+    seed(ctx, [{
+      sessionId: sid, isSubagent: false, maxContext: 200000,
+      imported1mSettings: true,
+    }]);
+    ctx.sessionsMap.set(sid, {
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    });
+
+    const html = ctx.renderSessionItem(ctx.sessionsMap.get(sid), sid, { title: '' });
+
+    assert.match(html, /ctx-alert ctx-alert-red/, '170K / verified 200K reaches the red threshold');
+    assert.match(html, /si-ctx-bar over-compact/, 'the compact line uses the verified 85%');
+    assert.match(html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
+      'the displayed percentage keeps the imported 1M denominator and its ? marker');
+  });
+
+  it('gives a 400K observed fossil category priority over an imported 1M hint in session and lane folds', () => {
+    const ctx = loadCtx(true);
+    const sid = 'observed-400k-imported-1m';
+    seed(ctx, [
+      { id: 'imported', sessionId: sid, isSubagent: false, maxContext: 200000, imported1mSettings: true },
+      { id: 'observed', sessionId: sid, isSubagent: false, maxContext: 400000 },
+    ]);
+
+    const lane = { key: 'main', turns: ctx.allEntries };
+
+    assert.equal(ctx.sessionCtxWindow(sid), 400000, 'a non-default observed window wins as a category, not by magnitude');
+    assert.equal(ctx.sessionCtxWindowSource(sid), 'observed');
+    assert.equal(ctx.ctxWindowUnverified(sid), false, 'the measured 400K denominator has no ? marker');
+    assert.equal(ctx._wfLaneWindow(lane), 400000, 'the swimlane mirrors the session fold');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'observed');
+
+    // A default 200K turn may coexist with a model-specific smaller fossil;
+    // the latter is still observed evidence and must keep imported out entirely.
+    seed(ctx, [
+      { id: 'default', sessionId: sid, isSubagent: false, maxContext: 200000, imported1mSettings: true },
+      { id: 'observed-small', sessionId: sid, isSubagent: false, maxContext: 128000 },
+    ]);
+    assert.equal(ctx.sessionCtxWindow(sid), 128000, 'any observed non-default fossil wins even below the 200K default');
+    assert.equal(ctx.sessionCtxWindowSource(sid), 'observed');
+    assert.equal(ctx._wfLaneWindow(lane), 128000, 'the lane preserves the smaller observed fossil too');
+    assert.equal(ctx._wfLaneWindowSource(lane), 'observed');
+  });
+});
+
 describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, subagent=own conv)', () => {
   let ctx;
   beforeEach(() => { ctx = loadCtx(); });
@@ -159,6 +245,12 @@ describe('#339 turnCtxWindow — per-turn minimap denominator (main=session, sub
     ]);
     const mainTurn = ctx.allEntries[1];
     assert.equal(ctx.turnCtxWindow(mainTurn), 1000000, 'main turn uses the 1M session fold, not its own 200K');
+  });
+
+  it('marks an imported-only main minimap denominator without treating it as measured', () => {
+    seed(ctx, [{ sessionId: 'minimap-imported', isSubagent: false, maxContext: 200000, imported1mSettings: true }]);
+    assert.equal(ctx.turnCtxWindow(ctx.allEntries[0]), 1000000);
+    assert.equal(ctx.turnCtxWindowMarker(ctx.allEntries[0]), '?');
   });
 
   it('a subagent uses its OWN conversation window, not the session 1M (#211 guard, one level down)', () => {
@@ -227,6 +319,67 @@ describe('#377 recomputeSessionStats — truncated client weather uses the serve
     assert.equal(ctx.sessionsMap.get(sid).weather.level, 'sunny');
   });
 
+  it('#603 keeps hot-session weather on the observed window when display has only an imported 1M hint', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-weather';
+    seed(ctx, [{ ...weatherTurn(sid), imported1mSettings: true }]);
+    ctx.sessionsMap.set(sid, { _cold: false, beta1m: false, maxContext: 200000 });
+
+    assert.equal(ctx.sessionCtxWindow(sid), 1000000, 'display still widens to the imported 1M tier');
+    ctx.recomputeSessionStats(sid);
+
+    assert.equal(ctx.sessionsMap.get(sid).weather.level, 'rainy',
+      'the imported display hint cannot suppress hot-session weather');
+  });
+
+  it('#603 re-renders a hot session card when its imported window fact arrives', () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-card';
+    const sess = {
+      _cold: false, beta1m: false, maxContext: 200000,
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    };
+    ctx.sessionsMap.set(sid, sess);
+
+    const card = { title: '', renders: 0, html: '' };
+    Object.defineProperty(card, 'innerHTML', {
+      set(html) { this.renders++; this.html = html; },
+    });
+    ctx.document.getElementById = (id) => id === 'sess-' + sid.slice(0, 8) ? card : null;
+
+    ctx.mergeColdSessions([{ sid, imported1mSettings: true }]);
+
+    assert.equal(sess.imported1mSettings, true, 'the aggregate retains the monotone imported fact');
+    assert.equal(card.renders, 1, 'the already-visible hot card is redrawn');
+    assert.match(card.html, />17% <span style="color:var\(--dim\)">of 1M\?<\/span>/,
+      'the redraw exposes the newly imported display window');
+  });
+
+  it('#603 refreshes an open swimlane when sessions_updated supplies an imported window fact', async () => {
+    const ctx = loadCtx(true);
+    const sid = 'hot-imported-swimlane';
+    const turn = { ...weatherTurn(sid), id: 'swimlane-turn', receivedAt: 1000, elapsed: '1', status: 200 };
+    seed(ctx, [turn]);
+    ctx.sessionsMap.set(sid, {
+      _cold: false, beta1m: false, maxContext: 200000,
+      model: 'claude-opus-4-6', count: 1, retryCount: 0, totalCost: 0,
+      latestMainCtxUsed: 170000, lastReceivedAt: Date.now(),
+    });
+    ctx.wfState = ctx.wfBuildState(sid);
+    assert.equal(ctx._wfLaneWindow(ctx.wfState.lanes[0]), 200000, 'setup starts at the verified 200K fold');
+
+    let renders = 0;
+    ctx.wfRenderTimeline = () => { renders += 1; };
+    ctx.window.__sessionsPayload = { sessions: [{ sid, imported1mSettings: true }] };
+    ctx.window.__eventSource.onmessage({ data: JSON.stringify({ _type: 'sessions_updated' }) });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(ctx._wfLaneWindow(ctx.wfState.lanes[0]), 1000000, 'the open lane reads the newly merged imported fact');
+    assert.equal(ctx._wfLaneWindowSource(ctx.wfState.lanes[0]), 'imported');
+    assert.equal(renders, 1, 'the active workflow view rerenders after its fact changes');
+  });
+
   it('hot session merge is monotone: a smaller server fold cannot narrow an existing 1M window', () => {
     const ctx = loadCtx(true);
     const sid = 'hot-monotone';
@@ -264,6 +417,73 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
   it('reports declared only when the declaration resolved the window', () => {
     ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
+  it('#603 folds positive imported declarations to 1M but keeps their provenance unverified', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mCostState: true });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'imported');
+    assert.equal(ctx.ctxWindowUnverified('s1'), true, 'an imported declaration does not grant alarm authority');
+  });
+
+  it('#603 gives dashboard, Sidebar, and Mission Control one imported aggregate fixture', () => {
+    const sid = 'imported-parity';
+    const nowMs = Date.parse('2026-08-31T12:00:00.000Z');
+    const entry = {
+      id: 'imported-parity-turn', sessionId: sid, model: 'claude-fable-5',
+      agentKey: 'orchestrator', isSubagent: false, imported: true,
+      receivedAt: nowMs - 1000, maxContext: 200000,
+      usage: { input_tokens: 192182, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    };
+    // The fact lives only in the aggregate, the #588 cold-session shape.
+    const aggregate = { sid, maxContext: 200000, imported1mSettings: true };
+    ctx.allEntries.push(entry);
+    ctx.sessionsMap.set(sid, aggregate);
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-603-parity-'));
+    const roots = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-603-no-transcripts-'));
+    try {
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), JSON.stringify(entry) + '\n');
+      fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify(aggregate) + '\n');
+      const env = { ...process.env, CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: roots, CCXRAY_IMPORT_CODEX_HOMES: roots };
+      for (const key of Object.keys(env)) {
+        if (key.startsWith('HERDR_')) delete env[key];
+      }
+
+      const sidebar = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+        env, sessionId: sid, nowMs, allowRepair: false, sidebarCols: 40,
+      });
+      const row = missionControlSnapshot({
+        env, entries: [entry], nowMs, agentReport: { ok: true, agents: [] },
+      }).rows[0];
+
+      assert.equal(ctx.sessionCtxWindow(sid), 1000000);
+      assert.equal(ctx.sessionCtxWindowSource(sid), 'imported');
+      assert.equal(Math.round(sidebar.ctxPct), 19);
+      assert.equal(sidebar.ctxWindowSource, 'imported');
+      assert.equal(sidebar.ctxWindowMarker, '?');
+      assert.equal(Math.round(row.ctxPct), 19);
+      assert.equal(row.ctxWindowSource, 'imported');
+      assert.equal(row.ctxWindowMarker, '?');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(roots, { recursive: true, force: true });
+    }
+  });
+
+  it('#603 orders observed and declared evidence above an imported declaration', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mSettings: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
+    ctx.allEntries.push({ ...turn(false), beta1m: true, maxContext: 1000000 });
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'declared');
+  });
+
+  it('#603 lets a 1.5M observed fossil outrank an imported 1M declaration', () => {
+    ctx.allEntries.push({ ...turn(false), imported1mCostState: true, maxContext: 200000 });
+    ctx.allEntries.push({ ...turn(false), maxContext: 1500000 });
+    assert.equal(ctx.sessionCtxWindow('s1'), 1500000);
+    assert.equal(ctx.sessionCtxWindowSource('s1'), 'observed');
   });
 
   it('a header the gate refused must NOT count as declared (fail-on-old)', () => {
@@ -354,5 +574,11 @@ describe('sessionCtxWindowSource — measured vs assumed denominator', () => {
     assert.equal(ctx.sessionCtxWindowSource('s2'), 'declared');
     ctx.sessionsMap.set('s3', { beta1m: false, maxContext: 1000000 });
     assert.equal(ctx.sessionCtxWindowSource('s3'), 'observed');
+  });
+
+  it('#603 reads an imported declaration from the cold session aggregate', () => {
+    ctx.sessionsMap.set('s8', { maxContext: 200000, imported1mSettings: true });
+    assert.equal(ctx.sessionCtxWindow('s8'), 1000000);
+    assert.equal(ctx.sessionCtxWindowSource('s8'), 'imported');
   });
 });

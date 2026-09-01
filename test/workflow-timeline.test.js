@@ -185,9 +185,59 @@ describe('workflow-timeline data layer', () => {
     ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'p2', maxContext: 1000000, ctxUsed: 500000 }, importedAbsent] }] };
     assert.equal(Math.round(ctx.wfCtxPctRender(importedAbsent)), 50); // 500K/1M
 
+    // #603: a history-only import persists a positive declaration separately
+    // from maxContext. The render lane must consume that fact without teaching
+    // prefix-local lane classification a new denominator.
+    const declaredImport = { id: 'i3', maxContext: 200000, ctxUsed: 199000, imported1mCostState: true };
+    const declaredImportPeer = { id: 'i4', maxContext: 200000, ctxUsed: 199000 };
+    ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [declaredImport, declaredImportPeer] }] };
+    assert.equal(Math.round(ctx.wfCtxPctRender(declaredImportPeer)), 20);
+    assert.equal(Math.round(ctx.wfCtxPct(declaredImportPeer)), 100, 'classification still uses raw per-turn maxContext');
+
     // A lane whose turns are all ≤200K keeps 200K (no wider signal to rescope to).
     ctx.wfState = { lanes: [{ key: 'main', name: 'main', turns: [{ id: 'x1', maxContext: 200000, ctxUsed: 100000 }] }] };
     assert.equal(Math.round(ctx.wfCtxPctRender({ id: 'x1', maxContext: 200000, ctxUsed: 100000 })), 50); // 100K/200K
+  });
+
+  it('codex round 5 P2-a: every swimlane render surface uses a narrower observed lane window', () => {
+    const ctx = loadWfModule();
+    const default200k = mkEntry('default-200k', 's1', 'claude-opus-4-6', 1000, 1, {
+      maxContext: 200000,
+      ctxUsed: 102400,
+      usage: { input_tokens: 102400, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    const observed128k = mkEntry('observed-128k', 's1', 'claude-opus-4-6', 3000, 1, {
+      maxContext: 128000,
+      ctxUsed: 102400,
+      usage: { input_tokens: 102400, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+    });
+    const lane = { key: 'main', name: 'main', turns: [default200k, observed128k] };
+    ctx.wfState = { lanes: [lane], selectedLane: lane, selectedSection: 'timeline', viewT0: 0, viewT1: 5000 };
+
+    assert.equal(ctx._wfLaneWindow(lane), 128000, 'the observed 128K window wins over the 200K default');
+    assert.equal(ctx._wfTurnWindow(default200k), 128000, 'default 200K turn resolves to its lane window');
+    assert.equal(ctx._wfTurnWindow(observed128k), 128000, 'observed turn resolves to that same lane window');
+    assert.equal(ctx.wfCtxPctRender(default200k), 80);
+    assert.equal(ctx.wfCtxPctRender(observed128k), 80);
+    assert.equal(Math.round(ctx.wfCtxPctAlert(default200k)), 51, 'alert retains the raw 200K denominator');
+    assert.equal(Math.round(ctx.wfCtxPct(default200k)), 51, 'classification remains raw per-turn');
+
+    const svg = ctx.wfRenderLaneSvg(lane, 0, 600, t => t, new Set());
+    assert.match(svg, / · 128K<\//, 'swimlane label uses the same observed window');
+    for (const id of [default200k.id, observed128k.id]) {
+      const bar = svg.match(new RegExp('<g class="wf-b[^\"]*" data-i="\\d+" data-turn-id="' + id + '"[^>]*>([\\s\\S]*?)<\\/g>'));
+      assert.ok(bar, id + ' renders a context bar');
+      assert.match(bar[1], /height="35"/, id + ' bar is 80% of 44px');
+    }
+
+    const panel = { innerHTML: '' };
+    ctx.document.getElementById = id => id === 'wf-agent-card-panel' ? panel : null;
+    ctx.wfRenderAgentCard(lane);
+    assert.match(panel.innerHTML, /Window<\/span><span class="wf-ac-val">128K<\//, 'lane card label stays at 128K');
+    ctx.wfRenderTurnCard(default200k);
+    assert.match(panel.innerHTML, /80\.0%/, 'turn card uses the 128K render denominator');
+    ctx._wfShowTooltip({ clientX: 0, clientY: 0 }, default200k, lane);
+    assert.match(ctx._wfTooltipEl.innerHTML, /80\.0%/, 'tooltip uses the 128K render denominator');
   });
 
   it('#377 slice 2: single-turn weather matches the lane-fold context window in tooltip and turn card', () => {
@@ -225,6 +275,55 @@ describe('workflow-timeline data layer', () => {
     // turn card uses entry.ctxUsed (input-only), not weather's four-term sum
     assert.match(panel.innerHTML, /17\.6%/);
     assert.doesNotMatch(panel.innerHTML, /🌧️/);
+  });
+
+  it('#603 keeps an imported 1M display fold marked while ctx events and weather ignore it', () => {
+    const ctx = loadWfModule({ weather: true, weatherDisplay: true });
+    const pressured = mkEntry('imported-pressure', 's1', 'claude-opus-4-6', 1000, 5, {
+      maxContext: 200000,
+      ctxUsed: 170000,
+      usage: { input_tokens: 170000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      imported1mCostState: true,
+    });
+    const lane = { key: 'main', name: 'main', turns: [pressured] };
+    ctx.wfState = { lanes: [lane], selectedLane: lane, selectedSection: 'timeline' };
+
+    assert.equal(Math.round(ctx.wfCtxPctRender(pressured)), 17, 'the display uses the imported 1M denominator');
+    assert.match(ctx.wfDetectEvents(pressured, null).join(','), /(?:^|,)ctx80(?:,|$)/,
+      'the imported display hint must not suppress a raw-context event');
+
+    const weatherWindows = [];
+    ctx.assessWeather = (turns, opts) => {
+      weatherWindows.push(opts?.sessionWindow);
+      return { level: 'sunny', emoji: '☀️', tooltip: 'normal' };
+    };
+    ctx._wfShowTooltip({ clientX: 0, clientY: 0 }, pressured, lane);
+    assert.match(ctx._wfTooltipEl.innerHTML, /wf-tt-danger/,
+      'the imported display hint must not downgrade the tooltip context-band colour');
+    const panel = { innerHTML: '' };
+    ctx.document.getElementById = id => id === 'wf-agent-card-panel' ? panel : null;
+    ctx.wfRenderTurnCard(pressured);
+    assert.equal(weatherWindows.join(','), '200000,200000',
+      'tooltip and turn card weather must both ignore imported-only widening');
+    assert.match(panel.innerHTML, /17\.0%\?/,
+      'the turn card retains the imported-provenance marker next to its display percentage');
+    assert.match(panel.innerHTML, /#f85149/,
+      'the turn-card context band remains raw-context red despite the display fold');
+
+    ctx.wfRenderAgentCard(lane);
+    assert.match(panel.innerHTML, /1000K\?/, 'the swimlane card marks its imported window');
+    assert.match(panel.innerHTML, /17\.0%\?/, 'the swimlane card marks its imported display peak too');
+  });
+
+  it('#603 lets an observed fossil larger than 1M outrank an imported 1M display hint', () => {
+    const ctx = loadWfModule();
+    const observed = { id: 'observed-1.5m', maxContext: 1500000, ctxUsed: 300000 };
+    const imported = { id: 'imported-1m', maxContext: 200000, ctxUsed: 300000, imported1mSettings: true };
+    const lane = { key: 'main', name: 'main', turns: [observed, imported] };
+    ctx.wfState = { lanes: [lane] };
+
+    assert.equal(ctx._wfLaneWindow(lane), 1500000);
+    assert.equal(Math.round(ctx.wfCtxPctRender(imported)), 20);
   });
 
   it('convId splits parallel same-agent instances into separate lanes (#117)', () => {

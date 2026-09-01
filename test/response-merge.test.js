@@ -114,6 +114,31 @@ describe('store.mergeByResponseId (#333)', () => {
     assert.ok(!mergeByResponseId([n1, n2])[0].beta1m, 'no beta1m anywhere → none fabricated');
   });
 
+  it('#603: preserves each imported 1M positive fact in both batch and live merges', () => {
+    const importedFacts = { imported1mCostState: true, imported1mSettings: true };
+    const batch = mergeByResponseId([
+      { id: 'import-batch-first', responseId: 'import-facts-batch', receivedAt: 1 },
+      { id: 'import-batch-later', responseId: 'import-facts-batch', receivedAt: 2, ...importedFacts },
+    ])[0];
+    assert.equal(batch.imported1mCostState, true,
+      'batch merge retains a cost-state fact from the non-canonical partial copy');
+    assert.equal(batch.imported1mSettings, true,
+      'batch merge retains a settings fact from the non-canonical partial copy');
+
+    const first = store.registerOrMerge({
+      id: 'import-live-first', responseId: 'import-facts-live', receivedAt: 1,
+    });
+    const live = store.registerOrMerge({
+      id: 'import-live-later', responseId: 'import-facts-live', receivedAt: 2, ...importedFacts,
+    });
+    assert.equal(first.merged, false, 'first live copy establishes the canonical register');
+    assert.equal(live.merged, true, 'later live copy folds into that register');
+    assert.equal(live.canonical.imported1mCostState, true,
+      'live merge cannot wash a cost-state fact back to undefined');
+    assert.equal(live.canonical.imported1mSettings, true,
+      'live merge cannot wash a settings fact back to undefined');
+  });
+
   it('carries the raw context-* beta across a merge, not just its interpretation (fail-on-old)', () => {
     // The merge already ORs beta1m. Keeping the conclusion while dropping the
     // observation it was drawn from loses the more fundamental fact — and with it
