@@ -32,6 +32,7 @@
 // Honestly null for runtime-only fields it cannot know (elapsed, receivedAt).
 
 const fs = require('fs');
+const crypto = require('crypto');
 const path = require('path');
 const config = require('./config');
 const store = require('./store');
@@ -211,6 +212,72 @@ function liveHubBlocking() {
   return lock && lock.pid && hub.isPidAlive(lock.pid) ? lock : null;
 }
 
+function indexFingerprint(indexPath) {
+  try {
+    const stat = fs.statSync(indexPath);
+    return { exists: true, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+// ponytail: S1b mtime recency guard — fast-fail optimization for --apply/--reimport.
+// Not a correctness boundary (CAS is); gated by CCXRAY_SKIP_RECENCY_CHECK in tests.
+const RECENCY_THRESHOLD_MS = 60_000
+function indexWasRecentlyWritten(indexPath, log) {
+  if (process.env.CCXRAY_SKIP_RECENCY_CHECK === '1') return false
+  let stat
+  try { stat = fs.statSync(indexPath) } catch (e) {
+    if (e.code === 'ENOENT') return false
+    throw e
+  }
+  const ageMs = Date.now() - stat.mtimeMs
+  if (ageMs < RECENCY_THRESHOLD_MS) {
+    const ageSeconds = Math.max(0, Math.floor(ageMs / 1000))
+    log(`index.ndjson was written ${ageSeconds}s ago — a ccxray server appears to be recording. Stop it and retry, or use a different CCXRAY_HOME.`)
+    return true
+  }
+  return false
+}
+
+function acquireMaintenanceLock(storage, op, log) {
+  // ponytail: realpath so symlinked paths to the same dir share one lock (codex P2)
+  let resolved
+  try { resolved = fs.realpathSync(storage.location) } catch { resolved = storage.location }
+  const lockPath = path.join(resolved, '.index-maintenance.lock');
+  const token = crypto.randomUUID();
+  const contents = JSON.stringify({ pid: process.pid, token, op, startedAt: new Date().toISOString() });
+  while (true) {
+    try {
+      fs.writeFileSync(lockPath, contents, { flag: 'wx', mode: 0o600 });
+      return { lockPath, token };
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      let existing;
+      try { existing = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch {}
+      if (!existing || !existing.pid || hub.isPidAlive(existing.pid)) {
+        log('Another index maintenance command is already running; aborting.');
+        return null;
+      }
+      try { fs.unlinkSync(lockPath); } catch (unlinkError) {
+        if (unlinkError.code === 'ENOENT') continue;
+        throw unlinkError;
+      }
+    }
+  }
+}
+
+function releaseMaintenanceLock(lock) {
+  if (!lock) return;
+  try {
+    const current = JSON.parse(fs.readFileSync(lock.lockPath, 'utf8'));
+    if (current.token === lock.token) fs.unlinkSync(lock.lockPath);
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+}
+
 async function rebuildIndex({ apply = false, storage = config.storage, log = console.log } = {}) {
   // ── Hub safety: refuse to race a live hub's appends. ──
   const blockingHub = liveHubBlocking();
@@ -221,6 +288,15 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   }
 
   await storage.init();
+
+  const indexPath = storage.location ? path.join(storage.location, 'index.ndjson') : null;
+  const usesMaintenanceLock = apply && storage.supportsDelta && storage.location;
+  const maintenanceLock = usesMaintenanceLock ? acquireMaintenanceLock(storage, 'rebuild-index', log) : null;
+  if (usesMaintenanceLock && !maintenanceLock) return { refused: true, reason: 'maintenance-locked' };
+
+  try {
+  if (usesMaintenanceLock && indexWasRecentlyWritten(indexPath, log)) { releaseMaintenanceLock(maintenanceLock); return { refused: true, reason: 'index-recent' }; }
+  const statBefore = usesMaintenanceLock ? indexFingerprint(indexPath) : null;
 
   // ── 1. Existing index → merge base + explicit-session timeline + cwd hints. ──
   // Keep every parseable existing line verbatim (merge-only), with ONE add-only
@@ -543,7 +619,6 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
     log('  --apply needs the local filesystem backend; aborting without writing.');
     return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: false };
   }
-  const indexPath = path.join(storage.location, 'index.ndjson');
   const tmpPath = `${indexPath}.rebuild-${process.pid}.tmp`;
   // Merge existing (verbatim, or add-only enriched with responseId #333 /
   // identity #342) + recovered, ordered by id so recovered turns land in
@@ -557,9 +632,31 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
   // still held in memory to sort; a manual recovery CLI can afford that.)
   await writeLinesToFile(tmpPath, merged);
   try { fs.chmodSync(tmpPath, 0o600); } catch {} // guarantee 0600 even if a stale tmp pre-existed
-  fs.renameSync(tmpPath, indexPath);
+  // CAS commit (ADR 0021): statSync and the commit operation stay synchronous,
+  // with no await between them, so a concurrent writer cannot be overwritten.
+  const statNow = indexFingerprint(indexPath);
+  if (statBefore === null) {
+    try {
+      fs.linkSync(tmpPath, indexPath);
+      fs.unlinkSync(tmpPath);
+    } catch (e) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      if (e.code === 'EEXIST') return { refused: true, reason: 'index-changed' };
+      throw e;
+    }
+  } else {
+    if (!statNow || statNow.dev !== statBefore.dev || statNow.ino !== statBefore.ino
+        || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      return { refused: true, reason: 'index-changed' };
+    }
+    fs.renameSync(tmpPath, indexPath);
+  }
   log(`  wrote ${indexPath} (${existingIds.size + N} lines). Restart the dashboard to see recovered turns.`);
   return { refused: false, recovered: N, enriched: enrichedResponseIds, enrichedIdentity, total: M, unrecoverable, applied: true, cacheFinalSize: cache.size };
+  } finally {
+    releaseMaintenanceLock(maintenanceLock);
+  }
 }
 
 // #500: --reimport — remove all imported index lines and re-run scanAndImport()
@@ -583,8 +680,15 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
     return { refused: true };
   }
 
-  // Stream-filter: keep non-imported lines, count removed
   const indexPath = path.join(storage.location, 'index.ndjson');
+  const maintenanceLock = acquireMaintenanceLock(storage, 'reimport', log);
+  if (!maintenanceLock) return { refused: true, reason: 'maintenance-locked' };
+
+  try {
+  if (indexWasRecentlyWritten(indexPath, log)) return { refused: true, reason: 'index-recent' };
+  const statBefore = indexFingerprint(indexPath);
+
+  // Stream-filter: keep non-imported lines, count removed
   const kept = []; // [{ line }] for writeLinesToFile
   let removed = 0;
   for await (const line of storage.readIndexLines()) {
@@ -599,7 +703,26 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
   const tmpPath = `${indexPath}.reimport-${process.pid}.tmp`;
   await writeLinesToFile(tmpPath, kept);
   try { fs.chmodSync(tmpPath, 0o600); } catch {}
-  fs.renameSync(tmpPath, indexPath);
+  // CAS commit (ADR 0021): statSync and the commit operation stay synchronous,
+  // with no await between them, so a concurrent writer cannot be overwritten.
+  const statNow = indexFingerprint(indexPath);
+  if (statBefore === null) {
+    try {
+      fs.linkSync(tmpPath, indexPath);
+      fs.unlinkSync(tmpPath);
+    } catch (e) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      if (e.code === 'EEXIST') return { refused: true, reason: 'index-changed' };
+      throw e;
+    }
+  } else {
+    if (!statNow || statNow.dev !== statBefore.dev || statNow.ino !== statBefore.ino
+        || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      return { refused: true, reason: 'index-changed' };
+    }
+    fs.renameSync(tmpPath, indexPath);
+  }
 
   // Rebuild session index from cleaned state (streaming — the index can exceed
   // Node's max string size; readFileSync would throw ERR_STRING_TOO_LONG after
@@ -621,6 +744,9 @@ async function reimportEntries({ storage = config.storage, log = console.log } =
     log(`\x1b[33m  ⚠ ${removed - result.imported} fewer entries than before — source transcripts may have been deleted or moved\x1b[0m`);
   }
   return { refused: false, removed, imported: result.imported, skipped: result.skipped };
+  } finally {
+    releaseMaintenanceLock(maintenanceLock);
+  }
 }
 
-module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession };
+module.exports = { rebuildIndex, reimportEntries, reconstructReq, tsFromId, nearestPrecedingSession, indexFingerprint };
