@@ -728,6 +728,7 @@ function describePortOccupant(occ, port) {
       return [
         `port ${port} is held by a standalone (non-hub) ccxray${occ.pid ? ` (pid ${occ.pid})` : ''}, so it cannot be shared as a hub.`,
         `Leave it running; ${escape}.`,
+        `Both will record into ${resolveLogsDir()} — that is supported. To record separately, set CCXRAY_HOME=<dir>.`,
       ];
     case 'ccxray-hub':
       // The hub may be healthy under a different CCXRAY_HOME — only its

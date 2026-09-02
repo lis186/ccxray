@@ -57,7 +57,7 @@ function sessionsPath() {
 }
 
 function tmpPath() {
-  return sessionsPath() + '.tmp';
+  return `${sessionsPath()}.${process.pid}.tmp`;
 }
 
 // Read sessions.json (NDJSON). Returns true on success, false on missing/corrupt/stale.
@@ -65,6 +65,17 @@ async function loadSessionIndex() {
   try {
     const sp = sessionsPath();
     const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    let names;
+    try { names = await fsp.readdir(path.dirname(sp)); } catch { names = []; }
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const name of names) {
+      if (!/^sessions\.json\..+\.tmp$/.test(name)) continue;
+      const orphan = path.join(path.dirname(sp), name);
+      try {
+        const stat = await fsp.stat(orphan);
+        if (stat.mtimeMs < cutoff) await fsp.unlink(orphan);
+      } catch {}
+    }
     // Stale check: if index.ndjson is newer than sessions.json, rebuild
     try {
       const [sStat, iStat] = await Promise.all([fsp.stat(sp), fsp.stat(indexPath)]);
@@ -497,18 +508,12 @@ function _scheduleDirtyFlush() {
 
 // Write full sessions.json atomically (tmp + rename).
 //
-// INVARIANT (ADR 0019): `tmpPath()` is a FIXED name with no pid in it, so "atomically" holds
-// against a crash, not against a second writer. Two processes flushing at once
-// can have one rename the other's half-written bytes. Every other writer in this
-// repo is the single hub process, which is why the name has been safe; a second
-// process that merely APPENDS index lines (`ccxray import --once`) must set
-// CCXRAY_SESSION_INDEX_NO_FLUSH=1 and leave this derived view alone. It is
-// rebuildable: `loadSessionIndex` already rebuilds when index.ndjson is newer
-// than sessions.json (:68-72), which is exactly the state such an append leaves
-// behind. Giving the tmp file a pid suffix would make concurrent flushes safe
-// but would still race last-writer-wins over the whole file, which is a
-// correctness question about WHOSE view wins — not one to settle here.
-// See docs/decisions/0019-second-writer-appends-never-derives.md.
+// INVARIANT (ADR 0021): `tmpPath()` includes the process pid so concurrent
+// flushers never write through the same temporary pathname. The final rename is
+// still last-writer-wins for this rebuildable derived view; a second process that
+// merely APPENDS index lines (`ccxray import --once`) must set
+// CCXRAY_SESSION_INDEX_NO_FLUSH=1 and leave this view alone. See the ADR 0019
+// amendment in docs/decisions/0021-data-root-writer-coordination.md.
 async function flush() {
   if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (!dirty && !flushTimer) return;
@@ -563,5 +568,5 @@ module.exports = {
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas, createReconcileTally,
   updateFromEntry, beginRestoreBuffer, endRestoreBuffer, _restoreBufferActive,
-  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
+  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow, tmpPath,
 };

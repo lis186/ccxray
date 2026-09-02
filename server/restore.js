@@ -775,10 +775,11 @@ async function pruneLogs() {
     }
     await pipeline(survivorLines(), fs.createWriteStream(tmpPath, { mode: 0o600 }));
 
-    // CAS commit: statSync then renameSync, both synchronous, no await between.
+    // CAS commit (ADR 0021): statSync then renameSync, both synchronous, no await between.
     let statNow;
     try { statNow = fs.statSync(indexPath); } catch { statNow = null; }
-    if (!statBefore || !statNow || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+    if (!statBefore || !statNow || statNow.dev !== statBefore.dev || statNow.ino !== statBefore.ino
+        || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
       try { fs.unlinkSync(tmpPath); } catch {}
       console.log('\x1b[33m[ccxray] index changed during prune — skipping rewrite (will retry next startup)\x1b[0m');
       return;
