@@ -11,7 +11,7 @@
 // captured by replaying these exact fixtures against origin/main@6e2aa71
 // (the last commit before this branch), normalized by replacing the
 // time/pricing-volatile fields in VOLATILE_FIELDS with '<volatile>'.
-// Comparing the live line (minus the enumerated #504 fields) byte-wise
+// Comparing the live line (minus the enumerated additive fields) byte-wise
 // against the golden proves every legacy field VALUE still serializes as the
 // old server did — not merely that key order is stable. Regenerate with the
 // procedure in the PR that introduced this file if a legit legacy-field
@@ -43,11 +43,13 @@ const LEGACY_INDEX_FIELDS = [
 // Append-only fields added after the frozen legacy shape. The original group
 // came from #504; later fields stay here so the projection guard keeps treating
 // them as additive rather than reporting a legacy regression.
-const NEW_504_FIELDS = [
+const ADDITIVE_INDEX_FIELDS = [
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted',
   'contextUsageKnown','imported1mCostState','imported1mSettings',
+  'accountEmail','accountDomain',
 ];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
+const ACCOUNT_KEYS = ['accountEmail','accountDomain'];
 const IDENTITY_VALUES = {
   agentId: 'machine-7', team: 'platform',
   userEmail: 'dev@example.test', agentType: 'ci-bot',
@@ -66,6 +68,8 @@ const GOLDEN_LEGACY_LINES = {
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"11111111-1111-4111-8111-111111111111","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_JSON_DUPES-tool-1":"local","INDEX_FIELDS_JSON_DUPES-tool-2":"local"},"responseId":"msg_INDEX_FIELDS_JSON_DUPES","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic non-SSE plain':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"22222222-2222-4222-8222-222222222222","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"1de3abc0","toolSources":{},"responseId":"msg_INDEX_FIELDS_JSON_PLAIN","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
+  'anthropic launcher account':
+    '{"id":"<volatile>","ts":"<volatile>","sessionId":"55555555-5555-4555-8555-555555555555","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":1,"toolCount":0,"toolCalls":{},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":false,"usage":{"input_tokens":5,"output_tokens":1},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":"2950769a","toolSources":{},"responseId":"msg_INDEX_FIELDS_ACCOUNT","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic SSE dupes':
     '{"id":"<volatile>","ts":"<volatile>","sessionId":"33333333-3333-4333-8333-333333333333","provider":"anthropic","agent":"claude","model":"claude-sonnet-4-6","msgCount":2,"toolCount":0,"toolCalls":{"Bash":2},"skillCalls":{},"isSubagent":false,"sessionInferred":false,"cwd":"/tmp/index-fields-e2e","isSSE":true,"usage":{"input_tokens":5,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"cost":"<volatile>","maxContext":200000,"stopReason":"end_turn","title":"ok","thinkingDuration":null,"toolFail":false,"elapsed":"<volatile>","status":200,"receivedAt":"<volatile>","sysHash":"5feeb813d8f1","toolsHash":null,"coreHash":null,"agentKey":null,"agentLabel":null,"convId":null,"toolSources":{"INDEX_FIELDS_SSE_DUPES-tool-1":"local","INDEX_FIELDS_SSE_DUPES-tool-2":"local"},"responseId":"msg_INDEX_FIELDS_SSE_DUPES","turnToolCalls":{},"turnToolCallIds":{},"turnToolResults":[]}',
   'anthropic SSE plain':
@@ -88,7 +92,7 @@ const GOLDEN_LEGACY_LINES = {
 function normalizedLegacyLine(obj) {
   const out = {};
   for (const k of Object.keys(obj)) {
-    if (NEW_504_FIELDS.includes(k)) continue;
+    if (ADDITIVE_INDEX_FIELDS.includes(k)) continue;
     out[k] = VOLATILE_FIELDS.has(k) ? '<volatile>' : obj[k];
   }
   return JSON.stringify(out);
@@ -102,8 +106,8 @@ function assertProjection(entry, where, goldenKey) {
   assert.equal(JSON.stringify(obj), raw, `${where}: raw index line is not canonical JSON.stringify output`);
   const keys = Object.keys(obj);
   // (a) 不得出現枚舉之外的 key
-  const stray = keys.filter(k => !LEGACY_INDEX_FIELDS.includes(k) && !NEW_504_FIELDS.includes(k));
-  assert.deepEqual(stray, [], `${where}: key outside legacy ∪ #504 enumeration`);
+  const stray = keys.filter(k => !LEGACY_INDEX_FIELDS.includes(k) && !ADDITIVE_INDEX_FIELDS.includes(k));
+  assert.deepEqual(stray, [], `${where}: key outside legacy ∪ additive enumeration`);
   // (b) 投影回 legacy 集合後，順序不得變動
   const projectedOrder = keys.filter(k => LEGACY_INDEX_FIELDS.includes(k));
   const legacyOrder = LEGACY_INDEX_FIELDS.filter(k => keys.includes(k));
@@ -112,7 +116,7 @@ function assertProjection(entry, where, goldenKey) {
   //     「原行刪掉枚舉新欄位」逐 byte 相同
   const projLine = JSON.stringify(Object.fromEntries(legacyOrder.map(k => [k, obj[k]])));
   const stripped = { ...obj };
-  for (const k of NEW_504_FIELDS) delete stripped[k];
+  for (const k of ADDITIVE_INDEX_FIELDS) delete stripped[k];
   assert.equal(projLine, JSON.stringify(stripped), `${where}: projection not byte-identical to stripped line`);
   // (d) value 層 oracle：與 pre-#504 golden line 逐 byte 相同（揮發欄位正規化後）。
   //     (a)-(c) 都由同一份新輸出推導，抓不到 legacy VALUE 的回歸；這條抓得到。
@@ -122,7 +126,7 @@ function assertProjection(entry, where, goldenKey) {
   assert.equal(normalizedLegacyLine(obj), golden, `${where}: legacy projection diverged from pre-#504 golden (${goldenKey})`);
 }
 
-function assertPresence(obj, { hasDupes, identity }, where) {
+function assertPresence(obj, { hasDupes, identity, account }, where) {
   for (const k of IDENTITY_KEYS) {
     if (identity[k] !== undefined) assert.equal(obj[k], identity[k], `${where}: ${k}`);
     else assert.ok(!(k in obj), `${where}: unset env ${k} must not appear`);
@@ -136,6 +140,10 @@ function assertPresence(obj, { hasDupes, identity }, where) {
   assert.equal(obj.localDate, expected, `${where}: localDate not reproducible from receivedAt+tz`);
   if (hasDupes) assert.deepEqual(obj.duplicateToolCalls, { Bash: 1 }, `${where}: duplicate count`);
   else assert.ok(!('duplicateToolCalls' in obj), `${where}: no-duplicate turn must omit the key`);
+  for (const key of ACCOUNT_KEYS) {
+    if (account?.[key] !== undefined) assert.equal(obj[key], account[key], `${where}: ${key}`);
+    else assert.ok(!(key in obj), `${where}: non-launcher turn must omit ${key}`);
+  }
 }
 
 function assertLiveLine(entry, options, where) {
@@ -403,11 +411,59 @@ function postJson(port, reqPath, body, headers) {
   });
 }
 
-function postMessages(port, body) {
+function postMessages(port, body, headers = {}) {
   return postJson(port, '/v1/messages', body, {
     'x-api-key': 'sk-test',
     'anthropic-version': '2023-06-01',
+    ...headers,
   });
+}
+
+function writeClaudeAccountConfig(home) {
+  const claudeConfig = path.join(home, 'claude-account-config');
+  fs.mkdirSync(claudeConfig, { recursive: true });
+  // Mirrors the real oauthAccount shape, with entirely synthetic values.
+  fs.writeFileSync(path.join(claudeConfig, '.claude.json'), JSON.stringify({
+    oauthAccount: {
+      accountUuid: '00000000-0000-4000-8000-000000000001',
+      emailAddress: 'Dev@Example.com',
+      organizationUuid: '00000000-0000-4000-8000-000000000002',
+      hasExtraUsageEnabled: false,
+      billingType: 'subscription',
+      accountCreatedAt: '2026-01-02T03:04:05.000Z',
+      subscriptionCreatedAt: '2026-01-03T04:05:06.000Z',
+      displayName: 'Dev Example',
+      fullName: 'Dev Example',
+      profileFetchedAt: 1770000000000,
+      organizationRole: 'member',
+      organizationName: 'Example Org',
+      organizationType: 'team',
+      organizationRateLimitTier: 'standard',
+      ccOnboardingFlags: null,
+      claudeCodeTrialEndsAt: null,
+      claudeCodeTrialDurationDays: null,
+      seatTier: null,
+      workspaceRole: null,
+      userRateLimitTier: null,
+    },
+  }));
+  return claudeConfig;
+}
+
+function launcherAccountHeader(home) {
+  const claudeConfig = writeClaudeAccountConfig(home);
+  const launcher = spawnSync(process.execPath, [
+    '-e',
+    "const providers = require(process.argv[1]); const launch = providers.getAgentLaunch('claude', 1, [], process.env); process.stdout.write(launch.env.ANTHROPIC_CUSTOM_HEADERS || '');",
+    path.join(__dirname, '..', 'server', 'providers.js'),
+  ], {
+    env: isolatedEnv(home, { CLAUDE_CONFIG_DIR: claudeConfig }),
+    encoding: 'utf8',
+  });
+  assert.equal(launcher.status, 0, `launcher failed: ${launcher.stderr}`);
+  const accountHeader = launcher.stdout.split(', ').find(header => header.startsWith('X-Ccxray-Account: '));
+  assert.equal(accountHeader, 'X-Ccxray-Account: Dev@Example.com');
+  return accountHeader;
 }
 
 function postResponses(port, body) {
@@ -486,6 +542,37 @@ describe('live Anthropic index lines use the real forward.js construction paths'
     assert.equal(lines.length, 2, `unexpected proxy stderr: ${proxy.stderr()}`);
     assertLiveLine(lines[0], { hasDupes: true, identity, golden: 'anthropic SSE dupes' }, 'anthropic SSE dupes');
     assertLiveLine(lines[1], { hasDupes: false, identity, golden: 'anthropic SSE plain' }, 'anthropic SSE plain');
+  });
+
+  it('persists the innermost launch account snapshot and its exact normalized domain', async () => {
+    const beforeCount = readIndexLines(home).length;
+    const accountHeader = launcherAccountHeader(home);
+    assert.equal(await postMessages(proxyPort, messagesBody('INDEX_FIELDS_ACCOUNT', {
+      sessionId: '55555555-5555-4555-8555-555555555555',
+    }), {
+      // Node joins duplicate headers with ', '. The last account segment is the
+      // innermost launch and must win over the outer launch's snapshot.
+      'x-ccxray-account': `outer@example.com, X-Ccxray-Auth: ignored, ${accountHeader}`,
+    }), 200);
+    const [line] = (await waitForIndexLines(home, beforeCount + 1)).slice(beforeCount);
+    assertLiveLine(line, {
+      hasDupes: false,
+      identity,
+      account: { accountEmail: 'dev@example.com', accountDomain: 'example.com' },
+      golden: 'anthropic launcher account',
+    }, 'anthropic launcher account');
+  });
+
+  it('persists a received launch account header in the index line', async () => {
+    const beforeCount = readIndexLines(home).length;
+    assert.equal(await postMessages(proxyPort, messagesBody('INDEX_FIELDS_ACCOUNT_DIFF', {
+      sessionId: '77777777-7777-4777-8777-777777777777',
+    }), {
+      'x-ccxray-account': ' Dev@EvilCorp.com ',
+    }), 200);
+    const [line] = (await waitForIndexLines(home, beforeCount + 1)).slice(beforeCount);
+    assert.equal(line.obj.accountEmail, 'dev@evilcorp.com');
+    assert.equal(line.obj.accountDomain, 'evilcorp.com');
   });
 });
 
@@ -607,6 +694,7 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-rebuild-'));
     tmpDirs.push(home);
+    const claudeConfig = writeClaudeAccountConfig(home);
     const upstream = makeAnthropicUpstream();
     await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
     const producerEnv = isolatedEnv(home, {
@@ -634,9 +722,10 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       fs.unlinkSync(indexPath);
       assert.equal(fs.existsSync(indexPath), false, 'precondition: live index line removed');
 
-      // rebuild 以四個 identity env 全設的環境跑：歷史 turn 一個都不得被蓋上。
+      // Rebuild runs with all identity env vars and a present launch-account
+      // fixture: neither current-machine fact may be stamped onto history.
       const rebuild = spawnSync(process.execPath, [SERVER_SCRIPT, 'rebuild-index', '--apply'], {
-        env: isolatedEnv(home, {}, { identity: 'full' }),
+        env: isolatedEnv(home, { CLAUDE_CONFIG_DIR: claudeConfig }, { identity: 'full' }),
         encoding: 'utf8',
       });
       assert.equal(rebuild.status, 0, `rebuild failed: ${rebuild.stderr}`);
@@ -646,7 +735,7 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
       assert.equal(lines.length, 1);
       const rebuilt = lines[0];
       assertProjection(rebuilt, 'rebuild orphan', 'rebuild orphan');
-      for (const key of [...IDENTITY_KEYS, 'localDate', 'tz']) {
+      for (const key of [...IDENTITY_KEYS, 'localDate', 'tz', ...ACCOUNT_KEYS]) {
         assert.ok(!(key in rebuilt.obj), `rebuild orphan: historical turn must not gain ${key}`);
       }
       console.log(`[index-fields keys] rebuild orphan: ${Object.keys(rebuilt.obj).join(',')}`);
@@ -658,12 +747,13 @@ describe('rebuild-index does not stamp current deployment metadata onto historic
 });
 
 describe('importer does not stamp current deployment metadata onto imported turns', () => {
-  it('imports a claude-code transcript with all four identity vars set — no #504 fields appear', async () => {
+  it('imports a claude-code transcript with all four identity vars set — no additive deployment fields appear', async () => {
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-'));
     const importHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-src-'));
     const codexImportHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-index-fields-import-codex-'));
     tmpDirs.push(home, importHome, codexImportHome);
+    const claudeConfig = writeClaudeAccountConfig(home);
 
     const sessionDir = path.join(importHome, 'index-fields-import-project');
     fs.mkdirSync(sessionDir, { recursive: true });
@@ -682,6 +772,7 @@ describe('importer does not stamp current deployment metadata onto imported turn
     const env = isolatedEnv(home, {
       CCXRAY_IMPORT_HOMES: importHome,
       CCXRAY_IMPORT_CODEX_HOMES: codexImportHome,
+      CLAUDE_CONFIG_DIR: claudeConfig,
     }, { identity: 'full' });
     env.CCXRAY_IMPORT_DISABLE = '0';
     const proxy = launchProxy(proxyPort, env);
@@ -693,7 +784,7 @@ describe('importer does not stamp current deployment metadata onto imported turn
       const imported = lines[0];
       assert.equal(imported.obj.imported, true, 'line came from the importer');
       assertProjection(imported, 'importer', 'importer');
-      for (const key of NEW_504_FIELDS.filter(key => key !== 'contextUsageKnown')) {
+      for (const key of ADDITIVE_INDEX_FIELDS.filter(key => key !== 'contextUsageKnown')) {
         assert.ok(!(key in imported.obj), `importer: imported turn must not gain ${key}`);
       }
       assert.equal(imported.obj.contextUsageKnown, true,

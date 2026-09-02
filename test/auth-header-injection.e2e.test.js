@@ -384,7 +384,7 @@ describe('Auth header injection E2E (1.4)', () => {
     }
   });
 
-  it('WS upgrade strips X-Ccxray-Auth before forwarding to upstream', async () => {
+  it('WS upgrade forwards no x-ccxray-* header upstream', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = makeTmpHome();
@@ -425,6 +425,8 @@ describe('Auth header injection E2E (1.4)', () => {
           // Valid token so 2.2 enforcement passes; the test asserts it is stripped upstream.
           'x-ccxray-auth': deriveUpstreamToken({ home, authToken: 'ws-strip-secret' }),
           'x-ccxray-bootstrap': 'also-must-not-reach',
+          'x-ccxray-account': 'dev@example.com',
+          'x-ccxray-future-thing': 'must-not-leak',
           'authorization': 'Bearer sk-real-key',
           'codex-session-id': 'test-session-strip',
         },
@@ -443,10 +445,8 @@ describe('Auth header injection E2E (1.4)', () => {
 
       assert.equal(receivedUpgradeHeaders.length, 1, 'upstream should receive one upgrade');
       const h = receivedUpgradeHeaders[0];
-      assert.equal(h['x-ccxray-auth'], undefined,
-        'X-Ccxray-Auth must NOT reach upstream via WS');
-      assert.equal(h['x-ccxray-bootstrap'], undefined,
-        'X-Ccxray-Bootstrap must NOT reach upstream via WS');
+      const leaked = Object.keys(h).filter(name => name.toLowerCase().startsWith('x-ccxray-'));
+      assert.deepEqual(leaked, [], `no x-ccxray-* may reach upstream via WS, saw: ${leaked.join(', ')}`);
       assert.equal(h['authorization'], 'Bearer sk-real-key',
         'Authorization header should be preserved');
       assert.ok(h['openai-beta'], 'openai-beta should be preserved');
@@ -510,6 +510,7 @@ describe('Auth header injection E2E (1.4)', () => {
       }, {
         'x-ccxray-auth': deriveUpstreamToken({ home }),
         'x-ccxray-agent-id': 'herdr:wY:herdr-abc123',
+        'x-ccxray-account': 'dev@example.com',
         // A namespace member nothing strips by name — the point of the prefix rule.
         'x-ccxray-future-thing': 'must-not-leak',
       });

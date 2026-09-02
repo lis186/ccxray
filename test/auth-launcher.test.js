@@ -15,6 +15,9 @@ describe('auth launcher header injection (1.4a)', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-auth-launcher-'));
     originalEnv = { ...process.env };
     process.env.CCXRAY_HOME = tmpHome;
+    // The launcher reads this once before spawning Claude. Keep it synthetic so
+    // the test never consults a developer's real Claude config directory.
+    process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude');
     // Ensure auth module re-derives from fresh CCXRAY_HOME
     delete require.cache[require.resolve('../server/auth')];
     delete require.cache[require.resolve('../server/providers')];
@@ -62,6 +65,58 @@ describe('auth launcher header injection (1.4a)', () => {
         launch.env.ANTHROPIC_CUSTOM_HEADERS,
         `X-Existing: foo, X-Ccxray-Auth: ${kUp}`
       );
+    });
+
+    it('captures the launch-time Claude OAuth account from the effective config directory', () => {
+      const providers = require('../server/providers');
+      const claudeConfig = process.env.CLAUDE_CONFIG_DIR;
+      fs.mkdirSync(claudeConfig, { recursive: true });
+      // Mirrors the real oauthAccount shape, with entirely synthetic values.
+      fs.writeFileSync(path.join(claudeConfig, '.claude.json'), JSON.stringify({
+        oauthAccount: {
+          accountUuid: '00000000-0000-4000-8000-000000000001',
+          emailAddress: 'Dev@Example.com',
+          organizationUuid: '00000000-0000-4000-8000-000000000002',
+          hasExtraUsageEnabled: false,
+          billingType: 'subscription',
+          accountCreatedAt: '2026-01-02T03:04:05.000Z',
+          subscriptionCreatedAt: '2026-01-03T04:05:06.000Z',
+          displayName: 'Dev Example',
+          fullName: 'Dev Example',
+          profileFetchedAt: 1770000000000,
+          organizationRole: 'member',
+          organizationName: 'Example Org',
+          organizationType: 'team',
+          organizationRateLimitTier: 'standard',
+          ccOnboardingFlags: null,
+          claudeCodeTrialEndsAt: null,
+          claudeCodeTrialDurationDays: null,
+          seatTier: null,
+          workspaceRole: null,
+          userRateLimitTier: null,
+        },
+      }));
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
+      });
+
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Existing: foo/);
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Auth: /);
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: Dev@Example\.com$/);
+    });
+
+    it('skips a malformed launch config without preventing Claude from starting', () => {
+      const providers = require('../server/providers');
+      const claudeConfig = process.env.CLAUDE_CONFIG_DIR;
+      fs.mkdirSync(claudeConfig, { recursive: true });
+      fs.writeFileSync(path.join(claudeConfig, '.claude.json'), '{not json');
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], { PATH: '/usr/bin' });
+
+      assert.equal(launch.bin, 'claude');
+      assert.doesNotMatch(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account:/);
     });
   });
 
