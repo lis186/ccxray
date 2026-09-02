@@ -469,13 +469,37 @@ describe('Auth header injection E2E (1.4)', () => {
     const upstreamRequests = [];
     const upstream = http.createServer((req, res) => {
       upstreamRequests.push({ headers: { ...req.headers } });
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        id: 'msg_prefix_rule', type: 'message', role: 'assistant',
-        model: 'claude-3-haiku-20240307', stop_reason: 'end_turn', stop_sequence: null,
-        content: [{ type: 'text', text: 'ok' }],
-        usage: { input_tokens: 1, output_tokens: 1 },
-      }));
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        // Real Claude Code traffic is streaming, so the strip must be asserted on
+        // the SSE path too -- it was previously asserted only on non-SSE, i.e. on
+        // the path production barely uses.
+        if (body.stream) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+          ev('message_start', { type: 'message_start', message: {
+            id: 'msg_prefix_rule_sse', type: 'message', role: 'assistant',
+            model: 'claude-3-haiku-20240307', content: [], stop_reason: null,
+            usage: { input_tokens: 1, output_tokens: 0 } } });
+          ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+          ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } });
+          ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+          ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } });
+          ev('message_stop', { type: 'message_stop' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'msg_prefix_rule', type: 'message', role: 'assistant',
+          model: 'claude-3-haiku-20240307', stop_reason: 'end_turn', stop_sequence: null,
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }));
+      });
     });
     await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
 
@@ -515,11 +539,36 @@ describe('Auth header injection E2E (1.4)', () => {
         'x-ccxray-future-thing': 'must-not-leak',
       });
       assert.equal(resp.statusCode, 200);
-      assert.equal(upstreamRequests.length, 1);
 
-      const leaked = Object.keys(upstreamRequests[0].headers)
-        .filter(name => name.toLowerCase().startsWith('x-ccxray-'));
-      assert.deepEqual(leaked, [], `no x-ccxray-* may reach upstream, saw: ${leaked.join(', ')}`);
+      // Same internal set again, this time streaming. All HTTP forwards share one
+      // funnel (buildForwardHeaders), but asserting only the non-SSE path is how a
+      // namespace member leaked before -- the guard must cover the path production
+      // actually uses.
+      const sseResp = await postJson(proxyPort, '/v1/messages', {
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 8,
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      }, {
+        'x-ccxray-auth': deriveUpstreamToken({ home }),
+        'x-ccxray-agent-id': 'herdr:wY:herdr-abc123',
+        'x-ccxray-account': 'dev@example.com',
+        'x-ccxray-future-thing': 'must-not-leak',
+      });
+      assert.equal(sseResp.statusCode, 200);
+      assert.equal(upstreamRequests.length, 2, 'both the non-SSE and SSE turns should reach upstream');
+
+      // Aggregate, not per-request assert: a per-request loop short-circuits on the
+      // first failure, so the SSE case would never be evaluated when the non-SSE one
+      // already failed -- the newer assertion would look live while proving nothing.
+      const leakedByRequest = upstreamRequests.map((observed, i) => ({
+        kind: i === 0 ? 'non-SSE' : 'SSE',
+        leaked: Object.keys(observed.headers)
+          .filter(name => name.toLowerCase().startsWith('x-ccxray-'))
+          .sort(),
+      })).filter(entry => entry.leaked.length > 0);
+      assert.deepEqual(leakedByRequest, [],
+        `no x-ccxray-* may reach upstream on any path, saw: ${JSON.stringify(leakedByRequest)}`);
 
       // Give the index append a moment, then read the persisted line.
       const indexPath = path.join(home, 'logs', 'index.ndjson');
