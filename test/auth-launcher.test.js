@@ -132,6 +132,30 @@ describe('auth launcher header injection (1.4a)', () => {
       assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: b@example\.com$/);
     });
 
+    it('uses the launch HOME config when no launch config directory is supplied', () => {
+      const providers = require('../server/providers');
+      const parentHome = path.join(tmpHome, 'parent-home');
+      const launchHome = path.join(tmpHome, 'launch-home');
+      process.env.HOME = parentHome;
+      for (const [home, emailAddress] of [
+        [parentHome, 'parent@example.com'],
+        [launchHome, 'launch@example.com'],
+      ]) {
+        const claudeConfig = path.join(home, '.claude');
+        fs.mkdirSync(claudeConfig, { recursive: true });
+        fs.writeFileSync(path.join(claudeConfig, '.claude.json'), JSON.stringify({
+          oauthAccount: { emailAddress },
+        }));
+      }
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        HOME: launchHome,
+      });
+
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: launch@example\.com$/);
+    });
+
     it('skips a malformed launch config without preventing Claude from starting', () => {
       const providers = require('../server/providers');
       const claudeConfig = path.join(tmpHome, 'malformed-claude');

@@ -77,3 +77,32 @@ file participates in that assertion.
   `git stash pop` it passed with `b@example.com`.
 - Not verified: a real authenticated Claude installation, the #612 consumer/UI,
   or the complete test suite beyond the four requested test files.
+
+## Round 3
+
+- Changed `getClaudeLaunchAccountEmail(env)` so its fallback is
+  `env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')`.
+  Its invariant comment now states that account snapshots resolve exactly as the
+  launched Claude process will, entirely from launch `env`; `os.homedir()` is
+  retained only when no `HOME` was supplied, matching the child's passwd-entry
+  fallback. The new synthetic HOME-only regression proves the injected account
+  is `launch@example.com`, not `parent@example.com`. The suite's
+  `afterEach` assigns `process.env = originalEnv`, so its temporary `HOME`
+  override is restored with the rest of the environment.
+- Class audit: re-read `getClaudeLaunchAccountEmail` and `claude.createLaunch`.
+  `proxyBaseUrl` and the account lookup both use the supplied launch `env`; no
+  other parent-process value describes the launched Claude session. Nothing
+  else found. `getUpstreamToken()` remains intentionally install-scoped: it
+  authenticates ccxray's proxy and is not launched-session configuration; this
+  is now documented beside the call.
+- Differential command:
+  `CCXRAY_HOME=$(mktemp -d) scripts/diff-check.sh HEAD test/auth-launcher.test.js -- node --test --test-name-pattern 'uses the launch HOME config when no launch config directory is supplied' test/auth-launcher.test.js`.
+  New code PASSed; the temporary `HEAD` worktree FAILed with
+  `X-Ccxray-Account: parent@example.com`; `diff-check.sh` reported
+  `old FAIL / new PASS`.
+- Verified: `node --check server/providers.js`; `node --check
+  test/auth-launcher.test.js`; `git diff --check`; and `node --test
+  test/auth-launcher.test.js test/entry.test.js test/index-fields.e2e.test.js
+  test/auth-header-injection.e2e.test.js` (38 pass, 0 fail).
+- Not verified: a real authenticated Claude installation, the #612 consumer/UI,
+  or the complete suite beyond the four requested test files.

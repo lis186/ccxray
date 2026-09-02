@@ -37,8 +37,11 @@ function appendAnthropicCustomHeader(launchEnv, header) {
 
 // This synchronous read is deliberately confined to launcher construction:
 // the launched account is a session-start snapshot, never a proxy hot-path read.
+// Invariant: account snapshot resolves exactly the way the launched process
+// resolves its config: every input is from launch env, never the parent.
+// os.homedir() is only the no-HOME fallback, matching the child's passwd entry.
 function getClaudeLaunchAccountEmail(env) {
-  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude');
   try {
     const config = JSON.parse(fs.readFileSync(path.join(claudeHome, '.claude.json'), 'utf8'));
     return typeof config.oauthAccount?.emailAddress === 'string'
@@ -58,6 +61,7 @@ const AGENT_PROVIDERS = Object.freeze({
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
       const launchEnv = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port, env) };
+      // This secret belongs to the ccxray install, not the launched session.
       const token = getUpstreamToken();
       if (token) {
         appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Auth: ${token}`);
