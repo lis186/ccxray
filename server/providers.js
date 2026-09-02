@@ -37,8 +37,8 @@ function appendAnthropicCustomHeader(launchEnv, header) {
 
 // This synchronous read is deliberately confined to launcher construction:
 // the launched account is a session-start snapshot, never a proxy hot-path read.
-function getClaudeLaunchAccountEmail() {
-  const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+function getClaudeLaunchAccountEmail(env) {
+  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   try {
     const config = JSON.parse(fs.readFileSync(path.join(claudeHome, '.claude.json'), 'utf8'));
     return typeof config.oauthAccount?.emailAddress === 'string'
@@ -62,7 +62,7 @@ const AGENT_PROVIDERS = Object.freeze({
       if (token) {
         appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Auth: ${token}`);
       }
-      const accountEmail = getClaudeLaunchAccountEmail();
+      const accountEmail = getClaudeLaunchAccountEmail(env);
       if (accountEmail) appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Account: ${accountEmail}`);
       return { bin: 'claude', args: [...args], env: launchEnv };
     },
