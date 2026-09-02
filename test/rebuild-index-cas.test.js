@@ -1,5 +1,5 @@
 'use strict';
-
+// ponytail: codex P2 realpath canonicalization — lock path uses realpathSync
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');

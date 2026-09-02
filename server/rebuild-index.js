@@ -242,7 +242,10 @@ function indexWasRecentlyWritten(indexPath, log) {
 }
 
 function acquireMaintenanceLock(storage, op, log) {
-  const lockPath = path.join(storage.location, '.index-maintenance.lock');
+  // ponytail: realpath so symlinked paths to the same dir share one lock (codex P2)
+  let resolved
+  try { resolved = fs.realpathSync(storage.location) } catch { resolved = storage.location }
+  const lockPath = path.join(resolved, '.index-maintenance.lock');
   const token = crypto.randomUUID();
   const contents = JSON.stringify({ pid: process.pid, token, op, startedAt: new Date().toISOString() });
   while (true) {
