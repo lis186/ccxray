@@ -127,6 +127,35 @@ function requestAgentForDeployment(provider, headers, parsedBody) {
   return agentForProvider(provider);
 }
 
+function launchAccountFields(headers) {
+  const rawAccount = headers['x-ccxray-account'];
+  if (!rawAccount) return {};
+  // Node joins duplicate headers with ', '. Match the agent-id seam: a nested
+  // ccxray launch prepends an outer account, so the LAST account segment is the
+  // innermost (newest) launch-time snapshot.
+  let candidate = null;
+  let accountValueContinues = true;
+  for (const rawSegment of String(rawAccount).split(',')) {
+    const segment = rawSegment.trim();
+    const header = segment.match(/^([A-Za-z][A-Za-z0-9-]*):\s*(.*)$/);
+    if (header) {
+      accountValueContinues = header[1].toLowerCase() === 'x-ccxray-account';
+      if (accountValueContinues) candidate = header[2];
+    } else if (accountValueContinues) {
+      candidate = segment;
+    }
+  }
+  if (!candidate) return {};
+  // Mirror hub.clientIdentityFromMessage's 512-character bound for
+  // client-supplied values persisted to the index. Keeping this local avoids
+  // widening the hub IPC identity contract's fixed key list for a launch-only fact.
+  const accountEmail = candidate.trim().toLowerCase();
+  if (!accountEmail || accountEmail.length > 512) return {};
+  const at = accountEmail.lastIndexOf('@');
+  if (at <= 0 || at === accountEmail.length - 1) return {};
+  return { accountEmail, accountDomain: accountEmail.slice(at + 1) };
+}
+
 function requestDeploymentFields(startTime, provider, req, parsedBody) {
   const headers = req.headers;
   const agent = requestAgentForDeployment(provider, headers, parsedBody);
@@ -153,14 +182,17 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
   }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
-  return deploymentFields(startTime, {
-    identity: identity || {},
-    // INVARIANT: gated on the HUB identity, never on the merged one. The header
-    // supplies agentId only, so letting it flip this flag silently dropped
-    // userEmail/team/agentType — the #505 export attribution — from every
-    // header-identified turn. deploymentFields already falls back per field.
-    useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
-  });
+  return {
+    ...deploymentFields(startTime, {
+      identity: identity || {},
+      // INVARIANT: gated on the HUB identity, never on the merged one. The header
+      // supplies agentId only, so letting it flip this flag silently dropped
+      // userEmail/team/agentType — the #505 export attribution — from every
+      // header-identified turn. deploymentFields already falls back per field.
+      useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
+    }),
+    ...launchAccountFields(headers),
+  };
 }
 
 function resolveProxyAgent(protocol, env) {

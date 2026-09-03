@@ -89,6 +89,17 @@ Fixtures contain only synthetic session ids, cwds, and titles — never real
 logs, project names, usernames, or home paths. Build them as literals; don't
 copy a slice of your own `~/.ccxray`.
 
+Claude launcher account fixtures must set `CLAUDE_CONFIG_DIR` to a test-owned
+directory and write `<CLAUDE_CONFIG_DIR>/.claude.json`, never the real Claude
+config. The `oauthAccount` fixture shape in `test/auth-launcher.test.js` and
+`test/index-fields.e2e.test.js` mirrors the known file: string `accountUuid`,
+`emailAddress`, `organizationUuid`, `billingType`, `accountCreatedAt`,
+`subscriptionCreatedAt`, `displayName`, `fullName`, `organizationRole`,
+`organizationName`, `organizationType`, and `organizationRateLimitTier`;
+boolean `hasExtraUsageEnabled`; numeric `profileFetchedAt`; and nullable
+`ccOnboardingFlags`, `claudeCodeTrialEndsAt`, `claudeCodeTrialDurationDays`,
+`seatTier`, `workspaceRole`, and `userRateLimitTier`. Keep synthetic values.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.
