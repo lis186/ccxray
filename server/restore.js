@@ -624,11 +624,47 @@ function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
   return { keptLines, dropped };
 }
 
+function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
+  if (!logsDir) return;
+
+  let files;
+  try { files = fs.readdirSync(logsDir); } catch { return; }
+
+  for (const filename of files) {
+    const match = /^index\.ndjson\.prune-(\d+)\.tmp$/.exec(filename);
+    if (!match) continue;
+
+    const pid = Number(match[1]);
+    // Own-PID cleanup assumes one PID namespace per logs dir—the only documented
+    // topology: README permits local-filesystem logs, and ADR 0021 scopes
+    // same-machine writers by realpath(config.LOGS_DIR). Separate namespaces sharing
+    // it already collide on this temp pathname: the prior failure can rename a
+    // truncated temp over index.ndjson (CAS fingerprints only index.ndjson); this
+    // sweep instead yields a caught ENOENT and skipped prune.
+    let orphaned = pid === process.pid;
+    if (!orphaned) {
+      try {
+        kill(pid, 0);
+        continue;
+      } catch (err) {
+        if (!err || err.code !== 'ESRCH') continue;
+        orphaned = true;
+      }
+    }
+
+    if (orphaned) try { fs.unlinkSync(path.join(logsDir, filename)); } catch {}
+  }
+}
+
 // ── Prune log files older than LOG_RETENTION_DAYS ───────────────────
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
 
 async function pruneLogs() {
+  // The sweep precedes the exclusive storage lock; a second concurrent call in
+  // this process could remove the first call's temp. That is unreachable from
+  // the single startup call site in server/index.js:1261.
+  sweepOrphanedPruneTmpFiles(config.storage.location);
   if (!config.LOG_RETENTION_DAYS || config.LOG_RETENTION_DAYS <= 0) return;
 
   // ponytail: if index is empty/missing, star-protection cascade can't map
@@ -813,4 +849,4 @@ async function pruneLogs() {
   }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };
