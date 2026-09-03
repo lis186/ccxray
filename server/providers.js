@@ -1,5 +1,9 @@
 'use strict';
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
 // Provider launchers are centralized here so startup and hub recovery stay
 // provider-agnostic. Each CLI has its own routing contract for pointing at the
 // ccxray proxy, so new launchers should be additive registry entries instead
@@ -24,6 +28,30 @@ function proxyBaseUrl(port, env, suffix = '') {
   return `http://localhost:${port}${clientRoute}${suffix}`;
 }
 
+function appendAnthropicCustomHeader(launchEnv, header) {
+  const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
+  launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
+    ? `${existing}, ${header}`
+    : header;
+}
+
+// This synchronous read is deliberately confined to launcher construction:
+// the launched account is a session-start snapshot, never a proxy hot-path read.
+// Invariant: account snapshot resolves exactly the way the launched process
+// resolves its config: every input is from launch env, never the parent.
+// os.homedir() is only the no-HOME fallback, matching the child's passwd entry.
+function getClaudeLaunchAccountEmail(env) {
+  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude');
+  try {
+    const config = JSON.parse(fs.readFileSync(path.join(claudeHome, '.claude.json'), 'utf8'));
+    return typeof config.oauthAccount?.emailAddress === 'string'
+      ? config.oauthAccount.emailAddress
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 const AGENT_PROVIDERS = Object.freeze({
   claude: Object.freeze({
     id: 'claude',
@@ -33,14 +61,13 @@ const AGENT_PROVIDERS = Object.freeze({
     installHint: '  npm install -g @anthropic-ai/claude-code',
     createLaunch({ port, args, env }) {
       const launchEnv = { ...env, ANTHROPIC_BASE_URL: proxyBaseUrl(port, env) };
+      // This secret belongs to the ccxray install, not the launched session.
       const token = getUpstreamToken();
       if (token) {
-        const authHeader = `X-Ccxray-Auth: ${token}`;
-        const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
-        launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
-          ? `${existing}, ${authHeader}`
-          : authHeader;
+        appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Auth: ${token}`);
       }
+      const accountEmail = getClaudeLaunchAccountEmail(env);
+      if (accountEmail) appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Account: ${accountEmail}`);
       return { bin: 'claude', args: [...args], env: launchEnv };
     },
   }),

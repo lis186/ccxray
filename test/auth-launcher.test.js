@@ -15,6 +15,9 @@ describe('auth launcher header injection (1.4a)', () => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-auth-launcher-'));
     originalEnv = { ...process.env };
     process.env.CCXRAY_HOME = tmpHome;
+    // The launcher reads this once before spawning Claude. Keep it synthetic so
+    // the test never consults a developer's real Claude config directory.
+    process.env.CLAUDE_CONFIG_DIR = path.join(tmpHome, '.claude');
     // Ensure auth module re-derives from fresh CCXRAY_HOME
     delete require.cache[require.resolve('../server/auth')];
     delete require.cache[require.resolve('../server/providers')];
@@ -39,6 +42,7 @@ describe('auth launcher header injection (1.4a)', () => {
 
       const launch = providers.getAgentLaunch('claude', 5577, ['--continue'], {
         PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
       });
 
       assert.equal(
@@ -55,6 +59,7 @@ describe('auth launcher header injection (1.4a)', () => {
 
       const launch = providers.getAgentLaunch('claude', 5577, [], {
         PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
         ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
       });
 
@@ -62,6 +67,108 @@ describe('auth launcher header injection (1.4a)', () => {
         launch.env.ANTHROPIC_CUSTOM_HEADERS,
         `X-Existing: foo, X-Ccxray-Auth: ${kUp}`
       );
+    });
+
+    it('captures the launch-time Claude OAuth account from the effective config directory', () => {
+      const providers = require('../server/providers');
+      const claudeConfig = path.join(tmpHome, 'launch-claude');
+      fs.mkdirSync(claudeConfig, { recursive: true });
+      // Mirrors the real oauthAccount shape, with entirely synthetic values.
+      fs.writeFileSync(path.join(claudeConfig, '.claude.json'), JSON.stringify({
+        oauthAccount: {
+          accountUuid: '00000000-0000-4000-8000-000000000001',
+          emailAddress: 'a@example.com',
+          organizationUuid: '00000000-0000-4000-8000-000000000002',
+          hasExtraUsageEnabled: false,
+          billingType: 'subscription',
+          accountCreatedAt: '2026-01-02T03:04:05.000Z',
+          subscriptionCreatedAt: '2026-01-03T04:05:06.000Z',
+          displayName: 'Dev Example',
+          fullName: 'Dev Example',
+          profileFetchedAt: 1770000000000,
+          organizationRole: 'member',
+          organizationName: 'Example Org',
+          organizationType: 'team',
+          organizationRateLimitTier: 'standard',
+          ccOnboardingFlags: null,
+          claudeCodeTrialEndsAt: null,
+          claudeCodeTrialDurationDays: null,
+          seatTier: null,
+          workspaceRole: null,
+          userRateLimitTier: null,
+        },
+      }));
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: claudeConfig,
+        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
+      });
+
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Existing: foo/);
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Auth: /);
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: a@example\.com$/);
+    });
+
+    it('uses the launch environment config over the parent process config', () => {
+      const providers = require('../server/providers');
+      const processConfig = path.join(tmpHome, 'process-claude');
+      const launchConfig = path.join(tmpHome, 'launch-claude');
+      process.env.CLAUDE_CONFIG_DIR = processConfig;
+      fs.mkdirSync(processConfig, { recursive: true });
+      fs.mkdirSync(launchConfig, { recursive: true });
+      fs.writeFileSync(path.join(processConfig, '.claude.json'), JSON.stringify({
+        oauthAccount: { emailAddress: 'a@example.com' },
+      }));
+      fs.writeFileSync(path.join(launchConfig, '.claude.json'), JSON.stringify({
+        oauthAccount: { emailAddress: 'b@example.com' },
+      }));
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: launchConfig,
+      });
+
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: b@example\.com$/);
+    });
+
+    it('uses the launch HOME config when no launch config directory is supplied', () => {
+      const providers = require('../server/providers');
+      const parentHome = path.join(tmpHome, 'parent-home');
+      const launchHome = path.join(tmpHome, 'launch-home');
+      process.env.HOME = parentHome;
+      for (const [home, emailAddress] of [
+        [parentHome, 'parent@example.com'],
+        [launchHome, 'launch@example.com'],
+      ]) {
+        const claudeConfig = path.join(home, '.claude');
+        fs.mkdirSync(claudeConfig, { recursive: true });
+        fs.writeFileSync(path.join(claudeConfig, '.claude.json'), JSON.stringify({
+          oauthAccount: { emailAddress },
+        }));
+      }
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        HOME: launchHome,
+      });
+
+      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: launch@example\.com$/);
+    });
+
+    it('skips a malformed launch config without preventing Claude from starting', () => {
+      const providers = require('../server/providers');
+      const claudeConfig = path.join(tmpHome, 'malformed-claude');
+      fs.mkdirSync(claudeConfig, { recursive: true });
+      fs.writeFileSync(path.join(claudeConfig, '.claude.json'), '{not json');
+
+      const launch = providers.getAgentLaunch('claude', 5577, [], {
+        PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: claudeConfig,
+      });
+
+      assert.equal(launch.bin, 'claude');
+      assert.doesNotMatch(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account:/);
     });
   });
 
@@ -143,7 +250,10 @@ describe('auth launcher header injection (1.4a)', () => {
 
       try {
         const providers = require('../server/providers');
-        const launch = providers.getAgentLaunch('claude', 5577, [], { PATH: '/usr/bin' });
+        const launch = providers.getAgentLaunch('claude', 5577, [], {
+          PATH: '/usr/bin',
+          CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
+        });
 
         assert.ok(launch, 'launch should not be null');
         assert.equal(launch.bin, 'claude');

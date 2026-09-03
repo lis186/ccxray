@@ -54,6 +54,10 @@ const INDEX_FIELDS = [
   // Keep the sources distinct: cost-state is session-local; settings is a
   // mutable home-level fallback. Both are omitted when absent.
   'imported1mCostState','imported1mSettings',
+  // #611: Claude OAuth account logged in when this session was launched. This
+  // is a launch-time snapshot, not a per-request fact; unlike userEmail above,
+  // it never comes from CCXRAY_USER_EMAIL deployment identity.
+  'accountEmail','accountDomain',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
