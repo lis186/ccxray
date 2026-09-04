@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
+const { retentionDays, retentionCutoffDate, taipeiDate } = require('./retention');
 // INVARIANT(ADR 0017): the human aggregate below must render through the shared
 // fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
 // top-level DOM), so the server reads the SAME thresholds the dashboard and the
@@ -75,6 +76,19 @@ function dedupeEntries(entries) {
   // mergeByResponseId deliberately folds into its canonical object. Usage is a
   // read-only command, so merge cloned index summaries and leave callers intact.
   return mergeByResponseId(structuredClone(entries));
+}
+
+const RETENTION_WARNING = 'Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.';
+
+function retentionStatus({ since = null, now = new Date(), env = process.env } = {}) {
+  // This is the display seam only. retentionDays() returns NaN for a malformed
+  // setting AND for one beyond the supported window, so config/prune keep their
+  // safe no-op behavior in both cases; `null` here covers both.
+  const parsedDays = retentionDays(env);
+  const days = Number.isFinite(parsedDays) ? parsedDays : null;
+  const cutoff = days > 0 ? retentionCutoffDate(days, now) : null;
+  const warning = cutoff && (since === null || taipeiDate(since) < cutoff) ? RETENTION_WARNING : null;
+  return { days, cutoff, warning };
 }
 
 async function run(argv) {
@@ -173,15 +187,31 @@ async function run(argv) {
   if (args.cwds.length >= 2) {
     const groups = {};
     for (const e of entries) { const k = e.cwd || 'unknown'; if (!groups[k]) groups[k] = []; groups[k].push(e); }
-    const rows = Object.entries(groups).map(([cwd, es]) => {
+    // No retention opts here on purpose: a group's retention fields are never
+    // emitted, so forwarding `since` into them would be dead code no test could
+    // pin. The query-wide verdict below is the only one rendered — a future reader
+    // wanting retention per row must read `meta`, not re-derive it here.
+    const projects = Object.entries(groups).map(([cwd, es]) => {
       const r = analyze(es);
       return { cwd, cost: r.meta.totalCost, sessions: r.meta.totalSessions, turns: r.meta.totalEntries, cacheHit: r.cache.hitRate };
     }).sort((a, b) => b.cost - a.cost);
-    if (args.json) { console.log(JSON.stringify(rows)); }
+    // These per-project totals sit behind the same retention window as the
+    // single-scope ones, so they need the same disclosure. Reporting it ONCE at the
+    // top level (rather than duplicating it onto every row) keeps a global signal
+    // out of the per-project channel — the same separation ADR 0017 draws between
+    // retention completeness and cost confidence.
+    const retention = retentionStatus({ since: args.since });
+    const meta = {
+      retentionDays: retention.days,
+      retentionCutoff: retention.cutoff,
+      ...(retention.warning ? { retentionWarning: retention.warning } : {}),
+    };
+    if (args.json) { console.log(JSON.stringify({ projects, meta })); }
     else {
-      const B = '\x1b[1m', R = '\x1b[0m';
+      const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
       console.log(`\n${B}Project Comparison${R}`);
-      for (const r of rows) console.log(`  ${r.cwd}  $${r.cost}  ${r.sessions} sessions  ${r.turns} turns  cache ${(r.cacheHit * 100).toFixed(1)}%`);
+      for (const r of projects) console.log(`  ${r.cwd}  $${r.cost}  ${r.sessions} sessions  ${r.turns} turns  cache ${(r.cacheHit * 100).toFixed(1)}%`);
+      if (meta.retentionWarning) console.log(`${D}${meta.retentionWarning}${R}`);
       console.log();
     }
     return;
@@ -209,6 +239,7 @@ async function run(argv) {
 
 function analyze(entries, opts = {}) {
   entries = dedupeEntries(entries);
+  const retention = retentionStatus(opts);
   const timestamps = [];
   const byProvider = {};
   const bySession = {};
@@ -292,6 +323,9 @@ function analyze(entries, opts = {}) {
     totalEntries: entries.length,
     totalSessions: sessionCount,
     totalCost: +totalCost.toFixed(2),
+    retentionDays: retention.days,
+    retentionCutoff: retention.cutoff,
+    ...(retention.warning ? { retentionWarning: retention.warning } : {}),
     timeRange: {
       from: timestamps[0] ? new Date(timestamps[0]).toISOString() : null,
       to: timestamps.at(-1) ? new Date(timestamps.at(-1)).toISOString() : null,
@@ -523,7 +557,7 @@ function printHuman(r) {
   const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
 
   console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · $${r.meta.totalCost}`);
-  console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${R}\n`);
+  console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${r.meta.retentionWarning ? ` — ${r.meta.retentionWarning}` : ''}${R}\n`);
 
   console.log(`${B}Sessions${R}`);
   for (const [p, n] of Object.entries(r.sessions.byProvider)) console.log(`  ${p}: ${n} turns`);
