@@ -2,6 +2,7 @@
 
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
+const { retentionDays } = require('./retention');
 
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
@@ -278,7 +279,7 @@ function joinUpstreamPath(upstream, requestUrl) {
   return basePath + (urlPath.startsWith('/') ? urlPath : `/${urlPath}`);
 }
 const LOGS_DIR = resolveLogsDir();
-const LOG_RETENTION_DAYS = parseInt(process.env.LOG_RETENTION_DAYS || '14', 10);
+const LOG_RETENTION_DAYS = retentionDays();
 const MAX_SSE_PER_IP = parseInt(process.env.CCXRAY_SSE_MAX_PER_IP || '20', 10);
 // ponytail: aligned with LOG_RETENTION_DAYS so the index is a cache, not a sole record
 const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS), 10);

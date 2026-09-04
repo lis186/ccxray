@@ -14,6 +14,7 @@ const { normalizeUsageForProvider } = require('./providers');
 const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
+const { retentionCutoffDate } = require('./retention');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -224,9 +225,7 @@ async function restoreFromLogs() {
   // sessions.json) re-stream via streamAllMetas() generator instead.
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - config.RESTORE_DAYS);
-    cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
+    cutoffStr = retentionCutoffDate(config.RESTORE_DAYS);
   }
   const stars = readStarsSafe();
   const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
@@ -681,9 +680,7 @@ async function pruneLogs() {
     return;
   }
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - config.LOG_RETENTION_DAYS);
-  const cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
+  const cutoffStr = retentionCutoffDate(config.LOG_RETENTION_DAYS);
 
   // Baseline: in-memory entries are always protected (existing behavior).
   // After star-aware restoreFromLogs, this already includes most starred

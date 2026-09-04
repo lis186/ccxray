@@ -53,6 +53,7 @@ the rounding cap is the contract.
 ```jsonc
 {
   "meta":     { "totalEntries": 0, "totalSessions": 0, "totalCost": 0,
+                "retentionDays": 14, "retentionCutoff": "YYYY-MM-DD",
                 "timeRange": { "from": "ISO|null", "to": "ISO|null" } },
   "sessions": { "count": 0, "byProvider": { "<provider>": 0 },
                 "subagentRatio": 0,
@@ -76,6 +77,9 @@ the rounding cap is the contract.
 | `totalEntries` | number | Count of entries (turns) after all filters. |
 | `totalSessions` | number | Distinct `sessionId` count. Entries with no session id collapse into one `"unknown"` bucket, which counts here. |
 | `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. |
+| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means `LOG_RETENTION_DAYS` is non-numeric; retention is inactive, so no cutoff or warning is produced. |
+| `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
+| `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
 | `timeRange.from` | string \| null | Earliest `receivedAt` as ISO 8601, or `null` if no timestamps. |
 | `timeRange.to` | string \| null | Latest `receivedAt` as ISO 8601, or `null`. |
 
@@ -287,6 +291,10 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 
 ## Changelog
 
+- **2026-09-04** — Added `meta.retentionDays`, `meta.retentionCutoff`, and the
+  conditional `meta.retentionWarning`. The human time-range line now gives the
+  same lower-bound warning when the requested range reaches before retention.
+  A non-numeric `LOG_RETENTION_DAYS` is represented as `retentionDays: null`.
 - **2026-06-21** (Claude, Opus 4.8) — Initial schema reference for
   `ccxray usage --json` as shipped in PR #94. Documents the single-scope object,
   multi-cwd array, and error object, plus filter semantics and per-field

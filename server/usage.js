@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
+const { retentionDays, retentionCutoffDate, taipeiDate } = require('./retention');
 // INVARIANT(ADR 0017): the human aggregate below must render through the shared
 // fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
 // top-level DOM), so the server reads the SAME thresholds the dashboard and the
@@ -75,6 +76,18 @@ function dedupeEntries(entries) {
   // mergeByResponseId deliberately folds into its canonical object. Usage is a
   // read-only command, so merge cloned index summaries and leave callers intact.
   return mergeByResponseId(structuredClone(entries));
+}
+
+const RETENTION_WARNING = 'Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.';
+
+function retentionStatus({ since = null, now = new Date(), env = process.env } = {}) {
+  // This is the display seam only. retentionDays() deliberately preserves a
+  // malformed setting as NaN so config/prune keep their safe no-op behavior.
+  const parsedDays = retentionDays(env);
+  const days = Number.isFinite(parsedDays) ? parsedDays : null;
+  const cutoff = days > 0 ? retentionCutoffDate(days, now) : null;
+  const warning = cutoff && (since === null || taipeiDate(since) < cutoff) ? RETENTION_WARNING : null;
+  return { days, cutoff, warning };
 }
 
 async function run(argv) {
@@ -209,6 +222,7 @@ async function run(argv) {
 
 function analyze(entries, opts = {}) {
   entries = dedupeEntries(entries);
+  const retention = retentionStatus(opts);
   const timestamps = [];
   const byProvider = {};
   const bySession = {};
@@ -292,6 +306,9 @@ function analyze(entries, opts = {}) {
     totalEntries: entries.length,
     totalSessions: sessionCount,
     totalCost: +totalCost.toFixed(2),
+    retentionDays: retention.days,
+    retentionCutoff: retention.cutoff,
+    ...(retention.warning ? { retentionWarning: retention.warning } : {}),
     timeRange: {
       from: timestamps[0] ? new Date(timestamps[0]).toISOString() : null,
       to: timestamps.at(-1) ? new Date(timestamps.at(-1)).toISOString() : null,
@@ -523,7 +540,7 @@ function printHuman(r) {
   const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
 
   console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · $${r.meta.totalCost}`);
-  console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${R}\n`);
+  console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${r.meta.retentionWarning ? ` — ${r.meta.retentionWarning}` : ''}${R}\n`);
 
   console.log(`${B}Sessions${R}`);
   for (const [p, n] of Object.entries(r.sessions.byProvider)) console.log(`  ${p}: ${n} turns`);

@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { analyze } = require('../server/usage');
+const { buildIndexLine } = require('../server/entry');
 
 // Deterministic CLI fixture: an isolated CCXRAY_HOME with a known index so the
 // e2e tests don't depend on the runner's real ~/.ccxray (which is empty in CI).
@@ -27,7 +28,7 @@ process.on('exit', () => { try { fs.rmSync(FIX_HOME, { recursive: true, force: t
 
 const cli = (...args) => execFileSync(
   process.execPath, ['server/index.js', 'usage', ...args],
-  { env: { ...process.env, CCXRAY_HOME: FIX_HOME }, timeout: 10000 }
+  { env: { ...process.env, CCXRAY_HOME: FIX_HOME, LOG_RETENTION_DAYS: '14' }, timeout: 10000 }
 ).toString();
 
 const cliErr = (...args) => {
@@ -43,6 +44,34 @@ const entry = (overrides = {}) => ({
   cost: { cost: 0.5 }, sysHash: 'aaa', toolsHash: 'bbb', coreHash: 'ccc',
   toolFail: false, ...overrides,
 });
+
+const SYNTHETIC_RETENTION_NOW = new Date('2026-03-15T20:30:00.000Z');
+const syntheticIndexEntry = (overrides = {}) => JSON.parse(buildIndexLine({
+  id: '2026-03-16T04-30-00-000', ts: '04:30:00',
+  sessionId: 'synthetic-session-0001', provider: 'synthetic-provider',
+  agent: 'synthetic-agent', model: 'synthetic-model', msgCount: 1, toolCount: 0,
+  toolCalls: {}, isSubagent: false, cwd: '/synthetic/project',
+  receivedAt: SYNTHETIC_RETENTION_NOW.getTime(), usage: {
+    input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0,
+  },
+  cost: { cost: 0.01 }, title: 'Synthetic usage turn', sysHash: 'synthetic-sys',
+  toolsHash: 'synthetic-tools', coreHash: 'synthetic-core', toolFail: false,
+  ...overrides,
+}));
+
+function syntheticUsageHome(entries) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-usage-retention-'));
+  fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+  return home;
+}
+
+function retentionCli(home, env, ...args) {
+  return execFileSync(
+    process.execPath, ['server/index.js', 'usage', ...args],
+    { env: { ...process.env, CCXRAY_HOME: home, ...env }, timeout: 10000 },
+  ).toString();
+}
 
 describe('usage analyze', () => {
   it('computes meta from entries', () => {
@@ -215,6 +244,94 @@ describe('usage analyze', () => {
     ]);
     const s = r.sessions.topSessions.find(s => s.sessionId === 'titled');
     assert.equal(s.title, 'Fix login bug');
+  });
+});
+
+describe('usage retention disclosure', () => {
+  it('warns all-time despite only surviving post-cutoff data (fail-on-old differential)', () => {
+    const result = analyze([syntheticIndexEntry()], {
+      env: { LOG_RETENTION_DAYS: '14' }, now: SYNTHETIC_RETENTION_NOW,
+    });
+    const expectedCutoff = new Date(SYNTHETIC_RETENTION_NOW);
+    expectedCutoff.setDate(expectedCutoff.getDate() - 14);
+    const expectedCutoffDate = expectedCutoff
+      .toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' })
+      .slice(0, 10);
+
+    assert.equal(result.meta.retentionDays, 14);
+    assert.equal(result.meta.retentionCutoff, expectedCutoffDate);
+    assert.ok(result.meta.timeRange.from > `${expectedCutoffDate}T00:00:00.000Z`, 'surviving data is newer than the cutoff');
+    assert.match(result.meta.retentionWarning, /older history may have been removed by retention/i);
+    assert.match(result.meta.retentionWarning, /lower bound/i);
+  });
+
+  it('warns only when a requested --last start has a Taipei date before the cutoff', () => {
+    const base = { env: { LOG_RETENTION_DAYS: '14' }, now: SYNTHETIC_RETENTION_NOW };
+    const atCutoff = analyze([syntheticIndexEntry()], {
+      ...base, since: Date.parse('2026-03-01T16:00:00.000Z'), // 2026-03-02 in Taipei
+    });
+    const beforeCutoff = analyze([syntheticIndexEntry()], {
+      ...base, since: Date.parse('2026-03-01T15:59:59.999Z'), // 2026-03-01 in Taipei
+    });
+
+    assert.equal(Object.hasOwn(atCutoff.meta, 'retentionWarning'), false);
+    assert.match(beforeCutoff.meta.retentionWarning, /reliable retention window/i);
+  });
+
+  it('keeps retentionDays but disables the cutoff warning when retention is disabled', () => {
+    const result = analyze([syntheticIndexEntry()], {
+      env: { LOG_RETENTION_DAYS: '0' }, now: SYNTHETIC_RETENTION_NOW,
+    });
+
+    assert.equal(result.meta.retentionDays, 0);
+    assert.equal(result.meta.retentionCutoff, null);
+    assert.equal(Object.hasOwn(result.meta, 'retentionWarning'), false);
+  });
+
+  it('publishes a malformed retention setting as null without a cutoff or warning', () => {
+    const result = analyze([syntheticIndexEntry()], {
+      env: { LOG_RETENTION_DAYS: 'not-a-number' }, now: SYNTHETIC_RETENTION_NOW,
+    });
+    assert.equal(result.meta.retentionDays, null);
+    assert.equal(result.meta.retentionCutoff, null);
+    assert.equal(Object.hasOwn(result.meta, 'retentionWarning'), false);
+
+    const home = syntheticUsageHome([syntheticIndexEntry()]);
+    try {
+      const json = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: 'not-a-number' }, '--json'));
+      assert.equal(Object.hasOwn(json.meta, 'retentionDays'), true);
+      assert.equal(json.meta.retentionDays, null);
+      assert.equal(json.meta.retentionCutoff, null);
+      assert.equal(Object.hasOwn(json.meta, 'retentionWarning'), false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('renders the same retention warning in JSON and the human time-range line', () => {
+    const now = Date.now();
+    const home = syntheticUsageHome([syntheticIndexEntry({
+      id: '2099-01-01T00-00-00-000', receivedAt: now - 1000,
+    })]);
+    try {
+      const json = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--json'));
+      const human = retentionCli(home, { LOG_RETENTION_DAYS: '14' });
+      const currentWindowJson = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--json', '--last', '1h'));
+      const currentWindowHuman = retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--last', '1h');
+      const disabledJson = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '0' }, '--json'));
+      const disabledHuman = retentionCli(home, { LOG_RETENTION_DAYS: '0' });
+
+      assert.match(json.meta.retentionWarning, /lower bound/i);
+      assert.match(human, /\d{4}-\d{2}-\d{2} → \d{4}-\d{2}-\d{2} — Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND\./);
+      assert.ok(human.includes(json.meta.retentionWarning), 'human output must render the JSON warning verbatim');
+      assert.equal(Object.hasOwn(currentWindowJson.meta, 'retentionWarning'), false);
+      assert.doesNotMatch(currentWindowHuman, /lower bound/i);
+      assert.equal(disabledJson.meta.retentionDays, 0);
+      assert.equal(Object.hasOwn(disabledJson.meta, 'retentionWarning'), false);
+      assert.doesNotMatch(disabledHuman, /lower bound/i);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
@@ -483,10 +600,13 @@ describe('usage --json shape contract', () => {
 
   it('meta has the documented shape', () => {
     const { meta } = JSON.parse(cli('--json'));
-    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'timeRange']);
+    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'retentionDays', 'retentionCutoff', 'retentionWarning', 'timeRange']);
     assert.equal(typeof meta.totalEntries, 'number');
     assert.equal(typeof meta.totalSessions, 'number');
     assert.equal(typeof meta.totalCost, 'number');
+    assert.equal(typeof meta.retentionDays, 'number');
+    assert.equal(typeof meta.retentionCutoff, 'string');
+    assert.equal(typeof meta.retentionWarning, 'string');
     sameKeys(meta.timeRange, ['from', 'to']);
     // ISO strings here (every fixture entry has receivedAt); null only when absent.
     assert.equal(typeof meta.timeRange.from, 'string');
