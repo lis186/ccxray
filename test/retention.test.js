@@ -2,6 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('fs');
 const path = require('path');
 const { retentionDays, retentionCutoffDate, taipeiDate } = require('../server/retention');
@@ -22,6 +23,23 @@ describe('retention', () => {
     assert.deepEqual(cutoffCalls, ['RESTORE_DAYS', 'LOG_RETENTION_DAYS']);
     assert.match(configSource, /const LOG_RETENTION_DAYS = retentionDays\(\);/);
     assert.doesNotMatch(configSource, /LOG_RETENTION_DAYS \|\| '14'/);
+  });
+
+  it('subtracts retention in local calendar days across DST', () => {
+    // This discriminates calendar-day setDate(getDate() - days) (→ "2026-03-08")
+    // from fixed now - days * 86400000 (→ "2026-03-07"). A DST-observing TZ is
+    // mandatory: Asia/Taipei has no DST, so it cannot distinguish the algorithms.
+    const child = spawnSync(process.execPath, ['-e', `
+      const { retentionCutoffDate } = require('../server/retention');
+      process.stdout.write(retentionCutoffDate(1, new Date('2026-03-08T15:30:00.000Z')));
+    `], {
+      cwd: __dirname,
+      env: { ...process.env, TZ: 'America/Los_Angeles' },
+      encoding: 'utf8',
+    });
+
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, '2026-03-08');
   });
 
   it('does not normalize malformed retention settings, so pruning stays a no-op', () => {

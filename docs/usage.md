@@ -54,6 +54,7 @@ the rounding cap is the contract.
 {
   "meta":     { "totalEntries": 0, "totalSessions": 0, "totalCost": 0,
                 "retentionDays": 14, "retentionCutoff": "YYYY-MM-DD",
+                "retentionWarning": "older history may have been removed; totals are a lower bound",
                 "timeRange": { "from": "ISO|null", "to": "ISO|null" } },
   "sessions": { "count": 0, "byProvider": { "<provider>": 0 },
                 "subagentRatio": 0,

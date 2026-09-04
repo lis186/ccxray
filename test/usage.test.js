@@ -249,7 +249,13 @@ describe('usage analyze', () => {
 
 describe('usage retention disclosure', () => {
   it('warns all-time despite only surviving post-cutoff data (fail-on-old differential)', () => {
-    const result = analyze([syntheticIndexEntry()], {
+    const oldest = syntheticIndexEntry({
+      id: '2026-03-03T00-00-00-000', receivedAt: Date.parse('2026-03-03T00:00:00.000Z'),
+    });
+    const newest = syntheticIndexEntry({
+      id: '2026-03-16T04-30-00-000', receivedAt: SYNTHETIC_RETENTION_NOW.getTime(),
+    });
+    const result = analyze([newest, oldest], {
       env: { LOG_RETENTION_DAYS: '14' }, now: SYNTHETIC_RETENTION_NOW,
     });
     const expectedCutoff = new Date(SYNTHETIC_RETENTION_NOW);
@@ -260,7 +266,10 @@ describe('usage retention disclosure', () => {
 
     assert.equal(result.meta.retentionDays, 14);
     assert.equal(result.meta.retentionCutoff, expectedCutoffDate);
-    assert.ok(result.meta.timeRange.from > `${expectedCutoffDate}T00:00:00.000Z`, 'surviving data is newer than the cutoff');
+    assert.ok(new Date(oldest.receivedAt).toISOString() > `${expectedCutoffDate}T00:00:00.000Z`, 'oldest surviving data is newer than the cutoff');
+    assert.ok(new Date(newest.receivedAt).toISOString() > `${expectedCutoffDate}T00:00:00.000Z`, 'newest surviving data is newer than the cutoff');
+    assert.equal(result.meta.timeRange.from, new Date(oldest.receivedAt).toISOString());
+    assert.equal(result.meta.timeRange.to, new Date(newest.receivedAt).toISOString());
     assert.match(result.meta.retentionWarning, /older history may have been removed by retention/i);
     assert.match(result.meta.retentionWarning, /lower bound/i);
   });
