@@ -108,6 +108,13 @@ describe('retention', () => {
       assert.equal(parsed.restoreDays, 7);
       assert.equal(parsed.threw, null);
       assert.match(parsed.cutoff, /^\d{4}-\d{2}-\d{2}$/);
+
+      // Unset RESTORE_DAYS must still INHERIT LOG_RETENTION_DAYS. Bounding the
+      // parse is not enough on its own: dropping the fallback would silently widen
+      // the restore window to unlimited, which no other assertion here notices.
+      const inherited = probe({ RESTORE_DAYS: '', LOG_RETENTION_DAYS: '7' });
+      assert.equal(inherited.status, 0, inherited.stderr);
+      assert.equal(JSON.parse(inherited.stdout).restoreDays, 7, 'unset RESTORE_DAYS inherits LOG_RETENTION_DAYS');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
