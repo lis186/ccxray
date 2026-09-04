@@ -6,11 +6,12 @@ const TAIPEI_TIME_ZONE = 'Asia/Taipei';
 // everything" — and must be treated as retention OFF rather than fed to the cutoff
 // calculation. Feeding it through produces an out-of-range Date, and the string that
 // used to fall out of that ("Invalid Da") compares ABOVE every real Taipei-dated
-// filename ('I' is 73, '2' is 50), so `filename.slice(0, 10) >= cutoffStr` was
-// false for every file: a
-// plausible "never prune" setting of LOG_RETENTION_DAYS=999999999 silently pruned
-// EVERYTHING. NaN here lands on the same safe no-op path a non-numeric setting takes
-// (`pruneLogs` returns on `!days`, restore skips its window on `days > 0`).
+// filename ('I' is 73, '2' is 50), so the prune keep-condition
+// `filename.slice(0, 10) >= cutoffStr` was false for EVERY file: a plausible
+// "never prune" setting of LOG_RETENTION_DAYS=999999999 silently pruned everything,
+// and restore's mirror condition read every line as out-of-window. NaN here lands on
+// the same safe no-op path a non-numeric setting takes (`pruneLogs` returns on
+// `!days`, restore skips its window on `days > 0`).
 const MAX_RETENTION_DAYS = 36500; // ~100 years
 
 // Every day-count entry point must go through this. Guarding only
