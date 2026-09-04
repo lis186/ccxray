@@ -12,18 +12,20 @@
 //
 // Hard guarantees (issue #48,做法 1):
 //   • merge-only, add-only — ADD lines for ids that have a _req.json on disk but
-//     are missing from the index (the "orphan set"). Existing lines, including
-//     the ~85% whose _req/_res were pruned (LOG_RETENTION_DAYS) while the index
-//     kept the line forever, are copied through verbatim. The index never shrinks
-//     and a present line is never DEGRADED. The one sanctioned overwrite is the
-//     #333 add-only responseId backfill: a legacy line missing the dedup key gets
-//     it appended (all other fields byte-identical) when its _res.json survives —
-//     strictly non-degrading, so #48's intent holds. See ADR 0012.
+//     are missing from the index (the "orphan set"). Existing lines are copied
+//     through verbatim and a present line is never DEGRADED. The one sanctioned
+//     overwrite is the #333 add-only responseId backfill: a legacy line missing
+//     the dedup key gets it appended (all other fields byte-identical) when its
+//     _res.json survives — strictly non-degrading, so #48's intent holds. See
+//     ADR 0012.
 //   • never degrade — a delta turn whose ancestor _req.json was pruned cannot be
 //     fully reconstructed; we SKIP it and count it unrecoverable rather than emit
 //     a truncated line. Rebuild must never produce a worse line than doing nothing.
 //   • atomic — write a temp file, then fs.rename() onto index.ndjson.
 //   • hub-safe — refuse to run while a live hub may be appending concurrently.
+//
+// Retention scope: startup `pruneLogs()` is an independent path that removes
+// unprotected proxy lines whose `_req.json` is gone.
 //
 // Recovers offline: model/usage/cost/maxContext/toolCalls (canonical), cwd (from
 // the rehydrated system prompt — shared sys_*.json files are never pruned),
