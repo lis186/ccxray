@@ -288,13 +288,41 @@ describe('usage retention disclosure', () => {
   });
 
   it('keeps retentionDays but disables the cutoff warning when retention is disabled', () => {
-    const result = analyze([syntheticIndexEntry()], {
-      env: { LOG_RETENTION_DAYS: '0' }, now: SYNTHETIC_RETENTION_NOW,
+    // The documented invariant is `<= 0` disables retention, so 0 alone does not
+    // pin it — a guard that only rejects 0 lets negatives re-enable a cutoff.
+    for (const setting of ['0', '-1', '-14']) {
+      const result = analyze([syntheticIndexEntry()], {
+        env: { LOG_RETENTION_DAYS: setting }, now: SYNTHETIC_RETENTION_NOW,
+      });
+
+      assert.equal(result.meta.retentionDays, Number(setting), `retentionDays preserved for ${setting}`);
+      assert.equal(result.meta.retentionCutoff, null, `no cutoff for ${setting}`);
+      assert.equal(Object.hasOwn(result.meta, 'retentionWarning'), false, `no warning for ${setting}`);
+    }
+  });
+
+  it('never clamps timeRange.from to the cutoff when protected data survives past it', () => {
+    // Star-protected entries outlive the cutoff (restore.js pruneLogs keeps
+    // `protectedIds`), so `from` earlier than the cutoff is a REAL production
+    // state, not a hypothetical. Clamping it to the cutoff — or dropping the
+    // figure — would misreport exactly the users who protected old data. The
+    // warning is the fix; rewriting the number is not.
+    const protectedOld = syntheticIndexEntry({
+      id: '2026-02-20T00-00-00-000', receivedAt: Date.parse('2026-02-20T00:00:00.000Z'),
+    });
+    const recent = syntheticIndexEntry({
+      id: '2026-03-16T04-30-00-000', receivedAt: SYNTHETIC_RETENTION_NOW.getTime(),
+    });
+    const result = analyze([recent, protectedOld], {
+      env: { LOG_RETENTION_DAYS: '14' }, now: SYNTHETIC_RETENTION_NOW,
     });
 
-    assert.equal(result.meta.retentionDays, 0);
-    assert.equal(result.meta.retentionCutoff, null);
-    assert.equal(Object.hasOwn(result.meta, 'retentionWarning'), false);
+    const cutoffISO = `${result.meta.retentionCutoff}T00:00:00.000Z`;
+    assert.ok(new Date(protectedOld.receivedAt).toISOString() < cutoffISO, 'fixture must straddle the cutoff');
+    assert.equal(result.meta.timeRange.from, new Date(protectedOld.receivedAt).toISOString());
+    assert.notEqual(result.meta.timeRange.from, cutoffISO);
+    assert.equal(result.meta.timeRange.to, new Date(recent.receivedAt).toISOString());
+    assert.match(result.meta.retentionWarning, /lower bound/i);
   });
 
   it('publishes a malformed retention setting as null without a cutoff or warning', () => {
@@ -333,6 +361,18 @@ describe('usage retention disclosure', () => {
       assert.match(json.meta.retentionWarning, /lower bound/i);
       assert.match(human, /\d{4}-\d{2}-\d{2} → \d{4}-\d{2}-\d{2} — Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND\./);
       assert.ok(human.includes(json.meta.retentionWarning), 'human output must render the JSON warning verbatim');
+
+      // INVARIANT(ADR 0017): retention completeness rides the time-range line ONLY.
+      // The aggregate cost above it is a different axis (cost confidence); leaking
+      // the retention warning onto it smuggles one signal into the other's channel.
+      // Asserting mere presence cannot catch that — count and locate it instead.
+      const plain = human.replace(/\x1b\[[0-9;]*m/g, '');
+      const carrying = plain.split('\n').filter(l => l.includes(json.meta.retentionWarning));
+      assert.equal(carrying.length, 1, 'warning must appear on exactly one line');
+      assert.match(carrying[0], /\d{4}-\d{2}-\d{2} → \d{4}-\d{2}-\d{2}/, 'the carrying line must be the time-range line');
+      const aggregate = plain.split('\n').find(l => l.includes('entries ·'));
+      assert.ok(aggregate, 'aggregate header line must exist');
+      assert.doesNotMatch(aggregate, /lower bound/i, 'aggregate cost header must stay free of the retention warning');
       assert.equal(Object.hasOwn(currentWindowJson.meta, 'retentionWarning'), false);
       assert.doesNotMatch(currentWindowHuman, /lower bound/i);
       assert.equal(disabledJson.meta.retentionDays, 0);
@@ -716,8 +756,15 @@ describe('usage --json shape contract', () => {
     }
   });
 
-  it('multi-cwd mode returns an array of the documented row shape, cost-desc', () => {
-    const rows = JSON.parse(cli('--json', '--cwd', '/work,/other'));
+  it('multi-cwd mode returns { projects, meta } with the documented row shape, cost-desc', () => {
+    const out = JSON.parse(cli('--json', '--cwd', '/work,/other'));
+    sameKeys(out, ['projects', 'meta']);
+    // Retention is reported ONCE for the query, never duplicated per project.
+    sameKeys(out.meta, ['retentionDays', 'retentionCutoff', 'retentionWarning']);
+    assert.equal(typeof out.meta.retentionDays, 'number');
+    assert.equal(typeof out.meta.retentionCutoff, 'string');
+    assert.equal(typeof out.meta.retentionWarning, 'string');
+    const rows = out.projects;
     assert.ok(Array.isArray(rows) && rows.length > 0);
     for (const row of rows) {
       sameKeys(row, ['cwd', 'cost', 'sessions', 'turns', 'cacheHit']);
@@ -728,6 +775,40 @@ describe('usage --json shape contract', () => {
       assert.equal(typeof row.cacheHit, 'number');
     }
     for (let i = 1; i < rows.length; i++) assert.ok(rows[i - 1].cost >= rows[i].cost);
+  });
+
+  it('discloses retention on the multi-cwd comparison in BOTH renderers', () => {
+    // #619 is about undisclosed all-time totals. The comparison table presents the
+    // same incomplete totals, so leaving it silent fixes only one of the two
+    // surfaces an agent can read. A synthetic home (not the shared fixture) is used
+    // so the `--last` window below actually matches entries.
+    const now = Date.now();
+    const home = syntheticUsageHome([
+      syntheticIndexEntry({ id: '2099-01-01T00-00-00-000', receivedAt: now - 1000, cwd: '/work/alpha', sessionId: 'synthetic-a' }),
+      syntheticIndexEntry({ id: '2099-01-01T00-00-01-000', receivedAt: now - 2000, cwd: '/work/beta', sessionId: 'synthetic-b' }),
+    ]);
+    try {
+      const strip = t => t.replace(/\x1b\[[0-9;]*m/g, '');
+      const out = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--json', '--cwd', '/work/alpha,/work/beta'));
+      const plain = strip(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--cwd', '/work/alpha,/work/beta'));
+
+      assert.equal(out.projects.length, 2);
+      assert.match(out.meta.retentionWarning, /lower bound/i);
+      assert.ok(plain.includes(out.meta.retentionWarning), 'human comparison must render the JSON warning verbatim');
+      // The warning belongs to the query, so it must NOT ride any project row.
+      const rowLines = plain.split('\n').filter(l => l.includes('$'));
+      assert.equal(rowLines.length, 2, 'both project rows must render');
+      for (const row of rowLines) assert.doesNotMatch(row, /lower bound/i, 'project rows must stay free of the retention warning');
+      for (const row of out.projects) assert.equal(Object.hasOwn(row, 'retentionWarning'), false);
+
+      // A window starting after the cutoff is complete — no warning on either side.
+      const recent = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--json', '--cwd', '/work/alpha,/work/beta', '--last', '1h'));
+      assert.equal(recent.projects.length, 2, 'the 1h window must still match both projects');
+      assert.equal(Object.hasOwn(recent.meta, 'retentionWarning'), false);
+      assert.doesNotMatch(strip(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--cwd', '/work/alpha,/work/beta', '--last', '1h')), /lower bound/i);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('error object is exactly { error, hint }', () => {

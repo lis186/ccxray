@@ -186,15 +186,31 @@ async function run(argv) {
   if (args.cwds.length >= 2) {
     const groups = {};
     for (const e of entries) { const k = e.cwd || 'unknown'; if (!groups[k]) groups[k] = []; groups[k].push(e); }
-    const rows = Object.entries(groups).map(([cwd, es]) => {
-      const r = analyze(es);
+    // `since` is forwarded so each group's retention verdict matches the range the
+    // user actually asked for. The per-row retention fields stay unread — retention
+    // is a property of the QUERY, not of any one project — but a group computing it
+    // as all-time under a `--last` window would be a trap for the next reader.
+    const projects = Object.entries(groups).map(([cwd, es]) => {
+      const r = analyze(es, { since: args.since });
       return { cwd, cost: r.meta.totalCost, sessions: r.meta.totalSessions, turns: r.meta.totalEntries, cacheHit: r.cache.hitRate };
     }).sort((a, b) => b.cost - a.cost);
-    if (args.json) { console.log(JSON.stringify(rows)); }
+    // These per-project totals sit behind the same retention window as the
+    // single-scope ones, so they need the same disclosure. Reporting it ONCE at the
+    // top level (rather than duplicating it onto every row) keeps a global signal
+    // out of the per-project channel — the same separation ADR 0017 draws between
+    // retention completeness and cost confidence.
+    const retention = retentionStatus({ since: args.since });
+    const meta = {
+      retentionDays: retention.days,
+      retentionCutoff: retention.cutoff,
+      ...(retention.warning ? { retentionWarning: retention.warning } : {}),
+    };
+    if (args.json) { console.log(JSON.stringify({ projects, meta })); }
     else {
-      const B = '\x1b[1m', R = '\x1b[0m';
+      const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
       console.log(`\n${B}Project Comparison${R}`);
-      for (const r of rows) console.log(`  ${r.cwd}  $${r.cost}  ${r.sessions} sessions  ${r.turns} turns  cache ${(r.cacheHit * 100).toFixed(1)}%`);
+      for (const r of projects) console.log(`  ${r.cwd}  $${r.cost}  ${r.sessions} sessions  ${r.turns} turns  cache ${(r.cacheHit * 100).toFixed(1)}%`);
+      if (meta.retentionWarning) console.log(`${D}${meta.retentionWarning}${R}`);
       console.log();
     }
     return;
