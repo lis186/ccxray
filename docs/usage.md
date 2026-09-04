@@ -79,7 +79,7 @@ the rounding cap is the contract.
 | `totalEntries` | number | Count of entries (turns) after all filters. |
 | `totalSessions` | number | Distinct `sessionId` count. Entries with no session id collapse into one `"unknown"` bucket, which counts here. |
 | `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. |
-| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means `LOG_RETENTION_DAYS` is non-numeric; retention is inactive, so no cutoff or warning is produced. |
+| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is non-numeric **or** beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
 | `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
 | `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
 | `timeRange.from` | string \| null | Earliest `receivedAt` as ISO 8601, or `null` if no timestamps. |
@@ -216,10 +216,10 @@ ones and would otherwise be presented as exact.
 | Field | Type | Notes |
 |-------|------|-------|
 | `cwd` | string | Working directory (group key). Always a real path — the `--cwd` filter that triggers this mode drops entries with no cwd, so no `"unknown"` row appears here. |
-| `cost` | number | `meta.totalCost` for that group, **2 dp**. |
-| `sessions` | number | `meta.totalSessions` for that group. |
-| `turns` | number | `meta.totalEntries` for that group. |
-| `cacheHit` | number | `cache.hitRate` for that group, **3 dp**. |
+| `cost` | number | That group's own single-scope `meta.totalCost`, **2 dp**. Not a field of the top-level `meta` above, which carries only the retention triple. |
+| `sessions` | number | That group's own single-scope `meta.totalSessions`. |
+| `turns` | number | That group's own single-scope `meta.totalEntries`. |
+| `cacheHit` | number | That group's own `cache.hitRate`, **3 dp**. |
 
 The grouping is over the entries that already passed `--last`/`--cwd`/`--session`
 filtering, so every matched cwd that survived appears as one row.
@@ -314,7 +314,9 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
   `{ projects, meta }` so the same disclosure reaches that surface — its totals
   sit behind the same retention window and were previously presented as exact.
   `--last` is now forwarded into the comparison's retention verdict, which
-  previously judged every window as all-time. The cutoff is also now computed in
+  previously judged every window as all-time. A `LOG_RETENTION_DAYS` beyond the
+  supported window is now treated as retention off; previously such a value fed
+  an out-of-range date into the cutoff and pruned every log file. The cutoff is also now computed in
   the Taipei calendar rather than the host's, so it no longer depends on where
   the process runs (unchanged on a Taipei or UTC host; a DST-observing host
   previously drifted by a day around its transitions).

@@ -2,8 +2,19 @@
 
 const TAIPEI_TIME_ZONE = 'Asia/Taipei';
 
+// A window this wide cannot exclude anything, so a value beyond it means "retain
+// everything" — and must be treated as retention OFF rather than fed to the cutoff
+// calculation. Feeding it through produces an out-of-range Date, and the string that
+// used to fall out of that ("Invalid Da") compares BELOW every real Taipei-dated
+// filename, so `filename.slice(0, 10) >= cutoffStr` was false for every file: a
+// plausible "never prune" setting of LOG_RETENTION_DAYS=999999999 silently pruned
+// EVERYTHING. NaN here lands on the same safe no-op path a non-numeric setting takes
+// (`pruneLogs` returns on `!days`, restore skips its window on `days > 0`).
+const MAX_RETENTION_DAYS = 36500; // ~100 years
+
 function retentionDays(env = process.env) {
-  return parseInt(env.LOG_RETENTION_DAYS || '14', 10);
+  const parsed = parseInt(env.LOG_RETENTION_DAYS || '14', 10);
+  return Math.abs(parsed) > MAX_RETENTION_DAYS ? NaN : parsed;
 }
 
 function taipeiDate(instant) {

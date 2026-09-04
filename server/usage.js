@@ -186,12 +186,12 @@ async function run(argv) {
   if (args.cwds.length >= 2) {
     const groups = {};
     for (const e of entries) { const k = e.cwd || 'unknown'; if (!groups[k]) groups[k] = []; groups[k].push(e); }
-    // `since` is forwarded so each group's retention verdict matches the range the
-    // user actually asked for. The per-row retention fields stay unread — retention
-    // is a property of the QUERY, not of any one project — but a group computing it
-    // as all-time under a `--last` window would be a trap for the next reader.
+    // No retention opts here on purpose: a group's retention fields are never
+    // emitted, so forwarding `since` into them would be dead code no test could
+    // pin. The query-wide verdict below is the only one rendered — a future reader
+    // wanting retention per row must read `meta`, not re-derive it here.
     const projects = Object.entries(groups).map(([cwd, es]) => {
-      const r = analyze(es, { since: args.since });
+      const r = analyze(es);
       return { cwd, cost: r.meta.totalCost, sessions: r.meta.totalSessions, turns: r.meta.totalEntries, cacheHit: r.cache.hitRate };
     }).sort((a, b) => b.cost - a.cost);
     // These per-project totals sit behind the same retention window as the

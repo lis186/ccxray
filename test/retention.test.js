@@ -57,6 +57,19 @@ describe('retention', () => {
     assert.equal(retentionDays({ LOG_RETENTION_DAYS: '7' }), 7);
   });
 
+  it('treats an out-of-range window as retention off instead of producing a bad cutoff', () => {
+    // A plausible "never prune" setting must not become a cutoff at all. Before the
+    // guard, LOG_RETENTION_DAYS=999999999 produced an out-of-range Date whose string
+    // form sorted BELOW every real Taipei-dated filename, so the prune keep-condition
+    // (`filename.slice(0, 10) >= cutoffStr`) was false for every file.
+    for (const setting of ['999999999', '36501', '-999999999']) {
+      assert.equal(Number.isFinite(retentionDays({ LOG_RETENTION_DAYS: setting })), false, `${setting} must not be a finite window`);
+    }
+    // The boundary itself stays usable and yields a real date.
+    assert.equal(retentionDays({ LOG_RETENTION_DAYS: '36500' }), 36500);
+    assert.match(retentionCutoffDate(36500, SYNTHETIC_RETENTION_NOW), /^\d{4}-\d{2}-\d{2}$/);
+  });
+
   it('does not normalize malformed retention settings, so pruning stays a no-op', () => {
     assert.equal(Number.isFinite(retentionDays({ LOG_RETENTION_DAYS: 'not-a-number' })), false);
   });

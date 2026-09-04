@@ -811,6 +811,47 @@ describe('usage --json shape contract', () => {
     }
   });
 
+  it('multi-cwd retention metadata equals the single-scope metadata, value for value', () => {
+    // Type-only assertions let a wrong VALUE through: hardcoding days=999 and
+    // cutoff=1970-01-01 in the comparison path would still satisfy them. Both paths
+    // share retentionStatus(), so the contract is exact equality — pin it across the
+    // configurations that take different branches, not just the default one.
+    const now = Date.now();
+    const home = syntheticUsageHome([
+      syntheticIndexEntry({ id: '2099-01-01T00-00-00-000', receivedAt: now - 1000, cwd: '/work/alpha', sessionId: 'synthetic-a' }),
+      syntheticIndexEntry({ id: '2099-01-01T00-00-01-000', receivedAt: now - 2000, cwd: '/work/beta', sessionId: 'synthetic-b' }),
+    ]);
+    const retentionOf = m => ({
+      retentionDays: m.retentionDays,
+      retentionCutoff: m.retentionCutoff,
+      ...(Object.hasOwn(m, 'retentionWarning') ? { retentionWarning: m.retentionWarning } : {}),
+    });
+    try {
+      for (const [label, env, extraArgs] of [
+        ['default 14', { LOG_RETENTION_DAYS: '14' }, []],
+        ['non-default 7', { LOG_RETENTION_DAYS: '7' }, []],
+        ['disabled 0', { LOG_RETENTION_DAYS: '0' }, []],
+        ['malformed', { LOG_RETENTION_DAYS: 'not-a-number' }, []],
+        ['out of range', { LOG_RETENTION_DAYS: '999999999' }, []],
+        ['recent window', { LOG_RETENTION_DAYS: '14' }, ['--last', '1h']],
+      ]) {
+        const single = JSON.parse(retentionCli(home, env, '--json', '--cwd', '/work/alpha', ...extraArgs));
+        const multi = JSON.parse(retentionCli(home, env, '--json', '--cwd', '/work/alpha,/work/beta', ...extraArgs));
+        assert.deepEqual(retentionOf(multi.meta), retentionOf(single.meta), `retention metadata must match for ${label}`);
+      }
+
+      // And the values themselves must track the setting, not just match each other.
+      const d7 = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '7' }, '--json', '--cwd', '/work/alpha,/work/beta'));
+      assert.equal(d7.meta.retentionDays, 7);
+      assert.match(d7.meta.retentionCutoff, /^\d{4}-\d{2}-\d{2}$/);
+      const d14 = JSON.parse(retentionCli(home, { LOG_RETENTION_DAYS: '14' }, '--json', '--cwd', '/work/alpha,/work/beta'));
+      assert.equal(d14.meta.retentionDays, 14);
+      assert.ok(d14.meta.retentionCutoff < d7.meta.retentionCutoff, 'a longer window must reach further back');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('error object is exactly { error, hint }', () => {
     const r = cliErr('--json', '--cwd', '/no/such/dir/at/all');
     assert.equal(r.code, 1);
