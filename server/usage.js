@@ -81,8 +81,9 @@ function dedupeEntries(entries) {
 const RETENTION_WARNING = 'Requested range reaches past the reliable retention window; older history may have been removed by retention, so totals are a LOWER BOUND.';
 
 function retentionStatus({ since = null, now = new Date(), env = process.env } = {}) {
-  // This is the display seam only. retentionDays() deliberately preserves a
-  // malformed setting as NaN so config/prune keep their safe no-op behavior.
+  // This is the display seam only. retentionDays() returns NaN for a malformed
+  // setting AND for one beyond the supported window, so config/prune keep their
+  // safe no-op behavior in both cases; `null` here covers both.
   const parsedDays = retentionDays(env);
   const days = Number.isFinite(parsedDays) ? parsedDays : null;
   const cutoff = days > 0 ? retentionCutoffDate(days, now) : null;

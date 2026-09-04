@@ -70,6 +70,49 @@ describe('retention', () => {
     assert.match(retentionCutoffDate(36500, SYNTHETIC_RETENTION_NOW), /^\d{4}-\d{2}-\d{2}$/);
   });
 
+  it('bounds an explicitly set RESTORE_DAYS at the config layer, not just LOG_RETENTION_DAYS', () => {
+    // Guarding retentionDays() alone left this path on bare parseInt: an explicit
+    // RESTORE_DAYS=999999999 passed `config.RESTORE_DAYS > 0` in restoreFromLogs and
+    // made retentionCutoffDate() throw RangeError on the STARTUP path, taking prune,
+    // cost warm-up and transcript import down with it. Out of range must mean "no
+    // restore window" (restore everything), which is the fail-safe direction.
+    // This probes the real config module, not the helper, because the defect lived
+    // in the caller.
+    const home = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ccxray-restore-days-'));
+    try {
+      const probe = extra => spawnSync(process.execPath, ['-e', `
+        const config = require('./server/config');
+        const { retentionCutoffDate } = require('./server/retention');
+        let cutoff = null, threw = null;
+        if (config.RESTORE_DAYS > 0) {
+          try { cutoff = retentionCutoffDate(config.RESTORE_DAYS); } catch (e) { threw = e.name; }
+        }
+        process.stdout.write(JSON.stringify({
+          restoreDays: Number.isFinite(config.RESTORE_DAYS) ? config.RESTORE_DAYS : null,
+          cutoff, threw,
+        }));
+      `], {
+        cwd: path.join(__dirname, '..'),
+        env: { ...process.env, CCXRAY_HOME: home, ...extra },
+        encoding: 'utf8',
+      });
+
+      const huge = probe({ RESTORE_DAYS: '999999999', LOG_RETENTION_DAYS: '14' });
+      assert.equal(huge.status, 0, huge.stderr);
+      assert.deepEqual(JSON.parse(huge.stdout), { restoreDays: null, cutoff: null, threw: null });
+
+      // A normal explicit value still works and still produces a real cutoff.
+      const normal = probe({ RESTORE_DAYS: '7', LOG_RETENTION_DAYS: '14' });
+      assert.equal(normal.status, 0, normal.stderr);
+      const parsed = JSON.parse(normal.stdout);
+      assert.equal(parsed.restoreDays, 7);
+      assert.equal(parsed.threw, null);
+      assert.match(parsed.cutoff, /^\d{4}-\d{2}-\d{2}$/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('does not normalize malformed retention settings, so pruning stays a no-op', () => {
     assert.equal(Number.isFinite(retentionDays({ LOG_RETENTION_DAYS: 'not-a-number' })), false);
   });

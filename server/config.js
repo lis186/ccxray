@@ -2,7 +2,7 @@
 
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
-const { retentionDays } = require('./retention');
+const { retentionDays, boundedDays } = require('./retention');
 
 // ── Config ──────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
@@ -282,7 +282,9 @@ const LOGS_DIR = resolveLogsDir();
 const LOG_RETENTION_DAYS = retentionDays();
 const MAX_SSE_PER_IP = parseInt(process.env.CCXRAY_SSE_MAX_PER_IP || '20', 10);
 // ponytail: aligned with LOG_RETENTION_DAYS so the index is a cache, not a sole record
-const RESTORE_DAYS = parseInt(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS), 10);
+// Bounded like LOG_RETENTION_DAYS: an out-of-range value means "no restore
+// window" (restore everything), not a cutoff that throws on the startup path.
+const RESTORE_DAYS = boundedDays(process.env.RESTORE_DAYS || String(LOG_RETENTION_DAYS));
 // 0 = only session-start anchor; N>0 = force full snapshot every N delta writes
 const DELTA_SNAPSHOT_N = parseInt(process.env.CCXRAY_DELTA_SNAPSHOT_N || '0', 10);
 const REWRITE_MODEL_PREFIX = process.env.CCXRAY_MODEL_PREFIX || '';

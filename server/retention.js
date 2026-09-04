@@ -12,9 +12,16 @@ const TAIPEI_TIME_ZONE = 'Asia/Taipei';
 // (`pruneLogs` returns on `!days`, restore skips its window on `days > 0`).
 const MAX_RETENTION_DAYS = 36500; // ~100 years
 
-function retentionDays(env = process.env) {
-  const parsed = parseInt(env.LOG_RETENTION_DAYS || '14', 10);
+// Every day-count entry point must go through this. Guarding only
+// LOG_RETENTION_DAYS left an explicit RESTORE_DAYS on bare parseInt, so
+// RESTORE_DAYS=999999999 still reached the cutoff calculation.
+function boundedDays(raw) {
+  const parsed = parseInt(raw, 10);
   return Math.abs(parsed) > MAX_RETENTION_DAYS ? NaN : parsed;
+}
+
+function retentionDays(env = process.env) {
+  return boundedDays(env.LOG_RETENTION_DAYS || '14');
 }
 
 function taipeiDate(instant) {
@@ -36,4 +43,4 @@ function retentionCutoffDate(days, now = new Date()) {
   return anchor.toISOString().slice(0, 10);
 }
 
-module.exports = { retentionDays, retentionCutoffDate, taipeiDate };
+module.exports = { retentionDays, retentionCutoffDate, taipeiDate, boundedDays, MAX_RETENTION_DAYS };
