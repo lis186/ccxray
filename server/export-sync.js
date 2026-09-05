@@ -13,7 +13,7 @@ const LOCK_STALE_MS = 5 * 60_000;
 const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5s, at-least-once retries next flush
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const FLOOR_VERSION = 1;
 const CUTOFF_DT_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -459,7 +459,8 @@ function mergeEntry(a, b) {
   for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
     'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
     'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider',
-    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash']) {
+    'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash',
+    'accountEmail', 'accountDomain']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
   }
   // ADR 0012 (field table, line 155): `imported`/`importSource` are CLEARED when a
@@ -500,7 +501,30 @@ function mergeEntry(a, b) {
   return merged;
 }
 
-function aggregate(lines, agentId) {
+function exportDomains() {
+  return new Set((process.env.CCXRAY_EXPORT_DOMAINS || '').split(',')
+    .map(domain => domain.trim().toLowerCase()).filter(Boolean));
+}
+
+function accountDomain(entry) {
+  if (typeof entry.accountDomain === 'string' && entry.accountDomain.trim()) {
+    return entry.accountDomain.trim().toLowerCase();
+  }
+  if (typeof entry.accountEmail !== 'string') return null;
+  const at = entry.accountEmail.lastIndexOf('@');
+  if (at <= 0 || at === entry.accountEmail.length - 1) return null;
+  return entry.accountEmail.slice(at + 1).trim().toLowerCase() || null;
+}
+
+function allowedAccountEmail(entry, allowedDomains) {
+  if (typeof entry.accountEmail !== 'string') return null;
+  const email = entry.accountEmail.trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at <= 0 || at === email.length - 1) return null;
+  return allowedDomains.has(email.slice(at + 1)) ? email : null;
+}
+
+function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
   const rawSessionBuckets = listRawSessionBuckets();
   const dailyByDt = new Map();
   const sessionsByDt = new Map(); // dt → Map(sid → session)
@@ -540,8 +564,29 @@ function aggregate(lines, agentId) {
   // don't poison first-turn/compaction detection.
   dedupedEntries.sort((a, b) => (a.receivedAt || Infinity) - (b.receivedAt || Infinity));
 
-  // Second pass: aggregate deduped entries
+  const excludedTurns = { noAccount: 0, domainMismatch: 0 };
+  const candidateEmails = new Set();
+  const allowedEntries = [];
   for (const entry of dedupedEntries) {
+    const domain = accountDomain(entry);
+    if (!domain) {
+      excludedTurns.noAccount++;
+      continue;
+    }
+    if (!allowedDomains.has(domain)) {
+      excludedTurns.domainMismatch++;
+      continue;
+    }
+    allowedEntries.push(entry);
+    const email = allowedAccountEmail(entry, allowedDomains);
+    if (email) candidateEmails.add(email);
+  }
+  const userEmail = configuredUserEmail || (candidateEmails.size === 1
+    ? [...candidateEmails][0]
+    : null);
+
+  // Second pass: aggregate allowed, responseId-deduped turns only.
+  for (const entry of allowedEntries) {
     const dt = utcDateFromEntry(entry);
     if (!dt) continue;
 
@@ -552,7 +597,7 @@ function aggregate(lines, agentId) {
         type: 'daily',
         _summary_schema_version: SCHEMA_VERSION,
         agent_id: agentId,
-        user_email: process.env.CCXRAY_USER_EMAIL || null,
+        user_email: userEmail,
         team: process.env.CCXRAY_TEAM || null,
         dt,
         local_date: entry.localDate || null,
@@ -736,6 +781,7 @@ function aggregate(lines, agentId) {
         type: 'session',
         _summary_schema_version: SCHEMA_VERSION,
         agent_id: agentId,
+        user_email: userEmail,
         dt,
         session_id: sid,
         cost_total: 0,
@@ -849,7 +895,7 @@ function aggregate(lines, agentId) {
     }
   }
 
-  return { dailyByDt, sessionsByDt, sessionHomeDt };
+  return { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail };
 }
 
 // ponytail: allowlist gates which repo names leave the machine; unknown → '[other]'
@@ -972,6 +1018,12 @@ function foldConfidence(counts) {
   return 'mixed';
 }
 
+function exportStatsLine(status, files, rows, dts, userEmail, excludedTurns) {
+  const dt = dts.length ? [...new Set(dts)].sort().join(',') : 'none';
+  return `[ccxray export] ${status} files=${files} rows=${rows} dt=${dt} user_email=${userEmail} `
+    + `excluded_turns=no-account:${excludedTurns.noAccount} domain-mismatch:${excludedTurns.domainMismatch}`;
+}
+
 // ── Flush ──────────────────────────────────────────────────────────────
 async function flushExport() {
   // INVARIANT: see shouldBlockExport — a real upload must be impossible
@@ -1013,6 +1065,20 @@ async function flushExport() {
       try { const p = JSON.parse(lines[i]); if (p.id) { currentLastId = p.id; break; } } catch {}
     }
 
+    // This must precede every cursor write: a missing or ambiguous local
+    // account identity must leave the same index lines eligible for retry.
+    const aggregation = aggregate(
+      lines,
+      agentId,
+      process.env.CCXRAY_USER_EMAIL || null,
+      exportDomains(),
+    );
+    const { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail } = aggregation;
+    if (!userEmail) {
+      console.log(`${exportStatsLine('hard-failed', 0, 0, [], 'unresolved', excludedTurns)} email_candidates=${candidateEmails.size}`);
+      return;
+    }
+
     if (isFirstRun) {
       const cutoffDt = new Date().toISOString().slice(0, 10);
       // Permanent no-backfill promise: the first-run floor is today's UTC date,
@@ -1021,6 +1087,7 @@ async function flushExport() {
         lastId: currentLastId, seq: {}, partial: true, cutoffDt, floorV: FLOOR_VERSION,
       });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
+      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
       return;
     }
 
@@ -1038,9 +1105,10 @@ async function flushExport() {
     const cutoffDt = cursor.cutoffDt;
 
     // #4: nothing new if last entry id unchanged
-    if (!currentLastId || currentLastId === cursor.lastId) return;
-
-    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregate(lines, agentId);
+    if (!currentLastId || currentLastId === cursor.lastId) {
+      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
+      return;
+    }
 
     if (dailyByDt.size === 0) {
       // Persist the no-backfill floor even when there is no aggregate to upload.
@@ -1051,6 +1119,7 @@ async function flushExport() {
         cutoffDt,
         floorV: FLOOR_VERSION,
       });
+      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
       return;
     }
 
@@ -1088,6 +1157,9 @@ async function flushExport() {
     const completedDts = new Set(
       cursor.snapshotLastId === currentLastId ? (cursor.completedDts || []) : []
     );
+    let uploadedFiles = 0;
+    let uploadedRows = 0;
+    const uploadedDts = [];
 
     for (const [dt, daily] of dailyByDt) {
       if (!datesWithNewData.has(dt)) continue;
@@ -1119,6 +1191,9 @@ async function flushExport() {
         return uploadToGcs(b, name, body, accessToken);
       });
       await upload(bucket, objectName, payload);
+      uploadedFiles++;
+      uploadedRows += 1 + dtSessions.size;
+      uploadedDts.push(dt);
 
       // #3: per-date checkpoint bound to current snapshot
       completedDts.add(dt);
@@ -1143,6 +1218,7 @@ async function flushExport() {
       cutoffDt,
       floorV: FLOOR_VERSION,
     });
+    console.log(exportStatsLine('exported', uploadedFiles, uploadedRows, uploadedDts, userEmail, excludedTurns));
   } finally {
     releaseLock(lockPath, token);
   }
@@ -1159,7 +1235,7 @@ function startExportSync() {
   // Until 2026-08-21 the exporter started with NO positive signal — only failures
   // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
   // told people to look for "exporter active", which did not exist. It does now.
-  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — exporting ALL sessions this machine observes (live + imported)\x1b[0m`);
+  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — exporting configured account-domain sessions\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
