@@ -39,8 +39,68 @@ function makeEntry(overrides = {}) {
     stopReason: 'end_turn',
     status: 200,
     cwd: '/Users/dev/myproject',
+    accountEmail: 'test@example.com',
+    accountDomain: 'example.com',
     ...overrides,
   };
+}
+
+// This is the account-bearing index shape covered by #616's live index
+// contract. Values are synthetic; mixed-account cases copy this sample and
+// rewrite only the account identity fields.
+const ACCOUNT_INDEX_SAMPLE = Object.freeze({
+  id: '2026-08-12T10-00-00-000',
+  ts: '2026-08-12T10-00-00-000',
+  sessionId: 'sample-session-001',
+  provider: 'anthropic',
+  agent: 'claude',
+  model: 'claude-sonnet-4-6',
+  msgCount: 10,
+  toolCount: 0,
+  toolCalls: {},
+  skillCalls: {},
+  isSubagent: false,
+  sessionInferred: false,
+  cwd: '/tmp/export-domain-fixture',
+  isSSE: false,
+  usage: { input_tokens: 50000, output_tokens: 2000, cache_read_input_tokens: 30000, cache_creation_input_tokens: 5000 },
+  cost: { cost: 0.15, confidence: 'exact' },
+  maxContext: 200000,
+  stopReason: 'end_turn',
+  status: 200,
+  receivedAt: Date.parse('2026-08-12T02:00:00Z'),
+  responseId: 'msg-export-domain-sample',
+  turnToolCalls: {},
+  accountEmail: 'sample@example.com',
+  accountDomain: 'example.com',
+});
+
+function sampledAccountEntry(overrides = {}) {
+  return {
+    ...ACCOUNT_INDEX_SAMPLE,
+    usage: { ...ACCOUNT_INDEX_SAMPLE.usage },
+    cost: { ...ACCOUNT_INDEX_SAMPLE.cost },
+    ...overrides,
+  };
+}
+
+// Controlled pre-#612 output for the same single-account sample, generated
+// from HEAD in a disposable worktree with CCXRAY_EXPORT_CWD_ALLOWLIST unset.
+// Schema v3's intentional version/session-user_email additions are normalized
+// away below so this remains a pre-filter aggregation-value baseline.
+const PRE_FILTER_SINGLE_ACCOUNT_V2_PAYLOAD = [
+  '{"type":"daily","_summary_schema_version":2,"agent_id":"test-agent-001","user_email":"configured@identity.test","team":"test-team","dt":"2026-08-12","local_date":null,"tz":null,"provider":"anthropic","upload_seq":1,"summary_id":"<summary-id>","partial_day":false,"cost_total":0.15,"models":{"claude-sonnet-4-6":{"turns":1,"input":50000,"output":2000,"cache_read":30000,"cache_creation":5000,"thinking_turns":0,"beta1m_turns":0,"cost":0.15}},"context_utilization":{"0-40":0,"40-80":1,"80+":0},"compaction_count":0,"tool_usage":{},"tool_sources":{},"skill_usage":{},"tool_defined_count":0,"tool_used_count":0,"tool_fail_count":0,"duplicate_tool_call_count":0,"credential_flag":false,"error_count":0,"stop_reasons":{"end_turn":1},"session_count":1,"turn_count":1,"subagent_turn_count":0,"cwd_repos":[],"cost_confidence":"exact","first_turn_context_pct_median":0.425,"distinct_sys_hash_count":0,"distinct_tools_hash_count":0}',
+  '{"type":"session","_summary_schema_version":2,"agent_id":"test-agent-001","dt":"2026-08-12","session_id":"sample-session-001","cost_total":0.15,"turn_count":1,"model_primary":"claude-sonnet-4-6","cwd":null,"flags":[],"summary_id":"<summary-id>","imported_turn_count":0,"inferred_turn_count":0,"session_id_kind":"explicit","models":{"claude-sonnet-4-6":{"turns":1,"cost":0.15,"fallback_cost":0,"fallback_count":0,"unknown_count":0}},"import_sources":[],"turn_set_size":1,"turn_set_hash":"7c3fab05511e0e6e","turn_set_basis":"responseId","cost_confidence":"exact"}',
+].join('\n') + '\n';
+
+function normalizeV3PayloadToV2(payload) {
+  const rows = payload.trim().split('\n').map(JSON.parse);
+  for (const row of rows) {
+    row._summary_schema_version = 2;
+    row.summary_id = '<summary-id>';
+    if (row.type === 'session') delete row.user_email;
+  }
+  return rows.map(JSON.stringify).join('\n') + '\n';
 }
 
 function todayUtc() {
@@ -74,14 +134,19 @@ function loadMergeEntryForTest() {
 // CCXRAY_EXPORT_DISABLE without knowing its original value.
 const _ambientDisable = process.env.CCXRAY_EXPORT_DISABLE;
 const _ambientTz = process.env.TZ;
-let _home, _uploads, _savedFlags = { disable: _ambientDisable, tz: _ambientTz };
+const _ambientDomains = process.env.CCXRAY_EXPORT_DOMAINS;
+let _home, _uploads, _savedFlags = { disable: _ambientDisable, tz: _ambientTz, domains: _ambientDomains };
 function setup(entries, envOverrides = {}) {
   _home = mkHome();
   _uploads = [];
   writeIndex(_home, entries);
 
   // Env — TZ must match the server that generates entry ids (Asia/Taipei)
-  const savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE, tz: process.env.TZ };
+  const savedFlags = {
+    disable: process.env.CCXRAY_EXPORT_DISABLE,
+    tz: process.env.TZ,
+    domains: process.env.CCXRAY_EXPORT_DOMAINS,
+  };
   process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = _home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
@@ -100,6 +165,7 @@ function setup(entries, envOverrides = {}) {
   process.env.CCXRAY_AGENT_ID = 'test-agent-001';
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
   process.env.CCXRAY_TEAM = 'test-team';
+  process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
 
   for (const [k, v] of Object.entries(envOverrides)) {
     if (v === undefined) delete process.env[k];
@@ -126,6 +192,7 @@ function cleanup() {
   delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
   delete process.env.CCXRAY_EXPORT_GCS_PREFIX;
   delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
+  delete process.env.CCXRAY_EXPORT_DOMAINS;
   delete process.env.CCXRAY_AGENT_ID;
   delete process.env.CCXRAY_USER_EMAIL;
   delete process.env.CCXRAY_TEAM;
@@ -135,6 +202,8 @@ function cleanup() {
   else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
   if (_savedFlags.tz === undefined) delete process.env.TZ;
   else process.env.TZ = _savedFlags.tz;
+  if (_savedFlags.domains === undefined) delete process.env.CCXRAY_EXPORT_DOMAINS;
+  else process.env.CCXRAY_EXPORT_DOMAINS = _savedFlags.domains;
   _savedFlags = {};
   _setUploader(null);
   if (home) fs.rmSync(home, { recursive: true, force: true });
@@ -142,6 +211,18 @@ function cleanup() {
   for (const k of Object.keys(require.cache)) {
     if (k.includes('/server/config')) delete require.cache[k];
   }
+}
+
+async function captureExportLogs(fn) {
+  const originalLog = console.log;
+  const logs = [];
+  console.log = (...args) => logs.push(args.map(String).join(' '));
+  try {
+    await fn();
+  } finally {
+    console.log = originalLog;
+  }
+  return logs;
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
@@ -155,6 +236,159 @@ describe('export-sync', () => {
     delete process.env.CCXRAY_EXPORT_GCS_BUCKET;
     _setUploader(async () => { throw new Error('should not upload'); });
     await flushExport(); // must not throw
+  });
+
+  it('filters a mixed-account index day, resolves one email, and reports both exclusions', async () => {
+    // The first row is the #616 account-bearing index sample. The other rows
+    // retain that production-shaped record and synthesize only account identity.
+    setup([
+      sampledAccountEntry({
+        accountEmail: 'allowed@example.com', accountDomain: 'example.com',
+        cost: { cost: 0.10, confidence: 'exact' },
+      }),
+      sampledAccountEntry({
+        id: '2026-08-12T10-01-00-000', ts: '2026-08-12T10-01-00-000',
+        responseId: 'msg-export-domain-mismatch', accountEmail: 'other@outside.test', accountDomain: 'outside.test',
+        cost: { cost: 0.20, confidence: 'exact' },
+      }),
+      sampledAccountEntry({
+        id: '2026-08-12T10-02-00-000', ts: '2026-08-12T10-02-00-000',
+        responseId: 'msg-export-domain-no-account', accountEmail: undefined, accountDomain: undefined,
+        cost: { cost: 0.30, confidence: 'exact' },
+      }),
+    ], {
+      CCXRAY_USER_EMAIL: undefined,
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+
+    const logs = await captureExportLogs(flushExport);
+    assert.equal(_uploads.length, 1);
+    const daily = _uploads[0].records.find(row => row.type === 'daily');
+    const session = _uploads[0].records.find(row => row.type === 'session');
+    assert.deepEqual(
+      { turn_count: daily.turn_count, cost_total: daily.cost_total, user_email: daily.user_email },
+      { turn_count: 1, cost_total: 0.10, user_email: 'allowed@example.com' },
+    );
+    assert.equal(session.turn_count, 1);
+    assert.equal(session.user_email, 'allowed@example.com');
+    assert.ok(logs.includes('[ccxray export] exported files=1 rows=2 dt=2026-08-12 user_email=allowed@example.com excluded_turns=no-account:1 domain-mismatch:1'));
+  });
+
+  it('uses an explicit user email for every summary row', async () => {
+    setup([sampledAccountEntry({ accountEmail: 'observed@example.com', accountDomain: 'example.com' })], {
+      CCXRAY_USER_EMAIL: 'configured@identity.test',
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+
+    await flushExport();
+
+    assert.deepEqual(
+      _uploads[0].records.map(row => row.user_email),
+      ['configured@identity.test', 'configured@identity.test'],
+    );
+  });
+
+  it('hard-fails without an allowed account email and leaves the cursor untouched', async () => {
+    setup([
+      sampledAccountEntry({ accountEmail: undefined, accountDomain: undefined }),
+      sampledAccountEntry({
+        id: '2026-08-12T10-01-00-000', ts: '2026-08-12T10-01-00-000',
+        responseId: 'msg-export-no-allowed-email', accountEmail: 'other@outside.test', accountDomain: 'outside.test',
+      }),
+    ], {
+      CCXRAY_USER_EMAIL: undefined,
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+    const cursorPath = path.join(_home, 'export-cursor.json');
+    const beforeCursor = fs.readFileSync(cursorPath, 'utf8');
+
+    const logs = await captureExportLogs(flushExport);
+
+    assert.equal(_uploads.length, 0, 'hard failure must not upload');
+    assert.equal(fs.readFileSync(cursorPath, 'utf8'), beforeCursor, 'hard failure must not advance the cursor');
+    assert.ok(logs.includes('[ccxray export] hard-failed files=0 rows=0 dt=none user_email=unresolved excluded_turns=no-account:1 domain-mismatch:1 email_candidates=0'));
+  });
+
+  it('hard-fails before initializing a first-run cursor', async () => {
+    setup([sampledAccountEntry({ accountEmail: undefined, accountDomain: undefined })], {
+      CCXRAY_USER_EMAIL: undefined,
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+      _skipCursor: true,
+    });
+
+    await captureExportLogs(flushExport);
+
+    assert.equal(fs.existsSync(path.join(_home, 'export-cursor.json')), false);
+  });
+
+  it('hard-fails when more than one allowed account email is observed', async () => {
+    setup([
+      sampledAccountEntry({ accountEmail: 'first@example.com', accountDomain: 'example.com' }),
+      sampledAccountEntry({
+        id: '2026-08-12T10-01-00-000', ts: '2026-08-12T10-01-00-000',
+        responseId: 'msg-export-second-allowed-email', accountEmail: 'second@example.com', accountDomain: 'example.com',
+      }),
+    ], {
+      CCXRAY_USER_EMAIL: undefined,
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+    const cursorPath = path.join(_home, 'export-cursor.json');
+    const beforeCursor = fs.readFileSync(cursorPath, 'utf8');
+
+    const logs = await captureExportLogs(flushExport);
+
+    assert.equal(_uploads.length, 0, 'ambiguous identity must not upload');
+    assert.equal(fs.readFileSync(cursorPath, 'utf8'), beforeCursor, 'ambiguous identity must not advance the cursor');
+    assert.ok(logs.includes('[ccxray export] hard-failed files=0 rows=0 dt=none user_email=unresolved excluded_turns=no-account:0 domain-mismatch:0 email_candidates=2'));
+  });
+
+  it('preserves a proxy account observation while responseId duplicates merge', async () => {
+    setup([
+      sampledAccountEntry({ accountEmail: undefined, accountDomain: undefined }),
+      sampledAccountEntry({
+        id: '2026-08-12T10-00-01-000', ts: '2026-08-12T10-00-01-000',
+        accountEmail: 'merged@example.com', accountDomain: 'example.com',
+      }),
+    ], {
+      CCXRAY_USER_EMAIL: undefined,
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+
+    const logs = await captureExportLogs(flushExport);
+
+    const daily = _uploads[0].records.find(row => row.type === 'daily');
+    assert.equal(daily.turn_count, 1, 'responseId still represents one turn');
+    assert.equal(daily.user_email, 'merged@example.com');
+    assert.ok(logs.includes('[ccxray export] exported files=1 rows=2 dt=2026-08-12 user_email=merged@example.com excluded_turns=no-account:0 domain-mismatch:0'));
+  });
+
+  it('keeps a single-account fixture bit-identical to its pre-filter aggregation baseline', async () => {
+    setup([sampledAccountEntry({
+      accountEmail: 'single@example.com', accountDomain: 'example.com', cwd: undefined,
+    })], {
+      CCXRAY_USER_EMAIL: 'configured@identity.test',
+      CCXRAY_EXPORT_DOMAINS: 'example.com',
+    });
+    await flushExport();
+
+    assert.equal(normalizeV3PayloadToV2(_uploads[0].body), PRE_FILTER_SINGLE_ACCOUNT_V2_PAYLOAD);
+  });
+
+  it('uses a fresh object name when a crashed upload is retried', async () => {
+    setup([sampledAccountEntry()]);
+    await flushExport();
+    const firstName = _uploads[0].name;
+
+    // Model the crash window after the object was accepted but before its
+    // checkpoint persisted: the retry sees the same index and upload sequence.
+    fs.writeFileSync(path.join(_home, 'export-cursor.json'),
+      JSON.stringify({ lastId: null, seq: {}, partial: false, cutoffDt: '2026-01-01', floorV: 1 }) + '\n');
+    _uploads = [];
+    await flushExport();
+    const retryName = _uploads[0].name;
+
+    assert.match(firstName, /^summaries\/dt=2026-08-12\/test-agent-001--1--[0-9a-f]{8}\.jsonl$/);
+    assert.notEqual(retryName, firstName, 'retry must not attempt to overwrite the accepted object');
   });
 
   it('T4: unset config-dir control leaves normal export unchanged', async () => {
@@ -421,7 +655,7 @@ describe('export-sync', () => {
     ]) {
       assert.ok(f in daily, `missing field: ${f}`);
     }
-    assert.equal(daily._summary_schema_version, 2);
+    assert.equal(daily._summary_schema_version, 3);
     assert.equal(daily.agent_id, 'test-agent-001');
     assert.equal(daily.dt, '2026-08-12');
     assert.equal(daily.turn_count, 1);
@@ -442,10 +676,54 @@ describe('export-sync', () => {
     assert.equal(sess.turn_count, 3);
     for (const f of ['type', '_summary_schema_version', 'agent_id', 'dt', 'session_id',
       'cost_total', 'turn_count', 'model_primary', 'flags', 'summary_id', 'models',
-      'imported_turn_count', 'inferred_turn_count', 'import_sources', 'session_id_kind']) {
+      'imported_turn_count', 'inferred_turn_count', 'import_sources', 'session_id_kind', 'user_email']) {
       assert.ok(f in sess, `missing field: ${f}`);
     }
-    assert.equal(sess._summary_schema_version, 2);
+    assert.equal(sess._summary_schema_version, 3);
+  });
+
+  it('schema v3 is additive: session gains user_email and legacy summary fields remain', async () => {
+    setup([sampledAccountEntry({ accountEmail: 'account@example.com', accountDomain: 'example.com' })], {
+      CCXRAY_USER_EMAIL: 'configured@identity.test',
+    });
+    await flushExport();
+    const daily = _uploads[0].records.find(row => row.type === 'daily');
+    const session = _uploads[0].records.find(row => row.type === 'session');
+    const dailyV2Fields = [
+      'type', '_summary_schema_version', 'agent_id', 'user_email', 'team', 'dt', 'local_date', 'tz',
+      'provider', 'upload_seq', 'summary_id', 'partial_day', 'cost_total', 'models',
+      'context_utilization', 'compaction_count', 'tool_usage', 'tool_sources', 'skill_usage',
+      'tool_defined_count', 'tool_used_count', 'tool_fail_count', 'duplicate_tool_call_count',
+      'credential_flag', 'error_count', 'stop_reasons', 'session_count', 'turn_count',
+      'subagent_turn_count', 'cwd_repos', 'cost_confidence', 'first_turn_context_pct_median',
+      'distinct_sys_hash_count', 'distinct_tools_hash_count',
+    ];
+    const sessionV2Fields = [
+      'type', '_summary_schema_version', 'agent_id', 'dt', 'session_id', 'cost_total', 'turn_count',
+      'model_primary', 'cwd', 'flags', 'summary_id', 'imported_turn_count', 'inferred_turn_count',
+      'session_id_kind', 'models', 'import_sources', 'turn_set_size', 'turn_set_hash',
+      'turn_set_basis', 'cost_confidence',
+    ];
+
+    for (const field of dailyV2Fields) assert.ok(field in daily, `daily v2 field preserved: ${field}`);
+    for (const field of sessionV2Fields) assert.ok(field in session, `session v2 field preserved: ${field}`);
+    assert.deepEqual(Object.keys(daily).filter(field => !dailyV2Fields.includes(field)), []);
+    assert.deepEqual(Object.keys(session).filter(field => !sessionV2Fields.includes(field)), ['user_email']);
+    assert.equal(daily._summary_schema_version, 3);
+    assert.equal(session._summary_schema_version, 3);
+  });
+
+  it('never includes the account email or account domain in an uploaded summary', async () => {
+    setup([sampledAccountEntry({ accountEmail: 'account@example.com', accountDomain: 'example.com' })], {
+      CCXRAY_USER_EMAIL: 'configured@identity.test',
+    });
+    await flushExport();
+
+    const payload = _uploads[0].body;
+    assert.ok(payload.includes('configured@identity.test'), 'existing user_email remains the summary identity');
+    assert.ok(!payload.includes('account@example.com'), 'accountEmail stays local to filtering');
+    assert.ok(!payload.includes('accountDomain'), 'per-turn account fields do not enter summaries');
+    assert.ok(!payload.includes('"account_domain"'), 'no account-domain summary field was added');
   });
 
   it('payload canary: no prompt/credential/path in output', async () => {
@@ -465,6 +743,8 @@ describe('export-sync', () => {
       cost: { cost: 0.01, confidence: 'exact' },
       maxContext: 200000,
       status: 200,
+      accountEmail: 'test@example.com',
+      accountDomain: 'example.com',
     };
     setup([decoys]);
     await flushExport();
@@ -761,15 +1041,21 @@ describe('export-sync', () => {
 
   it('partial_day flag on first flush after cursor init', async () => {
     const home = mkHome();
+    const savedDomains = process.env.CCXRAY_EXPORT_DOMAINS;
     process.env.CCXRAY_HOME = home;
     process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
     process.env.CCXRAY_AGENT_ID = 'test-agent-001';
+    process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
     delete process.env.LOGS_DIR;
     // Save and restore ambient DISABLE — this test bypasses setup()/cleanup() and manages
     // its own env, but afterEach(cleanup) still runs. Without saving, cleanup deletes the
     // ambient value and later files under --test-isolation=none lose the safety flag.
     const savedDisable = process.env.CCXRAY_EXPORT_DISABLE;
-    _savedFlags = { disable: savedDisable, tz: process.env.TZ };
+    _savedFlags = {
+      disable: savedDisable,
+      tz: process.env.TZ,
+      domains: savedDomains,
+    };
     delete process.env.CCXRAY_EXPORT_DISABLE;
     _uploads = [];
     _setUploader(async (bucket, name, body) => {

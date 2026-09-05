@@ -1,9 +1,16 @@
 # Export onboarding
 
-ccxray's export is machine-level telemetry, not an account boundary. ccxray
-cannot distinguish a company account from a personal account when both accounts
-write to the same Claude or Codex config store. Switching accounts with `/login`
-does not create a separate store.
+ccxray's export is machine-level telemetry with an account-domain filter for
+turns that carry a Claude launch-account snapshot. Set
+`CCXRAY_EXPORT_DOMAINS=example.com,example.org` to aggregate only turns whose
+recorded account domain is in that list. Turns with no account snapshot and
+turns from other domains are excluded before daily and session rows are built.
+
+`CCXRAY_USER_EMAIL` remains the explicit summary identity when set. Without
+it, ccxray requires exactly one observed email among the allowed-domain turns;
+zero or multiple candidates hard-fail the export without advancing its cursor.
+The filter cannot distinguish two accounts in the same allowed domain, so keep
+personal same-domain traffic out of ccxray's view or do not set the exporter.
 
 What leaves the machine is the per-session summary:
 
@@ -18,8 +25,9 @@ The export also contains the day's aggregate totals and breakdowns. It never
 contains prompts, titles, or tool arguments. `cwd` is masked to `[other]` unless
 the repository is included in `CCXRAY_EXPORT_CWD_ALLOWLIST`.
 
-If you use a personal account on this machine, either do not set
-`CCXRAY_EXPORT_GCS_BUCKET` here, or keep personal data out of ccxray's view with
+If you use a personal account outside an allowed domain, configure
+`CCXRAY_EXPORT_DOMAINS` before setting `CCXRAY_EXPORT_GCS_BUCKET`. For
+same-domain personal traffic, keep it out of ccxray's view with
 `CCXRAY_IMPORT_HOMES` and do not launch personal agents through ccxray. That
 variable is a comma-separated list of the actual Claude `projects/` scan roots;
 use the `projects/` directory itself, not a config home such as `~/.claude`.
