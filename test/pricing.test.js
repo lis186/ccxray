@@ -182,3 +182,150 @@ describe('pricing', () => {
     });
   });
 });
+
+// #568: same model, different upstream, different rates. The provider key is the
+// LiteLLM prefix (fireworks_ai, together_ai, xai …); a `provider/model` row wins
+// over the bare `model` row, and an unknown provider falls back to model-only.
+describe('provider-keyed pricing (#568)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const PRICING_MOD = require.resolve('../server/pricing');
+
+  // Fresh module instance bound to an isolated cache file (CCXRAY_PRICING_CACHE is
+  // read at require time — the package-relative default is outside CCXRAY_HOME).
+  async function loadWithCache(pricing) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-pricing-568-'));
+    const cachePath = path.join(dir, 'pricing-cache.json');
+    fs.writeFileSync(cachePath, JSON.stringify({ fetchedAt: Date.now(), pricing, context: {} }));
+    const prevEnv = process.env.CCXRAY_PRICING_CACHE;
+    const prevMod = require.cache[PRICING_MOD];
+    process.env.CCXRAY_PRICING_CACHE = cachePath;
+    delete require.cache[PRICING_MOD];
+    try {
+      const mod = require(PRICING_MOD);
+      await mod.fetchPricing();
+      return mod;
+    } finally {
+      delete require.cache[PRICING_MOD];
+      if (prevMod) require.cache[PRICING_MOD] = prevMod;
+      if (prevEnv === undefined) delete process.env.CCXRAY_PRICING_CACHE;
+      else process.env.CCXRAY_PRICING_CACHE = prevEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Real LiteLLM shape (cache fetched 2026-08-14): bare deepseek-v4-pro is the
+  // DeepSeek-direct rate; fireworks_ai/deepseek-v4-pro lists a different one.
+  const TABLE = {
+    'deepseek-v4-pro': { input: 1.74, output: 3.48, cache_create: 1.74, cache_read: 0.87 },
+    'fireworks_ai/deepseek-v4-pro': { input: 2.10, output: 4.40, cache_create: 2.10, cache_read: 1.05 },
+  };
+  const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
+
+  it('prefers the provider/model row when the provider is known', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'deepseek-v4-pro', 'fireworks_ai');
+    assert.equal(r.confidence, 'exact');
+    assert.equal(r.rates.input, 2.10);
+    assert.equal(r.cost, 2.10 + 4.40);
+  });
+
+  it('falls back to the model-only row when the provider has no row', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'deepseek-v4-pro', 'together_ai');
+    assert.equal(r.confidence, 'exact');
+    assert.equal(r.rates.input, 1.74);
+  });
+
+  it('is unchanged when no provider is given', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'deepseek-v4-pro');
+    assert.equal(r.rates.input, 1.74);
+  });
+
+  it('does not change the existing bare exact match for current upstreams', () => {
+    // Anthropic/OpenAI rows are bare in LiteLLM; xai/ rows mirror to bare with equal rates.
+    const a = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'claude-sonnet-4', 'anthropic');
+    const b = calculateCost({ input_tokens: 100, output_tokens: 50 }, 'claude-sonnet-4');
+    assert.deepEqual(a, b);
+    assert.equal(a.confidence, 'exact');
+  });
+});
+
+// PR #630 review P2: a model id may carry its own namespace or resource path,
+// so the provider-keyed lookup must key on the provider's actual prefix — not
+// on "contains a slash".
+describe('provider-keyed pricing — models with their own path (#568, PR #630 P2)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const PRICING_MOD = require.resolve('../server/pricing');
+
+  async function loadWithCache(pricing) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-pricing-630-'));
+    const cachePath = path.join(dir, 'pricing-cache.json');
+    fs.writeFileSync(cachePath, JSON.stringify({ fetchedAt: Date.now(), pricing, context: {} }));
+    const prevEnv = process.env.CCXRAY_PRICING_CACHE;
+    const prevMod = require.cache[PRICING_MOD];
+    process.env.CCXRAY_PRICING_CACHE = cachePath;
+    delete require.cache[PRICING_MOD];
+    try {
+      const mod = require(PRICING_MOD);
+      await mod.fetchPricing();
+      return mod;
+    } finally {
+      delete require.cache[PRICING_MOD];
+      if (prevMod) require.cache[PRICING_MOD] = prevMod;
+      if (prevEnv === undefined) delete process.env.CCXRAY_PRICING_CACHE;
+      else process.env.CCXRAY_PRICING_CACHE = prevEnv;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Synthetic rates; the key SHAPES mirror the real LiteLLM cache.
+  const TABLE = {
+    'together_ai/meta-llama/Llama-3.3-70B-Instruct-Turbo': { input: 0.88, output: 0.88, cache_create: 0.88, cache_read: 0.88 },
+    'fireworks_ai/accounts/fireworks/models/deepseek-r1': { input: 3, output: 8, cache_create: 3, cache_read: 3 },
+    // Same namespaced model priced differently by two providers, plus a bare row.
+    'meta-llama/Llama-4-Scout': { input: 1, output: 2, cache_create: 1, cache_read: 1 },
+    'together_ai/meta-llama/Llama-4-Scout': { input: 5, output: 6, cache_create: 5, cache_read: 5 },
+  };
+  const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000 };
+
+  it('finds a provider row for a model that carries its own namespace', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'meta-llama/Llama-3.3-70B-Instruct-Turbo', 'together_ai');
+    assert.equal(r.confidence, 'exact');
+    assert.equal(r.cost, 0.88 + 0.88);
+  });
+
+  it('finds a provider row for a Fireworks resource-path model', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'accounts/fireworks/models/deepseek-r1', 'fireworks_ai');
+    assert.equal(r.confidence, 'exact');
+    assert.equal(r.cost, 3 + 8);
+  });
+
+  it('accepts a model id that already carries the same provider prefix', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'fireworks_ai/accounts/fireworks/models/deepseek-r1', 'fireworks_ai');
+    assert.equal(r.confidence, 'exact');
+    assert.equal(r.cost, 3 + 8);
+  });
+
+  it('prefers the provider row over a bare row for a namespaced model', async () => {
+    const mod = await loadWithCache(TABLE);
+    const withProvider = mod.calculateCost(usage, 'meta-llama/Llama-4-Scout', 'together_ai');
+    assert.equal(withProvider.cost, 5 + 6);
+    const withoutProvider = mod.calculateCost(usage, 'meta-llama/Llama-4-Scout');
+    assert.equal(withoutProvider.cost, 1 + 2);
+  });
+
+  it('keeps the model-only behaviour for a namespaced model when no provider is given', async () => {
+    const mod = await loadWithCache(TABLE);
+    const r = mod.calculateCost(usage, 'meta-llama/Llama-3.3-70B-Instruct-Turbo');
+    assert.equal(r.confidence, 'unknown');
+    assert.equal(r.cost, null);
+  });
+});

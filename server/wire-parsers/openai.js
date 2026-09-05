@@ -7,6 +7,7 @@ const {
   matchOpenAIWireClient,
   resolveOpenAIWireAgent,
   displayNameForAgent,
+  describeAgentModule,
   OPENAI_WIRE_CLIENTS,
 } = require('../providers');
 const config = require('../config');
@@ -323,6 +324,8 @@ function buildEntryFields(ctx) {
   }
 
   const agent = resolveOpenAIAgent(null, parsedBody);
+  // #568: price by the upstream that served the turn (grok → xai), not the wire family.
+  const pricingUpstream = describeAgentModule(agent)?.upstreamKey || 'openai';
   const responseToolItems = isWS
     ? ctx.responseEvents
     : ((ctx.events && ctx.events.length) ? ctx.events : response?.output);
@@ -339,7 +342,7 @@ function buildEntryFields(ctx) {
     cwd: ctx.cwd ?? null,
     usage,
     contextUsageKnown,
-    cost: calculateCost(usage, model),
+    cost: calculateCost(usage, model, pricingUpstream),
     // instructions (Codex) or input[role=system] (other OpenAI-wire modules)
     maxContext: model ? config.inferMaxContext(model, getOpenAIInstructionsText(parsedBody), usage) : null,
     responseMetadata,
