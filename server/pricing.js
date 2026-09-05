@@ -181,8 +181,14 @@ async function fetchPricing() {
  */
 function getModelPricingWithConfidence(model, provider) {
   if (!model) return { rates: null, confidence: null };
-  if (provider && !model.includes('/') && pricingTable[`${provider}/${model}`]) {
-    return { rates: pricingTable[`${provider}/${model}`], confidence: 'exact' };
+  // A model id may itself carry a namespace or resource path (Together's
+  // meta-llama/Llama-3.3-70B-Instruct-Turbo, Fireworks' accounts/fireworks/models/…),
+  // so "contains a slash" is not "already provider-prefixed": only a leading
+  // `provider/` is. A wire id that already carries this provider's prefix is
+  // looked up as-is; anything else gets the prefix added.
+  if (provider) {
+    const key = model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
+    if (pricingTable[key]) return { rates: pricingTable[key], confidence: 'exact' };
   }
   if (pricingTable[model]) return { rates: pricingTable[model], confidence: 'exact' };
   // LiteLLM provider-prefixed form (xai/grok-4.3) when wire sent bare id
