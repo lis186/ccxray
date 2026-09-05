@@ -171,9 +171,19 @@ async function fetchPricing() {
  * confidence is 'exact', 'prefix', or null (not found).
  * The bare getModelPricing(model) call returns just the rates for backward
  * compat; getModelPricingWithConfidence returns the full object.
+ *
+ * #568: `provider` is the upstream key in LiteLLM's prefix vocabulary
+ * (anthropic, openai, xai, fireworks_ai, together_ai …). The same model can be
+ * served at different rates by different upstreams (LiteLLM lists both
+ * `deepseek-v4-pro` and `fireworks_ai/deepseek-v4-pro`), so a known provider
+ * checks its `provider/model` row first; a missing row falls back to the
+ * model-only lookup below, which is unchanged when provider is omitted.
  */
-function getModelPricingWithConfidence(model) {
+function getModelPricingWithConfidence(model, provider) {
   if (!model) return { rates: null, confidence: null };
+  if (provider && !model.includes('/') && pricingTable[`${provider}/${model}`]) {
+    return { rates: pricingTable[`${provider}/${model}`], confidence: 'exact' };
+  }
   if (pricingTable[model]) return { rates: pricingTable[model], confidence: 'exact' };
   // LiteLLM provider-prefixed form (xai/grok-4.3) when wire sent bare id
   if (!model.includes('/') && pricingTable[`xai/${model}`]) return { rates: pricingTable[`xai/${model}`], confidence: 'exact' };
@@ -186,13 +196,14 @@ function getModelPricingWithConfidence(model) {
   return { rates: null, confidence: null };
 }
 
-function getModelPricing(model) {
-  return getModelPricingWithConfidence(model).rates;
+function getModelPricing(model, provider) {
+  return getModelPricingWithConfidence(model, provider).rates;
 }
 
-function calculateCost(usage, model) {
+// #568: provider is optional; see getModelPricingWithConfidence.
+function calculateCost(usage, model, provider) {
   if (!usage) return null;
-  const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model);
+  const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model, provider);
   if (!rates) return { cost: null, rates: null, confidence: 'unknown', warning: `Unknown model: ${model}` };
   const cost =
     ((usage.input_tokens || 0) / 1_000_000) * rates.input +

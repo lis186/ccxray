@@ -10,7 +10,7 @@ const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, rawCoreHash
 const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
-const { normalizeUsageForProvider } = require('./providers');
+const { normalizeUsageForProvider, describeAgentModule } = require('./providers');
 const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
@@ -168,7 +168,8 @@ async function healMetaInPlace(meta) {
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
     if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
-      meta.cost = calculateCost(meta.usage, meta.model);
+      // #568: price by the upstream that served the turn (grok → xai), not the wire family.
+      meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }
   }
 }

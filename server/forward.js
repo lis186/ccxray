@@ -766,7 +766,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage, { beta1m: ctx.beta1m, ctxBeta: ctx.ctxBeta });
       const pct = (totalCtx / maxCtx * 100).toFixed(1);
       const newIdx = maxBlockIndex + 1;
-      const costInfo = calculateCost(usage, parsedBody?.model);
+      const costInfo = calculateCost(usage, parsedBody?.model, 'anthropic');
 
       let text = '\n\n---\nContext: ' + pct + '% (' + totalCtx.toLocaleString() + ' / ' + maxCtx.toLocaleString() + ')';
       text += ' | ' + totalCtx.toLocaleString() + ' in + ' + (usage.output_tokens || 0).toLocaleString() + ' out';
