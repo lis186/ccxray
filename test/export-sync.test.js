@@ -713,6 +713,40 @@ describe('export-sync', () => {
     assert.equal(session._summary_schema_version, 3);
   });
 
+  it('an unconfigured CCXRAY_EXPORT_DOMAINS filters nothing, so a pre-#612 index still exports', async () => {
+    // Measured 2026-09-06 on the real machine: 0 of 330,607 index lines carry an
+    // account field, because X-Ccxray-Account is injected only by providers.js
+    // createLaunch (i.e. only for `ccxray <agent>` launches) and the importer never
+    // writes one. An empty domain list therefore has to mean "filter not configured",
+    // never "no domain is allowed" — the latter excludes every turn while the cursor
+    // keeps advancing, which is silent, unrecoverable data loss.
+    const accountless = sampledAccountEntry();
+    delete accountless.accountEmail;
+    delete accountless.accountDomain;
+    setup([accountless], { CCXRAY_EXPORT_DOMAINS: undefined });
+    await flushExport();
+
+    assert.equal(_uploads.length, 1, 'an unconfigured exporter still uploads');
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.turn_count, 1, 'the account-less turn was aggregated, not excluded');
+    assert.equal(daily.user_email, 'test@example.com', 'env identity is still used when the filter is off');
+  });
+
+  it('an unconfigured exporter with no CCXRAY_USER_EMAIL does not hard-fail', async () => {
+    // The identity hard-fail belongs to the domain filter and activates with it.
+    // Firing it unconfigured would stop export for every deployment that has run
+    // without CCXRAY_USER_EMAIL since #505.
+    const accountless = sampledAccountEntry();
+    delete accountless.accountEmail;
+    delete accountless.accountDomain;
+    setup([accountless], { CCXRAY_EXPORT_DOMAINS: undefined, CCXRAY_USER_EMAIL: undefined });
+    await flushExport();
+
+    assert.equal(_uploads.length, 1, 'no hard-fail without a configured filter');
+    const daily = _uploads[0].records.find(r => r.type === 'daily');
+    assert.equal(daily.user_email, null, 'unset identity stays null, as it was before #612');
+  });
+
   it('never includes the account email or account domain in an uploaded summary', async () => {
     setup([sampledAccountEntry({ accountEmail: 'account@example.com', accountDomain: 'example.com' })], {
       CCXRAY_USER_EMAIL: 'configured@identity.test',

@@ -564,10 +564,20 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
   // don't poison first-turn/compaction detection.
   dedupedEntries.sort((a, b) => (a.receivedAt || Infinity) - (b.receivedAt || Infinity));
 
+  // #612: an empty CCXRAY_EXPORT_DOMAINS means the domain filter is NOT configured,
+  // which is not the same as "no domain is allowed". Treating it as the latter would
+  // silently exclude every turn while the cursor kept advancing, so an unconfigured
+  // exporter keeps its pre-#612 behaviour exactly. The filter — and the identity
+  // hard-fail that belongs to it — activate together with the list.
+  const filterActive = allowedDomains.size > 0;
   const excludedTurns = { noAccount: 0, domainMismatch: 0 };
   const candidateEmails = new Set();
   const allowedEntries = [];
   for (const entry of dedupedEntries) {
+    if (!filterActive) {
+      allowedEntries.push(entry);
+      continue;
+    }
     const domain = accountDomain(entry);
     if (!domain) {
       excludedTurns.noAccount++;
@@ -581,7 +591,7 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
     const email = allowedAccountEmail(entry, allowedDomains);
     if (email) candidateEmails.add(email);
   }
-  const userEmail = configuredUserEmail || (candidateEmails.size === 1
+  const userEmail = configuredUserEmail || (filterActive && candidateEmails.size === 1
     ? [...candidateEmails][0]
     : null);
 
@@ -895,7 +905,7 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
     }
   }
 
-  return { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail };
+  return { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail, filterActive };
 }
 
 // ponytail: allowlist gates which repo names leave the machine; unknown → '[other]'
@@ -1065,19 +1075,25 @@ async function flushExport() {
       try { const p = JSON.parse(lines[i]); if (p.id) { currentLastId = p.id; break; } } catch {}
     }
 
-    // This must precede every cursor write: a missing or ambiguous local
-    // account identity must leave the same index lines eligible for retry.
-    const aggregation = aggregate(
-      lines,
-      agentId,
-      process.env.CCXRAY_USER_EMAIL || null,
-      exportDomains(),
-    );
-    const { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail } = aggregation;
-    if (!userEmail) {
-      console.log(`${exportStatsLine('hard-failed', 0, 0, [], 'unresolved', excludedTurns)} email_candidates=${candidateEmails.size}`);
-      return;
+    // #612: the identity hard-fail must precede every cursor write, so when the
+    // domain filter is configured we aggregate up front and refuse before any
+    // writeCursor leaves these lines behind. When it is NOT configured there is
+    // nothing to hard-fail on, so we keep the original ordering and let the cheap
+    // early-returns below run before the full aggregation — pre-aggregating on
+    // every hourly flush would re-parse and re-dedup the whole index for nothing.
+    const allowedDomains = exportDomains();
+    const configuredUserEmail = process.env.CCXRAY_USER_EMAIL || null;
+    let aggregation = null;
+    if (allowedDomains.size > 0) {
+      aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
+      if (!aggregation.userEmail) {
+        console.log(`${exportStatsLine('hard-failed', 0, 0, [], 'unresolved', aggregation.excludedTurns)}`
+          + ` email_candidates=${aggregation.candidateEmails.size}`);
+        return;
+      }
     }
+    const statsOf = () => (aggregation ? aggregation.excludedTurns : { noAccount: 0, domainMismatch: 0 });
+    const emailOf = () => (aggregation ? aggregation.userEmail : configuredUserEmail) || 'unset';
 
     if (isFirstRun) {
       const cutoffDt = new Date().toISOString().slice(0, 10);
@@ -1087,7 +1103,7 @@ async function flushExport() {
         lastId: currentLastId, seq: {}, partial: true, cutoffDt, floorV: FLOOR_VERSION,
       });
       console.log('[ccxray export] First run — cursor initialized to index tail. No backfill.');
-      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
+      console.log(exportStatsLine('exported', 0, 0, [], emailOf(), statsOf()));
       return;
     }
 
@@ -1106,9 +1122,13 @@ async function flushExport() {
 
     // #4: nothing new if last entry id unchanged
     if (!currentLastId || currentLastId === cursor.lastId) {
-      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
+      console.log(exportStatsLine('exported', 0, 0, [], emailOf(), statsOf()));
       return;
     }
+
+    // Unconfigured path: the full aggregation was deliberately deferred to here.
+    if (!aggregation) aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
+    const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregation;
 
     if (dailyByDt.size === 0) {
       // Persist the no-backfill floor even when there is no aggregate to upload.
@@ -1119,7 +1139,7 @@ async function flushExport() {
         cutoffDt,
         floorV: FLOOR_VERSION,
       });
-      console.log(exportStatsLine('exported', 0, 0, [], userEmail, excludedTurns));
+      console.log(exportStatsLine('exported', 0, 0, [], emailOf(), statsOf()));
       return;
     }
 
@@ -1218,7 +1238,7 @@ async function flushExport() {
       cutoffDt,
       floorV: FLOOR_VERSION,
     });
-    console.log(exportStatsLine('exported', uploadedFiles, uploadedRows, uploadedDts, userEmail, excludedTurns));
+    console.log(exportStatsLine('exported', uploadedFiles, uploadedRows, uploadedDts, emailOf(), statsOf()));
   } finally {
     releaseLock(lockPath, token);
   }
@@ -1235,7 +1255,13 @@ function startExportSync() {
   // Until 2026-08-21 the exporter started with NO positive signal — only failures
   // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
   // told people to look for "exporter active", which did not exist. It does now.
-  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — exporting configured account-domain sessions\x1b[0m`);
+  // #612: say which of the two modes is actually in force. Announcing a domain
+  // filter that is not configured would be the same over-claim the filter exists
+  // to prevent — and the unconfigured wording is still literally true.
+  const scope = exportDomains().size > 0
+    ? 'exporting configured account-domain sessions'
+    : 'exporting ALL sessions this machine observes (live + imported)';
+  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest

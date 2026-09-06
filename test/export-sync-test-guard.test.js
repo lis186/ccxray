@@ -282,7 +282,10 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       const hit = lines.filter(l => l.includes('exporter active'));
       assert.strictEqual(hit.length, 1, 'exporter startup must emit exactly one positive signal');
       assert.match(hit[0], /announce-bucket/, 'the message must name the bucket it will write to');
-      assert.match(hit[0], /exporting configured account-domain sessions/);
+      // withEnv deletes CCXRAY_EXPORT_DOMAINS, so this asserts the UNCONFIGURED
+      // wording. #612 makes the scope clause conditional; announcing a filter that
+      // is not in force would be an over-claim.
+      assert.match(hit[0], /exporting ALL sessions this machine observes \(live \+ imported\)/);
     } finally {
       console.log = origLog;
       stopExportSync();
