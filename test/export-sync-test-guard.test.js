@@ -55,6 +55,8 @@ function withEnv(fn) {
     disable: process.env.CCXRAY_EXPORT_DISABLE,
     logs: process.env.LOGS_DIR,
     configDirs: process.env.CCXRAY_EXPORT_CONFIG_DIRS,
+    userEmail: process.env.CCXRAY_USER_EMAIL,
+    domains: process.env.CCXRAY_EXPORT_DOMAINS,
   };
   // No test may inherit ambient suppression state; each sets what it needs.
   delete process.env.CCXRAY_EXPORT_DISABLE;
@@ -64,12 +66,18 @@ function withEnv(fn) {
   // stale CCXRAY_EXPORT_CONFIG_DIRS would otherwise fail the injected-uploader and
   // positive-startup tests for an environmental reason, not a code one.
   delete process.env.CCXRAY_EXPORT_CONFIG_DIRS;
+  // Same reasoning for the #612 identity inputs: a shell that exports CCXRAY_USER_EMAIL
+  // makes the seam test pass locally while CI (no identity) hard-fails before cursor init.
+  delete process.env.CCXRAY_USER_EMAIL;
+  delete process.env.CCXRAY_EXPORT_DOMAINS;
   const restore = () => {
     for (const [k, v] of [['CCXRAY_HOME', saved.home],
                           ['CCXRAY_EXPORT_GCS_BUCKET', saved.bucket],
                           ['CCXRAY_EXPORT_DISABLE', saved.disable],
                           ['LOGS_DIR', saved.logs],
-                          ['CCXRAY_EXPORT_CONFIG_DIRS', saved.configDirs]]) {
+                          ['CCXRAY_EXPORT_CONFIG_DIRS', saved.configDirs],
+                          ['CCXRAY_USER_EMAIL', saved.userEmail],
+                          ['CCXRAY_EXPORT_DOMAINS', saved.domains]]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   };
@@ -223,6 +231,9 @@ test('an injected uploader seam still lets flushExport run (aggregation tests de
     try {
       process.env.CCXRAY_HOME = home;
       process.env.CCXRAY_EXPORT_GCS_BUCKET = 'seam-bucket';
+      // #612: without a resolvable identity flushExport hard-fails BEFORE first-run cursor
+      // init; this test is about the seam letting the flush run, so give it one.
+      process.env.CCXRAY_USER_EMAIL = 'seam@example.com';
       delete process.env.CCXRAY_EXPORT_DISABLE;
       let uploads = 0;
       _setUploader(async () => { uploads++; });
