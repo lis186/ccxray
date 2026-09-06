@@ -1,16 +1,25 @@
 # Export onboarding
 
-ccxray's export is machine-level telemetry with an account-domain filter for
-turns that carry a Claude launch-account snapshot. Set
+ccxray's export is machine-level telemetry with an optional account-domain
+filter for turns that carry a Claude launch-account snapshot. Set
 `CCXRAY_EXPORT_DOMAINS=example.com,example.org` to aggregate only turns whose
 recorded account domain is in that list. Turns with no account snapshot and
-turns from other domains are excluded before daily and session rows are built.
+turns from other domains are then excluded before daily and session rows are
+built, and every flush prints how many were excluded and why.
 
-`CCXRAY_USER_EMAIL` remains the explicit summary identity when set. Without
-it, ccxray requires exactly one observed email among the allowed-domain turns;
-zero or multiple candidates hard-fail the export without advancing its cursor.
-The filter cannot distinguish two accounts in the same allowed domain, so keep
-personal same-domain traffic out of ccxray's view or do not set the exporter.
+When `CCXRAY_EXPORT_DOMAINS` is unset or empty the filter is not configured:
+every turn this machine observes is exported, exactly as before the filter
+existed, with no identity resolution and no hard-fail. Only launches through
+`ccxray <agent>` record an account snapshot; imported transcripts never do, so
+an unconfigured exporter is the only mode in which imported history exports.
+
+With the filter configured, `CCXRAY_USER_EMAIL` remains the explicit summary
+identity when set. Without it, ccxray requires exactly one observed email among
+the allowed-domain turns; zero or multiple candidates hard-fail the export
+without advancing its cursor. Without the filter, an unset `CCXRAY_USER_EMAIL`
+still yields `user_email: null` in the summaries. The filter cannot distinguish
+two accounts in the same allowed domain, so keep personal same-domain traffic
+out of ccxray's view or do not set the exporter.
 
 What leaves the machine is the per-session summary:
 
