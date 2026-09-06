@@ -100,6 +100,13 @@ boolean `hasExtraUsageEnabled`; numeric `profileFetchedAt`; and nullable
 `ccOnboardingFlags`, `claudeCodeTrialEndsAt`, `claudeCodeTrialDurationDays`,
 `seatTier`, `workspaceRole`, and `userRateLimitTier`. Keep synthetic values.
 
+Exporter account-domain fixtures use the account-bearing index-line shape
+covered by `test/index-fields.e2e.test.js`; keep every field, email, domain,
+session id, and path synthetic. Build their `index.ndjson` under `mkHome()`'s
+temporary `CCXRAY_HOME`, then exercise them through `_setUploader()` and
+`flushExport()` as `test/export-sync.test.js` does. Do not sample either
+`~/.ccxray` or a real Claude account config.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.

@@ -66,6 +66,8 @@ function makeEntry(overrides = {}) {
     stopReason: 'end_turn',
     status: 200,
     cwd: '/Users/dev/myproject',
+    accountEmail: 'test@example.com',
+    accountDomain: 'example.com',
     ...overrides,
   };
 }
@@ -89,7 +91,11 @@ const _ambientTz = process.env.TZ;
 let _savedFlags = { disable: _ambientDisable, tz: _ambientTz };
 
 function setupEnv(home, agentId) {
-  const savedFlags = { disable: process.env.CCXRAY_EXPORT_DISABLE, tz: process.env.TZ };
+  const savedFlags = {
+    disable: process.env.CCXRAY_EXPORT_DISABLE,
+    tz: process.env.TZ,
+    domains: process.env.CCXRAY_EXPORT_DOMAINS,
+  };
   process.env.TZ = 'Asia/Taipei';
   process.env.CCXRAY_HOME = home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'test-bucket';
@@ -102,6 +108,7 @@ function setupEnv(home, agentId) {
   delete process.env.CCXRAY_EXPORT_DISABLE;
   process.env.CCXRAY_AGENT_ID = agentId;
   process.env.CCXRAY_USER_EMAIL = 'test@example.com';
+  process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
   process.env.CCXRAY_TEAM = 'test-team';
   bustConfigCache();
 }
@@ -123,6 +130,8 @@ function cleanupEnv() {
   else process.env.CCXRAY_EXPORT_DISABLE = _savedFlags.disable;
   if (_savedFlags.tz === undefined) delete process.env.TZ;
   else process.env.TZ = _savedFlags.tz;
+  if (_savedFlags.domains === undefined) delete process.env.CCXRAY_EXPORT_DOMAINS;
+  else process.env.CCXRAY_EXPORT_DOMAINS = _savedFlags.domains;
   _savedFlags = {};
   _setUploader(null);
   if (_testHomes.has(home)) {
