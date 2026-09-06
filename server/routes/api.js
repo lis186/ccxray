@@ -8,7 +8,7 @@ const { tokenizeRequest } = require('../helpers');
 const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
-const { UPSTREAM_PROFILES, normalizeUsageForProvider } = require('../providers');
+const { UPSTREAM_PROFILES, normalizeUsageForProvider, describeAgentModule } = require('../providers');
 const forward = require('../forward');
 const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
@@ -93,7 +93,8 @@ function normalizeIndexEntry(meta) {
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
     if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
-      meta.cost = calculateCost(meta.usage, meta.model);
+      // #568: price by the upstream that served the turn (grok → xai), not the wire family.
+      meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }
   }
   return summarizeEntry({ ...meta, req: null, res: null, _loaded: false });

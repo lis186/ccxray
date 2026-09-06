@@ -116,7 +116,7 @@ function buildEntryFields(ctx) {
     cwd: ctx.cwd ?? null,
     usage,
     contextUsageKnown,
-    cost: calculateCost(usage, model),
+    cost: calculateCost(usage, model, 'anthropic'),
     maxContext: config.inferMaxContext(model, parsedBody?.system, usage, { beta1m: ctx.beta1m }),
     // #339: persist the authoritative 1M signal (not just its effect on maxContext) so
     // restore/cold-load can derive a per-session context% denominator. Gated exactly like
