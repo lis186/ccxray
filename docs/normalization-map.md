@@ -112,7 +112,7 @@ Step 5 is the workaround for Codex's `{ "/path/to/project": { metadata } }` wher
 
 ## 3. Usage & Cost
 
-`pricing.js:calculateCost(usage, model)` — identical call for both providers.
+`pricing.js:calculateCost(usage, model, provider)` — same call for both wire families; `provider` is the upstream key (`anthropic`, `openai`, `xai` — grok resolves through `describeAgentModule(agent).upstreamKey`) and selects a LiteLLM `provider/model` row before the model-only lookup (#568).
 
 ### Usage extraction
 
