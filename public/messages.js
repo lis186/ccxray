@@ -205,9 +205,12 @@ function getOpenAIToolItemKind(type) {
 
 function parseOpenAIToolInput(item) {
   const rawInput = item?.arguments ?? item?.input ?? {};
-  if (rawInput && typeof rawInput === 'object') return rawInput;
-  try { return JSON.parse(rawInput || '{}'); }
-  catch { return { input: String(rawInput || '') }; }
+  const isPlainObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  if (isPlainObject(rawInput)) return rawInput;
+  try {
+    const parsed = JSON.parse(rawInput || '{}');
+    return isPlainObject(parsed) ? parsed : { input: parsed };
+  } catch { return { input: String(rawInput || '') }; }
 }
 
 // Grok CLI sends message.content as a plain string; Codex uses part arrays
