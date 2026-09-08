@@ -6,6 +6,7 @@ const path = require('path');
 const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { readExportCursorFacts } = require('./export-sync');
 const { renderConfigWarning } = require('./importer');
+const { credentialText } = require('./export-credentials');
 
 // Keep this in step with export-sync.js. The exporter schedules hourly flushes;
 // the home-level line uses twice that interval only for the behind qualifier.
@@ -43,6 +44,9 @@ function renderProcessStatus(report, unavailableReason = 'no discoverable hub') 
   if (Array.isArray(report.configWarnings) && report.configWarnings.length) {
     parts.push(`configWarnings=${report.configWarnings.map(warningText).join(' | ')}`);
   }
+  // Absent on reports from a hub older than #633 M0 and on non-enabled states;
+  // the line simply omits it rather than guessing.
+  if (report.credential) parts.push(credentialText(report.credential));
   parts.push(`identity=${identityText(report.identity)}`);
   return `Process: ${parts.join(' ')}`;
 }

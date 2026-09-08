@@ -105,6 +105,33 @@ describe('ccxray status process level', () => {
     assert.match(outputs[0], /exportState=unconfigured/, 'unconfigured must be stated, not silently omitted');
   });
 
+  it('D1c: renders the #633 credential stages when reported and omits them when the report predates them', () => {
+    const identity = { kind: 'hub', pid: 1, port: 5577, home: '/h', logsDir: '/l' };
+    const withCredential = renderProcessStatus({
+      exportState: 'enabled',
+      exportReason: null,
+      configWarnings: [],
+      credential: {
+        discovery: { state: 'adc', source: '%APPDATA%\\gcloud', pathLabel: '%APPDATA%\\gcloud/application_default_credentials.json' },
+        parse: { state: 'ok', type: 'authorized_user' },
+        token: { state: 'not-attempted' },
+        authorization: { state: 'unknown' },
+        ignoredEnv: ['GOOGLE_APPLICATION_CREDENTIALS'],
+      },
+      identity,
+    });
+    assert.match(withCredential,
+      /credential=discovery:adc at:%APPDATA%\\gcloud\/application_default_credentials\.json parse:ok\(authorized_user\) authorization:unknown ignored:GOOGLE_APPLICATION_CREDENTIALS/);
+    assert.doesNotMatch(withCredential, /token:/, 'an unexercised token stage must not be rendered as a verdict');
+    // Field order: credential sits between configWarnings and identity.
+    assert.ok(withCredential.indexOf('credential=') < withCredential.indexOf('identity='));
+
+    const legacy = renderProcessStatus({ exportState: 'enabled', exportReason: null, configWarnings: [], identity });
+    assert.doesNotMatch(legacy, /credential/);
+    const nullCredential = renderProcessStatus({ exportState: 'suppressed', exportReason: 'test-run', configWarnings: [], credential: null, identity });
+    assert.doesNotMatch(nullCredential, /credential/);
+  });
+
   it('A3: preserves unknown warning codes and raw args on the process line', () => {
     const output = renderProcessStatus({
       exportState: 'enabled',

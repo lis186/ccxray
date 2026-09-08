@@ -15,7 +15,14 @@ const ENV_KEYS = [
   'CCXRAY_IMPORT_CODEX_HOMES',
   'CCXRAY_HOME',
   'LOGS_DIR',
+  // #633 M0: an enabled report discovers the writer credential. These roots are
+  // scrubbed and CLOUDSDK_CONFIG is pinned to an empty dir so no test reads a
+  // developer's real ADC file (docs/testing.md, credential roots).
+  'CLOUDSDK_CONFIG',
+  'CCXRAY_EXPORT_GCS_KEY_FILE',
+  'GOOGLE_APPLICATION_CREDENTIALS',
 ];
+const emptyGcloudDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-owned-gcloud-'));
 const originalEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 const testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-owned-status-'));
 fs.mkdirSync(path.join(testHome, 'logs'), { recursive: true });
@@ -44,6 +51,7 @@ function reportFields(value) {
 
 function setEnv(env) {
   for (const key of ENV_KEYS) delete process.env[key];
+  process.env.CLOUDSDK_CONFIG = emptyGcloudDir;
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) process.env[key] = value;
   }
@@ -85,6 +93,7 @@ before(async () => {
 });
 
 after(async () => {
+  fs.rmSync(emptyGcloudDir, { recursive: true, force: true });
   clearClients();
   if (socketServer) await new Promise(resolve => socketServer.close(resolve));
   hub.setHubPort(null);
@@ -245,6 +254,7 @@ describe('hub-owned export/config status', () => {
         exportState: null,
         exportReason: null,
         configWarnings: [],
+        credential: null,
         identity: {
           kind: 'client',
           pid: process.pid,
@@ -312,6 +322,12 @@ describe('hub-owned export/config status', () => {
 
         assert.equal(assembled.exportState, state.expected.exportState, `${state.name}: assembler state`);
         assert.equal(assembled.exportReason, state.expected.exportReason, `${state.name}: assembler reason`);
+        if (state.expected.exportState === 'enabled') {
+          assert.equal(assembled.credential.discovery.state, 'none', `${state.name}: enabled reports the (empty) discovered credential`);
+          assert.equal('path' in assembled.credential, false, `${state.name}: report carries no credential path`);
+        } else {
+          assert.equal(assembled.credential, null, `${state.name}: no credential verdict without an enabled exporter`);
+        }
         assert.deepEqual(statusPayload, assembled, `${state.name}: getHubStatus uses assembler payload`);
         assert.deepEqual(replyPayload, assembled, `${state.name}: register uses assembler payload`);
         assert.deepEqual(replyPayload, statusPayload, `${state.name}: carriers agree`);
