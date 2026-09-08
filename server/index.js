@@ -158,7 +158,10 @@ if (agentMode || hubMode) console.log = () => {};
 // has its own status/reporting path and must retain the existing hub-log behavior.
 const localExporterMode = !hubMode
   && (explicitPort || !agentMode || process.platform === 'win32');
-if (localExporterMode) exportSync._setConfigDirsWarningLogger(_origLog);
+if (localExporterMode) {
+  exportSync._setConfigDirsWarningLogger(_origLog);
+  exportSync._setCredentialLogger(_origLog);
+}
 
 // ── Delta log storage ────────────────────────────────────────────────
 // sessionLastReq tracks the most recent req per session for delta writes.
@@ -1079,6 +1082,7 @@ function reportHubRegistrationStatus(reply, lifecycle) {
       exportState: reply.exportState,
       exportReason: reply.exportReason,
       configWarnings: reply.configWarnings,
+      credential: reply.credential,
     },
   );
   if (rendered) _origLog(rendered);

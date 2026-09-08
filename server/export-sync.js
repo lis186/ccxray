@@ -6,6 +6,10 @@ const crypto = require('crypto');
 const https = require('https');
 const { resolveCcxrayHome } = require('./paths');
 const { listRawSessionBuckets } = require('./providers');
+const {
+  discoverCredentials, describeCredentials, credentialText,
+  CredentialError, tokenError, networkError, uploadError,
+} = require('./export-credentials');
 
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
@@ -35,8 +39,17 @@ let _configDirsWarned = false; // the tombstone message is about static config �
 // still observe the refusal. server/index.js swaps this for _origLog on local
 // exporter paths, where agent mode has muted console.log.
 let _configDirsWarningLogger = (...args) => console.log(...args);
+// Same channel rule as above, for the one-line credential banner at startup.
+let _credentialLogger = (...args) => console.log(...args);
+let _tokenExchanger = null; // test seam: replaces the POST to oauth2.googleapis.com
 
 function _setUploader(fn) { _uploader = fn; }
+function _setTokenExchanger(fn) { _tokenExchanger = fn; }
+function _resetTokenCache() { _cachedToken = null; }
+
+function _setCredentialLogger(fn) {
+  _credentialLogger = typeof fn === 'function' ? fn : (...args) => console.log(...args);
+}
 
 function _setConfigDirsWarningLogger(fn) {
   _configDirsWarningLogger = typeof fn === 'function'
@@ -274,8 +287,7 @@ function sanitizeName(name) {
 }
 
 // ── GCS auth (RS256 JWT, zero deps) ────────────────────────────────────
-function signJwt(keyFile) {
-  const sa = JSON.parse(fs.readFileSync(keyFile, 'utf8'));
+function signJwt(sa) {
   const now = Math.floor(Date.now() / 1000);
   const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
   const payload = Buffer.from(JSON.stringify({
@@ -289,9 +301,12 @@ function signJwt(keyFile) {
   return `${header}.${payload}.${sig}`;
 }
 
-function exchangeJwt(jwt) {
+// Both grant types POST the same form to the same endpoint. Failures surface as
+// CredentialError categories (export-credentials.js): the endpoint's JSON body
+// names the client and must not reach a log line.
+function postTokenRequest(body) {
+  if (_tokenExchanger) return _tokenExchanger(body);
   return new Promise((resolve, reject) => {
-    const body = `grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`;
     const req = https.request('https://oauth2.googleapis.com/token', {
       method: 'POST',
       timeout: GCS_TIMEOUT_MS,
@@ -300,55 +315,45 @@ function exchangeJwt(jwt) {
       let data = '';
       res.on('data', c => { data += c; });
       res.on('end', () => {
-        try {
-          const j = JSON.parse(data);
-          if (j.access_token) resolve(j);
-          else reject(new Error(data));
-        } catch (e) { reject(e); }
+        let j = null;
+        try { j = JSON.parse(data); } catch {}
+        if (j && j.access_token) resolve(j);
+        else reject(j ? tokenError(data) : tokenError(data, 'malformed-response'));
       });
     });
-    req.on('timeout', () => { req.destroy(new Error('GCS auth timeout')); });
-    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new CredentialError('token', 'timeout')); });
+    req.on('error', err => reject(err instanceof CredentialError ? err : networkError('token', err)));
     req.end(body);
   });
 }
 
-// ponytail: ADC fallback — reads ~/.config/gcloud/application_default_credentials.json
-// and does an OAuth2 refresh. SA key file takes precedence when set.
-function refreshAdc() {
-  const adcPath = path.join(process.env.HOME || '', '.config', 'gcloud', 'application_default_credentials.json');
-  const adc = JSON.parse(fs.readFileSync(adcPath, 'utf8'));
-  const body = new URLSearchParams({
+function exchangeJwt(jwt) {
+  return postTokenRequest(`grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${jwt}`);
+}
+
+function refreshAdc(adc) {
+  return postTokenRequest(new URLSearchParams({
     grant_type: 'refresh_token',
     client_id: adc.client_id,
     client_secret: adc.client_secret,
     refresh_token: adc.refresh_token,
-  }).toString();
-  return new Promise((resolve, reject) => {
-    const req = https.request('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      timeout: GCS_TIMEOUT_MS,
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) },
-    }, res => {
-      let data = '';
-      res.on('data', c => { data += c; });
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(data);
-          if (j.access_token) resolve(j);
-          else reject(new Error(data));
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('timeout', () => { req.destroy(new Error('ADC refresh timeout')); });
-    req.on('error', reject);
-    req.end(body);
-  });
+  }).toString());
 }
 
-async function getAccessToken(keyFile) {
+// `record` is a discoverCredentials() result: key file (service_account) wins,
+// then the ADC file at gcloud's platform config root. A record that never
+// reached parse:ok fails here with the discovery/parse state as the category,
+// before any network I/O.
+async function getAccessToken(record) {
   if (_cachedToken && Date.now() < _cachedToken.expiresAt - 60_000) return _cachedToken.accessToken;
-  const tok = keyFile ? await exchangeJwt(signJwt(keyFile)) : await refreshAdc();
+  if (!record || record.parse.state !== 'ok') {
+    const stage = record && record.parse.state !== 'not-attempted' ? 'parse' : 'discovery';
+    throw new CredentialError(stage, record ? record[stage].state : 'unavailable');
+  }
+  const cred = record.parse.credential;
+  const tok = cred.type === 'service_account'
+    ? await exchangeJwt(signJwt(cred))
+    : await refreshAdc(cred);
   _cachedToken = { accessToken: tok.access_token, expiresAt: Date.now() + (tok.expires_in || 3600) * 1000 };
   return _cachedToken.accessToken;
 }
@@ -370,11 +375,12 @@ function uploadToGcs(bucket, objectName, body, accessToken) {
       res.on('data', c => { data += c; });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
-        else reject(new Error(`GCS ${res.statusCode}: ${data}`));
+        // A GCS error body names the principal and the bucket; keep the code only.
+        else reject(uploadError(res.statusCode));
       });
     });
-    req.on('timeout', () => { req.destroy(new Error('GCS upload timeout')); });
-    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new CredentialError('upload', 'timeout')); });
+    req.on('error', err => reject(err instanceof CredentialError ? err : networkError('upload', err)));
     req.end(body);
   });
 }
@@ -1170,7 +1176,9 @@ async function flushExport() {
     }
 
     const prefix = process.env.CCXRAY_EXPORT_GCS_PREFIX || 'summaries';
-    const keyFile = process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
+    // Discovered once per flush, and only if something is actually uploaded —
+    // first-run and no-data flushes never touch the credential file.
+    let credentials = null;
     const seq = { ...(cursor.seq || {}) };
 
     // #3: completedDts bound to snapshot — clear if index changed since they were recorded
@@ -1207,7 +1215,8 @@ async function flushExport() {
 
       const objectName = `${prefix}/dt=${dt}/${agentId}--${dtSeq}--${uuid8}.jsonl`;
       const upload = uploaderAtEntry || (async (b, name, body) => {
-        const accessToken = await getAccessToken(keyFile);
+        if (!credentials) credentials = discoverCredentials();
+        const accessToken = await getAccessToken(credentials);
         return uploadToGcs(b, name, body, accessToken);
       });
       await upload(bucket, objectName, payload);
@@ -1262,6 +1271,9 @@ function startExportSync() {
     ? 'exporting configured account-domain sessions'
     : 'exporting ALL sessions this machine observes (live + imported)';
   console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
+  // Offline stages only (discovery + parse). Token and authorization stay
+  // not-attempted/unknown until a real upload; nothing here talks to Google.
+  _credentialLogger(`\x1b[90m   [ccxray export] ${credentialText(describeCredentials(discoverCredentials()))}\x1b[0m`);
   _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
@@ -1296,5 +1308,9 @@ module.exports = {
   flushExport,
   awaitPendingFlush,
   isExportSuppressed,
+  getAccessToken,
   _setUploader,
+  _setTokenExchanger,
+  _resetTokenCache,
+  _setCredentialLogger,
 };
