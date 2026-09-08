@@ -45,6 +45,38 @@ it can never export. For Codex, the corresponding
 `CCXRAY_IMPORT_CODEX_HOMES` value is a comma-separated list of actual
 `sessions/` scan roots; use the `sessions/` directory itself, not `~/.codex`.
 
+## Writer credentials
+
+The exporter authenticates to GCS with one of two credentials, in this order:
+
+1. `CCXRAY_EXPORT_GCS_KEY_FILE` — a protected service-account JSON key file.
+2. The gcloud application-default credential (`gcloud auth application-default
+   login`), read from gcloud's own config root: `CLOUDSDK_CONFIG` if set,
+   otherwise `%APPDATA%\gcloud` on Windows and `~/.config/gcloud` elsewhere.
+
+There is no working-directory fallback: with no key file and no config root
+the exporter reports `discovery:no-config-root` and uploads fail before any
+network call. `GOOGLE_APPLICATION_CREDENTIALS` is deliberately not read;
+when it is set, status shows it under `ignored:` so you know it has no effect
+here.
+
+Credential state is reported in four stages, and each is stated only as far
+as it was actually exercised:
+
+| Stage | Values | When it is evaluated |
+|---|---|---|
+| `discovery` | `key-file`, `adc`, `none`, `no-config-root` | exporter startup and every upload; offline |
+| `parse` | `ok(type)`, `missing`, `unreadable`, `malformed`, `unsupported-type`, `missing-fields` | same; offline. Supported types are `service_account` and `authorized_user` |
+| `token` | `not-attempted`, `refused:<reason>`, `network:<code>`, `timeout` | only by a real upload |
+| `authorization` | `unknown`, `unauthenticated`, `denied` | only by a real upload's 401/403 |
+
+`ccxray status` shows the first two stages on the `Process:` line for an
+enabled exporter reached through a hub. Standalone, `--port`, and Windows
+servers print the same line to the terminal at startup instead; `status`
+cannot reach their exporter yet. Error output names the category only — never
+the upstream response body, which would carry the OAuth client, the principal,
+or the bucket.
+
 Do not set `CCXRAY_EXPORT_CONFIG_DIRS`. It never worked as an account or config
 directory filter. Setting it now disables export until you unset it, and ccxray
 prints a refusal explaining why.
