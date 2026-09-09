@@ -99,6 +99,7 @@ function normalizeV3PayloadToV2(payload) {
     row._summary_schema_version = 2;
     row.summary_id = '<summary-id>';
     if (row.type === 'session') delete row.user_email;
+    delete row.thinking_ratio;
   }
   return rows.map(JSON.stringify).join('\n') + '\n';
 }
@@ -696,13 +697,13 @@ describe('export-sync', () => {
       'tool_defined_count', 'tool_used_count', 'tool_fail_count', 'duplicate_tool_call_count',
       'credential_flag', 'error_count', 'stop_reasons', 'session_count', 'turn_count',
       'subagent_turn_count', 'cwd_repos', 'cost_confidence', 'first_turn_context_pct_median',
-      'distinct_sys_hash_count', 'distinct_tools_hash_count',
+      'distinct_sys_hash_count', 'distinct_tools_hash_count', 'thinking_ratio',
     ];
     const sessionV2Fields = [
       'type', '_summary_schema_version', 'agent_id', 'dt', 'session_id', 'cost_total', 'turn_count',
       'model_primary', 'cwd', 'flags', 'summary_id', 'imported_turn_count', 'inferred_turn_count',
       'session_id_kind', 'models', 'import_sources', 'turn_set_size', 'turn_set_hash',
-      'turn_set_basis', 'cost_confidence',
+      'turn_set_basis', 'cost_confidence', 'thinking_ratio',
     ];
 
     for (const field of dailyV2Fields) assert.ok(field in daily, `daily v2 field preserved: ${field}`);
