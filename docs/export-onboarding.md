@@ -37,8 +37,8 @@ main) for the full v3 schema. Key fields:
 - `provider`, `agent_id`, `session_id_kind`
 
 The export never contains prompts, titles, tool arguments, response bodies,
-credentials, or absolute paths. Failed turns (e.g. 401) are included with
-`error_count` and `cost_confidence:"unknown"`, not excluded.
+credentials, or absolute paths. Failed turns (e.g. 401) increment `error_count` and contribute unknown-cost
+evidence when the turn has no priced cost; they are not excluded.
 
 If you use a personal account outside an allowed domain, configure
 `CCXRAY_EXPORT_DOMAINS` before setting `CCXRAY_EXPORT_GCS_BUCKET`. For
@@ -71,8 +71,8 @@ as it was actually exercised:
 
 | Stage | Values | When it is evaluated |
 |---|---|---|
-| `discovery` | `key-file`, `adc`, `none`, `no-config-root` | exporter startup and every upload; offline |
-| `parse` | `ok(type)`, `missing`, `unreadable`, `malformed`, `unsupported-type`, `missing-fields` | same; offline. Supported types are `service_account` and `authorized_user` |
+| `discovery` | `key-file`, `adc`, `none`, `no-config-root` | exporter startup and once per uploading flush; offline |
+| `parse` | `ok(type)`, `missing`, `unreadable`, `malformed`, `unsupported-type`, `missing-fields` | same (once per flush); offline. Supported types are `service_account` and `authorized_user` |
 | `token` | `not-attempted`, `refused:<reason>`, `network:<code>`, `timeout` | only by a real upload |
 | `authorization` | `unauthenticated`, `denied` | only by a real upload's 401/403 |
 
