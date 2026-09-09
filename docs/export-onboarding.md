@@ -21,17 +21,18 @@ still yields `user_email: null` in the summaries. The filter cannot distinguish
 two accounts in the same allowed domain, so keep personal same-domain traffic
 out of ccxray's view or do not set the exporter.
 
-What leaves the machine is a per-session summary and a daily aggregate. See
-`bq/01-summaries-external-table.json` for the full v3 schema. Key fields:
+What leaves the machine is a per-session summary and a daily aggregate. See `bq/01-summaries-external-table.json` (in the `team/` package, not yet on
+main) for the full v3 schema. Key fields:
 
 - `user_email` — `CCXRAY_USER_EMAIL` or the resolved identity
 - `team` — `CCXRAY_TEAM` (daily row only; session rows do not carry it)
 - `cost_total`, `cost_confidence`
 - `turn_count`, `session_count`, `error_count`
 - `model_primary`, `models` (per-model turn/token/cost breakdown)
-- `cwd` — masked to `[other]` when `CCXRAY_EXPORT_CWD_ALLOWLIST` is set and the
-  repository is not in the list. When the variable is unset or empty, `cwd` is
-  exported as-is (no masking)
+- `cwd` — the repository directory basename (never a full path). Masked to
+  `[other]` when `CCXRAY_EXPORT_CWD_ALLOWLIST` is set and the basename is not
+  in the list. When the variable is unset or empty, the basename is exported
+  without masking
 - `flags`, `tool_usage`, `skill_usage`, `tool_sources`
 - `provider`, `agent_id`, `session_id_kind`
 
