@@ -99,6 +99,14 @@ To prevent this, either:
 - point `CCXRAY_IMPORT_HOMES` and `CCXRAY_IMPORT_CODEX_HOMES` at empty
   directories so the importer finds nothing to scan.
 
+When using a fake identity (`CCXRAY_USER_EMAIL=drill@example.invalid`), do
+**not** also set `CCXRAY_EXPORT_DOMAINS` to a fake domain. The domain filter
+matches the real launch-account snapshot on the wire, not the configured
+`CCXRAY_USER_EMAIL`. A real account at `company.com` sending turns through a
+proxy with `CCXRAY_EXPORT_DOMAINS=example.invalid` will have every turn
+excluded by `domain-mismatch`, producing `rows=0` — which looks like the
+exporter is broken rather than the filter working as designed.
+
 ## Flush timing
 
 The exporter flushes on three occasions: once at startup (initial flush),
