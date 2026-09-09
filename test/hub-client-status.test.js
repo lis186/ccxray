@@ -75,6 +75,22 @@ describe('hub client export/config status render', () => {
     },
   ];
 
+  it('renders the #633 credential stages on the attached banner when the hub reports them', () => {
+    const state = {
+      ...stateFor('enabled'),
+      credential: {
+        discovery: { state: 'key-file', source: 'CCXRAY_EXPORT_GCS_KEY_FILE', pathLabel: '$CCXRAY_EXPORT_GCS_KEY_FILE' },
+        parse: { state: 'missing', type: null },
+        token: { state: 'not-attempted' },
+        authorization: { state: 'unknown' },
+        ignoredEnv: [],
+      },
+    };
+    const output = renderHubClientStatus(hubIdentity, 'attached', state);
+    assert.match(output, /credential=discovery:key-file at:\$CCXRAY_EXPORT_GCS_KEY_FILE parse:missing/);
+    assert.doesNotMatch(renderHubClientStatus(hubIdentity, 'attached', stateFor('enabled')), /credential/);
+  });
+
   it('keeps the six terminal recovery outcomes on the status-render path', () => {
     assert.deepEqual(
       recoveryOutcomes.map(row => row.lifecycle),

@@ -107,6 +107,18 @@ temporary `CCXRAY_HOME`, then exercise them through `_setUploader()` and
 `flushExport()` as `test/export-sync.test.js` does. Do not sample either
 `~/.ccxray` or a real Claude account config.
 
+Exporter credential discovery (`server/export-credentials.js`) reads
+`CCXRAY_EXPORT_GCS_KEY_FILE`, `CLOUDSDK_CONFIG`, `%APPDATA%`, and
+`os.homedir()` — none of which `CCXRAY_HOME` isolates. Any test that reaches
+it (`startExportSync` with an injected uploader, `assembleExportReport` /
+`getHubStatus` for an enabled exporter, or `getAccessToken`) must scrub the
+key-file variable and pin `CLOUDSDK_CONFIG` to an empty temp dir, or inject
+`env`/`platform`/`homedir`/`readFile` as `test/export-credentials.test.js`
+does. Never read the real `~/.config/gcloud`; credential fixtures are
+synthetic JSON with the `type` field and placeholder values. The token exchange
+is mocked through `_setTokenExchanger()`; no test may reach
+`oauth2.googleapis.com`.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.

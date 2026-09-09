@@ -1,6 +1,7 @@
 'use strict';
 
 const { renderConfigWarning } = require('./importer');
+const { credentialText } = require('./export-credentials');
 
 const LIFECYCLES = new Set(['attached', 'recovered', 'recovery-failed']);
 
@@ -26,6 +27,7 @@ function stateText(state) {
   if (Array.isArray(state.configWarnings) && state.configWarnings.length) {
     parts.push('configWarnings=' + state.configWarnings.map(renderConfigWarning).join(' | '));
   }
+  if (state.credential) parts.push(credentialText(state.credential));
   return parts.join(' ');
 }
 

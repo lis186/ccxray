@@ -7,6 +7,7 @@ const http = require('http');
 const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
+const { discoverCredentials, describeCredentials } = require('./export-credentials');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -605,6 +606,12 @@ function assembleExportReport(env = process.env) {
     exportState,
     exportReason,
     configWarnings: kind === 'client' ? [] : relativeRootComplaints(env),
+    // #633 M0: offline discovery + parse of the writer credential, display view
+    // only (no path, no contents). Reported for an ENABLED exporter only — for a
+    // suppressed/unconfigured/refused process a credential verdict would invite
+    // the reader to infer an exporter that does not exist. Same client rule as
+    // exportState: a client has no authority over its own environment.
+    credential: exportState === 'enabled' ? describeCredentials(discoverCredentials({ env })) : null,
     identity: {
       kind,
       pid: process.pid,

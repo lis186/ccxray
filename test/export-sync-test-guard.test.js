@@ -57,6 +57,8 @@ function withEnv(fn) {
     configDirs: process.env.CCXRAY_EXPORT_CONFIG_DIRS,
     userEmail: process.env.CCXRAY_USER_EMAIL,
     domains: process.env.CCXRAY_EXPORT_DOMAINS,
+    keyFile: process.env.CCXRAY_EXPORT_GCS_KEY_FILE,
+    cloudsdk: process.env.CLOUDSDK_CONFIG,
   };
   // No test may inherit ambient suppression state; each sets what it needs.
   delete process.env.CCXRAY_EXPORT_DISABLE;
@@ -70,14 +72,23 @@ function withEnv(fn) {
   // makes the seam test pass locally while CI (no identity) hard-fails before cursor init.
   delete process.env.CCXRAY_USER_EMAIL;
   delete process.env.CCXRAY_EXPORT_DOMAINS;
+  // startExportSync now discovers the writer credential at startup. Point gcloud's
+  // config root at an empty dir so the suite never reads a developer's real ADC
+  // file (docs/testing.md, credential roots).
+  delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
+  const cloudsdkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-guard-gcloud-'));
+  process.env.CLOUDSDK_CONFIG = cloudsdkDir;
   const restore = () => {
+    fs.rmSync(cloudsdkDir, { recursive: true, force: true });
     for (const [k, v] of [['CCXRAY_HOME', saved.home],
                           ['CCXRAY_EXPORT_GCS_BUCKET', saved.bucket],
                           ['CCXRAY_EXPORT_DISABLE', saved.disable],
                           ['LOGS_DIR', saved.logs],
                           ['CCXRAY_EXPORT_CONFIG_DIRS', saved.configDirs],
                           ['CCXRAY_USER_EMAIL', saved.userEmail],
-                          ['CCXRAY_EXPORT_DOMAINS', saved.domains]]) {
+                          ['CCXRAY_EXPORT_DOMAINS', saved.domains],
+                          ['CCXRAY_EXPORT_GCS_KEY_FILE', saved.keyFile],
+                          ['CLOUDSDK_CONFIG', saved.cloudsdk]]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
   };
