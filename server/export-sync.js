@@ -1270,7 +1270,7 @@ function startExportSync() {
   const scope = exportDomains().size > 0
     ? 'exporting configured account-domain sessions'
     : 'exporting ALL sessions this machine observes (live + imported)';
-  console.log(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
+  _credentialLogger(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
   // Offline stages only (discovery + parse). Token and authorization stay
   // not-attempted/unknown until a real upload; nothing here talks to Google.
   _credentialLogger(`\x1b[90m   [ccxray export] ${credentialText(describeCredentials(discoverCredentials()))}\x1b[0m`);

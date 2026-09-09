@@ -155,7 +155,7 @@ test('startExportSync prints the offline credential stages through the injected 
     fs.rmSync(root, { recursive: true, force: true });
   }
 
-  const banner = lines.find(l => l.startsWith('LOGGER '));
+  const banner = lines.find(l => l.startsWith('LOGGER ') && l.includes('credential='));
   assert.ok(banner, `credential banner missing from:\n${lines.join('\n')}`);
   assert.match(banner, /\[ccxray export\] credential=discovery:adc at:\$CLOUDSDK_CONFIG\/application_default_credentials\.json parse:ok\(authorized_user\) ignored:GOOGLE_APPLICATION_CREDENTIALS/);
   assert.doesNotMatch(banner, /token:/, 'startup must not claim a token stage it never ran');

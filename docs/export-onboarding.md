@@ -29,7 +29,9 @@ What leaves the machine is a per-session summary and a daily aggregate. See
 - `cost_total`, `cost_confidence`
 - `turn_count`, `session_count`, `error_count`
 - `model_primary`, `models` (per-model turn/token/cost breakdown)
-- `cwd` — masked to `[other]` unless in `CCXRAY_EXPORT_CWD_ALLOWLIST`
+- `cwd` — masked to `[other]` when `CCXRAY_EXPORT_CWD_ALLOWLIST` is set and the
+  repository is not in the list. When the variable is unset or empty, `cwd` is
+  exported as-is (no masking)
 - `flags`, `tool_usage`, `skill_usage`, `tool_sources`
 - `provider`, `agent_id`, `session_id_kind`
 
@@ -84,6 +86,19 @@ exporter yet. Error output names the category only — never the upstream
 response body, which would carry the OAuth client, the principal, or the
 bucket.
 
+## Isolating a drill or canary run
+
+When testing with a separate `CCXRAY_HOME`, the startup importer still scans
+`~/.claude*/` and `~/.codex*/` (these paths follow `$HOME`, not
+`CCXRAY_HOME`). Without further isolation, real historical sessions from this
+machine are imported into the drill home and exported under whatever identity
+you configured — mixing real data with a test identity.
+
+To prevent this, either:
+- set `CCXRAY_IMPORT_DISABLE=1` (disables the importer entirely), or
+- point `CCXRAY_IMPORT_HOMES` and `CCXRAY_IMPORT_CODEX_HOMES` at empty
+  directories so the importer finds nothing to scan.
+
 ## Flush timing
 
 The exporter flushes on three occasions: once at startup (initial flush),
@@ -97,6 +112,6 @@ Do not set `CCXRAY_EXPORT_CONFIG_DIRS`. It never worked as an account or config
 directory filter. Setting it now disables export until you unset it, and ccxray
 prints a refusal explaining why.
 
-`CCXRAY_EXPORT_CWD_ALLOWLIST` does work: it masks repositories outside the
-allowlist. That is why the broken config-directory control is being removed
-rather than kept.
+`CCXRAY_EXPORT_CWD_ALLOWLIST` masks repositories outside its list to `[other]`.
+When unset or empty, no masking is applied — all repository names are exported
+as-is. Set it to a non-empty list to activate masking.
