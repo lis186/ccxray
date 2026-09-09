@@ -464,10 +464,18 @@ function mergeEntry(a, b) {
   }
   for (const f of ['maxContext', 'model', 'cwd', 'stopReason', 'thinkingDuration',
     'msgCount', 'toolCount', 'turnToolCalls', 'toolCalls', 'skillCalls',
-    'toolSources', 'duplicateToolCalls', 'receivedAt', 'provider',
+    'toolSources', 'duplicateToolCalls', 'provider',
     'agentKey', 'isSubagent', 'status', 'sysHash', 'toolsHash',
     'accountEmail', 'accountDomain']) {
     if (merged[f] == null && b[f] != null) merged[f] = b[f];
+  }
+  // #633: (receivedAt, elapsed) are a paired observation — take both from one copy.
+  // The fill-if-null loop above already handled the other timing fields; these two
+  // must move together so a ratio never mixes one copy's duration with another's timing.
+  // #633: (receivedAt, elapsed) move as a unit from one copy.
+  if (merged.receivedAt == null && b.receivedAt != null) {
+    merged.receivedAt = b.receivedAt;
+    merged.elapsed = b.elapsed;
   }
   // ADR 0012 (field table, line 155): `imported`/`importSource` are CLEARED when a
   // proxy copy merges in — a real observation supersedes an import reconstruction.
@@ -638,6 +646,9 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
         tool_fail_count: 0,
         duplicate_tool_call_count: 0,
         credential_flag: false,
+        _totalThinkingS: 0,
+        _totalElapsedS: 0,
+        _elapsedTurns: 0,
         error_count: 0,
         stop_reasons: {},
         session_count: 0,
@@ -682,8 +693,15 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
       mb.cache_read += entry.usage.cache_read_input_tokens || 0;
       mb.cache_creation += entry.usage.cache_creation_input_tokens || 0;
     }
-    if (entry.thinkingDuration > 0) mb.thinking_turns++;
+    if (entry.thinkingDuration > 0) {
+      mb.thinking_turns++;
+      if (!entry.imported) daily._totalThinkingS += Number(entry.thinkingDuration) || 0;
+    }
     if (entry.beta1m === true) mb.beta1m_turns++;
+    if (entry.elapsed != null && !entry.imported) {
+      daily._totalElapsedS += parseFloat(entry.elapsed) || 0;
+      daily._elapsedTurns++;
+    }
 
     // #9: cost confidence — null cost = unknown, legacy numeric = unknown confidence
     const costObj = entry.cost;
@@ -815,6 +833,9 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
         _costConfidence: { exact: 0, prefix: 0, fallback: 0, unknown: 0 },
         _hasCredential: false,
         _toolFailCount: 0,
+        _totalThinkingS: 0,
+        _totalElapsedS: 0,
+        _elapsedTurns: 0,
       };
       dtSessions.set(sid, sess);
     }
@@ -870,6 +891,11 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
       modelStats.unknown_count++;
     }
 
+    if (entry.thinkingDuration > 0 && !entry.imported) sess._totalThinkingS += Number(entry.thinkingDuration) || 0;
+    if (entry.elapsed != null && !entry.imported) {
+      sess._totalElapsedS += parseFloat(entry.elapsed) || 0;
+      sess._elapsedTurns++;
+    }
     if (entry.hasCredential === true) sess._hasCredential = true;
     if (entry.turnToolFail === true) sess._toolFailCount++;
   }
@@ -958,6 +984,14 @@ function finishDaily(daily, summaryId, uploadSeq, partial) {
   daily.tool_defined_count = daily._maxToolCount || daily.tool_used_count;
   daily.cwd_repos = [...daily.cwd_repos];
 
+  // #633: thinking_ratio — dimensionless 0–1, not a timing. null when no proxy
+  // turns with elapsed data exist (imported-only days).
+  daily.thinking_ratio = daily._elapsedTurns > 0 && daily._totalElapsedS > 0
+    ? Math.min(1, Math.round((daily._totalThinkingS / daily._totalElapsedS) * 10000) / 10000)
+    : null;
+  delete daily._totalThinkingS;
+  delete daily._totalElapsedS;
+  delete daily._elapsedTurns;
   delete daily._sessions;
   delete daily._providerCounts;
   delete daily._costConfidence;
@@ -1005,6 +1039,12 @@ function finishSession(sess, daily, summaryId) {
   sess.cost_confidence = foldConfidence(sess._costConfidence);
 
   const flags = [];
+  sess.thinking_ratio = sess._elapsedTurns > 0 && sess._totalElapsedS > 0
+    ? Math.min(1, Math.round((sess._totalThinkingS / sess._totalElapsedS) * 10000) / 10000)
+    : null;
+  delete sess._totalThinkingS;
+  delete sess._totalElapsedS;
+  delete sess._elapsedTurns;
   if (sess._hasCredential) flags.push('credential_leak');
   if (sess.turn_count > RUNAWAY_TURNS && sess.cost_total > RUNAWAY_COST) flags.push('runaway');
   if (daily && daily.session_count > 0) {
