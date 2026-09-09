@@ -21,18 +21,21 @@ still yields `user_email: null` in the summaries. The filter cannot distinguish
 two accounts in the same allowed domain, so keep personal same-domain traffic
 out of ccxray's view or do not set the exporter.
 
-What leaves the machine is the per-session summary:
+What leaves the machine is a per-session summary and a daily aggregate. See
+`bq/01-summaries-external-table.json` for the full v3 schema. Key fields:
 
-- `cost_total`
-- `turn_count`
-- `model_primary`
-- `cwd`
-- `flags`
-- `cost_confidence`
+- `user_email` — `CCXRAY_USER_EMAIL` or the resolved identity
+- `team` — `CCXRAY_TEAM` (daily row only; session rows do not carry it)
+- `cost_total`, `cost_confidence`
+- `turn_count`, `session_count`, `error_count`
+- `model_primary`, `models` (per-model turn/token/cost breakdown)
+- `cwd` — masked to `[other]` unless in `CCXRAY_EXPORT_CWD_ALLOWLIST`
+- `flags`, `tool_usage`, `skill_usage`, `tool_sources`
+- `provider`, `agent_id`, `session_id_kind`
 
-The export also contains the day's aggregate totals and breakdowns. It never
-contains prompts, titles, or tool arguments. `cwd` is masked to `[other]` unless
-the repository is included in `CCXRAY_EXPORT_CWD_ALLOWLIST`.
+The export never contains prompts, titles, tool arguments, response bodies,
+credentials, or absolute paths. Failed turns (e.g. 401) are included with
+`error_count` and `cost_confidence:"unknown"`, not excluded.
 
 If you use a personal account outside an allowed domain, configure
 `CCXRAY_EXPORT_DOMAINS` before setting `CCXRAY_EXPORT_GCS_BUCKET`. For
@@ -68,14 +71,27 @@ as it was actually exercised:
 | `discovery` | `key-file`, `adc`, `none`, `no-config-root` | exporter startup and every upload; offline |
 | `parse` | `ok(type)`, `missing`, `unreadable`, `malformed`, `unsupported-type`, `missing-fields` | same; offline. Supported types are `service_account` and `authorized_user` |
 | `token` | `not-attempted`, `refused:<reason>`, `network:<code>`, `timeout` | only by a real upload |
-| `authorization` | `unknown`, `unauthenticated`, `denied` | only by a real upload's 401/403 |
+| `authorization` | `unauthenticated`, `denied` | only by a real upload's 401/403 |
 
-`ccxray status` shows the first two stages on the `Process:` line for an
-enabled exporter reached through a hub. Standalone, `--port`, and Windows
-servers print the same line to the terminal at startup instead; `status`
-cannot reach their exporter yet. Error output names the category only — never
-the upstream response body, which would carry the OAuth client, the principal,
-or the bucket.
+`token` and `authorization` are omitted from the rendered line until they are
+actually exercised — a freshly started exporter that has not uploaded anything
+shows only `discovery` and `parse`.
+
+`ccxray status` shows these stages on the `Process:` line for an enabled
+exporter reached through a hub. Standalone, `--port`, and Windows servers
+print the same stages to the terminal at startup; `status` cannot reach their
+exporter yet. Error output names the category only — never the upstream
+response body, which would carry the OAuth client, the principal, or the
+bucket.
+
+## Flush timing
+
+The exporter flushes on three occasions: once at startup (initial flush),
+on an hourly interval, and during graceful shutdown (`SIGTERM` / `SIGINT`).
+A restart therefore triggers two flushes — the old process flushes on
+shutdown, and the new process flushes on startup. The upload confirmation
+(`exported files=N rows=M`) appears in whichever process performed the
+flush, which is usually the **old** process's final output, not the new one.
 
 Do not set `CCXRAY_EXPORT_CONFIG_DIRS`. It never worked as an account or config
 directory filter. Setting it now disables export until you unset it, and ccxray

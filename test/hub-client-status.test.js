@@ -87,7 +87,7 @@ describe('hub client export/config status render', () => {
       },
     };
     const output = renderHubClientStatus(hubIdentity, 'attached', state);
-    assert.match(output, /credential=discovery:key-file at:\$CCXRAY_EXPORT_GCS_KEY_FILE parse:missing authorization:unknown/);
+    assert.match(output, /credential=discovery:key-file at:\$CCXRAY_EXPORT_GCS_KEY_FILE parse:missing/);
     assert.doesNotMatch(renderHubClientStatus(hubIdentity, 'attached', stateFor('enabled')), /credential/);
   });
 

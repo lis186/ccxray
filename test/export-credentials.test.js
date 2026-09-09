@@ -189,7 +189,7 @@ describe('credential display and error redaction', () => {
     assert.equal('credential' in described.parse, false);
     const text = credentialText(described);
     assert.equal(text,
-      'credential=discovery:key-file at:$CCXRAY_EXPORT_GCS_KEY_FILE parse:ok(service_account) authorization:unknown ignored:GOOGLE_APPLICATION_CREDENTIALS');
+      'credential=discovery:key-file at:$CCXRAY_EXPORT_GCS_KEY_FILE parse:ok(service_account) ignored:GOOGLE_APPLICATION_CREDENTIALS');
     const serialized = JSON.stringify(described) + text;
     for (const secret of ['/secure', 'writer@synthetic.invalid', 'PRIVATE KEY', 'synthetic']) {
       assert.doesNotMatch(serialized, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), secret);
@@ -201,7 +201,7 @@ describe('credential display and error redaction', () => {
       env: {}, platform: 'darwin', homedir: () => '/Users/dev', readFile: fsOf({}),
     }));
     assert.equal(credentialText(described),
-      'credential=discovery:none at:~/.config/gcloud/application_default_credentials.json authorization:unknown');
+      'credential=discovery:none at:~/.config/gcloud/application_default_credentials.json');
     assert.equal(credentialText(null), 'credential=unavailable');
   });
 

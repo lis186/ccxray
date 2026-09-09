@@ -121,7 +121,7 @@ describe('ccxray status process level', () => {
       identity,
     });
     assert.match(withCredential,
-      /credential=discovery:adc at:%APPDATA%\\gcloud\/application_default_credentials\.json parse:ok\(authorized_user\) authorization:unknown ignored:GOOGLE_APPLICATION_CREDENTIALS/);
+      /credential=discovery:adc at:%APPDATA%\\gcloud\/application_default_credentials\.json parse:ok\(authorized_user\) ignored:GOOGLE_APPLICATION_CREDENTIALS/);
     assert.doesNotMatch(withCredential, /token:/, 'an unexercised token stage must not be rendered as a verdict');
     // Field order: credential sits between configWarnings and identity.
     assert.ok(withCredential.indexOf('credential=') < withCredential.indexOf('identity='));

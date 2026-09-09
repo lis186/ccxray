@@ -141,7 +141,7 @@ function credentialText(described) {
     parts.push(`parse:${p.state}${p.type ? `(${p.type})` : ''}`);
   }
   if (described.token && described.token.state !== 'not-attempted') parts.push(`token:${described.token.state}`);
-  if (described.authorization) parts.push(`authorization:${described.authorization.state}`);
+  if (described.authorization && described.authorization.state !== 'unknown') parts.push(`authorization:${described.authorization.state}`);
   if (described.ignoredEnv && described.ignoredEnv.length) parts.push(`ignored:${described.ignoredEnv.join(',')}`);
   return 'credential=' + parts.join(' ');
 }

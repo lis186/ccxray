@@ -147,7 +147,9 @@ function readIndexTailId(indexPath, options = {}) {
 }
 
 function ageText(ageMs) {
-  const hours = Math.max(1, Math.round(ageMs / 3_600_000));
+  if (ageMs < 60_000) return '<1m';
+  if (ageMs < 3_600_000) return `${Math.round(ageMs / 60_000)}m`;
+  const hours = Math.round(ageMs / 3_600_000);
   return `${hours}h`;
 }
 
