@@ -106,7 +106,13 @@ function isOpenAIWebSocket(req, upstream) {
 
 function requestDeploymentFields(startTime, req, parsedBody) {
   const agent = resolveOpenAIWireAgent(req.headers, parsedBody);
-  const identity = hub.lookupClientIdentityForRequest(req, agent);
+  let identity = hub.lookupClientIdentityForRequest(req, agent);
+  const headers = req.headers || {};
+  if (headers['x-ccxray-task'] || headers['x-ccxray-role']) {
+    identity = identity ? { ...identity } : {};
+    if (headers['x-ccxray-task']) identity.task = String(headers['x-ccxray-task']).trim();
+    if (headers['x-ccxray-role']) identity.role = String(headers['x-ccxray-role']).trim();
+  }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
