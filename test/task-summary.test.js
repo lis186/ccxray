@@ -46,6 +46,9 @@ describe('task-summary endpoint', () => {
         task: 'TASK-101',
         role: 'worker',
         cost: { cost: 0.015 },
+        turnToolCalls: { Bash: 2, Edit: 1 },
+        skillCalls: { agentflow: 1 },
+        turnToolFail: true,
         usage: {
           input_tokens: 1000,
           output_tokens: 200,
@@ -60,6 +63,7 @@ describe('task-summary endpoint', () => {
         task: 'TASK-101',
         role: 'worker',
         cost: { cost: 0.025 },
+        turnToolCalls: { Bash: 3, ReadFile: 4 },
         usage: {
           input_tokens: 2000,
           output_tokens: 400,
@@ -95,6 +99,9 @@ describe('task-summary endpoint', () => {
     assert.equal(summary.tokens.total, 5550);
     // Cache denom = 3000 + 1500 + 300 = 4800. Cache hit rate = 1500 / 4800 = 0.3125 -> 0.313
     assert.equal(summary.cache_hit_rate, 0.313);
+    assert.deepEqual(summary.tools, { Bash: 5, Edit: 1, ReadFile: 4 });
+    assert.equal(summary.tool_failures, 1);
+    assert.deepEqual(summary.skills, { agentflow: 1 });
   });
 
   it('works with /_api/task-summary prefix as well', () => {

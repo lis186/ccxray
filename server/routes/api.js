@@ -503,6 +503,9 @@ function handleApiRoutes(clientReq, clientRes) {
     let cacheCreateTokens = 0;
     let reasoningTokens = 0;
     let totalTokens = 0;
+    let toolFailures = 0;
+    const tools = {};
+    const skills = {};
 
     for (const e of matched) {
       if (e.cost && typeof e.cost.cost === 'number') totalCost += e.cost.cost;
@@ -513,6 +516,19 @@ function handleApiRoutes(clientReq, clientRes) {
       cacheCreateTokens += u.cache_creation_input_tokens || u.cache_create || 0;
       reasoningTokens += u.reasoning || 0;
       totalTokens += u.total || (inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens);
+
+      if (e.turnToolFail || e.toolFail) toolFailures += 1;
+      const tc = e.turnToolCalls || e.toolCalls;
+      if (tc && typeof tc === 'object') {
+        for (const [name, cnt] of Object.entries(tc)) {
+          tools[name] = (tools[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
+        }
+      }
+      if (e.skillCalls && typeof e.skillCalls === 'object') {
+        for (const [name, cnt] of Object.entries(e.skillCalls)) {
+          skills[name] = (skills[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
+        }
+      }
     }
 
     const cacheDenom = inputTokens + cacheReadTokens + cacheCreateTokens;
@@ -533,6 +549,9 @@ function handleApiRoutes(clientReq, clientRes) {
         total: totalTokens,
       },
       cache_hit_rate: Math.round(cacheHitRate * 1000) / 1000,
+      tools,
+      tool_failures: toolFailures,
+      skills,
     }));
     return true;
   }
