@@ -46,6 +46,30 @@ async function loadColdEntry(id) {
   return null;
 }
 
+// Collect the durable index rows for one task. This must not read store.entries:
+// that array is globally capped at MAX_ENTRIES (store.js, default 5000), so a long
+// run's oldest turns are evicted and the endpoint would answer 200 with an
+// undercount. index.ndjson is the durable record of every forwarded turn.
+async function collectTaskEntries(task, project) {
+  const needle = '"task":"' + task + '"';
+  const byId = new Map();
+  for await (const line of config.storage.readIndexLines()) {
+    if (!line.includes(needle)) continue;
+    let meta;
+    try { meta = JSON.parse(line); } catch { continue; }
+    if (meta.task !== task) continue;
+    // Exact match on the recorded project. The previous substring test against
+    // meta.cwd dropped every delegated turn (workers run in disposable clones
+    // under a temp path that never contains the project name) and admitted rows
+    // that carried no cwd at all.
+    if (project && meta.project !== project) continue;
+    // index.ndjson carries more than one row per response (ADR 0012 read-time
+    // merge); summing them double-counts. Last row wins.
+    byId.set(meta.responseId || meta.id, meta);
+  }
+  return [...byId.values()];
+}
+
 function computeSettings() {
   const recentUsages = store.entries
     .filter(e => e && e.usage)
@@ -489,70 +513,86 @@ function handleApiRoutes(clientReq, clientRes) {
       return true;
     }
 
-    const matched = store.entries.filter(e => {
-      if (!e) return false;
-      if (e.task !== task) return false;
-      if (project && e.cwd && !e.cwd.includes(project)) return false;
-      return true;
+    (async () => {
+      const matched = await collectTaskEntries(task, project);
+
+      let totalCost = 0;
+      let inputTokens = 0;
+      let outputTokens = 0;
+      let cacheReadTokens = 0;
+      let cacheCreateTokens = 0;
+      let reasoningTokens = 0;
+      let totalTokens = 0;
+      let toolFailures = 0;
+      const tools = {};
+      const skills = {};
+
+      for (const e of matched) {
+        if (e.cost && typeof e.cost.cost === 'number') totalCost += e.cost.cost;
+        const u = e.usage || {};
+        const input = u.input_tokens || u.input || 0;
+        const output = u.output_tokens || u.output || 0;
+        const cacheRead = u.cache_read_input_tokens || u.cache_read || 0;
+        const cacheCreate = u.cache_creation_input_tokens || u.cache_create || 0;
+        // OpenAI-wire rows carry reasoning under output_tokens_details, not at the
+        // top level, so the flat read alone scored every codex turn as zero.
+        const reasoning = u.reasoning || (u.output_tokens_details && u.output_tokens_details.reasoning_tokens) || 0;
+
+        inputTokens += input;
+        outputTokens += output;
+        cacheReadTokens += cacheRead;
+        cacheCreateTokens += cacheCreate;
+        reasoningTokens += reasoning;
+
+        // Per-entry total. The previous fallback added the running accumulators,
+        // so entry N contributed the sum of entries 1..N — a quadratic overcount.
+        // OpenAI-wire rows spell it total_tokens, which the old `u.total` read
+        // never matched, sending every codex turn down that fallback.
+        const declared = typeof u.total === 'number' ? u.total : u.total_tokens;
+        totalTokens += Number.isFinite(declared) ? declared : input + output + cacheRead + cacheCreate;
+
+        if (e.turnToolFail || e.toolFail) toolFailures += 1;
+        const tc = e.turnToolCalls || e.toolCalls;
+        if (tc && typeof tc === 'object') {
+          for (const [name, cnt] of Object.entries(tc)) {
+            tools[name] = (tools[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
+          }
+        }
+        if (e.skillCalls && typeof e.skillCalls === 'object') {
+          for (const [name, cnt] of Object.entries(e.skillCalls)) {
+            skills[name] = (skills[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
+          }
+        }
+      }
+
+      const cacheDenom = inputTokens + cacheReadTokens + cacheCreateTokens;
+      const cacheHitRate = cacheDenom > 0 ? (cacheReadTokens / cacheDenom) : 0;
+
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({
+        task,
+        project: project || null,
+        calls: matched.length,
+        cost_usd: Math.round(totalCost * 10000) / 10000,
+        tokens: {
+          input: inputTokens,
+          output: outputTokens,
+          cache_read: cacheReadTokens,
+          cache_create: cacheCreateTokens,
+          reasoning: reasoningTokens,
+          total: totalTokens,
+        },
+        cache_hit_rate: Math.round(cacheHitRate * 1000) / 1000,
+        tools,
+        tool_failures: toolFailures,
+        skills,
+      }));
+    })().catch(err => {
+      // An unreadable index must not answer 200 with zeros: the caller cannot
+      // distinguish "task had no traffic" from "the read failed".
+      if (!clientRes.headersSent) clientRes.writeHead(500, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: err.message }));
     });
-
-    let totalCost = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheCreateTokens = 0;
-    let reasoningTokens = 0;
-    let totalTokens = 0;
-    let toolFailures = 0;
-    const tools = {};
-    const skills = {};
-
-    for (const e of matched) {
-      if (e.cost && typeof e.cost.cost === 'number') totalCost += e.cost.cost;
-      const u = e.usage || {};
-      inputTokens += u.input_tokens || u.input || 0;
-      outputTokens += u.output_tokens || u.output || 0;
-      cacheReadTokens += u.cache_read_input_tokens || u.cache_read || 0;
-      cacheCreateTokens += u.cache_creation_input_tokens || u.cache_create || 0;
-      reasoningTokens += u.reasoning || 0;
-      totalTokens += u.total || (inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens);
-
-      if (e.turnToolFail || e.toolFail) toolFailures += 1;
-      const tc = e.turnToolCalls || e.toolCalls;
-      if (tc && typeof tc === 'object') {
-        for (const [name, cnt] of Object.entries(tc)) {
-          tools[name] = (tools[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
-        }
-      }
-      if (e.skillCalls && typeof e.skillCalls === 'object') {
-        for (const [name, cnt] of Object.entries(e.skillCalls)) {
-          skills[name] = (skills[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
-        }
-      }
-    }
-
-    const cacheDenom = inputTokens + cacheReadTokens + cacheCreateTokens;
-    const cacheHitRate = cacheDenom > 0 ? (cacheReadTokens / cacheDenom) : 0;
-
-    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({
-      task,
-      project: project || null,
-      calls: matched.length,
-      cost_usd: Math.round(totalCost * 10000) / 10000,
-      tokens: {
-        input: inputTokens,
-        output: outputTokens,
-        cache_read: cacheReadTokens,
-        cache_create: cacheCreateTokens,
-        reasoning: reasoningTokens,
-        total: totalTokens,
-      },
-      cache_hit_rate: Math.round(cacheHitRate * 1000) / 1000,
-      tools,
-      tool_failures: toolFailures,
-      skills,
-    }));
     return true;
   }
 

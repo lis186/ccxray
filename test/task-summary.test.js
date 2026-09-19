@@ -1,34 +1,67 @@
 'use strict';
 
-const { describe, it, beforeEach } = require('node:test');
+const { describe, it, beforeEach, after } = require('node:test');
 const assert = require('node:assert/strict');
 
 const store = require('../server/store');
+const config = require('../server/config');
 const { handleApiRoutes } = require('../server/routes/api');
 
 function fakeRes() {
   let status = 0;
   let body = null;
   let headers = {};
+  let resolveDone;
+  const done = new Promise((resolve) => { resolveDone = resolve; });
   return {
     headersSent: false,
     status: () => status,
     body: () => body,
+    headers: () => headers,
+    done,
     writeHead: (s, h) => {
       status = s;
       if (h) Object.assign(headers, h);
     },
-    end: (data) => { body = data; },
+    end: (data) => { body = data; resolveDone(); },
   };
+}
+
+const realReadIndexLines = config.storage.readIndexLines;
+
+// The endpoint reads index.ndjson, so tests feed rows through the storage seam
+// rather than store.entries.
+function stubIndex(rows) {
+  config.storage.readIndexLines = () => (async function* () {
+    for (const row of rows) yield typeof row === 'string' ? row : JSON.stringify(row);
+  })();
+}
+
+function stubIndexFailure(message) {
+  config.storage.readIndexLines = () => (async function* () {
+    throw new Error(message);
+    // eslint-disable-next-line no-unreachable
+    yield '';
+  })();
 }
 
 function reset() {
   store.entries.length = 0;
   for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
+  config.storage.readIndexLines = realReadIndexLines;
+}
+
+async function get(url) {
+  const res = fakeRes();
+  const handled = handleApiRoutes({ url, method: 'GET' }, res);
+  assert.equal(handled, true);
+  await res.done;
+  return res;
 }
 
 describe('task-summary endpoint', () => {
   beforeEach(reset);
+  after(reset);
 
   it('returns 400 when task query param is missing', () => {
     const res = fakeRes();
@@ -39,8 +72,8 @@ describe('task-summary endpoint', () => {
     assert.match(parsed.error, /task parameter required/);
   });
 
-  it('aggregates tokens and cost for matching task', () => {
-    store.entries.push(
+  it('aggregates tokens and cost for matching task', async () => {
+    stubIndex([
       {
         id: '1',
         task: 'TASK-101',
@@ -79,12 +112,13 @@ describe('task-summary endpoint', () => {
         role: 'planner',
         cost: { cost: 0.05 },
         usage: { input_tokens: 5000, output_tokens: 1000 },
-      }
-    );
+      },
+    ]);
+    // A stale in-memory row must not reach the answer: the durable index is the
+    // only source.
+    store.entries.push({ id: 'stale', task: 'TASK-101', cost: { cost: 99 }, usage: { input_tokens: 99 } });
 
-    const res = fakeRes();
-    const handled = handleApiRoutes({ url: '/api/task-summary?task=TASK-101', method: 'GET' }, res);
-    assert.equal(handled, true);
+    const res = await get('/api/task-summary?task=TASK-101');
     assert.equal(res.status(), 200);
 
     const summary = JSON.parse(res.body());
@@ -104,20 +138,109 @@ describe('task-summary endpoint', () => {
     assert.deepEqual(summary.skills, { agentflow: 1 });
   });
 
-  it('works with /_api/task-summary prefix as well', () => {
-    store.entries.push({
-      id: '1',
-      task: 'TASK-202',
-      cost: { cost: 0.01 },
-      usage: { input_tokens: 100, output_tokens: 50 },
-    });
+  it('works with /_api/task-summary prefix as well', async () => {
+    stubIndex([{ id: '1', task: 'TASK-202', cost: { cost: 0.01 }, usage: { input_tokens: 100, output_tokens: 50 } }]);
 
-    const res = fakeRes();
-    const handled = handleApiRoutes({ url: '/_api/task-summary?task=TASK-202', method: 'GET' }, res);
-    assert.equal(handled, true);
+    const res = await get('/_api/task-summary?task=TASK-202');
     assert.equal(res.status(), 200);
     const summary = JSON.parse(res.body());
     assert.equal(summary.task, 'TASK-202');
     assert.equal(summary.calls, 1);
+  });
+
+  it('counts turns past the in-memory entry cap', async () => {
+    const rows = [];
+    for (let i = 0; i < 6000; i += 1) {
+      rows.push({ id: `row-${i}`, task: 'LONG-RUN', usage: { input_tokens: 1, total: 1 } });
+    }
+    stubIndex(rows);
+
+    const summary = JSON.parse((await get('/api/task-summary?task=LONG-RUN')).body());
+    // store.js caps the in-memory array at MAX_ENTRIES (5000); reading it would
+    // have silently answered 5000.
+    assert.equal(summary.calls, 6000);
+    assert.equal(summary.tokens.input, 6000);
+  });
+
+  it('counts each response once when the index holds duplicate rows', async () => {
+    stubIndex([
+      { id: 'a1', responseId: 'resp-1', task: 'DUP', cost: { cost: 0.01 }, usage: { input_tokens: 100, total: 100 } },
+      { id: 'a2', responseId: 'resp-1', task: 'DUP', cost: { cost: 0.01 }, usage: { input_tokens: 100, total: 100 } },
+      { id: 'b1', responseId: 'resp-2', task: 'DUP', cost: { cost: 0.02 }, usage: { input_tokens: 200, total: 200 } },
+    ]);
+
+    const summary = JSON.parse((await get('/api/task-summary?task=DUP')).body());
+    assert.equal(summary.calls, 2);
+    assert.equal(summary.tokens.input, 300);
+    assert.equal(summary.cost_usd, 0.03);
+  });
+
+  it('derives a missing total per entry instead of from the running sum', async () => {
+    stubIndex([
+      { id: '1', task: 'NO-TOTAL', usage: { input_tokens: 100 } },
+      { id: '2', task: 'NO-TOTAL', usage: { input_tokens: 100 } },
+      { id: '3', task: 'NO-TOTAL', usage: { input_tokens: 100 } },
+    ]);
+
+    const summary = JSON.parse((await get('/api/task-summary?task=NO-TOTAL')).body());
+    // The previous fallback added the accumulators, yielding 100 + 200 + 300 = 600.
+    assert.equal(summary.tokens.total, 300);
+  });
+
+  it('reads OpenAI-wire totals and reasoning from their own field names', async () => {
+    stubIndex([
+      {
+        id: '1',
+        task: 'CODEX',
+        usage: {
+          input_tokens: 1000,
+          output_tokens: 100,
+          total_tokens: 1100,
+          output_tokens_details: { reasoning_tokens: 40 },
+        },
+      },
+    ]);
+
+    const summary = JSON.parse((await get('/api/task-summary?task=CODEX')).body());
+    assert.equal(summary.tokens.total, 1100);
+    assert.equal(summary.tokens.reasoning, 40);
+  });
+
+  it('filters on the recorded project, keeping turns run from disposable clones', async () => {
+    stubIndex([
+      {
+        id: 'host',
+        task: 'T',
+        project: 'ipadpos-v3-claude',
+        cwd: '/Users/dev/ipadpos-v3-claude',
+        usage: { input_tokens: 10, total: 10 },
+      },
+      {
+        // A delegated turn: the clone path never contains the project name, so a
+        // cwd substring test dropped it.
+        id: 'worker',
+        task: 'T',
+        project: 'ipadpos-v3-claude',
+        cwd: '/var/folders/xx/agentflow-external-runner-AbCdEf-clone',
+        usage: { input_tokens: 20, total: 20 },
+      },
+      { id: 'other', task: 'T', project: 'ipadpos-v3-codex', usage: { input_tokens: 500, total: 500 } },
+      // No project recorded at all — must not be admitted by a project query.
+      { id: 'untagged', task: 'T', usage: { input_tokens: 700, total: 700 } },
+    ]);
+
+    const summary = JSON.parse((await get('/api/task-summary?task=T&project=ipadpos-v3-claude')).body());
+    assert.equal(summary.calls, 2);
+    assert.equal(summary.tokens.input, 30);
+    assert.equal(summary.project, 'ipadpos-v3-claude');
+  });
+
+  it('fails loudly when the index cannot be read', async () => {
+    stubIndexFailure('index unreadable');
+
+    const res = await get('/api/task-summary?task=ANY');
+    // Answering 200 with zeros would be indistinguishable from a task that never ran.
+    assert.equal(res.status(), 500);
+    assert.match(JSON.parse(res.body()).error, /index unreadable/);
   });
 });

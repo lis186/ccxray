@@ -21,8 +21,22 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
     'ctxBeta','parentSessionId','compacted','contextUsageKnown',
     'imported1mCostState','imported1mSettings',
     'accountEmail','accountDomain',
-    'task','role',
+    'task','role','project',
   ]);
+});
+
+test('buildIndexLine persists agentflow attribution and omits it when absent', () => {
+  const tagged = JSON.parse(buildIndexLine({
+    id: 'tagged', task: 'v3-claude:run1', role: 'spec', project: 'ipadpos-v3-claude',
+  }));
+  assert.equal(tagged.task, 'v3-claude:run1');
+  assert.equal(tagged.role, 'spec');
+  assert.equal(tagged.project, 'ipadpos-v3-claude');
+  // OMIT_IF_NULL: an untagged turn must not gain `"project":null` on every row.
+  const untagged = JSON.parse(buildIndexLine({ id: 'untagged' }));
+  assert.ok(!('task' in untagged));
+  assert.ok(!('role' in untagged));
+  assert.ok(!('project' in untagged));
 });
 
 test('buildIndexLine persists child-session parent identity only when known', () => {

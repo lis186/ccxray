@@ -180,10 +180,11 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
     const fromHeader = hub.clientIdentityFromMessage({ agentId: lastHerdr });
     if (fromHeader.agentId) identity = fromHeader;
   }
-  if (headers['x-ccxray-task'] || headers['x-ccxray-role']) {
+  if (headers['x-ccxray-task'] || headers['x-ccxray-role'] || headers['x-ccxray-project']) {
     identity = identity ? { ...identity } : {};
     if (headers['x-ccxray-task']) identity.task = String(headers['x-ccxray-task']).trim();
     if (headers['x-ccxray-role']) identity.role = String(headers['x-ccxray-role']).trim();
+    if (headers['x-ccxray-project']) identity.project = String(headers['x-ccxray-project']).trim();
   }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
