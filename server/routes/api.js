@@ -51,8 +51,10 @@ async function loadColdEntry(id) {
 // run's oldest turns are evicted and the endpoint would answer 200 with an
 // undercount. index.ndjson is the durable record of every forwarded turn.
 async function collectTaskEntries(task, project) {
-  const needle = '"task":"' + task + '"';
-  const byId = new Map();
+  // JSON-encode the needle so a task containing a quote or backslash still
+  // matches the escaped form that is actually on disk.
+  const needle = '"task":' + JSON.stringify(task);
+  const metas = [];
   for await (const line of config.storage.readIndexLines()) {
     if (!line.includes(needle)) continue;
     let meta;
@@ -63,11 +65,19 @@ async function collectTaskEntries(task, project) {
     // under a temp path that never contains the project name) and admitted rows
     // that carried no cwd at all.
     if (project && meta.project !== project) continue;
-    // index.ndjson carries more than one row per response (ADR 0012 read-time
-    // merge); summing them double-counts. Last row wins.
-    byId.set(meta.responseId || meta.id, meta);
+    metas.push(meta);
   }
-  return [...byId.values()];
+  // The same canonical merge the cold-load path uses above: a shared ~/.ccxray
+  // written by chained proxies holds partial copies per turn, and _mergeGroup
+  // moves usage/cost as a unit to the richest copy, so a turn is costed exactly
+  // once (ADR 0012/0017). Collapsing copies by hand here would suppress the
+  // others rather than fold them, losing whatever only they carried.
+  //
+  // Deliberately NOT .map(normalizeIndexEntry) as loadSessionEntriesFromIndex
+  // does: that ends in summarizeEntry, whose whitelist has no skillCalls (nor
+  // task/project), and which calls store.markSessionUsage — a read-only summary
+  // must not mutate session state.
+  return store.mergeByResponseId(metas);
 }
 
 function computeSettings() {

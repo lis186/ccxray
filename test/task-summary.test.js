@@ -162,17 +162,29 @@ describe('task-summary endpoint', () => {
     assert.equal(summary.tokens.input, 6000);
   });
 
-  it('counts each response once when the index holds duplicate rows', async () => {
+  it('folds duplicate rows of one response instead of dropping copies', async () => {
     stubIndex([
+      // Proxy copy: carries the usage/cost, but the skill evidence landed only
+      // on the imported copy. Collapsing to one copy would lose the other's.
       { id: 'a1', responseId: 'resp-1', task: 'DUP', cost: { cost: 0.01 }, usage: { input_tokens: 100, total: 100 } },
-      { id: 'a2', responseId: 'resp-1', task: 'DUP', cost: { cost: 0.01 }, usage: { input_tokens: 100, total: 100 } },
+      { id: 'a2', responseId: 'resp-1', task: 'DUP', imported: true, skillCalls: { agentflow: 1 } },
       { id: 'b1', responseId: 'resp-2', task: 'DUP', cost: { cost: 0.02 }, usage: { input_tokens: 200, total: 200 } },
     ]);
 
     const summary = JSON.parse((await get('/api/task-summary?task=DUP')).body());
     assert.equal(summary.calls, 2);
     assert.equal(summary.tokens.input, 300);
+    // Costed once per response, never summed across copies (ADR 0017).
     assert.equal(summary.cost_usd, 0.03);
+    // Survives only if the copies were folded rather than deduped away.
+    assert.deepEqual(summary.skills, { agentflow: 1 });
+  });
+
+  it('matches a task whose name contains characters JSON escapes', async () => {
+    stubIndex([{ id: '1', task: 'quote"task', usage: { input_tokens: 5, total: 5 } }]);
+
+    const summary = JSON.parse((await get(`/api/task-summary?task=${encodeURIComponent('quote"task')}`)).body());
+    assert.equal(summary.calls, 1);
   });
 
   it('derives a missing total per entry instead of from the running sum', async () => {
