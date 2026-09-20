@@ -14,7 +14,7 @@ const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 const sessionIdx = require('../session-index');
-const { summarizeTask, parseSessionSpecs } = require('../task-summary');
+const { summarizeTask, parseSessionSpecs, parseTimeWindow } = require('../task-summary');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -516,6 +516,7 @@ function handleApiRoutes(clientReq, clientRes) {
       task,
       role: (params.get('role') || '').trim() || null,
       project: (params.get('project') || '').trim() || null,
+      window: parseTimeWindow(params.get('from'), params.get('to')),
     };
     const sessionSpecs = parseSessionSpecs(params.getAll('session'), Date.now());
     if (sessionSpecs.length === 0) {

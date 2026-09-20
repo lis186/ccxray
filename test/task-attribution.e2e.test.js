@@ -238,6 +238,11 @@ describe('work attribution across claude / codex / grok', () => {
     assert.equal(summary.tokens.cache_read, 8 + 40 + 40);
     assert.equal(summary.tokens.total, 23 + 105 + 105);
     assert.equal(summary.by_role['cross-check'].tokens.total, 105);
+    const chargedUsd = summary.charges
+      .filter(charge => charge.usd !== null)
+      .reduce((total, charge) => total + Number(charge.usd), 0);
+    assert.ok(Math.abs(chargedUsd - summary.cost_usd) < 0.0001,
+      `charge sum ${chargedUsd} did not match cost_usd ${summary.cost_usd}`);
 
     const other = JSON.parse((await request(proxyPort, {
       method: 'GET', path: '/_api/task-summary?task=A-012&project=elsewhere',
@@ -251,6 +256,7 @@ describe('work attribution across claude / codex / grok', () => {
     assert.equal(health.app, 'ccxray');
     assert.ok(Array.isArray(health.capabilities) && health.capabilities.includes('task-attribution'));
     assert.ok(health.capabilities.includes('session-intervals'));
+    assert.ok(health.capabilities.includes('cost-charges'));
   });
 
   it('accepts header attribution from Claude and strips it before forwarding', async () => {

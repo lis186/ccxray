@@ -123,6 +123,7 @@ curl "http://127.0.0.1:5577/_api/task-summary?task=A-012&project=demo"
 ```
 
 The label rides the base URL, so it works for Claude Code, Codex (including ChatGPT login and WebSocket), and Grok alike. A long-lived coordinator can add repeated `session=<sessionId>@<fromMs>-<toMs>` intervals to `/api/task-summary`; ccxray reads those calls from its index even after they leave the in-memory window. Details: [`docs/task-attribution.md`](docs/task-attribution.md).
+The summary also exposes exact charge buckets and optional inclusive/exclusive `from`/`to` windows for labelled worker attempts.
 
 ## Features
 

@@ -2,6 +2,16 @@
 
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-task-summary-'));
+process.env.CCXRAY_HOME = TEST_HOME;
+process.env.CCXRAY_IMPORT_DISABLE = '1';
+process.on('exit', () => {
+  try { fs.rmSync(TEST_HOME, { recursive: true, force: true }); } catch {}
+});
 
 const store = require('../server/store');
 const { handleApiRoutes } = require('../server/routes/api');
@@ -154,8 +164,8 @@ describe('summarizeTask', () => {
     const shared = entry({ id: 'shared', receivedAt: 110, role: 'implementation' });
     const labelOnly = entry({ id: 'label-only', receivedAt: 10, role: 'implementation' });
     const sessionEntries = [
-      entry({ id: 'shared', task: undefined, sessionId: 'host-1', receivedAt: 110, role: 'review' }),
-      entry({ id: 'host-only', task: undefined, sessionId: 'host-1', receivedAt: 120, role: 'review' }),
+      entry({ id: 'shared', task: undefined, sessionId: 'host-1', receivedAt: 110, role: undefined }),
+      entry({ id: 'host-only', task: undefined, sessionId: 'host-1', receivedAt: 120, role: undefined }),
       entry({ id: 'other-task', task: 'OTHER', sessionId: 'host-1', receivedAt: 130 }),
       entry({ id: 'outside', task: undefined, sessionId: 'host-1', receivedAt: 500 }),
     ];
@@ -169,12 +179,33 @@ describe('summarizeTask', () => {
     });
 
     assert.equal(summary.calls, 3);
-    assert.equal(summary.by_role.coordinator.calls, 2);
-    assert.equal(summary.by_role.implementation.calls, 1);
-    assert.equal(summary.coordinator.calls, 2);
+    assert.equal(summary.by_role.coordinator.calls, 1);
+    assert.equal(summary.by_role.implementation.calls, 2);
+    assert.equal(summary.coordinator.calls, 1);
     assert.deepEqual(summary.coordinator.sessions, [
-      { session: 'host-1', from: 100, to: 200, calls: 2 },
+      { session: 'host-1', from: 100, to: 200, calls: 1 },
       { session: 'never-seen', from: 100, to: 200, calls: 0 },
+    ]);
+  });
+
+  it('keeps a labelled worker out of coordinator selection even in the host interval', () => {
+    const worker = entry({
+      id: 'worker-review', task: 'A-1', role: 'review', sessionId: 'host-1', receivedAt: 150,
+    });
+    const host = entry({
+      id: 'host-call', task: undefined, role: undefined, sessionId: 'host-1', receivedAt: 160,
+    });
+    const summary = summarizeTask([worker], {
+      task: 'A-1',
+      sessionEntries: [{ ...worker, role: undefined }, host],
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 200 }],
+    });
+
+    assert.equal(summary.calls, 2);
+    assert.equal(summary.by_role.review.calls, 1);
+    assert.equal(summary.coordinator.calls, 1);
+    assert.deepEqual(summary.coordinator.sessions, [
+      { session: 'host-1', from: 100, to: 200, calls: 1 },
     ]);
   });
 
@@ -184,7 +215,7 @@ describe('summarizeTask', () => {
       entry({ id: 'label-coordinator', role: 'coordinator' }),
     ], {
       task: 'TASK-101',
-      sessionEntries: [entry({ id: 'host', task: undefined, sessionId: 'host-1', receivedAt: 100 })],
+      sessionEntries: [entry({ id: 'host', task: undefined, role: undefined, sessionId: 'host-1', receivedAt: 100 })],
       sessionSpecs: [{ session: 'host-1', from: 100, to: 100 }],
       role: 'coordinator',
     });
@@ -289,6 +320,306 @@ describe('cost confidence', () => {
     const s = summarizeTask([entry(), entry()], { task: 'TASK-101' });
     assert.deepEqual(s.cost_confidence, { priced: 2, unknown: 0, fallback: 0, no_usage: 0 });
   });
+
+  it('gives a session-selected coordinator the same cost contract as by_role.coordinator', () => {
+    const sessionEntries = [
+      entry({
+        id: 'coordinator-priced', task: undefined, role: undefined,
+        sessionId: 'host-1', receivedAt: 100,
+        cost: {
+          cost: 0.01,
+          rates: { input: 0.1, output: 0.2, cache_read: 0.3, cache_create: 0.4 },
+          confidence: 'exact',
+        },
+      }),
+      entry({
+        id: 'coordinator-unknown', task: undefined, role: undefined,
+        sessionId: 'host-1', receivedAt: 101,
+        cost: { cost: null, confidence: 'unknown' },
+      }),
+      entry({
+        id: 'coordinator-no-usage', task: undefined, role: undefined,
+        sessionId: 'host-1', receivedAt: 102,
+        usage: null, cost: null,
+      }),
+    ];
+    const summary = summarizeTask([], {
+      task: 'TASK-101',
+      sessionEntries,
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 102 }],
+    });
+
+    const coordinator = summary.coordinator;
+    const byRoleCoordinator = summary.by_role.coordinator;
+    assert.deepEqual(coordinator.cost_confidence, byRoleCoordinator.cost_confidence);
+    assert.deepEqual(coordinator.cost_confidence, {
+      priced: 1, unknown: 1, fallback: 0, no_usage: 1,
+    });
+    const expectedSharedKeys = [
+      'calls', 'cost_usd', 'cost_confidence', 'uncomputable_requests',
+      'charges', 'last_ingested_at', 'pending_requests',
+    ];
+    assert.deepEqual(
+      Object.keys(coordinator).filter(key => key in byRoleCoordinator).sort(),
+      [...expectedSharedKeys].sort(),
+    );
+    for (const key of expectedSharedKeys) {
+      assert.deepEqual(coordinator[key], byRoleCoordinator[key], key);
+    }
+  });
+
+  it('counts each selected entry with an uncomputable charge once at every aggregate level', () => {
+    const noRates = entry({
+      id: 'no-rates', role: 'implementation',
+      usage: { input_tokens: 3, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: 0.01 },
+    });
+    const partialRates = entry({
+      id: 'partial-rates', role: 'implementation',
+      usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: 0.01, rates: { input: 0.1 } },
+    });
+    const fullyRated = entry({
+      id: 'fully-rated', role: 'review',
+      usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: 0.01, rates: { input: 0.1, output: 0.2 } },
+    });
+    const noCost = entry({
+      id: 'no-cost', task: undefined, role: undefined, sessionId: 'host-1', receivedAt: 100,
+      usage: { input_tokens: 3, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: null,
+    });
+    const noUsage = entry({
+      id: 'no-usage', role: 'implementation', usage: null, cost: { cost: 0.01 },
+    });
+
+    const summary = summarizeTask([noRates, partialRates, fullyRated, noUsage], {
+      task: 'TASK-101',
+      sessionEntries: [noCost],
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 100 }],
+    });
+
+    assert.equal(summary.uncomputable_requests, 3);
+    assert.equal(summary.by_role.implementation.uncomputable_requests, 2);
+    assert.equal(summary.by_role.review.uncomputable_requests, 0);
+    assert.equal(summary.by_role.coordinator.uncomputable_requests, 1);
+    assert.equal(summary.coordinator.uncomputable_requests, 1);
+    assert.equal(summary.cost_confidence.unknown, 1);
+    assert.equal(summary.cost_confidence.no_usage, 1);
+  });
+
+  it('classifies a legacy numeric string as recorded and includes its exact cost', () => {
+    const s = summarizeTask([entry({
+      usage: { input_tokens: 1000000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: '0.1', rates: { input: 0.1 }, confidence: 'exact' },
+    })], { task: 'TASK-101' });
+
+    assert.equal(s.cost_usd, 0.1);
+    assert.deepEqual(s.cost_confidence, { priced: 1, unknown: 0, fallback: 0, no_usage: 0 });
+    assert.equal(s.charges.length, 1);
+    assert.equal(s.charges[0].basis, 'recorded');
+    assert.equal(s.charges[0].usd, '0.1000000');
+  });
+
+  it('classifies a legacy numeric string with fallback confidence as fallback', () => {
+    const s = summarizeTask([entry({
+      usage: { input_tokens: 1000000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: '0.1', rates: { input: 0.1 }, confidence: 'fallback' },
+    })], { task: 'TASK-101' });
+
+    assert.equal(s.cost_usd, 0.1);
+    assert.deepEqual(s.cost_confidence, { priced: 1, unknown: 0, fallback: 1, no_usage: 0 });
+    assert.equal(s.charges.length, 1);
+    assert.equal(s.charges[0].basis, 'fallback');
+  });
+
+  it('keeps NaN costs unpriced even when rates are present', () => {
+    const s = summarizeTask([entry({
+      usage: { input_tokens: 1000000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: NaN, rates: { input: 0.1 }, confidence: 'exact' },
+    })], { task: 'TASK-101' });
+
+    assert.equal(s.cost_usd, 0);
+    assert.deepEqual(s.cost_confidence, { priced: 0, unknown: 1, fallback: 0, no_usage: 0 });
+    assert.equal(s.charges.length, 1);
+    assert.equal(s.charges[0].basis, 'unpriced');
+  });
+
+  it('keeps negative costs unpriced even when rates are present', () => {
+    const s = summarizeTask([entry({
+      usage: { input_tokens: 1000000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: -0.1, rates: { input: 0.1 }, confidence: 'exact' },
+    })], { task: 'TASK-101' });
+
+    assert.equal(s.cost_usd, 0);
+    assert.deepEqual(s.cost_confidence, { priced: 0, unknown: 1, fallback: 0, no_usage: 0 });
+    assert.equal(s.charges.length, 1);
+    assert.equal(s.charges[0].basis, 'unpriced');
+  });
+
+  it('keeps unparsable string costs unpriced even when rates are present', () => {
+    const s = summarizeTask([entry({
+      usage: { input_tokens: 1000000, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      cost: { cost: 'not-a-decimal', rates: { input: 0.1 }, confidence: 'exact' },
+    })], { task: 'TASK-101' });
+
+    assert.equal(s.cost_usd, 0);
+    assert.deepEqual(s.cost_confidence, { priced: 0, unknown: 1, fallback: 0, no_usage: 0 });
+    assert.equal(s.charges.length, 1);
+    assert.equal(s.charges[0].basis, 'unpriced');
+  });
+
+  it('rounds exact per-entry cost sums half-up at a four-decimal tie', () => {
+    const tieCost = 0.000025;
+    const entries = [
+      entry({
+        id: 'tie-1', role: 'coordinator', sessionId: 'host-1', receivedAt: 100,
+        usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: tieCost, rates: { input: 25 }, confidence: 'exact' },
+      }),
+      entry({
+        id: 'tie-2', role: 'coordinator', sessionId: 'host-1', receivedAt: 101,
+        usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: tieCost, rates: { input: 25 }, confidence: 'exact' },
+      }),
+    ];
+    const summary = summarizeTask(entries, {
+      task: 'TASK-101',
+      sessionEntries: entries,
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 101 }],
+    });
+
+    assert.equal(summary.charges[0].quantity, '2');
+    assert.equal(summary.charges[0].usd, '0.000050');
+    assert.equal(summary.cost_usd, 0.0001);
+    assert.equal(summary.by_role.coordinator.cost_usd, 0.0001);
+    assert.equal(summary.coordinator.cost_usd, 0.0001);
+  });
+
+  it('preserves recorded decimal information below the four-decimal boundary', () => {
+    const rate = 49.99999999999996;
+    const summary = summarizeTask([
+      entry({
+        usage: { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: (1 / 1e6) * rate, rates: { input: rate }, confidence: 'exact' },
+      }),
+    ], { task: 'TASK-101' });
+
+    assert.equal(summary.cost_usd, 0);
+    assert.equal(summary.by_role.implementation.cost_usd, 0);
+  });
+
+  it('sums one thousand decimal cost entries exactly', () => {
+    const summary = summarizeTask(
+      Array.from({ length: 1000 }, (_, i) => entry({ id: `bulk-${i}`, cost: { cost: 0.1 } })),
+      { task: 'TASK-101' },
+    );
+
+    assert.equal(summary.cost_usd, 100);
+    assert.equal(summary.by_role.implementation.cost_usd, 100);
+  });
+
+  it('aggregates exact charge buckets by model and component', () => {
+    const recordedRates = { input: 0.1, output: 0.2, cache_read: 0.3, cache_create: 0.4 };
+    const fallbackRates = { input: 0.5, output: 0.1, cache_read: 0.3, cache_create: 0.4 };
+    const s = summarizeTask([
+      entry({
+        id: 'recorded-1', model: 'model-a', provider: 'anthropic',
+        role: 'implementation', receivedAt: 1000,
+        usage: { input_tokens: 3, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: 0.0000003, rates: recordedRates, confidence: 'exact' },
+      }),
+      entry({
+        id: 'recorded-2', model: 'model-a', provider: 'anthropic',
+        role: 'implementation', receivedAt: 2000,
+        usage: { input_tokens: 3, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: 0.0000003, rates: recordedRates, confidence: 'prefix' },
+      }),
+      entry({
+        id: 'fallback', model: 'model-b', provider: 'openai', agent: 'codex', role: 'cross-check', receivedAt: 3000,
+        usage: { input_tokens: 0, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: 0.0000002, rates: fallbackRates, confidence: 'fallback' },
+      }),
+      entry({
+        id: 'unpriced', model: 'model-c', provider: 'anthropic', role: 'cross-check', receivedAt: 4000,
+        usage: { input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        cost: { cost: null, rates: null, confidence: 'unknown' },
+      }),
+      entry({
+        id: 'no-usage', model: 'model-d', provider: 'anthropic', role: 'cross-check', receivedAt: 5000,
+        usage: null, cost: null,
+      }),
+    ], { task: 'TASK-101' });
+
+    assert.deepEqual(s.charges, [
+      {
+        model: 'model-a', billing_provider: 'anthropic', component: 'input', unit: 'tokens',
+        quantity: '6', usd_per_unit: '0.1', usd: '0.0000006', basis: 'recorded',
+        price_key: 'model-a', rate_source: 'ccxray',
+      },
+      {
+        model: 'model-b', billing_provider: 'openai', component: 'output', unit: 'tokens',
+        quantity: '2', usd_per_unit: '0.1', usd: '0.0000002', basis: 'fallback',
+        price_key: 'model-b', rate_source: 'ccxray',
+      },
+      {
+        model: 'model-c', billing_provider: 'anthropic', component: 'input', unit: 'tokens',
+        quantity: '5', usd_per_unit: null, usd: null, basis: 'unpriced',
+        price_key: 'model-c', rate_source: 'ccxray',
+      },
+      {
+        model: 'model-c', billing_provider: 'anthropic', component: 'output', unit: 'tokens',
+        quantity: '2', usd_per_unit: null, usd: null, basis: 'unpriced',
+        price_key: 'model-c', rate_source: 'ccxray',
+      },
+    ]);
+    assert.deepEqual(s.by_role.implementation.charges, [s.charges[0]]);
+    assert.deepEqual(s.by_role['cross-check'].charges, s.charges.slice(1));
+    assert.equal(s.charges.some(charge => charge.model === 'model-d'), false);
+  });
+
+  it('keeps timestamps and pending request counts at every aggregate level', () => {
+    const s = summarizeTask([
+      entry({ id: 'done', role: 'worker', receivedAt: 1000, status: 200 }),
+      entry({ id: 'pending', role: 'worker', receivedAt: 2000, status: null }),
+      entry({ id: 'other', role: 'other', receivedAt: 3000, status: 200 }),
+    ], { task: 'TASK-101' });
+    assert.equal(s.last_ingested_at, '1970-01-01T00:00:03.000Z');
+    assert.equal(s.pending_requests, 1);
+    assert.equal(s.by_role.worker.last_ingested_at, '1970-01-01T00:00:02.000Z');
+    assert.equal(s.by_role.worker.pending_requests, 1);
+    assert.equal(s.by_role.other.last_ingested_at, '1970-01-01T00:00:03.000Z');
+    assert.equal(s.by_role.other.pending_requests, 0);
+  });
+
+  it('filters labelled entries inclusively at from and exclusively at to', () => {
+    const entries = [
+      entry({ id: 'at-from', receivedAt: 100 }),
+      entry({ id: 'inside', receivedAt: 150 }),
+      entry({ id: 'at-to', receivedAt: 200 }),
+    ];
+    const s = summarizeTask(entries, { task: 'TASK-101', window: { from: 100, to: 200 } });
+    assert.equal(s.calls, 2);
+    assert.equal(s.window.from, 100);
+    assert.equal(s.window.to, 200);
+  });
+
+  it('keeps session-selected coordinator entries outside the labelled window', () => {
+    const s = summarizeTask([
+      entry({ id: 'worker', receivedAt: 150 }),
+    ], {
+      task: 'TASK-101',
+      window: { from: 150, to: 151 },
+      sessionEntries: [
+        entry({ id: 'host-before', task: undefined, role: undefined, sessionId: 'host', receivedAt: 100, status: 200 }),
+        entry({ id: 'host-after', task: undefined, role: undefined, sessionId: 'host', receivedAt: 200, status: 200 }),
+      ],
+      sessionSpecs: [{ session: 'host', from: 100, to: 200 }],
+    });
+    assert.equal(s.calls, 3);
+    assert.equal(s.by_role.coordinator.calls, 2);
+    assert.equal(s.coordinator.last_ingested_at, '1970-01-01T00:00:00.200Z');
+  });
 });
 
 describe('task-summary endpoint', () => {
@@ -321,5 +652,20 @@ describe('task-summary endpoint', () => {
     const r = get('/_api/task-summary?task=A-8');
     assert.equal(r.json.coverage.entries_in_memory, 1);
     assert.equal(r.json.coverage.max_entries, store.MAX_ENTRIES);
+  });
+
+  it('applies a labelled time window and ignores malformed window values', () => {
+    store.entries.push(
+      entry({ id: 'from', task: 'A-9', receivedAt: 100 }),
+      entry({ id: 'inside', task: 'A-9', receivedAt: 150 }),
+      entry({ id: 'to', task: 'A-9', receivedAt: 200 }),
+    );
+    const bounded = get('/_api/task-summary?task=A-9&from=100&to=200');
+    assert.equal(bounded.json.calls, 2);
+    assert.deepEqual(bounded.json.window, { from: 100, to: 200 });
+
+    const malformed = get('/_api/task-summary?task=A-9&from=nope&to=also-nope');
+    assert.equal(malformed.json.calls, 3);
+    assert.equal(malformed.json.window, null);
   });
 });
