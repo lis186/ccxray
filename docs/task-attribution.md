@@ -23,7 +23,7 @@ ignored and never causes a proxied request to fail.
 
 ```
 GET /_api/health
-{ "ok": true, "app": "ccxray", "version": "…", "capabilities": ["task-attribution"] }
+{ "ok": true, "app": "ccxray", "version": "…", "capabilities": ["task-attribution", "session-intervals"] }
 ```
 
 Inject the path prefix below **only** when `capabilities` contains
@@ -87,6 +87,34 @@ the first comma-separated segment is read.
 launch are registered with the hub and apply to that client's requests. Use this
 to label a whole interactive session. A per-request carrier overrides it.
 
+## Coordinator usage
+
+The coordinator is one long-lived host process, so its base URL cannot carry the
+current Ask's task label. Agentflow can instead attribute a host interval by
+session id:
+
+```
+GET /_api/task-summary?task=<id>[&project=<p>][&role=<r>]&session=<SPEC>&session=<SPEC>…
+SPEC = <sessionId>@<fromMs>-<toMs>
+```
+
+`fromMs` and `toMs` are inclusive epoch milliseconds. An empty `toMs` means
+"until now". At most 32 `session` parameters are considered; malformed,
+non-numeric, or reversed specs are ignored. The capability is advertised as
+`session-intervals` in `GET /_api/health`.
+
+The result is the union of entries labelled with the requested task and entries
+whose exact `sessionId` and `receivedAt` match a valid interval. A session entry
+with a different task label is skipped, and session-selected entries are
+aggregated under role `coordinator` regardless of their carried role. Therefore
+`role=coordinator` selects only session entries; another role selects only
+labelled entries. The response includes `by_role.coordinator` and, when at least
+one valid SPEC was supplied, a `coordinator` object whose `sessions` list
+contains every valid SPEC, including zero-call intervals. Session-selected
+entries are read from `index.ndjson` for the requested session ids, so they are
+not limited by `CCXRAY_MAX_ENTRIES`; entries present in memory and on disk are
+deduplicated by entry `id`.
+
 ## Reading it back
 
 ```
@@ -111,10 +139,17 @@ GET /_api/task-summary?task=A-012[&role=cross-check][&project=ipadpos]
   and `total` is the sum of input, output, cache_read, and cache_create.
   `reasoning` is a subset of `output`.
 - `project` matches `taskProject` exactly. An entry that declared no project
-  falls back to a substring match on its cwd.
+  falls back to its cwd, matched as a whole path segment (`ipadpos` does not
+  match a cwd under `ipadpos-web`).
 - An unknown task returns 200 with `calls: 0`.
-- The summary reads the in-memory window only (`CCXRAY_MAX_ENTRIES`). `coverage`
-  lets a caller tell "no calls" from "calls aged out".
+- `cost_confidence` classifies every counted call: `priced`, `unknown` (usage
+  present but no price, so `cost_usd` under-counts), `fallback` (priced with a
+  default rate), `no_usage` (counted, contributes nothing). Mark a total whose
+  `unknown` or `no_usage` is non-zero; do not present it as exact.
+- Labelled (worker) entries are read from the in-memory window
+  (`CCXRAY_MAX_ENTRIES`); `coverage` lets a caller tell "no calls" from "calls
+  aged out". Coordinator entries selected by `session` are read from the index
+  on disk and are not limited by that window.
 - `/api/task-summary` is served as an alias.
 
 Loopback callers need no credentials. See [SECURITY.md](../SECURITY.md) for

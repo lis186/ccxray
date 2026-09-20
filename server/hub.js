@@ -550,7 +550,7 @@ function hasClients() {
 // no cap to terminate: each pass removes at least one character from a URL that
 // Node has already bounded (max header size).
 // Feature names advertised on /_api/health. Append-only, stable strings.
-const HEALTH_CAPABILITIES = Object.freeze(['task-attribution']);
+const HEALTH_CAPABILITIES = Object.freeze(['task-attribution', 'session-intervals']);
 
 const CLIENT_ROUTE_RE = /^\/_ccxray\/client\/([1-9]\d*)(?=\/|\?|$)/;
 const ATTR_ROUTE_RE = /^\/_ccxray\/attr\/([^/?]+)(?=\/|\?|$)/;

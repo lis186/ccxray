@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const store = require('../server/store');
 const { handleApiRoutes } = require('../server/routes/api');
-const { summarizeTask, matchesProject } = require('../server/task-summary');
+const { summarizeTask, matchesProject, parseSessionSpecs } = require('../server/task-summary');
 
 function fakeRes() {
   let status = 0;
@@ -148,6 +148,146 @@ describe('summarizeTask', () => {
     assert.equal(s.cost_usd, 0);
     assert.equal(s.cache_hit_rate, 0);
     assert.equal(s.first_ts, null);
+  });
+
+  it('unions session-selected entries, deduplicates by id, and skips another task', () => {
+    const shared = entry({ id: 'shared', receivedAt: 110, role: 'implementation' });
+    const labelOnly = entry({ id: 'label-only', receivedAt: 10, role: 'implementation' });
+    const sessionEntries = [
+      entry({ id: 'shared', task: undefined, sessionId: 'host-1', receivedAt: 110, role: 'review' }),
+      entry({ id: 'host-only', task: undefined, sessionId: 'host-1', receivedAt: 120, role: 'review' }),
+      entry({ id: 'other-task', task: 'OTHER', sessionId: 'host-1', receivedAt: 130 }),
+      entry({ id: 'outside', task: undefined, sessionId: 'host-1', receivedAt: 500 }),
+    ];
+    const specs = [
+      { session: 'host-1', from: 100, to: 200 },
+      { session: 'never-seen', from: 100, to: 200 },
+    ];
+
+    const summary = summarizeTask([shared, labelOnly], {
+      task: 'TASK-101', sessionEntries, sessionSpecs: specs,
+    });
+
+    assert.equal(summary.calls, 3);
+    assert.equal(summary.by_role.coordinator.calls, 2);
+    assert.equal(summary.by_role.implementation.calls, 1);
+    assert.equal(summary.coordinator.calls, 2);
+    assert.deepEqual(summary.coordinator.sessions, [
+      { session: 'host-1', from: 100, to: 200, calls: 2 },
+      { session: 'never-seen', from: 100, to: 200, calls: 0 },
+    ]);
+  });
+
+  it('uses only session-selected entries for role=coordinator', () => {
+    const summary = summarizeTask([
+      entry({ id: 'label', role: 'implementation' }),
+      entry({ id: 'label-coordinator', role: 'coordinator' }),
+    ], {
+      task: 'TASK-101',
+      sessionEntries: [entry({ id: 'host', task: undefined, sessionId: 'host-1', receivedAt: 100 })],
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 100 }],
+      role: 'coordinator',
+    });
+    assert.equal(summary.calls, 1);
+    assert.deepEqual(Object.keys(summary.by_role), ['coordinator']);
+    assert.equal(summary.by_role.coordinator.calls, 1);
+  });
+
+  it('keeps every other role filter on labelled entries only', () => {
+    const summary = summarizeTask([
+      entry({ id: 'label', role: 'implementation' }),
+      entry({ id: 'other-role', role: 'cross-check' }),
+    ], {
+      task: 'TASK-101',
+      role: 'implementation',
+      sessionEntries: [entry({ id: 'host', task: undefined, sessionId: 'host-1', receivedAt: 100 })],
+      sessionSpecs: [{ session: 'host-1', from: 100, to: 100 }],
+    });
+    assert.equal(summary.calls, 1);
+    assert.deepEqual(Object.keys(summary.by_role), ['implementation']);
+    assert.equal(summary.coordinator.calls, 0);
+  });
+});
+
+describe('parseSessionSpecs', () => {
+  it('parses closed and open-ended inclusive intervals', () => {
+    assert.deepEqual(parseSessionSpecs(['host-1@100-200', 'host-2@300-'], 999), [
+      { session: 'host-1', from: 100, to: 200 },
+      { session: 'host-2', from: 300, to: 999 },
+    ]);
+  });
+
+  it('ignores malformed, reversed, and non-numeric specs', () => {
+    assert.deepEqual(parseSessionSpecs([
+      '', 'host-1', '@100-200', 'host-1@-200', 'host-1@100',
+      'host-1@abc-200', 'host-1@100-xyz', 'host-1@200-100',
+      'host-1@100.5-200', 'host-1@100-200-300',
+    ], 999), []);
+  });
+
+  it('bounds parsing to the first 32 session parameters', () => {
+    const specs = parseSessionSpecs(
+      Array.from({ length: 33 }, (_, i) => `host-${i}@${i}-${i}`),
+      999,
+    );
+    assert.equal(specs.length, 32);
+    assert.equal(specs.at(-1).session, 'host-31');
+  });
+});
+
+describe('client-supplied labels cannot reach Object.prototype', () => {
+  // Found in independent review: `byRole[roleKey]` with roleKey 'constructor'
+  // read Object.prototype.constructor, `+=` threw, and the proxy process died
+  // on a GET. Tool names come off the wire too, so they get the same guard.
+  const hostile = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'prototype'];
+
+  it('aggregates hostile role names as ordinary own properties', () => {
+    const s = summarizeTask(hostile.map(role => entry({ role, turnToolCalls: Object.fromEntries(hostile.map(n => [n, 2])) })), { task: 'TASK-101' });
+    assert.equal(s.calls, hostile.length);
+    assert.deepEqual(Object.keys(s.by_role).sort(), [...hostile].sort());
+    for (const name of hostile) {
+      assert.equal(s.by_role[name].calls, 1, name);
+      assert.equal(s.tools[name], 2 * hostile.length, name);
+    }
+    assert.equal(Object.getPrototypeOf(s.by_role), Object.prototype);
+    assert.equal(Object.getPrototypeOf(s.tools), Object.prototype);
+    // Serialises with the hostile keys as data, not as prototype surgery.
+    const round = JSON.parse(JSON.stringify(s));
+    assert.equal(round.by_role.__proto__.calls, 1);
+    assert.equal(round.tools.constructor, 2 * hostile.length);
+  });
+
+  it('serves a hostile role through the real route without throwing', () => {
+    store.entries.length = 0;
+    store.entries.push(entry({ task: 'POISON', role: 'constructor' }), entry({ task: 'POISON', role: '__proto__' }));
+    const r = get('/_api/task-summary?task=POISON');
+    assert.equal(r.status, 200);
+    assert.equal(r.json.calls, 2);
+    assert.equal(r.json.by_role.constructor.calls, 1);
+    const filtered = get('/_api/task-summary?task=POISON&role=constructor');
+    assert.equal(filtered.json.calls, 1);
+    store.entries.length = 0;
+  });
+});
+
+describe('cost confidence', () => {
+  it('classifies priced, unknown, fallback, and usage-less calls instead of summing zeros silently', () => {
+    const s = summarizeTask([
+      entry({ role: 'w', cost: { cost: 0.5, confidence: 'exact' } }),
+      entry({ role: 'w', cost: { cost: 0.25, confidence: 'fallback' } }),
+      entry({ role: 'w', cost: { cost: null, confidence: 'unknown', warning: 'Unknown model' } }),
+      entry({ role: 'w', cost: null, usage: null }),
+    ], { task: 'TASK-101' });
+    assert.equal(s.calls, 4);
+    assert.equal(s.cost_usd, 0.75);
+    assert.deepEqual(s.cost_confidence, { priced: 2, unknown: 1, fallback: 1, no_usage: 1 });
+    assert.deepEqual(s.by_role.w.cost_confidence, { priced: 2, unknown: 1, fallback: 1, no_usage: 1 });
+    assert.equal(s.by_role.w.cost_usd, 0.75);
+  });
+
+  it('reports all-priced summaries as fully priced', () => {
+    const s = summarizeTask([entry(), entry()], { task: 'TASK-101' });
+    assert.deepEqual(s.cost_confidence, { priced: 2, unknown: 0, fallback: 0, no_usage: 0 });
   });
 });
 

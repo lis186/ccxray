@@ -250,6 +250,7 @@ describe('work attribution across claude / codex / grok', () => {
     assert.equal(health.ok, true);
     assert.equal(health.app, 'ccxray');
     assert.ok(Array.isArray(health.capabilities) && health.capabilities.includes('task-attribution'));
+    assert.ok(health.capabilities.includes('session-intervals'));
   });
 
   it('accepts header attribution from Claude and strips it before forwarding', async () => {
@@ -423,5 +424,100 @@ describe('attribution does not switch off the deployment identity', () => {
     assert.equal(line.role, 'implementation');
     assert.equal(line.userEmail, 'dev@example.test');
     assert.equal(line.team, 'platform');
+  });
+});
+
+describe('coordinator usage by session interval', () => {
+  let upstream;
+  let proxy;
+  let proxyPort;
+  let home;
+
+  before(async () => {
+    const upstreamPort = await findFreePort();
+    proxyPort = await findFreePort();
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-session-interval-'));
+    upstream = makeUpstream();
+    await new Promise(r => upstream.server.listen(upstreamPort, '127.0.0.1', r));
+    const env = { ...process.env };
+    for (const k of ['CCXRAY_TASK', 'CCXRAY_ROLE', 'CCXRAY_PROJECT', 'CCXRAY_AGENT_ID', 'CCXRAY_AGENT_TYPE']) delete env[k];
+    proxy = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(proxyPort), '--no-browser'], {
+      env: {
+        ...env,
+        CCXRAY_HOME: home,
+        CCXRAY_MAX_ENTRIES: '1',
+        BROWSER: 'none', RESTORE_DAYS: '0', CCXRAY_IMPORT_DISABLE: '1',
+        ANTHROPIC_TEST_HOST: '127.0.0.1', ANTHROPIC_TEST_PORT: String(upstreamPort), ANTHROPIC_TEST_PROTOCOL: 'http',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    await waitForPort(proxyPort);
+  });
+
+  after(async () => {
+    await killAndWait(proxy);
+    for (const client of upstream.wss.clients) client.terminate();
+    await new Promise(r => upstream.wss.close(r));
+    await new Promise(r => upstream.server.close(r));
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  });
+
+  async function waitForIntervalEntries(hostSession, task) {
+    const start = Date.now();
+    for (;;) {
+      const lines = readIndexLines(home);
+      const host = lines.filter(l => l.sessionId === hostSession && !l.task);
+      const worker = lines.find(l => l.task === task);
+      if (host.length >= 2 && worker) return { host, worker };
+      if (Date.now() - start > 8000) return { host, worker };
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+
+  it('loads coordinator calls from disk after they leave the in-memory window', async () => {
+    const hostSession = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const task = 'INTERVAL-001';
+    for (let i = 0; i < 2; i++) {
+      const out = await request(proxyPort, {
+        method: 'POST', path: '/v1/messages',
+        headers: CLAUDE_HEADERS, body: claudeBody(hostSession),
+      });
+      assert.equal(out.status, 200, out.body.slice(0, 200));
+    }
+    const worker = await request(proxyPort, {
+      method: 'POST', path: '/v1/messages',
+      headers: { ...CLAUDE_HEADERS, 'x-ccxray-task': task, 'x-ccxray-role': 'implementation' },
+      body: claudeBody('11111111-2222-3333-4444-555555555555'),
+    });
+    assert.equal(worker.status, 200, worker.body.slice(0, 200));
+
+    const recorded = await waitForIntervalEntries(hostSession, task);
+    assert.equal(recorded.host.length, 2);
+    assert.ok(recorded.worker, 'labelled worker entry missing');
+    const from = Math.min(...recorded.host.map(l => l.receivedAt));
+    const to = Math.max(...recorded.host.map(l => l.receivedAt));
+    const spec = `${hostSession}@${from}-${to}`;
+    const summaryResponse = await request(proxyPort, {
+      method: 'GET', path: `/_api/task-summary?${new URLSearchParams({ task, session: spec })}`,
+    });
+    assert.equal(summaryResponse.status, 200, summaryResponse.body);
+    const summary = JSON.parse(summaryResponse.body);
+    assert.equal(summary.coverage.entries_in_memory, 1);
+    assert.equal(summary.calls, 3);
+    assert.equal(summary.by_role.coordinator.calls, 2);
+    assert.equal(summary.by_role.implementation.calls, 1);
+    assert.equal(summary.coordinator.calls, 2);
+    assert.deepEqual(summary.coordinator.sessions, [{ session: hostSession, from, to, calls: 2 }]);
+
+    const excludedSpec = `${hostSession}@${to + 1}-${to + 2}`;
+    const excludedResponse = await request(proxyPort, {
+      method: 'GET',
+      path: `/_api/task-summary?${new URLSearchParams({ task, role: 'coordinator', session: excludedSpec })}`,
+    });
+    assert.equal(excludedResponse.status, 200, excludedResponse.body);
+    const excluded = JSON.parse(excludedResponse.body);
+    assert.equal(excluded.calls, 0);
+    assert.equal(excluded.coordinator.calls, 0);
+    assert.deepEqual(excluded.coordinator.sessions, [{ session: hostSession, from: to + 1, to: to + 2, calls: 0 }]);
   });
 });

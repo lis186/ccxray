@@ -14,7 +14,7 @@ const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 const sessionIdx = require('../session-index');
-const { summarizeTask } = require('../task-summary');
+const { summarizeTask, parseSessionSpecs } = require('../task-summary');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -80,7 +80,7 @@ function computeSettings() {
 // Normalize a raw index.ndjson line into a summarized entry (simplified
 // restore.js pipeline: anthropic maxContext re-inference + openai usage
 // normalization; skips the async sysModelMarker pass).
-function normalizeIndexEntry(meta) {
+function normalizeIndexEntry(meta, opts = {}) {
   if (meta.provider === 'anthropic') {
     meta.maxContext = Math.max(meta.maxContext || 0, config.inferMaxContext(meta.model, null, meta.usage));
   }
@@ -98,7 +98,13 @@ function normalizeIndexEntry(meta) {
       meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }
   }
-  return summarizeEntry({ ...meta, req: null, res: null, _loaded: false });
+  const entry = summarizeEntry({ ...meta, req: null, res: null, _loaded: false });
+  if (opts.includeAttribution) {
+    for (const key of ['task', 'role', 'taskProject']) {
+      if (meta[key] !== undefined && meta[key] !== null) entry[key] = meta[key];
+    }
+  }
+  return entry;
 }
 
 // Scan index.ndjson for entries of the given session ids (cold sessions have
@@ -107,7 +113,7 @@ async function loadSessionEntriesFromIndex(targetSids, opts) {
   // String pre-filter before JSON.parse: parsing all ~150K lines costs
   // seconds per cold click; substring containment skips 99.9% of them.
   // The exact targetSids check after parse stays authoritative.
-  const needles = [...targetSids].map(s => '"sessionId":"' + s + '"');
+  const needles = [...targetSids].map(s => '"sessionId":' + JSON.stringify(s));
   const metas = [];
   // #345: stream lines — the index can exceed Node's ~512MB single-string limit,
   // where readIndex() throws ERR_STRING_TOO_LONG and cold sessions never load.
@@ -127,7 +133,22 @@ async function loadSessionEntriesFromIndex(targetSids, opts) {
   // the fields the merge reconstructs). Cold-load serves straight to the client
   // and these entries never enter store.entries, so no index/alias upkeep here.
   // See docs/decisions/0012-response-id-read-time-merge.md.
-  return store.mergeByResponseId(metas).map(normalizeIndexEntry);
+  return store.mergeByResponseId(metas).map(meta => normalizeIndexEntry(meta, { includeAttribution: true }));
+}
+
+// Session summaries combine the live window with the durable index. The
+// response-id merge handles partial copies first; the id pass then prevents a
+// canonical entry present in both sources from being counted twice.
+function mergeSessionEntriesById(inMemory, loaded) {
+  const merged = store.mergeByResponseId([...(inMemory || []), ...(loaded || [])]);
+  const seen = new Set();
+  return merged.filter(entry => {
+    if (!entry || entry.id === undefined || entry.id === null) return true;
+    const key = String(entry.id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // Add child sessions (workflow lanes render them alongside the parent)
@@ -491,16 +512,41 @@ function handleApiRoutes(clientReq, clientRes) {
       clientRes.end(JSON.stringify({ error: 'task parameter required' }));
       return true;
     }
-    const summary = summarizeTask(store.entries, {
+    const summaryOptions = {
       task,
       role: (params.get('role') || '').trim() || null,
       project: (params.get('project') || '').trim() || null,
+    };
+    const sessionSpecs = parseSessionSpecs(params.getAll('session'), Date.now());
+    if (sessionSpecs.length === 0) {
+      // Preserve the established synchronous response exactly when no valid
+      // session interval was requested: no disk read and no new JSON field.
+      const summary = summarizeTask(store.entries, summaryOptions);
+      summary.coverage = { entries_in_memory: store.entries.length, max_entries: store.MAX_ENTRIES };
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify(summary));
+      return true;
+    }
+
+    const targetSids = new Set(sessionSpecs.map(spec => spec.session));
+    (async () => {
+      const loaded = await loadSessionEntriesFromIndex(targetSids);
+      const inMemory = store.entries.filter(entry => entry && targetSids.has(entry.sessionId));
+      const sessionEntries = mergeSessionEntriesById(inMemory, loaded);
+      const summary = summarizeTask(store.entries, {
+        ...summaryOptions,
+        sessionEntries,
+        sessionSpecs,
+      });
+      // The labelled side still reports the live window. Coordinator entries
+      // are loaded from the index and therefore are not constrained by it.
+      summary.coverage = { entries_in_memory: store.entries.length, max_entries: store.MAX_ENTRIES };
+      clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify(summary));
+    })().catch(e => {
+      if (!clientRes.headersSent) clientRes.writeHead(500, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: e.message }));
     });
-    // The summary reads the in-memory window only (CCXRAY_MAX_ENTRIES). Say so,
-    // so a caller can tell "no calls" from "calls aged out of the window".
-    summary.coverage = { entries_in_memory: store.entries.length, max_entries: store.MAX_ENTRIES };
-    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify(summary));
     return true;
   }
 
