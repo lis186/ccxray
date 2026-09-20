@@ -14,6 +14,7 @@ const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 const sessionIdx = require('../session-index');
+const { summarizeTask } = require('../task-summary');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -479,80 +480,27 @@ function handleApiRoutes(clientReq, clientRes) {
     return true;
   }
 
+  // Work attribution summary for orchestrators (Agentflow). Both spellings are
+  // served: /_api/ is ccxray's convention, /api/ is what the first Agentflow
+  // integration shipped against.
   if (pathname === '/api/task-summary' || pathname === '/_api/task-summary') {
     const params = new URLSearchParams(clientReq.url.split('?')[1] || '');
-    const task = params.get('task');
-    const project = params.get('project');
+    const task = (params.get('task') || '').trim();
     if (!task) {
       clientRes.writeHead(400, { 'Content-Type': 'application/json' });
       clientRes.end(JSON.stringify({ error: 'task parameter required' }));
       return true;
     }
-
-    const matched = store.entries.filter(e => {
-      if (!e) return false;
-      if (e.task !== task) return false;
-      if (project && e.cwd && !e.cwd.includes(project)) return false;
-      return true;
-    });
-
-    let totalCost = 0;
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let cacheReadTokens = 0;
-    let cacheCreateTokens = 0;
-    let reasoningTokens = 0;
-    let totalTokens = 0;
-    let toolFailures = 0;
-    const tools = {};
-    const skills = {};
-
-    for (const e of matched) {
-      if (e.cost && typeof e.cost.cost === 'number') totalCost += e.cost.cost;
-      const u = e.usage || {};
-      inputTokens += u.input_tokens || u.input || 0;
-      outputTokens += u.output_tokens || u.output || 0;
-      cacheReadTokens += u.cache_read_input_tokens || u.cache_read || 0;
-      cacheCreateTokens += u.cache_creation_input_tokens || u.cache_create || 0;
-      reasoningTokens += u.reasoning || 0;
-      totalTokens += u.total || (inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens);
-
-      if (e.turnToolFail || e.toolFail) toolFailures += 1;
-      const tc = e.turnToolCalls || e.toolCalls;
-      if (tc && typeof tc === 'object') {
-        for (const [name, cnt] of Object.entries(tc)) {
-          tools[name] = (tools[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
-        }
-      }
-      if (e.skillCalls && typeof e.skillCalls === 'object') {
-        for (const [name, cnt] of Object.entries(e.skillCalls)) {
-          skills[name] = (skills[name] || 0) + (typeof cnt === 'number' ? cnt : 1);
-        }
-      }
-    }
-
-    const cacheDenom = inputTokens + cacheReadTokens + cacheCreateTokens;
-    const cacheHitRate = cacheDenom > 0 ? (cacheReadTokens / cacheDenom) : 0;
-
-    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
-    clientRes.end(JSON.stringify({
+    const summary = summarizeTask(store.entries, {
       task,
-      project: project || null,
-      calls: matched.length,
-      cost_usd: Math.round(totalCost * 10000) / 10000,
-      tokens: {
-        input: inputTokens,
-        output: outputTokens,
-        cache_read: cacheReadTokens,
-        cache_create: cacheCreateTokens,
-        reasoning: reasoningTokens,
-        total: totalTokens,
-      },
-      cache_hit_rate: Math.round(cacheHitRate * 1000) / 1000,
-      tools,
-      tool_failures: toolFailures,
-      skills,
-    }));
+      role: (params.get('role') || '').trim() || null,
+      project: (params.get('project') || '').trim() || null,
+    });
+    // The summary reads the in-memory window only (CCXRAY_MAX_ENTRIES). Say so,
+    // so a caller can tell "no calls" from "calls aged out of the window".
+    summary.coverage = { entries_in_memory: store.entries.length, max_entries: store.MAX_ENTRIES };
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify(summary));
     return true;
   }
 
