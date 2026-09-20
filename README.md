@@ -113,6 +113,17 @@ Env vars for tuning: `OPENAI_BASE_URL`, `CHATGPT_BASE_URL`, `CCXRAY_WS_IDLE_TIME
 
 File issues on [GitHub](https://github.com/lis186/ccxray/issues) — Beta means we want the rough edges reported.
 
+## Task attribution for orchestrators
+
+Tools that launch many agent workers, such as [Agentflow](https://github.com/agfnow/agentflow), can label each worker's traffic with a task, a pipeline role, and a project, then read cost and tokens back per task:
+
+```bash
+ANTHROPIC_BASE_URL="http://127.0.0.1:5577/_ccxray/attr/$(node -p 'encodeURIComponent("task=A-012&role=implementation&project=demo")')" claude -p "hi"
+curl "http://127.0.0.1:5577/_api/task-summary?task=A-012&project=demo"
+```
+
+The label rides the base URL, so it works for Claude Code, Codex (including ChatGPT login and WebSocket), and Grok alike. Details: [`docs/task-attribution.md`](docs/task-attribution.md).
+
 ## Features
 
 ### Workflow Timeline
@@ -260,6 +271,7 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
 | `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
 | `RESTORE_DAYS` | `14` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
+| `CCXRAY_TASK` / `CCXRAY_ROLE` / `CCXRAY_PROJECT` | _(unset)_ | Label every request of a `ccxray <agent>` launch with a task, pipeline role, and project for [`/_api/task-summary`](docs/task-attribution.md). A per-request `/_ccxray/attr/` prefix or `x-ccxray-*` header overrides them. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
