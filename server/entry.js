@@ -58,8 +58,11 @@ const INDEX_FIELDS = [
   // is a launch-time snapshot, not a per-request fact; unlike userEmail above,
   // it never comes from CCXRAY_USER_EMAIL deployment identity.
   'accountEmail','accountDomain',
-  // Agentflow integration: task and role attribution
-  'task','role',
+  // #636: work attribution declared by an orchestrator (Agentflow is the
+  // first): the task a request belongs to, the pipeline role that made it, and
+  // the project label the orchestrator uses. `taskProject` is not the
+  // cwd-derived dashboard project — see server/attribution.js.
+  'task','role','taskProject',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -71,13 +74,13 @@ const INDEX_FIELDS = [
 // exercise those construction paths.
 const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
-  'task','role',
+  'task','role','taskProject',
 ]);
 
 const DEPLOYMENT_ENV_FIELDS = [
   ['agentId', 'CCXRAY_AGENT_ID'], ['userEmail', 'CCXRAY_USER_EMAIL'],
   ['team', 'CCXRAY_TEAM'], ['agentType', 'CCXRAY_AGENT_TYPE'],
-  ['task', 'CCXRAY_TASK'], ['role', 'CCXRAY_ROLE'],
+  ['task', 'CCXRAY_TASK'], ['role', 'CCXRAY_ROLE'], ['taskProject', 'CCXRAY_PROJECT'],
 ];
 
 function deploymentFields(ts, opts = {}) {

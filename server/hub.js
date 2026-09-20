@@ -8,6 +8,7 @@ const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 const { discoverCredentials, describeCredentials } = require('./export-credentials');
+const { parseAttributionSegment } = require('./attribution');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -496,9 +497,14 @@ let hubListenPort = null; // set once at startup, survives lockfile deletion
 let identityPort = null; // this process's own listener, never read from the hub lockfile
 let onShutdown = null; // injectable shutdown handler (default: process.exit)
 
+// task/role/taskProject: work attribution declared at launch (CCXRAY_TASK,
+// CCXRAY_ROLE, CCXRAY_PROJECT) — see server/attribution.js. A per-request
+// /_ccxray/attr/ prefix or header overrides these per key.
+const CLIENT_IDENTITY_KEYS = Object.freeze(['agentId', 'userEmail', 'team', 'agentType', 'task', 'role', 'taskProject']);
+
 function clientIdentityFromMessage(msg) {
   const out = {};
-  for (const key of ['agentId', 'userEmail', 'team', 'agentType']) {
+  for (const key of CLIENT_IDENTITY_KEYS) {
     if (typeof msg?.[key] === 'string') {
       const value = msg[key].trim();
       if (value && value.length <= 512) out[key] = value;
@@ -532,11 +538,40 @@ function hasClients() {
   return clients.size > 0;
 }
 
+// Routing prefixes a launcher may put in front of the real API path. They
+// compose in any order — a worker launched from inside a ccxray-launched host
+// inherits the host's /_ccxray/client/<pid> base URL and appends its own
+// /_ccxray/attr/<…> — so strip them in a loop. A later attr segment overrides
+// an earlier one per key (innermost launch wins).
+//
+// INVARIANT: strip EVERY leading prefix, never a bounded number of them. A cap
+// leaves the remainder in req.url, which is then forwarded upstream — leaking
+// the internal path and the attribution values to the provider. The loop needs
+// no cap to terminate: each pass removes at least one character from a URL that
+// Node has already bounded (max header size).
+// Feature names advertised on /_api/health. Append-only, stable strings.
+const HEALTH_CAPABILITIES = Object.freeze(['task-attribution']);
+
+const CLIENT_ROUTE_RE = /^\/_ccxray\/client\/([1-9]\d*)(?=\/|\?|$)/;
+const ATTR_ROUTE_RE = /^\/_ccxray\/attr\/([^/?]+)(?=\/|\?|$)/;
+
 function applyClientRoute(req) {
-  const match = /^\/_ccxray\/client\/([1-9]\d*)(\/[^?]*)?(\?.*)?$/.exec(String(req?.url || ''));
-  if (!match) return false;
-  req.ccxrayClientPid = Number(match[1]);
-  req.url = `${match[2] || '/'}${match[3] || ''}`;
+  let url = String(req?.url || '');
+  let matched = false;
+  for (;;) {
+    let match = CLIENT_ROUTE_RE.exec(url);
+    if (match) {
+      req.ccxrayClientPid = Number(match[1]);
+    } else {
+      match = ATTR_ROUTE_RE.exec(url);
+      if (!match) break;
+      req.ccxrayAttribution = { ...(req.ccxrayAttribution || {}), ...parseAttributionSegment(match[1]) };
+    }
+    url = url.slice(match[0].length);
+    matched = true;
+  }
+  if (!matched) return false;
+  req.url = url.startsWith('/') ? url : `/${url}`;
   return true;
 }
 
@@ -659,6 +694,11 @@ function handleHubRoutes(clientReq, clientRes) {
       pid: process.pid,
       hub: hubListenPort != null,
       version: require('../package.json').version,
+      // Feature detection for integrators. An orchestrator must see
+      // 'task-attribution' before it puts /_ccxray/attr/ in a worker's base
+      // URL: a ccxray without the route forwards the prefixed path upstream and
+      // every worker API call 404s. Append-only list of stable names.
+      capabilities: HEALTH_CAPABILITIES,
     }));
     return true;
   }

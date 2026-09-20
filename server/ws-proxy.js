@@ -13,6 +13,7 @@ const { stripAuthParams } = require('./url-sanitize');
 const { isInternalHeader } = require('./internal-headers');
 const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
+const { requestAttribution } = require('./attribution');
 const sessionIdx = require('./session-index');
 const {
   detectSession: _detectOpenAISession3,
@@ -106,18 +107,21 @@ function isOpenAIWebSocket(req, upstream) {
 
 function requestDeploymentFields(startTime, req, parsedBody) {
   const agent = resolveOpenAIWireAgent(req.headers, parsedBody);
-  let identity = hub.lookupClientIdentityForRequest(req, agent);
-  const headers = req.headers || {};
-  if (headers['x-ccxray-task'] || headers['x-ccxray-role']) {
-    identity = identity ? { ...identity } : {};
-    if (headers['x-ccxray-task']) identity.task = String(headers['x-ccxray-task']).trim();
-    if (headers['x-ccxray-role']) identity.role = String(headers['x-ccxray-role']).trim();
-  }
+  const hubIdentity = hub.lookupClientIdentityForRequest(req, agent);
+  // Same rule as forward.js: the path prefix is the only carrier Codex on a
+  // ChatGPT login has, since it cannot add handshake headers.
+  const attribution = requestAttribution(req);
+  const identity = Object.keys(attribution).length > 0
+    ? { ...(hubIdentity || {}), ...attribution }
+    : hubIdentity;
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
     identity: identity || {},
-    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+    // INVARIANT: gated on the HUB identity, never the merged one — attribution
+    // supplies task/role only, so letting it flip this flag would drop
+    // userEmail/team/agentType from every attributed turn (forward.js, #505).
+    useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
   });
 }
 
