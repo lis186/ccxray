@@ -47,6 +47,7 @@ const ADDITIVE_INDEX_FIELDS = [
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','compacted',
   'contextUsageKnown','imported1mCostState','imported1mSettings',
   'accountEmail','accountDomain',
+  'task','role','taskProject',
 ];
 const IDENTITY_KEYS = ['agentId','userEmail','team','agentType'];
 const ACCOUNT_KEYS = ['accountEmail','accountDomain'];

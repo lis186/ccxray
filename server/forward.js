@@ -16,6 +16,7 @@ const { stripAuthParams, stripControlChars } = require('./url-sanitize');
 const { getParser } = require('./wire-parsers');
 const { agentForProvider, matchOpenAIWireClient, resolveOpenAIWireAgent } = require('./providers');
 const { buildIndexLine, deploymentFields } = require('./entry');
+const { requestAttribution } = require('./attribution');
 const path = require('path');
 const { resolveCcxrayHome } = require('./paths');
 const sessionIdx = require('./session-index');
@@ -180,6 +181,10 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
     const fromHeader = hub.clientIdentityFromMessage({ agentId: lastHerdr });
     if (fromHeader.agentId) identity = fromHeader;
   }
+  // Work attribution rides the /_ccxray/attr/ path prefix or x-ccxray-* headers
+  // and overrides the launch-time identity per key (server/attribution.js).
+  const attribution = requestAttribution(req);
+  if (Object.keys(attribution).length > 0) identity = { ...(identity || {}), ...attribution };
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return {

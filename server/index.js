@@ -1110,6 +1110,9 @@ async function startClientMode(lock) {
     userEmail: process.env.CCXRAY_USER_EMAIL || '',
     team: process.env.CCXRAY_TEAM || '',
     agentType: process.env.CCXRAY_AGENT_TYPE || agentCommand || '',
+    task: process.env.CCXRAY_TASK || '',
+    role: process.env.CCXRAY_ROLE || '',
+    taskProject: process.env.CCXRAY_PROJECT || '',
   };
 
   // INVARIANT: armed before registerClient so no signal can land on a
