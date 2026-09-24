@@ -659,6 +659,7 @@ function handleHubRoutes(clientReq, clientRes) {
       pid: process.pid,
       hub: hubListenPort != null,
       version: require('../package.json').version,
+      capabilities: ['task-attribution', 'session-intervals', 'cost-charges'],
     }));
     return true;
   }
