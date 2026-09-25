@@ -14,6 +14,7 @@ const { calculateCost } = require('../pricing');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 const sessionIdx = require('../session-index');
+const taskIndex = require('../task-index');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -51,6 +52,19 @@ async function loadColdEntry(id) {
 // run's oldest turns are evicted and the endpoint would answer 200 with an
 // undercount. index.ndjson is the durable record of every forwarded turn.
 async function collectTaskEntries(task, project) {
+  if (typeof config.storage.readIndexLinesFrom === 'function') {
+    await taskIndex.refresh();
+    const metas = [];
+    for (const line of taskIndex.linesFor(task)) {
+      let meta;
+      try { meta = JSON.parse(line); } catch { continue; }
+      if (meta.task !== task) continue;
+      if (project && meta.project !== project) continue;
+      metas.push(meta);
+    }
+    return store.mergeByResponseId(metas);
+  }
+
   // JSON-encode the needle so a task containing a quote or backslash still
   // matches the escaped form that is actually on disk.
   const needle = '"task":' + JSON.stringify(task);
@@ -609,4 +623,4 @@ function handleApiRoutes(clientReq, clientRes) {
   return false;
 }
 
-module.exports = { handleApiRoutes, computeSettings, normalizeIndexEntry };
+module.exports = { handleApiRoutes, computeSettings, normalizeIndexEntry, collectTaskEntries };

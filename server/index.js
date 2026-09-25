@@ -35,6 +35,7 @@ const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
 const { handleWebSocketUpgrade, drainWebSocketProxy } = require('./ws-proxy');
 const sessionIdx = require('./session-index');
+const taskIndex = require('./task-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const { renderHubClientStatus } = require('./hub-client-status');
 const { renderProcessStatus, inspectHomeStatus } = require('./status');
@@ -1265,6 +1266,7 @@ async function runPostListenStartupTasks() {
     await pruneLogs();
     warmUpCosts();
   }
+  if (typeof config.storage.readIndexLinesFrom === 'function') taskIndex.warm();
   startExportSync();
 
   // #438/#486: hint when legacy entries lack per-turn tool evidence.

@@ -101,6 +101,41 @@ function createLocalStorage(logsDir, opts = {}) {
       }
     },
 
+    // Read complete NDJSON lines starting at a byte offset. An unterminated
+    // final fragment stays unconsumed so a later append can complete it.
+    async readIndexLinesFrom(offset = 0) {
+      let stat;
+      try {
+        stat = await fsp.stat(indexPath);
+      } catch (e) {
+        if (e.code === 'ENOENT') return { ino: null, size: 0, lines: [], nextOffset: 0 };
+        throw e;
+      }
+
+      const lines = [];
+      let nextOffset = offset;
+      if (offset < stat.size) {
+        const input = fs.createReadStream(indexPath, { start: offset, encoding: 'utf8' });
+        let fragment = '';
+        try {
+          for await (const chunk of input) {
+            fragment += chunk;
+            let newline;
+            while ((newline = fragment.indexOf('\n')) !== -1) {
+              const line = fragment.slice(0, newline);
+              lines.push(line);
+              nextOffset += Buffer.byteLength(line, 'utf8') + 1;
+              fragment = fragment.slice(newline + 1);
+            }
+          }
+        } finally {
+          input.destroy();
+        }
+      }
+
+      return { ino: stat.ino, size: stat.size, lines, nextOffset };
+    },
+
     // Streaming line iterator over index.ndjson. Blank lines are skipped. Safe
     // for indexes past Node's ~512MB single-string limit (#345) — readIndex()
     // throws ERR_STRING_TOO_LONG there; this never materializes the whole file.

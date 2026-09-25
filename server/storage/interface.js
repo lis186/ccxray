@@ -24,6 +24,10 @@
  *   never materializes the whole file into one string, so it is safe past Node's
  *   ~512MB single-string limit (#345). Missing index → empty iteration.
  *
+ * @property {(offset: number) => Promise<{ino: number|null, size: number, lines: string[], nextOffset: number}>} [readIndexLinesFrom]
+ *   Read newline-terminated index rows from a byte offset, returning file
+ *   identity and the next byte offset. Missing index → an empty result.
+ *
  * @property {(id: string, suffix: string) => Promise<{mtimeMs: number}>} stat
  *   Get metadata (at minimum mtimeMs) for a log artifact. Throws if not found.
  *

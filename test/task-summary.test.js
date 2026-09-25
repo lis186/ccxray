@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const store = require('../server/store');
 const config = require('../server/config');
 const { handleApiRoutes } = require('../server/routes/api');
+const taskIndex = require('../server/task-index');
 
 function fakeRes() {
   let status = 0;
@@ -28,16 +29,19 @@ function fakeRes() {
 }
 
 const realReadIndexLines = config.storage.readIndexLines;
+const realReadIndexLinesFrom = config.storage.readIndexLinesFrom;
 
 // The endpoint reads index.ndjson, so tests feed rows through the storage seam
 // rather than store.entries.
 function stubIndex(rows) {
+  config.storage.readIndexLinesFrom = undefined;
   config.storage.readIndexLines = () => (async function* () {
     for (const row of rows) yield typeof row === 'string' ? row : JSON.stringify(row);
   })();
 }
 
 function stubIndexFailure(message) {
+  config.storage.readIndexLinesFrom = undefined;
   config.storage.readIndexLines = () => (async function* () {
     throw new Error(message);
     // eslint-disable-next-line no-unreachable
@@ -49,6 +53,8 @@ function reset() {
   store.entries.length = 0;
   for (const k of Object.keys(store.sessionMeta)) delete store.sessionMeta[k];
   config.storage.readIndexLines = realReadIndexLines;
+  config.storage.readIndexLinesFrom = realReadIndexLinesFrom;
+  taskIndex.reset();
 }
 
 async function get(url) {
