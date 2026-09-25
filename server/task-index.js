@@ -16,17 +16,19 @@ function clear() {
   initialized = false;
 }
 
+const isTaskLine = line => line.includes('"task":');
+
 async function refreshFromStorage(refreshGeneration) {
-  let result = await config.storage.readIndexLinesFrom(offset);
+  let result = await config.storage.readIndexLinesFrom(offset, isTaskLine);
   if (refreshGeneration !== generation) return;
   if (initialized && (result.ino !== ino || result.size < offset)) {
     clear();
-    result = await config.storage.readIndexLinesFrom(0);
+    result = await config.storage.readIndexLinesFrom(0, isTaskLine);
     if (refreshGeneration !== generation) return;
   }
 
   for (const line of result.lines) {
-    if (!line.includes('"task":')) continue;
+    if (!isTaskLine(line)) continue;
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
     if (typeof meta.task !== 'string') continue;

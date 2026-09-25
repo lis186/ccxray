@@ -61,6 +61,24 @@ describe('incremental task index', () => {
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
+  it('keeps only task-tagged rows from a cold read while advancing past every row', async () => {
+    await appendLine({ id: 'plain-1' });
+    await appendLine({ id: 'plain-2' });
+    await appendLine({ id: 'tagged', task: 'KEEP' });
+    await appendLine({ id: 'plain-3' });
+    const readFrom = config.storage.readIndexLinesFrom;
+    let returned;
+    config.storage.readIndexLinesFrom = async (offset, keep) => {
+      returned = await readFrom(offset, keep);
+      return returned;
+    };
+
+    assert.deepEqual((await collectTaskEntries('KEEP')).map(row => row.id), ['tagged']);
+    // A 423MB index held every row in memory at once when untagged rows were kept.
+    assert.equal(returned.lines.length, 1);
+    assert.equal(returned.nextOffset, (await fs.stat(indexPath)).size);
+  });
+
   it('includes task rows appended after the first query', async () => {
     await appendLine({ id: 'first', task: 'APPEND' });
     assert.deepEqual((await collectTaskEntries('APPEND')).map(row => row.id), ['first']);

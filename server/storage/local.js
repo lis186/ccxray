@@ -103,7 +103,9 @@ function createLocalStorage(logsDir, opts = {}) {
 
     // Read complete NDJSON lines starting at a byte offset. An unterminated
     // final fragment stays unconsumed so a later append can complete it.
-    async readIndexLinesFrom(offset = 0) {
+    // `keep` filters while streaming so a cold read of a large index never holds
+    // every line in memory at once; the offset still advances past all lines.
+    async readIndexLinesFrom(offset = 0, keep) {
       let stat;
       try {
         stat = await fsp.stat(indexPath);
@@ -123,7 +125,7 @@ function createLocalStorage(logsDir, opts = {}) {
             let newline;
             while ((newline = fragment.indexOf('\n')) !== -1) {
               const line = fragment.slice(0, newline);
-              lines.push(line);
+              if (!keep || keep(line)) lines.push(line);
               nextOffset += Buffer.byteLength(line, 'utf8') + 1;
               fragment = fragment.slice(newline + 1);
             }
