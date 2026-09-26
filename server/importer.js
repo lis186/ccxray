@@ -462,6 +462,14 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
         output_tokens: usage.output_tokens || 0,
         cache_read_input_tokens: usage.cache_read_input_tokens || 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+        // S-4: keep the 5m/1h ephemeral breakdown so a later cost recompute
+        // (calculateCostSimple) prices the split instead of the flat counter.
+        ...(usage.cache_creation && typeof usage.cache_creation === 'object' ? {
+          cache_creation: {
+            ephemeral_5m_input_tokens: usage.cache_creation.ephemeral_5m_input_tokens || 0,
+            ephemeral_1h_input_tokens: usage.cache_creation.ephemeral_1h_input_tokens || 0,
+          },
+        } : {}),
       },
       ...(opts.subagent ? {
         isSubagent: true,
