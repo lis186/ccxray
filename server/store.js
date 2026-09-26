@@ -92,8 +92,10 @@ function _contextUsageValue(u) {
 // its own req/res references; only complementary fields are pulled from `other`.
 function _foldEntry(canonical, other) {
   // Identity + context + labels: a non-empty value fills a canonical gap.
+  // S-1: subagentId/subagentToolUseId (transcript-derived subagent identity)
+  // join this list the same way as agentKey/coreHash/convId.
   for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
-    'title', 'thinkingDuration', 'duplicateToolCalls']) {
+    'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
       canonical[k] = other[k];
     }

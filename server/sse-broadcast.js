@@ -81,6 +81,9 @@ function summarizeEntry(entry) {
     thinkingStripped: entry.thinkingStripped || false,
     imported: entry.imported || undefined,
     importSource: entry.importSource || undefined,
+    // S-1: subagent transcript identity (see server/entry.js INDEX_FIELDS).
+    subagentId: entry.subagentId || null,
+    subagentToolUseId: entry.subagentToolUseId || null,
     firstPrompt: store.getSessionFirstPrompt(entry.sessionId) || null,
     parentSessionId: entry.parentSessionId || store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {

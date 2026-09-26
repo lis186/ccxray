@@ -16,8 +16,8 @@ const store = require('../server/store');
 const config = require('../server/config');
 const sessionIdx = require('../server/session-index');
 const {
-  scanAndImport, parseSessionFile, parseCodexSessionFile,
-  discoverHomes, discoverCodexHomes, slugToProject, tsToId,
+  scanAndImport, scanAndImportTranscript, parseSessionFile, parseCodexSessionFile,
+  collectSubagentFiles, discoverHomes, discoverCodexHomes, slugToProject, tsToId,
 } = require('../server/importer');
 // The importer now derives maxContext, so these assertions depend on the LiteLLM
 // capability table. It is read from a package-relative pricing-cache.json, which
@@ -399,6 +399,183 @@ describe('importer', () => {
       assert.strictEqual(entries.length, 1);
       assert.deepStrictEqual(entries[0].turnToolResults, []);
       assert.ok(entries[0].turnToolResults !== undefined);
+    });
+  });
+
+  // S-1: Claude Code Task-tool subagent transcripts live under
+  // `<slug>/<sid>/subagents/agent-<agentId>.jsonl` + a sidecar `.meta.json`,
+  // a directory shape `collectJsonlFiles` never descends into.
+  describe('S-1 subagent import', () => {
+    it('parseSessionFile with opts.subagent derives sessionId from the line, not the filename', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      const subagentsDir = path.join(sessionDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      const file = path.join(subagentsDir, 'agent-test123.jsonl');
+      fs.writeFileSync(file, [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:10.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'test123', cwd: '/tmp/test-project' },
+        }),
+      ].join('\n'));
+
+      // current code has no `opts.subagent` handling — this is fail-on-old
+      const entries = await parseSessionFile(file, 'test-project', {
+        subagent: true,
+        agentKey: 'general-purpose',
+        agentLabel: 'General Purpose',
+        subagentToolUseId: 'toolu_test',
+      });
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].isSubagent, true);
+      assert.strictEqual(entries[0].subagentId, 'test123');
+      assert.strictEqual(entries[0].subagentToolUseId, 'toolu_test');
+      assert.strictEqual(entries[0].agentKey, 'general-purpose');
+      assert.strictEqual(entries[0].agentLabel, 'General Purpose');
+      // Derived from the line's own sessionId, not `agent-test123` (the filename).
+      assert.strictEqual(entries[0].sessionId, 'parent-sess');
+    });
+
+    it('parseSessionFile falls back to opts.parentCwd when the subagent line has no cwd', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      const subagentsDir = path.join(sessionDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      const file = path.join(subagentsDir, 'agent-nocw.jsonl');
+      const line = JSON.parse(makeAssistant({
+        timestamp: '2026-07-15T10:30:10.000Z',
+        extra: { sessionId: 'parent-sess', agentId: 'nocw' },
+      }));
+      delete line.cwd;
+      fs.writeFileSync(file, JSON.stringify(line));
+
+      const entries = await parseSessionFile(file, 'test-project', {
+        subagent: true, parentCwd: '/tmp/parent-project',
+      });
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].cwd, '/tmp/parent-project');
+    });
+
+    it('collectSubagentFiles finds agent-*.jsonl under every <sid>/subagents/', async () => {
+      const projectDir = path.join(importDir, 'collect-project');
+      const subagentsDir = path.join(projectDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-abc.jsonl'), '');
+      fs.writeFileSync(path.join(subagentsDir, 'agent-abc.meta.json'), '{}');
+      // A non-agent-prefixed / non-jsonl file must not be picked up.
+      fs.writeFileSync(path.join(subagentsDir, 'notes.txt'), '');
+
+      const files = await collectSubagentFiles(projectDir);
+      assert.strictEqual(files.length, 1);
+      assert.strictEqual(files[0].sid, 'parent-sess');
+      assert.ok(files[0].file.endsWith(path.join('subagents', 'agent-abc.jsonl')));
+      assert.ok(files[0].metaPath.endsWith(path.join('subagents', 'agent-abc.meta.json')));
+    });
+
+    it('scanAndImport skips a subagent turn whose sessionId is not its parent directory', async () => {
+      const projectDir = path.join(importDir, 'mismatch-project');
+      const subagentsDir = path.join(projectDir, 'owner-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-stray.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T11:00:00.000Z',
+          extra: { sessionId: 'someone-else', agentId: 'stray', cwd: '/tmp/mismatch-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'the parent is the directory; a foreign sessionId is not attributed');
+      assert.ok(!readIndexLines().some(l => l.sessionId === 'someone-else'));
+    });
+
+    it('scanAndImport imports subagent turns alongside the parent session', async () => {
+      const projectDir = path.join(importDir, 'full-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'parent-sess.jsonl'), [
+        makeUser('parent turn'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:00.000Z',
+          extra: { sessionId: 'parent-sess', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.meta.json'), JSON.stringify({
+        agentType: 'general-purpose', toolUseId: 'toolu_01DJM',
+      }));
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'sub1', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      // A second subagent with missing/unreadable .meta.json must still import,
+      // with no agentKey and no subagentToolUseId (A-1.1).
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub2.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:06.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'sub2', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 3);
+
+      const lines = readIndexLines();
+      const sub1 = lines.find(l => l.subagentId === 'sub1');
+      const sub2 = lines.find(l => l.subagentId === 'sub2');
+      assert.ok(sub1, 'subagent with meta.json is imported');
+      assert.strictEqual(sub1.isSubagent, true);
+      assert.strictEqual(sub1.sessionId, 'parent-sess');
+      assert.strictEqual(sub1.subagentToolUseId, 'toolu_01DJM');
+      assert.strictEqual(sub1.agentKey, 'general-purpose');
+      assert.strictEqual(sub1.agentLabel, 'General Purpose');
+
+      assert.ok(sub2, 'subagent with missing meta.json is still imported');
+      assert.strictEqual(sub2.isSubagent, true);
+      assert.strictEqual(sub2.agentKey, null);
+      assert.ok(!('subagentToolUseId' in sub2), 'null subagentToolUseId is omitted (OMIT_IF_NULL)');
+    });
+
+    it('#A-1.2 scanAndImportTranscript also imports the parent transcript\'s subagent files', async () => {
+      const projectDir = path.join(importDir, 'targeted-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const sid = 'targeted-sess';
+      const parentFile = path.join(projectDir, `${sid}.jsonl`);
+      fs.writeFileSync(parentFile, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:40:00.000Z',
+          extra: { sessionId: sid, cwd: '/tmp/targeted-project' },
+        }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, sid, 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.meta.json'), JSON.stringify({
+        agentType: 'general-purpose', toolUseId: 'toolu_sub1',
+      }));
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:40:05.000Z',
+          extra: { sessionId: sid, agentId: 'sub1', cwd: '/tmp/targeted-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImportTranscript({
+        file: parentFile, provider: 'claude', sessionId: sid, cwd: '/tmp/targeted-project',
+      });
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'parent turn + subagent turn both imported');
+
+      const lines = readIndexLines().filter(l => l.sessionId === sid);
+      const sub = lines.find(l => l.isSubagent);
+      assert.ok(sub, 'subagent entry reached the index via the targeted import');
+      assert.strictEqual(sub.subagentId, 'sub1');
+      assert.strictEqual(sub.subagentToolUseId, 'toolu_sub1');
+      assert.strictEqual(sub.agentKey, 'general-purpose');
     });
   });
 

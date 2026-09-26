@@ -21,6 +21,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
     'ctxBeta','parentSessionId','compacted','contextUsageKnown',
     'imported1mCostState','imported1mSettings',
     'accountEmail','accountDomain',
+    'subagentId','subagentToolUseId',
   ]);
 });
 

@@ -10,6 +10,8 @@ const { broadcastRaw } = require('./sse-broadcast');
 const { buildIndexLine } = require('./entry');
 const sessionIdx = require('./session-index');
 const helpers = require('./helpers');
+// S-1: reuse the proxy path's agentKey → label table instead of duplicating it.
+const { KNOWN_AGENTS } = require('./system-prompt');
 
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const CODEX_CONTEXT_WINDOW = 400000;
@@ -220,6 +222,53 @@ async function collectJsonlFiles(dir) {
   return results;
 }
 
+// S-1: Claude Code writes Task-tool subagent transcripts under
+// `<projectDir>/<sid>/subagents/agent-<agentId>.jsonl` (+ a sidecar
+// `.meta.json`), a second directory level `collectJsonlFiles` never visits.
+// Kept separate (A-1.3) rather than folded into `collectJsonlFiles` so that
+// function's return shape stays unchanged for its existing callers.
+async function collectSubagentFiles(projectDir) {
+  const results = [];
+  let sids;
+  try { sids = await fs.promises.readdir(projectDir); } catch { return results; }
+  for (const sid of sids) {
+    const subagentsDir = path.join(projectDir, sid, 'subagents');
+    let files;
+    try { files = await fs.promises.readdir(subagentsDir); } catch { continue; }
+    for (const file of files) {
+      if (!file.startsWith('agent-') || !file.endsWith('.jsonl')) continue;
+      results.push({
+        file: path.join(subagentsDir, file),
+        metaPath: path.join(subagentsDir, `${file.slice(0, -'.jsonl'.length)}.meta.json`),
+        sid,
+      });
+    }
+  }
+  return results;
+}
+
+// Missing/unreadable meta → still import, just with no agentKey/toolUseId (A-1.1).
+function readSubagentMeta(metaPath) {
+  try {
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    return {
+      agentType: typeof meta.agentType === 'string' ? meta.agentType : null,
+      toolUseId: typeof meta.toolUseId === 'string' ? meta.toolUseId : null,
+    };
+  } catch {
+    return { agentType: null, toolUseId: null };
+  }
+}
+
+// agentLabel is only set when the proxy path would assign the SAME label for
+// this key (A-1.1) — otherwise it stays unset rather than inventing a label
+// the live classifier never uses.
+function labelForAgentKey(key) {
+  if (!key) return null;
+  const known = KNOWN_AGENTS.find(a => a.key === key);
+  return known ? known.label : null;
+}
+
 // Codex sessions live nested under sessions/YYYY/MM/DD/*.jsonl, unlike
 // Claude's flat projects/<slug>/*.jsonl — needs a recursive walk.
 async function collectJsonlFilesRecursive(dir, results = []) {
@@ -275,7 +324,10 @@ function attachImported1mFacts(entries, costStateModels, settingsModels) {
 }
 
 async function parseSessionFile(filePath, projectSlug, opts = {}) {
-  const sessionId = path.basename(filePath, '.jsonl');
+  // S-1: a subagent transcript's filename is `agent-<agentId>`, not the parent
+  // session id — derive sessionId from the transcript line's own `sessionId`
+  // instead (verified present on every line).
+  let sessionId = opts.subagent ? null : path.basename(filePath, '.jsonl');
   let lastUserText = null;
   let cwd = null;
   // #500: tool_result blocks from the most recent user line, carried to next assistant
@@ -296,6 +348,7 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
     try { obj = JSON.parse(line); } catch { continue; }
 
     if (obj.cwd && !cwd) cwd = obj.cwd;
+    if (opts.subagent && typeof obj.sessionId === 'string' && obj.sessionId) sessionId = obj.sessionId;
 
     // `cost-state` arrives late and is often after every assistant record, so
     // collect its positive declaration across the complete transcript then
@@ -397,7 +450,9 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
       importSource: 'claude-code',
       sessionInferred: false,
       provider: 'anthropic',
-      cwd: obj.cwd || cwd || slugToProject(projectSlug),
+      // S-1: a subagent transcript's own cwd (rare) wins, then the parent
+      // session's cwd, before falling back to the slug-derived approximation.
+      cwd: obj.cwd || cwd || opts.parentCwd || slugToProject(projectSlug),
       contextUsageKnown: helpers.hasContextUsage(usage),
       usage: {
         input_tokens: usage.input_tokens || 0,
@@ -405,6 +460,13 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
         cache_read_input_tokens: usage.cache_read_input_tokens || 0,
         cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
       },
+      ...(opts.subagent ? {
+        isSubagent: true,
+        subagentId: obj.agentId || null,
+        subagentToolUseId: opts.subagentToolUseId || null,
+        agentKey: opts.agentKey || null,
+        ...(opts.agentLabel ? { agentLabel: opts.agentLabel } : {}),
+      } : {}),
     };
     byResponseId.set(dedupKey, entry);
     pendingToolResults = [];
@@ -602,9 +664,32 @@ async function scanAndImport() {
       if (!stat.isDirectory()) continue;
 
       const jsonlFiles = await collectJsonlFiles(projectPath);
+      // S-1: remember each parent session's cwd so a subagent transcript that
+      // lacks its own `obj.cwd` can fall back to it (A-1.1).
+      const parentCwdBySid = new Map();
       for (const filePath of jsonlFiles) {
         const entries = await parseSessionFile(filePath, slug, { settingsModels });
         for (const entry of entries) {
+          if (entry.cwd && !parentCwdBySid.has(entry.sessionId)) parentCwdBySid.set(entry.sessionId, entry.cwd);
+          if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
+        }
+      }
+
+      const subagentFiles = await collectSubagentFiles(projectPath);
+      for (const { file, metaPath, sid } of subagentFiles) {
+        const meta = readSubagentMeta(metaPath);
+        const entries = await parseSessionFile(file, slug, {
+          settingsModels,
+          subagent: true,
+          agentKey: meta.agentType,
+          agentLabel: labelForAgentKey(meta.agentType),
+          subagentToolUseId: meta.toolUseId,
+          parentCwd: parentCwdBySid.get(sid) || null,
+        });
+        for (const entry of entries) {
+          // The parent is the directory the file lives under; a line claiming
+          // another session is not attributed there (targeted import throws).
+          if (entry.sessionId !== sid) { skipped++; continue; }
           if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
         }
       }
@@ -695,9 +780,41 @@ async function scanAndImportTranscript(target = {}) {
   const importHome = provider === 'claude'
     ? roots.find(root => pathInside(file, [root]) === file)
     : null;
-  const entries = provider === 'claude'
-    ? await parseSessionFile(file, path.basename(path.dirname(file)), { settingsModels: oneMillionSettingsModels(importHome) })
+  const settingsModels = provider === 'claude' ? oneMillionSettingsModels(importHome) : null;
+  let entries = provider === 'claude'
+    ? await parseSessionFile(file, path.basename(path.dirname(file)), { settingsModels })
     : await parseCodexSessionFile(file);
+
+  // S-1/A-1.2: a targeted import of a parent transcript also imports its
+  // Task-tool subagent transcripts (`<sid>/subagents/agent-*.jsonl`), so a
+  // targeted repair doesn't miss the subagent turns that make up a large
+  // share of a session's real cost. Each subagent file must independently
+  // pass pathInside; a parsed subagent entry that fails the sessionId/cwd
+  // identity checks below is rejected exactly like a bad parent transcript —
+  // no separate relaxation for subagents (A-1.2).
+  if (provider === 'claude') {
+    const parentCwd = entries.find(entry => entry.cwd)?.cwd || null;
+    const projectDir = path.dirname(file);
+    const subagentFiles = await collectSubagentFiles(projectDir);
+    for (const { file: subFile, metaPath, sid } of subagentFiles) {
+      if (sid !== target.sessionId) continue;
+      const resolvedSub = pathInside(subFile, roots);
+      if (!resolvedSub || path.extname(resolvedSub) !== '.jsonl') {
+        throw new Error('transcript is outside the provider import roots');
+      }
+      const meta = readSubagentMeta(metaPath);
+      const subEntries = await parseSessionFile(resolvedSub, path.basename(projectDir), {
+        settingsModels,
+        subagent: true,
+        agentKey: meta.agentType,
+        agentLabel: labelForAgentKey(meta.agentType),
+        subagentToolUseId: meta.toolUseId,
+        parentCwd,
+      });
+      entries = entries.concat(subEntries);
+    }
+  }
+
   if (entries.some(entry => entry.sessionId !== target.sessionId)) {
     throw new Error('transcript session identity conflict');
   }
@@ -800,6 +917,7 @@ module.exports = {
   scanAndImportTranscript,
   parseSessionFile,
   parseCodexSessionFile,
+  collectSubagentFiles,
   discoverHomes,
   discoverCodexHomes,
   slugToProject,
