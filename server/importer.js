@@ -23,7 +23,10 @@ const { calculateCostSimple } = require('./default-rates');
 function tsToId(timestamp) {
   const d = new Date(timestamp);
   if (isNaN(d.getTime())) return null;
-  return d.toISOString().replace(/[:.]/g, '-').slice(0, -2);
+  // S-2/A-2.3: keep all 3 ms digits (drop only the trailing `Z`), not 2 —
+  // the 10ms-precision id made same-millisecond collisions common once
+  // subagent turns (S-1) interleave with the main session's own turns.
+  return d.toISOString().replace(/[:.]/g, '-').slice(0, -1);
 }
 
 function slugToProject(slug) {
@@ -600,9 +603,91 @@ async function parseCodexSessionFile(filePath) {
 
 const _pendingIndexWrites = [];
 
-function pushImportedEntry(entry, existingIds, opts = {}) {
-  if (existingIds.has(entry.id)) return false;
-  existingIds.add(entry.id);
+// S-2/A-2.1/A-2.2: the dedup context keeps two things apart that look similar
+// but answer different questions. `idsBySession`/`importedResponseIds` are the
+// PRIOR state (what a previous scan already wrote) — frozen once the scan
+// starts pushing entries, via `seedDedupCtx`. `existingIds` is the id
+// namespace as it grows THROUGH this scan, used only to detect a millisecond
+// collision so it can be suffixed (A-2.2). Conflating the two would make a
+// same-millisecond sibling processed later in the same scan (e.g. a main turn
+// and its subagent, S-1) look like an already-imported copy of the first one
+// the moment the first one is folded in.
+function createDedupCtx() {
+  return {
+    existingIds: new Set(),
+    importedResponseIds: new Set(),
+    idsBySession: new Map(),
+    responseIdById: new Map(),
+  };
+}
+
+// Seeds the frozen "prior state" half of the context from an existing record
+// (a live store.entries entry or an index.ndjson line). Only ever called
+// before a scan starts pushing new entries — see createDedupCtx.
+function seedDedupCtx(ctx, rec) {
+  if (!rec || !rec.id) return;
+  ctx.existingIds.add(rec.id);
+  if (rec.sessionId) {
+    let ids = ctx.idsBySession.get(rec.sessionId);
+    if (!ids) { ids = new Set(); ctx.idsBySession.set(rec.sessionId, ids); }
+    ids.add(rec.id);
+  }
+  // A-2.1: a proxy (non-imported) line sharing a responseId must never
+  // suppress the imported copy — ADR 0012's read-time merge already
+  // reconciles those at read time.
+  if (rec.responseId && rec.imported === true) ctx.importedResponseIds.add(rec.responseId);
+  if (rec.responseId) ctx.responseIdById.set(rec.id, rec.responseId);
+}
+
+// A-2.1: an imported entry is already present when a PRIOR import already
+// logged this exact logical turn. Claude turns carry `responseId`
+// (Anthropic's own message id — stable across the id-format change and any
+// A-2.2 suffix below). Otherwise the same session holding the entry's new
+// full-ms id or legacy 10ms id is the same turn, unless that line carries a
+// different responseId: rows imported before responseId existed (#333) have
+// none, and Codex turns never do.
+function isAlreadyImported(entry, ctx) {
+  if (entry.responseId && ctx.importedResponseIds.has(entry.responseId)) return true;
+  const sessionIds = ctx.idsBySession.get(entry.sessionId);
+  if (!sessionIds) return false;
+  const sameTurn = id => {
+    const rid = ctx.responseIdById.get(id);
+    return !rid || !entry.responseId || rid === entry.responseId;
+  };
+  for (const id of [entry.id, entry.id.slice(0, -1)]) {
+    if (sessionIds.has(id) && sameTurn(id)) return true;
+  }
+  if (entry.responseId) return false;
+  // A prior scan may have written this turn under an A-2.2 suffix because
+  // another session held the bare id; without this, every rescan re-imports it.
+  const prefix = `${entry.id}-`;
+  for (const id of sessionIds) {
+    if (id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length))) return true;
+  }
+  return false;
+}
+
+function pushImportedEntry(entry, ctx, opts = {}) {
+  if (isAlreadyImported(entry, ctx)) return false;
+
+  let id = entry.id;
+  if (ctx.existingIds.has(id)) {
+    // A-2.2: a genuinely different turn sharing this millisecond gets a
+    // deterministic suffix — never silently dropped, and (in
+    // scanAndImportTranscript) never thrown as a collision error either.
+    let suffixed = null;
+    for (let i = 1; i <= 99; i++) {
+      const candidate = `${entry.id}-${i}`;
+      if (!ctx.existingIds.has(candidate)) { suffixed = candidate; break; }
+    }
+    if (!suffixed) return false; // 99 same-millisecond collisions exhausted
+    id = suffixed;
+  }
+  entry.id = id;
+  ctx.existingIds.add(id);
+  // Deliberately NOT folded into idsBySession/importedResponseIds — see
+  // createDedupCtx: those stay frozen to what existed before this scan.
+
   // Write to index.ndjson + session index only — skip store.entries and SSE
   // broadcast to avoid 158K memory spike + client SSE flood. Imported sessions
   // are cold; their entries load on-demand via /_api/session/:sid/entries.
@@ -629,18 +714,18 @@ async function scanAndImport() {
   // Durable dedup: imported entries never enter store.entries, so rescans and
   // restarts must dedup against index.ndjson itself — memory alone re-imports
   // everything (unbounded index growth + doubled session-index counts).
-  // "id" is the first INDEX_FIELDS key, so the first match is the entry id.
-  const existingIds = new Set(store.entries.map(e => e.id));
+  const ctx = createDedupCtx();
+  store.entries.forEach(e => seedDedupCtx(ctx, e));
   try {
     // #345: stream — the index can exceed Node's ~512MB single-string limit,
     // where readIndex() throws ERR_STRING_TOO_LONG and the import dedup breaks
     // (re-importing everything, unbounded index growth + doubled counts). One
-    // parse per line builds existingIds and the metas for dedup seeding.
+    // parse per line seeds the dedup context and collects metas for #333.
     const metas = [];
     for await (const line of config.storage.readIndexLines()) {
       let m;
       try { m = JSON.parse(line); } catch { continue; }
-      if (m && m.id) existingIds.add(m.id);
+      seedDedupCtx(ctx, m);
       metas.push(m);
     }
     // #333: seed dedup state (cost + count) from responseIds already logged by a
@@ -671,7 +756,7 @@ async function scanAndImport() {
         const entries = await parseSessionFile(filePath, slug, { settingsModels });
         for (const entry of entries) {
           if (entry.cwd && !parentCwdBySid.has(entry.sessionId)) parentCwdBySid.set(entry.sessionId, entry.cwd);
-          if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
+          if (pushImportedEntry(entry, ctx)) imported++; else skipped++;
         }
       }
 
@@ -690,7 +775,7 @@ async function scanAndImport() {
           // The parent is the directory the file lives under; a line claiming
           // another session is not attributed there (targeted import throws).
           if (entry.sessionId !== sid) { skipped++; continue; }
-          if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
+          if (pushImportedEntry(entry, ctx)) imported++; else skipped++;
         }
       }
     }
@@ -702,7 +787,7 @@ async function scanAndImport() {
     for (const filePath of jsonlFiles) {
       const entries = await parseCodexSessionFile(filePath);
       for (const entry of entries) {
-        if (pushImportedEntry(entry, existingIds)) imported++; else skipped++;
+        if (pushImportedEntry(entry, ctx)) imported++; else skipped++;
       }
     }
   }
@@ -748,21 +833,14 @@ async function scanAndImportTranscript(target = {}) {
     throw new Error('transcript session identity conflict');
   }
 
-  const existingIds = new Set();
-  const ownersById = new Map();
-  const rememberOwner = entry => {
-    if (!entry?.id) return;
-    existingIds.add(entry.id);
-    if (!ownersById.has(entry.id)) ownersById.set(entry.id, new Set());
-    if (entry.sessionId) ownersById.get(entry.id).add(entry.sessionId);
-  };
-  store.entries.forEach(rememberOwner);
+  const ctx = createDedupCtx();
+  store.entries.forEach(e => seedDedupCtx(ctx, e));
   const metas = [];
   let exactEvidence = null;
   for await (const line of config.storage.readIndexLines()) {
     let meta;
     try { meta = JSON.parse(line); } catch { continue; }
-    rememberOwner(meta);
+    seedDedupCtx(ctx, meta);
     metas.push(meta);
     if (meta?.sessionId !== target.sessionId) continue;
     if (meta.cwd && path.resolve(meta.cwd) !== path.resolve(target.cwd)) {
@@ -827,14 +905,13 @@ async function scanAndImportTranscript(target = {}) {
   let skipped = 0;
   const appendedEntries = [];
   for (const entry of entries) {
-    if (existingIds.has(entry.id)) {
-      const owners = ownersById.get(entry.id) || new Set();
-      if (!owners.has(entry.sessionId)) throw new Error('transcript entry id identity collision');
-      skipped += 1;
-      continue;
-    }
-    if (pushImportedEntry(entry, existingIds, { strict: true })) {
-      rememberOwner(entry);
+    // A-2.1/A-2.2: an id collision that IS this same logical turn (same
+    // responseId already imported, or — for Codex's no-responseId turns —
+    // the same session already holding this id or its legacy id) counts as
+    // skipped. A collision with a genuinely different turn gets a
+    // deterministic suffix instead of the old `transcript entry id identity
+    // collision` throw — see pushImportedEntry.
+    if (pushImportedEntry(entry, ctx, { strict: true })) {
       appendedEntries.push(entry);
       imported += 1;
     } else {

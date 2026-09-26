@@ -116,8 +116,11 @@ describe('importer', () => {
   });
 
   describe('tsToId', () => {
-    it('converts ISO timestamp to ID format', () => {
-      assert.strictEqual(tsToId('2026-07-15T10:30:00.123Z'), '2026-07-15T10-30-00-12');
+    // S-2/A-2.3: full 3-digit ms precision, not the old 10ms-rounded 2-digit
+    // form — the id format change this stage introduces (fail-on-old: the
+    // pre-S2 code returned '2026-07-15T10-30-00-12').
+    it('converts ISO timestamp to ID format with full millisecond precision', () => {
+      assert.strictEqual(tsToId('2026-07-15T10:30:00.123Z'), '2026-07-15T10-30-00-123');
     });
 
     it('returns null for invalid timestamps', () => {
@@ -576,6 +579,189 @@ describe('importer', () => {
       assert.strictEqual(sub.subagentId, 'sub1');
       assert.strictEqual(sub.subagentToolUseId, 'toolu_sub1');
       assert.strictEqual(sub.agentKey, 'general-purpose');
+    });
+  });
+
+  describe('S-2 import id precision and collisions', () => {
+    it('A-2.4(a): two different sessions with turns at the same millisecond each get a distinct id', async () => {
+      const ts = '2026-07-20T09:00:00.000Z';
+      const projA = path.join(importDir, '-tmp-collide-a');
+      const projB = path.join(importDir, '-tmp-collide-b');
+      fs.mkdirSync(projA, { recursive: true });
+      fs.mkdirSync(projB, { recursive: true });
+      fs.writeFileSync(path.join(projA, 'sess-a.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_a', extra: { sessionId: 'sess-a', cwd: '/tmp/collide-a' } }),
+      ].join('\n'));
+      fs.writeFileSync(path.join(projB, 'sess-b.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_b', extra: { sessionId: 'sess-b', cwd: '/tmp/collide-b' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'both same-millisecond turns import — no silent drop');
+
+      const lines = readIndexLines();
+      const a = lines.find(l => l.sessionId === 'sess-a');
+      const b = lines.find(l => l.sessionId === 'sess-b');
+      assert.ok(a && b);
+      assert.notStrictEqual(a.id, b.id, 'same-millisecond turns in different sessions get distinct ids');
+      assert.ok(a.id.startsWith('2026-07-20T09-00-00-000') && b.id.startsWith('2026-07-20T09-00-00-000'));
+      assert.ok(a.id === `${b.id}-1` || b.id === `${a.id}-1`,
+        'the turn processed second gets a deterministic -N suffix, not a thrown collision error');
+    });
+
+    it('A-2.4(b): a main turn and its subagent turn at the same millisecond both import with distinct ids', async () => {
+      const ts = '2026-07-20T09:05:00.000Z';
+      const projectDir = path.join(importDir, '-tmp-collide-main-sub');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'parent-collide.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_main', extra: { sessionId: 'parent-collide', cwd: '/tmp/collide-main-sub' } }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, 'parent-collide', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: ts, msgId: 'msg_sub',
+          extra: { sessionId: 'parent-collide', agentId: 'sub1', cwd: '/tmp/collide-main-sub' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'main + subagent turns both import despite the shared millisecond');
+
+      const lines = readIndexLines().filter(l => l.sessionId === 'parent-collide');
+      assert.strictEqual(lines.length, 2);
+      const main = lines.find(l => !l.isSubagent);
+      const sub = lines.find(l => l.isSubagent);
+      assert.ok(main && sub);
+      assert.notStrictEqual(main.id, sub.id, "the subagent turn does not overwrite the main turn's id");
+      assert.ok(sub.id === `${main.id}-1` || main.id === `${sub.id}-1`);
+    });
+
+    it('A-2.4(c): rescanning an index that holds legacy 10ms ids (Claude with responseId, Codex without) imports nothing new', async () => {
+      const claudeTs = '2026-07-20T09:10:00.000Z';
+      const codexTs = '2026-07-20T09:15:00.000Z';
+      const claudeLegacyId = tsToId(claudeTs).slice(0, -1);
+      const codexLegacyId = tsToId(codexTs).slice(0, -1);
+
+      // Simulate a pre-S2 import: legacy 10ms ids already on disk, one Claude
+      // line (carries responseId), one Codex line (never does).
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: claudeLegacyId, sessionId: 'legacy-claude-sess', responseId: 'msg_legacy_claude',
+        imported: true, importSource: 'claude-code',
+      }) + '\n');
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: codexLegacyId, sessionId: 'legacy-codex-sess', imported: true, importSource: 'codex',
+      }) + '\n');
+
+      const claudeProjectDir = path.join(importDir, '-tmp-legacy-claude');
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeProjectDir, 'legacy-claude-sess.jsonl'), [
+        makeAssistant({
+          timestamp: claudeTs, msgId: 'msg_legacy_claude',
+          extra: { sessionId: 'legacy-claude-sess', cwd: '/tmp/legacy-claude' },
+        }),
+      ].join('\n'));
+
+      const codexSessDir = path.join(codexImportDir, '2026', '07', '20');
+      fs.mkdirSync(codexSessDir, { recursive: true });
+      fs.writeFileSync(path.join(codexSessDir, 'rollout-legacy.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'legacy-codex-sess', cwd: '/tmp/legacy-codex', timestamp: codexTs }),
+        makeCodexTurnContext({ timestamp: codexTs, cwd: '/tmp/legacy-codex', model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: codexTs }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'both turns are recognized as already imported under the legacy id');
+      assert.strictEqual(result.skipped, 2);
+      assert.strictEqual(readIndexLines().length, 2, 'no new lines are appended for either provider');
+    });
+
+    it('A-2.4(d): rescanning after a new-format import (including a suffixed entry) imports nothing new', async () => {
+      const ts = '2026-07-20T09:20:00.000Z';
+      const projA = path.join(importDir, '-tmp-rescan-collide-a');
+      const projB = path.join(importDir, '-tmp-rescan-collide-b');
+      fs.mkdirSync(projA, { recursive: true });
+      fs.mkdirSync(projB, { recursive: true });
+      fs.writeFileSync(path.join(projA, 'sess-a.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_ra', extra: { sessionId: 'rescan-a', cwd: '/tmp/rescan-a' } }),
+      ].join('\n'));
+      fs.writeFileSync(path.join(projB, 'sess-b.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_rb', extra: { sessionId: 'rescan-b', cwd: '/tmp/rescan-b' } }),
+      ].join('\n'));
+
+      const first = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(first.imported, 2);
+      const firstLines = readIndexLines();
+      const suffixed = firstLines.find(l => l.id.endsWith('-1'));
+      assert.ok(suffixed, 'the fixture actually produced a suffixed entry (A-2.2)');
+
+      const second = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(second.imported, 0, 'the suffixed entry is recognized by responseId, not by its (changed) id');
+      assert.strictEqual(second.skipped, 2);
+      assert.strictEqual(readIndexLines().length, 2, 'index.ndjson is unchanged after the rescan');
+    });
+
+    it('A-2.2: an id already held by the SAME turn (same responseId, not imported) is skipped, not suffixed', async () => {
+      const ts = '2026-07-20T09:30:00.000Z';
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: tsToId(ts), sessionId: 'same-turn-sess', responseId: 'msg_same_turn', imported: false,
+      }) + '\n');
+      const proj = path.join(importDir, '-tmp-same-turn');
+      fs.mkdirSync(proj, { recursive: true });
+      fs.writeFileSync(path.join(proj, 'same-turn-sess.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_same_turn', extra: { sessionId: 'same-turn-sess', cwd: '/tmp/same-turn' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'the id is occupied by this very turn, so there is nothing to add');
+      assert.strictEqual(readIndexLines().length, 1);
+    });
+
+    it('A-2.1: a legacy 10ms row written before responseId existed is recognized as the same Claude turn', async () => {
+      const ts = '2026-07-20T09:35:00.000Z';
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: tsToId(ts).slice(0, -1), sessionId: 'pre-rid-sess', imported: true, importSource: 'claude-code',
+      }) + '\n');
+      const proj = path.join(importDir, '-tmp-pre-rid');
+      fs.mkdirSync(proj, { recursive: true });
+      fs.writeFileSync(path.join(proj, 'pre-rid-sess.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_pre_rid', extra: { sessionId: 'pre-rid-sess', cwd: '/tmp/pre-rid' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'an old import of the same turn must not be duplicated');
+      assert.strictEqual(readIndexLines().length, 1);
+    });
+
+    it('A-2.4(e): a suffixed Codex turn (no responseId) is not re-imported on rescan', async () => {
+      const ts = '2026-07-20T09:25:00.000Z';
+      const codexSessDir = path.join(codexImportDir, '2026', '07', '21');
+      fs.mkdirSync(codexSessDir, { recursive: true });
+      for (const sid of ['codex-collide-a', 'codex-collide-b']) {
+        fs.writeFileSync(path.join(codexSessDir, `rollout-${sid}.jsonl`), [
+          makeCodexSessionMeta({ sessionId: sid, cwd: `/tmp/${sid}`, timestamp: ts }),
+          makeCodexTurnContext({ timestamp: ts, cwd: `/tmp/${sid}`, model: 'gpt-5.5' }),
+          makeCodexTokenCount({ timestamp: ts }),
+        ].join('\n'));
+      }
+
+      const first = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(first.imported, 2);
+      assert.ok(readIndexLines().some(l => l.id.endsWith('-1')), 'the fixture produced a suffixed Codex entry');
+
+      const second = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(second.imported, 0, 'the suffixed Codex turn is recognized under its own session');
+      assert.strictEqual(readIndexLines().length, 2);
     });
   });
 
