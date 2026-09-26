@@ -92,8 +92,13 @@ function _contextUsageValue(u) {
 // its own req/res references; only complementary fields are pulled from `other`.
 function _foldEntry(canonical, other) {
   // Identity + context + labels: a non-empty value fills a canonical gap.
+  // S-1: subagentId/subagentToolUseId (transcript-derived subagent identity)
+  // join this list the same way as agentKey/coreHash/convId.
+  // S-6: effort/thinkingTokens/turnDurationMs (reasoning effort, imported
+  // thinking-token count, imported turn duration) join the same way.
   for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
-    'title', 'thinkingDuration', 'duplicateToolCalls']) {
+    'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId',
+    'effort', 'thinkingTokens', 'turnDurationMs']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
       canonical[k] = other[k];
     }
@@ -442,20 +447,49 @@ function extractCwd(req) {
     if (m) return m[1].trim();
     return null;
   }
-  // context_management format: system content in messages[0].content[] blocks.
-  // Defense-in-depth for project attribution (sessionMeta.cwd).
-  if (req?.context_management && Array.isArray(req?.messages?.[0]?.content)) {
-    for (const block of req.messages[0].content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        const m = block.text.match(/Primary working directory: (.+)/);
-        if (m) return m[1].trim();
-      }
+  // context_management format: system content lives in messages[0] (any role —
+  // Claude Code 2.1.283+ makes it a 'user' system-prompt block) and in dedicated
+  // role:'system' messages (where 2.1.283+ moved the env/cwd block). A message's
+  // content can be a plain string or an array of text blocks — observed on real
+  // 2.1.283 traffic, later same-session role:'system' messages fold to a string
+  // while the first one is still a block array. Never scan other user messages:
+  // user text can quote "Primary working directory:" and would misattribute the
+  // project.
+  if (req?.context_management && Array.isArray(req?.messages)) {
+    const candidates = [];
+    if (req.messages[0]) candidates.push(req.messages[0]);
+    for (let i = 1; i < req.messages.length; i++) {
+      if (req.messages[i]?.role === 'system') candidates.push(req.messages[i]);
     }
-    for (const block of req.messages[0].content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        const cm = block.text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
-        if (cm) return cm[1].trim();
+    const msgText = (msg) => {
+      // Only system-role messages fold to a string; a plain-string messages[0]
+      // is user text (e.g. a paste) and is not trusted to name the project.
+      if (typeof msg?.content === 'string') return msg.role === 'system' ? msg.content : null;
+      if (Array.isArray(msg?.content)) {
+        return msg.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
       }
+      return null;
+    };
+    for (const msg of candidates) {
+      const text = msgText(msg);
+      if (!text) continue;
+      const m = text.match(/Primary working directory: (.+)/);
+      if (m) return m[1].trim();
+    }
+    for (const msg of candidates) {
+      const text = msgText(msg);
+      if (!text) continue;
+      const cm = text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
+      if (cm) return cm[1].trim();
+    }
+  }
+  // safeguards: interactive-session-only fallback (last resort), present when
+  // neither the legacy system block nor the context_management scan found an
+  // env line — e.g. a delta body whose messages[0]/system-role turn aged out.
+  if (Array.isArray(req?.safeguards)) {
+    for (const sg of req.safeguards) {
+      const lc = sg?.classifier_context?.live_cwd;
+      if (typeof lc === 'string' && lc) return lc;
     }
   }
   return null;

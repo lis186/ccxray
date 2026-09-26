@@ -16,8 +16,8 @@ const store = require('../server/store');
 const config = require('../server/config');
 const sessionIdx = require('../server/session-index');
 const {
-  scanAndImport, parseSessionFile, parseCodexSessionFile,
-  discoverHomes, discoverCodexHomes, slugToProject, tsToId,
+  scanAndImport, scanAndImportTranscript, parseSessionFile, parseCodexSessionFile,
+  collectSubagentFiles, discoverHomes, discoverCodexHomes, slugToProject, tsToId,
 } = require('../server/importer');
 // The importer now derives maxContext, so these assertions depend on the LiteLLM
 // capability table. It is read from a package-relative pricing-cache.json, which
@@ -116,8 +116,11 @@ describe('importer', () => {
   });
 
   describe('tsToId', () => {
-    it('converts ISO timestamp to ID format', () => {
-      assert.strictEqual(tsToId('2026-07-15T10:30:00.123Z'), '2026-07-15T10-30-00-12');
+    // S-2/A-2.3: full 3-digit ms precision, not the old 10ms-rounded 2-digit
+    // form — the id format change this stage introduces (fail-on-old: the
+    // pre-S2 code returned '2026-07-15T10-30-00-12').
+    it('converts ISO timestamp to ID format with full millisecond precision', () => {
+      assert.strictEqual(tsToId('2026-07-15T10:30:00.123Z'), '2026-07-15T10-30-00-123');
     });
 
     it('returns null for invalid timestamps', () => {
@@ -402,6 +405,480 @@ describe('importer', () => {
     });
   });
 
+  // S-6/A-6.2: effort, thinkingTokens, turnDurationMs extraction from Claude
+  // Code transcripts.
+  describe('S-6 effort / thinking tokens / turn duration import', () => {
+    it('effort prefers non-empty perTurnEffort over the session-level effort', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-per-turn.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { effort: 'medium', perTurnEffort: 'low' },
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, 'low');
+    });
+
+    it('effort falls back to the session-level effort when perTurnEffort is null', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-fallback.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { effort: 'medium', perTurnEffort: null },
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, 'medium');
+    });
+
+    it('effort is null when neither perTurnEffort nor effort is a non-empty string', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-absent.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, null);
+    });
+
+    it('thinkingTokens is read from message.usage.output_tokens_details.thinking_tokens', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-thinking-tokens.jsonl');
+      const line = JSON.parse(makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }));
+      line.message.usage.output_tokens_details = { thinking_tokens: 17 };
+      fs.writeFileSync(file, [makeUser('hi'), JSON.stringify(line)].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].thinkingTokens, 17);
+    });
+
+    it('thinkingTokens is null when output_tokens_details is absent', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-thinking-tokens-absent.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].thinkingTokens, null);
+    });
+
+    it('turnDurationMs attaches to the last assistant entry parsed before the turn_duration line, across two user turns', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-turn-duration.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('first?'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z', msgId: 'msg_01A' }),
+        makeLine('system', { subtype: 'turn_duration', durationMs: 9245, timestamp: '2026-07-15T10:30:06.000Z' }),
+        makeUser('second?'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:10.000Z', msgId: 'msg_01B' }),
+        makeLine('system', { subtype: 'turn_duration', durationMs: 6702, timestamp: '2026-07-15T10:30:11.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 2);
+      const first = entries.find(e => e.responseId === 'msg_01A');
+      const second = entries.find(e => e.responseId === 'msg_01B');
+      assert.strictEqual(first.turnDurationMs, 9245);
+      assert.strictEqual(second.turnDurationMs, 6702);
+    });
+
+    it('turnDurationMs stays null when no turn_duration line follows (a "-p" session shape)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-no-turn-duration.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnDurationMs, null);
+    });
+  });
+
+  // S-1: Claude Code Task-tool subagent transcripts live under
+  // `<slug>/<sid>/subagents/agent-<agentId>.jsonl` + a sidecar `.meta.json`,
+  // a directory shape `collectJsonlFiles` never descends into.
+  describe('S-1 subagent import', () => {
+    it('parseSessionFile with opts.subagent derives sessionId from the line, not the filename', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      const subagentsDir = path.join(sessionDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      const file = path.join(subagentsDir, 'agent-test123.jsonl');
+      fs.writeFileSync(file, [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:10.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'test123', cwd: '/tmp/test-project' },
+        }),
+      ].join('\n'));
+
+      // current code has no `opts.subagent` handling — this is fail-on-old
+      const entries = await parseSessionFile(file, 'test-project', {
+        subagent: true,
+        agentKey: 'general-purpose',
+        agentLabel: 'General Purpose',
+        subagentToolUseId: 'toolu_test',
+      });
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].isSubagent, true);
+      assert.strictEqual(entries[0].subagentId, 'test123');
+      assert.strictEqual(entries[0].subagentToolUseId, 'toolu_test');
+      assert.strictEqual(entries[0].agentKey, 'general-purpose');
+      assert.strictEqual(entries[0].agentLabel, 'General Purpose');
+      // Derived from the line's own sessionId, not `agent-test123` (the filename).
+      assert.strictEqual(entries[0].sessionId, 'parent-sess');
+    });
+
+    it('parseSessionFile falls back to opts.parentCwd when the subagent line has no cwd', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      const subagentsDir = path.join(sessionDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      const file = path.join(subagentsDir, 'agent-nocw.jsonl');
+      const line = JSON.parse(makeAssistant({
+        timestamp: '2026-07-15T10:30:10.000Z',
+        extra: { sessionId: 'parent-sess', agentId: 'nocw' },
+      }));
+      delete line.cwd;
+      fs.writeFileSync(file, JSON.stringify(line));
+
+      const entries = await parseSessionFile(file, 'test-project', {
+        subagent: true, parentCwd: '/tmp/parent-project',
+      });
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].cwd, '/tmp/parent-project');
+    });
+
+    it('collectSubagentFiles finds agent-*.jsonl under every <sid>/subagents/', async () => {
+      const projectDir = path.join(importDir, 'collect-project');
+      const subagentsDir = path.join(projectDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-abc.jsonl'), '');
+      fs.writeFileSync(path.join(subagentsDir, 'agent-abc.meta.json'), '{}');
+      // A non-agent-prefixed / non-jsonl file must not be picked up.
+      fs.writeFileSync(path.join(subagentsDir, 'notes.txt'), '');
+
+      const files = await collectSubagentFiles(projectDir);
+      assert.strictEqual(files.length, 1);
+      assert.strictEqual(files[0].sid, 'parent-sess');
+      assert.ok(files[0].file.endsWith(path.join('subagents', 'agent-abc.jsonl')));
+      assert.ok(files[0].metaPath.endsWith(path.join('subagents', 'agent-abc.meta.json')));
+    });
+
+    it('scanAndImport skips a subagent turn whose sessionId is not its parent directory', async () => {
+      const projectDir = path.join(importDir, 'mismatch-project');
+      const subagentsDir = path.join(projectDir, 'owner-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-stray.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T11:00:00.000Z',
+          extra: { sessionId: 'someone-else', agentId: 'stray', cwd: '/tmp/mismatch-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'the parent is the directory; a foreign sessionId is not attributed');
+      assert.ok(!readIndexLines().some(l => l.sessionId === 'someone-else'));
+    });
+
+    it('scanAndImport imports subagent turns alongside the parent session', async () => {
+      const projectDir = path.join(importDir, 'full-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'parent-sess.jsonl'), [
+        makeUser('parent turn'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:00.000Z',
+          extra: { sessionId: 'parent-sess', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, 'parent-sess', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.meta.json'), JSON.stringify({
+        agentType: 'general-purpose', toolUseId: 'toolu_01DJM',
+      }));
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'sub1', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      // A second subagent with missing/unreadable .meta.json must still import,
+      // with no agentKey and no subagentToolUseId (A-1.1).
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub2.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:06.000Z',
+          extra: { sessionId: 'parent-sess', agentId: 'sub2', cwd: '/tmp/full-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 3);
+
+      const lines = readIndexLines();
+      const sub1 = lines.find(l => l.subagentId === 'sub1');
+      const sub2 = lines.find(l => l.subagentId === 'sub2');
+      assert.ok(sub1, 'subagent with meta.json is imported');
+      assert.strictEqual(sub1.isSubagent, true);
+      assert.strictEqual(sub1.sessionId, 'parent-sess');
+      assert.strictEqual(sub1.subagentToolUseId, 'toolu_01DJM');
+      assert.strictEqual(sub1.agentKey, 'general-purpose');
+      assert.strictEqual(sub1.agentLabel, 'General Purpose');
+
+      assert.ok(sub2, 'subagent with missing meta.json is still imported');
+      assert.strictEqual(sub2.isSubagent, true);
+      assert.strictEqual(sub2.agentKey, null);
+      assert.ok(!('subagentToolUseId' in sub2), 'null subagentToolUseId is omitted (OMIT_IF_NULL)');
+    });
+
+    it('#A-1.2 scanAndImportTranscript also imports the parent transcript\'s subagent files', async () => {
+      const projectDir = path.join(importDir, 'targeted-project');
+      fs.mkdirSync(projectDir, { recursive: true });
+      const sid = 'targeted-sess';
+      const parentFile = path.join(projectDir, `${sid}.jsonl`);
+      fs.writeFileSync(parentFile, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:40:00.000Z',
+          extra: { sessionId: sid, cwd: '/tmp/targeted-project' },
+        }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, sid, 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.meta.json'), JSON.stringify({
+        agentType: 'general-purpose', toolUseId: 'toolu_sub1',
+      }));
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: '2026-07-15T10:40:05.000Z',
+          extra: { sessionId: sid, agentId: 'sub1', cwd: '/tmp/targeted-project' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImportTranscript({
+        file: parentFile, provider: 'claude', sessionId: sid, cwd: '/tmp/targeted-project',
+      });
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'parent turn + subagent turn both imported');
+
+      const lines = readIndexLines().filter(l => l.sessionId === sid);
+      const sub = lines.find(l => l.isSubagent);
+      assert.ok(sub, 'subagent entry reached the index via the targeted import');
+      assert.strictEqual(sub.subagentId, 'sub1');
+      assert.strictEqual(sub.subagentToolUseId, 'toolu_sub1');
+      assert.strictEqual(sub.agentKey, 'general-purpose');
+    });
+  });
+
+  describe('S-2 import id precision and collisions', () => {
+    it('A-2.4(a): two different sessions with turns at the same millisecond each get a distinct id', async () => {
+      const ts = '2026-07-20T09:00:00.000Z';
+      const projA = path.join(importDir, '-tmp-collide-a');
+      const projB = path.join(importDir, '-tmp-collide-b');
+      fs.mkdirSync(projA, { recursive: true });
+      fs.mkdirSync(projB, { recursive: true });
+      fs.writeFileSync(path.join(projA, 'sess-a.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_a', extra: { sessionId: 'sess-a', cwd: '/tmp/collide-a' } }),
+      ].join('\n'));
+      fs.writeFileSync(path.join(projB, 'sess-b.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_b', extra: { sessionId: 'sess-b', cwd: '/tmp/collide-b' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'both same-millisecond turns import — no silent drop');
+
+      const lines = readIndexLines();
+      const a = lines.find(l => l.sessionId === 'sess-a');
+      const b = lines.find(l => l.sessionId === 'sess-b');
+      assert.ok(a && b);
+      assert.notStrictEqual(a.id, b.id, 'same-millisecond turns in different sessions get distinct ids');
+      assert.ok(a.id.startsWith('2026-07-20T09-00-00-000') && b.id.startsWith('2026-07-20T09-00-00-000'));
+      assert.ok(a.id === `${b.id}-1` || b.id === `${a.id}-1`,
+        'the turn processed second gets a deterministic -N suffix, not a thrown collision error');
+    });
+
+    it('A-2.4(b): a main turn and its subagent turn at the same millisecond both import with distinct ids', async () => {
+      const ts = '2026-07-20T09:05:00.000Z';
+      const projectDir = path.join(importDir, '-tmp-collide-main-sub');
+      fs.mkdirSync(projectDir, { recursive: true });
+      fs.writeFileSync(path.join(projectDir, 'parent-collide.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_main', extra: { sessionId: 'parent-collide', cwd: '/tmp/collide-main-sub' } }),
+      ].join('\n'));
+
+      const subagentsDir = path.join(projectDir, 'parent-collide', 'subagents');
+      fs.mkdirSync(subagentsDir, { recursive: true });
+      fs.writeFileSync(path.join(subagentsDir, 'agent-sub1.jsonl'), [
+        makeAssistant({
+          timestamp: ts, msgId: 'msg_sub',
+          extra: { sessionId: 'parent-collide', agentId: 'sub1', cwd: '/tmp/collide-main-sub' },
+        }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 2, 'main + subagent turns both import despite the shared millisecond');
+
+      const lines = readIndexLines().filter(l => l.sessionId === 'parent-collide');
+      assert.strictEqual(lines.length, 2);
+      const main = lines.find(l => !l.isSubagent);
+      const sub = lines.find(l => l.isSubagent);
+      assert.ok(main && sub);
+      assert.notStrictEqual(main.id, sub.id, "the subagent turn does not overwrite the main turn's id");
+      assert.ok(sub.id === `${main.id}-1` || main.id === `${sub.id}-1`);
+    });
+
+    it('A-2.4(c): rescanning an index that holds legacy 10ms ids (Claude with responseId, Codex without) imports nothing new', async () => {
+      const claudeTs = '2026-07-20T09:10:00.000Z';
+      const codexTs = '2026-07-20T09:15:00.000Z';
+      const claudeLegacyId = tsToId(claudeTs).slice(0, -1);
+      const codexLegacyId = tsToId(codexTs).slice(0, -1);
+
+      // Simulate a pre-S2 import: legacy 10ms ids already on disk, one Claude
+      // line (carries responseId), one Codex line (never does).
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: claudeLegacyId, sessionId: 'legacy-claude-sess', responseId: 'msg_legacy_claude',
+        imported: true, importSource: 'claude-code',
+      }) + '\n');
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: codexLegacyId, sessionId: 'legacy-codex-sess', imported: true, importSource: 'codex',
+      }) + '\n');
+
+      const claudeProjectDir = path.join(importDir, '-tmp-legacy-claude');
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(path.join(claudeProjectDir, 'legacy-claude-sess.jsonl'), [
+        makeAssistant({
+          timestamp: claudeTs, msgId: 'msg_legacy_claude',
+          extra: { sessionId: 'legacy-claude-sess', cwd: '/tmp/legacy-claude' },
+        }),
+      ].join('\n'));
+
+      const codexSessDir = path.join(codexImportDir, '2026', '07', '20');
+      fs.mkdirSync(codexSessDir, { recursive: true });
+      fs.writeFileSync(path.join(codexSessDir, 'rollout-legacy.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'legacy-codex-sess', cwd: '/tmp/legacy-codex', timestamp: codexTs }),
+        makeCodexTurnContext({ timestamp: codexTs, cwd: '/tmp/legacy-codex', model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: codexTs }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'both turns are recognized as already imported under the legacy id');
+      assert.strictEqual(result.skipped, 2);
+      assert.strictEqual(readIndexLines().length, 2, 'no new lines are appended for either provider');
+    });
+
+    it('A-2.4(d): rescanning after a new-format import (including a suffixed entry) imports nothing new', async () => {
+      const ts = '2026-07-20T09:20:00.000Z';
+      const projA = path.join(importDir, '-tmp-rescan-collide-a');
+      const projB = path.join(importDir, '-tmp-rescan-collide-b');
+      fs.mkdirSync(projA, { recursive: true });
+      fs.mkdirSync(projB, { recursive: true });
+      fs.writeFileSync(path.join(projA, 'sess-a.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_ra', extra: { sessionId: 'rescan-a', cwd: '/tmp/rescan-a' } }),
+      ].join('\n'));
+      fs.writeFileSync(path.join(projB, 'sess-b.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_rb', extra: { sessionId: 'rescan-b', cwd: '/tmp/rescan-b' } }),
+      ].join('\n'));
+
+      const first = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(first.imported, 2);
+      const firstLines = readIndexLines();
+      const suffixed = firstLines.find(l => l.id.endsWith('-1'));
+      assert.ok(suffixed, 'the fixture actually produced a suffixed entry (A-2.2)');
+
+      const second = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(second.imported, 0, 'the suffixed entry is recognized by responseId, not by its (changed) id');
+      assert.strictEqual(second.skipped, 2);
+      assert.strictEqual(readIndexLines().length, 2, 'index.ndjson is unchanged after the rescan');
+    });
+
+    it('A-2.2: an id already held by the SAME turn (same responseId, not imported) is skipped, not suffixed', async () => {
+      const ts = '2026-07-20T09:30:00.000Z';
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: tsToId(ts), sessionId: 'same-turn-sess', responseId: 'msg_same_turn', imported: false,
+      }) + '\n');
+      const proj = path.join(importDir, '-tmp-same-turn');
+      fs.mkdirSync(proj, { recursive: true });
+      fs.writeFileSync(path.join(proj, 'same-turn-sess.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_same_turn', extra: { sessionId: 'same-turn-sess', cwd: '/tmp/same-turn' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'the id is occupied by this very turn, so there is nothing to add');
+      assert.strictEqual(readIndexLines().length, 1);
+    });
+
+    it('A-2.1: a legacy 10ms row written before responseId existed is recognized as the same Claude turn', async () => {
+      const ts = '2026-07-20T09:35:00.000Z';
+      fs.appendFileSync(INDEX_PATH, JSON.stringify({
+        id: tsToId(ts).slice(0, -1), sessionId: 'pre-rid-sess', imported: true, importSource: 'claude-code',
+      }) + '\n');
+      const proj = path.join(importDir, '-tmp-pre-rid');
+      fs.mkdirSync(proj, { recursive: true });
+      fs.writeFileSync(path.join(proj, 'pre-rid-sess.jsonl'), [
+        makeAssistant({ timestamp: ts, msgId: 'msg_pre_rid', extra: { sessionId: 'pre-rid-sess', cwd: '/tmp/pre-rid' } }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0, 'an old import of the same turn must not be duplicated');
+      assert.strictEqual(readIndexLines().length, 1);
+    });
+
+    it('A-2.4(e): a suffixed Codex turn (no responseId) is not re-imported on rescan', async () => {
+      const ts = '2026-07-20T09:25:00.000Z';
+      const codexSessDir = path.join(codexImportDir, '2026', '07', '21');
+      fs.mkdirSync(codexSessDir, { recursive: true });
+      for (const sid of ['codex-collide-a', 'codex-collide-b']) {
+        fs.writeFileSync(path.join(codexSessDir, `rollout-${sid}.jsonl`), [
+          makeCodexSessionMeta({ sessionId: sid, cwd: `/tmp/${sid}`, timestamp: ts }),
+          makeCodexTurnContext({ timestamp: ts, cwd: `/tmp/${sid}`, model: 'gpt-5.5' }),
+          makeCodexTokenCount({ timestamp: ts }),
+        ].join('\n'));
+      }
+
+      const first = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(first.imported, 2);
+      assert.ok(readIndexLines().some(l => l.id.endsWith('-1')), 'the fixture produced a suffixed Codex entry');
+
+      const second = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(second.imported, 0, 'the suffixed Codex turn is recognized under its own session');
+      assert.strictEqual(readIndexLines().length, 2);
+    });
+  });
+
   describe('scanAndImport', () => {
     it('#603 persists separate positive 1M facts from cost-state and home settings without changing maxContext', async () => {
       const configHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-1m-home-'));
@@ -610,6 +1087,7 @@ function makeCodexTurnContext(opts = {}) {
       turn_id: opts.turnId || 'turn-1',
       cwd: opts.cwd || '/tmp/codex-project',
       model: opts.model || 'gpt-5.5',
+      ...(opts.effort ? { effort: opts.effort } : {}),
     },
   });
 }
@@ -858,6 +1336,40 @@ describe('codex importer', () => {
       assert.strictEqual(entries.length, 1);
       assert.deepStrictEqual(entries[0].turnToolCallIds, {});
       assert.deepStrictEqual(entries[0].turnToolResults, []);
+    });
+
+    // S-6/A-6.3: the latest turn_context effort applies to every subsequent entry.
+    it('S-6: effort from the latest turn_context applies to subsequent entries', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-effort.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-effort-1' }),
+        makeCodexTurnContext({ model: 'gpt-6-sol', effort: 'low' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexTurnContext({ model: 'gpt-6-sol', effort: 'high', turnId: 'turn-2' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:15.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.strictEqual(entries[0].effort, 'low');
+      assert.strictEqual(entries[1].effort, 'high');
+    });
+
+    it('S-6: effort is null when no turn_context declares one', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-no-effort.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-no-effort' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, null);
     });
   });
 

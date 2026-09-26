@@ -136,6 +136,12 @@ function getOfflineRates() {
 // Derived once at module load from DEFAULT_PRICING + lag overrides.
 // Pure computation, no I/O. Sorted longest-key-first so prefix matching
 // picks the most specific key (fixes importer.js's insertion-order bug).
+//
+// S-4 (issue 3): 1-hour cache-creation writes bill at 2x input, not the
+// 5-minute `cache_create` rate (1.25x input). DEFAULT_PRICING rows deliberately
+// carry no `cache_create_1h` value (A-4.1) — it is derived here, once, so a
+// row missing the field (every current row, plus LITELLM_LAG_OVERRIDES) never
+// silently falls back to the 5m rate.
 const _offlinePerMTok = getOfflineRates();
 const _perTokenRates = {};
 for (const [key, rates] of Object.entries(_offlinePerMTok)) {
@@ -144,11 +150,23 @@ for (const [key, rates] of Object.entries(_offlinePerMTok)) {
     output: rates.output / 1_000_000,
     cache_read: rates.cache_read / 1_000_000,
     cache_create: rates.cache_create / 1_000_000,
+    cache_create_1h: (rates.cache_create_1h != null ? rates.cache_create_1h : rates.input * 2) / 1_000_000,
   };
 }
 const _sortedKeys = Object.keys(_perTokenRates).sort((a, b) => b.length - a.length);
 const _defaultRate = _perTokenRates['claude-sonnet-4'] ||
-  { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6 };
+  { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6, cache_create_1h: 6e-6 };
+
+// The 5m/1h split applies only to non-negative numeric tier counts; anything
+// else (strings, negatives) falls back to the flat counter so a malformed
+// usage object cannot produce a negative or NaN cost. Shared with pricing.js.
+function hasCacheTierSplit(cc) {
+  if (!cc || typeof cc !== 'object') return false;
+  const t5 = cc.ephemeral_5m_input_tokens;
+  const t1 = cc.ephemeral_1h_input_tokens;
+  const ok = v => v == null || (Number.isFinite(v) && v >= 0);
+  return (t5 != null || t1 != null) && ok(t5) && ok(t1);
+}
 
 /**
  * Calculate cost from a usage object and model name using offline rates.
@@ -188,10 +206,20 @@ function calculateCostSimple(usage, model) {
     }
   }
   if (!r) r = _defaultRate;
+  // S-4 (A-4.2): split only when the ephemeral 5m/1h breakdown is numeric;
+  // otherwise keep pricing the flat `cache_creation_input_tokens` counter as before.
+  let cacheCost;
+  const cc = usage.cache_creation;
+  if (hasCacheTierSplit(cc)) {
+    cacheCost = (cc.ephemeral_5m_input_tokens || 0) * r.cache_create
+      + (cc.ephemeral_1h_input_tokens || 0) * r.cache_create_1h;
+  } else {
+    cacheCost = (usage.cache_creation_input_tokens || 0) * r.cache_create;
+  }
   const cost = (usage.input_tokens || 0) * r.input
     + (usage.output_tokens || 0) * r.output
     + (usage.cache_read_input_tokens || 0) * r.cache_read
-    + (usage.cache_creation_input_tokens || 0) * r.cache_create;
+    + cacheCost;
   return { cost, confidence };
 }
 
@@ -201,4 +229,5 @@ module.exports = {
   applyLagOverrides,
   getOfflineRates,
   calculateCostSimple,
+  hasCacheTierSplit,
 };

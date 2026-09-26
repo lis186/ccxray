@@ -58,6 +58,18 @@ const INDEX_FIELDS = [
   // is a launch-time snapshot, not a per-request fact; unlike userEmail above,
   // it never comes from CCXRAY_USER_EMAIL deployment identity.
   'accountEmail','accountDomain',
+  // S-1: subagent transcript identity (Claude Code `<sid>/subagents/agent-*.jsonl`).
+  // `subagentId` is the transcript line's `agentId`; `subagentToolUseId` is the
+  // parent's `Task` tool_use id from the sidecar `.meta.json`. Deliberately NOT
+  // the existing `agentId` (#504 deployment identity) or `agentType`
+  // (CCXRAY_AGENT_TYPE) fields — those are unrelated deployment concepts and
+  // reusing them would collide in meaning. Appended last to keep the field
+  // order add-only (test/entry.test.js G1).
+  'subagentId','subagentToolUseId',
+  // S-6: reasoning effort (Claude output_config.effort / Codex reasoning_effort),
+  // imported thinking-token count, and imported turn wall-clock duration.
+  // Appended last to keep the field order add-only (test/entry.test.js G1).
+  'effort','thinkingTokens','turnDurationMs',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -69,6 +81,8 @@ const INDEX_FIELDS = [
 // exercise those construction paths.
 const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
+  'subagentId','subagentToolUseId',
+  'effort','thinkingTokens','turnDurationMs',
 ]);
 
 const DEPLOYMENT_ENV_FIELDS = [

@@ -13,6 +13,7 @@ const {
   DEFAULT_PRICING,
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides: _rawApplyLagOverrides,
+  hasCacheTierSplit,
 } = require('./default-rates');
 
 // ── Pricing ─────────────────────────────────────────────────────────
@@ -32,11 +33,18 @@ let lastLagOverrideStatus = [];
 let pricingTable = {};
 
 function ratesFromLiteLLMEntry(val) {
+  const input = (val.input_cost_per_token || 0) * 1_000_000;
   return {
-    input: (val.input_cost_per_token || 0) * 1_000_000,
+    input,
     output: (val.output_cost_per_token || 0) * 1_000_000,
     cache_create: (val.cache_creation_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
     cache_read: (val.cache_read_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
+    // S-4 (A-4.1): 1-hour cache-creation rate. LiteLLM wins when it lists the
+    // field; otherwise derive 2x input (Anthropic's published 1h rate), never
+    // the 5-minute `cache_create` rate.
+    cache_create_1h: val.cache_creation_input_token_cost_above_1hr
+      ? val.cache_creation_input_token_cost_above_1hr * 1_000_000
+      : input * 2,
   };
 }
 
@@ -211,11 +219,24 @@ function calculateCost(usage, model, provider) {
   if (!usage) return null;
   const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model, provider);
   if (!rates) return { cost: null, rates: null, confidence: 'unknown', warning: `Unknown model: ${model}` };
+  // S-4 (A-4.1/A-4.2): split 5m/1h cache-creation tokens at their own rates when
+  // the ephemeral breakdown is numeric; otherwise price the flat counter as
+  // before. `rates` may come from DEFAULT_PRICING or an old pricing-cache.json
+  // row with no `cache_create_1h` field — derive 2x input, never `cache_create`.
+  const cacheCreate1h = rates.cache_create_1h != null ? rates.cache_create_1h : rates.input * 2;
+  let cacheCost;
+  const cc = usage.cache_creation;
+  if (hasCacheTierSplit(cc)) {
+    cacheCost = ((cc.ephemeral_5m_input_tokens || 0) / 1_000_000) * rates.cache_create
+      + ((cc.ephemeral_1h_input_tokens || 0) / 1_000_000) * cacheCreate1h;
+  } else {
+    cacheCost = ((usage.cache_creation_input_tokens || 0) / 1_000_000) * rates.cache_create;
+  }
   const cost =
     ((usage.input_tokens || 0) / 1_000_000) * rates.input +
     ((usage.output_tokens || 0) / 1_000_000) * rates.output +
-    ((usage.cache_creation_input_tokens || 0) / 1_000_000) * rates.cache_create +
-    ((usage.cache_read_input_tokens || 0) / 1_000_000) * rates.cache_read;
+    ((usage.cache_read_input_tokens || 0) / 1_000_000) * rates.cache_read +
+    cacheCost;
   return { cost, rates, confidence: rateConfidence };
 }
 
@@ -274,6 +295,7 @@ module.exports = {
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides,
   buildPricingTable,
+  ratesFromLiteLLMEntry,
   // Tests inject a table instead of reading the developer's pricing-cache.json,
   // which is package-relative and therefore outside CCXRAY_HOME isolation.
   __setContextTableForTests(table) {
