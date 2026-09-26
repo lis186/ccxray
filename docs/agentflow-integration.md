@@ -188,7 +188,7 @@ Both hooks are framed as **generic observability extension points**, with ccxray
 - **Codex background memory agents** run alongside `codex exec` (for example `thread_source: memory_consolidation`, and the proxy's `codex-raw` fallback session). They may lack cwd and a real session id. They are counted only when attributable; the remainder is visible as a `partial` coverage note.
 - **A long host session spanning Asks** must be split per turn. Idle gaps between Asks belong to no Ask.
 - **Several worktrees of one repository** must be distinguished by worktree root, or `ambiguous` becomes common.
-- **The dashboard shows no projects or sessions** for a home populated only by `import --target-transcript`. This is under investigation and must be resolved before A1 ships, so a first-time user does not see an empty dashboard.
+- **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. A home populated only from transcripts therefore shows 0 projects until `/?imported` is opened. The adapter must read `logs/index.ndjson` or the APIs without `hideImported`. A1 should point report users to `/?imported`; an empty-state hint in the dashboard is proposed separately.
 - **Grok is untested:** recorded Grok turns carry no cwd.
 - **External worker transcripts after clone deletion:** Claude writes them to `~/.claude/projects/<slug-of-clone-path>/`, and they survive the clone. A2 must confirm the same for Codex rollouts.
 
