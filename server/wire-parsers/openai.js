@@ -95,6 +95,38 @@ function getCodexInstructionsCwd(instructions) {
   return primaryMatch ? primaryMatch[1].trim() : null;
 }
 
+// S-5: agentflow-launched Codex workers carry no x-codex-turn-metadata cwd and
+// no CWD-bearing instructions — the only surviving cwd signal is the
+// <environment_context><cwd>...</cwd></environment_context> block Codex embeds
+// in the first user input[] item (workspace_roots as a weaker fallback).
+function getCodexInputCwd(input) {
+  if (!Array.isArray(input)) return null;
+  for (const item of input) {
+    if (!item || typeof item !== 'object' || item.role !== 'user') continue;
+    const texts = [];
+    if (typeof item.content === 'string') texts.push(item.content);
+    if (typeof item.text === 'string') texts.push(item.text);
+    if (Array.isArray(item.content)) {
+      for (const block of item.content) {
+        if (block && typeof block.text === 'string') texts.push(block.text);
+      }
+    }
+    for (const text of texts) {
+      // Codex sends its own block as a text that STARTS with the tag; a block
+      // quoted inside a larger prompt (memory consolidation quotes past
+      // rollouts) belongs to another session and must not be used.
+      const envMatch = text.trimStart().match(/^<environment_context>([\s\S]*?)<\/environment_context>/);
+      if (!envMatch) continue;
+      const scope = envMatch[1];
+      const cwdMatch = scope.match(/<cwd>(.*?)<\/cwd>/);
+      if (cwdMatch) return cwdMatch[1].trim();
+      const rootMatch = scope.match(/<workspace_roots>[\s\S]*?<root>(.*?)<\/root>/);
+      if (rootMatch) return rootMatch[1].trim();
+    }
+  }
+  return null;
+}
+
 function getCodexCwd(headers, parsedBody, fallback = null) {
   const turnMetadata = parseCodexTurnMetadata(headers);
   return parsedBody?.metadata?.cwd
@@ -102,6 +134,7 @@ function getCodexCwd(headers, parsedBody, fallback = null) {
     || turnMetadata?.cwd
     || getCodexWorkspaceCwd(turnMetadata?.workspaces)
     || getCodexInstructionsCwd(parsedBody?.instructions)
+    || getCodexInputCwd(parsedBody?.input)
     || fallback;
 }
 
