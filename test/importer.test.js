@@ -405,6 +405,120 @@ describe('importer', () => {
     });
   });
 
+  // S-6/A-6.2: effort, thinkingTokens, turnDurationMs extraction from Claude
+  // Code transcripts.
+  describe('S-6 effort / thinking tokens / turn duration import', () => {
+    it('effort prefers non-empty perTurnEffort over the session-level effort', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-per-turn.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { effort: 'medium', perTurnEffort: 'low' },
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, 'low');
+    });
+
+    it('effort falls back to the session-level effort when perTurnEffort is null', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-fallback.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({
+          timestamp: '2026-07-15T10:30:05.000Z',
+          extra: { effort: 'medium', perTurnEffort: null },
+        }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, 'medium');
+    });
+
+    it('effort is null when neither perTurnEffort nor effort is a non-empty string', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-effort-absent.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, null);
+    });
+
+    it('thinkingTokens is read from message.usage.output_tokens_details.thinking_tokens', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-thinking-tokens.jsonl');
+      const line = JSON.parse(makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }));
+      line.message.usage.output_tokens_details = { thinking_tokens: 17 };
+      fs.writeFileSync(file, [makeUser('hi'), JSON.stringify(line)].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].thinkingTokens, 17);
+    });
+
+    it('thinkingTokens is null when output_tokens_details is absent', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-thinking-tokens-absent.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].thinkingTokens, null);
+    });
+
+    it('turnDurationMs attaches to the last assistant entry parsed before the turn_duration line, across two user turns', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-turn-duration.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('first?'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z', msgId: 'msg_01A' }),
+        makeLine('system', { subtype: 'turn_duration', durationMs: 9245, timestamp: '2026-07-15T10:30:06.000Z' }),
+        makeUser('second?'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:10.000Z', msgId: 'msg_01B' }),
+        makeLine('system', { subtype: 'turn_duration', durationMs: 6702, timestamp: '2026-07-15T10:30:11.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 2);
+      const first = entries.find(e => e.responseId === 'msg_01A');
+      const second = entries.find(e => e.responseId === 'msg_01B');
+      assert.strictEqual(first.turnDurationMs, 9245);
+      assert.strictEqual(second.turnDurationMs, 6702);
+    });
+
+    it('turnDurationMs stays null when no turn_duration line follows (a "-p" session shape)', async () => {
+      const sessionDir = path.join(importDir, 'test-project');
+      fs.mkdirSync(sessionDir, { recursive: true });
+      const file = path.join(sessionDir, 'sess-no-turn-duration.jsonl');
+      fs.writeFileSync(file, [
+        makeUser('hi'),
+        makeAssistant({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseSessionFile(file, 'test-project');
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].turnDurationMs, null);
+    });
+  });
+
   // S-1: Claude Code Task-tool subagent transcripts live under
   // `<slug>/<sid>/subagents/agent-<agentId>.jsonl` + a sidecar `.meta.json`,
   // a directory shape `collectJsonlFiles` never descends into.
@@ -973,6 +1087,7 @@ function makeCodexTurnContext(opts = {}) {
       turn_id: opts.turnId || 'turn-1',
       cwd: opts.cwd || '/tmp/codex-project',
       model: opts.model || 'gpt-5.5',
+      ...(opts.effort ? { effort: opts.effort } : {}),
     },
   });
 }
@@ -1221,6 +1336,40 @@ describe('codex importer', () => {
       assert.strictEqual(entries.length, 1);
       assert.deepStrictEqual(entries[0].turnToolCallIds, {});
       assert.deepStrictEqual(entries[0].turnToolResults, []);
+    });
+
+    // S-6/A-6.3: the latest turn_context effort applies to every subsequent entry.
+    it('S-6: effort from the latest turn_context applies to subsequent entries', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-effort.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-effort-1' }),
+        makeCodexTurnContext({ model: 'gpt-6-sol', effort: 'low' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexTurnContext({ model: 'gpt-6-sol', effort: 'high', turnId: 'turn-2' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:15.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.strictEqual(entries[0].effort, 'low');
+      assert.strictEqual(entries[1].effort, 'high');
+    });
+
+    it('S-6: effort is null when no turn_context declares one', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const file = path.join(sessDir, 'rollout-no-effort.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-no-effort' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.strictEqual(entries[0].effort, null);
     });
   });
 

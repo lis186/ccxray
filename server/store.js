@@ -94,8 +94,11 @@ function _foldEntry(canonical, other) {
   // Identity + context + labels: a non-empty value fills a canonical gap.
   // S-1: subagentId/subagentToolUseId (transcript-derived subagent identity)
   // join this list the same way as agentKey/coreHash/convId.
+  // S-6: effort/thinkingTokens/turnDurationMs (reasoning effort, imported
+  // thinking-token count, imported turn duration) join the same way.
   for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
-    'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId']) {
+    'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId',
+    'effort', 'thinkingTokens', 'turnDurationMs']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
       canonical[k] = other[k];
     }

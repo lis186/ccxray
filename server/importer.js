@@ -342,6 +342,10 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
   const byResponseId = new Map();
   const costStateModels = new Set();
   const settingsModels = opts.settingsModels || new Set();
+  // S-6/A-6.2: a `system`/`turn_duration` line arrives AFTER the assistant line
+  // it measures, keyed by nothing but proximity — track the dedup key of the
+  // last assistant entry written so the duration can be back-filled onto it.
+  let lastDedupKey = null;
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -362,6 +366,15 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
         const base = oneMillionBase(key);
         if (base) costStateModels.add(base);
       }
+    }
+
+    // S-6/A-6.2: attach to the last assistant entry parsed before this line in
+    // the same file, only if that entry has no value yet (a duplicate
+    // turn_duration line, or one whose target was evicted, must not overwrite).
+    if (obj.type === 'system' && obj.subtype === 'turn_duration') {
+      const prevEntry = lastDedupKey ? byResponseId.get(lastDedupKey) : null;
+      if (prevEntry && prevEntry.turnDurationMs == null) prevEntry.turnDurationMs = obj.durationMs || null;
+      continue;
     }
 
     if (obj.type === 'user' && obj.message) {
@@ -423,6 +436,15 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
     const dedupKey = responseId || id;
     const prev = byResponseId.get(dedupKey);
 
+    // S-6/A-6.2: perTurnEffort (per-turn override) wins over the session-level
+    // effort declaration when both are present and non-empty.
+    const effort = (typeof obj.perTurnEffort === 'string' && obj.perTurnEffort)
+      || (typeof obj.effort === 'string' && obj.effort)
+      || null;
+    const thinkingTokens = Number.isFinite(usage.output_tokens_details?.thinking_tokens)
+      ? usage.output_tokens_details.thinking_tokens
+      : null;
+
     // #500: merge tool evidence across duplicate assistant lines (same msg.id)
     const mergedToolCallIds = prev ? { ...prev.turnToolCallIds, ...turnToolCallIds } : turnToolCallIds;
     const mergedToolResults = prev ? prev.turnToolResults : pendingToolResults;
@@ -449,6 +471,11 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
       sessionId,
       title: prev ? prev.title : (lastUserText || '(imported)'),
       stopReason: msg.stop_reason || prev?.stopReason || null,
+      effort,
+      thinkingTokens,
+      // S-6/A-6.2: back-filled by a later system/turn_duration line (above);
+      // preserve it across a duplicate assistant line for the same msg.id.
+      turnDurationMs: prev?.turnDurationMs ?? null,
       imported: true,
       importSource: 'claude-code',
       sessionInferred: false,
@@ -480,6 +507,7 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
       } : {}),
     };
     byResponseId.set(dedupKey, entry);
+    lastDedupKey = dedupKey;
     pendingToolResults = [];
   }
   const entries = [...byResponseId.values()];
@@ -503,6 +531,8 @@ async function parseCodexSessionFile(filePath) {
   let pendingResults = [];
   let prevResults = [];
   let pendingCompacted = false;
+  // S-6/A-6.3: latest turn_context effort applies to every subsequent entry.
+  let lastEffort = null;
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -523,6 +553,7 @@ async function parseCodexSessionFile(filePath) {
     if (payload.cwd && !cwd) cwd = payload.cwd;
     if (payload.model) lastModel = payload.model;
     if (obj.type === 'session_meta' && typeof payload.session_id === 'string') sessionId = payload.session_id;
+    if (obj.type === 'turn_context' && typeof payload.effort === 'string' && payload.effort) lastEffort = payload.effort;
 
     // #500: tool call lines (response side)
     if (payload.type === 'function_call' || payload.type === 'custom_tool_call') {
@@ -593,6 +624,7 @@ async function parseCodexSessionFile(filePath) {
       sessionId,
       title: '(imported)',
       stopReason: null,
+      effort: lastEffort || null,
       imported: true,
       importSource: 'codex',
       ...(pendingCompacted ? { compacted: true } : {}),

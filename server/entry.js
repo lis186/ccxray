@@ -66,6 +66,10 @@ const INDEX_FIELDS = [
   // reusing them would collide in meaning. Appended last to keep the field
   // order add-only (test/entry.test.js G1).
   'subagentId','subagentToolUseId',
+  // S-6: reasoning effort (Claude output_config.effort / Codex reasoning_effort),
+  // imported thinking-token count, and imported turn wall-clock duration.
+  // Appended last to keep the field order add-only (test/entry.test.js G1).
+  'effort','thinkingTokens','turnDurationMs',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -78,6 +82,7 @@ const INDEX_FIELDS = [
 const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
   'subagentId','subagentToolUseId',
+  'effort','thinkingTokens','turnDurationMs',
 ]);
 
 const DEPLOYMENT_ENV_FIELDS = [

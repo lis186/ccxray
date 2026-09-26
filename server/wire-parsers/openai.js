@@ -346,7 +346,11 @@ function buildEntryFields(ctx) {
     ? ctx.contextUsageKnown
     : (hasContextUsage(response)
       || (ctx.lastUsage != null && helpers.hasContextUsage(ctx.lastUsage)));
-  const model = ctx.lastModel || response?.model || parsedBody?.model || null;
+  // S-6/A-6.5: a Codex WS prewarm connection never gets an upstream response, so
+  // its own model can only come from the metadata a later same-session main
+  // turn would also fall back to — see the module-level map in ws-proxy.js.
+  const prewarmTurn = isWS ? ctx.prewarmTurn : null;
+  const model = ctx.lastModel || response?.model || parsedBody?.model || prewarmTurn?.model || null;
 
   let responseMetadata;
   if (isWS) {
@@ -400,6 +404,12 @@ function buildEntryFields(ctx) {
     agentLabel: ctx.agentLabel || null,
     thinkingStripped: undefined,
     sessionId: ctx.sessionId,
+    // S-6/A-6.5: per-turn reasoning effort — the turn's own request wins, then
+    // its metadata, then (WS only) the latest prewarm remembered for this
+    // session id (a prewarm connection carries no upstream response of its
+    // own, so its own entry falls back to the same lookup — see ws-proxy.js).
+    effort: [parsedBody?.reasoning?.effort, parsedBody?.metadata?.reasoning_effort, prewarmTurn?.effort]
+      .find(v => typeof v === 'string' && v) || null,
   };
 }
 

@@ -135,6 +135,46 @@ test('anthropic.buildEntryFields yields canonical fields', () => {
   assert.ok(f.maxContext > 0, 'maxContext inferred');
 });
 
+// S-6/A-6.4: proxy-side reasoning effort (Claude output_config.effort). C-5:
+// the proxy never has response-side thinking tokens or a turn duration.
+test('anthropic.buildEntryFields reads effort from output_config.effort', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    output_config: { effort: 'low' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, 'low');
+});
+
+test('anthropic.buildEntryFields effort is null when output_config is absent', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, null);
+});
+
+test('anthropic.buildEntryFields ignores a non-string effort', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    output_config: { effort: { level: 'low' } },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, null);
+});
+
 test('anthropic Skill message → buildEntryFields → buildIndexLine persists clean toolCalls + skillCalls', () => {
   // full write-path guard: a Skill tool_use must surface as a plain Skill key in
   // toolCalls AND as a per-name entry in the persisted skillCalls index field.

@@ -94,6 +94,28 @@ const WS_CLOSE_REASON_MAX_BYTES = 120; // WS spec caps reason at 123 bytes; leav
 const activeSessions = new Set();
 const pendingEntries = new Set();
 
+// S-6/A-6.5: a Codex prewarm connection (metadata.request_kind === 'prewarm')
+// carries reasoning_effort/model but never generates a response, and the main
+// turn that follows arrives on a SEPARATE WebSocket connection sharing only the
+// session id (verified against real traffic) — no per-connection ctx can carry
+// the fact forward, so a small bounded module-level map is the only shared
+// channel. Capped and FIFO-evicted (insertion order via Map) so a long-running
+// hub does not accumulate unbounded session history.
+const PREWARM_TURN_CAP = 500;
+const _prewarmBySession = new Map();
+function rememberPrewarmTurn(sessionId, { effort, model }) {
+  if (!sessionId) return;
+  _prewarmBySession.delete(sessionId);
+  const str = v => (typeof v === 'string' && v ? v : null);
+  _prewarmBySession.set(sessionId, { effort: str(effort), model: str(model), at: Date.now() });
+  if (_prewarmBySession.size > PREWARM_TURN_CAP) {
+    _prewarmBySession.delete(_prewarmBySession.keys().next().value);
+  }
+}
+function lookupPrewarmTurn(sessionId) {
+  return sessionId ? (_prewarmBySession.get(sessionId) || null) : null;
+}
+
 function isUpgradeRequest(req) {
   return String(req.headers.upgrade || '').toLowerCase() === 'websocket';
 }
@@ -370,6 +392,10 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
       sessionId, sessionInferred,
       isSubagent: agentType === 'explorer' || agentType === 'worker',
       cwd,
+      // S-6/A-6.5: this connection's own entry falls back to its own remembered
+      // prewarm data (recorded before finalize, below) the same way a later
+      // same-session main turn on a different connection would.
+      prewarmTurn: lookupPrewarmTurn(sessionId),
       wsCloseReason: result.close?.reason || null,
       wsErrorMessage: result.error?.message || null,
     }),
@@ -425,6 +451,14 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
     : null;
   const cwd = getCodexWorkspaceCwd(turnMetadata?.workspaces) || cwdFallback;
   const endpoint = (req.url || '').split('?')[0];
+  // S-6/A-6.5: real traffic shows a prewarm connection's `metadata.request_kind`
+  // arriving via the `x-codex-turn-metadata` header at handshake time (the
+  // connection's own request.create frame, if any, sets `generate: false` and
+  // is never captured as a client request) — remember it before this
+  // connection's own entry (or a later main turn's) needs the fallback.
+  if (turnMetadata?.request_kind === 'prewarm') {
+    rememberPrewarmTurn(sessionId, { effort: turnMetadata.reasoning_effort, model: turnMetadata.model });
+  }
 
   if (!store.sessionMeta[sessionId]) store.sessionMeta[sessionId] = {};
   store.sessionMeta[sessionId].provider = 'openai';
@@ -586,6 +620,17 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
         try {
           const parsed = JSON.parse(typeof data === 'string' ? data : data.toString());
           if (parsed.type === 'response.create') {
+            // S-6/A-6.5: a prewarm request may set `generate: false`, skipping
+            // every branch below (including the clientRequest capture) — so its
+            // metadata.reasoning_effort/model would otherwise be lost. Remember
+            // it before the generate gate so a same-session main turn on a
+            // later connection (or this connection's own transport-only entry)
+            // can fall back to it.
+            if (parsed.metadata?.request_kind === 'prewarm') {
+              rememberPrewarmTurn(ctx.sessionId, {
+                effort: parsed.metadata.reasoning_effort, model: parsed.metadata.model || parsed.model,
+              });
+            }
             if (parsed.generate !== false) {
               if (currentTurn) finalizeTurn({ status: 101 });
               const request = {
@@ -595,6 +640,9 @@ function handleWebSocketUpgrade(req, socket, head, opts = {}) {
                 tools: parsed.tools || null,
                 tool_choice: parsed.tool_choice || null,
                 previous_response_id: parsed.previous_response_id || null,
+                // S-6/A-6.5: was dropped entirely — buildEntryFields' first
+                // effort-precedence tier reads clientRequest.reasoning.effort.
+                reasoning: parsed.reasoning || null,
                 metadata: parsed.metadata || null,
               };
               const client = matchOpenAIWireClient(req.headers, request.model);

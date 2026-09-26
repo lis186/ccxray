@@ -139,6 +139,66 @@ describe('wire-parsers/openai', () => {
       assert.equal(entry.turnToolFail, undefined);
     });
 
+    // S-6/A-6.5: Codex HTTP path effort precedence.
+    it('buildEntryFields reads effort from parsedBody.reasoning.effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], reasoning: { effort: 'high' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'high');
+    });
+
+    it('buildEntryFields falls back to parsedBody.metadata.reasoning_effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], metadata: { reasoning_effort: 'medium' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'medium');
+    });
+
+    it('buildEntryFields prefers reasoning.effort over metadata.reasoning_effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: {
+          model: 'gpt-5.5', input: [],
+          reasoning: { effort: 'high' },
+          metadata: { reasoning_effort: 'medium' },
+        },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'high');
+    });
+
+    it('buildEntryFields skips a non-string reasoning.effort and uses the string metadata effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], reasoning: { effort: 7 }, metadata: { reasoning_effort: 'medium' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'medium');
+    });
+
+    it('buildEntryFields effort is null when neither source is present', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [] },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, null);
+    });
+
     it('injects session_id from headers into body metadata', () => {
       const body = { model: 'gpt-5.5', input: [] };
       const headers = { 'session_id': 'injected-session' };
