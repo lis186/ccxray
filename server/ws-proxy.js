@@ -99,21 +99,33 @@ const pendingEntries = new Set();
 // turn that follows arrives on a SEPARATE WebSocket connection sharing only the
 // session id (verified against real traffic) — no per-connection ctx can carry
 // the fact forward, so a small bounded module-level map is the only shared
-// channel. Capped and FIFO-evicted (insertion order via Map) so a long-running
-// hub does not accumulate unbounded session history.
+// channel. Capped with least-recently-used eviction (Map insertion order; a hit
+// re-inserts) so a long-running hub does not accumulate unbounded history.
 const PREWARM_TURN_CAP = 500;
+// Sliding idle window: a prewarm is sent once near session start, so a fixed
+// window would drop effort from a long session's later turns; each hit
+// refreshes the entry and only a session idle this long is forgotten.
+const PREWARM_TTL_MS = 30 * 60 * 1000;
+// An oversized value is dropped, not truncated: a cut model name would misprice.
+const PREWARM_VALUE_MAX = 128;
 const _prewarmBySession = new Map();
-function rememberPrewarmTurn(sessionId, { effort, model }) {
+function rememberPrewarmTurn(sessionId, { effort, model }, now = Date.now()) {
   if (!sessionId) return;
   _prewarmBySession.delete(sessionId);
-  const str = v => (typeof v === 'string' && v ? v : null);
-  _prewarmBySession.set(sessionId, { effort: str(effort), model: str(model), at: Date.now() });
+  const str = v => (typeof v === 'string' && v && v.length <= PREWARM_VALUE_MAX ? v : null);
+  _prewarmBySession.set(sessionId, { effort: str(effort), model: str(model), at: now });
   if (_prewarmBySession.size > PREWARM_TURN_CAP) {
     _prewarmBySession.delete(_prewarmBySession.keys().next().value);
   }
 }
-function lookupPrewarmTurn(sessionId) {
-  return sessionId ? (_prewarmBySession.get(sessionId) || null) : null;
+function lookupPrewarmTurn(sessionId, now = Date.now()) {
+  const hit = sessionId ? _prewarmBySession.get(sessionId) : null;
+  if (!hit) return null;
+  _prewarmBySession.delete(sessionId);
+  if (now - hit.at > PREWARM_TTL_MS) return null;
+  hit.at = now;
+  _prewarmBySession.set(sessionId, hit);
+  return hit;
 }
 
 function isUpgradeRequest(req) {
@@ -777,4 +789,7 @@ module.exports = {
   isOpenAIWebSocket,
   normalizeCloseCode,
   drainWebSocketProxy,
+  rememberPrewarmTurn,
+  lookupPrewarmTurn,
+  PREWARM_TTL_MS,
 };
