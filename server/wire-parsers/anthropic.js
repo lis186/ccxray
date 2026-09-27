@@ -152,6 +152,9 @@ function buildEntryFields(ctx) {
     convId: computeConvId(parsedBody),
     thinkingStripped: ctx.thinkingStripped,
     sessionId: ctx.sessionId,
+    // S-6/A-6.4: reasoning effort — request-side signal only (proxy has no
+    // access to response-side thinking tokens or turn duration; C-5).
+    effort: typeof parsedBody?.output_config?.effort === 'string' ? parsedBody.output_config.effort || null : null,
   };
 }
 

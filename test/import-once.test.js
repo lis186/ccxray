@@ -281,10 +281,12 @@ describe('ccxray import --once', () => {
     assert.match(String(failure.stdout), /EISDIR|directory/i);
   });
 
-  // FAIL-ON-OLD: transcript ids are timestamp-derived. A parsed target turn
-  // whose id belongs to another session must not become cached exact evidence
-  // when its append was skipped by global id dedup.
-  it('rejects a timestamp id collision owned by another indexed session', () => {
+  // S-2/A-2.2: a cross-session id collision between two GENUINELY DIFFERENT
+  // turns must get a deterministic suffix, not the old thrown `transcript
+  // entry id identity collision` — the spec's original throw-on-any-collision
+  // behavior would fail every such repair instead of importing it. This test
+  // used to assert the throw; it now asserts the suffixed import succeeds.
+  it('suffixes a timestamp id collision owned by another indexed session instead of failing', () => {
     const home = tmpdir('ccxray-target-id-collision-home-');
     const projects = tmpdir('ccxray-target-id-collision-projects-');
     const firstSession = 'ffffffff-1111-2222-3333-444444444444';
@@ -293,9 +295,10 @@ describe('ccxray import --once', () => {
     const targetCwd = '/work/id-collision';
     writeTranscript(projects, firstSession, firstCwd, 1);
     const firstFile = path.join(projects, firstCwd.replace(/[^a-zA-Z0-9]/g, '-'), `${firstSession}.jsonl`);
-    runTargetImport(home, projects, {
+    const firstResult = runTargetImport(home, projects, {
       file: firstFile, provider: 'claude', sessionId: firstSession, cwd: firstCwd,
     });
+    assert.equal(firstResult.imported, 1);
     const timestamp = JSON.parse(fs.readFileSync(firstFile, 'utf8').trim()).timestamp;
     const targetDir = path.join(projects, targetCwd.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(targetDir, { recursive: true });
@@ -305,17 +308,18 @@ describe('ccxray import --once', () => {
       message: { id: 'collision-msg', model: 'claude-opus-4-6', usage: { input_tokens: 10, output_tokens: 1 } },
     })}\n`);
 
-    let failure = null;
-    try {
-      runTargetImport(home, projects, {
-        file: targetFile, provider: 'claude', sessionId: targetSession, cwd: targetCwd,
-      });
-    } catch (error) { failure = error; }
-    assert.ok(failure, 'a cross-session id collision must fail closed');
-    assert.match(String(failure.stdout), /entry id identity collision/);
-    const sessions = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
-      .trim().split('\n').map(line => JSON.parse(line).sessionId);
-    assert.deepEqual(new Set(sessions), new Set([firstSession]));
+    const result = runTargetImport(home, projects, {
+      file: targetFile, provider: 'claude', sessionId: targetSession, cwd: targetCwd,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.imported, 1, 'a genuinely different turn sharing an id imports with a suffixed id');
+    const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    const sessions = lines.map(l => l.sessionId);
+    assert.deepEqual(new Set(sessions), new Set([firstSession, targetSession]));
+    const owner = lines.find(l => l.sessionId === firstSession);
+    const collided = lines.find(l => l.sessionId === targetSession);
+    assert.equal(collided.id, `${owner.id}-1`, 'the second turn gets a deterministic -1 suffix, not a thrown error');
   });
 
   // FAIL-ON-OLD: refresh-all can launch one exact repair per pane close

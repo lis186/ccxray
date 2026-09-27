@@ -329,3 +329,106 @@ describe('provider-keyed pricing — models with their own path (#568, PR #630 P
     assert.equal(r.cost, null);
   });
 });
+
+// S-4 (issue 3): 5-minute vs 1-hour cache-creation writes carry different rates
+// (1.25x input vs 2x input) but were priced through one flat `cache_create` rate.
+// calculateCost (this file) and calculateCostSimple (default-rates.js) must agree
+// on the split (INV-7), so both are exercised here with the real aggregate usage
+// from the C-1 evidence (Claude Code's own `total_cost_usd` for session 33539803).
+describe('5m/1h cache-creation split pricing (S-4)', () => {
+  const { calculateCostSimple } = require('../server/default-rates');
+
+  // (22*2 + 1127*10 + 415978*0.2 + 38097*2.50 + 53317*4.00) / 1_000_000 = 0.4030201
+  const AGGREGATE_USAGE = {
+    input_tokens: 22,
+    output_tokens: 1127,
+    cache_read_input_tokens: 415978,
+    cache_creation_input_tokens: 91414,
+    cache_creation: { ephemeral_5m_input_tokens: 38097, ephemeral_1h_input_tokens: 53317 },
+  };
+  const EXPECTED = 0.4030201;
+
+  it('calculateCost splits 5m/1h cache-creation tokens at their own rates', () => {
+    const result = calculateCost(AGGREGATE_USAGE, 'claude-sonnet-5');
+    assert.ok(Math.abs(result.cost - EXPECTED) < 1e-9, `expected ~${EXPECTED}, got ${result.cost}`);
+  });
+
+  it('calculateCostSimple agrees with calculateCost on the same usage (INV-7)', () => {
+    const result = calculateCostSimple(AGGREGATE_USAGE, 'claude-sonnet-5');
+    assert.ok(Math.abs(result.cost - EXPECTED) < 1e-9, `expected ~${EXPECTED}, got ${result.cost}`);
+  });
+
+  it('ignores non-numeric or negative tier counts and prices the flat counter (A-4.2)', () => {
+    for (const bad of [
+      { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: -1e9 },
+      { ephemeral_5m_input_tokens: 'abc', ephemeral_1h_input_tokens: 0 },
+      { ephemeral_5m_input_tokens: '1000000' },
+    ]) {
+      const usage = { cache_creation_input_tokens: 1_000_000, cache_creation: bad };
+      for (const fn of [calculateCost, calculateCostSimple]) {
+        assert.equal(fn(usage, 'claude-sonnet-5').cost, 2.50, `${fn.name} ${JSON.stringify(bad)}`);
+      }
+    }
+  });
+
+  it('falls back to the flat cache_create rate when cache_creation has no numeric tiers (A-4.2)', () => {
+    const flatUsage = {
+      input_tokens: 0, output_tokens: 0,
+      cache_read_input_tokens: 0, cache_creation_input_tokens: 1_000_000,
+    };
+    const result = calculateCost(flatUsage, 'claude-sonnet-5');
+    // claude-sonnet-5: cache_create = 2.50/MTok flat, unaffected by the split.
+    assert.equal(result.cost, 2.50);
+  });
+
+  it('a rate object missing cache_create_1h derives 2x input, never cache_create (A-4.1)', () => {
+    // DEFAULT_PRICING rows (and old pricing-cache.json rows) carry no
+    // cache_create_1h field at all — buildPricingTable({}) exercises exactly
+    // that shape for calculateCost.
+    const table = buildPricingTable({});
+    assert.equal(table['claude-sonnet-5'].cache_create_1h, undefined,
+      'DEFAULT_PRICING must not carry a literal cache_create_1h value (A-4.1)');
+    const usage = {
+      input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 1_000_000,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 },
+    };
+    const result = calculateCost(usage, 'claude-sonnet-5');
+    // input rate is 2/MTok -> derived 1h rate is 2x input = 4/MTok, not cache_create (2.50).
+    assert.equal(result.cost, 4);
+  });
+
+  it('ratesFromLiteLLMEntry maps cache_creation_input_token_cost_above_1hr when present', () => {
+    const { ratesFromLiteLLMEntry } = require('../server/pricing');
+    const rates = ratesFromLiteLLMEntry({
+      input_cost_per_token: 2e-6,
+      output_cost_per_token: 10e-6,
+      cache_creation_input_token_cost: 2.5e-6,
+      cache_read_input_token_cost: 0.2e-6,
+      cache_creation_input_token_cost_above_1hr: 3.33e-6,
+    });
+    assert.equal(rates.cache_create_1h, 3.33);
+  });
+
+  it('ratesFromLiteLLMEntry derives 2x input when cache_creation_input_token_cost_above_1hr is absent', () => {
+    const { ratesFromLiteLLMEntry } = require('../server/pricing');
+    const rates = ratesFromLiteLLMEntry({
+      input_cost_per_token: 2e-6,
+      output_cost_per_token: 10e-6,
+      cache_creation_input_token_cost: 2.5e-6,
+      cache_read_input_token_cost: 0.2e-6,
+    });
+    assert.equal(rates.cache_create_1h, 4); // 2 * input(2)
+  });
+
+  it('calculateCostSimple also derives 2x input when cache_create_1h is absent from a lag-override-style row', () => {
+    // Simulates a rate object shaped like LITELLM_LAG_OVERRIDES (no cache_create_1h key).
+    const usage = {
+      input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 1_000_000,
+      cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 },
+    };
+    const result = calculateCostSimple(usage, 'grok-4.5'); // grok-4.5: input 2.00
+    assert.equal(result.cost, 4.00); // 2x input, never the flat cache_create (2.00)
+  });
+});

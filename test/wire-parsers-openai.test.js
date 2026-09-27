@@ -139,6 +139,66 @@ describe('wire-parsers/openai', () => {
       assert.equal(entry.turnToolFail, undefined);
     });
 
+    // S-6/A-6.5: Codex HTTP path effort precedence.
+    it('buildEntryFields reads effort from parsedBody.reasoning.effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], reasoning: { effort: 'high' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'high');
+    });
+
+    it('buildEntryFields falls back to parsedBody.metadata.reasoning_effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], metadata: { reasoning_effort: 'medium' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'medium');
+    });
+
+    it('buildEntryFields prefers reasoning.effort over metadata.reasoning_effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: {
+          model: 'gpt-5.5', input: [],
+          reasoning: { effort: 'high' },
+          metadata: { reasoning_effort: 'medium' },
+        },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'high');
+    });
+
+    it('buildEntryFields skips a non-string reasoning.effort and uses the string metadata effort', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [], reasoning: { effort: 7 }, metadata: { reasoning_effort: 'medium' } },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, 'medium');
+    });
+
+    it('buildEntryFields effort is null when neither source is present', () => {
+      const entry = openai.buildEntryFields({
+        transport: 'http',
+        parsedBody: { model: 'gpt-5.5', input: [] },
+        response: { model: 'gpt-5.5', status: 'completed', output: [] },
+        proxyRes: { statusCode: 200 },
+        sessionId: 'codex-raw',
+      });
+      assert.equal(entry.effort, null);
+    });
+
     it('injects session_id from headers into body metadata', () => {
       const body = { model: 'gpt-5.5', input: [] };
       const headers = { 'session_id': 'injected-session' };
@@ -384,6 +444,107 @@ describe('wire-parsers/openai', () => {
 
     it('returns null when no cwd info', () => {
       assert.equal(openai.getCwd({}, {}), null);
+    });
+  });
+
+  describe('getCodexCwd — input[] environment_context (S-5)', () => {
+    it('extracts cwd from <environment_context><cwd> in a user input_text block', () => {
+      const parsedBody = {
+        input: [
+          { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'system stuff' }] },
+          {
+            type: 'message',
+            role: 'user',
+            content: [{
+              type: 'input_text',
+              text: '<environment_context>\n  <cwd>/test/codex-dir</cwd>\n</environment_context>',
+            }],
+          },
+        ],
+      };
+      assert.equal(openai.getCodexCwd({}, parsedBody), '/test/codex-dir');
+    });
+
+    it('falls back to the first <workspace_roots><root> when no <cwd> tag', () => {
+      const parsedBody = {
+        input: [
+          {
+            type: 'message',
+            role: 'user',
+            content: [{
+              type: 'input_text',
+              text: '<environment_context><filesystem><workspace_roots><root>/test/root-dir</root></workspace_roots></filesystem></environment_context>',
+            }],
+          },
+        ],
+      };
+      assert.equal(openai.getCodexCwd({}, parsedBody), '/test/root-dir');
+    });
+
+    it('reads plain string content and item.text, not just content[].text', () => {
+      const stringContent = { input: [{ role: 'user', content: '<environment_context><cwd>/test/string-content</cwd></environment_context>' }] };
+      assert.equal(openai.getCodexCwd({}, stringContent), '/test/string-content');
+
+      const itemText = { input: [{ role: 'user', text: '<environment_context><cwd>/test/item-text</cwd></environment_context>' }] };
+      assert.equal(openai.getCodexCwd({}, itemText), '/test/item-text');
+    });
+
+    it('ignores non-user role items', () => {
+      const parsedBody = {
+        input: [
+          { role: 'developer', content: [{ type: 'input_text', text: '<environment_context><cwd>/test/developer-dir</cwd></environment_context>' }] },
+        ],
+      };
+      assert.equal(openai.getCodexCwd({}, parsedBody), null);
+    });
+
+    it('existing sources still take precedence over input[]', () => {
+      const parsedBody = {
+        metadata: { cwd: '/from/metadata' },
+        input: [{ role: 'user', content: [{ type: 'input_text', text: '<environment_context><cwd>/test/codex-dir</cwd></environment_context>' }] }],
+      };
+      assert.equal(openai.getCodexCwd({}, parsedBody), '/from/metadata');
+    });
+
+    it('matches the shape of the real Codex WS main-turn request (S-5 real-evidence check)', () => {
+      // Mirrors the input[] shape of a real Codex 0.157 WS main turn (synthetic
+      // paths): developer messages precede two user messages — an
+      // <environment_context> block, then the user text.
+      const body = {
+        metadata: { client: 'codex', session_id: '00000000-0000-7000-8000-000000000001' },
+        input: [
+          { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'You are Codex...' }] },
+          {
+            type: 'message',
+            role: 'user',
+            content: [{
+              type: 'input_text',
+              text: '<environment_context>\n  <cwd>/tmp/synthetic/codex-probe-dir</cwd>\n  <shell>zsh</shell>\n  <filesystem><workspace_roots><root>/tmp/synthetic/codex-probe-dir</root></workspace_roots></filesystem>\n</environment_context>',
+            }],
+          },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Reply with exactly: ok' }] },
+        ],
+      };
+      assert.equal(
+        openai.getCodexCwd({}, body),
+        '/tmp/synthetic/codex-probe-dir'
+      );
+    });
+
+    it('ignores an <environment_context> quoted inside a larger user prompt', () => {
+      // Codex memory-consolidation requests quote a past rollout verbatim in
+      // the user prompt; that quoted cwd belongs to another session.
+      const body = {
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [{
+            type: 'input_text',
+            text: 'Analyze this rollout and produce JSON.\n<rollout>\n<environment_context>\n  <cwd>/tmp/quoted/other-project</cwd>\n</environment_context>\n</rollout>',
+          }],
+        }],
+      };
+      assert.equal(openai.getCodexCwd({}, body), null);
     });
   });
 

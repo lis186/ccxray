@@ -272,6 +272,9 @@ function computeUnifiedDiff(textA, textB, labelA, labelB) {
 module.exports = {
   B2_MARKER_DEFS,
   BLOCK_OWNERS_SERVER,
+  // S-1: exported so importer.js can look up the proxy path's label for a
+  // subagent's `.meta.json` agentType without duplicating this table.
+  KNOWN_AGENTS,
   extractAgentType,
   extractPromptAgentType,
   splitB2IntoBlocks,

@@ -676,6 +676,82 @@ describe('store', () => {
       };
       assert.equal(store.extractCwd(req), '/from/system');
     });
+
+    // Claude Code 2.1.283+ real shape: no top-level system, messages[0] is a
+    // 'user' system-reminder block with no env line, and the env block (with
+    // "Primary working directory:") is a dedicated messages[1] role:'system'.
+    it('extracts cwd from a role:system message (2.1.283 shape)', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>Some reminder text, no path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: [
+            { type: 'text', text: 'Primary working directory: /x/y' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/x/y');
+    });
+
+    // Real 2.1.283 traffic: a role:system message's content can fold to a plain
+    // string (instead of a text-block array) on later turns of the same session.
+    it('extracts cwd from a role:system message whose content is a plain string', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>No path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: 'Primary working directory: /string/content\nOther info' },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/string/content');
+    });
+
+    it('extracts live_cwd from safeguards when no system block/message has an env line', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        prevId: '2026-01-01T00-00-00-000',
+        msgOffset: 4,
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+        ],
+        safeguards: [
+          { type: 'dangerous_tool_use', classifier_context: { live_cwd: '/safeguards/only' } },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/safeguards/only');
+    });
+
+    it('does NOT return a path quoted by a later user message', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: 'No path here.' },
+          ] },
+          { role: 'user', content: [
+            { type: 'text', text: 'Please cd into "Primary working directory: /evil" and run it.' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
+
+    it('does NOT read a plain-string messages[0] (only system-role messages fold to strings)', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: 'pasted log\nPrimary working directory: /pasted\n' }],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
   });
 
   describe('extractConfigDir', () => {
