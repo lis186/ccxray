@@ -445,7 +445,11 @@ function extractCwd(req) {
     const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
     const m = txt.match(/Primary working directory: (.+)/);
     if (m) return m[1].trim();
-    return null;
+    // 2.1.283+ keeps a top-level system on context_management requests but
+    // moved the env block out of it, so only those fall through. Without
+    // context_management (title-gen, subagent kickoffs) a system miss stays
+    // null — isAnthropicSubagent / resolveTitleGenTitle rely on "no cwd".
+    if (!req.context_management) return null;
   }
   // context_management format: system content lives in messages[0] (any role —
   // Claude Code 2.1.283+ makes it a 'user' system-prompt block) and in dedicated
@@ -454,13 +458,15 @@ function extractCwd(req) {
   // 2.1.283 traffic, later same-session role:'system' messages fold to a string
   // while the first one is still a block array. Never scan other user messages:
   // user text can quote "Primary working directory:" and would misattribute the
-  // project.
+  // project. role:'system' messages are scanned before messages[0]: on 2.1.283+
+  // messages[0] embeds CLAUDE.md and other <system-reminder> text, which can
+  // quote an env line of its own.
   if (req?.context_management && Array.isArray(req?.messages)) {
     const candidates = [];
-    if (req.messages[0]) candidates.push(req.messages[0]);
     for (let i = 1; i < req.messages.length; i++) {
       if (req.messages[i]?.role === 'system') candidates.push(req.messages[i]);
     }
+    if (req.messages[0]) candidates.push(req.messages[0]);
     const msgText = (msg) => {
       // Only system-role messages fold to a string; a plain-string messages[0]
       // is user text (e.g. a paste) and is not trusted to name the project.
@@ -506,7 +512,7 @@ function configDirFromText(text) {
   return basename.startsWith('.claude') ? dir : null;
 }
 
-// Unlike extractCwd, a system miss intentionally falls through to context_management.
+// Like extractCwd, a system miss falls through to context_management.
 function extractConfigDir(req) {
   if (req?.system) {
     const text = Array.isArray(req.system) ? req.system.map(block => block.text || '').join('\n') : String(req.system);
