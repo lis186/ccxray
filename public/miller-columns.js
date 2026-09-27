@@ -854,33 +854,41 @@ function renderStarBadge(level, id) {
   }
   const direct = isStarredAt(level, id);
   const derived = countDescendantStars(level, id);
-  const idAttr = JSON.stringify(id).replace(/"/g, '&quot;');
+  // INVARIANT: id is user/data-controlled (project = cwd-derived name,
+  // session = client-supplied session_id, unconstrained — server/store.js:544
+  // accepts it verbatim). Never concatenate it into inline handler JS source;
+  // it lives in data-star-id (escapeHtml'd) instead, read at click time via
+  // this.dataset.starId. level is a fixed 'project'/'session' constant, carried
+  // the same way for uniformity.
+  const levelEsc = escapeHtml(level);
+  const idEsc = escapeHtml(id);
+  const dataAttrs = ' data-level="' + levelEsc + '" data-star-id="' + idEsc + '"';
   let glyph, cls, tip, onclickJs;
   if (direct && derived > 0) {
     // ★[N]: directly starred with starred descendants — glyph toggles star, chip opens popover
-    glyph = '★<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
+    glyph = '★<span class="pin-btn-count"' + dataAttrs + ' onclick="event.stopPropagation();openDerivedPopover(this.dataset.level,this.dataset.starId,this.closest(\'.pin-btn\'))" aria-hidden="true">' + derived + '</span>';
     cls = 'pinned';
     tip = 'Starred — click ★ to unstar, click [' + derived + '] to view starred items inside';
-    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
+    onclickJs = 'event.stopPropagation();toggleStar(this.dataset.level,this.dataset.starId,false)';
   } else if (direct) {
     glyph = '★'; cls = 'pinned';
     tip = 'Starred — click to unstar';
-    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',false)';
+    onclickJs = 'event.stopPropagation();toggleStar(this.dataset.level,this.dataset.starId,false)';
   } else if (derived > 0) {
     // Chip-style count: framing the digit with a small filled rounded background
     // signals "this is a count of items" (Gmail-unread / GitHub-PR convention),
     // so users don't read the superscript as "version 3" or "3 hours ago".
     // Yellow text ties it back to the star vocabulary.
-    glyph = '☆<span class="pin-btn-count" onclick="event.stopPropagation();openDerivedPopover(&quot;' + level + '&quot;,' + idAttr + ',this.closest(&quot;.pin-btn&quot;))" aria-hidden="true">' + derived + '</span>';
+    glyph = '☆<span class="pin-btn-count"' + dataAttrs + ' onclick="event.stopPropagation();openDerivedPopover(this.dataset.level,this.dataset.starId,this.closest(\'.pin-btn\'))" aria-hidden="true">' + derived + '</span>';
     cls = 'derived';
     tip = 'Star this ' + level + ', click [' + derived + '] to view starred items inside';
-    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
+    onclickJs = 'event.stopPropagation();toggleStar(this.dataset.level,this.dataset.starId,true)';
   } else {
     glyph = '☆'; cls = '';
     tip = 'Star this ' + level + ' (keeps log forever)';
-    onclickJs = 'event.stopPropagation();toggleStar(&quot;' + level + '&quot;,' + idAttr + ',true)';
+    onclickJs = 'event.stopPropagation();toggleStar(this.dataset.level,this.dataset.starId,true)';
   }
-  return '<button class="pin-btn ' + cls + '" onclick="' + onclickJs + '" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
+  return '<button class="pin-btn ' + cls + '"' + dataAttrs + ' onclick="' + onclickJs + '" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '">' + glyph + '</button>';
 }
 
 // ── Derived-badge popover (lists which descendants are keeping a parent retained) ──
@@ -1855,7 +1863,12 @@ function _renderProjectsColInner() {
       : 'offline';
     // INVARIANT(#420/ADR 0017): aggregate project cost must render through the
     // shared helper with the complete project fold.
-    html += '<div class="project-item' + (isSel ? ' selected' : '') + '" onclick="selectProject(' + JSON.stringify(proj.name).replace(/"/g, '&quot;') + ')">' +
+    // INVARIANT: proj.name is cwd-derived and user-controlled — never
+    // concatenate it into inline handler JS source. It lives in data-project
+    // (escapeHtml'd) instead; the handler is a fixed string that reads
+    // this.dataset at click time. keyboard-nav.js's project-list reader must
+    // stay in sync with this attribute.
+    html += '<div class="project-item' + (isSel ? ' selected' : '') + '" data-project="' + escapeHtml(proj.name) + '" onclick="selectProject(this.dataset.project)">' +
       '<div class="pi-name"><span class="sdot ' + statusClass + '" title="' + escapeHtml(dotTitle) + '"></span><span class="pi-label">' + escapeHtml(truncateMiddle(proj.name, 20)) + '</span>' + pinBtn + '</div>' +
       '<div class="pi-meta">' + proj.sessionIds.size + ' sessions</div>' +
       '<div class="pi-meta pi-cost">' + formatAggCost(proj.totalCost, proj, 2) + '</div>' +
