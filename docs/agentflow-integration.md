@@ -1,8 +1,8 @@
 # ccxray × agentflow integration
 
-- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1)
+- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1; revised again 2026-09-27 to put the proxy in the MVP, after a threeways review)
 - Date: 2026-09-27
-- Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), ADR 0012 (index lines are the durable record), ADR 0017 (aggregate cost confidence)
+- Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), #639 (CLI flags), #640 (live proxy cwd), #641, ADR 0012 (responseId read-time merge), ADR 0017 (aggregate cost confidence)
 
 ## Goal
 
@@ -14,6 +14,8 @@ Both tools must keep working on their own:
 - **agentflow without ccxray** behaves exactly as today. Phase A requires no change to agentflow at all. Phase B proposes two opt-in, tool-neutral changes upstream; both do nothing unless enabled.
 
 ccxray's maintainer does not maintain agentflow. Anything that needs agentflow to change is a proposal to its author, never a fork we carry.
+
+**Why this is ccxray's job.** Any tool can read transcripts. Only a proxy sees the requests that never reach a transcript, and for an interactive host those are real spend (see Data sources). So the report works without the proxy, labelled as a lower bound, and becomes complete when the proxy was running. The MVP reads both.
 
 ## agentflow concepts this spec relies on
 
@@ -35,13 +37,16 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
 
 ```
     transcripts (~/.claude/projects, ~/.codex/sessions)      proxy traffic (optional)
-                              │                                        │
+                              │ import                                 │ live
                               ▼                                        ▼
              ┌──────────────── ccxray index (index.ndjson) ─────────────────┐
              │ per turn: session, cwd, model, effort, tokens, cost,          │
-             │ subagent link, turn duration, receivedAt, dedup key           │
+             │ subagent link, turn duration, receivedAt, responseId          │
              └──────────────────────────────┬────────────────────────────────┘
-                                            │ core: usage query
+                                            │ provider reconciliation (merged data):
+                                            │ Claude responseId merge · Codex one source per session
+                                            ▼
+                                  core: usage query
                                             ▼
       adapters/agentflow: notebook + dispatch records → Ask windows → report
                                             │
@@ -49,18 +54,19 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
              report store under the ccxray data dir  ·  terminal / JSON
 ```
 
-- **Core** gets one reusable capability, a usage query: `query({ roots, from, to, sessions? }) → aggregate`. It selects turns by working-directory root, time range and optionally session. It folds in subagent turns per turn through their parent link, and aggregates tokens, cost (with ADR 0017 confidence), models, effort and duration per executor. The next workflow tool integration reuses it unchanged.
+- **Core** gets one reusable capability, a usage query: `query({ roots, from, to, sessions? }) → aggregate`. It reads **merged data**, never raw index lines (see Deduplication), and **merges before it filters**: selection by session and cwd uses the merged row, because a proxy row recorded before #640 has `cwd: null` and only its merged twin carries the path. A proxy-only row with no twin (a prompt suggestion, say) takes its session's cwd. It selects turns by working-directory root, time range and optionally session. It folds in subagent turns per turn through their parent link, and aggregates tokens, cost (with ADR 0017 confidence), models, effort and duration per executor. The next workflow tool integration reuses it unchanged.
 - **The agentflow adapter stays thin.** It turns notebooks and dispatch records into Ask windows, classifies executors, and renders the report. It never parses agentflow's prompts or briefs.
 
 ## Data sources
 
-**Transcripts are the primary source; the proxy is opportunistic.** Measured on Claude Code 2.1.283 (see Evidence):
+**The MVP reads both sources, merged.** Transcripts make the report work on its own; the proxy makes it complete. Measured on Claude Code 2.1.283 (see Evidence):
 
 - **Claude main-thread turns match** between import and proxy after #637, turn for turn and in cost.
-- **Proxy-only traffic depends on the session type** (re-verified on `e1b882c`, 2026-09-27):
+- **Some requests never reach a transcript.** Claude Code's prompt-suggestion requests (predicting the owner's next message, each re-reading the whole cached context) and its title-generation requests are billed but not written to the transcript. This is structural, not a sampling artefact, so a transcript-only host figure is always a **lower bound**. How low depends on session type and length:
   - **`claude -p` workers:** negligible. Import came within 0.1% of the proxy and of Claude Code's own total.
-  - **Interactive hosts: about 12%.** Claude Code's prompt-suggestion requests predict the owner's next message, and each re-reads the whole cached context. Together with title generation they never reach the transcript.
-  - A host row computed without the proxy is therefore a **lower bound**. It is labelled `excludes proxy-only requests`; with the proxy running, the row is complete.
+  - **Interactive hosts:** one measured two-prompt session was **11.7% low** (6 proxy-only rows, about $0.08 of $0.7334; re-verified on `e1b882c`, 2026-09-27). This is one measurement, not a calibrated correction; the share will vary with session length, the number of suggestions and context size.
+  - agentflow's coordinator is always an interactive host, so a transcript-only report systematically under-counts its most expensive row.
+- **Prompt suggestions are host cost.** The MVP adds them to the host row. Showing them as a separate category is a display change deferred to later.
 - **Transcripts carry everything the report needs:**
   - effort: Claude `effort`/`perTurnEffort`, Codex `turn_context.effort`
   - turn duration: Claude `turn_duration`, written only by interactive sessions, not by `claude -p`
@@ -71,18 +77,37 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
 Retention bounds what can be recomputed later:
 
 - **Claude Code deletes transcripts after `cleanupPeriodDays`, 30 days by default.** Machines configured longer keep them longer.
-- **Proxy raw logs** are pruned after `LOG_RETENTION_DAYS` (14).
-- **Imported index lines are not pruned.**
+- **Proxy raw logs** are pruned after `LOG_RETENTION_DAYS` (14), and **their index lines go with them** (`server/restore.js` `_shouldKeepIndexLine`, #344): a proxy line is kept only while its `_req.json` survives.
+- **Imported index lines are kept, except the twin of a pruned proxy turn.** An imported line whose responseId some proxy line also carried is deleted once no proxy copy of that responseId survives. A later import restores it if the transcript still exists; proxy-only rows (prompt suggestions, titles) are gone for good.
 
-So a report can be computed after the fact only within the transcript retention window. **Snapshots (see Freezing) are part of A1**, not a later nicety.
+So a report recomputed after 14 days loses its proxy-only rows and drops from `complete` to `transcripts only`; after the transcript retention window it loses the rest. Snapshots (see Freezing) are the durable record; they ship in A1b, and A1a says in its output that its figures are recomputed from what is still on disk.
 
 **Deduplication across sources** is per provider:
 
-- **Claude:** proxy and imported turns merge by responseId (`msg.id`, ADR 0012). Verified: with both sources in one home, the server's read path returned the proxy count and Claude Code's exact total. The merge happens at **read time**, while `index.ndjson` holds both rows. An adapter reading the index directly must apply the same merge, or use `/_api/entries` without the `hideImported` parameter; that parameter hides imported rows whenever it is present, whatever its value.
+- **Claude:** proxy and imported turns merge by responseId (`msg.id`, ADR 0012). Verified: with both sources in one home, the server's read path returned the proxy count and Claude Code's exact total. The merge happens at **read time**, while `index.ndjson` holds both rows, so the adapter never sums raw lines. It **calls the same merge function the server uses** (`store.mergeByResponseId`, as the cold-load path `server/routes/api.js` does) rather than calling a running server's API, because the CLI must work with no server. Requiring it must stay side-effect free (no timers, writes or price fetches), guarded by a test; whether the function first moves into its own module is an implementation choice. Known merge caveats carried into the report:
+  - Lines without a responseId (legacy) are not merged and are reported as-is.
+  - For a responseId seen under two sessions, the merge assigns the turn to the highest-identity copy's session (ADR 0012 scope note). The report follows the merge, not `sessions.json`.
+  - Until pricing is unified (see Phases), the two copies of a turn can carry different cost confidence; the merge keeps the richest usage and a priced cost.
 - **Codex:** neither imported nor proxied turns carry a responseId, so ADR 0012 does not apply and naive union double-counts. Verified: the read path returned four rows for a two-turn session. Until a tested Codex reconciliation key exists (session id plus turn id, or session plus timestamp within tolerance), the adapter uses **one source per Codex session**: the proxy if it recorded that session, otherwise the import. The report footer says which.
 - **Codex children** (`session_id = parent_thread_id`) import merged into the parent session. Parent totals include them; a per-child split is not available.
 
-**No separate "measured vs estimated" label** is shown; the footer names the sources used.
+### Completeness
+
+Every Ask carries one completeness label, derived from the data at report time (never stored in A1a):
+
+| Label | Meaning |
+|---|---|
+| `complete` | Every host transcript turn in the window has a proxy twin (same responseId), so the host's traffic went through the proxy, including requests that never reach a transcript. |
+| `partial proxy coverage` | Some host turns in the window have a proxy twin and some do not. |
+| `transcripts only` | No proxy twin in the window. The host total is a lower bound: in one measured interactive session it was 11.7% low. |
+
+Why per-turn twins are enough evidence: a Claude Code session's base URL is fixed at launch, so its requests all go through the proxy or none do, and a stopped hub makes requests fail rather than bypass it (inferred from launch behaviour, not separately measured). A request that failed while the hub was down was not billed. Workers are labelled the same way but a transcript-only worker is not flagged as low, since `claude -p` was measured complete within 0.1%.
+
+**Codex** has no responseId, so completeness follows the one-source rule: a session read from the proxy is `complete`, one read from import is `transcripts only`.
+
+This replaces the earlier "no separate measured vs estimated label" rule, which assumed the proxy added only about 1%. The 2026-09-27 re-verification disproved that for interactive hosts.
+
+Because proxy lines are pruned after 14 days (see Retention), a recomputed Ask can move from `complete` to `transcripts only`. That downgrade is honest, never a false `complete`; freezing in A1b keeps the original figure.
 
 ## Ask windows
 
@@ -119,6 +144,8 @@ Edge cases:
 
 Sessions in the same directory without such evidence are excluded. If evidence cannot be read (transcript gone, arguments unavailable), fall back to cwd plus window and mark the Ask `partial`.
 
+Both conditions are tested on merged rows. **Proxy-only host requests** (prompt suggestions, title generation) belong to the host session they carry, so they join the host row even though no transcript mentions them.
+
 **Internal workers.** Subagent turns follow their parent session through the #637 parent link and are assigned per turn by time.
 
 **External workers.** Joined in this order:
@@ -138,7 +165,7 @@ Sessions in the same directory without such evidence are excluded. If evidence c
 
 ## Report
 
-**Location.** By default reports live in ccxray's data directory, outside the project: `<CCXRAY_HOME>/agentflow/<project-id>/<notebook-id>.usage.md`, plus a snapshot store. `project-id` is derived from the resolved checkout root; `notebook-id` from the notebook's path relative to it. This keeps the project tree untouched, so agentflow's stream cleanup, which refuses unknown ignored files, is never affected.
+**Location.** A1a prints to the terminal only. From A1b, `--write` stores reports in ccxray's data directory, outside the project: `<CCXRAY_HOME>/agentflow/<project-id>/<notebook-id>.usage.md`, plus a snapshot store. `project-id` is derived from the resolved checkout root; `notebook-id` from the notebook's path relative to it. This keeps the project tree untouched, so agentflow's stream cleanup, which refuses unknown ignored files, is never affected.
 
 **Optional side file (`--beside`)** writes `<notebook-dir>/<notebook-stem>.usage.md` next to the notebook:
 
@@ -150,33 +177,34 @@ Sessions in the same directory without such evidence are excluded. If evidence c
 **Format.** Two levels: the Ask summary, then one row per executor.
 
 ```markdown
-## A-012 · 14m32s · $0.184 · 42 calls · in 12.3k · out 3.1k · cache read 210k / write 8.1k (read share 94%)
+## A-012 · complete · 14m32s · $0.184 · 42 calls · in 12.3k · out 3.1k · cache read 210k / write 8.1k (read share 94%)
 - host · claude-opus-5-5 · effort high · 9m10s · $0.121 · 30 calls
   - subagent general-purpose · claude-sonnet-5 · effort high · 1m02s · $0.018 · 4 calls
 - external cross-check · codex gpt-5.6-sol · effort low (requested low) · 5m22s · $0.063 · 12 calls
 - background · codex gpt-5.6-terra · effort low · $0.004 · 2 calls
 ```
 
-- **Ask time** is `end − start`. **Executor time** is the sum of `turnDurationMs` where present; otherwise first-to-last turn.
+- **Ask time** is `end − start`. **Executor time** is the sum of `turnDurationMs` where present; otherwise first-to-last turn, marked `duration estimated`. Until the importer upserts late fields (A1b), already-imported turns may lack `turnDurationMs`.
 - **"read share"** is cache-read tokens ÷ (input + cache-read + cache-write) tokens.
 - **Effort** is the value actually sent; if an executor used several levels, each is listed with its call count.
 - **Unpriced turns** follow ADR 0017: the total is rendered with its confidence (for example a `+` lower bound).
-- **Labels:**
-  - `partial`: some expected evidence is missing
+- **Completeness** (`complete`, `partial proxy coverage`, `transcripts only`) heads every Ask; see Completeness.
+- **Other labels:**
+  - `partial`: some expected attribution evidence is missing
+  - `duration estimated`: executor time is first-to-last, not measured
   - `estimated start`: see Ask windows
   - `ambiguous`: see Attribution
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
-  - `excludes proxy-only requests`: a host row computed without proxy coverage, so a lower bound
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status.
+- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update.
 - **Tool statistics** stay in the dashboard.
 
 **Privacy.** Reports and `--json` contain only the fields shown above: Ask id, executor kind, role, model, effort, durations, token counts, costs, call counts and labels. They never contain prompts, Ask text, tool arguments or transcript content. Absolute paths are omitted: clones appear as their role, checkouts as their notebook path. Files are written with owner-only permissions (0600, directories 0700). Matching Ask text against transcripts happens in memory only.
 
 ## Freezing
 
-Snapshots keep history stable against transcript deletion, proxy pruning and price-table changes. They ship in A1.
+Snapshots keep history stable against transcript deletion, proxy pruning and price-table changes. They ship in A1b; a snapshot also freezes the Ask's completeness label.
 
 **Settled** is decided from on-disk data only; the CLI never needs a running server. An Ask is settled when all of these hold:
 
@@ -197,12 +225,14 @@ On each run the adapter compares these fingerprints:
 - **A newer parser or pricing revision** makes it recomputable. `--rebuild` recomputes, and a change is shown as `revised`.
 - **A transcript that has since been deleted** keeps the snapshot as is; that is the point of freezing.
 
-Late transcript fields such as `turn_duration` are covered by the grace and size/mtime checks. Import must upsert missing fields for already-imported turns rather than skip them by responseId; otherwise a re-import cannot repair them. This is a prerequisite importer change in A1.
+Late transcript fields such as `turn_duration` are covered by the grace and size/mtime checks. Import must upsert missing fields for already-imported turns rather than skip them by responseId (today `isAlreadyImported` skips them, and `turn_duration` is attached only within one parse); otherwise a re-import cannot repair them. This importer change ships in A1b.
 
 ## CLI
 
 ```
-ccxray agentflow report [--notebook <path>] [--ask A-012] [--write] [--beside] [--all] [--rebuild] [--json]
+A1a:    ccxray agentflow report [--notebook <path>] [--ask A-012] [--json]
+A1b:    … [--write] [--rebuild]
+later:  … [--beside] [--all]
 ```
 
 - **Defaults:** without `--notebook`, it uses the notebook for the current directory: `ag.json` `target-doc` within `workspace-dir`, else `.agentflow/devlog.md`.
@@ -216,31 +246,38 @@ ccxray agentflow report [--notebook <path>] [--ask A-012] [--write] [--beside] [
 
 - subagent import
 - millisecond import ids
-- Claude 2.1.283 and Codex proxy cwd
+- Claude 2.1.283 and Codex proxy cwd on stored bodies
 - 1-hour cache-write pricing
 - indexed `effort`, `thinkingTokens` and `turnDurationMs`
 
-PR #639 stopped unknown CLI flags from booting a server.
+PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on live Claude Code 2.1.283 proxy traffic (#637's fix had worked only on stored bodies). PR #641 is a dashboard security fix, unrelated to this integration.
 
-**A1 — MVP.**
+**Prerequisite — one pricing source.** The proxy, CLI import and server reload paths must price a turn identically, including models missing from the built-in rates (see Known gaps). Handled separately, before A1a; without it, the two copies of a merged turn can disagree on cost.
 
-- **Scope:** `report --ask` and `--write` for one notebook, into the report store. This includes:
-  - Ask windows (Reply-stamp end, Ask-text start)
-  - host/internal attribution
-  - dispatch-record join for external workers
-  - Codex one-source-per-session dedup
-  - snapshots
-  - the importer upsert for late fields
-- **ccxray prerequisites** (found by the 2026-09-27 re-verification):
-  - live proxy cwd for Claude Code 2.1.283
-  - one pricing source across the proxy, CLI import and server reload paths
-  - a distinct executor kind for prompt-suggestion requests
-- **Test fixtures:** anonymised from the 2026-09-26 experiment sessions, plus a notebook with an empty scaffold, a retried close, and two overlapping windows.
-- **Validation:** real Asks in this repository are cross-checked against Claude Code's own cost.
+**A1a — terminal report on merged data (MVP).**
 
-**A2.** The fallback for external workers without dispatch records; background-agent rows; `--beside` with the Git-common-dir exclude; a real `codex exec` worker verified end to end.
+- **Scope:** `ccxray agentflow report [--ask A-NNN] [--json]` for one notebook, stdout only. This includes:
+  - reading merged data (Claude responseId merge through the server's merge function; Codex one source per session), merged before filtering
+  - the completeness label per Ask
+  - Ask windows: start by first-bullet match, end at Reply stamp plus tail, and the `setup` row
+  - attribution: host (prompt suggestions and title generation included), internal subagents, and external workers joined by dispatch record
+  - the A1a footer: recomputed from data on disk, may drift
+- **Acceptance:** this repository's own notebook, A-001 to A-007, reading `.agentflow/devlog.md` and `.agentflow/devlog.archive.md` as explicit inputs, plus the dispatch records under `.agentflow/artifacts/`. Cross-check against Claude Code's own totals where available. Run it while those Asks are within the 14-day proxy retention (A-001’s Reply is stamped 2026-09-27, so its proxy rows age out around 2026-10-11), or the proxy-only rows will already be pruned. General archive discovery is not part of A1a.
+- **Test fixtures:** anonymised from the 2026-09-26 experiment sessions, plus a notebook with an empty scaffold, a retried close, two overlapping windows, a window with partial proxy coverage, a pre-#640 proxy row with `cwd: null`, and a pruned proxy turn.
 
-**A3.** `--all`, feature streams, archives and notebook-only streams. Auto-watch is opt-in and off by default: it discovers projects from recorded cwds whose checkout contains an agentflow workspace, and refreshes reports when a new Reply appears.
+**A1b — persistence.** `--write` into the report store, snapshot freezing (including the completeness label), `--rebuild`, and the importer upsert for late fields such as `turn_duration`.
+
+**Later.**
+
+- a separate display category for prompt-suggestion and title-generation requests (they stay in the host row until then)
+- attribution for external workers without dispatch records
+- background-agent rows
+- `--beside` with the Git-common-dir exclude
+- feature streams, archives in general and notebook-only streams (`--all`)
+- opt-in auto-watch, off by default: discovers projects from recorded cwds whose checkout contains an agentflow workspace, and refreshes reports when a new Reply appears
+- a real `codex exec` worker verified end to end
+
+**Related, not blocking.** The stored `_req.json` format work (a ccxray-internal design of 2026-09-27, stage "B1" there; not this spec's Phase B1): a shared rebuild module, `ccxray show-request <id>`, and a format marker. It is deferred. A1 reads the index, not stored request bodies, so it does not depend on it. Anyone checking wire-level facts for this integration, such as whether a request carries `system`, must use a rebuilt request rather than raw `_req.json`: that mistake caused #637's live-cwd miss.
 
 **Dogfood.** Use the report daily in at least two repositories and collect five or more reports before Phase B. Record every row that looked untrustworthy and why.
 
@@ -275,20 +312,21 @@ Propose this after the report format is stable.
 
 ## Known gaps and risks
 
-- **Proxy cwd is still null on live Claude Code 2.1.283 traffic** (`e1b882c`). Both `index.ndjson` and `sessions.json` record `cwd: null`, although `parser.getCwd` returns the path for 20 of 22 of the same stored request bodies. The fix in #637 works on stored bodies but not on the live path. This is an A1 prerequisite; until it is fixed, host attribution takes cwd from the imported row of the same session.
+- **Proxy rows recorded before #640 have `cwd: null`** on live Claude Code 2.1.283 traffic (#640 fixed the live path; existing lines were not rewritten). Attribution merges first, so such a row takes cwd from its imported twin, or from its session when it has none.
 - **Pricing differs by path for models missing from the built-in rates.** For `gpt-6-astra`, with identical tokens:
   - the proxy priced $0.1861 (`exact`)
   - the CLI targeted import priced $0.0558 (`fallback`, apparently without the pricing cache)
   - the server's reload repriced the same rows to a third figure
 
-  This is an A1 prerequisite: one rate source for every path.
-- **Prompt-suggestion requests are classified as main (`Orchestrator`) turns** in the proxy. They should be identified as a separate executor kind so reports can show them, or exclude them, explicitly.
+  One rate source for every path is a prerequisite before A1a (see Phases).
+- **Prompt-suggestion requests are classified as main (`Orchestrator`) turns** in the proxy. The MVP counts them as host cost, which is correct; a separate display category is deferred.
+- **Proxy index lines are pruned after 14 days, together with their imported twins** (see Retention). A1a figures for older Asks drop proxy-only rows and fall to `transcripts only`; A1b snapshots are the fix.
 - **Codex reconciliation.** Proxy and import cannot be merged per turn yet (one source per session). Children merge into the parent.
 - **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not run. Those Asks fall back to `estimated start`.
 - **Dispatch records are conventions.** They may be missing, late or hand-edited; the join validates cwd and time and degrades to `partial`.
-- **Transcript retention** (30 days by default) limits recomputation; frozen snapshots are the durable record after that.
+- **Transcript retention** (30 days by default) limits recomputation; frozen snapshots (A1b) are the durable record after that.
 - **Several checkouts of one repository** are distinguished by resolved checkout root; symlinked paths are resolved before comparison.
-- **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. The adapter reads `logs/index.ndjson` or the APIs without `hideImported`, and A1 points report users to `/?imported`.
+- **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. The adapter reads merged index data itself, and A1a points report users to `/?imported`.
 - **Grok is untested:** recorded Grok turns carry no cwd.
 
 ## Non-goals
