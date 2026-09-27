@@ -293,6 +293,183 @@ describe('provider launcher selection', () => {
   });
 });
 
+// ── A-003 issue 1: CLI help and unknown flags ──────────────────────
+// The pre-scan runs before any require()/side effect (server/index.js, right
+// after the `usage` fast path). Each case here uses its own CCXRAY_HOME that
+// does NOT exist beforehand and asserts it still doesn't exist afterward —
+// proving zero fs side effects (no mkdir, no local-secret, no logs/) — plus
+// a dedicated PROXY_PORT that must never end up listening.
+describe('CLI help and unknown flags', () => {
+  // A fresh parent tmp dir per case (for cleanup), with a CCXRAY_HOME path
+  // inside it that is never created ahead of time.
+  function freshHome() {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-cli-'));
+    return { parent, home: path.join(parent, 'home') };
+  }
+
+  // Node 22's dual-stack connect (Happy Eyeballs) wraps a refused-connection
+  // failure in an AggregateError whose own .message is empty — the real
+  // ECONNREFUSED lives on the wrapped .errors[]. Check both shapes so this
+  // assertion doesn't depend on which stack (IPv4/IPv6/single) refused first.
+  function isConnRefused(err) {
+    if (!err) return false;
+    if (err.code === 'ECONNREFUSED') return true;
+    if (Array.isArray(err.errors)) return err.errors.some(e => e && e.code === 'ECONNREFUSED');
+    return false;
+  }
+
+  it('--help prints usage and exits 0 without side effects', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stdout, code } = await spawnAndCollect(
+        ['--help'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 0, `expected exit 0, got ${code}`);
+      assert.ok(stdout.includes('Usage:'), `expected usage text in stdout, got: ${stdout}`);
+      assert.ok(stdout.includes('--port'), `expected --port in help, got: ${stdout}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+      await assert.rejects(() => httpGetRaw(port, '/'), isConnRefused);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('-h prints usage and exits 0 without side effects', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stdout, code } = await spawnAndCollect(
+        ['-h'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 0, `expected exit 0, got ${code}`);
+      assert.ok(stdout.includes('Usage:'), `expected usage text in stdout, got: ${stdout}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+      await assert.rejects(() => httpGetRaw(port, '/'), isConnRefused);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('unknown long flag (--typo) exits 1 with error message and no side effects', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stderr, code } = await spawnAndCollect(
+        ['--typo'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 1, `expected exit 1, got ${code}`);
+      assert.ok(stderr.includes('unknown option'), `expected error in stderr, got: ${stderr}`);
+      assert.ok(stderr.includes('--typo'), `expected flag name in error, got: ${stderr}`);
+      assert.ok(stderr.includes('--help'), `expected help hint in error, got: ${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('unknown short flag (-x) exits 1 with error message and no side effects', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stderr, code } = await spawnAndCollect(
+        ['-x'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 1, `expected exit 1, got ${code}`);
+      assert.ok(stderr.includes('unknown option'), `expected error in stderr, got: ${stderr}`);
+      assert.ok(stderr.includes('-x'), `expected flag name in error, got: ${stderr}`);
+      assert.ok(stderr.includes('--help'), `expected help hint in error, got: ${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('unknown flag after a known global (--port N --typo) exits 1 with no side effects', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const otherPort = await findFreePort();
+      const { stderr, code } = await spawnAndCollect(
+        ['--port', String(otherPort), '--typo'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 1, `expected exit 1, got ${code}`);
+      assert.ok(stderr.includes('unknown option'), `expected error in stderr, got: ${stderr}`);
+      assert.ok(stderr.includes('--typo'), `expected flag name in error, got: ${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('a global flag before `usage` runs the usage report instead of booting', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stdout, stderr, code } = await spawnAndCollect(
+        ['--no-browser', 'usage'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      // Same outcome as plain `ccxray usage` on an empty home: no logs, exit 1.
+      assert.equal(code, 1, `expected usage's exit 1, got ${code}: ${stdout}${stderr}`);
+      assert.ok((stdout + stderr).includes('No logs found'), `expected the usage report, got: ${stdout}${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+      await assert.rejects(() => httpGetRaw(port, '/'), isConnRefused);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('an unknown flag in the place of a --port value is still rejected', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stderr, code } = await spawnAndCollect(
+        ['--port', String(port), '--port', '--bogus'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 1, `expected exit 1, got ${code}`);
+      assert.ok(stderr.includes('--bogus'), `expected --bogus reported, got: ${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('an empty argument (e.g. an unset "$AGENT") exits 1 instead of booting', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stderr, code } = await spawnAndCollect(
+        [''], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 1, `expected exit 1, got ${code}`);
+      assert.ok(stderr.includes('empty argument'), `expected an empty-argument error, got: ${stderr}`);
+      assert.ok(!fs.existsSync(home), `CCXRAY_HOME should not have been created: ${home}`);
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  // A-4 drift guard: the help text hardcodes agent names to avoid a
+  // require-time cost in the pre-scan; this catches a new provider being
+  // added to server/providers.js without updating the help text.
+  it('lists every known agent provider in --help output (drift guard)', async () => {
+    const { parent, home } = freshHome();
+    try {
+      const port = await findFreePort();
+      const { stdout, code } = await spawnAndCollect(
+        ['--help'], 5000, { CCXRAY_HOME: home, PROXY_PORT: String(port) }
+      );
+      assert.equal(code, 0, `expected exit 0, got ${code}`);
+      const providers = require('../server/providers');
+      for (const id of providers.listAgentProviderIds()) {
+        assert.ok(stdout.includes(id), `expected provider "${id}" listed in --help output, got: ${stdout}`);
+      }
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+    }
+  });
+});
+
 // ── R4: EADDRINUSE handling ────────────────────────────────────────
 
 describe('R4: port conflict', () => {

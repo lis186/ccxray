@@ -1,15 +1,90 @@
 #!/usr/bin/env node
 'use strict';
 
-// ── "usage" — fast-path, no server deps ──
-if (process.argv[2] === 'usage') {
-  // run() is async (#345: streams the index). Handle rejection so a read error
-  // exits non-zero instead of becoming an unhandled promise rejection.
-  require('./usage').run(process.argv.slice(3)).catch(err => {
-    console.error(err && err.message ? err.message : String(err));
-    process.exit(1);
-  });
-  return;
+// ── CLI pre-scan: --help/-h, unknown global flags, and the "usage" fast path ──
+// INVARIANT (A-003 issue 1): this block must run before every require() below
+// and before any fs/network side effect (pruneLogs, hub lockfile, listen()).
+// It decides "print help", "unknown flag, exit 1", or "run usage" — it must
+// not require('./providers') (that would defeat the zero-require-cost point of
+// living here) and does not inspect tokens after the first non-flag token (the
+// command slot); those are subcommand or agent args for the code below.
+{
+  // Keep in sync with the global flag-splice block below (the
+  // `process.argv.indexOf('--port')` / `--hub-mode` / `--allow-upstream-loop` /
+  // `--no-browser` handling) — a new global flag added there must be added
+  // here too, or it will be misreported as unknown.
+  const KNOWN_BOOL_FLAGS = new Set(['--hub-mode', '--allow-upstream-loop', '--no-browser']);
+  const KNOWN_VAL_FLAGS = new Set(['--port']);
+  const HELP_TEXT = `Usage: ccxray [options] [command]
+
+Commands:
+  claude              Launch Claude Code through the proxy
+  codex               Launch Codex CLI through the proxy
+  grok                Launch Grok CLI through the proxy
+  status              Show hub info and connected clients
+  open                Open dashboard in browser
+  import              Import transcripts (--once or --target-transcript)
+  rebuild-index       Rebuild index.ndjson from log files
+  setup-statusline    Configure Claude Code status line
+  secret              Manage shared secrets (upstream)
+  usage               Show usage summary and costs
+
+Options:
+  --port <n>              Custom proxy port (1-65535)
+  --no-browser            Don't auto-open browser on startup
+  --allow-upstream-loop   Allow upstream URL pointing back to self
+  --help, -h              Show this help
+
+Arguments after an agent command are passed to the agent:
+  ccxray claude --continue    # --continue goes to Claude Code
+  ccxray codex --model o3     # --model o3 goes to Codex
+
+Run "ccxray <command> --help" for command-specific help (where supported).
+`;
+
+  const argv = process.argv.slice(2);
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    // return, not process.exit(): exiting right after a write can truncate
+    // piped stdout/stderr on macOS, and nothing else is pending here.
+    if (tok === '--help' || tok === '-h') {
+      process.stdout.write(HELP_TEXT);
+      return;
+    }
+    if (tok === '') {
+      // e.g. `ccxray "$AGENT"` with AGENT unset: not a command, and falling
+      // through would boot a standalone server on the default home.
+      console.error('\x1b[31mError: empty argument. Run "ccxray --help" for usage.\x1b[0m');
+      process.exitCode = 1;
+      return;
+    }
+    if (KNOWN_BOOL_FLAGS.has(tok)) continue;
+    if (KNOWN_VAL_FLAGS.has(tok)) {
+      // Never swallow an option as the value; the --port parser below
+      // reports a missing or invalid value.
+      if (argv[i + 1] !== undefined && !argv[i + 1].startsWith('-')) i++;
+      continue;
+    }
+    if (tok.startsWith('-')) {
+      console.error(`\x1b[31mError: unknown option "${tok}". Run "ccxray --help" for usage.\x1b[0m`);
+      process.exitCode = 1;
+      return;
+    }
+    // First non-flag token: the command slot. "usage" is a read-only report
+    // that needs no server modules, so it runs here even after global flags
+    // (checking only argv[2] let `ccxray --no-browser usage` boot a server).
+    if (tok === 'usage') {
+      // run() is async (#345: streams the index). Handle rejection so a read error
+      // exits non-zero instead of becoming an unhandled promise rejection.
+      require('./usage').run(argv.slice(i + 1)).catch(err => {
+        console.error(err && err.message ? err.message : String(err));
+        process.exit(1);
+      });
+      return;
+    }
+    // Everything after the command slot belongs to the subcommand/agent.
+    break;
+  }
 }
 
 const http = require('http');
