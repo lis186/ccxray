@@ -657,7 +657,12 @@ describe('session-index', () => {
     si.rebuildFromMetas([{ id: 'rev-probe', sessionId: 'rev-probe', receivedAt: 1, model: 'm', maxContext: 200000 }]);
     const currentRev = si.get('rev-probe').weatherRev;
     assert.equal(typeof currentRev, 'number', 'the rebuild writer stamps a numeric revision');
-    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev }) + '\n');
+    // A-010/H6: the schema probe also checks a separate pricingRev stamp (same
+    // pattern, different derivation) — read it the same dynamic way so this
+    // weatherRev-focused test does not also need editing on a future pricing bump.
+    const currentPricingRev = si.get('rev-probe').pricingRev;
+    assert.equal(typeof currentPricingRev, 'number', 'the rebuild writer stamps a numeric pricing revision');
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev, pricingRev: currentPricingRev }) + '\n');
     await fsp.utimes(sessionsPath, now + 1, now + 1);
     assert.equal(await si.loadSessionIndex(), true, 'currently-stamped weather loads as-is');
   });

@@ -90,9 +90,21 @@ function normalizeIndexEntry(meta) {
     if (ctx !== config.DEFAULT_CONTEXT) meta.maxContext = ctx;
   }
   if (meta.usage) {
+    // R-2/INV-2 (A-010 §2): same read-side guard as restore.js's healMetaInPlace
+    // — an imported openai-provider line's usage is already cache-exclusive;
+    // legacy imported lines predate the on-disk _ccxrayUsageNormalized marker.
+    if (meta.imported && meta.provider === 'openai' && !meta.usage._ccxrayUsageNormalized) {
+      meta.usage = { ...meta.usage, _ccxrayUsageNormalized: true };
+    }
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+    const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
+    // H5 (A-010 design): reprice a stored fallback/unknown cost at read time —
+    // exact/prefix and legacy numeric costs are left untouched; nothing is
+    // rewritten on disk (cold-load only).
+    const stale = meta.cost && typeof meta.cost === 'object'
+      && (meta.cost.confidence === 'fallback' || meta.cost.confidence === 'unknown');
+    if (meta.model && (usageNormalized || stale)) {
       // #568: price by the upstream that served the turn (grok → xai), not the wire family.
       meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }

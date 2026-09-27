@@ -165,9 +165,26 @@ async function healMetaInPlace(meta) {
   }
   // usage normalization + cost recalc
   if (meta.usage) {
+    // R-2/INV-2 (A-010 §2): an imported openai-provider line's usage is already
+    // cache-exclusive — the Codex importer subtracts cached tokens manually
+    // before writing (importer.js parseCodexSessionFile). New imports carry
+    // _ccxrayUsageNormalized on the usage object itself; legacy imported lines
+    // predate that marker, so treat ANY imported openai line as normalized here
+    // rather than relying on the on-disk flag, or a second subtraction on
+    // reload halves the input tokens (the double-normalization bug this
+    // invariant exists to prevent).
+    if (meta.imported && meta.provider === 'openai' && !meta.usage._ccxrayUsageNormalized) {
+      meta.usage = { ...meta.usage, _ccxrayUsageNormalized: true };
+    }
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
+    const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
+    // H5 (A-010 design): reprice a stored fallback/unknown cost at read time —
+    // exact/prefix and legacy numeric costs (no .confidence) are left untouched.
+    // Nothing is rewritten on disk; only the in-memory view this function heals.
+    const stale = meta.cost && typeof meta.cost === 'object'
+      && (meta.cost.confidence === 'fallback' || meta.cost.confidence === 'unknown');
+    if (meta.model && (usageNormalized || stale)) {
       // #568: price by the upstream that served the turn (grok → xai), not the wire family.
       meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }

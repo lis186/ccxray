@@ -1,14 +1,36 @@
 'use strict';
 
-// #397: Single source of truth for offline model pricing.
-// All rates are per 1M tokens (USD). Three consumers:
-//   1. pricing.js — imports DEFAULT_PRICING, LITELLM_LAG_OVERRIDES, applyLagOverrides
-//      for buildPricingTable (merges with LiteLLM live data)
-//   2. cost-worker.js — imports calculateCostSimple (forked child process, no live pricing)
-//   3. importer.js — imports calculateCostSimple (runs at startup before pricing is fetched)
+const fs = require('fs');
+const path = require('path');
+
+// #397/A-010: Single source of truth for offline model pricing, AND the one
+// rate lookup every pricing site now calls (`lookupRates`). All rates are per
+// 1M tokens (USD). Consumers:
+//   1. pricing.js — imports DEFAULT_PRICING, LITELLM_LAG_OVERRIDES,
+//      mirrorProviderPrefixedKeys (context tables only — see the call sites
+//      there) and buildRateTable (its buildPricingTable is a thin wrapper
+//      around buildRateTable — see the INVARIANT there), and delegates
+//      getModelPricingWithConfidence to lookupRates. Calls setRateTable(table)
+//      once fetchPricing() lands a live table, so both wrappers converge on
+//      the richest table seen by either path.
+//   2. cost-worker.js — imports calculateCostSimple (forked child process, no
+//      live pricing; lookupRates' own lazy cache read is the only pricing
+//      data this process ever sees)
+//   3. importer.js — imports calculateCostSimple (runs at startup, often
+//      before pricing.js's fetchPricing() resolves)
 //
-// CONSTRAINT (ADR 0015): this module must be side-effect free — purely constants
-// and pure functions. No I/O, no event handlers, no process lifecycle effects.
+// INVARIANT (A-010 F1, acceptance-report.md): buildRateTable() is the ONE pure
+// table builder for pricing data — _ensureRateTable() (lazy singleton) and
+// pricing.js's buildPricingTable() (live fetchPricing() table) both call it,
+// so a LiteLLM cache shape that only matches through provider-prefix mirroring
+// (e.g. a `xai/<model>` row plus a suffixed wire id) resolves the same way on
+// both paths. Before this, _ensureRateTable() merged the cache without
+// mirroring while buildPricingTable() did — same cache, different tables.
+//
+// CONSTRAINT (ADR 0015): requiring this module installs no I/O, no event
+// handlers, no process lifecycle effects. lookupRates() DOES read the price-cache
+// file synchronously, but only lazily on its first CALL — never at require time —
+// mirroring pricing.js's ensureContextTable (C3, spec-report-r2.md §1.1). No network.
 // CONSTRAINT (#397): no circular dependency — this file must NOT require pricing.js.
 
 // ── Stable offline fallback rates (per 1M tokens, USD) ──────────────
@@ -124,6 +146,43 @@ function applyLagOverrides(litellmTable) {
 }
 
 /**
+ * Mirror `provider/model` -> bare `model` so wire IDs match LiteLLM rows.
+ * @param {string[]} [onlyProviders] - restrict to these prefixes (e.g. ['xai']).
+ *   Omit to mirror all providers (safe for context windows, not for pricing).
+ */
+function mirrorProviderPrefixedKeys(table, onlyProviders) {
+  const out = { ...table };
+  for (const [key, val] of Object.entries(table)) {
+    const slash = key.indexOf('/');
+    if (slash === -1) continue;
+    if (onlyProviders && !onlyProviders.includes(key.slice(0, slash))) continue;
+    const bare = key.slice(slash + 1);
+    if (bare && out[bare] == null) out[bare] = val;
+  }
+  return out;
+}
+
+/**
+ * The one pure rate-table builder (A-010 F1): xai/ mirror -> DEFAULT_PRICING
+ * floor -> lag overrides. Both _ensureRateTable() (lazy singleton, below) and
+ * pricing.js's buildPricingTable() (live fetchPricing() table) call this and
+ * only this, so the same litellmPricing object always produces the same table
+ * regardless of which path asks. Returns what applyLagOverrides returns
+ * ({ table, status }) — the caller manages the status side effect.
+ *
+ * INVARIANT(#397 defect 1): LiteLLM wins over DEFAULT_PRICING — DEFAULT is the
+ * offline floor, only filling keys LiteLLM lacks. Lag overrides run last, only
+ * when the merged table still lacks the model.
+ * INVARIANT(#397 defect 4): only xai/ keys are mirrored for pricing — other
+ * providers (azure_ai/, oci/) can have different rates for the same model.
+ */
+function buildRateTable(litellmPricing) {
+  const mirrored = mirrorProviderPrefixedKeys(litellmPricing || {}, ['xai']);
+  const withDefaults = { ...DEFAULT_PRICING, ...mirrored };
+  return applyLagOverrides(withDefaults);
+}
+
+/**
  * Returns the fully merged per-MTok rate table (DEFAULT_PRICING + lag overrides)
  * for consumers without access to live LiteLLM data. Used internally by
  * calculateCostSimple.
@@ -131,31 +190,6 @@ function applyLagOverrides(litellmTable) {
 function getOfflineRates() {
   return applyLagOverrides({ ...DEFAULT_PRICING }).table;
 }
-
-// ── Per-token rates for calculateCostSimple ──────────────────────────
-// Derived once at module load from DEFAULT_PRICING + lag overrides.
-// Pure computation, no I/O. Sorted longest-key-first so prefix matching
-// picks the most specific key (fixes importer.js's insertion-order bug).
-//
-// S-4 (issue 3): 1-hour cache-creation writes bill at 2x input, not the
-// 5-minute `cache_create` rate (1.25x input). DEFAULT_PRICING rows deliberately
-// carry no `cache_create_1h` value (A-4.1) — it is derived here, once, so a
-// row missing the field (every current row, plus LITELLM_LAG_OVERRIDES) never
-// silently falls back to the 5m rate.
-const _offlinePerMTok = getOfflineRates();
-const _perTokenRates = {};
-for (const [key, rates] of Object.entries(_offlinePerMTok)) {
-  _perTokenRates[key] = {
-    input: rates.input / 1_000_000,
-    output: rates.output / 1_000_000,
-    cache_read: rates.cache_read / 1_000_000,
-    cache_create: rates.cache_create / 1_000_000,
-    cache_create_1h: (rates.cache_create_1h != null ? rates.cache_create_1h : rates.input * 2) / 1_000_000,
-  };
-}
-const _sortedKeys = Object.keys(_perTokenRates).sort((a, b) => b.length - a.length);
-const _defaultRate = _perTokenRates['claude-sonnet-4'] ||
-  { input: 3e-6, output: 15e-6, cache_read: 0.3e-6, cache_create: 3.75e-6, cache_create_1h: 6e-6 };
 
 // The 5m/1h split applies only to non-negative numeric tier counts; anything
 // else (strings, negatives) falls back to the flat counter so a malformed
@@ -168,44 +202,108 @@ function hasCacheTierSplit(cc) {
   return (t5 != null || t1 != null) && ok(t5) && ok(t1);
 }
 
+// ── lookupRates: the single rate lookup (A-010 / #397) ───────────────
+// One table (DEFAULT_PRICING + LITELLM_LAG_OVERRIDES + the price-cache file),
+// one match rule, shared by calculateCost (pricing.js) and calculateCostSimple
+// (below) so the same (model, provider) always resolves to the same rates and
+// confidence, whichever path asks.
+//
+// _rateTable starts unset (no I/O at require time — ADR 0015). The first
+// lookupRates() call reads the price-cache file SYNCHRONOUSLY (never over the
+// network) via _ensureRateTable, exactly like pricing.js's ensureContextTable —
+// removing the fetchPricing()-vs-restore ordering race (spec-report-r2.md §1.1
+// C3): every consumer sees a consistent table immediately, without waiting for
+// the async fetch. pricing.js calls setRateTable(table) once fetchPricing()
+// lands a live LiteLLM table, replacing this lazy load with the richer one —
+// see the INVARIANT comment at that call site.
+let _rateTable = null;
+
+function _pricingCachePath() {
+  return process.env.CCXRAY_PRICING_CACHE || path.join(__dirname, '..', 'pricing-cache.json');
+}
+
+function _ensureRateTable() {
+  if (_rateTable) return;
+  let cachedPricing = {};
+  try {
+    const cached = JSON.parse(fs.readFileSync(_pricingCachePath(), 'utf8'));
+    if (cached && cached.pricing && typeof cached.pricing === 'object') cachedPricing = cached.pricing;
+  } catch { /* missing/unreadable cache → offline rates only */ }
+  // INVARIANT(A-010 F1): buildRateTable is the ONE table builder — see the
+  // INVARIANT comment at its definition. Do not re-merge/mirror inline here;
+  // that duplication is exactly what let this table diverge from
+  // pricing.js's buildPricingTable() (acceptance F1).
+  _rateTable = buildRateTable(cachedPricing).table;
+}
+
 /**
- * Calculate cost from a usage object and model name using offline rates.
- * Used by cost-worker.js (child process) and importer.js (startup import)
- * where the live LiteLLM pricing table is not available.
+ * Replace the shared rate table (called by pricing.js once fetchPricing()
+ * lands a live LiteLLM-derived table). Test-only reset: __resetRateTableForTests.
+ */
+function setRateTable(table) {
+  _rateTable = (table && typeof table === 'object') ? table : null;
+}
+
+/**
+ * The one rate lookup (H2/INV-1/INV-3, A-010 design). Returns
+ * { rates, confidence } — confidence is 'exact' or 'prefix'; on no match
+ * returns { rates: null, confidence: null } and the caller decides the
+ * cost/confidence shape for its own return type (H2: every wrapper maps a
+ * miss to `unknown` — no path substitutes another model's rates).
+ *
+ * Match rule (longest-prefix-first; mirrors the retired
+ * getModelPricingWithConfidence four layers — verified pricing.js:190-210):
+ *   1. `${provider}/${model}` exact match (a wire id already carrying this
+ *      provider's own prefix is looked up as-is; see H7/#568)
+ *   2. `model` exact match
+ *   3. `xai/${model}` — LiteLLM lists some Grok rows only under the xai/ prefix
+ *   4. Longest-key-first prefix match, with `-202` date-strip for dated wire IDs
+ *      (grok-4.5-build -> grok-4.5; claude-sonnet-4-5-20250514 -> claude-sonnet-4-5)
+ */
+function lookupRates(model, provider) {
+  _ensureRateTable();
+  if (!model) return { rates: null, confidence: null };
+  const table = _rateTable;
+  if (provider) {
+    const key = model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
+    if (table[key]) return { rates: table[key], confidence: 'exact' };
+  }
+  if (table[model]) return { rates: table[model], confidence: 'exact' };
+  if (!model.includes('/') && table[`xai/${model}`]) return { rates: table[`xai/${model}`], confidence: 'exact' };
+  const keys = Object.keys(table).sort((a, b) => b.length - a.length);
+  for (const key of keys) {
+    const prefix = key.split('-202')[0];
+    if (model.startsWith(key) || model.startsWith(prefix)) return { rates: table[key], confidence: 'prefix' };
+  }
+  return { rates: null, confidence: null };
+}
+
+/**
+ * Calculate cost from a usage object, model name and (optional) upstream
+ * provider key via lookupRates — the same table and match rule calculateCost
+ * (pricing.js) uses. Used by cost-worker.js (child process) and importer.js
+ * (startup import), where the live in-process LiteLLM table is not available.
  *
  * Returns { cost, confidence } where confidence is one of:
- *   - 'exact'    — exact hit in the rate table
- *   - 'prefix'   — matched via model.startsWith(key) or date-strip
- *   - 'fallback' — fell back to claude-sonnet-4 default rates
- *
- * Model matching (longest-prefix-first):
- *   1. Exact match against the rate table
- *   2. model.startsWith(key) — covers versioned wire IDs (grok-4.5-build -> grok-4.5)
- *   3. model.startsWith(key.split('-202')[0]) — covers dated Claude IDs
- *      (claude-sonnet-4-5-20250514 -> claude-sonnet-4-5)
- *   4. Falls back to claude-sonnet-4 rates
+ *   - 'exact'   — exact hit in the rate table
+ *   - 'prefix'  — matched via model.startsWith(key) or date-strip
+ *   - 'unknown' — no match; cost is null (H2, A-010: no path substitutes
+ *     another model's rates — the retired 'fallback' confidence/estimate).
  */
-function calculateCostSimple(usage, model) {
-  let r = null;
-  let confidence = 'fallback';
-  if (model) {
-    // Fast path: exact match
-    if (_perTokenRates[model]) {
-      r = _perTokenRates[model];
-      confidence = 'exact';
-    } else {
-      // Longest key first so grok-4.5-build -> grok-4.5 (not grok-build).
-      for (const k of _sortedKeys) {
-        const prefix = k.split('-202')[0];
-        if (model.startsWith(k) || model.startsWith(prefix)) {
-          r = _perTokenRates[k];
-          confidence = 'prefix';
-          break;
-        }
-      }
-    }
-  }
-  if (!r) r = _defaultRate;
+function calculateCostSimple(usage, model, provider) {
+  const { rates, confidence } = lookupRates(model, provider);
+  if (!rates) return { cost: null, confidence: 'unknown' };
+  // H3: lookupRates returns per-million rates (like calculateCost); convert to
+  // per-token here. S-4 (A-4.1): 1-hour cache-creation writes bill at 2x input,
+  // not the 5-minute `cache_create` rate — derive when the row (DEFAULT_PRICING,
+  // LITELLM_LAG_OVERRIDES, or an older cache file) carries no `cache_create_1h`.
+  const r = {
+    input: rates.input / 1_000_000,
+    output: rates.output / 1_000_000,
+    cache_read: rates.cache_read / 1_000_000,
+    cache_create: rates.cache_create / 1_000_000,
+    cache_create_1h: (rates.cache_create_1h != null ? rates.cache_create_1h : rates.input * 2) / 1_000_000,
+  };
   // S-4 (A-4.2): split only when the ephemeral 5m/1h breakdown is numeric;
   // otherwise keep pricing the flat `cache_creation_input_tokens` counter as before.
   let cacheCost;
@@ -227,7 +325,17 @@ module.exports = {
   DEFAULT_PRICING,
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides,
+  mirrorProviderPrefixedKeys,
+  buildRateTable,
   getOfflineRates,
   calculateCostSimple,
   hasCacheTierSplit,
+  lookupRates,
+  setRateTable,
+  // Test-only: reset the lazily-loaded singleton without a require.cache dance.
+  __resetRateTableForTests() { _rateTable = null; },
+  // Test-only (A-010 F1 regression): inspect the lazily-built table itself,
+  // so a test can assert it deep-equals pricing.buildPricingTable()'s output
+  // for the same cache content, not just that one lookup happens to agree.
+  __getRateTableForTests() { _ensureRateTable(); return _rateTable; },
 };

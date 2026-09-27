@@ -3,6 +3,12 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
+// A-010: calculateCostSimple now reads the package-relative pricing-cache.json
+// (lookupRates). Pin it to a file that does not exist so these assertions test
+// DEFAULT_PRICING, not whatever cache the developer machine happens to have.
+process.env.CCXRAY_PRICING_CACHE = require('path').join(require('os').tmpdir(), 'ccxray-default-rates-no-cache-' + process.pid, 'pricing-cache.json');
+require('../server/default-rates').__resetRateTableForTests();
+
 const {
   DEFAULT_PRICING,
   LITELLM_LAG_OVERRIDES,
@@ -107,12 +113,16 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.equal(calculateCostSimple(usage1M, 'claude-fable-5').cost, 10);
     });
 
-    it('falls back to sonnet-4 rates for unknown model', () => {
-      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').cost, 3);
+    // A-010/H2 (owner decision): the retired substitute-rate fallback. An
+    // unmatched model gets cost:null everywhere — no path substitutes another
+    // model's rates (a substitute price can be off by a large factor, e.g.
+    // the exp9 gpt-6-astra case: $0.055827 fallback vs $0.18609 real).
+    it('A-010/H2: no match -> cost null (not sonnet-4 substitute rates)', () => {
+      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').cost, null);
     });
 
-    it('falls back to sonnet-4 rates for null model', () => {
-      assert.equal(calculateCostSimple(usage1M, null).cost, 3);
+    it('A-010/H2: null model -> cost null (not sonnet-4 substitute rates)', () => {
+      assert.equal(calculateCostSimple(usage1M, null).cost, null);
     });
 
     it('calculates all four cost components', () => {
@@ -158,12 +168,13 @@ describe('default-rates: single source of truth (#397)', () => {
       assert.equal(calculateCostSimple(usage1M, 'claude-opus-4-6-20260115').confidence, 'prefix');
     });
 
-    it('returns fallback confidence for unknown model', () => {
-      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').confidence, 'fallback');
+    // A-010/H2: 'fallback' confidence is retired — no-match is 'unknown' everywhere.
+    it('returns unknown confidence for unknown model (A-010/H2, was fallback)', () => {
+      assert.equal(calculateCostSimple(usage1M, 'totally-unknown').confidence, 'unknown');
     });
 
-    it('returns fallback confidence for null model', () => {
-      assert.equal(calculateCostSimple(usage1M, null).confidence, 'fallback');
+    it('returns unknown confidence for null model (A-010/H2, was fallback)', () => {
+      assert.equal(calculateCostSimple(usage1M, null).confidence, 'unknown');
     });
 
     it('returns exact confidence for grok-build', () => {
@@ -174,7 +185,8 @@ describe('default-rates: single source of truth (#397)', () => {
       const result = calculateCostSimple(usage1M, 'claude-sonnet-4');
       assert.ok(typeof result === 'object');
       assert.ok(typeof result.cost === 'number');
-      assert.ok(['exact', 'prefix', 'fallback'].includes(result.confidence));
+      // A-010/H2: 'fallback' is retired from this shape's confidence values.
+      assert.ok(['exact', 'prefix', 'unknown'].includes(result.confidence));
     });
   });
 

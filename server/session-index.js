@@ -52,6 +52,26 @@ function _assignWeather(s, weather) {
   s.weatherRev = WEATHER_REV;
 }
 
+// H6 (A-010 design): revision of the pricing DERIVATION behind persisted cost
+// aggregates (totalCost/fallbackCost/fallbackCount), stamped on every session
+// record — same WEATHER_REV pattern above, because the same gap applies: the
+// schema probe below tests field existence and `reconcile` compares counts,
+// neither of which notices a change in HOW cost was computed. Without this
+// stamp, a session record built under the retired two-lookup/double-normalize
+// bug (or under stale fallback pricing later corrected by H5's read-time
+// reprice) would keep rendering forever — `sessions.json` aggregates only heal
+// on a rebuild (H6 known limit), and a stale-revision record is exactly what
+// forces one. Bump whenever the pricing derivation changes.
+//   1 — #397/A-010: single lookupRates table, retired calculateCostSimple
+//       fallback estimate, fixed Codex-import double-normalization (R-2)
+const PRICING_REV = 1;
+
+// Single writer, following _assignWeather above.
+function _assignPricingRev(s) {
+  if (!s) return;
+  s.pricingRev = PRICING_REV;
+}
+
 function sessionsPath() {
   return path.join(config.LOGS_DIR, 'sessions.json');
 }
@@ -105,6 +125,10 @@ async function loadSessionIndex() {
         || (s.weather !== undefined && s.weather?.stats?.toolTurns === undefined)
         // #503: not a field probe — a derivation-semantics probe. See WEATHER_REV.
         || (s.weather !== undefined && s.weatherRev !== WEATHER_REV)
+        // H6 (A-010): same derivation-semantics probe for pricing. Every record
+        // with s.count > 0 has gone through _upsert (which stamps pricingRev),
+        // so no `!== undefined` guard is needed the way weatherRev has one.
+        || s.pricingRev !== PRICING_REV
       )) { needsMigration = true; break; }
     }
     if (needsMigration) {
@@ -354,6 +378,10 @@ function _upsert(sid, entry) {
     s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, title: null, firstPrompt: null, firstReceivedAt: 0, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
+  // H6 (A-010): stamp every touched record with the current pricing revision
+  // (see _assignPricingRev above) — cheap and unconditional, mirroring how
+  // _assignWeather stamps every weather computation.
+  _assignPricingRev(s);
   // #333: bump COUNT once per responseId so the session card shows merged turns,
   // not the 2–8 raw duplicate lines a shared log holds. A line without responseId
   // (legacy/exempt) has no dedup key ⇒ always counts. Kept paired with reconcile's
