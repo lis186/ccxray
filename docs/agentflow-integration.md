@@ -1,6 +1,6 @@
 # ccxray × agentflow integration
 
-- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1; revised again 2026-09-27 to put the proxy in the MVP, after a threeways review)
+- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1; revised again 2026-09-27 to put the proxy in the MVP, after a threeways review; completeness, `complete` judgement and A1a duration decided by the owner the same day)
 - Date: 2026-09-27
 - Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), #639 (CLI flags), #640 (live proxy cwd), #641, ADR 0012 (responseId read-time merge), ADR 0017 (aggregate cost confidence)
 
@@ -31,7 +31,7 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
 | Host | The interactive session (Claude Code or Codex) the owner talks to; the coordinator. |
 | Internal worker | A native subagent of the host, for example a Claude Code Task agent. Its transcript sits under the host session. A resumed subagent may serve a later Ask. |
 | External worker | A separate `claude -p`, `codex exec` or `grok` process run by `external-runner.js`. Its clone is a fresh `$TMPDIR/agentflow-external-runner-XXXXXX/clone` by default, but a caller-chosen `clone_directory` is also allowed. The runner does not delete the clone. The runner itself records nothing about the Ask or role. |
-| Dispatch record | For each external run, the coordinator writes `<workspace>/artifacts/<A-NNN-slug>/dispatch/<stage>-dispatch.json`, following `references/delegation.md` ("record profile, model, effort, … facts"). Observed fields: `stage`, `model`, `effort`, `started`, `finished`, `clone`, and the runner's full `result` (command, exit code, clone identity). It is **host-authored**: the format is a convention, not a script-enforced contract, and it may be missing or incomplete. |
+| Dispatch record | For each external run, the coordinator writes `<workspace>/artifacts/<A-NNN-slug>/dispatch/<stage>-dispatch.json`, following `references/delegation.md` ("record profile, model, effort, … facts"). Observed fields: `stage`, `model`, `effort`, `started`, `finished`, `clone`, and the runner's `result` (command, exit code, clone identity). The runner may truncate the worker's report text captured inside `result`; that does not affect the fields attribution needs (`stage`, `model`, `effort`, `started`, `finished`, `clone`). It is **host-authored**: the format is a convention, not a script-enforced contract, and it may be missing or incomplete. |
 
 ## Architecture
 
@@ -93,7 +93,7 @@ So a report recomputed after 14 days loses its proxy-only rows and drops from `c
 
 ### Completeness
 
-Every Ask carries one completeness label, derived from the data at report time (never stored in A1a):
+Every Ask carries one completeness label, derived from the data at report time (never stored in A1a). The three labels and the per-turn-twin rule for `complete` are owner decisions (2026-09-27); no separate coverage record is kept.
 
 | Label | Meaning |
 |---|---|
@@ -184,7 +184,7 @@ Both conditions are tested on merged rows. **Proxy-only host requests** (prompt 
 - background · codex gpt-5.6-terra · effort low · $0.004 · 2 calls
 ```
 
-- **Ask time** is `end − start`. **Executor time** is the sum of `turnDurationMs` where present; otherwise first-to-last turn, marked `duration estimated`. Until the importer upserts late fields (A1b), already-imported turns may lack `turnDurationMs`.
+- **Ask time** is `end − start`. **Executor time** is the sum of `turnDurationMs` where present; otherwise first-to-last turn, marked `duration estimated`. Until the importer upserts late fields (A1b), already-imported turns may lack `turnDurationMs`. A1a does not require exact executor time (owner decision, 2026-09-27).
 - **"read share"** is cache-read tokens ÷ (input + cache-read + cache-write) tokens.
 - **Effort** is the value actually sent; if an executor used several levels, each is listed with its call count.
 - **Unpriced turns** follow ADR 0017: the total is rendered with its confidence (for example a `+` lower bound).
@@ -262,7 +262,8 @@ PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on li
   - Ask windows: start by first-bullet match, end at Reply stamp plus tail, and the `setup` row
   - attribution: host (prompt suggestions and title generation included), internal subagents, and external workers joined by dispatch record
   - the A1a footer: recomputed from data on disk, may drift
-- **Acceptance:** this repository's own notebook, A-001 to A-007, reading `.agentflow/devlog.md` and `.agentflow/devlog.archive.md` as explicit inputs, plus the dispatch records under `.agentflow/artifacts/`. Cross-check against Claude Code's own totals where available. Run it while those Asks are within the 14-day proxy retention (A-001’s Reply is stamped 2026-09-27, so its proxy rows age out around 2026-10-11), or the proxy-only rows will already be pruned. General archive discovery is not part of A1a.
+- **Acceptance:** this repository's own notebook, A-001 to A-008, reading `.agentflow/devlog.md` and `.agentflow/devlog.archive.md` as explicit inputs, plus the dispatch records under `.agentflow/artifacts/`. None of these Asks went through the proxy (the owner's `~/.ccxray` has had no writes since 2026-09-26 22:16 and no hub was running), so every one of them must come out `transcripts only`. General archive discovery is not part of A1a.
+- **Acceptance of `complete` and `partial proxy coverage`:** these two paths need either a later real Ask run with the proxy on, or test fixtures; the A-001 to A-008 run cannot exercise them.
 - **Test fixtures:** anonymised from the 2026-09-26 experiment sessions, plus a notebook with an empty scaffold, a retried close, two overlapping windows, a window with partial proxy coverage, a pre-#640 proxy row with `cwd: null`, and a pruned proxy turn.
 
 **A1b — persistence.** `--write` into the report store, snapshot freezing (including the completeness label), `--rebuild`, and the importer upsert for late fields such as `turn_duration`.
@@ -328,6 +329,7 @@ Propose this after the report format is stable.
 - **Several checkouts of one repository** are distinguished by resolved checkout root; symlinked paths are resolved before comparison.
 - **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. The adapter reads merged index data itself, and A1a points report users to `/?imported`.
 - **Grok is untested:** recorded Grok turns carry no cwd.
+- **No real agentflow Ask has gone through the proxy yet.** The `complete` and `partial proxy coverage` paths, the per-turn-twin rule and proxy-only host rows are so far checked only by the isolated 2026-09-26/27 experiments; they need a real proxied Ask or fixtures (see A1a acceptance).
 
 ## Non-goals
 
