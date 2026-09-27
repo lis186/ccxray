@@ -1,6 +1,6 @@
 # ccxray × agentflow integration
 
-- Status: Draft
+- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1)
 - Date: 2026-09-27
 - Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), ADR 0012 (index lines are the durable record), ADR 0017 (aggregate cost confidence)
 
@@ -11,128 +11,184 @@
 Both tools must keep working on their own:
 
 - **ccxray without agentflow** behaves exactly as today. The integration is an adapter; nothing in core depends on it.
-- **agentflow without ccxray** behaves exactly as today. Phase A requires no change to agentflow at all. Phase B proposes two optional, tool-neutral hooks upstream, and both are no-ops when nothing is configured.
+- **agentflow without ccxray** behaves exactly as today. Phase A requires no change to agentflow at all. Phase B proposes two opt-in, tool-neutral changes upstream; both do nothing unless enabled.
 
 ccxray's maintainer does not maintain agentflow. Anything that needs agentflow to change is a proposal to its author, never a fork we carry.
 
 ## agentflow concepts this spec relies on
 
+Paths below are relative to the notebook's workspace directory: `ag.json` `workspace-dir`, `.agentflow` by default.
+
 | Term | Meaning |
 |---|---|
-| Notebook | A Markdown file, by default `.agentflow/devlog.md`. Feature streams have their own notebook under `.agentflow/features/<name>/`, in a separate git worktree. Old rounds are compacted into `<notebook-stem>.archive.md`. |
-| Ask / Reply | One round. `# → Ask / A-012` is the request; `# ← Reply / A-012` is the answer. The Ask heading carries **no timestamp**; the Reply opens with a stamp line `* _YYYY-MM-DD HH:MM:SS ±HHMM (host/model/effort)_`. The stamp reads `claude/unknown` or `host/unknown` when agentflow cannot identify the model; it cannot for Claude today. |
-| RUN / WIP | Timestamped progress records inside a round. |
-| `agf close` | Atomic closeout: writes the Reply, hashes the notebook and commits (in a git repo). The commit message carries an `Agentflow-Close-Id: <64 hex>` trailer. **The notebook must not be modified after close**; agentflow re-verifies the hash. |
+| Notebook | A Markdown file, by default `.agentflow/devlog.md` (`ag.json` `target-doc`). Feature streams usually live in their own worktree at `.agentflow/features/<key>/<key>.devlog.md`; notebook-only streams may share a checkout. Compaction moves old rounds into an archive: `devlog.md` → `devlog.archive.md`, `<topic>.devlog.md` → `<topic>.archive.md`. |
+| Ask | The request of one round, under `# → Ask / A-012`. The heading has **no timestamp**. The body is the owner's prompt, captured verbatim by agentflow's `UserPromptSubmit` hook or typed into the notebook. A freshly scaffolded Ask may be empty. |
+| Reply | The answer, under `# ← Reply / A-012`. It opens with a stamp line `* _YYYY-MM-DD HH:MM:SS ±HHMM (<identity>)_`. The identity is `model/effort` when agentflow could read it (Codex) and `<host>/unknown` otherwise; today that means always for Claude. Every closed round has a Reply stamp, whatever the delivery mode. |
+| RUN / WIP | Progress records. Their timestamps are **not** progress times: RUN bodies submitted with a close manifest are stamped at close. |
+| `agf close` | Publishes the Reply, re-verifying the notebook hash inside a lock, and then, as a separate step that can fail on its own, commits with an `Agentflow-Close-Id: <64 hex>` trailer. Delivery affects the commit:<br>• `local` inside a Git repository still commits.<br>• A plain folder never commits.<br>• A stream's closing commits are fast-forwarded on merge-back, so their timestamps survive.<br>Owners may also close rounds without `agf close` (the ccxray repo does, to keep its notebook uncommitted). Closed rounds are byte-verified again only on compaction and ownership adoption. |
 | Host | The interactive session (Claude Code or Codex) the owner talks to; the coordinator. |
-| Internal worker | A native subagent of the host (for example a Claude Code Task agent). Its transcript sits under the host session. |
-| External worker | A separate `claude -p`, `codex exec` or `grok` process spawned by `external-runner.js` in a disposable clone at `$TMPDIR/agentflow-external-runner-XXXXXX/clone` (on macOS `/private/var/folders/…/T/…`). The clone is deleted afterwards. agentflow persists **no** record of which Ask or role a worker served. |
+| Internal worker | A native subagent of the host, for example a Claude Code Task agent. Its transcript sits under the host session. A resumed subagent may serve a later Ask. |
+| External worker | A separate `claude -p`, `codex exec` or `grok` process run by `external-runner.js`. Its clone is a fresh `$TMPDIR/agentflow-external-runner-XXXXXX/clone` by default, but a caller-chosen `clone_directory` is also allowed. The runner does not delete the clone. The runner itself records nothing about the Ask or role. |
+| Dispatch record | For each external run, the coordinator writes `<workspace>/artifacts/<A-NNN-slug>/dispatch/<stage>-dispatch.json`, following `references/delegation.md` ("record profile, model, effort, … facts"). Observed fields: `stage`, `model`, `effort`, `started`, `finished`, `clone`, and the runner's full `result` (command, exit code, clone identity). It is **host-authored**: the format is a convention, not a script-enforced contract, and it may be missing or incomplete. |
 
 ## Architecture
 
 ```
-            transcripts (~/.claude/projects, ~/.codex/sessions)   proxy traffic (optional)
-                                   │                                     │
-                                   ▼                                     ▼
-                         ┌──────────────────── ccxray index (index.ndjson) ─────────────────┐
-                         │ per turn: session, cwd, model, effort, tokens, cost, subagent,    │
-                         │ turn duration, receivedAt, responseId                             │
-                         └───────────────────────────────┬──────────────────────────────────┘
-                                                         │ core: usage query
-                                                         ▼
-                                  adapters/agentflow: notebook → Ask windows → report
-                                                         │
-                                                         ▼
-                                   <notebook-stem>.usage.md   ·   terminal report
+    transcripts (~/.claude/projects, ~/.codex/sessions)      proxy traffic (optional)
+                              │                                        │
+                              ▼                                        ▼
+             ┌──────────────── ccxray index (index.ndjson) ─────────────────┐
+             │ per turn: session, cwd, model, effort, tokens, cost,          │
+             │ subagent link, turn duration, receivedAt, dedup key           │
+             └──────────────────────────────┬────────────────────────────────┘
+                                            │ core: usage query
+                                            ▼
+      adapters/agentflow: notebook + dispatch records → Ask windows → report
+                                            │
+                                            ▼
+             report store under the ccxray data dir  ·  terminal / JSON
 ```
 
-The split is deliberate:
-
-- **Core** gets one reusable capability, a usage query: `query({ roots, from, to }) → aggregate`. It selects turns by working-directory root and time range, folds in subagent turns through their parent link, and aggregates tokens, cost (with ADR 0017 confidence), models, effort and duration per executor. The next workflow tool integration reuses it unchanged.
-- **The agentflow adapter stays thin.** It only turns a notebook into Ask windows, classifies executors, and renders the report. It never parses agentflow's prompts or briefs, because any wording change upstream would break it.
+- **Core** gets one reusable capability, a usage query: `query({ roots, from, to, sessions? }) → aggregate`. It selects turns by working-directory root, time range and optionally session. It folds in subagent turns per turn through their parent link, and aggregates tokens, cost (with ADR 0017 confidence), models, effort and duration per executor. The next workflow tool integration reuses it unchanged.
+- **The agentflow adapter stays thin.** It turns notebooks and dispatch records into Ask windows, classifies executors, and renders the report. It never parses agentflow's prompts or briefs.
 
 ## Data sources
 
 **Transcripts are the primary source; the proxy is opportunistic.** Measured on Claude Code 2.1.283 (see Evidence):
 
-- **Main-thread turns match exactly.** Imported and proxied turns agree turn for turn, including cost.
-- **Subagent cost was the only real gap.** Before #637 the importer skipped `subagents/*.jsonl`, which made import-only cost about 37% low.
+- **Claude main-thread turns match** between import and proxy after #637, turn for turn and in cost.
 - **Proxy-only traffic is small**, about 1% of cost: title generation, quota checks and `count_tokens`.
 - **Transcripts carry everything the report needs:**
   - effort: Claude `effort`/`perTurnEffort`, Codex `turn_context.effort`
-  - turn duration: Claude `turn_duration`
+  - turn duration: Claude `turn_duration`, written only by interactive sessions, not by `claude -p`
   - thinking tokens
   - tool arguments
   - subagent parent linkage
-- **Transcripts outlive the proxy.** Claude transcripts are kept 365 days by default. Imported index lines are never pruned. Proxy raw logs are pruned after `LOG_RETENTION_DAYS` (14).
 
-Consequences:
+Retention bounds what can be recomputed later:
 
-- **The report works when the proxy was never running**, and can be computed after the fact.
-- **When the proxy was running, its turns merge with imported ones** through responseId (ADR 0012) and add the proxy-only traffic. No separate "measured vs estimated" label: the ~1% difference does not justify the complexity. The report footer names the sources used.
-- **Codex children merge into the parent.** Codex child rollouts carry `session_id = parent_thread_id`, so the importer folds children into the parent session. Parent-window totals are right; parent vs child split is not available yet.
+- **Claude Code deletes transcripts after `cleanupPeriodDays`, 30 days by default.** Machines configured longer keep them longer.
+- **Proxy raw logs** are pruned after `LOG_RETENTION_DAYS` (14).
+- **Imported index lines are not pruned.**
+
+So a report can be computed after the fact only within the transcript retention window. **Snapshots (see Freezing) are part of A1**, not a later nicety.
+
+**Deduplication across sources** is per provider:
+
+- **Claude:** proxy and imported turns merge by responseId (`msg.id`, ADR 0012).
+- **Codex:** neither imported nor proxied turns carry a responseId, so ADR 0012 does not apply and naive union double-counts. Until a tested Codex reconciliation key exists (session id plus turn id, or session plus timestamp within tolerance), the adapter uses **one source per Codex session**: the proxy if it recorded that session, otherwise the import. The report footer says which.
+- **Codex children** (`session_id = parent_thread_id`) import merged into the parent session. Parent totals include them; a per-child split is not available.
+
+**No separate "measured vs estimated" label** is shown; the footer names the sources used.
 
 ## Ask windows
 
-A window is the time range whose turns belong to one Ask.
+A window is the half-open time range `[start, end)` whose turns belong to one Ask.
 
-**Boundaries.** An Ask's window runs from the end of the previous round to the end of this one:
+**End.** The Ask's Reply stamp. It is always present and parsed with agentflow's local-time format. When the round has a matching close commit (`Agentflow-Close-Id`, touching this notebook, whose tree contains this Reply), its committer time is a cross-check only: if the two disagree by more than a minute, keep the stamp and flag the Ask. An Ask with no Reply is **open**: its window ends now and it is never frozen.
 
-1. **In a git repository:** the committer time of the `agf close` commit that recorded the round. It is found as a commit touching the notebook whose message carries `Agentflow-Close-Id`. This avoids parsing Markdown timestamps and time zones.
-2. **Fallback:** the Reply stamp, when there is no git, no matching close commit (local delivery, plain folder), or history was rewritten. Rebase changes committer time, and so do stream merge-back and squash. When the two sources disagree by more than a minute, prefer the stamp and note it.
-3. The first Ask starts at the earliest turn in the notebook's root after the notebook was created.
-4. An Ask without a Reply is **open**: its window ends now, and it is never frozen.
+**Start.** The timestamp of the host-transcript user message whose text matches the Ask body. agentflow's hook captures the owner's prompt verbatim, so this is the moment the owner asked. Matching normalises whitespace and accepts an Ask body that is a prefix or a concatenation of several user messages (an Ask can collect follow-ups).
+- **Fallback:** the previous round's Reply stamp. The Ask is then labelled `estimated start`, because idle time and unrelated work in that gap may be included.
+- **Empty Asks** (scaffolds with no body) have no window.
 
-**Turn-level attribution.** Attribution is per turn, not per session. A long host session that spans several Asks is split at the window boundaries.
+Edge cases:
 
-**Session selection.** A turn belongs to the notebook when:
+- **Idle time** between a Reply and the next Ask's start belongs to no Ask.
+- **Several Asks closed together** each keep their own start. Where two windows overlap, turns are assigned to the Ask whose start is the most recent before the turn, and the overlap is flagged.
+- **A retried or failed close** uses the stamp that finally stands in the notebook; a Reply that was replaced is ignored.
+- **A reopened round** (the owner appends to an Ask after its Reply) extends that Ask only if the new text appears in the Ask body. Otherwise the new work belongs to the next Ask.
 
-- **Host turns:** its cwd equals the notebook's worktree root. The root is the worktree, not the repository, so feature streams in separate worktrees do not collide. The turn's session must also show evidence of working on this notebook: a tool call in the transcript that reads or writes the notebook path, or that runs agentflow's `agf` script with it. Sessions in the same directory that never touched the notebook are excluded. When no tool-argument evidence is available, fall back to cwd plus window, and mark the Ask `partial`.
-- **Internal workers:** a subagent turn belongs to the Ask of its parent turn, via the parent link from #637.
-- **External workers:** turns whose cwd matches `*/agentflow-external-runner-*/clone` inside the window. The clone path does not say which repository it came from. If exactly one notebook has an open window at that time, the turns go to it. Otherwise they are listed under every candidate Ask as `ambiguous`, and the grand total counts them once.
+## Attribution
+
+**Per turn, never per session.** A long host session is split at window boundaries; a resumed subagent's turns follow the Ask whose window contains them.
+
+**Host turns** belong to a notebook when both hold:
+
+1. The turn's cwd is the root of the checkout the notebook lives in: the worktree for a stream, the repository or folder otherwise.
+2. The session shows evidence of working on this notebook: a user message matching one of its Asks, or a tool call whose arguments mention the notebook path (relative or absolute), `agf`, or the notebook's workspace directory. Bash command text counts.
+
+Sessions in the same directory without such evidence are excluded. If evidence cannot be read (transcript gone, arguments unavailable), fall back to cwd plus window and mark the Ask `partial`.
+
+**Internal workers.** Subagent turns follow their parent session through the #637 parent link and are assigned per turn by time.
+
+**External workers.** Joined in this order:
+
+1. **Dispatch records.** The directory `A-NNN-slug` gives the Ask; `stage` gives the role; `model`/`effort` give the requested values; `started`/`finished` and `clone` give the run. Worker turns are those whose cwd equals `clone` and whose time falls in `[started, finished]`. The time bound matters because clone paths can be reused or caller-chosen. Requested and actual effort are compared, and a mismatch is flagged.
+2. **No dispatch record.** Turns whose cwd matches `*/agentflow-external-runner-*/clone` inside a window. If exactly one notebook has a window open at that time they go to it, role `unknown`, Ask marked `partial`. Otherwise they are listed as `ambiguous` under each candidate and counted once in the grand total.
+
+**Codex background agents** (for example `thread_source: memory_consolidation`) carry a cwd and their own session id, so they can land in an open window. They are listed as a separate `background` executor row, not merged into the host.
 
 ## Report
 
-**Surface.** A side file next to each notebook, `<notebook-stem>.usage.md` (for example `.agentflow/devlog.usage.md`). It is also available as a terminal report.
+**Location.** By default reports live in ccxray's data directory, outside the project: `<CCXRAY_HOME>/agentflow/<project-id>/<notebook-id>.usage.md`, plus a snapshot store. `project-id` is derived from the resolved checkout root; `notebook-id` from the notebook's path relative to it. This keeps the project tree untouched, so agentflow's stream cleanup, which refuses unknown ignored files, is never affected.
 
-- The side file is a **local, rebuildable cache**. ccxray adds it to `.git/info/exclude`, never to the project's `.gitignore`, so it stays out of commits and out of agentflow's repository-state checks.
-- Sharing cost with teammates or across machines is **not** a Phase A goal; that is Phase B2's job.
+**Optional side file (`--beside`)** writes `<notebook-dir>/<notebook-stem>.usage.md` next to the notebook:
+
+- It is excluded through `$(git rev-parse --git-common-dir)/info/exclude`, the repository-wide exclude that linked worktrees share. The literal `.git/info/exclude` is wrong in a worktree.
+- It is refused inside stream worktrees, and in plain folders without `--force`, until agentflow recognises the file (a small upstream request, listed under Phase B).
+- The side file is a local, rebuildable view. Sharing cost with teammates is Phase B2's job.
 - ccxray never writes to the notebook itself.
 
 **Format.** Two levels: the Ask summary, then one row per executor.
 
 ```markdown
-## A-012 · 14m32s wall · $0.184 · 42 calls · in 12.3k / out 3.1k / cache 210k (hit 94%)
+## A-012 · 14m32s · $0.184 · 42 calls · in 12.3k · out 3.1k · cache read 210k / write 8.1k (read share 94%)
 - host · claude-opus-5-5 · effort high · 9m10s · $0.121 · 30 calls
   - subagent general-purpose · claude-sonnet-5 · effort high · 1m02s · $0.018 · 4 calls
-- external · codex gpt-5.6-sol · effort low · 5m22s · $0.063 · 12 calls
+- external cross-check · codex gpt-5.6-sol · effort low (requested low) · 5m22s · $0.063 · 12 calls
+- background · codex gpt-5.6-terra · effort low · $0.004 · 2 calls
 ```
 
-- **Wall time** is the window's span. **Executor time** is the sum of `turnDurationMs` where the transcript has it: Claude interactive sessions do; `claude -p` does not write `turn_duration`. Otherwise it is first-to-last turn.
-- **Effort** is the value actually sent. When one executor used more than one level, list each with its call count.
+- **Ask time** is `end − start`. **Executor time** is the sum of `turnDurationMs` where present; otherwise first-to-last turn.
+- **"read share"** is cache-read tokens ÷ (input + cache-read + cache-write) tokens.
+- **Effort** is the value actually sent; if an executor used several levels, each is listed with its call count.
 - **Unpriced turns** follow ADR 0017: the total is rendered with its confidence (for example a `+` lower bound).
-- **Coverage labels:** `partial` means some expected evidence is missing: a fallback session match, an ambiguous external, or a window with turns but no transcript for a known executor. `unmeasured` means no turns were found at all.
-- **Tool statistics** stay in the dashboard; the report does not list them.
-- **The footer** states the sources used (transcripts and/or proxy) and the generation time.
+- **Labels:**
+  - `partial`: some expected evidence is missing
+  - `estimated start`: see Ask windows
+  - `ambiguous`: see Attribution
+  - `unmeasured`: no turns found
+  - `revised`: a frozen snapshot was recomputed and changed
+- **The footer** states the sources per provider, the generation time, and snapshot status.
+- **Tool statistics** stay in the dashboard.
 
-**Freezing.** An Ask is **settled** when all of these hold:
+**Privacy.** Reports and `--json` contain only the fields shown above: Ask id, executor kind, role, model, effort, durations, token counts, costs, call counts and labels. They never contain prompts, Ask text, tool arguments or transcript content. Absolute paths are omitted: clones appear as their role, checkouts as their notebook path. Files are written with owner-only permissions (0600, directories 0700). Matching Ask text against transcripts happens in memory only.
 
-- it has a Reply
-- ccxray has no pending proxy requests in its window
-- the transcripts covering the window have been imported
-- a grace period (default 10 minutes) has passed since the window end
+## Freezing
 
-A settled Ask is frozen as a snapshot in ccxray's own data directory, and later runs reuse it. This keeps history stable against pruning and price-table changes. `--rebuild` recomputes, for example after a pricing fix.
+Snapshots keep history stable against transcript deletion, proxy pruning and price-table changes. They ship in A1.
+
+**Settled** is decided from on-disk data only; the CLI never needs a running server. An Ask is settled when all of these hold:
+
+- it has a Reply stamp
+- `now ≥ end + grace` (default 30 minutes)
+- no index line falls inside its window that is newer than `end + grace`
+- every transcript file that contributed to the window is unchanged in size and mtime for at least the grace period
+
+A snapshot stores the aggregate plus what it was computed from:
+
+- the notebook identity: path, Ask id, and a hash of the Ask heading and Reply stamp
+- a fingerprint of each contributing transcript: path, size, mtime
+- the importer/parser revision and the pricing revision
+
+On each run the adapter compares these fingerprints:
+
+- **A changed Reply or Ask identity** invalidates the snapshot.
+- **A newer parser or pricing revision** makes it recomputable. `--rebuild` recomputes, and a change is shown as `revised`.
+- **A transcript that has since been deleted** keeps the snapshot as is; that is the point of freezing.
+
+Late transcript fields such as `turn_duration` are covered by the grace and size/mtime checks. Import must upsert missing fields for already-imported turns rather than skip them by responseId; otherwise a re-import cannot repair them. This is a prerequisite importer change in A1.
 
 ## CLI
 
 ```
-ccxray agentflow report [--notebook <path>] [--ask A-012] [--write] [--all] [--rebuild] [--json]
+ccxray agentflow report [--notebook <path>] [--ask A-012] [--write] [--beside] [--all] [--rebuild] [--json]
 ```
 
-- **Defaults:** without `--notebook`, it uses the agentflow notebook for the current directory: `ag.json` `target-doc`, else `.agentflow/devlog.md`.
-- **Output:** stdout by default. `--write` updates the side file. `--json` emits the aggregate for other tools.
-- **`--all`:** covers every notebook under the project (root, feature streams, archives) and prints cross-notebook totals.
-- **Isolation:** like every ccxray subcommand, it must not boot a server, prune, or import implicitly unless asked. Import freshness is ensured by an explicit import step.
+- **Defaults:** without `--notebook`, it uses the notebook for the current directory: `ag.json` `target-doc` within `workspace-dir`, else `.agentflow/devlog.md`.
+- **Output:** stdout by default. `--write` updates the report store (plus the side file with `--beside`). `--json` emits the aggregate.
+- **`--all`:** covers every notebook of the project, including feature streams, archives and notebook-only streams. Archived rounds are deduplicated against the live notebook by Ask id and Reply stamp, and a notebook copied by stream merge-back is counted once.
+- **No side effects unless asked:** like every ccxray subcommand, it must not boot a server or prune. It does not import implicitly; freshness comes from an explicit `ccxray import --once` or the running hub. The report says when the newest imported turn is older than the window end.
 
 ## Phases
 
@@ -144,59 +200,71 @@ ccxray agentflow report [--notebook <path>] [--ask A-012] [--write] [--all] [--r
 - 1-hour cache-write pricing
 - indexed `effort`, `thinkingTokens` and `turnDurationMs`
 
+PR #639 stopped unknown CLI flags from booting a server.
+
 **A1 — MVP.**
 
-- **Scope:** `report --ask` for one notebook, stdout only.
-- **Test fixtures:** anonymised from the 2026-09-26 experiment sessions: a `claude -p` worker with a subagent, and an interactive host with a subagent and title generation.
-- **Also includes:** the core usage query.
-- **Validation:** two real Asks cross-checked against Claude Code's own cost.
+- **Scope:** `report --ask` and `--write` for one notebook, into the report store. This includes:
+  - Ask windows (Reply-stamp end, Ask-text start)
+  - host/internal attribution
+  - dispatch-record join for external workers
+  - Codex one-source-per-session dedup
+  - snapshots
+  - the importer upsert for late fields
+- **Test fixtures:** anonymised from the 2026-09-26 experiment sessions, plus a notebook with an empty scaffold, a retried close, and two overlapping windows.
+- **Validation:** real Asks in this repository are cross-checked against Claude Code's own cost.
 
-**A2.** `--write`, snapshots and freezing, `--rebuild`, multi-Ask reports. The external-worker classification must be verified with a real `codex exec` worker.
+**A2.** The fallback for external workers without dispatch records; background-agent rows; `--beside` with the Git-common-dir exclude; a real `codex exec` worker verified end to end.
 
-**A3.** `--all`, feature streams and archives. Auto-watch is opt-in and off by default: it discovers projects from recorded cwds that contain `.agentflow/` and refreshes a side file when a new Reply appears.
+**A3.** `--all`, feature streams, archives and notebook-only streams. Auto-watch is opt-in and off by default: it discovers projects from recorded cwds whose checkout contains an agentflow workspace, and refreshes reports when a new Reply appears.
 
 **Dogfood.** Use the report daily in at least two repositories and collect five or more reports before Phase B. Record every row that looked untrustworthy and why.
 
 ## Phase B — proposals to agentflow upstream
 
-Both hooks are framed as **generic observability extension points**, with ccxray as one reference implementation. Neither mentions ccxray in agentflow's code. agentflow removed its earlier metrics helper because it was unfinished, not because it opposed the idea.
+All proposals are framed as generic observability extension points with ccxray as one reference implementation. None mentions ccxray in agentflow's code, and each does nothing unless enabled. agentflow removed its earlier metrics helper because it was unfinished, not because it opposed the idea.
 
-**B1 — external worker run ledger.** This is the one gap Phase A cannot close: an external worker's **role** (implementation, cross-check, …) and its **source repository**. Proposal: `external-runner.js` appends one JSON line per run under the workspace `.tmp/`:
+**B1 — make the dispatch record a contract.** agentflow already writes dispatch records by convention. The proposal is to have a script write the stable subset, so that it no longer depends on the coordinator's diligence. When the caller passes `--record <path>` with `ask` and `stage`, `external-runner.js` appends crash-safe start and end events carrying:
 
-```json
-{"ask":"A-012","role":"cross-check","executable":"codex","requested_model":"gpt-5.6-sol","requested_effort":"low","clone_path":"/…/agentflow-external-runner-N59FRB/clone","started_at":"…","ended_at":"…","exit":0}
-```
+- a run id
+- `ask` and `stage`
+- repository, worktree and notebook identity
+- the host session id
+- executable, requested model and effort
+- clone path, start/end times and exit status
 
-- **No network or environment changes.** Base URLs are not rewritten, headers are not injected, and nothing is proxy-specific.
-- **Joining:** ccxray joins the ledger to turns by `clone_path`. This gives exact role and repository attribution, and the requested effort, so the report can flag requested ≠ actual.
-- **Value to agentflow itself:** today `external-runner` persists nothing, so the ledger also helps agentflow debug and audit its own runs.
-- **Timing:** propose it early. It is small and independent of the report format.
+The runner does not know the Ask or stage today, so the caller supplies them; this is a small change to the documented dispatch step, not a new concept. Value to agentflow itself: auditable, machine-readable run history. Propose this early; it is independent of the report format.
 
-**B2 — close-time usage reporter.** An optional `usage-reporter` command. `agf close` calls it before hashing and pastes its stdout verbatim into the Reply, so the figures live in the committed notebook and reach teammates.
+**B2 — writer-owned usage block at close.** An opt-in `usage-reporter` command whose output agentflow places in the Reply as a **writer-owned block**, treated like the stamp:
 
-- **Discovery:** `auto` resolves it from `PATH` only.
-- **Failure handling:** 3-second timeout, fail-open. It writes `usage: unavailable` only when explicitly enabled and it failed.
-- **Contract:** the command is called with `--contract 1`; agentflow never parses the output.
-- **Cut-off:** figures are cut off at close time, so the post-close tail of the final turn is not included and is noted as pending.
-- **Timing:** propose it after the report format is stable.
+- **Placement and retries:** the block is fenced, placed right after the stamp, and stripped before the retry comparison in `match_closed_close`.
+- **Generation:** generated once per close attempt, persisted with that attempt, and reused byte for byte on retry.
+- **Validation:** output is size-capped and rejected if it contains fences, headings or `* _` stamp lines.
+- **Invocation:** the command receives the notebook path, Ask id and cutoff time. It is resolved from `PATH` only, and is called with `--contract 1`. It has a 3-second timeout, after which its process group is killed. It fails open, writing `usage: unavailable` only when explicitly enabled and it failed.
+- **Cut-off:** the closing turn's own usage does not exist yet at close, so the block covers the Ask up to the close request and says so.
 
-**Out of scope for both proposals:** agentflow's Reply identity stamp. ccxray can see the actual Claude model and effort that the stamp shows as `unknown`. The proposal may mention this, but changing the stamp is the upstream author's call.
+Propose this after the report format is stable.
+
+**B-minor — recognise the side file.** Add `*.usage.md` beside notebooks to agentflow's list of recognised ignored files, so `--beside` works in stream worktrees.
+
+**Out of scope:** agentflow's Reply identity stamp. ccxray can see the actual Claude model and effort that the stamp shows as `unknown`. The proposal may mention this, but changing the stamp is the upstream author's call.
 
 ## Known gaps and risks
 
-- **Codex children merge into the parent session** (see Data sources). There is no per-child split until the importer uses the child `id`.
-- **Codex background memory agents** run alongside `codex exec` (for example `thread_source: memory_consolidation`, and the proxy's `codex-raw` fallback session). They may lack cwd and a real session id. They are counted only when attributable; the remainder is visible as a `partial` coverage note.
-- **A long host session spanning Asks** must be split per turn. Idle gaps between Asks belong to no Ask.
-- **Several worktrees of one repository** must be distinguished by worktree root, or `ambiguous` becomes common.
-- **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. A home populated only from transcripts therefore shows 0 projects until `/?imported` is opened. The adapter must read `logs/index.ndjson` or the APIs without `hideImported`. A1 should point report users to `/?imported`; an empty-state hint in the dashboard is proposed separately.
+- **Codex reconciliation.** Proxy and import cannot be merged per turn yet (one source per session). Children merge into the parent.
+- **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not run. Those Asks fall back to `estimated start`.
+- **Dispatch records are conventions.** They may be missing, late or hand-edited; the join validates cwd and time and degrades to `partial`.
+- **Transcript retention** (30 days by default) limits recomputation; frozen snapshots are the durable record after that.
+- **Several checkouts of one repository** are distinguished by resolved checkout root; symlinked paths are resolved before comparison.
+- **The dashboard hides imported turns by default** (since `8e846c2`), because imported turns have no request/response files to open. The adapter reads `logs/index.ndjson` or the APIs without `hideImported`, and A1 points report users to `/?imported`.
 - **Grok is untested:** recorded Grok turns carry no cwd.
-- **External worker transcripts after clone deletion:** Claude writes them to `~/.claude/projects/<slug-of-clone-path>/`, and they survive the clone. A2 must confirm the same for Codex rollouts.
 
 ## Non-goals
 
 - Changing agentflow's notebook, its prompts, or its Reply identity stamp.
-- Rewriting worker base URLs or injecting headers. This was tried on the abandoned `feat/ccxray-telemetry` fork branch, which is now frozen as tag `archive/ccxray-telemetry`.
+- Rewriting worker base URLs or injecting headers. This was tried on the abandoned `feat/ccxray-telemetry` branch of the agentflow fork, now frozen as tag `archive/ccxray-telemetry` in `lis186/agentflow`.
 - Estimating tokens inside agentflow.
+- Putting prompts, tool arguments or transcript content into any report.
 - A dedicated agentflow dashboard page, at least until after dogfooding.
 
 ## Evidence (2026-09-26)
@@ -206,10 +274,12 @@ Two Claude Code 2.1.283 sessions were run through an isolated proxy (`CCXRAY_HOM
 - a `claude -p --model claude-sonnet-5 --effort low` worker with one Task subagent
 - an interactive `--effort medium` host with one subagent
 
-| | Proxy | Import before #637 | Import after #637 | Claude Code's own total |
+| | Proxy (pre-#637) | Import before #637 | Import and proxy after #637 | Claude Code's own total |
 |---|---|---|---|---|
 | Worker session cost | $0.3230 (5-minute rate for all cache writes) | $0.2043 (no subagents) | $0.4030201 | $0.4030201 |
 | Worker session turns | 12 requests | 7 | 11 (7 main + 4 subagent) | — |
 
 - **Before #637, every proxied Claude request had `cwd: null`.** The Codex `exec` probe had the same defect: its cwd was present only inside `input[]` `<environment_context>`.
 - **Effort was present on every request** (`output_config.effort` for Claude). Codex carried it as prewarm `metadata.reasoning_effort`.
+
+The adversarial review (2026-09-27) checked the agentflow facts above against `agfnow/agentflow` `upstream/main` 738d0b3.
