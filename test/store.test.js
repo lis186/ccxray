@@ -752,6 +752,50 @@ describe('store', () => {
       };
       assert.equal(store.extractCwd(req), null);
     });
+
+    it('system block without cwd falls through to context_management (2.1.283 live shape)', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ type: 'text', text: 'You are an interactive agent that helps users.' }],
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>No path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: [
+            { type: 'text', text: 'Primary working directory: /fallthrough/test' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/fallthrough/test');
+    });
+
+    it('prefers the role:system env block over an env line quoted in messages[0]', () => {
+      const store = require('../server/store');
+      // messages[0] embeds CLAUDE.md / pasted text via <system-reminder>, so a
+      // quoted "Primary working directory:" there must not beat the real one.
+      const req = {
+        system: [{ type: 'text', text: 'You are an interactive agent that helps users.' }],
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>Contents of /real/project/CLAUDE.md:\nPrimary working directory: /quoted/elsewhere</system-reminder>' },
+          ] },
+          { role: 'system', content: 'Primary working directory: /real/project' },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/real/project');
+    });
+
+    it('a system block without cwd and without context_management stays null (subagent/title-gen shapes)', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ type: 'text', text: 'You are naming a coding session so the user can pick it out of a long list of sessions.' }],
+        safeguards: [{ classifier_context: { live_cwd: '/parent/project' } }],
+        messages: [{ role: 'user', content: 'Generate a concise title.' }],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
   });
 
   describe('extractConfigDir', () => {
