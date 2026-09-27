@@ -57,7 +57,10 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
 **Transcripts are the primary source; the proxy is opportunistic.** Measured on Claude Code 2.1.283 (see Evidence):
 
 - **Claude main-thread turns match** between import and proxy after #637, turn for turn and in cost.
-- **Proxy-only traffic is small**, about 1% of cost: title generation, quota checks and `count_tokens`.
+- **Proxy-only traffic depends on the session type** (re-verified on `e1b882c`, 2026-09-27):
+  - **`claude -p` workers:** negligible. Import came within 0.1% of the proxy and of Claude Code's own total.
+  - **Interactive hosts: about 12%.** Claude Code's prompt-suggestion requests predict the owner's next message, and each re-reads the whole cached context. Together with title generation they never reach the transcript.
+  - A host row computed without the proxy is therefore a **lower bound**. It is labelled `excludes proxy-only requests`; with the proxy running, the row is complete.
 - **Transcripts carry everything the report needs:**
   - effort: Claude `effort`/`perTurnEffort`, Codex `turn_context.effort`
   - turn duration: Claude `turn_duration`, written only by interactive sessions, not by `claude -p`
@@ -75,8 +78,8 @@ So a report can be computed after the fact only within the transcript retention 
 
 **Deduplication across sources** is per provider:
 
-- **Claude:** proxy and imported turns merge by responseId (`msg.id`, ADR 0012).
-- **Codex:** neither imported nor proxied turns carry a responseId, so ADR 0012 does not apply and naive union double-counts. Until a tested Codex reconciliation key exists (session id plus turn id, or session plus timestamp within tolerance), the adapter uses **one source per Codex session**: the proxy if it recorded that session, otherwise the import. The report footer says which.
+- **Claude:** proxy and imported turns merge by responseId (`msg.id`, ADR 0012). Verified: with both sources in one home, the server's read path returned the proxy count and Claude Code's exact total. The merge happens at **read time**, while `index.ndjson` holds both rows. An adapter reading the index directly must apply the same merge, or use `/_api/entries` without the `hideImported` parameter; that parameter hides imported rows whenever it is present, whatever its value.
+- **Codex:** neither imported nor proxied turns carry a responseId, so ADR 0012 does not apply and naive union double-counts. Verified: the read path returned four rows for a two-turn session. Until a tested Codex reconciliation key exists (session id plus turn id, or session plus timestamp within tolerance), the adapter uses **one source per Codex session**: the proxy if it recorded that session, otherwise the import. The report footer says which.
 - **Codex children** (`session_id = parent_thread_id`) import merged into the parent session. Parent totals include them; a per-child split is not available.
 
 **No separate "measured vs estimated" label** is shown; the footer names the sources used.
@@ -87,7 +90,14 @@ A window is the half-open time range `[start, end)` whose turns belong to one As
 
 **End.** The Ask's Reply stamp. It is always present and parsed with agentflow's local-time format. When the round has a matching close commit (`Agentflow-Close-Id`, touching this notebook, whose tree contains this Reply), its committer time is a cross-check only: if the two disagree by more than a minute, keep the stamp and flag the Ask. An Ask with no Reply is **open**: its window ends now and it is never frozen.
 
-**Start.** The timestamp of the host-transcript user message whose text matches the Ask body. agentflow's hook captures the owner's prompt verbatim, so this is the moment the owner asked. Matching normalises whitespace and accepts an Ask body that is a prefix or a concatenation of several user messages (an Ask can collect follow-ups).
+**Tail.** Wrap-up turns (the host telling the owner it is done) follow the Reply stamp by seconds. The window therefore ends at `stamp + tail` (default 2 minutes, capped at the next Ask's start); observed tails were 0–35 s.
+
+**Start.** The timestamp of the host-transcript user message that contains the Ask body's **first bullet**, after whitespace normalisation. agentflow's hook captures the owner's prompt verbatim, so this is the moment the owner asked. Only the first bullet is used, for three reasons:
+- A pasted prompt is split into one bullet per paragraph in the notebook.
+- Later bullets record follow-ups and task notifications, which render differently from the transcript.
+- The notebook side may wrap text in `<pasted_content>` tags, which are stripped before matching.
+
+The matched message also identifies the **host session**; the Reply stamp cannot, since it reads `host/unknown` for Claude. Turns before the first Ask's start, such as a bare `godev` bootstrap, form a `setup` row rather than disappearing.
 - **Fallback:** the previous round's Reply stamp. The Ask is then labelled `estimated start`, because idle time and unrelated work in that gap may be included.
 - **Empty Asks** (scaffolds with no body) have no window.
 
@@ -114,6 +124,14 @@ Sessions in the same directory without such evidence are excluded. If evidence c
 **External workers.** Joined in this order:
 
 1. **Dispatch records.** The directory `A-NNN-slug` gives the Ask; `stage` gives the role; `model`/`effort` give the requested values; `started`/`finished` and `clone` give the run. Worker turns are those whose cwd equals `clone` and whose time falls in `[started, finished]`. The time bound matters because clone paths can be reused or caller-chosen. Requested and actual effort are compared, and a mismatch is flagged.
+
+   Verified on 18 real records (ccxray A-001…A-003, all Claude workers):
+   - each matched exactly one session
+   - every turn fell 1–2 s inside the time bound
+   - requested and actual model and effort agreed
+   - no clone path was reused
+
+   Match on the recorded `cwd`, not on a transcript directory name derived from the path: Claude replaces every non-alphanumeric character, including `_`, with `-`. Actual effort comes from the transcript's top-level `effort`; `perTurnEffort` was always null. Token totals from raw Claude transcripts must count each `message.id` once, because a turn's usage is repeated on every content-block line. ccxray's importer already does this.
 2. **No dispatch record.** Turns whose cwd matches `*/agentflow-external-runner-*/clone` inside a window. If exactly one notebook has a window open at that time they go to it, role `unknown`, Ask marked `partial`. Otherwise they are listed as `ambiguous` under each candidate and counted once in the grand total.
 
 **Codex background agents** (for example `thread_source: memory_consolidation`) carry a cwd and their own session id, so they can land in an open window. They are listed as a separate `background` executor row, not merged into the host.
@@ -149,6 +167,8 @@ Sessions in the same directory without such evidence are excluded. If evidence c
   - `ambiguous`: see Attribution
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
+  - `excludes proxy-only requests`: a host row computed without proxy coverage, so a lower bound
+  - a `setup` row: turns before the first Ask's start
 - **The footer** states the sources per provider, the generation time, and snapshot status.
 - **Tool statistics** stay in the dashboard.
 
@@ -211,6 +231,10 @@ PR #639 stopped unknown CLI flags from booting a server.
   - Codex one-source-per-session dedup
   - snapshots
   - the importer upsert for late fields
+- **ccxray prerequisites** (found by the 2026-09-27 re-verification):
+  - live proxy cwd for Claude Code 2.1.283
+  - one pricing source across the proxy, CLI import and server reload paths
+  - a distinct executor kind for prompt-suggestion requests
 - **Test fixtures:** anonymised from the 2026-09-26 experiment sessions, plus a notebook with an empty scaffold, a retried close, and two overlapping windows.
 - **Validation:** real Asks in this repository are cross-checked against Claude Code's own cost.
 
@@ -251,6 +275,14 @@ Propose this after the report format is stable.
 
 ## Known gaps and risks
 
+- **Proxy cwd is still null on live Claude Code 2.1.283 traffic** (`e1b882c`). Both `index.ndjson` and `sessions.json` record `cwd: null`, although `parser.getCwd` returns the path for 20 of 22 of the same stored request bodies. The fix in #637 works on stored bodies but not on the live path. This is an A1 prerequisite; until it is fixed, host attribution takes cwd from the imported row of the same session.
+- **Pricing differs by path for models missing from the built-in rates.** For `gpt-6-astra`, with identical tokens:
+  - the proxy priced $0.1861 (`exact`)
+  - the CLI targeted import priced $0.0558 (`fallback`, apparently without the pricing cache)
+  - the server's reload repriced the same rows to a third figure
+
+  This is an A1 prerequisite: one rate source for every path.
+- **Prompt-suggestion requests are classified as main (`Orchestrator`) turns** in the proxy. They should be identified as a separate executor kind so reports can show them, or exclude them, explicitly.
 - **Codex reconciliation.** Proxy and import cannot be merged per turn yet (one source per session). Children merge into the parent.
 - **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not run. Those Asks fall back to `estimated start`.
 - **Dispatch records are conventions.** They may be missing, late or hand-edited; the join validates cwd and time and degrades to `partial`.
@@ -283,3 +315,31 @@ Two Claude Code 2.1.283 sessions were run through an isolated proxy (`CCXRAY_HOM
 - **Effort was present on every request** (`output_config.effort` for Claude). Codex carried it as prewarm `metadata.reasoning_effort`.
 
 The adversarial review (2026-09-27) checked the agentflow facts above against `agfnow/agentflow` `upstream/main` 738d0b3.
+
+### Re-verification on merged `main` (2026-09-27)
+
+**Setup:**
+- A fresh worktree at `e1b882c` (after #637 and #639). The listening process was confirmed to run from that worktree.
+- One isolated home received both the proxy capture and a later targeted import.
+- Sessions:
+  - a `claude -p --effort low` worker with a Task subagent
+  - an interactive `--effort medium` host (two prompts, one subagent)
+  - `codex exec -m gpt-6-astra -c model_reasoning_effort=low`
+
+| Session | Proxy | Import | Read path (both sources) | Tool's own figure |
+|---|---|---|---|---|
+| `claude -p` worker | 8 rows, $0.3473501 | 7 rows (3 subagent), $0.3470001 | 8 rows, $0.3473501 | $0.3473501 |
+| Interactive host | 15 rows, $0.7334 | 9 rows (3 subagent), $0.6477 | 15 rows, $0.7334 | not available (`/cost` shows plan usage only) |
+| Codex worker | 2 rows, $0.2132 (`exact`) | 2 rows, $0.0639 (`fallback`) | 4 rows (double-counted) | 17,967 tokens, matching both sources |
+
+- **Interactive host gap:** the 6 proxy-only rows are 2 title generations and 4 prompt suggestions, about $0.08, or 11.7%.
+- **Proxy cwd was null** for all 23 Claude rows (see Known gaps).
+- **Effort was recorded on both paths:** `low` and `medium` as sent; `high` on title generation.
+
+Core assumptions checked against real data, read-only:
+- **Dispatch join:** 18 of 18 ccxray dispatch records matched exactly one worker session within their time bounds, with matching model and effort.
+- **Ask start:** A-001…A-004 each matched a host user message by first bullet, in the only session in that checkout active during the windows.
+  - 992 of 1,033 host turns fell inside windows.
+  - 13 were a pre-Ask `godev` bootstrap.
+  - 28 were wrap-up turns 0–35 s after a Reply stamp. This led to the `tail` rule.
+- **No close commits:** the ccxray repository has no `Agentflow-Close-Id` commits, confirming that the Reply stamp, not a close commit, must be the primary boundary.
