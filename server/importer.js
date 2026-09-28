@@ -16,8 +16,10 @@ const { KNOWN_AGENTS } = require('./system-prompt');
 const DEFAULT_CONTEXT_WINDOW = 200000;
 const CODEX_CONTEXT_WINDOW = 400000;
 
-// #397: calculateCostSimple lives in default-rates.js — the single source of
-// truth for offline model pricing shared with cost-worker.js.
+// #397/A-010: calculateCostSimple lives in default-rates.js — the single
+// source of truth for offline model pricing, shared with cost-worker.js AND
+// (via lookupRates) pricing.js's calculateCost, so an imported turn and a
+// live-proxied turn for the same model/provider always price identically.
 const { calculateCostSimple } = require('./default-rates');
 
 function tsToId(timestamp) {
@@ -411,7 +413,10 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
     if (!id) continue;
 
     const model = msg.model || 'unknown';
-    const costResult = calculateCostSimple(usage, model);
+    // H7: same provider key the live Anthropic proxy path uses (anthropic.js
+    // buildEntryFields), so a proxied and an imported copy of the same turn
+    // resolve to the same table row.
+    const costResult = calculateCostSimple(usage, model, 'anthropic');
     // #384 did this for Codex, whose transcript declares model_context_window.
     // Claude Code's transcript declares nothing and never records the
     // anthropic-beta header, so the only evidence here is the observation:
@@ -589,6 +594,12 @@ async function parseCodexSessionFile(filePath) {
       output_tokens: (tu.output_tokens || 0) + (tu.reasoning_output_tokens || 0),
       cache_read_input_tokens: cached,
       cache_creation_input_tokens: 0,
+      // #397/A-010 (R-2/INV-2): this usage is already cache-exclusive (input_tokens
+      // above has cached tokens subtracted) — mark it normalized so restore/cold-load
+      // (normalizeUsageForProvider) never subtract cached tokens a second time.
+      // Legacy imported lines written before this marker existed are covered by a
+      // read-side guard in restore.js/routes/api.js (meta.imported && provider==='openai').
+      _ccxrayUsageNormalized: true,
     };
     const totalTokens = usage.input_tokens + usage.output_tokens + usage.cache_read_input_tokens;
     if (totalTokens === 0) continue;
@@ -597,7 +608,10 @@ async function parseCodexSessionFile(filePath) {
     if (!id) continue;
 
     const contextWindow = (payload.info && payload.info.model_context_window) || CODEX_CONTEXT_WINDOW;
-    const costResult = calculateCostSimple(usage, lastModel);
+    // H7: same provider key the live OpenAI/Codex proxy path uses by default
+    // (openai.js buildEntryFields's pricingUpstream fallback — there is no Grok
+    // importer, so 'openai' is always correct here).
+    const costResult = calculateCostSimple(usage, lastModel, 'openai');
     const tokens = buildTokens(usage, contextWindow);
     const receivedAt = new Date(obj.timestamp).getTime();
 

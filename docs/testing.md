@@ -282,5 +282,14 @@ must pin that input, by any of:
 - set `CCXRAY_PRICING_CACHE` to a path that does not exist, for a spawned server
   or CLI that must resolve windows with no LiteLLM data at all.
 
+Since A-010 the same file also feeds **pricing**: `lookupRates` in
+`server/default-rates.js` reads it on first use, and every cost path
+(`calculateCost`, `calculateCostSimple`, the importer, cost-worker, restore)
+goes through it. A test that asserts a cost or a confidence must pin it the
+same way: set `CCXRAY_PRICING_CACHE` (a fixture file or a path that does not
+exist) and call `require('../server/default-rates').__resetRateTableForTests()`
+before the first lookup, as `test/default-rates.test.js` and
+`test/pricing-single-source.test.js` do.
+
 The rule of thumb matches rule 1: never let an assertion depend on a file the
 test did not create.
