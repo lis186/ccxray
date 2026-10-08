@@ -106,7 +106,18 @@ function fillSessionCwd(rows) {
 // first is what lets a pre-#640 proxy row be selected by its twin's cwd.
 async function readMergedTurns(opts = {}) {
   const raw = await readIndexRows(opts);
-  const { rows, sources } = oneSourcePerSession(mergeByResponseId(raw));
+  // Which sources observed each turn, for the completeness label: a host turn
+  // seen by both the transcript import and the proxy has a proxy twin.
+  const seenBy = new Map();
+  for (const e of raw) {
+    if (!e.responseId) continue;
+    if (!seenBy.has(e.responseId)) seenBy.set(e.responseId, new Set());
+    seenBy.get(e.responseId).add(e.imported ? 'import' : 'proxy');
+  }
+  for (const e of raw) e.sources = e.responseId ? null : [e.imported ? 'import' : 'proxy'];
+  const merged = mergeByResponseId(raw);
+  for (const e of merged) if (e.responseId) e.sources = [...seenBy.get(e.responseId)].sort();
+  const { rows, sources } = oneSourcePerSession(merged);
   return { turns: fillSessionCwd(rows), codexSources: sources };
 }
 
@@ -186,6 +197,7 @@ async function query({ roots, from, to, sessions } = {}, { logsDir } = {}) {
 
 module.exports = {
   MERGE_MARGIN_MS,
+  AGENT_WORKTREE,
   readIndexRows,
   oneSourcePerSession,
   sessionCwd,

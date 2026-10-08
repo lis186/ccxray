@@ -34,6 +34,7 @@ describe('readMergedTurns: merge before filter', () => {
     assert.equal(sel[0].id, 'p1', 'the proxy observation is canonical');
     assert.equal(sel[0].cwd, '/work/a');
     assert.equal(sel[0].effort, 'high', 'fields only the import carried survive the merge');
+    assert.deepEqual(sel[0].sources, ['import', 'proxy'], 'both sources saw the turn: it has a proxy twin');
   });
 
   it('merges a twin that lies just outside the requested range', async () => {
@@ -55,6 +56,7 @@ describe('readMergedTurns: merge before filter', () => {
     const sel = selectTurns(turns, { roots: ['/work/a'] });
     assert.deepEqual(sel.map(e => e.id).sort(), ['p1', 'p2']);
     assert.equal(sel.find(e => e.id === 'p2').cwdFromSession, true);
+    assert.deepEqual(sel.find(e => e.id === 'p2').sources, ['proxy']);
   });
 
   it('passes legacy rows without a responseId through as-is', async () => {
@@ -191,8 +193,9 @@ describe('require purity', () => {
     return { ...out, files: fs.readdirSync(home) };
   }
 
-  it('loading usage-query and the agentflow CLI starts no handles and writes nothing', () => {
-    const r = probe([path.join(__dirname, '../server/usage-query'), path.join(__dirname, '../server/agentflow/cli')]);
+  it('loading usage-query and the agentflow modules starts no handles and writes nothing', () => {
+    const r = probe(['usage-query', 'agentflow/cli', 'agentflow/notebook', 'agentflow/evidence', 'agentflow/windows', 'agentflow/host', 'agentflow/discover']
+      .map(m => path.join(__dirname, '../server', m)));
     assert.deepEqual(r.after, r.before);
     assert.deepEqual(r.files, []);
   });
