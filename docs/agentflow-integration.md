@@ -1,6 +1,6 @@
 # ccxray × agentflow integration
 
-- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1; revised again 2026-09-27 to put the proxy in the MVP, after a threeways review; completeness, `complete` judgement and A1a duration decided by the owner the same day; revised 2026-10-06 after experiments on concurrent coordinators, Ask windows and a Codex worker, and two further adversarial reviews by GPT-6 Astra and Fable 5.1)
+- Status: Draft (revised after adversarial review by GPT-6 Astra and Fable 5.1; revised again 2026-09-27 to put the proxy in the MVP, after a threeways review; completeness, `complete` judgement and A1a duration decided by the owner the same day; revised 2026-10-06 after experiments on concurrent coordinators, Ask windows and a Codex worker, and two further adversarial reviews by GPT-6 Astra and Fable 5.1; revised 2026-10-07 for projects developed on several machines, after a third pair of reviews and a survey of existing multi-machine usage tools)
 - Date: 2026-10-06
 - Related: PR #637 (subagent import, proxy cwd, 1-hour cache pricing, indexed effort), #639 (CLI flags), #640 (live proxy cwd), #641, ADR 0012 (responseId read-time merge), ADR 0017 (aggregate cost confidence)
 
@@ -94,6 +94,8 @@ So a report recomputed after 14 days loses its proxy-only rows and drops from `c
 - **Codex:** neither imported nor proxied turns carry a responseId, so ADR 0012 does not apply and naive union double-counts. Verified: the read path returned four rows for a two-turn session. Until a tested Codex reconciliation key exists (session id plus turn id, or session plus timestamp within tolerance), the adapter uses **one source per Codex session**: the proxy if it recorded that session, otherwise the import. The report footer says which.
 - **Codex children** (`session_id = parent_thread_id`) import merged into the parent session. Parent totals include them; a per-child split is not available.
 
+**Several machines.** The notebook travels with the repository, but transcripts and ccxray data stay on the machine that produced them, so a report sees every Ask and only this machine's usage. A1a reports this machine only and says so: an Ask with no owner submission of this machine inside its bounds is `no local evidence` (W6) and takes none of this machine's host turns, and the footer counts such Asks. Combining machines is under Later. It must union per-machine evidence before computing anything, not add per-machine totals: two machines can hold overlapping copies of the same transcripts (a synced `~/.claude`), and summed aggregates then count the overlap twice. That failure has been observed in another tool that uploads daily totals per machine.
+
 ### Completeness
 
 Every Ask carries one completeness label, derived from the data at report time (never stored in A1a). The three labels and the per-turn-twin rule for `complete` are owner decisions (2026-09-27); no separate coverage record is kept.
@@ -106,7 +108,7 @@ Every Ask carries one completeness label, derived from the data at report time (
 
 Why per-turn twins are enough evidence: a Claude Code session's base URL is fixed at launch, so its requests all go through the proxy or none do, and a stopped hub makes requests fail rather than bypass it (inferred from launch behaviour, not separately measured). A request that failed while the hub was down was not billed. Workers are labelled the same way but a transcript-only worker is not flagged as low, since `claude -p` was measured complete within 0.1%.
 
-**Several host sessions in one Ask** are labelled per host first. The Ask is `complete` only when every host is, `transcripts only` only when every host is, and `partial proxy coverage` otherwise.
+**Several host sessions in one Ask** are labelled per host first. The Ask is `complete` only when every host is, `transcripts only` only when every host is, and `partial proxy coverage` otherwise. An Ask with **no host row**, such as one that ran on another machine, is `unknown`: nothing was observed here, so neither `complete` nor `transcripts only` would be true.
 
 **Codex** has no responseId, so completeness follows the one-source rule: a session read from the proxy is `complete`, one read from import is `transcripts only`.
 
@@ -118,9 +120,9 @@ Because proxy lines are pruned after 14 days (see Retention), a recomputed Ask c
 
 A window is the half-open time range `[start, end)` whose turns belong to one Ask.
 
-**End.** The Ask's Reply stamp. It is always present and parsed with agentflow's local-time format. When the round has a matching close commit (`Agentflow-Close-Id`, touching this notebook, whose tree contains this Reply), its committer time is a cross-check only: if the two disagree by more than a minute, keep the stamp and flag the Ask. An Ask with no Reply is **open**: its window ends now and it is never frozen.
+**End.** The Ask's Reply stamp. It is always present and parsed with agentflow's local-time format. When the round has a matching close commit (`Agentflow-Close-Id`, touching this notebook, whose tree contains this Reply), its committer time is a cross-check only: if the two disagree by more than a minute, keep the stamp and flag the Ask. An Ask with no Reply is **open**: its window ends now and it is never frozen. A Reply whose stamp line is not in agentflow's format (early notebooks have hand-written stamps without seconds or offset) is **closed with no window**: labelled `stamp unreadable`, it matches no submission and gives no lower bound to the next Ask, and the footer counts it. It is never treated as open, which would stretch its window to now over every later round.
 
-**Tail.** Wrap-up turns (the host telling the owner it is done) follow the Reply stamp by seconds. The window therefore ends at `stamp + tail` (default 2 minutes). Only the tail is capped at the next Ask's start: the window never ends before its own Reply stamp. Observed tails were 0–35 s.
+**Tail.** Wrap-up turns (the host telling the owner it is done) follow the Reply stamp by seconds. The window therefore ends at `stamp + tail` (default 2 minutes). Only the tail is capped, and only at the next Ask's **matched** start; the window never ends before its own Reply stamp. An estimated start begins after this tail instead (W6), since capping at a start that is this very stamp would hand this Ask's wrap-up turns to the next one. Observed tails were 0–35 s.
 
 **Start.** The time of the owner submission matched to the Ask's first matched bullet. agentflow's hook captures the owner's prompt verbatim, so this is the moment the owner asked. Bullets are matched to submissions by **ordered alignment**, in numbered steps that the fixtures under Phases refer to:
 
@@ -129,7 +131,12 @@ A window is the half-open time range `[start, end)` whose turns belong to one As
 - **W3 — bounds.** A bullet of Ask N matches only a submission earlier than Ask N's Reply stamp (now, for an open Ask) and later than the latest Reply stamp of an Ask before N in notebook order. The first Ask, or an Ask with no earlier Reply stamp, has no lower bound. The lower bound holds even when the previous Ask matched nothing.
 - **W4 — match.** Walk the bullets in order. A bullet matches when its text **equals** a paragraph of a submission within its bounds, taking the earliest such paragraph strictly after the previously consumed paragraph; no paragraph is consumed twice. Consecutive bullets of one Ask may consume successive paragraphs of one submission; a submission consumed by one Ask is never consumed by another. A bullet with no equal paragraph is unmatched and the next bullet is tried, so hand-written text needs no special rule unless it happens to equal a submission paragraph. Each notebook is aligned on its own.
 - **W5 — ties.** If another eligible submission, not yet consumed, could have supplied the Ask's first match, the earliest is kept and the Ask header shows `start tie`.
-- **W6 — start.** The Ask starts at the submission of its first matched bullet. With no matched bullet, it starts at the latest earlier Reply stamp and is labelled `estimated start`, because idle time and unrelated work in that gap may be included; with no earlier Reply stamp it has no window and is reported `unmeasured`. **Empty Asks** (scaffolds with no body) have no window.
+- **W6 — start.** The Ask starts at the submission of its first matched bullet. With no matched bullet:
+  - if some owner submission of this machine falls inside its W3 bounds, it starts where the previous Ask's window ends (that Ask's Reply stamp plus its tail) and is labelled `estimated start`, because idle time and unrelated work in that gap may be included;
+  - if none does, it is labelled `no local evidence`: the round was most likely worked on another machine, or its transcripts are gone. Its window exists only for `dispatch` and `completion` evidence. It is never a candidate in W7 per-turn resolution or at the E3 `window` level, and never caps another Ask's tail. This machine's host turns inside it stay notebook-level `unassigned`, and the Ask discloses `local host turns inside bounds: n`;
+  - with no earlier Reply stamp it has no window and is reported `unmeasured`.
+
+  **Empty Asks** (scaffolds with no body) have no window. The label asserts only that evidence is absent here, not where the work ran; a clock difference between machines can also produce it.
 - **W7 — host rows.** W7 establishes host membership, not attribution. Every session with a submission matched to the Ask is a host row of that Ask, with evidence `prompt-match` (two coordinators in one worktree can share one Ask). A host session with notebook evidence (see Attribution) but no matched submission is a host row with evidence `window`. Each host or internal-subagent turn is then resolved by time across the eligible notebooks: within one notebook, overlapping windows go to the Ask with the latest start; windows of several notebooks that all contain the turn make it `ambiguous`.
 
 The Reply stamp cannot identify the host session, since it reads `host/unknown` for Claude; the matched submission does. Turns before the first Ask's start, such as a bare `godev` bootstrap, form a `setup` row rather than disappearing.
@@ -143,7 +150,7 @@ Edge cases:
 - **Idle time** between a Reply and the next Ask's start belongs to no Ask.
 - **Several Asks closed together** each keep their own start. Where two windows overlap, turns are assigned to the Ask whose start is the most recent before the turn, and the overlap is flagged.
 - **A retried or failed close** uses the stamp that finally stands in the notebook; a Reply that was replaced is ignored.
-- **A reopened round** (a bullet whose only equal submission is later than the Ask's Reply stamp) is not supported in A1a: by W3 the bullet stays unmatched, the window is not extended, and the Ask is labelled `reopened (unsupported)`.
+- **A reopened round** (a bullet whose only equal submission is later than the Ask's Reply stamp) is not supported in A1a: by W3 the bullet stays unmatched, the window is not extended, and the Ask discloses `unmatched bullets: k`. Reopening is not inferred from equal text: on several machines a short generic command typed later on one machine equals a bullet of a round worked on another (8 false hits in one real notebook, none true).
 
 ## Attribution
 
@@ -190,7 +197,7 @@ Both conditions are tested on merged rows. **Proxy-only host requests** (prompt 
     Match on the recorded `cwd`, not on a transcript directory name derived from the path: Claude replaces every non-alphanumeric character, including `_`, with `-`. Actual effort comes from the transcript's top-level `effort`; `perTurnEffort` was always null.
   - **`completion`.** An external review's `transport.clone` in a completion record's metadata. The pair comes from the record, whose `notebook` and `ask` must match its location. Validate `sha256` against the exact `completion.json` bytes and `reply_sha256` with upstream's `reply_digest` (which normalises the Reply), both from `completion.ref.json`; the namespace hashes the repository-relative POSIX notebook path. The run's turns must fall inside that Ask's window. Only external reviews are required to carry `transport.clone`; how many runs this recovers has not been measured.
   - **`launch-chain`** (E5). The window that holds session S at (a). If no window holds (a), the level yields each notebook S is a host row of, with the Ask dimension open. Host session: S.
-  - **`window`.** Only after E4 binds the run to this checkout: every window open in the workspace at the run's first turn is a candidate.
+  - **`window`.** Only after E4 binds the run to this checkout: every window open in the workspace at the run's first turn is a candidate, except a `no local evidence` window.
 
   Pairs stay together: a weaker level may fill a dimension left open only with a pair that agrees with every dimension already fixed and exists among its own candidates; no `(notebook, Ask)` pair absent from the candidates is ever constructed. A weaker candidate that disagrees with a fixed dimension changes nothing and labels the row `evidence conflict`. A level with several candidates for a dimension makes it `ambiguous`, and no weaker level is tried for it. A level with no evidence passes the dimension down.
 - **E4 — checkout binding** (for `window` only). The run is bound to a checkout only by surviving clone-origin evidence that names that checkout's root: the clone's `clone: from <source>` reflog entry, looked up among its entries rather than assumed to be the first one shown. `HEAD` reachability is diagnostic only, since several checkouts of one repository can hold the same commits. Reflog cannot separate sessions within one worktree, since their entries are identical, but it does separate checkouts. A deleted clone, an expired reflog, or a reused caller-chosen clone that was not cloned for this run leaves the checkout unknown, and the run is not attributed by `window`.
@@ -244,11 +251,12 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `duration estimated`: executor time is first-to-last, not measured
   - `estimated start`: see Ask windows
   - `ambiguous`, `unassigned`, `weak`, `truncated`, `evidence conflict`: see Attribution and Attribution status
-  - `reopened (unsupported)`, `start tie`: see Ask windows
+  - `start tie`, `no local evidence`, `stamp unreadable`, and the `unmatched bullets` disclosure: see Ask windows
+  - `unknown` completeness: no host row (see Completeness)
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update.
+- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`.
 - **Tool statistics** stay in the dashboard.
 
 **Attribution status.** Completeness says whether usage was captured; attribution says whether it was filed under the right Ask. Even fully proxied traffic can be misfiled, so every row carries both an `evidence` and a `status`:
@@ -258,6 +266,7 @@ The header total is the `unique` cost: the host row, which includes its indented
 | host | `prompt-match` | each turn resolves to one `(notebook, Ask)` under W7; every matched session is its own row |
 | host without a matched submission | `window` | as above |
 | host with `estimated start` | `window` | as above |
+| Ask with `no local evidence` | none | no host row; only `dispatch` and `completion` evidence can attribute to it |
 | internal subagent | follows its host through native lineage | each subagent turn resolves to one `(notebook, Ask)` under W7, after native lineage identifies its host |
 | external worker run | `dispatch`, `completion`, `launch-chain` or `window` (E3) | notebook and Ask each resolve to one candidate (E6) |
 | `setup` | `window` | as before |
@@ -268,7 +277,7 @@ The other statuses are `ambiguous` (several candidates) and notebook-level `unas
 
 ## Freezing
 
-Snapshots keep history stable against transcript deletion, proxy pruning and price-table changes. They ship in A1b; a snapshot also freezes the Ask's completeness label, every row's evidence and status, and the attributed, ambiguous and unassigned subtotals.
+Snapshots keep history stable against transcript deletion, proxy pruning and price-table changes. They describe one machine's view and are not added across machines (see Several machines). They ship in A1b; a snapshot also freezes the Ask's completeness label, every row's evidence and status, and the attributed, ambiguous and unassigned subtotals.
 
 **Settled** is decided from on-disk data only; the CLI never needs a running server. An Ask is settled when all of these hold:
 
@@ -330,7 +339,7 @@ PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on li
   - one with a completion record
   - one in the feature stream
   - one with no matched bullet
-  - one run on the other machine (no transcript here, so `unmeasured` or partial)
+  - one run on the other machine (no transcript here, so `no local evidence`, taking no host turn)
   - one inside the proxied period, which must come out `complete` or `partial proxy coverage` according to its per-turn twins
 - **Archive input:** the notebook's archive is read when it exists at the name agentflow's compaction gives it (`devlog.md` → `devlog.archive.md`, `<topic>.devlog.md` → `<topic>.archive.md`), and its rounds are deduplicated against the live notebook by Ask id. Deriving that one path is not discovery; general archive discovery stays out of A1a.
 - **Acceptance of `complete` and `partial proxy coverage`:** the proxied period of the project above exercises both on real data; fixtures cover them as well.
@@ -349,20 +358,21 @@ PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on li
   | F7 | Text `continue` as A-001's follow-up (before A-001's stamp) and as A-002's opening (after it) | W3 bounds each bullet to its own round; each matches its own submission |
   | F8 | A prompt whose `<pasted_content>` tag line is a paragraph of its own; a prompt of three distinct paragraphs matching three bullets | W1 skips the tag-only bullet; W4 matches the three bullets to three paragraphs of one submission |
   | F9 | `no-ag`, no-open-Ask, ownership-refused and bare `godev` prompts inside A-001's tail, from a host row of A-001; none is recorded as a bullet, and A-002 is empty; these four match no notebook bullet and are the only unmatched owner submissions across A-001's host rows within its window | Not bullets; their turns stay in A-001 by window; A-001 shows `unmatched owner submissions: 4` |
-  | F10 | A-002 holds `+` then a hand-written line equal to no submission, then the owner's prompt | W4: hand line unmatched, the owner's bullet matches; with no owner bullet, W6 gives `estimated start` |
+  | F10 | A-002 holds `+` then a hand-written line equal to no submission, then the owner's prompt | W4: hand line unmatched, the owner's bullet matches; with no owner bullet but an owner submission in bounds, W6 gives `estimated start` |
   | F11 | One caller-chosen clone reused for A-001 and A-002, each with a dispatch record; the two intervals are disjoint and cover all the clone's turns | E2: two runs by dispatch interval; E3: each `dispatch`, `unique` |
   | F12 | A caller-chosen clone, no record, wrapper prints the full result; the runner-naming wrapper invocation and its clone-path result share one tool call id in the same original session | E1 reverse discovery; E5 strong chain; `unique` |
   | F13 | A background launch; the result is later read through its `backgroundTaskId` | E5: strong chain; `unique` |
   | F14 | A wrapper that prints only `clone.root` | E5: accepted as (b) |
   | F15 | A persisted result whose side file is gone, with a qualifying launch: (a) the preview still holds the clone key and path, (b) it does not; in (a) the preview is the immediate result of that launch in the same original session | (a) E5 chain, labelled `truncated`. (b) no result evidence; lower levels decide |
   | F16 | Two notebooks share one workspace; a review worker has a dispatch record and a valid completion record naming the same Ask, whose window contains the whole run | E3: `dispatch` fixes the Ask, not the notebook; `completion` fixes the notebook by namespace and agrees on the Ask; `unique` |
-  | F17 | An A-001 bullet whose only equal submission is after A-001's stamp | W3: unmatched; `reopened (unsupported)` |
+  | F17 | An A-001 bullet whose only equal submission is after A-001's stamp | W3: unmatched; `unmatched bullets: 1`; no reopening label, window not extended |
   | F18 | A clone-pattern worker with no record, no chain, clone deleted | E6 step 1: not reported; footer `checkout unknown: 1` only |
   | F19 | One session launches workers in A-001 and in A-002, weak chains only; the workers have distinct sessions, the second launch comes after the first run's first turn, and each run has one matching result | E5 weak: run 1 sees only launch 1 and binds it; run 2 sees launch 2 (launch 1 is bound); both `unique` |
   | F20 | One Claude message written as three lines (same `message.id`, different uuids), two holding different tool calls | Deduplication: usage once; both tool calls kept as evidence |
   | F21 | A dispatch record naming A-001 whose `finished` comes after the worker's last turn, which is after A-002 starts | E7: all turns stay in A-001 |
   | F22 | Two checkouts each with an open window; a recordless worker whose clone was freshly cloned from checkout X and keeps its `clone: from` entry; its first turn falls inside X's window; the worker has no launch-chain evidence in either checkout | E4 binds it to X; reported only under X's notebook |
   | F23 | A dispatch record says A-002; a strong launch chain for the same worker session, overlapping it in the same clone, says A-003 | E2: one run with two pieces of evidence; E3: `dispatch` fixes A-002, the chain disagrees; row labelled `evidence conflict`, `unique` |
+  | F24 | A-002 ran on another machine: no owner submission of this machine falls in its bounds; this machine has a host session with notebook evidence and turns inside A-002's bounds, including wrap-up turns within 2 minutes of A-001's stamp | W6: `no local evidence`, completeness `unknown`; A-001's tail is not capped and keeps the wrap-up turns; the other turns are notebook-level `unassigned` and disclosed as `local host turns inside bounds` |
 
 **A1b — persistence.** `--write` into the report store, snapshot freezing (including the completeness label), `--rebuild`, and the importer upsert for late fields such as `turn_duration`.
 
@@ -372,6 +382,14 @@ PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on li
 - background-agent rows
 - `--beside` with the Git-common-dir exclude
 - feature streams, archives in general and notebook-only streams (`--all`)
+- **combining machines.** Each machine exports an evidence bundle; a combined report unions the bundles before W2 and runs W1–W7 and attribution once. A bundle holds:
+  - index lines, which carry no prompt text;
+  - owner submissions as the sha256 of each normalised paragraph, with time, session and Claude `promptId`, so bullets are matched by hash and no prompt text leaves the machine;
+  - the clone-related fields of tool evidence;
+  - a machine identifier hashed from Claude Code's per-install `userID`.
+
+  Union is by globally unique keys (index ids, then responseId through ADR 0012; event uuids; Codex one source per logical session across machines), which is order-independent and idempotent. Wall clocks differ between machines, so host turns should be attributed through Claude's causal links (`promptId`, `parentUuid`) to the submission that started them, with windows as the fallback, rather than by comparing timestamps across machines. Snapshots (A1b) freeze history and are not additive across machines. Transport is out of scope.
+- **causal host attribution.** Assigning each host turn to the owner submission that started it, through `promptId`/`parentUuid`, instead of by window overlap. To be measured against window attribution on real data before the spec adopts it; proxy-only rows carry no `promptId` and keep session plus time.
 - opt-in auto-watch, off by default: discovers projects from recorded cwds whose checkout contains an agentflow workspace, and refreshes reports when a new Reply appears
 - a worker-only route for Codex workers to reach the proxy. The zero-change route through the owner's Codex configuration was verified once (see Evidence), but it redirects every Codex process and appeared to break ChatGPT connector MCP calls; candidates to test are the runner's `env`, a `-p` profile and `-c model_provider`
 - reading input receipts while they last (they cover only the current or most recently closed Ask), or capturing them live by auto-watch, to bind bullets to submissions exactly
@@ -436,7 +454,7 @@ B2 changes closeout. It is proposed last, after the report format is stable and 
 - **Prompt-suggestion requests are classified as main (`Orchestrator`) turns** in the proxy. The MVP counts them as host cost, which is correct; a separate display category is deferred.
 - **Proxy index lines are pruned after 14 days, together with their imported twins** (see Retention). A1a figures for older Asks drop proxy-only rows and fall to `transcripts only`; A1b snapshots are the fix.
 - **Codex reconciliation.** Proxy and import cannot be merged per turn yet (one source per session). Children merge into the parent.
-- **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not capture the prompt (`no-ag`, no open Ask, ownership refusal, bare `godev`, hook failure). Unmatched Asks fall back to `estimated start`; uncaptured prompts stay in whichever window they fall in and are only disclosed as unmatched submissions. Chat and later follow-ups that the hook does capture are filed by the notebook itself under the open Ask; the report agrees with the notebook and discloses them rather than judging intent.
+- **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not capture the prompt (`no-ag`, no open Ask, ownership refusal, bare `godev`, hook failure). Unmatched Asks fall back to `estimated start`, or to `no local evidence` when this machine has no owner submission in their bounds; uncaptured prompts stay in whichever window they fall in and are only disclosed as unmatched submissions. Chat and later follow-ups that the hook does capture are filed by the notebook itself under the open Ask; the report agrees with the notebook and discloses them rather than judging intent.
 - **Input receipts are not a history.** They describe only each host identifier's last scoped Ask and are replaced when scope is captured for another, so most closed Asks have none left (see Later).
 - **Dispatch records are conventions.** They may be missing, late or hand-edited; the join validates cwd, time and notebook, then falls back to completion records, launch chains and finally windows, each with its own status. A local scan on 2026-10-05 (one machine, mixed releases, path hits rather than verified attribution) found the clone path in a coordinator tool result for 77% of worker clones, 85% with hand-written dispatch records; a coordinator wrapper that printed only a summary was one cause of the rest.
 - **The proxy's inferred parent link** (overlapping activity) can file a worker under a sibling worker; it is ignored for external worker runs (see Lineage).
