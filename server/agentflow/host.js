@@ -15,6 +15,12 @@ function isSubagentTurn(e) {
   return e.isSubagent === true || !!e.subagentId || AGENT_WORKTREE.test(e.cwd || '');
 }
 
+// Lineage recorded by the transcript itself (a subagent file's agent id, or a
+// worktree-isolated Task's cwd), as opposed to the proxy's inferred flag.
+function isNativeSubagent(e) {
+  return !!e.subagentId || AGENT_WORKTREE.test(e.cwd || '');
+}
+
 // Notebook evidence in a session's tool calls: the notebook path (relative or
 // absolute), `agf`, or the notebook's workspace directory. Bash command text is
 // part of the tool input, so it counts.
@@ -45,7 +51,7 @@ function attributeHosts({ turns, checkoutRoot, notebooks, report = 0, transcript
   const reportWindows = notebooks[report].windows;
   const setupBefore = firstStart(reportWindows);
   const noLocal = reportWindows.filter(w => w.startKind === 'no local evidence');
-  const out = { rows: [], setup: [], unassigned: [], excludedSessions: 0, noLocalTurns: {} };
+  const out = { rows: [], setup: [], unassigned: [], excludedSessions: 0, offRoot: [], noLocalTurns: {} };
   const rowsByKey = new Map();
   const row = (ask, session, status, evidence, labels) => {
     const key = `${ask}\0${session}\0${status}`;
@@ -67,7 +73,12 @@ function attributeHosts({ turns, checkoutRoot, notebooks, report = 0, transcript
     const labels = transcript ? [] : ['evidence unreadable'];
 
     for (const e of rows) {
-      if (!(isSubagentTurn(e) || stripSlash(e.cwd) === root)) continue;
+      if (!(isSubagentTurn(e) || stripSlash(e.cwd) === root)) {
+        // A shell `cd` below the root moves the transcript cwd; condition 1
+        // keeps such turns out, and the report discloses them.
+        if (e.cwd && e.cwd.startsWith(root + '/')) out.offRoot.push(e);
+        continue;
+      }
       const hits = [];
       for (const i of hostOf) {
         const r = resolveTurn(notebooks[i].windows, e.receivedAt);
@@ -93,4 +104,4 @@ function attributeHosts({ turns, checkoutRoot, notebooks, report = 0, transcript
   return out;
 }
 
-module.exports = { isSubagentTurn, mentionsNotebook, attributeHosts };
+module.exports = { isSubagentTurn, isNativeSubagent, mentionsNotebook, attributeHosts };

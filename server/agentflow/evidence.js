@@ -57,11 +57,13 @@ function readClaudeTranscript(file) {
   const seen = new Set();
   const submissions = [];
   const tools = new Map();
+  const turns = new Map(); // message.id → first time; usage counts each message once
   let sessionId = null;
   for (const e of lines(file)) {
     if (e.uuid) { if (seen.has(e.uuid)) continue; seen.add(e.uuid); }
     if (!sessionId && e.sessionId) sessionId = e.sessionId;
     const at = toMs(e.timestamp);
+    if (e.type === 'assistant' && e.message && e.message.id && !turns.has(e.message.id)) turns.set(e.message.id, at);
     const owner = claudeOwnerText(e);
     if (owner != null) submissions.push({ key: e.uuid || `${file}:${submissions.length}`, sessionId: e.sessionId || sessionId, at, text: owner });
     const content = e.message && Array.isArray(e.message.content) ? e.message.content : [];
@@ -78,7 +80,7 @@ function readClaudeTranscript(file) {
       }
     }
   }
-  return { provider: 'anthropic', sessionId, submissions, tools: [...tools.values()] };
+  return { provider: 'anthropic', sessionId, submissions, tools: [...tools.values()], turns: [...turns].map(([id, at]) => ({ id, at })) };
 }
 
 // Codex: owner messages are `response_item` user messages that are not tagged

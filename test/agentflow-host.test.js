@@ -68,6 +68,7 @@ describe('attributeHosts: turns', () => {
     ];
     const r = attributeHosts({ turns, checkoutRoot: ROOT, notebooks: [notebook(asks, transcripts)], transcripts });
     assert.deepEqual(summary(r)[0][5], 'main,sub-flag,sub-legacy');
+    assert.deepEqual(r.offRoot.map(e => e.id), ['cd']);
   });
 
   it('falls back to cwd plus window when the transcript cannot be read', () => {

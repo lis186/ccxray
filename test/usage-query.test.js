@@ -162,8 +162,14 @@ describe('aggregate', () => {
     assert.equal(r.durationEstimated, false);
   });
 
+  it('does not count a row with neither a model nor usage as a call', () => {
+    const r = aggregate([{ model: 'm1', receivedAt: T0, usage: usage(1, 1, 0, 0), cost: { cost: 0.1 } }, { receivedAt: T0 + 1, cost: null }]);
+    assert.equal(r.calls, 1);
+    assert.equal(r.costFold.count, 1);
+  });
+
   it('estimates executor time first-to-last when no turn carries turnDurationMs', () => {
-    const r = aggregate([{ receivedAt: T0 }, { receivedAt: T0 + 90000 }]);
+    const r = aggregate([{ model: 'm', receivedAt: T0 }, { model: 'm', receivedAt: T0 + 90000 }]);
     assert.equal(r.durationMs, 90000);
     assert.equal(r.durationEstimated, true);
     assert.equal(r.readShare, null);
@@ -194,7 +200,7 @@ describe('require purity', () => {
   }
 
   it('loading usage-query and the agentflow modules starts no handles and writes nothing', () => {
-    const r = probe(['usage-query', 'agentflow/cli', 'agentflow/notebook', 'agentflow/evidence', 'agentflow/windows', 'agentflow/host', 'agentflow/discover']
+    const r = probe(['usage-query', 'agentflow/cli', 'agentflow/notebook', 'agentflow/evidence', 'agentflow/windows', 'agentflow/host', 'agentflow/discover', 'agentflow/completeness', 'agentflow/report']
       .map(m => path.join(__dirname, '../server', m)));
     assert.deepEqual(r.after, r.before);
     assert.deepEqual(r.files, []);

@@ -5,6 +5,7 @@
 // (notebook-write.js, round-linter.js, local-time.js) rather than approximating.
 
 const fs = require('fs');
+const path = require('path');
 
 const ASK = /^# → Ask \/ (A-\d+)(?: \([^)\r\n]*\))?[ \t]*\r?$/u;
 const REPLY = /^(?:# ← Reply \/ (A-\d+)(?: \([^)\r\n]*\))?[ \t]*|## Reply \/ (A-\d+)\b[^\r\n]*)\r?$/u;
@@ -82,6 +83,15 @@ function parseNotebook(text) {
   return asks;
 }
 
+// The name agentflow's compaction gives the archive (upstream ag-settings.js):
+// `<topic>.devlog.md` → `<topic>.archive.md`, any other `<x>.md` → `<x>.archive.md`.
+function archivePathFor(notebook) {
+  const dir = path.dirname(notebook), base = path.basename(notebook);
+  if (base.endsWith('.devlog.md')) return path.join(dir, base.slice(0, -'.devlog.md'.length) + '.archive.md');
+  if (base.endsWith('.md')) return path.join(dir, base.slice(0, -'.md'.length) + '.archive.md');
+  return null;
+}
+
 // The live notebook and its compaction archive, archive rounds first; a round
 // present in both is taken from the live notebook.
 function loadNotebook(notebookPath, archivePath = null) {
@@ -91,4 +101,4 @@ function loadNotebook(notebookPath, archivePath = null) {
   return [...archived.filter(a => !liveIds.has(a.id)), ...live];
 }
 
-module.exports = { parseStamp, normalize, paragraphs, parseNotebook, loadNotebook };
+module.exports = { parseStamp, normalize, paragraphs, parseNotebook, archivePathFor, loadNotebook };

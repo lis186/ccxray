@@ -94,7 +94,7 @@ function buildWindows(asks, submissions, { now, tailMs = DEFAULT_TAIL_MS } = {})
     w.hostSessions = [...new Set(w.matches.flatMap(s => s.sessionIds))];
     w.firstMatchAt = Object.fromEntries(w.hostSessions.map(sid => [sid, w.matches.find(s => s.sessionIds.includes(sid)).at]));
   }
-  const consumed = new Set([...consumedBy.keys()].map(s => s.key));
+  const consumed = new Map([...consumedBy].map(([s, id]) => [s.key, id]));
   return { windows: windows.map(({ matches, firstSub, lower, ...w }) => w), submissions: subs, consumed };
 }
 

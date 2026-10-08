@@ -153,6 +153,9 @@ function aggregate(turns) {
   };
   let measured = false;
   for (const e of turns) {
+    // A row with neither a model nor usage is not a model call (the proxy also
+    // records unbilled requests); it would only inflate the call count.
+    if (!e.model && !e.usage) continue;
     out.calls++;
     const u = e.usage || {};
     out.tokens.input += u.input_tokens || 0;

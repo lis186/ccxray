@@ -50,4 +50,46 @@ function findTranscripts(sessionIds, { claudeDirs, codexDirs } = defaultRoots())
   return found;
 }
 
-module.exports = { defaultRoots, findTranscripts };
+function headCwd(file, pattern) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const buf = Buffer.alloc(256 * 1024);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = pattern.exec(buf.toString('utf8', 0, n));
+    return m ? JSON.parse(`"${m[1]}"`) : null;
+  } catch { return null; } finally { if (fd !== undefined) fs.closeSync(fd); }
+}
+
+// Host sessions straight from the transcripts, so a session the index has not
+// imported yet still contributes its owner submissions (and the report can say
+// the Ask is not imported yet rather than that it ran elsewhere). The project
+// directory name only narrows the search; the recorded cwd decides.
+function checkoutTranscripts(root, { claudeDirs, codexDirs } = defaultRoots(), { from = 0 } = {}) {
+  const found = new Map();
+  const dirName = root.replace(/[^a-zA-Z0-9]/gu, '-');
+  for (const projects of claudeDirs) {
+    const dir = path.join(projects, dirName);
+    for (const f of readdir(dir)) {
+      if (!f.isFile() || !f.name.endsWith('.jsonl')) continue;
+      const file = path.join(dir, f.name);
+      try { if (fs.statSync(file).mtimeMs < from) continue; } catch { continue; }
+      if (headCwd(file, /"cwd":"((?:[^"\\]|\\.)*)"/u) === root) found.set(f.name.slice(0, -'.jsonl'.length), { provider: 'anthropic', file });
+    }
+  }
+  const walk = (dir, depth) => {
+    for (const d of readdir(dir)) {
+      const full = path.join(dir, d.name);
+      if (d.isDirectory() && depth < 3) walk(full, depth + 1);
+      else if (d.isFile() && d.name.endsWith('.jsonl')) {
+        try { if (fs.statSync(full).mtimeMs < from) continue; } catch { continue; }
+        const m = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/u.exec(d.name);
+        if (m && headCwd(full, /"cwd":"((?:[^"\\]|\\.)*)"/u) === root) found.set(m[1], { provider: 'openai', file: full });
+      }
+    }
+  };
+  for (const sessions of codexDirs) walk(sessions, 0);
+  return found;
+}
+
+module.exports = { defaultRoots, findTranscripts, checkoutTranscripts };

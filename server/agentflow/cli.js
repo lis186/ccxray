@@ -6,6 +6,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { archivePathFor } = require('./notebook');
 
 const HELP = `Usage: ccxray agentflow report [options]
 
@@ -51,15 +52,6 @@ function defaultNotebook(cwd) {
   return path.resolve(cwd, typeof sw['target-doc'] === 'string' ? sw['target-doc'] : '.agentflow/devlog.md');
 }
 
-// The name agentflow's compaction gives the archive (upstream ag-settings.js):
-// `<topic>.devlog.md` → `<topic>.archive.md`, any other `<x>.md` → `<x>.archive.md`.
-function archivePathFor(notebook) {
-  const dir = path.dirname(notebook), base = path.basename(notebook);
-  if (base.endsWith('.devlog.md')) return path.join(dir, base.slice(0, -'.devlog.md'.length) + '.archive.md');
-  if (base.endsWith('.md')) return path.join(dir, base.slice(0, -'.md'.length) + '.archive.md');
-  return null;
-}
-
 function resolveInputs(args, cwd = process.cwd()) {
   const notebook = args.notebook ? path.resolve(cwd, args.notebook) : defaultNotebook(cwd);
   if (!fs.existsSync(notebook)) throw new UsageError(`notebook not found: ${notebook}`);
@@ -68,20 +60,25 @@ function resolveInputs(args, cwd = process.cwd()) {
 }
 
 async function run(argv) {
-  let args;
+  let args, inputs;
   try {
     args = parseArgs(argv);
     if (args.help) { process.stdout.write(HELP + '\n'); return; }
-    resolveInputs(args);
+    inputs = resolveInputs(args);
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
     console.error(`${err.message}. Run "ccxray agentflow report --help" for usage.`);
     process.exitCode = 1;
     return;
   }
-  // The report itself lands in later phases (Ask windows, attribution, render).
-  console.error('agentflow report: not implemented yet');
-  process.exitCode = 2;
+  const { buildReport, renderText } = require('./report');
+  const report = await buildReport({ ...inputs, ask: args.ask });
+  if (args.ask && !report.asks.length) {
+    console.error(`${args.ask} is not in ${report.notebook}`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(args.json ? JSON.stringify(report) + '\n' : renderText(report));
 }
 
 module.exports = { run, parseArgs, resolveInputs, archivePathFor, defaultNotebook, UsageError };
