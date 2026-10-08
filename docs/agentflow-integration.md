@@ -165,7 +165,7 @@ Edge cases:
 
 Sessions in the same directory without such evidence are excluded. If evidence cannot be read (transcript gone, arguments unavailable), fall back to cwd plus window and label the row `evidence unreadable`.
 
-Both conditions are tested on merged rows. **Proxy-only host requests** (prompt suggestions, title generation) belong to the host session they carry, so they join the host row even though no transcript mentions them.
+Both conditions are tested on merged rows. A host session is found from the index and from the transcripts themselves, so one not yet imported still contributes its owner submissions; when its transcript records the checkout root, that cwd is also the session's cwd for index rows that have none. **Proxy-only host requests** (prompt suggestions, title generation) belong to the host session they carry, so they join the host row even though no transcript mentions them.
 
 **Transcript evidence.** The index keeps tool call ids, names and failure flags, not tool arguments or results (`server/importer.js`). Ask matching and launch evidence therefore read transcripts directly, in memory only:
 - **Claude:** `type: user` lines with string content or `text` blocks; `tool_use`/`tool_result` blocks paired by `tool_use_id`; each line's `timestamp`. An oversized result is persisted to a side file whose absolute path the transcript's preview records (it may sit under a different Claude config directory than the transcript): read that file, and if it is gone use the preview and label the evidence `truncated`.
@@ -253,10 +253,11 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `ambiguous`, `unassigned`, `weak`, `truncated`, `evidence conflict`: see Attribution and Attribution status
   - `start tie`, `no local evidence`, `stamp unreadable`, and the `unmatched bullets` disclosure: see Ask windows
   - `unknown` completeness: no host row (see Completeness)
+  - `not yet imported: n turns`: transcript turns inside the window whose message id no index line carries (import lags per turn, since a session spans days); the footer counts such Asks and points to `ccxray import --once`
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`.
+- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
 - **Tool statistics** stay in the dashboard.
 
 **Attribution status.** Completeness says whether usage was captured; attribution says whether it was filed under the right Ask. Even fully proxied traffic can be misfiled, so every row carries both an `evidence` and a `status`:
@@ -389,7 +390,7 @@ PR #639 stopped unknown CLI flags from booting a server. PR #640 fixed cwd on li
   - a machine identifier hashed from Claude Code's per-install `userID`.
 
   Union is by globally unique keys (index ids, then responseId through ADR 0012; event uuids; Codex one source per logical session across machines), which is order-independent and idempotent. Wall clocks differ between machines, so host turns should be attributed through Claude's causal links (`promptId`, `parentUuid`) to the submission that started them, with windows as the fallback, rather than by comparing timestamps across machines. Snapshots (A1b) freeze history and are not additive across machines. Transport is out of scope.
-- **causal host attribution.** Assigning each host turn to the owner submission that started it, through `promptId`/`parentUuid`, instead of by window overlap. To be measured against window attribution on real data before the spec adopts it; proxy-only rows carry no `promptId` and keep session plus time.
+- **causal host attribution.** Assigning each host turn to the owner submission that started it, through `promptId`/`parentUuid`, instead of by window overlap. Measured on one real notebook (2026-10-08, one machine): of 1,039 turns both methods could place, none differed; causal links would recover 2 turns past a window's end, cannot place the 582 turns started by prompts that match no bullet (the notebook files those follow-ups under the open Ask, as windows do), and cannot place proxy-only rows (472), which carry no `promptId`. Not adopted for one machine; its value is avoiding cross-machine clock comparison when machines are combined.
 - opt-in auto-watch, off by default: discovers projects from recorded cwds whose checkout contains an agentflow workspace, and refreshes reports when a new Reply appears
 - a worker-only route for Codex workers to reach the proxy. The zero-change route through the owner's Codex configuration was verified once (see Evidence), but it redirects every Codex process and appeared to break ChatGPT connector MCP calls; candidates to test are the runner's `env`, a `-p` profile and `-c model_provider`
 - reading input receipts while they last (they cover only the current or most recently closed Ask), or capturing them live by auto-watch, to bind bullets to submissions exactly
