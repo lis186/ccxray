@@ -1336,8 +1336,21 @@ async function runPostListenStartupTasks() {
 
   await pricingReady;
   if (restoreOk) {
-    try { await flushExport(); } catch (e) { console.error('[ccxray export] Pre-prune flush failed:', e.message); }
-    await pruneLogs();
+    // Flush and prune under one exporter lock: another process sharing this
+    // CCXRAY_HOME (Windows standalone, --port) can neither prune what this one is
+    // uploading nor upload what this one is pruning. A lock loser skips both.
+    await exportSync.withExportLock(async (lockToken) => {
+      let outcome;
+      try {
+        outcome = await flushExport({ lockToken });
+      } catch (e) {
+        console.error('[ccxray export] Pre-prune flush failed:', e.message);
+        outcome = 'upload-failed';
+      }
+      const decision = exportSync.pruneDecision(outcome);
+      if (decision.reason) console.log(`\x1b[90m   [ccxray export] prune: ${decision.reason}\x1b[0m`);
+      if (decision.prune) await pruneLogs({ retentionDays: decision.retentionDays });
+    });
     warmUpCosts();
   }
   startExportSync();
