@@ -47,13 +47,17 @@ function parseNotebook(text) {
     }
     para = null;
   };
+  let reply = null;
+  const endReply = () => { if (reply && ask) ask.replyText = reply.join('\n'); reply = null; };
   for (const line of text.split('\n')) {
+    if (!fenced && ASK.test(line)) endReply();
+    if (reply) reply.push(line);
     if (FENCE.test(line)) { endPara(); fenced = !fenced; continue; }
     if (fenced) continue;
     const a = ASK.exec(line);
     if (a) {
       endPara();
-      ask = { id: a[1], bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false };
+      ask = { id: a[1], bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false, replyText: null };
       asks.push(ask);
       part = 'body';
       continue;
@@ -61,6 +65,7 @@ function parseNotebook(text) {
     if (!ask) continue;
     if (REPLY.test(line)) {
       endPara();
+      reply = [line];
       ask.hasReply = true;
       part = 'reply-head';
       continue;
@@ -80,6 +85,7 @@ function parseNotebook(text) {
     else if (/^\+(?: |$)/u.test(line)) para = [line.replace(/^\+ ?/u, '')];
   }
   endPara();
+  endReply();
   return asks;
 }
 

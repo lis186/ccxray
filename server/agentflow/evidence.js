@@ -27,6 +27,20 @@ function blockText(content) {
 }
 
 const SYSTEM_REMINDER = /<system-reminder>[\s\S]*?<\/system-reminder>/gu;
+const PERSISTED = /<persisted-output>[\s\S]*?Full output saved to:\s*(\/\S+)/u;
+const PERSISTED_MAX_BYTES = 8 * 1024 * 1024;
+
+// An oversized Claude tool result is saved to a side file whose absolute path
+// the transcript's preview records (possibly under another config directory).
+// Read it; if it is gone, keep the preview and mark the evidence truncated.
+function resolvePersisted(text) {
+  const m = PERSISTED.exec(text);
+  if (!m) return { text, truncated: false };
+  try {
+    if (fs.statSync(m[1]).size <= PERSISTED_MAX_BYTES) return { text: fs.readFileSync(m[1], 'utf8'), truncated: false };
+  } catch {}
+  return { text, truncated: true };
+}
 
 // Claude owner submissions exclude meta lines, tool results, slash commands and
 // skill expansions, task notifications, and lines holding only system reminders
@@ -75,11 +89,13 @@ function readClaudeTranscript(file) {
         tools.set(b.id, t);
       } else if (b.type === 'tool_result' && b.tool_use_id) {
         const t = tools.get(b.tool_use_id) || { id: b.tool_use_id, sessionId: e.sessionId || sessionId };
-        Object.assign(t, { result: blockText(b.content), resultAt: at, isError: !!b.is_error });
+        const r = resolvePersisted(blockText(b.content));
+        Object.assign(t, { result: r.text, truncated: r.truncated, resultAt: at, isError: !!b.is_error });
         tools.set(b.tool_use_id, t);
       }
     }
   }
+  for (const t of tools.values()) t.origin = file;
   return { provider: 'anthropic', sessionId, submissions, tools: [...tools.values()], turns: [...turns].map(([id, at]) => ({ id, at })) };
 }
 
@@ -114,6 +130,7 @@ function readCodexTranscript(file) {
       tools.set(p.call_id, t);
     }
   }
+  for (const t of tools.values()) t.origin = file;
   return { provider: 'openai', sessionId, background, submissions: background ? [] : submissions, tools: [...tools.values()] };
 }
 

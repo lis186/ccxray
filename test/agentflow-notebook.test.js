@@ -49,7 +49,11 @@ describe('parseNotebook', () => {
   });
 
   it('treats the bare `+` scaffold as an empty, open Ask', () => {
-    assert.deepEqual(asks[2], { id: 'A-003', bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false });
+    assert.deepEqual(asks[2], { id: 'A-003', bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false, replyText: null });
+  });
+
+  it('keeps each Reply\'s raw text, from its heading to the next Ask', () => {
+    assert.equal(asks[0].replyText, '# ← Reply / A-001\n\n* _2026-06-01 10:05:00 +0000 (claude/unknown)_\n\n+ inside the reply\n');
   });
 });
 

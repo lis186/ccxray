@@ -92,4 +92,11 @@ function checkoutTranscripts(root, { claudeDirs, codexDirs } = defaultRoots(), {
   return found;
 }
 
-module.exports = { defaultRoots, findTranscripts, checkoutTranscripts };
+// A Claude host's Task-subagent transcripts: `<project>/<sessionId>/subagents/*.jsonl`.
+// Their lines carry the host's session id; their tool events are evidence too.
+function subagentTranscripts(hostFile) {
+  const dir = path.join(path.dirname(hostFile), path.basename(hostFile, '.jsonl'), 'subagents');
+  return readdir(dir).filter(d => d.isFile() && d.name.endsWith('.jsonl')).map(d => path.join(dir, d.name));
+}
+
+module.exports = { defaultRoots, findTranscripts, checkoutTranscripts, subagentTranscripts };
