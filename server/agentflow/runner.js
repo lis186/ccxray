@@ -18,9 +18,11 @@ function unescape(text) {
 function stripSlash(p) { return p.length > 1 ? p.replace(/\/+$/u, '') : p; }
 
 // Clone paths a tool result reports in the runner's result structure: a
-// `clone` object's `root`, a wrapper's `clone.root` or `clone` summary key, or
-// `working_directory` beside the runner's other result keys. Never a checkout root.
-function runnerClonePaths(text, { checkoutRoots = [] } = {}) {
+// `clone` object's `root`, a wrapper's `clone.root`, or `working_directory`
+// beside the runner's other result keys; with `summary`, also a wrapper's bare
+// `clone` key, which proves a known clone (E5) but discovers none (E1). Never a
+// checkout root.
+function runnerClonePaths(text, { checkoutRoots = [], summary = true } = {}) {
   if (!text) return [];
   const t = unescape(text);
   const found = new Set();
@@ -28,7 +30,7 @@ function runnerClonePaths(text, { checkoutRoots = [] } = {}) {
   for (const m of t.matchAll(/clone\.root["']?\s*[:=]\s*["']?(\/[^\s"',}]+)/gu)) found.add(m[1]);
   if (RUNNER_KEYS.test(t)) for (const m of t.matchAll(/["']working_directory["']\s*:\s*["'](\/[^"']+)["']/gu)) found.add(m[1]);
   // A wrapper's summary naming the clone under a `clone` key.
-  for (const m of t.matchAll(/["']clone["']\s*:\s*["'](\/[^"']+)["']/gu)) found.add(m[1]);
+  if (summary) for (const m of t.matchAll(/["']clone["']\s*:\s*["'](\/[^"']+)["']/gu)) found.add(m[1]);
   const roots = new Set(checkoutRoots.map(stripSlash));
   return [...found].map(stripSlash).filter(p => !roots.has(p));
 }

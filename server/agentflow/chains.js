@@ -11,7 +11,7 @@ const { runnerClonePaths, namesRunner, launchHandles } = require('./runner');
 // Every clone path reported in runner-shaped tool results (E1 reverse discovery).
 function reverseDiscovered(toolEvents, { checkoutRoots = [] } = {}) {
   const found = new Set();
-  for (const ev of toolEvents) for (const p of runnerClonePaths(ev.result, { checkoutRoots })) found.add(p);
+  for (const ev of toolEvents) for (const p of runnerClonePaths(ev.result, { checkoutRoots, summary: false })) found.add(p);
   return found;
 }
 

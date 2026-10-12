@@ -91,6 +91,12 @@ describe('chainEvidence (E5)', () => {
   it('collects clones for reverse discovery', () => {
     assert.deepEqual([...reverseDiscovered([ev('t', 'f', '', 0, runnerResult(C2), 1)])], [C2]);
   });
+
+  it('does not discover a clone from a bare `clone` key, which only proves a known clone (E1, F30)', () => {
+    const summary = JSON.stringify({ summary: 'done', clone: C2 });
+    assert.deepEqual([...reverseDiscovered([ev('t', 'f', '{"command":"cat notes.json"}', 0, summary, 1)])], []);
+    assert.deepEqual(chainEvidence([ev('t1', 'f', '{"command":"node external-runner.js"}', 10, summary, 20)], clones).strong.map(s => s.clone), [C2]);
+  });
 });
 
 describe('readClaudeTranscript: persisted results (F15)', () => {
