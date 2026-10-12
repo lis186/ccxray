@@ -200,7 +200,7 @@ describe('require purity', () => {
   }
 
   it('loading usage-query and the agentflow modules starts no handles and writes nothing', () => {
-    const r = probe(['usage-query', 'agentflow/cli', 'agentflow/notebook', 'agentflow/evidence', 'agentflow/windows', 'agentflow/host', 'agentflow/discover', 'agentflow/completeness', 'agentflow/report', 'agentflow/runner', 'agentflow/chains', 'agentflow/records']
+    const r = probe(['usage-query', 'agentflow/cli', 'agentflow/notebook', 'agentflow/evidence', 'agentflow/windows', 'agentflow/host', 'agentflow/discover', 'agentflow/completeness', 'agentflow/report', 'agentflow/runner', 'agentflow/chains', 'agentflow/records', 'agentflow/workers']
       .map(m => path.join(__dirname, '../server', m)));
     assert.deepEqual(r.after, r.before);
     assert.deepEqual(r.files, []);

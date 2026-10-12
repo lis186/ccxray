@@ -22,13 +22,16 @@ function isNativeSubagent(e) {
 }
 
 // Notebook evidence in a session's tool calls: the notebook path (relative or
-// absolute), `agf`, or the notebook's workspace directory. Bash command text is
-// part of the tool input, so it counts.
+// absolute). Generic evidence, `agf` or the workspace directory, counts only for
+// the checkout's default notebook (`nb.isDefault`), the one a bare `agf` targets.
+// Bash command text is part of the tool input, so it counts.
 function mentionsNotebook(transcript, nb) {
-  const needles = [nb.abs, nb.rel, nb.workspaceAbs + '/', nb.workspaceRel + '/'].filter(Boolean);
+  const paths = [nb.abs, nb.rel].filter(Boolean);
+  const generic = nb.isDefault ? [nb.workspaceAbs + '/', nb.workspaceRel + '/'].filter(Boolean) : [];
   return transcript.tools.some(t => {
     const text = t.input || '';
-    return needles.some(n => text.includes(n)) || /(^|[^\w-])agf([^\w-]|$)/u.test(text);
+    return [...paths, ...generic].some(n => text.includes(n))
+      || (nb.isDefault && /(^|[^\w-])agf([^\w-]|$)/u.test(text));
   });
 }
 
@@ -51,7 +54,7 @@ function attributeHosts({ turns, checkoutRoot, notebooks, report = 0, transcript
   const reportWindows = notebooks[report].windows;
   const setupBefore = firstStart(reportWindows);
   const noLocal = reportWindows.filter(w => w.startKind === 'no local evidence');
-  const out = { rows: [], setup: [], unassigned: [], excludedSessions: 0, offRoot: [], noLocalTurns: {} };
+  const out = { rows: [], setup: [], unassigned: [], excludedSessions: 0, offRoot: [], noLocalTurns: {}, hostOf: new Map(), background: 0 };
   const rowsByKey = new Map();
   const row = (ask, session, status, evidence, labels) => {
     const key = `${ask}\0${session}\0${status}`;
@@ -66,10 +69,14 @@ function attributeHosts({ turns, checkoutRoot, notebooks, report = 0, transcript
   for (const [sid, rows] of bySession) {
     if (!rows.some(e => !isSubagentTurn(e) && stripSlash(e.cwd) === root)) continue;
     const transcript = transcripts.get(sid) || null;
+    // Codex background threads (memory_consolidation and the like) carry a cwd
+    // but are no host: left out of every total and counted (Attribution).
+    if (transcript && transcript.background) { out.background++; continue; }
     const hostOf = notebooks.map((nb, i) => i).filter(i => !transcript
       || notebooks[i].windows.some(w => w.hostSessions.includes(sid))
       || mentionsNotebook(transcript, notebooks[i]));
     if (!hostOf.length) { out.excludedSessions++; continue; }
+    out.hostOf.set(sid, hostOf);
     const labels = transcript ? [] : ['evidence unreadable'];
 
     for (const e of rows) {

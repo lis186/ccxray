@@ -85,7 +85,7 @@ function readClaudeTranscript(file) {
       if (!b) continue;
       if (b.type === 'tool_use' && b.id) {
         const t = tools.get(b.id) || { id: b.id, sessionId: e.sessionId || sessionId };
-        Object.assign(t, { name: b.name, input: JSON.stringify(b.input ?? null), useAt: at });
+        Object.assign(t, { name: b.name, input: JSON.stringify(b.input ?? null), inputAt: at });
         tools.set(b.id, t);
       } else if (b.type === 'tool_result' && b.tool_use_id) {
         const t = tools.get(b.tool_use_id) || { id: b.tool_use_id, sessionId: e.sessionId || sessionId };
@@ -121,7 +121,7 @@ function readCodexTranscript(file) {
       submissions.push({ key: `${sessionId}:${i}`, sessionId, at, text: t });
     } else if ((p.type === 'function_call' || p.type === 'custom_tool_call') && p.call_id) {
       const t = tools.get(p.call_id) || { id: p.call_id, sessionId };
-      Object.assign(t, { name: p.name, input: typeof p.arguments === 'string' ? p.arguments : typeof p.input === 'string' ? p.input : JSON.stringify(p.arguments ?? p.input ?? null), useAt: at });
+      Object.assign(t, { name: p.name, input: typeof p.arguments === 'string' ? p.arguments : typeof p.input === 'string' ? p.input : JSON.stringify(p.arguments ?? p.input ?? null), inputAt: at });
       tools.set(p.call_id, t);
     } else if ((p.type === 'function_call_output' || p.type === 'custom_tool_call_output') && p.call_id) {
       const t = tools.get(p.call_id) || { id: p.call_id, sessionId };

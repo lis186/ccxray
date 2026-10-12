@@ -18,7 +18,7 @@ const transcript = (subs, tools = []) => ({ submissions: subs, tools });
 const turn = (id, sid, m, extra = {}) => ({ id, sessionId: sid, cwd: ROOT, receivedAt: T(m), ...extra });
 const notebook = (asks, transcripts, rel = '.agentflow/devlog.md') => {
   const subs = [...transcripts.values()].filter(Boolean).flatMap(t => t.submissions.map(s => ({ ...s, sessionIds: [s.sessionId] })));
-  return { abs: path.join(ROOT, rel), rel, workspaceAbs: path.join(ROOT, '.agentflow'), workspaceRel: '.agentflow', windows: buildWindows(asks, subs, { now: T(1000) }).windows };
+  return { abs: path.join(ROOT, rel), rel, workspaceAbs: path.join(ROOT, '.agentflow'), workspaceRel: '.agentflow', isDefault: rel === '.agentflow/devlog.md', windows: buildWindows(asks, subs, { now: T(1000) }).windows };
 };
 const summary = r => r.rows.map(x => [x.ask, x.session, x.status, x.evidence, x.labels.join(','), x.turns.map(t => t.id).join(',')]);
 
@@ -83,6 +83,15 @@ describe('attributeHosts: turns', () => {
     const turns = [turn('t1', 'S1', 5.5), turn('t2', 'S1', 7)];
     const r = attributeHosts({ turns, checkoutRoot: ROOT, notebooks: [notebook(asks, t2), other], transcripts: t2 });
     assert.deepEqual(summary(r).map(x => [x[0], x[2], x[5]]), [['A-001', 'unique', 't1'], ['A-001', 'ambiguous', 't2']]);
+  });
+
+  it('counts generic evidence for the default notebook only, so a merged stream copy takes no turns (F33)', () => {
+    const t2 = new Map([['S1', transcript([sub('u1', 'S1', 5, 'first')], [{ id: 't', input: '{"command":"agf status && ls .agentflow/"}' }])]]);
+    const stream = notebook([ask('A-001', ['stream work'], 12)], new Map([['S9', transcript([sub('u9', 'S9', 6, 'stream work')])]]), '.agentflow/features/k/k.devlog.md');
+    const turns = [turn('t1', 'S1', 5.5), turn('t2', 'S1', 7)];
+    const r = attributeHosts({ turns, checkoutRoot: ROOT, notebooks: [notebook(asks, t2), stream], transcripts: t2 });
+    assert.deepEqual(summary(r).map(x => [x[0], x[2], x[5]]), [['A-001', 'unique', 't1,t2']]);
+    assert.deepEqual(r.hostOf.get('S1'), [0]);
   });
 });
 

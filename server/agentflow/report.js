@@ -10,9 +10,12 @@ const { execFileSync } = require('child_process');
 const { readMergedTurns, aggregate } = require('../usage-query');
 const { formatAggCostText } = require('../../public/format.js');
 const { loadNotebook, archivePathFor } = require('./notebook');
+const { defaultNotebook } = require('./cli');
 const { readClaudeTranscript, readCodexTranscript, collectSubmissions } = require('./evidence');
 const { buildWindows, disclose } = require('./windows');
-const { defaultRoots, findTranscripts, checkoutTranscripts } = require('./discover');
+const { defaultRoots, findTranscripts, checkoutTranscripts, subagentTranscripts } = require('./discover');
+const { readDispatchRecords, readCompletionRecords } = require('./records');
+const { attributeWorkers } = require('./workers');
 const { isNativeSubagent, attributeHosts } = require('./host');
 const { hostCompleteness, foldCompleteness } = require('./completeness');
 
@@ -87,13 +90,25 @@ function executorRows(row, codexSources) {
   };
 }
 
-async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now = Date.now(), logsDir, roots = defaultRoots() }) {
+function externalRow(run, codexSources) {
+  const agg = aggregate(run.turns);
+  const actual = Object.keys(agg.effort).filter(k => k !== 'unknown');
+  const labels = [...run.labels];
+  if (run.requested.effort && actual.length && !actual.includes(run.requested.effort)) labels.push('effort mismatch');
+  return {
+    kind: 'external', role: run.stage || 'unknown', evidence: run.evidence, status: run.status, labels,
+    requested: run.requested, completeness: hostCompleteness(run.turns, codexSources), total: agg, main: agg, subagents: [],
+  };
+}
+
+async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now = Date.now(), logsDir, roots = defaultRoots(), originOf }) {
   const root = checkoutRootFor(notebook);
   const workspace = workspaceDirFor(root);
   const paths = workspaceNotebooks(workspace, notebook);
+  const defaultAbs = defaultNotebook(root);
   const notebooks = paths.map((abs, i) => {
     const arch = i === 0 ? archive : archivePathFor(abs);
-    return { abs, rel: path.relative(root, abs), workspaceAbs: workspace, workspaceRel: path.relative(root, workspace), asks: loadNotebook(abs, arch && fs.existsSync(arch) ? arch : null) };
+    return { abs, rel: path.relative(root, abs), workspaceAbs: workspace, workspaceRel: path.relative(root, workspace), isDefault: abs === defaultAbs, asks: loadNotebook(abs, arch && fs.existsSync(arch) ? arch : null) };
   });
 
   const stamps = notebooks.flatMap(n => n.asks.map(a => a.stamp).filter(s => s != null));
@@ -124,6 +139,23 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   for (const n of notebooks) { n.windowsResult = buildWindows(n.asks, subs, { now }); n.windows = n.windowsResult.windows; }
   const hosts = attributeHosts({ turns, checkoutRoot: root, notebooks, report: 0, transcripts });
 
+  // External workers: tool evidence of every checkout host session and its
+  // Task subagents, plus the workspace's dispatch and completion records.
+  const toolEvents = [...transcripts.values()].flatMap(t => t.tools);
+  for (const [sid, f] of files) {
+    if (f.provider !== 'anthropic') continue;
+    for (const sub of subagentTranscripts(f.file)) {
+      try { toolEvents.push(...readClaudeTranscript(sub).tools.map(ev => ({ ...ev, sessionId: ev.sessionId || sid }))); } catch {}
+    }
+  }
+  const workspaceRel = path.relative(root, workspace).split(path.sep).join('/');
+  const workers = attributeWorkers({
+    turns, checkoutRoot: root, workspaceRel, notebooks, hostOf: hosts.hostOf, toolEvents,
+    dispatch: readDispatchRecords(workspace), completion: readCompletionRecords(workspace, root, notebooks),
+    now, ...(originOf ? { originOf } : {}),
+  });
+  const ourRuns = workers.runs.filter(r => r.notebook === notebooks[0].rel);
+
   const reported = notebooks[0];
   // Import lags per turn, not per session (a session spans days): a transcript
   // turn inside the window whose message id no index line carries is missing.
@@ -143,17 +175,20 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
       unmatchedSubmissions: disclose(w, r.session, reported.windowsResult).unmatched,
       followUps: followUps(r, w, reported.windowsResult),
     }));
-    const ambiguous = aggregate(rows.filter(r => r.status === 'ambiguous').flatMap(r => r.turns));
+    const runs = ourRuns.filter(r => r.ask === w.id);
+    for (const r of runs.filter(x => x.status === 'unique')) execs.push(externalRow(r, codexSources));
+    const ambiguous = aggregate([...rows.filter(r => r.status === 'ambiguous').flatMap(r => r.turns), ...runs.filter(x => x.status === 'ambiguous').flatMap(x => x.turns)]);
     const labels = [...w.labels, ...(w.unmatchedBullets ? [`unmatched bullets: ${w.unmatchedBullets}`] : [])];
     const missing = w.start != null && w.startKind !== 'no local evidence' ? missingTurns(w, [...new Set([...w.hostSessions, ...rows.map(r => r.session)])]) : 0;
     if (missing) labels.push(`not yet imported: ${missing} turns`);
     if (hosts.noLocalTurns[w.id]) labels.push(`local host turns inside bounds: ${hosts.noLocalTurns[w.id]}`);
     asks.push({
       id: w.id,
-      completeness: foldCompleteness(execs.map(x => x.completeness)),
+      // The Ask's label folds its hosts (Completeness); workers carry their own.
+      completeness: foldCompleteness(execs.filter(x => x.kind === 'host').map(x => x.completeness)),
       askTimeMs: w.start != null && w.end != null && w.startKind !== 'no local evidence' ? w.end - w.start : null,
       labels,
-      attributed: aggregate(unique.flatMap(r => r.turns)),
+      attributed: aggregate([...unique.flatMap(r => r.turns), ...runs.filter(x => x.status === 'unique').flatMap(x => x.turns)]),
       ambiguous: ambiguous.calls ? ambiguous : null,
       executors: execs,
     });
@@ -165,6 +200,9 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     generatedAt: now,
     setup: hosts.setup.length ? aggregate(hosts.setup) : null,
     unassigned: hosts.unassigned.length ? aggregate(hosts.unassigned) : null,
+    // Worker runs filed under this notebook but no single Ask, never in totals.
+    workersUnassigned: (() => { const t = ourRuns.filter(r => r.status === 'unassigned').flatMap(r => r.turns); return t.length ? aggregate(t) : null; })(),
+    workersAmbiguous: (() => { const t = [...ourRuns.filter(r => r.status === 'ambiguous' && r.ask == null).flatMap(r => r.turns), ...workers.ambiguousTurns]; return t.length ? aggregate(t) : null; })(),
     asks,
     footer: {
       sources: Object.entries(turns.filter(e => hosts.rows.some(r => r.turns.includes(e))).reduce((acc, e) => {
@@ -176,6 +214,10 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
       stampUnreadable: count('stamp unreadable'),
       offRootTurns: hosts.offRoot.length,
       notYetImported: asks.filter(a => a.labels.some(l => l.startsWith('not yet imported'))).length,
+      matchedNoNotebook: workers.footer.matchedNoNotebook,
+      checkoutUnknown: workers.footer.checkoutUnknown,
+      heuristicParentIgnored: workers.footer.heuristicParentIgnored,
+      background: hosts.background,
     },
   };
 }
@@ -216,18 +258,28 @@ function renderText(report) {
     out.push(`attribution: ${attribution.join(' · ')}`);
     if (a.labels.length) out.push(`labels: ${a.labels.join(' · ')}`);
     for (const x of a.executors) {
-      out.push(`- host · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.main.calls ? x.main : x.total)}${x.labels.length ? ' · ' + x.labels.join(' · ') : ''}`);
+      const tail = x.labels.length ? ' · ' + x.labels.join(' · ') : '';
+      if (x.kind === 'external') {
+        const req = x.requested.effort || x.requested.model ? ` (requested ${[x.requested.model, x.requested.effort].filter(Boolean).join(' ')})` : '';
+        out.push(`- external ${x.role} · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.total)}${req}${tail}`);
+        continue;
+      }
+      out.push(`- host · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.main.calls ? x.main : x.total)}${tail}`);
       for (const s of x.subagents) out.push(`  - subagent ${s.role} · ${executorLine(s)}`);
       out.push(`  unmatched owner submissions: ${x.unmatchedSubmissions} · follow-up submissions: ${x.followUps.count} (${fmtCost(x.followUps)})`);
     }
     out.push('');
   }
   if (report.unassigned) out.push(`notebook-level unassigned: ${fmtCost(report.unassigned)} · ${report.unassigned.calls} calls`, '');
+  if (report.workersUnassigned) out.push(`external runs, notebook-level unassigned: ${fmtCost(report.workersUnassigned)} · ${report.workersUnassigned.calls} calls`, '');
+  if (report.workersAmbiguous) out.push(`external runs, ambiguous: ${fmtCost(report.workersAmbiguous)} · ${report.workersAmbiguous.calls} calls`, '');
   const f = report.footer;
   out.push('---');
   out.push(`sources (host turns): ${f.sources.join(' · ') || 'none'}`);
   out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update`);
   out.push(`this machine's data only · no local evidence: ${f.noLocalEvidence} · stamp unreadable: ${f.stampUnreadable} · host turns below the checkout root, not attributed: ${f.offRootTurns}`);
+  out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · checkout unknown: ${f.checkoutUnknown} · heuristic parent ignored: ${f.heuristicParentIgnored}`);
+  if (f.background) out.push(`Codex background threads in this checkout, not attributed: ${f.background}`);
   if (f.notYetImported) out.push(`not yet imported: ${f.notYetImported} Asks have transcript turns the index lacks; run \`ccxray import --once\` and report again`);
   out.push('imported turns are hidden in the dashboard by default; open /?imported to see them');
   return out.join('\n') + '\n';

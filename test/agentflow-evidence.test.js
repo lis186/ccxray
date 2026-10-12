@@ -52,6 +52,8 @@ describe('readClaudeTranscript: tool events (F20)', () => {
     ]));
     assert.deepEqual(t.tools.map(x => [x.id, x.name, x.result ?? null]), [['tu1', 'Bash', 'out'], ['tu2', 'Read', null]]);
     assert.equal(t.tools[0].input, '{"command":"ls"}');
+    // The field names the chain finder reads (chains.js, workers.js).
+    assert.deepEqual([t.tools[0].inputAt, t.tools[0].resultAt], [Date.UTC(2026, 5, 1, 10, 0, 1), Date.UTC(2026, 5, 1, 10, 0, 2)]);
   });
 });
 
@@ -73,6 +75,7 @@ describe('readCodexTranscript', () => {
     assert.deepEqual(t.submissions.map(s => s.text), ['owner prompt']);
     assert.equal(t.sessionId, 'C1');
     assert.deepEqual(t.tools.map(x => [x.id, x.input, x.result]), [['c1', '{"cmd":"ls"}', 'listing'], ['c2', 'patch', 'applied']]);
+    assert.deepEqual([t.tools[0].inputAt, t.tools[0].resultAt], [Date.UTC(2026, 5, 1, 10, 0, 4), Date.UTC(2026, 5, 1, 10, 0, 5)]);
   });
 
   it('takes no owner input from a background thread', () => {
