@@ -8,7 +8,7 @@ const os = require('os');
 const crypto = require('crypto');
 const Module = require('module');
 
-const { flushExport, _setUploader } = require('../server/export-sync');
+const { flushExport, withExportLock, _setUploader } = require('../server/export-sync');
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -901,12 +901,10 @@ describe('export-sync', () => {
 
   it('lock: concurrent flush skipped', async () => {
     setup([makeEntry()]);
-    // Manually create lock
-    const lockPath = path.join(_home, 'export.lock');
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'held', acquiredAt: Date.now() }), { flag: 'wx' });
-    await flushExport();
+    let outcome;
+    await withExportLock(async () => { outcome = await flushExport(); });
+    assert.equal(outcome, 'lock-lost');
     assert.equal(_uploads.length, 0, 'skipped due to lock');
-    fs.unlinkSync(lockPath);
   });
 
   it('turnToolCalls null-vs-empty: {} contributes zero, null uses fallback', async () => {
@@ -1146,17 +1144,6 @@ describe('export-sync', () => {
     assert.ok(_uploads[0].name.includes('dt='));
   });
 
-  it('lock staleness recovery: stale lock from dead pid is cleaned up', async () => {
-    setup([makeEntry()]);
-    const lockPath = path.join(_home, 'export.lock');
-    // Create a stale lock with a dead PID (PID 1 is init, but use a large fake PID)
-    fs.writeFileSync(lockPath, JSON.stringify({
-      pid: 999999999, token: 'stale', acquiredAt: Date.now() - 10 * 60_000,
-    }), { flag: 'wx' });
-    await flushExport();
-    assert.equal(_uploads.length, 1, 'stale lock was recovered');
-  });
-
   it('#1 responseId dedup: duplicate entries counted once', async () => {
     setup([
       makeEntry({ responseId: 'msg_001', cost: { cost: 0.15, confidence: 'exact' } }),
@@ -1235,14 +1222,6 @@ describe('export-sync', () => {
     assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost from enriching copy');
     assert.equal(daily.models['claude-sonnet-4-6']?.turns, 1, 'model from canonical');
     assert.ok(daily.tool_sources.local >= 1, 'toolSources from canonical');
-  });
-
-  it('#6 malformed lock file is recovered', async () => {
-    setup([makeEntry()]);
-    const lockPath = path.join(_home, 'export.lock');
-    fs.writeFileSync(lockPath, 'NOT VALID JSON{{{{', { flag: 'wx' });
-    await flushExport();
-    assert.equal(_uploads.length, 1, 'malformed lock recovered');
   });
 
   it('#2 cross-midnight cumulative fields fold into home date only', async () => {

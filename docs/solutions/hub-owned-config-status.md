@@ -111,14 +111,16 @@ mine — the same class of error this document exists to fix. `startExportSync()
 unconditionally by `startServer()` (`server/index.js:1217`), so EVERY server process is
 an exporter, and a machine can run a hub alongside any number of `--port N` servers, each
 frozen with its own environment. Measured on the author's machine while writing this:
-**seven server processes live at once.** They serialize per flush through `export.lock`
-(`export-sync.js:935-940`) but they are all exporting, and `ccxray status` reports the
+**seven server processes live at once.** They serialize each export flush and startup prune
+through a per-home loopback socket lock derived from the home directory's filesystem identity
+(`dev` + `ino`), or its optional `export-lock-port` pin. A leftover `export.lock` file is
+advisory only. They are all exporting, and `ccxray status` reports the
 hub only.
 
 **Second correction (reviewer A, round 2).** Rev 2 answered this by going per-process:
 "every exporter reports its own state". That is also wrong, in the opposite direction.
-Export is not process-level: exporters serialize through one `export.lock` and advance one
-shared `export-cursor.json` (`export-sync.js:936-941`). So a hub honestly reporting
+Export is not process-level: exporters serialize through one per-home socket lock and advance
+one shared `export-cursor.json` (`export-sync.js`). So a hub honestly reporting
 `refused` while a clean `--port N` server flushes normally means summaries ARE reaching
 GCS — and an operator reading that per-process answer escalates or restarts against a
 pipeline that is working. Rev 1 claimed to know more than it could; rev 2 claimed to know
@@ -129,9 +131,9 @@ shared level **machine**, and asserted the sharing as an unconditional property.
 not. Both paths are derived from the caller's own environment:
 
 ```
-export-sync.js:934   const home = resolveCcxrayHome();              // no argument
-export-sync.js:935   const lockPath   = path.join(home, 'export.lock');
-export-sync.js:936   const cursorPath = path.join(home, 'export-cursor.json');
+export-sync.js:…     const home = resolveCcxrayHome();              // no argument
+export-sync.js:…     exportLockTarget(home) → identity-derived/pinned port
+export-sync.js:…     const cursorPath = path.join(home, 'export-cursor.json');
 paths.js:16          resolveCcxrayHome(env = process.env) => env.CCXRAY_HOME || ~/.ccxray
 ```
 
@@ -321,7 +323,7 @@ the index tail id. This is the same equality the flush itself evaluates (`:1027`
 `lastId === tailId` states precisely "the next flush would no-op" — a positive claim mtime
 cannot express. mtime survives only inside the `behind` branch, as a qualifier
 distinguishing `pending` (younger than 2× `FLUSH_INTERVAL_MS`, the interval plus one
-skipped-tick's slack for a flush that lost `export.lock`) from `overdue`, and `overdue` is
+skipped-tick's slack for a flush that lost the per-home socket lock) from `overdue`, and `overdue` is
 worded as a conditional with a re-check horizon, never as a verdict.
 
 States: `cursor-unreadable` · `no-index` · `never-flushed` · `current` (with a `partial`

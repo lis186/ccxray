@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
+const net = require('net');
 const { resolveCcxrayHome } = require('./paths');
 const { listRawSessionBuckets } = require('./providers');
 const {
@@ -13,7 +14,8 @@ const {
 
 // ── Constants ──────────────────────────────────────────────────────────
 const FLUSH_INTERVAL_MS = 3_600_000; // 1 hour
-const LOCK_STALE_MS = 5 * 60_000;
+const LOCK_PORT_BASE = 20000;
+const LOCK_PORT_SPAN = 12768;
 const GCS_TIMEOUT_MS = 3_000; // ponytail: 3s not 30s — shutdown deadline is 5s, at-least-once retries next flush
 const NAME_MAX_LEN = 64;
 const EMAIL_RE = /[@]/;
@@ -149,39 +151,106 @@ function getAgentId(home) {
   return id;
 }
 
-// ── Lock (hub.js shape) ────────────────────────────────────────────────
-function isPidAlive(pid) {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-}
+// ── Export lock (per-home loopback socket) ─────────────────────────────
+function exportLockTarget(home) {
+  try { fs.mkdirSync(home, { recursive: true }); }
+  catch (err) { return { reason: 'mkdir', detail: err.code || err.message }; }
 
-function acquireLock(lockPath) {
-  const token = crypto.randomUUID();
-  const payload = JSON.stringify({ pid: process.pid, token, acquiredAt: Date.now() });
-  try {
-    fs.writeFileSync(lockPath, payload, { flag: 'wx' });
-    return token;
-  } catch (err) {
-    if (err.code !== 'EEXIST') return null;
-    // #6: parse failure = treat as stale (corrupted lock)
-    let lock;
-    try { lock = JSON.parse(fs.readFileSync(lockPath, 'utf8')); } catch { lock = null; }
-    if (!lock || !isPidAlive(lock.pid)) {
-      const stale = lockPath + `.stale.${process.pid}`;
-      try { fs.renameSync(lockPath, stale); fs.unlinkSync(stale); } catch {}
-      try {
-        fs.writeFileSync(lockPath, payload, { flag: 'wx' });
-        return token;
-      } catch { return null; }
-    }
-    return null;
+  let st;
+  try { st = fs.statSync(home, { bigint: true }); }
+  catch (err) { return { reason: 'stat', detail: err.code || err.message }; }
+  if (!st.isDirectory() || st.ino === 0n) {
+    return { reason: 'identity', detail: `directory=${st.isDirectory()} ino=${st.ino}` };
   }
+
+  const pinPath = path.join(home, 'export-lock-port');
+  let pinned = null;
+  try { pinned = fs.readFileSync(pinPath, 'utf8'); }
+  catch (err) { if (err.code !== 'ENOENT') return { reason: 'pin-unreadable', detail: err.code || err.message }; }
+  if (pinned !== null) {
+    const port = Number(pinned.trim());
+    return Number.isInteger(port) && port > 0 && port < 65536
+      ? { port }
+      : { reason: 'pin-invalid', detail: pinned.trim().slice(0, 32) };
+  }
+
+  const hash = parseInt(crypto.createHash('sha256').update(`${st.dev}:${st.ino}`).digest('hex').slice(0, 8), 16);
+  return { port: LOCK_PORT_BASE + (hash % LOCK_PORT_SPAN) };
 }
 
-function releaseLock(lockPath, token) {
-  try {
-    const lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-    if (lock.token === token) fs.unlinkSync(lockPath);
-  } catch {}
+function listenLock(port) {
+  return new Promise(resolve => {
+    let settled = false;
+    const srv = net.createServer(sock => {
+      // Nobody should connect to the lock socket. Ordinary destroy() closes the
+      // accepted native handle; the error handler is defensive because no data is used.
+      sock.on('error', () => {});
+      sock.destroy();
+    });
+    srv.unref();
+    srv.on('error', err => {
+      if (!settled) {
+        settled = true;
+        resolve({ code: err.code || 'EUNKNOWN' });
+      }
+    });
+    srv.listen({ port, host: '127.0.0.1' }, () => {
+      settled = true;
+      resolve({ srv });
+    });
+  });
+}
+
+function closeServer(srv) {
+  if (!srv?.listening) return Promise.resolve();
+  return new Promise(resolve => srv.close(() => resolve()));
+}
+
+async function acquireLock(home) {
+  const target = exportLockTarget(home);
+  if (!target.port) return { lost: target };
+  const result = await listenLock(target.port);
+  return result.srv
+    ? { handle: { srv: result.srv, port: target.port } }
+    : { lost: { port: target.port, code: result.code } };
+}
+
+async function releaseLock(handle) {
+  if (handle?.srv) await closeServer(handle.srv);
+}
+
+function isContention(lost) {
+  return lost.code === 'EADDRINUSE' || (process.platform === 'win32' && lost.code === 'EACCES');
+}
+
+function describeLoss(home, lost) {
+  const pin = path.join(home, 'export-lock-port');
+  if (lost.reason === 'identity' || lost.reason === 'stat') {
+    return `port identity unavailable; occupancy unknown for ${home} (${lost.reason}: ${lost.detail})`;
+  }
+  if (lost.reason === 'mkdir') {
+    return `the lock port could not be determined for ${home} (mkdir: ${lost.detail}); fix the home directory`;
+  }
+  if (lost.reason === 'pin-unreadable' || lost.reason === 'pin-invalid') {
+    return `the lock port pin ${pin} could not be used (${lost.reason}: ${lost.detail}); fix or delete it`;
+  }
+  if (lost.code === 'EACCES' && process.platform === 'win32') {
+    return `binding 127.0.0.1:${lost.port} failed (EACCES: permission denied or exclusive binding). Check `
+      + `lsof -nP -iTCP:${lost.port} -sTCP:LISTEN (macOS/Linux) · netstat -ano | findstr :${lost.port} (Windows), `
+      + `then free the port or pin another one in ${pin} while ccxray is stopped`;
+  }
+  if (isContention(lost)) {
+    return `127.0.0.1:${lost.port} is held by another process (${lost.code}). Identify it: `
+      + `lsof -nP -iTCP:${lost.port} -sTCP:LISTEN (macOS/Linux) · netstat -ano | findstr :${lost.port} (Windows). `
+      + `If it is not ccxray, free the port or pin another one in ${pin} with every ccxray stopped`;
+  }
+  if (lost.code === 'EADDRNOTAVAIL' || lost.code === 'ENETDOWN') {
+    return `127.0.0.1 cannot be bound on this host (${lost.code}); loopback is unavailable — unsupported environment (docs/export-onboarding.md)`;
+  }
+  if (lost.code === 'EMFILE' || lost.code === 'ENFILE') {
+    return `no file descriptor was available for the lock socket (${lost.code})`;
+  }
+  return `binding 127.0.0.1:${lost.port} failed (${lost.code}); not a holder — a permission or system limit`;
 }
 
 // ── Cursor (temp + rename) ─────────────────────────────────────────────
@@ -270,11 +339,17 @@ function writeCursor(cursorPath, data) {
 function enrollmentPath(home) { return path.join(home, 'export-enrollment.json'); }
 
 function readEnrollment(home) {
-  try {
-    const e = JSON.parse(fs.readFileSync(enrollmentPath(home), 'utf8'));
-    if (e && (e.state === 'enrolled' || e.state === 'removed')) return e;
-  } catch {}
-  return null;
+  let raw;
+  try { raw = fs.readFileSync(enrollmentPath(home), 'utf8'); }
+  catch (err) {
+    if (err.code === 'ENOENT') return null;
+    return { state: 'invalid', reason: 'read', detail: err.code || err.message };
+  }
+  let e;
+  try { e = JSON.parse(raw); }
+  catch (err) { return { state: 'invalid', reason: 'parse', detail: err.message }; }
+  if (e && (e.state === 'enrolled' || e.state === 'removed')) return e;
+  return { state: 'invalid', reason: 'shape', detail: 'expected state enrolled or removed' };
 }
 
 function utcDateOf(value) {
@@ -1136,12 +1211,11 @@ function exportStatsLine(status, files, rows, dts, userEmail, excludedTurns) {
 }
 
 // ── Flush ──────────────────────────────────────────────────────────────
-// Resolves to an outcome: 'not-enabled' | 'lock-lost' | 'removed' | 'hard-failed' |
-// 'nothing-new' | 'no-data' | 'exported'. Upload errors still reject.
+// Resolves to an outcome: 'not-enabled' | 'lock-lost' | 'removed' | 'enrollment-invalid' |
+// 'hard-failed' | 'nothing-new' | 'no-data' | 'exported'. Upload errors still reject.
 // `lockToken`: the caller already holds the exporter lock (startup flush+prune). The
-// lock is pid-scoped, so re-acquiring from the same process would read as a live
-// foreign holder and silently skip — the held token must be passed in instead.
-async function flushExport({ lockToken = null } = {}) {
+// held handle must be passed in instead of re-acquiring the listening socket.
+async function flushExport({ lockToken = null, phase = 'interval' } = {}) {
   // INVARIANT: see shouldBlockExport — a real upload must be impossible
   // under `node --test`, and startExportSync must agree with this same predicate.
   if (shouldBlockExport()) return 'not-enabled';
@@ -1156,31 +1230,28 @@ async function flushExport({ lockToken = null } = {}) {
   const uploaderAtEntry = _uploader;
 
   const home = resolveCcxrayHome();
-  const lockPath = path.join(home, 'export.lock');
-
-  fs.mkdirSync(home, { recursive: true });
-  const token = lockToken || acquireLock(lockPath);
-  if (!token) {
-    appendExportEvent(home, 'lock-lost');
+  const { handle, lost } = lockToken
+    ? { handle: lockToken }
+    : await acquireLock(home);
+  if (!handle) {
+    appendExportEvent(home, { type: 'lock-lost', phase, port: lost.port ?? null, ...lost });
     return 'lock-lost';
   }
 
   try {
     const outcome = await flushLocked(home, bucket, uploaderAtEntry);
-    if (outcome !== 'removed') recordExportLast(home, outcome);
+    recordExportLast(home, outcome);
     return outcome;
   } catch (err) {
     recordExportLast(home, 'upload-failed');
     throw err;
   } finally {
-    if (!lockToken) releaseLock(lockPath, token);
+    if (!lockToken) await releaseLock(handle);
   }
 }
 
 async function flushLocked(home, bucket, uploaderAtEntry) {
   const cursorPath = path.join(home, 'export-cursor.json');
-  const agentId = getAgentId(home);
-  const config = require('./config');
   // Read under the lock: a `setup --remove` that completed while this process was
   // waiting must win over whatever it believed before acquiring.
   let enrollment = readEnrollment(home);
@@ -1188,7 +1259,14 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
     console.log('[ccxray export] removed — this home was un-enrolled by `ccxray setup --remove`; not exporting');
     return 'removed';
   }
+  if (enrollment?.state === 'invalid') {
+    appendExportEvent(home, { type: 'enrollment-invalid', reason: enrollment.reason, detail: enrollment.detail });
+    console.error(`[ccxray export] enrollment-invalid — ${enrollment.reason}: ${enrollment.detail}`);
+    return 'enrollment-invalid';
+  }
 
+  const agentId = getAgentId(home);
+  const config = require('./config');
   let cursor = readCursor(cursorPath);
   if (!cursor) {
     // First run: enroll (enrollment first, cursor second — a crash between them leaves
@@ -1388,30 +1466,56 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
   return 'exported';
 }
 
-// Startup holds the exporter lock across flush AND prune, so no process can delete
-// files another one is still uploading. Always acquired — even when this process does
-// not export — because prune must not race an exporting process either. A loser skips
-// both; the next startup retries. Resolves to fn's value, or undefined when lost.
-async function withExportLock(fn) {
+// Holds the exporter socket while fn runs. Startup holds it across flush AND prune,
+// so no process can delete files another one is still uploading. A loser skips work.
+async function withExportLock(fn, { phase = 'startup' } = {}) {
   const home = resolveCcxrayHome();
-  const lockPath = path.join(home, 'export.lock');
-  fs.mkdirSync(home, { recursive: true });
-  const token = acquireLock(lockPath);
-  if (!token) {
-    appendExportEvent(home, 'lock-lost');
+  const { handle, lost } = await acquireLock(home);
+  if (!handle) {
+    appendExportEvent(home, { type: 'lock-lost', phase, port: lost.port ?? null, ...lost });
     return undefined;
   }
-  try { return await fn(token); } finally { releaseLock(lockPath, token); }
+  try { return await fn(handle); } finally { await releaseLock(handle); }
+}
+
+async function startupFlushAndPrune({ pruneLogs, log = console.log }) {
+  const home = resolveCcxrayHome();
+  if (fs.existsSync(path.join(home, 'export.lock'))) {
+    log('\x1b[33m   [ccxray export] export.lock exists: a pre-socket-lock ccxray may be running or may have crashed here; '
+      + 'this version does not use the file (docs/export-onboarding.md, Upgrading). Delete it once every old ccxray is stopped.\x1b[0m');
+  }
+
+  const { handle, lost } = await acquireLock(home);
+  if (!handle) {
+    appendExportEvent(home, { type: 'lock-lost', phase: 'startup', port: lost.port ?? null, ...lost });
+    log(`\x1b[33m   [ccxray export] startup lock lost — ${describeLoss(home, lost)}; flush and prune skipped this startup.\x1b[0m`);
+    return 'lock-lost';
+  }
+
+  appendExportEvent(home, { type: 'lock-acquired', phase: 'startup', port: handle.port });
+  try {
+    let outcome;
+    try { outcome = await flushExport({ lockToken: handle, phase: 'startup' }); }
+    catch (err) {
+      console.error('[ccxray export] Pre-prune flush failed:', err.message);
+      outcome = 'upload-failed';
+    }
+    const decision = pruneDecision(outcome, home);
+    if (decision.event) appendExportEvent(home, decision.event);
+    if (decision.reason) log(`\x1b[90m   [ccxray export] prune: ${decision.reason}\x1b[0m`);
+    if (decision.prune) await pruneLogs({ retentionDays: decision.retentionDays });
+    return outcome;
+  } finally { await releaseLock(handle); }
 }
 
 // First finite timestamp wins. `lastSuccessAt` and `enrolledAt` are ISO strings, the
 // cursor mtime is epoch ms; none is trusted until it parses.
-function capBasis(home, enrollment) {
+function capBasis(home, enrollment, now = Date.now()) {
   let mtime = null;
   try { mtime = fs.statSync(path.join(home, 'export-cursor.json')).mtimeMs; } catch {}
   for (const v of [readExportLast(home)?.lastSuccessAt, enrollment?.enrolledAt, mtime]) {
     const t = new Date(v ?? NaN).getTime();
-    if (Number.isFinite(t)) return t;
+    if (Number.isFinite(t) && t <= now + 86_400_000) return t;
   }
   return null;
 }
@@ -1430,17 +1534,24 @@ function pruneDecision(outcome, home = resolveCcxrayHome(), now = Date.now()) {
   const config = require('./config');
   const enrollment = readEnrollment(home);
   const enrolled = enrollment?.state === 'enrolled';
+  const invalid = enrollment?.state === 'invalid';
   const retentionDays = enrolled && enrollment.retentionDays > 0
     ? enrollment.retentionDays
     : config.LOG_RETENTION_DAYS;
 
-  const owesData = (outcome === 'not-enabled' && enrolled)
+  const owesData = invalid || outcome === 'enrollment-invalid' || outcome === 'lock-lost'
+    || (outcome === 'not-enabled' && enrolled)
     || outcome === 'hard-failed' || outcome === 'upload-failed';
   if (!owesData) return { prune: true, retentionDays, reason: null };
 
-  const basis = capBasis(home, enrollment);
+  const basis = capBasis(home, enrollment, now);
   if (basis === null) {
-    return { prune: true, retentionDays, reason: `pruning despite ${outcome}: no valid cap basis` };
+    return {
+      prune: true,
+      retentionDays,
+      reason: `pruning despite ${outcome}: no valid cap basis`,
+      event: { type: 'cap-basis-invalid', outcome },
+    };
   }
   const leftDays = Math.ceil((basis + 2 * retentionDays * 86_400_000 - now) / 86_400_000);
   if (leftDays <= 0) {
@@ -1450,7 +1561,7 @@ function pruneDecision(outcome, home = resolveCcxrayHome(), now = Date.now()) {
 }
 
 // ── Lifecycle ──────────────────────────────────────────────────────────
-function startExportSync() {
+function startExportSync({ startupOutcome } = {}) {
   // INVARIANT: must share shouldBlockExport with flushExport, or this announces an
   // exporter that never flushes.
   if (shouldBlockExport()) return;
@@ -1466,15 +1577,25 @@ function startExportSync() {
   const scope = exportDomains().size > 0
     ? 'exporting configured account-domain sessions'
     : 'exporting ALL sessions this machine observes (live + imported)';
-  _credentialLogger(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
+  if (startupOutcome === 'removed') {
+    _credentialLogger('\x1b[90m   [ccxray export] removed — this home was un-enrolled by `ccxray setup --remove`; not exporting until setup is re-run\x1b[0m');
+  } else if (startupOutcome === 'enrollment-invalid') {
+    _credentialLogger('\x1b[33m   [ccxray export] enrollment-invalid — export-enrollment.json is unreadable or malformed; not exporting (see export-events.log)\x1b[0m');
+  } else if (startupOutcome === undefined || startupOutcome === 'lock-lost') {
+    _credentialLogger(`\x1b[90m   [ccxray export] exporter configured — bucket ${bucket}; initialization deferred, enrollment state unverified until the first locked flush — ${scope}\x1b[0m`);
+  } else {
+    _credentialLogger(`\x1b[90m   [ccxray export] exporter active — bucket ${bucket}, flush every ${Math.round(FLUSH_INTERVAL_MS / 60000)}min — ${scope}\x1b[0m`);
+  }
   // Offline stages only (discovery + parse). Token and authorization stay
   // not-attempted/unknown until a real upload; nothing here talks to Google.
   _credentialLogger(`\x1b[90m   [ccxray export] ${credentialText(describeCredentials(discoverCredentials()))}\x1b[0m`);
-  _runningFlush = flushExport().catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
+  if (startupOutcome !== 'removed' && startupOutcome !== 'enrollment-invalid') {
+    _runningFlush = flushExport({ phase: 'initial' }).catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
+  }
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
     _runningFlush = Promise.resolve(_runningFlush).then(() =>
-      flushExport().catch(err => console.error('[ccxray export] Periodic flush failed:', err.message))
+      flushExport({ phase: 'interval' }).catch(err => console.error('[ccxray export] Periodic flush failed:', err.message))
     );
   }, FLUSH_INTERVAL_MS);
   _interval.unref();
@@ -1503,6 +1624,10 @@ module.exports = {
   stopExportSync,
   flushExport,
   withExportLock,
+  startupFlushAndPrune,
+  exportLockTarget,
+  describeLoss,
+  releaseLock,
   pruneDecision,
   readEnrollment,
   readExportLast,

@@ -851,7 +851,7 @@ async function gracefulExit(code) {
     // #5: await in-flight export AFTER critical drains so a 30s GCS timeout
     // doesn't block WS/storage under the 5s shutdown deadline
     try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
-    try { await flushExport(); } catch (e) { console.error('Export flush failed:', e.message); }
+    try { await flushExport({ phase: 'shutdown' }); } catch (e) { console.error('Export flush failed:', e.message); }
   })();
   await Promise.race([drain, deadline]);
   process.exit(code);
@@ -1335,25 +1335,13 @@ async function runPostListenStartupTasks() {
   }
 
   await pricingReady;
+  let startupOutcome;
   if (restoreOk) {
-    // Flush and prune under one exporter lock: another process sharing this
-    // CCXRAY_HOME (Windows standalone, --port) can neither prune what this one is
-    // uploading nor upload what this one is pruning. A lock loser skips both.
-    await exportSync.withExportLock(async (lockToken) => {
-      let outcome;
-      try {
-        outcome = await flushExport({ lockToken });
-      } catch (e) {
-        console.error('[ccxray export] Pre-prune flush failed:', e.message);
-        outcome = 'upload-failed';
-      }
-      const decision = exportSync.pruneDecision(outcome);
-      if (decision.reason) console.log(`\x1b[90m   [ccxray export] prune: ${decision.reason}\x1b[0m`);
-      if (decision.prune) await pruneLogs({ retentionDays: decision.retentionDays });
-    });
+    startupOutcome = await exportSync.startupFlushAndPrune({ pruneLogs, log: _origLog });
     warmUpCosts();
   }
-  startExportSync();
+  startExportSync({ startupOutcome });
+  if (process.env.NODE_TEST_CONTEXT) process.stderr.write('[ccxray] startup tasks complete\n');
 
   // #438/#486: hint when legacy entries lack per-turn tool evidence.
   // turnToolResults is always set on new entries ([] for no-tools, [{...}] for

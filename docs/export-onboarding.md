@@ -108,6 +108,30 @@ proxy with `CCXRAY_EXPORT_DOMAINS=example.invalid` will have every turn
 excluded by `domain-mismatch`, producing `rows=0` — which looks like the
 exporter is broken rather than the filter working as designed.
 
+## Upgrading from a pre-socket-lock version
+
+Before the first launch of this version on a machine, stop every ccxray process
+that shares its `CCXRAY_HOME`: the hub, every standalone or `--port` server, and
+every Windows server. Verify that no `node … server/index.js` process remains.
+If several checkouts can launch ccxray on that machine, update each one or stop
+using it to launch. Then delete `<home>/export.lock` if it exists. This version
+does not use that file; if it remains, startup prints one advisory line and
+continues with the socket lock.
+
+The exporter lock is a listening socket on `127.0.0.1`, with a port derived
+from the home directory's filesystem identity. `export-lock-port` can pin a
+numeric port from `1` through `65535` when that port is occupied. Create or
+change the pin only while every ccxray using the home is stopped. Pinning works
+only when the home directory can be statted and has a usable nonzero inode;
+identity checks fail closed before the pin is read when `ino === 0n`. ReFS file
+identity behavior is unverified.
+
+If another process occupies the selected port, startup records a structured
+`lock-lost` event and skips its startup flush-and-prune critical section.
+Freeing the port triggers no immediate retry. Enabled exporters keep flushing
+through their existing lifecycle; pruning requires another successful startup
+acquisition and a prune decision that permits it.
+
 ## Flush timing
 
 The exporter flushes on three occasions: once at startup (initial flush),
