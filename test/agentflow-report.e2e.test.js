@@ -296,6 +296,8 @@ describe('ccxray agentflow report (e2e)', () => {
       // The host turn s6b and the worker turn w6 are both ambiguous between the notebooks.
       const a2 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-002');
       assert.equal(a2.ambiguous.calls, 2, nb);
+      // Its only host row is ambiguous, but it is a host row: not `unknown` (Completeness).
+      assert.equal(a2.completeness, 'transcripts only', nb);
     }
   });
 

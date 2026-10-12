@@ -227,8 +227,10 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     if (hosts.noLocalTurns[w.id]) labels.push(`local host turns inside bounds: ${hosts.noLocalTurns[w.id]}`);
     asks.push({
       id: w.id,
-      // The Ask's label folds its hosts (Completeness); workers carry their own.
-      completeness: foldCompleteness(execs.filter(x => x.kind === 'host').map(x => x.completeness)),
+      // The Ask's label folds its host rows, ambiguous ones included (Completeness:
+      // only an Ask with no host row is `unknown`); workers carry their own.
+      completeness: foldCompleteness([...execs.filter(x => x.kind === 'host').map(x => x.completeness),
+        ...rows.filter(r => r.status === 'ambiguous').map(r => hostCompleteness(r.turns, codexSources, pendingTurns(w, r.session)))]),
       askTimeMs: w.start != null && w.end != null && w.startKind !== 'no local evidence' ? w.end - w.start : null,
       labels,
       attributed: aggregate([...unique.flatMap(r => r.turns), ...runs.filter(x => x.status === 'unique').flatMap(x => x.turns)]),
