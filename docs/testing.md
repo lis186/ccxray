@@ -134,6 +134,26 @@ writes `expected.json`, which is hand-derived from
 rebuilds the checkout and clones with `git clone --no-local`, so each clone's
 reflog names the checkout as the runner's did.
 
+Two more agentflow report tests follow the same rule of expected results
+written before the code runs. `test/agentflow-ledger.e2e.test.js` assigns each
+turn of one fixture to a report bucket by hand from the spec and checks
+conservation: every index turn is in exactly one bucket or listed as outside the
+report, so a turn that silently vanishes fails it (compared by call count, which skips a row with neither a model nor usage; every fixture row carries both).
+`test/agentflow-privacy.e2e.test.js` plants a marker in every free-text and
+identifying input (prompts, bullets, Reply text, paths, session ids, tool
+commands and results, dispatch fields that fail the shape check) and asserts
+neither the text nor the JSON report prints one; a new output field that echoes
+input must keep it passing.
+
+Real-data acceptance of the report is manual and read-only, never a test: copy
+the owner's `index.ndjson` into a scratch `CCXRAY_HOME`, derive about five Asks'
+expected results with a script that does not use `server/agentflow` (window
+kind, host evidence and status, completeness from per-turn twins, call counts,
+unmatched bullets), save them, then run
+`TZ=UTC CCXRAY_HOME=<scratch> ccxray agentflow report --json` from the project
+and compare. Print ids and counts only; nothing from the run enters the
+repository.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.
