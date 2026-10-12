@@ -2136,6 +2136,9 @@ describe('Proxy loop startup guard', () => {
     const proxyPort = await findFreePort();
     const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort), 'codex'], 10000, {
       OPENAI_BASE_URL: `http://localhost:${proxyPort}/v1`,
+      // Preserve the guard's pre-fail-open diagnostic in this test; the
+      // default path is covered by launcher-fail-open.e2e.test.js.
+      CCXRAY_FAIL_CLOSED: '1',
     });
 
     assert.equal(code, 1);
@@ -2203,6 +2206,9 @@ describe('Proxy loop startup guard', () => {
     const proxyPort = await findFreePort();
     const { stderr, code } = await spawnAndCollect(['--port', String(proxyPort), 'codex'], 10000, {
       CHATGPT_BASE_URL: `http://localhost:${proxyPort}/v1`,
+      // Preserve the guard's pre-fail-open diagnostic in this test; the
+      // default path is covered by launcher-fail-open.e2e.test.js.
+      CCXRAY_FAIL_CLOSED: '1',
     });
 
     assert.equal(code, 1);

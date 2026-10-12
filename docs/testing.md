@@ -54,6 +54,17 @@ failure case runs the VM-loaded hub in a short-lived worker so the old
 unhandled-child-error behavior can be observed as a process failure without
 putting the test runner at risk.
 
+Launcher fail-open E2E tests (`test/launcher-fail-open.e2e.test.js`) create a
+throwaway `CCXRAY_HOME`, synthetic `hub.json`, fake HTTP hub responses, and
+fake provider executables in a temporary `bin/` directory. The fake executables
+record their arguments and selected environment values, then exit with a chosen
+code or signal. They must never resolve to a real `claude`, `codex`, or `grok`
+binary. Port fixtures are allocated dynamically; standalone bind-failure tests
+reserve a consecutive loopback range so every retry fails. Hub fixtures model
+lost, rejected, and failed registration replies and close after their empty
+client idle interval. The separate orphan-hub test launches the real server in
+`--hub-mode` and verifies its readiness lock is removed when the process exits.
+
 For tests that spawn the CLI, pass it in the child env instead of mutating the
 parent process:
 

@@ -223,6 +223,16 @@ describe('socket command handlers', () => {
     assert.equal(res.firstClient, false);
   });
 
+  it('drops a queued registration when its client socket has already timed out', () => {
+    const pid = 80003;
+    hub.handleSocketCommand({ cmd: 'register', pid, cwd: '/test/late' }, {
+      destroyed: true,
+      writable: false,
+      write() {},
+    });
+    assert.equal(hub.getHubStatus().clients.some(client => client.pid === pid), false);
+  });
+
   it('status → includes registered clients', async () => {
     const res = await socketCmd({ cmd: 'status' });
     assert.equal(res.app, 'ccxray');

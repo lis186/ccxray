@@ -163,11 +163,13 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
                        ├── HTTP proxy on :5577
                        ├── Dashboard (same port)
                        ├── Client registry (register/unregister/health)
-                       └── Idle shutdown (5s after last client exits)
+                     └── Idle shutdown (5s after readiness with no clients, or after last client exits)
 ```
 
 - Hub lockfile: `~/.ccxray/hub.json` (written after `listen()` succeeds = readiness signal)
 - Hub log: `~/.ccxray/hub.log` (stdout/stderr of detached process)
+- An empty hub starts its 5s idle timer as soon as it writes the readiness lock. Registering a client cancels the timer; unregistering the last client starts it again.
+- `ccxray <agent>` falls back to the provider's plain command if hub attach fails or exceeds `CCXRAY_ATTACH_TIMEOUT_MS` (default 3000ms), or if standalone startup fails before listen. The fallback is recorded in `fail-open.log`; `CCXRAY_FAIL_CLOSED=1` keeps the exit-on-failure behavior. Claude `--bg` / `--background` launches bypass the proxy and are recorded as `bg-bypass`.
 - **Hub mode is narrower than it looks.** `hubMode` is set ONLY by the internal `--hub-mode` flag (`server/index.js:53`), which the detached hub gives itself. These all run as independent servers sharing the same `CCXRAY_HOME`:
   - `ccxray --port N <agent>` — explicit port opts out (`index.js:1185`; no lockfile, `:1116`)
   - `ccxray` with no agent — standalone proxy + dashboard

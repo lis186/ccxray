@@ -366,6 +366,10 @@ function handleSocketCommand(msg, socket) {
     case 'register': {
       if (typeof msg.pid !== 'number' || msg.pid <= 0 || msg.pid > 4194304 || !Number.isInteger(msg.pid)) return;
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
+      // A timed-out client destroys its request socket. If the hub's event loop
+      // was delayed, drop that queued registration instead of creating a client
+      // after the launcher has already sent its one-shot unregister and exited.
+      if (socket.destroyed || socket.writable === false) return;
       const wasEmpty = clients.size === 0;
       addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
       socket.write(JSON.stringify({ ...assembleExportReport(), ok: true, firstClient: wasEmpty }) + '\n');
@@ -885,4 +889,5 @@ module.exports = {
   describePortOccupant,
   startHubMonitor,
   tryListen,
+  handleSocketCommand,
 };
