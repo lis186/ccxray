@@ -160,9 +160,20 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   // Import lags per turn, not per session (a session spans days): a transcript
   // turn inside the window whose message id no index line carries is missing.
   const indexed = new Set(turns.map(e => e.responseId).filter(Boolean));
+  // Codex turns have no id to compare: count the usage turns of the session's
+  // transcripts (its subagent threads' turns are filed under it) against its
+  // imported lines, unless the proxy is the session's one source.
+  const inWin = (w, at) => at >= w.start && at < w.end;
+  const codexTurns = sid => [...transcripts.values()].filter(x => x.provider === 'openai' && (x.sessionId === sid || x.parentSessionId === sid)).flatMap(x => x.turns);
   const missingTurns = (w, sids) => sids.reduce((n, sid) => {
     const t = transcripts.get(sid);
-    return n + (t && t.turns ? t.turns.filter(x => x.at >= w.start && x.at < w.end && !indexed.has(x.id)).length : 0);
+    if (!t || !t.turns) return n;
+    if (t.provider === 'openai') {
+      if (codexSources[sid] === 'proxy') return n;
+      const have = turns.filter(e => e.sessionId === sid && e.imported && inWin(w, e.receivedAt)).length;
+      return n + Math.max(0, codexTurns(sid).filter(x => inWin(w, x.at)).length - have);
+    }
+    return n + t.turns.filter(x => inWin(w, x.at) && !indexed.has(x.id)).length;
   }, 0);
   const asks = [];
   for (const w of reported.windows) {

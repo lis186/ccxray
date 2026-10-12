@@ -54,11 +54,53 @@ fs.writeFileSync(path.join(proj, `${SID}.jsonl`), [
   { type: 'assistant', uuid: 'a2', sessionId: SID, cwd: REPO, timestamp: iso(181), message: { id: 'msg_2', role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
 ].map(r => JSON.stringify(r)).join('\n') + '\n');
 
-function report(...args) {
+// A Codex host in its own checkout: the owner's prompt follows an attached
+// image, and the transcript holds three usage turns of which one is imported.
+// `tokens` is used again below by its subagent thread.
+const REPO2 = path.join(BASE, 'repo2');
+const SID2 = '66666666-7777-8888-9999-aaaaaaaaaaaa';
+const PROMPT2 = 'describe the attached mockup';
+fs.mkdirSync(path.join(REPO2, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO2]);
+fs.writeFileSync(path.join(REPO2, '.agentflow', 'devlog.md'), [
+  '# → Ask / A-001', '', `+ ${PROMPT2}`, '',
+  '# ← Reply / A-001', '', '* _2026-06-01 10:10:00 +0000 (gpt/high)_', '', 'done', '',
+].join('\n'));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify({
+  id: 'c1', sessionId: SID2, provider: 'openai', model: 'gpt-test', receivedAt: t(70), cwd: REPO2, imported: true, importSource: 'codex',
+  usage, cost: { cost: 0.5, confidence: 'exact' },
+}) + '\n');
+const codexDay = path.join(CODEX, '2026', '06', '01');
+fs.mkdirSync(codexDay, { recursive: true });
+const tokens = s => ({ timestamp: iso(s), type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 100, cached_input_tokens: 70, output_tokens: 20 } } } });
+fs.writeFileSync(path.join(codexDay, `rollout-2026-06-01T10-00-00-${SID2}.jsonl`), [
+  { timestamp: iso(50), type: 'session_meta', payload: { id: SID2, cwd: REPO2, thread_source: 'user' } },
+  { timestamp: iso(55), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `<image name="m.png"></image>\n${PROMPT2}` }] } },
+  { timestamp: iso(60), type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'exec_command', arguments: '{"cmd":"agf status"}' } },
+  tokens(70), tokens(80), tokens(90),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
+// A subagent thread of that host launches the runner synchronously; the worker
+// turns run in the clone. Lineage files the launch under the host.
+const CLONE = path.join(BASE, 'T', 'agentflow-external-runner-ABCD', 'clone');
+const CHILD = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+fs.writeFileSync(path.join(codexDay, `rollout-2026-06-01T10-01-20-${CHILD}.jsonl`), [
+  { timestamp: iso(80), type: 'session_meta', payload: { id: CHILD, session_id: SID2, parent_thread_id: SID2, cwd: REPO2, thread_source: 'subagent' } },
+  { timestamp: iso(90), type: 'response_item', payload: { type: 'function_call', call_id: 'k1', name: 'exec_command', arguments: '{"cmd":"node external-runner.js"}' } },
+  { timestamp: iso(120), type: 'response_item', payload: { type: 'function_call_output', call_id: 'k1', output: JSON.stringify({ working_directory: CLONE, clone: { root: CLONE } }) } },
+  tokens(125),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify({
+  id: 'w1', sessionId: 'worker-1', provider: 'anthropic', model: 'claude-test', receivedAt: t(100), cwd: CLONE, responseId: 'msg_w1',
+  usage, cost: { cost: 0.5, confidence: 'exact' },
+}) + '\n');
+
+function report(...args) { return reportIn(REPO, ...args); }
+function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
   delete env.LOGS_DIR;
   return spawnSync(process.execPath, [path.join(__dirname, '../server/index.js'), 'agentflow', 'report', ...args],
-    { cwd: REPO, env, encoding: 'utf8', timeout: 20000 });
+    { cwd, env, encoding: 'utf8', timeout: 20000 });
 }
 
 describe('ccxray agentflow report (e2e)', () => {
@@ -83,6 +125,20 @@ describe('ccxray agentflow report (e2e)', () => {
     assert.match(r.stdout, /this machine's data only/);
     for (const secret of [PROMPT, SID, REPO, BASE]) assert.equal(r.stdout.includes(secret), false, `leaked ${secret}`);
     assert.equal(report('--json').stdout.includes(PROMPT), false);
+  });
+
+  it('matches a Codex host whose prompt follows an attached image, and counts its turns not yet imported', () => {
+    const r = reportIn(REPO2, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
+    assert.deepEqual(a1.executors.filter(x => x.kind === 'host').map(x => [x.kind, x.evidence, x.status, x.completeness]), [['host', 'prompt-match', 'unique', 'transcripts only']]);
+    // Three of the host's usage turns and one of its subagent thread's; one imported.
+    assert.ok(a1.labels.includes('not yet imported: 3 turns'), a1.labels.join(' | '));
+  });
+
+  it('files a worker launched by the Codex host\'s subagent thread under the host\'s Ask', () => {
+    const a1 = JSON.parse(reportIn(REPO2, '--json').stdout).asks.find(a => a.id === 'A-001');
+    assert.deepEqual(a1.executors.filter(x => x.kind === 'external').map(x => [x.evidence, x.status, x.total.calls]), [['launch-chain', 'unique', 1]]);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {

@@ -78,6 +78,25 @@ describe('readCodexTranscript', () => {
     assert.deepEqual([t.tools[0].inputAt, t.tools[0].resultAt], [Date.UTC(2026, 5, 1, 10, 0, 4), Date.UTC(2026, 5, 1, 10, 0, 5)]);
   });
 
+  it('strips only what Codex injects, keeping owner text that follows it or starts with a tag', () => {
+    const say = (s, text) => item(s, { type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+    const t = readCodexTranscript(write([meta('user'),
+      say(1, '<recommended_plugins>p</recommended_plugins>\n# AGENTS.md instructions for /w\n\n<INSTRUCTIONS>x</INSTRUCTIONS>'),
+      say(2, '<recommended_plugins>p</recommended_plugins><environment_context>e</environment_context>'),
+      say(3, '<image name="a.png"></image>\nwhat is in this picture'),
+      say(4, '<in-app-browser-context>tab</in-app-browser-context>\n## My request for Codex:\nfix the header'),
+      say(5, '<task>review the diff</task>\n<grounding_rules>cite lines</grounding_rules>'),
+      say(6, '<turn_aborted>x</turn_aborted>'),
+    ]));
+    assert.deepEqual(t.submissions.map(s => s.text), ['what is in this picture', 'fix the header', '<task>review the diff</task>\n<grounding_rules>cite lines</grounding_rules>']);
+  });
+
+  it('files a subagent thread\'s tool evidence under its parent thread (lineage)', () => {
+    const child = { type: 'session_meta', timestamp: ts(0), payload: { id: 'K1', session_id: 'C1', parent_thread_id: 'C1', cwd: '/w', thread_source: 'subagent' } };
+    const t = readCodexTranscript(write([child, ...rows]));
+    assert.deepEqual([t.sessionId, t.submissions.length, [...new Set(t.tools.map(x => x.sessionId))]], ['K1', 0, ['C1']]);
+  });
+
   it('takes no owner input from a background thread', () => {
     const t = readCodexTranscript(write([meta('memory_consolidation'), ...rows]));
     assert.equal(t.background, true);

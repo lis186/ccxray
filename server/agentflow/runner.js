@@ -38,7 +38,8 @@ function namesRunner(input) {
 }
 
 // Handles a launch's immediate result returns for later reading: a background
-// task id and the file its output is written to.
+// task id and the file its output is written to (Claude), or the session id of a
+// still-running command (Codex).
 function launchHandles(result) {
   if (!result) return [];
   const t = unescape(result);
@@ -46,6 +47,8 @@ function launchHandles(result) {
   for (const m of t.matchAll(/"backgroundTaskId"\s*:\s*"([^"]+)"/gu)) out.add(m[1]);
   for (const m of t.matchAll(/running in background with ID:\s*([\w-]+)/gu)) out.add(m[1]);
   for (const m of t.matchAll(/[Oo]utput is being written to:\s*(\/\S+)/gu)) out.add(m[1].replace(/[.,;]$/u, ''));
+  // Codex: a command still running is read later through write_stdin's session_id.
+  for (const m of t.matchAll(/Process running with session ID (\d+)/gu)) out.add(`"session_id":${m[1]}`);
   return [...out];
 }
 

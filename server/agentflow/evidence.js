@@ -64,6 +64,25 @@ function claudeOwnerText(e) {
   return rest;
 }
 
+// Codex wraps what it injects as user messages in tags (environment, plugins,
+// skills, notifications, an attached image, the desktop app's browser context)
+// and sends AGENTS.md as its own message. Strip those leading blocks; what is
+// left, if anything, is the owner's text, even when it starts with a tag.
+const CODEX_INJECTED = new Set(['environment_context', 'recommended_plugins', 'user_instructions', 'user_action', 'skill',
+  'codex_internal_context', 'turn_aborted', 'subagent_notification', 'in-app-browser-context', 'hook_prompt',
+  'external_codex_apps_open_page', 'image', 'user_shell_command', 'command-name', 'command-message', 'command-args', 'local-command-stdout']);
+function codexOwnerText(text) {
+  let t = text.trim();
+  for (;;) {
+    const m = /^<([\w-]+)(?:\s[^>]*)?>[\s\S]*?<\/\1>\s*/u.exec(t);
+    if (!m || !CODEX_INJECTED.has(m[1])) break;
+    t = t.slice(m[0].length);
+  }
+  if (t.startsWith('# AGENTS.md instructions') || t.includes('<INSTRUCTIONS>')) return null;
+  t = t.replace(/^## My request(?: for Codex)?:\s*/u, '').trim();
+  return t || null;
+}
+
 // One pass over a Claude transcript. Events are deduplicated by uuid; tool
 // blocks are merged by tool_use id, so a message written as several lines keeps
 // every distinct block (F20).
@@ -105,19 +124,33 @@ function readClaudeTranscript(file) {
 function readCodexTranscript(file) {
   const submissions = [];
   const tools = new Map();
-  let sessionId = null, background = false;
+  const turns = [];
+  let sessionId = null, background = false, parentSessionId = null;
   for (const [i, e] of lines(file).entries()) {
     const p = e.payload || {};
     const at = toMs(e.timestamp);
     if (e.type === 'session_meta') {
       sessionId = p.id || sessionId;
       if (p.thread_source && p.thread_source !== 'user') background = true;
+      // A spawned subagent thread records its parent (usually as session_id, the
+      // id the importer files its turns under): lineage for its tool evidence.
+      if (p.thread_source === 'subagent') {
+        const spawn = p.source && p.source.subagent && p.source.subagent.thread_spawn;
+        parentSessionId = (p.session_id && p.session_id !== p.id && p.session_id) || p.parent_thread_id || (spawn && spawn.parent_thread_id) || null;
+      }
+      continue;
+    }
+    // The importer writes one index line per token_count with usage (importer.js
+    // parseCodexSessionFile); these are the turns the index should hold.
+    if (e.type === 'event_msg' && p.type === 'token_count') {
+      const u = p.info && p.info.last_token_usage;
+      if (u && (u.input_tokens || 0) + (u.output_tokens || 0) + (u.reasoning_output_tokens || 0) > 0) turns.push({ at });
       continue;
     }
     if (e.type !== 'response_item') continue;
     if (p.type === 'message' && p.role === 'user') {
-      const t = blockText(p.content).trim();
-      if (!t || t.startsWith('<') || t.startsWith('# AGENTS.md instructions') || t.includes('<INSTRUCTIONS>')) continue;
+      const t = codexOwnerText(blockText(p.content));
+      if (!t) continue;
       submissions.push({ key: `${sessionId}:${i}`, sessionId, at, text: t });
     } else if ((p.type === 'function_call' || p.type === 'custom_tool_call') && p.call_id) {
       const t = tools.get(p.call_id) || { id: p.call_id, sessionId };
@@ -130,8 +163,8 @@ function readCodexTranscript(file) {
       tools.set(p.call_id, t);
     }
   }
-  for (const t of tools.values()) t.origin = file;
-  return { provider: 'openai', sessionId, background, submissions: background ? [] : submissions, tools: [...tools.values()] };
+  for (const t of tools.values()) { t.origin = file; if (parentSessionId) t.sessionId = parentSessionId; }
+  return { provider: 'openai', sessionId, parentSessionId, background, submissions: background ? [] : submissions, tools: [...tools.values()], turns };
 }
 
 // Owner submissions across host transcripts. Across files only an identical

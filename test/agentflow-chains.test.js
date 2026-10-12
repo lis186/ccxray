@@ -43,6 +43,7 @@ describe('launch recognition', () => {
     assert.deepEqual(launchHandles('Command running in background with ID: bk3pxes25. Output is being written to: /tmp/tasks/bk3pxes25.output'),
       ['bk3pxes25', '/tmp/tasks/bk3pxes25.output']);
     assert.deepEqual(launchHandles('{"backgroundTaskId":"task-7"}'), ['task-7']);
+    assert.deepEqual(launchHandles('Chunk ID: a1\nProcess running with session ID 4127\nOriginal token count: 3'), ['"session_id":4127']);
   });
 });
 
@@ -61,6 +62,15 @@ describe('chainEvidence (E5)', () => {
       ev('t2', 'f', '{"bash_id":"bg42"}', 30, runnerResult(C1), 31),
     ], clones);
     assert.deepEqual(r.strong.map(s => [s.launch.id, s.result.id, s.interval]), [['t1', 't2', [10, 31]]]);
+  });
+
+  it('follows a Codex command still running to the write_stdin that reads its result, by whole session id', () => {
+    const r = chainEvidence([
+      ev('c1', 'f', '{"cmd":"node external-runner.js"}', 10, 'Process running with session ID 4', 11),
+      ev('c2', 'f', '{"session_id":41,"chars":""}', 20, runnerResult(C2), 21),
+      ev('c3', 'f', '{"session_id":4,"chars":"","yield_time_ms":30000}', 30, runnerResult(C1), 31),
+    ], clones);
+    assert.deepEqual(r.strong.map(s => [s.clone, s.launch.id, s.result.id]), [[C1, 'c1', 'c3']]);
   });
 
   it('does not pair across transcripts, and a result with no launch is no chain (F4)', () => {

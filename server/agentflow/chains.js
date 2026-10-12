@@ -15,6 +15,16 @@ function reverseDiscovered(toolEvents, { checkoutRoots = [] } = {}) {
   return found;
 }
 
+// A handle mentioned as a whole token: `"session_id":1` must not match `"session_id":12`.
+function mentions(text, handle) {
+  const word = /[\w-]/u;
+  for (let i = text.indexOf(handle); i >= 0; i = text.indexOf(handle, i + 1)) {
+    const before = text[i - 1], after = text[i + handle.length];
+    if ((!before || !word.test(handle[0]) || !word.test(before)) && (!after || !word.test(handle[handle.length - 1]) || !word.test(after))) return true;
+  }
+  return false;
+}
+
 // Tool events are paired within their original transcript (`origin`); a
 // subagent's events carry its host's session id for lineage after pairing.
 // Returns the launches (a), the results (b) naming a known clone, and the strong
@@ -33,7 +43,7 @@ function chainEvidence(toolEvents, clones, { checkoutRoots = [] } = {}) {
     if (namesRunner(r.ev.input)) launch = r.ev;
     else {
       const via = launches.filter(l => l.ev !== r.ev && l.ev.origin === r.ev.origin && l.ev.inputAt != null && r.ev.inputAt != null
-        && l.ev.inputAt <= r.ev.inputAt && l.handles.some(h => (r.ev.input || '').includes(h)));
+        && l.ev.inputAt <= r.ev.inputAt && l.handles.some(h => mentions(r.ev.input || '', h)));
       if (via.length) launch = via.sort((a, b) => b.ev.inputAt - a.ev.inputAt)[0].ev;
     }
     if (launch) strong.push({ clone: r.clone, launch, result: r.ev, interval: [launch.inputAt, r.ev.resultAt], truncated: r.truncated });
