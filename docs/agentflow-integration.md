@@ -108,6 +108,8 @@ Every Ask carries one completeness label, derived from the data at report time (
 
 Why per-turn twins are enough evidence: a Claude Code session's base URL is fixed at launch, so its requests all go through the proxy or none do, and a stopped hub makes requests fail rather than bypass it (inferred from launch behaviour, not separately measured). A request that failed while the hub was down was not billed. Workers are labelled the same way but a transcript-only worker is not flagged as low, since `claude -p` was measured complete within 0.1%.
 
+A host transcript turn that no imported line carries yet still counts: a proxy line with its message id is its twin, and with no index line at all the proxy never saw it, so a host whose transcript was never imported is not `complete` unless the proxy logged every turn.
+
 **Several host sessions in one Ask** are labelled per host first. The Ask is `complete` only when every host is, `transcripts only` only when every host is, and `partial proxy coverage` otherwise. An Ask with **no host row**, such as one that ran on another machine, is `unknown`: nothing was observed here, so neither `complete` nor `transcripts only` would be true.
 
 **Codex** has no responseId, so completeness follows the one-source rule: a session read from the proxy is `complete`, one read from import is `transcripts only`.

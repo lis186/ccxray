@@ -95,6 +95,26 @@ fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify({
   usage, cost: { cost: 0.5, confidence: 'exact' },
 }) + '\n');
 
+// A Claude host whose transcript was never imported: the proxy logged its first
+// turn only, so the second turn is in no index line and had no proxy twin.
+const REPO3 = path.join(BASE, 'repo3');
+const SID3 = '33333333-4444-5555-6666-777777777777';
+const PROMPT3 = 'tidy the parser';
+fs.mkdirSync(path.join(REPO3, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO3]);
+fs.writeFileSync(path.join(REPO3, '.agentflow', 'devlog.md'), [
+  '# → Ask / A-001', '', `+ ${PROMPT3}`, '',
+  '# ← Reply / A-001', '', '* _2026-06-01 10:10:00 +0000 (claude/unknown)_', '', 'done', '',
+].join('\n'));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify(row('q1', 60, { sessionId: SID3, cwd: REPO3, responseId: 'msg_q1' })) + '\n');
+const proj3 = path.join(CLAUDE, REPO3.replace(/[^a-zA-Z0-9]/g, '-'));
+fs.mkdirSync(proj3, { recursive: true });
+fs.writeFileSync(path.join(proj3, `${SID3}.jsonl`), [
+  { type: 'user', uuid: 'v1', sessionId: SID3, cwd: REPO3, timestamp: iso(55), message: { role: 'user', content: PROMPT3 } },
+  { type: 'assistant', uuid: 'b1', sessionId: SID3, cwd: REPO3, timestamp: iso(61), message: { id: 'msg_q1', role: 'assistant', content: [{ type: 'text', text: 'one' }] } },
+  { type: 'assistant', uuid: 'b2', sessionId: SID3, cwd: REPO3, timestamp: iso(121), message: { id: 'msg_q2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -139,6 +159,14 @@ describe('ccxray agentflow report (e2e)', () => {
   it('files a worker launched by the Codex host\'s subagent thread under the host\'s Ask', () => {
     const a1 = JSON.parse(reportIn(REPO2, '--json').stdout).asks.find(a => a.id === 'A-001');
     assert.deepEqual(a1.executors.filter(x => x.kind === 'external').map(x => [x.evidence, x.status, x.total.calls]), [['launch-chain', 'unique', 1]]);
+  });
+
+  it('does not call a host complete when a transcript turn reached neither the proxy nor the import', () => {
+    const r = reportIn(REPO3, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
+    assert.ok(a1.labels.includes('not yet imported: 1 turns'), a1.labels.join(' | '));
+    assert.deepEqual([a1.completeness, a1.executors.map(x => x.completeness)], ['partial proxy coverage', ['partial proxy coverage']]);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {

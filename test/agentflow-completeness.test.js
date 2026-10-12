@@ -16,6 +16,12 @@ describe('hostCompleteness', () => {
   it('Claude: transcripts only when no transcript turn has a twin', () => {
     assert.equal(hostCompleteness([c('import'), c('import')]), 'transcripts only');
   });
+  it('Claude: counts transcript turns no imported line carries yet (not imported, or a pruned proxy turn\'s twin)', () => {
+    assert.equal(hostCompleteness([c('proxy')], {}, { twins: 1, missing: 1 }), 'partial proxy coverage');
+    assert.equal(hostCompleteness([c('proxy')], {}, { twins: 1, missing: 0 }), 'complete');
+    assert.equal(hostCompleteness([c('import')], {}, { twins: 0, missing: 1 }), 'transcripts only');
+    assert.equal(hostCompleteness([c('import', 'proxy')], {}, { twins: 0, missing: 1 }), 'partial proxy coverage');
+  });
   it('Codex follows the session\'s single source', () => {
     const t = [{ provider: 'openai', sessionId: 'C1' }];
     assert.equal(hostCompleteness(t, { C1: 'proxy' }), 'complete');

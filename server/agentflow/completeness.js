@@ -7,16 +7,20 @@
 // responseId) proves the proxy saw it; a session's base URL is fixed at launch,
 // so twins for every transcript turn mean its proxy-only requests were seen too.
 // Codex has no responseId and follows the one-source-per-session rule.
-function hostCompleteness(turns, codexSources = {}) {
+// `pending` counts the window's transcript turns that no imported line carries
+// yet: `twins` have a proxy line, `missing` have no index line at all, so the
+// proxy never saw them.
+function hostCompleteness(turns, codexSources = {}, pending = { twins: 0, missing: 0 }) {
   if (!turns.length) return 'unknown';
   const provider = turns[0].provider;
   if (provider && provider !== 'anthropic') {
     return codexSources[turns[0].sessionId] === 'proxy' ? 'complete' : 'transcripts only';
   }
   const transcriptTurns = turns.filter(e => e.sources && e.sources.includes('import'));
-  if (!transcriptTurns.length) return turns.some(e => e.sources && e.sources.includes('proxy')) ? 'complete' : 'unknown';
-  const twins = transcriptTurns.filter(e => e.sources.includes('proxy')).length;
-  if (twins === transcriptTurns.length) return 'complete';
+  const total = transcriptTurns.length + pending.twins + pending.missing;
+  if (!total) return turns.some(e => e.sources && e.sources.includes('proxy')) ? 'complete' : 'unknown';
+  const twins = transcriptTurns.filter(e => e.sources.includes('proxy')).length + pending.twins;
+  if (twins === total) return 'complete';
   return twins ? 'partial proxy coverage' : 'transcripts only';
 }
 

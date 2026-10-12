@@ -72,7 +72,7 @@ function followUps(row, w, windowsResult) {
   return { count: times.length, calls: agg.calls, cost: agg.cost, costFold: agg.costFold };
 }
 
-function executorRows(row, codexSources) {
+function executorRows(row, codexSources, pending) {
   // Grouped by native lineage only: the proxy's isSubagent is inferred and also
   // marks title generation and prompt suggestions, which are host cost.
   const main = row.turns.filter(e => !isNativeSubagent(e));
@@ -83,7 +83,7 @@ function executorRows(row, codexSources) {
     groups.get(role).push(e);
   }
   return {
-    completeness: hostCompleteness(row.turns, codexSources),
+    completeness: hostCompleteness(row.turns, codexSources, pending),
     total: aggregate(row.turns),
     main: aggregate(main),
     subagents: [...groups].map(([role, turns]) => ({ role, ...aggregate(turns) })),
@@ -175,6 +175,22 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     }
     return n + t.turns.filter(x => inWin(w, x.at) && !indexed.has(x.id)).length;
   }, 0);
+  // A Claude host's transcript turns in the window that no imported line carries
+  // still count for completeness: a proxy line is their twin, no line means the
+  // proxy never saw them.
+  const withSource = src => new Set(turns.filter(e => e.responseId && e.sources && e.sources.includes(src)).map(e => e.responseId));
+  const importedIds = withSource('import'), proxiedIds = withSource('proxy');
+  const pendingTurns = (w, sid) => {
+    const t = transcripts.get(sid);
+    const out = { twins: 0, missing: 0 };
+    if (!t || !t.turns || t.provider === 'openai') return out;
+    for (const x of t.turns) {
+      if (!inWin(w, x.at) || importedIds.has(x.id)) continue;
+      if (proxiedIds.has(x.id)) out.twins++;
+      else if (!indexed.has(x.id)) out.missing++;
+    }
+    return out;
+  };
   const asks = [];
   for (const w of reported.windows) {
     if (onlyAsk && w.id !== onlyAsk) continue;
@@ -182,7 +198,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     const unique = rows.filter(r => r.status === 'unique');
     const execs = unique.map(r => ({
       kind: 'host', evidence: r.evidence, status: r.status, labels: [...r.labels, ...(r.overlap ? ['overlap'] : [])],
-      ...executorRows(r, codexSources),
+      ...executorRows(r, codexSources, pendingTurns(w, r.session)),
       unmatchedSubmissions: disclose(w, r.session, reported.windowsResult).unmatched,
       followUps: followUps(r, w, reported.windowsResult),
     }));
