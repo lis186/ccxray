@@ -289,7 +289,7 @@ function renderText(report) {
   out.push(`sources (host turns): ${f.sources.join(' · ') || 'none'}`);
   out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update`);
   out.push(`this machine's data only · no local evidence: ${f.noLocalEvidence} · stamp unreadable: ${f.stampUnreadable} · host turns below the checkout root, not attributed: ${f.offRootTurns}`);
-  out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · checkout unknown: ${f.checkoutUnknown} · heuristic parent ignored: ${f.heuristicParentIgnored}`);
+  out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · heuristic parent ignored: ${f.heuristicParentIgnored} · worker runs on this machine, any checkout, whose checkout is unknown, while this notebook's hosts were active: ${f.checkoutUnknown}`);
   if (f.background) out.push(`Codex background threads in this checkout, not attributed: ${f.background}`);
   if (f.notYetImported) out.push(`not yet imported: ${f.notYetImported} Asks have transcript turns the index lacks; run \`ccxray import --once\` and report again`);
   out.push('imported turns are hidden in the dashboard by default; open /?imported to see them');

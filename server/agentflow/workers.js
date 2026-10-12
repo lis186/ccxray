@@ -65,8 +65,11 @@ function combine(evidenceByLevel) {
   return { fixed, ambiguous, labels: [...labels], level };
 }
 
-function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, hostOf, toolEvents, dispatch = [], completion = [], originOf = cloneOrigin, now }) {
+function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report = 0, hostOf, toolEvents, dispatch = [], completion = [], originOf = cloneOrigin, now }) {
   const root = stripSlash(checkoutRoot);
+  // The span in which the reported notebook's hosts were active on this machine.
+  const ourHostTimes = turns.filter(e => (hostOf.get(e.sessionId) || []).includes(report) && e.receivedAt != null).map(e => e.receivedAt);
+  const hostSpan = ourHostTimes.length ? [Math.min(...ourHostTimes), Math.max(...ourHostTimes)] : null;
   const notebookByRel = new Map(notebooks.map(n => [n.rel, n]));
 
   // E1: clones from worker cwds, every record, and runner-shaped tool results.
@@ -208,7 +211,11 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, hostOf
     let status;
     if (r.fixed.notebook === OPEN && !r.ambiguous.has('notebook')) {
       const onlyWindowLeft = !LEVELS.slice(0, 3).some(lv => evidence[lv].length);
-      if (onlyWindowLeft && e4failed) out.footer.checkoutUnknown++;
+      // Counted only while the reported notebook's hosts were active: a run of
+      // unknown checkout cannot be claimed for this notebook, but the number
+      // says how much worker activity on this machine went unplaced then.
+      const duringOurHosts = hostSpan && run.first >= hostSpan[0] && run.first <= hostSpan[1];
+      if (onlyWindowLeft && e4failed) { if (duringOurHosts) out.footer.checkoutUnknown++; }
       else out.footer.matchedNoNotebook++;
       continue;
     }

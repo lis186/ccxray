@@ -23,9 +23,13 @@ const tool = (id, origin, sessionId, input, inputAt, res, resultAt) => ({ id, or
 
 const NOTEBOOKS = [notebook(NB, [win('A-001', 0, 100), win('A-002', 100, 200), win('A-003', 200, 300)])];
 const HOST = new Map([['S1', [0]], ['S2', [0]]]);
-function run(over = {}) {
-  return attributeWorkers({ turns: [], checkoutRoot: ROOT, workspaceRel: '.agentflow', notebooks: NOTEBOOKS, hostOf: HOST,
-    toolEvents: [], dispatch: [], completion: [], originOf: () => null, now: 1000, ...over });
+// The common premise: a host of the notebook (S1) is active around each worker
+// turn. `hosts: false` leaves host activity to the case.
+function run({ hosts = true, ...over } = {}) {
+  const turns = over.turns || [];
+  const hostTurns = hosts ? turns.filter(e => e.cwd !== ROOT).flatMap(e => [-1, 1].map(d => turn(`h${d}-${e.id}`, 'S1', ROOT, e.receivedAt + d))) : [];
+  return attributeWorkers({ checkoutRoot: ROOT, workspaceRel: '.agentflow', notebooks: NOTEBOOKS, hostOf: HOST,
+    toolEvents: [], dispatch: [], completion: [], originOf: () => null, now: 1000, ...over, turns: [...hostTurns, ...turns] });
 }
 const brief = r => r.runs.map(x => [x.clone, x.ask, x.status, x.evidence, x.labels.join(',')]);
 
@@ -51,6 +55,11 @@ describe('launch chains', () => {
         tool('t3', 'h', 'S1', '{"bash_id":"bg9"}', 230, result(C2), 231)],
     });
     assert.deepEqual(brief(r), [[CHOSEN, 'A-001', 'unique', 'launch-chain', ''], [C2, 'A-003', 'unique', 'launch-chain', '']]);
+  });
+
+  it('counts checkout-unknown runs only while the reported notebook\'s hosts were active', () => {
+    const r = run({ hosts: false, turns: [turn('h1', 'S1', ROOT, 10), turn('w1', 'W1', C1, 40), turn('h2', 'S1', ROOT, 60), turn('w2', 'W2', C2, 90)] });
+    assert.deepEqual([r.runs.length, r.footer.checkoutUnknown, r.footer.matchedNoNotebook], [0, 1, 0]);
   });
 
   it('F4/F18: a result read with no launch is no chain; with no reflog the run is checkout unknown', () => {
