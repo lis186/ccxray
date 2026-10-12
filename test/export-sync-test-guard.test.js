@@ -276,6 +276,12 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       delete process.env.CCXRAY_EXPORT_DISABLE;
       console.log = (...a) => lines.push(a.join(' '));
 
+      _setUploader(null);
+      startExportSync();
+      stopExportSync();
+      await awaitPendingFlush();
+      assert.deepEqual(lines, [], 'test suppression without an uploader seam must keep startup silent');
+
       _setUploader(async () => {});        // seam allows the startup message without real GCS
       startExportSync({ startupOutcome: 'lock-lost' });
       stopExportSync();

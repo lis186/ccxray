@@ -9,11 +9,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const { pinExportLockPort } = require('./helpers/export-lock-fixture');
 
 const exportSync = require('../server/export-sync');
 const { flushExport, withExportLock, startupFlushAndPrune, pruneDecision, readEnrollment, startExportSync, _setUploader, _setCredentialLogger, stopExportSync, awaitPendingFlush } = exportSync;
 const ROOT = path.resolve(__dirname, '..');
 const EXPORT_SYNC = path.join(ROOT, 'server', 'export-sync.js');
+const WAIT_MS = 5000;
 
 const ENV_KEYS = [
   'CCXRAY_HOME', 'CCXRAY_EXPORT_GCS_BUCKET', 'CCXRAY_EXPORT_DOMAINS', 'CCXRAY_USER_EMAIL',
@@ -47,10 +49,11 @@ function entryAt(dt, time, n = 1) {
   };
 }
 
-function setup({ entries = [], env = {} } = {}) {
+async function setup({ entries = [], env = {} } = {}) {
   if (credentialConfigDir) fs.rmSync(credentialConfigDir, { recursive: true, force: true });
   credentialConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-gcloud-'));
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-enroll-test-'));
+  await pinExportLockPort(home);
   fs.mkdirSync(path.join(home, 'logs'));
   writeIndex(entries);
   for (const k of ENV_KEYS) delete process.env[k];
@@ -82,6 +85,34 @@ function quiet(fn) {
   console.log = () => {};
   console.error = () => {};
   return Promise.resolve().then(fn).finally(() => { console.log = log; console.error = error; });
+}
+
+function withTimeout(promise, label, timeoutMs = WAIT_MS) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+function silenceConsole() {
+  const log = console.log;
+  const error = console.error;
+  console.log = () => {};
+  console.error = () => {};
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    console.log = log;
+    console.error = error;
+  };
+}
+
+async function settleStartup(promise) {
+  try { await withTimeout(promise, 'startup cleanup'); } catch {}
 }
 
 function removalWriter(childHome) {
@@ -137,7 +168,7 @@ describe('first run (§3.7)', () => {
   // first flush used to hard-fail before writing a cursor; the next flush then anchored
   // the cursor at the tail and never uploaded the first session.
   it('the first session survives an identity hard-fail on an empty index', async () => {
-    setup();
+    await setup();
     assert.equal(await quiet(() => flushExport()), 'hard-failed');
 
     appendIndex(entry(1), entry(2));
@@ -146,14 +177,14 @@ describe('first run (§3.7)', () => {
   });
 
   it('uploads today from an existing index but never an older day', async () => {
-    setup({ entries: [entry(1, { daysAgo: 3 }), entry(2)] });
+    await setup({ entries: [entry(1, { daysAgo: 3 }), entry(2)] });
     assert.equal(await quiet(() => flushExport()), 'exported');
     assert.deepEqual(uploadedDts(), [utcDay()]);
     assert.equal(readJson('export-enrollment.json').state, 'enrolled');
   });
 
   it('repairs an enrolled home with no cursor from the enrollment day', async () => {
-    setup({ entries: [entry(1, { daysAgo: 2 }), entry(2, { daysAgo: 4 })] });
+    await setup({ entries: [entry(1, { daysAgo: 2 }), entry(2, { daysAgo: 4 })] });
     writeJson('export-enrollment.json', {
       state: 'enrolled', enrolledAt: new Date(Date.now() - 2 * 86_400_000).toISOString(), retentionDays: 30,
     });
@@ -165,21 +196,28 @@ describe('first run (§3.7)', () => {
 
 describe('removed state', () => {
   it('a removed home neither exports nor re-enrolls, even with no cursor', async () => {
-    setup({ entries: [entry(1)] });
+    await setup({ entries: [entry(1)] });
     writeJson('export-enrollment.json', { state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 30 });
+    const enrollmentBefore = fs.readFileSync(path.join(home, 'export-enrollment.json'), 'utf8');
+    const lastSuccessAt = new Date(Date.now() - 60_000).toISOString();
+    writeJson('export-last.json', { outcome: 'exported', lastSuccessAt });
     assert.equal(await quiet(() => flushExport()), 'removed');
     assert.equal(uploads.length, 0);
     assert.equal(fs.existsSync(path.join(home, 'export-cursor.json')), false);
     assert.equal(readJson('export-enrollment.json').state, 'removed');
+    assert.equal(fs.readFileSync(path.join(home, 'export-enrollment.json'), 'utf8'), enrollmentBefore,
+      'a removal flush must leave the enrollment tombstone unchanged');
     assert.equal(fs.existsSync(path.join(home, 'export-last.json')), true,
       'the removal outcome is persisted even though no upload is attempted');
     assert.equal(readJson('export-last.json').outcome, 'removed');
+    assert.equal(readJson('export-last.json').lastSuccessAt, lastSuccessAt,
+      'recording removal must preserve the last successful export time');
   });
 });
 
 describe('effective floor (I2)', () => {
   it('an older cursor cannot upload days before the current enrollment', async () => {
-    setup({ entries: [entry(1, { daysAgo: 5 }), entry(2, { daysAgo: 1 })] });
+    await setup({ entries: [entry(1, { daysAgo: 5 }), entry(2, { daysAgo: 1 })] });
     writeJson('export-cursor.json', { lastId: null, seq: {}, partial: false, cutoffDt: utcDay(-10), floorV: 1 });
     writeJson('export-enrollment.json', {
       state: 'enrolled', enrolledAt: new Date(Date.now() - 86_400_000).toISOString(), retentionDays: 30,
@@ -193,19 +231,19 @@ describe('startup lock (§3.1)', () => {
   // A nested acquire cannot bind the same per-home socket. Startup must pass its
   // already-held socket handle into the flush instead.
   it('flushExport({lockToken}) runs inside withExportLock', async () => {
-    setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
+    await setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
     const outcome = await withExportLock(lockToken => quiet(() => flushExport({ lockToken })));
     assert.equal(outcome, 'exported');
   });
 
   it('a plain flushExport inside the held lock is lost, not deadlocked', async () => {
-    setup({ entries: [entry(1)] });
+    await setup({ entries: [entry(1)] });
     const outcome = await withExportLock(() => quiet(() => flushExport()));
     assert.equal(outcome, 'lock-lost');
   });
 
   it('export-last keeps lastSuccessAt across a failed attempt', async () => {
-    setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
+    await setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
     await quiet(() => flushExport());
     const ok = readJson('export-last.json');
     assert.equal(ok.outcome, 'exported');
@@ -220,7 +258,7 @@ describe('startup lock (§3.1)', () => {
 
 describe('enrollment read and recovery', () => {
   it('an invalid enrollment stops before cursor creation or upload', async () => {
-    setup({ entries: [entry(1)] });
+    await setup({ entries: [entry(1)] });
     fs.writeFileSync(path.join(home, 'export-enrollment.json'), '{broken json');
     assert.equal(readEnrollment(home)?.state, 'invalid');
     assert.equal(await quiet(() => flushExport()), 'enrollment-invalid');
@@ -229,8 +267,8 @@ describe('enrollment read and recovery', () => {
     assert.equal(readJson('export-last.json').outcome, 'enrollment-invalid');
   });
 
-  it('an invalid enrollment still owes data until the retention cap', () => {
-    setup();
+  it('an invalid enrollment still owes data until the retention cap', async () => {
+    await setup();
     writeJson('export-enrollment.json', { state: 'unknown', enrolledAt: new Date().toISOString(), retentionDays: 30 });
     writeJson('export-last.json', { lastSuccessAt: new Date().toISOString() });
     assert.equal(pruneDecision('not-enabled').prune, false);
@@ -241,7 +279,7 @@ describe('enrollment read and recovery', () => {
   it('recovers an enrollment across UTC midnight from its original floor', async () => {
     const today = utcDay();
     const yesterday = utcDay(-1);
-    setup({ entries: [entryAt(yesterday, '23:55:00'), entryAt(today, '00:01:00', 2)] });
+    await setup({ entries: [entryAt(yesterday, '23:55:00'), entryAt(today, '00:01:00', 2)] });
     writeJson('export-enrollment.json', {
       state: 'enrolled', enrolledAt: `${yesterday}T23:59:00.000Z`, retentionDays: 30,
     });
@@ -252,7 +290,7 @@ describe('enrollment read and recovery', () => {
 
   it('same-day re-enrollment preserves the existing upload sequence', async () => {
     const today = utcDay();
-    setup({ entries: [entryAt(today, '12:00:00')] });
+    await setup({ entries: [entryAt(today, '12:00:00')] });
     writeJson('export-cursor.json', {
       lastId: null, seq: { [today]: 3 }, partial: false, cutoffDt: utcDay(-10), floorV: 1,
     });
@@ -267,64 +305,97 @@ describe('enrollment read and recovery', () => {
 
 describe('startup exclusion gates', () => {
   it('holds the socket through upload; a removal writer waits until flush completes', async () => {
-    setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
+    await setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
     let beginUpload;
     let finishUpload;
     const uploadStarted = new Promise(resolve => { beginUpload = resolve; });
     const uploadGate = new Promise(resolve => { finishUpload = resolve; });
-    _setUploader(async (...args) => { uploads.push({ name: args[1], body: args[2] }); beginUpload(); await uploadGate; });
-    const startup = quiet(() => startupFlushAndPrune({ pruneLogs: async () => {} }));
-    await uploadStarted;
+    const restoreConsole = silenceConsole();
+    _setUploader(async (...args) => {
+      uploads.push({ name: args[1], body: args[2] });
+      beginUpload();
+      await withTimeout(uploadGate, 'upload gate');
+    });
+    const startup = startupFlushAndPrune({ pruneLogs: async () => {} });
+    try {
+      await withTimeout(uploadStarted, 'uploadStarted');
+      assert.equal((await withTimeout(removalWriter(home), 'removal writer while upload is held')).outcome, null,
+        'the remover cannot enter while upload is held');
+      finishUpload();
+      assert.equal(await withTimeout(startup, 'startup completion'), 'exported');
+      const cursorBefore = fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8');
 
-    assert.equal((await removalWriter(home)).outcome, null, 'the remover cannot enter while upload is held');
-    finishUpload();
-    assert.equal(await startup, 'exported');
-    const cursorBefore = fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8');
-
-    assert.equal((await removalWriter(home)).outcome, 'removed');
-    assert.equal(await quiet(() => flushExport()), 'removed');
-    assert.equal(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8'), cursorBefore);
-    assert.equal(uploads.length, 1);
-    assert.equal(readJson('export-last.json').outcome, 'removed');
+      assert.equal((await withTimeout(removalWriter(home), 'removal writer after startup')).outcome, 'removed');
+      assert.equal(await withTimeout(flushExport(), 'post-removal flush'), 'removed');
+      assert.equal(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8'), cursorBefore);
+      assert.equal(uploads.length, 1);
+      assert.equal(readJson('export-last.json').outcome, 'removed');
+    } finally {
+      finishUpload();
+      restoreConsole();
+      await settleStartup(startup);
+    }
   });
 
   it('holds the socket until the awaited prune finishes, then releases it', async () => {
-    setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
+    await setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
     let beginPrune;
     let finishPrune;
     const pruneStarted = new Promise(resolve => { beginPrune = resolve; });
     const pruneGate = new Promise(resolve => { finishPrune = resolve; });
-    const startup = startupFlushAndPrune({ pruneLogs: async () => { beginPrune(); await pruneGate; } });
-    await pruneStarted;
-    assert.equal(await withExportLock(() => 'acquired'), undefined);
-    finishPrune();
-    assert.equal(await startup, 'not-enabled');
-    assert.equal(await withExportLock(() => 'acquired'), 'acquired');
+    const restoreConsole = silenceConsole();
+    const startup = startupFlushAndPrune({ pruneLogs: async () => {
+      beginPrune();
+      await withTimeout(pruneGate, 'prune gate');
+    } });
+    try {
+      await withTimeout(pruneStarted, 'pruneStarted');
+      assert.equal(await withTimeout(withExportLock(() => 'acquired'), 'contending lock attempt'), undefined);
+      finishPrune();
+      assert.equal(await withTimeout(startup, 'startup completion'), 'not-enabled');
+      assert.equal(await withTimeout(withExportLock(() => 'acquired'), 'lock reacquisition'), 'acquired');
+    } finally {
+      finishPrune();
+      restoreConsole();
+      await settleStartup(startup);
+    }
   });
 
   it('normalizes upload errors while holding through prune; a throwing prune still releases', async () => {
-    setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com', LOG_RETENTION_DAYS: '0' } });
+    await setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com', LOG_RETENTION_DAYS: '0' } });
     _setUploader(async () => { throw new Error('upload boom'); });
     let beginPrune;
     let finishPrune;
     const pruneStarted = new Promise(resolve => { beginPrune = resolve; });
     const pruneGate = new Promise(resolve => { finishPrune = resolve; });
-    const startup = quiet(() => startupFlushAndPrune({ pruneLogs: async () => { beginPrune(); await pruneGate; } }));
-    await pruneStarted;
-    assert.equal(await withExportLock(() => 'acquired'), undefined);
-    finishPrune();
-    assert.equal(await startup, 'upload-failed');
+    const restoreConsole = silenceConsole();
+    const startup = startupFlushAndPrune({ pruneLogs: async () => {
+      beginPrune();
+      await withTimeout(pruneGate, 'prune gate');
+    } });
+    try {
+      await withTimeout(pruneStarted, 'pruneStarted');
+      assert.equal(await withTimeout(withExportLock(() => 'acquired'), 'contending lock attempt'), undefined);
+      finishPrune();
+      assert.equal(await withTimeout(startup, 'startup completion'), 'upload-failed');
 
-    process.env.CCXRAY_EXPORT_DISABLE = '1';
-    writeJson('export-enrollment.json', { state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 30 });
-    await assert.rejects(startupFlushAndPrune({ pruneLogs: async () => { throw new Error('prune boom'); } }), /prune boom/);
-    assert.equal(await withExportLock(() => 'acquired'), 'acquired');
+      process.env.CCXRAY_EXPORT_DISABLE = '1';
+      writeJson('export-enrollment.json', { state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 30 });
+      await assert.rejects(withTimeout(startupFlushAndPrune({
+        pruneLogs: async () => { throw new Error('prune boom'); },
+      }), 'throwing prune startup completion'), /prune boom/);
+      assert.equal(await withTimeout(withExportLock(() => 'acquired'), 'post-error lock reacquisition'), 'acquired');
+    } finally {
+      finishPrune();
+      restoreConsole();
+      await settleStartup(startup);
+    }
   });
 });
 
 describe('startup diagnostics and outcome reporting', () => {
   it('records startup acquisition and interval/shutdown lock-loss phases', async () => {
-    setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
+    await setup({ entries: [entry(1)], env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
     assert.equal(await quiet(() => startupFlushAndPrune({ pruneLogs: async () => {} })), 'exported');
     await withExportLock(async () => {
       assert.equal(await quiet(() => flushExport({ phase: 'interval' })), 'lock-lost');
@@ -340,7 +411,7 @@ describe('startup diagnostics and outcome reporting', () => {
   });
 
   it('prints one legacy-file advisory while continuing to acquire and prune', async () => {
-    setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
+    await setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
     fs.writeFileSync(path.join(home, 'export.lock'), 'legacy');
     const lines = [];
     let pruned = 0;
@@ -351,7 +422,7 @@ describe('startup diagnostics and outcome reporting', () => {
   });
 
   it('persists cap-basis-invalid under the startup lock before pruning', async () => {
-    setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
+    await setup({ env: { CCXRAY_EXPORT_DISABLE: '1' } });
     writeJson('export-enrollment.json', { state: 'enrolled', enrolledAt: 'invalid-date', retentionDays: 30 });
     writeJson('export-last.json', { lastSuccessAt: 'also-invalid' });
     const pruneEvents = [];
@@ -362,21 +433,119 @@ describe('startup diagnostics and outcome reporting', () => {
   });
 
   it('a removed startup outcome is not announced as an active exporter', async () => {
-    setup({ env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
+    await setup({ env: { CCXRAY_USER_EMAIL: 'dev@example.com' } });
     const lines = [];
     _setCredentialLogger(line => lines.push(line));
+    writeJson('export-enrollment.json', {
+      state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 30,
+    });
     startExportSync({ startupOutcome: 'removed' });
     stopExportSync();
     await awaitPendingFlush();
     assert.ok(lines.some(line => line.includes('removed — this home was un-enrolled')));
     assert.equal(lines.some(line => line.includes('exporter active')), false);
+    assert.equal(readJson('export-last.json').outcome, 'removed',
+      'the initial flush must still reread and record the removed enrollment');
 
     lines.length = 0;
+    fs.writeFileSync(path.join(home, 'export-enrollment.json'), '{invalid json');
     startExportSync({ startupOutcome: 'enrollment-invalid' });
     stopExportSync();
+    await awaitPendingFlush();
     assert.ok(lines.some(line => line.includes('enrollment-invalid — export-enrollment.json')));
     assert.equal(lines.some(line => line.includes('exporter active')), false);
+    assert.equal(readJson('export-last.json').outcome, 'enrollment-invalid',
+      'the initial flush must still reread and record invalid enrollment');
   });
+});
+
+describe('startup prune decision guards', () => {
+  const DAY = 86_400_000;
+
+  it('does not prune an enrolled home from an env-less startup', async () => {
+    await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '17' } });
+    writeJson('export-enrollment.json', {
+      state: 'enrolled', enrolledAt: new Date(Date.now() - DAY).toISOString(), retentionDays: 5,
+    });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, []);
+  });
+
+  it('does not prune invalid enrollment while last success is inside the cap', async () => {
+    await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '17' } });
+    const enrollmentPath = path.join(home, 'export-enrollment.json');
+    const enrollmentBytes = '{broken enrollment json\n';
+    fs.writeFileSync(enrollmentPath, enrollmentBytes);
+    const lastSuccessAt = new Date(Date.now() - DAY).toISOString();
+    writeJson('export-last.json', { outcome: 'upload-failed', lastSuccessAt });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, []);
+    assert.equal(fs.readFileSync(enrollmentPath, 'utf8'), enrollmentBytes,
+      'startup must not rewrite an invalid enrollment file');
+    assert.equal(readJson('export-last.json').lastSuccessAt, lastSuccessAt);
+  });
+
+  it('prunes an enrolled home after its retention cap and passes enrollment retention', async () => {
+    await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '17' } });
+    writeJson('export-enrollment.json', {
+      state: 'enrolled', enrolledAt: new Date(Date.now() - 11 * DAY).toISOString(), retentionDays: 5,
+    });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, [{ retentionDays: 5 }]);
+  });
+
+  it('prunes invalid enrollment after the configured retention cap expires', async () => {
+    await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '7' } });
+    fs.writeFileSync(path.join(home, 'export-enrollment.json'), '{broken enrollment json\n');
+    writeJson('export-last.json', {
+      lastSuccessAt: new Date(Date.now() - 15 * DAY).toISOString(),
+    });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, [{ retentionDays: 7 }]);
+  });
+
+  it('prunes a removed home with configured retention', async () => {
+    await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '17' } });
+    writeJson('export-enrollment.json', {
+      state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 5,
+    });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, [{ retentionDays: 17 }]);
+  });
+
+  for (const code of ['EACCES', 'EIO']) {
+    it(`keeps recent data when enrollment reads fail with ${code}`, async () => {
+      await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '9' } });
+      const enrollmentPath = path.join(home, 'export-enrollment.json');
+      const enrollmentBytes = '{state: unreadable but preserved}\n';
+      fs.writeFileSync(enrollmentPath, enrollmentBytes);
+      writeJson('export-last.json', {
+        lastSuccessAt: new Date(Date.now() - DAY).toISOString(),
+      });
+      const originalReadFileSync = fs.readFileSync;
+      const pruneCalls = [];
+      fs.readFileSync = function (filename, ...args) {
+        if (path.resolve(String(filename)) === enrollmentPath) {
+          const err = new Error(`fixture ${code}`);
+          err.code = code;
+          throw err;
+        }
+        return originalReadFileSync.call(this, filename, ...args);
+      };
+      try {
+        assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+      } finally {
+        fs.readFileSync = originalReadFileSync;
+      }
+      assert.deepEqual(pruneCalls, [], `${code} must not be treated as an absent enrollment`);
+      assert.equal(fs.readFileSync(enrollmentPath, 'utf8'), enrollmentBytes);
+    });
+  }
 });
 
 describe('pruneDecision (§3.1 iii)', () => {
@@ -385,34 +554,34 @@ describe('pruneDecision (§3.1 iii)', () => {
     state: 'enrolled', enrolledAt: new Date(Date.now() - daysAgo * DAY).toISOString(), retentionDays,
   });
 
-  it('prunes after any successful outcome', () => {
-    setup();
+  it('prunes after any successful outcome', async () => {
+    await setup();
     for (const o of ['exported', 'nothing-new', 'no-data']) assert.equal(pruneDecision(o).prune, true, o);
   });
 
-  it('an env-less process prunes an un-enrolled home with config retention', () => {
-    setup({ env: { LOG_RETENTION_DAYS: '14' } });
+  it('an env-less process prunes an un-enrolled home with config retention', async () => {
+    await setup({ env: { LOG_RETENTION_DAYS: '14' } });
     const d = pruneDecision('not-enabled');
     assert.equal(d.prune, true);
     assert.equal(d.retentionDays, 14);
   });
 
-  it('an env-less process keeps an enrolled home and uses its retention', () => {
-    setup({ env: { LOG_RETENTION_DAYS: '14' } });
+  it('an env-less process keeps an enrolled home and uses its retention', async () => {
+    await setup({ env: { LOG_RETENTION_DAYS: '14' } });
     enroll(1, 30);
     const d = pruneDecision('not-enabled');
     assert.equal(d.prune, false);
     assert.equal(d.retentionDays, 30);
   });
 
-  it('a removed home prunes', () => {
-    setup();
+  it('a removed home prunes', async () => {
+    await setup();
     writeJson('export-enrollment.json', { state: 'removed', enrolledAt: new Date().toISOString(), retentionDays: 30 });
     assert.equal(pruneDecision('removed').prune, true);
   });
 
-  it('failures keep files until the 2×retention cap', () => {
-    setup();
+  it('failures keep files until the 2×retention cap', async () => {
+    await setup();
     enroll(10, 30);
     for (const o of ['hard-failed', 'upload-failed']) assert.equal(pruneDecision(o).prune, false, o);
     enroll(61, 30);
@@ -422,15 +591,15 @@ describe('pruneDecision (§3.1 iii)', () => {
     assert.ok(d.reason);
   });
 
-  it('a recent lastSuccessAt outranks an old enrollment', () => {
-    setup();
+  it('a recent lastSuccessAt outranks an old enrollment', async () => {
+    await setup();
     enroll(90, 30);
     writeJson('export-last.json', { outcome: 'upload-failed', lastSuccessAt: new Date().toISOString() });
     assert.equal(pruneDecision('upload-failed').prune, false);
   });
 
-  it('no valid basis at all prunes and says why', () => {
-    setup();
+  it('no valid basis at all prunes and says why', async () => {
+    await setup();
     writeJson('export-enrollment.json', { state: 'enrolled', enrolledAt: 'garbage', retentionDays: 30 });
     writeJson('export-last.json', { lastSuccessAt: 'also-garbage' });
     // the cursor mtime is the last resort; remove it so nothing is valid
@@ -441,8 +610,8 @@ describe('pruneDecision (§3.1 iii)', () => {
     assert.deepEqual(d.event, { type: 'cap-basis-invalid', outcome: 'hard-failed' });
   });
 
-  it('future timestamps beyond one day are not accepted as cap bases', () => {
-    setup();
+  it('future timestamps beyond one day are not accepted as cap bases', async () => {
+    await setup();
     const tooFar = new Date(Date.now() + 2 * DAY).toISOString();
     writeJson('export-enrollment.json', { state: 'enrolled', enrolledAt: tooFar, retentionDays: 30 });
     writeJson('export-last.json', { lastSuccessAt: tooFar });

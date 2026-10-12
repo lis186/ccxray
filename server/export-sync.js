@@ -1589,9 +1589,7 @@ function startExportSync({ startupOutcome } = {}) {
   // Offline stages only (discovery + parse). Token and authorization stay
   // not-attempted/unknown until a real upload; nothing here talks to Google.
   _credentialLogger(`\x1b[90m   [ccxray export] ${credentialText(describeCredentials(discoverCredentials()))}\x1b[0m`);
-  if (startupOutcome !== 'removed' && startupOutcome !== 'enrollment-invalid') {
-    _runningFlush = flushExport({ phase: 'initial' }).catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
-  }
+  _runningFlush = flushExport({ phase: 'initial' }).catch(err => console.error('[ccxray export] Initial flush failed:', err.message));
   _interval = setInterval(() => {
     // P1: chain so awaitPendingFlush waits for ALL in-flight flushes, not just the latest
     _runningFlush = Promise.resolve(_runningFlush).then(() =>

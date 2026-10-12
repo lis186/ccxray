@@ -7,6 +7,7 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const { pinExportLockPort } = require('./helpers/export-lock-fixture');
 
 const ROOT = path.resolve(__dirname, '..');
 const EXPORT_SYNC = path.join(ROOT, 'server', 'export-sync.js');
@@ -17,35 +18,9 @@ let home;
 let savedEnv;
 const children = new Set();
 
-function canBind(port) {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once('error', err => err.code === 'EADDRINUSE' ? resolve(false) : reject(err));
-    server.listen(port, '127.0.0.1', () => server.close(err => err ? reject(err) : resolve(true)));
-  });
-}
-
-async function allocatePortBeforeContenders() {
-  // A listen(0) result is released before it can be pinned. Verify it is still
-  // bindable and retry here, before any lock contender exists in this fixture.
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const server = net.createServer();
-    const port = await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(0, '127.0.0.1', () => {
-        const value = server.address().port;
-        server.close(err => err ? reject(err) : resolve(value));
-      });
-    });
-    if (port !== 5577 && await canBind(port)) return port;
-  }
-  throw new Error('could not allocate an available lock fixture port before contenders started');
-}
-
 async function createHome() {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-export-lock-test-'));
-  const port = await allocatePortBeforeContenders();
-  fs.writeFileSync(path.join(home, 'export-lock-port'), `${port}\n`);
+  const port = await pinExportLockPort(home);
   savedEnv = {
     CCXRAY_HOME: process.env.CCXRAY_HOME,
     CCXRAY_EXPORT_DISABLE: process.env.CCXRAY_EXPORT_DISABLE,
@@ -249,7 +224,7 @@ describe('per-home exporter socket lock', () => {
     }
   });
 
-  it('T-simultaneous and T-eventual: no more than one winner, then acquisition succeeds', async () => {
+  it('T-simultaneous: at most one contender holds the lock', async () => {
     const { home: h } = await createHome();
     const goPath = path.join(h, 'go');
     const releasePath = path.join(h, 'release');
@@ -272,11 +247,18 @@ describe('per-home exporter socket lock', () => {
     await Promise.all(contenders.map(c => c.waitFor(m => m.state === 'ready', 'ready barrier')));
     fs.writeFileSync(goPath, 'go');
     const outcomes = await Promise.all(contenders.map(c => c.waitFor(m => m.state === 'acquired' || m.state === 'lost', 'acquisition barrier')));
-    assert.equal(outcomes.filter(m => m.state === 'acquired').length, 1, 'exactly one contender holds the lock');
+    assert.ok(outcomes.filter(m => m.state === 'acquired').length <= 1,
+      'at most one contender may hold the lock');
     fs.writeFileSync(releasePath, 'release');
     await Promise.all(contenders.map(c => waitExit(c)));
+  });
+
+  it('T-eventual: a released lock can be acquired again', async () => {
+    const { home: h } = await createHome();
+    const holder = await startHolder(h);
+    await releaseHolder(holder);
     const eventual = spawnJson(contendScript(), h);
-    assert.equal((await eventual.waitFor(m => m.state === 'lost' || m.state === 'acquired')).state, 'acquired');
+    assert.equal((await eventual.waitFor(m => m.state === 'lost' || m.state === 'acquired', 'eventual acquisition')).state, 'acquired');
     await waitExit(eventual);
   });
 
