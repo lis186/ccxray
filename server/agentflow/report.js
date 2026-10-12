@@ -155,9 +155,10 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     now, ...(originOf ? { originOf } : {}),
   });
   // A run ambiguous between notebooks is shown by each of them (Scope of
-  // candidates), so it never disappears from every report.
+  // candidates), so it never disappears from every report. Any level may have
+  // named the notebooks: dispatch can fix the Ask alone and a chain split them.
   const ourRuns = workers.runs.filter(r => r.notebook === notebooks[0].rel
-    || (r.status === 'ambiguous' && r.notebook == null && (r.candidates[r.evidence] || []).some(c => c.notebook === notebooks[0].rel)));
+    || (r.status === 'ambiguous' && r.notebook == null && Object.values(r.candidates).flat().some(c => c.notebook === notebooks[0].rel)));
 
   const reported = notebooks[0];
   // Import lags per turn, not per session (a session spans days): a transcript

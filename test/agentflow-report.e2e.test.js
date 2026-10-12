@@ -170,6 +170,33 @@ fs.writeFileSync(path.join(proj5, `${SID5}.jsonl`), [
   { type: 'assistant', uuid: 'c2', sessionId: SID5, cwd: REPO5, timestamp: iso(900), message: { id: 'msg_z2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
 ].map(r => JSON.stringify(r)).join('\n') + '\n');
 
+// Two notebooks directly in one workspace, both with A-002 open: a dispatch
+// record fixes A-002 but no notebook (the notebooks share the workspace), and a
+// strong chain launched inside both A-002 windows names both notebooks. The run
+// is ambiguous between them and must be shown under A-002 by each.
+const REPO6 = path.join(BASE, 'repo6');
+const SID6 = '66660000-0000-0000-0000-000000000006';
+const CLONE6 = path.join(BASE, 'T', 'agentflow-external-runner-SIX', 'clone');
+fs.mkdirSync(path.join(REPO6, '.agentflow', 'artifacts', 'A-002-x', 'dispatch'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO6]);
+const nb6 = p => ['# → Ask / A-001', '', `+ ${p} one`, '', '# ← Reply / A-001', '', '* _2026-06-01 10:05:00 +0000 (claude/unknown)_', '', 'done', '', '# → Ask / A-002', '', `+ ${p} two`, ''].join('\n');
+fs.writeFileSync(path.join(REPO6, '.agentflow', 'devlog.md'), nb6('north'));
+fs.writeFileSync(path.join(REPO6, '.agentflow', 'notes.devlog.md'), nb6('mill'));
+fs.writeFileSync(path.join(REPO6, '.agentflow', 'artifacts', 'A-002-x', 'dispatch', 'review-dispatch.json'), JSON.stringify({ stage: 'review', started: iso(490), finished: iso(530), clone: CLONE6 }));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), [
+  row('s6a', 70, { sessionId: SID6, cwd: REPO6, responseId: 'msg_s6a', imported: true }),
+  row('s6b', 500, { sessionId: SID6, cwd: REPO6, responseId: 'msg_s6b', imported: true }),
+  row('w6', 510, { sessionId: 'worker-6', cwd: CLONE6, responseId: 'msg_w6' }),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+const proj6 = path.join(CLAUDE, 'repo6');
+fs.mkdirSync(proj6, { recursive: true });
+const u6 = (uuid, s, content) => ({ type: 'user', uuid, sessionId: SID6, cwd: REPO6, timestamp: iso(s), message: { role: 'user', content } });
+fs.writeFileSync(path.join(proj6, `${SID6}.jsonl`), [
+  u6('n1', 60, 'north one'), u6('m1', 61, 'mill one'), u6('n2', 400, 'north two'), u6('m2', 401, 'mill two'),
+  { type: 'assistant', uuid: 'b6', sessionId: SID6, cwd: REPO6, timestamp: iso(500), message: { id: 'msg_s6b', role: 'assistant', content: [{ type: 'tool_use', id: 'k6', name: 'Bash', input: { command: 'node external-runner.js' } }] } },
+  u6('r6', 520, [{ type: 'tool_result', tool_use_id: 'k6', content: JSON.stringify({ working_directory: CLONE6, stdin_closed: true, clone: { root: CLONE6 } }) }]),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -241,6 +268,16 @@ describe('ccxray agentflow report (e2e)', () => {
     assert.equal(a2.completeness, 'unknown');
     assert.ok(a2.labels.includes('no local evidence') && a2.labels.includes('local host turns inside bounds: 1'), a2.labels.join(' | '));
     assert.match(reportIn(REPO5).stdout, /local host turns inside bounds: 1/);
+  });
+
+  it('shows a run ambiguous between two notebooks in both reports, even when dispatch decided its Ask', () => {
+    for (const nb of ['.agentflow/devlog.md', '.agentflow/notes.devlog.md']) {
+      const r = reportIn(REPO6, '--notebook', nb, '--json');
+      assert.equal(r.status, 0, r.stderr);
+      // The host turn s6b and the worker turn w6 are both ambiguous between the notebooks.
+      const a2 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-002');
+      assert.equal(a2.ambiguous.calls, 2, nb);
+    }
   });
 
   it('rejects an Ask id that is not in the notebook', () => {
