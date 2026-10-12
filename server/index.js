@@ -851,7 +851,7 @@ async function gracefulExit(code) {
     // #5: await in-flight export AFTER critical drains so a 30s GCS timeout
     // doesn't block WS/storage under the 5s shutdown deadline
     try { await awaitPendingFlush(); } catch (e) { console.error('Pending export flush failed:', e.message); }
-    try { await flushExport(); } catch (e) { console.error('Export flush failed:', e.message); }
+    try { await flushExport({ phase: 'shutdown' }); } catch (e) { console.error('Export flush failed:', e.message); }
   })();
   await Promise.race([drain, deadline]);
   process.exit(code);
@@ -1335,12 +1335,13 @@ async function runPostListenStartupTasks() {
   }
 
   await pricingReady;
+  let startupOutcome;
   if (restoreOk) {
-    try { await flushExport(); } catch (e) { console.error('[ccxray export] Pre-prune flush failed:', e.message); }
-    await pruneLogs();
+    startupOutcome = await exportSync.startupFlushAndPrune({ pruneLogs, log: _origLog });
     warmUpCosts();
   }
-  startExportSync();
+  startExportSync({ startupOutcome });
+  if (process.env.NODE_TEST_CONTEXT) process.stderr.write('[ccxray] startup tasks complete\n');
 
   // #438/#486: hint when legacy entries lack per-turn tool evidence.
   // turnToolResults is always set on new entries ([] for no-tools, [{...}] for

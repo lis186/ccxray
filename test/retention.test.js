@@ -19,8 +19,10 @@ describe('retention', () => {
     // follows the index filename timezone rather than UTC's calendar date.
     assert.equal(taipeiDate(SYNTHETIC_RETENTION_NOW), '2026-03-16');
     assert.equal(retentionCutoffDate(retentionDays(env), SYNTHETIC_RETENTION_NOW), '2026-03-02');
-    const cutoffCalls = [...restoreSource.matchAll(/retentionCutoffDate\(config\.(RESTORE_DAYS|LOG_RETENTION_DAYS)\)/g)].map(m => m[1]);
-    assert.deepEqual(cutoffCalls, ['RESTORE_DAYS', 'LOG_RETENTION_DAYS']);
+    const cutoffCalls = [...restoreSource.matchAll(/retentionCutoffDate\((config\.RESTORE_DAYS|retentionDays)\)/g)].map(m => m[1]);
+    assert.deepEqual(cutoffCalls, ['config.RESTORE_DAYS', 'retentionDays']);
+    // prune takes an enrolled home's retention as an override; its default is still config.
+    assert.match(restoreSource, /async function pruneLogs\(\{ retentionDays = config\.LOG_RETENTION_DAYS \} = \{\}\)/);
     assert.match(configSource, /const LOG_RETENTION_DAYS = retentionDays\(\);/);
     assert.doesNotMatch(configSource, /LOG_RETENTION_DAYS \|\| '14'/);
   });

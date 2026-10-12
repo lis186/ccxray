@@ -677,12 +677,14 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
 
-async function pruneLogs() {
+// `retentionDays` overrides config for an enrolled export home, whose retention was
+// fixed at enrollment and must not shrink just because this process lacks that env.
+async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
   // The sweep precedes the exclusive storage lock; a second concurrent call in
   // this process could remove the first call's temp. That is unreachable from
   // the single startup call site in server/index.js:1261.
   sweepOrphanedPruneTmpFiles(config.storage.location);
-  if (!config.LOG_RETENTION_DAYS || config.LOG_RETENTION_DAYS <= 0) return;
+  if (!retentionDays || retentionDays <= 0) return;
 
   // ponytail: if index is empty/missing, star-protection cascade can't map
   // turn→session→project — starred old entries would be silently deleted.
@@ -698,7 +700,7 @@ async function pruneLogs() {
     return;
   }
 
-  const cutoffStr = retentionCutoffDate(config.LOG_RETENTION_DAYS);
+  const cutoffStr = retentionCutoffDate(retentionDays);
 
   // Baseline: in-memory entries are always protected (existing behavior).
   // After star-aware restoreFromLogs, this already includes most starred
@@ -743,7 +745,7 @@ async function pruneLogs() {
 
   if (deleted > 0 || kept > 0) {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
-    console.log(`\x1b[90m   Pruned ${deleted} log files older than ${config.LOG_RETENTION_DAYS} days${keptMsg}\x1b[0m`);
+    console.log(`\x1b[90m   Pruned ${deleted} log files older than ${retentionDays} days${keptMsg}\x1b[0m`);
   }
 
   // #344 + #345: sync index.ndjson + sessions.json with the files that survived,

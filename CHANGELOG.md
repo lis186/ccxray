@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.0
+
+### Fixed
+
+- **Exporter lock and startup pruning.** Replaced PID-based lock-file reclaim with a per-home loopback socket lock held across startup flush and prune. Lock losses now preserve a structured phase and cause. Before the first launch after upgrading, stop all ccxray processes sharing the home and remove any leftover `export.lock`; see [export onboarding](docs/export-onboarding.md#upgrading-from-a-pre-socket-lock-version).
+
 ## 2.3.1
 
 ### Changed

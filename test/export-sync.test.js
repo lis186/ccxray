@@ -8,7 +8,7 @@ const os = require('os');
 const crypto = require('crypto');
 const Module = require('module');
 
-const { flushExport, _setUploader } = require('../server/export-sync');
+const { flushExport, withExportLock, _setUploader } = require('../server/export-sync');
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -310,16 +310,23 @@ describe('export-sync', () => {
     assert.ok(logs.includes('[ccxray export] hard-failed files=0 rows=0 dt=none user_email=unresolved excluded_turns=no-account:1 domain-mismatch:1 email_candidates=0'));
   });
 
-  it('hard-fails before initializing a first-run cursor', async () => {
+  // #612's requirement is that a hard-fail never leaves unexported lines behind the
+  // cursor. The first-run cursor now starts at lastId:null, so writing it before the
+  // hard-fail skips nothing — and is what lets a later identity resolution upload them.
+  it('a first-run hard-fail leaves no line behind the cursor', async () => {
     setup([sampledAccountEntry({ accountEmail: undefined, accountDomain: undefined })], {
       CCXRAY_USER_EMAIL: undefined,
       CCXRAY_EXPORT_DOMAINS: 'example.com',
       _skipCursor: true,
     });
 
-    await captureExportLogs(flushExport);
+    let outcome;
+    await captureExportLogs(async () => { outcome = await flushExport(); });
 
-    assert.equal(fs.existsSync(path.join(_home, 'export-cursor.json')), false);
+    assert.equal(outcome, 'hard-failed');
+    assert.equal(_uploads.length, 0);
+    const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
+    assert.equal(cursor.lastId, null, 'hard-fail must not anchor the cursor past any line');
   });
 
   it('hard-fails when more than one allowed account email is observed', async () => {
@@ -399,18 +406,19 @@ describe('export-sync', () => {
     assert.ok(_uploads[0].records.some(r => r.type === 'daily'));
   });
 
-  it('first-run: cursor init to tail, no upload', async () => {
+  it('first-run: enrolls today, uploads nothing older than the floor, consumes to tail', async () => {
     const liveDt = daysAgoUtc(14);
     setup([entryForDt(liveDt)], { _skipCursor: true });
     const before = todayUtc();
     await flushExport();
     const after = todayUtc();
-    assert.equal(_uploads.length, 0, 'no upload on first run');
+    assert.equal(_uploads.length, 0, 'a 14-day-old line is below the first-run floor');
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
     assert.equal(cursor.lastId, `${liveDt}T10-00-00-000`);
-    assert.equal(cursor.partial, true);
     assert.ok([before, after].includes(cursor.cutoffDt));
     assert.equal(cursor.floorV, 1);
+    const enrollment = JSON.parse(fs.readFileSync(path.join(_home, 'export-enrollment.json'), 'utf8'));
+    assert.equal(enrollment.state, 'enrolled');
   });
 
   // 13b bridge: the row-13b render test (test/status.test.js D3) hand-writes its cursor,
@@ -429,7 +437,7 @@ describe('export-sync', () => {
       identity: { kind: 'hub', pid: process.pid, port: 5577, home: _home, logsDir: path.join(_home, 'logs') },
     };
     const homeLine = inspectHomeStatus(report).line;
-    assert.match(homeLine, /current \(partial/, `production-written cursor must read as current; line: ${homeLine}`);
+    assert.match(homeLine, /— current —/, `production-written cursor must read as current; line: ${homeLine}`);
     assert.doesNotMatch(homeLine, /refused/);
     const processLine = renderProcessStatus(report);
     assert.match(processLine, /refused/);
@@ -618,7 +626,7 @@ describe('export-sync', () => {
     assert.equal(fs.readFileSync(path.join(_home, sidecars[0]), 'utf8'), corruptBody);
     const cursor = JSON.parse(fs.readFileSync(path.join(_home, 'export-cursor.json'), 'utf8'));
     assert.equal(cursor.lastId, oldId);
-    assert.equal(cursor.partial, true);
+    assert.equal(cursor.partial, false);
     assert.ok([before, after].includes(cursor.cutoffDt));
     assert.equal(cursor.floorV, 1);
   });
@@ -893,12 +901,10 @@ describe('export-sync', () => {
 
   it('lock: concurrent flush skipped', async () => {
     setup([makeEntry()]);
-    // Manually create lock
-    const lockPath = path.join(_home, 'export.lock');
-    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'held', acquiredAt: Date.now() }), { flag: 'wx' });
-    await flushExport();
+    let outcome;
+    await withExportLock(async () => { outcome = await flushExport(); });
+    assert.equal(outcome, 'lock-lost');
     assert.equal(_uploads.length, 0, 'skipped due to lock');
-    fs.unlinkSync(lockPath);
   });
 
   it('turnToolCalls null-vs-empty: {} contributes zero, null uses fallback', async () => {
@@ -1074,7 +1080,7 @@ describe('export-sync', () => {
     assert.equal(daily.tool_usage.shell, 5, 'OpenAI toolCalls summed directly');
   });
 
-  it('partial_day flag on first flush after cursor init', async () => {
+  it('partial_day is false for the floor day after a lastId:null first run', async () => {
     const home = mkHome();
     const savedDomains = process.env.CCXRAY_EXPORT_DOMAINS;
     process.env.CCXRAY_HOME = home;
@@ -1108,11 +1114,12 @@ describe('export-sync', () => {
     fs.appendFileSync(path.join(home, 'logs', 'index.ndjson'),
       JSON.stringify(makeEntry({ id: `${cutoffDt}T11-00-00-000`, msgCount: 12 })) + '\n');
 
-    // Second flush: should have partial_day = true for the first date
+    // Second flush: the first-run cursor started at lastId:null, so the floor day was
+    // counted from its first line — its row is complete, not partial.
     await flushExport();
     assert.equal(_uploads.length, 1);
     const daily = _uploads[0].records.find(r => r.type === 'daily');
-    assert.equal(daily.partial_day, true);
+    assert.equal(daily.partial_day, false);
   });
 
   it('multi-date aggregation: separate uploads per date', async () => {
@@ -1135,17 +1142,6 @@ describe('export-sync', () => {
     assert.equal(cursor.seq['2026-08-12'], 1);
     // GCS path includes dt= partition
     assert.ok(_uploads[0].name.includes('dt='));
-  });
-
-  it('lock staleness recovery: stale lock from dead pid is cleaned up', async () => {
-    setup([makeEntry()]);
-    const lockPath = path.join(_home, 'export.lock');
-    // Create a stale lock with a dead PID (PID 1 is init, but use a large fake PID)
-    fs.writeFileSync(lockPath, JSON.stringify({
-      pid: 999999999, token: 'stale', acquiredAt: Date.now() - 10 * 60_000,
-    }), { flag: 'wx' });
-    await flushExport();
-    assert.equal(_uploads.length, 1, 'stale lock was recovered');
   });
 
   it('#1 responseId dedup: duplicate entries counted once', async () => {
@@ -1226,14 +1222,6 @@ describe('export-sync', () => {
     assert.ok(Math.abs(daily.cost_total - 0.15) < 0.001, 'cost from enriching copy');
     assert.equal(daily.models['claude-sonnet-4-6']?.turns, 1, 'model from canonical');
     assert.ok(daily.tool_sources.local >= 1, 'toolSources from canonical');
-  });
-
-  it('#6 malformed lock file is recovered', async () => {
-    setup([makeEntry()]);
-    const lockPath = path.join(_home, 'export.lock');
-    fs.writeFileSync(lockPath, 'NOT VALID JSON{{{{', { flag: 'wx' });
-    await flushExport();
-    assert.equal(_uploads.length, 1, 'malformed lock recovered');
   });
 
   it('#2 cross-midnight cumulative fields fold into home date only', async () => {

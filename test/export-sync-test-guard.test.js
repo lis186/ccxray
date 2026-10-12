@@ -132,8 +132,6 @@ async function captureExportRefusal({ configDirs }) {
       assert.equal(uploads, 0, 'tombstone must refuse before uploading');
       assert.equal(fs.readFileSync(path.join(home, 'export-cursor.json'), 'utf8'), beforeCursor,
         'tombstone must not advance the cursor');
-      assert.equal(fs.existsSync(path.join(home, 'export.lock')), false,
-        'tombstone must refuse before acquiring the lock');
       assert.deepEqual(lines, [CONFIG_DIRS_REFUSAL]);
     } finally {
       console.log = origLog;
@@ -278,16 +276,24 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       delete process.env.CCXRAY_EXPORT_DISABLE;
       console.log = (...a) => lines.push(a.join(' '));
 
-      _setUploader(null);                 // suppressed -> must say nothing
+      _setUploader(null);
       startExportSync();
       stopExportSync();
       await awaitPendingFlush();
+      assert.deepEqual(lines, [], 'test suppression without an uploader seam must keep startup silent');
+
+      _setUploader(async () => {});        // seam allows the startup message without real GCS
+      startExportSync({ startupOutcome: 'lock-lost' });
+      stopExportSync();
+      await awaitPendingFlush();
       assert.strictEqual(lines.filter(l => l.includes('exporter active')).length, 0,
-        'must not announce an exporter that flushExport would refuse to run');
+        'a startup lock loss must not claim that initialization completed');
+      assert.ok(lines.some(l => l.includes('initialization deferred')),
+        'a startup lock loss must state that initialization is deferred');
 
       lines.length = 0;
       _setUploader(async () => {});        // seam -> real startup path -> must announce
-      startExportSync();
+      startExportSync({ startupOutcome: 'nothing-new' });
       stopExportSync();
       await awaitPendingFlush();           // settle the initial flush BEFORE clearing the seam
       const hit = lines.filter(l => l.includes('exporter active'));
