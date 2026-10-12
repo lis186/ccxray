@@ -154,7 +154,10 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     dispatch: readDispatchRecords(workspace), completion: readCompletionRecords(workspace, root, notebooks),
     now, ...(originOf ? { originOf } : {}),
   });
-  const ourRuns = workers.runs.filter(r => r.notebook === notebooks[0].rel);
+  // A run ambiguous between notebooks is shown by each of them (Scope of
+  // candidates), so it never disappears from every report.
+  const ourRuns = workers.runs.filter(r => r.notebook === notebooks[0].rel
+    || (r.status === 'ambiguous' && r.notebook == null && (r.candidates[r.evidence] || []).some(c => c.notebook === notebooks[0].rel)));
 
   const reported = notebooks[0];
   // Import lags per turn, not per session (a session spans days): a transcript
