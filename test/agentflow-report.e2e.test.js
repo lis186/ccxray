@@ -197,6 +197,25 @@ fs.writeFileSync(path.join(proj6, `${SID6}.jsonl`), [
   u6('r6', 520, [{ type: 'tool_result', tool_use_id: 'k6', content: JSON.stringify({ working_directory: CLONE6, stdin_closed: true, clone: { root: CLONE6 } }) }]),
 ].map(r => JSON.stringify(r)).join('\n') + '\n');
 
+// A notebook whose only Ask is open, worked on for two days: its matched
+// submission and first turn are two days old, older than a day before any stamp
+// (there is none).
+const REPO7 = path.join(BASE, 'repo7');
+const SID7 = '77770000-0000-0000-0000-000000000007';
+const ago = h => new Date(Date.now() - h * 3600e3).toISOString();
+fs.mkdirSync(path.join(REPO7, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO7]);
+fs.writeFileSync(path.join(REPO7, '.agentflow', 'devlog.md'), ['# → Ask / A-001', '', '+ keep going on the long task', ''].join('\n'));
+const row7 = (id, h) => ({ id, sessionId: SID7, provider: 'anthropic', model: 'claude-test', receivedAt: Date.parse(ago(h)), cwd: REPO7, responseId: `msg_${id}`, imported: true, usage, cost: { cost: 0.5, confidence: 'exact' } });
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), [row7('l1', 47.9), row7('l2', 1)].map(r => JSON.stringify(r)).join('\n') + '\n');
+const proj7 = path.join(CLAUDE, REPO7.replace(/[^a-zA-Z0-9]/g, '-'));
+fs.mkdirSync(proj7, { recursive: true });
+fs.writeFileSync(path.join(proj7, `${SID7}.jsonl`), [
+  { type: 'user', uuid: 'l0', sessionId: SID7, cwd: REPO7, timestamp: ago(48), message: { role: 'user', content: 'keep going on the long task' } },
+  { type: 'assistant', uuid: 'la1', sessionId: SID7, cwd: REPO7, timestamp: ago(47.9), message: { id: 'msg_l1', role: 'assistant', content: [{ type: 'text', text: 'one' }] } },
+  { type: 'assistant', uuid: 'la2', sessionId: SID7, cwd: REPO7, timestamp: ago(1), message: { id: 'msg_l2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -278,6 +297,14 @@ describe('ccxray agentflow report (e2e)', () => {
       const a2 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-002');
       assert.equal(a2.ambiguous.calls, 2, nb);
     }
+  });
+
+  it('reads the index back to the earliest matched start, not only a day before the earliest stamp', () => {
+    const r = reportIn(REPO7, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
+    assert.equal(a1.attributed.calls, 2);
+    assert.deepEqual(a1.labels, ['open']);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {

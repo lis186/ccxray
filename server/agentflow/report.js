@@ -111,8 +111,19 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     return { abs, rel: path.relative(root, abs), workspaceAbs: workspace, workspaceRel: path.relative(root, workspace), isDefault: abs === defaultAbs, asks: loadNotebook(abs, arch && fs.existsSync(arch) ? arch : null) };
   });
 
+  // The index is read from a day before the earliest window. A window starts no
+  // earlier than the earliest Reply stamp unless its first bullet matched earlier
+  // (an open-only notebook, a first round worked for days), so the checkout's
+  // transcripts still written to after that are aligned once to find such a
+  // start. A first round whose sessions all ended earlier is missed: it then has
+  // no matched start rather than a cut one.
+  const parsed = new Map();
+  const readOnce = f => { if (!parsed.has(f.file)) parsed.set(f.file, readTranscript(f)); return parsed.get(f.file); };
   const stamps = notebooks.flatMap(n => n.asks.map(a => a.stamp).filter(s => s != null));
-  const from = (stamps.length ? Math.min(...stamps) : now) - DAY;
+  const byStamp = Math.min(now, ...stamps) - DAY;
+  const earlySubs = collectSubmissions([...checkoutTranscripts(root, roots, { from: byStamp }).values()].map(readOnce).filter(Boolean));
+  const starts = notebooks.flatMap(n => buildWindows(n.asks, earlySubs, { now }).windows.filter(w => w.startKind === 'matched').map(w => w.start));
+  const from = Math.min(byStamp, ...starts.map(s => s - DAY));
   const { turns, codexSources } = await readMergedTurns({ from, to: now, logsDir });
   // Symlinked paths are resolved before comparison (a worker's /var is /private/var).
   const canon = new Map();
@@ -132,7 +143,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   const transcripts = new Map();
   const files = new Map([...local, ...findTranscripts(sids, roots)]);
   for (const [sid, f] of files) {
-    const t = readTranscript(f);
+    const t = readOnce(f);
     if (t) transcripts.set(sid, t);
   }
   const subs = collectSubmissions([...transcripts.values()]);
@@ -167,7 +178,8 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   // Codex turns have no id to compare: count the usage turns of the session's
   // transcripts (its subagent threads' turns are filed under it) against its
   // imported lines, unless the proxy is the session's one source.
-  const inWin = (w, at) => at >= w.start && at < w.end;
+  // Before `from` the index was not read, so a turn there is no evidence of lag.
+  const inWin = (w, at) => at >= w.start && at >= from && at < w.end;
   const codexTurns = sid => [...transcripts.values()].filter(x => x.provider === 'openai' && (x.sessionId === sid || x.parentSessionId === sid)).flatMap(x => x.turns);
   const missingTurns = (w, sids) => sids.reduce((n, sid) => {
     const t = transcripts.get(sid);
