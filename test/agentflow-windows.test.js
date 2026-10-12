@@ -66,6 +66,7 @@ describe('W3/W4/W6: start by ordered alignment', () => {
       [sub('u1', 'S1', 1, '<pasted_content>\n\none\n\ntwo\n\nthree')]);
     assert.equal(win(r, 'A-001').start, T(1));
     assert.equal(r.consumed.has('u1'), true);
+    assert.equal(win(r, 'A-001').unmatchedBullets, 0);
   });
 
   // W3 already keeps an earlier Ask's submissions out of a later Ask's bounds;

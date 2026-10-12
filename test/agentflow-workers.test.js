@@ -57,6 +57,19 @@ describe('launch chains', () => {
     assert.deepEqual(brief(r), [[CHOSEN, 'A-001', 'unique', 'launch-chain', ''], [C2, 'A-003', 'unique', 'launch-chain', '']]);
   });
 
+  it('F30: a wrapper summary whose `clone` key holds the clone path, in the runner-naming call, is a strong chain', () => {
+    const r = run({ turns: [turn('w1', 'W1', C1, 15)], toolEvents: [tool('t', 'h', 'S1', LAUNCH, 10, JSON.stringify({ summary: 'review done', clone: C1 }), 20)] });
+    assert.deepEqual(brief(r), [[C1, 'A-001', 'unique', 'launch-chain', '']]);
+  });
+
+  it('F15: a truncated preview still naming the clone is a chain labelled `truncated`; one that does not leaves lower levels to decide', () => {
+    const preview = p => `<persisted-output>…Preview: {"status":"completed"${p}`;
+    const a = run({ turns: [turn('w1', 'W1', C1, 15)], toolEvents: [{ ...tool('t', 'h', 'S1', LAUNCH, 10, preview(`, "clone": {"root": "${C1}"`), 20), truncated: true }] });
+    assert.deepEqual(brief(a), [[C1, 'A-001', 'unique', 'launch-chain', 'truncated']]);
+    const b = run({ turns: [turn('w1', 'W1', C1, 15)], originOf: () => ROOT, toolEvents: [{ ...tool('t', 'h', 'S1', LAUNCH, 10, preview(''), 20), truncated: true }] });
+    assert.deepEqual(brief(b), [[C1, 'A-001', 'unique', 'window', '']]);
+  });
+
   it('counts checkout-unknown runs only while the reported notebook\'s hosts were active', () => {
     const r = run({ hosts: false, turns: [turn('h1', 'S1', ROOT, 10), turn('w1', 'W1', C1, 40), turn('h2', 'S1', ROOT, 60), turn('w2', 'W2', C2, 90)] });
     assert.deepEqual([r.runs.length, r.footer.checkoutUnknown, r.footer.matchedNoNotebook], [0, 1, 0]);
@@ -65,7 +78,7 @@ describe('launch chains', () => {
   it('F4/F18: a result read with no launch is no chain; with no reflog the run is checkout unknown', () => {
     const r = run({ turns: [turn('w1', 'W1', C1, 15)], toolEvents: [tool('t', 'h', 'S1', '{"command":"cat saved.json"}', 30, result(C1), 31)] });
     assert.deepEqual(r.runs, []);
-    assert.equal(r.footer.checkoutUnknown, 1);
+    assert.deepEqual([r.footer.checkoutUnknown, r.footer.matchedNoNotebook], [1, 0]);
   });
 
   it('F19: weak chains bind each run to its own launch, in time order across clones', () => {
@@ -159,7 +172,8 @@ describe('dispatch and completion', () => {
 
 describe('window (E4)', () => {
   it('F2/F22: a recordless, chainless worker bound by its clone origin; another checkout\'s clone is not', () => {
-    assert.deepEqual(brief(run({ turns: [turn('a', 'W', C1, 15)], originOf: () => ROOT })), [[C1, 'A-001', 'unique', 'window', '']]);
+    const noPath = [tool('t', 'h', 'S1', '{"command":"./wrapper.sh review"}', 10, '{"summary":"review done"}', 20)];
+    assert.deepEqual(brief(run({ turns: [turn('a', 'W', C1, 15)], toolEvents: noPath, originOf: () => ROOT })), [[C1, 'A-001', 'unique', 'window', '']]);
     const other = run({ turns: [turn('a', 'W', C1, 15)], originOf: () => '/work/other-checkout' });
     assert.deepEqual([other.runs.length, other.footer.checkoutUnknown], [0, 1]);
   });
@@ -188,6 +202,7 @@ describe('E2 and lineage', () => {
   it('F6: a proxy-inferred parent is ignored and counted', () => {
     const r = run({ turns: [turn('a', 'W', C1, 15, { parentSessionId: 'W-sibling' })], toolEvents: [tool('t', 'h', 'S1', LAUNCH, 10, result(C1), 20)] });
     assert.equal(r.runs[0].status, 'unique');
+    assert.equal(r.runs[0].turns.length, 1, 'each turn counted once');
     assert.equal(r.footer.heuristicParentIgnored, 1);
   });
 

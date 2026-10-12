@@ -48,6 +48,11 @@ describe('parseNotebook', () => {
     assert.equal(asks[1].stamp, null);
   });
 
+  it('W1 skips a bullet holding only a pasted-content tag (F8)', () => {
+    const [a] = parseNotebook(['# → Ask / A-001', '', '+ <pasted_content id="1"></pasted_content>', '', '+ one', ''].join('\n'));
+    assert.deepEqual(a.bullets, ['one']);
+  });
+
   it('treats the bare `+` scaffold as an empty, open Ask', () => {
     assert.deepEqual(asks[2], { id: 'A-003', bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false, replyText: null });
   });

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { buildWindows } = require('../server/agentflow/windows');
+const { buildWindows, disclose } = require('../server/agentflow/windows');
 const { attributeHosts } = require('../server/agentflow/host');
 const { findTranscripts } = require('../server/agentflow/discover');
 
@@ -43,6 +43,12 @@ describe('attributeHosts: host membership (W7, Host turns)', () => {
 
   it('excludes a session in the same checkout with no notebook evidence', () => {
     assert.equal(r.excludedSessions, 1);
+  });
+
+  it('counts the window row\'s different-text start prompt as its one unmatched owner submission (F1)', () => {
+    const subs = [...transcripts.values()].flatMap(t => t.submissions.map(s => ({ ...s, sessionIds: [s.sessionId] })));
+    const built = buildWindows(asks, subs, { now: T(1000) });
+    assert.equal(disclose(built.windows.find(w => w.id === 'A-001'), 'S2', built).unmatched, 1);
   });
 });
 
