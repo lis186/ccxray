@@ -1,0 +1,60 @@
+name: Windows Stage 0
+
+# Windows has no hub (hub mode needs Unix sockets), so every `ccxray <agent>`
+# launch is a standalone server sharing one CCXRAY_HOME. This job checks the
+# parts of that topology a hosted runner can exercise: the per-home loopback
+# socket lock (exclusive binding / EACCES / rebinding after release, two
+# processes racing), flush+prune under that lock, standalone fail-open, and
+# that spawn('claude') resolves an npm-installed claude.cmd.
+#
+# Not covered here (needs a person on a real machine): PowerShell profile
+# loading in Windows Terminal / VS Code, the native Claude installer, endpoint
+# security software, and an ADC upload with an employee account.
+#
+# Non-blocking: branch protection requires only `test (20)` / `test (22)`.
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'server/export-sync.js'
+      - 'server/index.js'
+      - 'server/hub.js'
+      - 'server/client-shutdown.js'
+      - 'server/claude-args.js'
+      - 'test/export-lock.two-process.test.js'
+      - 'test/export-startup-lock.e2e.test.js'
+      - 'test/launcher-fail-open.e2e.test.js'
+      - 'test/claude-args.test.js'
+      - 'test/helpers/export-lock-fixture.js'
+      - '.github/workflows/windows-stage0.yml'
+
+jobs:
+  stage0:
+    runs-on: windows-latest
+    env:
+      PUPPETEER_SKIP_DOWNLOAD: 'true'
+      CCXRAY_EXPORT_DISABLE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Socket lock, startup flush+prune, launcher fail-open
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/empty-ccxray"
+          CCXRAY_HOME="$RUNNER_TEMP/empty-ccxray" node --test \
+            test/export-lock.two-process.test.js \
+            test/export-startup-lock.e2e.test.js \
+            test/launcher-fail-open.e2e.test.js \
+            test/claude-args.test.js
+      - name: spawn('claude') resolves an npm-installed claude.cmd
+        shell: bash
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          mkdir -p "$RUNNER_TEMP/claude-spawn-home"
+          CCXRAY_HOME="$RUNNER_TEMP/claude-spawn-home" CCXRAY_IMPORT_DISABLE=1 \
+            node server/index.js claude --version
