@@ -119,6 +119,21 @@ synthetic JSON with the `type` field and placeholder values. The token exchange
 is mocked through `_setTokenExchanger()`; no test may reach
 `oauth2.googleapis.com`.
 
+The agentflow report fixture `test/fixtures/agentflow/generated/` is the one
+generated fixture: `scripts/agentflow-fixtures/generate.js` runs the pinned
+upstream agentflow external runner (real clones and runner results), fake
+workers through this checkout's proxy (real index lines) and `ccxray import
+--once` over synthesized host transcripts, all in a scratch root it then
+replaces with `${ROOT}`, under `TZ=UTC`. It refuses to write when any file
+still holds the scratch root, the home directory, the username or the local
+time zone. Regenerate with
+`node scripts/agentflow-fixtures/generate.js <agentflow>/skills/agentflow/scripts`
+(agentflow at the commit named in the script; no network, no LLM). It never
+writes `expected.json`, which is hand-derived from
+`docs/agentflow-integration.md`; `test/agentflow-generated.e2e.test.js`
+rebuilds the checkout and clones with `git clone --no-local`, so each clone's
+reflog names the checkout as the runner's did.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.
