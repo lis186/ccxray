@@ -28,6 +28,13 @@ function parseTime(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// Record fields reach the report, so only identifier-shaped values pass: a stage
+// name, a model id (one provider prefix at most, never a path), an effort word.
+const STAGE = /^[a-z][a-z0-9-]{0,39}$/u;
+const MODEL = /^[A-Za-z0-9][\w.:-]{0,63}(?:\/[A-Za-z0-9][\w.:-]{0,63})?$/u;
+const EFFORT = /^[a-z]{1,16}$/u;
+const shaped = (re, v) => (typeof v === 'string' && re.test(v) ? v : null);
+
 function commandArgs(r) {
   const c = r.command || (r.result && r.result.command);
   if (!c) return [];
@@ -81,9 +88,9 @@ function readDispatchRecords(workspace) {
           const fromArgs = requestedFromArgs(commandArgs(r));
           out.push({
             file, scope, ask: am[1],
-            stage: typeof r.stage === 'string' ? r.stage : f.name.slice(0, -'-dispatch.json'.length),
-            model: typeof r.model === 'string' ? r.model : fromArgs.model,
-            effort: typeof r.effort === 'string' ? r.effort : fromArgs.effort,
+            stage: shaped(STAGE, typeof r.stage === 'string' ? r.stage : f.name.slice(0, -'-dispatch.json'.length)),
+            model: shaped(MODEL, typeof r.model === 'string' ? r.model : fromArgs.model),
+            effort: shaped(EFFORT, typeof r.effort === 'string' ? r.effort : fromArgs.effort),
             started: parseTime(r.started),
             finished: parseTime(r.finished),
             clone: cloneOf(r),

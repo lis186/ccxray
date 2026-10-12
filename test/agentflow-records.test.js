@@ -43,6 +43,16 @@ describe('readDispatchRecords', () => {
     ]);
   });
 
+  it('passes only identifier-shaped stage, model and effort on to the report', () => {
+    const ws = path.join(ROOT, 'sentinel', '.agentflow');
+    const f = path.join(ws, 'artifacts', 'A-001-x', 'review-dispatch.json');
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify({ stage: 'SECRET prompt text', model: '/Users/someone/models/x', effort: 'high; rm -rf' }));
+    fs.writeFileSync(path.join(path.dirname(f), 'plan-dispatch.json'), JSON.stringify({ model: 'openrouter/claude-opus-5-5', effort: 'xhigh' }));
+    const got = readDispatchRecords(ws).map(x => [x.stage, x.model, x.effort]);
+    assert.deepEqual(got.sort((a, b) => String(a[0]).localeCompare(String(b[0]))), [[null, null, null], ['plan', 'openrouter/claude-opus-5-5', 'xhigh']]);
+  });
+
   it('parses times in ISO, agentflow stamp, seconds and milliseconds', () => {
     assert.equal(parseTime(1780000000), 1780000000000);
     assert.equal(parseTime(1780000000000), 1780000000000);
