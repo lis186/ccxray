@@ -115,6 +115,61 @@ fs.writeFileSync(path.join(proj3, `${SID3}.jsonl`), [
   { type: 'assistant', uuid: 'b2', sessionId: SID3, cwd: REPO3, timestamp: iso(121), message: { id: 'msg_q2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
 ].map(r => JSON.stringify(r)).join('\n') + '\n');
 
+// Two Codex hosts in one Ask: one read from the proxy (its imported copy is
+// dropped by the one-source rule), one from import, which has notebook evidence.
+const REPO4 = path.join(BASE, 'repo4');
+const SID4P = '44444444-0000-0000-0000-00000000000a';
+const SID4I = '44444444-0000-0000-0000-00000000000b';
+const PROMPT4 = 'port the importer';
+fs.mkdirSync(path.join(REPO4, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO4]);
+fs.writeFileSync(path.join(REPO4, '.agentflow', 'devlog.md'), [
+  '# → Ask / A-001', '', `+ ${PROMPT4}`, '',
+  '# ← Reply / A-001', '', '* _2026-06-01 10:10:00 +0000 (gpt/high)_', '', 'done', '',
+].join('\n'));
+const codexRow = (id, sid, s, extra) => ({ id, sessionId: sid, provider: 'openai', model: 'gpt-test', receivedAt: t(s), cwd: REPO4, usage, cost: { cost: 0.5, confidence: 'exact' }, ...extra });
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), [
+  codexRow('x1', SID4P, 70), codexRow('x2', SID4P, 80), codexRow('x3', SID4P, 90),
+  codexRow('x1i', SID4P, 70, { imported: true, importSource: 'codex' }),
+  codexRow('y1', SID4I, 100, { imported: true, importSource: 'codex' }),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+fs.writeFileSync(path.join(codexDay, `rollout-2026-06-01T10-00-01-${SID4P}.jsonl`), [
+  { timestamp: iso(50), type: 'session_meta', payload: { id: SID4P, cwd: REPO4, thread_source: 'user' } },
+  { timestamp: iso(55), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: PROMPT4 }] } },
+  tokens(70), tokens(80), tokens(90),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+fs.writeFileSync(path.join(codexDay, `rollout-2026-06-01T10-00-02-${SID4I}.jsonl`), [
+  { timestamp: iso(52), type: 'session_meta', payload: { id: SID4I, cwd: REPO4, thread_source: 'user' } },
+  { timestamp: iso(58), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'review what the other session does' }] } },
+  { timestamp: iso(95), type: 'response_item', payload: { type: 'function_call', call_id: 'g1', name: 'exec_command', arguments: '{"cmd":"agf status"}' } },
+  tokens(100),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
+// F24 end to end: A-002 ran on another machine, and a local host turn falls
+// inside its bounds after A-001's tail.
+const REPO5 = path.join(BASE, 'repo5');
+const SID5 = '55555555-0000-0000-0000-000000000000';
+const PROMPT5 = 'start the migration';
+fs.mkdirSync(path.join(REPO5, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO5]);
+fs.writeFileSync(path.join(REPO5, '.agentflow', 'devlog.md'), [
+  '# → Ask / A-001', '', `+ ${PROMPT5}`, '',
+  '# ← Reply / A-001', '', '* _2026-06-01 10:10:00 +0000 (claude/unknown)_', '', 'done', '',
+  '# → Ask / A-002', '', '+ finish it on the laptop', '',
+  '# ← Reply / A-002', '', '* _2026-06-01 10:20:00 +0000 (claude/unknown)_', '', 'done', '',
+].join('\n'));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), [
+  row('z1', 61, { sessionId: SID5, cwd: REPO5, responseId: 'msg_z1', imported: true }),
+  row('z2', 900, { sessionId: SID5, cwd: REPO5, responseId: 'msg_z2', imported: true }),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+const proj5 = path.join(CLAUDE, REPO5.replace(/[^a-zA-Z0-9]/g, '-'));
+fs.mkdirSync(proj5, { recursive: true });
+fs.writeFileSync(path.join(proj5, `${SID5}.jsonl`), [
+  { type: 'user', uuid: 'v1', sessionId: SID5, cwd: REPO5, timestamp: iso(55), message: { role: 'user', content: PROMPT5 } },
+  { type: 'assistant', uuid: 'c1', sessionId: SID5, cwd: REPO5, timestamp: iso(61), message: { id: 'msg_z1', role: 'assistant', content: [{ type: 'text', text: 'one' }] } },
+  { type: 'assistant', uuid: 'c2', sessionId: SID5, cwd: REPO5, timestamp: iso(900), message: { id: 'msg_z2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -167,6 +222,25 @@ describe('ccxray agentflow report (e2e)', () => {
     const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
     assert.ok(a1.labels.includes('not yet imported: 1 turns'), a1.labels.join(' | '));
     assert.deepEqual([a1.completeness, a1.executors.map(x => x.completeness)], ['partial proxy coverage', ['partial proxy coverage']]);
+  });
+
+  it('folds a proxied and an imported Codex host of one Ask into partial proxy coverage', () => {
+    const r = reportIn(REPO4, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
+    assert.deepEqual(a1.executors.map(x => [x.evidence, x.completeness, x.total.calls]),
+      [['prompt-match', 'complete', 3], ['window', 'transcripts only', 1]]);
+    assert.equal(a1.completeness, 'partial proxy coverage');
+    assert.equal(a1.labels.some(l => l.startsWith('not yet imported')), false, 'a proxied Codex session is read from the proxy');
+  });
+
+  it('discloses local host turns inside the bounds of an Ask that ran on another machine (F24)', () => {
+    const r = reportIn(REPO5, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a2 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-002');
+    assert.equal(a2.completeness, 'unknown');
+    assert.ok(a2.labels.includes('no local evidence') && a2.labels.includes('local host turns inside bounds: 1'), a2.labels.join(' | '));
+    assert.match(reportIn(REPO5).stdout, /local host turns inside bounds: 1/);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {
