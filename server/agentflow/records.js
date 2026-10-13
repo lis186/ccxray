@@ -133,6 +133,29 @@ function notebookForNamespace(ns, wsRel, notebooks) {
   return null;
 }
 
+// The `clone` of each `transport` object in the metadata text (E3 completion):
+// only an external review's transport carries one, and a `clone` anywhere else,
+// an example or a note, is no evidence. Text that is not an absolute path is not either.
+function transportClones(text) {
+  const out = new Set();
+  for (const m of text.matchAll(/"transport"\s*:\s*\{/gu)) {
+    const start = m.index + m[0].length - 1;
+    let depth = 0, inString = false, end = -1;
+    for (let i = start; i < text.length && end < 0; i++) {
+      const ch = text[i];
+      if (inString) { if (ch === '\\') i++; else if (ch === '"') inString = false; }
+      else if (ch === '"') inString = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) end = i;
+    }
+    if (end < 0) continue;
+    let transport;
+    try { transport = JSON.parse(text.slice(start, end + 1)); } catch { continue; }
+    if (typeof transport.clone === 'string' && transport.clone.startsWith('/')) out.add(transport.clone.replace(/\/+$/u, ''));
+  }
+  return [...out];
+}
+
 // Completion records under `<ws>/.tmp/<namespace>/<A-NNN>/completion.json`.
 // notebooks: [{ rel (repository-relative POSIX path), asks: [{ id, replyText }] }].
 function readCompletionRecords(workspace, root, notebooks) {
@@ -154,7 +177,7 @@ function readCompletionRecords(workspace, root, notebooks) {
     const ref = readJson(path.join(dir, 'completion.ref.json'));
     const nb = notebookForNamespace(ns, wsRel, notebooks);
     const metadata = rec && typeof rec.metadata_text === 'string' ? rec.metadata_text : '';
-    const clones = [...new Set([...metadata.matchAll(/"clone"\s*:\s*"(\/[^"]+)"/gu)].map(m => m[1].replace(/\/+$/u, '')))];
+    const clones = transportClones(metadata);
     let reason = null;
     if (!rec) reason = 'unreadable record';
     else if (!nb) reason = 'namespace names no notebook';

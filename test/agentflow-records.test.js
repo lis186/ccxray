@@ -63,7 +63,7 @@ describe('readDispatchRecords', () => {
 
 describe('readCompletionRecords', () => {
   const reply = '# ← Reply / A-001\n\n* _2026-06-01 10:05:00 +0000 (claude/unknown)_\n\nDone.\n';
-  const notebooks = [{ rel: '.agentflow/devlog.md', asks: [{ id: 'A-001', replyText: reply }, { id: 'A-002', replyText: reply }] },
+  const notebooks = [{ rel: '.agentflow/devlog.md', asks: [{ id: 'A-001', replyText: reply }, { id: 'A-002', replyText: reply }, { id: 'A-003', replyText: reply }] },
     { rel: '.agentflow/notes.md', asks: [{ id: 'A-001', replyText: reply }] }];
   const record = (dir, nb, ask, metadata, { replyText = reply, tamper = false } = {}) => {
     const f = put(`${dir}/completion.json`, { version: 2, notebook: nb, ask, created_at: 'x', metadata_text: metadata });
@@ -76,6 +76,8 @@ describe('readCompletionRecords', () => {
   record(`.agentflow/.tmp/notebooks/${nsHash}/A-001`, '.agentflow/notes.md', 'A-001', ext('/work/c3'));
   record('.agentflow/.tmp/A-002', '.agentflow/devlog.md', 'A-002', ext(CLONE), { replyText: reply + 'edited later\n' });
   record('.agentflow/.tmp/features/gone/A-001', '.agentflow/features/gone/gone.devlog.md', 'A-001', ext(CLONE));
+  // A `clone` outside a transport object, here an example in the review text, is no evidence.
+  record('.agentflow/.tmp/A-003', '.agentflow/devlog.md', 'A-003', `Unrelated example: {"clone":"/work/c9"}\n${ext('/work/c4')}`);
   record('.agentflow/.tmp/notebooks/0000000000000000/A-009', '.agentflow/x.md', 'A-009', 'Cross-check review: PASS\n{"transport":{"clone":"disposable clone under the temp directory"}}');
 
   it('validates digests, location and namespace, and keeps clones of invalid records for discovery', () => {
@@ -85,6 +87,7 @@ describe('readCompletionRecords', () => {
       ['A-001', '.agentflow/notes.md', true, null, ['/work/c3']],
       ['A-001', null, false, 'namespace names no notebook', [CLONE]],
       ['A-002', '.agentflow/devlog.md', false, 'Reply digest mismatch', [CLONE]],
+      ['A-003', '.agentflow/devlog.md', true, null, ['/work/c4']],
       ['A-009', null, false, 'namespace names no notebook', []],
     ]);
   });
