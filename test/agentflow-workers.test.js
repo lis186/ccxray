@@ -146,6 +146,15 @@ describe('dispatch and completion', () => {
     assert.deepEqual(brief(r), [[C1, 'A-002', 'unique', 'dispatch', 'evidence conflict']]);
   });
 
+  it('a turn inside the chain alone stays in the run the chain and an overlapping dispatch form', () => {
+    // The chain [10,30] holds the first turn alone; the dispatch [20,40] joins it
+    // only at the second turn, after the first was filed.
+    const r = run({ turns: [turn('a', 'W', C1, 15), turn('b', 'W', C1, 25), turn('c', 'W', C1, 35)],
+      dispatch: [rec('A-001', C1, 20, 40)], toolEvents: [tool('t', 'h', 'S1', LAUNCH, 10, result(C1), 30)] });
+    assert.deepEqual(brief(r), [[C1, 'A-001', 'unique', 'dispatch', '']]);
+    assert.deepEqual(r.runs[0].turns.map(t => t.id), ['a', 'b', 'c']);
+  });
+
   it('F16: in a shared workspace dispatch fixes the Ask only; a valid completion record fixes the notebook', () => {
     const nbs = [notebook(NB, [win('A-001', 0, 100)]), notebook('.agentflow/notes.md', [win('A-001', 0, 100)])];
     const host = new Map([['S1', [0, 1]]]);

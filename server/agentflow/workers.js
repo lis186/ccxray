@@ -119,8 +119,8 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     for (let i = 0; i < ivs.length; i++) for (let j = i + 1; j < ivs.length; j++) {
       if (ivs[i].level === ivs[j].level && ivs[i].start <= ivs[j].end && ivs[j].start <= ivs[i].end && sameTarget(ivs[i], ivs[j])) union(i, j);
     }
-    const members = new Map(); // component → turns
     const residual = [];
+    const placed = [];
     for (const t of cturns) {
       const inside = ivs.map((iv, i) => i).filter(i => t.receivedAt >= ivs[i].start && t.receivedAt <= ivs[i].end);
       if (!inside.length) { residual.push(t); continue; }
@@ -130,7 +130,13 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       // Overlapping intervals of different levels sharing this turn (hence its
       // worker session) describe one run.
       for (const i of inside.slice(1)) union(inside[0], i);
-      const c = find(inside[0]);
+      placed.push([t, inside[0]]);
+    }
+    // Grouped only once every union is made: a later turn can join an earlier
+    // turn's component to another, and its root then changes.
+    const members = new Map(); // component → turns
+    for (const [t, i] of placed) {
+      const c = find(i);
       if (!members.has(c)) members.set(c, []);
       members.get(c).push(t);
     }
