@@ -146,6 +146,13 @@ describe('dispatch and completion', () => {
     assert.deepEqual(brief(r), [[C1, 'A-002', 'unique', 'dispatch', 'evidence conflict']]);
   });
 
+  it('a worker\'s native subagent in its own worktree belongs to the worker\'s run (Lineage)', () => {
+    const r = run({ turns: [turn('a', 'W', C1, 15), turn('b', 'W', `${C1}/.claude/worktrees/agent-1`, 16, { subagentId: 'x' })],
+      dispatch: [rec('A-001', C1, 10, 20)] });
+    assert.deepEqual(brief(r), [[C1, 'A-001', 'unique', 'dispatch', '']]);
+    assert.deepEqual(r.runs[0].turns.map(t => t.id), ['a', 'b']);
+  });
+
   it('a turn inside the chain alone stays in the run the chain and an overlapping dispatch form', () => {
     // The chain [10,30] holds the first turn alone; the dispatch [20,40] joins it
     // only at the second turn, after the first was filed.

@@ -7,6 +7,7 @@ const path = require('path');
 const { CLONE_PATTERN } = require('./runner');
 const { canonicalPath, reverseDiscovered, chainEvidence, cloneOrigin } = require('./chains');
 const { resolveTurn } = require('./windows');
+const { isNativeSubagent } = require('./host');
 
 const LEVELS = ['dispatch', 'completion', 'launch-chain', 'window'];
 const OPEN = undefined;
@@ -83,9 +84,20 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   for (const c of reverseDiscovered(toolEvents, { checkoutRoots: [root] })) clones.add(c);
   clones.delete(root);
   const workerTurns = turns.filter(e => e.cwd && clones.has(cwd(e)));
+  // Native descendants of a worker belong to its run whatever cwd their own
+  // worktree gave them (Lineage): they carry the worker's session id.
+  const clonesOf = new Map();
+  for (const e of workerTurns) {
+    if (!clonesOf.has(e.sessionId)) clonesOf.set(e.sessionId, new Set());
+    clonesOf.get(e.sessionId).add(cwd(e));
+  }
+  const cloneOf = e => (clones.has(cwd(e)) ? cwd(e) : [...clonesOf.get(e.sessionId)][0]);
+  for (const e of turns) {
+    if (e.cwd && !clones.has(cwd(e)) && isNativeSubagent(e) && clonesOf.get(e.sessionId)?.size === 1) workerTurns.push(e);
+  }
   const byClone = new Map();
   for (const e of workerTurns) {
-    const c = cwd(e);
+    const c = cloneOf(e);
     if (!byClone.has(c)) byClone.set(c, []);
     byClone.get(c).push(e);
   }
