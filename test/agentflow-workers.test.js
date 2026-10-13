@@ -10,8 +10,8 @@ const { attributeWorkers, combine } = require('../server/agentflow/workers');
 
 const ROOT = '/work/repo';
 const NB = '.agentflow/devlog.md';
-const C1 = '/tmp/T/agentflow-external-runner-AAAA/clone';
-const C2 = '/tmp/T/agentflow-external-runner-BBBB/clone';
+const C1 = '/work/T/agentflow-external-runner-AAAA/clone';
+const C2 = '/work/T/agentflow-external-runner-BBBB/clone';
 const CHOSEN = '/work/chosen-clone';
 const LAUNCH = '{"command":"node scripts/external-runner.js"}';
 const result = clone => JSON.stringify({ working_directory: clone, stdin_closed: true, clone: { root: clone } });

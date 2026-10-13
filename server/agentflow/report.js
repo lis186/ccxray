@@ -17,6 +17,7 @@ const { defaultRoots, findTranscripts, checkoutTranscripts, subagentTranscripts 
 const { readDispatchRecords, readCompletionRecords } = require('./records');
 const { attributeWorkers } = require('./workers');
 const { isNativeSubagent, attributeHosts } = require('./host');
+const { canonicalPath } = require('./chains');
 const { hostCompleteness, foldCompleteness } = require('./completeness');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -129,7 +130,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   const canon = new Map();
   for (const e of turns) {
     if (!e.cwd) continue;
-    if (!canon.has(e.cwd)) canon.set(e.cwd, realpath(e.cwd));
+    if (!canon.has(e.cwd)) canon.set(e.cwd, canonicalPath(e.cwd));
     e.cwd = canon.get(e.cwd);
   }
 

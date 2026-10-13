@@ -217,6 +217,41 @@ fs.writeFileSync(path.join(proj7, `${SID7}.jsonl`), [
   { type: 'assistant', uuid: 'la2', sessionId: SID7, cwd: REPO7, timestamp: ago(1), message: { id: 'msg_l2', role: 'assistant', content: [{ type: 'text', text: 'two' }] } },
 ].map(r => JSON.stringify(r)).join('\n') + '\n');
 
+// The runner's default clone sits under os.tmpdir(), on macOS /var/folders/...,
+// a symlink, while a worker records its cwd resolved (/private/var/...). Here a
+// dispatch record (A-001) and a runner result (A-002) name their clones through
+// a symlinked directory, the index names them resolved, and both clones are
+// gone, as the runner leaves them.
+const REPO8 = path.join(BASE, 'repo8');
+const SID8 = '88880000-0000-0000-0000-000000000008';
+fs.mkdirSync(path.join(BASE, 'T8'));
+fs.symlinkSync(path.join(BASE, 'T8'), path.join(BASE, 'T8link'));
+const viaLink = k => path.join(BASE, 'T8link', `agentflow-external-runner-${k}`, 'clone');
+const resolved = k => path.join(BASE, 'T8', `agentflow-external-runner-${k}`, 'clone');
+fs.mkdirSync(path.join(REPO8, '.agentflow', 'artifacts', 'A-001-x', 'dispatch'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO8]);
+fs.writeFileSync(path.join(REPO8, '.agentflow', 'devlog.md'), [
+  '# → Ask / A-001', '', '+ eight one', '', '# ← Reply / A-001', '', '* _2026-06-01 10:05:00 +0000 (claude/unknown)_', '', 'done', '',
+  '# → Ask / A-002', '', '+ eight two', '', '# ← Reply / A-002', '', '* _2026-06-01 10:10:00 +0000 (claude/unknown)_', '', 'done', '',
+].join('\n'));
+fs.writeFileSync(path.join(REPO8, '.agentflow', 'artifacts', 'A-001-x', 'dispatch', 'implement-dispatch.json'), JSON.stringify({ stage: 'implement', started: iso(90), finished: iso(150), clone: viaLink('EIGHT') }));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), [
+  row('h8a', 20, { sessionId: SID8, cwd: REPO8, responseId: 'msg_h8a', imported: true }),
+  row('h8b', 410, { sessionId: SID8, cwd: REPO8, responseId: 'msg_h8b', imported: true }),
+  row('w8a', 100, { sessionId: 'worker-8a', cwd: resolved('EIGHT'), responseId: 'msg_w8a' }),
+  row('w8b', 430, { sessionId: 'worker-8b', cwd: resolved('NINE'), responseId: 'msg_w8b' }),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+const proj8 = path.join(CLAUDE, 'repo8');
+fs.mkdirSync(proj8, { recursive: true });
+const u8 = (uuid, s, content) => ({ type: 'user', uuid, sessionId: SID8, cwd: REPO8, timestamp: iso(s), message: { role: 'user', content } });
+fs.writeFileSync(path.join(proj8, `${SID8}.jsonl`), [
+  u8('e1', 10, 'eight one'),
+  { type: 'assistant', uuid: 'e1a', sessionId: SID8, cwd: REPO8, timestamp: iso(20), message: { id: 'msg_h8a', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
+  u8('e2', 400, 'eight two'),
+  { type: 'assistant', uuid: 'e2a', sessionId: SID8, cwd: REPO8, timestamp: iso(410), message: { id: 'msg_h8b', role: 'assistant', content: [{ type: 'tool_use', id: 'k8', name: 'Bash', input: { command: 'node external-runner.js' } }] } },
+  u8('e2r', 450, [{ type: 'tool_result', tool_use_id: 'k8', content: JSON.stringify({ working_directory: viaLink('NINE'), stdin_closed: true, clone: { root: viaLink('NINE') } }) }]),
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -314,6 +349,15 @@ describe('ccxray agentflow report (e2e)', () => {
     const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
     assert.equal(a1.attributed.calls, 2);
     assert.deepEqual(a1.labels, ['open']);
+  });
+
+  it('joins a clone named through a symlink to its worker\'s resolved cwd, even after the clone is gone', () => {
+    const r = reportIn(REPO8, '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const asks = JSON.parse(r.stdout).asks;
+    const ext = id => asks.find(a => a.id === id).executors.filter(x => x.kind === 'external').map(x => [x.evidence, x.status, x.total.calls]);
+    assert.deepEqual(ext('A-001'), [['dispatch', 'unique', 1]]);
+    assert.deepEqual(ext('A-002'), [['launch-chain', 'unique', 1]]);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {

@@ -5,7 +5,7 @@
 
 const path = require('path');
 const { CLONE_PATTERN } = require('./runner');
-const { reverseDiscovered, chainEvidence, cloneOrigin } = require('./chains');
+const { canonicalPath, reverseDiscovered, chainEvidence, cloneOrigin } = require('./chains');
 const { resolveTurn } = require('./windows');
 
 const LEVELS = ['dispatch', 'completion', 'launch-chain', 'window'];
@@ -72,17 +72,20 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   const hostSpan = ourHostTimes.length ? [Math.min(...ourHostTimes), Math.max(...ourHostTimes)] : null;
   const notebookByRel = new Map(notebooks.map(n => [n.rel, n]));
 
-  // E1: clones from worker cwds, every record, and runner-shaped tool results.
+  // E1: clones from worker cwds, every record, and runner-shaped tool results,
+  // each resolved (canonicalPath) so that both sides of a join name one path.
+  const cwdOf = new Map();
+  const cwd = e => { if (!e.cwd) return null; if (!cwdOf.has(e.cwd)) cwdOf.set(e.cwd, canonicalPath(e.cwd)); return cwdOf.get(e.cwd); };
   const clones = new Set();
-  for (const e of turns) if (e.cwd && CLONE_PATTERN.test(e.cwd)) clones.add(stripSlash(e.cwd));
-  for (const r of dispatch) if (r.clone) clones.add(stripSlash(r.clone));
-  for (const r of completion) for (const c of r.clones) clones.add(stripSlash(c));
+  for (const e of turns) if (e.cwd && CLONE_PATTERN.test(e.cwd)) clones.add(cwd(e));
+  for (const r of dispatch) if (r.clone) clones.add(canonicalPath(r.clone));
+  for (const r of completion) for (const c of r.clones) clones.add(canonicalPath(c));
   for (const c of reverseDiscovered(toolEvents, { checkoutRoots: [root] })) clones.add(c);
   clones.delete(root);
-  const workerTurns = turns.filter(e => e.cwd && clones.has(stripSlash(e.cwd)));
+  const workerTurns = turns.filter(e => e.cwd && clones.has(cwd(e)));
   const byClone = new Map();
   for (const e of workerTurns) {
-    const c = stripSlash(e.cwd);
+    const c = cwd(e);
     if (!byClone.has(c)) byClone.set(c, []);
     byClone.get(c).push(e);
   }
@@ -100,7 +103,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   }
   for (const r of dispatch) {
     if (!r.clone || r.started == null) continue;
-    intervals.push({ level: 'dispatch', clone: stripSlash(r.clone), start: r.started, end: r.finished ?? now,
+    intervals.push({ level: 'dispatch', clone: canonicalPath(r.clone), start: r.started, end: r.finished ?? now,
       target: [{ notebook: dispatchNotebook(r, notebooks, workspaceRel), ask: r.ask }], record: r });
   }
   const sameTarget = (a, b) => a.target.length === b.target.length && a.target.every((p, i) => pairKey(p) === pairKey(b.target[i]));
@@ -165,7 +168,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   const runsOfClone = clone => runs.filter(r => r.clone === clone);
   for (const rec of dispatch) {
     if (!rec.clone || rec.started != null) continue;
-    const rs = runsOfClone(stripSlash(rec.clone));
+    const rs = runsOfClone(canonicalPath(rec.clone));
     if (rs.length === 1) (rs[0].timeless = rs[0].timeless || []).push(rec);
   }
 
@@ -186,7 +189,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     const records = [...run.intervals.filter(iv => iv.record).map(iv => iv.record), ...(run.timeless || [])];
     const evidence = {
       dispatch: records.map(r => ({ notebook: dispatchNotebook(r, notebooks, workspaceRel), ask: r.ask })),
-      completion: completion.filter(c => c.valid && c.clones.map(stripSlash).includes(run.clone)).filter(c => {
+      completion: completion.filter(c => c.valid && c.clones.map(canonicalPath).includes(run.clone)).filter(c => {
         const nb = notebookByRel.get(c.notebook);
         const w = nb && nb.windows.find(x => x.id === c.ask);
         return w && w.start != null && run.turns.every(t => t.receivedAt >= w.start && t.receivedAt < w.end);

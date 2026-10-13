@@ -8,10 +8,24 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { runnerClonePaths, namesRunner, launchHandles } = require('./runner');
 
+// Symlinked paths are resolved before comparison (Known gaps, several
+// checkouts): the runner's default clone sits under os.tmpdir(), on macOS
+// /var/folders/..., while a worker records its cwd as /private/var/.... A clone
+// that is gone resolves through its deepest surviving ancestor.
+function canonicalPath(p) {
+  const abs = path.resolve(p);
+  const rest = [];
+  for (let d = abs; ; d = path.dirname(d)) {
+    try { return path.join(fs.realpathSync(d), ...rest); } catch {}
+    if (path.dirname(d) === d) return abs;
+    rest.unshift(path.basename(d));
+  }
+}
+
 // Every clone path reported in runner-shaped tool results (E1 reverse discovery).
 function reverseDiscovered(toolEvents, { checkoutRoots = [] } = {}) {
   const found = new Set();
-  for (const ev of toolEvents) for (const p of runnerClonePaths(ev.result, { checkoutRoots, summary: false })) found.add(p);
+  for (const ev of toolEvents) for (const p of runnerClonePaths(ev.result, { checkoutRoots, summary: false })) found.add(canonicalPath(p));
   return found;
 }
 
@@ -34,7 +48,7 @@ function chainEvidence(toolEvents, clones, { checkoutRoots = [] } = {}) {
   const launches = [], results = [], strong = [];
   for (const ev of toolEvents) {
     if (namesRunner(ev.input)) launches.push({ ev, handles: launchHandles(ev.result) });
-    for (const clone of runnerClonePaths(ev.result, { checkoutRoots })) {
+    for (const clone of runnerClonePaths(ev.result, { checkoutRoots }).map(canonicalPath)) {
       if (clones.has(clone)) results.push({ ev, clone, truncated: !!ev.truncated });
     }
   }
@@ -51,8 +65,6 @@ function chainEvidence(toolEvents, clones, { checkoutRoots = [] } = {}) {
   return { launches, results, strong };
 }
 
-function realpath(p) { try { return fs.realpathSync(p); } catch { return path.resolve(p); } }
-
 // E4: the source a clone was made from, from its `clone: from <source>` reflog
 // entry, searched among all entries. null when the clone or its reflog is gone.
 function cloneOrigin(clone) {
@@ -62,9 +74,9 @@ function cloneOrigin(clone) {
   } catch { return null; }
   for (const line of out.split('\n')) {
     const m = /^clone: from (.+)$/u.exec(line.trim());
-    if (m) return realpath(m[1].replace(/^file:\/\//u, ''));
+    if (m) return canonicalPath(m[1].replace(/^file:\/\//u, ''));
   }
   return null;
 }
 
-module.exports = { reverseDiscovered, chainEvidence, cloneOrigin };
+module.exports = { canonicalPath, reverseDiscovered, chainEvidence, cloneOrigin };
