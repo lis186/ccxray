@@ -194,6 +194,15 @@ describe('dispatch and completion', () => {
     assert.equal(r.footer.matchedNoNotebook, 1);
   });
 
+  it('a dispatch Ask that exists in no candidate notebook, left open by every level, is an evidence conflict', () => {
+    const stale = run({ turns: [turn('a', 'W', C1, 15)], dispatch: [rec('A-009', C1, 10, 20)] });
+    assert.deepEqual(brief(stale), [[C1, undefined, 'unassigned', 'dispatch', 'evidence conflict']]);
+    // A weaker level that fills the Ask resolves the run; nothing conflicts.
+    const filled = run({ turns: [turn('a', 'W', C1, 15)], dispatch: [rec('A-009', C1, 10, 20)],
+      toolEvents: [tool('t', 'h', 'S1', LAUNCH, 9, result(C1), 20)] });
+    assert.deepEqual(brief(filled), [[C1, 'A-001', 'unique', 'dispatch', '']]);
+  });
+
   it('completion binds only a run wholly inside its Ask\'s window (the E7 known limit)', () => {
     const c = [{ valid: true, notebook: NB, ask: 'A-001', clones: [C1] }];
     assert.deepEqual(brief(run({ turns: [turn('a', 'W', C1, 15)], completion: c })), [[C1, 'A-001', 'unique', 'completion', '']]);
@@ -237,6 +246,22 @@ describe('E2 and lineage', () => {
     const r = run({ turns: [turn('a', 'W', CHOSEN, 12), turn('b', 'W', CHOSEN, 18), turn('c', 'W', CHOSEN, 25)], dispatch: [rec('A-001', 10, 20), rec('A-002', 15, 30)] });
     assert.deepEqual(r.ambiguousTurns.map(t => t.id), ['b']);
     assert.deepEqual(r.runs.map(x => [x.ask, x.turns.map(t => t.id).join()]), [['A-001', 'a'], ['A-002', 'c']]);
+  });
+
+  it('a clashing dispatch whose feature notebook is missing adds no notebook to the ambiguous candidates', () => {
+    const FB = '.agentflow/features/b/b.devlog.md';
+    const nbs = [notebook(NB, [win('A-001', 0, 100)]), notebook(FB, [win('A-001', 0, 100)])];
+    const rec = (scope, s, f) => ({ scope, ask: 'A-001', started: s, finished: f, clone: CHOSEN });
+    const r = run({ notebooks: nbs, turns: [turn('a', 'W', CHOSEN, 15)], dispatch: [rec('features/missing', 10, 20), rec('features/b', 10, 20)] });
+    assert.deepEqual(r.ambiguousTurns.map(t => t.candidateNotebooks), [[FB]]);
+  });
+
+  it('dispatches that clash but name no existing notebook leave their turns to the no-notebook footer', () => {
+    const rec = (scope, s, f) => ({ scope, ask: 'A-001', started: s, finished: f, clone: CHOSEN });
+    const r = run({ turns: [turn('a', 'W', CHOSEN, 15)], dispatch: [rec('features/gone', 10, 20), rec('features/missing', 10, 20)] });
+    assert.deepEqual(r.ambiguousTurns, []);
+    assert.deepEqual(r.runs, []);
+    assert.equal(r.footer.matchedNoNotebook, 1);
   });
 
   it('F6: a proxy-inferred parent is ignored and counted', () => {

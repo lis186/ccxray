@@ -28,17 +28,22 @@ function dispatchNotebook(rec, notebooks, workspaceRel) {
   return direct.length === 1 ? direct[0].rel : OPEN;
 }
 
+// The notebooks a dispatch record can mean: the one it names, the notebooks
+// directly in a shared workspace, or none when its feature notebook is missing.
+function dispatchCandidates(rec, notebooks, workspaceRel) {
+  const declared = dispatchNotebook(rec, notebooks, workspaceRel);
+  if (declared !== OPEN) return notebooks.filter(n => n.rel === declared);
+  return notebooks.filter(n => path.posix.dirname(n.rel) === workspaceRel);
+}
+
 // Keep a dispatch's Ask fixed only when that id exists in its candidate
 // notebook(s). A stale or malformed id still identifies the notebook while
 // leaving the Ask open for weaker levels; if none resolves it, E6 retains the
 // run as notebook-level unassigned.
 function dispatchTarget(rec, notebooks, workspaceRel) {
+  const candidates = dispatchCandidates(rec, notebooks, workspaceRel);
   const declared = dispatchNotebook(rec, notebooks, workspaceRel);
-  const exists = declared === OPEN || notebooks.some(n => n.rel === declared);
-  const notebook = exists ? declared : OPEN;
-  const candidates = !exists ? [] : notebook === OPEN
-    ? notebooks.filter(n => path.posix.dirname(n.rel) === workspaceRel)
-    : notebooks.filter(n => n.rel === notebook);
+  const notebook = candidates.length ? declared : OPEN;
   const ask = candidates.some(n => (n.asks || n.windows || []).some(a => a.id === rec.ask)) ? rec.ask : OPEN;
   return { notebook, ask };
 }
@@ -125,13 +130,15 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   // E2 intervals: strong chains and timed dispatch records.
   const intervals = [];
   for (const s of ev.strong) {
+    const target = launchCandidates(s.launch.sessionId, s.launch.inputAt, notebooks, hostOf);
     intervals.push({ level: 'launch-chain', clone: s.clone, start: s.interval[0], end: s.interval[1] ?? now,
-      target: launchCandidates(s.launch.sessionId, s.launch.inputAt, notebooks, hostOf), chain: s });
+      target, notebooks: target.map(p => p.notebook), chain: s });
   }
   for (const r of dispatch) {
     if (!r.clone || r.started == null) continue;
     intervals.push({ level: 'dispatch', clone: canonicalPath(r.clone), start: r.started, end: r.finished ?? now,
-      target: [dispatchTarget(r, notebooks, workspaceRel)], record: r });
+      target: [dispatchTarget(r, notebooks, workspaceRel)], record: r,
+      notebooks: dispatchCandidates(r, notebooks, workspaceRel).map(n => n.rel) });
   }
   const sameTarget = (a, b) => a.target.length === b.target.length && a.target.every((p, i) => pairKey(p) === pairKey(b.target[i]));
 
@@ -156,10 +163,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       if (clash) {
         const candidates = new Set();
         const conflicting = inside.filter(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
-        for (const i of conflicting) for (const p of ivs[i].target || []) {
-          if (p.notebook !== OPEN) candidates.add(p.notebook);
-          else for (const nb of notebooks) if (path.posix.dirname(nb.rel) === workspaceRel) candidates.add(nb.rel);
-        }
+        for (const i of conflicting) for (const rel of ivs[i].notebooks) candidates.add(rel);
         ambiguousTurns.push({ ...t, candidateNotebooks: [...candidates] });
         continue;
       }
@@ -248,6 +252,11 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     }
     const r = combine(evidence);
     if (run.weak && run.weak.ambiguous && r.fixed.ask === OPEN) r.ambiguous.add('ask');
+    // A dispatch naming an Ask its notebook does not have, which no weaker
+    // level filled, conflicts with the notebook it does identify.
+    if (r.fixed.ask === OPEN && !r.ambiguous.has('ask') && records.some((x, k) => x.ask != null && evidence.dispatch[k].ask === OPEN && evidence.dispatch[k].notebook !== OPEN)) {
+      r.labels.push('evidence conflict');
+    }
     // A shared-workspace dispatch may identify an Ask that exists in one
     // notebook while leaving its notebook dimension open. A weaker level can
     // fill the notebook, but the resulting pair is valid only if that Ask also

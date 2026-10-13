@@ -85,12 +85,19 @@ fallback share in words (`N/M 筆使用預設費率（佔 X%），可能不準�
 excluded count (`K 筆無費率資料，未計入總額`). Thresholds are named constants in
 `format.js` (`AGG_FB_MARK_SHARE = 0.10`, `AGG_FB_DEGRADE_SHARE = 0.50`).
 
-Legacy entries with a finite numeric cost but no confidence field contribute
-that cost to the sum and no confidence classification to the fold — an
-all-legacy priced aggregate renders clean, matching pre-#420 behavior. A model
-call with no finite price (missing cost, `null`, or a malformed nested price)
-is an unknown under-count even when its confidence wrapper is absent; otherwise
-the aggregate can render an exact-looking `$0` for a real but unpriced call.
+Legacy entries (no confidence field) contribute nothing to the fold — an
+all-legacy aggregate renders clean, matching pre-#420 behavior.
+
+**Stricter rule in `server/usage-query.js` `aggregate`** (the fold behind the
+agentflow report). A legacy entry with a finite numeric
+cost adds that cost to the sum and nothing to the fold, as above. But a model
+call with no finite price (cost missing, `null`, or a nested price that is not
+a finite number) counts as unknown even without a `confidence: 'unknown'`
+wrapper. Without this, an unpriced call adds `$0` and the total looks exact.
+The dashboard folds do not follow this rule yet: `server/session-index.js`
+`_upsert` and `server/cost-budget.js` still count a call as unknown only when
+its confidence is `'unknown'`, and `session-index` does not add numeric legacy
+costs to the sum. Aligning them is a separate change.
 
 ### The fold is a fact; the marker is a view (ADR 0013 shape)
 
@@ -108,6 +115,7 @@ The rendered marker is derived at render time and never stored.
 | Lane agent card / hover `lane $X` / cost table Total | `public/workflow-timeline.js` `wfLaneSummary` consumers | fold added to `wfLaneSummary` return (turns + `overlapEntries`) |
 | Usage daily/monthly/account cards | `public/cost-budget-ui.js` | per-group sums added in `server/cost-budget.js` |
 | Session-index persistence | `server/session-index.js` `_upsert` | 3 new fields on `s`, responseId-deduped alongside `_costByRid`/`_countedRids`; #368 field-probe migration |
+| agentflow report totals | `server/usage-query.js` `aggregate` | `costFold` per aggregate; the stricter unknown rule above |
 
 Per-turn sites are **not** touched — they keep `formatCost`/`formatCostText`
 (#422 INVARIANT).
