@@ -107,6 +107,19 @@ temporary `CCXRAY_HOME`, then exercise them through `_setUploader()` and
 `flushExport()` as `test/export-sync.test.js` does. Do not sample either
 `~/.ccxray` or a real Claude account config.
 
+Exporter socket-lock tests use a temporary `CCXRAY_HOME` and may write a
+decimal port plus newline to `<home>/export-lock-port`. Allocate it with a
+loopback `listen(0)`, close that socket, then probe and retry only before any
+contender exists if the port cannot be rebound. Keep the selected port fixed
+once the lock protocol starts. Child processes receive the fixture home and
+`CCXRAY_EXPORT_DISABLE=1`; server fixtures also set `CCXRAY_IMPORT_DISABLE=1`.
+Keep `CCXRAY_EXPORT_GCS_BUCKET` unset. The pin is read only after `stat`
+confirms that the home is a directory with a usable identity, so it cannot
+recover an `ino === 0n` or otherwise failed identity check. Startup-lock E2E
+fixtures use synthetic `index.ndjson` rows and `_req`/`_res` files, record the
+event-log byte offset before each child starts, and attribute events to that
+child's PID.
+
 Exporter credential discovery (`server/export-credentials.js`) reads
 `CCXRAY_EXPORT_GCS_KEY_FILE`, `CLOUDSDK_CONFIG`, `%APPDATA%`, and
 `os.homedir()` — none of which `CCXRAY_HOME` isolates. Any test that reaches
