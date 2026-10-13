@@ -110,7 +110,7 @@ Why per-turn twins are enough evidence: a Claude Code session's base URL is fixe
 
 A host transcript turn that no imported line carries yet still counts: a proxy line with its message id is its twin, and with no index line at all the proxy never saw it, so a host whose transcript was never imported is not `complete` unless the proxy logged every turn.
 
-**Several host sessions in one Ask** are labelled per host first. The Ask is `complete` only when every host is, `transcripts only` only when every host is, and `partial proxy coverage` otherwise. An Ask with **no host row**, such as one that ran on another machine, is `unknown`: nothing was observed here, so neither `complete` nor `transcripts only` would be true.
+**Several host sessions in one Ask** are labelled per host first. The Ask is `complete` only when every host is, `transcripts only` only when every host is, and `partial proxy coverage` otherwise. A host whose matched transcript turns no index line carries yet has no host row but is still labelled, from those turns, and folded in. An Ask with **no host on this machine**, such as one that ran on another machine, is `unknown`: nothing was observed here, so neither `complete` nor `transcripts only` would be true.
 
 **Codex** has no responseId, so completeness follows the one-source rule: a session read from the proxy is `complete`, one read from import is `transcripts only`.
 
@@ -254,7 +254,7 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `estimated start`: see Ask windows
   - `ambiguous`, `unassigned`, `weak`, `truncated`, `evidence conflict`: see Attribution and Attribution status
   - `start tie`, `no local evidence`, `stamp unreadable`, and the `unmatched bullets` disclosure: see Ask windows
-  - `unknown` completeness: no host row (see Completeness)
+  - `unknown` completeness: no host on this machine (see Completeness)
   - `not yet imported: n turns`: transcript turns inside the window whose message id no index line carries; for Codex, which has no message id, the usage turns (`token_count` events the importer turns into index lines) in the window beyond the session's imported lines there, unless the proxy is that session's one source (import lags per turn, since a session spans days); the footer counts such Asks and points to `ccxray import --once`
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed

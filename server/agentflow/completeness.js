@@ -11,8 +11,8 @@
 // yet: `twins` have a proxy line, `missing` have no index line at all, so the
 // proxy never saw them.
 function hostCompleteness(turns, codexSources = {}, pending = { twins: 0, missing: 0 }) {
-  if (!turns.length) return 'unknown';
-  const provider = turns[0].provider;
+  if (!turns.length && !(pending.twins + pending.missing)) return 'unknown';
+  const provider = turns.length ? turns[0].provider : 'anthropic';
   if (provider && provider !== 'anthropic') {
     return codexSources[turns[0].sessionId] === 'proxy' ? 'complete' : 'transcripts only';
   }

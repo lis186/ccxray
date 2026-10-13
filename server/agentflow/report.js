@@ -232,10 +232,14 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     if (hosts.noLocalTurns[w.id]) labels.push(`local host turns inside bounds: ${hosts.noLocalTurns[w.id]}`);
     asks.push({
       id: w.id,
-      // The Ask's label folds its host rows, ambiguous ones included (Completeness:
-      // only an Ask with no host row is `unknown`); workers carry their own.
+      // The Ask's label folds its host rows, ambiguous ones included, and a host
+      // whose turns no index line carries yet, which has no row (Completeness:
+      // only an Ask with no host on this machine is `unknown`). Workers carry
+      // their own.
       completeness: foldCompleteness([...execs.filter(x => x.kind === 'host').map(x => x.completeness),
-        ...rows.filter(r => r.status === 'ambiguous').map(r => hostCompleteness(r.turns, codexSources, pendingTurns(w, r.session)))]),
+        ...rows.filter(r => r.status === 'ambiguous').map(r => hostCompleteness(r.turns, codexSources, pendingTurns(w, r.session))),
+        ...w.hostSessions.filter(sid => !rows.some(r => r.session === sid)).map(sid => pendingTurns(w, sid))
+          .filter(p => p.twins + p.missing).map(p => hostCompleteness([], codexSources, p))]),
       askTimeMs: w.start != null && w.end != null && w.startKind !== 'no local evidence' ? w.end - w.start : null,
       labels,
       attributed: aggregate([...unique.flatMap(r => r.turns), ...runs.filter(x => x.status === 'unique').flatMap(x => x.turns)]),
