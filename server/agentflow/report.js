@@ -207,6 +207,10 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     }
     return out;
   };
+  // Turns not yet imported, per Ask of the whole notebook: the footer counts them
+  // all, as it does its other counts, even when one Ask is reported.
+  const missingByAsk = new Map(reported.windows.map(w => [w.id, w.start != null && w.startKind !== 'no local evidence'
+    ? missingTurns(w, [...new Set([...w.hostSessions, ...hosts.rows.filter(r => r.ask === w.id).map(r => r.session)])]) : 0]));
   const asks = [];
   for (const w of reported.windows) {
     if (onlyAsk && w.id !== onlyAsk) continue;
@@ -222,7 +226,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     for (const r of runs.filter(x => x.status === 'unique')) execs.push(externalRow(r, codexSources));
     const ambiguous = aggregate([...rows.filter(r => r.status === 'ambiguous').flatMap(r => r.turns), ...runs.filter(x => x.status === 'ambiguous').flatMap(x => x.turns)]);
     const labels = [...w.labels, ...(w.unmatchedBullets ? [`unmatched bullets: ${w.unmatchedBullets}`] : [])];
-    const missing = w.start != null && w.startKind !== 'no local evidence' ? missingTurns(w, [...new Set([...w.hostSessions, ...rows.map(r => r.session)])]) : 0;
+    const missing = missingByAsk.get(w.id);
     if (missing) labels.push(`not yet imported: ${missing} turns`);
     if (hosts.noLocalTurns[w.id]) labels.push(`local host turns inside bounds: ${hosts.noLocalTurns[w.id]}`);
     asks.push({
@@ -258,7 +262,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
       noLocalEvidence: count('no local evidence'),
       stampUnreadable: count('stamp unreadable'),
       offRootTurns: hosts.offRoot.length,
-      notYetImported: asks.filter(a => a.labels.some(l => l.startsWith('not yet imported'))).length,
+      notYetImported: [...missingByAsk.values()].filter(n => n > 0).length,
       matchedNoNotebook: workers.footer.matchedNoNotebook,
       checkoutUnknown: workers.footer.checkoutUnknown,
       heuristicParentIgnored: workers.footer.heuristicParentIgnored,

@@ -105,6 +105,7 @@ execFileSync('git', ['init', '-q', REPO3]);
 fs.writeFileSync(path.join(REPO3, '.agentflow', 'devlog.md'), [
   '# → Ask / A-001', '', `+ ${PROMPT3}`, '',
   '# ← Reply / A-001', '', '* _2026-06-01 10:10:00 +0000 (claude/unknown)_', '', 'done', '',
+  '# → Ask / A-002', '', '+', '',
 ].join('\n'));
 fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify(row('q1', 60, { sessionId: SID3, cwd: REPO3, responseId: 'msg_q1' })) + '\n');
 const proj3 = path.join(CLAUDE, REPO3.replace(/[^a-zA-Z0-9]/g, '-'));
@@ -268,6 +269,12 @@ describe('ccxray agentflow report (e2e)', () => {
     const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
     assert.ok(a1.labels.includes('not yet imported: 1 turns'), a1.labels.join(' | '));
     assert.deepEqual([a1.completeness, a1.executors.map(x => x.completeness)], ['partial proxy coverage', ['partial proxy coverage']]);
+  });
+
+  it('counts the whole notebook\'s not-yet-imported Asks in the footer under --ask, like its other counts', () => {
+    const r = reportIn(REPO3, '--ask', 'A-002', '--json');
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(JSON.parse(r.stdout).footer.notYetImported, 1);
   });
 
   it('folds a proxied and an imported Codex host of one Ask into partial proxy coverage', () => {
