@@ -288,7 +288,7 @@ describe('hub-client shutdown wiring (structural)', () => {
     // settles, so a call-site-only check can be answered by a stale reading.
     const doSpawn = source.slice(source.indexOf('const doSpawn = () => {'));
     const guard = doSpawn.indexOf('opts.isShuttingDown');
-    const spawnCall = doSpawn.indexOf('spawn(launch.bin');
+    const spawnCall = doSpawn.indexOf('spawn(plan.file, plan.args');
     assert.ok(guard > 0, 'doSpawn does not consult opts.isShuttingDown');
     assert.ok(guard < spawnCall, 'the gate must be checked before spawn()');
   });
@@ -321,9 +321,14 @@ describe('hub-client shutdown wiring (structural)', () => {
     assert.match(body, /hub-registration-rejected/);
     assert.match(body, /hub-registration-failed/);
     assert.match(body, /decision\.setRegistration\(registration, lock\)/);
-    assert.match(source, /onShutdownStart: \(\) => decision\.cancelForShutdown\(\)/);
+    assert.match(source, /onShutdownStart: \(\) => decision\.abortForShutdown\(\)/);
     assert.doesNotMatch(body, /clientShutdown\.shutdown\(1\)/);
-    assert.match(source, /bounded\(registration, UNREGISTER_DEADLINE_MS\)[\s\S]*?const lateSuccessCleanup = registration\.then/);
-    assert.match(source, /Promise\.all\(\[initialCleanup, lateSuccessCleanup\]\)/);
+    assert.match(source, /decision\.setRegistration\(registration, lock\)/);
+    const decisionSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'launch-decision.js'), 'utf8')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+    assert.match(decisionSource, /abortForShutdown: \(\) => decide\('aborted'\)/);
+    assert.match(decisionSource, /HUB_REQUEST_TIMEOUT_MS \+ 500/);
+    assert.match(decisionSource, /const first = attempt\(\);[\s\S]*?return bounded\(first, deadlineMs\)/);
+    assert.match(decisionSource, /first\.then\(reply => \{[\s\S]*?scheduleRetry\(\)/);
   });
 });

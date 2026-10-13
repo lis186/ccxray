@@ -335,7 +335,9 @@ const HOP_BY_HOP_HEADERS = new Set([
 // is shared with ws-proxy.js — see server/internal-headers.js for why an
 // allowlist here leaked the pane-identity header upstream.
 const { isInternalHeader } = require('./internal-headers');
-const { armClientShutdown, signalExitCode, UNREGISTER_DEADLINE_MS } = require('./client-shutdown');
+const { armClientShutdown, signalExitCode } = require('./client-shutdown');
+const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
+const { resolveAgentLaunch } = require('./win-launch');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -799,18 +801,34 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
       finish(1);
       return;
     }
-    const child = spawn(launch.bin, launch.args, {
-      stdio: 'inherit',
-      env: launch.env,
-    });
-    if (opts.onChild) opts.onChild(child);
-    child.on('error', (err) => {
+    let child;
+    const reportLaunchFailure = err => {
       if (err.code === 'ENOENT') {
         console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
         console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
       } else {
         console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
       }
+    };
+    try {
+      const plan = resolveAgentLaunch(launch.bin, launch.args, launch.env, providers.getAgentProvider(command));
+      if (plan.kind === 'error') {
+        reportLaunchFailure(plan.code === 'ENOENT' ? { code: 'ENOENT' } : { message: plan.message });
+        finish(1);
+        return;
+      }
+      child = spawn(plan.file, plan.args, {
+        stdio: 'inherit',
+        env: launch.env,
+      });
+    } catch (err) {
+      reportLaunchFailure(err);
+      finish(1);
+      return;
+    }
+    if (opts.onChild) opts.onChild(child);
+    child.on('error', (err) => {
+      reportLaunchFailure(err);
       finish(1);
     });
     child.on('exit', (code, signal) => {
@@ -836,163 +854,11 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
 }
 
 const ATTACH_TIMEOUT_DEFAULT_MS = 3000;
-// Hub registration socket requests time out at 3s; leave scheduling margin for
-// a delayed result and one bounded unregister before ending fail-open launch.
-const REGISTRATION_SETTLE_DEADLINE_MS = 3500;
 
 function attachTimeoutMs(env = process.env) {
   if (env.CCXRAY_ATTACH_TIMEOUT_MS === undefined) return ATTACH_TIMEOUT_DEFAULT_MS;
   const parsed = Number(env.CCXRAY_ATTACH_TIMEOUT_MS);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : ATTACH_TIMEOUT_DEFAULT_MS;
-}
-
-function bounded(promise, timeoutMs) {
-  return new Promise(resolve => {
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    }, timeoutMs);
-    if (timer.unref) timer.unref();
-    Promise.resolve(promise).catch(() => {}).then(value => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve(value);
-    });
-  });
-}
-
-function raceWithLaunchDecision(promise, decision) {
-  return Promise.race([
-    Promise.resolve(promise).then(
-      value => ({ kind: 'value', value }),
-      error => ({ kind: 'error', error }),
-    ),
-    decision.done.then(outcome => ({ kind: 'decision', outcome })),
-  ]);
-}
-
-function createLaunchDecision(command, args) {
-  let outcome = null;
-  let shutdownStarted = false;
-  let timer = null;
-  let pendingRegistration = null;
-  let registrationLock = null;
-  let lateRegistrationCleanup = Promise.resolve();
-  let clientShutdown = null;
-  let releaseForkLock = null;
-  let resolveDone;
-  const done = new Promise(resolve => { resolveDone = resolve; });
-
-  const cleanupLateRegistration = () => {
-    if (!pendingRegistration || !registrationLock) return;
-    // Registration may be applied after the initial bounded cleanup and return
-    // success late. Unregister once regardless of the first wait, then retain a
-    // bounded continuation on the actual result to remove any later success.
-    // The hub also drops registrations from a socket that disconnected on its
-    // request timeout, bounding the case where the result can never arrive.
-    const registration = Promise.resolve(pendingRegistration);
-    const unregister = () => bounded(
-      hub.unregisterClient(registrationLock, process.pid),
-      UNREGISTER_DEADLINE_MS,
-    );
-    const initialCleanup = bounded(registration, UNREGISTER_DEADLINE_MS)
-      .then(unregister, unregister)
-      .catch(() => {});
-    const lateSuccessCleanup = registration.then(result => {
-      if (!result || outcome !== 'original') return;
-      return initialCleanup.then(unregister);
-    }, () => {});
-    lateRegistrationCleanup = bounded(
-      Promise.all([initialCleanup, lateSuccessCleanup]),
-      REGISTRATION_SETTLE_DEADLINE_MS + UNREGISTER_DEADLINE_MS,
-    ).then(() => {}).catch(() => {});
-  };
-
-  const decide = (next, reason, failClosedMessage) => {
-    if (outcome !== null || shutdownStarted) return false;
-    if (next !== 'proxied' && next !== 'original') {
-      throw new Error(`invalid launch outcome: ${next}`);
-    }
-    outcome = next;
-    if (timer) clearTimeout(timer);
-    resolveDone(next);
-    if (next === 'proxied') return true;
-
-    if (releaseForkLock) releaseForkLock();
-
-    if (process.env.CCXRAY_FAIL_CLOSED === '1' && reason !== 'bg-bypass') {
-      if (failClosedMessage) console.error(failClosedMessage);
-      if (pendingRegistration && clientShutdown) clientShutdown.shutdown(1);
-      else process.exit(1);
-      return true;
-    }
-
-    if (clientShutdown) clientShutdown.abandon();
-    cleanupLateRegistration();
-
-    const record = {
-      ts: new Date().toISOString(),
-      reason,
-      version: require('../package.json').version,
-      agent: command,
-    };
-    try {
-      const home = resolveCcxrayHome();
-      fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-      fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify(record) + '\n', { mode: 0o600 });
-    } catch {}
-
-    console.error(`[ccxray] fail-open: ${reason} — this session is NOT traced; run ccxray setup --check`);
-    const provider = providers.getAgentProvider(command);
-    spawnAgent(command, null, args, code => {
-      // The cleanup is launched in the background at the decision point. If
-      // the fallback command exits first, let that bounded cleanup finish
-      // before ending this process so a lost reply cannot strand the hub slot.
-      launchDecision.waitForCleanup().then(() => process.exit(code));
-    }, {
-      launch: {
-        bin: command,
-        args: [...args],
-        env: process.env,
-        label: provider?.label || command,
-        installHint: provider?.installHint || '',
-      },
-      skipStatuslinePrompt: true,
-    });
-    return true;
-  };
-
-  return {
-    done,
-    decide,
-    isDecided: () => outcome !== null,
-    getOutcome: () => outcome,
-    waitForCleanup: () => lateRegistrationCleanup,
-    startBudget() {
-      if (outcome !== null || shutdownStarted) return;
-      timer = setTimeout(() => decide('original', 'attach-timeout'), attachTimeoutMs());
-    },
-    cancelForShutdown() {
-      if (outcome !== null) return;
-      shutdownStarted = true;
-      if (timer) clearTimeout(timer);
-    },
-    isShuttingDown: () => shutdownStarted,
-    setRegistration(registration, lock) {
-      pendingRegistration = registration;
-      registrationLock = lock;
-    },
-    setClientShutdown(shutdown) {
-      clientShutdown = shutdown;
-    },
-    setForkLockRelease(release) {
-      releaseForkLock = release;
-      if (outcome === 'original' && releaseForkLock) releaseForkLock();
-    },
-  };
 }
 
 // Drain pending WS finalize promises and storage writes before process.exit.
@@ -1360,7 +1226,7 @@ async function startClientMode(lock, decision) {
   let currentLock = lock;
   const clientShutdown = armClientShutdown(() => currentLock, () => agentChild, {
     getRegistration: () => registration,
-    onShutdownStart: () => decision.cancelForShutdown(),
+    onShutdownStart: () => decision.abortForShutdown(),
   });
   decision.setClientShutdown(clientShutdown);
 
@@ -1687,7 +1553,25 @@ async function startServer({ onListen } = {}) {
 }
 
 // ── Main entry ──
-const launchDecision = agentMode ? createLaunchDecision(agentCommand, agentArgs) : null;
+const launchDecision = agentMode ? createLaunchDecision({
+  command: agentCommand,
+  args: agentArgs,
+  attachTimeoutMs: () => attachTimeoutMs(),
+  logFailOpen: record => {
+    try {
+      const home = resolveCcxrayHome();
+      fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify(record) + '\n', { mode: 0o600 });
+    } catch {}
+  },
+  spawnFallback: (launch, onExit) => {
+    const provider = providers.getAgentProvider(agentCommand);
+    spawnAgent(agentCommand, null, agentArgs, onExit, {
+      launch: { ...launch, label: provider?.label || agentCommand, installHint: provider?.installHint || '' },
+      skipStatuslinePrompt: true,
+    });
+  },
+}) : null;
 
 (async () => {
   // Background Claude sessions can outlive their launcher process. Keep the

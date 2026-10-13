@@ -1,15 +1,19 @@
 name: Windows Stage 0
 
 # Windows has no hub (hub mode needs Unix sockets), so every `ccxray <agent>`
-# launch is a standalone server sharing one CCXRAY_HOME. This job checks the
-# parts of that topology a hosted runner can exercise: the per-home loopback
-# socket lock (exclusive binding / EACCES / rebinding after release, two
-# processes racing), flush+prune under that lock, standalone fail-open, and
-# that spawn('claude') resolves an npm-installed claude.cmd.
+# launch is a standalone server sharing one CCXRAY_HOME. Job 1 checks the
+# launcher's own behaviour with an executable fixture (a fake npm global layout
+# whose claude.exe is a copy of node.exe running an argv-echo script); hub-only
+# and POSIX-signal cases skip on win32 inside the test files. Job 2 is a
+# diagnostic against the REAL npm-installed Claude Code: once checkout,
+# setup-node, npm ci and the global install have succeeded, each later diagnostic
+# step runs regardless of earlier diagnostic step failures; it never starts a
+# session, and each step says what it proves.
 #
-# Not covered here (needs a person on a real machine): PowerShell profile
-# loading in Windows Terminal / VS Code, the native Claude installer, endpoint
-# security software, and an ADC upload with an employee account.
+# Not covered here (needs a person on a real machine): PowerShell profile loading
+# in Windows Terminal / VS Code, the native Claude installer, console Ctrl+C
+# behaviour in processed and raw input modes, endpoint security software, an ADC
+# upload with an employee account.
 #
 # Non-blocking: branch protection requires only `test (20)` / `test (22)`.
 on:
@@ -21,40 +25,88 @@ on:
       - 'server/index.js'
       - 'server/hub.js'
       - 'server/client-shutdown.js'
+      - 'server/launch-decision.js'
       - 'server/claude-args.js'
+      - 'server/win-launch.js'
+      - 'server/providers.js'
       - 'test/export-lock.two-process.test.js'
       - 'test/export-startup-lock.e2e.test.js'
       - 'test/launcher-fail-open.e2e.test.js'
       - 'test/claude-args.test.js'
+      - 'test/launch-decision.test.js'
+      - 'test/win-launch.test.js'
       - 'test/helpers/export-lock-fixture.js'
       - '.github/workflows/windows-stage0.yml'
 
+env:
+  PUPPETEER_SKIP_DOWNLOAD: 'true'
+  CCXRAY_EXPORT_DISABLE: '1'
+
 jobs:
-  stage0:
+  launcher-tests:
+    name: Launcher behaviour (fixture exe) + socket lock + startup flush/prune
     runs-on: windows-latest
-    env:
-      PUPPETEER_SKIP_DOWNLOAD: 'true'
-      CCXRAY_EXPORT_DISABLE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+        with: { node-version: 22, cache: npm }
       - run: npm ci
-      - name: Socket lock, startup flush+prune, launcher fail-open
+      - name: Unit + Windows execution — option grammar, launch decision, resolver policy (pure, fake fs) and the fake-npm-layout argv/exit-code cases (win32-only cases run here)
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/empty-ccxray"
-          CCXRAY_HOME="$RUNNER_TEMP/empty-ccxray" node --test \
-            test/export-lock.two-process.test.js \
-            test/export-startup-lock.e2e.test.js \
-            test/launcher-fail-open.e2e.test.js \
-            test/claude-args.test.js
-      - name: spawn('claude') resolves an npm-installed claude.cmd
+          mkdir -p "$RUNNER_TEMP/unit-ccxray"
+          CCXRAY_HOME="$RUNNER_TEMP/unit-ccxray" node --test \
+            test/claude-args.test.js test/launch-decision.test.js test/win-launch.test.js
+      - name: E2E — export lock + launcher fail-open (hub-only / POSIX-signal cases skip on win32)
         shell: bash
         run: |
-          npm install -g @anthropic-ai/claude-code
+          mkdir -p "$RUNNER_TEMP/e2e-ccxray"
+          CCXRAY_HOME="$RUNNER_TEMP/e2e-ccxray" node --test \
+            test/export-lock.two-process.test.js test/export-startup-lock.e2e.test.js \
+            test/launcher-fail-open.e2e.test.js
+
+  claude-cmd-diagnostic:
+    name: Diagnostic — real npm-installed Claude Code through the resolver (informational)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - name: Install Claude Code globally (npm shim + postinstall native binary)
+        id: install
+        continue-on-error: true
+        shell: bash
+        run: npm install -g @anthropic-ai/claude-code
+      - name: EVIDENCE — what PATH resolves `claude` to, and the shim → package.json → exe chain (MZ check)
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          where.exe claude
+          Get-Command claude | Format-List Name, CommandType, Source
+          node -e "const w=require('./server/win-launch');const p=require('./server/providers').getAgentProvider('claude');console.log(JSON.stringify(w.describeResolution('claude', process.env, p), null, 1))"
+        # Prints: each PATH/PATHEXT candidate probed, the hit, its kind, the package.json found
+        # beside the shim, the shape-check result, the bin target, its MZ result. Proves
+        # RESOLUTION only.
+      - name: EVIDENCE — the launcher starts the real native claude.exe (`--version`, no session, no login)
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
           mkdir -p "$RUNNER_TEMP/claude-spawn-home"
           CCXRAY_HOME="$RUNNER_TEMP/claude-spawn-home" CCXRAY_IMPORT_DISABLE=1 \
             node server/index.js claude --version
+        # Proves: resolver → direct exe spawn → the real binary runs and its exit status is
+        # propagated. Does NOT prove argv fidelity (that is job 1's fixture).
+      - name: INFORMATIONAL — how the real exe reports a metacharacter-laden unknown option (printed, not asserted)
+        if: always() && steps.install.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          DIAG='--ccxray-diag a b%PATH%^&|<>"q"(x)!y'
+          echo "sent: $DIAG"
+          CCXRAY_HOME="$RUNNER_TEMP/claude-spawn-home" CCXRAY_IMPORT_DISABLE=1 \
+            node server/index.js claude "$DIAG" 2>&1 || true
+        # commander reports an unknown option by name and exits before any action; the exact
+        # message format is version-dependent, so nothing is asserted. Argv-byte proof = job 1.

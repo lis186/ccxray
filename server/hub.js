@@ -8,6 +8,7 @@ const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 const { discoverCredentials, describeCredentials } = require('./export-credentials');
+const LAUNCH_TOKEN = require('crypto').randomBytes(8).toString('hex');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -17,6 +18,7 @@ const FORK_LOCK_PATH = path.join(HUB_DIR, 'hub.fork.lock');
 const FORK_LOCK_STALE_MS = 15000;
 const IDLE_TIMEOUT_MS = 5000;
 const DEAD_CLIENT_CHECK_MS = 30000;
+const HUB_REQUEST_TIMEOUT_MS = 3000;
 const HUB_HEALTH_CHECK_MS = 5000;
 const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
@@ -364,21 +366,24 @@ function handleSocketCommand(msg, socket) {
       socket.write(JSON.stringify({ ok: true }) + '\n');
       break;
     case 'register': {
-      if (typeof msg.pid !== 'number' || msg.pid <= 0 || msg.pid > 4194304 || !Number.isInteger(msg.pid)) return;
+      const token = tokenOf(msg);
+      if (!validClientPid(msg.pid) || token === null) return;
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
-      // A timed-out client destroys its request socket. If the hub's event loop
-      // was delayed, drop that queued registration instead of creating a client
-      // after the launcher has already sent its one-shot unregister and exited.
-      if (socket.destroyed || socket.writable === false) return;
       const wasEmpty = clients.size === 0;
-      addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
+      if (!addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg), token)) {
+        socket.write('null\n');
+        break;
+      }
       socket.write(JSON.stringify({ ...assembleExportReport(), ok: true, firstClient: wasEmpty }) + '\n');
       break;
     }
-    case 'unregister':
-      removeClient(msg.pid);
+    case 'unregister': {
+      const token = tokenOf(msg);
+      if (!validClientPid(msg.pid) || token === null) return;
+      removeClient(msg.pid, token);
       socket.write(JSON.stringify({ ok: true }) + '\n');
       break;
+    }
     case 'bootstrap-token': {
       const auth = require('./auth');
       const token = auth.mintBootstrapToken();
@@ -393,7 +398,7 @@ function handleSocketCommand(msg, socket) {
   }
 }
 
-function hubSocketRequest(sockPath, msg, timeoutMs = 3000) {
+function hubSocketRequest(sockPath, msg, timeoutMs = HUB_REQUEST_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const client = net.connect(sockPath);
     let buf = '';
@@ -426,7 +431,7 @@ function hubSocketRequest(sockPath, msg, timeoutMs = 3000) {
 
 function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
   const sockPath = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.sockPath : null;
-  const payload = { pid, cwd, ...clientIdentityFromMessage(identity) };
+  const payload = { pid, cwd, token: LAUNCH_TOKEN, ...clientIdentityFromMessage(identity) };
   if (sockPath) {
     return hubSocketRequest(sockPath, { cmd: 'register', ...payload });
   }
@@ -436,7 +441,7 @@ function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
     const req = http.request(`http://localhost:${port}/_api/hub/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 3000,
+      timeout: HUB_REQUEST_TIMEOUT_MS,
     }, res => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
@@ -453,16 +458,17 @@ function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
 
 function unregisterClient(lockInfoOrPort, pid) {
   const sockPath = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.sockPath : null;
+  const payload = { pid, token: LAUNCH_TOKEN };
   if (sockPath) {
-    return hubSocketRequest(sockPath, { cmd: 'unregister', pid }).catch(() => {});
+    return hubSocketRequest(sockPath, { cmd: 'unregister', ...payload }).catch(() => {});
   }
   const port = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.port : lockInfoOrPort;
   return new Promise(resolve => {
-    const body = JSON.stringify({ pid });
+    const body = JSON.stringify(payload);
     const req = http.request(`http://localhost:${port}/_api/hub/unregister`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 3000,
+      timeout: HUB_REQUEST_TIMEOUT_MS,
     }, res => {
       res.resume();
       resolve();
@@ -494,6 +500,8 @@ function truncateHubLog() {
 // ── Client lifecycle (hub-side state) ───────────────────────────────
 
 const clients = new Map(); // pid → { cwd, connectedAt, agentId?, userEmail?, team?, agentType? }
+const clientTokens = new Map(); // pid → token of held registration; excluded from status output
+const cancelledRegistrations = new Map(); // token → pid for unmatched unregister-before-register
 let idleTimer = null;
 let deadCheckInterval = null;
 let hubListenPort = null; // set once at startup, survives lockfile deletion
@@ -511,14 +519,33 @@ function clientIdentityFromMessage(msg) {
   return out;
 }
 
-function addClient(pid, cwd, identity = {}) {
-  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-  clients.set(pid, { cwd, connectedAt: new Date().toISOString(), ...clientIdentityFromMessage(identity) });
+function validClientPid(pid) {
+  return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 && pid <= 4194304;
 }
 
-function removeClient(pid) {
-  clients.delete(pid);
-  if (clients.size === 0) startIdleTimer();
+function tokenOf(msg) {
+  if (msg.token === undefined) return undefined;
+  return typeof msg.token === 'string' && /^[0-9a-f]{16}$/.test(msg.token) ? msg.token : null;
+}
+
+function addClient(pid, cwd, identity = {}, token) {
+  if (token && cancelledRegistrations.has(token)) return false;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  clients.set(pid, { cwd, connectedAt: new Date().toISOString(), ...clientIdentityFromMessage(identity) });
+  if (token) clientTokens.set(pid, token);
+  else clientTokens.delete(pid);
+  return true;
+}
+
+function removeClient(pid, token) {
+  const held = clientTokens.get(pid);
+  if (clients.has(pid) && (!token || !held || held === token)) {
+    clients.delete(pid);
+    clientTokens.delete(pid);
+    if (clients.size === 0) startIdleTimer();
+    return;
+  }
+  if (token) cancelledRegistrations.set(token, pid);
 }
 
 // Returns the cwd of the unique registered client, or null when zero or
@@ -582,15 +609,20 @@ function shutdownHub() {
 }
 
 function startDeadClientCheck() {
-  deadCheckInterval = setInterval(() => {
-    for (const [pid] of clients) {
-      if (!isPidAlive(pid)) {
-        console.log(`Dead client detected: pid ${pid}, removing.`);
-        removeClient(pid);
-      }
-    }
-  }, DEAD_CLIENT_CHECK_MS);
+  deadCheckInterval = setInterval(sweepDeadClients, DEAD_CLIENT_CHECK_MS);
   deadCheckInterval.unref();
+}
+
+function sweepDeadClients() {
+  for (const [pid] of clients) {
+    if (!isPidAlive(pid)) {
+      console.log(`Dead client detected: pid ${pid}, removing.`);
+      removeClient(pid);
+    }
+  }
+  for (const [token, pid] of cancelledRegistrations) {
+    if (!isPidAlive(pid)) cancelledRegistrations.delete(token);
+  }
 }
 
 function setHubPort(port) { hubListenPort = port; }
@@ -851,11 +883,14 @@ module.exports = {
   HUB_DIR,
   HUB_LOCK_PATH,
   HUB_LOG_PATH,
+  HUB_REQUEST_TIMEOUT_MS,
+  HUB_HEALTH_CHECK_MS,
   SOCK_PATH,
   readHubLock,
   writeHubLock,
   deleteHubLock,
   isPidAlive,
+  sweepDeadClients,
   checkHubHealth,
   probeHubStatus,
   discoverHub,

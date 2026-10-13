@@ -26,6 +26,16 @@ function clearAllClients() {
   }
 }
 
+function socketCommand(message) {
+  let output = '';
+  hub.handleSocketCommand(message, { write: chunk => { output += chunk; } });
+  return output;
+}
+
+function heldClient(pid) {
+  return hub.getHubStatus().clients.find(client => client.pid === pid);
+}
+
 // ── 1.19: Socket lifecycle ─────────────────────────────────────────
 
 describe('socket lifecycle', () => {
@@ -70,6 +80,113 @@ describe('socket lifecycle', () => {
     sockServer = null;
     // Node auto-unlinks on close; verify
     assert.ok(!fs.existsSync(hub.SOCK_PATH), 'socket file should be removed after close');
+  });
+});
+
+describe('tokened registration cancellation', () => {
+  beforeEach(clearAllClients);
+  afterEach(clearAllClients);
+
+  it('T3a: unregister-before-register cancels only that launch token', () => {
+    const pid = 82001;
+    const token = '1000000000000001';
+    assert.equal(socketCommand({ cmd: 'unregister', pid, token }), '{"ok":true}\n');
+    assert.equal(socketCommand({ cmd: 'register', pid, cwd: '/fixture/cancelled', token }), 'null\n');
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('a matched unregister removes the marker so the same token can register again', () => {
+    const pid = 82002;
+    const token = '1000000000000002';
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/first', token }), /"ok":true/);
+    assert.equal(socketCommand({ cmd: 'unregister', pid, token }), '{"ok":true}\n');
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/again', token }), /"ok":true/);
+    assert.equal(heldClient(pid).cwd, '/fixture/again');
+  });
+
+  it('a reused pid is owned by its newest token; stale unregister cannot remove it', () => {
+    const pid = 82003;
+    const older = '1000000000000003';
+    const current = '1000000000000004';
+    socketCommand({ cmd: 'register', pid, cwd: '/fixture/old', token: older });
+    socketCommand({ cmd: 'register', pid, cwd: '/fixture/current', token: current });
+    socketCommand({ cmd: 'unregister', pid, token: older });
+    assert.equal(heldClient(pid).cwd, '/fixture/current');
+    socketCommand({ cmd: 'unregister', pid, token: current });
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('keeps legacy tokenless behavior', () => {
+    const pid = 82004;
+    socketCommand({ cmd: 'unregister', pid });
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/legacy' }), /"ok":true/);
+    assert.equal(heldClient(pid).cwd, '/fixture/legacy');
+    socketCommand({ cmd: 'unregister', pid });
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('a tokenless unregister removes a tokened registration', () => {
+    const pid = 82007;
+    const token = '1000000000000010';
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/tokened', token }), /"ok":true/);
+    assert.equal(socketCommand({ cmd: 'unregister', pid }), '{"ok":true}\n');
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('a tokened unregister removes a legacy registration', () => {
+    const pid = 82008;
+    const token = '1000000000000011';
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/legacy' }), /"ok":true/);
+    assert.equal(socketCommand({ cmd: 'unregister', pid, token }), '{"ok":true}\n');
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('accepts a legacy registration despite a cancellation marker for that pid', () => {
+    const pid = 82009;
+    const token = '1000000000000012';
+    assert.equal(socketCommand({ cmd: 'unregister', pid, token }), '{"ok":true}\n');
+    assert.match(socketCommand({ cmd: 'register', pid, cwd: '/fixture/legacy-after-marker' }), /"ok":true/);
+    assert.equal(heldClient(pid).cwd, '/fixture/legacy-after-marker');
+  });
+
+  it('ignores malformed tokens without a reply or a cancellation marker', () => {
+    const pid = 82005;
+    for (const token of [null, 'xyz', 42]) {
+      assert.equal(socketCommand({ cmd: 'unregister', pid, token }), '');
+      assert.equal(socketCommand({ cmd: 'register', pid, cwd: '/fixture/invalid', token }), '');
+    }
+    assert.equal(heldClient(pid), undefined);
+  });
+
+  it('T3a\u2032: retains a live pid marker and reclaims a dead pid marker', async () => {
+    const liveToken = '1000000000000006';
+    socketCommand({ cmd: 'unregister', pid: process.pid, token: liveToken });
+    assert.equal(socketCommand({ cmd: 'register', pid: process.pid, cwd: '/fixture/live', token: liveToken }), 'null\n');
+
+    const child = require('child_process').spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    const deadPid = child.pid;
+    await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    const deadToken = '1000000000000007';
+    socketCommand({ cmd: 'unregister', pid: deadPid, token: deadToken });
+    assert.equal(hub.isPidAlive(deadPid), false);
+    hub.sweepDeadClients();
+    assert.equal(socketCommand({ cmd: 'register', pid: process.pid, cwd: '/fixture/live-after-sweep', token: liveToken }), 'null\n', 'sweep must retain a live token cancellation marker');
+    assert.match(socketCommand({ cmd: 'register', pid: deadPid, cwd: '/fixture/reaped', token: deadToken }), /"ok":true/);
+    assert.equal(heldClient(deadPid).cwd, '/fixture/reaped');
+  });
+
+  it('T3a\u2033: characterizes reverse-order pid reuse as an accepted residual', () => {
+    const pid = 82006;
+    const current = '1000000000000008';
+    const older = '1000000000000009';
+    socketCommand({ cmd: 'register', pid, cwd: '/fixture/current', token: current });
+    socketCommand({ cmd: 'register', pid, cwd: '/fixture/older', token: older });
+    assert.equal(heldClient(pid).cwd, '/fixture/older');
+    socketCommand({ cmd: 'unregister', pid, token: current });
+    assert.equal(heldClient(pid).cwd, '/fixture/older');
   });
 });
 
@@ -221,16 +338,6 @@ describe('socket command handlers', () => {
     const res = await socketCmd({ cmd: 'register', pid: 80002, cwd: '/test/b' });
     assert.equal(res.ok, true);
     assert.equal(res.firstClient, false);
-  });
-
-  it('drops a queued registration when its client socket has already timed out', () => {
-    const pid = 80003;
-    hub.handleSocketCommand({ cmd: 'register', pid, cwd: '/test/late' }, {
-      destroyed: true,
-      writable: false,
-      write() {},
-    });
-    assert.equal(hub.getHubStatus().clients.some(client => client.pid === pid), false);
   });
 
   it('status → includes registered clients', async () => {

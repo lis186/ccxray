@@ -56,6 +56,7 @@ const AGENT_PROVIDERS = Object.freeze({
   claude: Object.freeze({
     id: 'claude',
     label: 'Claude Code',
+    npmPackage: '@anthropic-ai/claude-code',
     displayName: 'ccxray',
     upstream: 'anthropic',
     installHint: '  npm install -g @anthropic-ai/claude-code',
@@ -75,6 +76,7 @@ const AGENT_PROVIDERS = Object.freeze({
   codex: Object.freeze({
     id: 'codex',
     label: 'Codex CLI',
+    npmPackage: '@openai/codex',
     displayName: 'ccxray',
     // Capitalized agent name for prose titles (e.g. "Codex WebSocket session").
     // Not displayName (process title "ccxray") or label ("Codex CLI").
