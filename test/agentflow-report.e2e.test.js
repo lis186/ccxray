@@ -275,6 +275,26 @@ const said9 = (sid, uuid, s, text, id) => [
 fs.writeFileSync(path.join(proj9, `${SID9A}.jsonl`), said9(SID9A, 'g1', 10, 'nine one', 'msg_n1'));
 fs.writeFileSync(path.join(proj9, `${SID9B}.jsonl`), said9(SID9B, 'g2', 30, 'nine two', 'msg_n2'));
 
+// The checkout's default notebook (ag.json target-doc) has a name the
+// `*.devlog.md` scan does not find; reporting the root devlog, a host matched to
+// both must still be ambiguous between them.
+const REPO10 = path.join(BASE, 'repo10');
+const SID10 = '10100000-0000-0000-0000-000000000010';
+fs.mkdirSync(path.join(REPO10, '.agentflow'), { recursive: true });
+execFileSync('git', ['init', '-q', REPO10]);
+fs.writeFileSync(path.join(REPO10, 'ag.json'), JSON.stringify({ switches: { 'target-doc': '.agentflow/plan.md' } }));
+const nb10 = p => ['# → Ask / A-001', '', `+ ${p} one`, '', '# ← Reply / A-001', '', '* _2026-06-01 10:05:00 +0000 (claude/unknown)_', '', 'done', ''].join('\n');
+fs.writeFileSync(path.join(REPO10, '.agentflow', 'devlog.md'), nb10('north'));
+fs.writeFileSync(path.join(REPO10, '.agentflow', 'plan.md'), nb10('mill'));
+fs.appendFileSync(path.join(HOME, 'logs', 'index.ndjson'), JSON.stringify(row('t10', 70, { sessionId: SID10, cwd: REPO10, responseId: 'msg_t10', imported: true })) + '\n');
+const proj10 = path.join(CLAUDE, REPO10.replace(/[^a-zA-Z0-9]/g, '-'));
+fs.mkdirSync(proj10, { recursive: true });
+const u10 = (uuid, s, content) => ({ type: 'user', uuid, sessionId: SID10, cwd: REPO10, timestamp: iso(s), message: { role: 'user', content } });
+fs.writeFileSync(path.join(proj10, `${SID10}.jsonl`), [
+  u10('x1', 60, 'north one'), u10('x2', 61, 'mill one'),
+  { type: 'assistant', uuid: 'x3', sessionId: SID10, cwd: REPO10, timestamp: iso(70), message: { id: 'msg_t10', role: 'assistant', content: [{ type: 'text', text: 'ok' }] } },
+].map(r => JSON.stringify(r)).join('\n') + '\n');
+
 function report(...args) { return reportIn(REPO, ...args); }
 function reportIn(cwd, ...args) {
   const env = { ...process.env, CCXRAY_HOME: HOME, CCXRAY_IMPORT_HOMES: CLAUDE, CCXRAY_IMPORT_CODEX_HOMES: CODEX };
@@ -389,6 +409,14 @@ describe('ccxray agentflow report (e2e)', () => {
     const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
     assert.ok(a1.labels.includes('not yet imported: 1 turns'), a1.labels.join('; '));
     assert.equal(a1.completeness, 'partial proxy coverage');
+  });
+
+  it('evaluates the checkout\'s default notebook as a candidate even when its name is not *.devlog.md', () => {
+    const r = reportIn(REPO10, '--notebook', '.agentflow/devlog.md', '--json');
+    assert.equal(r.status, 0, r.stderr);
+    const a1 = JSON.parse(r.stdout).asks.find(a => a.id === 'A-001');
+    assert.equal(a1.attributed.calls, 0);
+    assert.equal(a1.ambiguous && a1.ambiguous.calls, 1);
   });
 
   it('rejects an Ask id that is not in the notebook', () => {

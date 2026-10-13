@@ -46,11 +46,13 @@ function workspaceDirFor(root) {
 }
 
 // Every notebook of the workspace, so a cross-notebook conflict shows as
-// `ambiguous` (Attribution, Scope of candidates). The reported one comes first.
-function workspaceNotebooks(workspace, reported) {
+// `ambiguous` (Attribution, Scope of candidates), and the checkout's default
+// notebook, which ag.json may name anything. The reported one comes first.
+function workspaceNotebooks(workspace, reported, defaultAbs) {
   const found = [reported];
   const add = p => { if (fs.existsSync(p) && !found.some(f => realpath(f) === realpath(p))) found.push(p); };
   const list = d => { try { return fs.readdirSync(d); } catch { return []; } };
+  add(defaultAbs);
   add(path.join(workspace, 'devlog.md'));
   for (const f of list(workspace)) if (f.endsWith('.devlog.md')) add(path.join(workspace, f));
   for (const k of list(path.join(workspace, 'features'))) {
@@ -105,8 +107,8 @@ function externalRow(run, codexSources) {
 async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now = Date.now(), logsDir, roots = defaultRoots(), originOf }) {
   const root = checkoutRootFor(notebook);
   const workspace = workspaceDirFor(root);
-  const paths = workspaceNotebooks(workspace, notebook);
   const defaultAbs = defaultNotebook(root);
+  const paths = workspaceNotebooks(workspace, notebook, defaultAbs);
   const notebooks = paths.map((abs, i) => {
     const arch = i === 0 ? archive : archivePathFor(abs);
     return { abs, rel: path.relative(root, abs), workspaceAbs: workspace, workspaceRel: path.relative(root, workspace), isDefault: abs === defaultAbs, asks: loadNotebook(abs, arch && fs.existsSync(arch) ? arch : null) };
