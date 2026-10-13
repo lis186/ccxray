@@ -170,6 +170,30 @@ describe('dispatch and completion', () => {
     assert.deepEqual(r.runs.map(x => [x.notebook, x.ask, x.status, x.evidence]), [['.agentflow/notes.md', 'A-001', 'unique', 'dispatch']]);
   });
 
+  it('a shared-workspace Ask cannot be combined with a weaker notebook that does not contain it', () => {
+    const nbs = [
+      { rel: '.agentflow/a.devlog.md', asks: [{ id: 'A-001' }], windows: [win('A-001', 0, 40)] },
+      { rel: '.agentflow/b.devlog.md', asks: [{ id: 'A-001' }, { id: 'A-002' }], windows: [win('A-001', 0, 40), win('A-002', 40, 100)] },
+    ];
+    const host = new Map([['S1', [0]]]);
+    const r = run({ notebooks: nbs, hostOf: host,
+      turns: [turn('a', 'W', C1, 52)],
+      dispatch: [rec('A-002', C1, 49, 60)],
+      toolEvents: [tool('t', 'h', 'S1', LAUNCH, 50, result(C1), 55)],
+    });
+    assert.deepEqual(r.runs.map(x => [x.notebook, x.ask, x.status, x.labels]), [
+      ['.agentflow/a.devlog.md', undefined, 'unassigned', ['evidence conflict']],
+    ]);
+  });
+
+  it('a dispatch naming a missing feature notebook remains in the no-notebook footer', () => {
+    const r = run({ turns: [turn('a', 'W', C1, 15)], dispatch: [
+      { ...rec('A-001', C1, 10, 20), scope: 'features/missing' },
+    ] });
+    assert.equal(r.runs.length, 0);
+    assert.equal(r.footer.matchedNoNotebook, 1);
+  });
+
   it('completion binds only a run wholly inside its Ask\'s window (the E7 known limit)', () => {
     const c = [{ valid: true, notebook: NB, ask: 'A-001', clones: [C1] }];
     assert.deepEqual(brief(run({ turns: [turn('a', 'W', C1, 15)], completion: c })), [[C1, 'A-001', 'unique', 'completion', '']]);

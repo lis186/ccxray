@@ -144,6 +144,11 @@ identifying input (prompts, bullets, Reply text, paths, session ids, tool
 commands and results, dispatch fields that fail the shape check) and asserts
 neither the text nor the JSON report prints one; a new output field that echoes
 input must keep it passing.
+`test/agentflow-pr646-regressions.e2e.test.js` builds synthetic reports for
+candidate-scoped worker ambiguity, stale dispatch Ask ids, native Claude child
+transcript completeness and Codex transcripts with no index rows. These cases
+use their own temporary home and transcript roots, as well as synthetic index
+rows and notebook text.
 
 Real-data acceptance of the report is manual and read-only, never a test: copy
 the owner's `index.ndjson` into a scratch `CCXRAY_HOME`, derive about five Asks'

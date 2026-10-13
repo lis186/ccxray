@@ -28,6 +28,21 @@ function dispatchNotebook(rec, notebooks, workspaceRel) {
   return direct.length === 1 ? direct[0].rel : OPEN;
 }
 
+// Keep a dispatch's Ask fixed only when that id exists in its candidate
+// notebook(s). A stale or malformed id still identifies the notebook while
+// leaving the Ask open for weaker levels; if none resolves it, E6 retains the
+// run as notebook-level unassigned.
+function dispatchTarget(rec, notebooks, workspaceRel) {
+  const declared = dispatchNotebook(rec, notebooks, workspaceRel);
+  const exists = declared === OPEN || notebooks.some(n => n.rel === declared);
+  const notebook = exists ? declared : OPEN;
+  const candidates = !exists ? [] : notebook === OPEN
+    ? notebooks.filter(n => path.posix.dirname(n.rel) === workspaceRel)
+    : notebooks.filter(n => n.rel === notebook);
+  const ask = candidates.some(n => (n.asks || n.windows || []).some(a => a.id === rec.ask)) ? rec.ask : OPEN;
+  return { notebook, ask };
+}
+
 function windowAt(nb, at) { return resolveTurn(nb.windows, at); }
 
 // launch-chain candidates for a launch by host session `host` at time `at`:
@@ -116,7 +131,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   for (const r of dispatch) {
     if (!r.clone || r.started == null) continue;
     intervals.push({ level: 'dispatch', clone: canonicalPath(r.clone), start: r.started, end: r.finished ?? now,
-      target: [{ notebook: dispatchNotebook(r, notebooks, workspaceRel), ask: r.ask }], record: r });
+      target: [dispatchTarget(r, notebooks, workspaceRel)], record: r });
   }
   const sameTarget = (a, b) => a.target.length === b.target.length && a.target.every((p, i) => pairKey(p) === pairKey(b.target[i]));
 
@@ -138,7 +153,16 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       if (!inside.length) { residual.push(t); continue; }
       // Same-level intervals that overlap here and disagree on the target.
       const clash = inside.some(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
-      if (clash) { ambiguousTurns.push(t); continue; }
+      if (clash) {
+        const candidates = new Set();
+        const conflicting = inside.filter(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
+        for (const i of conflicting) for (const p of ivs[i].target || []) {
+          if (p.notebook !== OPEN) candidates.add(p.notebook);
+          else for (const nb of notebooks) if (path.posix.dirname(nb.rel) === workspaceRel) candidates.add(nb.rel);
+        }
+        ambiguousTurns.push({ ...t, candidateNotebooks: [...candidates] });
+        continue;
+      }
       // Overlapping intervals of different levels sharing this turn (hence its
       // worker session) describe one run.
       for (const i of inside.slice(1)) union(inside[0], i);
@@ -206,7 +230,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     for (const t of run.turns) if (t.parentSessionId) parentIgnored.add(t.sessionId);
     const records = [...run.intervals.filter(iv => iv.record).map(iv => iv.record), ...(run.timeless || [])];
     const evidence = {
-      dispatch: records.map(r => ({ notebook: dispatchNotebook(r, notebooks, workspaceRel), ask: r.ask })),
+      dispatch: records.map(r => dispatchTarget(r, notebooks, workspaceRel)),
       completion: completion.filter(c => c.valid && c.clones.map(canonicalPath).includes(run.clone)).filter(c => {
         const nb = notebookByRel.get(c.notebook);
         const w = nb && nb.windows.find(x => x.id === c.ask);
@@ -224,6 +248,17 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     }
     const r = combine(evidence);
     if (run.weak && run.weak.ambiguous && r.fixed.ask === OPEN) r.ambiguous.add('ask');
+    // A shared-workspace dispatch may identify an Ask that exists in one
+    // notebook while leaving its notebook dimension open. A weaker level can
+    // fill the notebook, but the resulting pair is valid only if that Ask also
+    // exists there. Keep the notebook attribution and leave the Ask open.
+    if (r.fixed.notebook !== OPEN && r.fixed.ask !== OPEN) {
+      const nb = notebookByRel.get(r.fixed.notebook);
+      if (!nb || !(nb.asks || nb.windows || []).some(a => a.id === r.fixed.ask)) {
+        r.fixed.ask = OPEN;
+        r.labels.push('evidence conflict');
+      }
+    }
     const labels = [...run.labels, ...r.labels];
     if (run.intervals.some(iv => iv.chain && iv.chain.truncated)) labels.push('truncated');
     const stage = records.find(x => x.stage)?.stage || null;

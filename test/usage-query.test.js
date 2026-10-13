@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { readMergedTurns, selectTurns, aggregate, query } = require('../server/usage-query');
+const { formatAggCostText } = require('../public/format.js');
 
 const T0 = Date.UTC(2026, 5, 1, 10, 0, 0);
 const MIN = 60 * 1000;
@@ -166,6 +167,18 @@ describe('aggregate', () => {
     const r = aggregate([{ model: 'm1', receivedAt: T0, usage: usage(1, 1, 0, 0), cost: { cost: 0.1 } }, { receivedAt: T0 + 1, cost: null }]);
     assert.equal(r.calls, 1);
     assert.equal(r.costFold.count, 1);
+  });
+
+  it('counts calls with absent or null prices as unknown lower-bound cost', () => {
+    const r = aggregate([
+      { model: 'm', usage: usage(1, 1, 0, 0), receivedAt: T0, cost: null },
+      { model: 'm', usage: usage(1, 1, 0, 0), receivedAt: T0 + 1 },
+      { model: 'm', usage: usage(1, 1, 0, 0), receivedAt: T0 + 2, cost: { cost: null } },
+    ]);
+    assert.equal(r.calls, 3);
+    assert.equal(r.cost, 0);
+    assert.deepEqual(r.costFold, { fallbackCost: 0, fallbackCount: 0, unknownCount: 3, count: 3 });
+    assert.equal(formatAggCostText(r.cost, r.costFold, 3), '—');
   });
 
   it('estimates executor time first-to-last when no turn carries turnDurationMs', () => {

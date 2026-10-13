@@ -156,12 +156,26 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   // External workers: tool evidence of every checkout host session and its
   // Task subagents, plus the workspace's dispatch and completion records.
   const toolEvents = [...transcripts.values()].flatMap(t => t.tools);
+  const nativeSubagentTurns = new Map();
   for (const [sid, f] of files) {
     if (f.provider !== 'anthropic') continue;
     for (const sub of subagentTranscripts(f.file)) {
-      try { toolEvents.push(...readClaudeTranscript(sub).tools.map(ev => ({ ...ev, sessionId: ev.sessionId || sid }))); } catch {}
+      try {
+        const child = readOnce({ provider: 'anthropic', file: sub });
+        if (!child) continue;
+        if (!nativeSubagentTurns.has(sid)) nativeSubagentTurns.set(sid, []);
+        nativeSubagentTurns.get(sid).push(...child.turns);
+        toolEvents.push(...child.tools.map(ev => ({ ...ev, sessionId: ev.sessionId || sid })));
+      } catch {}
     }
   }
+  const hostTranscriptTurns = sid => {
+    const unique = new Map();
+    for (const t of [...(transcripts.get(sid)?.turns || []), ...(nativeSubagentTurns.get(sid) || [])]) {
+      if (!unique.has(t.id)) unique.set(t.id, t);
+    }
+    return [...unique.values()];
+  };
   const workspaceRel = path.relative(root, workspace).split(path.sep).join('/');
   const workers = attributeWorkers({
     turns, checkoutRoot: root, workspaceRel, notebooks, hostOf: hosts.hostOf, toolEvents,
@@ -175,6 +189,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     || (r.status === 'ambiguous' && r.notebook == null && Object.values(r.candidates).flat().some(c => c.notebook === notebooks[0].rel)));
 
   const reported = notebooks[0];
+  const ambiguousWorkerTurns = workers.ambiguousTurns.filter(t => t.candidateNotebooks.includes(reported.rel));
   // Import lags per turn, not per session (a session spans days): a transcript
   // turn inside the window whose message id no index line carries is missing.
   const indexed = new Set(turns.map(e => e.responseId).filter(Boolean));
@@ -192,7 +207,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
       const have = turns.filter(e => e.sessionId === sid && e.imported && inWin(w, e.receivedAt)).length;
       return n + Math.max(0, codexTurns(sid).filter(x => inWin(w, x.at)).length - have);
     }
-    return n + t.turns.filter(x => inWin(w, x.at) && !indexed.has(x.id)).length;
+    return n + hostTranscriptTurns(sid).filter(x => inWin(w, x.at) && !indexed.has(x.id)).length;
   }, 0);
   // A Claude host's transcript turns in the window that no imported line carries
   // still count for completeness: a proxy line is their twin, no line means the
@@ -202,8 +217,12 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   const pendingTurns = (w, sid) => {
     const t = transcripts.get(sid);
     const out = { twins: 0, missing: 0 };
-    if (!t || !t.turns || t.provider === 'openai') return out;
-    for (const x of t.turns) {
+    if (!t || !t.turns) return out;
+    if (t.provider === 'openai') {
+      out.missing = missingTurns(w, [sid]);
+      return out;
+    }
+    for (const x of hostTranscriptTurns(sid)) {
       if (!inWin(w, x.at) || importedIds.has(x.id)) continue;
       if (proxiedIds.has(x.id)) out.twins++;
       else if (!indexed.has(x.id)) out.missing++;
@@ -258,7 +277,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
     unassigned: hosts.unassigned.length ? aggregate(hosts.unassigned) : null,
     // Worker runs filed under this notebook but no single Ask, never in totals.
     workersUnassigned: (() => { const t = ourRuns.filter(r => r.status === 'unassigned').flatMap(r => r.turns); return t.length ? aggregate(t) : null; })(),
-    workersAmbiguous: (() => { const t = [...ourRuns.filter(r => r.status === 'ambiguous' && r.ask == null).flatMap(r => r.turns), ...workers.ambiguousTurns]; return t.length ? aggregate(t) : null; })(),
+    workersAmbiguous: (() => { const t = [...ourRuns.filter(r => r.status === 'ambiguous' && r.ask == null).flatMap(r => r.turns), ...ambiguousWorkerTurns]; return t.length ? aggregate(t) : null; })(),
     asks,
     footer: {
       sources: Object.entries(turns.filter(e => hosts.rows.some(r => r.turns.includes(e))).reduce((acc, e) => {

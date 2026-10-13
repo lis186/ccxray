@@ -164,10 +164,18 @@ function aggregate(turns) {
     out.tokens.cacheWrite += u.cache_creation_input_tokens || 0;
     out.costFold.count++;
     const c = e.cost && typeof e.cost === 'object' ? e.cost : null;
-    if (c && c.cost != null) {
-      out.cost += c.cost;
-      if (c.confidence === 'fallback') { out.costFold.fallbackCost += c.cost; out.costFold.fallbackCount++; }
-    } else if (c && c.confidence === 'unknown') {
+    const amount = c && typeof c.cost === 'number' && Number.isFinite(c.cost)
+      ? c.cost
+      : (typeof e.cost === 'number' && Number.isFinite(e.cost) ? e.cost : null);
+    if (c && c.confidence === 'unknown') {
+      out.costFold.unknownCount++;
+    } else if (amount != null) {
+      out.cost += amount;
+      if (c && c.confidence === 'fallback') { out.costFold.fallbackCost += amount; out.costFold.fallbackCount++; }
+    } else {
+      // A model call with no finite price is an under-count even when the
+      // confidence object itself is absent or incomplete. Keep the fold
+      // complete so the aggregate renders the ADR 0017 lower-bound marker.
       out.costFold.unknownCount++;
     }
     const model = e.model || 'unknown';

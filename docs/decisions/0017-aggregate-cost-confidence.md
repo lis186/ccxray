@@ -85,8 +85,12 @@ fallback share in words (`N/M 筆使用預設費率（佔 X%），可能不準�
 excluded count (`K 筆無費率資料，未計入總額`). Thresholds are named constants in
 `format.js` (`AGG_FB_MARK_SHARE = 0.10`, `AGG_FB_DEGRADE_SHARE = 0.50`).
 
-Legacy entries (no confidence field) contribute nothing to the fold — an
-all-legacy aggregate renders clean, matching pre-#420 behavior.
+Legacy entries with a finite numeric cost but no confidence field contribute
+that cost to the sum and no confidence classification to the fold — an
+all-legacy priced aggregate renders clean, matching pre-#420 behavior. A model
+call with no finite price (missing cost, `null`, or a malformed nested price)
+is an unknown under-count even when its confidence wrapper is absent; otherwise
+the aggregate can render an exact-looking `$0` for a real but unpriced call.
 
 ### The fold is a fact; the marker is a view (ADR 0013 shape)
 
