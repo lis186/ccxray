@@ -620,3 +620,6 @@ describe('pruneDecision (§3.1 iii)', () => {
     assert.deepEqual(d.event, { type: 'cap-basis-invalid', outcome: 'upload-failed' });
   });
 });
+
+// Keep the attempt-record contract cases in the exporter regression suite.
+require('./helpers/export-attempt-record-cases');

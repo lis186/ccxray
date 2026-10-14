@@ -154,6 +154,14 @@ synthetic JSON with the `type` field and placeholder values. The token exchange
 is mocked through `_setTokenExchanger()`; no test may reach
 `oauth2.googleapis.com`.
 
+`test/export-config-hash.test.js` passes an explicit `env` object to
+`exportConfigObject()` / `exportConfigHash()`; it must not depend on ambient
+export settings. Tests for `collectExportDiagnostics()` and `fetchHubReport()`
+pin `CCXRAY_HOME`, `LOGS_DIR`, and `CLOUDSDK_CONFIG` to fixture paths and delete
+`CCXRAY_EXPORT_GCS_KEY_FILE`. Hub report fixtures use a test-owned Unix socket
+or a dynamically allocated loopback port. They must not contact gcloud or the
+OAuth endpoint.
+
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.

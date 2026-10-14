@@ -47,6 +47,9 @@ function renderProcessStatus(report, unavailableReason = 'no discoverable hub') 
   // Absent on reports from a hub older than #633 M0 and on non-enabled states;
   // the line simply omits it rather than guessing.
   if (report.credential) parts.push(credentialText(report.credential));
+  if (typeof report.exportConfigHash === 'string') {
+    parts.push(`hash=${report.exportConfigHash.slice(0, 12)}`);
+  }
   parts.push(`identity=${identityText(report.identity)}`);
   return `Process: ${parts.join(' ')}`;
 }
@@ -263,6 +266,7 @@ module.exports = {
   INDEX_TAIL_BYTES,
   hasNamedStoragePair,
   storagePaths,
+  readIndexTailChunk,
   readIndexTailId,
   renderProcessStatus,
   inspectHomeStatus,
