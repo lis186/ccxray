@@ -69,6 +69,12 @@ loopback range so every retry fails. The separate orphan-hub test launches the
 real server in `--hub-mode` and verifies its readiness lock is removed when the
 process exits.
 
+`test/bootstrap-fail-open.e2e.test.js` covers the pre-`launchDecision` window:
+it sets `STORAGE_BACKEND=s3` (a deterministic load-time throw from
+`config.js`) in the child env, with a throwaway `CCXRAY_HOME`, a fake POSIX
+`claude` in a temporary `bin/`, and `PROXY_PORT` pinned away from 5577 — the
+throw happens before any listen, so no port is bound. It is skipped on Windows.
+
 `test/win-launch.test.js` tests Windows PATH/PATHEXT policy on every platform
 with an injected `path.win32` and case-insensitive fake filesystem. Its actual
 Windows process test passes a plain `{Path, PATH}` env object through both

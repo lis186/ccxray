@@ -87,6 +87,56 @@ Run "ccxray <command> --help" for command-specific help (where supported).
   }
 }
 
+// ── Bootstrap fail-open ──
+// INVARIANT: installed before the first proxy-stack require and removed right
+// after launchDecision exists (see "Main entry"). A synchronous throw while the
+// modules below load (STORAGE_BACKEND=s3, a missing/corrupt `ws`) would
+// otherwise exit 1 before the fail-open decision object is created, so the
+// agent never starts. The failing module may be any of ours, so the handler
+// needs only Node built-ins; the project modules it touches (claude-args,
+// providers, win-launch) are each required inside a try and degrade safely.
+// BOOTSTRAP_AGENTS must equal Object.keys(AGENT_PROVIDERS) (asserted in
+// test/bootstrap-fail-open.e2e.test.js).
+const BOOTSTRAP_AGENTS = ['claude', 'codex', 'grok'];
+function onBootstrapFailure(err) {
+  // Skip global flags the way the pre-scan does (`ccxray --port 8080 claude`).
+  let at = 2;
+  while (at < process.argv.length && process.argv[at].startsWith('-')) at += process.argv[at] === '--port' ? 2 : 1;
+  const agent = BOOTSTRAP_AGENTS.includes(process.argv[at]) ? process.argv[at] : null;
+  console.error(err && err.stack ? err.stack : String(err));
+  if (!agent) process.exit(1);
+  const args = process.argv.slice(at + 1);
+  // Same exemption as launchDecision's bg-bypass: an intentional background
+  // session runs plain even under CCXRAY_FAIL_CLOSED=1. claude-args is pure; if
+  // it is the module that failed, degrade to fail-closed (the safe direction).
+  let bgBypass = false;
+  try { bgBypass = agent === 'claude' && require('./claude-args').hasClaudeBackgroundFlag(args); } catch {}
+  if (process.env.CCXRAY_FAIL_CLOSED === '1' && !bgBypass) process.exit(1);
+  const fs = require('fs');
+  const path = require('path');
+  try {
+    const home = process.env.CCXRAY_HOME || path.join(require('os').homedir(), '.ccxray');
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify({
+      ts: new Date().toISOString(), reason: 'bootstrap-failed', agent,
+      error: String(err && err.message || err),
+    }) + '\n', { mode: 0o600 });
+  } catch {}
+  console.error('[ccxray] fail-open: bootstrap-failed — this session is NOT traced; run ccxray setup --check');
+  let file = agent;
+  let fileArgs = args;
+  try {
+    let provider = null;
+    try { provider = require('./providers').getAgentProvider(agent); } catch {}
+    const plan = require('./win-launch').resolveAgentLaunch(agent, args, process.env, provider);
+    if (plan.kind !== 'error') { file = plan.file; fileArgs = plan.args; }
+  } catch {}
+  const child = require('child_process').spawn(file, fileArgs, { stdio: 'inherit', env: process.env });
+  child.on('error', e => { console.error(`Failed to start ${agent}: ${e.message}`); process.exit(1); });
+  child.on('exit', (code, signal) => process.exit(code ?? (signal === 'SIGINT' ? 130 : 1)));
+}
+process.on('uncaughtException', onBootstrapFailure);
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -1553,6 +1603,7 @@ async function startServer({ onListen } = {}) {
 }
 
 // ── Main entry ──
+process.removeListener('uncaughtException', onBootstrapFailure);
 const launchDecision = agentMode ? createLaunchDecision({
   command: agentCommand,
   args: agentArgs,
