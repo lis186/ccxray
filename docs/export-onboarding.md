@@ -28,6 +28,11 @@ through the end marker line in that startup file, then re-run `ccxray setup`.
 `ccxray setup --remove` still writes the removed tombstone, but leaves a
 malformed block unchanged and reports cleanup incomplete.
 
+Setup assumes its marker lines are ordinary top-level lines of the startup
+file. Do not place the setup block inside a here-document, here-string, or
+multi-line quoted string: setup cannot detect that, and `--remove` would then
+delete text that belongs to the surrounding construct.
+
 On Windows, setup discovers and configures every installed PowerShell edition
 by default. Run `ccxray setup --check` in each edition and inspect the reported
 edition and console host. The check does not cover host-specific profiles such
