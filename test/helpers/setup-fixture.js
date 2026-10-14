@@ -32,17 +32,35 @@ const DELETED_ENV = [
   'LOG_RETENTION_DAYS',
 ];
 
-function findExecutable(name, searchPath = process.env.PATH || '') {
-  for (const dir of searchPath.split(path.delimiter).filter(Boolean)) {
-    const file = path.join(dir, name);
-    try {
-      if (fs.statSync(file).isFile()) {
-        fs.accessSync(file, fs.constants.X_OK);
+function findExecutable(name, searchPath = process.env.PATH || '', env = process.env, platform = process.platform, io = fs) {
+  const pathApi = platform === 'win32' ? path.win32 : path;
+  const extensions = platform === 'win32'
+    ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : [''];
+  const candidates = platform === 'win32' && !pathApi.extname(name)
+    ? extensions.map(extension => name + extension)
+    : [name];
+  for (const dir of searchPath.split(pathApi.delimiter).filter(Boolean)) {
+    for (const candidate of candidates) {
+      const file = pathApi.join(dir, candidate);
+      try {
+        if (!io.statSync(file).isFile()) continue;
+        if (platform !== 'win32') io.accessSync(file, fs.constants.X_OK);
         return file;
-      }
-    } catch {}
+      } catch {}
+    }
   }
   return null;
+}
+
+function fixtureExecutableSearchPath(env = process.env, platform = process.platform) {
+  const pathApi = platform === 'win32' ? path.win32 : path;
+  const gitBashDirs = platform === 'win32'
+    ? [env.ProgramFiles, env['ProgramFiles(x86)']]
+      .filter(Boolean)
+      .map(programFiles => pathApi.join(programFiles, 'Git', 'bin'))
+    : [];
+  return [env.PATH || '', ...gitBashDirs].filter(Boolean).join(pathApi.delimiter);
 }
 
 function reservePort() {
@@ -82,12 +100,31 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   }));
   fs.writeFileSync(path.join(paths.logs, 'index.ndjson'), '');
 
+  const executableSearchPath = fixtureExecutableSearchPath();
   const allowedShells = ['bash', 'zsh', 'pwsh', 'powershell.exe']
-    .map(name => findExecutable(name))
+    .map(name => findExecutable(name, executableSearchPath))
     .filter(Boolean);
+  if (process.platform === 'win32' && process.env.SystemRoot) {
+    const windowsPowerShell = path.join(
+      process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+    );
+    try {
+      if (originalFs.statSync(windowsPowerShell).isFile()
+          && !allowedShells.some(file => file.toLowerCase() === windowsPowerShell.toLowerCase())) {
+        allowedShells.push(windowsPowerShell);
+      }
+    } catch {}
+  }
+  const systemDirs = process.platform === 'win32'
+    ? [
+      process.env.SystemRoot && path.join(process.env.SystemRoot, 'System32'),
+      process.env.SystemRoot && path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0'),
+    ].filter(Boolean)
+    : ['/bin', '/usr/bin'];
   const shellDirs = [...new Set([
     ...allowedShells.map(file => path.dirname(file)),
-    '/bin', '/usr/bin', path.dirname(process.execPath),
+    ...systemDirs,
+    path.dirname(process.execPath),
   ])];
   const fixturePath = [paths.bin, ...shellDirs].join(path.delimiter);
   const env = { ...process.env };
@@ -98,7 +135,7 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   Object.assign(env, {
     HOME: paths.home,
     ZDOTDIR: paths.zdotdir,
-    SHELL: '/bin/bash',
+    SHELL: 'bash',
     CLAUDE_CONFIG_DIR: paths.claude,
     CLOUDSDK_CONFIG: paths.cloudsdk,
     CCXRAY_HOME: paths.ccxray,
@@ -119,9 +156,30 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     ].join('\n'), { mode: 0o700 });
     fs.chmodSync(file, 0o700);
   }
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(paths.bin, 'fake-client.js'), [
+      "'use strict';",
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      'const executable = process.argv[2];',
+      'const args = process.argv.slice(3);',
+      "const log = path.join(process.env.CCXRAY_HOME, executable === 'ccxray' ? 'fake-ccxray.log' : 'fake-claude.log');",
+      "fs.appendFileSync(log, args.map(value => '<' + value + '>\\n').join(''));",
+      'process.exit(Number(process.env.CCXRAY_FAKE_EXIT || 0));',
+      '',
+    ].join('\n'));
+    for (const name of ['claude', 'ccxray']) {
+      fs.writeFileSync(path.join(paths.bin, name + '.cmd'), [
+        '@echo off',
+        '"' + process.execPath + '" "%~dp0fake-client.js" ' + name + ' %*',
+        'exit /b %errorlevel%',
+        '',
+      ].join('\r\n'));
+    }
+  }
 
   const fixtureLexicalRoot = path.resolve(root);
-  const fixtureRoot = path.resolve(fs.realpathSync(root));
+  const fixtureRoot = path.resolve(originalRealpath(root));
   const allowedRoots = [...new Set([fixtureRoot, fixtureLexicalRoot])];
   const allowedExecutables = new Set([
     process.execPath,
@@ -143,6 +201,11 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   const isUnder = (candidate, base) => {
     const relative = path.relative(base, candidate);
     return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+  };
+  const canonicalizeFixturePath = candidate => {
+    if (process.platform !== 'win32' || !allowedRoots.some(base => isUnder(candidate, base))) return candidate;
+    try { return path.resolve(originalRealpath(candidate)); }
+    catch { return candidate; }
   };
   const normalizePath = candidate => {
     if (typeof candidate === 'string') return candidate;
@@ -192,7 +255,7 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
         error.code = 'ENOTDIR';
         throw error;
       }
-      current = next;
+      current = canonicalizeFixturePath(next);
     }
     return path.resolve(current);
   };
@@ -366,4 +429,6 @@ function openWrites(flags) {
     : /[wax+]/.test(String(flags || 'r'));
 }
 
-module.exports = { DELETED_ENV, createSetupFixture, findExecutable, reservePort };
+module.exports = {
+  DELETED_ENV, createSetupFixture, findExecutable, fixtureExecutableSearchPath, reservePort,
+};

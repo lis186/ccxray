@@ -34,7 +34,11 @@ function rawExists(file) {
   catch { return false; }
 }
 const childProcess = require('node:child_process');
-const { createSetupFixture } = require('./helpers/setup-fixture');
+const {
+  createSetupFixture,
+  findExecutable: findFixtureExecutable,
+  fixtureExecutableSearchPath,
+} = require('./helpers/setup-fixture');
 
 let bootstrapFixture;
 let setup;
@@ -193,7 +197,65 @@ function rcFile(fixture, shell = 'bash') {
 }
 
 function fixtureExecutable(fixture, name) {
-  return fixture.allowedShells.find(file => path.basename(file).toLowerCase() === name.toLowerCase()) || null;
+  const wanted = path.parse(name).name.toLowerCase();
+  return fixture.allowedShells.find(file => path.parse(file).name.toLowerCase() === wanted) || null;
+}
+
+function makeClaudeOnlyPath(fixture, directory) {
+  fs.mkdirSync(directory);
+  fs.copyFileSync(path.join(fixture.paths.bin, 'claude'), path.join(directory, 'claude'));
+  if (process.platform === 'win32') {
+    fs.copyFileSync(path.join(fixture.paths.bin, 'claude.cmd'), path.join(directory, 'claude.cmd'));
+  }
+  return directory;
+}
+
+function mockedPowerShellDeps(fixture, profile, overrides = {}) {
+  const frameNonce = 'fixture-powershell-frame';
+  const executable = path.join(fixture.paths.bin, process.platform === 'win32' ? 'pwsh.exe' : 'pwsh');
+  fs.writeFileSync(executable, '', { mode: 0o700 });
+  const stdout = [
+    '<<ccxray-probe:' + frameNonce + '>>',
+    'allHosts=' + profile,
+    'currentHost=',
+    'edition=Core',
+    'host=ConsoleHost',
+    'executionPolicy=RemoteSigned',
+    'profileSignature=NotSigned',
+    '<</ccxray-probe:' + frameNonce + '>>',
+    '',
+  ].join('\n');
+  return depsFor(fixture, {
+    ...overrides,
+    platform: process.platform,
+    nonce: frameNonce,
+    runBounded: async () => ({ status: 'exited', exitCode: 0, stdout }),
+  });
+}
+
+function braceCrossingRegion(powershell, shape) {
+  const generated = setup.renderRcBlock({
+    bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+  }, powershell);
+  const rows = generated.replace(/\n$/, '').split('\n');
+  const inner = rows.slice(1, -1);
+  const foreignHeader = powershell ? 'function foreign {' : 'foreign() {';
+  if (shape === 'negative-depth') {
+    return [
+      foreignHeader,
+      setup.START_MARKER,
+      '}',
+      ...inner,
+      setup.END_MARKER,
+    ].join('\n');
+  }
+  return [
+    setup.START_MARKER,
+    foreignHeader,
+    ...inner,
+    setup.END_MARKER,
+    '}',
+  ].join('\n');
 }
 
 function installArgs(extra = []) {
@@ -218,6 +280,33 @@ function installTargetFromFile(fixture, file, label = 'second target') {
     parsed,
   };
 }
+
+test('setup fixture executable discovery expands Windows PATHEXT', () => {
+  const recognized = new Set([
+    'c:\\tools\\pwsh.exe',
+    'c:\\tools\\powershell.exe',
+    'c:\\program files\\git\\bin\\bash.exe',
+  ]);
+  const env = {
+    PATH: 'C:\\Tools',
+    ProgramFiles: 'C:\\Program Files',
+    'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+    PATHEXT: '.EXE;.CMD',
+  };
+  const fakeFs = {
+    statSync(file) {
+      if (recognized.has(String(file).toLowerCase())) return { isFile: () => true };
+      throw Object.assign(new Error('missing fixture executable'), { code: 'ENOENT' });
+    },
+  };
+  const searchPath = fixtureExecutableSearchPath(env, 'win32');
+  assert.equal(findFixtureExecutable('pwsh', searchPath, env, 'win32', fakeFs),
+    'C:\\Tools\\pwsh.EXE');
+  assert.equal(findFixtureExecutable('powershell.exe', searchPath, env, 'win32', fakeFs),
+    'C:\\Tools\\powershell.exe');
+  assert.equal(findFixtureExecutable('bash', searchPath, env, 'win32', fakeFs),
+    'C:\\Program Files\\Git\\bin\\bash.EXE');
+});
 
 function runChild(fixture, file, args, overrides = {}) {
   return runBounded({
@@ -437,7 +526,8 @@ test('resolveChain follows links and refuses dangling targets and loops', async 
     fs.symlinkSync(path.basename(b), a);
     const followed = setup.resolveChain(a, fixture.guardedFs);
     assert.equal(followed.realPath, fs.realpathSync(b));
-    assert.equal(followed.chain[0].kind, 'symlink');
+    assert.ok(followed.chain.some(item => path.basename(item.path) === path.basename(a)
+      && item.kind === 'symlink'));
 
     const dangling = path.join(fixture.paths.home, 'dangling');
     fs.symlinkSync('missing-file', dangling);
@@ -449,6 +539,34 @@ test('resolveChain follows links and refuses dangling targets and loops', async 
     fs.symlinkSync('loop-a', loopB);
     assert.throws(() => setup.resolveChain(loopA, fixture.guardedFs), /symlink loop/);
   });
+});
+
+test('resolveChain compares canonical Windows paths when the input uses an 8.3 alias', () => {
+  const shortFile = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\fixture\\home\\.bashrc';
+  const longFile = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\fixture\\home\\.bashrc';
+  const isShortFile = file => path.win32.resolve(file).toLowerCase() === path.win32.resolve(shortFile).toLowerCase();
+  const io = {
+    lstatSync(file) {
+      const isFile = isShortFile(file);
+      return {
+        isSymbolicLink: () => false,
+        isFile: () => isFile,
+        isDirectory: () => !isFile,
+        dev: 1,
+        ino: 2,
+        size: 0,
+        mtimeMs: 1,
+        nlink: 1,
+        mode: 0o100600,
+      };
+    },
+    realpathSync: {
+      native() { return longFile; },
+    },
+  };
+  const resolved = setup.resolveChain(shortFile, io, { pathApi: path.win32 });
+  assert.equal(resolved.realPath, shortFile);
+  assert.equal(resolved.kind, 'file');
 });
 
 test('resolveChain follows only platform separators and matches native symlink-dot-dot resolution', async () => {
@@ -477,6 +595,88 @@ test('resolveChain follows only platform separators and matches native symlink-d
     assert.equal(resolved.realPath, native);
     assert.equal(fs.readFileSync(resolved.realPath, 'utf8'), 'physical parent\n');
   });
+});
+
+async function assertRawSetupTarget(shell, variable, filename) {
+  await withFixture(async fixture => {
+    const physicalParent = path.join(fixture.paths.root, shell + '-physical-parent');
+    const physicalChild = path.join(physicalParent, 'child');
+    fs.mkdirSync(physicalChild, { recursive: true });
+    const link = path.join(fixture.paths.home, shell + '-linked-child');
+    fs.symlinkSync(physicalChild, link, 'dir');
+
+    const rawBase = link + path.sep + '..';
+    const physicalRc = path.join(physicalParent, filename);
+    const decoyRc = path.join(fixture.paths.home, filename);
+    const physicalBefore = Buffer.from('# physical sentinel\n');
+    const decoyBefore = Buffer.from('# decoy sentinel\n');
+    fs.writeFileSync(physicalRc, physicalBefore);
+    fs.writeFileSync(decoyRc, decoyBefore);
+
+    const log = makeLogger();
+    const deps = depsFor(fixture, { env: { [variable]: rawBase }, logger: log });
+    const installed = await setup.runSetup([
+      '--shell', shell, '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
+    ], deps);
+    assert.equal(installed, 0, log.lines.join('\n'));
+    assert.ok(fs.readFileSync(physicalRc).includes(Buffer.from(setup.START_MARKER)));
+    assert.deepEqual(fs.readFileSync(decoyRc), decoyBefore);
+
+    const removed = await setup.runSetup(['--remove', '--shell', shell, '--yes'], deps);
+    assert.equal(removed, 0, log.lines.join('\n'));
+    assert.deepEqual(fs.readFileSync(physicalRc), physicalBefore);
+    assert.deepEqual(fs.readFileSync(decoyRc), decoyBefore);
+  });
+}
+
+test('setup target discovery preserves raw HOME symlink-dot-dot semantics', async () => {
+  await assertRawSetupTarget('bash', 'HOME', '.bashrc');
+});
+
+test('setup target discovery preserves symlink-dot-dot semantics', async () => {
+  await assertRawSetupTarget('zsh', 'ZDOTDIR', '.zshrc');
+});
+
+test('brace balance covers the whole POSIX and PowerShell fenced region', async () => {
+  const cases = [
+    { shell: 'bash', powershell: false, shape: 'negative-depth' },
+    { shell: 'bash', powershell: false, shape: 'nonzero-final-depth' },
+    { shell: 'pwsh', powershell: true, shape: 'negative-depth' },
+    { shell: 'pwsh', powershell: true, shape: 'nonzero-final-depth' },
+  ];
+  const malformed = cases.map(item => setup.parseRcBlock(
+    braceCrossingRegion(item.powershell, item.shape),
+    item.powershell,
+  ).kind);
+  assert.deepEqual(malformed, cases.map(() => 'malformed'));
+
+  for (const item of cases) {
+    await withFixture(async fixture => {
+      const file = item.powershell
+        ? path.join(fixture.paths.root, 'synthetic-profile.ps1')
+        : rcFile(fixture, 'bash');
+      const original = Buffer.from(braceCrossingRegion(item.powershell, item.shape));
+      fs.writeFileSync(file, original);
+      const log = makeLogger();
+      const deps = item.powershell
+        ? mockedPowerShellDeps(fixture, file, { logger: log })
+        : depsFor(fixture, { logger: log });
+
+      const installed = await setup.runSetup([
+        '--shell', item.shell, '--bucket', 'fixture-bucket-01',
+        '--domains', 'example.test', '--yes',
+      ], deps);
+      assert.equal(installed, 1, log.lines.join('\n'));
+      assert.deepEqual(fs.readFileSync(file), original);
+      assert.equal(exportSync.readEnrollment(setupHome(fixture)), null);
+
+      const removed = await setup.runSetup(['--remove', '--shell', item.shell, '--yes'], deps);
+      assert.equal(removed, 1, log.lines.join('\n'));
+      assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'removed');
+      assert.deepEqual(fs.readFileSync(file), original);
+      assert.ok(log.lines.some(line => line.includes('export remains removed; shell cleanup incomplete')));
+    });
+  }
 });
 
 test('brace-balanced owned wrapper revisions survive replacement and removal', async () => {
@@ -2002,24 +2202,29 @@ test('POSIX wrapper preserves argument boundaries, bypasses version, and propaga
   });
 });
 
-test('PowerShell wrapper preserves argument boundaries when pwsh is installed', async t => {
+test('PowerShell wrappers preserve argument boundaries under every installed edition', async t => {
   await withFixture(async fixture => {
-    const pwsh = fixtureExecutable(fixture, 'pwsh');
-    if (!pwsh) { t.skip('pwsh is not installed in this environment'); return; }
-    const profile = path.join(fixture.paths.root, 'synthetic-profile.ps1');
-    fs.writeFileSync(profile, setup.renderRcBlock({
-      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries',
-      retentionDays: 30,
-    }, true));
-    const quotedProfile = "'" + profile.replace(/'/g, "''") + "'";
-    const result = await runChild(fixture, pwsh, [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-      `. ${quotedProfile}; claude 'two words' 'x;y'`,
-    ]);
-    assert.equal(result.status, 'exited');
-    assert.equal(result.exitCode, 0, result.stderr);
-    assert.equal(fs.readFileSync(path.join(setupHome(fixture), 'fake-ccxray.log'), 'utf8'),
-      '<claude>\n<two words>\n<x;y>\n');
+    const editions = ['pwsh', 'powershell']
+      .map(name => ({ name, executable: fixtureExecutable(fixture, name) }))
+      .filter(item => item.executable);
+    if (!editions.length) { t.skip('no PowerShell edition is installed in this environment'); return; }
+    for (const edition of editions) {
+      const profile = path.join(fixture.paths.root, 'synthetic-profile-' + edition.name + '.ps1');
+      fs.writeFileSync(profile, setup.renderRcBlock({
+        bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries',
+        retentionDays: 30,
+      }, true));
+      const quotedProfile = "'" + profile.replace(/'/g, "''") + "'";
+      fs.writeFileSync(path.join(setupHome(fixture), 'fake-ccxray.log'), '');
+      const result = await runChild(fixture, edition.executable, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        '. ' + quotedProfile + "; claude 'two words' 'x;y'",
+      ], { deadlineMs: 15000 });
+      assert.equal(result.status, 'exited', edition.name + ': ' + result.stderr);
+      assert.equal(result.exitCode, 0, edition.name + ': ' + result.stderr);
+      assert.equal(fs.readFileSync(path.join(setupHome(fixture), 'fake-ccxray.log'), 'utf8'),
+        '<claude>\n<two words>\n<x;y>\n', edition.name);
+    }
   });
 });
 
@@ -2645,9 +2850,7 @@ test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch
       assert.equal(fs.readFileSync(claudeLog, 'utf8'), '', `${shell} must not launch Claude again after proxy failure`);
 
       const noCcxrayPath = path.join(fixture.paths.root, `${shell}-path-without-ccxray`);
-      fs.mkdirSync(noCcxrayPath);
-      fs.symlinkSync(path.join(fixture.paths.bin, 'claude'), path.join(noCcxrayPath, 'claude'));
-      const pathWithoutCcxray = noCcxrayPath;
+      const pathWithoutCcxray = makeClaudeOnlyPath(fixture, noCcxrayPath);
       fs.writeFileSync(claudeLog, '');
       fs.writeFileSync(ccxrayLog, '');
       const fallback = await runChild(fixture, executable, ['-i', '-c', 'claude fallback', 'fixture-shell'], {
@@ -2668,63 +2871,66 @@ test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch
   });
 });
 
-test('PowerShell wrapper covers bypasses, fallback, and one-launch failures when pwsh is installed', async t => {
+test('PowerShell wrappers cover bypasses, fallback, and one-launch failures under every installed edition', async t => {
   await withFixture(async fixture => {
-    const pwsh = fixtureExecutable(fixture, 'pwsh');
-    if (!pwsh) { t.skip('pwsh is not installed in this environment'); return; }
-    const profile = path.join(fixture.paths.root, 'synthetic-profile-matrix.ps1');
-    fs.writeFileSync(profile, setup.renderRcBlock({
-      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries',
-      retentionDays: 30,
-    }, true));
-    const quotedProfile = "'" + profile.replace(/'/g, "''") + "'";
-    const claudeLog = path.join(setupHome(fixture), 'fake-claude.log');
-    const ccxrayLog = path.join(setupHome(fixture), 'fake-ccxray.log');
-    const invoke = async (command, env = {}) => runChild(fixture, pwsh, [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
-      `. ${quotedProfile}; ${command}; exit $LASTEXITCODE`,
-    ], { env });
+    const editions = ['pwsh', 'powershell']
+      .map(name => ({ name, executable: fixtureExecutable(fixture, name) }))
+      .filter(item => item.executable);
+    if (!editions.length) { t.skip('no PowerShell edition is installed in this environment'); return; }
+    for (const edition of editions) {
+      const pwsh = edition.executable;
+      const profile = path.join(fixture.paths.root, 'synthetic-profile-matrix-' + edition.name + '.ps1');
+      fs.writeFileSync(profile, setup.renderRcBlock({
+        bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries',
+        retentionDays: 30,
+      }, true));
+      const quotedProfile = "'" + profile.replace(/'/g, "''") + "'";
+      const claudeLog = path.join(setupHome(fixture), 'fake-claude.log');
+      const ccxrayLog = path.join(setupHome(fixture), 'fake-ccxray.log');
+      const invoke = async (command, env = {}) => runChild(fixture, pwsh, [
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
+        '. ' + quotedProfile + '; ' + command + '; exit $LASTEXITCODE',
+      ], { env, deadlineMs: 15000 });
 
-    for (const command of ['--version', '--help', '-h', 'mcp', 'doctor', 'agents', 'plugin', 'auth', 'attach', 'respawn']) {
+      for (const command of ['--version', '--help', '-h', 'mcp', 'doctor', 'agents', 'plugin', 'auth', 'attach', 'respawn']) {
+        fs.writeFileSync(claudeLog, '');
+        fs.writeFileSync(ccxrayLog, '');
+        const result = await invoke(`claude '${command}'`);
+        assert.equal(result.exitCode, 0, `${command}: ${result.stdout} ${result.stderr}`);
+        assert.equal(fs.readFileSync(claudeLog, 'utf8'), `<${command}>\n`, `${result.stdout} ${result.stderr}`);
+        assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '');
+      }
+
       fs.writeFileSync(claudeLog, '');
       fs.writeFileSync(ccxrayLog, '');
-      const result = await invoke(`claude '${command}'`);
-      assert.equal(result.exitCode, 0, `${command}: ${result.stdout} ${result.stderr}`);
-      assert.equal(fs.readFileSync(claudeLog, 'utf8'), `<${command}>\n`, `${result.stdout} ${result.stderr}`);
+      const proxied = await invoke("claude 'two words' 'x;y'");
+      assert.equal(proxied.exitCode, 0, proxied.stderr);
+      assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '<claude>\n<two words>\n<x;y>\n');
+      assert.equal(fs.readFileSync(claudeLog, 'utf8'), '');
+
+      fs.writeFileSync(claudeLog, '');
+      fs.writeFileSync(ccxrayLog, '');
+      const failedProxy = await invoke('claude request', { CCXRAY_FAKE_EXIT: '17' });
+      assert.equal(failedProxy.exitCode, 17);
+      assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '<claude>\n<request>\n');
+      assert.equal(fs.readFileSync(claudeLog, 'utf8'), '');
+
+      const noCcxrayPath = path.join(fixture.paths.root, 'powershell-path-without-ccxray-' + edition.name);
+      const pathWithoutCcxray = makeClaudeOnlyPath(fixture, noCcxrayPath);
+      fs.writeFileSync(claudeLog, '');
+      fs.writeFileSync(ccxrayLog, '');
+      const fallback = await invoke('claude fallback', { PATH: pathWithoutCcxray });
+      assert.equal(fallback.exitCode, 0, fallback.stderr);
+      assert.equal(fs.readFileSync(claudeLog, 'utf8'), '<fallback>\n');
+      assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '');
+
+      fs.writeFileSync(claudeLog, '');
+      const failedFallback = await invoke('claude fallback', {
+        PATH: pathWithoutCcxray, CCXRAY_FAKE_EXIT: '23',
+      });
+      assert.equal(failedFallback.exitCode, 23);
+      assert.equal(fs.readFileSync(claudeLog, 'utf8'), '<fallback>\n');
       assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '');
     }
-
-    fs.writeFileSync(claudeLog, '');
-    fs.writeFileSync(ccxrayLog, '');
-    const proxied = await invoke("claude 'two words' 'x;y'");
-    assert.equal(proxied.exitCode, 0, proxied.stderr);
-    assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '<claude>\n<two words>\n<x;y>\n');
-    assert.equal(fs.readFileSync(claudeLog, 'utf8'), '');
-
-    fs.writeFileSync(claudeLog, '');
-    fs.writeFileSync(ccxrayLog, '');
-    const failedProxy = await invoke('claude request', { CCXRAY_FAKE_EXIT: '17' });
-    assert.equal(failedProxy.exitCode, 17);
-    assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '<claude>\n<request>\n');
-    assert.equal(fs.readFileSync(claudeLog, 'utf8'), '');
-
-    const noCcxrayPath = path.join(fixture.paths.root, 'powershell-path-without-ccxray');
-    fs.mkdirSync(noCcxrayPath);
-    fs.symlinkSync(path.join(fixture.paths.bin, 'claude'), path.join(noCcxrayPath, 'claude'));
-    const pathWithoutCcxray = noCcxrayPath;
-    fs.writeFileSync(claudeLog, '');
-    fs.writeFileSync(ccxrayLog, '');
-    const fallback = await invoke('claude fallback', { PATH: pathWithoutCcxray });
-    assert.equal(fallback.exitCode, 0, fallback.stderr);
-    assert.equal(fs.readFileSync(claudeLog, 'utf8'), '<fallback>\n');
-    assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '');
-
-    fs.writeFileSync(claudeLog, '');
-    const failedFallback = await invoke('claude fallback', {
-      PATH: pathWithoutCcxray, CCXRAY_FAKE_EXIT: '23',
-    });
-    assert.equal(failedFallback.exitCode, 23);
-    assert.equal(fs.readFileSync(claudeLog, 'utf8'), '<fallback>\n');
-    assert.equal(fs.readFileSync(ccxrayLog, 'utf8'), '');
   });
 });

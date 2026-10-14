@@ -192,6 +192,13 @@ fixture-owned fake `claude`/`ccxray` commands. A shell may resolve its own
 builtins or commands; that does not expand the runner's executable allowlist.
 Never run setup tests with a real home or real gcloud config.
 
+On Windows, the setup fixture also creates a fixture-local `fake-client.js` and
+`.cmd` launchers for fake `claude` and `ccxray`. Native PowerShell wrapper tests
+resolve them through the fixture `PATH`/`PATHEXT`; they record arguments and
+exit codes only under the fixture `CCXRAY_HOME`. These tests source synthetic
+profiles with `-NoProfile`, so they do not load real PowerShell profiles or
+invoke globally installed clients.
+
 ### 3. CI-equivalent check
 
 Before pushing, confirm the suite passes against an empty home:

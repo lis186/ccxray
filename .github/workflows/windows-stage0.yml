@@ -37,6 +37,7 @@ on:
       - 'test/launch-decision.test.js'
       - 'test/win-launch.test.js'
       - 'test/setup.test.js'
+      - 'test/helpers/setup-fixture.js'
       - 'test/helpers/export-lock-fixture.js'
       - '.github/workflows/windows-stage0.yml'
 

@@ -228,6 +228,15 @@ function braceDelta(line, powershell) {
   return delta;
 }
 
+function braceRegionIsBalanced(text, powershell) {
+  let depth = 0;
+  for (const row of lineRanges(text)) {
+    depth += braceDelta(row.text, powershell);
+    if (depth < 0) return false;
+  }
+  return depth === 0;
+}
+
 function hasGeneratedWrapperShape(fn, powershell) {
   if (!fn.complete) return false;
   const expectedHeader = powershell ? /^\s*function\s+claude\s*\{\s*$/i : /^\s*claude\s*\(\s*\)\s*\{\s*$/i;
@@ -253,6 +262,9 @@ function parseRcBlock(text, powershell) {
   const inner = text.slice(start.end, end.start);
   if (inner.includes(START_MARKER) || inner.includes(END_MARKER)) {
     return { kind: 'malformed', reason: 'nested setup markers', text };
+  }
+  if (!braceRegionIsBalanced(inner, powershell)) {
+    return { kind: 'malformed', reason: 'setup block has unbalanced braces', text };
   }
   const innerFunctions = functionBlocks(inner, powershell).filter(fn => fn.name.toLowerCase() === 'claude');
   if (innerFunctions.length !== 1 || !hasGeneratedWrapperShape(innerFunctions[0], powershell)) {
@@ -480,14 +492,15 @@ function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi
         throw new Error('filesystem does not expose realpathSync.native for target verification');
       }
       const nativePath = io.realpathSync.native(rawLogical);
+      const canonicalResolvedPath = io.realpathSync.native(absolute);
       const comparable = value => {
         let normalized = pathApi.normalize(value);
-        if (pathApi === path.win32) {
+        if (pathApi === path.win32 || pathApi.sep === '\\') {
           normalized = normalized.replace(/^\\\\\?\\/, '').toLowerCase();
         }
         return normalized;
       };
-      if (comparable(nativePath) !== comparable(absolute)) {
+      if (comparable(nativePath) !== comparable(canonicalResolvedPath)) {
         throw new Error(`path resolver disagrees with realpathSync.native for ${logical}: ${absolute} versus ${nativePath}`);
       }
       return { logicalPath: logical, realPath: absolute, chain, kind: 'file', fingerprint, parentMissing: false };
@@ -678,7 +691,12 @@ async function resolveTargets(options, deps) {
   const addPosix = shell => {
     const base = shell === 'zsh' ? (env.ZDOTDIR || env.HOME) : env.HOME;
     if (!base) throw new Error(`cannot resolve ${shell} target without ${shell === 'zsh' ? 'HOME/ZDOTDIR' : 'HOME'}`);
-    const logicalPath = pathApi.join(base, shell === 'zsh' ? '.zshrc' : '.bashrc');
+    const rawBase = String(base);
+    const filename = shell === 'zsh' ? '.zshrc' : '.bashrc';
+    const hasTrailingSeparator = platform === 'win32'
+      ? /[\\/]$/.test(rawBase)
+      : rawBase.endsWith(pathApi.sep);
+    const logicalPath = rawBase + (hasTrailingSeparator ? '' : pathApi.sep) + filename;
     out.targets.push({ shell, kind: 'posix', logicalPath, label: shell });
   };
   const addPowerShell = async (edition, exe) => {
