@@ -71,14 +71,19 @@ function claudeOwnerText(e) {
 const CODEX_INJECTED = new Set(['environment_context', 'recommended_plugins', 'user_instructions', 'user_action', 'skill',
   'codex_internal_context', 'turn_aborted', 'subagent_notification', 'in-app-browser-context', 'hook_prompt',
   'external_codex_apps_open_page', 'image', 'user_shell_command', 'command-name', 'command-message', 'command-args', 'local-command-stdout']);
+// The AGENTS.md block Codex injects: a heading, then the file in <INSTRUCTIONS>.
+// Matched as a whole envelope, so owner text that merely quotes the tag stays.
+const AGENTS_ENVELOPE = /^# AGENTS\.md instructions[^\n]*\n+<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>\s*/u;
 function codexOwnerText(text) {
   let t = text.trim();
   for (;;) {
+    const env = AGENTS_ENVELOPE.exec(t);
+    if (env) { t = t.slice(env[0].length); continue; }
     const m = /^<([\w-]+)(?:\s[^>]*)?>[\s\S]*?<\/\1>\s*/u.exec(t);
     if (!m || !CODEX_INJECTED.has(m[1])) break;
     t = t.slice(m[0].length);
   }
-  if (t.startsWith('# AGENTS.md instructions') || t.includes('<INSTRUCTIONS>')) return null;
+  if (t.startsWith('# AGENTS.md instructions')) return null;
   t = t.replace(/^## My request(?: for Codex)?:\s*/u, '').trim();
   return t || null;
 }

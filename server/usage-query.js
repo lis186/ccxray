@@ -41,13 +41,15 @@ async function readIndexRows({ from = -Infinity, to = Infinity, logsDir = resolv
 // Codex (and other non-Anthropic) turns carry no responseId, so a proxy copy and
 // an imported copy of the same turn cannot be merged. Until a tested
 // reconciliation key exists, each such session is read from ONE source: the
-// proxy if it recorded the session, otherwise the import.
+// proxy if it recorded the session, otherwise the import. A row with no
+// provider predates provider tagging and is Anthropic.
+const isAnthropic = e => e.provider == null || e.provider === 'anthropic';
 function oneSourcePerSession(rows) {
   const proxied = new Set();
-  for (const e of rows) if (e.provider !== 'anthropic' && !e.imported && e.sessionId) proxied.add(e.sessionId);
+  for (const e of rows) if (!isAnthropic(e) && !e.imported && e.sessionId) proxied.add(e.sessionId);
   const sources = {};
   const kept = rows.filter(e => {
-    if (e.provider === 'anthropic' || !e.sessionId) return true;
+    if (isAnthropic(e) || !e.sessionId) return true;
     const fromProxy = proxied.has(e.sessionId);
     sources[e.sessionId] = fromProxy ? 'proxy' : 'import';
     return fromProxy ? !e.imported : true;

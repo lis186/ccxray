@@ -128,6 +128,16 @@ describe('readMergedTurns: Codex one source per session', () => {
     assert.deepEqual(turns.map(e => e.id).sort(), ['ci3', 'cp1', 'cp2']);
     assert.deepEqual(codexSources, { C1: 'proxy', C2: 'import' });
   });
+
+  it('keeps every row of a legacy session with no provider: it is Anthropic, not Codex', async () => {
+    const logsDir = mkLogs([
+      { id: 'lp1', sessionId: 'L1', cwd: '/work/a', receivedAt: T0 },
+      { id: 'li1', sessionId: 'L1', cwd: '/work/a', receivedAt: T0 + 5000, imported: true },
+    ]);
+    const { turns, codexSources } = await readMergedTurns({ logsDir });
+    assert.deepEqual(turns.map(e => e.id).sort(), ['li1', 'lp1']);
+    assert.deepEqual(codexSources, {});
+  });
 });
 
 describe('selectTurns', () => {

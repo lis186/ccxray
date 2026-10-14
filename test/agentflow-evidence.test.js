@@ -87,8 +87,11 @@ describe('readCodexTranscript', () => {
       say(4, '<in-app-browser-context>tab</in-app-browser-context>\n## My request for Codex:\nfix the header'),
       say(5, '<task>review the diff</task>\n<grounding_rules>cite lines</grounding_rules>'),
       say(6, '<turn_aborted>x</turn_aborted>'),
+      say(7, '# AGENTS.md instructions for /w\n\n<INSTRUCTIONS>x</INSTRUCTIONS>\n<environment_context>e</environment_context>'),
+      say(8, 'why does the AGENTS block end with </INSTRUCTIONS> and not <INSTRUCTIONS>?'),
     ]));
-    assert.deepEqual(t.submissions.map(s => s.text), ['what is in this picture', 'fix the header', '<task>review the diff</task>\n<grounding_rules>cite lines</grounding_rules>']);
+    assert.deepEqual(t.submissions.map(s => s.text), ['what is in this picture', 'fix the header', '<task>review the diff</task>\n<grounding_rules>cite lines</grounding_rules>',
+      'why does the AGENTS block end with </INSTRUCTIONS> and not <INSTRUCTIONS>?']);
   });
 
   it('files a subagent thread\'s tool evidence under its parent thread (lineage)', () => {
