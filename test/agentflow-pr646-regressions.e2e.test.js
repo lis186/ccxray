@@ -242,6 +242,62 @@ describe('PR #646 report regressions', () => {
     assert.deepEqual(external(), [['complete', 2]]);
   });
 
+  it('splits a reused worker session\'s transcript turns among its runs', () => {
+    const ctx = setup('worker-reused', ['one', 'two']);
+    const clone = path.join(ctx.base, 'agentflow-external-runner-reuse', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 30);
+    writeDispatch(ctx, '.', 'A-002', clone, 70, 80);
+    const worker = sid(10);
+    const said = (uuid, s, id) => ({ type: 'assistant', uuid, sessionId: worker, cwd: clone, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    fs.writeFileSync(path.join(claudeProject(ctx, clone), `${worker}.jsonl`),
+      [said('a', 25, 'msg-a'), said('c', 72, 'msg-c'), said('b', 75, 'msg-b')].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', cwd: clone, usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    const both = (id, s) => [{ ...row, id: `${id}-p`, receivedAt: at(s), responseId: id }, { ...row, id: `${id}-i`, receivedAt: at(s), responseId: id, imported: true, importSource: 'claude-code' }];
+    writeIndex(ctx, [...both('msg-a', 25), ...both('msg-b', 75)]);
+    const label = ask => report(ctx).asks.find(a => a.id === ask).executors.filter(x => x.kind === 'external').map(x => x.completeness);
+    // msg-c, in no index line, falls in the second dispatch interval, before
+    // that run's first indexed turn: the second run's turn only.
+    assert.deepEqual(label('A-001'), ['complete']);
+    assert.deepEqual(label('A-002'), ['partial proxy coverage']);
+  });
+
+  it('gives a worker transcript turn outside every interval to its session\'s residual run', () => {
+    const ctx = setup('worker-residual');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-res', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 30);
+    const worker = sid(12);
+    const said = (uuid, s, id) => ({ type: 'assistant', uuid, sessionId: worker, cwd: clone, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    fs.writeFileSync(path.join(claudeProject(ctx, clone), `${worker}.jsonl`),
+      [said('0', 15, 'msg-0'), said('1', 25, 'msg-1'), said('2', 45, 'msg-2'), said('3', 50, 'msg-3')].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', cwd: clone, usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    const both = (id, s) => [{ ...row, id: `${id}-p`, receivedAt: at(s), responseId: id }, { ...row, id: `${id}-i`, receivedAt: at(s), responseId: id, imported: true, importSource: 'claude-code' }];
+    // msg-0 and msg-2 are outside the dispatch interval (the residual run), so
+    // msg-3, in no index line, is the residual run's turn, not the dispatched run's.
+    writeIndex(ctx, [...both('msg-0', 15), ...both('msg-1', 25), ...both('msg-2', 45)]);
+    const external = report(ctx).asks.find(a => a.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => [x.completeness, x.total.calls]), [['complete', 1]]);
+  });
+
+  it('compares a worker\'s own transcript turns with its clone, not with where its subagents ran', () => {
+    const ctx = setup('worker-subagent-cwd');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-sub', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 40);
+    const worker = sid(11);
+    const said = (uuid, s, id, cwd) => ({ type: 'assistant', uuid, sessionId: worker, cwd, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    // msg-h ran in the checkout, where the worker's subagent also ran, and msg-n
+    // names no cwd; no index line carries either.
+    fs.writeFileSync(path.join(claudeProject(ctx, clone), `${worker}.jsonl`),
+      [said('w', 25, 'msg-w', clone), said('h', 28, 'msg-h', ctx.repo), said('n', 29, 'msg-n', undefined)].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    writeIndex(ctx, [
+      { ...row, id: 'w-p', cwd: clone, receivedAt: at(25), responseId: 'msg-w' },
+      { ...row, id: 'w-i', cwd: clone, receivedAt: at(25), responseId: 'msg-w', imported: true, importSource: 'claude-code' },
+      { ...row, id: 's-p', cwd: ctx.repo, receivedAt: at(30), responseId: 'msg-s', isSubagent: true, subagentId: 'a1' },
+    ]);
+    const external = report(ctx).asks.find(a => a.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => [x.completeness, x.total.calls]), [['complete', 2]]);
+  });
+
   it('labels a matched Codex transcript without index rows as transcripts only, including in a multi-host fold', () => {
     const onlyCodex = setup('codex-only', ['codex task']);
     const codexSession = sid(3);

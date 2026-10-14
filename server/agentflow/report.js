@@ -254,15 +254,16 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
     }
     return out;
   };
-  // A worker run is whole, so no window narrows its transcript turns; only
-  // those in the run's clone count, as a host that worked in a clone for a while
-  // is a worker only there. From the start of the index read on.
+  // A worker run is whole, so no Ask window narrows its transcript turns. Only
+  // turns in the run's clone count, as a host that worked in a clone for a while
+  // is a worker only there, and each is placed among the clone's runs as an
+  // index turn at that time would be (E2). From the start of the index read on.
   const workerPending = run => {
     const out = { twins: 0, missing: 0 };
-    const cwds = new Set(run.turns.map(e => e.cwd));
     for (const sid of new Set(run.turns.map(e => e.sessionId))) {
       for (const x of workerTranscriptTurns.get(sid) || []) {
-        if (!x.native && x.cwd && !cwds.has(canonicalPath(x.cwd))) continue;
+        if (!x.native && (!x.cwd || canonicalPath(x.cwd) !== run.clone)) continue;
+        if (workers.ownerOf(sid, run.clone, x.at) !== run.id) continue;
         if (x.at < from || importedIds.has(x.id)) continue;
         if (proxiedIds.has(x.id)) out.twins++;
         else if (!indexed.has(x.id)) out.missing++;

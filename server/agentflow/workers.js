@@ -147,6 +147,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
 
   const runs = [];
   const ambiguousTurns = [];
+  const owners = new Map(); // clone → (sessionId, time) → run or null
   for (const [clone, cturns] of byClone) {
     const ivs = intervals.filter(iv => iv.clone === clone);
     const parent = ivs.map((_, i) => i);
@@ -156,14 +157,15 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     for (let i = 0; i < ivs.length; i++) for (let j = i + 1; j < ivs.length; j++) {
       if (ivs[i].level === ivs[j].level && ivs[i].start <= ivs[j].end && ivs[j].start <= ivs[i].end && sameTarget(ivs[i], ivs[j])) union(i, j);
     }
+    const insideAt = at => ivs.map((iv, i) => i).filter(i => at >= ivs[i].start && at <= ivs[i].end);
+    // Same-level intervals that overlap here and disagree on the target.
+    const clashes = inside => inside.some(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
     const residual = [];
     const placed = [];
     for (const t of cturns) {
-      const inside = ivs.map((iv, i) => i).filter(i => t.receivedAt >= ivs[i].start && t.receivedAt <= ivs[i].end);
+      const inside = insideAt(t.receivedAt);
       if (!inside.length) { residual.push(t); continue; }
-      // Same-level intervals that overlap here and disagree on the target.
-      const clash = inside.some(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
-      if (clash) {
+      if (clashes(inside)) {
         const candidates = new Set();
         const conflicting = inside.filter(i => inside.some(j => j !== i && ivs[i].level === ivs[j].level && find(i) !== find(j)));
         for (const i of conflicting) for (const rel of ivs[i].notebooks) candidates.add(rel);
@@ -183,18 +185,34 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       if (!members.has(c)) members.set(c, []);
       members.get(c).push(t);
     }
+    const runOfComponent = new Map();
     for (const [c, ts] of members) {
       const comp = ivs.filter((_, i) => find(i) === c);
-      runs.push({ clone, turns: ts, intervals: comp, residual: false, labels: comp.some(iv => iv.record && iv.record.finished == null) ? ['incomplete'] : [] });
+      const run = { clone, turns: ts, intervals: comp, residual: false, labels: comp.some(iv => iv.record && iv.record.finished == null) ? ['incomplete'] : [] };
+      runs.push(run);
+      runOfComponent.set(c, run);
     }
     const bySession = new Map();
     for (const t of residual) {
       if (!bySession.has(t.sessionId)) bySession.set(t.sessionId, []);
       bySession.get(t.sessionId).push(t);
     }
-    for (const ts of bySession.values()) runs.push({ clone, turns: ts, intervals: [], residual: true, labels: [] });
+    const residualRun = new Map();
+    for (const [sid, ts] of bySession) {
+      const run = { clone, turns: ts, intervals: [], residual: true, labels: [] };
+      runs.push(run);
+      residualRun.set(sid, run);
+    }
+    // The same placement for a turn no index line carries (a transcript turn):
+    // the run its interval formed, or its session's residual run; none when the
+    // intervals clash or the turn would have formed a run of its own.
+    owners.set(clone, (sid, at) => {
+      const inside = insideAt(at);
+      if (!inside.length) return residualRun.get(sid) || null;
+      return clashes(inside) ? null : runOfComponent.get(find(inside[0])) || null;
+    });
   }
-  for (const r of runs) { r.first = r.turns[0].receivedAt; r.last = r.turns[r.turns.length - 1].receivedAt; }
+  runs.forEach((r, id) => { r.id = id; r.first = r.turns[0].receivedAt; r.last = r.turns[r.turns.length - 1].receivedAt; });
 
   // E5 weak chains: residual runs of every clone, in time order of first turn.
   for (const run of runs.filter(r => r.residual).sort((a, b) => a.first - b.first)) {
@@ -231,7 +249,8 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   };
 
   // E3 per run, then E6.
-  const out = { runs: [], ambiguousTurns, footer: { checkoutUnknown: 0, matchedNoNotebook: 0, heuristicParentIgnored: 0, background: background.size } };
+  const ownerOf = (sid, clone, at) => { const r = owners.has(clone) ? owners.get(clone)(sid, at) : null; return r ? r.id : null; };
+  const out = { runs: [], ownerOf, ambiguousTurns, footer: { checkoutUnknown: 0, matchedNoNotebook: 0, heuristicParentIgnored: 0, background: background.size } };
   const parentIgnored = new Set();
   for (const run of runs) {
     for (const t of run.turns) if (t.parentSessionId) parentIgnored.add(t.sessionId);
@@ -290,7 +309,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
     if (r.ambiguous.has('notebook') || r.ambiguous.has('ask')) status = 'ambiguous';
     else if (r.fixed.ask === OPEN) status = 'unassigned';
     else status = 'unique';
-    out.runs.push({ clone: run.clone, turns: run.turns, first: run.first, last: run.last, notebook: r.fixed.notebook, ask: r.fixed.ask, status,
+    out.runs.push({ id: run.id, clone: run.clone, turns: run.turns, first: run.first, last: run.last, notebook: r.fixed.notebook, ask: r.fixed.ask, status,
       evidence: r.level || 'window', labels: [...new Set(labels)], stage, requested,
       candidates: Object.fromEntries(LEVELS.map(lv => [lv, evidence[lv]])) });
   }
