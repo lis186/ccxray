@@ -35,7 +35,7 @@ const DELETED_ENV = [
 function findExecutable(name, searchPath = process.env.PATH || '', env = process.env, platform = process.platform, io = fs) {
   const pathApi = platform === 'win32' ? path.win32 : path;
   const extensions = platform === 'win32'
-    ? String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
     : [''];
   const candidates = platform === 'win32' && !pathApi.extname(name)
     ? extensions.map(extension => name + extension)
@@ -127,10 +127,10 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     path.dirname(process.execPath),
   ])];
   const pathApi = process.platform === 'win32' ? path.win32 : path;
-  const shellCandidateNames = ['bash', 'zsh', 'pwsh', 'powershell', 'powershell.exe'];
+  const shellCandidateNames = ['bash', 'zsh', 'pwsh', 'powershell', 'powershell.exe', 'claude', 'ccxray'];
   if (process.platform === 'win32') {
     const extensions = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
-    shellCandidateNames.push(...['bash', 'zsh', 'pwsh', 'powershell'].flatMap(name =>
+    shellCandidateNames.push(...['bash', 'zsh', 'pwsh', 'powershell', 'claude', 'ccxray'].flatMap(name =>
       extensions.map(extension => name + extension)));
   }
   const shellExecutableCandidates = new Set(shellDirs.flatMap(dir =>
@@ -201,7 +201,9 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   const assertSpawnAllowed = file => {
     assert.ok(allowedExecutables.has(path.resolve(file)), `spawn executable is not allowlisted: ${file}`);
   };
-  const executableMetadata = new Set([...allowedExecutables].map(file => path.resolve(file)));
+  // Windows paths are case-insensitive: PATHEXT probes stat powershell.EXE for powershell.exe.
+  const metadataKey = file => (process.platform === 'win32' ? path.resolve(file).toLowerCase() : path.resolve(file));
+  const executableMetadata = new Set([...allowedExecutables].map(metadataKey));
   const metadataAncestors = new Set();
   for (const fixturePath of allowedRoots) {
     for (let current = path.dirname(fixturePath); ; current = path.dirname(current)) {
@@ -300,7 +302,7 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     if (!follow && lexicalInside) return;
     if (metadataAncestors.has(lexical)
         && ['lstatSync', 'readlinkSync', 'statSync', 'realpathSync'].includes(operation)) return;
-    if (executableMetadata.has(lexical)
+    if (executableMetadata.has(metadataKey(lexical))
         && ['accessSync', 'lstatSync', 'statSync', 'realpathSync'].includes(operation)) return;
     let resolved;
     try { resolved = resolveForBoundary(rawPath); }

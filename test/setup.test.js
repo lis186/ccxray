@@ -2280,6 +2280,8 @@ test('PowerShell wrappers preserve argument boundaries under every installed edi
     const editions = ['pwsh', 'powershell']
       .map(name => ({ name, executable: fixtureExecutable(fixture, name) }))
       .filter(item => item.executable);
+    // windows-latest ships both editions; a missing one must fail, not silently shrink coverage.
+    if (process.platform === 'win32') assert.deepEqual(editions.map(item => item.name), ['pwsh', 'powershell']);
     if (!editions.length) { t.skip('no PowerShell edition is installed in this environment'); return; }
     for (const edition of editions) {
       const profile = path.join(fixture.paths.root, 'synthetic-profile-' + edition.name + '.ps1');
@@ -2949,6 +2951,8 @@ test('PowerShell wrappers cover bypasses, fallback, and one-launch failures unde
     const editions = ['pwsh', 'powershell']
       .map(name => ({ name, executable: fixtureExecutable(fixture, name) }))
       .filter(item => item.executable);
+    // windows-latest ships both editions; a missing one must fail, not silently shrink coverage.
+    if (process.platform === 'win32') assert.deepEqual(editions.map(item => item.name), ['pwsh', 'powershell']);
     if (!editions.length) { t.skip('no PowerShell edition is installed in this environment'); return; }
     for (const edition of editions) {
       const pwsh = edition.executable;
