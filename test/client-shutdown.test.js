@@ -9,7 +9,7 @@ const { armClientShutdown, signalExitCode, UNREGISTER_DEADLINE_MS } = require('.
 // A harness over the injection seams: no signals are sent to this process and
 // no socket is opened, so these run alongside the e2e in
 // test/hub-client-signal.e2e.test.js without touching a real hub.
-function arm({ child = null, unregister, deadlineMs, registration = Promise.resolve({}), lock = { sockPath: '/tmp/ccxray-test.sock' } } = {}) {
+function arm({ child = null, unregister, deadlineMs, registration = Promise.resolve({}), lock = { sockPath: '/tmp/ccxray-test.sock' }, onShutdownStart = () => {} } = {}) {
   const handlers = new Map();
   const exits = [];
   const unregistered = [];
@@ -22,7 +22,9 @@ function arm({ child = null, unregister, deadlineMs, registration = Promise.reso
     },
     exit: code => exits.push(code),
     on: (signal, fn) => handlers.set(signal, fn),
+    off: signal => handlers.delete(signal),
     getRegistration: () => registration,
+    onShutdownStart,
     deadlineMs,
   });
   return {
@@ -30,8 +32,9 @@ function arm({ child = null, unregister, deadlineMs, registration = Promise.reso
     setChild: next => { child = next; },
     setLock: next => { lock = next; },
     setRegistration: next => { registration = next; },
-    fire: signal => handlers.get(signal)(),
+    fire: signal => handlers.get(signal)?.(),
     signals: [...handlers.keys()],
+    signalCount: () => handlers.size,
   };
 }
 
@@ -42,6 +45,16 @@ const after = ms => new Promise(r => setTimeout(r, ms));
 describe('hub-client graceful shutdown', () => {
   it('arms every signal that would otherwise kill the process unregistered', () => {
     assert.deepEqual(arm().signals, ['SIGINT', 'SIGHUP', 'SIGTERM']);
+  });
+
+  it('abandons hub signal handlers without unregistering or exiting', () => {
+    const h = arm();
+    h.abandon();
+    h.fire('SIGTERM');
+    assert.equal(h.signalCount(), 0);
+    assert.equal(h.isShuttingDown(), true);
+    assert.deepEqual(h.unregistered, []);
+    assert.deepEqual(h.exits, []);
   });
 
   it('forwards to a live agent instead of unregistering itself', async () => {
@@ -72,12 +85,14 @@ describe('hub-client graceful shutdown', () => {
   });
 
   it('unregisters then exits when the signal lands before the agent exists', async () => {
-    const h = arm();
+    let shutdownStarts = 0;
+    const h = arm({ onShutdownStart: () => { shutdownStarts++; } });
 
     h.fire('SIGHUP');
     // The gate must flip synchronously: startClientMode checks it in the same
     // tick it would otherwise spawn the agent.
     assert.equal(h.isShuttingDown(), true);
+    assert.equal(shutdownStarts, 1, 'shutdown decision callback must run synchronously and once');
     await settled();
 
     assert.equal(h.unregistered.length, 1);
@@ -273,7 +288,7 @@ describe('hub-client shutdown wiring (structural)', () => {
     // settles, so a call-site-only check can be answered by a stale reading.
     const doSpawn = source.slice(source.indexOf('const doSpawn = () => {'));
     const guard = doSpawn.indexOf('opts.isShuttingDown');
-    const spawnCall = doSpawn.indexOf('spawn(launch.bin');
+    const spawnCall = doSpawn.indexOf('spawn(plan.file, plan.args');
     assert.ok(guard > 0, 'doSpawn does not consult opts.isShuttingDown');
     assert.ok(guard < spawnCall, 'the gate must be checked before spawn()');
   });
@@ -297,15 +312,23 @@ describe('hub-client shutdown wiring (structural)', () => {
     assert.match(body, /if \(clientShutdown\.isShuttingDown\(\)\) return;/);
   });
 
-  it('releases the slot when registration itself fails', () => {
-    // The hub can apply a registration and lose only the reply. These
-    // continuations were attached before any shutdown's, so a bare process.exit
-    // here wins the race and strands that slot until the 30s sweep.
+  it('hands registration failures to the single fail-open decision', () => {
+    // The hub can apply a registration and lose only the reply. Fail-open must
+    // detach the hub-client signal handlers and send a bounded unregister while
+    // the passthrough agent owns the terminal.
     const clientMode = source.slice(source.indexOf('async function startClientMode'));
     const body = clientMode.slice(0, clientMode.indexOf('\n}\n'));
-    assert.doesNotMatch(body, /Hub rejected client registration[\s\S]{0,80}process\.exit/);
-    assert.doesNotMatch(body, /Failed to register with hub[\s\S]{0,80}process\.exit/);
-    assert.match(body, /Hub rejected client registration[\s\S]{0,80}clientShutdown\.shutdown\(1\)/);
-    assert.match(body, /Failed to register with hub[\s\S]{0,80}clientShutdown\.shutdown\(1\)/);
+    assert.match(body, /hub-registration-rejected/);
+    assert.match(body, /hub-registration-failed/);
+    assert.match(body, /decision\.setRegistration\(registration, lock\)/);
+    assert.match(source, /onShutdownStart: \(\) => decision\.abortForShutdown\(\)/);
+    assert.doesNotMatch(body, /clientShutdown\.shutdown\(1\)/);
+    assert.match(source, /decision\.setRegistration\(registration, lock\)/);
+    const decisionSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'launch-decision.js'), 'utf8')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+    assert.match(decisionSource, /abortForShutdown: \(\) => decide\('aborted'\)/);
+    assert.match(decisionSource, /HUB_REQUEST_TIMEOUT_MS \+ 500/);
+    assert.match(decisionSource, /const first = attempt\(\);[\s\S]*?return bounded\(first, deadlineMs\)/);
+    assert.match(decisionSource, /first\.then\(reply => \{[\s\S]*?scheduleRetry\(\)/);
   });
 });

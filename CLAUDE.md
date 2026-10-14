@@ -108,8 +108,10 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/routes/intercept.js` | Intercept toggle/approve/reject/timeout |
 | `server/routes/costs.js` | Cost budget endpoints |
 | `server/hub.js` | Multi-project hub: lockfile (`~/.ccxray/hub.json`), discovery (with orphan port probe fallback), client registration, idle shutdown (injectable via setOnShutdown), crash auto-recovery |
+| `server/launch-decision.js` | Single hub-attach outcome, fail-open fallback, settlement-first tokened unregister cleanup and retries |
 | `server/auth.js` | API key auth middleware (enabled via `AUTH_TOKEN` env) |
 | `server/client-shutdown.js` | Hub-client graceful shutdown. `armClientShutdown` must be armed BEFORE `hub.registerClient()` — an unarmed SIGHUP/SIGTERM keeps its OS default disposition and kills the process without unregistering, leaving a phantom client until the hub's 30s dead-client sweep |
+| `server/win-launch.js` | Windows shell-free executable resolution for PATH, PATHEXT, npm cmd-shims, and native binary diagnostics |
 | `server/openai-response.js` | OpenAI Responses API helpers: response-object detection, field extraction |
 | `server/ws-proxy.js` | OpenAI WebSocket transport proxy for `/v1/responses` and `/v1/realtime` upgrades. Tracks active sessions + pending `recordWebSocketEntry` promises so `drainWebSocketProxy()` can force-finalize stragglers and await writes on shutdown. Tunables: `CCXRAY_WS_IDLE_TIMEOUT_MS` (default 60s), `CCXRAY_WS_MAX_QUEUE_BYTES` (default 4 MiB; caps client→upstream buffer while upstream is connecting) |
 | `server/entry.js` | `INDEX_FIELDS`, `buildIndexLine`, `deploymentFields` — the index-line schema definition. Invariants reference this file |
@@ -163,11 +165,14 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
                        ├── HTTP proxy on :5577
                        ├── Dashboard (same port)
                        ├── Client registry (register/unregister/health)
-                       └── Idle shutdown (5s after last client exits)
+                     └── Idle shutdown (5s after readiness with no clients, or after last client exits)
 ```
 
 - Hub lockfile: `~/.ccxray/hub.json` (written after `listen()` succeeds = readiness signal)
 - Hub log: `~/.ccxray/hub.log` (stdout/stderr of detached process)
+- An empty hub starts its 5s idle timer as soon as it writes the readiness lock. Registering a client cancels the timer; unregistering the last client starts it again.
+- Register and unregister socket messages carry one random token per launcher process. An unregister that arrives before that launch's registration cancels only that token; cancelled markers are swept after the launcher PID dies. On fail-open, registration settlement is bounded by the hub request timeout plus 500 ms. After settlement, ccxray sends one bounded unregister and retries after hub health intervals until acknowledgement, hub death, or launcher exit.
+- `ccxray <agent>` falls back to the provider's plain command if hub attach fails or exceeds `CCXRAY_ATTACH_TIMEOUT_MS` (default 3000ms), or if standalone startup fails before listen. The fallback is recorded in `fail-open.log`; `CCXRAY_FAIL_CLOSED=1` keeps the exit-on-failure behavior. Claude `--bg` / `--background` launches bypass the proxy and are recorded as `bg-bypass`; `-p --bg` is treated as a background bypass because `-p` takes no value.
 - **Hub mode is narrower than it looks.** `hubMode` is set ONLY by the internal `--hub-mode` flag (`server/index.js:53`), which the detached hub gives itself. These all run as independent servers sharing the same `CCXRAY_HOME`:
   - `ccxray --port N <agent>` — explicit port opts out (`index.js:1185`; no lockfile, `:1116`)
   - `ccxray` with no agent — standalone proxy + dashboard
@@ -186,6 +191,7 @@ Launchers are **modules** in `server/providers.js` — not product forks. Full c
 3. If it speaks OpenAI Responses (`POST /v1/responses`) but is **not** Codex → also add an **`OPENAI_WIRE_CLIENTS`** entry: `matchHeaders`, `upstreamKey` (host profile), `rawSessionId`, optional `sessionHeaderNames` / `controlPlaneIsNoise` / `modelPattern`. Reuse `wire-parsers/openai.js`; do not fork a new parser per agent.
 
 Current modules: `claude` (anthropic), `codex` (openai → api.openai.com / ChatGPT), `grok` (openai client → `UPSTREAMS.xai`). Helpers: `describeAgentModule`, `listRawSessionBuckets`, `agentUsesCwdFallback`. Multi-agent acceptance: `test/multi-agent-proxy.e2e.test.js`. Avoid new `if (provider === …)` branches in `server/index.js`.
+- On Windows, `spawnAgent` resolves fully-qualified PATH entries and PATHEXT itself, then uses shell-free `spawn()`. It never runs `.cmd`/`.bat`; it recognizes the adjacent npm package and shim target, then launches the target `.exe`/`.com` or JavaScript bin directly. Placeholder binaries, unsupported wrappers, resolver errors, and synchronous spawn throws use the same one-time launch error reporter.
 - `--no-browser` only suppresses browser auto-open. The dashboard remains available on the proxy port.
 - Codex's main session traffic upgrades to a WebSocket on `POST /v1/responses` (with `openai-beta: responses_websockets=*`), not `/v1/realtime`. `/v1/realtime` exists for the older Realtime API but is not what current codex uses for normal `/goal` / chat turns. When ChatGPT auth is active, codex also sends `chatgpt-account-id`, which `getUpstreamForRequestAndHeaders` (see `server/config.js`) uses to route to `CHATGPT_BASE_URL` instead of `OPENAI_BASE_URL`.
 - Codex 0.133+ pings platform endpoints on startup. All ChatGPT-platform paths (`/v1/plugins/*`, `/v1/ps/plugins/*`, `/v1/connectors/*`, `/v1/api/codex/*`, `/v1/codex/*`) and `/v1/models` are classified as noise by `isNoiseRequest` in `server/wire-parsers/openai.js`; `server/index.js` forwards them with `skipEntry: true` so they don't pollute the dashboard.

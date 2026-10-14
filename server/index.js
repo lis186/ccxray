@@ -224,6 +224,8 @@ const agentMode = Boolean(agentCommand);
 const agentArgs = agentMode ? process.argv.slice(3) : [];
 const DISPLAY_NAME = providers.getDisplayName(agentCommand, process.env);
 
+const { hasClaudeBackgroundFlag } = require('./claude-args');
+
 // In agent/hub mode, mute startup logs so they don't pollute output.
 const _origLog = console.log;
 if (agentMode || hubMode) console.log = () => {};
@@ -334,6 +336,8 @@ const HOP_BY_HOP_HEADERS = new Set([
 // allowlist here leaked the pane-identity header upstream.
 const { isInternalHeader } = require('./internal-headers');
 const { armClientShutdown, signalExitCode } = require('./client-shutdown');
+const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
+const { resolveAgentLaunch } = require('./win-launch');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -785,7 +789,7 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
     // waiting — spawning then orphans the agent. See server/client-shutdown.js.
     if (opts.isShuttingDown && opts.isShuttingDown()) return;
     const { spawn } = require('child_process');
-    const launch = providers.getAgentLaunch(command, port, args);
+    const launch = opts.launch || providers.getAgentLaunch(command, port, args);
     let finished = false;
     const finish = (code) => {
       if (finished) return;
@@ -797,18 +801,34 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
       finish(1);
       return;
     }
-    const child = spawn(launch.bin, launch.args, {
-      stdio: 'inherit',
-      env: launch.env,
-    });
-    if (opts.onChild) opts.onChild(child);
-    child.on('error', (err) => {
+    let child;
+    const reportLaunchFailure = err => {
       if (err.code === 'ENOENT') {
         console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
         console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
       } else {
         console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
       }
+    };
+    try {
+      const plan = resolveAgentLaunch(launch.bin, launch.args, launch.env, providers.getAgentProvider(command));
+      if (plan.kind === 'error') {
+        reportLaunchFailure(plan.code === 'ENOENT' ? { code: 'ENOENT' } : { message: plan.message });
+        finish(1);
+        return;
+      }
+      child = spawn(plan.file, plan.args, {
+        stdio: 'inherit',
+        env: launch.env,
+      });
+    } catch (err) {
+      reportLaunchFailure(err);
+      finish(1);
+      return;
+    }
+    if (opts.onChild) opts.onChild(child);
+    child.on('error', (err) => {
+      reportLaunchFailure(err);
       finish(1);
     });
     child.on('exit', (code, signal) => {
@@ -826,11 +846,19 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
     }
   };
 
-  if (command === 'claude') {
+  if (command === 'claude' && !opts.skipStatuslinePrompt) {
     const p = promptClaudeStatusline();
     if (p && typeof p.then === 'function') { p.then(doSpawn).catch(() => doSpawn()); return; }
   }
   doSpawn();
+}
+
+const ATTACH_TIMEOUT_DEFAULT_MS = 3000;
+
+function attachTimeoutMs(env = process.env) {
+  if (env.CCXRAY_ATTACH_TIMEOUT_MS === undefined) return ATTACH_TIMEOUT_DEFAULT_MS;
+  const parsed = Number(env.CCXRAY_ATTACH_TIMEOUT_MS);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : ATTACH_TIMEOUT_DEFAULT_MS;
 }
 
 // Drain pending WS finalize promises and storage writes before process.exit.
@@ -1163,12 +1191,13 @@ function reportHubRegistrationStatus(reply, lifecycle) {
   if (rendered) _origLog(rendered);
 }
 
-async function startClientMode(lock) {
+async function startClientMode(lock, decision) {
   const compat = hub.checkVersionCompat(lock.version);
   if (compat.fatal) {
-    console.error(`\x1b[31m${compat.message}\x1b[0m`);
-    process.exit(1);
+    decision.decide('original', 'version-mismatch', compat.message);
+    return;
   }
+  if (decision.isDecided()) return;
   if (compat.warning) {
     _origLog(`\x1b[33m${compat.warning}\x1b[0m`);
   }
@@ -1197,19 +1226,31 @@ async function startClientMode(lock) {
   let currentLock = lock;
   const clientShutdown = armClientShutdown(() => currentLock, () => agentChild, {
     getRegistration: () => registration,
+    onShutdownStart: () => decision.abortForShutdown(),
   });
+  decision.setClientShutdown(clientShutdown);
 
   try {
+    if (decision.isDecided()) return;
     registration = hub.registerClient(lock, process.pid, process.cwd(), clientIdentity);
-    const reg = await registration;
-    if (!reg) {
-      console.error('\x1b[31mHub rejected client registration.\x1b[0m');
-      // Through the shutdown path, not process.exit: the hub may have applied
-      // the registration and lost only the reply, and a bare exit here would
-      // leave that slot held until the 30s sweep.
-      clientShutdown.shutdown(1);
+    decision.setRegistration(registration, lock);
+    const result = await raceWithLaunchDecision(registration, decision);
+    if (result.kind === 'decision') return;
+    if (result.kind === 'error') {
+      decision.decide('original', 'hub-registration-failed', `Failed to register with hub: ${result.error.message}`);
       return;
     }
+    const reg = result.value;
+    if (decision.isDecided()) return;
+    if (!reg) {
+      decision.decide('original', 'hub-registration-rejected', 'Hub rejected client registration.');
+      return;
+    }
+
+    // Registration is the hub-client attach decision point. Everything after
+    // this—including browser bootstrap and agent startup—belongs to the normal
+    // proxied launch lifecycle.
+    if (!decision.decide('proxied')) return;
 
     reportHubRegistrationStatus(reg, 'attached');
 
@@ -1239,12 +1280,12 @@ async function startClientMode(lock) {
       }
     }
   } catch (err) {
-    console.error(`\x1b[31mFailed to register with hub: ${err.message}\x1b[0m`);
-    // Same reason as the !reg branch above. This continuation was attached
-    // before any shutdown's, so a bare exit here wins the race against it.
-    clientShutdown.shutdown(1);
+    if (decision.getOutcome() === 'proxied') throw err;
+    decision.decide('original', 'hub-registration-failed', `Failed to register with hub: ${err.message}`);
     return;
   }
+
+  if (decision.getOutcome() !== 'proxied') return;
 
   // Monitor hub health and auto-recover
   hub.startHubMonitor(lock.pid, lock.port, async (newLock) => {
@@ -1364,7 +1405,7 @@ async function runPostListenStartupTasks() {
   }
 }
 
-async function startServer() {
+async function startServer({ onListen } = {}) {
   if (!allowUpstreamLoop) {
     const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
     const upstreamFamily = providers.getAgentProvider(agentCommand)?.upstream ?? 'anthropic';
@@ -1434,6 +1475,7 @@ async function startServer() {
   } else {
     actualPort = await hub.tryListen(server, config.PORT, maxAttempts);
   }
+  if (onListen) onListen(actualPort);
   hub.setIdentityPort(actualPort);
   rebuildIndexHTML(actualPort);
 
@@ -1449,6 +1491,10 @@ async function startServer() {
     await hub.createHubSocket();
     // Write lockfile after BOTH http + socket are ready (readiness signal)
     hub.writeHubLock(actualPort, process.pid, undefined, hub.SOCK_PATH);
+    // A detached hub can become ready just as its client gives up attaching.
+    // Start the same idle timer used after the last unregister so an empty hub
+    // does not live forever waiting for a client that will never arrive.
+    hub.startIdleTimer();
     hub.startDeadClientCheck();
     hub.setOnShutdown(() => gracefulExit(0));
     const cleanup = () => hub.shutdownHub(); // closes socket + deletes lockfile + gracefulExit via onShutdown
@@ -1507,12 +1553,48 @@ async function startServer() {
 }
 
 // ── Main entry ──
+const launchDecision = agentMode ? createLaunchDecision({
+  command: agentCommand,
+  args: agentArgs,
+  attachTimeoutMs: () => attachTimeoutMs(),
+  logFailOpen: record => {
+    try {
+      const home = resolveCcxrayHome();
+      fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+      fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify(record) + '\n', { mode: 0o600 });
+    } catch {}
+  },
+  spawnFallback: (launch, onExit) => {
+    const provider = providers.getAgentProvider(agentCommand);
+    spawnAgent(agentCommand, null, agentArgs, onExit, {
+      launch: { ...launch, label: provider?.label || agentCommand, installHint: provider?.installHint || '' },
+      skipStatuslinePrompt: true,
+    });
+  },
+}) : null;
+
 (async () => {
+  // Background Claude sessions can outlive their launcher process. Keep the
+  // session usable, but run it directly so the hub does not lose its client.
+  if (agentCommand === 'claude' && hasClaudeBackgroundFlag(agentArgs)) {
+    launchDecision.decide('original', 'bg-bypass');
+    return;
+  }
+
   // Hub mode or explicit port or standalone: start server directly
   if (hubMode || explicitPort || !agentMode) {
     try {
-      await startServer();
+      await startServer(agentMode && !hubMode
+        ? { onListen: () => launchDecision.decide('proxied') }
+        : undefined);
     } catch (err) {
+      if (agentMode && !hubMode && !launchDecision.isDecided()) {
+        const message = err.code === 'EADDRINUSE'
+          ? `Error: port ${config.PORT} is already in use`
+          : `Startup failed: ${err.message}`;
+        launchDecision.decide('original', 'server-start-failed', message);
+        return;
+      }
       if (err.code === 'EADDRINUSE') {
         console.error(`\x1b[31mError: port ${config.PORT} is already in use\x1b[0m`);
       } else {
@@ -1525,7 +1607,13 @@ async function startServer() {
 
   // Windows: hub mode requires Unix sockets; fall back to standalone
   if (process.platform === 'win32') {
-    try { await startServer(); } catch (err) {
+    try {
+      await startServer({ onListen: () => launchDecision.decide('proxied') });
+    } catch (err) {
+      if (!launchDecision.isDecided()) {
+        launchDecision.decide('original', 'server-start-failed', `Startup failed: ${err.message}`);
+        return;
+      }
       console.error(`\x1b[31mStartup failed: ${err.message}\x1b[0m`);
       process.exit(1);
     }
@@ -1533,9 +1621,30 @@ async function startServer() {
   }
 
   // Agent mode without explicit port: try hub discovery
-  const existingHub = await hub.discoverHub(config.PORT);
+  launchDecision.startBudget();
+  let discovery;
+  try {
+    discovery = await raceWithLaunchDecision(hub.discoverHub(config.PORT), launchDecision);
+  } catch (err) {
+    launchDecision.decide('original', 'hub-discovery-failed', err.message);
+    return;
+  }
+  if (discovery.kind === 'decision') return;
+  if (discovery.kind === 'error') {
+    launchDecision.decide('original', 'hub-discovery-failed', discovery.error.message);
+    return;
+  }
+  const existingHub = discovery.value;
   if (existingHub) {
-    await startClientMode(existingHub);
+    try {
+      await startClientMode(existingHub, launchDecision);
+    } catch (err) {
+      if (!launchDecision.isDecided()) launchDecision.decide('original', 'hub-attach-failed', err.message);
+      else if (launchDecision.getOutcome() === 'proxied') {
+        console.error(`\x1b[31m${err.message}\x1b[0m`);
+        process.exit(1);
+      }
+    }
     return;
   }
 
@@ -1543,41 +1652,57 @@ async function startServer() {
   // failure is asynchronous, so race it against readiness instead of relying
   // on the detached child to make the failure observable by itself.
   let acquired = false;
-  let launchFailure = null;
+  let forkLockReleased = false;
+  const releaseForkLock = () => {
+    if (!acquired || forkLockReleased) return;
+    forkLockReleased = true;
+    hub.releaseForkLock();
+  };
+  launchDecision.setForkLockRelease(releaseForkLock);
   try {
     acquired = hub.tryAcquireForkLock();
+    if (launchDecision.isDecided()) return;
+    let readiness;
     if (acquired) {
       let rejectLaunch;
-      launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+      const launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
       hub.forkHub(config.PORT, { onError: rejectLaunch });
+      readiness = Promise.race([
+        hub.waitForHubReady().then(lock => ({ kind: 'ready', lock }), error => ({ kind: 'readiness-error', error })),
+        launchFailure.then(() => ({ kind: 'ready' }), error => ({ kind: 'fork-error', error })),
+      ]);
+    } else {
+      readiness = hub.waitForHubReady().then(
+        lock => ({ kind: 'ready', lock }),
+        error => ({ kind: 'readiness-error', error }),
+      );
     }
-    const readiness = hub.waitForHubReady();
-    const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
-    if (acquired) hub.releaseForkLock();
-    await startClientMode(lock);
+    const result = await raceWithLaunchDecision(readiness, launchDecision);
+    if (result.kind === 'decision') return;
+    if (result.kind === 'error') {
+      launchDecision.decide('original', 'hub-readiness-failed', result.error.message);
+      return;
+    }
+    if (result.value.kind !== 'ready') {
+      const reason = result.value.kind === 'fork-error' ? 'hub-fork-failed' : 'hub-readiness-failed';
+      launchDecision.decide('original', reason, result.value.error.message);
+      return;
+    }
+    const lock = result.value.lock || hub.readHubLock();
+    releaseForkLock();
+    if (!lock) {
+      launchDecision.decide('original', 'hub-readiness-failed');
+      return;
+    }
+    await startClientMode(lock, launchDecision);
   } catch (err) {
-    if (acquired) hub.releaseForkLock();
-    console.error(`\x1b[31m${err.message}\x1b[0m`);
-    // Show last hub log lines so user doesn't have to open the file
-    const fs = require('fs');
-    try {
-      const log = fs.readFileSync(hub.HUB_LOG_PATH, 'utf8');
-      const lines = log.trim().split('\n');
-      const lastErrors = lines.filter(l => /error|EADDRINUSE/i.test(l)).slice(-3);
-      if (lastErrors.length) {
-        console.error('\x1b[33mHub log:\x1b[0m');
-        lastErrors.forEach(l => console.error(`  ${l.replace(/\x1b\[[0-9;]*m/g, '')}`));
-      }
-      if (lines.some(l => /EADDRINUSE|already in use/i.test(l))) {
-        // #555: probe the occupant instead of the old blanket "kill the
-        // process" advice, and offer PROXY_PORT (which moves the hub) rather
-        // than --port (which would silently opt out of hub mode).
-        const occ = await hub.probePortOccupant(config.PORT);
-        const advice = hub.describePortOccupant(occ, config.PORT);
-        if (advice.length) advice.forEach(l => console.error(`\x1b[33mSuggestion: ${l}\x1b[0m`));
-        else console.error(`\x1b[33mSuggestion: port ${config.PORT} was busy but seems free now — retry, or relaunch with PROXY_PORT=<other-port>.\x1b[0m`);
-      }
-    } catch {}
-    process.exit(1);
+    releaseForkLock();
+    if (!launchDecision.isDecided()) launchDecision.decide('original', 'hub-attach-failed', err.message);
+    else if (launchDecision.getOutcome() === 'proxied') {
+      console.error(`\x1b[31m${err.message}\x1b[0m`);
+      process.exit(1);
+    }
+  } finally {
+    releaseForkLock();
   }
 })();

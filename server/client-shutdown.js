@@ -52,12 +52,14 @@ function armClientShutdown(getLock, getChild, deps = {}) {
   const hub = deps.hub || require('./hub');
   const exit = deps.exit || (code => process.exit(code));
   const on = deps.on || ((signal, fn) => process.on(signal, fn));
+  const onShutdownStart = deps.onShutdownStart || (() => {});
   const deadlineMs = deps.deadlineMs ?? UNREGISTER_DEADLINE_MS;
   const getRegistration = deps.getRegistration || (() => null);
 
   let shuttingDown = false;
   let chosenCode = null;
   let exited = false;
+  let abandoned = false;
   // Counts USER signals — every one that arrives, including those forwarded to a
   // live agent. A shutdown started by the agent's own exit leaves this at 0, so
   // the SIGINT the terminal delivered to both of us — arriving after the agent
@@ -79,6 +81,7 @@ function armClientShutdown(getLock, getChild, deps = {}) {
     if (shuttingDown) return;
     shuttingDown = true;
     chosenCode = code;
+    onShutdownStart();
 
     // Wait for an in-flight registration before unregistering. The two are
     // separate socket round trips with no ordering guarantee, so unregistering
@@ -110,6 +113,7 @@ function armClientShutdown(getLock, getChild, deps = {}) {
   };
 
   const onSignal = (signal) => {
+    if (abandoned) return;
     // Counted before the live-child branch returns. Counting only the signals
     // that reach the shutdown below would mean a Ctrl-C delivered while the
     // agent was still alive did not count, so the user's SECOND press would read
@@ -142,9 +146,20 @@ function armClientShutdown(getLock, getChild, deps = {}) {
   // startup, and no handler at all leaves the phantom-client hole this module
   // closes. Routing it through onSignal gives both: nothing while the agent
   // owns the terminal, unregister-and-exit before that.
-  on('SIGINT', () => onSignal('SIGINT'));
-  on('SIGHUP', () => onSignal('SIGHUP'));
-  on('SIGTERM', () => onSignal('SIGTERM'));
+  const signalHandlers = {
+    SIGINT: () => onSignal('SIGINT'),
+    SIGHUP: () => onSignal('SIGHUP'),
+    SIGTERM: () => onSignal('SIGTERM'),
+  };
+  for (const [signal, handler] of Object.entries(signalHandlers)) on(signal, handler);
+
+  const off = deps.off || ((signal, handler) => process.off(signal, handler));
+  const abandon = () => {
+    if (abandoned) return;
+    abandoned = true;
+    shuttingDown = true;
+    for (const [signal, handler] of Object.entries(signalHandlers)) off(signal, handler);
+  };
 
   return {
     // The caller MUST gate the agent spawn on this, and must re-check it
@@ -154,6 +169,10 @@ function armClientShutdown(getLock, getChild, deps = {}) {
     // Spawning then leaves the agent running with its parent gone.
     isShuttingDown: () => shuttingDown,
     shutdown,
+    // Fail-open transfers this process to an unproxied child. Remove the
+    // hub-client signal handlers so they cannot intercept signals intended
+    // for that child; registration cleanup is owned by the launch decision.
+    abandon,
   };
 }
 
