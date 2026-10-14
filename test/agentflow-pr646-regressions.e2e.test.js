@@ -278,6 +278,29 @@ describe('PR #646 report regressions', () => {
     assert.deepEqual(external.map(x => [x.completeness, x.total.calls]), [['complete', 1]]);
   });
 
+  it('gives a native subagent turn of a session in two clones to neither run, as its index turns', () => {
+    const ctx = setup('worker-two-clones', ['one', 'two']);
+    const clone1 = path.join(ctx.base, 'agentflow-external-runner-two1', 'clone');
+    const clone2 = path.join(ctx.base, 'agentflow-external-runner-two2', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone1, 20, 40);
+    writeDispatch(ctx, '.', 'A-002', clone2, 70, 90);
+    const worker = sid(13);
+    const said = (uuid, s, id, cwd) => ({ type: 'assistant', uuid, sessionId: worker, cwd, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    const project = claudeProject(ctx, clone1);
+    fs.writeFileSync(path.join(project, `${worker}.jsonl`),
+      [said('1', 25, 'msg-1', clone1), said('2', 75, 'msg-2', clone2)].map(e => JSON.stringify(e)).join('\n') + '\n');
+    // A subagent turn in its own worktree that no index line carries: its worker
+    // session ran in two clones, so it belongs to neither run.
+    fs.mkdirSync(path.join(project, worker, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(project, worker, 'subagents', 'agent-x.jsonl'), JSON.stringify(said('s', 30, 'msg-s', ctx.repo)) + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    const both = (id, s, cwd) => [{ ...row, cwd, id: `${id}-p`, receivedAt: at(s), responseId: id }, { ...row, cwd, id: `${id}-i`, receivedAt: at(s), responseId: id, imported: true, importSource: 'claude-code' }];
+    writeIndex(ctx, [...both('msg-1', 25, clone1), ...both('msg-2', 75, clone2)]);
+    const r = report(ctx);
+    const label = ask => r.asks.find(a => a.id === ask).executors.filter(x => x.kind === 'external').map(x => x.completeness);
+    assert.deepEqual([label('A-001'), label('A-002')], [['complete'], ['complete']]);
+  });
+
   it('compares a worker\'s own transcript turns with its clone, not with where its subagents ran', () => {
     const ctx = setup('worker-subagent-cwd');
     const clone = path.join(ctx.base, 'agentflow-external-runner-sub', 'clone');

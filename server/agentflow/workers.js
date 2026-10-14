@@ -249,7 +249,15 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   };
 
   // E3 per run, then E6.
-  const ownerOf = (sid, clone, at) => { const r = owners.has(clone) ? owners.get(clone)(sid, at) : null; return r ? r.id : null; };
+  // A transcript turn's run, placed as an index turn at that cwd and time is:
+  // its clone by cwd, or for a native subagent the worker's one clone.
+  const ownerOf = (sid, at, turnCwd, native) => {
+    if (!turnCwd) return null;
+    const own = canonicalPath(turnCwd);
+    const clone = clones.has(own) ? own : native && clonesOf.get(sid)?.size === 1 ? [...clonesOf.get(sid)][0] : null;
+    const r = clone && owners.has(clone) ? owners.get(clone)(sid, at) : null;
+    return r ? r.id : null;
+  };
   const out = { runs: [], ownerOf, ambiguousTurns, footer: { checkoutUnknown: 0, matchedNoNotebook: 0, heuristicParentIgnored: 0, background: background.size } };
   const parentIgnored = new Set();
   for (const run of runs) {
