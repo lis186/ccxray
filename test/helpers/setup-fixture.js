@@ -35,7 +35,7 @@ const DELETED_ENV = [
 function findExecutable(name, searchPath = process.env.PATH || '', env = process.env, platform = process.platform, io = fs) {
   const pathApi = platform === 'win32' ? path.win32 : path;
   const extensions = platform === 'win32'
-    ? String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    ? String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
     : [''];
   const candidates = platform === 'win32' && !pathApi.extname(name)
     ? extensions.map(extension => name + extension)
@@ -126,6 +126,18 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     ...systemDirs,
     path.dirname(process.execPath),
   ])];
+  const pathApi = process.platform === 'win32' ? path.win32 : path;
+  const shellCandidateNames = ['bash', 'zsh', 'pwsh', 'powershell', 'powershell.exe'];
+  if (process.platform === 'win32') {
+    const extensions = String(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+    shellCandidateNames.push(...['bash', 'zsh', 'pwsh', 'powershell'].flatMap(name =>
+      extensions.map(extension => name + extension)));
+  }
+  const shellExecutableCandidates = new Set(shellDirs.flatMap(dir =>
+    shellCandidateNames.map(name => {
+      const candidate = pathApi.resolve(pathApi.join(dir, name));
+      return process.platform === 'win32' ? candidate.toLowerCase() : candidate;
+    })));
   const fixturePath = [paths.bin, ...shellDirs].join(path.delimiter);
   const env = { ...process.env };
   for (const key of DELETED_ENV) delete env[key];
@@ -301,6 +313,11 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
       assert.fail(`sensitive filesystem read outside fixture root: ${operation} ${lexical} → ${resolved}`);
     }
   };
+  const isShellExecutableCandidate = candidate => {
+    const raw = normalizePath(candidate);
+    const absolute = pathApi.resolve(raw);
+    return shellExecutableCandidates.has(process.platform === 'win32' ? absolute.toLowerCase() : absolute);
+  };
   const policies = {
     accessSync: { follow: true }, appendFileSync: { write: true }, chmodSync: { write: true },
     chownSync: { write: true }, copyFileSync: { copy: true }, createReadStream: { follow: true },
@@ -315,6 +332,11 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   const guardedCall = (target, property, args, delegate = null) => {
     const policy = policies[property];
     if (!policy) return (delegate || target[property]).apply(target, args);
+    if (['accessSync', 'lstatSync', 'statSync'].includes(property)
+        && isShellExecutableCandidate(args[0])) {
+      try { (delegate || target[property]).apply(target, args); }
+      catch (error) { if (error.code === 'ENOENT') throw error; }
+    }
     if (policy.copy) {
       assertPathAllowed('copyFileSync:source', args[0]);
       assertPathAllowed('copyFileSync:destination', args[1], { write: true });

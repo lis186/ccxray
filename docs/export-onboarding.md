@@ -22,6 +22,12 @@ To stop future uploads and remove the wrapper, run:
 ccxray setup --remove
 ```
 
+Setup replaces or removes only a block that still matches its generated output.
+If it reports a malformed block, delete everything from the start marker line
+through the end marker line in that startup file, then re-run `ccxray setup`.
+`ccxray setup --remove` still writes the removed tombstone, but leaves a
+malformed block unchanged and reports cleanup incomplete.
+
 On Windows, setup discovers and configures every installed PowerShell edition
 by default. Run `ccxray setup --check` in each edition and inspect the reported
 edition and console host. The check does not cover host-specific profiles such

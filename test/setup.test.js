@@ -206,6 +206,7 @@ function makeClaudeOnlyPath(fixture, directory) {
   fs.copyFileSync(path.join(fixture.paths.bin, 'claude'), path.join(directory, 'claude'));
   if (process.platform === 'win32') {
     fs.copyFileSync(path.join(fixture.paths.bin, 'claude.cmd'), path.join(directory, 'claude.cmd'));
+    fs.copyFileSync(path.join(fixture.paths.bin, 'fake-client.js'), path.join(directory, 'fake-client.js'));
   }
   return directory;
 }
@@ -231,31 +232,6 @@ function mockedPowerShellDeps(fixture, profile, overrides = {}) {
     nonce: frameNonce,
     runBounded: async () => ({ status: 'exited', exitCode: 0, stdout }),
   });
-}
-
-function braceCrossingRegion(powershell, shape) {
-  const generated = setup.renderRcBlock({
-    bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
-  }, powershell);
-  const rows = generated.replace(/\n$/, '').split('\n');
-  const inner = rows.slice(1, -1);
-  const foreignHeader = powershell ? 'function foreign {' : 'foreign() {';
-  if (shape === 'negative-depth') {
-    return [
-      foreignHeader,
-      setup.START_MARKER,
-      '}',
-      ...inner,
-      setup.END_MARKER,
-    ].join('\n');
-  }
-  return [
-    setup.START_MARKER,
-    foreignHeader,
-    ...inner,
-    setup.END_MARKER,
-    '}',
-  ].join('\n');
 }
 
 function installArgs(extra = []) {
@@ -405,6 +381,57 @@ test('rc block parsing, writing, byte preservation, encodings, and malformed sha
   assert.equal(appendedForeign.slice(0, foreign.length), foreign);
 });
 
+test('v1 rendered-block golden byte strings remain owned', () => {
+  const fixtures = [
+    {
+      powershell: false,
+      text: "# >>> ccxray setup >>>\nexport CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'\nexport CCXRAY_EXPORT_GCS_PREFIX='summaries'\nexport CCXRAY_EXPORT_DOMAINS='example.test'\nexport LOG_RETENTION_DAYS='30'\nexport CCXRAY_IMPORT_DISABLE='1'\nclaude() {\n  : ccxray-wrapper-v1\n  case \"$1\" in --version|--help|-h|mcp|doctor|agents|plugin|auth|attach|respawn)\n    command claude \"$@\"; return ;; esac\n  if command -v ccxray >/dev/null 2>&1; then ccxray claude \"$@\"; else command claude \"$@\"; fi\n}\n# <<< ccxray setup <<<\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30 },
+    },
+    {
+      powershell: false,
+      text: "# >>> ccxray setup >>>\r\nexport CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'\r\nexport CCXRAY_EXPORT_GCS_PREFIX='summaries'\r\nexport CCXRAY_EXPORT_DOMAINS='example.test'\r\nexport LOG_RETENTION_DAYS='30'\r\nexport CCXRAY_IMPORT_DISABLE='1'\r\nclaude() {\r\n  : ccxray-wrapper-v1\r\n  case \"$1\" in --version|--help|-h|mcp|doctor|agents|plugin|auth|attach|respawn)\r\n    command claude \"$@\"; return ;; esac\r\n  if command -v ccxray >/dev/null 2>&1; then ccxray claude \"$@\"; else command claude \"$@\"; fi\r\n}\r\n# <<< ccxray setup <<<\r\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30 },
+    },
+    {
+      powershell: false,
+      text: "# >>> ccxray setup >>>\nexport CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'\nexport CCXRAY_EXPORT_GCS_PREFIX='summaries'\nexport CCXRAY_EXPORT_DOMAINS='example.test'\nexport LOG_RETENTION_DAYS='30'\nexport CCXRAY_EXPORT_CWD_ALLOWLIST='repo'\\''s'\nexport CCXRAY_IMPORT_DISABLE='1'\nclaude() {\n  : ccxray-wrapper-v1\n  case \"$1\" in --version|--help|-h|mcp|doctor|agents|plugin|auth|attach|respawn)\n    command claude \"$@\"; return ;; esac\n  if command -v ccxray >/dev/null 2>&1; then ccxray claude \"$@\"; else command claude \"$@\"; fi\n}\n# <<< ccxray setup <<<\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30, cwdAllowlist: "repo's" },
+    },
+    {
+      powershell: false,
+      text: "# >>> ccxray setup >>>\r\nexport CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'\r\nexport CCXRAY_EXPORT_GCS_PREFIX='summaries'\r\nexport CCXRAY_EXPORT_DOMAINS='example.test'\r\nexport LOG_RETENTION_DAYS='30'\r\nexport CCXRAY_EXPORT_CWD_ALLOWLIST='repo'\\''s'\r\nexport CCXRAY_IMPORT_DISABLE='1'\r\nclaude() {\r\n  : ccxray-wrapper-v1\r\n  case \"$1\" in --version|--help|-h|mcp|doctor|agents|plugin|auth|attach|respawn)\r\n    command claude \"$@\"; return ;; esac\r\n  if command -v ccxray >/dev/null 2>&1; then ccxray claude \"$@\"; else command claude \"$@\"; fi\r\n}\r\n# <<< ccxray setup <<<\r\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30, cwdAllowlist: "repo's" },
+    },
+    {
+      powershell: true,
+      text: "# >>> ccxray setup >>>\n$env:CCXRAY_EXPORT_GCS_BUCKET = 'fixture-bucket-01'\n$env:CCXRAY_EXPORT_GCS_PREFIX = 'summaries'\n$env:CCXRAY_EXPORT_DOMAINS = 'example.test'\n$env:LOG_RETENTION_DAYS = '30'\n$env:CCXRAY_IMPORT_DISABLE = '1'\nfunction claude {\n  # ccxray-wrapper-v1\n  $claudeApp = (Get-Command claude -CommandType Application | Select-Object -First 1).Source\n  $bypass = @('--version','--help','-h','mcp','doctor','agents','plugin','auth','attach','respawn')\n  if ($args.Count -gt 0 -and $bypass -contains $args[0]) { & $claudeApp @args; return }\n  if (Get-Command ccxray -ErrorAction SilentlyContinue) { ccxray claude @args } else { & $claudeApp @args }\n}\n# <<< ccxray setup <<<\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30 },
+    },
+    {
+      powershell: true,
+      text: "# >>> ccxray setup >>>\r\n$env:CCXRAY_EXPORT_GCS_BUCKET = 'fixture-bucket-01'\r\n$env:CCXRAY_EXPORT_GCS_PREFIX = 'summaries'\r\n$env:CCXRAY_EXPORT_DOMAINS = 'example.test'\r\n$env:LOG_RETENTION_DAYS = '30'\r\n$env:CCXRAY_IMPORT_DISABLE = '1'\r\nfunction claude {\r\n  # ccxray-wrapper-v1\r\n  $claudeApp = (Get-Command claude -CommandType Application | Select-Object -First 1).Source\r\n  $bypass = @('--version','--help','-h','mcp','doctor','agents','plugin','auth','attach','respawn')\r\n  if ($args.Count -gt 0 -and $bypass -contains $args[0]) { & $claudeApp @args; return }\r\n  if (Get-Command ccxray -ErrorAction SilentlyContinue) { ccxray claude @args } else { & $claudeApp @args }\r\n}\r\n# <<< ccxray setup <<<\r\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30 },
+    },
+    {
+      powershell: true,
+      text: "# >>> ccxray setup >>>\n$env:CCXRAY_EXPORT_GCS_BUCKET = 'fixture-bucket-01'\n$env:CCXRAY_EXPORT_GCS_PREFIX = 'summaries'\n$env:CCXRAY_EXPORT_DOMAINS = 'example.test'\n$env:LOG_RETENTION_DAYS = '30'\n$env:CCXRAY_EXPORT_CWD_ALLOWLIST = 'repo''s'\n$env:CCXRAY_IMPORT_DISABLE = '1'\nfunction claude {\n  # ccxray-wrapper-v1\n  $claudeApp = (Get-Command claude -CommandType Application | Select-Object -First 1).Source\n  $bypass = @('--version','--help','-h','mcp','doctor','agents','plugin','auth','attach','respawn')\n  if ($args.Count -gt 0 -and $bypass -contains $args[0]) { & $claudeApp @args; return }\n  if (Get-Command ccxray -ErrorAction SilentlyContinue) { ccxray claude @args } else { & $claudeApp @args }\n}\n# <<< ccxray setup <<<\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30, cwdAllowlist: "repo's" },
+    },
+    {
+      powershell: true,
+      text: "# >>> ccxray setup >>>\r\n$env:CCXRAY_EXPORT_GCS_BUCKET = 'fixture-bucket-01'\r\n$env:CCXRAY_EXPORT_GCS_PREFIX = 'summaries'\r\n$env:CCXRAY_EXPORT_DOMAINS = 'example.test'\r\n$env:LOG_RETENTION_DAYS = '30'\r\n$env:CCXRAY_EXPORT_CWD_ALLOWLIST = 'repo''s'\r\n$env:CCXRAY_IMPORT_DISABLE = '1'\r\nfunction claude {\r\n  # ccxray-wrapper-v1\r\n  $claudeApp = (Get-Command claude -CommandType Application | Select-Object -First 1).Source\r\n  $bypass = @('--version','--help','-h','mcp','doctor','agents','plugin','auth','attach','respawn')\r\n  if ($args.Count -gt 0 -and $bypass -contains $args[0]) { & $claudeApp @args; return }\r\n  if (Get-Command ccxray -ErrorAction SilentlyContinue) { ccxray claude @args } else { & $claudeApp @args }\r\n}\r\n# <<< ccxray setup <<<\r\n",
+      values: { bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30, cwdAllowlist: "repo's" },
+    },
+  ];
+
+  for (const { powershell, text, values } of fixtures) {
+    const parsed = setup.parseRcBlock(text, powershell);
+    assert.equal(parsed.kind, 'owned', JSON.stringify({ powershell, text }));
+    assert.deepEqual(parsed.values, values);
+  }
+});
+
 test('PowerShell blocks use the same values with PowerShell quoting and control flow', () => {
   const values = {
     bucket: 'fixture-bucket-01',
@@ -435,7 +462,7 @@ test('PowerShell blocks use the same values with PowerShell quoting and control 
   assert.ok(powershellQuoted.includes("CCXRAY_EXPORT_CWD_ALLOWLIST = 'can''t'"));
 });
 
-test('owned-block conflict scans exempt only the marked claude wrapper', () => {
+test('modified setup blocks are not exempted during conflict scans', () => {
   const values = {
     bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries',
     retentionDays: 30,
@@ -444,9 +471,10 @@ test('owned-block conflict scans exempt only the marked claude wrapper', () => {
   const posixText = posixBlock.replace(setup.END_MARKER,
     "alias claude-debug=claude\nexport ANTHROPIC_BASE_URL='https://synthetic.invalid'\n" + setup.END_MARKER);
   const posixOwned = setup.parseRcBlock(posixText, false);
-  assert.equal(posixOwned.kind, 'owned');
-  const posix = setup.scanConflicts(posixText, false, '/fixture/.bashrc', posixOwned);
-  assert.equal(posix.conflicts.length, 2);
+  assert.equal(posixOwned.kind, 'malformed');
+  const posix = setup.scanConflicts(posixText, false, '/fixture/.bashrc');
+  assert.equal(posix.conflicts.length, 3);
+  assert.ok(posix.conflicts.some(line => line.includes('function claude')));
   assert.ok(posix.conflicts.some(line => line.includes('alias claude-debug')));
   assert.ok(posix.conflicts.some(line => line.includes('environment ANTHROPIC_BASE_URL')));
 
@@ -454,11 +482,12 @@ test('owned-block conflict scans exempt only the marked claude wrapper', () => {
   const powershellText = powershellBlock.replace(setup.END_MARKER,
     "Set-Alias -Name claude-dev claude\n$env:ANTHROPIC_BASE_URL = 'https://synthetic.invalid'\n" + setup.END_MARKER);
   const powershellOwned = setup.parseRcBlock(powershellText, true);
-  assert.equal(powershellOwned.kind, 'owned');
+  assert.equal(powershellOwned.kind, 'malformed');
   const powershell = setup.scanConflicts(
-    powershellText, true, 'C:\\fixture\\profile.ps1', powershellOwned,
+    powershellText, true, 'C:\\fixture\\profile.ps1',
   );
-  assert.equal(powershell.conflicts.length, 2);
+  assert.equal(powershell.conflicts.length, 3);
+  assert.ok(powershell.conflicts.some(line => line.includes('function claude')));
   assert.ok(powershell.conflicts.some(line => line.includes('alias claude-dev')));
   assert.ok(powershell.conflicts.some(line => line.includes('environment ANTHROPIC_BASE_URL')));
 });
@@ -590,6 +619,15 @@ test('resolveChain follows only platform separators and matches native symlink-d
     fs.symlinkSync(path.relative(fixture.paths.home, child), link, 'dir');
     const candidate = `${link}${path.sep}..${path.sep}rc`;
     const native = fs.realpathSync.native(candidate);
+    if (process.platform === 'win32') {
+      try {
+        const resolved = setup.resolveChain(candidate, fixture.guardedFs);
+        assert.equal(resolved.realPath, native);
+      } catch (error) {
+        assert.match(error.message, /path resolver disagrees with realpathSync\.native/);
+      }
+      return;
+    }
     const resolved = setup.resolveChain(candidate, fixture.guardedFs);
     assert.equal(native, fs.realpathSync.native(expected));
     assert.equal(resolved.realPath, native);
@@ -629,57 +667,90 @@ async function assertRawSetupTarget(shell, variable, filename) {
   });
 }
 
-test('setup target discovery preserves raw HOME symlink-dot-dot semantics', async () => {
+test('setup target discovery preserves raw HOME symlink-dot-dot semantics', {
+  skip: process.platform === 'win32' ? 'bash is unsupported on Windows' : false,
+}, async () => {
   await assertRawSetupTarget('bash', 'HOME', '.bashrc');
 });
 
-test('setup target discovery preserves symlink-dot-dot semantics', async () => {
+test('setup target discovery preserves symlink-dot-dot semantics', {
+  skip: process.platform === 'win32' ? 'zsh is unsupported on Windows' : false,
+}, async () => {
   await assertRawSetupTarget('zsh', 'ZDOTDIR', '.zshrc');
 });
 
-test('brace balance covers the whole POSIX and PowerShell fenced region', async () => {
-  const cases = [
-    { shell: 'bash', powershell: false, shape: 'negative-depth' },
-    { shell: 'bash', powershell: false, shape: 'nonzero-final-depth' },
-    { shell: 'pwsh', powershell: true, shape: 'negative-depth' },
-    { shell: 'pwsh', powershell: true, shape: 'nonzero-final-depth' },
+test('strict ownership rejects injected lines inside marked blocks', async () => {
+  const values = {
+    bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+  };
+  const injectionCases = [
+    { posix: '}; other() {', powershell: '}; function other {' },
+    { posix: '  echo x#; }; other() {', powershell: '  Write-Output x#; }; function other {' },
+    { posix: "  echo $'\\''; }; other() {", powershell: "  Write-Output 'x''; }; function other {" },
+    { posix: '  alias x=y', powershell: '  Set-Alias x y' },
+    { posix: null, powershell: '  Write-Output x`}' },
   ];
-  const malformed = cases.map(item => setup.parseRcBlock(
-    braceCrossingRegion(item.powershell, item.shape),
-    item.powershell,
-  ).kind);
-  assert.deepEqual(malformed, cases.map(() => 'malformed'));
+  const shellCases = [
+    { shell: 'bash', powershell: false },
+    { shell: 'pwsh', powershell: true },
+  ];
+  for (const shellCase of shellCases) {
+    const injections = injectionCases
+      .map(item => item[shellCase.powershell ? 'powershell' : 'posix'])
+      .filter(Boolean);
+    for (const injection of injections) {
+      const rendered = setup.renderRcBlock(values, shellCase.powershell);
+      const rows = rendered.replace(/(?:\r\n|\n|\r)$/, '').split(/\r\n|\n|\r/);
+      const foreignHeader = shellCase.powershell ? 'function foreign {' : 'foreign() {';
+      const text = [
+        foreignHeader,
+        rows[0],
+        injection,
+        ...rows.slice(1, -1),
+        rows[rows.length - 1],
+        '}',
+        '',
+      ].join('\n');
+      const parsed = setup.parseRcBlock(text, shellCase.powershell);
+      assert.equal(parsed.kind, 'malformed', shellCase.shell + ' injection ' + JSON.stringify(injection));
+      assert.equal(parsed.reason, 'setup block was modified (does not match setup output)');
 
-  for (const item of cases) {
-    await withFixture(async fixture => {
-      const file = item.powershell
-        ? path.join(fixture.paths.root, 'synthetic-profile.ps1')
-        : rcFile(fixture, 'bash');
-      const original = Buffer.from(braceCrossingRegion(item.powershell, item.shape));
-      fs.writeFileSync(file, original);
-      const log = makeLogger();
-      const deps = item.powershell
-        ? mockedPowerShellDeps(fixture, file, { logger: log })
-        : depsFor(fixture, { logger: log });
+      // Bash and zsh are unsupported on Windows; keep parser coverage there,
+      // while the integration checks run for PowerShell.
+      if (!shellCase.powershell && process.platform === 'win32') continue;
+      await withFixture(async fixture => {
+        const file = shellCase.powershell
+          ? path.join(fixture.paths.root, 'synthetic-injected-profile.ps1')
+          : rcFile(fixture, 'bash');
+        const original = Buffer.from(text);
+        fs.writeFileSync(file, original);
+        const log = makeLogger();
+        const deps = shellCase.powershell
+          ? mockedPowerShellDeps(fixture, file, { logger: log })
+          : depsFor(fixture, { logger: log });
+        const installArgsForShell = [
+          '--shell', shellCase.shell, '--bucket', 'fixture-bucket-01',
+          '--domains', 'example.test', '--yes',
+        ];
+        const installed = await setup.runSetup(installArgsForShell, deps);
+        assert.equal(installed, 1, log.lines.join('\n'));
+        assert.deepEqual(fs.readFileSync(file), original);
+        assert.equal(exportSync.readEnrollment(setupHome(fixture)), null);
+        assert.ok(log.lines.some(line => line.includes(
+          'recover manually: delete everything from the start marker line through the end marker line, then re-run ccxray setup',
+        )), log.lines.join('\n'));
 
-      const installed = await setup.runSetup([
-        '--shell', item.shell, '--bucket', 'fixture-bucket-01',
-        '--domains', 'example.test', '--yes',
-      ], deps);
-      assert.equal(installed, 1, log.lines.join('\n'));
-      assert.deepEqual(fs.readFileSync(file), original);
-      assert.equal(exportSync.readEnrollment(setupHome(fixture)), null);
-
-      const removed = await setup.runSetup(['--remove', '--shell', item.shell, '--yes'], deps);
-      assert.equal(removed, 1, log.lines.join('\n'));
-      assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'removed');
-      assert.deepEqual(fs.readFileSync(file), original);
-      assert.ok(log.lines.some(line => line.includes('export remains removed; shell cleanup incomplete')));
-    });
+        const removed = await setup.runSetup(['--remove', '--shell', shellCase.shell, '--yes'], deps);
+        assert.equal(removed, 1, log.lines.join('\n'));
+        assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'removed');
+        assert.deepEqual(fs.readFileSync(file), original);
+        assert.ok(log.lines.some(line => line.includes('export remains removed; shell cleanup incomplete')));
+      });
+    }
   }
 });
 
-test('brace-balanced owned wrapper revisions survive replacement and removal', async () => {
+test('modified wrapper revisions are malformed and show the manual recovery instruction', async () => {
   await withFixture(async fixture => {
     const file = rcFile(fixture);
     const values = {
@@ -690,20 +761,20 @@ test('brace-balanced owned wrapper revisions survive replacement and removal', a
       '  : ccxray-wrapper-v1\n',
       '  : ccxray-wrapper-v1\n  if true; then\n    { :; }\n  fi\n',
     );
-    const original = `export FOREIGN='keep-me'\n${revised}`;
+    const original = "export FOREIGN='keep-me'\n" + revised;
     fs.writeFileSync(file, original);
-    assert.equal(setup.parseRcBlock(revised, false).kind, 'owned');
-
-    const replace = await setup.runSetup([
+    const parsed = setup.parseRcBlock(revised, false);
+    assert.equal(parsed.kind, 'malformed');
+    assert.equal(parsed.reason, 'setup block was modified (does not match setup output)');
+    const log = makeLogger();
+    const install = await setup.runSetup([
       '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
-    ], depsFor(fixture));
-    assert.equal(replace, 0);
-    assert.ok(fs.readFileSync(file, 'utf8').startsWith("export FOREIGN='keep-me'\n"));
-    assert.equal(setup.parseRcBlock(fs.readFileSync(file, 'utf8'), false).values.bucket, 'fixture-bucket-02');
-
-    const removed = await setup.runSetup(['--remove', '--shell', 'bash', '--yes'], depsFor(fixture));
-    assert.equal(removed, 0);
-    assert.equal(fs.readFileSync(file, 'utf8'), "export FOREIGN='keep-me'\n");
+    ], depsFor(fixture, { logger: log }));
+    assert.equal(install, 1, log.lines.join('\n'));
+    assert.deepEqual(fs.readFileSync(file), Buffer.from(original));
+    assert.ok(log.lines.some(line => line.includes(
+      'recover manually: delete everything from the start marker line through the end marker line, then re-run ccxray setup',
+    )), log.lines.join('\n'));
   });
 });
 
@@ -722,11 +793,7 @@ test('owned block round-trip table preserves foreign bytes across encoding and n
         for (const trailingNewline of [false, true]) {
           for (const hasPrelude of [false, true]) {
             const generated = setup.renderRcBlock(values, false, newline);
-            const body = generated.replace(
-              `  : ccxray-wrapper-v1${newline}`,
-              `  : ccxray-wrapper-v1${newline}  if true; then${newline}    { :; }${newline}  fi${newline}`,
-            );
-            const owned = trailingNewline ? body : body.slice(0, -newline.length);
+            const owned = trailingNewline ? generated : generated.slice(0, -newline.length);
             const prelude = hasPrelude ? `export FOREIGN='sentinel'${newline}` : '';
             const original = Buffer.concat([encoding.bom, encoding.encode(prelude + owned)]);
             fs.writeFileSync(file, original);
@@ -1977,7 +2044,9 @@ test('check continues through an unreachable hub and reports all remaining check
   });
 });
 
-test('check reports a shadowing alias loaded from a sourced file as the effective command', async () => {
+test('check reports a shadowing alias loaded from a sourced file as the effective command', {
+  skip: process.platform === 'win32' ? 'bash probes are unsupported on Windows' : false,
+}, async () => {
   await withFixture(async fixture => {
     const rcPath = rcFile(fixture);
     const sourced = path.join(fixture.paths.home, 'late-alias.sh');
@@ -2040,7 +2109,9 @@ test('coverage is the local-day intersection and reports unmatched captured ids 
   });
 });
 
-test('owned shell probe reports function loaded from the startup file', async () => {
+test('owned shell probe reports function loaded from the startup file', {
+  skip: process.platform === 'win32' ? 'bash probes are unsupported on Windows' : false,
+}, async () => {
   await withFixture(async fixture => {
     const result = await setup.runSetup(installArgs(), depsFor(fixture));
     assert.equal(result, 0);
@@ -2052,7 +2123,9 @@ test('owned shell probe reports function loaded from the startup file', async ()
   });
 });
 
-test('a complete frame with an incomplete probe drain is unknown, never ok', async () => {
+test('a complete frame with an incomplete probe drain is unknown, never ok', {
+  skip: process.platform === 'win32' ? 'bash probes are unsupported on Windows' : false,
+}, async () => {
   await withFixture(async fixture => {
     assert.equal(await setup.runSetup(installArgs(), depsFor(fixture)), 0);
     const nonce = '0123456789abcdef';

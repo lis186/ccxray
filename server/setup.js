@@ -19,6 +19,7 @@ const { runBounded } = require('./bounded-run');
 const START_MARKER = '# >>> ccxray setup >>>';
 const END_MARKER = '# <<< ccxray setup <<<';
 const WRAPPER_MARKER = 'ccxray-wrapper-v1';
+const MANUAL_SETUP_RECOVERY = 'delete everything from the start marker line through the end marker line, then re-run ccxray setup';
 const SETUP_TIMEOUT_MS = 10_000;
 const SETUP_LOCK_TIMEOUT_MS = 10_000;
 const CHECK_IDS = new Set([
@@ -228,26 +229,6 @@ function braceDelta(line, powershell) {
   return delta;
 }
 
-function braceRegionIsBalanced(text, powershell) {
-  let depth = 0;
-  for (const row of lineRanges(text)) {
-    depth += braceDelta(row.text, powershell);
-    if (depth < 0) return false;
-  }
-  return depth === 0;
-}
-
-function hasGeneratedWrapperShape(fn, powershell) {
-  if (!fn.complete) return false;
-  const expectedHeader = powershell ? /^\s*function\s+claude\s*\{\s*$/i : /^\s*claude\s*\(\s*\)\s*\{\s*$/i;
-  if (!expectedHeader.test(fn.header)) return false;
-  // Here-documents and PowerShell here-strings have their own brace rules. Refuse
-  // those shapes instead of guessing where the owned function ends.
-  if (powershell ? /@['"]/.test(fn.body) : /<<-?\s*['"]?[A-Za-z_]/.test(fn.body)) return false;
-  const body = fn.body.split('\n').slice(1, -1).map(line => line.trim());
-  return body.length > 0 && body[0] === (powershell ? `# ${WRAPPER_MARKER}` : `: ${WRAPPER_MARKER}`);
-}
-
 function parseRcBlock(text, powershell) {
   const rows = lineRanges(text);
   const starts = rows.filter(row => row.text.trim() === START_MARKER);
@@ -262,13 +243,6 @@ function parseRcBlock(text, powershell) {
   const inner = text.slice(start.end, end.start);
   if (inner.includes(START_MARKER) || inner.includes(END_MARKER)) {
     return { kind: 'malformed', reason: 'nested setup markers', text };
-  }
-  if (!braceRegionIsBalanced(inner, powershell)) {
-    return { kind: 'malformed', reason: 'setup block has unbalanced braces', text };
-  }
-  const innerFunctions = functionBlocks(inner, powershell).filter(fn => fn.name.toLowerCase() === 'claude');
-  if (innerFunctions.length !== 1 || !hasGeneratedWrapperShape(innerFunctions[0], powershell)) {
-    return { kind: 'malformed', reason: 'setup block does not own its claude wrapper', text };
   }
   const blockText = text.slice(start.start, end.end);
   const values = Object.create(null);
@@ -288,8 +262,36 @@ function parseRcBlock(text, powershell) {
     domains: values.CCXRAY_EXPORT_DOMAINS === undefined ? undefined : normalizeDomains(values.CCXRAY_EXPORT_DOMAINS),
     prefix: values.CCXRAY_EXPORT_GCS_PREFIX,
     retentionDays: values.LOG_RETENTION_DAYS === undefined ? undefined : Number(values.LOG_RETENTION_DAYS),
-    cwdAllowlist: values.CCXRAY_EXPORT_CWD_ALLOWLIST,
   };
+  if (values.CCXRAY_EXPORT_CWD_ALLOWLIST !== undefined) {
+    resolved.cwdAllowlist = values.CCXRAY_EXPORT_CWD_ALLOWLIST;
+  }
+  if (typeof resolved.bucket !== 'string' || !resolved.bucket
+      || !Array.isArray(resolved.domains) || !resolved.domains.length
+      || typeof resolved.prefix !== 'string' || !resolved.prefix
+      || !Number.isFinite(resolved.retentionDays)
+      || (resolved.cwdAllowlist !== undefined && typeof resolved.cwdAllowlist !== 'string')) {
+    return { kind: 'malformed', reason: 'setup block was modified (does not match setup output)', text };
+  }
+  const rendererValues = { ...resolved };
+  if (rendererValues.cwdAllowlist === undefined) delete rendererValues.cwdAllowlist;
+  let rendered;
+  try { rendered = renderRcBlock(rendererValues, powershell); }
+  catch {
+    return { kind: 'malformed', reason: 'setup block was modified (does not match setup output)', text };
+  }
+  // Ownership is byte-equality with the current renderer. Any change to its
+  // output must keep the v1 golden fixtures parsing as owned (for example by
+  // retaining a v1 renderer), or existing installs will become malformed.
+  const comparableBlock = value => {
+    const lines = value.replace(/(?:\r\n|\n|\r)$/, '').split(/\r\n|\n|\r/);
+    lines[0] = lines[0].trim();
+    lines[lines.length - 1] = lines[lines.length - 1].trim();
+    return lines.join('\n');
+  };
+  if (comparableBlock(blockText) !== comparableBlock(rendered)) {
+    return { kind: 'malformed', reason: 'setup block was modified (does not match setup output)', text };
+  }
   return {
     kind: 'owned',
     text,
@@ -1176,7 +1178,12 @@ function launchAccountEmail(deps) {
 function targetRcStatus(target) {
   if (target.unknown) return { status: 'unknown', detail: `unknown(${target.unknown})` };
   if (target.error) return { status: 'unknown', detail: target.error.message };
-  if (target.parsed.kind === 'malformed') return { status: 'failed', detail: target.parsed.reason };
+  if (target.parsed.kind === 'malformed') {
+    return {
+      status: 'failed',
+      detail: `${target.parsed.reason}; recover manually: ${MANUAL_SETUP_RECOVERY}`,
+    };
+  }
   if (target.parsed.kind === 'owned') return { status: 'ok', detail: `${target.label}: owned` };
   return { status: 'warning', detail: `${target.label}: absent` };
 }
@@ -1631,7 +1638,7 @@ function printDryRun(context, options, deps, nextEnrollment, cursorState, browse
     for (const target of context.targets) {
       if (target.parsed?.kind === 'owned') io.log(`Would remove setup block: ${target.logicalPath} → ${target.snapshot.realPath}`);
       else if (target.parsed?.kind === 'malformed') {
-        io.log(`Would skip malformed setup block: ${target.logicalPath} (${target.parsed.reason}); tombstone will be written and cleanup reported incomplete.`);
+        io.log(`Would skip malformed setup block: ${target.logicalPath} (${target.parsed.reason}; recover manually: ${MANUAL_SETUP_RECOVERY}); tombstone will be written and cleanup reported incomplete.`);
       }
     }
     return;
@@ -1837,7 +1844,10 @@ async function runRemove(context, options, deps) {
 
   if (failures.length) {
     for (const item of failures) {
-      deps.logger.error(`export remains removed; shell cleanup incomplete: ${item.target.logicalPath} (${item.error?.message || 'write failed'})`);
+      const recovery = item.target.parsed.kind === 'malformed'
+        ? `; recover manually: ${MANUAL_SETUP_RECOVERY}`
+        : '';
+      deps.logger.error(`export remains removed; shell cleanup incomplete: ${item.target.logicalPath} (${item.error?.message || 'write failed'}${recovery})`);
     }
   } else deps.logger.log('Export removed.');
   deps.logger.log('After removal, run unset -f claude in existing POSIX shells or Remove-Item Function:claude in PowerShell; starting a new terminal also clears the wrapper.');
