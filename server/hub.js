@@ -5,7 +5,7 @@ const path = require('path');
 const net = require('net');
 const http = require('http');
 const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
-const { exportStatus } = require('./export-sync');
+const { exportStatus, exportConfigHash } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 const { discoverCredentials, describeCredentials } = require('./export-credentials');
 const LAUNCH_TOKEN = require('crypto').randomBytes(8).toString('hex');
@@ -24,6 +24,7 @@ const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
 const HUB_LOG_MAX_BYTES = 1 * 1024 * 1024; // 1 MB
 const HUB_LOG_KEEP_BYTES = 100 * 1024;     // 100 KB
+const HUB_REPLY_MAX_BYTES = 1 * 1024 * 1024;
 
 // These are the same launch signals that server/index.js already derives before
 // it starts a server. A client-side `ccxray <agent>` launch receives its report
@@ -86,41 +87,104 @@ function isPidAlive(pid) {
 
 // ── Health check (HTTP probe) ───────────────────────────────────────
 
-function checkHubHealth(port, timeoutMs = 2000) {
+function hubHttpJson(port, route, timeoutMs, signal, onParsed, failureValue, {
+  detailed = false,
+  maxBytes = HUB_REPLY_MAX_BYTES,
+  acceptAnyJson = false,
+} = {}) {
   return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/_api/health`, { timeout: timeoutMs }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
+    let settled = false;
+    let req = null;
+    let res = null;
+    let data = '';
+    let bytes = 0;
+
+    const removeAbort = () => signal?.removeEventListener('abort', onAbort);
+    const success = value => detailed ? { ok: true, value } : value;
+    const failure = (reason, error = null) => detailed
+      ? {
+        ok: false,
+        reason,
+        error: error ? { code: error.code || null, message: error.message } : null,
+      }
+      : failureValue;
+    const settle = value => {
+      if (settled) return;
+      settled = true;
+      removeAbort();
+      resolve(value);
+    };
+    const destroyAndSettle = (reason = 'aborted', error = null) => {
+      if (settled) return;
+      settled = true;
+      removeAbort();
+      req?.destroy();
+      res?.destroy();
+      resolve(failure(reason, error));
+    };
+    const onAbort = () => destroyAndSettle('aborted');
+
+    if (signal?.aborted) {
+      settle(failure('aborted'));
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    req = http.get(`http://localhost:${port}${route}`, resArg => {
+      res = resArg;
+      res.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          const error = Object.assign(new Error('hubHttpJson reply too large'), { code: 'reply-too-large' });
+          destroyAndSettle('reply-too-large', error);
+          return;
+        }
+        data += chunk.toString('utf8');
+      });
       res.on('end', () => {
+        if (settled) return;
+        let parsed;
+        try { parsed = JSON.parse(data); }
+        catch {
+          // The original status CLI rejected with the response body as its
+          // message. Keep that detail for the status caller; discovery callers
+          // retain their historic false/null result.
+          const error = Object.assign(new Error(data), { code: 'parse' });
+          settle(failure('parse', error));
+          return;
+        }
         try {
-          const parsed = JSON.parse(data);
-          resolve(parsed.ok === true);
-        } catch { resolve(false); }
+          settle(success(acceptAnyJson ? parsed : onParsed(parsed)));
+        } catch (error) {
+          settle(failure(error.code || 'parse', error));
+        }
+      });
+      res.on('error', error => settle(failure('request-failed', error)));
+      res.on('aborted', () => {
+        const error = Object.assign(new Error('aborted'), { code: 'ECONNRESET' });
+        settle(failure('request-failed', error));
       });
     });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.setTimeout(timeoutMs, () => {
+      const error = Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+      destroyAndSettle('timeout', error);
+    });
+    req.on('error', error => settle(failure('request-failed', error)));
   });
+}
+
+function checkHubHealth(port, timeoutMs = 2000, signal, options = {}) {
+  return hubHttpJson(port, '/_api/health', timeoutMs, signal,
+    parsed => parsed?.ok === true, false, options);
 }
 
 // ── Orphan hub probe (port-level fallback when lockfile missing) ────
 
-function probeHubStatus(port, timeoutMs = 2000) {
-  return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/_api/hub/status`, { timeout: timeoutMs }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.app === 'ccxray' && parsed.pid && parsed.version && parsed.port) resolve(parsed);
-          else resolve(null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-  });
+function probeHubStatus(port, timeoutMs = 2000, signal, options = {}) {
+  return hubHttpJson(port, '/_api/hub/status', timeoutMs, signal, parsed => {
+    if (parsed?.app === 'ccxray' && parsed.pid && parsed.version && parsed.port) return parsed;
+    return null;
+  }, null, options);
 }
 
 // ── Hub discovery (dual verification: pid + health) ─────────────────
@@ -398,30 +462,76 @@ function handleSocketCommand(msg, socket) {
   }
 }
 
-function hubSocketRequest(sockPath, msg, timeoutMs = HUB_REQUEST_TIMEOUT_MS) {
+function hubSocketRequest(sockPath, msg, timeoutMs = HUB_REQUEST_TIMEOUT_MS, signal, {
+  maxReplyBytes = HUB_REPLY_MAX_BYTES,
+} = {}) {
   return new Promise((resolve, reject) => {
     const client = net.connect(sockPath);
     let buf = '';
-    const timer = setTimeout(() => {
+    let settled = false;
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const rejectAndDestroy = err => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       client.destroy();
-      reject(new Error('hubSocketRequest timeout'));
+      reject(err);
+    };
+    const resolveAndDestroy = value => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      client.destroy();
+      resolve(value);
+    };
+    const onAbort = () => {
+      const err = new Error('hubSocketRequest aborted');
+      err.code = 'ABORT_ERR';
+      rejectAndDestroy(err);
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      const err = new Error('hubSocketRequest timeout');
+      err.code = 'ETIMEDOUT';
+      rejectAndDestroy(err);
     }, timeoutMs);
 
     client.on('connect', () => {
       client.write(JSON.stringify(msg) + '\n');
     });
     client.on('data', chunk => {
+      if (settled) return;
       buf += chunk.toString();
+      if (Buffer.byteLength(buf) > maxReplyBytes) {
+        const err = new Error('hubSocketRequest reply too large');
+        err.code = 'reply-too-large';
+        rejectAndDestroy(err);
+        return;
+      }
       const nl = buf.indexOf('\n');
       if (nl !== -1) {
-        clearTimeout(timer);
-        const parsed = JSON.parse(buf.slice(0, nl));
-        client.destroy();
-        resolve(parsed);
+        try {
+          resolveAndDestroy(JSON.parse(buf.slice(0, nl)));
+        } catch {
+          const err = new Error('hubSocketRequest malformed reply');
+          err.code = 'malformed-reply';
+          rejectAndDestroy(err);
+        }
       }
     });
     client.on('error', err => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(err);
     });
   });
@@ -642,6 +752,7 @@ function assembleExportReport(env = process.env) {
     exportState,
     exportReason,
     configWarnings: kind === 'client' ? [] : relativeRootComplaints(env),
+    exportConfigHash: kind === 'client' ? null : exportConfigHash(env),
     // #633 M0: offline discovery + parse of the writer credential, display view
     // only (no path, no contents). Reported for an ENABLED exporter only — for a
     // suppressed/unconfigured/refused process a credential verdict would invite

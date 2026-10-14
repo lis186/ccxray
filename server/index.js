@@ -264,6 +264,7 @@ const { handleInterceptRoutes } = require('./routes/intercept');
 const { handleCostRoutes, startCodexRefresh, stopCodexRefresh } = require('./routes/costs');
 const { handleAuthRoutes } = require('./routes/auth');
 const hub = require('./hub');
+const { collectExportDiagnostics, fetchHubReport, renderExportDiagnostics } = require('./export-diagnostics');
 hub.setLaunchSignals({
   hubMode,
   explicitPort,
@@ -1075,13 +1076,21 @@ if (process.argv[2] === 'setup-statusline') {
 
 // ── "status" subcommand ──
 if (process.argv[2] === 'status') {
-  const lock = hub.readHubLock();
-  if (!lock) {
-    // #555: "No hub running" alone is misleading when the hub's default port
-    // is held by something else (e.g. a standalone `ccxray --port 5577`, which
-    // writes no lockfile) — a subsequent hub launch will fail on that port.
-    // Probe and say so.
-    (async () => {
+  (async () => {
+    const result = await fetchHubReport({ statusCommand: true });
+    const printDiagnostics = report => {
+      const diagnostics = collectExportDiagnostics({
+        env: process.env,
+        report,
+        reportReason: result.reason,
+      });
+      for (const line of renderExportDiagnostics(diagnostics)) console.log(line);
+    };
+
+    if (result.kind === 'none') {
+      // #555: "No hub running" alone is misleading when the hub's default port
+      // is held by something else (e.g. a standalone `ccxray --port 5577`, which
+      // writes no lockfile) — a subsequent hub launch will fail on that port.
       const occ = await hub.probePortOccupant(config.PORT, 1000);
       console.log('No hub running.');
       console.log(renderProcessStatus(null));
@@ -1090,9 +1099,7 @@ if (process.argv[2] === 'status') {
         hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
       }
       // One machine-readable line so a consumer does not have to scrape the
-      // English above. `proxy` answers the only question a launcher actually
-      // has — is something here that will trace my traffic — which is true for
-      // a standalone too, even though it is not a hub.
+      // English above. `proxy` answers whether this process can trace traffic.
       console.log(`Machine: ${JSON.stringify({
         proxy: occ.kind === 'ccxray-standalone' || occ.kind === 'ccxray-hub',
         hub: false,
@@ -1100,52 +1107,49 @@ if (process.argv[2] === 'status') {
         port: config.PORT,
         occupant: occ.kind,
       })}`);
+      printDiagnostics(null);
       process.exit(0);
-    })();
-    return; // prevent falling through while the probe runs
-  }
-  if (!hub.isPidAlive(lock.pid)) {
-    console.log('Hub lockfile exists but process is dead. Cleaning up.');
-    hub.deleteHubLock();
-    console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
-    console.log(inspectHomeStatus(null, { env: process.env }).line);
-    process.exit(1);
-  }
+      return;
+    }
 
-  (async () => {
-    try {
-      let s;
-      if (lock.sockPath) {
-        const health = await hub.hubSocketRequest(lock.sockPath, { cmd: 'health' }, 2000);
-        if (!health || !health.ok) {
-          console.log(`Hub pid ${lock.pid} alive but socket not responding.`);
-          console.log(`Check ${hub.HUB_LOG_PATH}`);
-          console.log(renderProcessStatus(null,
-            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
-          console.log(inspectHomeStatus(null, { env: process.env }).line);
-          process.exit(1);
+    if (result.kind === 'dead-lockfile') {
+      console.log('Hub lockfile exists but process is dead. Cleaning up.');
+      hub.deleteHubLock();
+      console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
+      printDiagnostics(null);
+      process.exit(1);
+      return;
+    }
+
+    if (result.kind === 'unresponsive') {
+      const lock = result.lock || {};
+      const pid = lock.pid ?? 'unknown';
+      const port = lock.port ?? 'unknown';
+      const httpHealthTimeout = !lock.sockPath
+        && result.phase === 'health'
+        && result.reason === 'timeout';
+      if (result.reason === 'health-failed' || httpHealthTimeout) {
+        if (lock.sockPath) {
+          console.log(`Hub pid ${pid} alive but socket not responding.`);
+        } else {
+          console.log(`Hub pid ${pid} alive but not responding on port ${port}.`);
         }
-        s = await hub.hubSocketRequest(lock.sockPath, { cmd: 'status' });
+        console.log(`Check ${hub.HUB_LOG_PATH}`);
       } else {
-        const ok = await hub.checkHubHealth(lock.port);
-        if (!ok) {
-          console.log(`Hub pid ${lock.pid} alive but not responding on port ${lock.port}.`);
-          console.log(`Check ${hub.HUB_LOG_PATH}`);
-          console.log(renderProcessStatus(null,
-            `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
-          console.log(inspectHomeStatus(null, { env: process.env }).line);
-          process.exit(1);
-        }
-        s = await new Promise((resolve, reject) => {
-          http.get(`http://localhost:${lock.port}/_api/hub/status`, res => {
-            let data = '';
-            res.on('data', c => { data += c; });
-            res.on('end', () => {
-              try { resolve(JSON.parse(data)); } catch { reject(new Error(data)); }
-            });
-          }).on('error', reject);
-        });
+        const detail = result.error ? result.error.message : result.reason;
+        console.error(`Failed to query hub: ${detail}`);
       }
+      console.log(renderProcessStatus(null,
+        `hub detected (pid ${pid}, port ${port}) — exporter state unavailable`));
+      console.log(inspectHomeStatus(null, { env: process.env }).line);
+      printDiagnostics(null);
+      process.exit(1);
+      return;
+    }
+
+    try {
+      const s = result.report;
       console.log(`Hub: http://localhost:${s.port} (pid ${s.pid}, uptime ${s.uptime}s, v${s.version})`);
       console.log(renderProcessStatus(
         s.exportState === undefined ? null : s,
@@ -1164,12 +1168,15 @@ if (process.argv[2] === 'status') {
           console.log(`  [${i + 1}] pid ${c.pid} — ${c.cwd} (since ${c.connectedAt})`);
         });
       }
+      printDiagnostics(s);
       process.exit(0);
     } catch (err) {
       console.error(`Failed to query hub: ${err.message}`);
+      const lock = result.lock || {};
       console.log(renderProcessStatus(null,
-        `hub detected (pid ${lock.pid}, port ${lock.port}) — exporter state unavailable`));
+        `hub detected (pid ${lock.pid ?? 'unknown'}, port ${lock.port ?? 'unknown'}) — exporter state unavailable`));
       console.log(inspectHomeStatus(null, { env: process.env }).line);
+      printDiagnostics(null);
       process.exit(1);
     }
   })();
@@ -1186,9 +1193,15 @@ function reportHubRegistrationStatus(reply, lifecycle) {
       exportReason: reply.exportReason,
       configWarnings: reply.configWarnings,
       credential: reply.credential,
+      exportConfigHash: reply.exportConfigHash,
     },
   );
   if (rendered) _origLog(rendered);
+  if (typeof reply?.exportConfigHash === 'string'
+    && reply.exportConfigHash !== exportSync.exportConfigHash(process.env)) {
+    const pid = reply.identity?.pid ?? 'unknown';
+    _origLog(`\x1b[33m[ccxray] export settings differ from the running hub (pid ${pid}) — close every ccxray session and start again\x1b[0m`);
+  }
 }
 
 async function startClientMode(lock, decision) {

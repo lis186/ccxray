@@ -7,10 +7,28 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const http = require('http');
+const { spawn } = require('child_process');
 
 // Isolated temp dir — never touches real ~/.ccxray
 const TEST_HUB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hubsock-'));
+const TEST_LOGS_DIR = path.join(TEST_HUB_DIR, 'logs');
+const TEST_CLOUDSDK_DIR = path.join(TEST_HUB_DIR, 'gcloud');
+fs.mkdirSync(TEST_LOGS_DIR, { recursive: true });
+fs.writeFileSync(path.join(TEST_LOGS_DIR, 'index.ndjson'), '');
+fs.mkdirSync(TEST_CLOUDSDK_DIR, { recursive: true });
+const ENV_KEYS = [
+  'CCXRAY_HOME', 'LOGS_DIR', 'CLOUDSDK_CONFIG', 'CCXRAY_EXPORT_GCS_KEY_FILE',
+  'CCXRAY_EXPORT_DISABLE', 'NODE_TEST_CONTEXT', 'CCXRAY_EXPORT_GCS_BUCKET',
+  'CCXRAY_EXPORT_GCS_PREFIX', 'CCXRAY_EXPORT_DOMAINS', 'CCXRAY_EXPORT_CONFIG_DIRS',
+  'CCXRAY_EXPORT_CWD_ALLOWLIST', 'CCXRAY_USER_EMAIL', 'CCXRAY_AGENT_ID',
+  'CCXRAY_TEAM', 'LOG_RETENTION_DAYS',
+];
+const ORIGINAL_ENV = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
+for (const key of ENV_KEYS) delete process.env[key];
 process.env.CCXRAY_HOME = TEST_HUB_DIR;
+process.env.LOGS_DIR = TEST_LOGS_DIR;
+process.env.CLOUDSDK_CONFIG = TEST_CLOUDSDK_DIR;
+process.env.CCXRAY_EXPORT_DISABLE = '1';
 
 const hub = require('../server/hub');
 
@@ -18,6 +36,10 @@ hub.setOnShutdown(() => {});
 
 after(() => {
   fs.rmSync(TEST_HUB_DIR, { recursive: true, force: true });
+  for (const [key, value] of Object.entries(ORIGINAL_ENV)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
 });
 
 function clearAllClients() {
@@ -80,6 +102,52 @@ describe('socket lifecycle', () => {
     sockServer = null;
     // Node auto-unlinks on close; verify
     assert.ok(!fs.existsSync(hub.SOCK_PATH), 'socket file should be removed after close');
+  });
+});
+
+describe('malformed hub socket reply handling', () => {
+  it('rejects malformed JSON without crashing the calling process', async () => {
+    const socketPath = path.join(TEST_HUB_DIR, 'malformed-reply.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', () => socket.end('{not-json}\n'));
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+
+    try {
+      const code = [
+        `const hub = require(${JSON.stringify(path.resolve(__dirname, '../server/hub.js'))});`,
+        `hub.hubSocketRequest(${JSON.stringify(socketPath)}, { cmd: 'status' }, 1000)`,
+        `.then(() => { process.stderr.write('unexpected-resolution'); process.exitCode = 2; })`,
+        `.catch(error => process.stdout.write(error.code || 'rejected'));`,
+      ].join('\n');
+      const childEnv = {
+        ...process.env,
+        CCXRAY_HOME: TEST_HUB_DIR,
+        LOGS_DIR: TEST_LOGS_DIR,
+        CLOUDSDK_CONFIG: TEST_CLOUDSDK_DIR,
+        CCXRAY_EXPORT_DISABLE: '1',
+      };
+      let stdout = '';
+      let stderr = '';
+      const child = spawn(process.execPath, ['-e', code], { env: childEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      const exitCode = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('malformed reply child timed out')); }, 3000);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', status => { clearTimeout(timer); resolve(status); });
+      });
+      assert.equal(exitCode, 0, `the child must survive the malformed reply; stderr: ${stderr}`);
+      assert.equal(stdout, 'malformed-reply');
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+      try { fs.unlinkSync(socketPath); } catch {}
+    }
   });
 });
 

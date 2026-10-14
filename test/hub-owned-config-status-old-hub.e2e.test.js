@@ -209,7 +209,13 @@ async function runLegacyStatus(t, carrier) {
     const result = await statusRun.done;
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /exporter state unavailable/);
-    assert.doesNotMatch(result.stdout, /exportState=/);
+    const processLine = result.stdout.split(/\r?\n/).find(line => line.startsWith('Process:')) || '';
+    assert.doesNotMatch(processLine, /exportState=/,
+      `${carrier} legacy hub status must not infer the running export state from this shell`);
+    assert.match(result.stdout, /Shell: exportState=suppressed/,
+      `${carrier} status must label the shell's own suppressed config`);
+    assert.match(result.stdout, /Config: unknown — no reachable exporter/,
+      `${carrier} legacy report must not produce a config comparison`);
     assert.doesNotMatch(result.stdout, new RegExp(BAD_CLIENT_VALUE.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 
     const renderObservation = JSON.parse(fs.readFileSync(probe.marker, 'utf8'));
