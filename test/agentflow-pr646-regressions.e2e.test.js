@@ -221,6 +221,27 @@ describe('PR #646 report regressions', () => {
     assert.deepEqual(external.map(x => [x.total.calls, x.total.cost]), [[1, 4]]);
   });
 
+  it('labels a Claude worker from its transcript turns, as a host is labelled', () => {
+    const ctx = setup('worker-completeness');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-wc', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 40);
+    const worker = sid(9);
+    const said = (uuid, s, id, cwd = clone) => ({ type: 'assistant', uuid, sessionId: worker, cwd, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    // msg-w0 ran in the checkout, not the clone: not the worker's turn, whatever its index lines.
+    fs.writeFileSync(path.join(claudeProject(ctx, clone), `${worker}.jsonl`),
+      [said('w0', 22, 'msg-w0', ctx.repo), said('w1', 25, 'msg-w1'), said('w2', 30, 'msg-w2')].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', cwd: clone, receivedAt: at(25), responseId: 'msg-w1', usage: { input_tokens: 1 }, cost: { cost: 4, confidence: 'exact' } };
+    const external = () => report(ctx).asks.find(ask => ask.id === 'A-001').executors.filter(x => x.kind === 'external').map(x => [x.completeness, x.total.calls]);
+
+    // msg-w2 is in no index line: the proxy never saw it, so the worker is not complete.
+    writeIndex(ctx, [{ ...row, id: 'w-proxy' }, { ...row, id: 'w-import', imported: true, importSource: 'claude-code' }]);
+    assert.deepEqual(external(), [['partial proxy coverage', 1]]);
+    // Once the proxy has it too, every transcript turn has a twin.
+    writeIndex(ctx, [{ ...row, id: 'w-proxy' }, { ...row, id: 'w-import', imported: true, importSource: 'claude-code' },
+      { ...row, id: 'w-proxy-2', receivedAt: at(30), responseId: 'msg-w2' }]);
+    assert.deepEqual(external(), [['complete', 2]]);
+  });
+
   it('labels a matched Codex transcript without index rows as transcripts only, including in a multi-host fold', () => {
     const onlyCodex = setup('codex-only', ['codex task']);
     const codexSession = sid(3);

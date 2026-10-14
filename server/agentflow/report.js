@@ -98,14 +98,14 @@ function executorRows(row, codexSources, pending) {
   };
 }
 
-function externalRow(run, codexSources) {
+function externalRow(run, codexSources, pending) {
   const agg = aggregate(run.turns);
   const actual = Object.keys(agg.effort).filter(k => k !== 'unknown');
   const labels = [...run.labels];
   if (run.requested.effort && actual.length && !actual.includes(run.requested.effort)) labels.push('effort mismatch');
   return {
     kind: 'external', role: run.stage || 'unknown', evidence: run.evidence, status: run.status, labels,
-    requested: run.requested, completeness: hostCompleteness(run.turns, codexSources), total: agg, main: agg, subagents: [],
+    requested: run.requested, completeness: hostCompleteness(run.turns, codexSources, pending), total: agg, main: agg, subagents: [],
   };
 }
 
@@ -197,6 +197,22 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
   const ourRuns = workers.runs.filter(r => r.notebook === notebooks[0].rel
     || (r.status === 'ambiguous' && r.notebook == null && Object.values(r.candidates).flat().some(c => c.notebook === notebooks[0].rel)));
 
+  // Workers are labelled the same way as hosts (Completeness): a Claude worker's
+  // transcript turns, its native subagents' included, are read for their twins.
+  const workerSids = [...new Set(ourRuns.filter(r => r.status === 'unique').flatMap(r => r.turns)
+    .filter(e => e.provider == null || e.provider === 'anthropic').map(e => e.sessionId))];
+  const workerTranscriptTurns = new Map();
+  for (const [sid, f] of findTranscripts(workerSids, roots)) {
+    if (f.provider !== 'anthropic') continue;
+    // A native subagent belongs to its worker whatever its cwd (Lineage).
+    const unique = new Map();
+    for (const [i, file] of [f.file, ...subagentTranscripts(f.file)].entries()) {
+      const t = readOnce({ provider: 'anthropic', file });
+      for (const x of (t && t.turns) || []) if (!unique.has(x.id)) unique.set(x.id, { ...x, native: i > 0 });
+    }
+    workerTranscriptTurns.set(sid, [...unique.values()]);
+  }
+
   const reported = notebooks[0];
   const ambiguousWorkerTurns = workers.ambiguousTurns.filter(t => t.candidateNotebooks.includes(reported.rel));
   // Import lags per turn, not per session (a session spans days): a transcript
@@ -238,6 +254,22 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
     }
     return out;
   };
+  // A worker run is whole, so no window narrows its transcript turns; only
+  // those in the run's clone count, as a host that worked in a clone for a while
+  // is a worker only there. From the start of the index read on.
+  const workerPending = run => {
+    const out = { twins: 0, missing: 0 };
+    const cwds = new Set(run.turns.map(e => e.cwd));
+    for (const sid of new Set(run.turns.map(e => e.sessionId))) {
+      for (const x of workerTranscriptTurns.get(sid) || []) {
+        if (!x.native && x.cwd && !cwds.has(canonicalPath(x.cwd))) continue;
+        if (x.at < from || importedIds.has(x.id)) continue;
+        if (proxiedIds.has(x.id)) out.twins++;
+        else if (!indexed.has(x.id)) out.missing++;
+      }
+    }
+    return out;
+  };
   // Turns not yet imported, per Ask of the whole notebook: the footer counts them
   // all, as it does its other counts, even when one Ask is reported.
   const missingByAsk = new Map(reported.windows.map(w => [w.id, w.start != null && w.startKind !== 'no local evidence'
@@ -254,7 +286,7 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
       followUps: followUps(r, w, reported.windowsResult),
     }));
     const runs = ourRuns.filter(r => r.ask === w.id);
-    for (const r of runs.filter(x => x.status === 'unique')) execs.push(externalRow(r, codexSources));
+    for (const r of runs.filter(x => x.status === 'unique')) execs.push(externalRow(r, codexSources, workerPending(r)));
     const ambiguous = aggregate([...rows.filter(r => r.status === 'ambiguous').flatMap(r => r.turns), ...runs.filter(x => x.status === 'ambiguous').flatMap(x => x.turns)]);
     const labels = [...w.labels, ...(w.unmatchedBullets ? [`unmatched bullets: ${w.unmatchedBullets}`] : [])];
     const missing = missingByAsk.get(w.id);
