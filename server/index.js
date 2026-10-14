@@ -97,18 +97,20 @@ Run "ccxray <command> --help" for command-specific help (where supported).
 // record and the spawn come from server/plain-launch.js (load closure pinned),
 // shared with the normal launcher; every other module used here is required
 // inside a try, because it may be the one that failed.
-// Once the agent is launched the removal below is never reached, so a later
-// uncaught error must not launch a second agent; one raised while this handler
-// is still deciding exits 1 instead of looping.
-let bootstrapState = 'idle';
+// Once the agent is launched the removal below is never reached: a later
+// uncaught error is printed and survived (the launcher still exits with the
+// agent's code) and must not launch a second agent.
+let bootstrapLaunched = false;
 function onBootstrapFailure(err) {
   console.error(err && err.stack ? err.stack : String(err));
-  if (bootstrapState === 'launched') return;
-  if (bootstrapState === 'handling') process.exit(1);
-  bootstrapState = 'handling';
+  if (bootstrapLaunched) return;
   let plain;
   try { plain = require('./plain-launch'); } catch { process.exit(1); }
   const flags = plain.parseGlobalFlags(process.argv);
+  if (flags.hasPort && plain.parsePort(flags.portValue) == null) {
+    console.error(plain.INVALID_PORT_MESSAGE);
+    process.exit(1);
+  }
   const agent = plain.BOOTSTRAP_AGENTS.includes(flags.argv[2]) ? flags.argv[2] : null;
   if (!agent || flags.hubMode) process.exit(1);
   const args = flags.argv.slice(3);
@@ -125,7 +127,7 @@ function onBootstrapFailure(err) {
   console.error('[ccxray] fail-open: bootstrap-failed — this session is NOT traced; run ccxray setup --check');
   let provider = null;
   try { provider = require('./providers').getAgentProvider(agent); } catch {}
-  bootstrapState = 'launched';
+  bootstrapLaunched = true;
   plain.spawnPlain(
     { bin: agent, args, env: process.env, label: provider?.label || agent, installHint: provider?.installHint || '' },
     { provider, onExit: code => process.exit(code) },
@@ -169,7 +171,7 @@ let explicitPort = false;
 if (globalFlags.hasPort) {
   const parsed = plainLaunch.parsePort(globalFlags.portValue);
   if (parsed == null) {
-    console.error('\x1b[31mError: --port requires a valid port number (1-65535)\x1b[0m');
+    console.error(plainLaunch.INVALID_PORT_MESSAGE);
     process.exit(1);
   }
   config.PORT = parsed;

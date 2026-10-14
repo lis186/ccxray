@@ -43,6 +43,8 @@ function parseGlobalFlags(argv) {
   return { argv: rest, hasPort, portValue, hubMode, allowUpstreamLoop, noBrowser };
 }
 
+const INVALID_PORT_MESSAGE = '\x1b[31mError: --port requires a valid port number (1-65535)\x1b[0m';
+
 function parsePort(value) {
   const parsed = parseInt(value, 10);
   if (!value || isNaN(parsed) || parsed < 1 || parsed > 65535) return null;
@@ -114,4 +116,4 @@ function spawnPlain(launch, { provider = null, onExit, onChild, signalsOwnedByCa
   }
 }
 
-module.exports = { BOOTSTRAP_AGENTS, parseGlobalFlags, parsePort, appendFailOpen, spawnPlain };
+module.exports = { BOOTSTRAP_AGENTS, parseGlobalFlags, parsePort, INVALID_PORT_MESSAGE, appendFailOpen, spawnPlain };

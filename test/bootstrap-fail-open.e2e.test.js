@@ -81,7 +81,7 @@ describe('bootstrap fail-open (load-time throw before launchDecision)', { skip: 
     });
   }
 
-  it('leaves SIGINT to the agent and forwards SIGTERM to it', async t => {
+  it('leaves SIGINT to the agent', async t => {
     const { capture, env } = setup(t);
     const child = spawn(process.execPath, [SERVER, 'claude'], {
       env: { ...env, FAKE_AGENT_DELAY_MS: '1500' }, stdio: ['ignore', 'ignore', 'pipe'],
@@ -90,34 +90,31 @@ describe('bootstrap fail-open (load-time throw before launchDecision)', { skip: 
     const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
     await waitFor(capture);
     child.kill('SIGINT');
-    const result = await exited;
-    assert.deepEqual(result, { code: 7, signal: null }, 'Ctrl-C must not kill the launcher while the agent runs');
-
-    const { capture: capture2, env: env2 } = setup(t);
-    const child2 = spawn(process.execPath, [SERVER, 'claude'], {
-      env: { ...env2, FAKE_AGENT_DELAY_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    t.after(() => { try { child2.kill('SIGKILL'); } catch {} });
-    const exited2 = new Promise(resolve => child2.on('exit', (code, signal) => resolve({ code, signal })));
-    await waitFor(capture2);
-    const agentPid = JSON.parse(fs.readFileSync(capture2, 'utf8')).pid;
-    child2.kill('SIGTERM');
-    assert.deepEqual(await exited2, { code: 1, signal: null });
-    assert.throws(() => process.kill(agentPid, 0), 'agent received the forwarded SIGTERM');
+    assert.deepEqual(await exited, { code: 7, signal: null }, 'Ctrl-C must not kill the launcher while the agent runs');
   });
 
-  it('forwards SIGHUP to the agent', async t => {
-    const { capture, env } = setup(t);
-    const child = spawn(process.execPath, [SERVER, 'claude'], {
-      env: { ...env, FAKE_AGENT_DELAY_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe'],
+  for (const sig of ['SIGTERM', 'SIGHUP']) {
+    it(`forwards ${sig} to the agent`, async t => {
+      const { capture, env } = setup(t);
+      const child = spawn(process.execPath, [SERVER, 'claude'], {
+        env: { ...env, FAKE_AGENT_DELAY_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+      const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
+      await waitFor(capture);
+      const agentPid = JSON.parse(fs.readFileSync(capture, 'utf8')).pid;
+      child.kill(sig);
+      assert.deepEqual(await exited, { code: 1, signal: null });
+      assert.throws(() => process.kill(agentPid, 0), `agent received the forwarded ${sig}`);
     });
-    t.after(() => { try { child.kill('SIGKILL'); } catch {} });
-    const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
-    await waitFor(capture);
-    const agentPid = JSON.parse(fs.readFileSync(capture, 'utf8')).pid;
-    child.kill('SIGHUP');
-    assert.deepEqual(await exited, { code: 1, signal: null });
-    assert.throws(() => process.kill(agentPid, 0), 'agent received the forwarded SIGHUP');
+  }
+
+  it('rejects an invalid --port exactly as the normal path does', t => {
+    const { capture, env } = setup(t);
+    const r = run(['claude', '--port', 'abc'], env);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /--port requires a valid port number/);
+    assert.equal(fs.existsSync(capture), false);
   });
 
   it('does not launch a second agent on a later uncaught error', t => {
@@ -169,5 +166,31 @@ poll.unref();
     const { env } = setup(t);
     const r = run(['status'], env);
     assert.equal(r.status, 1);
+  });
+});
+
+// Not a bootstrap failure: the normal path's launchDecision writes the same
+// record through plain-launch's appendFailOpen.
+describe('normal-path fail-open record', { skip: process.platform === 'win32' }, () => {
+  it('still launches the agent when resolving the home directory throws', t => {
+    const { home, capture, env } = setup(t);
+    delete env.STORAGE_BACKEND;
+    // Throw only for the fail-open log write, so the proxy stack still loads.
+    const preload = path.join(home, 'home-throws.js');
+    fs.writeFileSync(preload, `
+const paths = require(${JSON.stringify(path.resolve(__dirname, '..', 'server', 'paths.js'))});
+const real = paths.resolveCcxrayHome;
+paths.resolveCcxrayHome = (...a) => {
+  if (new Error().stack.includes('logFailOpen')) throw new Error('home unavailable');
+  return real(...a);
+};
+`);
+    // --bg takes the bg-bypass fail-open path without starting a server.
+    const r = spawnSync(process.execPath, ['--require', preload, SERVER, 'claude', '--bg', 'hi'], {
+      env, encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(r.status, 7, r.stderr);
+    assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).args, ['--bg', 'hi']);
+    assert.equal(fs.existsSync(path.join(home, 'fail-open.log')), false, 'the record write was what failed');
   });
 });

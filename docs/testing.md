@@ -78,7 +78,11 @@ throw happens before any listen, so no port is bound. It also sets
 the real transcripts. Its signal cases send SIGINT/SIGTERM/SIGHUP to the
 launcher and wait for the fake agent's own exit. The second-agent case preloads
 a script (`node --require`) into the launcher that throws once the fake agent is
-running; the preload lives in the throwaway home. The file is skipped on Windows.
+running; the preload lives in the throwaway home. A second describe drops
+`STORAGE_BACKEND` and uses the same preload technique on the normal path: it
+makes `resolveCcxrayHome` throw only when called under `logFailOpen`, and runs
+`claude --bg` (the bg-bypass fail-open, no server start). The file is skipped on
+Windows.
 
 `test/plain-launch.test.js` is pure except one child `node -e` that loads
 `server/plain-launch.js` and lists `require.cache`, pinning its load closure. Its
