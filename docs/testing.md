@@ -54,6 +54,28 @@ failure case runs the VM-loaded hub in a short-lived worker so the old
 unhandled-child-error behavior can be observed as a process failure without
 putting the test runner at risk.
 
+Launcher fail-open E2E tests (`test/launcher-fail-open.e2e.test.js`) create a
+throwaway `CCXRAY_HOME`, synthetic `hub.json`, a fake Unix-socket hub, and fake
+provider executables in a temporary `bin/` directory. The hub records protocol
+messages and asserts register/unregister carry the same launch token while
+health remains tokenless. Its cases model lost, rejected, EOF, failed, and
+delayed registration replies, then close after their empty-client idle
+interval. On POSIX the fake executables are Node scripts; on Windows the fixture
+uses an npm global layout, a copy of `process.execPath` as the `.exe` bin, and a
+script argument that records argv and exits with a chosen code. They must never
+resolve to a real `claude`, `codex`, or `grok` binary. Port fixtures are
+allocated dynamically; standalone bind-failure tests reserve a consecutive
+loopback range so every retry fails. The separate orphan-hub test launches the
+real server in `--hub-mode` and verifies its readiness lock is removed when the
+process exits.
+
+`test/win-launch.test.js` tests Windows PATH/PATHEXT policy on every platform
+with an injected `path.win32` and case-insensitive fake filesystem. Its actual
+Windows process test passes a plain `{Path, PATH}` env object through both
+resolution and `spawn()` to verify the chosen executable and child environment
+agree. Windows-only launcher and process tests are marked skipped elsewhere;
+the Windows Stage 0 workflow runs them with the fake npm layout.
+
 For tests that spawn the CLI, pass it in the child env instead of mutating the
 parent process:
 
@@ -171,6 +193,14 @@ unmatched bullets), save them, then run
 `TZ=UTC CCXRAY_HOME=<scratch> ccxray agentflow report --json` from the project
 and compare. Print ids and counts only; nothing from the run enters the
 repository.
+
+`test/export-config-hash.test.js` passes an explicit `env` object to
+`exportConfigObject()` / `exportConfigHash()`; it must not depend on ambient
+export settings. Tests for `collectExportDiagnostics()` and `fetchHubReport()`
+pin `CCXRAY_HOME`, `LOGS_DIR`, and `CLOUDSDK_CONFIG` to fixture paths and delete
+`CCXRAY_EXPORT_GCS_KEY_FILE`. Hub report fixtures use a test-owned Unix socket
+or a dynamically allocated loopback port. They must not contact gcloud or the
+OAuth endpoint.
 
 If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is

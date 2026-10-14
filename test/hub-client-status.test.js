@@ -42,6 +42,16 @@ function renderReply(reply, lifecycle = 'attached') {
 }
 
 describe('hub client export/config status render', () => {
+  it('renders the optional hub config hash and stays compatible with an older hub', () => {
+    const hash = 'a'.repeat(64);
+    const withHash = renderHubClientStatus(hubIdentity, 'attached', {
+      ...stateFor('suppressed', 'explicitly-disabled'),
+      exportConfigHash: hash,
+    });
+    assert.match(withHash, /hash=aaaaaaaaaaaa/);
+    assert.doesNotMatch(renderHubClientStatus(hubIdentity, 'attached', stateFor('suppressed')), /hash=/);
+  });
+
   const recoveryOutcomes = [
     {
       outcome: 'success → register resolves a reply',

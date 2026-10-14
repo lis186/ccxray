@@ -28,6 +28,7 @@ function stateText(state) {
     parts.push('configWarnings=' + state.configWarnings.map(renderConfigWarning).join(' | '));
   }
   if (state.credential) parts.push(credentialText(state.credential));
+  if (typeof state.exportConfigHash === 'string') parts.push('hash=' + state.exportConfigHash.slice(0, 12));
   return parts.join(' ');
 }
 
