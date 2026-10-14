@@ -29,6 +29,13 @@ function reverseDiscovered(toolEvents, { checkoutRoots = [] } = {}) {
   return found;
 }
 
+// A JSON tool input in its compact form, so `{"session_id": 4}`, spaced as the
+// model wrote it, names the handle `"session_id":4`. Other input is read as is.
+function compactInput(input) {
+  if (!input) return '';
+  try { return JSON.stringify(JSON.parse(input)); } catch { return input; }
+}
+
 // A handle mentioned as a whole token: `"session_id":1` must not match `"session_id":12`.
 function mentions(text, handle) {
   const word = /[\w-]/u;
@@ -57,7 +64,7 @@ function chainEvidence(toolEvents, clones, { checkoutRoots = [] } = {}) {
     if (namesRunner(r.ev.input)) launch = r.ev;
     else {
       const via = launches.filter(l => l.ev !== r.ev && l.ev.origin === r.ev.origin && l.ev.inputAt != null && r.ev.inputAt != null
-        && l.ev.inputAt <= r.ev.inputAt && l.handles.some(h => mentions(r.ev.input || '', h)));
+        && l.ev.inputAt <= r.ev.inputAt && l.handles.some(h => mentions(compactInput(r.ev.input), h)));
       if (via.length) launch = via.sort((a, b) => b.ev.inputAt - a.ev.inputAt)[0].ev;
     }
     if (launch) strong.push({ clone: r.clone, launch, result: r.ev, interval: [launch.inputAt, r.ev.resultAt], truncated: r.truncated });

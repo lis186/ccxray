@@ -190,6 +190,37 @@ describe('PR #646 report regressions', () => {
     assert.doesNotMatch(text, /secret/, 'a subagent type that is not identifier-shaped never reaches the report');
   });
 
+  it('leaves a Codex background thread in a worker clone out of the worker run and counts it', () => {
+    const ctx = setup('worker-background');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-bg', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 30);
+    const worker = sid(7), background = sid(8);
+    const day = path.join(ctx.codex, '2026', '06', '01');
+    fs.mkdirSync(day, { recursive: true });
+    fs.writeFileSync(path.join(day, `rollout-2026-06-01T10-00-08-${background}.jsonl`),
+      JSON.stringify({ timestamp: iso(21), type: 'session_meta', payload: { id: background, cwd: clone, thread_source: 'automation' } }) + '\n');
+    const row = { provider: 'openai', model: 'gpt-test', cwd: clone, imported: true, usage: { input_tokens: 1 } };
+    writeIndex(ctx, [
+      { ...row, id: 'w-run', sessionId: worker, receivedAt: at(25), cost: { cost: 4, confidence: 'exact' } },
+      { ...row, id: 'w-background', sessionId: background, receivedAt: at(26), cost: { cost: 9, confidence: 'exact' } },
+    ]);
+    const r = report(ctx);
+    const external = r.asks.find(ask => ask.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => [x.total.calls, x.total.cost]), [[1, 4]]);
+    assert.equal(r.footer.background, 1);
+  });
+
+  it('reads a notebook named through a symlink as the checkout\'s default notebook', () => {
+    const ctx = setup('symlinked-notebook');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-link', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 30);
+    writeIndex(ctx, [{ id: 'w-link', sessionId: 'worker-link', provider: 'anthropic', model: 'claude-test', cwd: clone, receivedAt: at(25), responseId: 'msg-link', usage: { input_tokens: 1 }, cost: { cost: 4, confidence: 'exact' } }]);
+    const link = path.join(ctx.base, 'repo-link');
+    fs.symlinkSync(ctx.repo, link);
+    const external = report(ctx, path.join(link, '.agentflow', 'devlog.md')).asks.find(ask => ask.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => [x.total.calls, x.total.cost]), [[1, 4]]);
+  });
+
   it('labels a matched Codex transcript without index rows as transcripts only, including in a multi-host fold', () => {
     const onlyCodex = setup('codex-only', ['codex task']);
     const codexSession = sid(3);

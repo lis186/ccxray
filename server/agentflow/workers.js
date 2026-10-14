@@ -86,7 +86,7 @@ function combine(evidenceByLevel) {
   return { fixed, ambiguous, labels: [...labels], level };
 }
 
-function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report = 0, hostOf, toolEvents, dispatch = [], completion = [], originOf = cloneOrigin, now }) {
+function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report = 0, hostOf, toolEvents, dispatch = [], completion = [], originOf = cloneOrigin, backgroundSessions = () => new Set(), now }) {
   const root = stripSlash(checkoutRoot);
   // The span in which the reported notebook's hosts were active on this machine.
   const ourHostTimes = turns.filter(e => (hostOf.get(e.sessionId) || []).includes(report) && e.receivedAt != null).map(e => e.receivedAt);
@@ -103,7 +103,10 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   for (const r of completion) for (const c of r.clones) clones.add(canonicalPath(c));
   for (const c of reverseDiscovered(toolEvents, { checkoutRoots: [root] })) clones.add(c);
   clones.delete(root);
-  const workerTurns = turns.filter(e => e.cwd && clones.has(cwd(e)));
+  // Codex background threads (automation, memory_consolidation) are no worker
+  // run, wherever their cwd: left out and counted, as for hosts (Attribution).
+  const background = backgroundSessions([...new Set(turns.filter(e => e.cwd && clones.has(cwd(e))).map(e => e.sessionId))]);
+  const workerTurns = turns.filter(e => e.cwd && clones.has(cwd(e)) && !background.has(e.sessionId));
   // Native descendants of a worker belong to its run whatever cwd their own
   // worktree gave them (Lineage): they carry the worker's session id.
   const clonesOf = new Map();
@@ -228,7 +231,7 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   };
 
   // E3 per run, then E6.
-  const out = { runs: [], ambiguousTurns, footer: { checkoutUnknown: 0, matchedNoNotebook: 0, heuristicParentIgnored: 0 } };
+  const out = { runs: [], ambiguousTurns, footer: { checkoutUnknown: 0, matchedNoNotebook: 0, heuristicParentIgnored: 0, background: background.size } };
   const parentIgnored = new Set();
   for (const run of runs) {
     for (const t of run.turns) if (t.parentSessionId) parentIgnored.add(t.sessionId);

@@ -109,7 +109,10 @@ function externalRow(run, codexSources) {
   };
 }
 
-async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now = Date.now(), logsDir, roots = defaultRoots(), originOf }) {
+async function buildReport({ notebook: given, archive = null, ask: onlyAsk = null, now = Date.now(), logsDir, roots = defaultRoots(), originOf }) {
+  // Resolved like the checkout root, so its path relative to the root and the
+  // default-notebook test hold when it was named through a symlink (/var).
+  const notebook = realpath(given);
   const root = checkoutRootFor(notebook);
   const workspace = workspaceDirFor(root);
   const defaultAbs = defaultNotebook(root);
@@ -185,6 +188,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
   const workers = attributeWorkers({
     turns, checkoutRoot: root, workspaceRel, notebooks, hostOf: hosts.hostOf, toolEvents,
     dispatch: readDispatchRecords(workspace), completion: readCompletionRecords(workspace, root, notebooks),
+    backgroundSessions: sids => new Set([...findTranscripts(sids, roots)].filter(([, f]) => readOnce(f)?.background).map(([sid]) => sid)),
     now, ...(originOf ? { originOf } : {}),
   });
   // A run ambiguous between notebooks is shown by each of them (Scope of
@@ -297,7 +301,7 @@ async function buildReport({ notebook, archive = null, ask: onlyAsk = null, now 
       matchedNoNotebook: workers.footer.matchedNoNotebook,
       checkoutUnknown: workers.footer.checkoutUnknown,
       heuristicParentIgnored: workers.footer.heuristicParentIgnored,
-      background: hosts.background,
+      background: hosts.background + workers.footer.background,
     },
   };
 }
@@ -359,7 +363,7 @@ function renderText(report) {
   out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update`);
   out.push(`this machine's data only · no local evidence: ${f.noLocalEvidence} · stamp unreadable: ${f.stampUnreadable} · host turns below the checkout root, not attributed: ${f.offRootTurns}`);
   out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · heuristic parent ignored: ${f.heuristicParentIgnored} · worker runs on this machine, any checkout, whose checkout is unknown, while this notebook's hosts were active: ${f.checkoutUnknown}`);
-  if (f.background) out.push(`Codex background threads in this checkout, not attributed: ${f.background}`);
+  if (f.background) out.push(`Codex background threads in this checkout or its worker clones, not attributed: ${f.background}`);
   if (f.notYetImported) out.push(`not yet imported: ${f.notYetImported} Asks have transcript turns the index lacks; run \`ccxray import --once\` and report again`);
   out.push('imported turns are hidden in the dashboard by default; open /?imported to see them');
   return out.join('\n') + '\n';

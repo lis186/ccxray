@@ -73,6 +73,14 @@ describe('chainEvidence (E5)', () => {
     assert.deepEqual(r.strong.map(s => [s.clone, s.launch.id, s.result.id]), [[C1, 'c1', 'c3']]);
   });
 
+  it('reads a write_stdin session id however its JSON is spaced', () => {
+    const r = chainEvidence([
+      ev('c1', 'f', '{"cmd":"node external-runner.js"}', 10, 'Process running with session ID 4', 11),
+      ev('c2', 'f', '{"session_id": 4, "chars": ""}', 30, runnerResult(C1), 31),
+    ], clones);
+    assert.deepEqual(r.strong.map(s => [s.clone, s.launch.id, s.result.id]), [[C1, 'c1', 'c2']]);
+  });
+
   it('does not pair across transcripts, and a result with no launch is no chain (F4)', () => {
     const r = chainEvidence([
       ev('t1', 'host.jsonl', '{"command":"node external-runner.js &"}', 10, 'running in background with ID: bg42', 11),

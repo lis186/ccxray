@@ -53,6 +53,15 @@ describe('parseNotebook', () => {
     assert.deepEqual(a.bullets, ['one']);
   });
 
+  it('keeps a fence inside an owner bullet as the owner\'s text, and the Asks after it', () => {
+    const message = 'look at this\n```js\nconst a = 1;\n```\n\n```\nsecond\n\nthird\n```';
+    // agf's format_owner_input: a `+ ` bullet per paragraph, continuation lines indented.
+    const owner = message.split(/\n(?:[\t ]*\n)+/u).map(p => `+ ${p.split('\n').join('\n  ')}`).join('\n\n');
+    const [a, b] = parseNotebook(['# → Ask / A-001', '', owner, '', '# → Ask / A-002', '', '+ next', ''].join('\n'));
+    assert.deepEqual(a.bullets, paragraphs(message));
+    assert.deepEqual(b && b.bullets, ['next']);
+  });
+
   it('treats the bare `+` scaffold as an empty, open Ask', () => {
     assert.deepEqual(asks[2], { id: 'A-003', bullets: [], hasReply: false, stamp: null, identity: null, stampUnreadable: false, replyText: null });
   });

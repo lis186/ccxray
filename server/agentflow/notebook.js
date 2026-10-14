@@ -52,6 +52,9 @@ function parseNotebook(text) {
   for (const line of text.split('\n')) {
     if (!fenced && ASK.test(line)) endReply();
     if (reply) reply.push(line);
+    // agf indents an owner bullet's continuation lines (format_owner_input), so
+    // an indented line inside one is the owner's text, a fence marker included.
+    if (para && part === 'body' && /^[ \t]/u.test(line) && line.trim()) { para.push(line); continue; }
     if (FENCE.test(line)) { endPara(); fenced = !fenced; continue; }
     if (fenced) continue;
     const a = ASK.exec(line);
