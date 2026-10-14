@@ -154,6 +154,46 @@ synthetic JSON with the `type` field and placeholder values. The token exchange
 is mocked through `_setTokenExchanger()`; no test may reach
 `oauth2.googleapis.com`.
 
+The agentflow report fixture `test/fixtures/agentflow/generated/` is the one
+generated fixture: `scripts/agentflow-fixtures/generate.js` runs the pinned
+upstream agentflow external runner (real clones and runner results), fake
+workers through this checkout's proxy (real index lines) and `ccxray import
+--once` over synthesized host transcripts, all in a scratch root it then
+replaces with `${ROOT}`, under `TZ=UTC`. It refuses to write when any file
+still holds the scratch root, the home directory, the username or the local
+time zone. Regenerate with
+`node scripts/agentflow-fixtures/generate.js <agentflow>/skills/agentflow/scripts`
+(agentflow at the commit named in the script; no network, no LLM). It never
+writes `expected.json`, which is hand-derived from
+`docs/agentflow-integration.md`; `test/agentflow-generated.e2e.test.js`
+rebuilds the checkout and clones with `git clone --no-local`, so each clone's
+reflog names the checkout as the runner's did.
+
+Two more agentflow report tests follow the same rule of expected results
+written before the code runs. `test/agentflow-ledger.e2e.test.js` assigns each
+turn of one fixture to a report bucket by hand from the spec and checks
+conservation: every index turn is in exactly one bucket or listed as outside the
+report, so a turn that silently vanishes fails it (compared by call count, which skips a row with neither a model nor usage; every fixture row carries both).
+`test/agentflow-privacy.e2e.test.js` plants a marker in every free-text and
+identifying input (prompts, bullets, Reply text, paths, session ids, tool
+commands and results, dispatch fields that fail the shape check) and asserts
+neither the text nor the JSON report prints one; a new output field that echoes
+input must keep it passing.
+`test/agentflow-pr646-regressions.e2e.test.js` builds synthetic reports for
+candidate-scoped worker ambiguity, stale dispatch Ask ids, native Claude child
+transcript completeness and Codex transcripts with no index rows. These cases
+use their own temporary home and transcript roots, as well as synthetic index
+rows and notebook text.
+
+Real-data acceptance of the report is manual and read-only, never a test: copy
+the owner's `index.ndjson` into a scratch `CCXRAY_HOME`, derive about five Asks'
+expected results with a script that does not use `server/agentflow` (window
+kind, host evidence and status, completeness from per-turn twins, call counts,
+unmatched bullets), save them, then run
+`TZ=UTC CCXRAY_HOME=<scratch> ccxray agentflow report --json` from the project
+and compare. Print ids and counts only; nothing from the run enters the
+repository.
+
 `test/export-config-hash.test.js` passes an explicit `env` object to
 `exportConfigObject()` / `exportConfigHash()`; it must not depend on ambient
 export settings. Tests for `collectExportDiagnostics()` and `fetchHubReport()`

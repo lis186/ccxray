@@ -28,6 +28,7 @@ Commands:
   setup-statusline    Configure Claude Code status line
   secret              Manage shared secrets (upstream)
   usage               Show usage summary and costs
+  agentflow report    Usage per Ask of an agentflow notebook
 
 Options:
   --port <n>              Custom proxy port (1-65535)
@@ -79,6 +80,15 @@ Run "ccxray <command> --help" for command-specific help (where supported).
       require('./usage').run(argv.slice(i + 1)).catch(err => {
         console.error(err && err.message ? err.message : String(err));
         process.exit(1);
+      });
+      return;
+    }
+    // Same read-only shape as `usage`: loading the rest of server/ would only
+    // add modules the report must not start (docs/agentflow-integration.md, CLI).
+    if (tok === 'agentflow') {
+      require('./agentflow/cli').run(argv.slice(i + 1)).catch(err => {
+        console.error(err && err.message ? err.message : String(err));
+        process.exitCode = 1;
       });
       return;
     }
