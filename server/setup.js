@@ -23,6 +23,7 @@ const SETUP_TIMEOUT_MS = 10_000;
 const SETUP_LOCK_TIMEOUT_MS = 10_000;
 const CHECK_IDS = new Set([
   'node-version', 'claude-resolvable', 'shell-target', 'rc-block', 'conflict-scan',
+  'execution-policy',
   'env-anthropic-base-url', 'claude-account', 'account-count', 'adc',
   'invoking-shell', 'running-exporter', 'enrollment', 'cursor', 'last-attempt',
   'last-lock-loss', 'last-fail-open', 'coverage', 'shell-probe',
@@ -180,14 +181,22 @@ function functionBlocks(text, powershell) {
     if (!match) continue;
     const name = powershell ? match[2] : match[1];
     const open = rows[i].text.indexOf('{');
-    const inlineClose = open >= 0 && rows[i].text.indexOf('}', open + 1) >= 0;
-    let end = i + 1;
-    if (inlineClose) end = i;
-    else {
-      while (end < rows.length && !/^\s*}\s*;?\s*$/.test(rows[end].text)) end++;
+    let depth = 0;
+    let end = i;
+    let complete = false;
+    for (; end < rows.length; end++) {
+      const line = rows[end].text;
+      const scanFrom = end === i ? open : 0;
+      if (scanFrom < 0) break;
+      const delta = braceDelta(line.slice(scanFrom), powershell);
+      depth += delta;
+      if (depth < 0) break;
+      if (depth === 0) {
+        complete = end > i && line.trim() === '}';
+        break;
+      }
     }
-    const complete = !inlineClose && end < rows.length;
-    if (!complete) end = inlineClose ? i : rows.length - 1;
+    if (!complete) end = Math.min(end, rows.length - 1);
     const body = rows.slice(i, end + 1).map(row => row.text).join('\n');
     found.push({
       name, start: rows[i].start, end: rows[end].contentEnd, body, line: i + 1,
@@ -197,24 +206,37 @@ function functionBlocks(text, powershell) {
   return found;
 }
 
+function braceDelta(line, powershell) {
+  let delta = 0;
+  let quote = null;
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (quote) {
+      if (powershell && quote === '"' && char === '`') { index++; continue; }
+      if (!powershell && quote === '"' && char === '\\') { index++; continue; }
+      if (char === quote) {
+        if (powershell && quote === "'" && line[index + 1] === "'") { index++; continue; }
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '#' || (!powershell && char === '#')) break;
+    if (char === "'" || char === '"') { quote = char; continue; }
+    if (char === '{') delta++;
+    else if (char === '}') delta--;
+  }
+  return delta;
+}
+
 function hasGeneratedWrapperShape(fn, powershell) {
   if (!fn.complete) return false;
   const expectedHeader = powershell ? /^\s*function\s+claude\s*\{\s*$/i : /^\s*claude\s*\(\s*\)\s*\{\s*$/i;
   if (!expectedHeader.test(fn.header)) return false;
+  // Here-documents and PowerShell here-strings have their own brace rules. Refuse
+  // those shapes instead of guessing where the owned function ends.
+  if (powershell ? /@['"]/.test(fn.body) : /<<-?\s*['"]?[A-Za-z_]/.test(fn.body)) return false;
   const body = fn.body.split('\n').slice(1, -1).map(line => line.trim());
-  const expected = powershell ? [
-    `# ${WRAPPER_MARKER}`,
-    "$claudeApp = (Get-Command claude -CommandType Application | Select-Object -First 1).Source",
-    " $bypass = @('--version','--help','-h','mcp','doctor','agents','plugin','auth','attach','respawn')".trim(),
-    'if ($args.Count -gt 0 -and $bypass -contains $args[0]) { & $claudeApp @args; return }',
-    'if (Get-Command ccxray -ErrorAction SilentlyContinue) { ccxray claude @args } else { & $claudeApp @args }',
-  ] : [
-    `: ${WRAPPER_MARKER}`,
-    'case "$1" in --version|--help|-h|mcp|doctor|agents|plugin|auth|attach|respawn)',
-    'command claude "$@"; return ;; esac',
-    'if command -v ccxray >/dev/null 2>&1; then ccxray claude "$@"; else command claude "$@"; fi',
-  ];
-  return body.length === expected.length && body.every((line, index) => line === expected[index]);
+  return body.length > 0 && body[0] === (powershell ? `# ${WRAPPER_MARKER}` : `: ${WRAPPER_MARKER}`);
 }
 
 function parseRcBlock(text, powershell) {
@@ -373,20 +395,24 @@ function snapshotComparable(snapshot) {
     chain: snapshot.chain.map(item => ({
       path: item.path, kind: item.kind, target: item.target ?? null,
       dev: item.dev ?? null, ino: item.ino ?? null, size: item.size ?? null,
-      mtimeMs: item.mtimeMs ?? null,
+      mtimeMs: item.mtimeMs ?? null, nlink: item.nlink ?? null,
     })),
     parentMissing: snapshot.parentMissing === true,
   });
 }
 
 function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi = path } = {}) {
-  const logical = pathApi.resolve(logicalPath);
+  const rawLogical = String(logicalPath);
+  const logical = pathApi.resolve(rawLogical);
+  const rawAbsolute = pathApi.isAbsolute(rawLogical)
+    ? rawLogical
+    : `${process.cwd()}${pathApi.sep}${rawLogical}`;
   const splitPath = absolute => {
     const parsed = pathApi.parse(absolute);
-    const parts = absolute.slice(parsed.root.length).split(/[\\/]+/).filter(Boolean);
+    const parts = absolute.slice(parsed.root.length).split(pathApi.sep).filter(Boolean);
     return { root: parsed.root, parts };
   };
-  const initial = splitPath(logical);
+  const initial = splitPath(rawAbsolute);
   let pending = initial.parts.map(value => ({ value, fromLinkTarget: false }));
   let current = initial.root;
   const chain = [];
@@ -394,6 +420,12 @@ function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi
   let linkCount = 0;
   for (let index = 0; index < pending.length; index++) {
     const component = pending[index];
+    if (component.value === '.' || component.value === '') continue;
+    if (component.value === '..') {
+      if (component.fromLinkTarget && !current) throw new Error(`invalid symlink target for ${logical}`);
+      current = pathApi.dirname(current);
+      continue;
+    }
     const absolute = pathApi.resolve(pathApi.join(current, component.value));
     let stat;
     try { stat = io.lstatSync(absolute); }
@@ -411,6 +443,9 @@ function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi
       if (missing.some(item => item.fromLinkTarget)) {
         throw new Error(`${logical} → ${absolute} does not exist; fix the link first`);
       }
+      if (missing.some(item => item.value === '..')) {
+        throw new Error(`parent directory for ${logical} cannot be created through a missing path component`);
+      }
       for (const directory of missing.slice(0, -1)) {
         current = pathApi.resolve(pathApi.join(current, directory.value));
         chain.push({ path: current, kind: 'absent-directory' });
@@ -427,8 +462,8 @@ function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi
       const target = io.readlinkSync(absolute);
       chain.push({ path: absolute, kind: 'symlink', target, dev: stat.dev, ino: stat.ino });
       const targetPath = pathApi.isAbsolute(target)
-        ? pathApi.resolve(target)
-        : pathApi.resolve(pathApi.dirname(absolute), target);
+        ? target
+        : `${pathApi.dirname(absolute)}${pathApi.sep}${target}`;
       const resolvedTarget = splitPath(targetPath);
       pending = resolvedTarget.parts.map(value => ({ value, fromLinkTarget: true }))
         .concat(pending.slice(index + 1));
@@ -439,8 +474,22 @@ function resolveChain(logicalPath, io = fs, { allowCreateParent = false, pathApi
     const isFinal = index === pending.length - 1;
     if (isFinal) {
       if (!stat.isFile()) throw new Error(`${absolute} is not a regular file`);
-      const fingerprint = { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+      const fingerprint = { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, nlink: stat.nlink };
       chain.push({ path: absolute, kind: 'file', mode: stat.mode, ...fingerprint });
+      if (typeof io.realpathSync?.native !== 'function') {
+        throw new Error('filesystem does not expose realpathSync.native for target verification');
+      }
+      const nativePath = io.realpathSync.native(rawLogical);
+      const comparable = value => {
+        let normalized = pathApi.normalize(value);
+        if (pathApi === path.win32) {
+          normalized = normalized.replace(/^\\\\\?\\/, '').toLowerCase();
+        }
+        return normalized;
+      };
+      if (comparable(nativePath) !== comparable(absolute)) {
+        throw new Error(`path resolver disagrees with realpathSync.native for ${logical}: ${absolute} versus ${nativePath}`);
+      }
       return { logicalPath: logical, realPath: absolute, chain, kind: 'file', fingerprint, parentMissing: false };
     }
     if (!stat.isDirectory()) throw new Error(`${absolute} is not a directory`);
@@ -562,6 +611,10 @@ function powershellDiscoveryScript(frameNonce) {
     `Write-Output "currentHost=$($PROFILE.CurrentUserCurrentHost)"`,
     `Write-Output "edition=$($PSVersionTable.PSEdition)"`,
     `Write-Output "host=$($Host.Name)"`,
+    '$executionPolicy = Get-ExecutionPolicy',
+    '$profileSignature = try { if (Test-Path -LiteralPath $PROFILE.CurrentUserAllHosts -PathType Leaf) { (Get-AuthenticodeSignature -LiteralPath $PROFILE.CurrentUserAllHosts).Status.ToString() } else { "Missing" } } catch { "Unknown" }',
+    'Write-Output "executionPolicy=$executionPolicy"',
+    'Write-Output "profileSignature=$profileSignature"',
     `Write-Output '<</ccxray-probe:${frameNonce}>>'`,
   ].join('\n');
 }
@@ -606,6 +659,8 @@ async function discoverPowerShell(exe, env, deps, frameNonce = nonce(deps)) {
     currentHost: frame.currentHost || null,
     edition: frame.edition || 'unknown',
     host: frame.host || 'unknown',
+    executionPolicy: frame.executionPolicy || null,
+    profileSignature: frame.profileSignature || null,
   };
 }
 
@@ -643,6 +698,8 @@ async function resolveTargets(options, deps) {
       logicalPath: discovery.allHosts,
       currentHostPath: discovery.currentHost,
       label: `${edition}/${discovery.edition}, ${discovery.host}`,
+      executionPolicy: discovery.executionPolicy,
+      profileSignature: discovery.profileSignature,
     });
     const target = out.targets[out.targets.length - 1];
     if (target.currentHostPath) {
@@ -730,6 +787,9 @@ function prepareTarget(target, deps) {
     allowCreateParent: target.kind === 'powershell',
     pathApi: target.kind === 'powershell' && deps.platform === 'win32' ? path.win32 : deps.path,
   });
+  if (snapshot.fingerprint?.nlink > 1) {
+    throw new Error(`${target.logicalPath} is hard-linked (nlink=${snapshot.fingerprint.nlink}); ccxray setup refuses to replace it. Copy it to a regular file first.`);
+  }
   let raw = Buffer.alloc(0);
   if (snapshot.kind === 'file') raw = deps.fs.readFileSync(snapshot.realPath);
   const decoded = decodeRc(raw);
@@ -773,6 +833,8 @@ function targetProbeDescriptors(target) {
 
 function targetDescription(target) {
   if (target.unknown) return `${target.label}: unknown(${target.unknown})`;
+  if (target.error) return `${target.label}: unresolved (${target.error.message})`;
+  if (!target.snapshot) return `${target.label}: unresolved`;
   const chain = target.snapshot.chain.map(item => item.kind === 'symlink'
     ? `${item.path} -> ${item.target}`
     : `${item.path} (${item.kind})`).join(' -> ');
@@ -1122,6 +1184,36 @@ function nodeVersionCheck() {
   return statusLine('node-version', major >= 18 ? 'ok' : 'failed', `Node ${process.versions.node}; requires major >= 18`);
 }
 
+function executionPolicyCheck(target, { forInstall = false, values = null, deps = null } = {}) {
+  if (target.kind !== 'powershell') return null;
+  const policy = String(target.executionPolicy || '').trim();
+  if (!policy || policy.toLowerCase() === 'undefined') {
+    return statusLine('execution-policy', 'unknown', `${target.label}: Get-ExecutionPolicy did not return an effective policy`);
+  }
+  if (policy.toLowerCase() === 'restricted') {
+    return statusLine('execution-policy', 'failed', `${target.label}: PowerShell ExecutionPolicy Restricted prevents profile loading (${target.logicalPath})`);
+  }
+  if (policy.toLowerCase() === 'allsigned') {
+    const signature = String(target.profileSignature || 'Unknown');
+    if (signature.toLowerCase() !== 'valid') {
+      return statusLine('execution-policy', 'failed', `${target.label}: PowerShell ExecutionPolicy AllSigned prevents this profile from loading because its signature status is ${signature} (${target.logicalPath})`);
+    }
+    if (forInstall) {
+      let rendered;
+      try {
+        if (!target.snapshot || !Buffer.isBuffer(target.raw)) throw new Error('profile bytes are unavailable');
+        rendered = renderTargetRc(target, values, false, deps);
+      } catch (error) {
+        return statusLine('execution-policy', 'failed', `${target.label}: PowerShell ExecutionPolicy AllSigned cannot be preserved for this setup change (${error.message})`);
+      }
+      if (!rendered.equals(target.raw)) {
+        return statusLine('execution-policy', 'failed', `${target.label}: PowerShell ExecutionPolicy AllSigned would prevent this modified unsigned profile from loading; setup cannot sign it (${target.logicalPath})`);
+      }
+    }
+  }
+  return statusLine('execution-policy', 'ok', `${target.label}: PowerShell ExecutionPolicy ${policy}; profile signature ${target.profileSignature || 'unknown'}`);
+}
+
 function resolveClaudeExecutable(deps) {
   if (deps.platform !== 'win32') return findExecutable('claude', deps.env, { fs: deps.fs, path: deps.path, platform: deps.platform });
   const resolver = deps.winLaunch.describeResolution || winLaunch.describeResolution;
@@ -1166,6 +1258,10 @@ async function buildInstallChecks(context, options, deps) {
     checks.push(statusLine('rc-block', rc.status, `${target.label}: ${rc.detail}`));
     const conflict = conflictStatus(target);
     checks.push(statusLine('conflict-scan', conflict.status, conflict.detail));
+  }
+  for (const target of context.targets.flatMap(targetProbeDescriptors)) {
+    const policy = executionPolicyCheck(target, { forInstall: true, values: context.values, deps });
+    if (policy) checks.push(policy);
   }
 
   const hubClient = Boolean(deps.env.CCXRAY_HUB_CLIENT_PID);
@@ -1240,6 +1336,10 @@ async function buildCheckReport(context, options, deps) {
     } else if (target.error) {
       checks.push(statusLine('shell-target', 'failed', `${target.label}: ${target.error.message}`));
     } else checks.push(statusLine('shell-target', 'ok', targetDescription(target)));
+  }
+  for (const target of context.targets.flatMap(targetProbeDescriptors)) {
+    const policy = executionPolicyCheck(target);
+    if (policy) checks.push(policy);
   }
 
   const rcStatuses = new Map();
@@ -1390,12 +1490,20 @@ function tempPathFor(file, deps, suffix) {
 function atomicWriteBrowser(home, setting, deps) {
   deps.fs.mkdirSync(home, { recursive: true, mode: 0o700 });
   const file = deps.path.join(home, 'auto-open-browser');
-  const tmp = tempPathFor(file, deps, 'browser-tmp');
+  let tmp = null;
+  let fd = null;
   try {
-    deps.fs.writeFileSync(tmp, `${setting}\n`, { flag: 'wx', mode: 0o600 });
+    const candidate = tempPathFor(file, deps, 'browser-tmp');
+    fd = deps.fs.openSync(candidate, 'wx', 0o600);
+    tmp = candidate;
+    deps.fs.writeFileSync(fd, `${setting}\n`);
+    deps.fs.closeSync(fd);
+    fd = null;
     deps.fs.renameSync(tmp, file);
+    tmp = null;
   } finally {
-    try { deps.fs.unlinkSync(tmp); } catch {}
+    if (fd !== null) { try { deps.fs.closeSync(fd); } catch {} }
+    if (tmp) { try { deps.fs.unlinkSync(tmp); } catch {} }
   }
   return file;
 }
@@ -1425,7 +1533,14 @@ function verifyTargetSnapshot(target, deps) {
       allowCreateParent: logicalTarget.kind === 'powershell',
       pathApi: logicalTarget.kind === 'powershell' && deps.platform === 'win32' ? path.win32 : deps.path,
     });
-    if (chainIsStale(logicalTarget.snapshot, current)) {
+    let bytesStale = false;
+    const expectedBytes = logicalTarget.raw ?? target.raw;
+    if (!chainIsStale(logicalTarget.snapshot, current)
+        && current.kind === 'file'
+        && Buffer.isBuffer(expectedBytes)) {
+      bytesStale = !deps.fs.readFileSync(current.realPath).equals(expectedBytes);
+    }
+    if (chainIsStale(logicalTarget.snapshot, current) || bytesStale) {
       return { current, stale: true, staleTarget: logicalTarget };
     }
   }
@@ -1434,6 +1549,7 @@ function verifyTargetSnapshot(target, deps) {
 
 function commitRcTarget(target, bytes, deps) {
   let tmp = null;
+  let fd = null;
   try {
     const checked = verifyTargetSnapshot(target, deps);
     if (checked.stale) return { kind: 'stale', error: new Error('stale preparation; re-run ccxray setup') };
@@ -1446,8 +1562,12 @@ function commitRcTarget(target, bytes, deps) {
 
     const fileNode = target.snapshot.chain[target.snapshot.chain.length - 1];
     const mode = (fileNode.mode ?? 0o600) & 0o777;
-    tmp = tempPathFor(targetPath, deps, 'rc-tmp');
-    deps.fs.writeFileSync(tmp, bytes, { flag: 'wx', mode });
+    const candidate = tempPathFor(targetPath, deps, 'rc-tmp');
+    fd = deps.fs.openSync(candidate, 'wx', mode);
+    tmp = candidate;
+    deps.fs.writeFileSync(fd, bytes);
+    deps.fs.closeSync(fd);
+    fd = null;
     try { deps.fs.chmodSync(tmp, mode); } catch (error) { if (error.code !== 'ENOSYS') throw error; }
     const latest = verifyTargetSnapshot(target, deps);
     if (latest.stale) return { kind: 'stale', error: new Error('stale preparation; re-run ccxray setup') };
@@ -1460,6 +1580,7 @@ function commitRcTarget(target, bytes, deps) {
     }
     return { kind: 'failed', error };
   } finally {
+    if (fd !== null) { try { deps.fs.closeSync(fd); } catch {} }
     if (tmp) {
       try { deps.fs.unlinkSync(tmp); } catch {}
     }
@@ -1483,11 +1604,17 @@ function cursorSeed(home, enrollment, deps) {
 function printDryRun(context, options, deps, nextEnrollment, cursorState, browserSetting) {
   const io = deps.logger;
   io.log('Dry run — no lock acquired and no files changed.');
-  for (const target of context.targets) io.log(targetDescription(target));
+  for (const target of context.targets) {
+    io.log(targetDescription(target));
+    for (const alias of targetAliases(target)) io.log(`Logical target: ${alias}`);
+  }
   if (options.remove) {
     io.log(`Would write tombstone: ${deps.exportSync.enrollmentPath(context.home)} (${enrollmentText(context.diagnostics.durableHome.enrollment)} → removed)`);
     for (const target of context.targets) {
       if (target.parsed?.kind === 'owned') io.log(`Would remove setup block: ${target.logicalPath} → ${target.snapshot.realPath}`);
+      else if (target.parsed?.kind === 'malformed') {
+        io.log(`Would skip malformed setup block: ${target.logicalPath} (${target.parsed.reason}); tombstone will be written and cleanup reported incomplete.`);
+      }
     }
     return;
   }
@@ -1495,11 +1622,16 @@ function printDryRun(context, options, deps, nextEnrollment, cursorState, browse
   io.log(`Cursor seed: ${cursorState.absent ? `create ${cursorState.path}` : `preserve ${cursorState.path}`}`);
   for (const target of context.targets) {
     if (target.unknown || target.error || target.parsed.kind === 'malformed') continue;
-    const bytes = renderTargetRc(target, context.values, false, deps);
-    io.log(`Would write ${target.logicalPath} → ${target.snapshot.realPath}:\n${decodeRc(bytes).text}`);
+    const block = renderRcBlock(context.values, target.kind === 'powershell', targetNewline(target, deps));
+    io.log(`Would write setup block for ${targetAliases(target).join('; ')}:\n${block}`);
   }
   if (browserSetting) io.log(`Would write ${deps.path.join(context.home, 'auto-open-browser')}: ${browserSetting}`);
   else if (!options.yes) io.log(`First install will ask whether to write ${deps.path.join(context.home, 'auto-open-browser')}.`);
+}
+
+function targetAliases(target) {
+  const logicalTargets = target.logicalTargets || [target];
+  return logicalTargets.map(item => `${item.label || target.label}: ${item.logicalPath || target.logicalPath}`);
 }
 
 function isTty(deps) {
@@ -1576,7 +1708,7 @@ function changeLines(context, options, cursorState, browserSetting, nextEnrollme
   for (const target of context.targets) {
     if (target.unknown || target.error) continue;
     const real = target.snapshot.realPath;
-    const symlinkSuffix = target.snapshot.logicalPath !== real ? ` → ${real}` : '';
+    const aliases = targetAliases(target);
     let create = '';
     if (target.snapshot.kind === 'absent') {
       create = ' (will create)';
@@ -1585,9 +1717,17 @@ function changeLines(context, options, cursorState, browserSetting, nextEnrollme
         create = ` (will create directory ${pathApi.dirname(real)} and file)`;
       }
     }
+    if (options.remove && target.parsed.kind === 'malformed') {
+      changes.push(`skip malformed setup block after tombstone (cleanup incomplete): ${aliases.join('; ')}`);
+      continue;
+    }
     const action = options.remove ? 'remove owned setup block' : 'write setup block';
     if (options.remove && target.parsed.kind !== 'owned') continue;
-    changes.push(`${action}: ${target.logicalPath}${symlinkSuffix}${create}`);
+    for (const alias of aliases) {
+      const logicalPath = alias.slice(alias.indexOf(': ') + 2);
+      const symlinkSuffix = logicalPath !== real ? ` → ${real}` : '';
+      changes.push(`${action}: ${alias}${symlinkSuffix}${create}`);
+    }
   }
   if (browserSetting) changes.push(`${deps.path.join(context.home, 'auto-open-browser')}: will write ${browserSetting}`);
   return changes;
@@ -1624,7 +1764,7 @@ async function runRemove(context, options, deps) {
     }
     return 1;
   }
-  const invalidTarget = context.targets.find(target => target.unknown || target.error || target.parsed?.kind === 'malformed');
+  const invalidTarget = context.targets.find(target => target.unknown || target.error);
   if (invalidTarget) {
     deps.logger.error(`Cannot remove setup: ${invalidTarget.logicalPath || invalidTarget.label}: ${invalidTarget.unknown || invalidTarget.error?.message || invalidTarget.parsed?.reason}`);
     return 1;
@@ -1663,6 +1803,10 @@ async function runRemove(context, options, deps) {
     }
     for (let index = 0; index < context.targets.length; index++) {
       const target = context.targets[index];
+      if (target.parsed.kind === 'malformed') {
+        failures.push({ target, error: new Error(target.parsed.reason || 'malformed setup block; left unchanged') });
+        continue;
+      }
       if (target.parsed.kind !== 'owned') continue;
       const bytes = renderTargetRc(target, context.values, true, deps);
       const result = commitRcTarget(target, bytes, deps);
@@ -1846,6 +1990,7 @@ module.exports = {
   findExecutable,
   parseFrame,
   powershellEncoded,
+  powershellDiscoveryScript,
   powershellProbeScript,
   runSetupProcess,
   readExpectedTranscripts,
@@ -1853,6 +1998,9 @@ module.exports = {
   inspectPopulation,
   buildCheckReport,
   buildInstallChecks,
+  executionPolicyCheck,
+  printDryRun,
+  changeLines,
   verifyTargetSnapshot,
   commitRcTarget,
   cursorSeed,

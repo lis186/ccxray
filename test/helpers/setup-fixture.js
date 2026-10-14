@@ -9,7 +9,7 @@ const { fileURLToPath } = require('node:url');
 
 const syncFsMethods = [
   'accessSync', 'appendFileSync', 'chmodSync', 'chownSync', 'copyFileSync',
-  'createReadStream', 'existsSync', 'lstatSync', 'mkdirSync', 'mkdtempSync',
+  'closeSync', 'createReadStream', 'existsSync', 'linkSync', 'lstatSync', 'mkdirSync', 'mkdtempSync',
   'openSync', 'readFileSync', 'readdirSync', 'readlinkSync', 'realpathSync',
   'renameSync', 'rmSync', 'rmdirSync', 'statSync', 'symlinkSync', 'truncateSync',
   'unlinkSync', 'utimesSync', 'writeFileSync',
@@ -154,26 +154,56 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     throw new TypeError(`unsupported filesystem path argument: ${String(candidate)}`);
   };
   const resolveForBoundary = candidate => {
-    let current = path.resolve(normalizePath(candidate));
-    const suffix = [];
-    while (true) {
-      try {
-        originalFs.lstatSync(current);
-        const real = originalRealpath(current);
-        return path.resolve(real, ...suffix.reverse());
-      } catch (error) {
+    const raw = normalizePath(candidate);
+    const absolute = path.isAbsolute(raw) ? raw : `${process.cwd()}${path.sep}${raw}`;
+    const parsed = path.parse(absolute);
+    let pending = absolute.slice(parsed.root.length).split(path.sep).filter(Boolean);
+    let current = parsed.root;
+    const visited = new Set();
+    let hops = 0;
+    for (let index = 0; index < pending.length; index++) {
+      const part = pending[index];
+      if (part === '.' || part === '') continue;
+      if (part === '..') { current = path.dirname(current); continue; }
+      const next = path.resolve(path.join(current, part));
+      let stat;
+      try { stat = originalFs.lstatSync(next); }
+      catch (error) {
         if (error.code !== 'ENOENT') throw error;
-        const parent = path.dirname(current);
-        if (parent === current) return current;
-        suffix.push(path.basename(current));
-        current = parent;
+        current = next;
+        continue;
       }
+      if (stat.isSymbolicLink()) {
+        if (++hops > 40) throw new Error(`symlink chain exceeds 40 hops at ${next}`);
+        const target = originalFs.readlinkSync(next);
+        const state = `${next}\0${pending.slice(index).join('/')}`;
+        if (visited.has(state)) throw new Error(`symlink loop at ${next}`);
+        visited.add(state);
+        const targetPath = path.isAbsolute(target) ? target : `${path.dirname(next)}${path.sep}${target}`;
+        const targetParsed = path.parse(targetPath);
+        pending = targetPath.slice(targetParsed.root.length).split(path.sep).filter(Boolean)
+          .concat(pending.slice(index + 1));
+        current = targetParsed.root;
+        index = -1;
+        continue;
+      }
+      if (index < pending.length - 1 && !stat.isDirectory()) {
+        const error = new Error(`${next} is not a directory`);
+        error.code = 'ENOTDIR';
+        throw error;
+      }
+      current = next;
     }
+    return path.resolve(current);
   };
   const assertPathAllowed = (operation, candidate, { write = false, follow = true } = {}) => {
     if (typeof candidate === 'number') return;
     let lexical;
-    try { lexical = path.resolve(normalizePath(candidate)); }
+    let rawPath;
+    try {
+      rawPath = normalizePath(candidate);
+      lexical = path.resolve(rawPath);
+    }
     catch (error) {
       outsideAttempts.push({ operation, path: String(candidate), reason: 'unsupported-path' });
       throw error;
@@ -181,7 +211,7 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     const lexicalInside = allowedRoots.some(base => isUnder(lexical, base));
     if (write) {
       let resolved;
-      try { resolved = resolveForBoundary(lexical); }
+      try { resolved = resolveForBoundary(rawPath); }
       catch (error) {
         outsideAttempts.push({ operation, path: lexical, reason: error.code || 'resolve-failed' });
         throw error;
@@ -198,7 +228,7 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     if (executableMetadata.has(lexical)
         && ['accessSync', 'lstatSync', 'statSync', 'realpathSync'].includes(operation)) return;
     let resolved;
-    try { resolved = resolveForBoundary(lexical); }
+    try { resolved = resolveForBoundary(rawPath); }
     catch (error) {
       outsideAttempts.push({ operation, path: lexical, reason: error.code || 'resolve-failed' });
       throw error;
@@ -211,7 +241,8 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   const policies = {
     accessSync: { follow: true }, appendFileSync: { write: true }, chmodSync: { write: true },
     chownSync: { write: true }, copyFileSync: { copy: true }, createReadStream: { follow: true },
-    existsSync: { follow: true }, lstatSync: { follow: false }, mkdirSync: { write: true },
+    closeSync: { descriptor: true }, existsSync: { follow: true }, linkSync: { link: true },
+    lstatSync: { follow: false }, mkdirSync: { write: true },
     mkdtempSync: { write: true }, openSync: { open: true }, readFileSync: { follow: true },
     readdirSync: { follow: true }, readlinkSync: { follow: false }, realpathSync: { follow: true },
     renameSync: { rename: true }, rmSync: { write: true }, rmdirSync: { write: true },
@@ -229,12 +260,11 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
       assertPathAllowed('renameSync:destination', args[1], { write: true });
     } else if (policy.symlink) {
       assertPathAllowed('symlinkSync:link', args[1], { write: true });
+    } else if (policy.link) {
+      assertPathAllowed('linkSync:source', args[0]);
+      assertPathAllowed('linkSync:destination', args[1], { write: true });
     } else if (policy.open) {
-      const flags = args[1];
-      const write = typeof flags === 'number'
-        ? Boolean(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND))
-        : /[wax+]/.test(String(flags || 'r'));
-      assertPathAllowed('openSync', args[0], { write });
+      assertPathAllowed('openSync', args[0], { write: openWrites(args[1]) });
     } else if (policy.writeFile) {
       if (typeof args[0] !== 'number') assertPathAllowed('writeFileSync', args[0], { write: true });
     } else if (policy.write) {
@@ -247,6 +277,11 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
   const guardedFs = new Proxy(fs, {
     get(target, property) {
       if (property === 'promises') return guardedPromises;
+      if (property === 'realpathSync') {
+        const guarded = (...args) => guardedCall(target, property, args);
+        guarded.native = (...args) => guardedCall(target, property, args, originalRealpath);
+        return guarded;
+      }
       if (Object.prototype.hasOwnProperty.call(policies, property)) {
         return (...args) => guardedCall(target, property, args);
       }
@@ -255,10 +290,10 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     },
   });
   const promisePolicies = {
-    access: false, appendFile: true, chmod: true, chown: true, copyFile: 'copy',
-    lstat: false, mkdir: true, open: 'open', readFile: false, readdir: false,
-    readlink: false, realpath: false, rename: 'rename', rm: true, rmdir: true,
-    stat: false, symlink: 'symlink', truncate: true, unlink: true, utimes: true, writeFile: true,
+    access: 'read', appendFile: 'write', chmod: 'write', chown: 'write', copyFile: 'copy',
+    lstat: 'read', mkdir: 'write', open: 'open', readFile: 'read', readdir: 'read',
+    readlink: 'read', realpath: 'read', rename: 'rename', rm: 'write', rmdir: 'write',
+    stat: 'read', symlink: 'symlink', truncate: 'write', unlink: 'write', utimes: 'write', writeFile: 'write',
   };
   const guardedPromises = new Proxy(fs.promises, {
     get(target, property) {
@@ -275,9 +310,9 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
         } else if (policy === 'symlink') {
           assertPathAllowed(`${String(property)}:link`, args[1], { write: true });
         } else if (policy === 'open') {
-          assertPathAllowed(String(property), args[0], { write: /[wax+]/.test(String(args[1] || 'r')) });
+          assertPathAllowed(String(property), args[0], { write: openWrites(args[1]) });
         } else {
-          assertPathAllowed(String(property), args[0], { write: policy === true, follow: policy !== true });
+          assertPathAllowed(String(property), args[0], { write: policy === 'write', follow: policy !== 'write' });
         }
         return value.apply(target, args);
       };
@@ -288,7 +323,9 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     for (const property of syncFsMethods) {
       const original = fs[property];
       if (typeof original !== 'function') continue;
-      fs[property] = function(...args) { return guardedCall(fs, property, args, original); };
+      const guarded = function(...args) { return guardedCall(fs, property, args, original); };
+      if (property === 'realpathSync') guarded.native = (...args) => guardedCall(fs, property, args, originalRealpath);
+      fs[property] = guarded;
       restores.push(() => { fs[property] = original; });
     }
     const promiseRestores = [];
@@ -321,6 +358,12 @@ async function createSetupFixture({ name = 'ccxray-setup-test-' } = {}) {
     assertSpawnAllowed, assertPathAllowed, outsideAttempts, guardedFs, installGlobalFsGuard,
     applyProcessEnv, writeIndex, dispose,
   };
+}
+
+function openWrites(flags) {
+  return typeof flags === 'number'
+    ? Boolean(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC | fs.constants.O_APPEND))
+    : /[wax+]/.test(String(flags || 'r'));
 }
 
 module.exports = { DELETED_ENV, createSetupFixture, findExecutable, reservePort };

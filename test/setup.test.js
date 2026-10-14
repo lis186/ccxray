@@ -7,8 +7,15 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const rawOpenSync = fs.openSync.bind(fs);
 const rawReadSync = fs.readSync.bind(fs);
+const rawWriteSync = fs.writeSync.bind(fs);
 const rawCloseSync = fs.closeSync.bind(fs);
 const rawStatSync = fs.statSync.bind(fs);
+const rawUnlinkSync = fs.unlinkSync.bind(fs);
+
+function rawWriteBytes(file, bytes) {
+  const fd = rawOpenSync(file, 'w', 0o600);
+  try { rawWriteSync(fd, bytes); } finally { rawCloseSync(fd); }
+}
 
 function rawReadBytes(file) {
   const fd = rawOpenSync(file, 'r');
@@ -27,7 +34,7 @@ function rawExists(file) {
   catch { return false; }
 }
 const childProcess = require('node:child_process');
-const { createSetupFixture, findExecutable } = require('./helpers/setup-fixture');
+const { createSetupFixture } = require('./helpers/setup-fixture');
 
 let bootstrapFixture;
 let setup;
@@ -125,7 +132,9 @@ function depsFor(fixture, overrides = {}) {
     fs: overrides.fs || fixture.guardedFs,
     path,
     os: { homedir: () => fixture.paths.home, ...(overrides.os || {}) },
-    platform: overrides.platform || process.platform,
+    // The suite's default cases exercise the POSIX target rules with host paths;
+    // Windows-specific cases opt into win32 explicitly below.
+    platform: overrides.platform || (process.platform === 'win32' ? 'linux' : process.platform),
     spawn,
     terminate: overrides.terminate,
     runBounded: overrides.runBounded,
@@ -151,12 +160,27 @@ function depsFor(fixture, overrides = {}) {
 async function withFixture(run) {
   const fixture = await createSetupFixture();
   const restoreFsGuard = fixture.installGlobalFsGuard?.() || (() => {});
+  let runError = null;
   try {
     await run(fixture);
+  } catch (error) {
+    runError = error;
   } finally {
     restoreFsGuard();
     fixture.dispose();
   }
+  const attempts = fixture.outsideAttempts.slice();
+  if (runError) {
+    if (attempts.length) runError.message += `; fixture boundary attempts: ${JSON.stringify(attempts)}`;
+    throw runError;
+  }
+  assert.deepEqual(attempts, [], `fixture boundary recorded unexpected outside accesses: ${JSON.stringify(attempts)}`);
+}
+
+function consumeOutsideAttempts(fixture, expectedOperations) {
+  const attempts = fixture.outsideAttempts.splice(0);
+  assert.deepEqual(attempts.map(item => item.operation).sort(), [...expectedOperations].sort(),
+    `unexpected fixture boundary attempts: ${JSON.stringify(attempts)}`);
 }
 
 function setupHome(fixture) {
@@ -166,6 +190,10 @@ function setupHome(fixture) {
 function rcFile(fixture, shell = 'bash') {
   return path.join(shell === 'zsh' ? fixture.paths.zdotdir : fixture.paths.home,
     shell === 'zsh' ? '.zshrc' : '.bashrc');
+}
+
+function fixtureExecutable(fixture, name) {
+  return fixture.allowedShells.find(file => path.basename(file).toLowerCase() === name.toLowerCase()) || null;
 }
 
 function installArgs(extra = []) {
@@ -420,6 +448,231 @@ test('resolveChain follows links and refuses dangling targets and loops', async 
     fs.symlinkSync('loop-b', loopA);
     fs.symlinkSync('loop-a', loopB);
     assert.throws(() => setup.resolveChain(loopA, fixture.guardedFs), /symlink loop/);
+  });
+});
+
+test('resolveChain follows only platform separators and matches native symlink-dot-dot resolution', async () => {
+  await withFixture(async fixture => {
+    if (path.sep === '/') {
+      const literalBackslash = path.join(fixture.paths.home, 'literal\\name.rc');
+      fs.writeFileSync(literalBackslash, 'backslash sentinel\n');
+      const backslashResult = setup.resolveChain(literalBackslash, fixture.guardedFs);
+      assert.equal(backslashResult.realPath, fs.realpathSync.native(literalBackslash));
+      assert.equal(backslashResult.kind, 'file');
+    }
+
+    const directory = path.join(fixture.paths.home, 'physical');
+    const child = path.join(directory, 'child');
+    fs.mkdirSync(child, { recursive: true });
+    const expected = path.join(directory, 'rc');
+    const decoy = path.join(fixture.paths.home, 'rc');
+    fs.writeFileSync(expected, 'physical parent\n');
+    fs.writeFileSync(decoy, 'lexical parent\n');
+    const link = path.join(fixture.paths.home, 'physical-link');
+    fs.symlinkSync(path.relative(fixture.paths.home, child), link, 'dir');
+    const candidate = `${link}${path.sep}..${path.sep}rc`;
+    const native = fs.realpathSync.native(candidate);
+    const resolved = setup.resolveChain(candidate, fixture.guardedFs);
+    assert.equal(native, fs.realpathSync.native(expected));
+    assert.equal(resolved.realPath, native);
+    assert.equal(fs.readFileSync(resolved.realPath, 'utf8'), 'physical parent\n');
+  });
+});
+
+test('brace-balanced owned wrapper revisions survive replacement and removal', async () => {
+  await withFixture(async fixture => {
+    const file = rcFile(fixture);
+    const values = {
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    };
+    const generated = setup.renderRcBlock(values, false);
+    const revised = generated.replace(
+      '  : ccxray-wrapper-v1\n',
+      '  : ccxray-wrapper-v1\n  if true; then\n    { :; }\n  fi\n',
+    );
+    const original = `export FOREIGN='keep-me'\n${revised}`;
+    fs.writeFileSync(file, original);
+    assert.equal(setup.parseRcBlock(revised, false).kind, 'owned');
+
+    const replace = await setup.runSetup([
+      '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
+    ], depsFor(fixture));
+    assert.equal(replace, 0);
+    assert.ok(fs.readFileSync(file, 'utf8').startsWith("export FOREIGN='keep-me'\n"));
+    assert.equal(setup.parseRcBlock(fs.readFileSync(file, 'utf8'), false).values.bucket, 'fixture-bucket-02');
+
+    const removed = await setup.runSetup(['--remove', '--shell', 'bash', '--yes'], depsFor(fixture));
+    assert.equal(removed, 0);
+    assert.equal(fs.readFileSync(file, 'utf8'), "export FOREIGN='keep-me'\n");
+  });
+});
+
+test('owned block round-trip table preserves foreign bytes across encoding and newline combinations', async () => {
+  await withFixture(async fixture => {
+    const file = rcFile(fixture);
+    const values = {
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    };
+    const encodings = [
+      { name: 'utf8', bom: Buffer.from([0xef, 0xbb, 0xbf]), encode: text => Buffer.from(text, 'utf8') },
+      { name: 'utf16le', bom: Buffer.from([0xff, 0xfe]), encode: text => Buffer.from(text, 'utf16le') },
+    ];
+    for (const encoding of encodings) {
+      for (const newline of ['\n', '\r\n', '\r']) {
+        for (const trailingNewline of [false, true]) {
+          for (const hasPrelude of [false, true]) {
+            const generated = setup.renderRcBlock(values, false, newline);
+            const body = generated.replace(
+              `  : ccxray-wrapper-v1${newline}`,
+              `  : ccxray-wrapper-v1${newline}  if true; then${newline}    { :; }${newline}  fi${newline}`,
+            );
+            const owned = trailingNewline ? body : body.slice(0, -newline.length);
+            const prelude = hasPrelude ? `export FOREIGN='sentinel'${newline}` : '';
+            const original = Buffer.concat([encoding.bom, encoding.encode(prelude + owned)]);
+            fs.writeFileSync(file, original);
+
+            const first = await setup.runSetup([
+              '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
+            ], depsFor(fixture));
+            assert.equal(first, 0, `${encoding.name}/${JSON.stringify(newline)}/${trailingNewline}/${hasPrelude}`);
+            const current = fs.readFileSync(file);
+            const preservedPrelude = Buffer.concat([
+              encoding.bom,
+              encoding.encode(prelude),
+            ]);
+            assert.ok(current.subarray(0, preservedPrelude.length).equals(preservedPrelude), 'foreign prelude bytes changed');
+
+            const replacement = await setup.runSetup([
+              '--shell', 'bash', '--bucket', 'fixture-bucket-03', '--domains', 'example.test', '--yes',
+            ], depsFor(fixture));
+            assert.equal(replacement, 0);
+            assert.equal(setup.parseRcBlock(setup.decodeRc(fs.readFileSync(file)).text, false).values.bucket, 'fixture-bucket-03');
+
+            const removed = await setup.runSetup(['--remove', '--shell', 'bash', '--yes'], depsFor(fixture));
+            assert.equal(removed, 0);
+            assert.deepEqual(fs.readFileSync(file), Buffer.concat([encoding.bom, encoding.encode(prelude)]));
+          }
+        }
+      }
+    }
+  });
+});
+
+test('hard-linked startup files are refused with actionable guidance', async () => {
+  await withFixture(async fixture => {
+    const file = rcFile(fixture);
+    const alias = path.join(fixture.paths.home, 'same-rc-inode');
+    fs.writeFileSync(file, 'export KEEP=hard-linked\n');
+    fs.linkSync(file, alias);
+    const before = fs.readFileSync(file);
+    const log = makeLogger();
+    const result = await setup.runSetup(installArgs(), depsFor(fixture, { logger: log }));
+    assert.equal(result, 1, log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('hard-linked') && line.includes('Copy it to a regular file')));
+    assert.deepEqual(fs.readFileSync(file), before);
+    assert.deepEqual(fs.readFileSync(alias), before);
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)), null);
+  });
+});
+
+test('remove tombstones a malformed wrapper and leaves its bytes for manual cleanup', async () => {
+  await withFixture(async fixture => {
+    const file = rcFile(fixture);
+    const malformed = [
+      setup.START_MARKER,
+      "export CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'",
+      'claude() {',
+      '  : ccxray-wrapper-v1',
+      '  if true; then',
+      setup.END_MARKER,
+    ].join('\n');
+    const original = Buffer.from(malformed);
+    fs.writeFileSync(file, original);
+    assert.equal(setup.parseRcBlock(malformed, false).kind, 'malformed');
+    const log = makeLogger();
+    const result = await setup.runSetup(['--remove', '--shell', 'bash', '--yes'], depsFor(fixture, { logger: log }));
+    assert.equal(result, 1, log.lines.join('\n'));
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'removed');
+    assert.deepEqual(fs.readFileSync(file), original);
+    assert.ok(log.lines.some(line => line.includes('export remains removed; shell cleanup incomplete')));
+    assert.ok(log.lines.some(line => line.includes(file)));
+  });
+});
+
+test('browser temp collision leaves the unowned temp file untouched', async () => {
+  await withFixture(async fixture => {
+    const file = path.join(setupHome(fixture), 'auto-open-browser');
+    const nonce = 'r2-browser-collision';
+    const temporary = path.join(path.dirname(file), `${path.basename(file)}.ccxray-browser-tmp.${process.pid}.${nonce}`);
+    const sentinel = Buffer.from('foreign browser temp sentinel\n');
+    fs.writeFileSync(temporary, sentinel);
+    const log = makeLogger();
+    const result = await setup.runSetup(['--browser', 'off', '--yes'], depsFor(fixture, {
+      logger: log, nonce,
+    }));
+    assert.equal(result, 1);
+    assert.deepEqual(fs.readFileSync(temporary), sentinel);
+    assert.equal(fs.existsSync(file), false);
+  });
+});
+
+test('rc temp collision leaves the unowned temp file untouched', async () => {
+  await withFixture(async fixture => {
+    const file = rcFile(fixture);
+    fs.writeFileSync(file, 'export USER_RC=preserve\n');
+    const nonce = 'r2-rc-collision';
+    const temporary = path.join(path.dirname(file), `${path.basename(file)}.ccxray-rc-tmp.${process.pid}.${nonce}`);
+    const sentinel = Buffer.from('foreign rc temp sentinel\n');
+    fs.writeFileSync(temporary, sentinel);
+    const original = fs.readFileSync(file);
+    const log = makeLogger();
+    const result = await setup.runSetup(installArgs(), depsFor(fixture, { logger: log, nonce }));
+    assert.equal(result, 1);
+    assert.deepEqual(fs.readFileSync(temporary), sentinel);
+    assert.deepEqual(fs.readFileSync(file), original);
+  });
+});
+
+test('dry-run output lists every logical alias and prints only the generated block', async () => {
+  await withFixture(async fixture => {
+    const foreign = "export TOKEN='do-not-print-this-sentinel'\n";
+    const values = {
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    };
+    const block = setup.renderRcBlock(values, false, '\n');
+    const raw = Buffer.from(foreign + block);
+    const parsed = setup.parseRcBlock(raw.toString('utf8'), false);
+    const snapshot = {
+      kind: 'file', realPath: path.join(fixture.paths.home, 'shared.rc'), logicalPath: '/alias-one',
+      chain: [{ path: path.join(fixture.paths.home, 'shared.rc'), kind: 'file' }],
+    };
+    const target = {
+      label: 'bash', kind: 'posix', logicalPath: '/alias-one', snapshot, raw,
+      decoded: setup.decodeRc(raw), parsed,
+      logicalTargets: [
+        { label: 'pwsh/Core', kind: 'posix', logicalPath: '/alias-one', snapshot, raw },
+        { label: 'powershell/Desktop', kind: 'posix', logicalPath: '/alias-two', snapshot, raw },
+      ],
+    };
+    const log = makeLogger();
+    const context = {
+      targets: [target], values, home: setupHome(fixture),
+      diagnostics: { durableHome: { enrollment: 'absent' } },
+    };
+    const deps = depsFor(fixture, { logger: log });
+    setup.printDryRun(context, setup.parseArgs(['--dry-run']).options, deps,
+      { state: 'enrolled', enrolledAt: '2026-10-14T00:00:00.000Z', retentionDays: 30 },
+      { absent: true, path: path.join(setupHome(fixture), 'export-cursor.json') }, null);
+    const output = log.lines.join('\n');
+    assert.ok(output.includes('pwsh/Core: /alias-one'));
+    assert.ok(output.includes('powershell/Desktop: /alias-two'));
+    assert.ok(output.includes('ccxray-wrapper-v1'));
+    assert.ok(!output.includes('do-not-print-this-sentinel'));
+
+    const consent = setup.changeLines(context, { remove: false }, null, null,
+      { state: 'enrolled', enrolledAt: '2026-10-14T00:00:00.000Z', retentionDays: 30 }, deps).join('\n');
+    assert.ok(consent.includes('pwsh/Core: /alias-one'));
+    assert.ok(consent.includes('powershell/Desktop: /alias-two'));
   });
 });
 
@@ -748,8 +1001,8 @@ test('PowerShell resolution labels edition and host, reports unknown discovery, 
     const frameNonce = '0123456789abcdef';
     const allHosts = 'C:\\Users\\fixture\\Documents\\PowerShell\\profile.ps1';
     const rows = new Map([
-      ['pwsh', { edition: 'Core', host: 'ConsoleHost', currentHost: 'C:\\Users\\fixture\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1' }],
-      ['powershell', { edition: 'Desktop', host: 'Windows PowerShell', currentHost: 'C:\\Users\\fixture\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1' }],
+      ['pwsh', { edition: 'Core', host: 'ConsoleHost', currentHost: 'C:\\Users\\fixture\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1', executionPolicy: 'Restricted', profileSignature: 'NotSigned' }],
+      ['powershell', { edition: 'Desktop', host: 'Windows PowerShell', currentHost: 'C:\\Users\\fixture\\Documents\\WindowsPowerShell\\Microsoft.PowerShell_profile.ps1', executionPolicy: 'AllSigned', profileSignature: 'NotSigned' }],
     ]);
     const fakeWindowsFs = {
       statSync(file) {
@@ -770,6 +1023,7 @@ test('PowerShell resolution labels edition and host, reports unknown discovery, 
       const payload = [
         `allHosts=${allHosts}`, `currentHost=${row.currentHost}`,
         `edition=${row.edition}`, `host=${row.host}`,
+        `executionPolicy=${row.executionPolicy}`, `profileSignature=${row.profileSignature}`,
       ].join('\n');
       return {
         status: 'exited', exitCode: 0,
@@ -786,6 +1040,9 @@ test('PowerShell resolution labels edition and host, reports unknown discovery, 
     const resolved = await setup.resolveTargets(setup.parseArgs([]).options, depsFor(fixture, common));
     assert.deepEqual(resolved.targets.map(target => target.label), [
       'pwsh/Core, ConsoleHost', 'powershell/Desktop, Windows PowerShell',
+    ]);
+    assert.deepEqual(resolved.targets.map(target => [target.executionPolicy, target.profileSignature]), [
+      ['Restricted', 'NotSigned'], ['AllSigned', 'NotSigned'],
     ]);
     assert.equal(resolved.notices.length, 2);
 
@@ -808,6 +1065,73 @@ test('PowerShell resolution labels edition and host, reports unknown discovery, 
       }),
     );
     assert.equal(unknown.targets[0].unknown, 'no-frame');
+  });
+});
+
+test('--check names PowerShell ExecutionPolicy causes that prevent profile loading', async () => {
+  await withFixture(async fixture => {
+    const frameNonce = 'policy-check-frame';
+    const profile = 'C:\\Users\\fixture\\Documents\\PowerShell\\profile.ps1';
+    const windowsFs = new Proxy(fixture.guardedFs, {
+      get(target, property) {
+        if (property === 'statSync') {
+          return file => {
+            if (/^[A-Z]:\\/i.test(String(file))) {
+              if (/^C:\\Tools\\pwsh\.exe$/i.test(String(file))) return { isFile: () => true };
+              throw Object.assign(new Error('missing synthetic Windows path'), { code: 'ENOENT' });
+            }
+            return target.statSync(file);
+          };
+        }
+        if (property === 'lstatSync') {
+          return file => {
+            if (/^[A-Z]:\\/i.test(String(file))) throw Object.assign(new Error('missing synthetic Windows path'), { code: 'ENOENT' });
+            return target.lstatSync(file);
+          };
+        }
+        return target[property];
+      },
+    });
+
+    for (const [executionPolicy, profileSignature, expectedStatus, expectedReason] of [
+      ['Restricted', 'Valid', 'failed', 'Restricted prevents profile loading'],
+      ['AllSigned', 'NotSigned', 'failed', 'AllSigned prevents this profile from loading'],
+      ['AllSigned', 'Valid', 'ok', null],
+    ]) {
+      const log = makeLogger();
+      const payload = [
+        `allHosts=${profile}`, `currentHost=${profile}`,
+        'edition=Core', 'host=ConsoleHost',
+        `executionPolicy=${executionPolicy}`, `profileSignature=${profileSignature}`,
+      ].join('\n');
+      const result = await setup.runSetup(['--check', '--shell', 'pwsh', '--no-probe'], depsFor(fixture, {
+        platform: 'win32',
+        env: { PATH: 'C:\\Tools', PATHEXT: '.EXE', SystemRoot: 'C:\\Windows' },
+        fs: windowsFs,
+        logger: log,
+        nonce: frameNonce,
+        runBounded: async () => ({
+          status: 'exited', exitCode: 0,
+          stdout: `<<ccxray-probe:${frameNonce}>>\n${payload}\n<</ccxray-probe:${frameNonce}>>\n`,
+        }),
+        winLaunch: { describeResolution: () => ({ hit: 'C:\\Tools\\claude.exe' }) },
+        providers: {
+          getAgentProvider: () => ({}),
+          getClaudeLaunchAccountEmail: () => null,
+        },
+        credentials: {
+          discoverCredentials: () => ({ discovery: { state: 'adc' }, parse: { state: 'ok', type: 'authorized_user' } }),
+          describeCredentials: () => 'fixture ADC',
+          credentialText: () => 'fixture ADC',
+        },
+      }));
+      assert.equal(result, expectedStatus === 'failed' ? 1 : 0, log.lines.join('\n'));
+      const policyLine = log.lines.find(line => line.startsWith('execution-policy:'));
+      assert.ok(policyLine, log.lines.join('\n'));
+      assert.ok(policyLine.includes(`${expectedStatus} —`), policyLine);
+      if (expectedReason) assert.ok(policyLine.includes(expectedReason), policyLine);
+      else assert.ok(policyLine.includes('profile signature Valid'), policyLine);
+    }
   });
 });
 
@@ -928,6 +1252,40 @@ test('consent-time symlink retarget and file edit abort phase A without any setu
   });
 });
 
+test('phase A rejects same-size byte edits even when the original mtime is restored', async () => {
+  await withFixture(async fixture => {
+    const logical = rcFile(fixture);
+    const before = Buffer.from('export SAFE=before\n');
+    const after = Buffer.from('export SAFE=change\n');
+    assert.equal(before.length, after.length);
+    fs.writeFileSync(logical, before);
+    const preservedTime = 1_790_000_000;
+    fs.utimesSync(logical, preservedTime, preservedTime);
+    const stat = fs.statSync(logical);
+    const log = makeLogger();
+    const result = await setup.runSetup([
+      '--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
+    ], depsFor(fixture, {
+      logger: log,
+      isTTY: true,
+      prompt: async question => {
+        if (question.startsWith('Open the dashboard')) return 'no';
+        fs.writeFileSync(logical, after);
+        fs.utimesSync(logical, preservedTime, preservedTime);
+        const current = fs.statSync(logical);
+        assert.equal(current.size, stat.size);
+        assert.equal(current.ino, stat.ino);
+        assert.equal(current.mtimeMs, stat.mtimeMs);
+        return 'yes';
+      },
+    }));
+    assert.equal(result, 1, log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('changed since preparation')));
+    assert.deepEqual(fs.readFileSync(logical), after);
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)), null);
+  });
+});
+
 test('phase B revalidates a later target and retains the earlier committed block', async () => {
   await withFixture(async fixture => {
     const second = path.join(fixture.paths.home, 'second.rc');
@@ -951,6 +1309,42 @@ test('phase B revalidates a later target and retains the earlier committed block
     assert.ok(log.lines.some(line => line.includes('enrollment is ACTIVE (state: enrolled)')));
     assert.ok(log.lines.some(line => line.includes(second + ' was not updated')));
     assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'enrolled');
+  });
+});
+
+test('phase B2 rejects same-size byte edits with restored mtime before replacing a later target', async () => {
+  await withFixture(async fixture => {
+    const second = path.join(fixture.paths.home, 'second-same-metadata.rc');
+    const before = Buffer.from('export SAFE=before\n');
+    const after = Buffer.from('export SAFE=change\n');
+    assert.equal(before.length, after.length);
+    fs.writeFileSync(second, before);
+    const preservedTime = 1_790_000_000;
+    fs.utimesSync(second, preservedTime, preservedTime);
+    const stat = fs.statSync(second);
+    const log = makeLogger();
+    let added = false;
+    const result = await setup.runSetup(installArgs(), depsFor(fixture, {
+      logger: log,
+      hooks: {
+        afterTargetCommit({ context }) {
+          if (added) return;
+          added = true;
+          context.targets.push(installTargetFromFile(fixture, second));
+          fs.writeFileSync(second, after);
+          fs.utimesSync(second, preservedTime, preservedTime);
+          const current = fs.statSync(second);
+          assert.equal(current.size, stat.size);
+          assert.equal(current.ino, stat.ino);
+          assert.equal(current.mtimeMs, stat.mtimeMs);
+        },
+      },
+    }));
+    assert.equal(result, 1, log.lines.join('\n'));
+    assert.ok(fs.readFileSync(rcFile(fixture), 'utf8').includes('ccxray-wrapper-v1'));
+    assert.deepEqual(fs.readFileSync(second), after);
+    assert.ok(log.lines.some(line => line.includes('enrollment is ACTIVE (state: enrolled)')));
+    assert.ok(log.lines.some(line => line.includes(second + ' was not updated')));
   });
 });
 
@@ -1288,6 +1682,69 @@ test('an interrupted first enrollment can seed its cursor from the original enro
   });
 });
 
+test('setup respects a held real exporter lock before seeding the cursor', async () => {
+  await withFixture(async fixture => {
+    const home = setupHome(fixture);
+    const cursorPath = path.join(home, 'export-cursor.json');
+    const lock = await exportSync.acquireLock(home);
+    assert.ok(lock.handle, 'fixture exporter lock should be acquired');
+    let clock = 0;
+    const log = makeLogger();
+    try {
+      const result = await setup.runSetup(installArgs(), depsFor(fixture, {
+        logger: log,
+        now: () => clock,
+        sleep: async ms => { clock += ms; },
+      }));
+      assert.equal(result, 1);
+      assert.ok(clock >= 10_000, `setup should exhaust its bounded lock wait; elapsed=${clock}`);
+      assert.equal(fs.existsSync(cursorPath), false, 'setup must not seed a cursor without the exporter lock');
+      assert.equal(exportSync.readEnrollment(home), null);
+      assert.ok(log.lines.some(line => line.includes('could not start')));
+    } finally {
+      await exportSync.releaseLock(lock.handle);
+    }
+  });
+});
+
+test('interrupted setup can be removed and a residual-environment flush returns removed', async () => {
+  await withFixture(async fixture => {
+    const home = setupHome(fixture);
+    const log = makeLogger();
+    await assert.rejects(setup.runSetup(installArgs(), depsFor(fixture, {
+      logger: log,
+      hooks: {
+        afterTargetCommit() { throw new Error('synthetic interruption after rc commit'); },
+      },
+    })), /synthetic interruption after rc commit/);
+    assert.equal(exportSync.readEnrollment(home).state, 'enrolled');
+    assert.ok(fs.readFileSync(rcFile(fixture), 'utf8').includes('ccxray-wrapper-v1'));
+
+    const removed = await setup.runSetup(['--remove', '--shell', 'bash', '--yes'], depsFor(fixture));
+    assert.equal(removed, 0);
+    assert.equal(exportSync.readEnrollment(home).state, 'removed');
+
+    const savedEnv = { ...process.env };
+    const previousLog = console.log;
+    try {
+      Object.assign(process.env, fixture.env, { CCXRAY_EXPORT_GCS_BUCKET: 'fixture-bucket-01' });
+      delete process.env.CCXRAY_EXPORT_DISABLE;
+      delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
+      delete process.env.ANTHROPIC_BASE_URL;
+      delete process.env.CCXRAY_HUB_CLIENT_PID;
+      exportSync._setUploader(async () => { throw new Error('removed flush must not upload'); });
+      console.log = () => {};
+      assert.equal(await exportSync.flushExport(), 'removed');
+      assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'export-last.json'), 'utf8')).outcome, 'removed');
+    } finally {
+      console.log = previousLog;
+      exportSync._setUploader(null);
+      for (const key of Object.keys(process.env)) delete process.env[key];
+      Object.assign(process.env, savedEnv);
+    }
+  });
+});
+
 test('check continues through an unreachable hub and reports all remaining checks', async () => {
   await withFixture(async fixture => {
     const log = makeLogger();
@@ -1437,7 +1894,7 @@ test('bounded runner captures a final frame before exit and bounds a descendant-
     assert.equal(frame.drainComplete, true);
     assert.equal(setup.parseFrame(frame.stdout, nonce).kind, 'none');
 
-    const bash = findExecutable('bash', fixture.env.PATH);
+    const bash = fixtureExecutable(fixture, 'bash');
     if (!bash) return;
     const pidFile = path.join(fixture.paths.root, 'descendant.pid');
     const script = 'sleep 5 & echo $! > ' + pidFile + '; printf before-exit; exit 0';
@@ -1523,7 +1980,7 @@ test('POSIX wrapper preserves argument boundaries, bypasses version, and propaga
   await withFixture(async fixture => {
     const install = await setup.runSetup(installArgs(), depsFor(fixture));
     assert.equal(install, 0);
-    const bash = findExecutable('bash', fixture.env.PATH);
+    const bash = fixtureExecutable(fixture, 'bash');
     assert.ok(bash);
 
     let launched = await runChild(fixture, bash, ['-i', '-c', 'claude \"two words\" \"x;y\"', 'fixture-shell']);
@@ -1547,7 +2004,7 @@ test('POSIX wrapper preserves argument boundaries, bypasses version, and propaga
 
 test('PowerShell wrapper preserves argument boundaries when pwsh is installed', async t => {
   await withFixture(async fixture => {
-    const pwsh = findExecutable('pwsh', fixture.env.PATH);
+    const pwsh = fixtureExecutable(fixture, 'pwsh');
     if (!pwsh) { t.skip('pwsh is not installed in this environment'); return; }
     const profile = path.join(fixture.paths.root, 'synthetic-profile.ps1');
     fs.writeFileSync(profile, setup.renderRcBlock({
@@ -1829,14 +2286,14 @@ test('generated PowerShell probe embeds and recognizes the wrapper marker', asyn
   assert.ok(script.includes('ccxray-wrapper-v1'));
   assert.ok(!script.includes('${WRAPPER_MARKER}'));
   await withFixture(async fixture => {
-    const pwsh = findExecutable('pwsh', fixture.env.PATH);
+    const pwsh = fixtureExecutable(fixture, 'pwsh');
     if (!pwsh) { t.skip('pwsh is not installed in this environment'); return; }
     for (const owned of [true, false]) {
       const definition = owned
         ? 'function global:claude { # ccxray-wrapper-v1\n }\n'
         : 'function global:claude { # local implementation\n }\n';
       const result = await runChild(fixture, pwsh, [
-        '-NoLogo', '-NonInteractive', '-EncodedCommand',
+        '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand',
         setup.powershellEncoded(definition + script),
       ]);
       assert.equal(result.status, 'exited');
@@ -1895,11 +2352,42 @@ test('timeout and output-cap results wait for asynchronous termination to finish
   });
 });
 
-test('default POSIX runner observes process-group SIGKILL escalation', async () => {
+test('default POSIX runner observes process-group SIGKILL escalation after child readiness', async t => {
+  if (process.platform === 'win32') { t.skip('POSIX process-group escalation'); return; }
   await withFixture(async fixture => {
-    const result = await runChild(fixture, process.execPath, [
-      '-e', 'process.on("SIGTERM",()=>{}); setInterval(()=>{},1000);',
-    ], { deadlineMs: 60, graceMs: 30, drainMs: 30 });
+    fixture.assertSpawnAllowed(process.execPath);
+    const child = childProcess.spawn(process.execPath, [
+      '-e', 'process.on("SIGTERM",()=>{}); process.stdout.write("READY\\n"); setInterval(()=>{},1000);',
+    ], {
+      cwd: fixture.paths.home,
+      env: fixture.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: true,
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('child did not report readiness')), 2000);
+      const onData = chunk => {
+        if (!String(chunk).includes('READY')) return;
+        clearTimeout(timer);
+        child.stdout.removeListener('data', onData);
+        child.stdout.pause();
+        resolve();
+      };
+      child.stdout.on('data', onData);
+      child.once('error', error => { clearTimeout(timer); reject(error); });
+    });
+    const result = await runBounded({
+      file: process.execPath,
+      args: [],
+      env: fixture.env,
+      cwd: fixture.paths.home,
+      deadlineMs: 80,
+      graceMs: 40,
+      drainMs: 40,
+    }, {
+      platform: process.platform,
+      spawn: () => child,
+    });
     assert.equal(result.status, 'timeout');
     assert.equal(result.signal, 'SIGKILL');
   });
@@ -1990,6 +2478,10 @@ test('fixture boundary blocks escaped dependency reads and writes through string
     assert.throws(() => fixture.guardedFs.readFileSync(Buffer.from(outsideFile), 'utf8'), /outside fixture root/);
     assert.throws(() => fixture.guardedFs.readFileSync(pathToFileURL(outsideFile), 'utf8'), /outside fixture root/);
     assert.deepEqual(rawReadBytes(outsideFile), outsideOriginal);
+    consumeOutsideAttempts(fixture, [
+      'readFileSync', 'openSync', 'writeFileSync', 'lstatSync',
+      'readFileSync', 'readFileSync', 'readFileSync',
+    ]);
   } finally {
     restoreFsGuard();
     fixture.dispose();
@@ -2051,11 +2543,66 @@ test('setup dependencies refuse symlink-escaped account, enrollment, cursor, and
     assert.throws(() => fixture.guardedFs.readFileSync(Buffer.from(accountFile), 'utf8'), /outside fixture root/);
     assert.throws(() => fixture.guardedFs.readFileSync(pathToFileURL(accountFile), 'utf8'), /outside fixture root/);
     assert.deepEqual(rawReadBytes(enrollmentFile), enrollmentBefore);
+    consumeOutsideAttempts(fixture, [
+      'readFileSync', 'readdirSync', 'readFileSync', 'readFileSync',
+      'readFileSync', 'openSync', 'readFileSync', 'writeFileSync',
+      'readFileSync', 'readFileSync', 'readFileSync',
+    ]);
   } finally {
     restoreFsGuard();
     fixture.dispose();
     fs.rmSync(outside, { recursive: true, force: true });
   }
+});
+
+test('fixture boundary guards promise reads, numeric open writes, dangling links, and native realpath', async () => {
+  let outsideReadFile;
+  let outsideDanglingTarget;
+  try {
+    await withFixture(async fixture => {
+      const outside = path.dirname(fixture.paths.root);
+      outsideReadFile = path.join(outside, `ccxray-setup-promise-read-${process.pid}.txt`);
+      outsideDanglingTarget = path.join(outside, `ccxray-setup-dangling-write-${process.pid}.txt`);
+      rawWriteBytes(outsideReadFile, Buffer.from('outside promise sentinel\n'));
+
+      await assert.rejects(
+        Promise.resolve().then(() => fixture.guardedFs.promises.readFile(outsideReadFile, 'utf8')),
+        /outside fixture root/,
+      );
+
+      const danglingLink = path.join(fixture.paths.root, 'dangling-write-link');
+      fs.symlinkSync(outsideDanglingTarget, danglingLink);
+      await assert.rejects(
+        Promise.resolve().then(() => fixture.guardedFs.promises.open(
+          danglingLink,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC,
+          0o600,
+        )),
+        /outside fixture root/,
+      );
+      assert.equal(rawExists(outsideDanglingTarget), false);
+
+      assert.equal(typeof fixture.guardedFs.realpathSync.native, 'function');
+      assert.throws(() => fixture.guardedFs.realpathSync.native(outsideReadFile), /outside fixture root/);
+      consumeOutsideAttempts(fixture, ['readFile', 'open', 'realpathSync']);
+    });
+  } finally {
+    if (outsideReadFile && rawExists(outsideReadFile)) rawUnlinkSync(outsideReadFile);
+    if (outsideDanglingTarget && rawExists(outsideDanglingTarget)) rawUnlinkSync(outsideDanglingTarget);
+  }
+});
+
+test('fixture teardown detects swallowed outside-read exceptions', async () => {
+  let teardownError = null;
+  try {
+    await withFixture(async fixture => {
+      const outsideConfig = path.join(path.dirname(fixture.paths.root), `ccxray-swallowed-${process.pid}`);
+      assert.equal(providers.getClaudeLaunchAccountEmail({ CLAUDE_CONFIG_DIR: outsideConfig }), null);
+    });
+  } catch (error) {
+    teardownError = error;
+  }
+  assert.match(teardownError?.message || '', /fixture boundary recorded unexpected outside accesses/);
 });
 
 test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch failure behavior', async () => {
@@ -2064,7 +2611,7 @@ test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch
     const claudeLog = path.join(setupHome(fixture), 'fake-claude.log');
     const ccxrayLog = path.join(setupHome(fixture), 'fake-ccxray.log');
     for (const shell of ['bash', 'zsh']) {
-      const executable = findExecutable(shell, fixture.env.PATH);
+      const executable = fixtureExecutable(fixture, shell);
       if (!executable) continue;
       const installed = await setup.runSetup([
         '--shell', shell, '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
@@ -2123,7 +2670,7 @@ test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch
 
 test('PowerShell wrapper covers bypasses, fallback, and one-launch failures when pwsh is installed', async t => {
   await withFixture(async fixture => {
-    const pwsh = findExecutable('pwsh', fixture.env.PATH);
+    const pwsh = fixtureExecutable(fixture, 'pwsh');
     if (!pwsh) { t.skip('pwsh is not installed in this environment'); return; }
     const profile = path.join(fixture.paths.root, 'synthetic-profile-matrix.ps1');
     fs.writeFileSync(profile, setup.renderRcBlock({
