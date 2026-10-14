@@ -93,11 +93,19 @@ Run "ccxray <command> --help" for command-specific help (where supported).
 // (secret/import/rebuild-index) return before that and simply keep it, where it
 // only prints and exits 1. A synchronous throw while the modules below load
 // (STORAGE_BACKEND=s3, a missing/corrupt `ws`) would otherwise exit 1 before
-// the fail-open decision exists, so the agent never starts. Everything used
-// here comes from server/plain-launch.js, whose load closure is pinned to stay
-// outside the proxy stack, so the normal launcher and this path cannot drift.
+// the fail-open decision exists, so the agent never starts. Parsing, the log
+// record and the spawn come from server/plain-launch.js (load closure pinned),
+// shared with the normal launcher; every other module used here is required
+// inside a try, because it may be the one that failed.
+// Once the agent is launched the removal below is never reached, so a later
+// uncaught error must not launch a second agent; one raised while this handler
+// is still deciding exits 1 instead of looping.
+let bootstrapState = 'idle';
 function onBootstrapFailure(err) {
   console.error(err && err.stack ? err.stack : String(err));
+  if (bootstrapState === 'launched') return;
+  if (bootstrapState === 'handling') process.exit(1);
+  bootstrapState = 'handling';
   let plain;
   try { plain = require('./plain-launch'); } catch { process.exit(1); }
   const flags = plain.parseGlobalFlags(process.argv);
@@ -110,14 +118,14 @@ function onBootstrapFailure(err) {
   let bgBypass = false;
   try { bgBypass = agent === 'claude' && require('./claude-args').hasClaudeBackgroundFlag(args); } catch {}
   if (process.env.CCXRAY_FAIL_CLOSED === '1' && !bgBypass) process.exit(1);
-  let home = null;
   let version = null;
-  try { home = require('./paths').resolveCcxrayHome(); } catch {}
   try { version = require('../package.json').version; } catch {}
-  if (home) plain.appendFailOpen(home, { ts: new Date().toISOString(), reason: 'bootstrap-failed', version, agent });
+  plain.appendFailOpen(() => require('./paths').resolveCcxrayHome(),
+    { ts: new Date().toISOString(), reason: 'bootstrap-failed', version, agent });
   console.error('[ccxray] fail-open: bootstrap-failed — this session is NOT traced; run ccxray setup --check');
   let provider = null;
   try { provider = require('./providers').getAgentProvider(agent); } catch {}
+  bootstrapState = 'launched';
   plain.spawnPlain(
     { bin: agent, args, env: process.env, label: provider?.label || agent, installHint: provider?.installHint || '' },
     { provider, onExit: code => process.exit(code) },
@@ -1549,7 +1557,7 @@ const launchDecision = agentMode ? createLaunchDecision({
   command: agentCommand,
   args: agentArgs,
   attachTimeoutMs: () => attachTimeoutMs(),
-  logFailOpen: record => plainLaunch.appendFailOpen(resolveCcxrayHome(), record),
+  logFailOpen: record => plainLaunch.appendFailOpen(resolveCcxrayHome, record),
   spawnFallback: (launch, onExit) => {
     const provider = providers.getAgentProvider(agentCommand);
     spawnAgent(agentCommand, null, agentArgs, onExit, {

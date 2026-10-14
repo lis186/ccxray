@@ -3,9 +3,11 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-const { BOOTSTRAP_AGENTS, parseGlobalFlags, parsePort } = require('../server/plain-launch');
+const { BOOTSTRAP_AGENTS, parseGlobalFlags, parsePort, appendFailOpen } = require('../server/plain-launch');
 
 // Oracle: the global-flag splice as it stood in server/index.js at 62fcf05,
 // copied verbatim apart from process.argv → argv and process.exit → return.
@@ -98,5 +100,20 @@ describe('plain-launch parseGlobalFlags', () => {
       'server/plain-launch.js',
       'server/win-launch.js',
     ]);
+  });
+});
+
+describe('plain-launch appendFailOpen', () => {
+  it('swallows a home resolver that throws, so the launch still happens', () => {
+    assert.doesNotThrow(() => appendFailOpen(() => { throw new Error('no home'); }, { reason: 'x' }));
+  });
+
+  it('appends one JSON line under the resolved home', t => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-plain-launch-'));
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+    appendFailOpen(() => home, { reason: 'a' });
+    appendFailOpen(() => home, { reason: 'b' });
+    const lines = fs.readFileSync(path.join(home, 'fail-open.log'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.deepEqual(lines, [{ reason: 'a' }, { reason: 'b' }]);
   });
 });

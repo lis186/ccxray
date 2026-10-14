@@ -75,8 +75,10 @@ it sets `STORAGE_BACKEND=s3` (a deterministic load-time throw from
 `claude` in a temporary `bin/`, and `PROXY_PORT` pinned away from 5577 — the
 throw happens before any listen, so no port is bound. It also sets
 `CCXRAY_IMPORT_DISABLE=1` so a future change that stops the throw cannot scan
-the real transcripts. Its signal case sends SIGINT/SIGTERM to the launcher and
-waits for the fake agent's own exit; it is skipped on Windows.
+the real transcripts. Its signal cases send SIGINT/SIGTERM/SIGHUP to the
+launcher and wait for the fake agent's own exit. The second-agent case preloads
+a script (`node --require`) into the launcher that throws once the fake agent is
+running; the preload lives in the throwaway home. The file is skipped on Windows.
 
 `test/plain-launch.test.js` is pure except one child `node -e` that loads
 `server/plain-launch.js` and lists `require.cache`, pinning its load closure. Its

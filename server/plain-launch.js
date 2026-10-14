@@ -4,11 +4,10 @@
 // bootstrap fail-open handler in server/index.js.
 //
 // INVARIANT: this module and everything it loads must stay usable when the
-// proxy stack cannot load (STORAGE_BACKEND=s3, a missing `ws`): Node built-ins
-// plus win-launch / client-shutdown only, neither of which loads another
-// project module at require time. test/plain-launch.test.js pins the closure.
-// Adding a require here that reaches config/store/hub/ws silently disables
-// bootstrap fail-open again.
+// proxy stack cannot load (STORAGE_BACKEND=s3, a missing `ws`).
+// test/plain-launch.test.js pins its load closure to an exact file list; a
+// require here that reaches config/store/hub/ws silently disables bootstrap
+// fail-open again.
 
 const fs = require('fs');
 const path = require('path');
@@ -50,8 +49,11 @@ function parsePort(value) {
   return parsed;
 }
 
-function appendFailOpen(home, record) {
+// resolveHome runs inside the try: a launch must never be lost because the
+// home directory could not be resolved.
+function appendFailOpen(resolveHome, record) {
   try {
+    const home = resolveHome();
     fs.mkdirSync(home, { recursive: true, mode: 0o700 });
     fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify(record) + '\n', { mode: 0o600 });
   } catch {}

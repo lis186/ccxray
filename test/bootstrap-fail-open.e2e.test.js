@@ -22,8 +22,10 @@ function setup(t) {
   const binDir = path.join(home, 'bin');
   fs.mkdirSync(binDir);
   const capture = path.join(home, 'capture.json');
+  const runs = path.join(home, 'runs.log');
   const bin = path.join(binDir, 'claude');
   fs.writeFileSync(bin, `#!/usr/bin/env node
+require('fs').appendFileSync(${JSON.stringify(runs)}, process.pid + '\\n');
 require('fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
   args: process.argv.slice(2),
   anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? null,
@@ -36,7 +38,7 @@ setTimeout(() => process.exit(7), Number(process.env.FAKE_AGENT_DELAY_MS || 0));
     CCXRAY_HOME: home, CCXRAY_EXPORT_DISABLE: '1', CCXRAY_IMPORT_DISABLE: '1',
     STORAGE_BACKEND: 's3', PROXY_PORT: '5697' };
   for (const k of ['ANTHROPIC_BASE_URL', 'CCXRAY_HUB_CLIENT_PID', 'CCXRAY_EXPORT_GCS_BUCKET', 'CCXRAY_FAIL_CLOSED']) delete env[k];
-  return { home, capture, env };
+  return { home, capture, runs, env };
 }
 
 function run(args, env) {
@@ -102,6 +104,43 @@ describe('bootstrap fail-open (load-time throw before launchDecision)', { skip: 
     child2.kill('SIGTERM');
     assert.deepEqual(await exited2, { code: 1, signal: null });
     assert.throws(() => process.kill(agentPid, 0), 'agent received the forwarded SIGTERM');
+  });
+
+  it('forwards SIGHUP to the agent', async t => {
+    const { capture, env } = setup(t);
+    const child = spawn(process.execPath, [SERVER, 'claude'], {
+      env: { ...env, FAKE_AGENT_DELAY_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+    const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
+    await waitFor(capture);
+    const agentPid = JSON.parse(fs.readFileSync(capture, 'utf8')).pid;
+    child.kill('SIGHUP');
+    assert.deepEqual(await exited, { code: 1, signal: null });
+    assert.throws(() => process.kill(agentPid, 0), 'agent received the forwarded SIGHUP');
+  });
+
+  it('does not launch a second agent on a later uncaught error', t => {
+    const { home, capture, runs, env } = setup(t);
+    // Preloaded into the launcher: once the agent is running, raise another
+    // uncaught error, as a stray timer from a half-loaded module would.
+    const preload = path.join(home, 'late-throw.js');
+    fs.writeFileSync(preload, `
+const fs = require('fs');
+const poll = setInterval(() => {
+  if (!fs.existsSync(${JSON.stringify(capture)})) return;
+  clearInterval(poll);
+  throw new Error('late uncaught error');
+}, 25);
+poll.unref();
+`);
+    const r = spawnSync(process.execPath, ['--require', preload, SERVER, 'claude', '-p', 'hi'], {
+      env: { ...env, FAKE_AGENT_DELAY_MS: '1500' }, encoding: 'utf8', timeout: 15000,
+    });
+    assert.match(r.stderr, /late uncaught error/, 'the late error was raised and reported');
+    assert.equal(r.status, 7, r.stderr);
+    assert.equal(fs.readFileSync(runs, 'utf8').trim().split('\n').length, 1, 'exactly one agent ran');
+    assert.equal(readLog(home).length, 1, 'exactly one fail-open record');
   });
 
   it('keeps the bg-bypass exemption under CCXRAY_FAIL_CLOSED=1', t => {
