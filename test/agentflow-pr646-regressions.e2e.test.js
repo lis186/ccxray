@@ -54,7 +54,7 @@ function writeIndex(ctx, rows) {
   fs.writeFileSync(path.join(ctx.home, 'logs', 'index.ndjson'), rows.map(row => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''));
 }
 
-function report(ctx, notebook = '.agentflow/devlog.md') {
+function report(ctx, notebook = '.agentflow/devlog.md', { text = false } = {}) {
   const env = {
     ...process.env,
     CCXRAY_HOME: ctx.home,
@@ -63,11 +63,11 @@ function report(ctx, notebook = '.agentflow/devlog.md') {
     CCXRAY_IMPORT_DISABLE: '1',
   };
   delete env.LOGS_DIR;
-  const run = spawnSync(process.execPath, [path.join(ROOT, 'server/index.js'), 'agentflow', 'report', '--notebook', notebook, '--json'], {
+  const run = spawnSync(process.execPath, [path.join(ROOT, 'server/index.js'), 'agentflow', 'report', '--notebook', notebook, ...(text ? [] : ['--json'])], {
     cwd: ctx.repo, env, encoding: 'utf8', timeout: 20000,
   });
   assert.equal(run.status, 0, run.stderr);
-  return JSON.parse(run.stdout);
+  return text ? run.stdout : JSON.parse(run.stdout);
 }
 
 function claudeProject(ctx, repo) {
@@ -165,6 +165,29 @@ describe('PR #646 report regressions', () => {
     assert.equal(a1.completeness, 'partial proxy coverage');
     assert.equal(a1.executors.find(row => row.kind === 'host').completeness, 'partial proxy coverage');
     assert.ok(a1.labels.includes('not yet imported: 1 turns'), a1.labels.join(' | '));
+  });
+
+  it('names each native subagent by its type and keeps it inside the host row', () => {
+    const ctx = setup('subagent-role', ['hello agent']);
+    const session = sid(6);
+    fs.writeFileSync(path.join(claudeProject(ctx, ctx.repo), `${session}.jsonl`), [
+      { type: 'user', uuid: 'owner', sessionId: session, cwd: ctx.repo, timestamp: iso(10), message: { role: 'user', content: 'hello agent' } },
+      { type: 'assistant', uuid: 'main-turn', sessionId: session, cwd: ctx.repo, timestamp: iso(20), message: { id: 'msg-main', role: 'assistant', content: [{ type: 'text', text: 'done' }] } },
+    ].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: session, provider: 'anthropic', model: 'claude-test', cwd: ctx.repo, imported: true, importSource: 'claude-code', usage: { input_tokens: 10 }, cost: { cost: 0.5, confidence: 'exact' } };
+    writeIndex(ctx, [
+      { ...row, id: 'main', receivedAt: at(20), responseId: 'msg-main' },
+      { ...row, id: 'typed', receivedAt: at(30), responseId: 'msg-typed', isSubagent: true, subagentId: 'a1', agentKey: 'general-purpose' },
+      { ...row, id: 'untyped', receivedAt: at(40), responseId: 'msg-untyped', isSubagent: true, subagentId: 'a2', agentKey: 'unknown' },
+      { ...row, id: 'unshaped', receivedAt: at(45), responseId: 'msg-unshaped', isSubagent: true, subagentId: 'a3', agentKey: 'Review /secret/path' },
+    ]);
+
+    const host = report(ctx).asks.find(ask => ask.id === 'A-001').executors.find(x => x.kind === 'host');
+    assert.deepEqual(host.subagents.map(s => [s.role, s.calls]).sort(), [['general-purpose', 1], ['unknown', 2]]);
+    const text = report(ctx, '.agentflow/devlog.md', { text: true });
+    assert.match(text, /^- host · .* · \$2\.000 · 4 calls/m, 'the host row includes its subagents');
+    assert.match(text, /^ {2}- subagent general-purpose · .* · 1 calls/m);
+    assert.doesNotMatch(text, /secret/, 'a subagent type that is not identifier-shaped never reaches the report');
   });
 
   it('labels a matched Codex transcript without index rows as transcripts only, including in a multi-host fold', () => {

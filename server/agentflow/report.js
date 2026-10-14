@@ -9,12 +9,13 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { readMergedTurns, aggregate } = require('../usage-query');
 const { formatAggCostText } = require('../../public/format.js');
+const { AGENT_KEY_UNRELIABLE } = require('../../public/agent-classification.js');
 const { loadNotebook, archivePathFor } = require('./notebook');
 const { defaultNotebook } = require('./cli');
 const { readClaudeTranscript, readCodexTranscript, collectSubmissions } = require('./evidence');
 const { buildWindows, disclose } = require('./windows');
 const { defaultRoots, findTranscripts, checkoutTranscripts, subagentTranscripts } = require('./discover');
-const { readDispatchRecords, readCompletionRecords } = require('./records');
+const { STAGE, readDispatchRecords, readCompletionRecords } = require('./records');
 const { attributeWorkers } = require('./workers');
 const { isNativeSubagent, attributeHosts } = require('./host');
 const { canonicalPath } = require('./chains');
@@ -80,8 +81,12 @@ function executorRows(row, codexSources, pending) {
   // marks title generation and prompt suggestions, which are host cost.
   const main = row.turns.filter(e => !isNativeSubagent(e));
   const groups = new Map();
+  // The role is the subagent's type: the importer takes it from the
+  // subagent's meta file; the catch-all keys of prompt detection name none.
+  // It reaches the report, so it passes only identifier-shaped, like a stage.
   for (const e of row.turns.filter(isNativeSubagent)) {
-    const role = 'subagent';
+    const key = e.agentKey;
+    const role = typeof key === 'string' && !AGENT_KEY_UNRELIABLE[key] && STAGE.test(key) ? key : 'unknown';
     if (!groups.has(role)) groups.set(role, []);
     groups.get(role).push(e);
   }
@@ -339,7 +344,7 @@ function renderText(report) {
         out.push(`- external ${x.role} · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.total)}${req}${tail}`);
         continue;
       }
-      out.push(`- host · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.main.calls ? x.main : x.total)}${tail}`);
+      out.push(`- host · ${x.evidence} · ${x.status} · ${x.completeness} · ${executorLine(x.total)}${tail}`);
       for (const s of x.subagents) out.push(`  - subagent ${s.role} · ${executorLine(s)}`);
       out.push(`  unmatched owner submissions: ${x.unmatchedSubmissions} · follow-up submissions: ${x.followUps.count} (${fmtCost(x.followUps)})`);
     }

@@ -194,4 +194,4 @@ function readCompletionRecords(workspace, root, notebooks) {
   return out;
 }
 
-module.exports = { parseTime, requestedFromArgs, readDispatchRecords, replyDigest, notebookForNamespace, readCompletionRecords };
+module.exports = { STAGE, parseTime, requestedFromArgs, readDispatchRecords, replyDigest, notebookForNamespace, readCompletionRecords };
