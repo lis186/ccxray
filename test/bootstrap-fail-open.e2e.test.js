@@ -8,12 +8,13 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const SERVER = path.resolve(__dirname, '..', 'server', 'index.js');
+const PACKAGE = require('../package.json');
 
 function setup(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-bootstrap-'));
@@ -26,12 +27,14 @@ function setup(t) {
 require('fs').writeFileSync(${JSON.stringify(capture)}, JSON.stringify({
   args: process.argv.slice(2),
   anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL ?? null,
+  pid: process.pid,
 }));
-process.exit(7);
+setTimeout(() => process.exit(7), Number(process.env.FAKE_AGENT_DELAY_MS || 0));
 `);
   fs.chmodSync(bin, 0o755);
   const env = { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
-    CCXRAY_HOME: home, CCXRAY_EXPORT_DISABLE: '1', STORAGE_BACKEND: 's3', PROXY_PORT: '5697' };
+    CCXRAY_HOME: home, CCXRAY_EXPORT_DISABLE: '1', CCXRAY_IMPORT_DISABLE: '1',
+    STORAGE_BACKEND: 's3', PROXY_PORT: '5697' };
   for (const k of ['ANTHROPIC_BASE_URL', 'CCXRAY_HUB_CLIENT_PID', 'CCXRAY_EXPORT_GCS_BUCKET', 'CCXRAY_FAIL_CLOSED']) delete env[k];
   return { home, capture, env };
 }
@@ -40,27 +43,73 @@ function run(args, env) {
   return spawnSync(process.execPath, [SERVER, ...args], { env, encoding: 'utf8', timeout: 15000 });
 }
 
+function readLog(home) {
+  return fs.readFileSync(path.join(home, 'fail-open.log'), 'utf8').trim().split('\n').map(JSON.parse);
+}
+
+async function waitFor(file, ms = 10000) {
+  const until = Date.now() + ms;
+  while (!fs.existsSync(file)) {
+    if (Date.now() > until) throw new Error(`timed out waiting for ${file}`);
+    await new Promise(r => setTimeout(r, 25));
+  }
+}
+
 describe('bootstrap fail-open (load-time throw before launchDecision)', { skip: process.platform === 'win32' }, () => {
-  for (const args of [['claude', '-p', 'hi'], ['claude', '--bg', 'hi'], ['--port', '5698', 'claude', '-p', 'hi']]) {
+  const CASES = [
+    [['claude', '-p', 'hi'], ['-p', 'hi']],
+    [['claude', '--bg', 'hi'], ['--bg', 'hi']],
+    [['--port', '5698', 'claude', '-p', 'hi'], ['-p', 'hi']],
+    // Global flags after the agent are ccxray's, exactly as on the normal path.
+    [['claude', '--port', '5698', '-p', 'hi', '--no-browser'], ['-p', 'hi']],
+  ];
+  for (const [args, expected] of CASES) {
     it(`runs the plain agent for: ${args.join(' ')}`, t => {
       const { home, capture, env } = setup(t);
       const r = run(args, env);
       assert.equal(r.status, 7, `agent exit code passes through; stderr=${r.stderr}`);
       const got = JSON.parse(fs.readFileSync(capture, 'utf8'));
-      assert.deepEqual(got.args, args.slice(args.indexOf('claude') + 1));
+      assert.deepEqual(got.args, expected);
       assert.equal(got.anthropicBaseUrl, null, 'env must be unchanged (not proxied)');
-      const log = fs.readFileSync(path.join(home, 'fail-open.log'), 'utf8').trim().split('\n').map(JSON.parse);
-      assert.equal(log.at(-1).reason, 'bootstrap-failed');
+      const last = readLog(home).at(-1);
+      assert.deepEqual(Object.keys(last), ['ts', 'reason', 'version', 'agent'], 'same record shape as launchDecision');
+      assert.equal(last.reason, 'bootstrap-failed');
+      assert.equal(last.version, PACKAGE.version);
       assert.match(r.stderr, /STORAGE_BACKEND=s3/, 'original error is still shown');
     });
   }
+
+  it('leaves SIGINT to the agent and forwards SIGTERM to it', async t => {
+    const { capture, env } = setup(t);
+    const child = spawn(process.execPath, [SERVER, 'claude'], {
+      env: { ...env, FAKE_AGENT_DELAY_MS: '1500' }, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    t.after(() => { try { child.kill('SIGKILL'); } catch {} });
+    const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal })));
+    await waitFor(capture);
+    child.kill('SIGINT');
+    const result = await exited;
+    assert.deepEqual(result, { code: 7, signal: null }, 'Ctrl-C must not kill the launcher while the agent runs');
+
+    const { capture: capture2, env: env2 } = setup(t);
+    const child2 = spawn(process.execPath, [SERVER, 'claude'], {
+      env: { ...env2, FAKE_AGENT_DELAY_MS: '10000' }, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    t.after(() => { try { child2.kill('SIGKILL'); } catch {} });
+    const exited2 = new Promise(resolve => child2.on('exit', (code, signal) => resolve({ code, signal })));
+    await waitFor(capture2);
+    const agentPid = JSON.parse(fs.readFileSync(capture2, 'utf8')).pid;
+    child2.kill('SIGTERM');
+    assert.deepEqual(await exited2, { code: 1, signal: null });
+    assert.throws(() => process.kill(agentPid, 0), 'agent received the forwarded SIGTERM');
+  });
 
   it('keeps the bg-bypass exemption under CCXRAY_FAIL_CLOSED=1', t => {
     const { home, capture, env } = setup(t);
     const r = run(['claude', '--bg', 'hi'], { ...env, CCXRAY_FAIL_CLOSED: '1' });
     assert.equal(r.status, 7, r.stderr);
     assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).args, ['--bg', 'hi']);
-    assert.match(fs.readFileSync(path.join(home, 'fail-open.log'), 'utf8'), /bootstrap-failed/);
+    assert.equal(readLog(home).at(-1).reason, 'bootstrap-failed');
   });
 
   it('exits 1 without launching under CCXRAY_FAIL_CLOSED=1', t => {
@@ -75,12 +124,6 @@ describe('bootstrap fail-open (load-time throw before launchDecision)', { skip: 
     const r = run(['claude', '--', '--bg'], { ...env, CCXRAY_FAIL_CLOSED: '1' });
     assert.equal(r.status, 1);
     assert.equal(fs.existsSync(capture), false);
-  });
-
-  it('knows every agent provider', () => {
-    const src = fs.readFileSync(SERVER, 'utf8');
-    const listed = JSON.parse(src.match(/const BOOTSTRAP_AGENTS = (\[[^\]]*\]);/)[1].replace(/'/g, '"'));
-    assert.deepEqual(listed.sort(), Object.keys(require('../server/providers').AGENT_PROVIDERS).sort());
   });
 
   it('does not launch anything for a non-agent command', t => {

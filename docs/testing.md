@@ -73,7 +73,16 @@ process exits.
 it sets `STORAGE_BACKEND=s3` (a deterministic load-time throw from
 `config.js`) in the child env, with a throwaway `CCXRAY_HOME`, a fake POSIX
 `claude` in a temporary `bin/`, and `PROXY_PORT` pinned away from 5577 — the
-throw happens before any listen, so no port is bound. It is skipped on Windows.
+throw happens before any listen, so no port is bound. It also sets
+`CCXRAY_IMPORT_DISABLE=1` so a future change that stops the throw cannot scan
+the real transcripts. Its signal case sends SIGINT/SIGTERM to the launcher and
+waits for the fake agent's own exit; it is skipped on Windows.
+
+`test/plain-launch.test.js` is pure except one child `node -e` that loads
+`server/plain-launch.js` and lists `require.cache`, pinning its load closure. Its
+`parseGlobalFlags` cases are a differential test against a verbatim copy of the
+pre-refactor splice in `server/index.js`; keep the oracle frozen — it is the
+evidence that the refactor did not change flag semantics.
 
 `test/win-launch.test.js` tests Windows PATH/PATHEXT policy on every platform
 with an injected `path.win32` and case-insensitive fake filesystem. Its actual
