@@ -774,7 +774,7 @@ function uninstallStatusline(claudeHome) {
   return { status: 'removed' };
 }
 
-function promptClaudeStatusline() {
+function promptClaudeStatusline(args = []) {
   const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
   const ccxrayHome = resolveCcxrayHome();
 
@@ -788,6 +788,12 @@ function promptClaudeStatusline() {
   // through to the one-line hint; the declined marker is NOT written, so a
   // later direct TTY launch still gets to answer.
   const herdrLaunch = (process.env.CCXRAY_AGENT_ID || '').startsWith('herdr:');
+  // Use the launcher's shared parser so a bare `--` ends option parsing here
+  // too. --bg/--background also returns immediately (and is already a
+  // plain-launch bypass elsewhere). TTY stdin alone does not make consent
+  // visible when stdout is piped, so keep the stdout TTY check as well.
+  const printMode = providers.isClaudePrintMode(args);
+  if (printMode || hasClaudeBackgroundFlag(args) || !process.stdout.isTTY) return;
 
   if (process.stdin.isTTY && !herdrLaunch && !fs.existsSync(declinedPath)) {
     // #563: disclose purpose, impact, and reversibility; the default follows
@@ -865,7 +871,7 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
   };
 
   if (command === 'claude' && !opts.skipStatuslinePrompt) {
-    const p = promptClaudeStatusline();
+    const p = promptClaudeStatusline(args);
     if (p && typeof p.then === 'function') { p.then(doSpawn).catch(() => doSpawn()); return; }
   }
   doSpawn();
