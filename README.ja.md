@@ -214,6 +214,16 @@ ccxray usage --tools                  # 全ツール呼び出しの内訳
 
 `--json` 出力はエージェント向けの契約です — フィールドごとの完全なスキーマ、multi-cwd とエラー時の出力形状、フィルタのセマンティクスは [`docs/usage.md`](docs/usage.md) を参照してください。
 
+### agentflow レポート（実験的）
+
+```bash
+ccxray agentflow report              # プロジェクトの agentflow notebook の全 Ask
+ccxray agentflow report --ask A-012  # 1 つの Ask
+ccxray agentflow report --json       # JSON
+```
+
+[agentflow](https://github.com/agfnow/agentflow) を使うプロジェクト向け：notebook の各 Ask について、トークン、コスト、モデル、effort、時間を、ホストセッション、サブエージェント、ディスパッチされた外部ワーカーに分けて表示します。各 Ask には、使用量がすべてプロキシを通ったか（`complete`）、transcript からしか読めないか（下限値）が表示されます。先に `ccxray import --once` を実行してください。サーバーは不要です。詳細は [`docs/agentflow-report.md`](docs/agentflow-report.md)（英語）。
+
 ### その他
 
 - **ディープリンクナビゲーション** — すべての選択状態（project / session / turn / step）はアドレスバーの URL に反映されます。URL を新しいタブに貼り付けると、ダッシュボードが同じ画面に直接ナビゲートします。
