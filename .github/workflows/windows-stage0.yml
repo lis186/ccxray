@@ -29,11 +29,15 @@ on:
       - 'server/claude-args.js'
       - 'server/win-launch.js'
       - 'server/providers.js'
+      - 'server/setup.js'
+      - 'server/bounded-run.js'
       - 'test/export-lock.two-process.test.js'
       - 'test/launcher-fail-open.e2e.test.js'
       - 'test/claude-args.test.js'
       - 'test/launch-decision.test.js'
       - 'test/win-launch.test.js'
+      - 'test/setup.test.js'
+      - 'test/helpers/setup-fixture.js'
       - 'test/helpers/export-lock-fixture.js'
       - '.github/workflows/windows-stage0.yml'
 
@@ -50,20 +54,43 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm }
       - run: npm ci
+      - name: Evidence — PowerShell execution policy
+        shell: pwsh
+        run: Get-ExecutionPolicy -List
       - name: Unit + Windows execution — option grammar, launch decision, resolver policy (pure, fake fs) and the fake-npm-layout argv/exit-code cases (win32-only cases run here)
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/unit-ccxray"
-          CCXRAY_HOME="$RUNNER_TEMP/unit-ccxray" node --test \
-            test/claude-args.test.js test/launch-decision.test.js test/win-launch.test.js
+          mkdir -p "$RUNNER_TEMP/unit-ccxray/home" "$RUNNER_TEMP/unit-ccxray/zsh" \
+            "$RUNNER_TEMP/unit-ccxray/claude" "$RUNNER_TEMP/unit-ccxray/cloudsdk" \
+            "$RUNNER_TEMP/unit-ccxray/ccxray" "$RUNNER_TEMP/unit-ccxray/logs"
+          unset CCXRAY_EXPORT_GCS_BUCKET ANTHROPIC_BASE_URL CCXRAY_HUB_CLIENT_PID CCXRAY_EXPORT_GCS_KEY_FILE
+          HOME="$RUNNER_TEMP/unit-ccxray/home" \
+          ZDOTDIR="$RUNNER_TEMP/unit-ccxray/zsh" \
+          SHELL=/bin/bash \
+          CLAUDE_CONFIG_DIR="$RUNNER_TEMP/unit-ccxray/claude" \
+          CLOUDSDK_CONFIG="$RUNNER_TEMP/unit-ccxray/cloudsdk" \
+          CCXRAY_HOME="$RUNNER_TEMP/unit-ccxray/ccxray" \
+          LOGS_DIR="$RUNNER_TEMP/unit-ccxray/logs" \
+          CCXRAY_EXPORT_DISABLE=1 node --test \
+            test/claude-args.test.js test/launch-decision.test.js test/win-launch.test.js test/setup.test.js
       # test/export-startup-lock.e2e.test.js is excluded until #648: on Windows a
       # second server on the port of a just-stopped one fails with EADDRINUSE every
       # time. Add it back here and to `paths` when #648 is closed.
       - name: E2E — export lock + launcher fail-open (hub-only / POSIX-signal cases skip on win32)
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/e2e-ccxray"
-          CCXRAY_HOME="$RUNNER_TEMP/e2e-ccxray" node --test \
+          mkdir -p "$RUNNER_TEMP/e2e-ccxray/home" "$RUNNER_TEMP/e2e-ccxray/zsh" \
+            "$RUNNER_TEMP/e2e-ccxray/claude" "$RUNNER_TEMP/e2e-ccxray/cloudsdk" \
+            "$RUNNER_TEMP/e2e-ccxray/ccxray" "$RUNNER_TEMP/e2e-ccxray/logs"
+          unset CCXRAY_EXPORT_GCS_BUCKET ANTHROPIC_BASE_URL CCXRAY_HUB_CLIENT_PID CCXRAY_EXPORT_GCS_KEY_FILE
+          HOME="$RUNNER_TEMP/e2e-ccxray/home" \
+          ZDOTDIR="$RUNNER_TEMP/e2e-ccxray/zsh" \
+          SHELL=/bin/bash \
+          CLAUDE_CONFIG_DIR="$RUNNER_TEMP/e2e-ccxray/claude" \
+          CLOUDSDK_CONFIG="$RUNNER_TEMP/e2e-ccxray/cloudsdk" \
+          CCXRAY_HOME="$RUNNER_TEMP/e2e-ccxray/ccxray" \
+          LOGS_DIR="$RUNNER_TEMP/e2e-ccxray/logs" \
+          CCXRAY_EXPORT_DISABLE=1 node --test \
             test/export-lock.two-process.test.js test/launcher-fail-open.e2e.test.js
 
   claude-cmd-diagnostic:

@@ -1,5 +1,44 @@
 # Export onboarding
 
+## One-step setup
+
+Install gcloud Application Default Credentials first:
+
+```sh
+gcloud auth application-default login
+ccxray setup --bucket <bucket> --domains <domain> --cwd-allowlist <allowed-repository-basename>
+ccxray setup --check
+```
+
+Replace the placeholders with the bucket, allowed account domain, and repository
+basenames approved for the pilot. Setup stores these values in an owned block in
+the selected shell startup file. It never reads them from the invoking
+environment. If no repository allowlist is supplied, repository basenames are
+exported without masking.
+
+To stop future uploads and remove the wrapper, run:
+
+```sh
+ccxray setup --remove
+```
+
+Setup replaces or removes only a block that still matches its generated output.
+If it reports a malformed block, delete everything from the start marker line
+through the end marker line in that startup file, then re-run `ccxray setup`.
+`ccxray setup --remove` still writes the removed tombstone, but leaves a
+malformed block unchanged and reports cleanup incomplete.
+
+Setup assumes its marker lines are ordinary top-level lines of the startup
+file. Do not place the setup block inside a here-document, here-string, or
+multi-line quoted string: setup cannot detect that, and `--remove` would then
+delete text that belongs to the surrounding construct.
+
+On Windows, setup discovers and configures every installed PowerShell edition
+by default. Run `ccxray setup --check` in each edition and inspect the reported
+edition and console host. The check does not cover host-specific profiles such
+as VS Code or ISE; open those hosts and confirm `Get-Command claude` resolves to
+the ccxray wrapper before relying on it.
+
 ccxray's export is machine-level telemetry with an optional account-domain
 filter for turns that carry a Claude launch-account snapshot. Set
 `CCXRAY_EXPORT_DOMAINS=example.com,example.org` to aggregate only turns whose

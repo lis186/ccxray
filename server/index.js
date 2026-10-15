@@ -25,6 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
+  setup               Configure export enrollment and Claude shell wrapper
   setup-statusline    Configure Claude Code status line
   secret              Manage shared secrets (upstream)
   usage               Show usage summary and costs
@@ -205,6 +206,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
   && cliCommand !== 'import'
+  && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
   && cliCommand !== 'usage'
   && !cliCommand.startsWith('-')
@@ -974,6 +976,17 @@ if (process.argv[2] === 'open') {
   return; // prevent falling through to startup
 }
 
+// ── "setup" subcommand ──
+if (process.argv[2] === 'setup') {
+  require('./setup').runSetup(process.argv.slice(3)).then(code => {
+    process.exitCode = code;
+  }).catch(error => {
+    console.error(`\x1b[31mSetup failed: ${error.message}\x1b[0m`);
+    process.exitCode = 1;
+  });
+  return;
+}
+
 // ── "setup-statusline" subcommand ──
 if (process.argv[2] === 'setup-statusline') {
   const explicitHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home');
@@ -1197,6 +1210,20 @@ if (process.argv[2] === 'status') {
   return; // prevent falling through to startup
 }
 
+// Read the setup preference once per process. Its absence preserves the current
+// auto-open behaviour; `off` is an additional suppression at both startup gates.
+const autoOpenBrowserOff = (() => {
+  try {
+    const preference = require('fs').readFileSync(
+      require('path').join(resolveCcxrayHome(process.env), 'auto-open-browser'),
+      'utf8',
+    ).trim();
+    return preference === 'off';
+  } catch {
+    return false;
+  }
+})();
+
 // ── Client mode: connect to existing hub ──
 function reportHubRegistrationStatus(reply, lifecycle) {
   const rendered = renderHubClientStatus(
@@ -1284,6 +1311,7 @@ async function startClientMode(lock, decision) {
     // Auto-open browser for the first client connecting to this hub
     if (reg.firstClient) {
       const noOpen = noBrowser
+        || autoOpenBrowserOff
         || process.env.BROWSER === 'none'
         || process.env.CI
         || process.env.SSH_TTY;
@@ -1566,6 +1594,7 @@ async function startServer({ onListen } = {}) {
   // Auto-open dashboard in browser (not in hub mode)
   const noOpen = hubMode
     || noBrowser
+    || autoOpenBrowserOff
     || process.env.BROWSER === 'none'
     || process.env.CI
     || process.env.SSH_TTY;
