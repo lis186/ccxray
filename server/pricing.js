@@ -247,8 +247,11 @@ function calculateCost(usage, model, provider) {
 // fetch overwrites this table when it lands.
 let contextTableLoadAttempted = false;
 function ensureContextTable() {
-  if (contextTableLoadAttempted || Object.keys(contextTable).length) return;
+  if (contextTableLoadAttempted) return;
   contextTableLoadAttempted = true;
+  // fetchPricing() can populate the table without setting this flag. Set it
+  // before the emptiness check so it does not enumerate the warm table per lookup.
+  if (Object.keys(contextTable).length) return;
   try {
     const cached = JSON.parse(fs.readFileSync(PRICING_CACHE_PATH, 'utf8'));
     if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
