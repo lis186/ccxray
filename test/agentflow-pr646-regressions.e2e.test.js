@@ -301,6 +301,24 @@ describe('PR #646 report regressions', () => {
     assert.deepEqual([label('A-001'), label('A-002')], [['complete'], ['complete']]);
   });
 
+  it('gives a native subagent turn that names no cwd to its worker\'s one clone, as the importer does', () => {
+    const ctx = setup('worker-subagent-no-cwd');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-nocwd', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 40);
+    const worker = sid(15);
+    const said = (uuid, s, id, cwd) => ({ type: 'assistant', uuid, sessionId: worker, cwd, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    const project = claudeProject(ctx, clone);
+    fs.writeFileSync(path.join(project, `${worker}.jsonl`), JSON.stringify(said('w', 25, 'msg-w', clone)) + '\n');
+    // A subagent turn naming no cwd, in no index line: imported, it would take
+    // the worker's cwd, so the proxy never saw a turn of this worker.
+    fs.mkdirSync(path.join(project, worker, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(project, worker, 'subagents', 'agent-x.jsonl'), JSON.stringify(said('s', 30, 'msg-s', undefined)) + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', cwd: clone, receivedAt: at(25), responseId: 'msg-w', usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    writeIndex(ctx, [{ ...row, id: 'p' }, { ...row, id: 'i', imported: true, importSource: 'claude-code' }]);
+    const external = report(ctx).asks.find(a => a.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => x.completeness), ['partial proxy coverage']);
+  });
+
   it('compares a worker\'s transcript turns only up to the report time, as the index is read', async () => {
     const { buildReport } = require('../server/agentflow/report');
     const ctx = setup('worker-cutoff');
