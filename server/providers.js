@@ -28,6 +28,115 @@ function proxyBaseUrl(port, env, suffix = '') {
   return `http://localhost:${port}${clientRoute}${suffix}`;
 }
 
+// Keep root option arity aligned with `codex --help`. Infinity means a
+// detached option consumes following non-option tokens; Codex's `--image`
+// does this even when a value looks like a subcommand. `terminal` options
+// take over parsing before a later subcommand can run.
+const CODEX_ROOT_OPTION_ARITY = Object.freeze({
+  '-c': 1,
+  '--config': 1,
+  '--enable': 1,
+  '--disable': 1,
+  '--remote': 1,
+  '--remote-auth-token-env': 1,
+  '-i': Infinity,
+  '--image': Infinity,
+  '-m': 1,
+  '--model': 1,
+  '--oss': 0,
+  '--local-provider': 1,
+  '-p': 1,
+  '--profile': 1,
+  '-s': 1,
+  '--sandbox': 1,
+  '--approve-for-me': 0,
+  '--dangerously-bypass-approvals-and-sandbox': 0,
+  '--dangerously-bypass-hook-trust': 0,
+  '-C': 1,
+  '--cd': 1,
+  '--worktree': 0,
+  '--add-dir': 1,
+  '-a': 1,
+  '--ask-for-approval': 1,
+  '--search': 0,
+  '--no-alt-screen': 0,
+  '--no-daemon': 0,
+  '--strict-config': 0,
+  '-h': 'terminal',
+  '--help': 'terminal',
+  '-V': 'terminal',
+  '--version': 'terminal',
+});
+const CODEX_MODEL_SUBCOMMANDS = new Set(['exec', 'e', 'review', 'resume', 'fork']);
+// Needed to distinguish a root prompt from a different root command after
+// Codex allows a prompt positional before a command (for example, `app exec`).
+// Keep synchronized with the root Commands section in `codex --help`.
+const CODEX_SUBCOMMANDS = new Set([
+  ...CODEX_MODEL_SUBCOMMANDS,
+  'agents', 'login', 'logout', 'mcp', 'plugin', 'app-server', 'remote-control',
+  'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a',
+  'help', 'queue', 'archive', 'delete', 'migrate-rollouts', 'unarchive', 'cloud',
+  'exec-server', 'features',
+]);
+
+function getCodexRootOption(arg) {
+  if (Object.hasOwn(CODEX_ROOT_OPTION_ARITY, arg)) {
+    return { arity: CODEX_ROOT_OPTION_ARITY[arg], attachedValue: false };
+  }
+
+  for (const [option, arity] of Object.entries(CODEX_ROOT_OPTION_ARITY)) {
+    if (typeof arity !== 'number' || arity === 0) continue;
+    const prefix = option.startsWith('--') ? `${option}=` : option;
+    if (arg.startsWith(prefix) && arg.length > prefix.length) {
+      return { arity, attachedValue: true };
+    }
+  }
+  return null;
+}
+
+function findCodexModelSubcommand(args) {
+  let sawRootPrompt = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') return -1;
+    if (!arg.startsWith('-') || arg === '-') {
+      if (CODEX_MODEL_SUBCOMMANDS.has(arg)) return i;
+      // Codex permits its one root PROMPT positional before a subcommand.
+      // A different known root command takes ownership of the remaining args.
+      if (CODEX_SUBCOMMANDS.has(arg) || sawRootPrompt) return -1;
+      sawRootPrompt = true;
+      continue;
+    }
+
+    const option = getCodexRootOption(arg);
+    if (!option) return -1;
+    if (option.arity === 'terminal') return -1;
+    if (option.arity === 0 || option.attachedValue) continue;
+
+    if (option.arity === Infinity) {
+      if (i + 1 >= args.length) return -1;
+      i++;
+      while (i + 1 < args.length && (!args[i + 1].startsWith('-') || args[i + 1] === '-')) i++;
+      continue;
+    }
+
+    if (i + 1 >= args.length) return -1;
+    i++;
+  }
+  return -1;
+}
+
+function withCodexConfig(configArgs, args) {
+  const commandIndex = findCodexModelSubcommand(args);
+  if (commandIndex < 0) return [...configArgs, ...args];
+  return [
+    ...args.slice(0, commandIndex + 1),
+    ...configArgs,
+    ...args.slice(commandIndex + 1),
+  ];
+}
+
 function appendAnthropicCustomHeader(launchEnv, header) {
   const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
   launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
@@ -95,7 +204,7 @@ const AGENT_PROVIDERS = Object.freeze({
           const mpConfig = `model_providers.ccxray={name="ccxray", base_url="${baseUrl}", wire_api="responses", http_headers={"X-Ccxray-Auth"="${token}"}}`;
           return {
             bin: 'codex',
-            args: ['-c', mpConfig, '-c', 'model_provider="ccxray"', ...args],
+            args: withCodexConfig(['-c', mpConfig, '-c', 'model_provider="ccxray"'], args),
             env: { ...env },
           };
         }
@@ -106,13 +215,12 @@ const AGENT_PROVIDERS = Object.freeze({
       // ChatGPT-OAuth mode or token derivation failure: legacy path
       return {
         bin: 'codex',
-        args: [
+        args: withCodexConfig([
           '-c',
           `openai_base_url="${baseUrl}"`,
           '-c',
           `chatgpt_base_url="${baseUrl}"`,
-          ...args,
-        ],
+        ], args),
         env: { ...env },
       };
     },
