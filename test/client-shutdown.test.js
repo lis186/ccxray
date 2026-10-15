@@ -288,7 +288,7 @@ describe('hub-client shutdown wiring (structural)', () => {
     // settles, so a call-site-only check can be answered by a stale reading.
     const doSpawn = source.slice(source.indexOf('const doSpawn = () => {'));
     const guard = doSpawn.indexOf('opts.isShuttingDown');
-    const spawnCall = doSpawn.indexOf('spawn(plan.file, plan.args');
+    const spawnCall = doSpawn.indexOf('plainLaunch.spawnPlain(');
     assert.ok(guard > 0, 'doSpawn does not consult opts.isShuttingDown');
     assert.ok(guard < spawnCall, 'the gate must be checked before spawn()');
   });

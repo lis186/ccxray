@@ -297,9 +297,11 @@ describe('Windows process execution', () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')), { argv1: script, args: ['arg'], path: envObj.PATH });
   });
 
-  it('keeps doSpawn resolution and spawn failures under one reporter and exit owner', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'index.js'), 'utf8');
-    const doSpawn = source.slice(source.indexOf('const doSpawn = () => {'));
+  it('keeps spawnPlain resolution and spawn failures under one reporter and exit owner', () => {
+    // spawnPlain (server/plain-launch.js) is the one spawn site for both the
+    // normal launcher's doSpawn and the bootstrap fail-open handler.
+    const source = fs.readFileSync(path.join(__dirname, '..', 'server', 'plain-launch.js'), 'utf8');
+    const doSpawn = source.slice(source.indexOf('function spawnPlain('));
     assert.match(doSpawn, /try\s*\{\s*const plan = resolveAgentLaunch\([\s\S]*?child = spawn\(plan\.file, plan\.args, \{\s*stdio: 'inherit',\s*env: launch\.env,\s*\}\);\s*\} catch \(err\) \{\s*reportLaunchFailure\(err\);\s*finish\(1\);/);
     assert.match(doSpawn, /child\.on\('error', \(err\) => \{\s*reportLaunchFailure\(err\);\s*finish\(1\);/);
     assert.doesNotMatch(doSpawn, /shell\s*:/);
