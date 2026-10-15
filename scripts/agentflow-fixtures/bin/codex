@@ -1,0 +1,24 @@
+#!/usr/bin/env node
+'use strict';
+
+// Fake `codex exec` worker: like the real CLI, the session id rides the
+// `session_id` header and the cwd an <environment_context> block.
+const http = require('node:http');
+
+const target = new URL(process.env.GEN_OPENAI_BASE + '/responses');
+const sid = process.env.GEN_WORKER_SESSION;
+const calls = Number(process.env.GEN_CALLS || 2);
+const post = i => new Promise((resolve, reject) => {
+  const body = Buffer.from(JSON.stringify({ model: 'gpt-5.5', instructions: 'You are Codex',
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>\n  <cwd>' + process.cwd() + '</cwd>\n</environment_context>' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'worker ' + i }] }] }));
+  const req = http.request({ host: target.hostname, port: target.port, path: target.pathname, method: 'POST',
+    headers: { 'content-type': 'application/json', 'content-length': body.length, authorization: 'Bearer sk-test', session_id: sid } },
+    res => { res.resume(); res.on('end', () => (res.statusCode === 200 ? resolve() : reject(new Error('status ' + res.statusCode)))); });
+  req.on('error', reject);
+  req.end(body);
+});
+(async () => {
+  for (let i = 0; i < calls; i++) { await post(i); await new Promise(r => setTimeout(r, 50)); }
+  process.stdout.write('codex worker done');
+})().catch(e => { console.error(String(e)); process.exit(1); });

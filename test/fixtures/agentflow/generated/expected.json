@@ -1,0 +1,29 @@
+{
+  "_comment": "Hand-written from docs/agentflow-integration.md (W7, E1-E7, Completeness), never generated. Executors are [kind, evidence, status, completeness, calls, labels]; workers make 2 calls each.",
+  "asks": {
+    "A-001": {
+      "_why": "F1: H1 prompt-match, H2 window host via `agf start` with one unmatched owner submission; each launches a worker whose full runner result shares the tool call (strong chain). Every host turn has a proxy twin.",
+      "completeness": "complete",
+      "executors": [["host", "prompt-match", "unique", "complete", 2, ""], ["host", "window", "unique", "complete", 2, ""],
+        ["external", "launch-chain", "unique", "complete", 2, ""], ["external", "launch-chain", "unique", "complete", 2, ""]],
+      "unmatchedSubmissions": [0, 1]
+    },
+    "A-002": {
+      "_why": "F13: a background launch read later by its handle is a strong chain; the Codex worker is read from the proxy.",
+      "completeness": "complete",
+      "executors": [["host", "prompt-match", "unique", "complete", 3, ""], ["external", "launch-chain", "unique", "complete", 2, ""]]
+    },
+    "A-003": {
+      "_why": "F30: a runner-naming wrapper whose summary holds the clone path under `clone`.",
+      "completeness": "complete",
+      "executors": [["host", "prompt-match", "unique", "complete", 2, ""], ["external", "launch-chain", "unique", "complete", 2, ""]]
+    },
+    "A-004": {
+      "_why": "F26: a reused caller-chosen clone, no chain; the earlier run is bound by its reflog and attributed by window, the later one is checkout unknown.",
+      "completeness": "complete",
+      "executors": [["host", "prompt-match", "unique", "complete", 3, ""], ["external", "window", "unique", "complete", 2, ""]]
+    }
+  },
+  "_footer": "The proxy infers the Codex worker's parent (its temporal heuristic, a property of the input); Lineage ignores it and counts it (F6).",
+  "footer": { "checkoutUnknown": 1, "matchedNoNotebook": 0, "heuristicParentIgnored": 1 }
+}

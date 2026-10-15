@@ -98,6 +98,53 @@ function exportStatus(env = process.env) {
   return { exportState: 'enabled', exportReason: null };
 }
 
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function normalizedEnvList(value, { lowercase = false } = {}) {
+  const values = (value || '').split(',').map(item => {
+    const trimmed = item.trim();
+    return lowercase ? trimmed.toLowerCase() : trimmed;
+  }).filter(Boolean);
+  return [...new Set(values)].sort();
+}
+
+// This is a fingerprint of the enumerated settings only. It says nothing about
+// whether credentials work, which storage a process writes, or exporter health.
+function exportConfigObject(env = process.env) {
+  let credentialSelector;
+  if (env.CCXRAY_EXPORT_GCS_KEY_FILE) {
+    credentialSelector = { mode: 'key-file', hash: sha256(env.CCXRAY_EXPORT_GCS_KEY_FILE) };
+  } else if (env.CLOUDSDK_CONFIG) {
+    credentialSelector = { mode: 'cloudsdk-config', hash: sha256(env.CLOUDSDK_CONFIG) };
+  } else {
+    credentialSelector = { mode: 'platform-default' };
+  }
+
+  return {
+    v: 1,
+    disabled: env.CCXRAY_EXPORT_DISABLE === '1',
+    testContext: Boolean(env.NODE_TEST_CONTEXT),
+    configDirsRefused: env.CCXRAY_EXPORT_CONFIG_DIRS !== undefined,
+    bucket: env.CCXRAY_EXPORT_GCS_BUCKET || null,
+    prefix: env.CCXRAY_EXPORT_GCS_PREFIX || 'summaries',
+    domains: normalizedEnvList(env.CCXRAY_EXPORT_DOMAINS, { lowercase: true }),
+    team: env.CCXRAY_TEAM || null,
+    userEmailHash: env.CCXRAY_USER_EMAIL ? sha256(env.CCXRAY_USER_EMAIL) : null,
+    agentIdHash: env.CCXRAY_AGENT_ID ? sha256(env.CCXRAY_AGENT_ID) : null,
+    cwdFilter: {
+      configured: Boolean(env.CCXRAY_EXPORT_CWD_ALLOWLIST),
+      values: normalizedEnvList(env.CCXRAY_EXPORT_CWD_ALLOWLIST),
+    },
+    credentialSelector,
+  };
+}
+
+function exportConfigHash(env = process.env) {
+  return sha256(JSON.stringify(exportConfigObject(env)));
+}
+
 // INVARIANT: one block predicate, two callers (flushExport + startExportSync). Under
 // `node --test` a real upload must be structurally impossible: the suite has no
 // shared env-scrub helper and CCXRAY_HOME does NOT isolate the bucket, so any e2e
@@ -372,13 +419,41 @@ function readExportLast(home) {
 
 // Only an enabled lock holder writes this, so a lock loser or an env-less process can
 // never overwrite the last real failure with something less informative.
-function recordExportLast(home, outcome) {
+function recordExportLast(home, outcome, attempt = {}, err = null, phase = 'interval') {
   const prev = readExportLast(home) || {};
   const now = new Date().toISOString();
   const success = outcome === 'exported' || outcome === 'nothing-new';
+  let stage = null;
+  let category = null;
+  if (outcome === 'enrollment-invalid') {
+    stage = 'enrollment';
+    category = attempt.category || 'error';
+  } else if (outcome === 'hard-failed') {
+    stage = 'identity';
+    category = attempt.category || 'error';
+  } else if (err instanceof CredentialError) {
+    stage = err.stage || null;
+    category = err.category || 'error';
+  } else if (outcome === 'upload-failed') {
+    stage = attempt.stage || null;
+    category = typeof err?.code === 'string' && /^E[A-Z0-9]{2,}$/.test(err.code)
+      ? err.code
+      : 'error';
+  }
   try {
     writeCursor(path.join(home, 'export-last.json'), {
-      attemptedAt: now, outcome, lastSuccessAt: success ? now : (prev.lastSuccessAt ?? null),
+      attemptedAt: now,
+      outcome,
+      lastSuccessAt: success ? now : (prev.lastSuccessAt ?? null),
+      phase,
+      exportConfigHash: exportConfigHash(process.env),
+      stage,
+      category,
+      files: Number.isInteger(attempt.files) ? attempt.files : 0,
+      rows: Number.isInteger(attempt.rows) ? attempt.rows : 0,
+      eligibleTurns: attempt.eligibleTurns ?? null,
+      excludedTurns: attempt.excludedTurns ?? null,
+      candidateEmails: attempt.candidateEmails ?? null,
     });
   } catch {}
 }
@@ -1067,7 +1142,22 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
     }
   }
 
-  return { dailyByDt, sessionsByDt, sessionHomeDt, candidateEmails, excludedTurns, userEmail, filterActive };
+  return {
+    dailyByDt,
+    sessionsByDt,
+    sessionHomeDt,
+    candidateEmails,
+    excludedTurns,
+    eligibleTurns: allowedEntries.length,
+    userEmail,
+    filterActive,
+  };
+}
+
+function captureAttemptAggregation(attempt, aggregation) {
+  attempt.eligibleTurns = aggregation.eligibleTurns;
+  attempt.excludedTurns = aggregation.excludedTurns;
+  attempt.candidateEmails = aggregation.candidateEmails.size;
 }
 
 // ponytail: allowlist gates which repo names leave the machine; unknown → '[other]'
@@ -1228,6 +1318,14 @@ async function flushExport({ lockToken = null, phase = 'interval' } = {}) {
   // that window would otherwise let an already-permitted flush switch to the real GCS
   // uploader (codex review, 2026-08-21).
   const uploaderAtEntry = _uploader;
+  const attempt = {
+    stage: null,
+    files: 0,
+    rows: 0,
+    eligibleTurns: null,
+    excludedTurns: null,
+    candidateEmails: null,
+  };
 
   const home = resolveCcxrayHome();
   const { handle, lost } = lockToken
@@ -1239,27 +1337,32 @@ async function flushExport({ lockToken = null, phase = 'interval' } = {}) {
   }
 
   try {
-    const outcome = await flushLocked(home, bucket, uploaderAtEntry);
-    recordExportLast(home, outcome);
+    const outcome = await flushLocked(home, bucket, uploaderAtEntry, attempt);
+    if (outcome === 'hard-failed') {
+      attempt.category = attempt.candidateEmails === 0 ? 'no-candidate' : 'multiple-candidates';
+    }
+    recordExportLast(home, outcome, attempt, null, phase);
     return outcome;
   } catch (err) {
-    recordExportLast(home, 'upload-failed');
+    recordExportLast(home, 'upload-failed', attempt, err, phase);
     throw err;
   } finally {
     if (!lockToken) await releaseLock(handle);
   }
 }
 
-async function flushLocked(home, bucket, uploaderAtEntry) {
+async function flushLocked(home, bucket, uploaderAtEntry, attempt) {
   const cursorPath = path.join(home, 'export-cursor.json');
   // Read under the lock: a `setup --remove` that completed while this process was
   // waiting must win over whatever it believed before acquiring.
+  attempt.stage = 'enrollment';
   let enrollment = readEnrollment(home);
   if (enrollment?.state === 'removed') {
     console.log('[ccxray export] removed — this home was un-enrolled by `ccxray setup --remove`; not exporting');
     return 'removed';
   }
   if (enrollment?.state === 'invalid') {
+    attempt.category = enrollment.reason || 'error';
     appendExportEvent(home, { type: 'enrollment-invalid', reason: enrollment.reason, detail: enrollment.detail });
     console.error(`[ccxray export] enrollment-invalid — ${enrollment.reason}: ${enrollment.detail}`);
     return 'enrollment-invalid';
@@ -1267,6 +1370,7 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
 
   const agentId = getAgentId(home);
   const config = require('./config');
+  attempt.stage = 'cursor-read';
   let cursor = readCursor(cursorPath);
   if (!cursor) {
     // First run: enroll (enrollment first, cursor second — a crash between them leaves
@@ -1280,6 +1384,7 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
         enrolledAt: new Date().toISOString(),
         retentionDays: config.LOG_RETENTION_DAYS,
       };
+      attempt.stage = 'enrollment-write';
       writeCursor(enrollmentPath(home), enrollment);
     }
     // partial:false — scanning from lastId:null counts the whole floor day, so the
@@ -1291,12 +1396,14 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
       cutoffDt: utcDateOf(enrollment.enrolledAt) || new Date().toISOString().slice(0, 10),
       floorV: FLOOR_VERSION,
     };
+    attempt.stage = 'cursor-write';
     writeCursor(cursorPath, cursor);
     console.log(`[ccxray export] First run — enrolled; uploading from ${cursor.cutoffDt} (UTC). No backfill.`);
   }
 
   // #4: cursor tracks last-processed entry id (not line count)
   const lines = [];
+  attempt.stage = 'index-read';
   for await (const line of config.storage.readIndexLines()) {
     lines.push(line);
   }
@@ -1318,7 +1425,9 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
   const configuredUserEmail = process.env.CCXRAY_USER_EMAIL || null;
   let aggregation = null;
   if (allowedDomains.size > 0) {
+    attempt.stage = 'aggregate';
     aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
+    captureAttemptAggregation(attempt, aggregation);
     if (!aggregation.userEmail) {
       console.log(`${exportStatsLine('hard-failed', 0, 0, [], 'unresolved', aggregation.excludedTurns)}`
         + ` email_candidates=${aggregation.candidateEmails.size}`);
@@ -1337,6 +1446,7 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
       cutoffDt,
       floorV: FLOOR_VERSION,
     };
+    attempt.stage = 'cursor-write';
     writeCursor(cursorPath, cursor);
   }
   const cutoffDt = effectiveFloor(cursor.cutoffDt, enrollment);
@@ -1348,11 +1458,16 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
   }
 
   // Unconfigured path: the full aggregation was deliberately deferred to here.
-  if (!aggregation) aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
+  if (!aggregation) {
+    attempt.stage = 'aggregate';
+    aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
+    captureAttemptAggregation(attempt, aggregation);
+  }
   const { dailyByDt, sessionsByDt, sessionHomeDt } = aggregation;
 
   if (dailyByDt.size === 0) {
     // Persist the no-backfill floor even when there is no aggregate to upload.
+    attempt.stage = 'cursor-write';
     writeCursor(cursorPath, {
       lastId: currentLastId,
       seq: pruneSeqBeforeFloor(cursor.seq, cutoffDt),
@@ -1434,7 +1549,10 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
       const accessToken = await getAccessToken(credentials);
       return uploadToGcs(b, name, body, accessToken);
     });
+    attempt.stage = 'upload';
     await upload(bucket, objectName, payload);
+    attempt.files++;
+    attempt.rows += 1 + dtSessions.size;
     uploadedFiles++;
     uploadedRows += 1 + dtSessions.size;
     uploadedDts.push(dt);
@@ -1442,6 +1560,7 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
     // #3: per-date checkpoint bound to current snapshot
     completedDts.add(dt);
     // Persist cutoffDt so the permanent no-backfill promise survives checkpoints.
+    attempt.stage = 'cursor-write';
     writeCursor(cursorPath, {
       lastId: cursor.lastId,
       seq: pruneSeqBeforeFloor(seq, cutoffDt),
@@ -1455,6 +1574,7 @@ async function flushLocked(home, bucket, uploaderAtEntry) {
 
   // All dates uploaded — advance lastId to current tail, clear completedDts
   // Persist cutoffDt so the permanent no-backfill promise survives cursor advance.
+  attempt.stage = 'cursor-write';
   writeCursor(cursorPath, {
     lastId: currentLastId,
     seq: pruneSeqBeforeFloor(seq, cutoffDt),
@@ -1617,6 +1737,14 @@ module.exports = {
   configDirsRefusal,
   exportSuppressionReason,
   exportStatus,
+  exportConfigHash,
+  exportConfigObject,
+  acquireLock,
+  isContention,
+  writeCursor,
+  enrollmentPath,
+  utcDateOf,
+  FLOOR_VERSION,
   readExportCursorFacts,
   startExportSync,
   stopExportSync,

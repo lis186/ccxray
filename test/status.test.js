@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -52,6 +53,10 @@ function machineJson(stdout) {
   return JSON.parse(line.slice('Machine: '.length));
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function runStatusSync(env) {
   return spawnSync(process.execPath, [SERVER_SCRIPT, 'status'], {
     env,
@@ -81,6 +86,49 @@ function runStatus(env) {
   });
 }
 
+function isolatedStatusEnv(home, overrides = {}) {
+  const env = { ...process.env };
+  for (const key of [
+    'ANTHROPIC_BASE_URL', 'CCXRAY_HUB_CLIENT_PID', 'CCXRAY_EXPORT_GCS_BUCKET',
+    'CCXRAY_EXPORT_GCS_KEY_FILE', 'CCXRAY_EXPORT_GCS_PREFIX', 'CCXRAY_EXPORT_DOMAINS',
+    'CCXRAY_EXPORT_CONFIG_DIRS', 'CCXRAY_EXPORT_CWD_ALLOWLIST', 'CCXRAY_USER_EMAIL',
+    'CCXRAY_AGENT_ID', 'CCXRAY_TEAM', 'GOOGLE_APPLICATION_CREDENTIALS',
+  ]) delete env[key];
+  Object.assign(env, {
+    HOME: home,
+    CCXRAY_HOME: home,
+    LOGS_DIR: path.join(home, 'logs'),
+    CLOUDSDK_CONFIG: path.join(home, 'gcloud'),
+    CCXRAY_EXPORT_DISABLE: '1',
+    CCXRAY_IMPORT_DISABLE: '1',
+    PROXY_PORT: '1',
+    ...overrides,
+  });
+  fs.mkdirSync(env.LOGS_DIR, { recursive: true });
+  fs.mkdirSync(env.CLOUDSDK_CONFIG, { recursive: true });
+  const indexPath = path.join(env.LOGS_DIR, 'index.ndjson');
+  if (!fs.existsSync(indexPath)) fs.writeFileSync(indexPath, '');
+  return env;
+}
+
+function configHashForStatusEnv(env) {
+  const modulePath = path.resolve(__dirname, '..', 'server', 'export-sync.js');
+  const script = `process.stdout.write(require(${JSON.stringify(modulePath)}).exportConfigHash(process.env));`;
+  const result = spawnSync(process.execPath, ['-e', script], {
+    env,
+    encoding: 'utf8',
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+function writeStatusHubLock(home, { pid = process.pid, port, sockPath }) {
+  fs.writeFileSync(path.join(home, 'hub.json'), JSON.stringify({
+    pid, port, version: 'fixture', ...(sockPath ? { sockPath } : {}),
+  }));
+}
+
 describe('ccxray status process level', () => {
   it('D1: iterates every exportState/reason surface value explicitly', () => {
     const rows = [
@@ -103,6 +151,19 @@ describe('ccxray status process level', () => {
       if (exportReason) assert.match(outputs[index], new RegExp(`exportReason=${exportReason}`));
     }
     assert.match(outputs[0], /exportState=unconfigured/, 'unconfigured must be stated, not silently omitted');
+  });
+
+  it('renders only the optional short config hash from a hub report', () => {
+    const fullHash = 'b'.repeat(64);
+    const output = renderProcessStatus({
+      exportState: 'enabled',
+      exportReason: null,
+      configWarnings: [],
+      exportConfigHash: fullHash,
+      identity: { kind: 'hub', pid: 1, port: 5990, home: '/h', logsDir: '/l' },
+    });
+    assert.match(output, /hash=bbbbbbbbbbbb/);
+    assert.doesNotMatch(output, new RegExp(fullHash));
   });
 
   it('D1c: renders the #633 credential stages when reported and omits them when the report predates them', () => {
@@ -421,14 +482,228 @@ describe('ccxray status home level', () => {
         'unreachable process state must not fabricate a never-flushed claim');
       assert.doesNotMatch(result.stdout, /exportState=enabled/);
       assert.match(result.stdout, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(result.stdout, /^Shell: .*hash=[a-f0-9]{64} — this shell's environment/m);
+      assert.match(result.stdout, /^Config: unknown — no reachable exporter$/m);
+      assert.match(result.stdout, /^Durable: .* \(from this shell — no exporter named a home\)/m);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
       fs.rmSync(otherHome, { recursive: true, force: true });
     }
   });
+
+  it('D5b: durable removal stays visible when the last attempt is an older success', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-removed-'));
+    try {
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+      fs.writeFileSync(path.join(home, 'export-enrollment.json'), JSON.stringify({
+        state: 'removed', enrolledAt: '2026-10-01T00:00:00.000Z', retentionDays: 30,
+      }));
+      fs.writeFileSync(path.join(home, 'export-last.json'), JSON.stringify({
+        attemptedAt: '2026-10-01T00:00:00.000Z', outcome: 'exported',
+        lastSuccessAt: '2026-10-01T00:00:00.000Z', files: 1, rows: 2,
+      }));
+      const result = runStatusSync({
+        ...process.env,
+        CCXRAY_HOME: home,
+        LOGS_DIR: path.join(home, 'logs'),
+        CCXRAY_EXPORT_DISABLE: '1',
+        CCXRAY_EXPORT_GCS_BUCKET: undefined,
+        CCXRAY_EXPORT_GCS_KEY_FILE: undefined,
+        CLOUDSDK_CONFIG: path.join(home, 'empty-gcloud'),
+        PROXY_PORT: '1',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /^Durable: .*enrollment=removed .*outcome=exported/m);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('ccxray status socket surface', () => {
+  it('D7: actual status compares hub hashes and reads diagnostics from hub-named storage', async () => {
+    const readerHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-hash-reader-'));
+    const reportedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-hash-hub-'));
+    const logsDir = path.join(reportedHome, 'reported-logs');
+    const socketPath = path.join(readerHome, 'status.sock');
+    fs.mkdirSync(logsDir, { recursive: true });
+    fs.writeFileSync(path.join(logsDir, 'index.ndjson'), '');
+    fs.writeFileSync(path.join(reportedHome, 'export-enrollment.json'), JSON.stringify({
+      state: 'enrolled', enrolledAt: '2026-10-01T00:00:00.000Z', retentionDays: 30,
+    }));
+
+    let currentReport;
+    const server = net.createServer(socket => {
+      let input = '';
+      socket.on('data', chunk => {
+        input += chunk;
+        if (!input.includes('\n')) return;
+        const request = JSON.parse(input);
+        const payload = request.cmd === 'health' ? { ok: true } : currentReport;
+        socket.end(JSON.stringify(payload) + '\n');
+      });
+    });
+
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(socketPath, resolve);
+      });
+
+      const shellEnv = isolatedStatusEnv(readerHome, { CCXRAY_EXPORT_GCS_BUCKET: 'shell-bucket' });
+      const equalHubHash = configHashForStatusEnv(shellEnv);
+      const differentHubEnv = { ...shellEnv, CCXRAY_EXPORT_GCS_BUCKET: 'hub-bucket' };
+      const differentHubHash = configHashForStatusEnv(differentHubEnv);
+      assert.notEqual(equalHubHash, differentHubHash);
+
+      for (const scenario of [
+        { hash: equalHubHash, line: 'Config: equal' },
+        { hash: differentHubHash, line: 'Config: DIFFERS — close every ccxray session and start again' },
+      ]) {
+        currentReport = {
+          app: 'ccxray', port: 5997, pid: 4312, version: '2.3.1', uptime: 9,
+          exportState: 'suppressed', exportReason: 'explicitly-disabled',
+          exportConfigHash: scenario.hash,
+          identity: { kind: 'hub', pid: 4312, port: 5997, home: reportedHome, logsDir },
+          clients: [],
+        };
+        writeStatusHubLock(readerHome, { port: 5997, sockPath: socketPath });
+        const result = await runStatus(shellEnv);
+        assert.equal(result.status, 0, result.stderr);
+        assert.ok(result.stdout.split(/\r?\n/).includes(scenario.line), result.stdout);
+        assert.match(result.stdout, new RegExp(`^Durable: ${escapeRegExp(reportedHome)} \\(named by hub\\) — enrollment=enrolled`, 'm'));
+        assert.doesNotMatch(result.stdout, new RegExp(`^Durable: ${escapeRegExp(readerHome)}`, 'm'));
+      }
+    } finally {
+      await new Promise(resolve => server.close(resolve));
+      fs.rmSync(readerHome, { recursive: true, force: true });
+      fs.rmSync(reportedHome, { recursive: true, force: true });
+    }
+  });
+
+  it('D8: dead-lockfile and unresponsive status branches exit 1 and still print diagnostics', async () => {
+    const deadHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-dead-home-'));
+    try {
+      const env = isolatedStatusEnv(deadHome);
+      writeStatusHubLock(deadHome, { pid: 2_147_000_000, port: 5998 });
+      const result = runStatusSync(env);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stdout, /Hub lockfile exists but process is dead/);
+      assert.match(result.stdout, /^Config: unknown — no reachable exporter$/m);
+      assert.match(result.stdout, new RegExp(`^Durable: ${escapeRegExp(deadHome)} \\(from this shell`, 'm'));
+      assert.equal(fs.existsSync(path.join(deadHome, 'hub.json')), false);
+    } finally {
+      fs.rmSync(deadHome, { recursive: true, force: true });
+    }
+
+    for (const transport of ['socket', 'http']) {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), `ccxray-status-${transport}-unresponsive-`));
+      let server;
+      let socketPath;
+      try {
+        const env = isolatedStatusEnv(home);
+        let port;
+        if (transport === 'socket') {
+          socketPath = path.join(home, 'unresponsive.sock');
+          server = net.createServer(socket => {
+            let input = '';
+            socket.on('data', chunk => {
+              input += chunk;
+              if (!input.includes('\n')) return;
+              const request = JSON.parse(input);
+              if (request.cmd === 'health') socket.end('{"ok":false}\n');
+            });
+          });
+          await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(socketPath, resolve);
+          });
+          port = 5999;
+        } else {
+          server = http.createServer((req, res) => res.end('{"ok":false}'));
+          await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolve);
+          });
+          port = server.address().port;
+        }
+
+        writeStatusHubLock(home, { port, sockPath: socketPath });
+        const result = await runStatus(env);
+        assert.equal(result.status, 1, result.stderr);
+        if (transport === 'socket') {
+          assert.match(result.stdout, new RegExp(`^Hub pid ${process.pid} alive but socket not responding\\.$`, 'm'));
+        } else {
+          assert.match(result.stdout, new RegExp(`^Hub pid ${process.pid} alive but not responding on port ${port}\\.$`, 'm'));
+        }
+        assert.ok(result.stdout.split(/\r?\n/).includes(`Check ${path.join(home, 'hub.log')}`), result.stdout);
+        assert.match(result.stdout, /^Config: unknown — no reachable exporter$/m);
+        assert.match(result.stdout, new RegExp(`^Durable: ${escapeRegExp(home)} \\(from this shell`, 'm'));
+      } finally {
+        if (server?.listening) await new Promise(resolve => server.close(resolve));
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('D9: preserves 62fcf05 wording for silent HTTP health timeout', async () => {
+    const httpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-silent-health-'));
+    const silentServer = http.createServer(() => {});
+    try {
+      const env = isolatedStatusEnv(httpHome);
+      await new Promise((resolve, reject) => {
+        silentServer.once('error', reject);
+        silentServer.listen(0, '127.0.0.1', resolve);
+      });
+      const port = silentServer.address().port;
+      writeStatusHubLock(httpHome, { port });
+
+      const result = await runStatus(env);
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stdout.split(/\r?\n/).includes(
+        `Hub pid ${process.pid} alive but not responding on port ${port}.`,
+      ), result.stdout);
+      assert.ok(result.stdout.split(/\r?\n/).includes(`Check ${path.join(httpHome, 'hub.log')}`), result.stdout);
+      assert.ok(result.stdout.indexOf(`Check ${path.join(httpHome, 'hub.log')}`)
+        < result.stdout.indexOf('Shell: '), 'diagnostics must follow the legacy status messages');
+    } finally {
+      if (silentServer.listening) await new Promise(resolve => silentServer.close(resolve));
+      fs.rmSync(httpHome, { recursive: true, force: true });
+    }
+  });
+
+  it('D10: preserves the original socket refusal message and path from 62fcf05', async () => {
+    const socketHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-socket-refusal-'));
+    let listener;
+    try {
+      const env = isolatedStatusEnv(socketHome);
+      const sockPath = path.join(socketHome, 'refused.sock');
+      listener = spawn(process.execPath, ['-e',
+        "const net = require('node:net'); net.createServer().listen(process.env.SOCK_PATH, () => process.stdout.write('ready'));",
+      ], { env: { ...env, SOCK_PATH: sockPath }, stdio: ['ignore', 'pipe', 'inherit'] });
+      await new Promise((resolve, reject) => {
+        listener.once('error', reject);
+        listener.stdout.once('data', resolve);
+      });
+      listener.kill('SIGKILL');
+      await new Promise(resolve => listener.once('exit', resolve));
+      assert.equal(fs.existsSync(sockPath), true, 'the closed socket inode must remain for ECONNREFUSED');
+      writeStatusHubLock(socketHome, { port: 5999, sockPath });
+      const result = await runStatus(env);
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stderr.split(/\r?\n/).includes(
+        `Failed to query hub: connect ECONNREFUSED ${sockPath}`,
+      ), result.stderr);
+      assert.match(result.stdout, /^Shell: /m, 'new diagnostics must still be appended');
+      assert.ok(result.stdout.indexOf('Home: ') < result.stdout.indexOf('Shell: '),
+        'diagnostics must follow the legacy status messages');
+    } finally {
+      if (listener && listener.exitCode === null && listener.signalCode === null) listener.kill('SIGKILL');
+      fs.rmSync(socketHome, { recursive: true, force: true });
+    }
+  });
+
   it('D6: parses Machine JSON and includes the reporting pid', async t => {
     const readerHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-reader-'));
     const reportedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-reported-'));
@@ -488,6 +763,9 @@ describe('ccxray status socket surface', () => {
       assert.match(result.stdout, new RegExp(reportedHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       assert.match(result.stdout, /Home: .*current/);
       assert.doesNotMatch(result.stdout, /exporter state unavailable/);
+      assert.match(result.stdout, /^Config: unknown — no reachable exporter$/m,
+        'an older hub report without a hash must stay unknown');
+      assert.match(result.stdout, new RegExp(`^Durable: .*${reportedHome.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\(named by hub\\)`, 'm'));
     } finally {
       await new Promise(resolve => server.close(resolve));
       fs.rmSync(readerHome, { recursive: true, force: true });

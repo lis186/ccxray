@@ -11,6 +11,12 @@ const ENV_KEYS = [
   'NODE_TEST_CONTEXT',
   'CCXRAY_EXPORT_CONFIG_DIRS',
   'CCXRAY_EXPORT_GCS_BUCKET',
+  'CCXRAY_EXPORT_GCS_PREFIX',
+  'CCXRAY_EXPORT_CWD_ALLOWLIST',
+  'CCXRAY_USER_EMAIL',
+  'CCXRAY_AGENT_ID',
+  'CCXRAY_TEAM',
+  'LOG_RETENTION_DAYS',
   'CCXRAY_IMPORT_HOMES',
   'CCXRAY_IMPORT_CODEX_HOMES',
   'CCXRAY_HOME',
@@ -164,8 +170,12 @@ describe('hub-owned export/config status', () => {
       for (const mode of launchModes) {
         hub.setLaunchSignals(mode.signals);
         await withEnv(ambientIdentity, () => {
-          const identity = hub.assembleExportReport(mode.env).identity;
+          const report = hub.assembleExportReport(mode.env);
+          const identity = report.identity;
           assert.equal(identity.kind, mode.expected, mode.name);
+          assert.equal(report.exportConfigHash,
+            mode.expected === 'client' ? null : exportSync.exportConfigHash(mode.env),
+            `${mode.name}: only a non-client process owns the reported hash`);
           assert.deepEqual(
             { home: identity.home, logsDir: identity.logsDir },
             mode.expectedIdentity,
@@ -254,6 +264,7 @@ describe('hub-owned export/config status', () => {
         exportState: null,
         exportReason: null,
         configWarnings: [],
+        exportConfigHash: null,
         credential: null,
         identity: {
           kind: 'client',
@@ -322,6 +333,8 @@ describe('hub-owned export/config status', () => {
 
         assert.equal(assembled.exportState, state.expected.exportState, `${state.name}: assembler state`);
         assert.equal(assembled.exportReason, state.expected.exportReason, `${state.name}: assembler reason`);
+        assert.equal(assembled.exportConfigHash, exportSync.exportConfigHash(process.env),
+          `${state.name}: the real hub report carries its config fingerprint`);
         if (state.expected.exportState === 'enabled') {
           assert.equal(assembled.credential.discovery.state, 'none', `${state.name}: enabled reports the (empty) discovered credential`);
           assert.equal('path' in assembled.credential, false, `${state.name}: report carries no credential path`);

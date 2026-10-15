@@ -87,6 +87,37 @@ exporter yet. Error output names the category only — never the upstream
 response body, which would carry the OAuth client, the principal, or the
 bucket.
 
+## Reading `ccxray status`
+
+The export diagnostics are split across three lines because they describe three
+different sources:
+
+- `Shell:` is the environment of the process running `ccxray status`. It is not
+  the environment of a detached hub. Its `hash=` value is a SHA-256 fingerprint
+  of the enumerated export settings; it does not prove that credentials work,
+  storage matches, enrollment is valid, or uploads are healthy.
+- `Config:` compares that shell fingerprint with the hash reported by the
+  running hub. `equal` means the enumerated settings match. `DIFFERS` prints
+  “close every ccxray session and start again” because the hub keeps the
+  environment it inherited when it started. `unknown` means no reachable hub
+  reported a hash; it is never inferred from the shell alone.
+- `Durable:` reads enrollment, cursor, the last attempt, lock-loss history,
+  and fail-open history from the storage home. When a hub names both its home
+  and logs directory, those paths are authoritative and the line says
+  `named by hub`; otherwise it reads the invoking shell's paths and says
+  `from this shell`.
+
+`enrollment=removed` comes from the durable removal marker, even if the last
+attempt record is an older successful export. `enrollment=invalid` includes
+the stored reason and detail so a malformed or unreadable marker remains
+visible. On a failed attempt, `[stage/category]` identifies the last exporter
+step entered and a safe category label: `enrollment`, `enrollment-write`,
+`cursor-read`, `cursor-write`, `index-read`, `aggregate`, or `upload`, plus
+credential-specific stages such as `token` or `authorization`. The detail is
+never an exception message or upstream response body. A failure before
+aggregation leaves its aggregate counts unavailable; uploaded `files` and
+`rows` count only uploads that completed successfully.
+
 ## Isolating a drill or canary run
 
 When testing with a separate `CCXRAY_HOME`, the startup importer still scans

@@ -2,13 +2,14 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 
 const SERVER = path.resolve(__dirname, '..', 'server', 'index.js');
+const LEGACY_HUB_CONSUMER = path.resolve(__dirname, 'fixtures', 'legacy-hub-consumer.js');
 const CONFIG_DIRS_REFUSAL = '[ccxray export] CCXRAY_EXPORT_CONFIG_DIRS is set but was never implemented — it filtered nothing. Export is disabled until you unset it. ccxray cannot separate accounts or config directories; see docs/export-onboarding.md';
 
 function freePort() {
@@ -113,7 +114,7 @@ function makeFakeClaude(home) {
   return binDir;
 }
 
-function clientEnv({ home, binDir, port, marker, importHomes }) {
+function clientEnv({ home, binDir, port, marker, importHomes, extraEnv = {} }) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) {
     if (key.startsWith('CCXRAY_')) delete env[key];
@@ -141,6 +142,7 @@ function clientEnv({ home, binDir, port, marker, importHomes }) {
     ...(importHomes === undefined ? {} : { CCXRAY_IMPORT_HOMES: importHomes }),
     PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}`,
     PROXY_PORT: String(port),
+    ...extraEnv,
   };
 }
 
@@ -259,7 +261,7 @@ async function assertPidGone(pid, label) {
   }
 }
 
-async function runDivergence({ badFirst }) {
+async function runDivergence({ badFirst, secondEnv = {} }) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-owned-status-e2e-'));
   const firstMarker = path.join(home, 'first-agent.pid');
   const secondMarker = path.join(home, 'second-agent.pid');
@@ -304,6 +306,7 @@ async function runDivergence({ badFirst }) {
       port,
       marker: secondMarker,
       importHomes: badFirst ? undefined : badValue,
+      extraEnv: secondEnv,
     });
     clients.push(second);
     const secondReady = await waitForRegisteredClient(home, second.child.pid);
@@ -350,6 +353,51 @@ async function runDivergence({ badFirst }) {
 }
 
 describe('hub-owned config status divergence', () => {
+  it('runs a frozen legacy consumer against current registration and status replies', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-legacy-hub-consumer-'));
+    const marker = path.join(home, 'agent.pid');
+    let client;
+    let hubPid = null;
+    try {
+      fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
+      fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+      const binDir = makeFakeClaude(home);
+      const port = await freePort();
+      client = spawnClient({ home, binDir, port, marker });
+      const active = await waitForRegisteredClient(home, client.child.pid);
+      hubPid = active.lock.pid;
+      await waitForFakeAgent(client, marker);
+
+      const consumerEnv = clientEnv({ home, binDir, port, marker });
+      const consumer = spawnSync(process.execPath, [LEGACY_HUB_CONSUMER], {
+        env: consumerEnv,
+        encoding: 'utf8',
+        timeout: 5000,
+      });
+      assert.equal(consumer.status, 0, consumer.stderr);
+      const observation = JSON.parse(consumer.stdout);
+      assert.equal(observation.legacyOperationsSucceeded, true);
+      assert.equal(observation.additiveHashPresentOnRegistration, true);
+      assert.equal(observation.additiveHashPresentOnStatus, true);
+
+      const currentStatus = await hubStatus(active.lock);
+      assert.equal(typeof currentStatus.exportConfigHash, 'string');
+      assert.ok(currentStatus.clients.some(item => item.pid === client.child.pid));
+    } finally {
+      const cleanupErrors = [];
+      if (client) {
+        try { await stopClient(client, marker); } catch (error) { cleanupErrors.push(error); }
+      }
+      const lock = readHubLock(home);
+      if (!hubPid && lock) hubPid = lock.pid;
+      try { await killAndConfirm(hubPid, 'hub'); } catch (error) { cleanupErrors.push(error); }
+      fs.rmSync(home, { recursive: true, force: true });
+      if (cleanupErrors.length) {
+        throw new Error('process cleanup failed: ' + cleanupErrors.map(error => error.message).join(' | '));
+      }
+    }
+  });
+
   it('row 6: shows a bad hub warning to a clean attaching client', async () => {
     const result = await runDivergence({ badFirst: true });
     const output = result.second.stdout;
@@ -390,6 +438,34 @@ describe('hub-owned config status divergence', () => {
       `row 7 must name the hub home ${result.home}; stdout:\n${output}`);
     assert.ok(output.includes(`"logsDir":"${path.join(result.home, 'logs')}"`),
       `row 7 must name the hub logs directory; stdout:\n${output}`);
+  });
+
+  it("warns once when the attaching client's export settings differ and still launches it proxied", async () => {
+    const result = await runDivergence({
+      badFirst: false,
+      secondEnv: { CCXRAY_EXPORT_GCS_BUCKET: 'client-only-synthetic-bucket' },
+    });
+    const warning = `[ccxray] export settings differ from the running hub (pid ${result.hubPid}) — close every ccxray session and start again`;
+    assert.equal(result.second.stdout.split(warning).length - 1, 1,
+      `one attach warning must be printed; stdout:\n${result.second.stdout}`);
+    assert.ok(result.second.stdout.includes('CCXRAY_FAKE_AGENT_READY'),
+      `the mismatch is diagnostic only; the agent must still launch proxied. stdout:\n${result.second.stdout}`);
+  });
+
+  it('does not warn when the attaching client differs only by LOGS_DIR', async () => {
+    const clientLogs = path.join(os.tmpdir(), `ccxray-client-logs-${process.pid}`);
+    try {
+      const result = await runDivergence({
+        badFirst: false,
+        secondEnv: { LOGS_DIR: clientLogs },
+      });
+      assert.doesNotMatch(result.second.stdout, /export settings differ from the running hub/,
+        `LOGS_DIR is intentionally outside the fingerprint; stdout:\n${result.second.stdout}`);
+      assert.ok(result.second.stdout.includes('CCXRAY_FAKE_AGENT_READY'),
+        `the client must still launch proxied. stdout:\n${result.second.stdout}`);
+    } finally {
+      fs.rmSync(clientLogs, { recursive: true, force: true });
+    }
   });
 
   it('row 2: local agent-port refusal reaches stdout, while clean env stays silent', async () => {
