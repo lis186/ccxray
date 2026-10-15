@@ -100,7 +100,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/cost-worker.js` | Child process: scans `~/.claude/` JSONL files without blocking event loop |
 | `server/store.js` | In-memory state: entries[] (capped at MAX_ENTRIES), sseClients[], sessions, intercept, versionIndex (keyed by `agentKey::coreHash`). Session detection with subagent inference (inflight + temporal heuristic) |
 | `server/sse-broadcast.js` | SSE broadcast to dashboard clients, entry summarization |
-| `server/helpers.js` | Tokenization, context breakdown, SSE parsing, formatting |
+| `server/helpers.js` | Tokenization, context breakdown, SSE parsing, formatting. OpenAI-wire tool extraction: `OPENAI_TOOL_CALL_TYPES` is the one item-type predicate shared by `extractOpenAIToolCalls` (counts) and `extractOpenAIToolCallIds` (call-id map) — add a new item type there, not in one extractor. Gateway MCP names (Codex `exec` input, Grok `use_tool` `tool_name`) are extracted by the counts path only (#577) |
 | `server/system-prompt.js` | KNOWN_AGENTS registry, agent type detection, B2 block splitting, unified diff |
 | `server/restore.js` | Startup log restoration, lazy-load req/res from disk, delta chain reconstruction |
 | `server/forward.js` | HTTP/HTTPS proxy to Anthropic, SSE capture, response logging, proxyRes error handling |
