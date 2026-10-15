@@ -256,14 +256,14 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
   };
   // A worker run is whole, so no Ask window narrows its transcript turns. Each
   // is placed as an index turn at its cwd and time would be (E1, E2): a host
-  // that worked in a clone for a while is a worker only there. From the start
-  // of the index read on.
+  // that worked in a clone for a while is a worker only there. Only the span
+  // the index was read for, [from, now), is compared.
   const workerPending = run => {
     const out = { twins: 0, missing: 0 };
     for (const sid of new Set(run.turns.map(e => e.sessionId))) {
       for (const x of workerTranscriptTurns.get(sid) || []) {
         if (workers.ownerOf(sid, x.at, x.cwd, x.native) !== run.id) continue;
-        if (x.at < from || importedIds.has(x.id)) continue;
+        if (x.at < from || x.at >= now || importedIds.has(x.id)) continue;
         if (proxiedIds.has(x.id)) out.twins++;
         else if (!indexed.has(x.id)) out.missing++;
       }

@@ -301,6 +301,24 @@ describe('PR #646 report regressions', () => {
     assert.deepEqual([label('A-001'), label('A-002')], [['complete'], ['complete']]);
   });
 
+  it('compares a worker\'s transcript turns only up to the report time, as the index is read', async () => {
+    const { buildReport } = require('../server/agentflow/report');
+    const ctx = setup('worker-cutoff');
+    const clone = path.join(ctx.base, 'agentflow-external-runner-cut', 'clone');
+    writeDispatch(ctx, '.', 'A-001', clone, 20, 60);
+    const worker = sid(14);
+    const said = (uuid, s, id) => ({ type: 'assistant', uuid, sessionId: worker, cwd: clone, timestamp: iso(s), message: { id, role: 'assistant', content: [{ type: 'text', text: 'work' }] } });
+    // msg-late was written after the report time: the index was not read for it.
+    fs.writeFileSync(path.join(claudeProject(ctx, clone), `${worker}.jsonl`),
+      [said('1', 25, 'msg-1'), said('2', 50, 'msg-late')].map(e => JSON.stringify(e)).join('\n') + '\n');
+    const row = { sessionId: worker, provider: 'anthropic', model: 'claude-test', cwd: clone, receivedAt: at(25), responseId: 'msg-1', usage: { input_tokens: 1 }, cost: { cost: 1, confidence: 'exact' } };
+    writeIndex(ctx, [{ ...row, id: 'p' }, { ...row, id: 'i', imported: true, importSource: 'claude-code' }]);
+    const r = await buildReport({ notebook: path.join(ctx.repo, '.agentflow', 'devlog.md'), now: at(45), logsDir: path.join(ctx.home, 'logs'),
+      roots: { claudeDirs: [ctx.claude], codexDirs: [ctx.codex] }, originOf: () => null });
+    const external = r.asks.find(a => a.id === 'A-001').executors.filter(x => x.kind === 'external');
+    assert.deepEqual(external.map(x => x.completeness), ['complete']);
+  });
+
   it('compares a worker\'s own transcript turns with its clone, not with where its subagents ran', () => {
     const ctx = setup('worker-subagent-cwd');
     const clone = path.join(ctx.base, 'agentflow-external-runner-sub', 'clone');
