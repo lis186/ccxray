@@ -45,6 +45,8 @@ WebSocket traffic.
 
 ## How to add a module
 
+Every module id must also be added to `BOOTSTRAP_AGENTS` in `server/plain-launch.js`, the bootstrap fail-open list that cannot require `providers.js`; `test/plain-launch.test.js` fails until it matches `AGENT_PROVIDERS`.
+
 ### A. Anthropic Messages CLI
 
 1. Add `AGENT_PROVIDERS.<id>` with `upstream: 'anthropic'` and `createLaunch` setting the base URL env the CLI reads.

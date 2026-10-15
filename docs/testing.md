@@ -69,6 +69,27 @@ loopback range so every retry fails. The separate orphan-hub test launches the
 real server in `--hub-mode` and verifies its readiness lock is removed when the
 process exits.
 
+`test/bootstrap-fail-open.e2e.test.js` covers the pre-`launchDecision` window:
+it sets `STORAGE_BACKEND=s3` (a deterministic load-time throw from
+`config.js`) in the child env, with a throwaway `CCXRAY_HOME`, a fake POSIX
+`claude` in a temporary `bin/`, and `PROXY_PORT` pinned away from 5577 — the
+throw happens before any listen, so no port is bound. It also sets
+`CCXRAY_IMPORT_DISABLE=1` so a future change that stops the throw cannot scan
+the real transcripts. Its signal cases send SIGINT/SIGTERM/SIGHUP to the
+launcher and wait for the fake agent's own exit. The second-agent case preloads
+a script (`node --require`) into the launcher that throws once the fake agent is
+running; the preload lives in the throwaway home. A second describe drops
+`STORAGE_BACKEND` and uses the same preload technique on the normal path: it
+makes `resolveCcxrayHome` throw only when called under `logFailOpen`, and runs
+`claude --bg` (the bg-bypass fail-open, no server start). The file is skipped on
+Windows.
+
+`test/plain-launch.test.js` is pure except one child `node -e` that loads
+`server/plain-launch.js` and lists `require.cache`, pinning its load closure. Its
+`parseGlobalFlags` cases are a differential test against a verbatim copy of the
+pre-refactor splice in `server/index.js`; keep the oracle frozen — it is the
+evidence that the refactor did not change flag semantics.
+
 `test/win-launch.test.js` tests Windows PATH/PATHEXT policy on every platform
 with an injected `path.win32` and case-insensitive fake filesystem. Its actual
 Windows process test passes a plain `{Path, PATH}` env object through both
