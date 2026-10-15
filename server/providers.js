@@ -140,7 +140,7 @@ function withCodexConfig(configArgs, args) {
 function appendAnthropicCustomHeader(launchEnv, header) {
   const existing = launchEnv.ANTHROPIC_CUSTOM_HEADERS;
   launchEnv.ANTHROPIC_CUSTOM_HEADERS = existing
-    ? `${existing}, ${header}`
+    ? `${existing}\n${header}`
     : header;
 }
 
