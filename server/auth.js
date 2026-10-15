@@ -322,7 +322,7 @@ function redeemBootstrap(req, res) {
 // without the bootstrap dance), or `Authorization: Bearer <AUTH_TOKEN>`
 // (permanent dashboard credential per spec). 'chatgpt-oauth' is deliberately
 // NOT accepted: codex markers are not a dashboard credential.
-function _isDashboardAuthenticated(req) {
+function isDashboardAuthenticated(req) {
   if (isLoopbackBypass(req)) return true;
   const cookieValue = _readSessionCookie(req);
   if (cookieValue && _verifySessionCookieValue(cookieValue)) return true;
@@ -335,7 +335,7 @@ function _isDashboardAuthenticated(req) {
 }
 
 function authStatus(req, res) {
-  if (_isDashboardAuthenticated(req)) {
+  if (isDashboardAuthenticated(req)) {
     _send(res, 200, { ok: true });
   } else {
     _send(res, 401, { error: 'no_session' });
@@ -343,7 +343,7 @@ function authStatus(req, res) {
 }
 
 function verifyDashboard(req, res) {
-  if (!_isDashboardAuthenticated(req)) {
+  if (!isDashboardAuthenticated(req)) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       error: 'unauthorized',
@@ -468,6 +468,9 @@ module.exports = {
   compareSecret,
   // Two-domain dispatcher + gates
   dispatch,
+  // Pure dashboard-gate predicate for early routes that must remain public
+  // but may include optional data only for already-trusted callers.
+  isDashboardAuthenticated,
   verifyDashboard,
   verifyUpstream,
   // Shared upstream credential taxonomy (pure header check)

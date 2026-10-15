@@ -191,7 +191,7 @@ function describeHomeState(report, cursor, tail, nowMs) {
   return ageMs < (2 * FLUSH_INTERVAL_MS) ? 'behind-pending' : 'behind-overdue';
 }
 
-function renderDetermination(paths, cursor, nowMs) {
+function renderDetermination(paths, cursor, nowMs, unavailableReason) {
   let cursorDetail;
   if (cursor.unreadable) {
     cursorDetail = 'cursor unreadable';
@@ -205,7 +205,9 @@ function renderDetermination(paths, cursor, nowMs) {
     const partial = cursor.partial === true ? ' (partial)' : '';
     cursorDetail = `cursor present${partial} — lastId=${lastId}; cursor age ${age}`;
   }
-  return `Home: ${paths.home} — ${cursorDetail}; exporter state unavailable; no exporter process reachable — cannot tell whether export is configured for this home`
+  const reportDetail = unavailableReason
+    || 'no exporter process reachable — cannot tell whether export is configured for this home';
+  return `Home: ${paths.home} — ${cursorDetail}; exporter state unavailable; ${reportDetail}`
     + ` (read cursor ${paths.cursorPath}; index ${paths.indexPath})`;
 }
 
@@ -246,7 +248,7 @@ function inspectHomeStatus(report, options = {}) {
       paths,
       cursor,
       tail,
-      line: renderDetermination(paths, cursor, nowMs),
+      line: renderDetermination(paths, cursor, nowMs, options.unavailableReason),
     };
   }
 

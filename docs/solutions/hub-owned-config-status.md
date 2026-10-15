@@ -587,7 +587,8 @@ from both the tombstone and the root warning at once.
 
 ## 8. Decided in round 2
 
-**`/_api/health` does NOT carry export state (reviewer B).** I had framed row 13 as "more
+**Original round-2 decision, superseded by the amendment below:** `/_api/health` does NOT
+carry export state (reviewer B). I had framed row 13 as "more
 useful versus more honest" and missed the third axis: `configWarnings.args` contains the
 operator's rejected filesystem paths, and `handleHubRoutes` serves `/_api/health`
 unauthenticated (`server/hub.js:584`). Publishing config diagnostics there widens an
@@ -595,6 +596,17 @@ unauthenticated surface to fix a visibility problem. Instead `ccxray status` say
 `hub detected (pid N, port P) — exporter state unavailable`. Admitting what it could not
 determine IS the useful answer; the previous framing treated honesty as the cheaper
 option rather than the correct one.
+
+**Round-2 amendment (2026-10-15):** the public health response remains minimal, but a
+trusted request may now receive the export report. The route uses the same pure
+`isDashboardAuthenticated()` predicate as the dashboard gate, so default loopback trust,
+`CCXRAY_LOOPBACK_REQUIRE_AUTH=1`, and configured dashboard credentials keep one policy.
+An untrusted request receives only `exportReportUnavailableReason:
+"authentication-required"` alongside the existing health identity fields; it receives no
+home, logs path, config warning arguments, or credential display. `ccxray status` uses a
+loopback health probe and gets the report under the default policy. If loopback auth is
+required and the probe has no dashboard credential, status exits normally, says the report
+requires loopback authentication, and inspects only the status caller's own home.
 
 **`docs/wire-protocol-reference.md` does not cover this.** That document is scoped to
 observable differences on the PROVIDER wire (Anthropic Messages, OpenAI Responses); the

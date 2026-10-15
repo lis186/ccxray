@@ -433,7 +433,8 @@ const server = http.createServer((clientReq, clientRes) => {
   hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
-  // Placed before auth: these are local IPC endpoints, not user-facing
+  // Health keeps its small public identity; its optional export report uses
+  // the dashboard trust predicate because the route precedes this auth gate.
   if (hub.handleHubRoutes(clientReq, clientRes)) return;
 
   // ── Auth bootstrap routes (Phase 1.3) ──
@@ -1119,9 +1120,21 @@ if (process.argv[2] === 'status') {
       // is held by something else (e.g. a standalone `ccxray --port 5577`, which
       // writes no lockfile) — a subsequent hub launch will fail on that port.
       const occ = await hub.probePortOccupant(config.PORT, 1000);
+      const probed = occ.report || null;
+      const probedIsCcxray = occ.kind === 'ccxray-standalone' || occ.kind === 'ccxray-hub';
+      const unavailableReason = probedIsCcxray && !probed
+        ? occ.reportUnavailableReason === 'authentication-required'
+          ? 'loopback authentication is required (CCXRAY_LOOPBACK_REQUIRE_AUTH=1); status could not read the export report'
+          : `no discoverable hub; the ccxray holding port ${config.PORT} is older than export reporting`
+        : 'no discoverable hub';
       console.log('No hub running.');
-      console.log(renderProcessStatus(null));
-      console.log(inspectHomeStatus(null, { env: process.env }).line);
+      console.log(renderProcessStatus(probed, unavailableReason));
+      console.log(inspectHomeStatus(probed, {
+        env: process.env,
+        unavailableReason: occ.reportUnavailableReason === 'authentication-required'
+          ? `${unavailableReason}; cannot tell whether export is configured for this home`
+          : undefined,
+      }).line);
       if (occ.kind !== 'free') {
         hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
       }
