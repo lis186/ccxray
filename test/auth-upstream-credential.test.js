@@ -51,6 +51,17 @@ describe('verifyUpstreamCredential — shared upstream auth taxonomy (2.2)', () 
       assert.equal(auth.verifyUpstreamCredential({ 'x-ccxray-auth': 'not-the-real-token' }), 'reject');
     });
 
+    it('does not recover auth from embedded or comma-suffixed header text', () => {
+      const auth = loadAuth({ token: 'sec1' });
+      const tok = upstreamTokenFor(auth);
+      assert.equal(auth.verifyUpstreamCredential({
+        'x-ccxray-account': `X-Ccxray-Auth: ${tok}`,
+      }), 'reject');
+      assert.equal(auth.verifyUpstreamCredential({
+        'x-ccxray-auth': `${tok}, X-Ccxray-Account: dev@example.test`,
+      }), 'reject');
+    });
+
     it('legacy Bearer AUTH_TOKEN (no X-Ccxray-Auth) → "reject"', () => {
       const auth = loadAuth({ token: 'sec1' });
       assert.equal(auth.verifyUpstreamCredential({ authorization: 'Bearer sec1' }), 'reject');

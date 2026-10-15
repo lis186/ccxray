@@ -2935,13 +2935,13 @@ function proxyEnvVars(agent, port, opts = {}) {
       const authToken = opts.skipAuth ? null : upstreamAuthToken(opts.env || process.env);
       const authHeader = authToken ? `X-Ccxray-Auth: ${authToken}` : '';
       const vars = { ANTHROPIC_BASE_URL: base };
-      // Same comma-joined form providers.js uses for this variable — and, like
-      // providers.js, the user's own value is PREPENDED rather than replaced.
+      // Same newline-separated form providers.js uses for this variable — and,
+      // like providers.js, the user's own value is PREPENDED rather than replaced.
       // These become `--env KEY=VALUE` on `herdr tab create`, which overrides
       // the inherited variable outright, so assigning ours dropped an existing
       // `ANTHROPIC_CUSTOM_HEADERS="X-Existing: foo"` on the floor.
       const existing = String((opts.env || process.env).ANTHROPIC_CUSTOM_HEADERS || '').trim();
-      const headers = [existing, agentIdHeader, authHeader].filter(Boolean).join(', ');
+      const headers = [existing, agentIdHeader, authHeader].filter(Boolean).join('\n');
       if (headers) vars.ANTHROPIC_CUSTOM_HEADERS = headers;
       return vars;
     }

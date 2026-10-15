@@ -62,6 +62,8 @@ function pluginEnv(overrides = {}) {
   // so a genuinely hung mock still fails as a spawn timeout rather than hanging.
   env.CCXRAY_HERDR_CMD_TIMEOUT_MS = '10000';
   env.CCXRAY_HOME = isolatedHome();
+  env.HOME = env.CCXRAY_HOME;
+  env.CCXRAY_EXPORT_DISABLE = '1';
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
   // sessionSummaryDetails call sees the child's env, where an unset
   // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects;
@@ -6500,7 +6502,8 @@ describe('codex round 2 fixes', () => {
   };
 
   // `--env KEY=VALUE` on `herdr tab create` OVERRIDES the inherited variable, so
-  // assigning our headers dropped the user's. providers.js prepends; so must we.
+  // assigning our headers dropped the user's. providers.js prepends on its own
+  // line; so must we.
   it('keeps the user own ANTHROPIC_CUSTOM_HEADERS when adding its own', () => {
     const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
     const vars = proxyEnvVars('claude', 5577, {
@@ -6508,22 +6511,25 @@ describe('codex round 2 fixes', () => {
       skipAuth: true,
       env: pluginEnv({ ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo' }),
     });
-    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, /X-Existing: foo/,
-      'the user header must survive');
-    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Agent-Id: herdr:w1:p1/);
-    assert.ok(vars.ANTHROPIC_CUSTOM_HEADERS.indexOf('X-Existing')
-      < vars.ANTHROPIC_CUSTOM_HEADERS.indexOf('X-Ccxray-Agent-Id'),
-      'the user value is prepended, matching server/providers.js');
+    assert.equal(vars.ANTHROPIC_CUSTOM_HEADERS,
+      'X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1',
+      'the user header survives as a separate Claude Code header line');
   });
 
   it('injects X-Ccxray-Auth into a claude launch', () => {
     const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
     const vars = proxyEnvVars('claude', 5577, {
       paneId: 'w1:p1',
-      env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }),
+      env: pluginEnv({
+        CCXRAY_BIN: fakeCcxray(),
+        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
+      }),
     });
-    assert.match(vars.ANTHROPIC_CUSTOM_HEADERS, new RegExp(`X-Ccxray-Auth: ${TOKEN}`),
-      'CCXRAY_LOOPBACK_REQUIRE_AUTH=1 returns 401 without this');
+    assert.deepEqual(vars.ANTHROPIC_CUSTOM_HEADERS.split(/\r?\n/), [
+      'X-Existing: foo',
+      'X-Ccxray-Agent-Id: herdr:w1:p1',
+      `X-Ccxray-Auth: ${TOKEN}`,
+    ], 'Herdr headers stay separate for Claude Code parsing and gated auth');
   });
 
   // Codex carries the credential in a model_providers block, not a header env

@@ -212,7 +212,9 @@ function isolatedEnv(home, overrides = {}, { identity = 'partial' } = {}) {
   const env = {
     ...base,
     ...overrides,
+    HOME: home,
     CCXRAY_HOME: home,
+    CCXRAY_EXPORT_DISABLE: '1',
     // Window resolution reads a package-relative pricing-cache.json that
     // CCXRAY_HOME does not isolate; pin it so a spawned server derives windows
     // from the same input on CI and on a machine that has run ccxray for real.
@@ -457,13 +459,19 @@ function launcherAccountHeader(home) {
     "const providers = require(process.argv[1]); const launch = providers.getAgentLaunch('claude', 1, [], process.env); process.stdout.write(launch.env.ANTHROPIC_CUSTOM_HEADERS || '');",
     path.join(__dirname, '..', 'server', 'providers.js'),
   ], {
-    env: isolatedEnv(home, { CLAUDE_CONFIG_DIR: claudeConfig }),
+    env: isolatedEnv(home, { CLAUDE_CONFIG_DIR: claudeConfig, HOME: home }),
     encoding: 'utf8',
   });
   assert.equal(launcher.status, 0, `launcher failed: ${launcher.stderr}`);
-  const accountHeader = launcher.stdout.split(', ').find(header => header.startsWith('X-Ccxray-Account: '));
-  assert.equal(accountHeader, 'X-Ccxray-Account: Dev@Example.com');
-  return accountHeader;
+  const headers = {};
+  for (const line of launcher.stdout.split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon < 0) continue;
+    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  assert.equal(headers['x-ccxray-account'], 'Dev@Example.com');
+  assert.ok(headers['x-ccxray-auth'], 'the launcher auth header must be its own parsed line');
+  return `X-Ccxray-Account: ${headers['x-ccxray-account']}`;
 }
 
 function postResponses(port, body) {

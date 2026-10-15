@@ -7,6 +7,19 @@ const fs = require('fs');
 const os = require('os');
 const crypto = require('crypto');
 
+// Claude Code reads ANTHROPIC_CUSTOM_HEADERS one line at a time, splitting
+// each line at its first colon. Keep this test oracle independent of ccxray's
+// launch implementation.
+function parseClaudeCustomHeaders(value) {
+  const headers = {};
+  for (const line of String(value || '').split(/\r?\n/)) {
+    const colon = line.indexOf(':');
+    if (colon < 0) continue;
+    headers[line.slice(0, colon).trim().toLowerCase()] = line.slice(colon + 1).trim();
+  }
+  return headers;
+}
+
 describe('auth launcher header injection (1.4a)', () => {
   let tmpHome;
   let originalEnv;
@@ -64,13 +77,17 @@ describe('auth launcher header injection (1.4a)', () => {
       const launch = providers.getAgentLaunch('claude', 5577, [], {
         PATH: '/usr/bin',
         CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
-        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
+        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1',
       });
 
       assert.equal(
         launch.env.ANTHROPIC_CUSTOM_HEADERS,
-        `X-Existing: foo, X-Ccxray-Auth: ${kUp}`
+        `X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1\nX-Ccxray-Auth: ${kUp}`
       );
+      const headers = parseClaudeCustomHeaders(launch.env.ANTHROPIC_CUSTOM_HEADERS);
+      assert.equal(headers['x-existing'], 'foo');
+      assert.equal(headers['x-ccxray-agent-id'], 'herdr:w1:p1');
+      assert.equal(headers['x-ccxray-auth'], kUp);
     });
 
     it('captures the launch-time Claude OAuth account from the effective config directory', () => {
@@ -109,9 +126,10 @@ describe('auth launcher header injection (1.4a)', () => {
         ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
       });
 
-      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Existing: foo/);
-      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Auth: /);
-      assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Account: a@example\.com$/);
+      const headers = parseClaudeCustomHeaders(launch.env.ANTHROPIC_CUSTOM_HEADERS);
+      assert.equal(headers['x-existing'], 'foo', 'the user-provided header must be preserved');
+      assert.equal(headers['x-ccxray-auth'], getKUpstreamBase64url());
+      assert.equal(headers['x-ccxray-account'], 'a@example.com');
     });
 
     it('uses the launch environment config over the parent process config', () => {
