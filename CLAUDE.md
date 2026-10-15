@@ -15,6 +15,7 @@ ccxray codex                                     # Proxy + Codex CLI
 ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
 ccxray status                                    # Show hub info and connected clients
+ccxray setup --bucket <bucket> --domains <domain> # Enroll export and configure Claude shell wrapper
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
 npm test                                         # Run tests
@@ -94,6 +95,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | Module | Purpose |
 |--------|---------|
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
+| `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
+| `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
 | `server/config.js` | PORT, ANTHROPIC_HOST/PORT/PROTOCOL, LOGS_DIR, MAX_ENTRIES, model context windows |
 | `server/pricing.js` | LiteLLM price fetch, 24h cache, fallback rates, cost calculation |
 | `server/cost-budget.js` | Cost data orchestration: cache, warm-up, grouping |

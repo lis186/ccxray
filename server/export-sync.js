@@ -370,10 +370,49 @@ function readExportCursorFacts(home) {
   }
 }
 
-function writeCursor(cursorPath, data) {
+function writeCursor(cursorPath, data, io = fs) {
   const tmp = cursorPath + `.tmp.${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(data) + '\n', { mode: 0o600 });
-  fs.renameSync(tmp, cursorPath);
+  let fd = null;
+  let created = false;
+  try {
+    fd = io.openSync(tmp, 'wx', 0o600);
+    created = true;
+    io.writeFileSync(fd, JSON.stringify(data) + '\n');
+    io.closeSync(fd);
+    fd = null;
+    io.renameSync(tmp, cursorPath);
+  } finally {
+    if (fd !== null) {
+      try { io.closeSync(fd); } catch {}
+    }
+    if (created) {
+      try { io.unlinkSync(tmp); } catch {}
+    }
+  }
+}
+
+function isoNow(now = Date.now()) {
+  const value = typeof now === 'function' ? now() : now;
+  return new Date(value).toISOString();
+}
+
+function buildEnrollment(retentionDays, now = Date.now()) {
+  return {
+    state: 'enrolled',
+    enrolledAt: isoNow(now),
+    retentionDays,
+  };
+}
+
+function buildCursor(enrollment, now = Date.now()) {
+  const today = isoNow(now).slice(0, 10);
+  return {
+    lastId: null,
+    seq: {},
+    partial: false,
+    cutoffDt: utcDateOf(enrollment?.enrolledAt) || today,
+    floorV: FLOOR_VERSION,
+  };
 }
 
 // ── Enrollment (one explicit-state file) ───────────────────────────────
@@ -385,9 +424,9 @@ function writeCursor(cursorPath, data) {
 // upload, or prune, read it only while holding the exporter lock.
 function enrollmentPath(home) { return path.join(home, 'export-enrollment.json'); }
 
-function readEnrollment(home) {
+function readEnrollment(home, io = fs) {
   let raw;
-  try { raw = fs.readFileSync(enrollmentPath(home), 'utf8'); }
+  try { raw = io.readFileSync(enrollmentPath(home), 'utf8'); }
   catch (err) {
     if (err.code === 'ENOENT') return null;
     return { state: 'invalid', reason: 'read', detail: err.code || err.message };
@@ -1379,23 +1418,13 @@ async function flushLocked(home, bucket, uploaderAtEntry, attempt) {
     // identity hard-fail; the floor (enrollment day, else today) keeps the
     // no-backfill promise.
     if (!enrollment) {
-      enrollment = {
-        state: 'enrolled',
-        enrolledAt: new Date().toISOString(),
-        retentionDays: config.LOG_RETENTION_DAYS,
-      };
+      enrollment = buildEnrollment(config.LOG_RETENTION_DAYS);
       attempt.stage = 'enrollment-write';
       writeCursor(enrollmentPath(home), enrollment);
     }
     // partial:false — scanning from lastId:null counts the whole floor day, so the
     // first row for it is complete, unlike the old tail-anchored init.
-    cursor = {
-      lastId: null,
-      seq: {},
-      partial: false,
-      cutoffDt: utcDateOf(enrollment.enrolledAt) || new Date().toISOString().slice(0, 10),
-      floorV: FLOOR_VERSION,
-    };
+    cursor = buildCursor(enrollment);
     attempt.stage = 'cursor-write';
     writeCursor(cursorPath, cursor);
     console.log(`[ccxray export] First run — enrolled; uploading from ${cursor.cutoffDt} (UTC). No backfill.`);
@@ -1742,6 +1771,8 @@ module.exports = {
   acquireLock,
   isContention,
   writeCursor,
+  buildEnrollment,
+  buildCursor,
   enrollmentPath,
   utcDateOf,
   FLOOR_VERSION,

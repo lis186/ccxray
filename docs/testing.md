@@ -227,6 +227,39 @@ If a test needs to exercise `~` expansion, set a throwaway `$HOME` for that
 single test — don't resolve against the real `os.homedir()`. Note this is
 narrow: see the `$HOME` caveat below before scrubbing `$HOME` broadly.
 
+### 2b. Isolate setup and shell startup tests
+
+`test/setup.test.js` builds each environment through
+`test/helpers/setup-fixture.js` before requiring setup-related server modules.
+The fixture pins temporary `HOME`, `ZDOTDIR`, `SHELL`, `CLAUDE_CONFIG_DIR`,
+`CLOUDSDK_CONFIG`, `CCXRAY_HOME`, `LOGS_DIR`, and `TZ`, and deletes inherited
+`CCXRAY_EXPORT_GCS_KEY_FILE`, `ANTHROPIC_BASE_URL`,
+`CCXRAY_HUB_CLIENT_PID`, `CCXRAY_EXPORT_GCS_BUCKET`,
+`CCXRAY_EXPORT_GCS_PREFIX`, `CCXRAY_EXPORT_DOMAINS`,
+`CCXRAY_EXPORT_CWD_ALLOWLIST`, `CCXRAY_EXPORT_CONFIG_DIRS`,
+`CCXRAY_USER_EMAIL`, `CCXRAY_AGENT_ID`, `CCXRAY_TEAM`, and
+`LOG_RETENTION_DAYS`. Every child receives `CCXRAY_EXPORT_DISABLE=1` and
+`CCXRAY_IMPORT_DISABLE=1`.
+
+The setup fixture resolves string, `Buffer`, and file-URL paths through symlinks
+before allowing file reads or writes. Access through a link that leaves the
+fixture root fails the test. The same guard wraps the process-wide synchronous
+and promise-based filesystem APIs used by setup dependencies, including account
+and enrollment readers. It permits metadata checks for fixture ancestors and
+the exact executable allowlist; shell executable directories are not writable
+roots. Tests that spawn through the bounded runner separately check its
+executable argument against `process.execPath`, resolved shell binaries, and
+fixture-owned fake `claude`/`ccxray` commands. A shell may resolve its own
+builtins or commands; that does not expand the runner's executable allowlist.
+Never run setup tests with a real home or real gcloud config.
+
+On Windows, the setup fixture also creates a fixture-local `fake-client.js` and
+`.cmd` launchers for fake `claude` and `ccxray`. Native PowerShell wrapper tests
+resolve them through the fixture `PATH`/`PATHEXT`; they record arguments and
+exit codes only under the fixture `CCXRAY_HOME`. These tests source synthetic
+profiles with `-NoProfile`, so they do not load real PowerShell profiles or
+invoke globally installed clients.
+
 ### 3. CI-equivalent check
 
 Before pushing, confirm the suite passes against an empty home:
