@@ -159,4 +159,46 @@ describe('#563 statusline consent prompt', () => {
     assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{ this is not json', 'file left byte-identical');
     assert.equal(r.declined, true);
   });
+
+  it('labels the default Claude home from HOME/.claude.json during discovery', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-statusline-discovery-home-'));
+    SCENARIO_DIRS.push(home);
+    const claudeHome = path.join(home, '.claude');
+    const namedHome = path.join(home, '.claude-work');
+    fs.mkdirSync(claudeHome, { recursive: true });
+    fs.mkdirSync(namedHome, { recursive: true });
+    fs.writeFileSync(path.join(claudeHome, 'settings.json'), '{}');
+    fs.writeFileSync(path.join(namedHome, 'settings.json'), '{}');
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+      oauthAccount: { emailAddress: 'synthetic.user@example.test' },
+    }));
+
+    const ttyShim = path.join(home, 'tty-shim.js');
+    fs.writeFileSync(ttyShim, [
+      "Object.defineProperty(process.stdin, 'isTTY', { value: true });",
+      'process.stdin.setRawMode = () => {};',
+      'process.stdin.resume = () => {};',
+      'process.stdin.pause = () => {};',
+      "process.stdin.on = (event, callback) => {",
+      "  if (event === 'data') process.nextTick(() => callback(Buffer.from('\\n')));",
+      '  return process.stdin;',
+      '};',
+      '',
+    ].join('\n'));
+    const result = spawnSync(process.execPath, ['-r', ttyShim, SERVER_SCRIPT, 'setup-statusline'], {
+      encoding: 'utf8',
+      timeout: 10000,
+      env: {
+        HOME: home,
+        CCXRAY_HOME: path.join(home, '.ccxray'),
+        CCXRAY_EXPORT_DISABLE: '1',
+        PATH: process.env.PATH || '',
+        TERM: 'dumb',
+      },
+    });
+
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /synthetic\.user@example\.test/, result.stdout);
+  });
 });

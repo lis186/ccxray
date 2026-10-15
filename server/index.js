@@ -998,7 +998,7 @@ if (process.argv[2] === 'setup-statusline') {
     const defaultHome = path.join(home, '.claude');
     if (fs.existsSync(path.join(defaultHome, 'settings.json'))) {
       let email = null;
-      try { email = JSON.parse(fs.readFileSync(path.join(defaultHome, '.claude.json'), 'utf8')).oauthAccount?.emailAddress; } catch {}
+      try { email = JSON.parse(fs.readFileSync(path.join(home, '.claude.json'), 'utf8')).oauthAccount?.emailAddress; } catch {}
       found.push({ path: defaultHome, label: '.claude', email, installed: isStatuslineInstalled(defaultHome) });
     }
     for (const d of fs.readdirSync(home)) {

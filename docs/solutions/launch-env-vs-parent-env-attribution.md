@@ -1,17 +1,21 @@
 # 描述被啟動 session 的事實，必須從 launch env 解析，不能從 parent process
 
+> **2026-10-15 路徑更正：** Claude Code 的預設帳號檔是 `$HOME/.claude.json`；只有設定 `CLAUDE_CONFIG_DIR` 時才是 `$CLAUDE_CONFIG_DIR/.claude.json`。下方仍說明 round 1 / round 2 的 parent-vs-launch env 缺陷；舊版預設檔位置也不正確，以下程式碼路徑已改用核實後的位置。`getClaudeLaunchAccountEmail` 現在依上述規則解析。
+
 - 發現：2026-09-03，#611 / PR #616（codex 二審 round 1 與 round 2，**同一類別連續兩輪**）
 - 適用：任何 launcher 注入的 header／欄位，只要它宣稱描述「被啟動的那個 session」
 
 ## 一、缺陷形狀
 
-`server/providers.js` 的 `claude.createLaunch({ port, args, env })` 用 `env` 參數組出 `launchEnv`，而 `server/index.js` 以 `spawn(bin, args, { env: launch.env })` 啟動子行程——**`spawn` 會完全取代子行程的環境**。因此子 Claude 解析自己的 config 目錄時看的是 `launchEnv`，即 `env.CLAUDE_CONFIG_DIR || env.HOME/.claude`。
+`server/providers.js` 的 `claude.createLaunch({ port, args, env })` 用 `env` 參數組出 `launchEnv`，而 `server/index.js` 以 `spawn(bin, args, { env: launch.env })` 啟動子行程——**`spawn` 會完全取代子行程的環境**。因此子 Claude 解析自己的帳號檔時看的是 `launchEnv`：`env.CLAUDE_CONFIG_DIR/.claude.json`，或未設定時的 `env.HOME/.claude.json`。
 
 第一版的帳號快照卻從 **parent** 讀：
 
 ```js
 // round 1 的缺陷
-const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const accountConfig = process.env.CLAUDE_CONFIG_DIR
+  ? path.join(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
+  : path.join(os.homedir(), '.claude.json');
 ```
 
 結果：呼叫方若傳入不同 config dir，Claude 以帳號 A 啟動，index 卻蓋上帳號 B ——**正是這個欄位存在的目的（歸因）被破壞**。
@@ -22,10 +26,12 @@ round 1 只改了 `CLAUDE_CONFIG_DIR`：
 
 ```js
 // round 1 的修法 —— 仍有缺陷
-const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+const accountConfig = env.CLAUDE_CONFIG_DIR
+  ? path.join(env.CLAUDE_CONFIG_DIR, '.claude.json')
+  : path.join(os.homedir(), '.claude.json');
 ```
 
-`os.homedir()` 在 POSIX 讀 parent 的 `$HOME`。所以只要呼叫方給了不同 `HOME` 而沒給 `CLAUDE_CONFIG_DIR`，同一個缺陷就從 fallback 那條路回來，而且會去讀開發者**真實**的 `~/.claude/.claude.json`。round 2 的 P2 就是這個。
+`os.homedir()` 在 POSIX 讀 parent 的 `$HOME`。所以只要呼叫方給了不同 `HOME` 而沒給 `CLAUDE_CONFIG_DIR`，同一個缺陷就從 fallback 那條路回來，而且會去讀開發者**真實**的 `~/.claude.json`。round 2 的 P2 就是這個。
 
 **歸因**：round 1 的派工指令逐字寫出了 `env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')`——orchestrator 指定了半套修法。實作端照做並不算失誤；**是指令把缺陷的一半當成正解寫進去了**。
 
@@ -36,7 +42,9 @@ const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 > **帳號快照必須完全照被啟動的行程解析自己 config 的方式解析：每一個輸入都取自 launch `env`，永不取自 parent process。**
 
 ```js
-const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude');
+const accountConfig = env.CLAUDE_CONFIG_DIR
+  ? path.join(env.CLAUDE_CONFIG_DIR, '.claude.json')
+  : path.join(env.HOME || os.homedir(), '.claude.json');
 ```
 
 `os.homedir()` 只保留為「呼叫方完全沒給 `HOME`」的最後手段——此時子行程也會退回 passwd entry，兩者一致。**不要「簡化」掉這層。**
