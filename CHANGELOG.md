@@ -1,22 +1,55 @@
 # Changelog
 
-## 2.5.0 (unreleased)
+## 2.5.0-rc.1
+
+198 non-merge commits since 2.3.1. Three headlines: ccxray adds optional GCS summary export and one-step setup; session, cost, and context data become more accurate and diagnosable; and launcher reliability, status reporting, and agentflow usage reports improve.
 
 ### Added
 
-- **Optional GCS summary export and `ccxray setup` (#612, #616, #631, #643, #652).** Setup enrolls an export, adds a Claude shell wrapper, configures summary fields, and keeps transcript import disabled by default. The exporter uploads daily and session summaries, with an optional Claude launch-account domain filter and repository-name masking; raw request/response logs remain local. See [export onboarding](docs/export-onboarding.md).
-- **`ccxray status` export diagnostics (#651, #659).** Status reports the target process's export state, local enrollment/cursor state, this shell's export settings, and whether they match the running hub. It can inspect trusted standalone and Windows servers as well as the hub.
+- **Optional GCS summary export and `ccxray setup` (#612, #616, #631, #643, #652).** Setup enrolls an export, adds a Claude shell wrapper, configures summary fields, and keeps transcript import disabled by default. The exporter uploads daily and session summaries, with an optional Claude launch-account domain filter and repository-name masking; raw request/response logs remain local. Setup also provides `--check`, `--dry-run`, and `--remove`; removal stops future uploads with an enrollment tombstone but leaves local logs and uploaded summaries intact. Summaries include session provenance, per-model cost confidence, and thinking ratio; they do not copy full prompts, response bodies, or full tool-argument objects, but source-derived names and configured metadata are not comprehensively scrubbed. Summary rows can still identify work through account email, session ID, repository basename, and tool or skill names. A configured domain filter excludes turns without a matching account snapshot, including imported, Codex, and Grok turns; `CCXRAY_EXPORT_CWD_ALLOWLIST` masks other repository basenames as `[other]` without excluding rows. The first cursor starts at `lastId: null` and scans from the enrollment timestamp's UTC date, including eligible indexed turns earlier on that date; earlier dates are not backfilled. See [export onboarding](docs/export-onboarding.md).
+- **`ccxray status` export diagnostics (#651, #659).** Status reports the target process's export state, local enrollment/cursor state, this shell's export settings, and whether they match the running hub. It can inspect trusted standalone and Windows servers as well as the hub. Status labels process and home state separately and reports durable diagnostics.
+- **Exporter credential diagnostics (#633, #634, #651).** Credential discovery and parsing expose safe stages; a real upload adds token and authorization outcomes. Failure details use bounded categories and counts without exposing exception messages or upstream response bodies.
 - **`ccxray agentflow report` (experimental, PR #646, #653).** Tokens, cost, models, effort and time for every Ask of an [agentflow](https://github.com/agfnow/agentflow) notebook, split by host session, native subagents and dispatched external workers. It reads transcript files and indexed proxy records, imports nothing, and starts no server. Each Ask and executor reports proxy completeness and attribution status. Text and `--json` output are available; see [`docs/agentflow-report.md`](docs/agentflow-report.md) for restricted transcript roots and optional import.
+- **Multiple transcript import roots (#593).** Claude and Codex imports can scan comma-separated source roots.
 
 ### Changed
 
+- **Exporter enrollment and startup locking (#643).** Enrollment distinguishes absent, removed, and invalid state. A per-home loopback socket lock covers startup flush and pruning; competing processes skip both, and the operating system releases the lock when its owner exits. Lock-loss records retain the phase and cause.
+- **Exporter config-dir setting (#631).** `CCXRAY_EXPORT_CONFIG_DIRS` never filtered exported accounts or directories; setting it now refuses export instead of silently doing nothing.
+- **Hub-aware status (#593, #651, #659).** Status labels process and home state separately and reports the running hub's export configuration and durable diagnostics.
+- **`ccxray usage` retention disclosure (#619).** Output includes the configured retention window and cutoff, and warns when the requested range starts before that cutoff. Multi-project `--json --cwd a,b` output now has a `{ "projects": ..., "meta": ... }` shape so retention metadata applies to the query as a whole.
 - **Fail-open agent launching and Windows standalone mode (#647, #650).** If the proxy stack fails to load or hub attachment fails, the agent can start directly and the session is not recorded. An unresolved hub attach falls back when its default 3000 ms budget expires (`CCXRAY_ATTACH_TIMEOUT_MS` changes the budget); an earlier failure can fall back sooner. ccxray attempts to append a record to `fail-open.log`, but the write is best effort. Set `CCXRAY_FAIL_CLOSED=1` to stop instead. Windows launches run standalone rather than sharing the Unix-socket hub; use a distinct port for each server.
-
-## 2.4.0
+- **Launcher behavior (#587, #647).** `--bg`/`--background` bypasses proxying, orphaned hubs exit, and hub clients clean up on shutdown signals. Windows resolves npm's `claude.cmd` shim to the native executable.
+- **Codex proxy overrides (#658).** For model-running subcommands such as `exec`, `review`, `resume`, and `fork`, ccxray inserts its `-c` proxy overrides after the subcommand so Codex applies them.
 
 ### Fixed
 
-- **Exporter lock and startup pruning.** Replaced PID-based lock-file reclaim with a per-home loopback socket lock held across startup flush and prune. Lock losses now preserve a structured phase and cause. Before the first launch after upgrading, stop all ccxray processes sharing the home and remove any leftover `export.lock`; see [export onboarding](docs/export-onboarding.md#upgrading-from-a-pre-socket-lock-version).
+- **Pricing consistency and lookup cost (#519, #568, #630, #637, #642, #657).** Provider-specific rates distinguish the same model on different upstreams, and proxy, import, restore, and reload share one rate lookup. One-hour cache writes use the correct rate, imported Codex usage is not normalized twice, unpriced models stay unknown, and warm context-table lookups no longer re-enumerate the full table.
+- **Transcript and project attribution (#637, #640).** Imports include Claude subagent transcripts and preserve distinct turns with colliding timestamps. Claude Code 2.1.283 and Codex proxy traffic recover their working directory from current request formats.
+- **Indexed per-turn evidence (#497, #498, #503, #577, #637).** The index retains effort, thinking-token counts, and turn duration beyond request-file retention; Anthropic tool-call IDs and results are captured per turn, and Codex/Grok response parsing handles the observed payload forms.
+- **Context-window recovery (#533, #534, #535, #536, #603, #605).** Displays identify assumed context denominators and recover the 1M window for history-only sessions when persisted import evidence supports it; disproved windows no longer appear as a confident 100%.
+- **Session Weather evidence (#484, #487, #509, #516).** Retires cumulative and otherwise falsified failure signals, combines tool results by call ID across import and proxy records, and shows unavailable instead of sunny when captured Bash calls have no paired result evidence (Read/Grep calls and legacy data without that evidence are not covered).
+- **Dashboard rendering and safety (#559, #580, #641).** Project names and session IDs no longer enter inline handlers, and Bash tool timeout text is escaped in detail metadata. Test runs (`node --test`) and processes with `CCXRAY_EXPORT_DISABLE=1` do not upload to GCS; ordinary processes are not checked for synthetic data.
+- **Internal headers no longer reach upstream (#575).** Every `x-ccxray-*` request header is stripped by prefix on both the HTTP and WebSocket forward paths; previously `x-ccxray-agent-id` could be forwarded to the provider.
+- **CLI and health reporting (#639, #656).** Help and unknown-option handling run before server startup; the health endpoint no longer advertises capabilities that this build does not implement.
+
+### Architecture
+
+- **ADR 0019** — secondary writers append to `index.ndjson` but do not write the derived session view.
+- **ADR 0021 (#610)** — full-file index rewrites compare the source fingerprint before replacement, and maintenance commands coordinate at the resolved data root.
+
+### Upgrading
+
+- **Exporter lock migration (#643).** Before the first launch after upgrading, stop every ccxray process sharing the home, verify no `node … server/index.js` process remains, and remove any leftover `export.lock`; see [export onboarding](docs/export-onboarding.md#upgrading-from-a-pre-socket-lock-version).
+- **Adopting `ccxray setup` (#652).** Install and log in to Claude Code so its account email is readable, include that account's domain in `--domains`, and configure gcloud Application Default Credentials with `gcloud auth application-default login`. Setup requires ADC of type `authorized_user` and rejects `CCXRAY_EXPORT_GCS_KEY_FILE`, even though the exporter itself supports a service-account key file. Then run `ccxray setup --bucket <bucket> --domains <domain>`, open a new terminal (or reload the modified shell profile) so the wrapper and export settings take effect, and run `ccxray setup --check`.
+- **PowerShell policy and shell selection.** Select `--shell pwsh` or `--shell powershell` for the intended edition. Setup refuses an effective `Restricted` or `AllSigned` policy; selecting `pwsh` does not bypass policy. If appropriate for the machine, use `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, then run setup and `--check` in the intended edition and host.
+- **Shell-file limitation.** Keep setup's marker block at top level in the startup file. Setup does not detect it inside a foreign here-document, here-string, or multi-line quoted string; `--remove` could then delete text belonging to the surrounding construct.
+- **Multi-project usage JSON consumers (#619).** Update scripts that read `ccxray usage --json --cwd a,b`: the result is now an object with `projects` and `meta`, not a bare array.
+- **Obsolete exporter setting (#631).** Unset `CCXRAY_EXPORT_CONFIG_DIRS` if present; it now disables export because it was never an effective filter.
+
+## 2.4.0
+
+2.4.0 was never published to npm; its changes are included in 2.5.0-rc.1.
 
 ## 2.3.1
 
