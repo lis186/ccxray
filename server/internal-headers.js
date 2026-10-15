@@ -15,6 +15,8 @@
 //   x-ccxray-auth        hop-by-hop credential (base64url K_upstream)
 //   x-ccxray-bootstrap   one-time bootstrap token
 //   x-ccxray-agent-id    Herdr pane identity — client metadata, never upstream
+//   x-ccxray-account     Claude launch-time account snapshot
+//   x-ccxray-print-mode  suppresses the Context HUD for Claude -p/--print
 const CCXRAY_HEADER_PREFIX = 'x-ccxray-';
 
 // Headers that are DELIBERATELY forwarded despite the prefix. Empty by design:

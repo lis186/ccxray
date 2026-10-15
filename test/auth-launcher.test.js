@@ -90,6 +90,63 @@ describe('auth launcher header injection (1.4a)', () => {
       assert.equal(headers['x-ccxray-auth'], kUp);
     });
 
+    it('marks Claude print-mode launches for -p and --print wherever they appear', () => {
+      const providers = require('../server/providers');
+      const cases = [
+        { args: ['-p'], label: '-p' },
+        { args: ['--print'], label: '--print' },
+        { args: ['--model', 'claude-sonnet-4-6', '--print'], label: '--print after other args' },
+        {
+          args: ['--model', 'claude-sonnet-4-6', '--input-format', 'stream-json', '--output-format', 'stream-json', '-p'],
+          label: 'stream-json options with -p after other args',
+        },
+      ];
+
+      for (const { args, label } of cases) {
+        const launch = providers.getAgentLaunch('claude', 6001, args, {
+          PATH: '/usr/bin',
+          CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
+        });
+        assert.match(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Print-Mode:\s*true/, label);
+      }
+    });
+
+    it('does not mark an interactive Claude launch as print mode', () => {
+      const providers = require('../server/providers');
+      const launch = providers.getAgentLaunch('claude', 6001, ['--continue'], {
+        PATH: '/usr/bin',
+        CLAUDE_CONFIG_DIR: path.join(tmpHome, '.claude'),
+      });
+
+      assert.doesNotMatch(launch.env.ANTHROPIC_CUSTOM_HEADERS, /X-Ccxray-Print-Mode:/);
+    });
+
+    const printModeCases = [
+      { args: ['-p'], expected: true, label: 'short print flag' },
+      { args: ['--print'], expected: true, label: 'long print flag' },
+      { args: ['--model', 'sonnet', '--print'], expected: true, label: 'print flag after other args' },
+      {
+        args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--print'],
+        expected: true,
+        label: 'print-only format options with print mode',
+      },
+      { args: ['--output-format', 'json'], expected: false, label: 'output format alone' },
+      { args: ['--input-format', 'stream-json'], expected: false, label: 'input format alone' },
+      { args: ['--no-session-persistence'], expected: false, label: 'session persistence option alone' },
+      { args: ['--max-budget-usd', '1'], expected: false, label: 'print-only budget option alone' },
+      { args: ['--include-partial-messages'], expected: false, label: 'print-only partial option alone' },
+      { args: ['--', '-p'], expected: false, label: 'short flag after option boundary' },
+      { args: ['--model', 'sonnet', '--', '--print'], expected: false, label: 'long flag in prompt after option boundary' },
+      { args: ['--', 'include the literal -p and --print in this prompt'], expected: false, label: 'flag-like prompt text' },
+    ];
+
+    for (const { args, expected, label } of printModeCases) {
+      it(`isClaudePrintMode: ${label}`, () => {
+        const { isClaudePrintMode } = require('../server/providers');
+        assert.equal(isClaudePrintMode(args), expected);
+      });
+    }
+
     it('captures the launch-time Claude OAuth account from the effective config directory', () => {
       const providers = require('../server/providers');
       const claudeConfig = path.join(tmpHome, 'launch-claude');

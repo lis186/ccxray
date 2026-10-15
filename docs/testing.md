@@ -35,6 +35,17 @@ Server tests that do not exercise transcript importing must also set
 `$HOME/.claude*` and `$HOME/.codex*/sessions`; isolating `CCXRAY_HOME` alone
 does not stop an active local agent session from contaminating a proxy test.
 
+`test/anthropic-print-hud.e2e.test.js` starts the proxy with separate temporary
+`CCXRAY_HOME` and `$HOME` directories, creates an empty synthetic
+`logs/index.ndjson`, disables import and export, and sends synthetic Messages
+requests through dynamically allocated loopback ports to a mock SSE upstream.
+It writes a fresh synthetic pricing cache and points `CCXRAY_PRICING_CACHE` at
+it, so server startup never fetches LiteLLM. It also scrubs inherited
+`CLAUDE_CONFIG_DIR`, preventing launch account discovery from reading a real
+config. The test derives launch env through `server/providers.js` and applies
+Claude Code's newline-separated custom-header parser; it never invokes a real
+Claude CLI or Anthropic endpoint.
+
 Exporter status tests may create `export-cursor.json` fixtures under the isolated
 home. The absent, valid, and corrupt cursor shapes are intentional test data; a
 corrupt-cursor status read must leave the original file and directory entries
