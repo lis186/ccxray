@@ -743,6 +743,8 @@ function currentHubPort() {
   return hubListenPort || readHubLock()?.port;
 }
 
+// Shared by the hub socket and authenticated /_api/health responses so
+// standalone status probes use the same display-safe report as hub status.
 function assembleExportReport(env = process.env) {
   const kind = kindFromLaunchSignals(launchSignals);
   const { exportState, exportReason } = kind === 'client'
@@ -796,16 +798,22 @@ function handleHubRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/health' && clientReq.method === 'GET') {
+    // Health stays public for port discovery, but the export report contains
+    // local paths and config diagnostics. Reuse the dashboard's exact trust
+    // predicate here because this route runs before the normal auth gate.
+    const reportTrusted = require('./auth').isDashboardAuthenticated(clientReq);
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     // app/pid/hub identify the listener to probePortOccupant (#555) so a
     // port-conflict message can tell a standalone ccxray from a foreign
     // process. `hub` is true only after setHubPort — i.e. real hub mode.
     clientRes.end(JSON.stringify({
+      ...(reportTrusted ? assembleExportReport() : {}),
       ok: true,
       app: 'ccxray',
       pid: process.pid,
       hub: hubListenPort != null,
       version: require('../package.json').version,
+      ...(!reportTrusted ? { exportReportUnavailableReason: 'authentication-required' } : {}),
       capabilities: [],
     }));
     return true;
@@ -834,11 +842,32 @@ function handleHubRoutes(clientReq, clientRes) {
 //   'silent'            — something is bound but does not answer HTTP
 //   'free'              — connection refused (nothing listening)
 
+// Trusted health responses include the bounded export report and warnings;
+// leave room for it while keeping the port probe's response size capped.
+const PROBE_MAX_BYTES = 64 * 1024;
+
+function exportReportFromHealth(parsed) {
+  if (!parsed || typeof parsed.exportState !== 'string' || parsed.exportState.length === 0) return null;
+  return {
+    exportState: parsed.exportState,
+    exportReason: typeof parsed.exportReason === 'string' ? parsed.exportReason : null,
+    configWarnings: Array.isArray(parsed.configWarnings) ? parsed.configWarnings : [],
+    exportConfigHash: typeof parsed.exportConfigHash === 'string' ? parsed.exportConfigHash : null,
+    credential: parsed.credential && typeof parsed.credential === 'object' ? parsed.credential : null,
+    identity: parsed.identity && typeof parsed.identity === 'object' ? parsed.identity : null,
+  };
+}
+
 function probePortOccupant(port, timeoutMs = 1500) {
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/_api/health`, { timeout: timeoutMs }, res => {
       let data = '';
-      res.on('data', c => { data += c; if (data.length > 4096) req.destroy(); });
+      let bytes = 0;
+      res.on('data', c => {
+        bytes += c.length;
+        data += c;
+        if (bytes > PROBE_MAX_BYTES) req.destroy();
+      });
       res.on('end', () => {
         // Only a 200 counts as a health answer — a foreign service that
         // happens to echo { ok: true } on an error page must not be
@@ -847,7 +876,15 @@ function probePortOccupant(port, timeoutMs = 1500) {
           try {
             const parsed = JSON.parse(data);
             if (parsed && parsed.ok === true && parsed.app === 'ccxray') {
-              resolve({ kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone', pid: parsed.pid || null, version: parsed.version || null });
+              resolve({
+                kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone',
+                pid: parsed.pid || null,
+                version: parsed.version || null,
+                report: exportReportFromHealth(parsed),
+                reportUnavailableReason: parsed.exportReportUnavailableReason === 'authentication-required'
+                  ? 'authentication-required'
+                  : null,
+              });
               return;
             }
             if (parsed && parsed.ok === true) { resolve({ kind: 'health-ok', pid: null }); return; }
@@ -989,6 +1026,7 @@ function tryListen(srv, port, maxAttempts) {
 module.exports = {
   clientIdentityFromMessage,
   kindFromLaunchSignals,
+  exportReportFromHealth,
   setLaunchSignals,
   assembleExportReport,
   HUB_DIR,

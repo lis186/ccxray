@@ -203,12 +203,14 @@ describe('ccxray status process level', () => {
     assert.match(output, /future-warning: \{"rawValue":"keep-me","count":2\}/);
   });
 
-  it('C1: keeps export state out of the unauthenticated health route', () => {
+  it('C1: gates the optional health report with dashboard authentication', () => {
     const hubSource = fs.readFileSync(path.join(__dirname, '..', 'server', 'hub.js'), 'utf8');
     const healthStart = hubSource.indexOf("pathname === '/_api/health'");
     const hubRouteStart = hubSource.indexOf('// Phase 2.1: hub IPC moved to Unix socket', healthStart);
     const healthBody = hubSource.slice(healthStart, hubRouteStart);
-    assert.doesNotMatch(healthBody, /exportState|exportReason|configWarnings/);
+    assert.match(healthBody, /isDashboardAuthenticated\(clientReq\)/);
+    assert.match(healthBody, /reportTrusted \? assembleExportReport\(\) : \{\}/);
+    assert.match(healthBody, /exportReportUnavailableReason: 'authentication-required'/);
   });
 });
 

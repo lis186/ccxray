@@ -27,7 +27,7 @@ describe('health capabilities', () => {
       },
     };
 
-    assert.equal(hub.handleHubRoutes({ url: '/_api/health', method: 'GET' }, response), true);
+    assert.equal(hub.handleHubRoutes({ url: '/_api/health', method: 'GET', headers: {}, socket: { remoteAddress: '203.0.113.1' } }, response), true);
     assert.equal(response.statusCode, 200);
     assert.deepEqual(JSON.parse(response.body).capabilities, []);
   });
