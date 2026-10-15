@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.0 (unreleased)
+
+### Added
+
+- **`ccxray agentflow report` (experimental, PR #646, #653).** Tokens, cost, models, effort and time for every Ask of an [agentflow](https://github.com/agfnow/agentflow) notebook, split by host session, native subagents and dispatched external workers. Reads transcripts and proxy records, merged; each Ask and executor says whether its usage was fully captured by the proxy (`complete`), partly (`partial proxy coverage`) or from transcripts only (a lower bound), and whether it was attributed to the Ask alone (`unique`) or not. Starts no server and imports nothing; run `ccxray import --once` first. Prints to the terminal or as `--json`; never writes to the project. See [`docs/agentflow-report.md`](docs/agentflow-report.md).
+
 ## 2.4.0
 
 ### Fixed
