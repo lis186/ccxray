@@ -144,6 +144,22 @@ function appendAnthropicCustomHeader(launchEnv, header) {
     : header;
 }
 
+/**
+ * @param {string[]} args Arguments passed after the `claude` command.
+ * @returns {boolean} Whether Claude was launched in its non-interactive print mode.
+ *
+ * Claude Code --help identifies -p/--print as the mode switches; options such
+ * as --input-format and --output-format only modify print mode. A bare `--`
+ * ends option parsing, so later values are prompt text rather than flags.
+ */
+function isClaudePrintMode(args) {
+  for (const arg of Array.isArray(args) ? args : []) {
+    if (arg === '--') break;
+    if (arg === '-p' || arg === '--print') return true;
+  }
+  return false;
+}
+
 // This synchronous read is deliberately confined to launcher construction:
 // the launched account is a session-start snapshot, never a proxy hot-path read.
 // Invariant: account snapshot resolves exactly the way the launched process
@@ -180,6 +196,7 @@ const AGENT_PROVIDERS = Object.freeze({
       }
       const accountEmail = getClaudeLaunchAccountEmail(env);
       if (accountEmail) appendAnthropicCustomHeader(launchEnv, `X-Ccxray-Account: ${accountEmail}`);
+      if (isClaudePrintMode(args)) appendAnthropicCustomHeader(launchEnv, 'X-Ccxray-Print-Mode: true');
       return { bin: 'claude', args: [...args], env: launchEnv };
     },
   }),
@@ -491,6 +508,7 @@ module.exports = {
   getDisplayName,
   getOpenAIWireClient,
   getUpstreamProfile,
+  isClaudePrintMode,
   isAgentProvider,
   listAgentProviderIds,
   listRawSessionBuckets,

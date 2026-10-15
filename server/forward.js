@@ -758,7 +758,8 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       return r;
     }, '');
     const totalCtx = helpers.totalContextTokens(usage);
-    if (usage && totalCtx && stopReason !== 'tool_use' && statusLineEnabled) {
+    const printMode = ctx.clientReq?.headers?.['x-ccxray-print-mode'] === 'true';
+    if (usage && totalCtx && stopReason !== 'tool_use' && statusLineEnabled && !printMode) {
       if (reqSessionId && !_hudLoggedSessions.has(reqSessionId)) {
         console.log(`\x1b[90m   Context HUD: injecting into session ${reqSessionId.slice(0, 8)}\x1b[0m`);
         _hudLoggedSessions.add(reqSessionId);
