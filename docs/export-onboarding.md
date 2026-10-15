@@ -1,94 +1,157 @@
 # Export onboarding
 
-## One-step setup
+## Install and configure
 
-Install gcloud Application Default Credentials first:
+Install ccxray. Before setup, make sure Claude Code is installed and ccxray can
+read its logged-in account email; the `--domains` list must include that
+account's domain. Setup also requires a readable gcloud Application Default
+Credential of type `authorized_user`. Setup rejects
+`CCXRAY_EXPORT_GCS_KEY_FILE`, even though the exporter itself supports a service
+account key file. For setup, use gcloud Application Default Credentials:
 
-```sh
+```bash
+npm install -g ccxray
 gcloud auth application-default login
-ccxray setup --bucket <bucket> --domains <domain> --cwd-allowlist <allowed-repository-basename>
+ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+```
+
+Replace the placeholders with your GCS bucket, the account domain to allow, and
+repository basenames to reveal. Setup adds an owned block to the selected shell
+startup file. The block defines a `claude` shell wrapper and sets
+`CCXRAY_EXPORT_GCS_BUCKET`, `CCXRAY_EXPORT_GCS_PREFIX`,
+`CCXRAY_EXPORT_DOMAINS`, `LOG_RETENTION_DAYS`, and
+`CCXRAY_IMPORT_DISABLE=1`; it also sets `CCXRAY_EXPORT_CWD_ALLOWLIST` when
+provided. It does not add Codex or Grok wrappers. If `--retention-days` is
+omitted on a first install, setup writes 30 days; a re-run keeps the value
+already in its existing block. Without a repository allowlist, repository
+basenames are exported without masking.
+
+Use `ccxray setup --dry-run` with the same setup options to preview changes
+without writing them. After setup, open a new terminal or reload the edited
+shell profile, then run:
+
+```bash
 ccxray setup --check
 ```
 
-Replace the placeholders with the bucket, allowed account domain, and repository
-basenames approved for the pilot. Setup stores these values in an owned block in
-the selected shell startup file. It never reads them from the invoking
-environment. If no repository allowlist is supplied, repository basenames are
-exported without masking.
+Setup checks configuration and credential parsing; a successful parse is not a
+test upload and does not prove that a real upload will succeed.
 
-To stop future uploads and remove the wrapper, run:
+### Windows PowerShell
+
+On Windows, setup discovers both installed PowerShell editions by default. To
+select one explicitly, use either command:
+
+```powershell
+ccxray setup --shell pwsh --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
+ccxray setup --shell powershell --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
+```
+
+Setup checks the selected edition's effective `Get-ExecutionPolicy`. It refuses
+to install when `Restricted` prevents profile loading or when `AllSigned` would
+block the modified unsigned profile. Choosing `pwsh` instead of `powershell`
+does not bypass an effective policy. Run setup from the PowerShell edition and
+host whose profile you intend to configure. The check does not cover
+host-specific profiles such as VS Code or ISE; open those hosts and confirm
+`Get-Command claude` resolves to the ccxray wrapper.
+
+### Removal and shell-file safety
+
+To stop future uploads and remove ccxray's owned shell block, run:
 
 ```sh
 ccxray setup --remove
 ```
 
-Setup replaces or removes only a block that still matches its generated output.
-If it reports a malformed block, delete everything from the start marker line
-through the end marker line in that startup file, then re-run `ccxray setup`.
-`ccxray setup --remove` still writes the removed tombstone, but leaves a
-malformed block unchanged and reports cleanup incomplete.
+Removal writes an enrollment tombstone and removes only a block that still
+matches its generated output. It does not delete uploaded summaries or local
+raw logs. A wrapper already loaded into an open shell remains there until that
+shell closes or you remove it manually: use `unset -f claude` in bash/zsh or
+`Remove-Item Function:claude` in PowerShell.
 
-Setup assumes its marker lines are ordinary top-level lines of the startup
-file. Do not place the setup block inside a here-document, here-string, or
-multi-line quoted string: setup cannot detect that, and `--remove` would then
-delete text that belongs to the surrounding construct.
+If setup reports a malformed block, delete everything from the start marker
+line through the end marker line in that startup file, then re-run setup.
+Removal still writes the tombstone but leaves a malformed block unchanged and
+reports cleanup incomplete. Setup assumes marker lines are ordinary top-level
+lines; do not place its block inside a here-document, here-string, or multi-line
+quoted string, where removal could delete text belonging to the surrounding
+construct.
 
-On Windows, setup discovers and configures every installed PowerShell edition
-by default. Run `ccxray setup --check` in each edition and inspect the reported
-edition and console host. The check does not cover host-specific profiles such
-as VS Code or ISE; open those hosts and confirm `Get-Command claude` resolves to
-the ccxray wrapper before relying on it.
+## Account filter and collection start
 
-ccxray's export is machine-level telemetry with an optional account-domain
-filter for turns that carry a Claude launch-account snapshot. Set
-`CCXRAY_EXPORT_DOMAINS=example.com,example.org` to aggregate only turns whose
-recorded account domain is in that list. Turns with no account snapshot and
-turns from other domains are then excluded before daily and session rows are
-built, and every flush prints how many were excluded and why.
+`CCXRAY_EXPORT_DOMAINS` filters by the account snapshot attached by the Claude
+launcher. When it is non-empty, only turns whose Claude launch-account snapshot
+matches one of the configured domains are exported. Turns without that snapshot
+are excluded. Codex and Grok launches do not attach a Claude account snapshot,
+so their turns are excluded whenever this filter is set. This is the current
+intended behavior.
 
-When `CCXRAY_EXPORT_DOMAINS` is unset or empty the filter is not configured:
-every turn this machine observes is exported, exactly as before the filter
-existed, with no identity resolution and no hard-fail. Only launches through
-`ccxray <agent>` record an account snapshot; imported transcripts never do, so
-an unconfigured exporter is the only mode in which imported history exports.
+When `CCXRAY_EXPORT_DOMAINS` is unset or empty, the filter is inactive and all
+indexed turns are eligible, including imported transcript entries. Imported
+transcripts have no account snapshot, so the configured-domain filter excludes
+them. `CCXRAY_USER_EMAIL`, when set, supplies summary identity but does not
+create or replace the per-turn account snapshot used by the filter. Without it,
+a configured-domain export needs exactly one observed allowed-domain email;
+otherwise that flush fails without advancing its cursor. A domain filter cannot
+distinguish multiple accounts within the same domain.
 
-With the filter configured, `CCXRAY_USER_EMAIL` remains the explicit summary
-identity when set. Without it, ccxray requires exactly one observed email among
-the allowed-domain turns; zero or multiple candidates hard-fail the export
-without advancing its cursor. Without the filter, an unset `CCXRAY_USER_EMAIL`
-still yields `user_email: null` in the summaries. The filter cannot distinguish
-two accounts in the same allowed domain, so keep personal same-domain traffic
-out of ccxray's view or do not set the exporter.
+The first cursor starts at `lastId: null` and uses the enrollment timestamp's
+UTC calendar date as its lower bound. It scans the whole date, so an eligible
+turn already in the index earlier on that same UTC date can be included. Earlier
+UTC dates are not backfilled.
 
-What leaves the machine is a per-session summary and a daily aggregate. See `bq/01-summaries-external-table.json` (in the `team/` package, not yet on
-main) for the full v3 schema. Key fields:
+## What can be uploaded
 
-- `user_email` — `CCXRAY_USER_EMAIL` or the resolved identity
-- `team` — `CCXRAY_TEAM` (daily row only; session rows do not carry it)
-- `cost_total`, `cost_confidence`
-- `turn_count`, `session_count`, `error_count`
-- `model_primary`, `models` (per-model turn/token/cost breakdown)
-- `cwd` — the repository directory basename (never a full path). Masked to
-  `[other]` when `CCXRAY_EXPORT_CWD_ALLOWLIST` is set and the basename is not
-  in the list. When the variable is unset or empty, the basename is exported
-  without masking
-- `flags`, `tool_usage`, `skill_usage`, `tool_sources`
-- `provider`, `agent_id`, `session_id_kind`
+Raw request and response JSON files remain in local `LOGS_DIR` (default
+`~/.ccxray/logs/`). When export is configured, ccxray uploads daily and
+per-session summary rows, not the raw logs. The v3 summary fields are:
 
-The export never contains prompts, titles, tool arguments, response bodies,
-credentials, or absolute paths. Failed turns (e.g. 401) increment `error_count` and contribute unknown-cost
-evidence when the turn has no priced cost; they are not excluded.
+- `daily`: `type`, `_summary_schema_version`, `agent_id`, `user_email`, `team`,
+  `dt`, `local_date`, `tz`, `provider`, `upload_seq`, `summary_id`,
+  `partial_day`, `cost_total`, `cost_confidence`, `models`,
+  `context_utilization`, `first_turn_context_pct_median`, `compaction_count`,
+  `distinct_sys_hash_count`, `distinct_tools_hash_count`, `tool_usage`,
+  `tool_sources`, `skill_usage`, `tool_defined_count`, `tool_used_count`,
+  `tool_fail_count`, `duplicate_tool_call_count`, `credential_flag`,
+  `error_count`, `stop_reasons`, `session_count`, `turn_count`,
+  `subagent_turn_count`, `cwd_repos`, and `thinking_ratio`.
+- `session`: `type`, `_summary_schema_version`, `agent_id`, `user_email`, `dt`,
+  `session_id`, `session_id_kind`, `summary_id`, `cost_total`,
+  `cost_confidence`, `turn_count`, `imported_turn_count`, `inferred_turn_count`,
+  `model_primary`, `models`, `cwd`, `flags`, `import_sources`, `thinking_ratio`,
+  `turn_set_size`, `turn_set_hash`, and `turn_set_basis`.
+- Each daily `models` value contains `turns`, `input`, `output`, `cache_read`,
+  `cache_creation`, `thinking_turns`, `beta1m_turns`, and `cost`. Each session
+  `models` value contains `turns`, `cost`, `fallback_cost`, `fallback_count`,
+  and `unknown_count`.
 
-If you use a personal account outside an allowed domain, configure
-`CCXRAY_EXPORT_DOMAINS` before setting `CCXRAY_EXPORT_GCS_BUCKET`. For
-same-domain personal traffic, keep it out of ccxray's view with
-`CCXRAY_IMPORT_HOMES` and do not launch personal agents through ccxray. That
-variable is a comma-separated list of the actual Claude `projects/` scan roots;
-use the `projects/` directory itself, not a config home such as `~/.claude`.
-Setting `~/.claude` imports zero and reports no error. What ccxray never observes
-it can never export. For Codex, the corresponding
-`CCXRAY_IMPORT_CODEX_HOMES` value is a comma-separated list of actual
-`sessions/` scan roots; use the `sessions/` directory itself, not `~/.codex`.
+These summaries identify work. Session rows carry `session_id` and repository
+basename (`cwd`); daily rows carry `cwd_repos`; `tool_usage`, `tool_sources`,
+and `skill_usage` carry tool, source, and skill names; and both row types can
+carry `user_email`. The daily `team` field is optional configured metadata. No
+full cwd path is exported. `CCXRAY_EXPORT_CWD_ALLOWLIST` masks a repository
+basename outside its list as `[other]`; it does not exclude the row.
+
+The exporter does not copy raw prompts, response bodies, or full tool-argument
+objects into these summaries. It does aggregate source-derived model, tool,
+tool-source, and skill names, as well as the identifying fields listed above.
+Names and configured metadata are not comprehensively scrubbed and may contain
+unexpected or sensitive text; review them before enabling export. Failed turns
+(e.g. 401) increment `error_count` and contribute unknown-cost evidence when the
+turn has no priced cost; they are not excluded.
+
+Each upload is a newly aggregated per-day snapshot. A file contains that date's
+daily row and session rows, and its object name includes an increasing
+`upload_seq`. Downstream consumers must keep the latest snapshot for each daily
+key (`dt`, `agent_id`) and session key (`dt`, `agent_id`, `session_id`); do not
+sum every object file, because later files repeat eligible data already present
+in earlier snapshots for that date.
+
+Set `CCXRAY_EXPORT_DISABLE=1` to suppress export for a process even when export
+settings are present. Export failures normally keep unsent local logs. A
+safety cap can allow pruning after there has been no successful upload for twice
+the configured retention period; if the cap has no valid basis, pruning can
+proceed immediately to keep disk use bounded.
 
 ## Writer credentials
 
@@ -119,17 +182,22 @@ as it was actually exercised:
 actually exercised — a freshly started exporter that has not uploaded anything
 shows only `discovery` and `parse`.
 
-`ccxray status` shows these stages on the `Process:` line for an enabled
-exporter reached through a hub. Standalone, `--port`, and Windows servers
-print the same stages to the terminal at startup; `status` cannot reach their
-exporter yet. Error output names the category only — never the upstream
-response body, which would carry the OAuth client, the principal, or the
-bucket.
+`ccxray status` shows these stages on the `Process:` line for a reachable
+exporter. Status checks the hub lock/socket first. If a lock exists, status
+follows it and does not probe the selected `--port`, even when that hub is
+unresponsive. Only when no hub lock is found does it probe the configured port,
+so `ccxray --port 5602 status` probes port 5602 only in that case. Status
+reaches HTTP export reports through trusted loopback by default. With
+`CCXRAY_LOOPBACK_REQUIRE_AUTH=1`, an HTTP probe can still receive the public
+minimal `/_api/health` identity response but not its export report; status
+reports that authentication is required. A hub with its Unix-domain socket
+available can return status over that socket. Error output names a category,
+not an upstream response body.
 
 ## Reading `ccxray status`
 
-The export diagnostics are split across three lines because they describe three
-different sources:
+The status output includes `Process:` and `Home:` for the server and its local
+export state, followed by diagnostics from three sources:
 
 - `Shell:` is the environment of the process running `ccxray status`. It is not
   the environment of a detached hub. Its `hash=` value is a SHA-256 fingerprint
@@ -157,26 +225,21 @@ never an exception message or upstream response body. A failure before
 aggregation leaves its aggregate counts unavailable; uploaded `files` and
 `rows` count only uploads that completed successfully.
 
-## Isolating a drill or canary run
+## Restricting transcript roots
 
-When testing with a separate `CCXRAY_HOME`, the startup importer still scans
-`~/.claude*/` and `~/.codex*/` (these paths follow `$HOME`, not
-`CCXRAY_HOME`). Without further isolation, real historical sessions from this
-machine are imported into the drill home and exported under whatever identity
-you configured — mixing real data with a test identity.
+The importer follows `$HOME`, not `CCXRAY_HOME`, when it discovers transcript
+roots. To disable import for a process, set `CCXRAY_IMPORT_DISABLE=1`. To allow
+only selected transcript stores, set `CCXRAY_IMPORT_HOMES` to a comma-separated
+list of absolute Claude `projects/` directories and
+`CCXRAY_IMPORT_CODEX_HOMES` to a comma-separated list of absolute Codex
+`sessions/` directories. An empty value means that provider has no roots; pass
+the actual `projects/` or `sessions/` directory, not `~/.claude` or `~/.codex`.
 
-To prevent this, either:
-- set `CCXRAY_IMPORT_DISABLE=1` (disables the importer entirely), or
-- point `CCXRAY_IMPORT_HOMES` and `CCXRAY_IMPORT_CODEX_HOMES` at empty
-  directories so the importer finds nothing to scan.
-
-When using a fake identity (`CCXRAY_USER_EMAIL=drill@example.invalid`), do
-**not** also set `CCXRAY_EXPORT_DOMAINS` to a fake domain. The domain filter
-matches the real launch-account snapshot on the wire, not the configured
-`CCXRAY_USER_EMAIL`. A real account at `company.com` sending turns through a
-proxy with `CCXRAY_EXPORT_DOMAINS=example.invalid` will have every turn
-excluded by `domain-mismatch`, producing `rows=0` — which looks like the
-exporter is broken rather than the filter working as designed.
+Import appends summary lines to `LOGS_DIR/index.ndjson`; disabling future import
+does not remove those lines. For a private report that must be isolated from a
+live index or exporter, use a separate `CCXRAY_HOME` and `LOGS_DIR`. Setting
+`CCXRAY_EXPORT_DISABLE=1` on a one-off command does not stop another running
+process from reading the same index.
 
 ## Upgrading from a pre-socket-lock version
 

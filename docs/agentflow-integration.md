@@ -80,10 +80,10 @@ Paths below are relative to the notebook's workspace directory: `ag.json` `works
 Retention bounds what can be recomputed later:
 
 - **Claude Code deletes transcripts after `cleanupPeriodDays`, 30 days by default.** Machines configured longer keep them longer.
-- **Proxy raw logs** are pruned after `LOG_RETENTION_DAYS` (14), and **their index lines go with them** (`server/restore.js` `_shouldKeepIndexLine`, #344): a proxy line is kept only while its `_req.json` survives.
+- **Proxy raw logs** are pruned according to the effective retention period: `LOG_RETENTION_DAYS` defaults to 14 days, while an export enrollment can store a different positive retention value. Their index lines go with them (`server/restore.js` `_shouldKeepIndexLine`, #344): a proxy line is kept only while its `_req.json` survives.
 - **Imported index lines are kept, except the twin of a pruned proxy turn.** An imported line whose responseId some proxy line also carried is deleted once no proxy copy of that responseId survives. A later import restores it if the transcript still exists; proxy-only rows (prompt suggestions, titles) are gone for good.
 
-So a report recomputed after 14 days loses its proxy-only rows and drops from `complete` to `transcripts only`; after the transcript retention window it loses the rest. Snapshots (see Freezing) are the durable record; they ship in A1b, and A1a says in its output that its figures are recomputed from what is still on disk.
+As proxy records are pruned, proxy-only rows become unavailable and an Ask can lose proxy coverage; after transcript cleanup, the remaining transcript evidence can also disappear. The timing depends on the effective proxy and transcript retention settings. Snapshots (see Freezing) are the durable record; they ship in A1b, and A1a says in its output that its figures are recomputed from what is still on disk.
 
 **Deduplication across sources** is per provider:
 
@@ -116,7 +116,7 @@ A host transcript turn that no imported line carries yet still counts, including
 
 This replaces the earlier "no separate measured vs estimated label" rule, which assumed the proxy added only about 1%. The 2026-09-27 re-verification disproved that for interactive hosts.
 
-Because proxy lines are pruned after 14 days (see Retention), a recomputed Ask can move from `complete` to `transcripts only`. That downgrade is honest, never a false `complete`; freezing in A1b keeps the original figure.
+As proxy lines are pruned according to the effective retention period (14 days by default; see Retention), a recomputed Ask can move from `complete` to `transcripts only`. That downgrade is honest, never a false `complete`; freezing in A1b keeps the original figure.
 
 ## Ask windows
 
@@ -259,7 +259,7 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
+- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning, transcript deletion or a price-table update. The text currently prints fixed figures ("14 days", "30 days"); they are the defaults, not the effective settings, which can differ (see Retention). It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
 - **Tool statistics** stay in the dashboard.
 
 **Attribution status.** Completeness says whether usage was captured; attribution says whether it was filed under the right Ask. Even fully proxied traffic can be misfiled, so every row carries both an `evidence` and a `status`:
@@ -464,7 +464,7 @@ B2 changes closeout. It is proposed last, after the report format is stable and 
 
   One rate source for every path is a prerequisite before A1a (see Phases).
 - **Prompt-suggestion requests are classified as main (`Orchestrator`) turns** in the proxy. The MVP counts them as host cost, which is correct; a separate display category is deferred.
-- **Proxy index lines are pruned after 14 days, together with their imported twins** (see Retention). A1a figures for older Asks drop proxy-only rows and fall to `transcripts only`; A1b snapshots are the fix.
+- **Proxy index lines are pruned with their raw logs according to the effective retention period** (14 days by default, with an export-enrollment override; see Retention). As that evidence ages out, A1a figures can drop proxy-only rows and move to `transcripts only`; A1b snapshots preserve the earlier figure.
 - **Codex reconciliation.** Proxy and import cannot be merged per turn yet (one source per session). Children merge into the parent.
 - **Ask-start matching** fails when the owner edits the notebook directly instead of prompting, or when the hook did not capture the prompt (`no-ag`, no open Ask, ownership refusal, bare `godev`, hook failure). Unmatched Asks fall back to `estimated start`, or to `no local evidence` when this machine has no owner submission in their bounds; uncaptured prompts stay in whichever window they fall in and are only disclosed as unmatched submissions. Chat and later follow-ups that the hook does capture are filed by the notebook itself under the open Ask; the report agrees with the notebook and discloses them rather than judging intent.
 - **Input receipts are not a history.** They describe only each host identifier's last scoped Ask and are replaced when scope is captured for another, so most closed Asks have none left (see Later).
