@@ -214,6 +214,16 @@ ccxray usage --tools                  # 完整工具呼叫明細
 
 `--json` 輸出是 agent-facing 契約 — 完整的逐欄位 schema、multi-cwd 與錯誤輸出形狀、以及過濾語意見 [`docs/usage.md`](docs/usage.md)。
 
+### agentflow 報表（實驗性）
+
+```bash
+ccxray agentflow report              # 專案 agentflow notebook 的每個 Ask
+ccxray agentflow report --ask A-012  # 單一 Ask
+ccxray agentflow report --json       # JSON
+```
+
+給使用 [agentflow](https://github.com/agfnow/agentflow) 的專案：列出 notebook 每個 Ask 的 token、成本、模型、effort 與時間，並分成 host session、subagent 與派出去的 external worker。每個 Ask 會標出用量是否全部經過 proxy（`complete`），或只讀得到 transcript（數字是下限）。先跑 `ccxray import --once`，不需要開 server。詳見 [`docs/agentflow-report.md`](docs/agentflow-report.md)（英文）。
+
 ### 其他功能
 
 - **Deep Link 導航** — 每個選取狀態（project / session / turn / step）都會反映在網址列 URL 中。把 URL 貼到新分頁，儀表板會直接導航到相同的畫面。

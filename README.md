@@ -214,6 +214,16 @@ Automated usage analysis in 0.6 seconds — know where your tokens and dollars g
 
 The `--json` output is an agent-facing contract — see [`docs/usage.md`](docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
 
+### agentflow Report (experimental)
+
+```bash
+ccxray agentflow report              # Every Ask of the project's agentflow notebook
+ccxray agentflow report --ask A-012  # One Ask
+ccxray agentflow report --json       # JSON
+```
+
+For projects that use [agentflow](https://github.com/agfnow/agentflow): tokens, cost, models, effort and time for every Ask of the notebook, split by host session, subagents and dispatched external workers. Each Ask says whether its usage was fully captured by the proxy (`complete`) or read from transcripts only (a lower bound). Run `ccxray import --once` first; no server needed. See [`docs/agentflow-report.md`](docs/agentflow-report.md).
+
 ### More
 
 - **Deep Link Navigation** — Every selection (project / session / turn / step) is reflected in the address bar URL. Paste a URL into a new tab and the dashboard navigates directly to the same view.
