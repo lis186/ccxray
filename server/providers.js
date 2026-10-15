@@ -150,9 +150,11 @@ function appendAnthropicCustomHeader(launchEnv, header) {
 // resolves its config: every input is from launch env, never the parent.
 // os.homedir() is only the no-HOME fallback, matching the child's passwd entry.
 function getClaudeLaunchAccountEmail(env, { readFile = file => fs.readFileSync(file, 'utf8') } = {}) {
-  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude');
+  const accountConfig = env.CLAUDE_CONFIG_DIR
+    ? path.join(env.CLAUDE_CONFIG_DIR, '.claude.json')
+    : path.join(env.HOME || os.homedir(), '.claude.json');
   try {
-    const config = JSON.parse(readFile(path.join(claudeHome, '.claude.json')));
+    const config = JSON.parse(readFile(accountConfig));
     return typeof config.oauthAccount?.emailAddress === 'string'
       ? config.oauthAccount.emailAddress
       : null;

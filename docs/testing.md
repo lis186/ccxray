@@ -132,9 +132,11 @@ Fixtures contain only synthetic session ids, cwds, and titles — never real
 logs, project names, usernames, or home paths. Build them as literals; don't
 copy a slice of your own `~/.ccxray`.
 
-Claude launcher account fixtures must set `CLAUDE_CONFIG_DIR` to a test-owned
-directory and write `<CLAUDE_CONFIG_DIR>/.claude.json`, never the real Claude
-config. The `oauthAccount` fixture shape in `test/auth-launcher.test.js` and
+Claude launcher account fixtures must use test-owned config files and a
+throwaway `HOME`, never the real Claude config. Cover the default
+`$HOME/.claude.json` layout with `CLAUDE_CONFIG_DIR` unset and the explicit
+`$CLAUDE_CONFIG_DIR/.claude.json` layout. The `oauthAccount` fixture shape in
+`test/auth-launcher.test.js` and
 `test/index-fields.e2e.test.js` mirrors the known file: string `accountUuid`,
 `emailAddress`, `organizationUuid`, `billingType`, `accountCreatedAt`,
 `subscriptionCreatedAt`, `displayName`, `fullName`, `organizationRole`,

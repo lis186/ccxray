@@ -1139,6 +1139,28 @@ test('account count rejects two allowed-domain accounts in the shell population'
   });
 });
 
+test('check accepts the default Claude account config at HOME/.claude.json', async () => {
+  await withFixture(async fixture => {
+    fs.writeFileSync(path.join(fixture.paths.home, '.claude.json'), JSON.stringify({
+      oauthAccount: { emailAddress: 'synthetic.user@example.test' },
+    }));
+    const log = makeLogger();
+    const result = await setup.runSetup(['--check', '--shell', 'bash', '--no-probe'], depsFor(fixture, {
+      env: {
+        HOME: fixture.paths.home,
+        CLAUDE_CONFIG_DIR: undefined,
+        CCXRAY_EXPORT_DOMAINS: 'example.test',
+      },
+      logger: log,
+    }));
+
+    assert.equal(result, 0, log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('claude-account: ok')
+      && line.includes('account domain example.test is allowed')), log.lines.join('\n'));
+    assert.ok(!log.lines.some(line => line.includes('claude-account: failed')), log.lines.join('\n'));
+  });
+});
+
 test('storage selection checks both hub and shell LOGS_DIR populations', async () => {
   await withFixture(async fixture => {
     const hubLogs = path.join(fixture.paths.root, 'hub-logs');
