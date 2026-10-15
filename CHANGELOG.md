@@ -1,8 +1,8 @@
 # Changelog
 
-## 2.5.0-rc.2
+## 2.5.0-rc.3
 
-200 non-merge commits since 2.3.1. Three headlines: ccxray adds optional GCS summary export and one-step setup; session, cost, and context data become more accurate and diagnosable; and launcher reliability, status reporting, and agentflow usage reports improve.
+204 non-merge commits since 2.3.1. Three headlines: ccxray adds optional GCS summary export and one-step setup; session, cost, and context data become more accurate and diagnosable; and launcher reliability, status reporting, and agentflow usage reports improve.
 
 ### Added
 
@@ -30,7 +30,10 @@
 - **Context-window recovery (#533, #534, #535, #536, #603, #605).** Displays identify assumed context denominators and recover the 1M window for history-only sessions when persisted import evidence supports it; disproved windows no longer appear as a confident 100%.
 - **Session Weather evidence (#484, #487, #509, #516).** Retires cumulative and otherwise falsified failure signals, combines tool results by call ID across import and proxy records, and shows unavailable instead of sunny when captured Bash calls have no paired result evidence (Read/Grep calls and legacy data without that evidence are not covered).
 - **Dashboard rendering and safety (#559, #580, #641).** Project names and session IDs no longer enter inline handlers, and Bash tool timeout text is escaped in detail metadata. Test runs (`node --test`) and processes with `CCXRAY_EXPORT_DISABLE=1` do not upload to GCS; ordinary processes are not checked for synthetic data.
-- **Claude account detection on default installs (#662).** With `CLAUDE_CONFIG_DIR` unset, ccxray now reads the account from `$HOME/.claude.json`, where Claude Code keeps it, instead of `$HOME/.claude/.claude.json`. Previously `ccxray setup` failed its account check on such installs and, with `CCXRAY_EXPORT_DOMAINS` set, their Claude turns were excluded from export. 2.5.0-rc.1 was tagged but not published to npm.
+- **Claude account detection on default installs (#662).** With `CLAUDE_CONFIG_DIR` unset, ccxray now reads the account from `$HOME/.claude.json`, where Claude Code keeps it, instead of `$HOME/.claude/.claude.json`. Previously `ccxray setup` failed its account check on such installs and, with `CCXRAY_EXPORT_DOMAINS` set, their Claude turns were excluded from export. 2.5.0-rc.1 and 2.5.0-rc.2 were tagged but not published to npm.
+- **Launch headers reach the proxy (#664).** ccxray joined its `ANTHROPIC_CUSTOM_HEADERS` entries with `, `, but Claude Code splits that variable on newlines, so `X-Ccxray-Account` never arrived as its own header. No turn recorded `accountEmail`/`accountDomain`, and with `CCXRAY_EXPORT_DOMAINS` set every Claude turn was excluded from export. Entries are now newline-separated.
+- **`claude -p` returns the model's answer (#665).** The Context HUD is no longer appended to responses in print mode (`-p` / `--print` before a bare `--`), where it replaced the answer printed by `claude -p`. Interactive sessions keep the HUD.
+- **`claude -p` no longer waits on a hidden prompt (#666).** The statusline consent prompt is skipped in print mode or when stdout is not a terminal; a skipped prompt installs nothing and is not recorded as declined.
 - **Internal headers no longer reach upstream (#575).** Every `x-ccxray-*` request header is stripped by prefix on both the HTTP and WebSocket forward paths; previously `x-ccxray-agent-id` could be forwarded to the provider.
 - **CLI and health reporting (#639, #656).** Help and unknown-option handling run before server startup; the health endpoint no longer advertises capabilities that this build does not implement.
 
