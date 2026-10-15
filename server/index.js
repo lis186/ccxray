@@ -111,12 +111,15 @@ Run "ccxray <command> --help" for command-specific help (where supported).
 // uncaught error is printed and survived (the launcher still exits with the
 // agent's code) and must not launch a second agent.
 let bootstrapLaunched = false;
+// Snapshot: the CLI section below rewrites process.argv in place, and a later
+// require can still fail, so parsing it again would strip global flags twice.
+const bootstrapArgv = process.argv.slice();
 function onBootstrapFailure(err) {
   console.error(err && err.stack ? err.stack : String(err));
   if (bootstrapLaunched) return;
   let plain;
   try { plain = require('./plain-launch'); } catch { process.exit(1); }
-  const flags = plain.parseGlobalFlags(process.argv);
+  const flags = plain.parseGlobalFlags(bootstrapArgv);
   if (flags.hasPort && plain.parsePort(flags.portValue) == null) {
     console.error(plain.INVALID_PORT_MESSAGE);
     process.exit(1);

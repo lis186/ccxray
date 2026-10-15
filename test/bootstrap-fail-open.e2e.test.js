@@ -140,6 +140,28 @@ poll.unref();
     assert.equal(readLog(home).length, 1, 'exactly one fail-open record');
   });
 
+  it('parses the original argv when a require after flag parsing fails', t => {
+    const { home, capture, env } = setup(t);
+    delete env.STORAGE_BACKEND;
+    // Fail a module that loads after the CLI section rewrote process.argv.
+    const preload = path.join(home, 'late-require.js');
+    fs.writeFileSync(preload, `
+const Module = require('module');
+const load = Module._load;
+Module._load = function (request, ...rest) {
+  if (request === './routes/sse') throw new Error('routes/sse failed to load');
+  return load.call(this, request, ...rest);
+};
+`);
+    const r = spawnSync(process.execPath, ['--require', preload, SERVER, 'claude', '--no-browser', '-p', 'hi', '--no-browser'], {
+      env, encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(r.status, 7, r.stderr);
+    assert.match(r.stderr, /routes\/sse failed to load/);
+    // Only the first --no-browser is ccxray's; the second belongs to the agent.
+    assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')).args, ['-p', 'hi', '--no-browser']);
+  });
+
   it('keeps the bg-bypass exemption under CCXRAY_FAIL_CLOSED=1', t => {
     const { home, capture, env } = setup(t);
     const r = run(['claude', '--bg', 'hi'], { ...env, CCXRAY_FAIL_CLOSED: '1' });
