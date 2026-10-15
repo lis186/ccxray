@@ -177,7 +177,7 @@ describe('auth launcher header injection (1.4a)', () => {
       const providers = require('../server/providers');
       const kUp = getKUpstreamBase64url();
 
-      const launch = providers.getAgentLaunch('codex', 5577, ['exec', 'hello'], {
+      const launch = providers.getAgentLaunch('codex', 5577, ['-m', 'gpt-test', 'exec', 'hello'], {
         PATH: '/usr/bin',
         OPENAI_API_KEY: 'sk-test-key',
       });
@@ -190,7 +190,6 @@ describe('auth launcher header injection (1.4a)', () => {
       assert.match(mpArg, new RegExp(`X-Ccxray-Auth.*${kUp.slice(0, 10)}`));
 
       // Should have model_provider="ccxray"
-      const providerIdx = launch.args.indexOf('-c');
       const mpOverride = launch.args.find(a => a.includes('model_provider="ccxray"'));
       assert.ok(mpOverride, 'should have model_provider="ccxray" arg');
 
@@ -198,9 +197,14 @@ describe('auth launcher header injection (1.4a)', () => {
       const hasOldStyle = launch.args.some(a => a.includes('openai_base_url'));
       assert.equal(hasOldStyle, false, 'should not have openai_base_url in API-key mode');
 
-      // User args still pass through
-      assert.ok(launch.args.includes('exec'));
-      assert.ok(launch.args.includes('hello'));
+      // Root options stay before the subcommand, while both overrides follow it.
+      const commandIdx = launch.args.indexOf('exec');
+      assert.deepEqual(launch.args.slice(0, commandIdx), ['-m', 'gpt-test']);
+      assert.deepEqual(launch.args.slice(commandIdx + 1, commandIdx + 5), [
+        '-c', mpArg,
+        '-c', 'model_provider="ccxray"',
+      ]);
+      assert.equal(launch.args.at(-1), 'hello');
     });
   });
 

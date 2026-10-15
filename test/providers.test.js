@@ -38,16 +38,89 @@ describe('agent provider registry', () => {
     assert.equal(launch.displayName, 'ccxray');
     assert.equal(launch.bin, 'codex');
     assert.deepEqual(launch.args, [
+      'exec',
       '-c',
       'openai_base_url="http://localhost:5577/v1"',
       '-c',
       'chatgpt_base_url="http://localhost:5577/v1"',
-      'exec',
       'hello',
     ]);
     assert.equal(launch.env.PATH, '/usr/bin');
     assert.equal(launch.env.ANTHROPIC_BASE_URL, 'https://anthropic.example.com');
     assert.match(launch.installHint, /openai\/codex/);
+  });
+
+  it('places Codex config overrides immediately after model-running commands', () => {
+    const overrides = [
+      '-c', 'openai_base_url="http://localhost:5577/v1"',
+      '-c', 'chatgpt_base_url="http://localhost:5577/v1"',
+    ];
+    const env = { PATH: '/usr/bin' };
+    const cases = [
+      { label: 'exec', args: ['exec', 'hello'], insertAt: 1 },
+      { label: 'exec alias', args: ['e', 'hello'], insertAt: 1 },
+      { label: 'review', args: ['review', '--json'], insertAt: 1 },
+      { label: 'resume', args: ['resume', 'session-id'], insertAt: 1 },
+      { label: 'fork', args: ['fork', 'session-id'], insertAt: 1 },
+      { label: 'short model option before exec', args: ['-m', 'gpt-x', 'exec', 'hello'], insertAt: 3 },
+      { label: 'long model option before exec', args: ['--model', 'gpt-x', 'exec', 'hello'], insertAt: 3 },
+      { label: 'short config option before exec', args: ['-c', 'foo=bar', 'exec', 'hello'], insertAt: 3 },
+      { label: 'long config option before exec', args: ['--config', 'foo=bar', 'exec', 'hello'], insertAt: 3 },
+      { label: 'long config option with equals before review', args: ['--config=foo=bar', 'review', '--json'], insertAt: 2 },
+      { label: 'remote option before resume', args: ['--remote', 'ws://example.test', 'resume', 'session-id'], insertAt: 3 },
+      { label: 'remote token env option before fork', args: ['--remote-auth-token-env', 'TOKEN', 'fork', 'session-id'], insertAt: 3 },
+      { label: 'other root options before exec', args: ['--enable', 'feature-x', '--profile', 'work', 'exec', 'hello'], insertAt: 5 },
+      { label: 'remaining value options before exec', args: [
+        '--disable', 'feature-y', '--local-provider', 'ollama', '-s', 'read-only',
+        '-a', 'never', '-C', '/repo', '--add-dir', '/extra', '-p', 'work', 'exec', 'hello',
+      ], insertAt: 15 },
+      { label: 'detached image consumes a subcommand-looking value', args: ['-i', 'one.png', 'exec', 'hello'], insertAt: 0 },
+      { label: 'detached long image consumes a subcommand-looking value', args: ['--image', 'one.png', 'exec', 'hello'], insertAt: 0 },
+      { label: 'variadic image values consume a later subcommand-looking value', args: ['-i', 'one.png', 'two.png', 'exec', 'hello'], insertAt: 0 },
+      { label: 'image option ends at a following root option', args: ['-i', 'one.png', '--model', 'gpt-x', 'exec', 'hello'], insertAt: 5 },
+      { label: 'attached image value leaves the root prompt before exec', args: ['--image=one.png', 'two.png', 'exec', 'hello'], insertAt: 3 },
+      { label: 'option value literally exec is skipped', args: ['--model', 'exec', 'exec', 'hello'], insertAt: 3 },
+      { label: 'root prompt positional before exec', args: ['hello', 'exec', 'hello'], insertAt: 2 },
+      { label: 'options and prompt before exec', args: ['--model', 'gpt-x', 'hello', 'exec', 'hello'], insertAt: 4 },
+      { label: 'another root command owns later arguments', args: ['app', 'exec', 'hello'], insertAt: 0 },
+      { label: 'option terminator hides later exec', args: ['--', 'exec', 'hello'], insertAt: 0 },
+      { label: 'options before and after the subcommand', args: ['--model', 'gpt-x', 'exec', '-c', 'foo=bar', 'hello'], insertAt: 3 },
+    ];
+
+    for (const { label, args, insertAt } of cases) {
+      const expected = [
+        ...args.slice(0, insertAt),
+        ...overrides,
+        ...args.slice(insertAt),
+      ];
+      const launch = providers.getAgentLaunch('codex', 5577, args, env);
+      assert.deepEqual(launch.args, expected, label);
+      assert.equal(launch.args.indexOf(overrides[1]) - 1, insertAt, `${label}: insertion index`);
+    }
+  });
+
+  it('keeps Codex config overrides at the root for interactive and other commands', () => {
+    const overrides = [
+      '-c', 'openai_base_url="http://localhost:5577/v1"',
+      '-c', 'chatgpt_base_url="http://localhost:5577/v1"',
+    ];
+    const env = { PATH: '/usr/bin' };
+    const cases = [
+      [],
+      ['hello'],
+      ['--model', 'gpt-x'],
+      ['--model', 'gpt-x', 'hello'],
+      ['app', '/repo'],
+      ['login'],
+    ];
+
+    for (const args of cases) {
+      assert.deepEqual(
+        providers.getAgentLaunch('codex', 5577, args, env).args,
+        [...overrides, ...args],
+        JSON.stringify(args)
+      );
+    }
   });
 
   it('builds the Codex desktop app launch through the registry', () => {
