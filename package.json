@@ -36,6 +36,11 @@
     "public/",
     "shared/",
     "README*.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "docs/export-onboarding.md",
+    "docs/agentflow-report.md",
+    "docs/usage.md",
     "LICENSE"
   ],
   "type": "commonjs",

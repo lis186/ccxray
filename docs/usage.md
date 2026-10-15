@@ -12,7 +12,7 @@ note). So treat the **shape** as the contract; expect values to track the index
 and the runtime environment.
 
 The single source of truth for the shapes below is
-[`server/usage.js`](../server/usage.js): `analyze()` builds the single-scope
+[`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js): `analyze()` builds the single-scope
 object, while `run()` assembles the multi-cwd comparison object and the error
 object. This
 doc mirrors them; if they ever disagree, the code wins — and that disagreement
@@ -22,7 +22,7 @@ is a bug to fix here.
 > the three top-level shapes (single-scope object, multi-cwd object, error
 > object) are treated as a contract. Shape changes must be deliberate and noted
 > in the changelog below. The `usage --json shape contract` block in
-> [`test/usage.test.js`](../test/usage.test.js) locks every section's exact key
+> [`test/usage.test.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/test/usage.test.js) locks every section's exact key
 > set and field types (plus the multi-cwd and error shapes), so an accidental
 > field add/remove fails CI — a deliberate change must update both that test and
 > this doc in the same commit. A separate test guards the `<5KB` size ceiling
@@ -296,10 +296,10 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 
 ## See also
 
-- [`docs/data-model.md`](data-model.md) — the per-entry summary fields
+- [`docs/data-model.md`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/data-model.md) — the per-entry summary fields
   (`cost`, `usage`, `toolCalls`, `skillCalls`, `sysHash`/`toolsHash`/`coreHash`,
   `isSubagent`, `cwd`, …) that `usage` aggregates from `index.ndjson`.
-- [`server/usage.js`](../server/usage.js) — the implementation.
+- [`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js) — the implementation.
 - README → *Usage Analytics CLI* — task-oriented command examples.
 
 ---

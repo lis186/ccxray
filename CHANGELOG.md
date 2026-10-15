@@ -4,7 +4,13 @@
 
 ### Added
 
-- **`ccxray agentflow report` (experimental, PR #646, #653).** Tokens, cost, models, effort and time for every Ask of an [agentflow](https://github.com/agfnow/agentflow) notebook, split by host session, native subagents and dispatched external workers. Reads transcripts and proxy records, merged; each Ask and executor says whether its usage was fully captured by the proxy (`complete`), partly (`partial proxy coverage`) or from transcripts only (a lower bound), and whether it was attributed to the Ask alone (`unique`) or not. Starts no server and imports nothing; run `ccxray import --once` first. Prints to the terminal or as `--json`; never writes to the project. See [`docs/agentflow-report.md`](docs/agentflow-report.md).
+- **Optional GCS summary export and `ccxray setup` (#612, #616, #631, #643, #652).** Setup enrolls an export, adds a Claude shell wrapper, configures summary fields, and keeps transcript import disabled by default. The exporter uploads daily and session summaries, with an optional Claude launch-account domain filter and repository-name masking; raw request/response logs remain local. See [export onboarding](docs/export-onboarding.md).
+- **`ccxray status` export diagnostics (#651, #659).** Status reports the target process's export state, local enrollment/cursor state, this shell's export settings, and whether they match the running hub. It can inspect trusted standalone and Windows servers as well as the hub.
+- **`ccxray agentflow report` (experimental, PR #646, #653).** Tokens, cost, models, effort and time for every Ask of an [agentflow](https://github.com/agfnow/agentflow) notebook, split by host session, native subagents and dispatched external workers. It reads transcript files and indexed proxy records, imports nothing, and starts no server. Each Ask and executor reports proxy completeness and attribution status. Text and `--json` output are available; see [`docs/agentflow-report.md`](docs/agentflow-report.md) for restricted transcript roots and optional import.
+
+### Changed
+
+- **Fail-open agent launching and Windows standalone mode (#647, #650).** If the proxy stack fails to load or hub attachment fails, the agent can start directly and the session is not recorded. An unresolved hub attach falls back when its default 3000 ms budget expires (`CCXRAY_ATTACH_TIMEOUT_MS` changes the budget); an earlier failure can fall back sooner. ccxray attempts to append a record to `fail-open.log`, but the write is best effort. Set `CCXRAY_FAIL_CLOSED=1` to stop instead. Windows launches run standalone rather than sharing the Unix-socket hub; use a distinct port for each server.
 
 ## 2.4.0
 
@@ -309,7 +315,7 @@ _No changelog entry (patch release)._
 
 ### Breaking
 
-- **Removed `≈N turns left` prediction from session cards.** Empirical backtest against 15 real sessions showed the predictor's median absolute percentage error was 43% (mean 87%), with worst-case 10× overestimate. Root cause was structural: a 5-turn arithmetic mean of `tokens.messages` delta is fundamentally unstable against conversations with phase shifts (heavy file reads → mid-session tool use → light end-of-session wrap-up). No repair path was found — Theil-Sen/robust variants tested worse (MAPE 135%). The UX lie (showing 367 turns remaining when ctx was already at 83%) was the original bug trigger. Replaced with factual signals — see the context-visualization features below. Full decision trail: [`openspec/changes/remove-prediction-add-countdowns/`](openspec/changes/remove-prediction-add-countdowns/) and [`docs/process-study-turns-left-pivot.md`](docs/process-study-turns-left-pivot.md).
+- **Removed `≈N turns left` prediction from session cards.** Empirical backtest against 15 real sessions showed the predictor's median absolute percentage error was 43% (mean 87%), with worst-case 10× overestimate. Root cause was structural: a 5-turn arithmetic mean of `tokens.messages` delta is fundamentally unstable against conversations with phase shifts (heavy file reads → mid-session tool use → light end-of-session wrap-up). No repair path was found — Theil-Sen/robust variants tested worse (MAPE 135%). The UX lie (showing 367 turns remaining when ctx was already at 83%) was the original bug trigger. Replaced with factual signals — see the context-visualization features below. Full decision trail: [archived OpenSpec proposal](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/openspec/changes/archive/2026-05-01-remove-prediction-add-countdowns/proposal.md) and [context-visualization study](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/process-study-turns-left-pivot.md).
 
 ### Added
 

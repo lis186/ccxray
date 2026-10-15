@@ -4,24 +4,31 @@ Guidance for Claude Code when working with this repository.
 
 ## What is ccxray
 
-A transparent HTTP proxy that sits between Claude Code and the Anthropic API. It records every request/response, serves a real-time Miller-column dashboard at the same port, and supports request interception/editing. Zero config, zero dependencies beyond Node.js.
+A transparent HTTP/WebSocket proxy and local dashboard for Claude Code, Codex, and Grok. It records request/response logs and supports request interception/editing. Runtime requires Node.js and the `ws` package.
 
 ## Commands
 
 ```bash
 npx ccxray claude                                # One command: proxy + Claude Code
-ccxray claude                                    # Multiple terminals auto-share one hub
+ccxray claude                                    # macOS/Linux launches auto-share one hub
 ccxray codex                                     # Proxy + Codex CLI
 ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
-ccxray status                                    # Show hub info and connected clients
-ccxray setup --bucket <bucket> --domains <domain> # Enroll export and configure Claude shell wrapper
+ccxray status                                    # Show process, export, home, and hub status
+ccxray --port 8080 status                        # Checks hub lock/socket first; probes this port only if no lock exists
+ccxray setup --bucket <bucket> --domains example.com # Export settings + Claude wrapper; import stays disabled
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
 npm test                                         # Run tests
 ```
 
 No build step. No linting. Restart to apply changes.
+
+`ccxray setup` writes `CCXRAY_IMPORT_DISABLE=1`; it does not install a Codex or Grok wrapper. Reload the shell after setup. `ccxray setup --check`, `--dry-run`, and `--remove` inspect, preview, and remove setup respectively. Removal writes an export tombstone and removes ccxray's owned shell block; it does not delete local logs or uploaded summaries. See the [export onboarding guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/export-onboarding.md).
+
+## Using ccxray from another agent
+
+For a machine-local agentflow usage report, run `ccxray agentflow report --json`; see the [report guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/agentflow-report.md). `GET /_api/health` is public and returns listener identity with `capabilities: []`; the export report is included only for trusted callers.
 
 ## Invariants
 
@@ -60,7 +67,7 @@ CCXRAY_HOME=/tmp/ccxray-smoke-$$ CCXRAY_EXPORT_DISABLE=1 ccxray --port 5602 --no
 - Loopback is trusted by default (dashboard + upstream + WS) — no env var needed
 - Set `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` to re-gate loopback (e.g. behind a reverse proxy)
 - `CCXRAY_HOME` — isolates logs/hub/secrets from the user's real data
-- `CCXRAY_EXPORT_DISABLE=1` — **required**. `CCXRAY_EXPORT_GCS_BUCKET` is exported globally in `~/.zshrc` (so a hub inherits it and `index.js:1108`'s sync-before-prune actually runs), and `CCXRAY_HOME` does **not** isolate it — without this flag a smoke run ships synthetic summaries to the company bucket. Same flag is set by `scripts/boot-smoke.sh`, `scripts/perf/measure.js` and `test/*.sh`; `node --test` is covered automatically.
+- `CCXRAY_EXPORT_DISABLE=1` — **required**. Export settings inherited from a shell remain active even with an isolated `CCXRAY_HOME`; this flag prevents a smoke run from uploading synthetic summaries.
 - Avoid port 5577 (user's hub) and any port already in use
 - For browser verification use browser-harness (CDP/Chrome), not cmux-browser (WKWebView has SSE and JS eval issues)
 - `BU_CDP_URL=http://127.0.0.1:<port>` — point browser-harness at a self-launched Chrome with `--remote-debugging-port=<port>` to skip the manual "Allow remote debugging" dialog
@@ -97,8 +104,10 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
+| `server/claude-args.js` | Detects Claude background-launch flags that bypass proxying |
 | `server/config.js` | PORT, ANTHROPIC_HOST/PORT/PROTOCOL, LOGS_DIR, MAX_ENTRIES, model context windows |
 | `server/pricing.js` | LiteLLM price fetch, 24h cache, fallback rates, cost calculation |
+| `server/default-rates.js` | Offline fallback model prices and temporary LiteLLM lag overrides |
 | `server/cost-budget.js` | Cost data orchestration: cache, warm-up, grouping |
 | `server/cost-worker.js` | Child process: scans `~/.claude/` JSONL files without blocking event loop |
 | `server/store.js` | In-memory state: entries[] (capped at MAX_ENTRIES), sseClients[], sessions, intercept, versionIndex (keyed by `agentKey::coreHash`). Session detection with subagent inference (inflight + temporal heuristic) |
@@ -107,15 +116,20 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/system-prompt.js` | KNOWN_AGENTS registry, agent type detection, B2 block splitting, unified diff |
 | `server/restore.js` | Startup log restoration, lazy-load req/res from disk, delta chain reconstruction |
 | `server/forward.js` | HTTP/HTTPS proxy to Anthropic, SSE capture, response logging, proxyRes error handling |
+| `server/internal-headers.js` | Defines the default-deny `x-ccxray-*` request-header rule shared by HTTP and WebSocket forwarding |
 | `server/routes/api.js` | REST endpoints for entries, tokens, system prompt |
+| `server/routes/auth.js` | Dashboard authentication bootstrap and status routes |
 | `server/routes/sse.js` | SSE endpoint |
 | `server/routes/intercept.js` | Intercept toggle/approve/reject/timeout |
 | `server/routes/costs.js` | Cost budget endpoints |
 | `server/hub.js` | Multi-project hub: lockfile (`~/.ccxray/hub.json`), discovery (with orphan port probe fallback), client registration, idle shutdown (injectable via setOnShutdown), crash auto-recovery. Hub status reports the hub-owned export config hash; socket replies reject malformed or over-1 MiB frames, and HTTP probes accept cancellation and cap replies at 1 MiB |
+| `server/providers.js` | Provider registry and launch functions for Claude, Codex, and Grok |
+| `server/hub-client-status.js` | Renders the launcher's hub-client status summary |
 | `server/export-diagnostics.js` | Shared `ccxray status` reader: separates this shell's settings from the hub's frozen report, compares hashes, reads durable enrollment/cursor/attempt/lock-loss/fail-open state, and fetches hub status under one deadline |
 | `server/launch-decision.js` | Single hub-attach outcome, fail-open fallback, settlement-first tokened unregister cleanup and retries |
-| `server/auth.js` | API key auth middleware (enabled via `AUTH_TOKEN` env) |
+| `server/auth.js` | Dashboard and upstream auth; loopback is trusted by default, `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` gates it, and `AUTH_TOKEN` optionally supplies a shared secret (otherwise a local secret is used) |
 | `server/client-shutdown.js` | Hub-client graceful shutdown. `armClientShutdown` must be armed BEFORE `hub.registerClient()` — an unarmed SIGHUP/SIGTERM keeps its OS default disposition and kills the process without unregistering, leaving a phantom client until the hub's 30s dead-client sweep |
+| `server/plain-launch.js` | Parses global CLI flags, starts an agent without the proxy on fail-open, and writes `fail-open.log` |
 | `server/win-launch.js` | Windows shell-free executable resolution for PATH, PATHEXT, npm cmd-shims, and native binary diagnostics |
 | `server/openai-response.js` | OpenAI Responses API helpers: response-object detection, field extraction |
 | `server/ws-proxy.js` | OpenAI WebSocket transport proxy for `/v1/responses` and `/v1/realtime` upgrades. Tracks active sessions + pending `recordWebSocketEntry` promises so `drainWebSocketProxy()` can force-finalize stragglers and await writes on shutdown. Tunables: `CCXRAY_WS_IDLE_TIMEOUT_MS` (default 60s), `CCXRAY_WS_MAX_QUEUE_BYTES` (default 4 MiB; caps client→upstream buffer while upstream is connecting) |
@@ -123,6 +137,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/export-sync.js` | Daily + session summary exporter to GCS (#505). Per-home loopback socket lock on `127.0.0.1`, keyed by filesystem `(dev, ino)` or `<home>/export-lock-port`; startup holds it through flush + prune, and initial/hourly/shutdown flushes reacquire it. A leftover `export.lock` is advisory only. `export-last.json` records phase, config hash, stage/category, uploaded file/row counts, and aggregate filter counts. Flush stages are `enrollment`, `enrollment-write`, `cursor-read`, `cursor-write`, `index-read`, `aggregate`, and `upload`; credential failures retain their credential stage/category. `exportConfigObject(env)` and `exportConfigHash(env)` fingerprint only the documented effective settings. Env: `CCXRAY_EXPORT_GCS_BUCKET`, `CCXRAY_EXPORT_DOMAINS`, `CCXRAY_EXPORT_CWD_ALLOWLIST`, `CCXRAY_USER_EMAIL`, `CCXRAY_TEAM` |
 | `server/export-credentials.js` | GCS writer credential discovery + parse for the exporter (#633 M0): key file, then ADC at gcloud's platform config root (`CLOUDSDK_CONFIG` → `%APPDATA%\gcloud` / `~/.config/gcloud`), no cwd fallback. Token/authorization stages are named only; display view carries no path or contents. Env: `CCXRAY_EXPORT_GCS_KEY_FILE`, `CLOUDSDK_CONFIG` (`GOOGLE_APPLICATION_CREDENTIALS` diagnosed as ignored) |
 | `server/importer.js` | Imports Claude/Codex transcripts from `~/.claude*/`/`~/.codex*/` into the index on startup. Does NOT push `store.entries` (only writes index lines) |
+| `server/session-index.js` | Rebuilds and persists derived session index data from indexed turns |
 | `server/rebuild-index.js` | `ccxray rebuild-index` CLI — rebuilds `index.ndjson` from surviving `_req/_res` log files |
 | `server/import-once.js` | `ccxray import --once` CLI — throttled, lock-guarded single-shot transcript scan for a dashboard that has noticed the index fell behind. Appends index lines only and sets `CCXRAY_SESSION_INDEX_NO_FLUSH=1`, so it may run beside a live hub (unlike `rebuild-index --reimport`, which refuses). Env: `CCXRAY_IMPORT_ONCE_MIN_INTERVAL_MS` (default 10min) |
 | `server/usage.js` | Per-turn usage extraction and session-level aggregation helpers |
@@ -131,11 +146,16 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/plan-detector.js` | Auto-detect Claude Code subscription plan from response usage data |
 | `server/plans.js` | Known plan definitions (token thresholds, names) |
 | `server/paths.js` | Path resolution helpers (`CCXRAY_HOME`, log dirs) |
+| `server/retention.js` | Bounds retention settings and computes log-pruning cutoffs |
+| `server/status.js` | Builds process and local-home export status reports |
 | `server/ratelimit-log.js` | Rate-limit event logging |
 | `server/settings.js` | Server-side settings persistence (`~/.ccxray/settings.json`) |
 | `server/url-sanitize.js` | URL sanitization for logged entries |
-| `server/storage/` | Storage adapters (local filesystem, S3/R2). `statShared()` for file mtime. `supportsDelta` flag gates delta-write eligibility. The factory wraps every adapter with a write-tracker that exposes `drain()` for graceful shutdown |
-| `server/adapters/` | Provider-specific transcript adapters (`claude-adapter.js`, `codex-adapter.js`, `grok-adapter.js`) for the importer |
+| `server/usage-query.js` | Reads, filters, and aggregates indexed usage for the CLI |
+| `server/storage/` | Local filesystem storage is supported. `STORAGE_BACKEND=s3` fails fast; the S3/R2 adapter is an incomplete skeleton. The factory tracks writes and exposes `drain()` for graceful shutdown |
+| `server/adapters/{shared,claude-adapter,codex-adapter,grok-adapter}.js` | Shared and provider-specific transcript adapters for the importer |
+| `server/agentflow/*.js` | Notebook discovery, transcript evidence, attribution, completeness, and report rendering/CLI |
+| `server/wire-parsers/{index,anthropic,openai}.js` | Provider wire-family detection and request/response parsing |
 
 ### Client (`public/`)
 
@@ -178,12 +198,12 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 - An empty hub starts its 5s idle timer as soon as it writes the readiness lock. Registering a client cancels the timer; unregistering the last client starts it again.
 - Register and unregister socket messages carry one random token per launcher process. An unregister that arrives before that launch's registration cancels only that token; cancelled markers are swept after the launcher PID dies. On fail-open, registration settlement is bounded by the hub request timeout plus 500 ms. After settlement, ccxray sends one bounded unregister and retries after hub health intervals until acknowledgement, hub death, or launcher exit.
 - `ccxray <agent>` falls back to the provider's plain command if hub attach fails or exceeds `CCXRAY_ATTACH_TIMEOUT_MS` (default 3000ms), or if standalone startup fails before listen. The fallback is recorded in `fail-open.log`; `CCXRAY_FAIL_CLOSED=1` keeps the exit-on-failure behavior. Claude `--bg` / `--background` launches bypass the proxy and are recorded as `bg-bypass`; `-p --bg` is treated as a background bypass because `-p` takes no value.
-- **Hub mode is narrower than it looks.** `hubMode` is set ONLY by the internal `--hub-mode` flag (`server/index.js:53`), which the detached hub gives itself. These all run as independent servers sharing the same `CCXRAY_HOME`:
-  - `ccxray --port N <agent>` — explicit port opts out (`index.js:1185`; no lockfile, `:1116`)
+- **Hub mode is narrower than it looks.** `parseGlobalFlags()` in `server/plain-launch.js` parses the internal `--hub-mode` flag, which `forkHub()` in `server/hub.js` passes to the detached hub. These all run as independent servers sharing the same `CCXRAY_HOME`:
+  - `ccxray --port N <agent>` — explicit port opts out of hub attach and starts the server directly (`startServer()` in `server/index.js`; no hub lockfile)
   - `ccxray` with no agent — standalone proxy + dashboard
-  - **Windows, always** — hub requires Unix sockets, so `--hub-mode` exits with an error (`index.js:55-57`)
+  - **Windows, always** — agent launches start a standalone server because the hub requires Unix sockets (`server/index.js` startup branch)
 
-  Only `ccxray <agent>` with no explicit port forks a detached hub. Anything reasoning about "one process per machine" (cross-process locks, cursors, shared-file writers) must use this list, not the `--port` case alone.
+  Only macOS/Linux `ccxray <agent>` launches without an explicit port attach to or start a detached hub. Anything reasoning about "one process per machine" (cross-process locks, cursors, shared-file writers) must use this list, not the `--port` case alone.
 - Crash recovery: clients monitor hub pid every 5s, auto-fork new hub using port as mutex
 - Version check: semver major mismatch → reject, minor → warn, patch → silent
 
@@ -242,7 +262,7 @@ Rules:
 - Delta only applies to sessions with an explicit `session_id` (main orchestrator turns). Subagents and inferred sessions always write full format.
 - First turn of a session = always full (chain anchor).
 - Compaction (messages shrinks) = always full (resets chain).
-- `supportsDelta: false` on the storage adapter (e.g. S3) disables delta entirely.
-- `CCXRAY_DELTA_SNAPSHOT_N=N` forces a full snapshot every N delta writes (default `0` = only session-start anchor). Use `5` for S3-backed setups.
+- `supportsDelta: false` on a storage adapter disables delta entirely; the local filesystem is the currently supported backend.
+- `CCXRAY_DELTA_SNAPSHOT_N=N` forces a full snapshot every N delta writes (default `0` = only session-start anchor).
 
 **Read side**: `loadEntryReqRes` detects `prevId`, recursively loads the chain, and splices `prevMessages[0..msgOffset]` + delta messages. Results are cached in memory (per entry). If `prevId` entry has been pruned, gracefully degrades to showing only the delta portion.
