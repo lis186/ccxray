@@ -9,10 +9,10 @@
 // living here) and does not inspect tokens after the first non-flag token (the
 // command slot); those are subcommand or agent args for the code below.
 {
-  // Keep in sync with the global flag-splice block below (the
-  // `process.argv.indexOf('--port')` / `--hub-mode` / `--allow-upstream-loop` /
-  // `--no-browser` handling) — a new global flag added there must be added
-  // here too, or it will be misreported as unknown.
+  // Keep in sync with parseGlobalFlags in server/plain-launch.js (`--port` /
+  // `--hub-mode` / `--allow-upstream-loop` / `--no-browser`) — a new global
+  // flag added there must be added here too, or it will be misreported as
+  // unknown.
   const KNOWN_BOOL_FLAGS = new Set(['--hub-mode', '--allow-upstream-loop', '--no-browser']);
   const KNOWN_VAL_FLAGS = new Set(['--port']);
   const HELP_TEXT = `Usage: ccxray [options] [command]
@@ -25,6 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
+  setup               Configure export enrollment and Claude shell wrapper
   setup-statusline    Configure Claude Code status line
   secret              Manage shared secrets (upstream)
   usage               Show usage summary and costs
@@ -97,6 +98,57 @@ Run "ccxray <command> --help" for command-specific help (where supported).
   }
 }
 
+// ── Bootstrap fail-open ──
+// INVARIANT: installed before the first proxy-stack require and removed right
+// before createLaunchDecision (see "Main entry"); the early-exit subcommands
+// (secret/import/rebuild-index) return before that and simply keep it, where it
+// only prints and exits 1. A synchronous throw while the modules below load
+// (STORAGE_BACKEND=s3, a missing/corrupt `ws`) would otherwise exit 1 before
+// the fail-open decision exists, so the agent never starts. Parsing, the log
+// record and the spawn come from server/plain-launch.js (load closure pinned),
+// shared with the normal launcher; every other module used here is required
+// inside a try, because it may be the one that failed.
+// Once the agent is launched the removal below is never reached: a later
+// uncaught error is printed and survived (the launcher still exits with the
+// agent's code) and must not launch a second agent.
+let bootstrapLaunched = false;
+// Snapshot: the CLI section below rewrites process.argv in place, and a later
+// require can still fail, so parsing it again would strip global flags twice.
+const bootstrapArgv = process.argv.slice();
+function onBootstrapFailure(err) {
+  console.error(err && err.stack ? err.stack : String(err));
+  if (bootstrapLaunched) return;
+  let plain;
+  try { plain = require('./plain-launch'); } catch { process.exit(1); }
+  const flags = plain.parseGlobalFlags(bootstrapArgv);
+  if (flags.hasPort && plain.parsePort(flags.portValue) == null) {
+    console.error(plain.INVALID_PORT_MESSAGE);
+    process.exit(1);
+  }
+  const agent = plain.BOOTSTRAP_AGENTS.includes(flags.argv[2]) ? flags.argv[2] : null;
+  if (!agent || flags.hubMode) process.exit(1);
+  const args = flags.argv.slice(3);
+  // Same exemption as launchDecision's bg-bypass: an intentional background
+  // session runs plain even under CCXRAY_FAIL_CLOSED=1. If claude-args is the
+  // module that failed, degrade to fail-closed (the safe direction).
+  let bgBypass = false;
+  try { bgBypass = agent === 'claude' && require('./claude-args').hasClaudeBackgroundFlag(args); } catch {}
+  if (process.env.CCXRAY_FAIL_CLOSED === '1' && !bgBypass) process.exit(1);
+  let version = null;
+  try { version = require('../package.json').version; } catch {}
+  plain.appendFailOpen(() => require('./paths').resolveCcxrayHome(),
+    { ts: new Date().toISOString(), reason: 'bootstrap-failed', version, agent });
+  console.error('[ccxray] fail-open: bootstrap-failed — this session is NOT traced; run ccxray setup --check');
+  let provider = null;
+  try { provider = require('./providers').getAgentProvider(agent); } catch {}
+  bootstrapLaunched = true;
+  plain.spawnPlain(
+    { bin: agent, args, env: process.env, label: provider?.label || agent, installHint: provider?.installHint || '' },
+    { provider, onExit: code => process.exit(code) },
+  );
+}
+process.on('uncaughtException', onBootstrapFailure);
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -123,32 +175,30 @@ const sessionIdx = require('./session-index');
 const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const { renderHubClientStatus } = require('./hub-client-status');
 const { renderProcessStatus, inspectHomeStatus } = require('./status');
+const plainLaunch = require('./plain-launch');
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
-const portIdx = process.argv.indexOf('--port');
+// Shared with the bootstrap fail-open handler so both see the same agent args.
+const globalFlags = plainLaunch.parseGlobalFlags(process.argv);
 let explicitPort = false;
-if (portIdx !== -1) {
-  const portVal = process.argv[portIdx + 1];
-  const parsed = parseInt(portVal, 10);
-  if (!portVal || isNaN(parsed) || parsed < 1 || parsed > 65535) {
-    console.error('\x1b[31mError: --port requires a valid port number (1-65535)\x1b[0m');
+if (globalFlags.hasPort) {
+  const parsed = plainLaunch.parsePort(globalFlags.portValue);
+  if (parsed == null) {
+    console.error(plainLaunch.INVALID_PORT_MESSAGE);
     process.exit(1);
   }
   config.PORT = parsed;
   explicitPort = true;
-  process.argv.splice(portIdx, 2);
 }
-let hubMode = process.argv.includes('--hub-mode');
-if (hubMode) process.argv.splice(process.argv.indexOf('--hub-mode'), 1);
+process.argv.splice(0, process.argv.length, ...globalFlags.argv);
+let hubMode = globalFlags.hubMode;
 if (hubMode && process.platform === 'win32') {
   console.error('\x1b[31mHub mode requires Unix sockets (macOS/Linux). On Windows, use --port for standalone mode.\x1b[0m');
   process.exit(1);
 }
-const allowUpstreamLoop = process.argv.includes('--allow-upstream-loop') || process.env.CCXRAY_ALLOW_UPSTREAM_LOOP === '1';
-if (process.argv.includes('--allow-upstream-loop')) process.argv.splice(process.argv.indexOf('--allow-upstream-loop'), 1);
-const noBrowser = process.argv.includes('--no-browser');
-if (noBrowser) process.argv.splice(process.argv.indexOf('--no-browser'), 1);
+const allowUpstreamLoop = globalFlags.allowUpstreamLoop || process.env.CCXRAY_ALLOW_UPSTREAM_LOOP === '1';
+const noBrowser = globalFlags.noBrowser;
 const cliCommand = process.argv[2];
 const unknownCommand = cliCommand
   && cliCommand !== 'status'
@@ -156,6 +206,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'secret'
   && cliCommand !== 'rebuild-index'
   && cliCommand !== 'import'
+  && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
   && cliCommand !== 'usage'
   && !cliCommand.startsWith('-')
@@ -346,9 +397,8 @@ const HOP_BY_HOP_HEADERS = new Set([
 // is shared with ws-proxy.js — see server/internal-headers.js for why an
 // allowlist here leaked the pane-identity header upstream.
 const { isInternalHeader } = require('./internal-headers');
-const { armClientShutdown, signalExitCode } = require('./client-shutdown');
+const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
-const { resolveAgentLaunch } = require('./win-launch');
 
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
@@ -799,62 +849,18 @@ function spawnAgent(command, port, args, onExit, opts = {}) {
     // so a signal can have begun the caller's shutdown while the prompt was
     // waiting — spawning then orphans the agent. See server/client-shutdown.js.
     if (opts.isShuttingDown && opts.isShuttingDown()) return;
-    const { spawn } = require('child_process');
     const launch = opts.launch || providers.getAgentLaunch(command, port, args);
-    let finished = false;
-    const finish = (code) => {
-      if (finished) return;
-      finished = true;
-      onExit(code);
-    };
     if (!launch) {
       console.error(`\x1b[31mError: unsupported provider "${command}". Supported providers: ${providers.supportedProviderList()}\x1b[0m`);
-      finish(1);
+      onExit(1);
       return;
     }
-    let child;
-    const reportLaunchFailure = err => {
-      if (err.code === 'ENOENT') {
-        console.error(`\x1b[31mError: "${launch.bin}" command not found. Install ${launch.label} first:\x1b[0m`);
-        console.error(`\x1b[31m${launch.installHint}\x1b[0m`);
-      } else {
-        console.error(`\x1b[31mFailed to start ${launch.bin}: ${err.message}\x1b[0m`);
-      }
-    };
-    try {
-      const plan = resolveAgentLaunch(launch.bin, launch.args, launch.env, providers.getAgentProvider(command));
-      if (plan.kind === 'error') {
-        reportLaunchFailure(plan.code === 'ENOENT' ? { code: 'ENOENT' } : { message: plan.message });
-        finish(1);
-        return;
-      }
-      child = spawn(plan.file, plan.args, {
-        stdio: 'inherit',
-        env: launch.env,
-      });
-    } catch (err) {
-      reportLaunchFailure(err);
-      finish(1);
-      return;
-    }
-    if (opts.onChild) opts.onChild(child);
-    child.on('error', (err) => {
-      reportLaunchFailure(err);
-      finish(1);
+    plainLaunch.spawnPlain(launch, {
+      provider: providers.getAgentProvider(command),
+      onExit,
+      onChild: opts.onChild,
+      signalsOwnedByCaller: opts.signalsOwnedByCaller,
     });
-    child.on('exit', (code, signal) => {
-      finish(code ?? signalExitCode(signal));
-    });
-    // INVARIANT (hub client mode): when the caller armed its own handlers BEFORE
-    // registering with the hub, installing these would double-handle the signal.
-    // The caller's handlers read the child through opts.onChild, so they cover
-    // this window too — including SIGINT, which they no-op while the agent owns
-    // the terminal exactly as this does. See server/client-shutdown.js.
-    if (!opts.signalsOwnedByCaller) {
-      process.on('SIGINT', () => {});
-      process.on('SIGTERM', () => child.kill('SIGTERM'));
-      process.on('SIGHUP', () => child.kill('SIGHUP'));
-    }
   };
 
   if (command === 'claude' && !opts.skipStatuslinePrompt) {
@@ -968,6 +974,17 @@ if (process.argv[2] === 'open') {
     }
   })();
   return; // prevent falling through to startup
+}
+
+// ── "setup" subcommand ──
+if (process.argv[2] === 'setup') {
+  require('./setup').runSetup(process.argv.slice(3)).then(code => {
+    process.exitCode = code;
+  }).catch(error => {
+    console.error(`\x1b[31mSetup failed: ${error.message}\x1b[0m`);
+    process.exitCode = 1;
+  });
+  return;
 }
 
 // ── "setup-statusline" subcommand ──
@@ -1193,6 +1210,20 @@ if (process.argv[2] === 'status') {
   return; // prevent falling through to startup
 }
 
+// Read the setup preference once per process. Its absence preserves the current
+// auto-open behaviour; `off` is an additional suppression at both startup gates.
+const autoOpenBrowserOff = (() => {
+  try {
+    const preference = require('fs').readFileSync(
+      require('path').join(resolveCcxrayHome(process.env), 'auto-open-browser'),
+      'utf8',
+    ).trim();
+    return preference === 'off';
+  } catch {
+    return false;
+  }
+})();
+
 // ── Client mode: connect to existing hub ──
 function reportHubRegistrationStatus(reply, lifecycle) {
   const rendered = renderHubClientStatus(
@@ -1280,6 +1311,7 @@ async function startClientMode(lock, decision) {
     // Auto-open browser for the first client connecting to this hub
     if (reg.firstClient) {
       const noOpen = noBrowser
+        || autoOpenBrowserOff
         || process.env.BROWSER === 'none'
         || process.env.CI
         || process.env.SSH_TTY;
@@ -1562,6 +1594,7 @@ async function startServer({ onListen } = {}) {
   // Auto-open dashboard in browser (not in hub mode)
   const noOpen = hubMode
     || noBrowser
+    || autoOpenBrowserOff
     || process.env.BROWSER === 'none'
     || process.env.CI
     || process.env.SSH_TTY;
@@ -1576,17 +1609,12 @@ async function startServer({ onListen } = {}) {
 }
 
 // ── Main entry ──
+process.removeListener('uncaughtException', onBootstrapFailure);
 const launchDecision = agentMode ? createLaunchDecision({
   command: agentCommand,
   args: agentArgs,
   attachTimeoutMs: () => attachTimeoutMs(),
-  logFailOpen: record => {
-    try {
-      const home = resolveCcxrayHome();
-      fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-      fs.appendFileSync(path.join(home, 'fail-open.log'), JSON.stringify(record) + '\n', { mode: 0o600 });
-    } catch {}
-  },
+  logFailOpen: record => plainLaunch.appendFailOpen(resolveCcxrayHome, record),
   spawnFallback: (launch, onExit) => {
     const provider = providers.getAgentProvider(agentCommand);
     spawnAgent(agentCommand, null, agentArgs, onExit, {

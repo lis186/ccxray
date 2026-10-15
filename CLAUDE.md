@@ -15,6 +15,7 @@ ccxray codex                                     # Proxy + Codex CLI
 ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
 ccxray status                                    # Show hub info and connected clients
+ccxray setup --bucket <bucket> --domains <domain> # Enroll export and configure Claude shell wrapper
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
 npm test                                         # Run tests
@@ -46,6 +47,7 @@ These constraints are enforced by structural encapsulation where possible, and g
 - **The `x-ccxray-*` request-header namespace is default-deny BY PREFIX, from one shared module** — `server/internal-headers.js` `isInternalHeader()` is used by both forward paths (`server/index.js` `buildForwardHeaders`, `server/ws-proxy.js` `buildWebSocketHeaders`). It replaced a two-member allowlist that was duplicated in those two files, which shipped `x-ccxray-agent-id` to Anthropic: the header was added at the injection site only, and the one e2e strip test named members rather than the rule, so nothing went red. `FORWARD_ALLOWED` is empty by design — ADR 0012 Layer B's `x-ccxray-relay` becomes an explicit exception (and reading an INBOUND relay never needs one: stripping builds the outbound set)
 - **A process other than the hub may append `index.ndjson`, but must never write a derived view** — `session-index.js` `tmpPath()` uses a PID suffix so concurrent flushers do not share a temporary pathname; the final derived view remains rebuildable. `ccxray import --once` sets `CCXRAY_SESSION_INDEX_NO_FLUSH=1` and appends only; the hub re-derives via the existing "index.ndjson newer than sessions.json" rebuild. A new second writer must declare which side it is on — @docs/decisions/0019-second-writer-appends-never-derives.md, as amended by @docs/decisions/0021-data-root-writer-coordination.md
 - **Any full-file rewrite of `index.ndjson` must CAS (fingerprint before read, compare before rename, synchronously)** — `liveHubBlocking()` reads `hub.json` only and is blind to standalone/`--port`/Windows servers; the CAS is the correctness boundary. Scope key is `realpath(config.LOGS_DIR)`, not `CCXRAY_HOME`. Maintenance commands (`--apply`, `--reimport`) hold a `wx`-flag lock to serialize against each other — @docs/decisions/0021-data-root-writer-coordination.md
+- **Bootstrap fail-open covers module load, through one plain-launch module** — `server/index.js` installs `onBootstrapFailure` (`uncaughtException`) before the first proxy-stack `require` and removes it immediately before `createLaunchDecision` (early-exit subcommands keep it; it only prints and exits 1 for them). A synchronous load-time throw (e.g. `STORAGE_BACKEND=s3`, missing `ws`) must still launch the plain agent with unchanged env, write `fail-open.log` (`bootstrap-failed`, same record shape), honour `CCXRAY_FAIL_CLOSED=1`, and keep the `claude --bg` exemption. Once it has launched the agent the removal is never reached: a later uncaught error is printed and survived, and must not launch a second agent (`bootstrapLaunched`). An invalid `--port` exits 1 exactly as on the normal path. Global-flag parsing, the plain spawn (Windows resolution + signal forwarding) and the log append live in `server/plain-launch.js` and are used by BOTH the normal launcher and this handler — re-inlining any of them in `index.js` reopens the drift. `plain-launch.js`'s load closure is pinned to built-ins + `win-launch`/`client-shutdown` (`test/plain-launch.test.js`); a require that reaches config/store/hub/ws silently disables the fallback — `test/bootstrap-fail-open.e2e.test.js`
 
 ## Smoke Testing
 
@@ -93,6 +95,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | Module | Purpose |
 |--------|---------|
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
+| `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
+| `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
 | `server/config.js` | PORT, ANTHROPIC_HOST/PORT/PROTOCOL, LOGS_DIR, MAX_ENTRIES, model context windows |
 | `server/pricing.js` | LiteLLM price fetch, 24h cache, fallback rates, cost calculation |
 | `server/cost-budget.js` | Cost data orchestration: cache, warm-up, grouping |
