@@ -323,6 +323,14 @@ function analyze(entries, opts = {}) {
     totalEntries: entries.length,
     totalSessions: sessionCount,
     totalCost: +totalCost.toFixed(2),
+    costAgg: entries.reduce((fold, e) => {
+      fold.count += 1;
+      const conf = e.cost?.confidence;
+      const value = Number(e.cost?.cost);
+      if (conf === 'unknown' || !Number.isFinite(value)) fold.unknownCount += 1;
+      else if (conf === 'fallback') { fold.fallbackCount += 1; fold.fallbackCost += value; }
+      return fold;
+    }, { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 }),
     retentionDays: retention.days,
     retentionCutoff: retention.cutoff,
     ...(retention.warning ? { retentionWarning: retention.warning } : {}),
@@ -556,7 +564,7 @@ function percentiles(arr) {
 function printHuman(r) {
   const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
 
-  console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · $${r.meta.totalCost}`);
+  console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · ${formatAggCostText(r.meta.totalCost, r.meta.costAgg)}`);
   console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${r.meta.retentionWarning ? ` — ${r.meta.retentionWarning}` : ''}${R}\n`);
 
   console.log(`${B}Sessions${R}`);

@@ -304,6 +304,26 @@ function reportIn(cwd, ...args) {
 }
 
 describe('ccxray agentflow report (e2e)', () => {
+  it('reports effective proxy retention without guessing transcript retention', () => {
+    const file = path.join(HOME, 'export-enrollment.json');
+    const old = process.env.LOG_RETENTION_DAYS;
+    try {
+      process.env.LOG_RETENTION_DAYS = '7';
+      assert.match(report().stdout, /proxy logs are pruned \(configured retention: 7 days/);
+      process.env.LOG_RETENTION_DAYS = '0';
+      assert.match(report().stdout, /proxy logs are not pruned/);
+      fs.writeFileSync(file, JSON.stringify({ state: 'enrolled', retentionDays: 45 }));
+      const out = report().stdout;
+      assert.match(out, /configured retention: 45 days/);
+      assert.match(out, /provider transcripts are cleaned up/);
+      assert.doesNotMatch(out, /transcript deletion \(30 days\)/);
+    } finally {
+      fs.rmSync(file, { force: true });
+      if (old === undefined) delete process.env.LOG_RETENTION_DAYS;
+      else process.env.LOG_RETENTION_DAYS = old;
+    }
+  });
+
   it('files a proxied host, its twin-merged turns and a proxy-only request under the Ask', () => {
     const r = report('--json');
     assert.equal(r.status, 0, r.stderr);
