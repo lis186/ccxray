@@ -187,6 +187,10 @@ function attemptText(attempt) {
   parts.push(`files=${Number.isInteger(attempt.files) ? attempt.files : 'unknown'}`);
   parts.push(`rows=${Number.isInteger(attempt.rows) ? attempt.rows : 'unknown'}`);
   parts.push(`lastSuccessAt=${attempt.lastSuccessAt ?? 'none'}`);
+  const count = value => Number.isInteger(value) ? value : 'unknown';
+  parts.push(`eligible=${count(attempt.eligibleTurns)}`);
+  parts.push(`excluded=no-account:${count(attempt.excludedTurns?.noAccount)},domain-mismatch:${count(attempt.excludedTurns?.domainMismatch)}`);
+  parts.push(`candidates=${count(attempt.candidateEmails)}`);
   return parts.join(' ');
 }
 

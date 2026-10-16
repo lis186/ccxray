@@ -18,7 +18,9 @@ const MAX_RETENTION_DAYS = 36500; // ~100 years
 // LOG_RETENTION_DAYS left an explicit RESTORE_DAYS on bare parseInt, so
 // RESTORE_DAYS=999999999 still reached the cutoff calculation.
 function boundedDays(raw) {
-  const parsed = parseInt(raw, 10);
+  const text = String(raw).trim();
+  if (!/^[+-]?\d+$/.test(text)) return NaN;
+  const parsed = Number(text);
   return Math.abs(parsed) > MAX_RETENTION_DAYS ? NaN : parsed;
 }
 

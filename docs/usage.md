@@ -79,7 +79,7 @@ the rounding cap is the contract.
 | `totalEntries` | number | Count of entries (turns) after all filters. |
 | `totalSessions` | number | Distinct `sessionId` count. Entries with no session id collapse into one `"unknown"` bucket, which counts here. |
 | `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. |
-| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is non-numeric **or** beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
+| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is not a complete decimal integer (for example, `1e9`, `0x10`, or `14 days`) **or** is beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
 | `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
 | `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
 | `timeRange.from` | string \| null | Earliest `receivedAt` as ISO 8601, or `null` if no timestamps. |
