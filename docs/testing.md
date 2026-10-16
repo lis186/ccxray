@@ -28,6 +28,10 @@ The rules below make isolation the default, not an afterthought.
 `npm test` preloads `test/helpers/home-guard.js` and propagates it to Node children
 through `NODE_OPTIONS`. It blocks writes inside the original real HOME and reads
 of its ccxray/Claude/Codex/gcloud data, including paths reached through symlinks.
+Explicit `CCXRAY_HOME`, the checkout,
+`os.tmpdir()` and `RUNNER_TEMP` remain writable when nested beneath HOME (as on
+GitHub Actions). These exceptions never override protected application data or
+allow HOME itself or an ancestor as an isolation root.
 Blocked access throws `ETEST_HOME` and marks the process failed even if application
 code catches the error. Browser-cache reads remain available; do not globally
 replace HOME just to run Puppeteer. With no explicit `CCXRAY_HOME`, the runner

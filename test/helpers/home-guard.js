@@ -29,11 +29,17 @@ function canonical(value) {
   }
 }
 const protectedHome = canonical(realHome);
+function within(root, file) {
+  const relative = path.relative(root, file);
+  return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+}
+const isolationRoots = [path.resolve(__dirname, '../..'), os.tmpdir(), process.env.RUNNER_TEMP];
 function check(value, write) {
   if (value instanceof URL) value = fileURLToPath(value);
   if (Buffer.isBuffer(value)) value = value.toString();
   if (typeof value !== 'string') return; // fd access was checked when opened
-  const relatives = [path.relative(realHome, path.resolve(value)), path.relative(protectedHome, canonical(value))]
+  const physicalPath = canonical(value);
+  const relatives = [path.relative(realHome, path.resolve(value)), path.relative(protectedHome, physicalPath)]
     .filter(p => p !== '..' && !p.startsWith('..' + path.sep) && !path.isAbsolute(p));
   if (!relatives.length) return;
   const appData = relatives.some(relative => {
@@ -41,7 +47,13 @@ function check(value, write) {
     return parts[0] === '.ccxray' || /^\.(claude|codex)/.test(parts[0])
       || (parts[0] === '.config' && ['claude', 'gcloud'].includes(parts[1]));
   });
-  if (!write && !appData) return; // e.g. Puppeteer's installed browser cache
+  if (!appData) {
+    if (!write) return; // e.g. Puppeteer's installed browser cache
+    // CI checkouts and temp dirs may live beneath HOME. Never exempt HOME itself
+    // (or its ancestors), and check app data first so aliases cannot expose it.
+    const roots = [...isolationRoots, process.env.CCXRAY_HOME].filter(Boolean).map(canonical);
+    if (roots.some(root => !within(root, protectedHome) && within(root, physicalPath))) return;
+  }
   const error = new Error(`ETEST_HOME: blocked ${write ? 'write' : 'application-data read'} in real HOME; isolate HOME, CCXRAY_HOME and LOGS_DIR`);
   error.code = 'ETEST_HOME';
   process.exitCode = 1; // cannot disappear inside a production catch/default path

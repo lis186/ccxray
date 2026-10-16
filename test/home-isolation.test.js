@@ -47,3 +47,57 @@ for (const mode of ['default', 'explicit', 'logs', 'direct', 'read', 'symlink', 
     } finally { fs.rmSync(root, { recursive: true, force: true }); }
   });
 }
+
+it('HOME guard allows CI isolation roots nested beneath HOME, but protects real app data', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ci-home-'));
+  const home = path.join(root, 'home');
+  const repo = path.join(home, 'work', 'checkout');
+  const temp = path.join(home, 'work', 'tmp');
+  const runnerTemp = path.join(home, 'work', 'runner-temp');
+  const ccx = path.join(home, 'work', 'isolated-ccxray');
+  const guard = path.join(repo, 'test', 'helpers', 'home-guard.js');
+  fs.mkdirSync(path.dirname(guard), { recursive: true });
+  fs.copyFileSync(path.join(__dirname, 'helpers/home-guard.js'), guard);
+  for (const dir of [temp, runnerTemp, ccx]) fs.mkdirSync(dir, { recursive: true });
+  const protectedDirs = ['.ccxray', '.claude', '.claude-personal', '.codex', '.config/gcloud'];
+  for (const dir of protectedDirs) {
+    fs.mkdirSync(path.join(home, dir), { recursive: true });
+    fs.writeFileSync(path.join(home, dir, 'fixture'), 'protected');
+  }
+  const env = { ...process.env, NODE_OPTIONS: '', NODE_TEST_REAL_HOME: home,
+    HOME: home, USERPROFILE: home, TMPDIR: temp, TMP: temp, TEMP: temp,
+    RUNNER_TEMP: runnerTemp, CCXRAY_HOME: ccx };
+  const run = (code, overrides = {}) => spawnSync(process.execPath, ['--require', guard, '-e', code], {
+    cwd: repo, env: { ...env, ...overrides }, encoding: 'utf8', timeout: 10000,
+  });
+  try {
+    // Both explicit homes and independently selected temp/checkout roots are writable.
+    for (const dir of [ccx, temp, runnerTemp, repo]) {
+      const child = run(`require('fs').writeFileSync(${JSON.stringify(path.join(dir, 'probe'))}, 'isolated')`);
+      assert.equal(child.status, 0, child.stderr);
+    }
+    for (const dir of protectedDirs) {
+      const file = path.join(home, dir, 'fixture');
+      for (const operation of ['readFileSync', 'writeFileSync']) {
+        const child = run(`require('fs').${operation}(${JSON.stringify(file)}, 'utf8')`, { CCXRAY_HOME: path.dirname(file) });
+        assert.equal(child.status, 1, child.stderr);
+        assert.match(child.stderr, /ETEST_HOME/);
+      }
+      assert.equal(fs.readFileSync(file, 'utf8'), 'protected');
+    }
+    const sibling = run(`require('fs').mkdirSync(${JSON.stringify(ccx + '-sibling')})`);
+    assert.equal(sibling.status, 1, sibling.stderr);
+    assert.match(sibling.stderr, /ETEST_HOME/);
+    const broad = run(`require('fs').writeFileSync(${JSON.stringify(path.join(home, 'probe'))}, 'unsafe')`,
+      { CCXRAY_HOME: home, TMPDIR: home, TMP: home, TEMP: home, RUNNER_TEMP: home });
+    assert.equal(broad.status, 1, broad.stderr);
+    assert.match(broad.stderr, /ETEST_HOME/);
+    if (process.platform !== 'win32') {
+      fs.symlinkSync(path.join(home, '.ccxray'), path.join(repo, 'alias'), 'dir');
+      const child = run(`require('fs').writeFileSync('alias/fixture', 'overwritten')`);
+      assert.equal(child.status, 1, child.stderr);
+      assert.match(child.stderr, /ETEST_HOME/);
+      assert.equal(fs.readFileSync(path.join(home, '.ccxray/fixture'), 'utf8'), 'protected');
+    }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
