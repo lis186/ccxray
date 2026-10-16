@@ -1457,7 +1457,8 @@ async function flushLocked(home, bucket, uploaderAtEntry, attempt) {
     attempt.stage = 'aggregate';
     aggregation = aggregate(lines, agentId, configuredUserEmail, allowedDomains);
     captureAttemptAggregation(attempt, aggregation);
-    if (!aggregation.userEmail) {
+    // An empty index has no identity to resolve; let the nothing-new path handle it.
+    if (currentLastId && !aggregation.userEmail) {
       console.log(`${exportStatsLine('hard-failed', 0, 0, [], 'unresolved', aggregation.excludedTurns)}`
         + ` email_candidates=${aggregation.candidateEmails.size}`);
       return 'hard-failed';

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const fs = require('fs');
 const path = require('path');
-const { retentionDays, retentionCutoffDate, taipeiDate } = require('../server/retention');
+const { boundedDays, retentionDays, retentionCutoffDate, taipeiDate } = require('../server/retention');
 
 const SYNTHETIC_RETENTION_NOW = new Date('2026-03-15T20:30:00.000Z');
 
@@ -120,6 +120,36 @@ describe('retention', () => {
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it('accepts only complete decimal integers within the retention bounds', () => {
+    for (const raw of ['1e9', '0x10', '14 days', '14.5', '14.0', '', ' ', 'NaN', 'Infinity', '36501']) {
+      assert.ok(Number.isNaN(boundedDays(raw)), `${JSON.stringify(raw)} must be invalid`);
+    }
+    for (const [raw, expected] of [[' 14 ', 14], ['014', 14], ['36500', 36500], ['0', 0], ['-1', -1], ['+14', 14]]) {
+      assert.equal(boundedDays(raw), expected);
+    }
+  });
+
+  it('rejects malformed LOG_RETENTION_DAYS and RESTORE_DAYS through config', () => {
+    const home = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ccxray-strict-days-'));
+    try {
+      fs.mkdirSync(path.join(home, 'logs'));
+      fs.writeFileSync(path.join(home, 'logs/index.ndjson'), '');
+      for (const key of ['LOG_RETENTION_DAYS', 'RESTORE_DAYS']) {
+        for (const value of ['1e9', '0x10', '14 days']) {
+          const child = spawnSync(process.execPath, ['-e', `
+            const config = require('./server/config');
+            process.stdout.write(JSON.stringify(config[process.argv[1]]));
+          `, key], { cwd: path.join(__dirname, '..'), encoding: 'utf8', env: {
+            ...process.env, CCXRAY_HOME: home, LOGS_DIR: path.join(home, 'logs'),
+            LOG_RETENTION_DAYS: '14', RESTORE_DAYS: '14', [key]: value,
+          } });
+          assert.equal(child.status, 0, child.stderr);
+          assert.equal(JSON.parse(child.stdout), null, `${key}=${value} must disable its window`);
+        }
+      }
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 
   it('does not normalize malformed retention settings, so pruning stays a no-op', () => {

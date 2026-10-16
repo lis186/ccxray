@@ -92,7 +92,8 @@ transcripts have no account snapshot, so the configured-domain filter excludes
 them. `CCXRAY_USER_EMAIL`, when set, supplies summary identity but does not
 create or replace the per-turn account snapshot used by the filter. Without it,
 a configured-domain export needs exactly one observed allowed-domain email;
-otherwise that flush fails without advancing its cursor. A domain filter cannot
+otherwise a nonempty index fails without advancing its cursor. An empty or missing
+index is `nothing-new`, with no upload or prune hold. A domain filter cannot
 distinguish multiple accounts within the same domain.
 
 The first cursor starts at `lastId: null` and uses the enrollment timestamp's
