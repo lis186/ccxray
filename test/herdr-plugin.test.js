@@ -64,6 +64,8 @@ function pluginEnv(overrides = {}) {
   env.CCXRAY_HOME = isolatedHome();
   env.HOME = env.CCXRAY_HOME;
   env.CCXRAY_EXPORT_DISABLE = '1';
+  // CLI rendering tests must not start a detached working-badge daemon.
+  env.CCXRAY_BADGE_LOOP_CHILD = '1';
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
   // sessionSummaryDetails call sees the child's env, where an unset
   // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects;
@@ -86,6 +88,15 @@ function withAmbientEnv(vars, fn) {
       else process.env[key] = value;
     }
   }
+}
+
+// These routing tests need a discovered proxy, not a real detached listener.
+function makeRunningProxy() {
+  const dir = tempDir('ccxray-proxy-fixture-');
+  const bin = path.join(dir, 'ccxray');
+  fs.writeFileSync(bin, '#!/bin/sh\n[ "$1" = status ] || { touch "$0.started"; exit 1; }\necho "Hub running (pid 123) on port 9999"\n');
+  fs.chmodSync(bin, 0o755);
+  return bin;
 }
 
 function runScript(script, args = [], env = {}) {
@@ -3523,6 +3534,15 @@ describe('#603 Mission Control aggregate snapshot cache', () => {
 });
 
 describe('Herdr working badge refresh loop', () => {
+  it('CLI fixture environments never spawn a detached badge loop', () => {
+    const { startWorkingRefreshLoop } = require('../plugins/herdr/bin/refresh-badges');
+    const result = startWorkingRefreshLoop(
+      { paneId: 'w1:p1', status: 'working' }, pluginEnv(),
+      { spawnImpl() { assert.fail('a rendering fixture must not spawn a daemon'); } },
+    );
+    assert.equal(result, null);
+  });
+
   it('refreshes on the interval and exits at the lifecycle boundaries', () => {
     const { loopTick } = require('../plugins/herdr/bin/badge-refresh-loop');
     const config = { intervalMs: 100, maxAgeMs: 500, paneId: 'w1:p1' };
@@ -5363,14 +5383,18 @@ describe('Herdr plugin commands', () => {
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
 
+    const proxy = makeRunningProxy();
     const result = runScript('launch-agent.js', ['codex'], {
       HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
         focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      CCXRAY_BIN: proxy,
       PROXY_PORT: '9999',
     });
+    assert.equal(fs.existsSync(`${proxy}.started`), false, 'must reuse the fixture without spawning a server');
+    assert.equal(result.status, 0, result.stderr);
     const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p7')}.json`);
     assert.ok(fs.existsSync(routed), 'a detected launch must stay routed');
   });
@@ -5391,14 +5415,17 @@ describe('Herdr plugin commands', () => {
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
 
+    const proxy = makeRunningProxy();
     const result = runScript('launch-agent.js', ['codex'], {
       HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
         focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      CCXRAY_BIN: proxy,
       PROXY_PORT: '9999',
     });
+    assert.equal(fs.existsSync(`${proxy}.started`), false, 'must not spawn a proxy on the failed launch either');
     assert.equal(result.status, 1);
   });
 

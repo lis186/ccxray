@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const net = require('net');
 const WebSocket = require('ws');
+const { childClosed, stopChild } = require('./helpers/child-lifecycle');
 const { deriveUpstreamToken } = require('./helpers/upstream-token');
 
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
@@ -30,6 +31,7 @@ function spawnServer(args, env, opts = {}) {
     env: { ...process.env, BROWSER: 'none', ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child.closed = childClosed(child);
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', d => { stdout += d; });
@@ -57,18 +59,6 @@ function waitForPort(port, timeoutMs = 8000) {
       });
     };
     check();
-  });
-}
-
-function killAndWait(child) {
-  return new Promise(resolve => {
-    if (!child || child.exitCode !== null) return resolve();
-    child.on('exit', resolve);
-    child.kill('SIGTERM');
-    setTimeout(() => {
-      try { child.kill('SIGKILL'); } catch {}
-      resolve();
-    }, 3000);
   });
 }
 
@@ -111,20 +101,10 @@ async function waitForIndexEntries(logsDir, predicate, minCount, timeoutMs = 800
   throw new Error(`timeout waiting for ${minCount} index entries`);
 }
 
-// ponytail: bounded barrier — rejects on close/error/timeout instead of hanging forever
-function waitForCompleted(ws, timeoutMs = 4000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { cleanup(); reject(new Error('barrier timeout: no response.completed')); }, timeoutMs);
-    const onMsg = d => {
-      if (JSON.parse(d.toString()).type === 'response.completed') { cleanup(); resolve(); }
-    };
-    const onClose = () => { cleanup(); reject(new Error('ws closed before response.completed')); };
-    const onError = err => { cleanup(); reject(err); };
-    function cleanup() { clearTimeout(timer); ws.off('message', onMsg); ws.off('close', onClose); ws.off('error', onError); }
-    ws.on('message', onMsg);
-    ws.on('close', onClose);
-    ws.on('error', onError);
-  });
+const { waitForFrame } = require('./helpers/websocket-barrier');
+
+function waitForCompleted(ws) {
+  return waitForFrame(ws, d => JSON.parse(d.toString()).type === 'response.completed');
 }
 
 describe('OpenAI Responses WebSocket proxy', () => {
@@ -136,6 +116,8 @@ describe('OpenAI Responses WebSocket proxy', () => {
   let proxyPort;
 
   beforeEach(async () => {
+    proxyChild = null;
+    upstreamWss = null;
     testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ws-test-'));
     upstreamServer = http.createServer();
     await new Promise(resolve => upstreamServer.listen(0, resolve));
@@ -144,7 +126,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
   });
 
   afterEach(async () => {
-    await killAndWait(proxyChild);
+    await stopChild(proxyChild, proxyChild?.closed);
     if (upstreamWss) await new Promise(resolve => upstreamWss.close(resolve));
     if (upstreamServer?.listening) await new Promise(resolve => upstreamServer.close(resolve));
     fs.rmSync(testHome, { recursive: true, force: true });
@@ -199,9 +181,11 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
+    const textEcho = waitForFrame(ws, d => d.toString() === 'echo:hello');
+    const binaryEcho = waitForFrame(ws, d => d.equals(Buffer.from([1, 2, 3])));
     ws.send('hello');
     ws.send(Buffer.from([1, 2, 3]), { binary: true });
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await Promise.all([textEcho, binaryEcho]);
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -249,12 +233,13 @@ describe('OpenAI Responses WebSocket proxy', () => {
       },
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const done = waitForCompleted(ws);
     ws.send(JSON.stringify({
       type: 'response.create', generate: true,
       model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Say hello' }] }],
     }));
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await done;
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -586,12 +571,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
+    const echo = waitForFrame(ws, d => d.toString() === 'realtime-ok');
     ws.send('hello realtime');
-    // Wait for the echo instead of a fixed sleep — 200ms flakes under full-suite load.
-    const echoDeadline = Date.now() + 5000;
-    while (!messages.includes('realtime-ok') && Date.now() < echoDeadline) {
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    await echo;
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -627,8 +609,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
+    const echo = waitForFrame(ws, d => d.toString() === 'echo:hello');
     ws.send('hello');
-    await new Promise(resolve => setTimeout(resolve, 100));
+    await echo;
     ws.terminate();
 
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
@@ -775,8 +758,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
+    const echo = waitForFrame(ws, d => d.toString() === 'echo:ping');
     ws.send('ping');
-    await new Promise(r => setTimeout(r, 200));
+    await echo;
     ws.close(1000, 'done');
     await new Promise(r => ws.on('close', r));
     assert.ok(messages.includes('echo:ping'));
@@ -815,6 +799,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('error', reject);
     });
 
+    const done = waitForCompleted(ws);
     ws.send(JSON.stringify({
       type: 'response.create',
       model: 'gpt-5.5',
@@ -837,7 +822,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
       tool_choice: 'auto',
     }));
 
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await done;
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -872,7 +857,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
 
   it('captured request without instructions still classifies agent (codex default)', async () => {
     upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
-    upstreamWss.on('connection', ws => { ws.on('message', () => {}); });
+    upstreamWss.on('connection', ws => { ws.on('message', () => ws.send('received')); });
     await startProxy();
 
     const sessionId = 'ws-noinstr-test-001';
@@ -880,12 +865,13 @@ describe('OpenAI Responses WebSocket proxy', () => {
       headers: { 'openai-beta': 'responses_websockets=2026-02-06', session_id: sessionId },
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+    const received = waitForFrame(ws, d => d.toString() === 'received');
     ws.send(JSON.stringify({
       type: 'response.create',
       model: 'gpt-5.5',
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }],
     }));
-    await new Promise(resolve => setTimeout(resolve, 500));
+    await received;
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -912,8 +898,9 @@ describe('OpenAI Responses WebSocket proxy', () => {
       ws.on('open', resolve);
       ws.on('error', reject);
     });
+    const pong = waitForFrame(ws, d => d.toString() === 'pong');
     ws.send('not json');
-    await new Promise(resolve => setTimeout(resolve, 200));
+    await pong;
     ws.close(1000, 'done');
     await new Promise(resolve => ws.on('close', resolve));
 
@@ -1007,8 +994,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Turn one' }] }],
     }));
     await turn1Done;
-    // ponytail: 2ms guard against ms-precision timestamp collision on fast roundtrips
-    await new Promise(r => setTimeout(r, 2));
+    await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId && e.title === 'Turn one');
 
     const turn2Done = waitForCompleted(ws);
     ws.send(JSON.stringify({
@@ -1100,11 +1086,12 @@ describe('OpenAI Responses WebSocket proxy', () => {
     });
     await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
 
+    const partial = waitForFrame(ws, d => JSON.parse(d.toString()).type === 'response.output_text.delta');
     ws.send(JSON.stringify({
       type: 'response.create', model: 'gpt-5.5',
       input: [{ role: 'user', content: [{ type: 'input_text', text: 'Interrupted turn' }] }],
     }));
-    await new Promise(r => setTimeout(r, 200));
+    await partial;
     ws.close(1000, 'mid-turn close');
     await new Promise(r => ws.on('close', r));
 
