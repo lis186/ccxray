@@ -83,6 +83,15 @@ with only synthetic excluded turns; the latter must retain the identity failure
 and prune hold. Durable status renders stored filter counts, using `unknown` for
 older attempt records that lack those facts.
 
+Atomic-write tests run two barrier-controlled children with the same simulated PID
+and synthetic status/index data in a temporary home. They inspect each private
+temp before allowing rename; prune's second writer must lose its CAS cleanly.
+Worker-parent tests use controlled events for exit/close ordering and executable
+fixtures for timeout escalation, stderr, and a large stdout payload. Fixture
+workers get isolated `HOME`/`CCXRAY_HOME`, an empty index, and are killed/reaped in
+`finally`. Keep fixtures under `test/fixtures/` and the explicit `test/*.test.js`
+glob so the runner never executes a hanging fixture on its own.
+
 For in-process tests, set it before requiring any module that captures it at
 load time:
 

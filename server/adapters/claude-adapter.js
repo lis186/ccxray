@@ -3,6 +3,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomBytes } = require('node:crypto');
 const { execSync } = require('node:child_process');
 const { normalizeEpoch } = require('./shared');
 
@@ -50,7 +51,7 @@ function processInput(raw, outDir, alias) {
   };
 
   const outPath = path.join(outDir, `${id}.json`);
-  const tmpPath = outPath + '.tmp';
+  const tmpPath = `${outPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(snap, null, 2));
   fs.renameSync(tmpPath, outPath);
 }
