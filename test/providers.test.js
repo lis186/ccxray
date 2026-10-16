@@ -1,11 +1,17 @@
 'use strict';
 
-const { describe, it } = require('node:test');
+const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const providers = require('../server/providers');
 
 describe('agent provider registry', () => {
+  let home;
+  before(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-provider-')); });
+  after(() => fs.rmSync(home, { recursive: true, force: true }));
   it('lists the supported provider launchers', () => {
     assert.deepEqual(providers.listAgentProviderIds(), ['claude', 'codex', 'grok']);
     assert.equal(providers.supportedProviderList(), 'claude, codex, grok');
@@ -13,7 +19,7 @@ describe('agent provider registry', () => {
 
   it('builds the Claude launch through the registry', () => {
     const launch = providers.getAgentLaunch('claude', 5577, ['--continue'], {
-      PATH: '/usr/bin',
+      PATH: '/usr/bin', HOME: home,
     });
 
     assert.equal(launch.provider, 'claude');
@@ -156,7 +162,7 @@ describe('agent provider registry', () => {
   });
 
   it('routes every hub-launched provider through its registered client identity', () => {
-    const env = { PATH: '/usr/bin', CCXRAY_HUB_CLIENT_PID: '78846' };
+    const env = { PATH: '/usr/bin', HOME: home, CCXRAY_HUB_CLIENT_PID: '78846' };
     const claude = providers.getAgentLaunch('claude', 5577, [], env);
     const codex = providers.getAgentLaunch('codex', 5577, [], env);
     const grok = providers.getAgentLaunch('grok', 5577, [], env);

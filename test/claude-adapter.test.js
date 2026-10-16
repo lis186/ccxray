@@ -14,13 +14,20 @@ function makeTmpDir() {
 }
 
 describe('claude-adapter', () => {
-  let outDir;
+  let outDir, savedEnv;
 
   beforeEach(() => {
     outDir = makeTmpDir();
+    savedEnv = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+    process.env.HOME = outDir;
+    process.env.USERPROFILE = outDir;
+    delete process.env.CLAUDE_CONFIG_DIR;
   });
 
   afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
@@ -111,7 +118,7 @@ describe('claude-adapter', () => {
     execFileSync('node', [adapterPath, '--out-dir', outDir], {
       input,
       timeout: 5000,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: '/Users/test/.claude-personal' },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(outDir, '.claude-personal') },
     });
 
     assert.ok(fs.existsSync(path.join(outDir, 'claude-personal.json')), 'should write claude-personal.json');

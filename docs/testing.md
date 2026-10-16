@@ -3,8 +3,8 @@
 How ccxray's test suite is run, and the hygiene rules every test must follow.
 
 ```bash
-npm test                          # node --test test/*.test.js
-node --test test/usage.test.js    # one file
+npm test                          # Node test runner with HOME guard preload
+node --require ./test/helpers/home-guard.js --test test/usage.test.js # one file
 ```
 
 No build step, no test framework beyond Node's built-in `node:test`.
@@ -22,6 +22,25 @@ home was empty, `usage` exited 1, and 11 assertions failed. The same fallback
 also risked leaking the runner's username and home path into recorded data.
 
 The rules below make isolation the default, not an afterthought.
+
+### HOME guard (npm test)
+
+`npm test` preloads `test/helpers/home-guard.js` and propagates it to Node children
+through `NODE_OPTIONS`. It blocks writes inside the original real HOME and reads
+of its ccxray/Claude/Codex/gcloud data, including paths reached through symlinks.
+Blocked access throws `ETEST_HOME` and marks the process failed even if application
+code catches the error. Browser-cache reads remain available; do not globally
+replace HOME just to run Puppeteer. With no explicit `CCXRAY_HOME`, the runner
+creates and cleans an empty temporary home. Individual tests still isolate their
+own data and scan roots as described below. This is a Node filesystem guard, not
+a sandbox for arbitrary native programs.
+
+`test/home-isolation.test.js` simulates a real HOME entirely under a temporary
+root: it checks settings fallback, explicit homes, logs, direct writes, reads, and
+an allowed isolated write without ever probing the human's files.
+`test/internal-api-404.e2e.test.js` uses an isolated home, empty index, mock upstream,
+disabled import/export and a fresh pricing fixture. It verifies unknown APIs leave
+both the upstream and durable turn storage untouched.
 
 ### 1. Isolate `CCXRAY_HOME`
 

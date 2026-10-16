@@ -471,6 +471,13 @@ const server = http.createServer((clientReq, clientRes) => {
   // ── Cost Budget API ──
   if (handleCostRoutes(clientReq, clientRes)) return;
 
+  // Internal API paths form a closed namespace; typos must never become turns.
+  if (clientReq.url.split('?')[0].startsWith('/_api/')) {
+    clientRes.writeHead(404, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify({ error: 'Unknown API route' }));
+    return;
+  }
+
   // ── Proxy logic ──
   const ts = helpers.taipeiTime();
   const id = helpers.timestamp();

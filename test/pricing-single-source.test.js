@@ -578,10 +578,11 @@ describe('A-010 H6: pricing-derivation revision on persisted session aggregates'
       const config = require('../server/config');
       const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
       const sessionsPath = path.join(config.LOGS_DIR, 'sessions.json');
+      si.rebuildFromMetas([{ id: 'rev-probe', sessionId: 'rev-probe', receivedAt: 1, model: 'm', maxContext: 200000 }]);
       await fsp.writeFile(indexPath, JSON.stringify({ id: 't1', sessionId: 's1' }) + '\n');
       await fsp.writeFile(sessionsPath, JSON.stringify({
         sid: 's1', count: 1, totalCost: 0.1, maxContext: 200000, fallbackCount: 0, firstReceivedAt: 1, provider: 'openai',
-        weather: { level: 'sunny', score: 0, stats: { toolSignal: null, toolTurns: 0 } }, weatherRev: 4,
+        weather: { level: 'sunny', score: 0, stats: { toolSignal: null, toolTurns: 0 } }, weatherRev: si.get('rev-probe').weatherRev,
         // pricingRev intentionally absent — simulates a sessions.json written before A-010.
       }) + '\n');
       const now = Date.now() / 1000;
@@ -608,7 +609,7 @@ describe('A-010 H6: pricing-derivation revision on persisted session aggregates'
       assert.equal(typeof currentPricingRev, 'number', 'the rebuild writer stamps a numeric pricing revision');
       await fsp.writeFile(sessionsPath, JSON.stringify({
         sid: 's1', count: 1, totalCost: 0.1, maxContext: 200000, fallbackCount: 0, firstReceivedAt: 1, provider: 'openai',
-        weather: { level: 'sunny', score: 0, stats: { toolSignal: null, toolTurns: 0 } }, weatherRev: 4,
+        weather: { level: 'sunny', score: 0, stats: { toolSignal: null, toolTurns: 0 } }, weatherRev: si.get('rev-probe').weatherRev,
         pricingRev: currentPricingRev,
       }) + '\n');
       const now = Date.now() / 1000;

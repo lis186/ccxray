@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch-path=server --watch-path=public server/index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --require ./test/helpers/home-guard.js --test test/*.test.js"
   },
   "keywords": [
     "claude",

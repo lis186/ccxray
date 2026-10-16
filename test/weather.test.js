@@ -541,13 +541,21 @@ describe('assessWeather', function() {
     assert.ok(!hasFactor(r, 'latency_drift'));
   });
 
-  it('latency uses fallback baseline for unknown model', function() {
-    var turns = repeat(10, { model: 'future-model-99', elapsed: '40' });
-    var r = assessWeather(turns);
-    assert.ok(hasFactor(r, 'latency_drift'));
-    var f = r.factors.find(function(f) { return f.type === 'latency_drift'; });
-    assert.ok(f.detail.baseline === 20000);
-  });
+  for (const model of ['future-model-99', 'claude-opus-5', 'claude-opus-5-20261001']) {
+    it(`does not invent a latency baseline for ${model}`, function() {
+      assert.ok(!hasFactor(assessWeather(repeat(10, { model, elapsed: '100' })), 'latency_drift'));
+    });
+  }
+
+  for (const model of ['claude-haiku-4-5-20251001', 'claude-opus-4-6-20260205']) {
+    it(`uses the known prefix baseline for ${model}`, function() {
+      const base = model.startsWith('claude-haiku') ? 'claude-haiku-4-5' : 'claude-opus-4-6';
+      const expected = assessWeather(repeat(10, { model: base, elapsed: '40' })).factors.find(f => f.type === 'latency_drift');
+      const actual = assessWeather(repeat(10, { model, elapsed: '40' })).factors.find(f => f.type === 'latency_drift');
+      assert.deepEqual(actual, expected);
+    });
+  }
+
 
   // #499: error_cluster now uses paired evidence only
   it('error_burst — 5 paired tool results with 4 errors among 5', function() {

@@ -662,6 +662,11 @@ describe('session-index', () => {
     // weatherRev-focused test does not also need editing on a future pricing bump.
     const currentPricingRev = si.get('rev-probe').pricingRev;
     assert.equal(typeof currentPricingRev, 'number', 'the rebuild writer stamps a numeric pricing revision');
+    // #518: known model prefixes and unknown-model abstention supersede rev 4.
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: 4, pricingRev: currentPricingRev }) + '\n');
+    await fsp.utimes(sessionsPath, now + 1, now + 1);
+    assert.equal(await si.loadSessionIndex(), false, 'pre-prefix weather must rebuild');
+
     await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev, pricingRev: currentPricingRev }) + '\n');
     await fsp.utimes(sessionsPath, now + 1, now + 1);
     assert.equal(await si.loadSessionIndex(), true, 'currently-stamped weather loads as-is');

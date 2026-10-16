@@ -87,8 +87,9 @@ describe('plain-launch parseGlobalFlags', () => {
   it('loads no project module outside its allowlist', () => {
     const root = path.resolve(__dirname, '..');
     const r = spawnSync(process.execPath, ['-e', `
+      const preloaded = new Set(Object.keys(require.cache));
       require(${JSON.stringify(path.join(root, 'server', 'plain-launch.js'))});
-      console.log(JSON.stringify(Object.keys(require.cache)));
+      console.log(JSON.stringify(Object.keys(require.cache).filter(f => !preloaded.has(f))));
     `], { encoding: 'utf8' });
     assert.equal(r.status, 0, r.stderr);
     const loaded = JSON.parse(r.stdout)
