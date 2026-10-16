@@ -40,25 +40,40 @@ let lastFailureAt = 0;
 const FAILURE_BACKOFF_MS = 60_000;
 
 // ADR 0015 R3: reads the worker's single stdout JSON result — do not add a second channel without updating this and every stdout-reading test.
-function streamUsageEntries(workerPath) {
+function streamUsageEntries(workerPath, { timeoutMs = WORKER_TIMEOUT_MS, killGraceMs = 2000 } = {}) {
   return new Promise((resolve, reject) => {
     const worker = fork(workerPath || path.join(__dirname, 'cost-worker.js'), [], { silent: true, windowsHide: true });
     const chunks = [];
     let stderrBuf = '';
+    let settled = false, failure = null, killTimer;
     const timeout = setTimeout(() => {
-      worker.kill();
-      reject(new Error(`Worker timeout (${WORKER_TIMEOUT_MS / 1000}s)`));
-    }, WORKER_TIMEOUT_MS);
+      if (settled) return;
+      failure ||= new Error(`Worker timeout (${timeoutMs / 1000}s)`);
+      worker.kill('SIGTERM');
+      if (settled) return;
+      killTimer = setTimeout(() => {
+        if (settled || worker.exitCode !== null || worker.signalCode !== null) return;
+        console.error('[ccxray] Cost worker still running after SIGTERM; sending SIGKILL');
+        worker.kill('SIGKILL');
+      }, killGraceMs);
+      killTimer.unref();
+    }, timeoutMs);
+    timeout.unref();
     worker.stdout.on('data', (chunk) => chunks.push(chunk));
     worker.stderr.on('data', (chunk) => { stderrBuf += chunk; });
-    worker.on('error', (err) => { clearTimeout(timeout); reject(err); });
-    worker.on('exit', (code, signal) => {
+    worker.on('error', (err) => { if (!settled) failure ||= err; });
+    // close follows stdio drain. Even timeout/error failures wait for that boundary.
+    worker.once('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
+      clearTimeout(killTimer);
+      if (failure) { reject(failure); return; }
       if (signal) {
         reject(new Error(`Worker killed by ${signal}${stderrBuf ? ': ' + stderrBuf : ''}`));
         return;
       }
-      if (code !== 0 && code !== null) {
+      if (code !== 0) {
         reject(new Error(stderrBuf || `Worker exited with code ${code}`));
         return;
       }

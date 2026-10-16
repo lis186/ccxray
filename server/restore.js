@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { randomBytes } = require('crypto');
 const { pipeline } = require('stream/promises');
 const config = require('./config');
 const store = require('./store');
@@ -648,16 +649,16 @@ function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
   try { files = fs.readdirSync(logsDir); } catch { return; }
 
   for (const filename of files) {
-    const match = /^index\.ndjson\.prune-(\d+)\.tmp$/.exec(filename);
+    const match = /^index\.ndjson\.prune-(\d+)(?:-[a-f0-9]{16})?\.tmp$/.exec(filename);
     if (!match) continue;
 
     const pid = Number(match[1]);
     // Own-PID cleanup assumes one PID namespace per logs dir—the only documented
     // topology: README permits local-filesystem logs, and ADR 0021 scopes
     // same-machine writers by realpath(config.LOGS_DIR). Separate namespaces sharing
-    // it already collide on this temp pathname: the prior failure can rename a
-    // truncated temp over index.ndjson (CAS fingerprints only index.ndjson); this
-    // sweep instead yields a caught ENOENT and skipped prune.
+    // it may still unlink another writer's temp. Unique nonces prevent publishing
+    // another writer's bytes; an interrupted rename yields a caught ENOENT and
+    // skipped prune. Cross-namespace coordination remains outside this contract.
     let orphaned = pid === process.pid;
     if (!orphaned) {
       try {
@@ -816,7 +817,7 @@ async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
     // Pass 3: stream survivors to a temp file (verbatim lines), collecting metas
     // for the session rebuild. mode 0600 so the rename doesn't downgrade the
     // index from 0600 to 0644 (log metadata is sensitive).
-    const tmpPath = `${indexPath}.prune-${process.pid}.tmp`;
+    const tmpPath = `${indexPath}.prune-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
     const survivorMetas = [];
     async function* survivorLines() {
       for await (const line of config.storage.readIndexLines()) {

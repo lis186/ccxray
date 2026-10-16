@@ -180,7 +180,7 @@ describe('cost-worker Grok index source', () => {
       child.stdout.on('data', c => chunks.push(c));
       child.stderr.on('data', c => { err += c; });
       child.on('error', reject);
-      child.on('exit', code => {
+      child.on('close', code => {
         if (code !== 0) return reject(new Error(err || `exit ${code}`));
         try {
           resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '[]'));
