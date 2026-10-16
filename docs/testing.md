@@ -57,6 +57,13 @@ home. The absent, valid, and corrupt cursor shapes are intentional test data; a
 corrupt-cursor status read must leave the original file and directory entries
 unchanged.
 
+Retention config tests use a temporary home and empty index to check both day-count
+environment variables through the real config module. Export enrollment tests
+cover both missing and empty indexes under a domain filter, plus nonempty indexes
+with only synthetic excluded turns; the latter must retain the identity failure
+and prune hold. Durable status renders stored filter counts, using `unknown` for
+older attempt records that lack those facts.
+
 For in-process tests, set it before requiring any module that captures it at
 load time:
 

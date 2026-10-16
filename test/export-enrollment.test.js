@@ -167,13 +167,33 @@ describe('first run (§3.7)', () => {
   // The day-1 loss: with a domain filter and no CCXRAY_USER_EMAIL, the empty-index
   // first flush used to hard-fail before writing a cursor; the next flush then anchored
   // the cursor at the tail and never uploaded the first session.
-  it('the first session survives an identity hard-fail on an empty index', async () => {
+  it('an empty index is nothing-new and the first session still exports', async () => {
     await setup();
-    assert.equal(await quiet(() => flushExport()), 'hard-failed');
+    for (const missing of [false, true]) {
+      if (missing) fs.rmSync(path.join(home, 'logs/index.ndjson'));
+      assert.equal(await quiet(() => flushExport()), 'nothing-new');
+      assert.equal(uploads.length, 0);
+      assert.equal(readJson('export-cursor.json').lastId, null);
+      assert.equal(readJson('export-last.json').outcome, 'nothing-new');
+      assert.equal(readJson('export-last.json').eligibleTurns, 0);
+      assert.equal(pruneDecision('nothing-new', home).prune, true);
+    }
 
     appendIndex(entry(1), entry(2));
     assert.equal(await quiet(() => flushExport()), 'exported');
     assert.deepEqual(uploadedDts(), [utcDay()]);
+  });
+
+  it('keeps the identity failure, cursor and prune hold when all turns are excluded', async () => {
+    await setup({ entries: [entry(1, { accountEmail: null }), entry(2, { accountEmail: 'dev@outside.test' })] });
+    assert.equal(await quiet(() => flushExport()), 'hard-failed');
+    assert.equal(uploads.length, 0);
+    assert.equal(readJson('export-cursor.json').lastId, null);
+    const attempt = readJson('export-last.json');
+    assert.equal(attempt.category, 'no-candidate');
+    assert.equal(attempt.eligibleTurns, 0);
+    assert.deepEqual(attempt.excludedTurns, { noAccount: 1, domainMismatch: 1 });
+    assert.equal(pruneDecision('hard-failed', home).prune, false);
   });
 
   it('uploads today from an existing index but never an older day', async () => {

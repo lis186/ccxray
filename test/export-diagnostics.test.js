@@ -266,6 +266,7 @@ describe('export diagnostics reader', () => {
     const removedLines = renderExportDiagnostics(removed);
     assert.match(removedLines[2], /enrollment=removed/);
     assert.match(removedLines[2], /outcome=exported/);
+    assert.match(removedLines[2], /eligible=1 excluded=no-account:0,domain-mismatch:0 candidates=1/);
 
     fs.writeFileSync(path.join(paths.home, 'export-enrollment.json'), '{broken');
     fs.rmSync(path.join(paths.home, 'export-last.json'));
@@ -292,6 +293,7 @@ describe('export diagnostics reader', () => {
     const lines = renderExportDiagnostics(diagnostics);
     assert.match(lines[2], /enrollment=absent/);
     assert.match(lines[2], /last attempt .*outcome=removed/);
+    assert.match(lines[2], /eligible=unknown excluded=no-account:unknown,domain-mismatch:unknown candidates=unknown/);
   });
 
   it('prints field-local unreadable codes and still renders the remaining durable facts', () => {
