@@ -1963,6 +1963,25 @@ async function runInstall(context, options, deps) {
 
 async function runSetup(argv = process.argv.slice(3), overrides = {}) {
   const deps = makeDeps(overrides);
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+    deps.logger.log(`${usageLine()}
+
+Options:
+  --remove                 Remove enrollment and the owned shell wrapper
+  --check                  Inspect setup and export diagnostics without changes
+  --browser on|off         Set automatic dashboard opening preference
+  --dry-run                Preview setup changes without writing files
+  --yes                    Accept setup consent without prompting
+  --shell zsh|bash|pwsh|powershell  Select the shell startup file
+  --no-probe                Skip shell startup probes (only with --check)
+  --bucket B                GCS bucket for exported summaries
+  --domains D               Comma-separated allowed account email domains
+  --prefix P                GCS object prefix
+  --cwd-allowlist L          Comma-separated working directory basenames
+  --retention-days N         Retention in days (1–3650; default 30)
+  --help, -h                Show this help`);
+    return 0;
+  }
   const parsed = parseArgs(argv);
   if (parsed.error) {
     deps.logger.error(parsed.error);

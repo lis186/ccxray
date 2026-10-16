@@ -46,6 +46,12 @@ config. The test derives launch env through `server/providers.js` and applies
 Claude Code's newline-separated custom-header parser; it never invokes a real
 Claude CLI or Anthropic endpoint.
 
+CLI output tests (`test/cli-output.test.js`) give each child a temporary home,
+empty index, isolated gcloud config, and disabled import/export. They check help,
+version, utility output, and the normal settings startup log. Agentflow footer
+tests use synthetic `export-enrollment.json` records with `state: 'enrolled'`
+and `retentionDays` to check the enrollment override without loading the exporter.
+
 Exporter status tests may create `export-cursor.json` fixtures under the isolated
 home. The absent, valid, and corrupt cursor shapes are intentional test data; a
 corrupt-cursor status read must leave the original file and directory entries

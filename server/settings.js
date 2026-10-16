@@ -48,7 +48,7 @@ function serializeStars(s) {
   };
 }
 
-function readSettings() {
+function readSettings({ quiet = false } = {}) {
   if (_cache) return cloneSettings(_cache);
   let firstLoad = false;
   try {
@@ -72,7 +72,7 @@ function readSettings() {
     _cache = { ...DEFAULTS };
     firstLoad = true;
   }
-  if (firstLoad) {
+  if (firstLoad && !quiet) {
     console.log(`\x1b[90m   Context HUD: ${_cache.statusLine ? 'enabled' : 'disabled'} (settings.json)\x1b[0m`);
   }
   return cloneSettings(_cache);

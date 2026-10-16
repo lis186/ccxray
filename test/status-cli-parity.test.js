@@ -13,7 +13,6 @@ const { inspectHomeStatus, renderProcessStatus } = require('../server/status');
 
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
 const REPORT_PID = 4312;
-const CONTEXT_HUD_LINE = '\u001b[90m   Context HUD: enabled (settings.json)\u001b[0m';
 
 function makeStatusHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-status-parity-'));
@@ -124,7 +123,6 @@ function fixtureReport(port, home, additions = {}) {
 
 function failedPrefix(env, pid, port) {
   return [
-    CONTEXT_HUD_LINE,
     ...failedBodyPrefix(env, pid, port),
   ];
 }
@@ -138,7 +136,7 @@ function failedBodyPrefix(env, pid, port) {
 }
 
 function healthFailurePrefix(env, pid, port, transport) {
-  const lines = [CONTEXT_HUD_LINE];
+  const lines = [];
   if (transport === 'socket') lines.push(`Hub pid ${pid} alive but socket not responding.`);
   else lines.push(`Hub pid ${pid} alive but not responding on port ${port}.`);
   lines.push(`Check ${path.join(env.CCXRAY_HOME, 'hub.log')}`);

@@ -361,6 +361,19 @@ function executorLine(a) {
   return `${fmtCounts(a.models)} · ${fmtCounts(a.effort, 'effort')} · ${fmtDuration(a.durationMs)}${a.durationEstimated ? ' (duration estimated)' : ''} · ${fmtCost(a)} · ${a.calls} calls`;
 }
 
+// Read only the retention inputs; loading config/export-sync would start server state.
+function proxyRetentionText() {
+  let days = require('../retention').retentionDays();
+  try {
+    const home = require('../paths').resolveCcxrayHome();
+    const enrollment = JSON.parse(fs.readFileSync(path.join(home, 'export-enrollment.json'), 'utf8'));
+    if (enrollment?.state === 'enrolled' && enrollment.retentionDays > 0) days = enrollment.retentionDays;
+  } catch {}
+  return days > 0
+    ? `proxy logs are pruned (configured retention: ${days} days; protection or export delays may keep logs longer)`
+    : 'proxy logs are not pruned';
+}
+
 function renderText(report) {
   const out = [];
   if (report.setup) out.push(`## setup · ${fmtCost(report.setup)} · ${report.setup.calls} calls`, '');
@@ -392,7 +405,7 @@ function renderText(report) {
   const f = report.footer;
   out.push('---');
   out.push(`sources (host turns): ${f.sources.join(' · ') || 'none'}`);
-  out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change after proxy pruning (14 days), transcript deletion (30 days) or a price-table update`);
+  out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change as evidence ages or prices are updated; ${proxyRetentionText()}; provider transcripts are cleaned up according to provider settings`);
   out.push(`this machine's data only · no local evidence: ${f.noLocalEvidence} · stamp unreadable: ${f.stampUnreadable} · host turns below the checkout root, not attributed: ${f.offRootTurns}`);
   out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · heuristic parent ignored: ${f.heuristicParentIgnored} · worker runs on this machine, any checkout, whose checkout is unknown, while this notebook's hosts were active: ${f.checkoutUnknown}`);
   if (f.background) out.push(`Codex background threads in this checkout or its worker clones, not attributed: ${f.background}`);
