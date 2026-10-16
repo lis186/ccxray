@@ -26,3 +26,6 @@ handoff.md
 
 # Visual-review acceptance reports (untracked evidence bundles, see ops runbook UI track)
 .visual-review/
+
+# Dev-agent scratch reports (dispatch prompts say "untracked is fine" -- keep it true)
+REPORT-*.md
