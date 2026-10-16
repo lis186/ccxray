@@ -649,7 +649,7 @@ describe('usage --json shape contract', () => {
 
   it('meta has the documented shape', () => {
     const { meta } = JSON.parse(cli('--json'));
-    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'retentionDays', 'retentionCutoff', 'retentionWarning', 'timeRange']);
+    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'costAgg', 'retentionDays', 'retentionCutoff', 'retentionWarning', 'timeRange']);
     assert.equal(typeof meta.totalEntries, 'number');
     assert.equal(typeof meta.totalSessions, 'number');
     assert.equal(typeof meta.totalCost, 'number');
@@ -878,6 +878,22 @@ describe('usage human output marks aggregate cost confidence', () => {
     process.execPath, ['server/index.js', 'usage', ...args],
     { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
   ).toString();
+
+  for (const [name, costs, expected, fold] of [
+    ['fallback', [{ cost: 2, confidence: 'fallback' }], '~$2', { count: 1, fallbackCount: 1, fallbackCost: 2, unknownCount: 0 }],
+    ['unknown', [{ cost: 2, confidence: 'exact' }, { cost: null, confidence: 'unknown' }], '$2.00+', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 1 }],
+    ['clean', [{ cost: 1, confidence: 'exact' }, { cost: 1, confidence: 'prefix' }], '$2.00', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 }],
+  ]) {
+    it(`renders the ${name} header and exposes its complete JSON fold`, () => {
+      const home = homeWith(costs.map((cost, i) => entry({ id: `header-${i}`, responseId: `msg_header_${i}`, receivedAt: 1717236000000 + i * 1000, cost })));
+      try {
+        const header = humanCli(home, '--last', '9999d').split('\n').find(l => l.includes('ccxray usage'));
+        assert.equal(header.split(' · ').at(-1), expected);
+        const json = JSON.parse(humanCli(home, '--last', '9999d', '--json'));
+        assert.deepEqual(json.meta.costAgg, fold);
+      } finally { fs.rmSync(home, { recursive: true, force: true }); }
+    });
+  }
 
   it('marks an all-fallback session with ~ and an unpriced one with +', () => {
     const fallbackHome = homeWith([1, 2, 3, 4].map(i => entry({

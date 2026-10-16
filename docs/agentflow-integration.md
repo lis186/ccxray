@@ -259,7 +259,7 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning, transcript deletion or a price-table update. The text currently prints fixed figures ("14 days", "30 days"); they are the defaults, not the effective settings, which can differ (see Retention). It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
+- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning, transcript deletion or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
 - **Tool statistics** stay in the dashboard.
 
 **Attribution status.** Completeness says whether usage was captured; attribution says whether it was filed under the right Ask. Even fully proxied traffic can be misfiled, so every row carries both an `evidence` and a `status`:

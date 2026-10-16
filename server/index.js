@@ -21,7 +21,7 @@ Commands:
   claude              Launch Claude Code through the proxy
   codex               Launch Codex CLI through the proxy
   grok                Launch Grok CLI through the proxy
-  status              Show hub info and connected clients
+  status              Show process, home export state, shell config and diagnostics
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
@@ -35,6 +35,7 @@ Options:
   --port <n>              Custom proxy port (1-65535)
   --no-browser            Don't auto-open browser on startup
   --allow-upstream-loop   Allow upstream URL pointing back to self
+  --version, -v           Show package version
   --help, -h              Show this help
 
 Arguments after an agent command are passed to the agent:
@@ -49,6 +50,10 @@ Run "ccxray <command> --help" for command-specific help (where supported).
     const tok = argv[i];
     // return, not process.exit(): exiting right after a write can truncate
     // piped stdout/stderr on macOS, and nothing else is pending here.
+    if (tok === '--version' || tok === '-v') {
+      process.stdout.write(require('../package.json').version + '\n');
+      return;
+    }
     if (tok === '--help' || tok === '-h') {
       process.stdout.write(HELP_TEXT);
       return;
@@ -346,7 +351,7 @@ const SECURITY_HEADERS = {
 };
 
 // Load persisted settings and apply immediately
-const settings = readSettings();
+const settings = readSettings({ quiet: ['setup', 'setup-statusline', 'status', 'open'].includes(cliCommand) });
 setStatusLineEnabled(settings.statusLine);
 
 // index.html with config injection — built fresh per request so dynamic values (statusLine) stay current
