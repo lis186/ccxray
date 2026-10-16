@@ -2154,7 +2154,7 @@ describe('Proxy loop startup guard', () => {
     const stubBinDir = path.join(TEST_HOME, 'stub-bin');
     fs.mkdirSync(stubBinDir, { recursive: true });
     const stubCodex = path.join(stubBinDir, 'codex');
-    fs.writeFileSync(stubCodex, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+    fs.writeFileSync(stubCodex, '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
 
     const proxyChild = spawnServer(['--port', String(proxyPort), 'codex'], {
       env: {
@@ -2223,7 +2223,7 @@ describe('Proxy loop startup guard', () => {
     const stubBinDir = path.join(TEST_HOME, 'stub-bin-chatgpt-default');
     fs.mkdirSync(stubBinDir, { recursive: true });
     const stubCodex = path.join(stubBinDir, 'codex');
-    fs.writeFileSync(stubCodex, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+    fs.writeFileSync(stubCodex, '#!/bin/sh\nexec sleep 60\n', { mode: 0o755 });
 
     const proxyChild = spawnServer(['--port', String(proxyPort), 'codex'], {
       env: {

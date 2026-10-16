@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { childClosed, stopChild } = require('./helpers/child-lifecycle');
 const { EventEmitter } = require('node:events');
 const { execFileSync, spawn } = require('node:child_process');
 
@@ -137,6 +138,7 @@ async function runLaunchSubprocess() {
 
   let stdout = '';
   let child;
+  let closed;
   let closeTimer;
   let killTimer;
   try {
@@ -145,12 +147,9 @@ async function runLaunchSubprocess() {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    closed = childClosed(child);
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { stdout += chunk; });
-    const closed = new Promise(resolve => {
-      child.once('close', (code, signal) => resolve({ code, signal }));
-      child.once('error', error => resolve({ code: null, signal: null, error }));
-    });
     closeTimer = setTimeout(() => child.kill('SIGTERM'), 3000);
     killTimer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 4500);
     const [status, forkLock] = await Promise.all([
@@ -167,6 +166,7 @@ async function runLaunchSubprocess() {
       signal: status.signal,
     };
   } finally {
+    await stopChild(child, closed);
     if (closeTimer) clearTimeout(closeTimer);
     if (killTimer) clearTimeout(killTimer);
     fs.rmSync(home, { recursive: true, force: true });
