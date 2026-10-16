@@ -164,6 +164,25 @@ describe('pruneLogs safety: empty/missing index', () => {
     assertNeighborsUntouched(neighbors);
   });
 
+  it('applies the ownership rules to nonce-suffixed prune temps too', async () => {
+    const dead = await exitedPid();
+    const live = await liveChild();
+    const file = pid => path.join(tmpDir, `index.ndjson.prune-${pid}-0123456789abcdef.tmp`);
+    try {
+      for (const pid of [dead, live.pid, process.pid, 12345]) fs.writeFileSync(file(pid), 'synthetic temp');
+      const neighbors = seedUntouchedNeighbors([`index.ndjson.prune-${dead}-invalid.tmp`]);
+      sweepOrphanedPruneTmpFiles(tmpDir, (pid, signal) => {
+        if (pid === 12345) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+        return process.kill(pid, signal);
+      });
+      assert.equal(fs.existsSync(file(dead)), false);
+      assert.equal(fs.existsSync(file(process.pid)), false);
+      assert.equal(fs.existsSync(file(live.pid)), true);
+      assert.equal(fs.existsSync(file(12345)), true);
+      assertNeighborsUntouched(neighbors);
+    } finally { await stopChild(live); }
+  });
+
   it('skips prune when index.ndjson is missing', async () => {
     // Old file that would normally be pruned (>14 days ago)
     seedOldFile('2020-01-01T00-00-00-000');
