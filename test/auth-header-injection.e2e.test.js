@@ -384,7 +384,7 @@ describe('Auth header injection E2E (1.4)', () => {
     }
   });
 
-  it('WS upgrade strips X-Ccxray-Auth before forwarding to upstream', async () => {
+  it('WS upgrade forwards no x-ccxray-* header upstream', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = makeTmpHome();
@@ -425,6 +425,8 @@ describe('Auth header injection E2E (1.4)', () => {
           // Valid token so 2.2 enforcement passes; the test asserts it is stripped upstream.
           'x-ccxray-auth': deriveUpstreamToken({ home, authToken: 'ws-strip-secret' }),
           'x-ccxray-bootstrap': 'also-must-not-reach',
+          'x-ccxray-account': 'dev@example.com',
+          'x-ccxray-future-thing': 'must-not-leak',
           'authorization': 'Bearer sk-real-key',
           'codex-session-id': 'test-session-strip',
         },
@@ -443,15 +445,150 @@ describe('Auth header injection E2E (1.4)', () => {
 
       assert.equal(receivedUpgradeHeaders.length, 1, 'upstream should receive one upgrade');
       const h = receivedUpgradeHeaders[0];
-      assert.equal(h['x-ccxray-auth'], undefined,
-        'X-Ccxray-Auth must NOT reach upstream via WS');
-      assert.equal(h['x-ccxray-bootstrap'], undefined,
-        'X-Ccxray-Bootstrap must NOT reach upstream via WS');
+      const leaked = Object.keys(h).filter(name => name.toLowerCase().startsWith('x-ccxray-'));
+      assert.deepEqual(leaked, [], `no x-ccxray-* may reach upstream via WS, saw: ${leaked.join(', ')}`);
       assert.equal(h['authorization'], 'Bearer sk-real-key',
         'Authorization header should be preserved');
       assert.ok(h['openai-beta'], 'openai-beta should be preserved');
     } finally {
       upstreamHttp.close();
+      await killAndWait(child);
+    }
+  });
+  // The allowlist that used to govern this strip shipped `x-ccxray-agent-id`
+  // straight to Anthropic: the header was added in one place, the two strip
+  // lists (index.js + ws-proxy.js) were never updated, and the assertions above
+  // only named auth/bootstrap so nothing went red. The rule is now default-deny
+  // by prefix (server/internal-headers.js); this test asserts the RULE, not a
+  // member, so a future `x-ccxray-<anything>` cannot leak the same way.
+  it('forwards no x-ccxray-* header upstream, and keeps env identity on a header-identified turn', async () => {
+    const upstreamPort = await findFreePort();
+    const proxyPort = await findFreePort();
+    const home = makeTmpHome();
+
+    const upstreamRequests = [];
+    const upstream = http.createServer((req, res) => {
+      upstreamRequests.push({ headers: { ...req.headers } });
+      const chunks = [];
+      req.on('data', chunk => chunks.push(chunk));
+      req.on('end', () => {
+        let body = {};
+        try { body = JSON.parse(Buffer.concat(chunks).toString() || '{}'); } catch {}
+        // Real Claude Code traffic is streaming, so the strip must be asserted on
+        // the SSE path too -- it was previously asserted only on non-SSE, i.e. on
+        // the path production barely uses.
+        if (body.stream) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          const ev = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+          ev('message_start', { type: 'message_start', message: {
+            id: 'msg_prefix_rule_sse', type: 'message', role: 'assistant',
+            model: 'claude-3-haiku-20240307', content: [], stop_reason: null,
+            usage: { input_tokens: 1, output_tokens: 0 } } });
+          ev('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+          ev('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } });
+          ev('content_block_stop', { type: 'content_block_stop', index: 0 });
+          ev('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } });
+          ev('message_stop', { type: 'message_stop' });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          id: 'msg_prefix_rule', type: 'message', role: 'assistant',
+          model: 'claude-3-haiku-20240307', stop_reason: 'end_turn', stop_sequence: null,
+          content: [{ type: 'text', text: 'ok' }],
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }));
+      });
+    });
+    await new Promise(resolve => upstream.listen(upstreamPort, '127.0.0.1', resolve));
+
+    const child = spawn(process.execPath, [SERVER_SCRIPT, '--port', String(proxyPort), '--no-browser'], {
+      env: {
+        ...process.env,
+        ANTHROPIC_TEST_HOST: '127.0.0.1',
+        ANTHROPIC_TEST_PORT: String(upstreamPort),
+        ANTHROPIC_TEST_PROTOCOL: 'http',
+        CCXRAY_HOME: home,
+        BROWSER: 'none',
+        RESTORE_DAYS: '0',
+        // The #505 export attribution fields. A header-identified turn used to
+        // lose all three because the header made `identity` truthy, which
+        // turned useEnvIdentity off wholesale.
+        CCXRAY_USER_EMAIL: 'someone@example.com',
+        CCXRAY_TEAM: 'platform',
+        CCXRAY_AGENT_TYPE: 'claude',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', () => {});
+    child.stderr.on('data', () => {});
+
+    try {
+      await waitForPort(proxyPort);
+
+      const resp = await postJson(proxyPort, '/v1/messages', {
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 8,
+        messages: [{ role: 'user', content: 'hello' }],
+      }, {
+        'x-ccxray-auth': deriveUpstreamToken({ home }),
+        'x-ccxray-agent-id': 'herdr:wY:herdr-abc123',
+        'x-ccxray-account': 'dev@example.com',
+        // A namespace member nothing strips by name — the point of the prefix rule.
+        'x-ccxray-future-thing': 'must-not-leak',
+      });
+      assert.equal(resp.statusCode, 200);
+
+      // Same internal set again, this time streaming. All HTTP forwards share one
+      // funnel (buildForwardHeaders), but asserting only the non-SSE path is how a
+      // namespace member leaked before -- the guard must cover the path production
+      // actually uses.
+      const sseResp = await postJson(proxyPort, '/v1/messages', {
+        model: 'claude-3-haiku-20240307',
+        max_tokens: 8,
+        stream: true,
+        messages: [{ role: 'user', content: 'hello' }],
+      }, {
+        'x-ccxray-auth': deriveUpstreamToken({ home }),
+        'x-ccxray-agent-id': 'herdr:wY:herdr-abc123',
+        'x-ccxray-account': 'dev@example.com',
+        'x-ccxray-future-thing': 'must-not-leak',
+      });
+      assert.equal(sseResp.statusCode, 200);
+      assert.equal(upstreamRequests.length, 2, 'both the non-SSE and SSE turns should reach upstream');
+
+      // Aggregate, not per-request assert: a per-request loop short-circuits on the
+      // first failure, so the SSE case would never be evaluated when the non-SSE one
+      // already failed -- the newer assertion would look live while proving nothing.
+      const leakedByRequest = upstreamRequests.map((observed, i) => ({
+        kind: i === 0 ? 'non-SSE' : 'SSE',
+        leaked: Object.keys(observed.headers)
+          .filter(name => name.toLowerCase().startsWith('x-ccxray-'))
+          .sort(),
+      })).filter(entry => entry.leaked.length > 0);
+      assert.deepEqual(leakedByRequest, [],
+        `no x-ccxray-* may reach upstream on any path, saw: ${JSON.stringify(leakedByRequest)}`);
+
+      // Give the index append a moment, then read the persisted line.
+      const indexPath = path.join(home, 'logs', 'index.ndjson');
+      for (let i = 0; i < 40 && !fs.existsSync(indexPath); i += 1) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      let meta = null;
+      for (let i = 0; i < 40; i += 1) {
+        const lines = fs.existsSync(indexPath)
+          ? fs.readFileSync(indexPath, 'utf8').split('\n').filter(Boolean)
+          : [];
+        if (lines.length) { meta = JSON.parse(lines[lines.length - 1]); break; }
+        await new Promise(r => setTimeout(r, 50));
+      }
+      assert.ok(meta, 'an index line should be written');
+      assert.equal(meta.agentId, 'herdr:wY:herdr-abc123', 'header should supply agentId');
+      assert.equal(meta.userEmail, 'someone@example.com', 'env userEmail must survive a header identity');
+      assert.equal(meta.team, 'platform', 'env team must survive a header identity');
+    } finally {
+      upstream.close();
       await killAndWait(child);
     }
   });

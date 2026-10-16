@@ -30,6 +30,17 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
 | `codex` | `openai_base_url` / model_provider | openai | `openai` / ChatGPT |
 | `grok` | `GROK_CLI_CHAT_PROXY_BASE_URL` | openai + client | `xai` (cli-chat-proxy) |
 
+**Codex config placement.** The launcher scans the root options documented by
+`codex --help` to find `exec` (or its `e` alias), `review`, `resume`, or `fork`,
+then puts its routing `-c` overrides immediately after that command. The scan
+follows Codex's root argument behavior: a detached `-i`/`--image` consumes
+following non-option values even when one spells a subcommand, while
+`--image=FILE` stays in one argv token; a root prompt may precede a subcommand,
+and `--` ends root parsing. Interactive launches and other commands keep the
+overrides at the root. The placement addresses the reported 0.159.3 behavior;
+help output alone does not confirm whether that version ignores root-level
+overrides at runtime.
+
 ## Shared hub client identity
 
 In hub mode, every launcher base URL includes `/_ccxray/client/<pid>` before the
@@ -44,6 +55,8 @@ same identity contract covers Anthropic requests, OpenAI HTTP, and OpenAI
 WebSocket traffic.
 
 ## How to add a module
+
+Every module id must also be added to `BOOTSTRAP_AGENTS` in `server/plain-launch.js`, the bootstrap fail-open list that cannot require `providers.js`; `test/plain-launch.test.js` fails until it matches `AGENT_PROVIDERS`.
 
 ### A. Anthropic Messages CLI
 

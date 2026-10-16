@@ -53,6 +53,24 @@ describe('session-index', () => {
     assert.equal(weather.score, 0);
   });
 
+  it('keeps an explicit zero context report as the latest known value', () => {
+    const si = require('../server/session-index');
+    const base = {
+      sessionId: 'known-zero', id: 'zero-turn', agentKey: 'orchestrator',
+      isSubagent: false, maxContext: 200000, receivedAt: 1,
+      usage: { input_tokens: 0, output_tokens: 0 }, contextUsageKnown: true,
+    };
+    si.updateFromEntry(base);
+    assert.equal(si.get('known-zero').latestCtxPct, 0);
+
+    si.updateFromEntry({
+      ...base, id: 'unknown-turn', receivedAt: 2,
+      usage: { input_tokens: 0, output_tokens: 5 }, contextUsageKnown: false,
+    });
+    assert.equal(si.get('known-zero').latestCtxPct, 0,
+      'a later missing report must not replace a known zero');
+  });
+
   it('#377 slice 2: partial store weather uses the session-index 1M fold', async () => {
     const si = require('../server/session-index');
     const store = require('../server/store');
@@ -88,6 +106,21 @@ describe('session-index', () => {
       store.entries.splice(0, store.entries.length, ...savedEntries);
       await si.flush();
     }
+  });
+
+  it('#603 retains an imported 1M fact for cold consumers without promoting server weather', async () => {
+    const si = require('../server/session-index');
+    const sid = 'imported-1m-cold';
+    si.updateFromEntry({
+      id: 'imported-1m-fact', sessionId: sid, agentKey: 'orchestrator', isSubagent: false,
+      maxContext: 200000, imported1mCostState: true,
+      usage: { input_tokens: 180000, output_tokens: 0 }, contextUsageKnown: true,
+    });
+
+    assert.equal(si.get(sid).imported1mCostState, true, 'sessions.json aggregate keeps the add-only fact');
+    assert.equal(si.sessionWindow(sid), 200000,
+      'the server weather fold must not turn weak import provenance into alarm authority');
+    await si.flush();
   });
 
   it('updateFromEntry + flush + load round-trip', async () => {
@@ -624,7 +657,12 @@ describe('session-index', () => {
     si.rebuildFromMetas([{ id: 'rev-probe', sessionId: 'rev-probe', receivedAt: 1, model: 'm', maxContext: 200000 }]);
     const currentRev = si.get('rev-probe').weatherRev;
     assert.equal(typeof currentRev, 'number', 'the rebuild writer stamps a numeric revision');
-    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev }) + '\n');
+    // A-010/H6: the schema probe also checks a separate pricingRev stamp (same
+    // pattern, different derivation) — read it the same dynamic way so this
+    // weatherRev-focused test does not also need editing on a future pricing bump.
+    const currentPricingRev = si.get('rev-probe').pricingRev;
+    assert.equal(typeof currentPricingRev, 'number', 'the rebuild writer stamps a numeric pricing revision');
+    await fsp.writeFile(sessionsPath, JSON.stringify({ ...record, weatherRev: currentRev, pricingRev: currentPricingRev }) + '\n');
     await fsp.utimes(sessionsPath, now + 1, now + 1);
     assert.equal(await si.loadSessionIndex(), true, 'currently-stamped weather loads as-is');
   });

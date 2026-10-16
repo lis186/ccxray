@@ -2,7 +2,7 @@
 
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -10,13 +10,21 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
 // ISOLATION (docs/testing.md): CCXRAY_HOME for ccxray's own data, and
-// CCXRAY_IMPORT_HOMES for the transcript scan root — server/importer.js reads
-// $HOME/.claude*/projects when the latter is unset, so a test without it scans
-// the developer's real transcripts. This is the ADR 0015 R4 root table applied
+// CCXRAY_IMPORT_HOMES for the transcript scan root — its value is the actual
+// Claude projects/ directory (or comma-separated list of such roots), while
+// server/importer.js reads $HOME/.claude*/projects when it is unset, so a test
+// without it scans the developer's real transcripts. This is the ADR 0015 R4 root table applied
 // to a new CLI entry point.
+const TEMP_DIRS = [];
+process.on('exit', () => {
+  for (const dir of TEMP_DIRS) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
 function tmpdir(prefix) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch {} });
+  TEMP_DIRS.push(dir);
   return dir;
 }
 
@@ -58,6 +66,32 @@ function runImport(home, projectsRoot, extraEnv = {}, args = ['--once']) {
         CCXRAY_HOME: home,
         CCXRAY_IMPORT_HOMES: projectsRoot,
         CCXRAY_IMPORT_CODEX_HOMES: tmpdir('ccxray-import-nocodex-'),
+        CCXRAY_IMPORT_DISABLE: '0',
+        ...extraEnv,
+      },
+      timeout: 30000,
+    },
+  ).toString().trim();
+  return JSON.parse(out.split('\n').filter(Boolean).pop());
+}
+
+function runTargetImport(home, projectsRoot, target, extraEnv = {}) {
+  const out = execFileSync(
+    process.execPath,
+    [
+      'server/index.js', 'import', '--target-transcript', target.file,
+      '--provider', target.provider,
+      '--session-id', target.sessionId,
+      '--cwd', target.cwd,
+    ],
+    {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: projectsRoot,
+        CCXRAY_IMPORT_CODEX_HOMES: tmpdir('ccxray-import-nocodex-'),
+        CCXRAY_IMPORT_DISABLE: '0',
         ...extraEnv,
       },
       timeout: 30000,
@@ -67,6 +101,272 @@ function runImport(home, projectsRoot, extraEnv = {}, args = ['--once']) {
 }
 
 describe('ccxray import --once', () => {
+  // FAIL-ON-OLD: the only existing import mode is a global scan. A Sidebar
+  // repair must parse exactly the transcript Herdr's native session identified,
+  // leaving unrelated sessions untouched.
+  it('imports only the explicitly targeted Claude transcript', () => {
+    const home = tmpdir('ccxray-target-import-home-');
+    const projects = tmpdir('ccxray-target-import-projects-');
+    const cwd = '/work/targeted';
+    const targetSession = 'aaaaaaaa-1111-2222-3333-444444444444';
+    writeTranscript(projects, targetSession, cwd, 2);
+    writeTranscript(projects, 'bbbbbbbb-1111-2222-3333-444444444444', '/work/unrelated', 3);
+    fs.writeFileSync(path.join(path.dirname(projects), 'settings.json'), JSON.stringify({
+      model: 'claude-opus-4-6[1m]',
+    }));
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${targetSession}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'cost-state', modelUsage: { 'claude-opus-4-6[1m]': { costUSD: 0.01 } },
+    }) + '\n');
+
+    const result = runTargetImport(home, projects, {
+      file, provider: 'claude', sessionId: targetSession, cwd,
+    }, { CCXRAY_PRICING_CACHE: path.join(home, 'pricing-cache.json') });
+    assert.equal(result.ok, true);
+    assert.equal(result.imported, 2);
+    assert.equal(result.contextSamples.length, 2,
+      'targeted import must return bounded context samples for Sidebar repair');
+    assert.ok(result.contextSamples.every(sample => sample.sessionId === targetSession));
+    assert.ok(result.contextSamples.every(sample => sample.imported1mCostState === true
+      && sample.imported1mSettings === true),
+    'targeted repair samples retain both imported-window facts outside the Sidebar tail');
+
+    const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(new Set(lines.map(line => line.sessionId)), new Set([targetSession]));
+    assert.ok(lines.every(line => line.imported1mCostState === true),
+      'targeted repair shares the importer cost-state declaration path');
+    assert.equal(fs.existsSync(path.join(home, 'logs', 'sessions.json')), false,
+      'a targeted detached importer must remain append-only');
+  });
+
+  it('returns late cost-state evidence in repair samples even when every assistant turn already exists', () => {
+    const home = tmpdir('ccxray-target-late-cost-state-home-');
+    const projects = tmpdir('ccxray-target-late-cost-state-projects-');
+    const cwd = '/work/late-cost-state';
+    const sessionId = 'late-cost-state-1111-2222-3333-444444444444';
+    writeTranscript(projects, sessionId, cwd, 1);
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+    const target = { file, provider: 'claude', sessionId, cwd };
+    const env = { CCXRAY_PRICING_CACHE: path.join(home, 'pricing-cache.json') };
+
+    const first = runTargetImport(home, projects, target, env);
+    assert.equal(first.imported, 1, 'setup imports the assistant turn before cost-state arrives');
+
+    fs.appendFileSync(file, JSON.stringify({
+      type: 'cost-state', modelUsage: { 'claude-opus-4-6[1m]': { costUSD: 0.01 } },
+    }) + '\n');
+
+    const repaired = runTargetImport(home, projects, target, env);
+    assert.equal(repaired.ok, true);
+    assert.equal(repaired.imported, 0, 'the second repair appends no duplicate assistant entry');
+    assert.equal(repaired.contextSamples.length, 1);
+    assert.equal(repaired.contextSamples[0].imported1mCostState, true,
+      'a parsed late cost-state fact overlays the returned Sidebar sample');
+
+    const indexLines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').trim().split('\n');
+    assert.equal(indexLines.length, 1, 'the repair remains append-free while returning the new fact');
+  });
+
+  it('returns late settings evidence in repair samples even when every assistant turn already exists', () => {
+    const home = tmpdir('ccxray-target-late-settings-home-');
+    const configHome = tmpdir('ccxray-target-late-settings-config-');
+    const projects = path.join(configHome, 'projects');
+    fs.mkdirSync(projects, { recursive: true });
+    const cwd = '/work/late-settings';
+    const sessionId = 'late-settings-1111-2222-3333-444444444444';
+    writeTranscript(projects, sessionId, cwd, 1);
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+    const target = { file, provider: 'claude', sessionId, cwd };
+    const env = { CCXRAY_PRICING_CACHE: path.join(home, 'pricing-cache.json') };
+
+    const first = runTargetImport(home, projects, target, env);
+    assert.equal(first.imported, 1, 'setup imports the assistant turn before the settings declaration arrives');
+
+    fs.writeFileSync(path.join(configHome, 'settings.json'), JSON.stringify({
+      model: 'claude-opus-4-6[1m]',
+    }));
+
+    const repaired = runTargetImport(home, projects, target, env);
+    assert.equal(repaired.ok, true);
+    assert.equal(repaired.imported, 0, 'the second repair appends no duplicate assistant entry');
+    assert.equal(repaired.contextSamples.length, 1);
+    assert.equal(repaired.contextSamples[0].imported1mSettings, true,
+      'a parsed late settings fact overlays the returned Sidebar sample');
+
+    const indexLines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').trim().split('\n');
+    assert.equal(indexLines.length, 1, 'the repair remains append-free while returning the new fact');
+  });
+
+  it('imports one explicitly targeted Codex rollout with matching identity', () => {
+    const home = tmpdir('ccxray-target-codex-home-');
+    const claudeProjects = tmpdir('ccxray-target-codex-noclaude-');
+    const codexRoot = tmpdir('ccxray-target-codex-sessions-');
+    const day = path.join(codexRoot, '2026', '08', '26');
+    fs.mkdirSync(day, { recursive: true });
+    const cwd = '/work/codex-target';
+    const sessionId = '01a037d2-71f8-7be3-adf7-c572e2b212fe';
+    const file = path.join(day, `rollout-2026-08-26T01-00-00-${sessionId}.jsonl`);
+    fs.writeFileSync(file, [
+      JSON.stringify({
+        timestamp: '2026-08-26T01:00:00.000Z', type: 'session_meta',
+        payload: { session_id: sessionId, cwd },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-26T01:00:01.000Z', type: 'turn_context',
+        payload: { cwd, model: 'gpt-5.6-luna' },
+      }),
+      JSON.stringify({
+        timestamp: '2026-08-26T01:00:02.000Z', type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            model_context_window: 400000,
+            last_token_usage: { input_tokens: 1000, cached_input_tokens: 200, output_tokens: 50 },
+          },
+        },
+      }),
+      '',
+    ].join('\n'));
+
+    const result = runTargetImport(home, claudeProjects, {
+      file, provider: 'codex', sessionId, cwd,
+    }, { CCXRAY_IMPORT_CODEX_HOMES: codexRoot });
+    assert.equal(result.ok, true);
+    assert.equal(result.imported, 1);
+    const line = JSON.parse(fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').trim());
+    assert.equal(line.sessionId, sessionId);
+    assert.equal(line.imported, true);
+    assert.equal(line.importSource, 'codex');
+  });
+
+  it('fails closed when the targeted transcript cwd conflicts with the native pane cwd', () => {
+    const home = tmpdir('ccxray-target-conflict-home-');
+    const projects = tmpdir('ccxray-target-conflict-projects-');
+    const sessionId = 'cccccccc-1111-2222-3333-444444444444';
+    const actualCwd = '/work/actual';
+    writeTranscript(projects, sessionId, actualCwd, 1);
+    const file = path.join(projects, actualCwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+
+    let failure = null;
+    try {
+      runTargetImport(home, projects, {
+        file, provider: 'claude', sessionId, cwd: '/work/different-pane',
+      });
+    } catch (error) {
+      failure = error;
+    }
+    assert.ok(failure, 'identity conflict must reject the targeted import');
+    assert.match(String(failure.stdout), /transcript cwd identity conflict/);
+    assert.equal(fs.existsSync(path.join(home, 'logs', 'index.ndjson')), false,
+      'a rejected identity must append no telemetry');
+  });
+
+  // FAIL-ON-OLD: pushImportedEntry used to swallow append failures, increment
+  // imported, and let the Sidebar fingerprint become permanently complete.
+  it('reports a targeted index append failure instead of claiming success', () => {
+    const home = tmpdir('ccxray-target-write-failure-home-');
+    const projects = tmpdir('ccxray-target-write-failure-projects-');
+    const sessionId = 'dddddddd-1111-2222-3333-444444444444';
+    const cwd = '/work/write-failure';
+    writeTranscript(projects, sessionId, cwd, 1);
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+    fs.mkdirSync(path.join(home, 'logs', 'index.ndjson'), { recursive: true });
+
+    let failure = null;
+    try { runTargetImport(home, projects, { file, provider: 'claude', sessionId, cwd }); }
+    catch (error) { failure = error; }
+    assert.ok(failure, 'an append failure must make the target command fail');
+    assert.match(String(failure.stdout), /target-import-failed/);
+    assert.match(String(failure.stdout), /EISDIR|directory/i);
+  });
+
+  // S-2/A-2.2: a cross-session id collision between two GENUINELY DIFFERENT
+  // turns must get a deterministic suffix, not the old thrown `transcript
+  // entry id identity collision` — the spec's original throw-on-any-collision
+  // behavior would fail every such repair instead of importing it. This test
+  // used to assert the throw; it now asserts the suffixed import succeeds.
+  it('suffixes a timestamp id collision owned by another indexed session instead of failing', () => {
+    const home = tmpdir('ccxray-target-id-collision-home-');
+    const projects = tmpdir('ccxray-target-id-collision-projects-');
+    const firstSession = 'ffffffff-1111-2222-3333-444444444444';
+    const targetSession = '99999999-1111-2222-3333-444444444444';
+    const firstCwd = '/work/id-owner';
+    const targetCwd = '/work/id-collision';
+    writeTranscript(projects, firstSession, firstCwd, 1);
+    const firstFile = path.join(projects, firstCwd.replace(/[^a-zA-Z0-9]/g, '-'), `${firstSession}.jsonl`);
+    const firstResult = runTargetImport(home, projects, {
+      file: firstFile, provider: 'claude', sessionId: firstSession, cwd: firstCwd,
+    });
+    assert.equal(firstResult.imported, 1);
+    const timestamp = JSON.parse(fs.readFileSync(firstFile, 'utf8').trim()).timestamp;
+    const targetDir = path.join(projects, targetCwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(targetDir, { recursive: true });
+    const targetFile = path.join(targetDir, `${targetSession}.jsonl`);
+    fs.writeFileSync(targetFile, `${JSON.stringify({
+      type: 'assistant', cwd: targetCwd, timestamp,
+      message: { id: 'collision-msg', model: 'claude-opus-4-6', usage: { input_tokens: 10, output_tokens: 1 } },
+    })}\n`);
+
+    const result = runTargetImport(home, projects, {
+      file: targetFile, provider: 'claude', sessionId: targetSession, cwd: targetCwd,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.imported, 1, 'a genuinely different turn sharing an id imports with a suffixed id');
+    const lines = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8')
+      .trim().split('\n').map(line => JSON.parse(line));
+    const sessions = lines.map(l => l.sessionId);
+    assert.deepEqual(new Set(sessions), new Set([firstSession, targetSession]));
+    const owner = lines.find(l => l.sessionId === firstSession);
+    const collided = lines.find(l => l.sessionId === targetSession);
+    assert.equal(collided.id, `${owner.id}-1`, 'the second turn gets a deterministic -1 suffix, not a thrown error');
+  });
+
+  // FAIL-ON-OLD: refresh-all can launch one exact repair per pane close
+  // together. The second worker used to treat the first worker's shared lock as
+  // a terminal skip and permanently poison its own fingerprint.
+  it('waits boundedly for another importer and then repairs its own target', async () => {
+    const home = tmpdir('ccxray-target-lock-wait-home-');
+    const projects = tmpdir('ccxray-target-lock-wait-projects-');
+    const sessionId = 'eeeeeeee-1111-2222-3333-444444444444';
+    const cwd = '/work/lock-wait';
+    writeTranscript(projects, sessionId, cwd, 1);
+    const file = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'), `${sessionId}.jsonl`);
+    const { lockPath } = require('../server/import-once');
+    const lock = lockPath({ CCXRAY_HOME: home });
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, startedAt: Date.now() }));
+
+    const args = [
+      'server/index.js', 'import', '--target-transcript', file,
+      '--provider', 'claude', '--session-id', sessionId, '--cwd', cwd,
+    ];
+    const started = Date.now();
+    const child = spawn(process.execPath, args, {
+      cwd: ROOT,
+      env: {
+        ...process.env,
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: projects,
+        CCXRAY_IMPORT_CODEX_HOMES: tmpdir('ccxray-target-lock-wait-nocodex-'),
+        CCXRAY_IMPORT_DISABLE: '0',
+        CCXRAY_IMPORT_TARGET_WATCHDOG_MS: '3000',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    setTimeout(() => { try { fs.unlinkSync(lock); } catch {} }, 500);
+    const code = await new Promise(resolve => child.on('close', resolve));
+    const elapsed = Date.now() - started;
+
+    assert.equal(code, 0, stderr || stdout);
+    assert.ok(elapsed >= 400, `target should have waited for the live holder, took ${elapsed}ms`);
+    const report = JSON.parse(stdout.trim().split('\n').filter(Boolean).pop());
+    assert.equal(report.imported, 1);
+  });
+
   // Both halves of one run's contract are asserted from a single spawn: what it
   // must write (index lines) and what it must NOT (the hub's derived view).
   // Each spawn here is a full `node server/index.js`, and the suite runs files

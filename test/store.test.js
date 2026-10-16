@@ -676,6 +676,126 @@ describe('store', () => {
       };
       assert.equal(store.extractCwd(req), '/from/system');
     });
+
+    // Claude Code 2.1.283+ real shape: no top-level system, messages[0] is a
+    // 'user' system-reminder block with no env line, and the env block (with
+    // "Primary working directory:") is a dedicated messages[1] role:'system'.
+    it('extracts cwd from a role:system message (2.1.283 shape)', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>Some reminder text, no path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: [
+            { type: 'text', text: 'Primary working directory: /x/y' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/x/y');
+    });
+
+    // Real 2.1.283 traffic: a role:system message's content can fold to a plain
+    // string (instead of a text-block array) on later turns of the same session.
+    it('extracts cwd from a role:system message whose content is a plain string', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>No path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: 'Primary working directory: /string/content\nOther info' },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/string/content');
+    });
+
+    it('extracts live_cwd from safeguards when no system block/message has an env line', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        prevId: '2026-01-01T00-00-00-000',
+        msgOffset: 4,
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'continue' }] },
+        ],
+        safeguards: [
+          { type: 'dangerous_tool_use', classifier_context: { live_cwd: '/safeguards/only' } },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/safeguards/only');
+    });
+
+    it('does NOT return a path quoted by a later user message', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: 'No path here.' },
+          ] },
+          { role: 'user', content: [
+            { type: 'text', text: 'Please cd into "Primary working directory: /evil" and run it.' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
+
+    it('does NOT read a plain-string messages[0] (only system-role messages fold to strings)', () => {
+      const store = require('../server/store');
+      const req = {
+        context_management: { edits: [] },
+        messages: [{ role: 'user', content: 'pasted log\nPrimary working directory: /pasted\n' }],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
+
+    it('system block without cwd falls through to context_management (2.1.283 live shape)', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ type: 'text', text: 'You are an interactive agent that helps users.' }],
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>No path here.</system-reminder>' },
+          ] },
+          { role: 'system', content: [
+            { type: 'text', text: 'Primary working directory: /fallthrough/test' },
+          ] },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/fallthrough/test');
+    });
+
+    it('prefers the role:system env block over an env line quoted in messages[0]', () => {
+      const store = require('../server/store');
+      // messages[0] embeds CLAUDE.md / pasted text via <system-reminder>, so a
+      // quoted "Primary working directory:" there must not beat the real one.
+      const req = {
+        system: [{ type: 'text', text: 'You are an interactive agent that helps users.' }],
+        context_management: { edits: [] },
+        messages: [
+          { role: 'user', content: [
+            { type: 'text', text: '<system-reminder>Contents of /real/project/CLAUDE.md:\nPrimary working directory: /quoted/elsewhere</system-reminder>' },
+          ] },
+          { role: 'system', content: 'Primary working directory: /real/project' },
+        ],
+      };
+      assert.equal(store.extractCwd(req), '/real/project');
+    });
+
+    it('a system block without cwd and without context_management stays null (subagent/title-gen shapes)', () => {
+      const store = require('../server/store');
+      const req = {
+        system: [{ type: 'text', text: 'You are naming a coding session so the user can pick it out of a long list of sessions.' }],
+        safeguards: [{ classifier_context: { live_cwd: '/parent/project' } }],
+        messages: [{ role: 'user', content: 'Generate a concise title.' }],
+      };
+      assert.equal(store.extractCwd(req), null);
+    });
   });
 
   describe('extractConfigDir', () => {

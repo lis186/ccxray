@@ -88,6 +88,17 @@ excluded count (`K 筆無費率資料，未計入總額`). Thresholds are named 
 Legacy entries (no confidence field) contribute nothing to the fold — an
 all-legacy aggregate renders clean, matching pre-#420 behavior.
 
+**Stricter rule in `server/usage-query.js` `aggregate`** (the fold behind the
+agentflow report). A legacy entry with a finite numeric
+cost adds that cost to the sum and nothing to the fold, as above. But a model
+call with no finite price (cost missing, `null`, or a nested price that is not
+a finite number) counts as unknown even without a `confidence: 'unknown'`
+wrapper. Without this, an unpriced call adds `$0` and the total looks exact.
+The dashboard folds do not follow this rule yet: `server/session-index.js`
+`_upsert` and `server/cost-budget.js` still count a call as unknown only when
+its confidence is `'unknown'`, and `session-index` does not add numeric legacy
+costs to the sum. Aligning them is a separate change.
+
 ### The fold is a fact; the marker is a view (ADR 0013 shape)
 
 Persisted/accumulated state is only monotone sums and counts
@@ -104,6 +115,7 @@ The rendered marker is derived at render time and never stored.
 | Lane agent card / hover `lane $X` / cost table Total | `public/workflow-timeline.js` `wfLaneSummary` consumers | fold added to `wfLaneSummary` return (turns + `overlapEntries`) |
 | Usage daily/monthly/account cards | `public/cost-budget-ui.js` | per-group sums added in `server/cost-budget.js` |
 | Session-index persistence | `server/session-index.js` `_upsert` | 3 new fields on `s`, responseId-deduped alongside `_costByRid`/`_countedRids`; #368 field-probe migration |
+| agentflow report totals | `server/usage-query.js` `aggregate` | `costFold` per aggregate; the stricter unknown rule above |
 
 Per-turn sites are **not** touched — they keep `formatCost`/`formatCostText`
 (#422 INVARIANT).
@@ -131,7 +143,35 @@ exists today on 42 real sessions becomes visible; all folds are rebuildable.
 (e.g. forgetting `overlapEntries`), silently reverts that site to unmarked
 fabrication. Guard comments at every site in the table name this ADR.
 
-## Alternatives considered
+## Extended across the process boundary — the Herdr plugin (Accepted 2026-08-20)
+
+The site table above lists in-page sites only, so the Herdr plugin — a separate
+process that renders aggregate costs into the Herdr sidebar and its own Mission
+Control pane — sat outside this ADR entirely. It did not merely omit the helper:
+`mission-control.js` `rowCost`/`confidenceCost` implemented **Alternative A**,
+the worst-of `~` this ADR rejected 3/3/3, and the sidebar badge rendered a bare
+`formatMoney` total (unmarked fabrication, the other failure mode). Neither had
+a `+`, so the under-count was invisible unless every turn was unpriced.
+
+Resolution (2026-08-20): `public/format.js` is now isomorphic — the #381
+`agent-classification.js` shape, `typeof module !== 'undefined'` guard, no
+top-level DOM — so the plugin requires the real helper instead of re-deriving
+thresholds that would then drift. Added sites:
+
+| Site | Fold source |
+|------|-------------|
+| Sidebar badge total | `plugins/herdr/bin/lib/ccxray.js` `summarizeTurnGroup` → `costFold(sorted)`, exposed as `costAgg` |
+| Mission Control row / hover / 5m rate | `missionControlRow` → `costAgg`, `totalCostAgg`, `totalRecentCostAgg` (subagent rollup merged in, because the rendered number includes it) |
+| Mission Control header 5m rate | `missionControlSnapshot` → `recentCostAgg` (merge of every row's fold) |
+
+**Degraded mode.** A plugin installed without a ccxray checkout cannot require
+core. It then renders the number UNMARKED and keeps only the two claims that
+need no calibration — `—` for nothing priced, `+` for an under-count.
+Deliberately not the old worst-of: without the thresholds, marking everything is
+the rejected shape, and this ADR's own reasoning says an always-firing marker
+carries no information. Recorded as an accepted limit, not a gap to close.
+
+## Alternatives considered## Alternatives considered
 
 - **A worst-of** — rejected, scores 3/3/3 (habituation, inverted Lie Factor
   ≈357, back-contamination of the per-turn marker).

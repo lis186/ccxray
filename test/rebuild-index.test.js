@@ -27,10 +27,12 @@ describe('rebuild-index', () => {
     await storage.init();
     realReadHubLock = hub.readHubLock;
     hub.readHubLock = () => null; // no live hub
+    process.env.CCXRAY_SKIP_RECENCY_CHECK = '1';
   });
 
   after(() => {
     hub.readHubLock = realReadHubLock;
+    delete process.env.CCXRAY_SKIP_RECENCY_CHECK;
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 

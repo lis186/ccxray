@@ -80,13 +80,25 @@ function _usageRichness(u) {
     + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
 }
 
+function _contextUsageValue(u) {
+  if (!u || typeof u !== 'object') return 0;
+  return Number(u.input_tokens || 0)
+    + Number(u.cache_read_input_tokens || 0)
+    + Number(u.cache_creation_input_tokens || 0);
+}
+
 // Fold `other` into `canonical` in place. `canonical` keeps its id/ts/receivedAt/
 // elapsed as a unit (the log timestamp lazy-load and date logic depend on) and
 // its own req/res references; only complementary fields are pulled from `other`.
 function _foldEntry(canonical, other) {
   // Identity + context + labels: a non-empty value fills a canonical gap.
+  // S-1: subagentId/subagentToolUseId (transcript-derived subagent identity)
+  // join this list the same way as agentKey/coreHash/convId.
+  // S-6: effort/thinkingTokens/turnDurationMs (reasoning effort, imported
+  // thinking-token count, imported turn duration) join the same way.
   for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
-    'title', 'thinkingDuration', 'duplicateToolCalls']) {
+    'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId',
+    'effort', 'thinkingTokens', 'turnDurationMs']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
       canonical[k] = other[k];
     }
@@ -98,6 +110,11 @@ function _foldEntry(canonical, other) {
   // header (e.g. an imported copy, #329) inherits it from a proxy copy that saw it. Never
   // downgrades (monotone), matching the sessionCtxWindow fold that consumes it.
   if (other.beta1m === true) canonical.beta1m = true;
+  // #603: imported 1M declarations are independently sourced positive facts.
+  // Keep each provenance tier distinct, but OR each one so a partial duplicate
+  // cannot wash true back to absent during either batch or live response-id merge.
+  if (other.imported1mCostState === true) canonical.imported1mCostState = true;
+  if (other.imported1mSettings === true) canonical.imported1mSettings = true;
   // ctxBeta is the OBSERVATION behind beta1m (the raw context-* header). Fill it the
   // same way: an imported canonical never saw the header, and losing it while keeping
   // the interpretation would discard the more fundamental fact — and with it any tier
@@ -160,6 +177,15 @@ function _foldEntry(canonical, other) {
     canonical.cost = other.cost;
     if (other.maxContext != null) canonical.maxContext = other.maxContext;
     if (other.responseMetadata != null) canonical.responseMetadata = other.responseMetadata;
+  }
+  // Context provenance is monotone across copies of one response. Explicit
+  // usage (including zero) wins over unknown; a legacy positive context sum is
+  // inferable evidence; only then may an explicit missing marker remain false.
+  if (canonical.contextUsageKnown === true || other.contextUsageKnown === true
+      || _contextUsageValue(canonical.usage) > 0 || _contextUsageValue(other.usage) > 0) {
+    canonical.contextUsageKnown = true;
+  } else if (canonical.contextUsageKnown === false || other.contextUsageKnown === false) {
+    canonical.contextUsageKnown = false;
   }
   // Terminal signals: a set value beats null/empty.
   if (canonical.status == null && other.status != null) canonical.status = other.status;
@@ -419,27 +445,65 @@ function extractCwd(req) {
     const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
     const m = txt.match(/Primary working directory: (.+)/);
     if (m) return m[1].trim();
-    return null;
+    // 2.1.283+ keeps a top-level system on context_management requests but
+    // moved the env block out of it, so only those fall through. Without
+    // context_management (title-gen, subagent kickoffs) a system miss stays
+    // null — isAnthropicSubagent / resolveTitleGenTitle rely on "no cwd".
+    if (!req.context_management) return null;
   }
-  // context_management format: system content in messages[0].content[] blocks.
-  // Defense-in-depth for project attribution (sessionMeta.cwd).
-  if (req?.context_management && Array.isArray(req?.messages?.[0]?.content)) {
-    for (const block of req.messages[0].content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        const m = block.text.match(/Primary working directory: (.+)/);
-        if (m) return m[1].trim();
-      }
+  // context_management format: system content lives in messages[0] (any role —
+  // Claude Code 2.1.283+ makes it a 'user' system-prompt block) and in dedicated
+  // role:'system' messages (where 2.1.283+ moved the env/cwd block). A message's
+  // content can be a plain string or an array of text blocks — observed on real
+  // 2.1.283 traffic, later same-session role:'system' messages fold to a string
+  // while the first one is still a block array. Never scan other user messages:
+  // user text can quote "Primary working directory:" and would misattribute the
+  // project. role:'system' messages are scanned before messages[0]: on 2.1.283+
+  // messages[0] embeds CLAUDE.md and other <system-reminder> text, which can
+  // quote an env line of its own.
+  if (req?.context_management && Array.isArray(req?.messages)) {
+    const candidates = [];
+    for (let i = 1; i < req.messages.length; i++) {
+      if (req.messages[i]?.role === 'system') candidates.push(req.messages[i]);
     }
-    for (const block of req.messages[0].content) {
-      if (block?.type === 'text' && typeof block.text === 'string') {
-        const cm = block.text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
-        if (cm) return cm[1].trim();
+    if (req.messages[0]) candidates.push(req.messages[0]);
+    const msgText = (msg) => {
+      // Only system-role messages fold to a string; a plain-string messages[0]
+      // is user text (e.g. a paste) and is not trusted to name the project.
+      if (typeof msg?.content === 'string') return msg.role === 'system' ? msg.content : null;
+      if (Array.isArray(msg?.content)) {
+        return msg.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text).join('\n');
       }
+      return null;
+    };
+    for (const msg of candidates) {
+      const text = msgText(msg);
+      if (!text) continue;
+      const m = text.match(/Primary working directory: (.+)/);
+      if (m) return m[1].trim();
+    }
+    for (const msg of candidates) {
+      const text = msgText(msg);
+      if (!text) continue;
+      const cm = text.match(/Contents of (\/[^\n]+)\/CLAUDE\.md/);
+      if (cm) return cm[1].trim();
+    }
+  }
+  // safeguards: interactive-session-only fallback (last resort), present when
+  // neither the legacy system block nor the context_management scan found an
+  // env line — e.g. a delta body whose messages[0]/system-role turn aged out.
+  if (Array.isArray(req?.safeguards)) {
+    for (const sg of req.safeguards) {
+      const lc = sg?.classifier_context?.live_cwd;
+      if (typeof lc === 'string' && lc) return lc;
     }
   }
   return null;
 }
 
+// Local observational metadata only: configDir is deliberately not an export
+// control. CCXRAY_EXPORT_CONFIG_DIRS was inert and is now a fail-stop tombstone;
+// keep this extraction for local session observation, not account separation.
 function configDirFromText(text) {
   const m = text.match(/Contents of ([^\n]+)[\\/]CLAUDE\.md \(user's private global instructions/);
   if (!m) return null;
@@ -448,7 +512,7 @@ function configDirFromText(text) {
   return basename.startsWith('.claude') ? dir : null;
 }
 
-// Unlike extractCwd, a system miss intentionally falls through to context_management.
+// Like extractCwd, a system miss falls through to context_management.
 function extractConfigDir(req) {
   if (req?.system) {
     const text = Array.isArray(req.system) ? req.system.map(block => block.text || '').join('\n') : String(req.system);

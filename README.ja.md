@@ -7,7 +7,7 @@ AIエージェントセッションのX線ビュー。ゼロ設定のHTTPプロ�
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
-![ccxrayダッシュボード](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/dashboard-v2.png)
+![ccxrayダッシュボード](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/dashboard-v2.png)
 
 ## なぜ必要か
 
@@ -29,26 +29,56 @@ npx ccxray codex
 npx ccxray grok
 ```
 
-これだけです。プロキシが起動し、選択した CLI がプロキシ経由で起動され、ダッシュボードが自動的にブラウザで開きます。複数のターミナルで実行すると、自動的に一つのダッシュボードを共有します。
+プロキシが起動し、選択した CLI がプロキシ経由で実行され、ダッシュボードも自動で開きます。macOS と Linux では `--port` を指定しない agent launch が一つの hub とダッシュボードを共有します。Windows では起動ごとに独立サーバーが動作します。下の例を参照してください。
+
+ccxray が proxy を読み込めない、または hub に接続できない場合、agent を直接起動し、その session は記録されません。hub 接続の予算時間はデフォルトで 3000 ms です。未解決の接続は時間切れで fallback し、それより前に失敗すれば早く fallback します。`CCXRAY_ATTACH_TIMEOUT_MS` で予算時間を変更できます。ccxray は `<CCXRAY_HOME>/fail-open.log`（デフォルトは `~/.ccxray/fail-open.log`）への記録を試みますが、書き込みは best effort で失敗することもあります。`CCXRAY_FAIL_CLOSED=1` を設定すると、fallback せずに起動を停止します。Claude の `--bg` / `--background` launch は仕様上 proxy を通りません。
+
+Claude の shell wrapper と任意のサマリー出力を設定して継続利用する場合：
+
+`setup` を実行する前に Claude Code をインストールし、ログイン済みアカウントのメールアドレスを ccxray が取得できることを確認してください。`--domains` のリストにはそのアカウントのドメインを含めます。setup には読み取り可能な gcloud Application Default Credentials も必要です。先に `gcloud auth application-default login` を実行してください。exporter 自体は service-account key file に対応していますが、setup は `CCXRAY_EXPORT_GCS_KEY_FILE` を拒否します。
+
+```bash
+npm install -g ccxray
+gcloud auth application-default login
+ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+# 新しいターミナルを開く（または shell profile を再読み込み）し、設定を確認：
+ccxray setup --check
+```
+
+`setup` は shell profile に Claude wrapper と出力設定を追加し、ログ保持期間を設定して `CCXRAY_IMPORT_DISABLE=1` を書き込みます。Codex wrapper は追加しません。`ccxray setup --dry-run`（同じ setup オプションを指定）で変更をプレビューできます。`ccxray setup --remove` は ccxray が書き込んだ shell block を削除して tombstone を書き、今後のアップロードを停止します。ローカルログやアップロード済みサマリーは削除しません。詳細は[エクスポート設定ガイド](docs/export-onboarding.md)を参照してください。
 
 launcher の引数は provider registry で管理されています。現在 `claude`・`codex`・`grok` に対応。未知の provider コマンドは即座に失敗し、未設定のプロキシが静かに起動することはありません。
+
+### Herdr プラグイン
+
+Herdr 内で ccxray セッションを実行し、サイドバーの context、cost、health、Mission Control、dashboard を利用できます。
+
+```bash
+herdr plugin install lis186/ccxray/plugins/herdr
+herdr plugin action invoke ccxray.herdr.quick-start
+```
+
+2 つ目のコマンドは、すでに起動している Herdr へのインストールでは startup hook が実行されないため、カーソル操作できる Quick Start をすぐに開きます。矢印キーまたは `j`/`k` で移動し、`Enter` で実行してください。数字と文字のショートカットも利用できます。オンボーディングが未完了なら、次回の完全な Herdr 起動時にも Quick Start を一度提供します。インストール済みの provider を検出して最初の traced session を起動します。サイドバーの変更は任意で、明示的な同意が必要な可逆操作です。最初の traced session 後に Mission Control が、十分なサンプルが集まった後に experimental の Capability Footprint が利用できます。インストール、信頼、更新、アンインストールは [Herdr プラグインガイド](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/plugins/herdr/README.md)を、Provider ごとの機能マトリクスと制限は [Herdr サポートガイド](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/herdr-support.ja.md)を参照してください。
 
 ### その他の実行方法
 
 ```bash
 ccxray                           # プロキシ + ダッシュボードのみ
-ccxray claude --continue         # すべてのclaude引数がそのまま渡される
-ccxray codex exec "hello"        # すべてのcodex引数がそのまま渡される
-ccxray grok -p "hello"           # すべてのgrok引数がそのまま渡される
+ccxray claude --continue         # provider に渡す引数の例
+ccxray codex exec "hello"        # provider に渡す引数の例
+ccxray grok -p "hello"           # provider に渡す引数の例
 ccxray --port 8080 claude        # カスタムポート（独立モード、hub共有なし）
 ccxray claude --no-browser       # ブラウザの自動オープンをスキップ
-ccxray status                    # hubの情報と接続中のクライアントを表示
+ccxray status                    # process、出力、home、hubの状態を表示
+ccxray --port 5602 status        # hub lock が見つからない場合に 5602 番ポートを確認
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # 既存の claude セッションを実行中の ccxray hub に向ける
 ```
 
+provider の引数は各 CLI に渡されます。`--port` や `--no-browser` など ccxray が認識する global flag は、引数列のどこにあっても ccxray が処理し、CLI には渡しません。
+
 ### マルチプロジェクト
 
-複数のターミナルで `ccxray claude` を実行すると、自動的に単一のプロキシとダッシュボードを共有します。設定は不要です。
+macOS と Linux では、複数のターミナルで `ccxray claude` を実行すると、設定なしで単一のプロキシとダッシュボードを共有します。Windows は共有 hub を使わず、起動ごとに独立したサーバーが動くため、それぞれに別のポートが必要です。
 
 ```bash
 # Terminal 1
@@ -60,17 +90,33 @@ cd ~/project-b && ccxray claude     # 既存のhubに接続
 # 両プロジェクトが http://localhost:5577 のダッシュボードに表示
 ```
 
-Hubプロセスがクラッシュした場合、接続中のクライアントは数秒以内に自動的に復旧します。
+macOS または Linux で hub プロセスがクラッシュした場合、接続中のクライアントは数秒以内に自動復旧します。Windows では起動ごとに別のポートを指定してください：
+
+```powershell
+# Terminal 1
+ccxray --port 5577 claude
+
+# Terminal 2
+ccxray --port 5578 claude
+```
+
+`http://localhost:5577` と `http://localhost:5578` を開くと、それぞれの独立したダッシュボードを確認できます。
 
 ```bash
 $ ccxray status
-Hub: http://localhost:5577 (pid 12345, uptime 3600s)
+Hub: http://localhost:5577 (pid 12345, uptime 3600s, v<version>)
+Process: exportState=enabled ... identity={...}
+Home: ~/.ccxray — current — cursor has consumed through the index tail (...)
+Machine: {"proxy":true,"hub":true,"pid":12345,"port":5577,"occupant":"ccxray-hub"}
 Connected clients (2):
   [1] pid 23456 — ~/dev/project-a
   [2] pid 34567 — ~/dev/project-b
+Shell: exportState=enabled hash=... — this shell's environment, not what the running exporter uses
+Config: equal
+Durable: ~/.ccxray (named by hub) — enrollment=enrolled · cursor ... · last attempt ...
 ```
 
-`--port` を使用すると独立モードで実行できます。
+`Process`、`Home`、`Shell`、`Config`、`Durable` の各行は、実行中の process、本機の出力状態、この shell の設定、永続化された enrollment/cursor の履歴を表示します。`--port` を使うと独立サーバーとして実行できます。
 
 ## 対応エージェントモジュール
 
@@ -82,7 +128,7 @@ launcher は `server/providers.js` に登録されています（すべて同じ
 | `ccxray codex` | OpenAI Responses | `api.openai.com` / ChatGPT |
 | `ccxray grok` | OpenAI Responses（クライアントモジュール） | `cli-chat-proxy.grok.com`（`XAI_BASE_URL` で上書き可） |
 
-Codex 以外の OpenAI-wire クライアント（現在は Grok）は `OPENAI_WIRE_CLIENTS` に登録されます — 共通パーサー、個別の host/agent/raw-session バケット。マルチエージェント hub では `OPENAI_BASE_URL` を切り替えることなく混在できます。受け入れテストの記録：[`docs/grok-testing.md`](docs/grok-testing.md)。
+Codex 以外の OpenAI-wire クライアント（現在は Grok）は `OPENAI_WIRE_CLIENTS` に登録されます — 共通パーサー、個別の host/agent/raw-session バケット。マルチエージェント hub では `OPENAI_BASE_URL` を切り替えることなく混在できます。受け入れテストの記録：[Grok テスト](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/grok-testing.md)。
 
 **Grok の課金情報開示：** Grok CLI のトラフィックをプロキシする際、ccxray は `cli-chat-proxy.grok.com/v1/billing` を呼び出し（CLI がすでにプロキシ経由で送信しているのと同じ auth token を使用）、Usage タブのアカウントカードを表示します。成功レスポンスの後 60 秒間は再呼び出しを抑制します（alias+credential ごと）。`XAI_BASE_URL` を設定すると呼び出し先ホストを変更できます。
 
@@ -98,7 +144,7 @@ API キー認証・ChatGPT 認証のどちらの codex セッションでも動�
 - WebSocket トランスポート（`/v1/responses` のアップグレード）はフレームごとにデコードされます：各 codex ターンは model、トークン使用量、リクエストの instructions/input/tools、レスポンスイベントを記録します。一部の大きなエンベロープイベントは完全なペイロードではなくコンパクトなタイミングアンカー（TTFT 用）として保存されるため、codex ターンの詳細度は部分的に Claude ターンに及ばないことがあります。
 - Claude パスと比較して実運用でのテストが限定的です。
 
-チューニング用の環境変数：`OPENAI_BASE_URL`、`CHATGPT_BASE_URL`、`CCXRAY_WS_IDLE_TIMEOUT_MS`、`CCXRAY_WS_MAX_QUEUE_BYTES`。詳細は [CLAUDE.md](CLAUDE.md) を参照。
+チューニング用の環境変数：`OPENAI_BASE_URL`、`CHATGPT_BASE_URL`、`CCXRAY_WS_IDLE_TIMEOUT_MS`、`CCXRAY_WS_MAX_QUEUE_BYTES`。詳細は [CLAUDE.md](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/CLAUDE.md) を参照。
 
 問題は [GitHub](https://github.com/lis186/ccxray/issues) へ — Beta とは、粗削りな部分の報告を歓迎するという意味です。
 
@@ -116,19 +162,19 @@ API キー認証・ChatGPT 認証のどちらの codex セッションでも動�
 
 **L1/L2 二層選択**：Tab / ▲▼ でレーン選択（L1）、j/k でレーン内のターン選択（L2）、Esc で段階的に戻る。従来の単層クリックモデルを置き換えます。
 
-![ワークフロータイムライン](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/timeline-v2.png)
+![ワークフロータイムライン](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/timeline-v2.png)
 
 ### 使用量とコスト
 
 実際の支出を把握。消費レート、アカウント別の Claude・Codex レート制限カード — トークンの行き先を正確に把握できます。
 
-![使用量分析](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.png)
+![使用量分析](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/usage.png)
 
 ### システムプロンプト追跡
 
 バージョンの自動検出とdiffビューア。複数の認識されたエージェントタイプのプロンプトを閲覧し、更新ごとの変更点を正確に把握できます。不確定なものは `unknown` として正直に表示します。
 
-![システムプロンプト追跡](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
+![システムプロンプト追跡](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/system-prompt-v2.png)
 
 ### キーボード操作
 
@@ -140,19 +186,19 @@ API キー認証・ChatGPT 認証のどちらの codex セッションでも動�
 
 `n`/`N` はダッシュボード全体でスター付きアイテムの次/前へジャンプします — プロジェクト、セッション、ターン、タイムラインの個別ステップを横断して移動できます。コマンドバーは現在のビューからスター付きアイテムに到達できる場合のみこのショートカットを表示します。
 
-![キーボード操作](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/keyboard-v2.png)
+![キーボード操作](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/keyboard-v2.png)
 
 ### セッションタイトルとキャッシュアラート
 
 セッションカードに Claude Code が自動生成したタイトル（例：`Fix login button on mobile`）とリアルタイムのキャッシュ TTL カウントダウン（`cache 4m left`）が表示され、1 分を切ると赤く点滅します。いずれかのセッションが期限に近づくと、ブラウザのタブタイトルが `ccxray` と `⚠ ccxray` の間で交互に切り替わります。オプトインのブラウザ通知はプラン対応のリードタイムで発火します — Max は 5 分前、Pro/API キーは 60 秒前。ダイレクト API トラフィックや進行中のセッションは短いハッシュにフォールバックします。
 
-![セッションタイトルとキャッシュアラート](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
+![セッションタイトルとキャッシュアラート](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/cache-expiry.png)
 
 ### セッション天気
 
-各セッションカードに天気絵文字（☀️ 晴れ → ⛈️ 嵐）が表示され、8 つのヘルスシグナル（コンテキスト圧力、コンパクション、切り詰め、スタックループ、レイテンシドリフト、エラー率、キャッシュ効率）を一目で確認できます。ホバーで内訳を表示。詳細は [`docs/weather.md`](docs/weather.md) を参照。
+各セッションカードに天気絵文字（☀️ 晴れ → ⛈️ 嵐）が表示され、コンテキスト圧力、コンパクション、出力の切り詰め、レイテンシドリフト、キャッシュヒット率に基づいてスコアを示します。ツール結果の証拠が不足すると、状態が unavailable になる場合もあります。ホバーで内訳を表示。詳細は[天気機能ガイド](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/weather.md)を参照してください。
 
-> **注意（2.3.1）：** ツール失敗シグナルの修正中のため、天気表示は**デフォルトでオフ**です。計算はバックグラウンドで継続しています。ダッシュボード URL に `?weather=on` を追加して一時的に確認するか、コンソールで `localStorage.setItem('ccxray-weather-display', 'on')` を実行して永続化できます。詳細は [docs/weather.md](docs/weather.md#display-toggle-231) を参照。
+> **注意（2.3.1）：** ツール失敗シグナルの修正中のため、天気表示は**デフォルトでオフ**です。計算はバックグラウンドで継続しています。ダッシュボード URL に `?weather=on` を追加して一時的に確認するか、コンソールで `localStorage.setItem('ccxray-weather-display', 'on')` を実行して永続化できます。詳細は[天気機能ガイド](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/weather.md#display-toggle-231)を参照してください。
 
 ### プラン自動検出
 
@@ -180,7 +226,7 @@ turn、session、または project カードにある star をクリックする
 
 親要素が star の付いた子孫要素から保護を継承している場合、badge は `★` ではなく `☆ [N]` になります。chip をクリックすると、どの要素によって retention されているかを正確にリスト表示する popover が開きます。各行の star は独立したトグルになっており、行の本体をクリックすると、その turn / session へ直接移動します。
 
-![スター保持と子孫ポップオーバー](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/stars.png)
+![スター保持と子孫ポップオーバー](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/stars.png)
 
 ### 使用量分析 CLI
 
@@ -202,6 +248,16 @@ ccxray usage --tools                  # 全ツール呼び出しの内訳
 0.6 秒で自動使用量分析 — ログを手動で掘らなくても、トークンとコストの行き先が分かります。`index.ndjson` を直接読み取り、サーバー起動不要。モデル別コスト、ツール・スキル使用量、プロンプトハッシュ安定性（system/tools/core プロンプトのターン間変化頻度）、ターン間隔別キャッシュヒット率、コスト上位 10 セッション（タイトル付き）を表示します。
 
 `--json` 出力はエージェント向けの契約です — フィールドごとの完全なスキーマ、multi-cwd とエラー時の出力形状、フィルタのセマンティクスは [`docs/usage.md`](docs/usage.md) を参照してください。
+
+### agentflow レポート（実験的）
+
+```bash
+ccxray agentflow report              # プロジェクトの agentflow notebook の全 Ask
+ccxray agentflow report --ask A-012  # 1 つの Ask
+ccxray agentflow report --json       # JSON
+```
+
+[agentflow](https://github.com/agfnow/agentflow) を使うプロジェクト向け：notebook の各 Ask について、トークン、コスト、モデル、effort、時間を、ホストセッション、サブエージェント、ディスパッチされた外部ワーカーに分けて表示します。レポートは帰属判定に transcript を読みますが、使用量は ccxray index 内の turn から集計します。必要な turn がすでに index にあれば import は不要です。transcript にしかない履歴は、使用量に加える前に import してください。`ccxray setup` は import を無効にするため、必要な場合はガイドにある1回限りの import 手順を使います。サーバーは不要です。詳細は [`docs/agentflow-report.md`](docs/agentflow-report.md)（英語）。
 
 ### その他
 
@@ -225,7 +281,7 @@ Claude Code  ──►  ccxray (:5577)  ──►  api.anthropic.com（または
                   ダッシュボード（同じポート）
 ```
 
-ccxrayは透過型HTTPプロキシです。リクエストを上流API（AnthropicまたはOpenAI）に転送し、リクエストとレスポンスの両方をJSONファイルとして記録し、同じポートでWebダッシュボードを提供します。すべてのエンドポイントで認証が強制されます：launcherから起動したCLIは `X-Ccxray-Auth` ヘッダーを自動注入するため、ユーザーは意識する必要がありません。`/v1/*` を直接呼び出すスクリプトはこのヘッダーを付与する必要があります（詳細はCHANGELOGを参照）。Hub間通信はHTTPではなくUnixドメインソケット（`~/.ccxray/hub.sock`）を使用します。
+ccxray は透過型 HTTP プロキシです。リクエストを上流 API（Anthropic または OpenAI）に転送し、リクエストとレスポンスを JSON ファイルに記録して、同じポートで Web ダッシュボードを提供します。Loopback から dashboard と upstream API へのリクエストはデフォルトで信頼されます。`CCXRAY_LOOPBACK_REQUIRE_AUTH=1` を設定すると loopback にも認証を要求します。非 loopback の保護対象 dashboard/API リクエストには有効な認証が必要です。upstream HTTP と WebSocket の通信には通常 ccxray が注入する認証情報が必要です。ChatGPT にルーティングされる Codex 通信には互換性の例外があります。ccxray は `chatgpt-account-id` と JWT 形式の `Authorization` ヘッダーを受け入れますが、署名は検証せず、OAuth の有効性は upstream が判断します。`AUTH_TOKEN` は共有 token として設定でき、未設定時は ccxray がローカル secret を使います。`/_api/health` は最小限の識別情報（`capabilities: []`）を公開し、export report は信頼された呼び出し元にだけ返します。Hub 間通信は HTTP ではなく Unix domain socket（`~/.ccxray/hub.sock`）を使います。
 
 ## 設定
 
@@ -242,12 +298,12 @@ ccxrayは透過型HTTPプロキシです。リクエストを上流API（Anthrop
 |---|---|---|
 | `PROXY_PORT` | `5577` | プロキシ + ダッシュボードのポート（`--port`で上書き） |
 | `BROWSER` | — | `none`に設定すると自動オープンを無効化 |
-| `AUTH_TOKEN` | _（自動生成）_ | アクセス制御用キー。未設定時は `<CCXRAY_HOME>/local-secret` から自動導出（デフォルト `~/.ccxray/local-secret`）。非ループバックのリクエストには必須。ループバックはデフォルトで信頼されます（[SECURITY.md](SECURITY.md) と `CCXRAY_LOOPBACK_REQUIRE_AUTH` を参照）。 |
+| `AUTH_TOKEN` | _（未設定）_ | 任意の共有 access token。未設定時は `<CCXRAY_HOME>/local-secret` を使います（デフォルト `~/.ccxray/local-secret`）。非 loopback の保護対象 dashboard/API リクエストと大半の upstream 通信には認証が必要です。ChatGPT にルーティングされる Codex 通信には native-marker の例外があります。`CCXRAY_LOOPBACK_REQUIRE_AUTH=1` を設定しない限り loopback は信頼されます。[SECURITY.md](SECURITY.md) を参照してください。 |
 | `CCXRAY_SESSION_ENTRY_CAP` | `500` | 起動復元時に単一セッションから読み込むエントリの最大数。超過セッションは最新1件のみ保持（ランタイムでは制限なし） |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _（未設定）_ | ループバックはデフォルトで認証不要。`1` に設定するとループバックでも認証を強制 |
 | `CCXRAY_HOME` | `~/.ccxray` | hubロックファイル、ログ、hub.logの基本ディレクトリ |
 | `CCXRAY_MAX_ENTRIES` | `5000` | メモリ上の最大エントリ数（古いものから削除。ディスクログには影響なし） |
-| `LOG_RETENTION_DAYS` | `14` | 起動時に N 日より古いログファイルを自動削除。Star が付いた turn / session / project(およびその配下のすべて)は保護されます;復元されたエントリから参照されているファイルも保護されます。`0` で無効化。 |
+| `LOG_RETENTION_DAYS` | `14` | 起動時に N 日より古いログファイルを自動削除。Star が付いた turn / session / project(およびその配下のすべて)は保護されます;復元されたエントリから参照されているファイルも保護されます。`0` で無効化。ただし export の enrollment がある home では、記録された正の保持日数が優先されます(export onboarding を参照)。 |
 | `RESTORE_DAYS` | `14` | 起動時に読み込むログの日数を制限（`0` = 全部、`CCXRAY_MAX_ENTRIES` の上限は適用される）。ログディレクトリが非常に大きい場合に有用。 |
 | `CCXRAY_PLAN` | _（自動）_ | プラン検出を上書き：`pro`、`max5x`、`max20x`、`api-key` |
 | `CCXRAY_DISABLE_TITLES` | _（未設定）_ | `1` に設定するとセッションタイトル抽出を無効化（短いハッシュにフォールバック） |
@@ -255,9 +311,9 @@ ccxrayは透過型HTTPプロキシです。リクエストを上流API（Anthrop
 | `HTTPS_PROXY` / `https_proxy` | _（未設定）_ | HTTP CONNECT トンネル経由で送信 HTTPS トラフィックを企業プロキシに転送。 |
 | `ANTHROPIC_BASE_URL` | — | カスタム上流Anthropicエンドポイント（企業ゲートウェイなど）。ベースパスをサポート — `https://host/serving-endpoints/anthropic` がそのまま動作します。`ANTHROPIC_TEST_*`が設定されている場合はそちらが優先されます。 |
 
-ログは`~/.ccxray/logs/`に`{timestamp}_req.json`と`{timestamp}_res.json`として保存されます。v1.0からアップグレードする場合、`./logs/`のログは初回起動時に自動的に移行されます。
+生の request/response ログはローカルの `LOGS_DIR`（デフォルトは `~/.ccxray/logs/`）に `{timestamp}_req.json` と `{timestamp}_res.json` として保存されます。v1.0からアップグレードする場合、`./logs/`のログは初回起動時に自動的に移行されます。
 
-ccxray は現在、ログをローカルファイルシステムにのみ保存します。リモートのオブジェクトストレージバックエンド（S3 / R2）はまだサポートされていません — ストレージインターフェースと、request／response ログをマシン外へ送信する際のセキュリティモデルについて、さらなる設計が必要です。
+`ccxray setup` で出力を設定すると、日次・セッション別サマリーをアップロードできます。生の request/response ログはアップロードされません。サマリーにはユーザー ID、session ID、repository basename、model 名、tool 名や skill 名が含まれることがあります。元データ由来の名前や metadata は全面的に秘匿化されないため、出力を有効にする前に確認してください。`CCXRAY_EXPORT_CWD_ALLOWLIST` は未登録の repo 名を `[other]` にマスクしますが、その session 自体は除外しません。`CCXRAY_EXPORT_DOMAINS` を設定した場合、一致する Claude launch-account snapshot がある turn だけを出力します。Codex と Grok の launch にはこの snapshot がないため、この filter では除外されます。これは意図された動作です。フィールド、filter、削除方法は[エクスポート設定ガイド](docs/export-onboarding.md)を参照してください。
 
 ## Docker
 

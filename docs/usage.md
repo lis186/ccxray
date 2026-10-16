@@ -12,16 +12,17 @@ note). So treat the **shape** as the contract; expect values to track the index
 and the runtime environment.
 
 The single source of truth for the shapes below is
-[`server/usage.js`](../server/usage.js): `analyze()` builds the single-scope
-object, while `run()` assembles the multi-cwd array and the error object. This
+[`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js): `analyze()` builds the single-scope
+object, while `run()` assembles the multi-cwd comparison object and the error
+object. This
 doc mirrors them; if they ever disagree, the code wins — and that disagreement
 is a bug to fix here.
 
 > **Contract note.** Because agents consume `--json`, the field set, types, and
-> the three top-level shapes (single-scope object, multi-cwd array, error
+> the three top-level shapes (single-scope object, multi-cwd object, error
 > object) are treated as a contract. Shape changes must be deliberate and noted
 > in the changelog below. The `usage --json shape contract` block in
-> [`test/usage.test.js`](../test/usage.test.js) locks every section's exact key
+> [`test/usage.test.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/test/usage.test.js) locks every section's exact key
 > set and field types (plus the multi-cwd and error shapes), so an accidental
 > field add/remove fails CI — a deliberate change must update both that test and
 > this doc in the same commit. A separate test guards the `<5KB` size ceiling
@@ -37,7 +38,7 @@ Which of three shapes you get depends on the arguments:
 | Condition | Shape | Exit |
 |-----------|-------|------|
 | Default (0 or 1 `--cwd`) | [Single-scope object](#1-single-scope-object-default) | 0 |
-| `--cwd a,b` (**2+** values) | [Multi-cwd array](#2-multi-cwd-comparison-array) | 0 |
+| `--cwd a,b` (**2+** values) | [Multi-cwd object](#2-multi-cwd-comparison-object) | 0 |
 | No index / no matching entries | [Error object](#3-error-object) | 1 |
 
 Rounded numeric fields are rounded to **at most** the number of decimals noted
@@ -53,6 +54,8 @@ the rounding cap is the contract.
 ```jsonc
 {
   "meta":     { "totalEntries": 0, "totalSessions": 0, "totalCost": 0,
+                "retentionDays": 14, "retentionCutoff": "YYYY-MM-DD",
+                "retentionWarning": "older history may have been removed; totals are a lower bound",
                 "timeRange": { "from": "ISO|null", "to": "ISO|null" } },
   "sessions": { "count": 0, "byProvider": { "<provider>": 0 },
                 "subagentRatio": 0,
@@ -76,6 +79,9 @@ the rounding cap is the contract.
 | `totalEntries` | number | Count of entries (turns) after all filters. |
 | `totalSessions` | number | Distinct `sessionId` count. Entries with no session id collapse into one `"unknown"` bucket, which counts here. |
 | `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. |
+| `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is non-numeric **or** beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
+| `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
+| `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
 | `timeRange.from` | string \| null | Earliest `receivedAt` as ISO 8601, or `null` if no timestamps. |
 | `timeRange.to` | string \| null | Latest `receivedAt` as ISO 8601, or `null`. |
 
@@ -96,6 +102,7 @@ Each `topSessions[]` element:
 | `sessionId` | string | Full session id. |
 | `turns` | number | Turns in the session. |
 | `cost` | number | USD, **2 dp**. |
+| `costAgg` | object | Confidence fold for `cost`, always present: `{count, fallbackCount, fallbackCost, unknownCount}`, all numbers. `fallbackCount`/`fallbackCost` cover turns priced from a default rate; `unknownCount` counts turns that contributed **nothing** to `cost`, so a non-zero value means `cost` is a lower bound. Render `cost` through this fold (`formatAggCost`/`formatAggCostText`, ADR 0017) — a consumer of this JSON cannot see the turns, so it cannot re-derive the fold, and printing `cost` alone reports a fabricated or under-counted total as an exact one. |
 | `durationMin` | number | First→last `receivedAt` span in minutes, **1 dp**. `0` if fewer than 2 timestamped turns. |
 | `title` | string \| null | Best non-continuation title, truncated to 40 chars. `null` if none. |
 | `model` | string | The session's **dominant** model (most turns), as a single string — not a map. `"unknown"` if absent. |
@@ -180,26 +187,39 @@ turn finished). Only buckets that contain at least one measured gap appear —
 
 ---
 
-## 2. Multi-cwd comparison array
+## 2. Multi-cwd comparison object
 
 When **two or more** `--cwd` values are given (e.g. `--cwd proj-a,proj-b`), the
-output is a per-project comparison **array** instead of the single-scope object,
-sorted by `cost` descending:
+output is a per-project comparison object instead of the single-scope object.
+`projects` is sorted by `cost` descending; `meta` carries the retention
+disclosure for the query as a whole:
 
 ```jsonc
-[
-  { "cwd": "/work/project-alpha", "cost": 0.80, "sessions": 1, "turns": 2, "cacheHit": 0.86 },
-  { "cwd": "/work/project-beta",  "cost": 0.30, "sessions": 1, "turns": 2, "cacheHit": 0.78 }
-]
+{
+  "projects": [
+    { "cwd": "/work/project-alpha", "cost": 0.80, "sessions": 1, "turns": 2, "cacheHit": 0.86 },
+    { "cwd": "/work/project-beta",  "cost": 0.30, "sessions": 1, "turns": 2, "cacheHit": 0.78 }
+  ],
+  "meta": {
+    "retentionDays": 14, "retentionCutoff": "YYYY-MM-DD",
+    "retentionWarning": "older history may have been removed; totals are a lower bound"
+  }
+}
 ```
+
+`meta` holds exactly the three retention fields documented for the single-scope
+`meta`, with the same semantics. Retention is a property of the **query**, not of
+any one project, so it appears once at the top level and never on a `projects[]`
+row — these per-project totals sit behind the same window as the single-scope
+ones and would otherwise be presented as exact.
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `cwd` | string | Working directory (group key). Always a real path — the `--cwd` filter that triggers this mode drops entries with no cwd, so no `"unknown"` row appears here. |
-| `cost` | number | `meta.totalCost` for that group, **2 dp**. |
-| `sessions` | number | `meta.totalSessions` for that group. |
-| `turns` | number | `meta.totalEntries` for that group. |
-| `cacheHit` | number | `cache.hitRate` for that group, **3 dp**. |
+| `cost` | number | That group's own single-scope `meta.totalCost`, **2 dp**. Not a field of the top-level `meta` above, which carries only the retention triple. |
+| `sessions` | number | That group's own single-scope `meta.totalSessions`. |
+| `turns` | number | That group's own single-scope `meta.totalEntries`. |
+| `cacheHit` | number | That group's own `cache.hitRate`, **3 dp**. |
 
 The grouping is over the entries that already passed `--last`/`--cwd`/`--session`
 filtering, so every matched cwd that survived appears as one row.
@@ -245,7 +265,7 @@ Comma-separated or repeated. Each value matches one of two ways:
   `./` is stripped, so `./foo` behaves like `foo`.
 
 Giving **2+** cwd values switches the output to the
-[multi-cwd array](#2-multi-cwd-comparison-array).
+[multi-cwd comparison object](#2-multi-cwd-comparison-object).
 
 ### `--session <id>` (matching)
 
@@ -269,25 +289,39 @@ Lifts the `tools.top` cap from 7 to all tools (and shows all in human output).
 After printing, opens the dashboard to the resolved session — only valid when
 exactly one session matched. With **2+** matches it prints a stderr note and
 skips opening; with **0** matched sessions it silently does nothing. Either way
-it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-comparison-array)
+it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-comparison-object)
 (`--cwd a,b`) `--open` is ignored entirely.
 
 ---
 
 ## See also
 
-- [`docs/data-model.md`](data-model.md) — the per-entry summary fields
+- [`docs/data-model.md`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/data-model.md) — the per-entry summary fields
   (`cost`, `usage`, `toolCalls`, `skillCalls`, `sysHash`/`toolsHash`/`coreHash`,
   `isSubagent`, `cwd`, …) that `usage` aggregates from `index.ndjson`.
-- [`server/usage.js`](../server/usage.js) — the implementation.
+- [`server/usage.js`](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/server/usage.js) — the implementation.
 - README → *Usage Analytics CLI* — task-oriented command examples.
 
 ---
 
 ## Changelog
 
+- **2026-09-04** — Added `meta.retentionDays`, `meta.retentionCutoff`, and the
+  conditional `meta.retentionWarning`. The human time-range line now gives the
+  same lower-bound warning when the requested range reaches before retention.
+  A non-numeric `LOG_RETENTION_DAYS` is represented as `retentionDays: null`.
+  **Breaking:** multi-cwd comparison output changed from a bare array to
+  `{ projects, meta }` so the same disclosure reaches that surface — its totals
+  sit behind the same retention window and were previously presented as exact.
+  `--last` is now forwarded into the comparison's retention verdict, which
+  previously judged every window as all-time. A `LOG_RETENTION_DAYS` beyond the
+  supported window is now treated as retention off; previously such a value fed
+  an out-of-range date into the cutoff and pruned every log file. The cutoff is also now computed in
+  the Taipei calendar rather than the host's, so it no longer depends on where
+  the process runs (unchanged on a Taipei or UTC host; a DST-observing host
+  previously drifted by a day around its transitions).
 - **2026-06-21** (Claude, Opus 4.8) — Initial schema reference for
   `ccxray usage --json` as shipped in PR #94. Documents the single-scope object,
-  multi-cwd array, and error object, plus filter semantics and per-field
+  multi-cwd comparison shape, and error object, plus filter semantics and per-field
   precision. Backed by the `usage --json shape contract` test that locks the key
   set and field types of every section.

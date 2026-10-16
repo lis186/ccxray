@@ -10,10 +10,11 @@ const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, rawCoreHash
 const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
-const { normalizeUsageForProvider } = require('./providers');
+const { normalizeUsageForProvider, describeAgentModule } = require('./providers');
 const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
+const { retentionCutoffDate } = require('./retention');
 
 
 // #211: model marker ("The exact model ID is ...") from the persisted system
@@ -164,10 +165,28 @@ async function healMetaInPlace(meta) {
   }
   // usage normalization + cost recalc
   if (meta.usage) {
+    // R-2/INV-2 (A-010 §2): an imported openai-provider line's usage is already
+    // cache-exclusive — the Codex importer subtracts cached tokens manually
+    // before writing (importer.js parseCodexSessionFile). New imports carry
+    // _ccxrayUsageNormalized on the usage object itself; legacy imported lines
+    // predate that marker, so treat ANY imported openai line as normalized here
+    // rather than relying on the on-disk flag, or a second subtraction on
+    // reload halves the input tokens (the double-normalization bug this
+    // invariant exists to prevent).
+    if (meta.imported && meta.provider === 'openai' && !meta.usage._ccxrayUsageNormalized) {
+      meta.usage = { ...meta.usage, _ccxrayUsageNormalized: true };
+    }
     const before = meta.usage;
     meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-    if (meta.usage !== before && meta.usage._ccxrayUsageNormalized && meta.model) {
-      meta.cost = calculateCost(meta.usage, meta.model);
+    const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
+    // H5 (A-010 design): reprice a stored fallback/unknown cost at read time —
+    // exact/prefix and legacy numeric costs (no .confidence) are left untouched.
+    // Nothing is rewritten on disk; only the in-memory view this function heals.
+    const stale = meta.cost && typeof meta.cost === 'object'
+      && (meta.cost.confidence === 'fallback' || meta.cost.confidence === 'unknown');
+    if (meta.model && (usageNormalized || stale)) {
+      // #568: price by the upstream that served the turn (grok → xai), not the wire family.
+      meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     }
   }
 }
@@ -224,9 +243,7 @@ async function restoreFromLogs() {
   // sessions.json) re-stream via streamAllMetas() generator instead.
   let cutoffStr = null;
   if (config.RESTORE_DAYS > 0) {
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - config.RESTORE_DAYS);
-    cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
+    cutoffStr = retentionCutoffDate(config.RESTORE_DAYS);
   }
   const stars = readStarsSafe();
   const hasAnyStar = stars.projects.length || stars.sessions.length || stars.turns.length || stars.steps.length;
@@ -624,12 +641,50 @@ function pruneIndexLines(indexContent, { survivingReqIds, protectedIds }) {
   return { keptLines, dropped };
 }
 
+function sweepOrphanedPruneTmpFiles(logsDir, kill = process.kill) {
+  if (!logsDir) return;
+
+  let files;
+  try { files = fs.readdirSync(logsDir); } catch { return; }
+
+  for (const filename of files) {
+    const match = /^index\.ndjson\.prune-(\d+)\.tmp$/.exec(filename);
+    if (!match) continue;
+
+    const pid = Number(match[1]);
+    // Own-PID cleanup assumes one PID namespace per logs dir—the only documented
+    // topology: README permits local-filesystem logs, and ADR 0021 scopes
+    // same-machine writers by realpath(config.LOGS_DIR). Separate namespaces sharing
+    // it already collide on this temp pathname: the prior failure can rename a
+    // truncated temp over index.ndjson (CAS fingerprints only index.ndjson); this
+    // sweep instead yields a caught ENOENT and skipped prune.
+    let orphaned = pid === process.pid;
+    if (!orphaned) {
+      try {
+        kill(pid, 0);
+        continue;
+      } catch (err) {
+        if (!err || err.code !== 'ESRCH') continue;
+        orphaned = true;
+      }
+    }
+
+    if (orphaned) try { fs.unlinkSync(path.join(logsDir, filename)); } catch {}
+  }
+}
+
 // ── Prune log files older than LOG_RETENTION_DAYS ───────────────────
 // Files belonging to entries currently restored in memory are never pruned —
 // otherwise lazy-load (loadEntryReqRes) would return null after restart.
 
-async function pruneLogs() {
-  if (!config.LOG_RETENTION_DAYS || config.LOG_RETENTION_DAYS <= 0) return;
+// `retentionDays` overrides config for an enrolled export home, whose retention was
+// fixed at enrollment and must not shrink just because this process lacks that env.
+async function pruneLogs({ retentionDays = config.LOG_RETENTION_DAYS } = {}) {
+  // The sweep precedes the exclusive storage lock; a second concurrent call in
+  // this process could remove the first call's temp. That is unreachable from
+  // the single startup call site in server/index.js:1261.
+  sweepOrphanedPruneTmpFiles(config.storage.location);
+  if (!retentionDays || retentionDays <= 0) return;
 
   // ponytail: if index is empty/missing, star-protection cascade can't map
   // turn→session→project — starred old entries would be silently deleted.
@@ -645,9 +700,7 @@ async function pruneLogs() {
     return;
   }
 
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - config.LOG_RETENTION_DAYS);
-  const cutoffStr = cutoff.toLocaleString('sv-SE', { timeZone: 'Asia/Taipei' }).slice(0, 10);
+  const cutoffStr = retentionCutoffDate(retentionDays);
 
   // Baseline: in-memory entries are always protected (existing behavior).
   // After star-aware restoreFromLogs, this already includes most starred
@@ -692,7 +745,7 @@ async function pruneLogs() {
 
   if (deleted > 0 || kept > 0) {
     const keptMsg = kept > 0 ? `, kept ${kept} referenced by restored entries` : '';
-    console.log(`\x1b[90m   Pruned ${deleted} log files older than ${config.LOG_RETENTION_DAYS} days${keptMsg}\x1b[0m`);
+    console.log(`\x1b[90m   Pruned ${deleted} log files older than ${retentionDays} days${keptMsg}\x1b[0m`);
   }
 
   // #344 + #345: sync index.ndjson + sessions.json with the files that survived,
@@ -775,10 +828,11 @@ async function pruneLogs() {
     }
     await pipeline(survivorLines(), fs.createWriteStream(tmpPath, { mode: 0o600 }));
 
-    // CAS commit: statSync then renameSync, both synchronous, no await between.
+    // CAS commit (ADR 0021): statSync then renameSync, both synchronous, no await between.
     let statNow;
     try { statNow = fs.statSync(indexPath); } catch { statNow = null; }
-    if (!statBefore || !statNow || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
+    if (!statBefore || !statNow || statNow.dev !== statBefore.dev || statNow.ino !== statBefore.ino
+        || statNow.size !== statBefore.size || statNow.mtimeMs !== statBefore.mtimeMs) {
       try { fs.unlinkSync(tmpPath); } catch {}
       console.log('\x1b[33m[ccxray] index changed during prune — skipping rewrite (will retry next startup)\x1b[0m');
       return;
@@ -812,4 +866,4 @@ async function pruneLogs() {
   }
 }
 
-module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines };
+module.exports = { loadEntryReqRes, restoreFromLogs, pruneLogs, pruneIndexLines, boundedIndexLines, sweepOrphanedPruneTmpFiles };

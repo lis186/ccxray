@@ -8,9 +8,12 @@ const path = require('path');
 const readline = require('readline');
 const os = require('os');
 
-// #397: calculateCostSimple lives in default-rates.js — the single source of
-// truth for offline model pricing. Re-exported here so existing consumers
-// (tests, processGrokIndexEntry) keep their import path.
+// #397/A-010: calculateCostSimple lives in default-rates.js — the single
+// source of truth for offline model pricing (via lookupRates, shared with
+// pricing.js's calculateCost — this child process has no live pricing of its
+// own; lookupRates' own lazy price-cache read is the only source it sees).
+// Re-exported here so existing consumers (tests, processGrokIndexEntry) keep
+// their import path.
 const { calculateCostSimple } = require('./default-rates');
 
 async function collectJsonlFiles(dir, results = []) {
@@ -73,7 +76,8 @@ function processFile(filePath, accountId) {
       const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0)
         + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
       if (totalTokens === 0) return;
-      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, model);
+      // H7: same provider key the live Anthropic proxy path uses.
+      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, model, 'anthropic');
       const sessionId = path.basename(filePath, '.jsonl');
       localEntries.push({ timestamp: new Date(timestamp).getTime(), usage, costUSD, costConfidence, model, sessionId, messageId, accountId });
     });
@@ -117,7 +121,8 @@ function processCodexFile(filePath, accountId) {
       if (totalTokens === 0) return;
 
       if (!obj.timestamp) return;
-      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, lastModel);
+      // H7: same provider key the live OpenAI/Codex proxy path uses by default.
+      const { cost: costUSD, confidence: costConfidence } = calculateCostSimple(usage, lastModel, 'openai');
       const tsMs = new Date(obj.timestamp).getTime();
       const messageId = `${tsMs}::${sessionId}`;
       localEntries.push({ timestamp: tsMs, usage, costUSD, costConfidence, model: lastModel, sessionId, messageId, accountId });
@@ -184,13 +189,15 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   const model = obj.model || 'unknown';
   let costUSD = entryCostUSD(obj);
   let costConfidence;
+  // H7: same provider key the live proxy path uses for grok (describeAgentModule
+  // resolves the grok agent's upstream to 'xai' — see openai.js buildEntryFields).
   if (costUSD != null) {
     // Preserve existing confidence; if absent, derive from model lookup (not 'exact' — the
-    // stored cost may have been calculated with a prefix match or fallback rate).
+    // stored cost may have been calculated with a prefix match).
     costConfidence = (obj.cost && typeof obj.cost === 'object' && obj.cost.confidence)
-      || calculateCostSimple(usage, model).confidence;
+      || calculateCostSimple(usage, model, 'xai').confidence;
   } else {
-    const result = calculateCostSimple(usage, model);
+    const result = calculateCostSimple(usage, model, 'xai');
     costUSD = result.cost;
     costConfidence = result.confidence;
   }

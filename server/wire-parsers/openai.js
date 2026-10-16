@@ -7,6 +7,7 @@ const {
   matchOpenAIWireClient,
   resolveOpenAIWireAgent,
   displayNameForAgent,
+  describeAgentModule,
   OPENAI_WIRE_CLIENTS,
 } = require('../providers');
 const config = require('../config');
@@ -94,6 +95,38 @@ function getCodexInstructionsCwd(instructions) {
   return primaryMatch ? primaryMatch[1].trim() : null;
 }
 
+// S-5: agentflow-launched Codex workers carry no x-codex-turn-metadata cwd and
+// no CWD-bearing instructions — the only surviving cwd signal is the
+// <environment_context><cwd>...</cwd></environment_context> block Codex embeds
+// in the first user input[] item (workspace_roots as a weaker fallback).
+function getCodexInputCwd(input) {
+  if (!Array.isArray(input)) return null;
+  for (const item of input) {
+    if (!item || typeof item !== 'object' || item.role !== 'user') continue;
+    const texts = [];
+    if (typeof item.content === 'string') texts.push(item.content);
+    if (typeof item.text === 'string') texts.push(item.text);
+    if (Array.isArray(item.content)) {
+      for (const block of item.content) {
+        if (block && typeof block.text === 'string') texts.push(block.text);
+      }
+    }
+    for (const text of texts) {
+      // Codex sends its own block as a text that STARTS with the tag; a block
+      // quoted inside a larger prompt (memory consolidation quotes past
+      // rollouts) belongs to another session and must not be used.
+      const envMatch = text.trimStart().match(/^<environment_context>([\s\S]*?)<\/environment_context>/);
+      if (!envMatch) continue;
+      const scope = envMatch[1];
+      const cwdMatch = scope.match(/<cwd>(.*?)<\/cwd>/);
+      if (cwdMatch) return cwdMatch[1].trim();
+      const rootMatch = scope.match(/<workspace_roots>[\s\S]*?<root>(.*?)<\/root>/);
+      if (rootMatch) return rootMatch[1].trim();
+    }
+  }
+  return null;
+}
+
 function getCodexCwd(headers, parsedBody, fallback = null) {
   const turnMetadata = parseCodexTurnMetadata(headers);
   return parsedBody?.metadata?.cwd
@@ -101,6 +134,7 @@ function getCodexCwd(headers, parsedBody, fallback = null) {
     || turnMetadata?.cwd
     || getCodexWorkspaceCwd(turnMetadata?.workspaces)
     || getCodexInstructionsCwd(parsedBody?.instructions)
+    || getCodexInputCwd(parsedBody?.input)
     || fallback;
 }
 
@@ -245,6 +279,14 @@ function extractUsage(resData) {
   return normalizeUsageForProvider('openai', result);
 }
 
+function hasContextUsage(resData) {
+  if (!resData) return false;
+  const usage = resData.usage || (Array.isArray(resData)
+    ? resData.find(e => e?.usage)?.usage
+    : null);
+  return helpers.hasContextUsage(usage);
+}
+
 // From openai-session.js:58-70
 function detectSession(_req, headers, parsedBody) {
   const sessionId = getCodexSessionId(headers, parsedBody);
@@ -300,7 +342,15 @@ function buildEntryFields(ctx) {
   const isWS = ctx.transport === 'websocket';
   const response = isWS ? null : (ctx.response || getOpenAIResponseFromEvents(ctx.events || []));
   const usage = ctx.lastUsage || extractUsage(response);
-  const model = ctx.lastModel || response?.model || parsedBody?.model || null;
+  const contextUsageKnown = typeof ctx.contextUsageKnown === 'boolean'
+    ? ctx.contextUsageKnown
+    : (hasContextUsage(response)
+      || (ctx.lastUsage != null && helpers.hasContextUsage(ctx.lastUsage)));
+  // S-6/A-6.5: a Codex WS prewarm connection never gets an upstream response, so
+  // its own model can only come from the metadata a later same-session main
+  // turn would also fall back to — see the module-level map in ws-proxy.js.
+  const prewarmTurn = isWS ? ctx.prewarmTurn : null;
+  const model = ctx.lastModel || response?.model || parsedBody?.model || prewarmTurn?.model || null;
 
   let responseMetadata;
   if (isWS) {
@@ -311,6 +361,8 @@ function buildEntryFields(ctx) {
   }
 
   const agent = resolveOpenAIAgent(null, parsedBody);
+  // #568: price by the upstream that served the turn (grok → xai), not the wire family.
+  const pricingUpstream = describeAgentModule(agent)?.upstreamKey || 'openai';
   const responseToolItems = isWS
     ? ctx.responseEvents
     : ((ctx.events && ctx.events.length) ? ctx.events : response?.output);
@@ -326,7 +378,8 @@ function buildEntryFields(ctx) {
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
     usage,
-    cost: calculateCost(usage, model),
+    contextUsageKnown,
+    cost: calculateCost(usage, model, pricingUpstream),
     // instructions (Codex) or input[role=system] (other OpenAI-wire modules)
     maxContext: model ? config.inferMaxContext(model, getOpenAIInstructionsText(parsedBody), usage) : null,
     responseMetadata,
@@ -351,6 +404,12 @@ function buildEntryFields(ctx) {
     agentLabel: ctx.agentLabel || null,
     thinkingStripped: undefined,
     sessionId: ctx.sessionId,
+    // S-6/A-6.5: per-turn reasoning effort — the turn's own request wins, then
+    // its metadata, then (WS only) the latest prewarm remembered for this
+    // session id (a prewarm connection carries no upstream response of its
+    // own, so its own entry falls back to the same lookup — see ws-proxy.js).
+    effort: [parsedBody?.reasoning?.effort, parsedBody?.metadata?.reasoning_effort, prewarmTurn?.effort]
+      .find(v => typeof v === 'string' && v) || null,
   };
 }
 
@@ -416,6 +475,7 @@ module.exports = {
   // WIRE_PARSERS interface
   isNoiseRequest,
   extractUsage,
+  hasContextUsage,
   detectSession,
   preprocessBody,
   buildEntryFields,

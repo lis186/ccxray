@@ -79,7 +79,7 @@ cd .claude/worktrees/grok-wire-experiment
 export CCXRAY_HOME=$(mktemp -d)
 PORT=5612
 
-node server/index.js --port $PORT --no-browser &
+CCXRAY_EXPORT_DISABLE=1 node server/index.js --port $PORT --no-browser &
 # wait for listen…
 
 mkdir -p /tmp/grok-ccxray-smoke && cd /tmp/grok-ccxray-smoke
@@ -106,7 +106,7 @@ open "http://127.0.0.1:$PORT"
 ### One-shot launcher
 
 ```bash
-CCXRAY_HOME=$(mktemp -d) node server/index.js --port 5613 grok
+CCXRAY_HOME=$(mktemp -d) CCXRAY_EXPORT_DISABLE=1 node server/index.js --port 5613 grok
 ```
 
 ## 3. Acceptance criteria (product)

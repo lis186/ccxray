@@ -5,13 +5,16 @@
 - Related: ADR 0005 (agentKey unreliable — this ADR raises its conclusion to the
   protocol layer) / ADR 0008 (temporal overlap overrides declaration) / ADR 0010
   (coreHash-authoritative identity)
-- **Depends on #313** (Grok as an OpenAI-wire module — open at time of writing).
-  The registry this ADR extends (`OPENAI_WIRE_CLIENTS`) and the contract document
-  it amends (`docs/provider-modules.md`) both arrive with that PR; neither exists
-  on `main` yet, where `server/providers.js` carries only `AGENT_PROVIDERS`
-  (:19), `PROVIDER_AGENT` (:80) and `UPSTREAM_PROFILES` (:85). This ADR is
-  therefore unimplementable until #313 lands, and is recorded now because the
-  design question it settles is what #313 exposed.
+- ~~**Depends on #313**~~ — **landed.** `OPENAI_WIRE_CLIENTS` is in
+  `server/providers.js` and `docs/provider-modules.md` exists, so the blocker
+  this ADR recorded is gone. What remains unimplemented is the ADR's own
+  decision: there is no `server/attribution.js`, and `roleSignal` is not on any
+  `OPENAI_WIRE_CLIENTS` entry. Status is therefore still "decision only, not yet
+  implemented" — but for a different reason than the one written here, which was
+  factually stale (fixed 2026-08-20 while auditing the Herdr plugin, which has
+  quietly become a CONSUMER of inferred parentage: it reads `parentSessionId` to
+  decide that a session is not the pane's own — making an unimplemented
+  decision load-bearing for a rendered surface).
 
 ## Context
 

@@ -11,7 +11,12 @@ let clip = null;
 for (let k = 1; k <= all.length; k++) {
   fs.writeFileSync(HOME + '/logs/index.ndjson', all.slice(0, k).map(l => JSON.stringify(l)).join('\n') + '\n');
   const srv = spawn('node', ['/home/user/ccxray/server/index.js', '--port', '5603', '--no-browser'],
-    { env: { ...process.env, CCXRAY_HOME: HOME, HOME: process.cwd() + '/fake-home', CCXRAY_PLAN: 'max5x' }, stdio: 'ignore' });
+    { env: { ...process.env, CCXRAY_HOME: HOME, HOME: process.cwd() + '/fake-home', CCXRAY_PLAN: 'max5x',
+        // Synthetic demo data. export-sync has no way to infer that on its own (the
+        // heuristic that tried was deleted — it broke production), so every synthetic
+        // launcher says so explicitly. Without this, one fake export per frame reaches
+        // the real bucket.
+        CCXRAY_EXPORT_DISABLE: '1' }, stdio: 'ignore' });
   for (let i = 0; i < 60; i++) {
     try { const r = await fetch('http://127.0.0.1:5603/', { signal: AbortSignal.timeout(400) }); if (r.ok) break; } catch {}
     await new Promise(r => setTimeout(r, 300));

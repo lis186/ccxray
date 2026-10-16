@@ -165,7 +165,16 @@ MVP should avoid magic where possible:
 
 1. Plugin launcher wrappers start `ccxray claude|codex|grok` inside Herdr panes.
 2. The wrapper exports stable identity into ccxray:
-   - `CCXRAY_AGENT_ID=herdr:<pane_id>` or `herdr:<workspace_id>:<pane_id>`
+   - `CCXRAY_AGENT_ID=herdr:<user>:<host>:<pane_id>` — **the value must be globally
+     unique across people.** Decided 2026-08-26 in
+     `docs/solutions/cross-agent-export-dedup.md` §6.4: `agent_id` is a *home*
+     identifier, never a person key (the live export bucket carries 177 of them for
+     2 `user_email`s), and `bq/02-daily_latest.sql` dedups with
+     `PARTITION BY (agent_id, dt)`. A bare `herdr:<pane_id>` — or
+     `herdr:<workspace_id>:<pane_id>`, since neither id is unique across machines —
+     would let two people's daily rows collide and resolve last-writer-wins, silently
+     losing one of them. Nothing may key identity, salt, or cost attribution on
+     `agent_id`.
    - `CCXRAY_AGENT_TYPE=claude|codex|grok`
    - optional `CCXRAY_TEAM`, `CCXRAY_USER_EMAIL`
 3. ccxray persists these fields in index rows already.

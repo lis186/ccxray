@@ -4,7 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const net = require('net');
 const http = require('http');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
+const { exportStatus, exportConfigHash } = require('./export-sync');
+const { relativeRootComplaints } = require('./importer');
+const { discoverCredentials, describeCredentials } = require('./export-credentials');
+const LAUNCH_TOKEN = require('crypto').randomBytes(8).toString('hex');
 
 const HUB_DIR = resolveCcxrayHome();
 const HUB_LOCK_PATH = path.join(HUB_DIR, 'hub.json');
@@ -14,11 +18,34 @@ const FORK_LOCK_PATH = path.join(HUB_DIR, 'hub.fork.lock');
 const FORK_LOCK_STALE_MS = 15000;
 const IDLE_TIMEOUT_MS = 5000;
 const DEAD_CLIENT_CHECK_MS = 30000;
+const HUB_REQUEST_TIMEOUT_MS = 3000;
 const HUB_HEALTH_CHECK_MS = 5000;
 const READINESS_POLL_MS = 200;
 const READINESS_TIMEOUT_MS = 10000;
 const HUB_LOG_MAX_BYTES = 1 * 1024 * 1024; // 1 MB
 const HUB_LOG_KEEP_BYTES = 100 * 1024;     // 100 KB
+const HUB_REPLY_MAX_BYTES = 1 * 1024 * 1024;
+
+// These are the same launch signals that server/index.js already derives before
+// it starts a server. A client-side `ccxray <agent>` launch receives its report
+// from the detached hub; the hub process itself is launched with --hub-mode.
+let launchSignals = {
+  hubMode: false,
+  explicitPort: false,
+  agentNamed: false,
+  platform: process.platform,
+};
+
+function setLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  launchSignals = { hubMode, explicitPort, agentNamed, platform };
+}
+
+function kindFromLaunchSignals({ hubMode = false, explicitPort = false, agentNamed = false, platform = process.platform } = {}) {
+  if (hubMode) return 'hub';
+  if (explicitPort && agentNamed) return 'agent-port';
+  if (!explicitPort && agentNamed && platform !== 'win32') return 'client';
+  return 'standalone';
+}
 
 // ── Lockfile operations ─────────────────────────────────────────────
 
@@ -60,41 +87,104 @@ function isPidAlive(pid) {
 
 // ── Health check (HTTP probe) ───────────────────────────────────────
 
-function checkHubHealth(port, timeoutMs = 2000) {
+function hubHttpJson(port, route, timeoutMs, signal, onParsed, failureValue, {
+  detailed = false,
+  maxBytes = HUB_REPLY_MAX_BYTES,
+  acceptAnyJson = false,
+} = {}) {
   return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/_api/health`, { timeout: timeoutMs }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
+    let settled = false;
+    let req = null;
+    let res = null;
+    let data = '';
+    let bytes = 0;
+
+    const removeAbort = () => signal?.removeEventListener('abort', onAbort);
+    const success = value => detailed ? { ok: true, value } : value;
+    const failure = (reason, error = null) => detailed
+      ? {
+        ok: false,
+        reason,
+        error: error ? { code: error.code || null, message: error.message } : null,
+      }
+      : failureValue;
+    const settle = value => {
+      if (settled) return;
+      settled = true;
+      removeAbort();
+      resolve(value);
+    };
+    const destroyAndSettle = (reason = 'aborted', error = null) => {
+      if (settled) return;
+      settled = true;
+      removeAbort();
+      req?.destroy();
+      res?.destroy();
+      resolve(failure(reason, error));
+    };
+    const onAbort = () => destroyAndSettle('aborted');
+
+    if (signal?.aborted) {
+      settle(failure('aborted'));
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    req = http.get(`http://localhost:${port}${route}`, resArg => {
+      res = resArg;
+      res.on('data', chunk => {
+        bytes += chunk.length;
+        if (bytes > maxBytes) {
+          const error = Object.assign(new Error('hubHttpJson reply too large'), { code: 'reply-too-large' });
+          destroyAndSettle('reply-too-large', error);
+          return;
+        }
+        data += chunk.toString('utf8');
+      });
       res.on('end', () => {
+        if (settled) return;
+        let parsed;
+        try { parsed = JSON.parse(data); }
+        catch {
+          // The original status CLI rejected with the response body as its
+          // message. Keep that detail for the status caller; discovery callers
+          // retain their historic false/null result.
+          const error = Object.assign(new Error(data), { code: 'parse' });
+          settle(failure('parse', error));
+          return;
+        }
         try {
-          const parsed = JSON.parse(data);
-          resolve(parsed.ok === true);
-        } catch { resolve(false); }
+          settle(success(acceptAnyJson ? parsed : onParsed(parsed)));
+        } catch (error) {
+          settle(failure(error.code || 'parse', error));
+        }
+      });
+      res.on('error', error => settle(failure('request-failed', error)));
+      res.on('aborted', () => {
+        const error = Object.assign(new Error('aborted'), { code: 'ECONNRESET' });
+        settle(failure('request-failed', error));
       });
     });
-    req.on('error', () => resolve(false));
-    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.setTimeout(timeoutMs, () => {
+      const error = Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+      destroyAndSettle('timeout', error);
+    });
+    req.on('error', error => settle(failure('request-failed', error)));
   });
+}
+
+function checkHubHealth(port, timeoutMs = 2000, signal, options = {}) {
+  return hubHttpJson(port, '/_api/health', timeoutMs, signal,
+    parsed => parsed?.ok === true, false, options);
 }
 
 // ── Orphan hub probe (port-level fallback when lockfile missing) ────
 
-function probeHubStatus(port, timeoutMs = 2000) {
-  return new Promise(resolve => {
-    const req = http.get(`http://localhost:${port}/_api/hub/status`, { timeout: timeoutMs }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.app === 'ccxray' && parsed.pid && parsed.version && parsed.port) resolve(parsed);
-          else resolve(null);
-        } catch { resolve(null); }
-      });
-    });
-    req.on('error', () => resolve(null));
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-  });
+function probeHubStatus(port, timeoutMs = 2000, signal, options = {}) {
+  return hubHttpJson(port, '/_api/hub/status', timeoutMs, signal, parsed => {
+    if (parsed?.app === 'ccxray' && parsed.pid && parsed.version && parsed.port) return parsed;
+    return null;
+  }, null, options);
 }
 
 // ── Hub discovery (dual verification: pid + health) ─────────────────
@@ -234,15 +324,21 @@ function forkHub(port, opts = {}) {
   const env = { ...process.env };
   if (opts.displayName && !env.CCXRAY_DISPLAY_NAME) env.CCXRAY_DISPLAY_NAME = opts.displayName;
 
-  const child = spawn(process.execPath, [hubScript, ...args], {
-    detached: true,
-    stdio: ['ignore', fd, fd],
-    windowsHide: true,
-    env,
-  });
-  child.unref();
-  fs.closeSync(fd);
-  return child.pid;
+  try {
+    const child = spawn(process.execPath, [hubScript, ...args], {
+      detached: true,
+      stdio: ['ignore', fd, fd],
+      windowsHide: true,
+      env,
+    });
+    child.once('error', opts.onError || (err => {
+      console.error(`\x1b[31mHub launch failed: ${err.message}\x1b[0m`);
+    }));
+    child.unref();
+    return child.pid;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ── Wait for hub readiness (poll lockfile) ──────────────────────────
@@ -334,17 +430,24 @@ function handleSocketCommand(msg, socket) {
       socket.write(JSON.stringify({ ok: true }) + '\n');
       break;
     case 'register': {
-      if (typeof msg.pid !== 'number' || msg.pid <= 0 || msg.pid > 4194304 || !Number.isInteger(msg.pid)) return;
+      const token = tokenOf(msg);
+      if (!validClientPid(msg.pid) || token === null) return;
       if (typeof msg.cwd !== 'string' || msg.cwd.length > 4096) return;
       const wasEmpty = clients.size === 0;
-      addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg));
-      socket.write(JSON.stringify({ ok: true, firstClient: wasEmpty }) + '\n');
+      if (!addClient(msg.pid, msg.cwd, clientIdentityFromMessage(msg), token)) {
+        socket.write('null\n');
+        break;
+      }
+      socket.write(JSON.stringify({ ...assembleExportReport(), ok: true, firstClient: wasEmpty }) + '\n');
       break;
     }
-    case 'unregister':
-      removeClient(msg.pid);
+    case 'unregister': {
+      const token = tokenOf(msg);
+      if (!validClientPid(msg.pid) || token === null) return;
+      removeClient(msg.pid, token);
       socket.write(JSON.stringify({ ok: true }) + '\n');
       break;
+    }
     case 'bootstrap-token': {
       const auth = require('./auth');
       const token = auth.mintBootstrapToken();
@@ -359,30 +462,76 @@ function handleSocketCommand(msg, socket) {
   }
 }
 
-function hubSocketRequest(sockPath, msg, timeoutMs = 3000) {
+function hubSocketRequest(sockPath, msg, timeoutMs = HUB_REQUEST_TIMEOUT_MS, signal, {
+  maxReplyBytes = HUB_REPLY_MAX_BYTES,
+} = {}) {
   return new Promise((resolve, reject) => {
     const client = net.connect(sockPath);
     let buf = '';
-    const timer = setTimeout(() => {
+    let settled = false;
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const rejectAndDestroy = err => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       client.destroy();
-      reject(new Error('hubSocketRequest timeout'));
+      reject(err);
+    };
+    const resolveAndDestroy = value => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      client.destroy();
+      resolve(value);
+    };
+    const onAbort = () => {
+      const err = new Error('hubSocketRequest aborted');
+      err.code = 'ABORT_ERR';
+      rejectAndDestroy(err);
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      const err = new Error('hubSocketRequest timeout');
+      err.code = 'ETIMEDOUT';
+      rejectAndDestroy(err);
     }, timeoutMs);
 
     client.on('connect', () => {
       client.write(JSON.stringify(msg) + '\n');
     });
     client.on('data', chunk => {
+      if (settled) return;
       buf += chunk.toString();
+      if (Buffer.byteLength(buf) > maxReplyBytes) {
+        const err = new Error('hubSocketRequest reply too large');
+        err.code = 'reply-too-large';
+        rejectAndDestroy(err);
+        return;
+      }
       const nl = buf.indexOf('\n');
       if (nl !== -1) {
-        clearTimeout(timer);
-        const parsed = JSON.parse(buf.slice(0, nl));
-        client.destroy();
-        resolve(parsed);
+        try {
+          resolveAndDestroy(JSON.parse(buf.slice(0, nl)));
+        } catch {
+          const err = new Error('hubSocketRequest malformed reply');
+          err.code = 'malformed-reply';
+          rejectAndDestroy(err);
+        }
       }
     });
     client.on('error', err => {
-      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(err);
     });
   });
@@ -392,7 +541,7 @@ function hubSocketRequest(sockPath, msg, timeoutMs = 3000) {
 
 function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
   const sockPath = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.sockPath : null;
-  const payload = { pid, cwd, ...clientIdentityFromMessage(identity) };
+  const payload = { pid, cwd, token: LAUNCH_TOKEN, ...clientIdentityFromMessage(identity) };
   if (sockPath) {
     return hubSocketRequest(sockPath, { cmd: 'register', ...payload });
   }
@@ -402,7 +551,7 @@ function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
     const req = http.request(`http://localhost:${port}/_api/hub/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 3000,
+      timeout: HUB_REQUEST_TIMEOUT_MS,
     }, res => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
@@ -419,16 +568,17 @@ function registerClient(lockInfoOrPort, pid, cwd, identity = {}) {
 
 function unregisterClient(lockInfoOrPort, pid) {
   const sockPath = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.sockPath : null;
+  const payload = { pid, token: LAUNCH_TOKEN };
   if (sockPath) {
-    return hubSocketRequest(sockPath, { cmd: 'unregister', pid }).catch(() => {});
+    return hubSocketRequest(sockPath, { cmd: 'unregister', ...payload }).catch(() => {});
   }
   const port = typeof lockInfoOrPort === 'object' ? lockInfoOrPort.port : lockInfoOrPort;
   return new Promise(resolve => {
-    const body = JSON.stringify({ pid });
+    const body = JSON.stringify(payload);
     const req = http.request(`http://localhost:${port}/_api/hub/unregister`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: 3000,
+      timeout: HUB_REQUEST_TIMEOUT_MS,
     }, res => {
       res.resume();
       resolve();
@@ -460,9 +610,12 @@ function truncateHubLog() {
 // ── Client lifecycle (hub-side state) ───────────────────────────────
 
 const clients = new Map(); // pid → { cwd, connectedAt, agentId?, userEmail?, team?, agentType? }
+const clientTokens = new Map(); // pid → token of held registration; excluded from status output
+const cancelledRegistrations = new Map(); // token → pid for unmatched unregister-before-register
 let idleTimer = null;
 let deadCheckInterval = null;
 let hubListenPort = null; // set once at startup, survives lockfile deletion
+let identityPort = null; // this process's own listener, never read from the hub lockfile
 let onShutdown = null; // injectable shutdown handler (default: process.exit)
 
 function clientIdentityFromMessage(msg) {
@@ -476,14 +629,33 @@ function clientIdentityFromMessage(msg) {
   return out;
 }
 
-function addClient(pid, cwd, identity = {}) {
-  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
-  clients.set(pid, { cwd, connectedAt: new Date().toISOString(), ...clientIdentityFromMessage(identity) });
+function validClientPid(pid) {
+  return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 && pid <= 4194304;
 }
 
-function removeClient(pid) {
-  clients.delete(pid);
-  if (clients.size === 0) startIdleTimer();
+function tokenOf(msg) {
+  if (msg.token === undefined) return undefined;
+  return typeof msg.token === 'string' && /^[0-9a-f]{16}$/.test(msg.token) ? msg.token : null;
+}
+
+function addClient(pid, cwd, identity = {}, token) {
+  if (token && cancelledRegistrations.has(token)) return false;
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  clients.set(pid, { cwd, connectedAt: new Date().toISOString(), ...clientIdentityFromMessage(identity) });
+  if (token) clientTokens.set(pid, token);
+  else clientTokens.delete(pid);
+  return true;
+}
+
+function removeClient(pid, token) {
+  const held = clientTokens.get(pid);
+  if (clients.has(pid) && (!token || !held || held === token)) {
+    clients.delete(pid);
+    clientTokens.delete(pid);
+    if (clients.size === 0) startIdleTimer();
+    return;
+  }
+  if (token) cancelledRegistrations.set(token, pid);
 }
 
 // Returns the cwd of the unique registered client, or null when zero or
@@ -547,26 +719,70 @@ function shutdownHub() {
 }
 
 function startDeadClientCheck() {
-  deadCheckInterval = setInterval(() => {
-    for (const [pid] of clients) {
-      if (!isPidAlive(pid)) {
-        console.log(`Dead client detected: pid ${pid}, removing.`);
-        removeClient(pid);
-      }
-    }
-  }, DEAD_CLIENT_CHECK_MS);
+  deadCheckInterval = setInterval(sweepDeadClients, DEAD_CLIENT_CHECK_MS);
   deadCheckInterval.unref();
+}
+
+function sweepDeadClients() {
+  for (const [pid] of clients) {
+    if (!isPidAlive(pid)) {
+      console.log(`Dead client detected: pid ${pid}, removing.`);
+      removeClient(pid);
+    }
+  }
+  for (const [token, pid] of cancelledRegistrations) {
+    if (!isPidAlive(pid)) cancelledRegistrations.delete(token);
+  }
 }
 
 function setHubPort(port) { hubListenPort = port; }
 
+function setIdentityPort(port) { identityPort = port; }
+
+function currentHubPort() {
+  return hubListenPort || readHubLock()?.port;
+}
+
+// Shared by the hub socket and authenticated /_api/health responses so
+// standalone status probes use the same display-safe report as hub status.
+function assembleExportReport(env = process.env) {
+  const kind = kindFromLaunchSignals(launchSignals);
+  const { exportState, exportReason } = kind === 'client'
+    ? { exportState: null, exportReason: null }
+    : exportStatus(env);
+  return {
+    exportState,
+    exportReason,
+    configWarnings: kind === 'client' ? [] : relativeRootComplaints(env),
+    exportConfigHash: kind === 'client' ? null : exportConfigHash(env),
+    // #633 M0: offline discovery + parse of the writer credential, display view
+    // only (no path, no contents). Reported for an ENABLED exporter only — for a
+    // suppressed/unconfigured/refused process a credential verdict would invite
+    // the reader to infer an exporter that does not exist. Same client rule as
+    // exportState: a client has no authority over its own environment.
+    credential: exportState === 'enabled' ? describeCredentials(discoverCredentials({ env })) : null,
+    identity: {
+      kind,
+      pid: process.pid,
+      port: kind === 'client' ? null : identityPort,
+      home: resolveCcxrayHome(env),
+      logsDir: resolveLogsDir(env),
+    },
+  };
+}
+
 function getHubStatus() {
+  // `port` is the HUB's listener (what `ccxray status` means by "the hub is on port N");
+  // `identity.port` is the REPORTING process's own listener. They coincide in the hub and
+  // can diverge in any other process that calls this helper; later surfaces must choose deliberately
+  // (see docs/solutions/hub-owned-config-status.md §2.3).
   return {
     app: 'ccxray',
-    port: hubListenPort || readHubLock()?.port,
+    port: currentHubPort(),
     pid: process.pid,
     version: require('../package.json').version,
     uptime: Math.floor(process.uptime()),
+    ...assembleExportReport(),
     clients: [...clients.entries()].map(([pid, info]) => ({ pid, ...info })),
   };
 }
@@ -582,16 +798,23 @@ function handleHubRoutes(clientReq, clientRes) {
   const pathname = clientReq.url.split('?')[0];
 
   if (pathname === '/_api/health' && clientReq.method === 'GET') {
+    // Health stays public for port discovery, but the export report contains
+    // local paths and config diagnostics. Reuse the dashboard's exact trust
+    // predicate here because this route runs before the normal auth gate.
+    const reportTrusted = require('./auth').isDashboardAuthenticated(clientReq);
     clientRes.writeHead(200, { 'Content-Type': 'application/json' });
     // app/pid/hub identify the listener to probePortOccupant (#555) so a
     // port-conflict message can tell a standalone ccxray from a foreign
     // process. `hub` is true only after setHubPort — i.e. real hub mode.
     clientRes.end(JSON.stringify({
+      ...(reportTrusted ? assembleExportReport() : {}),
       ok: true,
       app: 'ccxray',
       pid: process.pid,
       hub: hubListenPort != null,
       version: require('../package.json').version,
+      ...(!reportTrusted ? { exportReportUnavailableReason: 'authentication-required' } : {}),
+      capabilities: [],
     }));
     return true;
   }
@@ -619,11 +842,32 @@ function handleHubRoutes(clientReq, clientRes) {
 //   'silent'            — something is bound but does not answer HTTP
 //   'free'              — connection refused (nothing listening)
 
+// Trusted health responses include the bounded export report and warnings;
+// leave room for it while keeping the port probe's response size capped.
+const PROBE_MAX_BYTES = 64 * 1024;
+
+function exportReportFromHealth(parsed) {
+  if (!parsed || typeof parsed.exportState !== 'string' || parsed.exportState.length === 0) return null;
+  return {
+    exportState: parsed.exportState,
+    exportReason: typeof parsed.exportReason === 'string' ? parsed.exportReason : null,
+    configWarnings: Array.isArray(parsed.configWarnings) ? parsed.configWarnings : [],
+    exportConfigHash: typeof parsed.exportConfigHash === 'string' ? parsed.exportConfigHash : null,
+    credential: parsed.credential && typeof parsed.credential === 'object' ? parsed.credential : null,
+    identity: parsed.identity && typeof parsed.identity === 'object' ? parsed.identity : null,
+  };
+}
+
 function probePortOccupant(port, timeoutMs = 1500) {
   return new Promise(resolve => {
     const req = http.get(`http://localhost:${port}/_api/health`, { timeout: timeoutMs }, res => {
       let data = '';
-      res.on('data', c => { data += c; if (data.length > 4096) req.destroy(); });
+      let bytes = 0;
+      res.on('data', c => {
+        bytes += c.length;
+        data += c;
+        if (bytes > PROBE_MAX_BYTES) req.destroy();
+      });
       res.on('end', () => {
         // Only a 200 counts as a health answer — a foreign service that
         // happens to echo { ok: true } on an error page must not be
@@ -632,7 +876,15 @@ function probePortOccupant(port, timeoutMs = 1500) {
           try {
             const parsed = JSON.parse(data);
             if (parsed && parsed.ok === true && parsed.app === 'ccxray') {
-              resolve({ kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone', pid: parsed.pid || null, version: parsed.version || null });
+              resolve({
+                kind: parsed.hub ? 'ccxray-hub' : 'ccxray-standalone',
+                pid: parsed.pid || null,
+                version: parsed.version || null,
+                report: exportReportFromHealth(parsed),
+                reportUnavailableReason: parsed.exportReportUnavailableReason === 'authentication-required'
+                  ? 'authentication-required'
+                  : null,
+              });
               return;
             }
             if (parsed && parsed.ok === true) { resolve({ kind: 'health-ok', pid: null }); return; }
@@ -668,6 +920,7 @@ function describePortOccupant(occ, port) {
       return [
         `port ${port} is held by a standalone (non-hub) ccxray${occ.pid ? ` (pid ${occ.pid})` : ''}, so it cannot be shared as a hub.`,
         `Leave it running; ${escape}.`,
+        `This process records into ${resolveLogsDir()}. To record separately, set CCXRAY_HOME=<dir>.`,
       ];
     case 'ccxray-hub':
       // The hub may be healthy under a different CCXRAY_HOME — only its
@@ -699,7 +952,13 @@ function describePortOccupant(occ, port) {
 
 // ── Hub pid monitoring (client-side recovery) ───────────────────────
 
-function startHubMonitor(hubPid, hubPort, onRecovery) {
+function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
+  // Recovery failure is a separate required channel so a caller cannot omit
+  // the failure path and mistake a failed recovery for a successful one.
+  if (typeof onRecovery !== 'function' || typeof onRecoveryFailure !== 'function') {
+    throw new TypeError('startHubMonitor requires success and failure callbacks');
+  }
+
   const interval = setInterval(async () => {
     if (isPidAlive(hubPid)) return;
 
@@ -710,21 +969,29 @@ function startHubMonitor(hubPid, hubPort, onRecovery) {
     let acquired = false;
     try {
       acquired = tryAcquireForkLock();
-      if (acquired) forkHub(hubPort);
-      const lock = await waitForHubReady();
+      let launchFailure = null;
+      if (acquired) {
+        let rejectLaunch;
+        launchFailure = new Promise((_, reject) => { rejectLaunch = reject; });
+        forkHub(hubPort, { onError: rejectLaunch });
+      }
+      const readiness = waitForHubReady();
+      const lock = acquired ? await Promise.race([readiness, launchFailure]) : await readiness;
       if (acquired) releaseForkLock();
       if (lock.port !== hubPort) {
         if (acquired) releaseForkLock();
         console.error(`\x1b[31mHub recovered on port ${lock.port} but Claude is using port ${hubPort}. Cannot recover.\x1b[0m`);
         try { process.kill(lock.pid, 'SIGTERM'); } catch {}
+        onRecoveryFailure();
         return;
       }
       console.error(`\x1b[32mHub recovered (pid ${lock.pid}, port ${lock.port})\x1b[0m`);
       if (onRecovery) onRecovery(lock);
-      startHubMonitor(lock.pid, lock.port, onRecovery);
+      startHubMonitor(lock.pid, lock.port, onRecovery, onRecoveryFailure);
     } catch (err) {
       if (acquired) releaseForkLock();
       console.error(`\x1b[31mHub recovery failed: ${err.message}\x1b[0m`);
+      onRecoveryFailure();
     }
   }, HUB_HEALTH_CHECK_MS);
   interval.unref();
@@ -757,14 +1024,22 @@ function tryListen(srv, port, maxAttempts) {
 }
 
 module.exports = {
+  clientIdentityFromMessage,
+  kindFromLaunchSignals,
+  exportReportFromHealth,
+  setLaunchSignals,
+  assembleExportReport,
   HUB_DIR,
   HUB_LOCK_PATH,
   HUB_LOG_PATH,
+  HUB_REQUEST_TIMEOUT_MS,
+  HUB_HEALTH_CHECK_MS,
   SOCK_PATH,
   readHubLock,
   writeHubLock,
   deleteHubLock,
   isPidAlive,
+  sweepDeadClients,
   checkHubHealth,
   probeHubStatus,
   discoverHub,
@@ -791,10 +1066,12 @@ module.exports = {
   shutdownHub,
   startDeadClientCheck,
   setHubPort,
+  setIdentityPort,
   getHubStatus,
   handleHubRoutes,
   probePortOccupant,
   describePortOccupant,
   startHubMonitor,
   tryListen,
+  handleSocketCommand,
 };

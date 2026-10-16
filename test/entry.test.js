@@ -14,11 +14,15 @@ const LEGACY_INDEX_FIELDS = [
   'turnToolCallIds','turnToolResults','beta1m',
 ];
 
-test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 fields', () => {
+test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends #504 and #611 fields', () => {
   assert.deepEqual(INDEX_FIELDS.slice(0, LEGACY_INDEX_FIELDS.length), LEGACY_INDEX_FIELDS);
   assert.deepEqual(INDEX_FIELDS.slice(LEGACY_INDEX_FIELDS.length), [
     'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls',
-    'ctxBeta','parentSessionId',
+    'ctxBeta','parentSessionId','compacted','contextUsageKnown',
+    'imported1mCostState','imported1mSettings',
+    'accountEmail','accountDomain',
+    'subagentId','subagentToolUseId',
+    'effort','thinkingTokens','turnDurationMs',
   ]);
 });
 
@@ -29,6 +33,18 @@ test('buildIndexLine persists child-session parent identity only when known', ()
   assert.equal(child.parentSessionId, 'parent-session');
   const main = JSON.parse(buildIndexLine({ id: 'main', sessionId: 'main-session' }));
   assert.ok(!('parentSessionId' in main));
+});
+
+test('buildIndexLine persists an explicit compaction boundary', () => {
+  const compacted = JSON.parse(buildIndexLine({ id: 'compact-next', compacted: true }));
+  assert.equal(compacted.compacted, true);
+  const ordinary = JSON.parse(buildIndexLine({ id: 'ordinary' }));
+  assert.ok(!('compacted' in ordinary));
+});
+
+test('buildIndexLine persists false context usage provenance', () => {
+  const line = JSON.parse(buildIndexLine({ id: 'unknown-context', contextUsageKnown: false }));
+  assert.equal(line.contextUsageKnown, false);
 });
 
 test('buildIndexLine projects only INDEX_FIELDS, drops excluded + undefined', () => {

@@ -8,6 +8,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// A-010: every cost path reads the package-relative pricing-cache.json on first
+// lookup. Pin it to a file that does not exist so the expected costs below come
+// from DEFAULT_PRICING, not the developer machine's cache (docs/testing.md).
+process.env.CCXRAY_PRICING_CACHE = path.join(require('os').tmpdir(), 'ccxray-grok-wire-no-cache-' + process.pid, 'pricing-cache.json');
+require('../server/default-rates').__resetRateTableForTests();
+
 const openai = require('../server/wire-parsers/openai');
 const config = require('../server/config');
 const { getParser } = require('../server/wire-parsers');

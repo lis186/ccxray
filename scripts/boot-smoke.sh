@@ -18,7 +18,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # ANTHROPIC_BASE_URL inherited from a ccxray-proxied shell would trip the
 # upstream-loop guard (42c80fb) or point upstream at the local hub — boot
 # smoke must test default upstream config.
+# CCXRAY_EXPORT_DISABLE for the same class of reason: CCXRAY_HOME isolates storage
+# paths but NOT CCXRAY_EXPORT_GCS_BUCKET, which is exported globally in the dev's
+# shell, so a smoke boot would ship synthetic summaries to the company bucket.
 env -u ANTHROPIC_BASE_URL CCXRAY_HOME="$HOME_DIR" PROXY_PORT="$PORT" \
+  CCXRAY_EXPORT_DISABLE=1 \
   node "$ROOT/server/index.js" >"$LOG" 2>&1 &
 PID=$!
 trap 'kill "$PID" 2>/dev/null; wait "$PID" 2>/dev/null' EXIT

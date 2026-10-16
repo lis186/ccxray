@@ -1,0 +1,12 @@
+{
+  "upstream": "d0a6dd0a00d2d0914c900a0a5851764b32b50fb1",
+  "generatedAt": "2026-10-12T08:43:20.209Z",
+  "repo": "${ROOT}/repo",
+  "clones": [
+    "${ROOT}/tmp/agentflow-external-runner-cuoCU0/clone",
+    "${ROOT}/tmp/agentflow-external-runner-mZ2ytm/clone",
+    "${ROOT}/tmp/agentflow-external-runner-awuRqI/clone",
+    "${ROOT}/tmp/agentflow-external-runner-HCiUhq/clone",
+    "${ROOT}/tmp/agentflow-external-runner-reuse/clone"
+  ]
+}

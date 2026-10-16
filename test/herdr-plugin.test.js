@@ -3,6 +3,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync, spawnSync } = require('child_process');
+const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -10,6 +11,18 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const PLUGIN = path.join(ROOT, 'plugins', 'herdr');
 const MANIFEST = path.join(PLUGIN, 'herdr-plugin.toml');
+const TEMP_DIRS = [];
+process.on('exit', () => {
+  for (const dir of TEMP_DIRS) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+  }
+});
+
+function tempDir(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  TEMP_DIRS.push(dir);
+  return dir;
+}
 
 // INVARIANT: plugin code resolves workspace scope, ccxray home, and command
 // paths from the ambient environment, so no spawn may inherit the developer's.
@@ -23,14 +36,40 @@ function pluginEnv(overrides = {}) {
   for (const [key, value] of Object.entries(process.env)) {
     // PROXY_PORT joined the plugin's env surface in #555 (the launch port
     // escape hatch): an ambient value would silently retarget every spawn.
-    if (key.startsWith('HERDR_') || key.startsWith('CCXRAY_') || key === 'PROXY_PORT') continue;
+    //
+    // ANTHROPIC_CUSTOM_HEADERS joined it in #575 (native launch with header
+    // identity). It leaks where ANTHROPIC_BASE_URL does not, and the difference
+    // is the merge: launchEnvVars OVERWRITES the base url but deliberately
+    // PREPENDS the user's existing headers (lib/ccxray.js, "the user's own value
+    // is PREPENDED rather than replaced"), so a developer whose own shell was
+    // launched by this plugin hands every spawned launch-agent a header to
+    // prepend. The exact-equality assertion in 'launch-agent stamps the
+    // workspace id into the pane identity header' then sees three headers. It
+    // shipped green because it only fails for that developer. Rule for the next
+    // variable: an overwritten one is safe here, a merged one is not.
+    if (key.startsWith('HERDR_')
+      || key.startsWith('CCXRAY_')
+      || key === 'PROXY_PORT'
+      || key === 'ANTHROPIC_CUSTOM_HEADERS') continue;
     env[key] = value;
   }
+  // Load budget: the plugin's CLI calls have deliberately tight per-call
+  // budgets (1200ms / 1500ms) that a mock can miss when `node --test` saturates
+  // the machine. A missed budget does not report as a timeout — it degrades a
+  // value and fails an unrelated assertion in another suite, which is how two
+  // tests in this file flaked for weeks. Same remedy as #542's launcher budget.
+  // 10s: comfortably above any load spike, and below runScript's own 15s kill
+  // so a genuinely hung mock still fails as a spawn timeout rather than hanging.
+  env.CCXRAY_HERDR_CMD_TIMEOUT_MS = '10000';
   env.CCXRAY_HOME = isolatedHome();
+  env.HOME = env.CCXRAY_HOME;
+  env.CCXRAY_EXPORT_DISABLE = '1';
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own
   // sessionSummaryDetails call sees the child's env, where an unset
-  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects.
+  // CCXRAY_IMPORT_HOMES means the developer's real $HOME/.claude*/projects;
+  // configured values are the actual Claude projects/ scan root(s).
   env.CCXRAY_IMPORT_HOMES = NO_TRANSCRIPTS;
+  env.CCXRAY_IMPORT_CODEX_HOMES = NO_CODEX_TRANSCRIPTS;
   return { ...env, ...overrides };
 }
 
@@ -65,8 +104,19 @@ function isolatedHome() {
   return emptyHome;
 }
 
+function paneAlertFor(detail) {
+  const { paneAlert } = require('../plugins/herdr/bin/lib/ccxray');
+  return paneAlert({
+    hasTelemetry: true,
+    refusedCount: detail.refusedCount,
+    staleText: detail.stale?.text,
+    failures: detail.failures,
+    cacheDropped: detail.cacheDropped,
+  });
+}
+
 function makeHome(entries = []) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-plugin-'));
+  const home = tempDir('ccxray-herdr-plugin-');
   fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
   if (entries.length) {
     fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), entries.map(e => JSON.stringify(e)).join('\n') + '\n');
@@ -74,16 +124,67 @@ function makeHome(entries = []) {
   return home;
 }
 
+function makeEmptyHome() {
+  const home = makeHome();
+  fs.writeFileSync(path.join(home, 'logs', 'index.ndjson'), '');
+  return home;
+}
+
+function repairStatePathForTest(home, target) {
+  const stat = fs.statSync(target.file);
+  const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+    provider: target.provider,
+    sessionId: target.sessionId,
+    cwd: target.cwd,
+    file: path.resolve(fs.realpathSync(target.file)),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+  })).digest('hex');
+  return path.join(home, 'herdr-plugin', 'link-repair-v1', `${fingerprint}.json`);
+}
+
+function makeCcxrayMock({ stdout = '', stderr = '', status = 0 } = {}) {
+  const dir = tempDir('ccxray-herdr-repair-command-');
+  const bin = path.join(dir, 'ccxray');
+  fs.writeFileSync(bin, [
+    '#!/usr/bin/env node',
+    `process.stdout.write(${JSON.stringify(stdout)});`,
+    `process.stderr.write(${JSON.stringify(stderr)});`,
+    `process.exit(${status});`,
+    '',
+  ].join('\n'));
+  fs.chmodSync(bin, 0o755);
+  return bin;
+}
+
+function makeTargetedImportWrapper() {
+  const dir = tempDir('ccxray-herdr-repair-wrapper-');
+  const bin = path.join(dir, 'ccxray');
+  const server = path.join(ROOT, 'server', 'index.js');
+  fs.writeFileSync(bin, [
+    '#!/usr/bin/env node',
+    "const { spawnSync } = require('child_process');",
+    `const result = spawnSync(process.execPath, [${JSON.stringify(server)}, ...process.argv.slice(2)], { env: process.env, encoding: 'utf8' });`,
+    "process.stdout.write(result.stdout || '');",
+    "process.stderr.write((result.stderr || '') + ' synthetic stderr diagnostic \\n');",
+    'process.exit(result.status == null ? 1 : result.status);',
+    '',
+  ].join('\n'));
+  fs.chmodSync(bin, 0o755);
+  return bin;
+}
+
 // ISOLATION: sessionSummaryDetails now consults the Claude transcript tree to
 // decide staleness, and server/importer.js's rule is that an unset
-// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one.
+// CCXRAY_IMPORT_HOMES means $HOME/.claude*/projects — the developer's real one;
+// configured values must be actual Claude projects/ scan root(s).
 // Measured: one unisolated call statted 7 real paths. It "passed" only because no
 // real transcript is named s1.jsonl, which is the #407 shape (a leak that passes
 // because the real data happens to be empty). Every sessionSummaryDetails call
 // pins this empty root unless it is deliberately providing a transcript.
 // See docs/testing.md and docs/decisions/0015-cost-worker-lifecycle-drain-exit.md R4.
-const NO_TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-no-transcripts-'));
-process.on('exit', () => { try { fs.rmSync(NO_TRANSCRIPTS, { recursive: true, force: true }); } catch {} });
+const NO_TRANSCRIPTS = tempDir('ccxray-herdr-no-transcripts-');
+const NO_CODEX_TRANSCRIPTS = tempDir('ccxray-herdr-no-codex-transcripts-');
 
 function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
   const shared = path.join(home, 'logs', 'shared');
@@ -91,13 +192,30 @@ function writeToolDefinitions(home, hash, tools, prefix = 'tools_') {
   fs.writeFileSync(path.join(shared, `${prefix}${hash}.json`), JSON.stringify(tools));
 }
 
-function makeHerdr(agents = []) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-bin-'));
-  const bin = path.join(dir, 'herdr');
-  const response = JSON.stringify({ id: 'test', result: { type: 'agent_list', agents } });
-  fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(response)} + '\\n');\n`);
+// A mock `herdr` that starts in ~5ms instead of ~150ms+.
+//
+// `#!/usr/bin/env node` mocks are spawned INSIDE runHerdr's timeout budget
+// (herdrAgentReport uses 1500ms), and a cold Node startup on a loaded machine
+// can exceed it. The timeout does not surface as a timeout: herdrOk flips to
+// false, or currentWorkspaceScope falls back to the plugin cwd, and the failure
+// appears as an unrelated string/path assertion in a different suite. Two tests
+// in this file were flaky for exactly that reason — always on the first run
+// after files changed on disk, never in isolation.
+//
+// The remaining `#!/usr/bin/env node` mocks in this file carry real logic
+// (argv logging, timers, exit codes); convert them the same way if they start
+// flaking.
+function writeShMock(bin, stdout) {
+  fs.writeFileSync(bin, `#!/bin/sh\ncat <<'CCXRAY_MOCK_EOF'\n${stdout}\nCCXRAY_MOCK_EOF\n`);
   fs.chmodSync(bin, 0o755);
   return bin;
+}
+
+function makeHerdr(agents = []) {
+  const dir = tempDir('ccxray-herdr-bin-');
+  const bin = path.join(dir, 'herdr');
+  const response = JSON.stringify({ id: 'test', result: { type: 'agent_list', agents } });
+  return writeShMock(bin, response);
 }
 
 function makeRecordingHerdr({ status = 0 } = {}) {
@@ -187,11 +305,10 @@ describe('Herdr plugin manifest', () => {
     assert.ok(manifest.includes('on = "workspace.created"\ncommand = ["/bin/sh", "-c", "exec \\"$HERDR_PLUGIN_ROOT/bin/run-node.sh\\" \\"$HERDR_PLUGIN_ROOT/bin/open-onboarding.js\\" --first-run"]'));
   });
 
-  it('opens Mission Control and launched providers in stable new tabs by default', () => {
+  it('opens panes as tabs by default (overlay requires a pane entrypoint, not an action)', () => {
     const manifest = fs.readFileSync(MANIFEST, 'utf8');
+    assert.match(manifest, /id = "onboarding"[\s\S]*?placement = "tab"/);
     assert.match(manifest, /id = "mission-control"[\s\S]*?placement = "tab"/);
-    const onboarding = fs.readFileSync(path.join(PLUGIN, 'bin', 'onboarding.js'), 'utf8');
-    assert.match(onboarding, /'--entrypoint', 'mission-control', '--placement', 'tab'/);
   });
 
   it('labels capability analysis experimental and starts it through an explicit main entrypoint', () => {
@@ -226,10 +343,36 @@ describe('Quick Start keyboard menu', () => {
     };
     const items = menuItems(state);
     assert.equal(recommendedItemId(state), 'launch-codex');
-    assert.equal(moveSelection(items, 'launch-codex', 1), 'sidebar');
-    assert.equal(moveSelection(items, 'sidebar', -1), 'launch-codex');
+    assert.equal(moveSelection(items, 'launch-codex', 1), 'keybindings');
+    assert.equal(moveSelection(items, 'keybindings', -1), 'launch-codex');
     assert.equal(items.find(item => item.key === 'M').enabled, false);
     assert.equal(items.find(item => item.key === 'S').detail, 'installed · Enter remove');
+    // A state built without a keys snapshot must still render.
+    assert.equal(items.find(item => item.key === 'B').detail, 'not bound · Enter install');
+  });
+
+  // Whether a key reaches ccxray is state the user cannot see anywhere else:
+  // Herdr's manifest cannot declare keybindings, so an uninstalled binding is
+  // indistinguishable from a broken one until the row says which.
+  it('Quick Start shows the bound key and offers the reverse action', () => {
+    const { menuItems } = require('../plugins/herdr/bin/onboarding');
+    const base = {
+      ccxrayReady: true,
+      hubRunning: true,
+      sessions: 3,
+      sidebar: true,
+      providers: [{ id: 'claude', label: 'Claude', key: '1', available: true }],
+    };
+    const unbound = menuItems({ ...base, keys: { mission: null, quickStart: null, any: false } });
+    assert.equal(unbound.find(item => item.key === 'B').detail, 'not bound · Enter install');
+    assert.equal(unbound.find(item => item.key === 'M').detail, 'live attention');
+
+    const bound = menuItems({
+      ...base,
+      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true },
+    });
+    assert.equal(bound.find(item => item.key === 'B').detail, 'prefix+m / prefix+shift+m · Enter remove');
+    assert.equal(bound.find(item => item.key === 'M').detail, 'live attention · prefix+m');
   });
 
   it('counts traced sessions only in the current workspace', () => {
@@ -300,8 +443,7 @@ describe('Herdr workspace scope', () => {
         ],
       },
     };
-    fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(response) + '\n')});\n`);
-    fs.chmodSync(bin, 0o755);
+    writeShMock(bin, JSON.stringify(response));
 
     const scope = currentWorkspaceScope(pluginEnv({
       HERDR_WORKSPACE_ID: 'w1',
@@ -335,6 +477,588 @@ describe('Herdr workspace scope', () => {
     });
     assert.equal(detail.summary, 'ccxray: ready · send prompt');
     assert.equal(detail.matched, false);
+  });
+
+  // FAIL-ON-OLD: with a native session that has no index evidence, the old
+  // matcher falls through to this pane's historical agentId and renders the old
+  // session as linked. The native session is the authority; the transcript is
+  // only a bounded recovery source for that exact id.
+  it('does not borrow an older pane session when the native session needs repair', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const cwd = '/work/native-repair';
+    const nativeSessionId = 'native-session-new';
+    const transcripts = tempDir('ccxray-native-repair-');
+    const project = path.join(transcripts, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(project, `${nativeSessionId}.jsonl`), `${JSON.stringify({
+      type: 'assistant', cwd, timestamp: '2026-08-26T00:00:00.000Z',
+      message: { id: 'msg-native', model: 'claude-opus-5', usage: { input_tokens: 10, output_tokens: 1 } },
+    })}\n`);
+    const old = {
+      ...sampleEntry,
+      id: 'old-pane-turn',
+      sessionId: 'native-session-old',
+      agentId: 'herdr:w1:p9',
+      cwd,
+      model: 'claude-sonnet-5',
+    };
+
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome([old]), CCXRAY_IMPORT_HOMES: transcripts },
+      paneId: 'w1:p9',
+      sessionId: nativeSessionId,
+      cwd,
+      agent: 'claude',
+    });
+
+    assert.equal(detail.matched, false);
+    assert.equal(detail.sessionId, null);
+    assert.equal(detail.repairCandidate?.sessionId, nativeSessionId);
+    assert.equal(detail.repairCandidate?.provider, 'claude');
+    assert.doesNotMatch(detail.summary, /sonnet/);
+  });
+
+  // FAIL-ON-OLD: newer imported evidence used to set `matched` and therefore
+  // rendered the normal idle/live route merely because older proxy evidence
+  // existed for the same resumed session.
+  it('labels a native session whose latest evidence is imported as history-only with live tracing off', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges');
+    const imported = {
+      ...sampleEntry,
+      id: 'imported-native-turn',
+      sessionId: 'native-history',
+      agentId: null,
+      imported: true,
+      importSource: 'claude-code',
+      cwd: '/work/history-only',
+      receivedAt: Date.parse('2026-08-26T02:00:00.000Z'),
+    };
+    const formerlyLive = {
+      ...sampleEntry,
+      id: 'formerly-live-native-turn',
+      sessionId: 'native-history',
+      agentId: 'herdr:w1:p10',
+      imported: false,
+      cwd: '/work/history-only',
+      receivedAt: Date.parse('2026-08-26T01:00:00.000Z'),
+    };
+    const badge = badgeTokens(
+      { parsed: { running: true, machine: { proxy: true } } },
+      { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } },
+      {
+        env: { CCXRAY_HOME: makeHome([formerlyLive, imported]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+        paneId: 'w1:p10',
+        sessionId: 'native-history',
+        cwd: '/work/history-only',
+        agent: 'claude',
+        status: 'idle',
+        sidebarCols: 24,
+      },
+    );
+
+    assert.equal(badge.tokens.route, 'history · live off');
+    assert.match(badge.tokens.summary, /^history-only · live off/);
+    assert.equal(badge.liveLinked, false);
+    assert.equal(badge.located, true, 'history telemetry remains available without claiming a live link');
+  });
+
+  // FAIL-ON-OLD: Sidebar transcript recovery only knew Claude's cwd slug. Codex
+  // UUIDv7 ids carry their creation date, so the locator can inspect a bounded
+  // set of date directories without walking the whole sessions tree.
+  it('locates a Codex native session without a global transcript scan', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const cwd = '/work/codex-repair';
+    const createdAt = Date.parse('2026-08-26T12:00:00.000Z');
+    const stamp = createdAt.toString(16).padStart(12, '0');
+    const sessionId = `${stamp.slice(0, 8)}-${stamp.slice(8)}-7abc-8def-0123456789ab`;
+    const root = tempDir('ccxray-codex-repair-');
+    const day = path.join(root, '2026', '08', '26');
+    fs.mkdirSync(day, { recursive: true });
+    const file = path.join(day, `rollout-2026-08-26T12-00-00-${sessionId}.jsonl`);
+    fs.writeFileSync(file, `${JSON.stringify({
+      timestamp: '2026-08-26T12:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, cwd },
+    })}\n`);
+
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: {
+        CCXRAY_HOME: makeHome(),
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_IMPORT_CODEX_HOMES: root,
+      },
+      paneId: 'w1:p11',
+      sessionId,
+      cwd,
+      agent: 'codex',
+    });
+
+    assert.equal(detail.matched, false);
+    assert.equal(detail.repairCandidate?.provider, 'codex');
+    // realpathSync on the expectation: codexSessionRoots now canonicalizes its
+    // configured roots (so two aliases of one store dedupe, matching core), and on
+    // macOS os.tmpdir() is /var -> /private/var. The candidate is the same file.
+    assert.equal(detail.repairCandidate?.file, fs.realpathSync(file));
+  });
+
+  // FAIL-ON-OLD: duplicate live owners of one native session are an identity
+  // conflict. Exact index history cannot decide which pane owns the live link.
+  it('fails closed when the native session identity has multiple pane owners', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges');
+    const entry = {
+      ...sampleEntry,
+      id: 'conflicted-native-turn',
+      sessionId: 'shared-native-session',
+      agentId: 'herdr:w1:p12',
+    };
+    const badge = badgeTokens(
+      { parsed: { running: true, machine: { proxy: true } } },
+      { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } },
+      {
+        env: { CCXRAY_HOME: makeHome([entry]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+        paneId: 'w1:p12',
+        sessionId: 'shared-native-session',
+        cwd: '/work/conflict',
+        agent: 'claude',
+        status: 'idle',
+        identityConflict: true,
+        sidebarCols: 24,
+      },
+    );
+
+    assert.equal(badge.tokens.route, '?link p12');
+    assert.match(badge.tokens.summary, /identity conflict/);
+    assert.equal(badge.liveLinked, false);
+    assert.equal(badge.repairCandidate, null);
+  });
+
+  // FAIL-ON-OLD: workspace xray counted any native session present in the
+  // index, including import-only history, so the aggregate contradicted the
+  // pane's new `live off` route.
+  it('does not count import-only history as a live workspace link', () => {
+    const { workspaceXrayToken } = require('../plugins/herdr/bin/refresh-badges');
+    const imported = {
+      ...sampleEntry,
+      id: 'workspace-history',
+      sessionId: 'history-session',
+      agentId: null,
+      imported: true,
+    };
+    const env = pluginEnv({
+      CCXRAY_HOME: makeHome([imported]),
+      HERDR_WORKSPACE_ID: 'w1',
+    });
+    const agents = [{
+      pane_id: 'w1:p13',
+      workspace_id: 'w1',
+      agent_session: { kind: 'id', value: 'history-session' },
+    }];
+
+    assert.equal(
+      workspaceXrayToken({ parsed: { machine: { proxy: true } } }, env, agents, null, { sidebarCols: 24 }),
+      'xray 0/1',
+    );
+  });
+
+  // FAIL-ON-OLD: a pane id and a legacy "linked" label survive session
+  // rotation. Without a Herdr-native session they are not proof that the
+  // current agent process is attached, even when old proxy telemetry exists.
+  it('does not count pane telemetry or compatibility labels without a native session', () => {
+    const { workspaceXrayToken } = require('../plugins/herdr/bin/refresh-badges');
+    const oldLive = {
+      ...sampleEntry,
+      id: 'workspace-old-pane-live',
+      sessionId: 'rotated-away-session',
+      agentId: 'herdr:w1:p13b',
+      imported: false,
+    };
+    const agents = [{
+      pane_id: 'w1:p13b', workspace_id: 'w1', agent_session: null,
+      state_labels: { idle: 'ccxray: linked' },
+    }];
+    const env = pluginEnv({ CCXRAY_HOME: makeHome([oldLive]), HERDR_WORKSPACE_ID: 'w1' });
+
+    assert.equal(
+      workspaceXrayToken({ parsed: { machine: { proxy: true } } }, env, agents, null, { sidebarCols: 24 }),
+      'xray 0/1',
+    );
+  });
+
+  // FAIL-ON-OLD: the Sidebar intentionally reads only the index tail. When an
+  // exact session was pushed before that window, a targeted import found every
+  // turn duplicated, marked the fingerprint complete, but the pane remained
+  // ?link forever because no new line was appended to the tail.
+  it('uses targeted exact-index evidence after the session falls outside the Sidebar tail', () => {
+    const { requestImport, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const home = makeHome();
+    const projects = tempDir('ccxray-tail-evidence-projects-');
+    const cwd = '/work/tail-evidence';
+    const sessionId = 'tail-evidence-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    fs.writeFileSync(transcript, `${JSON.stringify({
+      type: 'assistant', cwd, timestamp: '2026-08-26T03:00:00.000Z',
+      message: { id: 'tail-msg', model: 'claude-opus-5', usage: { input_tokens: 10, output_tokens: 1 } },
+    })}\n`);
+    const coreEnv = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      CCXRAY_IMPORT_DISABLE: '0',
+    });
+    const first = execFileSync(process.execPath, [
+      path.join(ROOT, 'server', 'index.js'), 'import', '--target-transcript', transcript,
+      '--provider', 'claude', '--session-id', sessionId, '--cwd', cwd,
+    ], { env: coreEnv }).toString();
+    assert.match(first, /"imported":1/);
+    const indexFile = path.join(home, 'logs', 'index.ndjson');
+    const liveRow = JSON.parse(fs.readFileSync(indexFile, 'utf8').trim());
+    liveRow.imported = false;
+    liveRow.agentId = 'herdr:w1:p13c';
+    fs.writeFileSync(indexFile, `${JSON.stringify(liveRow)}\n`);
+    fs.appendFileSync(indexFile,
+      `${JSON.stringify({ id: 'tail-filler', pad: 'x'.repeat(4 * 1024 * 1024 + 1024) })}\n`);
+
+    const opts = {
+      env: coreEnv, paneId: 'w1:p13c', sessionId, cwd, agent: 'claude', allowRepair: true,
+    };
+    const before = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, opts);
+    assert.equal(before.matched, false, 'fixture must push exact evidence outside the bounded tail');
+    assert.equal(before.repairCandidate?.sessionId, sessionId);
+
+    const requestEnv = {
+      ...coreEnv,
+      CCXRAY_BIN_JSON: JSON.stringify([process.execPath, path.join(ROOT, 'server', 'index.js')]),
+      HERDR_BIN_PATH: makeHerdr([]),
+    };
+    assert.equal(requestImport({ env: requestEnv, target: before.repairCandidate, paneId: 'w1:p13c' }).ok, true);
+    const stateDir = path.join(home, 'herdr-plugin', 'link-repair-v1');
+    let state = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && state?.status !== 'complete') {
+      const name = fs.existsSync(stateDir)
+        ? fs.readdirSync(stateDir).find(item => item.endsWith('.json'))
+        : null;
+      if (name) state = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
+      if (state?.status !== 'complete') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    assert.equal(state?.status, 'complete', JSON.stringify(state));
+    assert.deepEqual(Object.keys(state).sort(), [
+      'contextSamples', 'duplicatesSkipped', 'exactEvidence', 'finishedAt', 'imported', 'status',
+    ], 'targeted repair success state shape must remain unchanged');
+    assert.equal(state.exactEvidence?.sessionId, sessionId);
+    assert.ok(Array.isArray(state.contextSamples));
+    assert.equal(state.contextSamples.length, 1,
+      'targeted repair state must retain its bounded session history');
+
+    const after = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      ...opts, env: requestEnv,
+    });
+    assert.equal(after.matched, true);
+    assert.equal(after.historyOnly, false);
+    assert.equal(after.liveLinked, true);
+
+    const { workspaceXrayToken } = require('../plugins/herdr/bin/refresh-badges');
+    const agents = [{
+      pane_id: 'w1:p13c', workspace_id: 'w1', foreground_cwd: cwd, agent: 'claude',
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+    assert.equal(workspaceXrayToken(
+      { parsed: { machine: { proxy: true } } },
+      { ...requestEnv, HERDR_WORKSPACE_ID: 'w1' }, agents, null, { sidebarCols: 24 },
+    ), 'xray 1/1', 'workspace aggregate must consume the same cached live evidence as the pane');
+  });
+
+  // FAIL-ON-OLD: an exact native-session row in the 4 MiB tail used to suppress
+  // repair even when that row was a contextless subagent. The pane was matched,
+  // but its main context history had already fallen out of the bounded read.
+  it('recovers main context history when the matching tail row has no context', () => {
+    const { requestImport, sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const home = makeHome();
+    const projects = tempDir('ccxray-context-history-projects-');
+    const cwd = '/work/context-history';
+    const sessionId = 'context-history-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    const timestamps = [
+      '2026-08-26T04:00:00.000Z',
+      '2026-08-26T04:00:01.000Z',
+      '2026-08-26T04:00:02.000Z',
+    ];
+    fs.writeFileSync(path.join(project, `${sessionId}.jsonl`), timestamps.map((timestamp, i) => JSON.stringify({
+      type: 'assistant', cwd, timestamp,
+      message: {
+        id: `context-history-msg-${i}`,
+        model: 'claude-opus-5',
+        usage: { input_tokens: (i + 1) * 200000, output_tokens: 1 },
+      },
+    })).join('\n') + '\n');
+
+    const baseAt = Date.parse(timestamps[0]);
+    const mainRows = timestamps.map((timestamp, i) => ({
+      id: timestamp.replace(/[:.]/g, '-').slice(0, -2),
+      sessionId,
+      provider: 'anthropic',
+      agent: 'claude',
+      model: 'claude-opus-5',
+      agentId: 'herdr:w1:p20',
+      agentKey: 'orchestrator',
+      isSubagent: false,
+      cwd,
+      receivedAt: baseAt + i * 1000,
+      maxContext: 200000,
+      contextUsageKnown: true,
+      usage: { input_tokens: (i + 1) * 200000, output_tokens: 1 },
+      cost: { cost: 0.1 },
+      imported: false,
+    }));
+    const subagentTail = {
+      id: 'context-history-subagent-tail', sessionId, provider: 'anthropic', agent: 'claude',
+      agentId: 'herdr:w1:p20', agentKey: 'agent', isSubagent: true, cwd,
+      receivedAt: baseAt + 3000, contextUsageKnown: false, usage: null,
+      imported: false,
+    };
+    fs.writeFileSync(
+      path.join(home, 'logs', 'index.ndjson'),
+      `${mainRows.map(row => JSON.stringify(row)).join('\n')}\n`
+        + `${JSON.stringify({ id: 'context-history-filler', pad: 'x'.repeat(4 * 1024 * 1024 + 1024) })}\n`
+        + `${JSON.stringify(subagentTail)}\n`,
+    );
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), `${JSON.stringify({
+      sid: sessionId, count: 4, totalCost: 0.3, fallbackCost: 0, fallbackCount: 0,
+      unknownCount: 0, maxContext: 1000000, beta1m: true,
+      firstReceivedAt: baseAt, lastReceivedAt: baseAt + 3000,
+    })}\n`);
+
+    const coreEnv = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      CCXRAY_IMPORT_DISABLE: '0',
+    });
+    const opts = {
+      env: coreEnv, paneId: 'w1:p20', sessionId, cwd, agent: 'claude', allowRepair: true,
+      sidebarCols: 24,
+    };
+    const before = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, opts);
+    assert.equal(before.matched, true, 'the tail row still identifies the native session');
+    assert.equal(before.ctxPct, null, 'the tail row itself has no context usage');
+    assert.equal(before.repairCandidate?.sessionId, sessionId,
+      'a contextless tail must request targeted history recovery');
+
+    const requestEnv = {
+      ...coreEnv,
+      CCXRAY_BIN_JSON: JSON.stringify([process.execPath, path.join(ROOT, 'server', 'index.js')]),
+      HERDR_BIN_PATH: makeHerdr([]),
+    };
+    assert.equal(requestImport({
+      env: requestEnv, target: before.repairCandidate, paneId: 'w1:p20',
+    }).ok, true);
+    const stateDir = path.join(home, 'herdr-plugin', 'link-repair-v1');
+    let state = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && state?.status !== 'complete') {
+      const name = fs.existsSync(stateDir)
+        ? fs.readdirSync(stateDir).find(item => item.endsWith('.json'))
+        : null;
+      if (name) state = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
+      if (state?.status !== 'complete') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    assert.equal(state?.status, 'complete', JSON.stringify(state));
+    assert.equal(state.contextSamples.length, 4);
+
+    const after = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      ...opts, env: requestEnv,
+    });
+    assert.equal(after.matched, true);
+    assert.equal(Math.round(after.ctxPct), 60,
+      'the newest main context sample must survive a contextless tail row');
+    assert.equal(after.ctxDirection, '↑', 'a recovered rising history must expose direction');
+    assert.match(after.ctxBar, /↑/);
+    assert.equal(after.repairCandidate, null, 'a complete sample ring needs no repeat repair');
+  });
+
+  // Full Sidebar seam: Herdr native identity -> exact transcript candidate ->
+  // detached target import. The fake core records the observable CLI request;
+  // the badge process itself must return before that background request runs.
+  it('refresh-badges requests one targeted repair for a uniquely owned native session', () => {
+    const cwd = '/work/sidebar-repair';
+    const sessionId = 'sidebar-native-session';
+    const transcripts = tempDir('ccxray-sidebar-repair-transcripts-');
+    const project = path.join(transcripts, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(project, `${sessionId}.jsonl`), `${JSON.stringify({
+      type: 'assistant', cwd, timestamp: '2026-08-26T01:00:00.000Z',
+      message: { id: 'repair-msg', model: 'claude-opus-5', usage: { input_tokens: 10, output_tokens: 1 } },
+    })}\n`);
+
+    const dir = tempDir('ccxray-sidebar-repair-bin-');
+    const marker = path.join(dir, 'import-args');
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "const fs = require('fs');",
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'status') process.stdout.write('Machine: {\"proxy\":true,\"hub\":true}\\n');",
+      "else if (args[0] === 'usage') process.stdout.write(JSON.stringify({ meta: {}, sessions: {}, models: [], cache: {}, tools: {} }) + '\\n');",
+      `else if (args[0] === 'import') { fs.writeFileSync(${JSON.stringify(marker)}, args.join(' ')); process.stdout.write(JSON.stringify({ ok: true, ran: true, imported: 1 }) + '\\n'); }`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const agents = [{
+      pane_id: 'w1:p14', workspace_id: 'w1', tab_id: 'w1:t1',
+      foreground_cwd: cwd, agent_status: 'idle', agent: 'claude',
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(),
+      CCXRAY_BIN: bin,
+      CCXRAY_IMPORT_HOMES: transcripts,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      HERDR_BIN_PATH: makeHerdr(agents),
+      HERDR_PANE_ID: 'w1:p14',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_TAB_ID: 'w1:t1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p14',
+        focused_pane_cwd: cwd,
+        agent_session: { kind: 'id', value: sessionId },
+      }),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /route=\?link p14/);
+    assert.match(result.stdout, /Import: requested \(spawned\)/);
+    const deadline = Date.now() + 5000;
+    while (!fs.existsSync(marker) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+    assert.equal(fs.existsSync(marker), true, 'detached repair should invoke the target importer');
+    const args = fs.readFileSync(marker, 'utf8');
+    assert.match(args, /^import --target-transcript /);
+    assert.match(args, /--session-id sidebar-native-session/);
+    assert.doesNotMatch(args, /--once/);
+  });
+
+  // FAIL-ON-OLD: startup fan-out has no pane.agent_status event payload. The
+  // native Herdr agent list is still authoritative, so a working Claude pane
+  // must not receive the default idle route during the refresh.
+  it('uses the native pane status during startup refresh when no event status exists', () => {
+    const cwd = '/work/sidebar-working-status';
+    const sessionId = 'sidebar-working-session';
+    const home = makeHome([{
+      ...sampleEntry,
+      id: 'sidebar-working-turn',
+      sessionId,
+      agentId: 'herdr:w1:p16',
+      cwd,
+      receivedAt: Date.now(),
+      imported: false,
+    }]);
+    const dir = tempDir('ccxray-sidebar-working-status-bin-');
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, [
+      '#!/usr/bin/env node',
+      "const args = process.argv.slice(2);",
+      "if (args[0] === 'status') process.stdout.write('Machine: {\"proxy\":true,\"hub\":true}\\n');",
+      "else if (args[0] === 'usage') process.stdout.write(JSON.stringify({ meta: {}, sessions: {}, models: [], cache: {}, tools: {} }) + '\\n');",
+      '',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const agents = [{
+      pane_id: 'w1:p16', workspace_id: 'w1', tab_id: 'w1:t1',
+      foreground_cwd: cwd, agent_status: 'working', agent: 'claude',
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: bin,
+      HERDR_BIN_PATH: makeHerdr(agents),
+      HERDR_PANE_ID: 'w1:p16',
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_TAB_ID: 'w1:t1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p16',
+        focused_pane_cwd: cwd,
+        workspace_id: 'w1',
+        tab_id: 'w1:t1',
+        agent_session: { kind: 'id', value: sessionId },
+      }),
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /route=>live p16/);
+  });
+
+  it('does not offer repair without native identity, a supported importer, or a live proxy', () => {
+    const { badgeTokens } = require('../plugins/herdr/bin/refresh-badges');
+    const cwd = '/work/repair-guards';
+    const sessionId = 'repair-guard-session';
+    const root = tempDir('ccxray-repair-guards-');
+    const project = path.join(root, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(path.join(project, `${sessionId}.jsonl`), '{}\n');
+    const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+    const base = {
+      env: { CCXRAY_HOME: makeHome(), CCXRAY_IMPORT_HOMES: root },
+      paneId: 'w1:p15', cwd, status: 'idle', sidebarCols: 24,
+    };
+
+    const noNative = badgeTokens({ parsed: { machine: { proxy: true } } }, usage, {
+      ...base, agent: 'claude', sessionId: null,
+    });
+    assert.equal(noNative.repairCandidate, null);
+    assert.match(noNative.tokens.route, /^\?link/);
+
+    const grok = badgeTokens({ parsed: { machine: { proxy: true } } }, usage, {
+      ...base, agent: 'grok', sessionId,
+    });
+    assert.equal(grok.repairCandidate, null);
+    assert.match(grok.tokens.route, /^\?link/);
+
+    const noHub = badgeTokens({ parsed: { machine: { proxy: false } } }, usage, {
+      ...base, agent: 'claude', sessionId,
+    });
+    assert.equal(noHub.repairCandidate, null);
+    assert.equal(noHub.tokens.route, '!hub');
+  });
+});
+
+describe('Herdr Sidebar geometry and lifecycle', () => {
+  it('reserves the native Sidebar chrome when layout is the width source', () => {
+    const { contextSidebarColumns } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = tempDir('ccxray-herdr-layout-width-');
+    const bin = path.join(dir, 'herdr');
+    writeShMock(bin, JSON.stringify({
+      id: 'test',
+      result: {
+        type: 'pane_layout',
+        layout: { area: { x: 36, width: 339, height: 94, y: 1 } },
+      },
+    }));
+    const cols = contextSidebarColumns({
+      env: { HERDR_BIN_PATH: bin, HERDR_PANE_ID: 'w1:p1' },
+      paneId: 'w1:p1',
+    });
+    assert.equal(cols, 32, 'layout x includes four cells of Herdr Sidebar chrome');
+  });
+
+  it('starts the working refresh loop from native status during startup fan-out', () => {
+    const { startWorkingRefreshLoop } = require('../plugins/herdr/bin/refresh-badges');
+    let spawned = 0;
+    const spawnImpl = () => {
+      spawned += 1;
+      return { on() {}, unref() {} };
+    };
+    const result = startWorkingRefreshLoop(
+      { paneId: 'w1:p1', status: null },
+      { CCXRAY_BADGE_LOOP_CHILD: '0' },
+      { status: 'working', spawnImpl },
+    );
+    assert.equal(result?.ok, true);
+    assert.equal(spawned, 1);
   });
 });
 
@@ -386,7 +1110,7 @@ describe('Herdr sidebar main-agent anchoring', () => {
     });
     // cacheHitText folds only the anchored turns, so the background turn's
     // uncached 126K must not dilute the ratio: 287100/319000 = 90%.
-    assert.match(detail.ctxBar, /cache 90%/);
+    assert.match(detail.cacheText, /cache 90%/);
   });
 
   it('falls back to every turn when no turn is positively a main agent', () => {
@@ -405,6 +1129,27 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 2000,
     });
     assert.equal(Math.round(detail.ctxPct), 25);
+  });
+
+  it('keeps newer unclassified main turns after a classified turn', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const turns = [
+      { ...mainTurn, id: 'c1', sessionId: 's-codex', receivedAt: T,
+        beta1m: false, maxContext: 400000, usage: { input_tokens: 80000 } },
+      // Codex can omit agentKey after the session has already emitted
+      // classified turns. This is still a main turn when isSubagent=false.
+      { ...mainTurn, id: 'c2', sessionId: 's-codex', receivedAt: T + 1000,
+        agentKey: null, beta1m: false, model: 'gpt-5.6-luna', maxContext: 400000,
+        usage: { input_tokens: 160000 } },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 's-codex',
+      nowMs: T + 2000,
+    });
+    assert.equal(Math.round(detail.ctxPct), 40,
+      'the latest unclassified main turn must drive current ctx%');
+    assert.equal(detail.model, 'gpt-5.6-luna');
   });
 
   // `toolFail` is the cumulative request-side flag; `turnToolFail` is the
@@ -427,7 +1172,11 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.doesNotMatch(detail.ctxBar, /fail/, 'no turn failed; the badge must not claim one did');
+    assert.equal(detail.failures, 0, 'no turn failed; the badge must not claim one did');
+    // Asserted on the raw count, not row 2's tail: row 3 owns alerts now, so
+    // `doesNotMatch(ctxBar, /fail/)` would hold for every input and protect
+    // nothing. paneAlert is the channel a failure actually reaches.
+    assert.equal(paneAlertFor(detail), null);
   });
 
   it('still reports a genuine per-turn tool failure', () => {
@@ -444,7 +1193,8 @@ describe('Herdr sidebar main-agent anchoring', () => {
       nowMs: T + 7000,
       sidebarCols: 32,
     });
-    assert.match(detail.ctxBar, /fail 2x/);
+    assert.equal(detail.failures, 2);
+    assert.equal(paneAlertFor(detail).text, 'fail 2x');
   });
 
   // Every turn from a pane carries that pane's agentId, including turns from a
@@ -489,6 +1239,1521 @@ describe('Herdr sidebar main-agent anchoring', () => {
     });
     assert.equal(detail.sessionId, 'orphan-1');
     assert.equal(Math.round(detail.ctxPct), 40);
+  });
+});
+
+// The badge's model label read a PLURALITY over the session's main turns while
+// ctx% and cache% next to it read the latest main turn. So `/model sonnet` did
+// not change the label until the new model out-counted the old one. Measured on
+// the real 4 MiB badge window (23 sessions, 2026-08-19): the flip needs a median
+// of 41 further turns, p90 132, worst 400 — not the "one idle cycle" the symptom
+// report assumed. Owner decision (2026-08-19): the label reports the latest main
+// turn, matching the fields it sits beside.
+describe('Quick Start honours the documented placement', () => {
+  // The README said CCXRAY_HERDR_PANE_PLACEMENT applied to Quick Start, Mission
+  // Control and Capability Footprint. The other two passed it; Quick Start did
+  // not, so the manifest's `placement = "tab"` always won and the env var
+  // silently did nothing there.
+  it('passes the placement, defaulting to tab', () => {
+    const { openArgs } = require('../plugins/herdr/bin/open-onboarding.js');
+    const dflt = openArgs(pluginEnv({ HERDR_WORKSPACE_ID: 'w1' }));
+    assert.ok(dflt.includes('--placement'), 'placement must be passed at all');
+    assert.equal(dflt[dflt.indexOf('--placement') + 1], 'tab', 'default unchanged');
+
+    const overlay = openArgs(pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1', CCXRAY_HERDR_PANE_PLACEMENT: 'overlay',
+    }));
+    assert.equal(overlay[overlay.indexOf('--placement') + 1], 'overlay');
+  });
+
+  // Requiring this module used to run main() — which opened a real pane, and
+  // meant openArgs could not be tested at all. ADR 0015's two-mode shape.
+  //
+  // The fake MUST be wired into the ambient env: `main()` resolves its binary
+  // from `process.env.HERDR_BIN_PATH`, so a version of this test that only
+  // built a fake and checked its log could not fail — a regression that ran
+  // main() would invoke the REAL herdr (and write real plugin state) while the
+  // untouched fake log kept the assertion green.
+  it('is side-effect free when imported', () => {
+    const herdr = makeRecordingHerdr();
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-state-'));
+    withAmbientEnv({
+      HERDR_ENV: '1',
+      HERDR_BIN_PATH: herdr.bin,
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_cwd: stateDir }),
+      CCXRAY_HOME: isolatedHome(),
+    }, () => {
+      delete require.cache[require.resolve('../plugins/herdr/bin/open-onboarding.js')];
+      require('../plugins/herdr/bin/open-onboarding.js');
+    });
+    assert.equal(fs.existsSync(herdr.log), false, 'import must not invoke herdr');
+    assert.deepEqual(fs.readdirSync(stateDir), [], 'import must not write plugin state');
+  });
+});
+
+describe('codex round 1 fixes', () => {
+  const turn = (i, cost, ts) => ({
+    id: `cx${i}`, sessionId: 's-cx', provider: 'anthropic', cwd: '/work/cx',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: ts, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence: 'exact' }, responseId: `msg_cx${i}`,
+  });
+  const badgeFor = home => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/cx',
+    });
+  };
+
+  // An aggregate row with no usable flush cursor must not be topped up: `|| 0`
+  // made every tail turn look post-flush, so its cost was ADDED to a total that
+  // already counted it — doubling the number rather than merely lagging it.
+  it('does not top up an aggregate that has no flush cursor', () => {
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-cx', count: 10, totalCost: 10,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: 1787000000000, // lastReceivedAt deliberately absent
+    }) + '\n');
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 10, 'aggregate alone');
+    assert.equal(badge.costText, '$10.00', 'not $12.00');
+  });
+
+  // A post-flush turn used to show its cost and count while the elapsed time
+  // stayed frozen at the last flush.
+  it('extends the duration with post-flush turns', () => {
+    const t0 = 1787000000000;
+    const home = makeHome([turn(1, 1, t0 + 3 * 3600 * 1000)]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-cx', count: 1, totalCost: 1,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: t0, lastReceivedAt: t0 + 3600 * 1000,
+    }) + '\n');
+    assert.equal(badgeFor(home).ageText, '3.0h', 'not the 1h the flush knew about');
+  });
+
+  // `ccxray status` reads a CCXRAY_HOME-keyed lockfile, so a hub on 5577 is
+  // reported even when PROXY_PORT names 5600 — returning it would route the
+  // agent to the port the user deliberately moved away from.
+  it('ensureProxy refuses a discovered port that is not the requested one', () => {
+    const { ensureProxy } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-port-'));
+    const fake = path.join(dir, 'ccxray');
+    // Always reports a hub on 5577, and never becomes ready on 5600.
+    fs.writeFileSync(fake, '#!/bin/sh\nif [ "$1" = "status" ]; then echo "Hub: http://localhost:5577 (pid 1, uptime 1s, v1)"; exit 0; fi\nexit 0\n');
+    fs.chmodSync(fake, 0o755);
+    const port = ensureProxy({
+      env: pluginEnv({ CCXRAY_BIN: fake, PROXY_PORT: '5600' }),
+      cwd: dir,
+    });
+    assert.notEqual(port, 5577, 'must not hand back the port PROXY_PORT moved away from');
+    // `notEqual` alone also passes for a broken implementation that returns the
+    // dead 5600 it never reached. This fake never becomes ready there, so the
+    // only honest answer is "no port" — the caller must be told to fail rather
+    // than routing the agent at an unavailable proxy.
+    assert.equal(port, null, 'an unreachable requested port must resolve to null');
+  });
+
+  // Skipping identical writes cannot be unconditional when the write carries a
+  // TTL: Herdr drops the tokens when it lapses, so the badge would VANISH while
+  // the agent is still working.
+  it('re-writes identical tokens once past half the TTL', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ttl-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({ result: { pane: { pane_id: 'w1:p1', tokens: { ctx: '9%' }, state_labels: {}, scroll: {} } } });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ttl-state-'));
+    const env = pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin, HERDR_PLUGIN_STATE_DIR: state });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+
+    // No record of a previous write → must write, even though tokens match.
+    reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(writes(), 1, 'no prior write recorded means write');
+    // Immediately after, the TTL is fresh → skip.
+    const again = reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(again.skipped, 'unchanged');
+    assert.equal(writes(), 1);
+    // Age the record past half the TTL → write again.
+    const rec = path.join(state, 'pane-write-v1', `${encodeURIComponent('w1:p1')}.json`);
+    fs.writeFileSync(rec, JSON.stringify({ at: Date.now() - 45000 }) + '\n');
+    reportPaneTokens({ ctx: '9%' }, { env, ttlMs: 60000 });
+    assert.equal(writes(), 2, 'past half the TTL the pane must be refreshed');
+  });
+});
+
+describe('Herdr badge time is the session duration', () => {
+  // `now - first turn` (how long ago it started) and `last - first` (how long it
+  // ran) differ by however long the session has been idle, and both printed as a
+  // bare `9.9h` / `2.2h`. Measured on a real session: 9.9h vs 2.2h for the same
+  // pane, which read as the badge disagreeing with the dashboard rather than as
+  // two different quantities.
+  it('reports how long the session ran, not how long ago it started', () => {
+    const t0 = 1787000000000;
+    const home = makeHome([{
+      id: 'dur1', sessionId: 's-dur', provider: 'anthropic', cwd: '/work/dur',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', receivedAt: t0, maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 },
+      cost: { cost: 1, confidence: 'exact' }, responseId: 'msg_dur1',
+    }]);
+    // ran 2h, but started 10h ago
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 's-dur', count: 5, totalCost: 5,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      firstReceivedAt: t0, lastReceivedAt: t0 + 2 * 3600 * 1000,
+    }) + '\n');
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const badge = sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: String(t0 + 10 * 3600 * 1000),
+      }),
+      paneId: 'w1:p1', cwd: '/work/dur',
+    });
+    assert.equal(badge.ageText, '2.0h', 'the duration, not the 10h since it started');
+  });
+});
+
+describe('ccxray status carries a machine-readable line', () => {
+  // Two plugin sites used to decide "is a proxy usable" by regexing an English
+  // sentence. The line is OPTIONAL by design — a globally installed `ccxray`
+  // can be older than it — so both the parse and the text fallback are pinned.
+  it('parseStatus surfaces the Machine line and prefers it', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const withMachine = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 1), so it cannot be shared as a hub.',
+      'Machine: {"proxy":true,"hub":false,"port":5601,"occupant":"ccxray-standalone"}',
+    ].join('\n'));
+    assert.equal(withMachine.machine.proxy, true);
+    // 5601 comes only from the Machine line; the prose says 5577. Proving which
+    // one wins is the point of the test.
+    assert.equal(withMachine.machine.port, 5601);
+
+    const legacy = parseStatus([
+      'No hub running.',
+      'Note: port 5577 is held by a standalone (non-hub) ccxray (pid 1), so it cannot be shared as a hub.',
+    ].join('\n'));
+    assert.equal(legacy.machine, null, 'an older ccxray still parses');
+    assert.ok(legacy.notes.length, 'and the text fallback survives');
+  });
+
+  it('a malformed Machine line does not throw or poison the parse', () => {
+    const { parseStatus } = require('../plugins/herdr/bin/lib/ccxray');
+    const parsed = parseStatus('No hub running.\nMachine: not-json\n');
+    assert.equal(parsed.machine, null);
+  });
+});
+
+describe('Herdr pane writes skip when nothing changed', () => {
+  // Writing pane metadata makes Herdr re-publish it, and a full-screen agent
+  // TUI repaints when it does. `pane.agent_status_changed` fires twice per turn,
+  // and the recomputed tokens are usually identical, so an unconditional write
+  // charges the user a repaint twice per prompt for no new information.
+  const makeHerdrPane = (tokens, stateLabels = {}) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-pane-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      id: 'cli:pane:get',
+      result: { pane: { pane_id: 'w1:p1', tokens, state_labels: stateLabels, scroll: {} } },
+    });
+    // sh, not node: this is spawned inside runCommand's budget (see writeShMock).
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then',
+      "cat <<'CCXRAY_PANE_EOF'",
+      pane,
+      'CCXRAY_PANE_EOF',
+      '  exit 0',
+      'fi',
+      'echo \'{"result":{"ok":true}}\'',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  };
+  const writes = log => (fs.existsSync(log)
+    ? fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length
+    : 0);
+
+  it('does not write when every token and state label already matches', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', cost: '$1.00' }, { idle: 'x' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const res = reportPaneTokens({ ctx: '32%', cost: '$1.00' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      stateLabels: { idle: 'x' },
+    });
+    assert.equal(res.skipped, 'unchanged');
+    assert.equal(writes(log), 0, 'an identical payload must not reach report-metadata');
+  });
+
+  it('writes when a single token moved', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', cost: '$1.00' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '33%', cost: '$1.00' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+    });
+    assert.equal(writes(log), 1);
+  });
+
+  it('writes when a token that should be cleared is still present', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%', stale: 'yes' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      clearTokens: ['stale'],
+    });
+    assert.equal(writes(log), 1, 'a pending clear is a change');
+  });
+
+  it('writes when the pane state cannot be read — a failed read must not suppress an update', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-pane-bad-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(bin, `#!/bin/sh\necho "$@" >> "${log}"\nif [ "$2" = "get" ]; then exit 1; fi\necho '{"result":{"ok":true}}'\n`);
+    fs.chmodSync(bin, 0o755);
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+    });
+    assert.equal(writes(log), 1);
+  });
+
+  it('force skips the comparison entirely', () => {
+    const { bin, log } = makeHerdrPane({ ctx: '32%' });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    reportPaneTokens({ ctx: '32%' }, {
+      env: pluginEnv({ HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin }),
+      force: true,
+    });
+    assert.equal(writes(log), 1);
+    assert.equal(fs.readFileSync(log, 'utf8').includes('pane get'), false,
+      'force must not even read the pane');
+  });
+});
+
+describe('Herdr badge totals come from the hub aggregate', () => {
+  // The badge reads a 4 MiB tail of an index that is currently 338 MiB, so its
+  // own sum is a SAMPLE and disagrees with the dashboard even when perfectly
+  // deduped (measured: 135 of 156 responses, $23.63 of $26.27). sessions.json
+  // carries the hub's per-session count, total and ADR 0017 fold, so reading it
+  // makes the two surfaces agree by construction. ADR 0019 permits a non-hub
+  // process to READ a derived view; it must never write one.
+  const writeAggregate = (home, row) => {
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify(row) + '\n');
+  };
+  const turn = (i, cost, ts) => ({
+    id: `agg${i}`, sessionId: 's-agg-hub', provider: 'anthropic', cwd: '/work/agghub',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: ts, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence: 'exact' }, responseId: `msg_agg${i}`,
+  });
+  const badgeFor = home => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/agghub',
+    });
+  };
+
+  it('reports the hub total, not the truncated window sum', () => {
+    // The window holds 2 turns worth $2; the hub knows the session is 157/$26.27.
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    writeAggregate(home, {
+      sid: 's-agg-hub', count: 157, totalCost: 26.27,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      lastReceivedAt: 1787000002000, firstReceivedAt: 1787000000000,
+    });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 157, 'turn count comes from the aggregate');
+    assert.equal(badge.costText, '$26.27', 'so does the total');
+  });
+
+  it('adds turns newer than the last flush so a live session is not stuck', () => {
+    const home = makeHome([
+      turn(1, 1, 1787000001000),          // already folded
+      turn(2, 5, 1787000009000),          // arrived after the flush
+    ]);
+    writeAggregate(home, {
+      sid: 's-agg-hub', count: 10, totalCost: 10,
+      fallbackCost: 0, fallbackCount: 0, unknownCount: 0,
+      lastReceivedAt: 1787000005000, firstReceivedAt: 1787000000000,
+    });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 11, '10 folded + 1 post-flush');
+    assert.equal(badge.costText, '$15.00', '$10 folded + $5 post-flush');
+  });
+
+  it('falls back to the window when the session has no aggregate yet', () => {
+    const home = makeHome([turn(1, 1, 1787000001000), turn(2, 1, 1787000002000)]);
+    writeAggregate(home, { sid: 'some-other-session', count: 99, totalCost: 99 });
+    const badge = badgeFor(home);
+    assert.equal(badge.turns, 2, 'a brand-new session still renders from the window');
+    assert.equal(badge.costText, '$2.00');
+  });
+});
+
+describe('Herdr badge dedups by responseId', () => {
+  // The same logical response lands as several index lines (ADR 0012), so a raw
+  // sum inflates cost and the turn count together. Mission Control already
+  // deduped (it goes through filterEntriesToWorkspace); the badge read the index
+  // directly and did not, so the two surfaces disagreed on the same session
+  // while ctx% matched — ctx% reads ONE latest turn, not a sum, which is what
+  // made a double count look like a rendering quirk. Measured on real session
+  // 9ea7a6d4: 297 lines / $46.35 raw vs 156 / $26.27 deduped.
+  it('counts one turn and one cost per responseId', () => {
+    const line = (i, rid, cost) => ({
+      id: `d${i}`, sessionId: 's-dedup', provider: 'anthropic', cwd: '/work/dedup',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', receivedAt: 1787000000000 + i * 1000, maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 },
+      cost: { cost, confidence: 'exact' }, responseId: rid,
+    });
+    // three logical responses, each written twice
+    const home = makeHome([
+      line(1, 'msg_a', 1), line(2, 'msg_a', 1),
+      line(3, 'msg_b', 1), line(4, 'msg_b', 1),
+      line(5, 'msg_c', 1), line(6, 'msg_c', 1),
+    ]);
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const badge = sessionSummaryDetails({}, {
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/dedup',
+    });
+    assert.equal(badge.turns, 3, 'six lines carrying three responseIds are three turns');
+    assert.equal(badge.costText, '$3.00', 'and three dollars, not six');
+  });
+});
+
+describe('Herdr aggregate cost confidence (ADR 0017)', () => {
+  const costTurn = (i, confidence, cost) => ({
+    id: `c${i}`, sessionId: 's-agg', provider: 'anthropic', cwd: '/work/agg',
+    agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+    model: 'claude-opus-5', receivedAt: 1787000000000 + i * 1000, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 10 },
+    cost: { cost, confidence }, responseId: `msg_c${i}`,
+  });
+  const badgeFor = turns => {
+    const home = makeHome(turns);
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    return sessionSummaryDetails({}, {
+      // CCXRAY_IMPORT_HOMES is pinned explicitly even though pluginEnv() already
+      // sets it: the audit below is a TEXTUAL check on this call site, and the
+      // convention it enforces is worth more than the redundancy it costs.
+      env: pluginEnv({
+        CCXRAY_HOME: home,
+        CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS,
+        CCXRAY_HERDR_NOW_MS: '1787000900000',
+      }),
+      paneId: 'w1:p1', cwd: '/work/agg',
+    });
+  };
+
+  // The rejected alternative marked ANY non-exact total `~`. On a lightly
+  // contaminated total that overstates by ~357x, which is why ADR 0017 gates on
+  // share instead. One fallback turn in 20 is 5% — below both thresholds.
+  it('leaves a lightly contaminated total unmarked', () => {
+    const turns = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 20; i += 1) turns.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(turns).costText, '$2.00');
+  });
+
+  it('marks at the 10% share threshold and degrades precision past 50%', () => {
+    const marked = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 10; i += 1) marked.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(marked).costText, '~$1.00', '10% of count marks');
+
+    const degraded = [];
+    for (let i = 1; i <= 9; i += 1) degraded.push(costTurn(i, 'fallback', 2));
+    degraded.push(costTurn(10, 'exact', 2));
+    // 18/20 of cost is fabricated: the displayed digits must not outrun the
+    // known digits, so the total renders to two significant figures.
+    assert.equal(badgeFor(degraded).costText, '~$20');
+  });
+
+  it('suffixes + when unpriced turns are excluded, and — when nothing is priced', () => {
+    const partial = [costTurn(1, 'unknown', null)];
+    for (let i = 2; i <= 10; i += 1) partial.push(costTurn(i, 'exact', 0.1));
+    assert.equal(badgeFor(partial).costText, '$0.90+');
+
+    const nothing = [1, 2, 3].map(i => costTurn(i, 'unknown', null));
+    assert.equal(badgeFor(nothing).costText, '—');
+  });
+
+  it('Mission Control uses the same fold, not worst-of', () => {
+    const turns = [costTurn(1, 'fallback', 0.1)];
+    for (let i = 2; i <= 20; i += 1) turns.push(costTurn(i, 'exact', 0.1));
+    const home = makeHome(turns);
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000900000' }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    assert.deepEqual(snapshot.rows[0].costAgg,
+      { count: 20, fallbackCount: 1, fallbackCost: 0.1, unknownCount: 0 });
+    const { aggCostText } = require('../plugins/herdr/bin/lib/ccxray');
+    assert.equal(aggCostText(snapshot.rows[0].cost, snapshot.rows[0].costAgg), '$2.00',
+      'a 5%-contaminated row total must not be marked');
+  });
+});
+
+// INVARIANT(ADR 0005 shape): ONE ranked list answers "what is the most important
+// thing about this pane right now", for both the sidebar badge's row-3 $alert and
+// Mission Control's action. Two orderings used to contradict each other:
+// the now-removed contextSignal ranked context above every tool failure, while
+// chain ranked `fail >= 2` above context and `cache dropped` above `fail == 1`.
+describe('Herdr pane concerns are ranked once (ADR 0005 shape)', () => {
+  const {
+    paneAction,
+    paneAlert,
+    paneConcerns,
+    quotaRefusalCount,
+  } = require('../plugins/herdr/bin/lib/ccxray');
+
+  it('ranks any tool failure above a dropped cache', () => {
+    const signals = { hasTelemetry: true, failures: 1, cacheDropped: true };
+    assert.equal(paneAction(signals), 'inspect failed tool');
+    assert.equal(paneAlert(signals).kind, 'fail-single');
+  });
+
+  it('row 3 skips the tiers rows 1 and 2 already render', () => {
+    // Repeating context on row 3 while row 2 shows the percentage, or repeating
+    // process state while row 1 shows it, is the duplication this layout exists
+    // to remove. Mission Control is a single row and still acts on both.
+    const ctxOnly = { hasTelemetry: true, ctxPct: 95 };
+    assert.equal(paneAlert(ctxOnly), null);
+    assert.equal(paneAction(ctxOnly), 'compact or start fresh');
+
+    const blocked = { hasTelemetry: true, status: 'blocked' };
+    assert.equal(paneAlert(blocked), null);
+    assert.equal(paneAction(blocked), 'inspect last error');
+
+    const dark = { hasTelemetry: false };
+    assert.equal(paneAlert(dark), null);
+    assert.equal(paneAction(dark), 'relaunch via ccxray');
+  });
+
+  it('keeps the signed-off $alert order once row-owned tiers are dropped', () => {
+    const signals = {
+      hasTelemetry: true,
+      refusedCount: 2,
+      staleText: 'stale 3m',
+      failures: 3,
+      cacheDropped: true,
+      ctxPct: 95,
+      status: 'blocked',
+    };
+    assert.deepEqual(
+      paneConcerns(signals).filter(concern => !concern.sidebarOwned).map(concern => concern.kind),
+      ['quota-refused', 'stale', 'fail-multi', 'cache-dropped'],
+      'quota > stale > fail > cache-dropped is owner-signed-off');
+    assert.equal(paneAlert(signals).text, 'quota refused 2x');
+  });
+
+  it('counts a quota refusal as an observed 429, never a forecast', () => {
+    assert.equal(quotaRefusalCount([{ status: 200 }, { status: 429 }, { status: 200 }]), 1);
+    assert.equal(quotaRefusalCount([{ status: 200 }]), 0);
+    // Same last-six window as toolFailureCount, so an old refusal ages out.
+    const aged = [{ status: 429 }].concat(Array.from({ length: 6 }, () => ({ status: 200 })));
+    assert.equal(quotaRefusalCount(aged), 0);
+  });
+
+  // Asserted through the pre-existing missionControlSnapshot API on purpose: the
+  // old code answers this one (with the other ordering) instead of throwing on a
+  // missing export, so the red it produces is the ordering change and nothing else.
+  it('Mission Control acts on the failure, not the dropped cache', () => {
+    const T = 1787000000000;
+    const base = {
+      sessionId: 'mc-order-1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'aaaa', maxContext: 200000,
+      // The pane's own agentId is what attributes a turn to its row.
+      agentId: 'herdr:w1:p1', cwd: '/work/mc-order', provider: 'anthropic',
+    };
+    const turns = [
+      {
+        ...base, id: 'mo1', receivedAt: T, sysHash: 'h1', turnToolFail: false,
+        usage: { input_tokens: 10000, cache_read_input_tokens: 90000 },
+      },
+      {
+        ...base, id: 'mo2', receivedAt: T + 1000, sysHash: 'h2', turnToolFail: true,
+        usage: { input_tokens: 100000, cache_read_input_tokens: 0 },
+      },
+    ];
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome(turns), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    // Pin the fixture before trusting the verdict: a fixture that stopped
+    // dropping the cache would make this pass for the wrong reason.
+    assert.equal(row.cacheDropped, true, 'fixture must actually drop the cache');
+    assert.equal(row.failures, 1, 'fixture must carry exactly one failure');
+    assert.ok(row.ctxPct <= 80, 'context must stay below the tier that outranks both');
+    assert.equal(row.action, 'inspect failed tool');
+  });
+});
+
+// Row 3 of the three-row sidebar: `$facts` (grey) and `$alert` (warning colour),
+// exactly one non-empty per refresh, the other returned in clearTokens — the
+// mechanism `ctx_bar_*` already ships with.
+describe('Herdr sidebar row 3 fills exactly one token', () => {
+  const { badgeTokens, applyRow3Tokens } = require('../plugins/herdr/bin/refresh-badges.js');
+  const T = 1787000000000;
+  const status = { ok: true, parsed: { running: true, machine: { proxy: true, port: 5577 } } };
+  const usage = {
+    ok: true,
+    data: {
+      meta: { totalCost: 999.99, totalEntries: 1234 },
+      sessions: { topSessions: [{ sessionId: 'sTOP', cost: 42.5, turns: 77, model: 'claude-opus-5', durationMin: 60 }] },
+      models: [{ model: 'claude-fable-5' }],
+      cache: { hitRate: 0.91 },
+      tools: { failRate: 0.07 },
+    },
+  };
+  const turn = extra => ({
+    sessionId: 'r3', agentId: 'herdr:w1:p1', model: 'claude-opus-5',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    provider: 'anthropic', cwd: '/work/r3', receivedAt: T,
+    cost: { cost: 42.08, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const render = turns => badgeTokens(status, usage, {
+    env: pluginEnv({ CCXRAY_HOME: makeHome(turns) }),
+    paneId: 'w1:p1',
+    nowMs: T + 3600000,
+    sidebarCols: 40,
+  });
+
+  it('shows the facts when nothing is wrong and the alert when something is', () => {
+    const healthy = render([turn({ id: 'h1', usage: { input_tokens: 50000 } })]);
+    assert.equal(healthy.tokens.facts, '$42.08 · hit 0% · 60m');
+    assert.equal(healthy.tokens.alert, undefined);
+    assert.ok(healthy.clearTokens.includes('alert'));
+    assert.equal(healthy.clearTokens.includes('facts'), false);
+
+    const failed = render([turn({ id: 'f1', usage: { input_tokens: 50000 }, turnToolFail: true })]);
+    assert.equal(failed.tokens.alert, 'fail 1x');
+    assert.equal(failed.tokens.facts, undefined);
+    assert.ok(failed.clearTokens.includes('facts'));
+    assert.equal(failed.clearTokens.includes('alert'), false);
+  });
+
+  it('leaves context pressure to row 2 instead of repeating it', () => {
+    // 190K/200K = 95%. Row 2 already renders the percentage, the sparkline AND
+    // the colour band, so an alert saying "full" would be the fourth encoding of
+    // one fact — the duplication this layout exists to remove.
+    const full = render([turn({ id: 'c1', usage: { input_tokens: 190000 } })]);
+    assert.equal(full.tokens.alert, undefined);
+    assert.equal(full.tokens.facts, '$42.08 · hit 0% · 60m');
+  });
+
+  it('fills neither token for a pane whose session it cannot locate', () => {
+    // NOT a fail-on-old: `$facts` did not exist before, so the old code would
+    // fail this for a missing token rather than for a behaviour difference. The
+    // claim is only that row 1 keeps sole ownership of "not linked" — rendering
+    // the detail's honest-but-useless `n/a · ?` beside it is the duplication.
+    const elsewhere = render([turn({ id: 'x1', agentId: 'herdr:w1:pOTHER' })]);
+    assert.equal(elsewhere.tokens.facts, undefined);
+    assert.equal(elsewhere.tokens.alert, undefined);
+    assert.ok(elsewhere.clearTokens.includes('facts'));
+    assert.ok(elsewhere.clearTokens.includes('alert'));
+  });
+
+  it('fills neither token when there is no hub to report', () => {
+    const dark = badgeTokens({ ok: true, parsed: { running: false, notes: [] } }, { ok: false }, {
+      env: pluginEnv({ CCXRAY_HOME: makeHome([]) }),
+      paneId: 'w1:p1',
+      sidebarCols: 40,
+    });
+    assert.equal(dark.tokens.facts, undefined);
+    assert.equal(dark.tokens.alert, undefined);
+  });
+
+  it('keeps every alert label inside a narrow sidebar', () => {
+    // The spelled-out 'cache dropped after prompt change' is 33 columns; the
+    // sidebar chooses a complete compact variant rather than cutting it.
+    const dropped = render([
+      turn({ id: 'd1', sysHash: 'h1', usage: { input_tokens: 10000, cache_read_input_tokens: 90000 } }),
+      turn({ id: 'd2', sysHash: 'h2', receivedAt: T + 1000, usage: { input_tokens: 100000, cache_read_input_tokens: 0 } }),
+    ]);
+    assert.equal(dropped.tokens.alert, 'cache dropped');
+    assert.ok(dropped.tokens.alert.length <= 14, 'must fit a 14-column sidebar');
+
+    const wide = {};
+    applyRow3Tokens(wide, { matched: true, costText: '$1234.56', ageText: '12.3h' }, { sidebarCols: 14 });
+    assert.equal(wide.facts, '$1234.56');
+  });
+});
+
+describe('Herdr sidebar observability contract', () => {
+  const {
+    displayWidth,
+    formatContextBar,
+  } = require('../plugins/herdr/bin/lib/ccxray');
+  const {
+    compactRoute,
+    compactWho,
+    workspaceXrayToken,
+  } = require('../plugins/herdr/bin/refresh-badges');
+
+  it('keeps a fixed trend viewport and right-aligned scalar at every supported width', () => {
+    const turns = Array.from({ length: 12 }, (_, index) => ({
+      usage: { input_tokens: (index + 1) * 700 },
+      maxContext: 10000,
+    }));
+    for (const cols of [8, 10, 14, 18, 26, 36]) {
+      const value = formatContextBar(turns, 10000, '80%', { sidebarCols: cols });
+      assert.equal(displayWidth(value), cols, `${cols}: ${value}`);
+      assert.doesNotMatch(value, /…|~/, `${cols}: partial display marker is forbidden`);
+      assert.ok(value.endsWith('80%'), `${cols}: context percentage must remain visible`);
+    }
+  });
+
+  it('keeps a fixed right-anchored trend viewport when the scalar width changes', () => {
+    const turns = [1000, 2000].map((input_tokens, index) => ({
+      id: `fixed-${index}`,
+      receivedAt: index + 1,
+      contextUsageKnown: true,
+      usage: { input_tokens },
+      maxContext: 10000,
+    }));
+    const nine = formatContextBar(turns, 10000, '9%', { sidebarCols: 18 });
+    const hundred = formatContextBar(turns, 10000, '100%', { sidebarCols: 18 });
+
+    assert.equal(displayWidth(nine), 18);
+    assert.equal(displayWidth(hundred), 18);
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    // The chart is a fixed cell viewport: missing prefix history is explicit light
+    // shade, and the newest sample is the shared rightmost chart cell.
+    assert.equal(nine.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▂▂');
+    assert.equal(hundred.slice(0, chartWidth), nine.slice(0, chartWidth));
+    assert.equal(nine[chartWidth - 1], '▂');
+    assert.equal(hundred[chartWidth - 1], '▂');
+  });
+
+  it('treats an explicit zero context report as valid history', () => {
+    const value = formatContextBar([{
+      contextUsageKnown: true,
+      usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      maxContext: 10000,
+    }], 10000, '0%', { sidebarCols: 18 });
+    assert.equal(displayWidth(value), 18);
+    assert.match(value, /▁ +0%$/);
+  });
+
+  it('marks an unknown latest turn at the right edge while preserving valid history', () => {
+    const turns = [
+      {
+        id: 'known', receivedAt: 1, contextUsageKnown: true,
+        usage: { input_tokens: 3000 }, maxContext: 10000,
+      },
+      {
+        id: 'unknown', receivedAt: 2, contextUsageKnown: false,
+        usage: { input_tokens: 0, output_tokens: 10 }, maxContext: 10000,
+      },
+    ];
+    const value = formatContextBar(turns, 10000, '?', { sidebarCols: 18 });
+    assert.equal(displayWidth(value), 18);
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    assert.equal(value.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▃░');
+    assert.equal(value[chartWidth - 1], '░', 'the latest unknown sample owns the rightmost cell');
+    assert.equal(value.at(-1), '?');
+  });
+
+  it('orders the trend by received time even when input turns arrive out of order', () => {
+    const value = formatContextBar([
+      {
+        id: 'latest-unknown', receivedAt: 20, contextUsageKnown: false,
+        usage: { input_tokens: 0, output_tokens: 1 }, maxContext: 10000,
+      },
+      {
+        id: 'older-known', receivedAt: 10, contextUsageKnown: true,
+        usage: { input_tokens: 3000 }, maxContext: 10000,
+      },
+    ], 10000, '?', { sidebarCols: 18 });
+    const chartWidth = 18 - 1 - displayWidth('999%↑✗');
+    assert.equal(value.slice(0, chartWidth), '░'.repeat(chartWidth - 2) + '▃░');
+    assert.equal(value[chartWidth - 1], '░', 'newest turn must own the rightmost cell');
+  });
+
+  it('does not treat a negative context numerator as valid history', () => {
+    const value = formatContextBar([{
+      contextUsageKnown: true,
+      ctxUsed: -1,
+      usage: { input_tokens: -1 },
+      maxContext: 10000,
+    }], 10000, '?', { sidebarCols: 18 });
+    assert.equal(value, '?');
+  });
+
+  it('suppresses small unmarked reversals but preserves an explicit compaction reset', () => {
+    const jitter = [90, 75, 90].map(input_tokens => ({ usage: { input_tokens }, maxContext: 100 }));
+    const smoothed = formatContextBar(jitter, 100, '90%', { sidebarCols: 18 });
+    assert.doesNotMatch(smoothed, /█▆█/, 'a small sawtooth must not be presented as history');
+
+    const compacted = [
+      { usage: { input_tokens: 90 }, maxContext: 100 },
+      { usage: { input_tokens: 75 }, maxContext: 100, isCompacted: true },
+      { usage: { input_tokens: 90 }, maxContext: 100 },
+    ];
+    const reset = formatContextBar(compacted, 100, '90%', { sidebarCols: 18 });
+    assert.match(reset, /█▆█/, 'an explicit compaction boundary must remain visible');
+  });
+
+  it('uses complete identity and route variants at narrow widths', () => {
+    assert.equal(compactWho('claude', 8), 'C');
+    assert.equal(compactWho('gpt-5.6-luna', 8), 'L');
+    for (const cols of [8, 10, 14, 18, 26, 36]) {
+      const route = compactRoute('working', {
+        sidebarCols: cols,
+        paneId: 'w1:p3V',
+        proxy: true,
+        located: true,
+      });
+      assert.ok(displayWidth(route) <= cols, `${cols}: ${route}`);
+      assert.doesNotMatch(route, /…|~/, `${cols}: route was clipped`);
+
+      const history = compactRoute('idle', {
+        sidebarCols: cols,
+        paneId: 'w1:p3V',
+        proxy: true,
+        located: true,
+        historyOnly: true,
+      });
+      assert.ok(displayWidth(history) <= cols, `${cols}: ${history}`);
+      assert.match(history, /off/, `${cols}: import-only history must also say live is off`);
+    }
+  });
+
+  it('reports workspace linkage as an aggregate, with explicit off/unknown states', () => {
+    const agents = [
+      { pane_id: 'w1:p1', workspace_id: 'w1', state_labels: { idle: 'ccxray: linked' } },
+      { pane_id: 'w1:p2', workspace_id: 'w1', state_labels: { idle: 'ccxray: not linked' } },
+      { pane_id: 'w1:p3', workspace_id: 'w1', state_labels: { idle: 'ccxray: linked' } },
+      { pane_id: 'w2:p4', workspace_id: 'w2', state_labels: { idle: 'ccxray: linked' } },
+    ];
+    const bin = makeHerdr(agents);
+    const env = pluginEnv({ HERDR_BIN_PATH: bin, HERDR_WORKSPACE_ID: 'w1' });
+    assert.equal(workspaceXrayToken({ parsed: { running: true, machine: { proxy: true } } }, env), 'xray 0/3');
+    assert.equal(workspaceXrayToken({ parsed: { running: false, notes: [] } }, env), 'xray off');
+    assert.equal(workspaceXrayToken({ parsed: { running: true, machine: { proxy: true } } }, {
+      ...env,
+      HERDR_BIN_PATH: path.join(os.tmpdir(), 'missing-herdr-for-ctx-contract'),
+    }), 'xray ?');
+  });
+});
+
+// Row 1 is `state_icon · $who`; route and context are separate owned tokens.
+describe('Herdr row 1 keeps the native icon and compact identity', () => {
+  const T = 1787000000000;
+  const paneTurn = extra => ({
+    id: 'r1a', sessionId: 'row1', model: 'claude-opus-5', provider: 'anthropic',
+    agentKey: 'orchestrator', isSubagent: false, convId: 'c1', maxContext: 200000,
+    receivedAt: T, cwd: '/work/row1', usage: { input_tokens: 40000 },
+    cost: { cost: 1.5, confidence: 'exact' }, turnToolFail: false, ...extra,
+  });
+  const run = turns => {
+    const herdr = makeRecordingHerdr();
+    const result = runScript('refresh-badges.js', [], {
+      CCXRAY_HOME: makeHome(turns),
+      CCXRAY_HERDR_LAST: '9999d',
+      CCXRAY_HERDR_NOW_MS: String(T + 60000),
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_BIN_PATH: herdr.bin,
+      CCXRAY_HERDR_NO_LAYOUT: '1',
+      PROXY_PORT: '5999',
+    });
+    const args = fs.existsSync(herdr.log) ? fs.readFileSync(herdr.log, 'utf8') : '';
+    return { result, args };
+  };
+
+  it('clears the state labels instead of overwriting the state text', () => {
+    // fail-on-old: the old code emitted --state-label on every refresh and never
+    // emitted --clear-state-labels, so both assertions below invert.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:p1' })]);
+    assert.match(args, /report-metadata/);
+    assert.match(args, /--clear-state-labels/,
+      'a located pane must hand row 1 back to Herdr');
+    assert.equal(/--state-label/.test(args), false,
+      'and must not overwrite the native state text');
+  });
+
+  it('also clears labels for a pane whose session it cannot locate', () => {
+    // Linkage is rendered by the compact $route token, not by a long state label.
+    const { args } = run([paneTurn({ agentId: 'herdr:w1:pOTHER' })]);
+    assert.match(args, /--clear-state-labels/);
+    assert.equal(/--state-label/.test(args), false);
+    assert.match(args, /--token route=!hub/);
+  });
+});
+
+// The reported config, verbatim in shape: eight rows accumulated across three
+// installer generations, rendering the model three times, the cost twice and the
+// percentage twice, with four truncations. The old installer could only APPEND,
+// so running it here made the card worse, not better.
+describe('Herdr sidebar installer migrates accumulated generations', () => {
+  const ACCUMULATED = [
+    'onboarding = false',
+    '',
+    '[ui.sidebar.agents]',
+    'rows = [',
+    '  ["state_icon", "agent", "state_text"],',
+    '  ["$ctx", "$model", "$cost"],',
+    '  [{ token = "$tg", fg = "#50c878" }, { token = "$ty", fg = "#e0b040" }, { token = "$tr", fg = "#e05050" }],',
+    '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+    '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+    '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+    '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+    '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+    ']',
+    '',
+    '[ui]',
+    'agent_panel_sort = "spaces"',
+    '',
+  ].join('\n');
+
+  const install = config => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-migrate-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, config);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('install-sidebar-summary.js', [], env);
+    return { result, configPath, env, after: fs.readFileSync(configPath, 'utf8') };
+  };
+  // Line-scan to the array's own closing bracket: indexOf(']') would stop at the
+  // first row's own bracket.
+  const sidebarRows = (config) => {
+    const lines = config.split('\n');
+    const start = lines.findIndex(line => /^\s*rows\s*=\s*\[/.test(line));
+    const rows = [];
+    for (const line of lines.slice(start + 1)) {
+      if (/^\s*\]/.test(line)) break;
+      if (/^\s*\[/.test(line)) rows.push(line);
+    }
+    return rows;
+  };
+
+  // FAIL-ON-OLD: the previous installer appended, so `$summary` and the atomic
+  // row both survive and the array grows instead of shrinking.
+  it('replaces every superseded generation instead of stacking on top', () => {
+    const { result, after } = install(ACCUMULATED);
+    assert.equal(result.status, 0, result.stderr);
+    for (const dead of ['$summary', '$tg', '$ty', '$tr']) {
+      assert.equal(after.includes(dead), false, `${dead} must be gone`);
+    }
+    // `$ctx`/`$model`/`$cost` are gone as a ROW; $ctx_bar_* legitimately contains
+    // the substring `$ctx`, so assert on the row rather than on the text.
+    assert.equal(sidebarRows(after).some(row => /"\$ctx"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$model"/.test(row)), false);
+    assert.equal(sidebarRows(after).some(row => /"\$cost"/.test(row)), false);
+
+    assert.match(after, /\$facts/);
+    assert.match(after, /\$alert/);
+    assert.match(after, /\["state_icon", \{ token = "\$who"/);
+    assert.match(after, /\$route/);
+    // Eight config rows: row 1, route, four ctx_bar colour variants, and row 3's pair.
+    // Herdr skips rows whose tokens are all empty, so this renders four lines.
+    assert.equal(sidebarRows(after).length, 8);
+    // The user's other tables are untouched.
+    assert.match(after, /agent_panel_sort = "spaces"/);
+    assert.equal(after.match(/\[ui\.sidebar\.agents\]/g).length, 1);
+  });
+
+  it('is idempotent', () => {
+    const first = install(ACCUMULATED);
+    const second = runScript('install-sidebar-summary.js', [], first.env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(fs.readFileSync(first.configPath, 'utf8'), first.after,
+      'a second run must not change the file');
+    assert.match(second.stdout, /already installed/);
+  });
+
+  it('keeps a superseded row the user extended, because we cannot know which half they wanted', () => {
+    const { after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["$summary", "$mine"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.match(after, /\["\$summary", "\$mine"\]/);
+    assert.match(after, /\$facts/);
+  });
+
+  it('reports what it deleted, so a surprising removal is visible', () => {
+    const { result } = install(ACCUMULATED);
+    assert.match(result.stdout, /superseded row removed: \$ctx \$model \$cost/);
+    assert.match(result.stdout, /superseded row removed: \$tg \$ty \$tr/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+  });
+
+  // codex round 1, P1: a table emitted by the previous installer carries legacy
+  // default rows (`state_icon workspace tab` + `agent`) that must be replaced,
+  // not just left behind — otherwise the card renders four lines.
+  it('replaces the legacy default rows from a plugin-managed table', () => {
+    const { result, after } = install([
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      '  [{ token = "$ctx_bar_green", fg = "#a6e3a1", dim = true }],',
+      '  [{ token = "$ctx_bar_yellow", fg = "#f9e2af", dim = true }],',
+      '  [{ token = "$ctx_bar_red", fg = "#f38ba8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    // Legacy rows are gone, new row 1 is in place.
+    assert.equal(sidebarRows(after).some(row => /"workspace"/.test(row)), false,
+      'old workspace column must go');
+    assert.match(after, /\["state_icon", \{ token = "\$who"/);
+    // Eight config rows → four visible lines.
+    assert.equal(sidebarRows(after).length, 8);
+    assert.match(result.stdout, /legacy default rows/);
+  });
+
+  // codex round 1, P2a: removal must recognize a table emitted by the previous
+  // installer, or stripping its token rows leaves an empty table behind.
+  it('removes the whole section when it carries the legacy skeleton', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-legacy-remove-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui]',
+      'show_agent_labels_on_pane_borders = true',
+      '',
+      '# ccxray sidebar summary rows (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.agents]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      '  [{ token = "$summary", fg = "#89b4fa", dim = true }],',
+      '  [{ token = "$ctx_bar_unknown", fg = "#a6adc8", dim = true }],',
+      ']',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    const result = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(result.status, 0, result.stderr);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(after, /\[ui\.sidebar\.agents\]/,
+      'the whole managed section must go');
+    assert.match(after, /show_agent_labels_on_pane_borders/,
+      'the user table must survive');
+  });
+
+  // codex round 2 P1: a user-authored table (no SECTION_MARKER) that happens to
+  // contain `["agent"]` must NOT have it replaced — it is the user's row.
+  it('preserves legacy-looking rows in a user-authored table', () => {
+    const { result, after } = install([
+      '[ui.sidebar.agents]',
+      'rows = [',
+      '  ["state_icon", "workspace", "tab"],',
+      '  ["agent"],',
+      ']',
+      '',
+    ].join('\n'));
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(after, /\["state_icon", "workspace", "tab"\]/,
+      'without the marker these are the user\'s own rows');
+    assert.match(after, /\["agent"\]/);
+    assert.match(after, /\$facts/);
+  });
+
+  it('Quick Start and the installer agree on what installed means', () => {
+    const { configHasManagedRows } = require('../plugins/herdr/bin/install-sidebar-summary');
+    assert.equal(configHasManagedRows(ACCUMULATED), false, 'the old generation is not installed');
+    const { after } = install(ACCUMULATED);
+    assert.equal(configHasManagedRows(after), true);
+    // A commented-out example row is not an installation.
+    const commented = after.split('\n').map(l => (l.includes('$facts') ? `#${l}` : l)).join('\n');
+    assert.equal(configHasManagedRows(commented), false);
+  });
+});
+
+// The standalone dashboard action ran a bare `ccxray open`, throwing away the one
+// thing its caller knew: which pane they were looking at. Mission Control's `d`
+// has passed --session since it shipped.
+describe('Herdr dashboard action deep-links the pane session', () => {
+  const recordingCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-open-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'argv.log');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      `echo "$@" >> "${log}"`,
+      // parseStatus needs a JSON Machine line and something that reads as a live
+      // hub; `port=5577` matches neither of its patterns.
+      'if [ "$1" = "status" ]; then',
+      '  echo "Hub running on http://localhost:5577 (pid 4242, clients 1)"',
+      '  echo \'Machine: {"proxy":true,"hub":true,"port":5577}\''
+      ,
+      'fi',
+      'exit 0',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log };
+  };
+  const argvFor = extraEnv => {
+    const ccxray = recordingCcxray();
+    const result = runScript('open-dashboard.js', [], {
+      CCXRAY_BIN: ccxray.bin,
+      CCXRAY_HERDR_NO_BROWSER: '1',
+      ...extraEnv,
+    });
+    const argv = fs.existsSync(ccxray.log) ? fs.readFileSync(ccxray.log, 'utf8') : '';
+    return { result, argv };
+  };
+
+  it('passes the focused pane session to ccxray open', () => {
+    // fail-on-old: the old action emitted a bare `open` for this same input.
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        agent_session: { kind: 'id', value: 'sess-abc-123' },
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open --session sess-abc-123$/m);
+    assert.match(result.stdout, /opening the dashboard on session sess-abc-123/);
+  });
+
+  it('falls back to a plain open when the pane has no session id', () => {
+    const { result, argv } = argvFor({
+      HERDR_PANE_ID: 'w1:p1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        // agent_session_known means the context author already asked and the
+        // answer was "none", so the resolver must not re-list the agents.
+        agent_session_known: true,
+      }),
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(argv, /^open$/m);
+    assert.match(result.stdout, /no session id yet/);
+  });
+
+  it('resolves the session the same way the badge does', () => {
+    // One helper, so `prefix+m` -> d and the standalone action cannot open
+    // different sessions for the same pane.
+    const { resolvePaneSessionId } = require('../plugins/herdr/bin/lib/ccxray');
+    const context = { agent_session: { kind: 'id', value: 'sess-xyz' } };
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context }), 'sess-xyz');
+    assert.equal(resolvePaneSessionId({ env: pluginEnv({}), paneId: 'w1:p1', context, eventSessionId: 'from-event' }),
+      'from-event', 'an event id wins, as it does in the badge');
+    assert.equal(resolvePaneSessionId({
+      env: pluginEnv({}), paneId: 'w1:p1', context: { agent_session_known: true },
+    }), null);
+  });
+});
+
+// codex round 1, P2b: a quota refusal must not leave Mission Control severity
+// green. The attention filter hides green rows, so a pane that got 429'd would
+// be invisible to the operator.
+describe('Herdr Mission Control marks a quota refusal red', () => {
+  it('updates severity and reasons when status 429 is observed', () => {
+    const T = 1787000000000;
+    const turn = {
+      id: 'q1', sessionId: 'sq1', model: 'claude-opus-5', agentKey: 'orchestrator',
+      isSubagent: false, convId: 'c1', maxContext: 200000, provider: 'anthropic',
+      agentId: 'herdr:w1:p1', cwd: '/work/quota', receivedAt: T,
+      usage: { input_tokens: 50000 }, cost: { cost: 1, confidence: 'exact' },
+      turnToolFail: false, status: 429,
+    };
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome([turn]), CCXRAY_HERDR_NOW_MS: String(T + 2000) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    const row = snapshot.rows[0];
+    assert.equal(row.severity, 'red', 'a quota refusal must not stay green');
+    assert.ok(row.reasons.some(r => /quota refused/.test(r)));
+    assert.equal(row.action, 'wait for quota reset');
+  });
+});
+
+describe('ensureProxy cold start', () => {
+  // `ccxray --no-browser` with no agent is a FOREGROUND standalone server (a hub
+  // is forked only by `ccxray <agent>` without --port). ensureProxy used
+  // spawnSync with a 15s timeout, so it blocked for the full timeout and then
+  // SIGTERM'd the very server it had started; the readiness probe then looked
+  // only for a hub, which never existed. The cold-start path could not succeed.
+  //
+  // Asserted by STATE, not timing: the fake server records the signal it
+  // receives, so "we killed what we started" is directly observable.
+  it('leaves the server it started alive and accepts a standalone port', () => {
+    const { ensureProxy } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ensure-'));
+    const fake = path.join(dir, 'ccxray');
+    fs.writeFileSync(fake, [
+      '#!/bin/sh',
+      'if [ "$1" = "status" ]; then',
+      '  echo "No hub running"',
+      '  if [ -f "$CCXRAY_FAKE_DIR/listening" ]; then',
+      '    echo "Note: port 5999 is held by a standalone ccxray"',
+      '  fi',
+      '  exit 0',
+      'fi',
+      '# the --no-browser foreground server',
+      'echo $$ > "$CCXRAY_FAKE_DIR/pid"',
+      'trap \'echo TERM > "$CCXRAY_FAKE_DIR/killed"; exit 0\' TERM',
+      'touch "$CCXRAY_FAKE_DIR/listening"',
+      'while true; do sleep 0.2; done',
+    ].join('\n'));
+    fs.chmodSync(fake, 0o755);
+
+    let port = null;
+    try {
+      port = ensureProxy({
+        env: pluginEnv({ CCXRAY_BIN: fake, CCXRAY_FAKE_DIR: dir }),
+        cwd: dir,
+      });
+      assert.equal(port, 5999, 'the readiness probe must accept a standalone port');
+      assert.equal(fs.existsSync(path.join(dir, 'killed')), false,
+        'must not SIGTERM the server it just started');
+      assert.ok(fs.existsSync(path.join(dir, 'pid')), 'the server should have started');
+    } finally {
+      // Never leave the fake behind — an orphaned proxy is the failure mode this
+      // whole path is about.
+      try {
+        const pid = Number(fs.readFileSync(path.join(dir, 'pid'), 'utf8').trim());
+        if (Number.isFinite(pid) && pid > 0) process.kill(pid, 'SIGKILL');
+      } catch {}
+    }
+  });
+});
+
+describe('Herdr model label agrees across surfaces', () => {
+  // The sidebar anchors on mainDisplayTurns (agentKey whitelist, then raw
+  // !isSubagent); Mission Control's turns arrive filtered only by raw
+  // !isSubagent. A Task-tool subagent carries the PARENT's sessionId with
+  // isSubagent false — the documented ADR 0005 miss — so when the label moved
+  // from a session-wide plurality to "the latest turn", the two surfaces began
+  // naming different models for one pane. The plurality had masked it.
+  it('names the same model in the sidebar badge and the Mission Control row', () => {
+    const base = {
+      sessionId: 's-agree', provider: 'anthropic', cwd: '/work/agree',
+      agentId: 'herdr:w1:p1', maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 }, cost: { cost: 0.01 },
+    };
+    const home = makeHome([
+      { ...base, id: 'a1', responseId: 'msg_a1', receivedAt: 1787000001000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
+      { ...base, id: 'a2', responseId: 'msg_a2', receivedAt: 1787000002000, agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-5' },
+      // Arrives last, looks like main to a raw flag check, is not main. Its
+      // context is deliberately ~60% against a2's ~0.5% so an unanchored
+      // percentage cannot coincide with the anchored one by accident.
+      {
+        ...base, id: 'a3', responseId: 'msg_a3', receivedAt: 1787000003000,
+        agentKey: 'general-purpose', isSubagent: false, model: 'claude-haiku-4-5-20251001',
+        usage: { input_tokens: 120000, output_tokens: 10 },
+      },
+    ]);
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000004000' });
+    const { sessionSummaryDetails, missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+
+    const badge = sessionSummaryDetails({}, { env, paneId: 'w1:p1', cwd: '/work/agree' });
+    const snapshot = missionControlSnapshot({
+      env,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+
+    assert.equal(badge.model, 'claude-opus-5', 'badge reads the last MAIN turn');
+    assert.equal(snapshot.rows.length, 1);
+    assert.equal(snapshot.rows[0].model, badge.model,
+      'Mission Control must not name a different model than the badge');
+    // The model label was the first symptom, not the whole divergence: ctx% and
+    // cache% read the same anchored set, so a `general-purpose` turn carrying
+    // isSubagent:false must not move them on one surface and not the other.
+    // a3's context is deliberately far from a2's so an unanchored percentage
+    // cannot coincide with the anchored one.
+    assert.equal(Math.round(snapshot.rows[0].ctxPct), Math.round(badge.ctxPct),
+      'Mission Control must not report a different ctx% than the badge');
+  });
+});
+
+describe('Herdr sidebar model reports the latest main turn', () => {
+  const T = Date.parse('2026-08-19T00:00:00.000Z');
+  const turn = (i, model) => ({
+    id: `s${i}`, sessionId: 'sw', model, agentKey: 'orchestrator', isSubagent: false,
+    convId: 'aaaa', receivedAt: T + i * 1000, maxContext: 200000,
+    usage: { input_tokens: 20000 },
+  });
+
+  it('flips on the first turn after a /model switch, not on plurality', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    // 40 opus turns, then one sonnet turn — the shape of a /model switch mid-session.
+    const entries = [];
+    for (let i = 0; i < 40; i += 1) entries.push(turn(i, 'claude-opus-5'));
+    entries.push(turn(40, 'claude-sonnet-5'));
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'sw',
+      nowMs: T + 60000,
+    });
+    assert.equal(detail.matched, true);
+    // Under the plurality rule this was 'claude-opus-5' (40 vs 1).
+    assert.equal(detail.model, 'claude-sonnet-5');
+  });
+
+  // The plurality rule existed to damp oscillation, but `anchor` is already
+  // main-only (mainDisplayTurns drops subagent turns), so the noise it damped is
+  // filtered upstream — a subagent on another model must still not move the label.
+  it('still ignores a non-main turn that arrives last', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      turn(0, 'claude-opus-5'),
+      { ...turn(1, 'claude-fable-5'), agentKey: 'agent', isSubagent: true, convId: 'bbbb' },
+    ];
+    const detail = sessionSummaryDetails({ meta: {}, sessions: {}, models: [] }, {
+      env: { CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'sw',
+      nowMs: T + 60000,
+    });
+    assert.equal(detail.model, 'claude-opus-5');
+  });
+});
+
+describe('Herdr repair worker state', () => {
+  it('persists no-evidence diagnostics and target identity after a zero-row import', () => {
+    const home = makeEmptyHome();
+    const projects = tempDir('ccxray-herdr-repair-no-evidence-');
+    const cwd = '/work/repair-no-evidence';
+    const sessionId = 'repair-no-evidence-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(transcript, [
+      {
+        type: 'system', subtype: 'init', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:00.000Z',
+      },
+      {
+        type: 'user', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:01.000Z',
+        message: { role: 'user', content: [{ type: 'text', text: 'Resume the session' }] },
+      },
+      {
+        type: 'file-history-snapshot', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:02.000Z',
+        snapshot: { messageId: 'snapshot-1', trackedFileBackups: {} },
+      },
+      {
+        type: 'assistant', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T01:00:03.000Z',
+        message: {
+          id: 'msg-zero-token', role: 'assistant', model: 'claude-opus-5',
+          content: [], usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      },
+    ].map(line => JSON.stringify(line)).join('\n') + '\n');
+
+    const target = { file: transcript, provider: 'claude', sessionId, cwd };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+      CCXRAY_IMPORT_DISABLE: '0',
+      CCXRAY_BIN: makeTargetedImportWrapper(),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.status, 'failed');
+    assert.equal(state.reason, 'no-exact-evidence');
+    assert.equal(state.error, 'synthetic stderr diagnostic');
+    assert.equal(state.provider, target.provider);
+    assert.equal(state.sessionId, target.sessionId);
+  });
+
+  it('prefers importer JSON error detail over stderr in a failed state', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-error-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'reported-error-session', cwd: '/work/error',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: makeCcxrayMock({
+        stdout: `${JSON.stringify({
+          ok: false, ran: true, reason: 'target-import-failed', error: 'importer detail',
+        })}\n`,
+        stderr: 'stderr detail\n',
+      }),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.reason, 'target-import-failed');
+    assert.equal(state.error, 'importer detail');
+    assert.equal(state.provider, target.provider);
+    assert.equal(state.sessionId, target.sessionId);
+  });
+
+  it('keeps the spawn error message when the command never produced output', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-enoent-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'enoent-session', cwd: '/work/enoent',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: path.join(dir, 'no-such-ccxray-binary'),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(state.reason, 'ENOENT');
+    assert.match(state.error, /ENOENT/);
+  });
+
+  it('caps a runaway stderr diagnostic in the failed state', () => {
+    const home = makeEmptyHome();
+    const dir = tempDir('ccxray-herdr-repair-truncate-');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
+    const target = {
+      file: transcript, provider: 'claude', sessionId: 'truncate-session', cwd: '/work/truncate',
+    };
+    const stateFile = path.join(home, 'herdr-plugin', 'link-repair-v1', 'worker.json');
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const result = runScript('repair-session-link.js', [], {
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: makeCcxrayMock({ stderr: 'x'.repeat(100000), status: 1 }),
+      CCXRAY_LINK_REPAIR_TARGET: JSON.stringify(target),
+      CCXRAY_LINK_REPAIR_STATE: stateFile,
+    });
+
+    assert.equal(result.status, 1, result.stderr);
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(state.error.length < 3000, `diagnostic must be capped, got ${state.error.length}`);
+    assert.match(state.error, /\[truncated\]$/);
+  });
+
+  it('refresh-badges parses legacy complete and diagnostic repair state shapes', () => {
+    const { workspaceXrayToken } = require('../plugins/herdr/bin/refresh-badges');
+    const home = makeEmptyHome();
+    const projects = tempDir('ccxray-herdr-repair-reader-');
+    const cwd = '/work/repair-reader';
+    const sessionId = 'repair-reader-session';
+    const project = path.join(projects, cwd.replace(/[^a-zA-Z0-9]/g, '-'));
+    const transcript = path.join(project, `${sessionId}.jsonl`);
+    fs.mkdirSync(project, { recursive: true });
+    fs.writeFileSync(transcript, [
+      {
+        type: 'system', subtype: 'init', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T02:00:00.000Z',
+      },
+      {
+        type: 'assistant', cwd, session_id: sessionId,
+        timestamp: '2026-08-30T02:00:01.000Z',
+        message: {
+          id: 'msg-reader-shape', model: 'claude-opus-5',
+          usage: { input_tokens: 10, output_tokens: 1 },
+        },
+      },
+    ].map(line => JSON.stringify(line)).join('\n') + '\n');
+
+    const target = { file: transcript, provider: 'claude', sessionId, cwd };
+    const stateFile = repairStatePathForTest(home, target);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const evidence = { sessionId, cwd, imported: false, receivedAt: 1788055200000 };
+    const env = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_IMPORT_HOMES: projects,
+      HERDR_WORKSPACE_ID: 'w1',
+    });
+    const status = { parsed: { machine: { proxy: true } } };
+    const agents = [{
+      pane_id: 'w1:p1', workspace_id: 'w1', agent: 'claude', foreground_cwd: cwd,
+      agent_session: { kind: 'id', value: sessionId },
+    }];
+
+    for (const state of [
+      { status: 'complete', exactEvidence: evidence },
+      { status: 'complete', exactEvidence: evidence, contextSamples: [evidence] },
+    ]) {
+      fs.writeFileSync(stateFile, JSON.stringify(state));
+      assert.equal(
+        workspaceXrayToken(status, env, agents, null, { sidebarCols: 24 }),
+        'xray 1/1',
+        `complete repair state should link: ${JSON.stringify(state)}`,
+      );
+    }
+
+    fs.writeFileSync(stateFile, JSON.stringify({
+      status: 'failed', finishedAt: 1788055200000, retryAfter: 1788055230000,
+      reason: 'no-exact-evidence', error: 'synthetic stderr diagnostic',
+      provider: target.provider, sessionId: target.sessionId,
+    }));
+    assert.equal(
+      workspaceXrayToken(status, env, agents, null, { sidebarCols: 24 }),
+      'xray 0/1',
+      'a failed diagnostic state must not be rendered as linked evidence',
+    );
   });
 });
 
@@ -584,7 +2849,11 @@ describe('Herdr sidebar import freshness', () => {
     assert.ok(detail.stale, 'expected a staleness marker');
     assert.equal(detail.stale.text, 'stale 11h');
     assert.match(detail.summary, /· stale 11h$/);
-    assert.match(detail.ctxBar, /stale 11h/);
+    // The reason moved to row 3's $alert. Row 2 keeps the withdrawn colour (the
+    // assertion below) and the cache fact, so it no longer repeats the word —
+    // `21% · stal…` beside `21% stale` is the duplication being removed.
+    assert.doesNotMatch(detail.ctxBar, /stale/);
+    assert.equal(paneAlertFor(detail).text, 'stale 11h');
     // The percentage survives; only the confident colour is withdrawn.
     assert.equal(Math.round(detail.ctxPct), 32);
     assert.equal(detail.ctxBand, 'unknown');
@@ -687,18 +2956,36 @@ describe('Herdr sidebar import freshness', () => {
   // disk scan would stall the sidebar for every pane in the workspace.
   it('spawns the rescan without waiting for it', () => {
     const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-import-'));
+    const dir = tempDir('ccxray-herdr-import-');
     const marker = path.join(dir, 'ran');
     const bin = path.join(dir, 'fake-ccxray');
+    const transcript = path.join(dir, 'target.jsonl');
+    fs.writeFileSync(transcript, '{}\n');
     // Sleeps well past any reasonable badge refresh, then records that it ran.
     fs.writeFileSync(bin, `#!/usr/bin/env node\nsetTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, process.argv.slice(2).join(' ')), 400);\n`);
     fs.chmodSync(bin, 0o755);
 
     const started = Date.now();
-    const result = requestImport({ env: { ...process.env, CCXRAY_BIN: bin } });
+    const home = makeHome();
+    const target = {
+      file: transcript,
+      provider: 'claude',
+      sessionId: 'target-session',
+      cwd: '/work/target',
+    };
+    const requestEnv = pluginEnv({
+      CCXRAY_HOME: home,
+      CCXRAY_BIN: bin,
+      CCXRAY_IMPORT_HOMES: dir,
+      CCXRAY_IMPORT_CODEX_HOMES: NO_CODEX_TRANSCRIPTS,
+    });
+    const result = requestImport({ env: requestEnv, target, paneId: 'w1:p1' });
     const elapsed = Date.now() - started;
     assert.equal(result.ok, true);
     assert.ok(elapsed < 300, `requestImport must return immediately, took ${elapsed}ms`);
+    const duplicate = requestImport({ env: requestEnv, target, paneId: 'w1:p1' });
+    assert.equal(duplicate.ok, false);
+    assert.equal(duplicate.reason, 'already-requested');
 
     // And the child really does outlive the call.
     const deadline = Date.now() + 5000;
@@ -706,7 +2993,38 @@ describe('Herdr sidebar import freshness', () => {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
     }
     assert.equal(fs.existsSync(marker), true, 'the detached child should still run');
-    assert.equal(fs.readFileSync(marker, 'utf8'), 'import --once');
+    const args = fs.readFileSync(marker, 'utf8');
+    assert.match(args, /^import --target-transcript /);
+    assert.match(args, /--provider claude/);
+    assert.match(args, /--session-id target-session/);
+    assert.doesNotMatch(args, /--once/);
+
+    // A real worker records a failed attempt with a short retry window instead
+    // of poisoning this transcript fingerprint forever. The fake command emits
+    // no success JSON, so it deterministically exercises that terminal state.
+    const stateDir = path.join(home, 'herdr-plugin', 'link-repair-v1');
+    let failedState = null;
+    const stateDeadline = Date.now() + 5000;
+    while (!failedState && Date.now() < stateDeadline) {
+      for (const name of fs.readdirSync(stateDir)) {
+        if (!name.endsWith('.json')) continue;
+        const state = JSON.parse(fs.readFileSync(path.join(stateDir, name), 'utf8'));
+        if (state.status === 'failed') failedState = state;
+      }
+      if (!failedState) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    assert.equal(failedState?.status, 'failed');
+    failedState.retryAfter = 1;
+    const stateName = fs.readdirSync(stateDir).find(name => name.endsWith('.json'));
+    const statePath = path.join(stateDir, stateName);
+    fs.writeFileSync(statePath, JSON.stringify(failedState));
+    const reclaim = `${statePath}.reclaim`;
+    fs.writeFileSync(reclaim, JSON.stringify({ pid: 4194303, at: 1 }));
+    assert.equal(requestImport({ env: requestEnv, target, paneId: 'w1:p1' }).ok, false,
+      'the observer that clears a dead reclaimer does not race to replace it');
+    assert.equal(fs.existsSync(reclaim), false, 'a crashed reclaimer must not poison the fingerprint forever');
+    assert.equal(requestImport({ env: requestEnv, target, paneId: 'w1:p1' }).ok, true,
+      'a failed exact attempt must be retryable rather than permanently claimed');
   });
 
   it('can be switched off without switching off the marker', () => {
@@ -771,7 +3089,7 @@ describe('Herdr sidebar import freshness', () => {
       ['/Users//dev/proj', '-Users-dev-proj'],
     ];
     for (const [cwd, expectedDir] of cases) {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slug-'));
+      const root = tempDir('ccxray-herdr-slug-');
       const dir = path.join(root, expectedDir);
       fs.mkdirSync(dir, { recursive: true });
       const file = path.join(dir, 's1.jsonl');
@@ -787,6 +3105,462 @@ describe('Herdr sidebar import freshness', () => {
     assert.equal(transcriptFile('missing', CWD, env), null);
     assert.equal(transcriptFile(null, CWD, env), null);
     assert.equal(transcriptFile('s1', null, env), null);
+  });
+
+  // Differential evidence must cross the process boundary: the root parsers
+  // resolve relative entries against process.cwd(), so an in-process comparison
+  // cannot observe the defect. Keep both provider pairs in the same table so a
+  // passing Claude-only check cannot silently leave Codex uncovered.
+  it('core and Herdr resolve both import-root variables identically across processes', () => {
+    const coreCwd = tempDir('ccxray-parity-core-cwd-');
+    const herdrCwd = tempDir('ccxray-parity-herdr-cwd-');
+    const configuredA = tempDir('ccxray-parity-a-');
+    const configuredB = tempDir('ccxray-parity-b-');
+    const aliasParent = tempDir('ccxray-parity-alias-');
+    const configuredAlias = path.join(aliasParent, 'alias');
+    fs.symlinkSync(configuredA, configuredAlias, 'dir');
+
+    const singleHome = tempDir('ccxray-parity-home-');
+    fs.mkdirSync(path.join(singleHome, '.claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(singleHome, '.config', 'claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(singleHome, '.codex', 'sessions'), { recursive: true });
+    const aliasHome = tempDir('ccxray-parity-alias-home-');
+    fs.mkdirSync(path.join(aliasHome, '.claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(aliasHome, '.config', 'claude', 'projects'), { recursive: true });
+    fs.mkdirSync(path.join(aliasHome, '.codex', 'sessions'), { recursive: true });
+    fs.symlinkSync(path.join(aliasHome, '.codex'), path.join(aliasHome, '.codex-alias'), 'dir');
+
+    const script = [
+      "'use strict';",
+      "const mod = require(process.env.CCXRAY_PARITY_MODULE);",
+      "const fs = require('fs');",
+      "const provider = process.env.CCXRAY_PARITY_PROVIDER;",
+      "const method = process.env.CCXRAY_PARITY_KIND === 'core'",
+      "  ? (provider === 'claude' ? 'discoverHomes' : 'discoverCodexHomes')",
+      "  : (provider === 'claude' ? 'claudeProjectRoots' : 'codexSessionRoots');",
+      "const roots = mod[method]();",
+      "const dirs = roots.map(root => root.dir || root).map(dir => {",
+      "  try { return fs.realpathSync(dir); } catch { return dir; }",
+      "});",
+      "process.stdout.write(JSON.stringify(dirs));",
+    ].join('\n');
+    const run = ({ kind, provider, raw, cwd, home, name }) => {
+      const envVar = provider === 'claude' ? 'CCXRAY_IMPORT_HOMES' : 'CCXRAY_IMPORT_CODEX_HOMES';
+      const env = pluginEnv({
+        HOME: home,
+        CCXRAY_PARITY_KIND: kind,
+        CCXRAY_PARITY_MODULE: kind === 'core'
+          ? path.join(ROOT, 'server', 'importer.js')
+          : path.join(PLUGIN, 'bin', 'lib', 'ccxray.js'),
+        CCXRAY_PARITY_PROVIDER: provider,
+      });
+      // An omitted variable is different from an explicitly empty variable:
+      // the former exercises ambient discovery, the latter means no roots.
+      delete env.CCXRAY_IMPORT_HOMES;
+      delete env.CCXRAY_IMPORT_CODEX_HOMES;
+      if (raw !== undefined) env[envVar] = raw;
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd,
+        env,
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+      // The case NAME, not just the raw value: `unset` and `ambient symlink alias`
+      // both carry raw === undefined, so without it the two collapse to one message.
+      const where = `${kind}/${provider}/${name}/${JSON.stringify(raw)}`;
+      assert.equal(result.status, 0, `${where} exited ${result.status}: ${result.stderr}`);
+      try {
+        return JSON.parse(result.stdout).sort();
+      } catch (err) {
+        throw new Error(`${where} produced unparseable stdout (${err.message}): `
+          + `${JSON.stringify(result.stdout.slice(0, 200))}`);
+      }
+    };
+
+    const cases = [
+      { name: 'absolute list', raw: configuredA, home: singleHome },
+      { name: 'relative entry', raw: 'relative-import-root', home: singleHome },
+      { name: 'empty string', raw: '', home: singleHome },
+      { name: 'unset', raw: undefined, home: singleHome },
+      { name: 'comma-list', raw: `${configuredA},${configuredB}`, home: singleHome },
+      { name: 'trailing comma', raw: `${configuredA},${configuredB},`, home: singleHome },
+      { name: 'empty middle entry', raw: `${configuredA},,${configuredB}`, home: singleHome },
+      { name: 'whitespace', raw: ` ${configuredA} , ${configuredB} `, home: singleHome },
+      { name: 'configured symlink alias', raw: `${configuredA},${configuredAlias}`, home: singleHome },
+      // The Codex roots below are the same inode. Core already collapses them;
+      // this case makes Herdr's former ambiguous-two-candidate behavior visible.
+      { name: 'ambient symlink alias', raw: undefined, home: aliasHome },
+    ];
+    const mismatches = [];
+    for (const provider of ['claude', 'codex']) {
+      for (const testCase of cases) {
+        const core = run({ kind: 'core', provider, ...testCase, cwd: coreCwd });
+        const herdr = run({ kind: 'herdr', provider, ...testCase, cwd: herdrCwd });
+        if (JSON.stringify(core) !== JSON.stringify(herdr)) {
+          mismatches.push({ provider, case: testCase.name, core, herdr });
+        }
+      }
+    }
+    assert.deepEqual(mismatches, []);
+
+    // Root-list parity is necessary but not sufficient: it never exercises the symptom
+    // the alias fix exists for. With `.codex-alias` symlinked to `.codex`, the old code
+    // returned the same store twice, codexTranscriptFile saw two matching candidates,
+    // and rejected the transcript as ambiguous — so a user with an aliased home lost
+    // their pane's link while every root-list assertion above still passed.
+    const sessionId = '01a03df1-0200-7abc-8def-0123456789ab';
+    const day = path.join(aliasHome, '.codex', 'sessions', '2026', '08', '26');
+    fs.mkdirSync(day, { recursive: true });
+    const rollout = path.join(day, `rollout-2026-08-26T12-00-00-${sessionId}.jsonl`);
+    fs.writeFileSync(rollout, `${JSON.stringify({
+      timestamp: '2026-08-26T12:00:00.000Z',
+      type: 'session_meta',
+      payload: { session_id: sessionId, cwd: '/work/alias' },
+    })}\n`);
+    // Must run in a CHILD with HOME set: ambient discovery reads os.homedir(), not the
+    // env object it is handed, so an in-process assertion cannot exercise this path at
+    // all — it would silently consult the developer's real ~/.codex instead.
+    const lookup = spawnSync(process.execPath, ['-e',
+      "const m = require(process.env.CCXRAY_PARITY_MODULE);"
+      + "process.stdout.write(JSON.stringify(m.codexTranscriptFile(process.env.SID) || null));",
+    ], {
+      cwd: coreCwd,
+      env: (() => {
+        const e = pluginEnv({
+          HOME: aliasHome,
+          SID: sessionId,
+          CCXRAY_PARITY_MODULE: path.join(PLUGIN, 'bin', 'lib', 'ccxray.js'),
+        });
+        // Ambient discovery is the path under test, so the override must be absent.
+        delete e.CCXRAY_IMPORT_CODEX_HOMES;
+        return e;
+      })(),
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    assert.equal(lookup.status, 0, `alias lookup exited ${lookup.status}: ${lookup.stderr}`);
+    // Assert the resolved FILE, not truthiness: `[]` and any unrelated object are both
+    // truthy, so `assert.ok` would pass on a lookup that found the wrong thing or
+    // nothing useful. realpath on the expectation because the roots are canonicalized.
+    let resolved;
+    try {
+      resolved = JSON.parse(lookup.stdout);
+    } catch (err) {
+      throw new Error(`alias lookup produced unparseable stdout (${err.message}): `
+        + `${JSON.stringify(lookup.stdout.slice(0, 200))}`);
+    }
+    assert.ok(resolved && typeof resolved === 'object' && resolved.file,
+      `an aliased Codex home must not make its own transcript ambiguous (got ${lookup.stdout})`);
+    // Which of `.codex` / `.codex-alias` wins depends on readdirSync order, which is
+    // not guaranteed — so assert IDENTITY (same inode as the fixture), not one spelling
+    // of the path. That is also the property the fix is about: one store must resolve
+    // to one transcript however its aliases are ordered. The path shape is pinned
+    // separately below.
+    assert.equal(fs.statSync(resolved.file).ino, fs.statSync(rollout).ino,
+      'the alias and the real home must resolve to the same transcript');
+    // Ambient Codex roots deliberately do NOT canonicalize (matching core's inode
+    // identity, which pushes the original path), unlike the configured path and unlike
+    // the Claude sibling. Pinning this keeps that asymmetry visible if it ever changes.
+    assert.ok(!resolved.file.startsWith('/private/'),
+      'ambient Codex roots return the un-canonicalized path');
+  });
+
+  it('T6a: a comma-separated CCXRAY_IMPORT_HOMES finds a transcript in the SECOND root', () => {
+    const { transcriptFile } = require('../plugins/herdr/bin/lib/ccxray');
+    const rootA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-t6a-a-'));
+    const rootB = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-t6a-b-'));
+    const cwd = path.join(os.tmpdir(), 'ccxray-t6a-proj');
+    const slug = cwd.replace(/\/+/g, '/').replace(/(.)\/$/, '$1').replace(/[^a-zA-Z0-9]/g, '-');
+    fs.mkdirSync(path.join(rootB, slug), { recursive: true });
+    const target = path.join(rootB, slug, 's-t6a.jsonl');
+    fs.writeFileSync(target, '{}\n');
+
+    const env = { CCXRAY_IMPORT_HOMES: `${rootA},${rootB}` };
+    const found = transcriptFile('s-t6a', cwd, env);
+    assert.ok(found, 'old code stats the literal path "rootA,rootB" and finds nothing');
+    // realpathSync on the expectation, not the actual: the parser canonicalizes roots
+    // (so two aliases of one store dedupe), and on macOS os.tmpdir() is /var -> /private/var.
+    assert.equal(found.file, fs.realpathSync(target));
+  });
+
+  it('T6: Herdr parses every comma-separated Claude projects root', () => {
+    const { claudeProjectRoots } = require('../plugins/herdr/bin/lib/ccxray');
+    const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-root-a-'));
+    const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-root-b-'));
+    const aliasParent = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-alias-'));
+    const aliasRoot = path.join(aliasParent, 'projects');
+    fs.symlinkSync(firstRoot, aliasRoot);
+    try {
+      assert.deepStrictEqual(
+        claudeProjectRoots(pluginEnv({
+          CCXRAY_IMPORT_HOMES: ` ${firstRoot}, , ${aliasRoot}, ${secondRoot} `,
+        })),
+        [fs.realpathSync(firstRoot), fs.realpathSync(secondRoot)],
+      );
+    } finally {
+      fs.rmSync(aliasParent, { recursive: true, force: true });
+      fs.rmSync(firstRoot, { recursive: true, force: true });
+      fs.rmSync(secondRoot, { recursive: true, force: true });
+    }
+  });
+
+  // FAIL-ON-OLD: two named Claude homes can both contain the same session id.
+  // Picking the newer file silently assigns ambiguous history to this pane.
+  it('fails closed when distinct Claude homes claim the same native session', () => {
+    const fakeHome = tempDir('ccxray-herdr-ambiguous-home-');
+    const cwd = '/work/ambiguous';
+    const slug = '-work-ambiguous';
+    const sessionId = 'ambiguous-session';
+    const files = [
+      path.join(fakeHome, '.claude', 'projects', slug, `${sessionId}.jsonl`),
+      path.join(fakeHome, '.claude-work', 'projects', slug, `${sessionId}.jsonl`),
+    ];
+    files.forEach((file, index) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, assistantLine(T + index) + '\n');
+      fs.utimesSync(file, new Date(T + index), new Date(T + index));
+    });
+    const childEnv = pluginEnv({ HOME: fakeHome });
+    delete childEnv.CCXRAY_IMPORT_HOMES;
+    const modulePath = path.join(ROOT, 'plugins', 'herdr', 'bin', 'lib', 'ccxray.js');
+    const output = execFileSync(process.execPath, ['-e', [
+      `const { transcriptFile } = require(${JSON.stringify(modulePath)});`,
+      `process.stdout.write(JSON.stringify(transcriptFile(${JSON.stringify(sessionId)}, ${JSON.stringify(cwd)})));`,
+    ].join('')], { env: childEnv }).toString();
+    assert.equal(JSON.parse(output), null);
+  });
+});
+
+describe('Herdr context window provenance', () => {
+  const T = Date.parse('2026-08-24T09:00:00.000Z');
+  const status = { parsed: { running: true, machine: { proxy: true } } };
+  const usage = { ok: true, data: { meta: {}, sessions: {}, models: [], cache: {}, tools: {} } };
+  const turn = (id, used, maxContext) => ({
+    id, sessionId: 'fable-window', model: 'claude-fable-5', agentKey: 'orchestrator',
+    isSubagent: false, receivedAt: T, cwd: '/work/fable-window', maxContext,
+    usage: { input_tokens: used }, imported: true,
+  });
+  const render = turns => require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+    env: { CCXRAY_HOME: makeHome(turns), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+    sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+  });
+
+  it('marks a default 200K denominator as unverified', () => {
+    const badge = render([turn('f6a', 192182, 200000)]);
+    assert.equal(badge.ctxWindowSource, 'default');
+    assert.equal(Math.round(badge.ctxPct), 96);
+    assert.equal(badge.tokens.ctx, '96%?');
+    assert.equal(badge.tokens.ctx_band, 'unknown');
+  });
+
+  it('uses an observed 1M fossil after the importer usage hatch', () => {
+    const badge = render([
+      turn('f6a', 192182, 200000),
+      turn('f6b', 232659, 1000000),
+    ]);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(Math.round(badge.ctxPct), 23);
+    assert.equal(badge.tokens.ctx, '23%');
+    assert.equal(badge.tokens.ctx_band, 'green');
+  });
+
+  it('#603 shares the imported 1M window with Mission Control without granting alert authority', () => {
+    // Exercise the session-index aggregate specifically: a cold card / badge
+    // can have the fact even when its short tail has none. MC must consume the
+    // same aggregate or #588's cross-surface denominator split returns.
+    const imported = turn('f6-imported', 192182, 200000);
+    const home = makeHome([imported]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 200000, imported1mCostState: true,
+    }) + '\n');
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env: { CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS },
+      sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    assert.equal(badge.ctxWindowSource, 'imported');
+    assert.equal(Math.round(badge.ctxPct), 19);
+    assert.equal(badge.tokens.ctx, '19%?');
+    assert.equal(badge.tokens.ctx_band, 'unknown', 'the weaker declaration keeps the badge neutral');
+
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      entries: [imported],
+      nowMs: T + 1000,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working',
+        agent_session: { kind: 'id', value: 'fable-window' },
+      }] },
+    });
+    const row = snapshot.rows[0];
+    assert.equal(Math.round(row.ctxPct), 19);
+    assert.equal(row.ctxWindowSource, 'imported');
+    assert.equal(row.ctxWindowMarker, '?');
+    assert.equal(row.severity, 'green', 'a changed ctx% alone cannot escalate Mission Control');
+  });
+
+  it('#603 gives an observed 400K fossil category priority over the imported 1M hint in Sidebar and Mission Control', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const imported = turn('f6-observed', 300000, 200000);
+    const home = makeHome([imported]);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 400000, imported1mSettings: true,
+    }) + '\n');
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env, sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    const row = missionControlSnapshot({
+      env, entries: [imported], nowMs: T + 1000, agentReport: { ok: true, agents: [] },
+    }).rows[0];
+
+    assert.equal(Math.round(badge.ctxPct), 75);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(badge.tokens.ctx, '75%', 'the measured 400K denominator has no imported ? marker');
+    assert.equal(Math.round(row.ctxPct), 75);
+    assert.equal(row.ctxWindowSource, 'observed');
+    assert.equal(row.ctxWindowMarker, '');
+  });
+
+  it('#603 keeps a 128K observed fossil ahead of an imported hint even beside default 200K turns', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [
+      turn('f6-default', 96000, 200000),
+      { ...turn('f6-observed-small', 96000, 128000), receivedAt: T + 1 },
+    ];
+    const home = makeHome(entries);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), JSON.stringify({
+      sid: 'fable-window', maxContext: 200000, imported1mSettings: true,
+    }) + '\n');
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const badge = require('../plugins/herdr/bin/refresh-badges').badgeTokens(status, usage, {
+      env, sessionId: 'fable-window', nowMs: T + 1000, sidebarCols: 40,
+    });
+    const row = missionControlSnapshot({
+      env, entries, nowMs: T + 1000, agentReport: { ok: true, agents: [] },
+    }).rows[0];
+
+    assert.equal(Math.round(badge.ctxPct), 75);
+    assert.equal(badge.ctxWindowSource, 'observed');
+    assert.equal(badge.tokens.ctx, '75%');
+    assert.equal(Math.round(row.ctxPct), 75);
+    assert.equal(row.ctxWindowSource, 'observed');
+    assert.equal(row.ctxWindowMarker, '');
+  });
+
+  it('marks an overflowing raw row as contradicted instead of clamping it cleanly', () => {
+    const badge = render([turn('f6c', 232659, 200000)]);
+    assert.equal(badge.ctxWindowSource, 'contradicted');
+    assert.equal(Math.round(badge.ctxPct), 116);
+    assert.equal(badge.tokens.ctx, '116%✗');
+    assert.equal(badge.tokens.ctx_band, 'unknown');
+  });
+
+  it('keeps Mission Control numeric parity while withdrawing confident pressure', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [turn('f6a', 192182, 200000)];
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: makeHome(entries), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      entries,
+      nowMs: T + 1000,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working',
+        agent_session: { kind: 'id', value: 'fable-window' },
+      }] },
+    });
+    const row = snapshot.rows[0];
+    assert.ok(Math.abs(row.ctxPct - 96.091) < 1e-9);
+    assert.equal(row.ctxWindowSource, 'default');
+    assert.equal(row.ctxWindowMarker, '?');
+    assert.equal(row.severity, 'green');
+    assert.equal(row.action, null);
+    assert.ok(row.reasons.some(reason => reason.includes('assumed 96%?')));
+  });
+});
+
+describe('#603 Mission Control aggregate snapshot cache', () => {
+  const nowMs = Date.parse('2026-08-31T12:00:00.000Z');
+  const entry = (sid, paneId, offset) => ({
+    id: `${sid}-turn`, sessionId: sid, agentId: `herdr:${paneId}`,
+    agentKey: 'orchestrator', isSubagent: false, model: 'claude-opus-4-6',
+    cwd: '/work/snapshot-cache', receivedAt: nowMs + offset, maxContext: 200000,
+    usage: { input_tokens: 1000, output_tokens: 1 },
+    cost: { cost: 0.01, confidence: 'exact' },
+  });
+
+  it('reads sessions.json once for each Mission Control snapshot in both row paths', () => {
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const entries = [entry('snapshot-a', 'w1:p1', 1), entry('snapshot-b', 'w1:p2', 2)];
+    const home = makeHome(entries);
+    fs.writeFileSync(path.join(home, 'logs', 'sessions.json'), [
+      JSON.stringify({ sid: 'snapshot-a', count: 1, totalCost: 0.01, maxContext: 200000 }),
+      JSON.stringify({ sid: 'snapshot-b', count: 1, totalCost: 0.01, maxContext: 200000 }),
+      '',
+    ].join('\n'));
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS });
+    const countSessionReads = run => {
+      const original = fs.readFileSync;
+      let reads = 0;
+      fs.readFileSync = function(file, ...args) {
+        if (String(file).endsWith(`${path.sep}sessions.json`)) reads += 1;
+        return original.call(this, file, ...args);
+      };
+      try { run(); } finally { fs.readFileSync = original; }
+      return reads;
+    };
+    const agents = [
+      { pane_id: 'w1:p1', workspace_id: 'w1', tab_id: 'w1:t1', agent: 'claude', agent_status: 'working', agent_session: { kind: 'id', value: 'snapshot-a' } },
+      { pane_id: 'w1:p2', workspace_id: 'w1', tab_id: 'w1:t2', agent: 'claude', agent_status: 'working', agent_session: { kind: 'id', value: 'snapshot-b' } },
+    ];
+
+    assert.equal(countSessionReads(() => missionControlSnapshot({
+      env, entries, nowMs, agentReport: { ok: true, agents },
+    })), 1, 'agent rows share one sessions.json read');
+    assert.equal(countSessionReads(() => missionControlSnapshot({
+      env, entries, nowMs, agentReport: { ok: true, agents: [] },
+    })), 1, 'recent-session rows share the same snapshot-level read');
+  });
+});
+
+describe('Herdr working badge refresh loop', () => {
+  it('refreshes on the interval and exits at the lifecycle boundaries', () => {
+    const { loopTick } = require('../plugins/herdr/bin/badge-refresh-loop');
+    const config = { intervalMs: 100, maxAgeMs: 500, paneId: 'w1:p1' };
+    let state = { startedAt: 1000 };
+    let tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 1, now: 1000, config,
+    });
+    assert.equal(tick.refresh, true);
+    state = tick.nextState;
+    tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 1, now: 1050, config,
+    });
+    assert.equal(tick.refresh, false);
+    tick = loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], indexMtime: 2, now: 1100, config,
+    });
+    assert.equal(tick.refresh, true, 'a working pane must be refreshed without another status event');
+    assert.equal(loopTick(state, { agents: [], now: 1100, config }).exit, 'pane-gone');
+    assert.equal(loopTick(state, { agents: [{ pane_id: 'w1:p1', agent_status: 'idle' }], now: 1100, config }).exit, 'idle');
+    assert.equal(loopTick(state, {
+      agents: [{ pane_id: 'w1:p1', agent_status: 'idle' }], indexMtime: 2, now: 1100, config,
+    }).refresh, true, 'idle transition must flush the final index change before exit');
+    assert.equal(loopTick(state, { agents: [{ pane_id: 'w1:p1', agent_status: 'working' }], now: 1600, config }).exit, 'max-age');
+  });
+
+  it('deduplicates live loops with an atomic pane pidfile', () => {
+    const { claimPid, releasePid } = require('../plugins/herdr/bin/badge-refresh-loop');
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-loop-state-'));
+    try {
+      const env = pluginEnv({ HERDR_PANE_ID: 'w1:p2', HERDR_PLUGIN_STATE_DIR: stateDir });
+      const first = claimPid('w1:p2', env);
+      const second = claimPid('w1:p2', env);
+      assert.equal(first.owned, true);
+      assert.equal(second.reason, 'already-running');
+      releasePid(first);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1314,6 +4088,9 @@ describe('Herdr plugin commands', () => {
     assert.match(manual.stdout, /Opened ccxray Quick Start/);
     const calls = fs.readFileSync(herdr.log, 'utf8').trim().split('\n');
     assert.equal(calls.length, 2);
+    // `--placement tab` is explicit now: this assertion previously encoded its
+    // ABSENCE, which was the bug — the manifest's placement always won and
+    // CCXRAY_HERDR_PANE_PLACEMENT did nothing for Quick Start.
     assert.match(calls[0], /plugin pane open --plugin ccxray\.herdr --entrypoint onboarding --placement tab --focus --workspace w1 --cwd \/work\/demo/);
     const saved = JSON.parse(fs.readFileSync(path.join(stateDir, 'onboarding-v1.json'), 'utf8'));
     assert.equal(saved.version, 1);
@@ -2145,7 +4922,14 @@ describe('Herdr plugin commands', () => {
         agentId: 'herdr:w1:p3',
         receivedAt: now,
         isSubagent: true,
-        cost: { cost: 0.07, confidence: 'estimated' },
+        // 'fallback', not 'estimated': the server writes only exact / prefix /
+        // fallback / unknown (`calculateCost`), and the plugin's `'estimated'`
+        // is a capability-analysis field, not a cost confidence. The old
+        // worst-of marked ANY non-exact value, so an invented one still
+        // rendered `~`; ADR 0017's fold keys strictly on 'fallback', exactly as
+        // core's does. 0.07 of 0.27 is a 26% cost share — above the 10% mark
+        // threshold, below the 50% degrade threshold, so `~$0.27` still holds.
+        cost: { cost: 0.07, confidence: 'fallback' },
       },
     ];
     const agents = [{
@@ -2220,9 +5004,9 @@ describe('Herdr plugin commands', () => {
     assert.match(result.stdout, /model=claude-sonnet-4-6/);
     assert.match(result.stdout, /turns=1/);
     assert.match(result.stdout, /summary=sonnet-4-6, 5m, \$0\.12/);
-    assert.match(result.stdout, /ctx_bar=▁▁▁▂ 20%/);
+    assert.match(result.stdout, /ctx_bar=░{10}▂ +20%/);
     assert.match(result.stdout, /ctx_band=green/);
-    assert.match(result.stdout, /ctx_bar_green=▁▁▁▂ 20%/);
+    assert.match(result.stdout, /ctx_bar_green=░{10}▂ +20%/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_yellow ctx_bar_red/);
   });
 
@@ -2261,7 +5045,7 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=\?/);
     assert.match(result.stdout, /ctx_band=unknown/);
-    assert.match(result.stdout, /ctx_bar_unknown=▁▁▁▁ \?/);
+    assert.match(result.stdout, /ctx_bar_unknown=\?/);
     assert.match(result.stdout, /Clear: ctx_bar_green ctx_bar_yellow ctx_bar_red/);
   });
 
@@ -2446,9 +5230,9 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 1);
     assert.match(result.stdout, /summary=opus-5, 15m, \$0\.51/);
-    assert.match(result.stdout, /ctx_bar=▂▃▅▆ 80%/);
+    assert.match(result.stdout, /ctx_bar=░{7}▂▃▅▆ +80%↑/);
     assert.match(result.stdout, /ctx_band=yellow/);
-    assert.match(result.stdout, /ctx_bar_yellow=▂▃▅▆ 80%/);
+    assert.match(result.stdout, /ctx_bar_yellow=░{7}▂▃▅▆ +80%↑/);
     assert.doesNotMatch(result.stdout, /ctx_bar_red=/);
   });
 
@@ -2475,11 +5259,12 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 1);
     assert.match(result.stdout, /ctx=90%/);
     assert.match(result.stdout, /ctx_band=red/);
-    assert.match(result.stdout, /ctx_bar_red=▁▁▁█ 90% · full/);
+    assert.match(result.stdout, /ctx_bar_red=░+█ +90%/);
+    assert.doesNotMatch(result.stdout, /ctx_bar_red=.*…/);
     assert.match(result.stdout, /Clear: ctx_bar_unknown ctx_bar_green ctx_bar_yellow/);
   });
 
-  it('refresh-badges sizes ctx_bar by available sidebar columns', () => {
+  it('refresh-badges keeps ctx_bar viewport fixed as sidebar width changes', () => {
     const receivedAt = Date.now() - 20 * 60000;
     const usagePoints = [100, 200, 300, 400, 500, 600, 700, 800, 700, 600, 700, 800];
     const entries = usagePoints.map((tokens, i) => ({
@@ -2502,7 +5287,7 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '10',
     });
     assert.equal(narrow.status, 1);
-    assert.match(narrow.stdout, /ctx_bar=▆▆▆▅▆▆ 80%/);
+    assert.match(narrow.stdout, /ctx_bar=▅▆▆ +80%↑/);
 
     const wide = runScript('refresh-badges.js', [], {
       CCXRAY_HOME: home,
@@ -2511,7 +5296,8 @@ describe('Herdr plugin commands', () => {
       CCXRAY_HERDR_SIDEBAR_COLS: '36',
     });
     assert.equal(wide.status, 1);
-    assert.match(wide.stdout, /ctx_bar=▂▂▃▃▅▅▆▆▆▅▆▆ 80% · near full/);
+    assert.match(wide.stdout, /ctx_bar=░{17}▂▂▃▃▅▅▆▆▆▅▆▆ +80%↑/);
+    assert.doesNotMatch(wide.stdout, /ctx_bar=.*…/);
   });
 
   it('launch-agent can produce a stable new-tab plan without side effects', () => {
@@ -2527,9 +5313,12 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const plan = JSON.parse(result.stdout);
     assert.equal(plan.agent, 'codex');
-    assert.deepEqual(plan.open.slice(0, 4), ['tab', 'create', '--workspace', 'w1']);
-    assert.ok(plan.open.includes('--focus'));
     assert.equal(plan.cwd, '/work/demo');
+    assert.equal(plan.workspaceId, 'w1');
+    // Plan must include proxy routing info without actually starting a proxy.
+    assert.ok(plan.port > 0);
+    assert.ok(plan.envVars);
+    assert.ok(plan.codexArgs);
   });
 
   it('launch-agent refuses to start an agent inside the plugin checkout', () => {
@@ -2548,23 +5337,28 @@ describe('Herdr plugin commands', () => {
     assert.doesNotMatch(result.stdout, /plugins[/\\]herdr/);
   });
 
-  // `herdr pane run` timing out is not the same as failing: herdr may already
-  // have started the command. Forgetting the routed record on an unknown outcome
-  // is the harmful choice — if the pane did start, its badge never recognises it.
-  it('launch-agent keeps the routed record when pane run times out', () => {
+  // The detected path. Its name used to claim it covered a FAILED detection
+  // while the mock returned `agent_started`, so it asserted nothing about the
+  // failure it named — and the code did not in fact keep the record there. The
+  // real failure case is pinned in 'codex round 2 fixes'.
+  it('launch-agent records the routed pane on a detected launch', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-slowrun-'));
     const bin = path.join(dir, 'herdr');
     const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
+    const agentOk = JSON.stringify({ id: 'a', result: { type: 'agent_started', agent: { agent: 'codex', pane_id: 'w1:p7' } } });
     fs.writeFileSync(bin, [
       '#!/usr/bin/env node',
-      // `pane run` answers far slower than launch-agent's 3s budget, then succeeds.
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      '  const until = Date.now() + 6000; while (Date.now() < until) {}',
-      "  process.stdout.write('{}\\n'); process.exit(0);",
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'start') {",
+      `  process.stdout.write(${JSON.stringify(agentOk + '\\n')});`,
+      '  process.exit(0);',
       '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      "if (process.argv[2] === 'pane') {",
+      `  process.stdout.write(${JSON.stringify(opened + '\\n')});`,
+      '  process.exit(0);',
+      '}',
+      `process.stdout.write(${JSON.stringify(opened + '\\n')});`,
       '',
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
@@ -2575,13 +5369,13 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
     });
     const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p7')}.json`);
-    assert.ok(fs.existsSync(routed), 'an unconfirmed launch must stay routed, not be forgotten');
-    assert.match(result.stderr, /could not confirm/i);
+    assert.ok(fs.existsSync(routed), 'a detected launch must stay routed');
   });
 
-  it('launch-agent forgets the routed record when pane run genuinely fails', () => {
+  it('launch-agent exits non-zero when herdr agent start fails to detect', () => {
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-failrun-'));
@@ -2589,10 +5383,10 @@ describe('Herdr plugin commands', () => {
     const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p8' }, tab: { tab_id: 'w1:t2' } } });
     fs.writeFileSync(bin, [
       '#!/usr/bin/env node',
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      "  process.stderr.write('no such pane\\n'); process.exit(1);",
+      "if (process.argv[2] === 'agent' && process.argv[3] === 'start') {",
+      "  process.stderr.write('agent not detected\\n'); process.exit(1);",
       '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
+      `process.stdout.write(${JSON.stringify(opened + '\\n')});`,
       '',
     ].join('\n'));
     fs.chmodSync(bin, 0o755);
@@ -2603,9 +5397,8 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
       HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
     });
-    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p8')}.json`);
-    assert.equal(fs.existsSync(routed), false, 'a refused launch must not stay routed');
     assert.equal(result.status, 1);
   });
 
@@ -2629,7 +5422,7 @@ describe('Herdr plugin commands', () => {
       }),
       HERDR_BIN_PATH: bin,
     });
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, `stderr: ${result.stderr}`);
     assert.equal(JSON.parse(result.stdout).cwd, project);
   });
 
@@ -2663,6 +5456,25 @@ describe('Herdr plugin commands', () => {
     assert.equal(parsed.pid, null);
     const plain = parseStatus('No hub running.\n');
     assert.deepEqual(plain.notes, []);
+  });
+
+  // E2 retro: herdr CLI puts error JSON on stderr. runCommand.parsed must
+  // merge both streams so callers don't silently get null on failure.
+  it('runCommand exposes parsed JSON from stdout and stderr', () => {
+    const { runHerdr } = require('../plugins/herdr/bin/lib/ccxray');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-parsed-'));
+    const bin = path.join(dir, 'herdr');
+    // Success on stdout
+    fs.writeFileSync(bin, '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({result:{ok:true}})+"\\n");\n');
+    fs.chmodSync(bin, 0o755);
+    const ok = runHerdr(['test'], { env: { ...process.env, HERDR_BIN_PATH: bin } });
+    assert.deepEqual(ok.parsed?.result, { ok: true });
+
+    // Error on stderr (the E2 pattern)
+    fs.writeFileSync(bin, '#!/usr/bin/env node\nprocess.stderr.write(JSON.stringify({error:{code:"agent_pane_busy"}})+"\\n");process.exit(1);\n');
+    fs.chmodSync(bin, 0o755);
+    const err = runHerdr(['test'], { env: { ...process.env, HERDR_BIN_PATH: bin } });
+    assert.equal(err.parsed?.error?.code, 'agent_pane_busy');
   });
 
   // #555 port escape hatch: PROXY_PORT must travel launch-agent → pane runner
@@ -2704,38 +5516,60 @@ describe('Herdr plugin commands', () => {
       PROXY_PORT: '5678',
     });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).proxyPort, 5678);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.port, 5678);
+    assert.ok(plan.envVars);
   });
 
-  it('launch-agent threads PROXY_PORT into the pane runner command', () => {
-    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-project-'));
-    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-routed-'));
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-portrun-'));
-    const bin = path.join(dir, 'herdr');
-    const log = path.join(dir, 'args.log');
-    const opened = JSON.stringify({ id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p7' }, tab: { tab_id: 'w1:t2' } } });
-    fs.writeFileSync(bin, [
-      '#!/usr/bin/env node',
-      `require('fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
-      "if (process.argv[2] === 'pane' && process.argv[3] === 'run') {",
-      "  process.stdout.write('{}\\n'); process.exit(0);",
-      '}',
-      `process.stdout.write(${JSON.stringify(opened + '\n')});`,
-      '',
-    ].join('\n'));
-    fs.chmodSync(bin, 0o755);
-
-    const result = runScript('launch-agent.js', ['codex'], {
+  it('launch-agent uses PROXY_PORT for the proxy env vars', () => {
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
       HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
-        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+        focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
       }),
-      HERDR_BIN_PATH: bin,
-      HERDR_PLUGIN_STATE_DIR: stateDir,
       PROXY_PORT: '5678',
     });
     assert.equal(result.status, 0, result.stderr);
-    const calls = fs.readFileSync(log, 'utf8');
-    assert.match(calls, /pane run w1:p7 .*run-agent\.js codex w1:p7 .*--proxy-port=5678/);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.envVars.ANTHROPIC_BASE_URL, 'http://localhost:5678');
+  });
+
+  // The launch stamp must carry the workspace id, because the reader side
+  // (filterEntriesToWorkspace) treats any `herdr:`-prefixed agentId as already
+  // attributed and keeps it only under `herdr:<workspaceId>:`. A workspace-less
+  // stamp is DROPPED rather than recovered by cwd, so Quick Start's session
+  // count stays 0 and Mission Control reports the pane unlinked.
+  it('launch-agent stamps the workspace id into the pane identity header', () => {
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      PROXY_PORT: '5678',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const plan = JSON.parse(result.stdout);
+    assert.match(plan.launchToken, /^w1:herdr-/, 'token starts with the workspace id');
+    assert.equal(
+      plan.envVars.ANTHROPIC_CUSTOM_HEADERS,
+      `X-Ccxray-Agent-Id: herdr:${plan.launchToken}`,
+      '--plan must report the header a real launch injects',
+    );
+
+    // The reader side keeps it. This is the assertion the old shape failed.
+    const { filterEntriesToWorkspace } = require('../plugins/herdr/bin/lib/ccxray');
+    const stamped = { sessionId: 's1', cwd: '/work/demo', agentId: `herdr:${plan.launchToken}` };
+    const kept = filterEntriesToWorkspace([stamped], pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/demo' }),
+    })).entries;
+    assert.equal(kept.length, 1, 'a workspace-stamped launch id survives the workspace filter');
+
+    // ...and the pre-fix shape does not, which is why this test exists.
+    const legacy = { sessionId: 's1', cwd: '/work/demo', agentId: 'herdr:herdr-m9x' };
+    const keptLegacy = filterEntriesToWorkspace([legacy], pluginEnv({
+      HERDR_WORKSPACE_ID: 'w1',
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({ workspace_id: 'w1', workspace_cwd: '/work/demo' }),
+    })).entries;
+    assert.equal(keptLegacy.length, 0, 'workspace-less herdr: ids are dropped, not cwd-recovered');
   });
 
   it('launch-agent rejects an invalid PROXY_PORT before creating any pane', () => {
@@ -2861,13 +5695,134 @@ describe('Herdr plugin commands', () => {
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
     assert.match(config, /\[ui\.sidebar\.agents\]/);
-    assert.match(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
+    // Row 3 replaced $summary: every field the one-line summary carried now has
+    // an owning row, so a fresh install must not write it back.
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    assert.doesNotMatch(config, /\$summary/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
     assert.match(result.stdout, /backup:/);
+  });
+
+  // FAIL-ON-OLD: defining `rows` replaces Herdr's built-in spaces rows, so a
+  // fresh section must carry those defaults before the plugin's row.
+  it('install-sidebar-summary keeps Herdr default spaces rows on a fresh section', () => {
+    const dir = tempDir('herdr-spaces-config-');
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const result = runScript('install-sidebar-summary.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    const spaces = config.slice(config.indexOf('[ui.sidebar.spaces]'));
+    assert.match(spaces, /\n  \["state_icon", "workspace"\],\n  \["branch", "git_status"\],\n  \[\{ token = "\$xray", fg = "#a6e3a1" \}\],/);
+  });
+
+  // A section the previous installer wrote carries only the $xray row and hides
+  // the workspace names. Reinstall must upgrade exactly that marker-owned shape,
+  // stay idempotent, and removal must still take the whole plugin-owned table.
+  it('install-sidebar-summary upgrades the previous installer\'s spaces section', () => {
+    const dir = tempDir('herdr-spaces-legacy-config-');
+    const configPath = path.join(dir, 'config.toml');
+    const legacy = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, legacy);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const upgraded = fs.readFileSync(configPath, 'utf8');
+    assert.match(upgraded, /\n  \["state_icon", "workspace"\],\n  \["branch", "git_status"\],\n  \[\{ token = "\$xray", fg = "#a6e3a1" \}\],/);
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), upgraded);
+
+    assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
+    assert.doesNotMatch(fs.readFileSync(configPath, 'utf8'), /\[ui\.sidebar\.spaces\]/);
+  });
+
+  it('install-sidebar-summary leaves a spaces section whose marker is elsewhere', () => {
+    const dir = tempDir('herdr-spaces-stale-marker-');
+    const configPath = path.join(dir, 'config.toml');
+    const misplaced = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, misplaced);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    const spaces = after.slice(after.indexOf('[ui.sidebar.spaces]'));
+    assert.doesNotMatch(spaces, /\["state_icon", "workspace"\]/);
+  });
+
+  it('remove-sidebar-summary keeps a default-shaped user table under a stale marker', () => {
+    const dir = tempDir('herdr-spaces-stale-marker-remove-');
+    const configPath = path.join(dir, 'config.toml');
+    const misplaced = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["state_icon", "workspace"],',
+      '  ["branch", "git_status"],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, misplaced);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.match(after, /\[terminal\]/);
+    assert.match(after, /\[ui\.sidebar\.spaces\]/);
+    assert.match(after, /\["state_icon", "workspace"\]/);
+  });
+
+  it('install-sidebar-summary keeps a user-extended legacy spaces section', () => {
+    const dir = tempDir('herdr-spaces-legacy-extended-');
+    const configPath = path.join(dir, 'config.toml');
+    const extended = [
+      '# ccxray workspace observability row (managed by the ccxray Herdr plugin)',
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  [{ token = "$xray", fg = "#a6e3a1" }],',
+      '  ["cwd"],',
+      ']',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, extended);
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
+    const after = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(after, /\["state_icon", "workspace"\]/);
+    assert.match(after, /\["cwd"\]/);
   });
 
   // remove-sidebar-summary restores its backup when `herdr config check` rejects
@@ -2938,7 +5893,7 @@ describe('Herdr plugin commands', () => {
 
     const install = runScript('install-sidebar-summary.js', [], env);
     assert.equal(install.status, 0, install.stderr);
-    assert.match(fs.readFileSync(configPath, 'utf8'), /\$summary/);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /\$facts/);
     assert.equal(fs.existsSync(path.join(home, '.config', 'herdr', 'config.toml')), false);
 
     const quickStart = runScript('onboarding.js', ['--once'], {
@@ -2967,13 +5922,21 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    // The old installer could only APPEND, so this config came back with the new
+    // rows stacked on the old ones and rendered MORE duplication. The $summary
+    // row is now removed, which is the whole point of the migration.
+    assert.doesNotMatch(config, /\$summary/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
-    assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
+    // `$summary` identifies the previous plugin contract, so its old default
+    // `["agent"]` row is migrated along with that contract.
+    assert.doesNotMatch(config, /\["agent"\]/);
+    assert.match(result.stdout, /superseded row removed: \$summary/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('install-sidebar-summary upgrades the uncolored ctx_bar row to color rows', () => {
@@ -2999,7 +5962,7 @@ describe('Herdr plugin commands', () => {
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
     assert.doesNotMatch(config, /token\s*=\s*"\$ctx_bar"/);
-    assert.match(result.stdout, /updated sidebar summary rows/);
+    assert.match(result.stdout, /migrated sidebar summary rows/);
   });
 
   it('remove-sidebar-summary removes only ccxray rows and keeps the Herdr layout valid', () => {
@@ -3069,15 +6032,51 @@ describe('Herdr plugin commands', () => {
     });
     assert.equal(result.status, 0, result.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
+    assert.match(config, /\$alert/);
     assert.match(config, /\$ctx_bar_unknown/);
     assert.match(config, /\$ctx_bar_green/);
     assert.match(config, /\$ctx_bar_yellow/);
     assert.match(config, /\$ctx_bar_red/);
+    // No marker → legacy-looking rows are treated as user's own.
     assert.match(config, /\["state_icon", "workspace", "tab"\]/);
     assert.match(config, /\["agent"\]/);
     assert.match(config, /\[terminal\]/);
     assert.equal(config.match(/\[ui\.sidebar\.agents\]/g).length, 1);
+  });
+
+  it('keeps user-owned spaces rows append-only across install and remove', () => {
+    const dir = tempDir('herdr-spaces-user-config-');
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[ui.sidebar.spaces]',
+      'row_gap = 0',
+      'rows = [',
+      '  ["cwd"],',
+      ']',
+      '',
+      '[terminal]',
+      'new_cwd = "follow"',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+
+    const installed = runScript('install-sidebar-summary.js', [], env);
+    assert.equal(installed.status, 0, installed.stderr);
+    const afterInstall = fs.readFileSync(configPath, 'utf8');
+    const spacesAfterInstall = afterInstall.slice(afterInstall.indexOf('[ui.sidebar.spaces]'));
+    assert.match(spacesAfterInstall, /\["cwd"\]/);
+    assert.match(spacesAfterInstall, /\$xray/);
+    assert.doesNotMatch(spacesAfterInstall, /\["state_icon", "workspace"\]/);
+    assert.doesNotMatch(spacesAfterInstall, /\["branch", "git_status"\]/);
+
+    const removed = runScript('remove-sidebar-summary.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    const afterRemove = fs.readFileSync(configPath, 'utf8');
+    assert.match(afterRemove, /\[ui\.sidebar\.spaces\]/);
+    assert.match(afterRemove, /\["cwd"\]/);
+    assert.doesNotMatch(afterRemove, /\$xray/);
+    assert.match(afterRemove, /\[terminal\]/);
   });
 
   it('sidebar summary survives a remove and install round trip', () => {
@@ -3106,10 +6105,153 @@ describe('Herdr plugin commands', () => {
     const reinstalled = runScript('install-sidebar-summary.js', [], env);
     assert.equal(reinstalled.status, 0, reinstalled.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
-    assert.match(config, /\$summary/);
+    assert.match(config, /\$facts/);
     assert.match(config, /\$ctx_bar_red/);
+    // No marker: `["agent"]` is treated as user's own and survives both
+    // removal and reinstall.
     assert.match(config, /\["agent"\]/);
-    assert.equal(config.match(/\$summary/g).length, 1);
+    // One row each: a reinstall must not stack a second copy, which is the
+    // add-only behaviour the migration replaced.
+    assert.equal(config.match(/\$facts/g).length, 1);
+    assert.equal(config.match(/\$alert/g).length, 1);
+  });
+
+  // Herdr's manifest cannot declare keybindings, so a plugin either documents a
+  // snippet or writes it. These cover the write: it must be idempotent, must
+  // never take a key the user already bound, and must remove exactly what it
+  // added.
+  it('install-keybindings adds both bindings with a backup', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\nshow_agent_labels_on_pane_borders = true\n');
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /key = "prefix\+m"/);
+    assert.match(config, /key = "prefix\+shift\+m"/);
+    assert.match(config, /command = "ccxray\.herdr\.mission-control"/);
+    assert.match(config, /command = "ccxray\.herdr\.quick-start"/);
+    assert.match(config, /type = "plugin_action"/);
+    assert.match(config, /show_agent_labels_on_pane_borders/, 'must not clobber existing config');
+    assert.match(result.stdout, /backup:/);
+  });
+
+  it('install-keybindings is idempotent', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '');
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    assert.equal(runScript('install-keybindings.js', [], env).status, 0);
+    const first = fs.readFileSync(configPath, 'utf8');
+    const second = runScript('install-keybindings.js', [], env);
+    assert.equal(second.status, 0, second.stderr);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), first);
+    assert.match(second.stdout, /already installed/);
+  });
+
+  // Silently rebinding a key the user chose is worse than not installing: the
+  // keypress they rely on would start doing something else with no message.
+  it('install-keybindings refuses a key the user already bound elsewhere', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    const original = [
+      '[[keys.command]]',
+      'key = "prefix+m"',
+      'type = "plugin_action"',
+      'command = "someone.else.thing"',
+      '',
+    ].join('\n');
+    fs.writeFileSync(configPath, original);
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.match(config, /command = "someone\.else\.thing"/);
+    assert.equal(config.match(/key = "prefix\+m"/g).length, 1);
+    assert.match(result.stderr, /already bound/);
+    assert.match(result.stderr, /CCXRAY_HERDR_KEY_MISSION/);
+    // The free key still installs; only the taken one is skipped.
+    assert.match(config, /command = "ccxray\.herdr\.quick-start"/);
+
+    // A partial install exits 0 (something WAS written) and names only what it
+    // wrote on stdout. Quick Start must surface the stderr conflict alongside
+    // it, or the row reports plain success while a key was skipped.
+    assert.equal(result.status, 0, 'a partial install is not a failure');
+    assert.match(result.stdout, /quick-start|prefix\+shift\+m/);
+    assert.doesNotMatch(result.stdout, /prefix\+m →/, 'must not claim the skipped key');
+  });
+
+  // A PARTIAL install must keep offering install. Keying the row's action on
+  // `any` made Enter remove the one binding that had succeeded, so the missing
+  // one could never be added from the TUI.
+  it('Quick Start still offers install when only one keybinding is present', () => {
+    const { menuItems } = require('../plugins/herdr/bin/onboarding');
+    const state = {
+      ccxrayReady: true, hubRunning: true, sessions: 1, sidebar: true, providers: [],
+      keys: { mission: null, quickStart: 'prefix+shift+m', any: true },
+    };
+    const row = menuItems(state).find(item => item.id === 'keybindings');
+    assert.ok(row, 'the keybindings row exists');
+    assert.match(row.detail, /Enter install/, 'partial state must offer install, not remove');
+    assert.match(row.detail, /1 of 2/, 'and say that it is partial');
+
+    const bothBound = menuItems({
+      ...state,
+      keys: { mission: 'prefix+m', quickStart: 'prefix+shift+m', any: true },
+    }).find(item => item.id === 'keybindings');
+    assert.match(bothBound.detail, /Enter remove/, 'only a complete install offers remove');
+  });
+
+  it('install-keybindings honours a key override', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '');
+    const result = runScript('install-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+      CCXRAY_HERDR_KEY_MISSION: 'prefix+alt+i',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(fs.readFileSync(configPath, 'utf8'), /key = "prefix\+alt\+i"/);
+  });
+
+  it('remove-keybindings removes only ccxray bindings', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, [
+      '[[keys.command]]',
+      'key = "prefix+u"',
+      'type = "plugin_action"',
+      'command = "someone.else.thing"',
+      '',
+    ].join('\n'));
+    const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
+    assert.equal(runScript('install-keybindings.js', [], env).status, 0);
+
+    const removed = runScript('remove-keybindings.js', [], env);
+    assert.equal(removed.status, 0, removed.stderr);
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.doesNotMatch(config, /ccxray\.herdr\./);
+    assert.doesNotMatch(config, /ccxray keybindings \(managed/);
+    assert.match(config, /command = "someone\.else\.thing"/);
+    assert.match(config, /key = "prefix\+u"/);
+  });
+
+  it('remove-keybindings reports when nothing is installed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-herdr-keys-'));
+    const configPath = path.join(dir, 'config.toml');
+    fs.writeFileSync(configPath, '[ui]\n');
+    const result = runScript('remove-keybindings.js', [], {
+      HERDR_CONFIG_PATH: configPath,
+      CCXRAY_HERDR_SKIP_RELOAD: '1',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /not installed/);
+    assert.equal(fs.readFileSync(configPath, 'utf8'), '[ui]\n');
   });
 
   it('remove-sidebar-summary drops the whole table when the plugin created it', () => {
@@ -3119,12 +6261,17 @@ describe('Herdr plugin commands', () => {
     const env = { HERDR_CONFIG_PATH: configPath, CCXRAY_HERDR_SKIP_RELOAD: '1' };
 
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
-    assert.match(fs.readFileSync(configPath, 'utf8'), /\[ui\.sidebar\.agents\]/);
+    const installed = fs.readFileSync(configPath, 'utf8');
+    assert.match(installed, /\[ui\.sidebar\.agents\]/);
+    assert.match(installed, /\["state_icon", "workspace"\]/);
+    assert.match(installed, /\["branch", "git_status"\]/);
+    assert.match(installed, /\$xray/);
 
     const removed = runScript('remove-sidebar-summary.js', [], env);
     assert.equal(removed.status, 0, removed.stderr);
     const config = fs.readFileSync(configPath, 'utf8');
     assert.doesNotMatch(config, /\[ui\.sidebar\.agents\]/);
+    assert.doesNotMatch(config, /\[ui\.sidebar\.spaces\]/);
     assert.doesNotMatch(config, /ccxray sidebar summary rows/);
     assert.match(config, /show_agent_labels_on_pane_borders = true/);
   });
@@ -3137,7 +6284,8 @@ describe('Herdr plugin commands', () => {
     assert.equal(runScript('install-sidebar-summary.js', [], env).status, 0);
 
     const extended = fs.readFileSync(configPath, 'utf8')
-      .replace('  ["agent"],', '  ["agent"],\n  ["cwd"],');
+      .replace('  ["state_icon", { token = "$who", fg = "#cdd6f4" }],',
+        '  ["state_icon", { token = "$who", fg = "#cdd6f4" }],\n  ["cwd"],');
     fs.writeFileSync(configPath, extended);
 
     assert.equal(runScript('remove-sidebar-summary.js', [], env).status, 0);
@@ -3332,6 +6480,383 @@ describe('audit: sessionSummaryDetails call sites pin CCXRAY_IMPORT_HOMES', () =
       assert.ok(span.includes('CCXRAY_IMPORT_HOMES'),
         `sessionSummaryDetails call sets CCXRAY_HOME without pinning CCXRAY_IMPORT_HOMES `
         + `(stats the developer's real transcripts):\n${span.slice(0, 200)}`);
+      if (span.includes("agent: 'codex'") || span.includes('agent: "codex"')) {
+        assert.ok(span.includes('CCXRAY_IMPORT_CODEX_HOMES'),
+          `Codex sessionSummaryDetails call does not pin CCXRAY_IMPORT_CODEX_HOMES `
+          + `(scans the developer's real Codex session dates):\n${span.slice(0, 200)}`);
+      }
     }
+  });
+});
+
+describe('codex round 2 fixes', () => {
+  const TOKEN = 'GMe19yT9nI3t6-8mYyCbTgCJJmUZlP3YPcfgDAVgZrY';
+  // A fake `ccxray` that answers `secret upstream`. sh, not node: these mocks
+  // are spawned inside the plugin's tight per-call budget.
+  const fakeCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-secret-'));
+    const bin = path.join(dir, 'ccxray');
+    fs.writeFileSync(bin, `#!/bin/sh\nif [ "$1" = "secret" ]; then echo "${TOKEN}"; exit 0; fi\nexit 1\n`);
+    fs.chmodSync(bin, 0o755);
+    return bin;
+  };
+
+  // `--env KEY=VALUE` on `herdr tab create` OVERRIDES the inherited variable, so
+  // assigning our headers dropped the user's. providers.js prepends on its own
+  // line; so must we.
+  it('keeps the user own ANTHROPIC_CUSTOM_HEADERS when adding its own', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    const vars = proxyEnvVars('claude', 5577, {
+      paneId: 'w1:p1',
+      skipAuth: true,
+      env: pluginEnv({ ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo' }),
+    });
+    assert.equal(vars.ANTHROPIC_CUSTOM_HEADERS,
+      'X-Existing: foo\nX-Ccxray-Agent-Id: herdr:w1:p1',
+      'the user header survives as a separate Claude Code header line');
+  });
+
+  it('injects X-Ccxray-Auth into a claude launch', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    const vars = proxyEnvVars('claude', 5577, {
+      paneId: 'w1:p1',
+      env: pluginEnv({
+        CCXRAY_BIN: fakeCcxray(),
+        ANTHROPIC_CUSTOM_HEADERS: 'X-Existing: foo',
+      }),
+    });
+    assert.deepEqual(vars.ANTHROPIC_CUSTOM_HEADERS.split(/\r?\n/), [
+      'X-Existing: foo',
+      'X-Ccxray-Agent-Id: herdr:w1:p1',
+      `X-Ccxray-Auth: ${TOKEN}`,
+    ], 'Herdr headers stay separate for Claude Code parsing and gated auth');
+  });
+
+  // Codex carries the credential in a model_providers block, not a header env
+  // var — the shape server/providers.js uses, including its OPENAI_API_KEY gate.
+  it('routes codex through a model_providers block carrying X-Ccxray-Auth', () => {
+    const { codexAgentArgs } = require('../plugins/herdr/bin/lib/ccxray');
+    const withKey = codexAgentArgs(5577, {
+      env: pluginEnv({ CCXRAY_BIN: fakeCcxray(), OPENAI_API_KEY: 'sk-test' }),
+    });
+    assert.ok(withKey.some(a => a.includes(`http_headers={"X-Ccxray-Auth"="${TOKEN}"}`)),
+      'an API-key codex launch must carry the credential');
+    assert.ok(withKey.includes('model_provider="ccxray"'));
+
+    // ChatGPT-OAuth mode (no OPENAI_API_KEY) resolves its provider differently,
+    // so the legacy base-url form stays the fallback — same as providers.js.
+    const noKey = codexAgentArgs(5577, { env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }) });
+    assert.ok(noKey.some(a => a.startsWith('openai_base_url=')), 'legacy fallback');
+    assert.ok(!noKey.some(a => a.includes('X-Ccxray-Auth')));
+  });
+
+  // `--agent` was sent and never compared, so a changed agent on identical
+  // tokens was skipped and Herdr kept the stale one.
+  it('re-writes pane metadata when only the agent changed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-agentchg-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      result: { pane: { pane_id: 'w1:p1', agent: 'claude', tokens: { ctx: '9%' }, state_labels: {}, scroll: {} } },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const env = pluginEnv({
+      HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-agentchg-state-')),
+    });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+
+    // Same agent as the pane reports, identical tokens → nothing moved.
+    const same = reportPaneTokens({ ctx: '9%' }, { env, agent: 'claude' });
+    assert.equal(same.skipped, 'unchanged', 'an unchanged agent must still skip');
+    assert.equal(writes(), 0);
+    // A different agent with the same tokens must NOT be skipped.
+    reportPaneTokens({ ctx: '9%' }, { env, agent: 'codex' });
+    assert.equal(writes(), 1, 'a changed agent must reach Herdr');
+  });
+
+  // `[[keys.command]] # comment` is legal TOML. Missing it made the installer
+  // believe the key was free and append a colliding duplicate.
+  it('sees an existing binding whose header carries a TOML comment', () => {
+    const { addBindings, boundKeyFor } = require('../plugins/herdr/bin/lib/keybindings');
+    const config = [
+      '[[keys.command]] # my own binding',
+      'key = "prefix+m"',
+      'command = "workspace.switch"',
+      '',
+    ].join('\n');
+    assert.equal(boundKeyFor(config, 'workspace.switch'), 'prefix+m',
+      'the commented block must parse');
+    const result = addBindings(config, [
+      { key: 'prefix+m', command: 'plugin.ccxray.mission-control', description: 'x' },
+    ]);
+    assert.equal(result.added.length, 0, 'must not append a duplicate prefix+m');
+    assert.equal(result.conflicts.length, 1, 'the collision must be reported');
+    assert.equal(result.conflicts[0].boundTo, 'workspace.switch');
+  });
+
+  // Detection timing out does not mean nothing started, so the routed record —
+  // the only thing that links this pane's traffic to it — must survive.
+  it('keeps the routed record when herdr agent start never detects', () => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-project-'));
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-routed-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r2-failrun-'));
+    const bin = path.join(dir, 'herdr');
+    const opened = JSON.stringify({
+      id: 't', result: { type: 'tab_created', root_pane: { pane_id: 'w1:p9' }, tab: { tab_id: 'w1:t2' } },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh',
+      'if [ "$1" = "agent" ] && [ "$2" = "start" ]; then',
+      '  echo "agent not detected" 1>&2; exit 1',
+      'fi',
+      "cat <<'O_EOF'", opened, 'O_EOF',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const result = runScript('launch-agent.js', ['codex'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1', focused_pane_cwd: project, workspace_id: 'w1', tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: stateDir,
+      PROXY_PORT: '9999',
+    });
+    assert.equal(result.status, 1, 'an undetected agent is still a failed launch');
+    const routed = path.join(stateDir, 'routed-panes-v1', `${encodeURIComponent('w1:p9')}.json`);
+    assert.ok(fs.existsSync(routed),
+      'the pane already carries the identity header, so its record must survive');
+  });
+
+  // INVARIANT(ADR 0017): the fallback badge renders an aggregate, so it needs
+  // the fold. usage.js emitted none, so a wholly fallback-priced session
+  // printed a clean number indistinguishable from an exact one.
+  it('marks a fallback-priced session on the usage fallback path', () => {
+    const { sessionSummaryDetails } = require('../plugins/herdr/bin/lib/ccxray');
+    const data = {
+      sessions: {
+        topSessions: [{
+          sessionId: 'fb-1', turns: 4, cost: 2, durationMin: 10, model: 'claude-opus-5',
+          costAgg: { count: 4, fallbackCount: 4, fallbackCost: 2, unknownCount: 0 },
+        }],
+      },
+      meta: { totalCost: 2, totalEntries: 4 },
+    };
+    const badge = sessionSummaryDetails(data, {
+      env: pluginEnv({ CCXRAY_HOME: makeHome([]), CCXRAY_IMPORT_HOMES: NO_TRANSCRIPTS }),
+      cwd: '/work/nowhere',
+    });
+    assert.match(badge.costText, /~/, 'an all-fallback total must carry the marker');
+  });
+
+  it('server/usage.js emits the confidence fold beside every top-session cost', () => {
+    const { analyze } = require('../server/usage.js');
+    const base = {
+      sessionId: 's-fold', model: 'claude-opus-5', provider: 'anthropic',
+      receivedAt: 1787000000000, usage: { input_tokens: 10, output_tokens: 1 },
+    };
+    const summary = analyze([
+      { ...base, id: 'f1', cost: { cost: 1, confidence: 'fallback' } },
+      { ...base, id: 'f2', cost: { cost: null, confidence: 'unknown' } },
+      { ...base, id: 'f3', cost: { cost: 1, confidence: 'exact' } },
+    ]);
+    const top = summary.sessions.topSessions.find(s => s.sessionId === 's-fold');
+    assert.ok(top, 'the session must be in topSessions');
+    assert.deepEqual(top.costAgg,
+      { count: 3, fallbackCount: 1, fallbackCost: 1, unknownCount: 1 },
+      'a consumer cannot re-derive this — it cannot see the turns');
+  });
+
+  // Every keybinding test sets CCXRAY_HERDR_SKIP_RELOAD=1, which returns before
+  // `config check`, so the restore-on-reject path had no coverage at all.
+  it('restores the user config when Herdr rejects the written one', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-reject-'));
+    const configPath = path.join(dir, 'herdr.toml');
+    const original = '# the user own config\n[[keys.command]]\nkey = "prefix+z"\ncommand = "mine"\n';
+    fs.writeFileSync(configPath, original);
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    // Rejects `config check`; anything else succeeds.
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$1" = "config" ] && [ "$2" = "check" ]; then',
+      '  echo "invalid keybinding" 1>&2; exit 1',
+      'fi',
+      'echo "{}"',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+
+    const { writeConfigAndReload } = require('../plugins/herdr/bin/lib/ccxray');
+    const status = writeConfigAndReload(configPath, original, `${original}\n[[keys.command]]\nkey = "bad"\n`, {
+      env: pluginEnv({ HERDR_BIN_PATH: bin }),
+    });
+    // Assert the FAKE was reached, not just that a restore happened: with the
+    // pre-fix code (env never passed to runHerdr) the real herdr ran instead,
+    // and on a machine where it is missing or its own config is invalid the
+    // check also fails, the file is also restored, and both assertions below
+    // pass for entirely the wrong reason.
+    assert.ok(fs.existsSync(log), 'HERDR_BIN_PATH must be the binary that ran');
+    assert.match(fs.readFileSync(log, 'utf8'), /config check/,
+      'the injected herdr must be the one asked to validate');
+    assert.equal(status, 1, 'a rejected config must not report success');
+    assert.equal(fs.readFileSync(configPath, 'utf8'), original,
+      'the user config must be byte-identical after a rejection');
+  });
+});
+
+describe('codex round 3 fixes', () => {
+  const TOKEN = 'GMe19yT9nI3t6-8mYyCbTgCJJmUZlP3YPcfgDAVgZrY';
+  // Records every invocation so a test can assert a lookup did NOT happen.
+  const recordingCcxray = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-secret-'));
+    const bin = path.join(dir, 'ccxray');
+    const log = path.join(dir, 'calls.log');
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$1" = "secret" ]; then', `echo "${TOKEN}"`, 'exit 0', 'fi', 'exit 1',
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    return { bin, log, calls: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '') };
+  };
+
+  // `contextPercents` DROPS turns with no usage, so the last finite percentage
+  // can belong to an older turn. The badge reads the latest anchored turn
+  // directly and shows `?`; Mission Control reported the stale number.
+  it('reports no ctx% when the latest main turn carries no usage', () => {
+    const base = {
+      sessionId: 's-nousage', provider: 'anthropic', cwd: '/work/nousage',
+      agentId: 'herdr:w1:p1', agentKey: 'orchestrator', isSubagent: false,
+      model: 'claude-opus-5', maxContext: 200000, cost: { cost: 0.01, confidence: 'exact' },
+    };
+    const home = makeHome([
+      { ...base, id: 'n1', responseId: 'msg_n1', receivedAt: 1787000001000, usage: { input_tokens: 2000, output_tokens: 10 } },
+      // Latest main turn, no usage at all — a real shape for an errored turn.
+      { ...base, id: 'n2', responseId: 'msg_n2', receivedAt: 1787000002000 },
+    ]);
+    const env = pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: '1787000003000' });
+    const { sessionSummaryDetails, missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+
+    const badge = sessionSummaryDetails({}, { env, paneId: 'w1:p1', cwd: '/work/nousage' });
+    const snapshot = missionControlSnapshot({
+      env,
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(badge.ctxPct, null, 'the badge cannot know this turn context');
+    assert.equal(snapshot.rows[0].ctxPct, null,
+      'Mission Control must not substitute an older turn percentage');
+  });
+
+  // The comparison set must cover every non-token arg report-metadata accepts.
+  // `title` and `display_agent` are absent from `pane get` until set, which is
+  // why one reading of an unset pane looked like herdr reported neither.
+  it('re-writes pane metadata when only the title or display agent changed', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-meta-'));
+    const bin = path.join(dir, 'herdr');
+    const log = path.join(dir, 'calls.log');
+    const pane = JSON.stringify({
+      result: {
+        pane: {
+          pane_id: 'w1:p1', agent: 'claude', title: 'old title',
+          display_agent: 'Claude Code', tokens: { ctx: '9%' }, state_labels: {}, scroll: {},
+        },
+      },
+    });
+    fs.writeFileSync(bin, [
+      '#!/bin/sh', `echo "$@" >> "${log}"`,
+      'if [ "$2" = "get" ]; then', "cat <<'P_EOF'", pane, 'P_EOF', 'exit 0', 'fi',
+      "echo '{\"result\":{\"ok\":true}}'",
+    ].join('\n'));
+    fs.chmodSync(bin, 0o755);
+    const env = pluginEnv({
+      HERDR_PANE_ID: 'w1:p1', HERDR_BIN_PATH: bin,
+      HERDR_PLUGIN_STATE_DIR: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-meta-state-')),
+    });
+    const { reportPaneTokens } = require('../plugins/herdr/bin/lib/ccxray');
+    const writes = () => fs.readFileSync(log, 'utf8').split('\n').filter(l => l.includes('report-metadata')).length;
+    const opts = { env, agent: 'claude', title: 'old title', displayAgent: 'Claude Code' };
+
+    assert.equal(reportPaneTokens({ ctx: '9%' }, opts).skipped, 'unchanged',
+      'everything matching the pane must still skip');
+    assert.equal(writes(), 0);
+    reportPaneTokens({ ctx: '9%' }, { ...opts, title: 'new title' });
+    assert.equal(writes(), 1, 'a changed title must reach Herdr');
+    reportPaneTokens({ ctx: '9%' }, { ...opts, displayAgent: 'Codex' });
+    assert.equal(writes(), 2, 'a changed display agent must reach Herdr');
+  });
+
+  // The lookup spawns `ccxray secret upstream`, which can derive and persist a
+  // secret and carries a 4s timeout. Only the claude branch consumes it.
+  it('does not look up the upstream secret for agents that cannot carry it', () => {
+    const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
+    for (const agent of ['grok', 'codex']) {
+      const rec = recordingCcxray();
+      proxyEnvVars(agent, 5577, { paneId: 'w1:p1', env: pluginEnv({ CCXRAY_BIN: rec.bin }) });
+      assert.doesNotMatch(rec.calls(), /secret/,
+        `${agent} has no header to put the token in, so it must not fetch one`);
+    }
+    // The claude branch still does.
+    const rec = recordingCcxray();
+    proxyEnvVars('claude', 5577, { paneId: 'w1:p1', env: pluginEnv({ CCXRAY_BIN: rec.bin }) });
+    assert.match(rec.calls(), /secret upstream/, 'claude carries it in a header');
+  });
+
+  // `--plan` must stay a pure描述 of what a launch WOULD do: no secret derived,
+  // nothing written. skipAuth is what guarantees that, and nothing pinned it.
+  it('the --plan path derives no secret', () => {
+    const rec = recordingCcxray();
+    const result = runScript('launch-agent.js', ['claude', '--plan'], {
+      HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+        focused_pane_id: 'w1:p1',
+        focused_pane_cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-r3-plan-')),
+        workspace_id: 'w1',
+        tab_id: 'w1:t1',
+      }),
+      HERDR_BIN_PATH: makeHerdr([]),
+      CCXRAY_BIN: rec.bin,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.doesNotMatch(rec.calls(), /secret/, 'planning must not mint a credential');
+  });
+});
+
+describe('codex round 4 fixes', () => {
+  // "seen" is EVIDENCE freshness. Built from main-only `latestAt`, the Mission
+  // Control row called a pane stale while its subagent was actively working,
+  // while the badge's evidenceStaleness (which reads every turn) called it
+  // fresh — the ADR 0005 contract says this figure must agree.
+  it('a recent subagent turn keeps the Mission Control row fresh', () => {
+    const T = 1787000000000;
+    const base = {
+      sessionId: 's-fresh', provider: 'anthropic', cwd: '/work/fresh',
+      agentId: 'herdr:w1:p1', model: 'claude-opus-5', maxContext: 200000,
+      usage: { input_tokens: 1000, output_tokens: 10 }, cost: { cost: 0.01, confidence: 'exact' },
+    };
+    const home = makeHome([
+      // Main turn two hours ago.
+      { ...base, id: 'f1', responseId: 'msg_f1', receivedAt: T, agentKey: 'orchestrator', isSubagent: false },
+      // Subagent turn one minute ago — ccxray is plainly still watching.
+      { ...base, id: 'f2', responseId: 'msg_f2', receivedAt: T + 7140000, agentKey: 'general-purpose', isSubagent: true },
+    ]);
+    const nowMs = T + 7200000; // 2h after the main turn, 1m after the subagent
+    const { missionControlSnapshot } = require('../plugins/herdr/bin/lib/ccxray');
+    const snapshot = missionControlSnapshot({
+      env: pluginEnv({ CCXRAY_HOME: home, CCXRAY_HERDR_NOW_MS: String(nowMs) }),
+      agentReport: { ok: true, agents: [{
+        pane_id: 'w1:p1', tab_id: 'w1:t1', agent: 'claude',
+        agent_status: 'recent', workspace_id: 'w1', agent_session: { kind: 'none' },
+      }] },
+    });
+    assert.equal(snapshot.rows.length, 1);
+    assert.doesNotMatch(snapshot.rows[0].freshness, /h$/,
+      `seen must not report hours while a subagent ran a minute ago (got ${snapshot.rows[0].freshness})`);
   });
 });

@@ -7,7 +7,7 @@ X-ray vision for AI agent sessions. A zero-config HTTP proxy that records every 
 ![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-blue)
 [![Mentioned in Awesome Claude Code](https://awesome.re/mentioned-badge-flat.svg)](https://github.com/hesreallyhim/awesome-claude-code)
 
-![ccxray dashboard](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/dashboard-v2.png)
+![ccxray dashboard](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/dashboard-v2.png)
 
 ## Why
 
@@ -29,7 +29,23 @@ npx ccxray codex
 npx ccxray grok
 ```
 
-That's it. Proxy starts, the selected CLI launches through it, and the dashboard opens automatically in your browser. Run it in multiple terminals — they automatically share one dashboard.
+The proxy starts, the selected CLI launches through it, and the dashboard opens automatically. On macOS and Linux, agent launches without `--port` share one hub and dashboard. Windows runs each launch as its own standalone server; see the example below.
+
+If ccxray cannot load the proxy or attach to a hub, it starts the agent directly and that session is not recorded. The hub attach budget is 3000 ms by default; an unresolved attach falls back when the budget expires, and an earlier failure can fall back sooner. Set `CCXRAY_ATTACH_TIMEOUT_MS` to change the budget. ccxray attempts to append a fallback record to `<CCXRAY_HOME>/fail-open.log` (default `~/.ccxray/fail-open.log`), but writing that file is best effort. Set `CCXRAY_FAIL_CLOSED=1` to stop instead of falling back. Claude `--bg` / `--background` launches bypass the proxy by design.
+
+For a persistent install with Claude's shell wrapper and optional summary export:
+
+Before running `setup`, install Claude Code and make sure its logged-in account email is available to ccxray. The `--domains` list must include that account's domain. Setup also requires readable gcloud Application Default Credentials; run `gcloud auth application-default login` first. Setup rejects `CCXRAY_EXPORT_GCS_KEY_FILE`, even though the exporter itself supports a service-account key file.
+
+```bash
+npm install -g ccxray
+gcloud auth application-default login
+ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+# Open a new terminal (or reload your shell profile), then verify:
+ccxray setup --check
+```
+
+`setup` adds a Claude wrapper and export settings to your shell profile, sets log retention, and writes `CCXRAY_IMPORT_DISABLE=1`. It does not install a Codex wrapper. Preview changes with `ccxray setup --dry-run` (include the same setup options). `ccxray setup --remove` removes ccxray's shell block and writes a tombstone to stop future uploads; it does not delete local logs or uploaded summaries. See the [export onboarding guide](docs/export-onboarding.md) for the data and removal details.
 
 ### Herdr plugin
 
@@ -40,7 +56,7 @@ herdr plugin install lis186/ccxray/plugins/herdr
 herdr plugin action invoke ccxray.herdr.quick-start
 ```
 
-The second command opens a cursor-driven Quick Start because installing into an already-running Herdr process does not run startup hooks. Use the arrow keys or `j`/`k` and `Enter`; number and letter shortcuts remain available. The plugin also offers Quick Start once on the next full Herdr startup if onboarding is still incomplete. It detects installed providers and launches the first traced session; sidebar changes remain optional, explicit, and reversible. Mission Control appears after the first traced session, while the experimental Capability Footprint appears after enough samples exist. See [`plugins/herdr`](plugins/herdr) for usage, trust, update, and uninstall details.
+The second command opens a cursor-driven Quick Start because installing into an already-running Herdr process does not run startup hooks. Use the arrow keys or `j`/`k` and `Enter`; number and letter shortcuts remain available. The plugin also offers Quick Start once on the next full Herdr startup if onboarding is still incomplete. It detects installed providers and launches the first traced session; sidebar changes remain optional, explicit, and reversible. Mission Control appears after the first traced session, while the experimental Capability Footprint appears after enough samples exist. See the [Herdr plugin guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/plugins/herdr/README.md) for usage, trust, update, and uninstall details, and the [Herdr support guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/herdr-support.md) for the Provider matrix and known limitations.
 
 The launcher argument is provider-backed. Today `claude`, `codex`, and `grok` are supported; unknown provider commands fail fast instead of silently starting an unconfigured proxy.
 
@@ -48,18 +64,21 @@ The launcher argument is provider-backed. Today `claude`, `codex`, and `grok` ar
 
 ```bash
 ccxray                           # Proxy + dashboard only
-ccxray claude --continue         # All claude args pass through
-ccxray codex exec "hello"        # All codex args pass through
-ccxray grok -p "hello"           # All grok args pass through
+ccxray claude --continue         # Example provider arguments
+ccxray codex exec "hello"        # Example provider arguments
+ccxray grok -p "hello"           # Example provider arguments
 ccxray --port 8080 claude        # Custom port (independent, no hub sharing)
 ccxray claude --no-browser       # Skip auto-open browser
-ccxray status                    # Show hub info and connected clients
+ccxray status                    # Show process, export, home, and hub status
+ccxray --port 5602 status        # Probes port 5602 only when no hub lock is found
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # Point existing claude session at a running ccxray hub
 ```
 
+Provider arguments are forwarded to the CLI. ccxray consumes its recognized global flags, such as `--port` and `--no-browser`, wherever they appear in the argument list; they are not forwarded to the CLI.
+
 ### Multi-project
 
-Running `ccxray claude` in multiple terminals automatically shares a single proxy and dashboard — no configuration needed.
+On macOS and Linux, running `ccxray claude` in multiple terminals automatically shares a single proxy and dashboard — no configuration needed. Windows has no shared hub: each `ccxray` launch is standalone and needs its own port.
 
 ```bash
 # Terminal 1
@@ -71,17 +90,33 @@ cd ~/project-b && ccxray claude     # Connects to existing hub
 # Both projects visible in one dashboard at http://localhost:5577
 ```
 
-If the hub process crashes, connected clients automatically recover within seconds.
+If the hub process crashes on macOS or Linux, connected clients automatically recover within seconds. On Windows, start each launch on a distinct port:
+
+```powershell
+# Terminal 1
+ccxray --port 5577 claude
+
+# Terminal 2
+ccxray --port 5578 claude
+```
+
+Open `http://localhost:5577` and `http://localhost:5578` to view each standalone dashboard.
 
 ```bash
 $ ccxray status
-Hub: http://localhost:5577 (pid 12345, uptime 3600s)
+Hub: http://localhost:5577 (pid 12345, uptime 3600s, v<version>)
+Process: exportState=enabled ... identity={...}
+Home: ~/.ccxray — current — cursor has consumed through the index tail (...)
+Machine: {"proxy":true,"hub":true,"pid":12345,"port":5577,"occupant":"ccxray-hub"}
 Connected clients (2):
   [1] pid 23456 — ~/dev/project-a
   [2] pid 34567 — ~/dev/project-b
+Shell: exportState=enabled hash=... — this shell's environment, not what the running exporter uses
+Config: equal
+Durable: ~/.ccxray (named by hub) — enrollment=enrolled · cursor ... · last attempt ...
 ```
 
-Use `--port` to opt out and run an independent server instead.
+The `Process`, `Home`, `Shell`, `Config`, and `Durable` lines report the running process, local export state, this shell's settings, and persisted enrollment/cursor history. Use `--port` to run an independent server instead.
 
 ## Supported agent modules
 
@@ -93,7 +128,7 @@ Launchers are registered in `server/providers.js` (same hub + dashboard for all)
 | `ccxray codex` | OpenAI Responses | `api.openai.com` / ChatGPT |
 | `ccxray grok` | OpenAI Responses (client module) | `cli-chat-proxy.grok.com` (`XAI_BASE_URL` override) |
 
-OpenAI-wire clients that are not Codex (today: Grok) are listed in `OPENAI_WIRE_CLIENTS` — shared parser, distinct host/agent/raw-session bucket. Multi-agent hubs mix them without swapping `OPENAI_BASE_URL`. Acceptance notes: [`docs/grok-testing.md`](docs/grok-testing.md).
+OpenAI-wire clients that are not Codex (today: Grok) are listed in `OPENAI_WIRE_CLIENTS` — shared parser, distinct host/agent/raw-session bucket. Multi-agent hubs mix them without swapping `OPENAI_BASE_URL`. Acceptance notes: [Grok testing](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/grok-testing.md).
 
 **Grok billing disclosure:** When proxying Grok CLI traffic, ccxray calls `cli-chat-proxy.grok.com/v1/billing` (using the same auth token the CLI already sends through the proxy) to populate the Usage tab's account card. Repeat calls are suppressed for 60 seconds after a successful response (per alias+credential). Set `XAI_BASE_URL` to point the call at a different host.
 
@@ -109,7 +144,7 @@ Works for both API-key and ChatGPT-auth codex sessions. ChatGPT routing to `chat
 - WebSocket transport (`/v1/responses` upgrades) is decoded per frame: each codex turn records model, token usage, request instructions/input/tools, and response events. A few large envelope events are stored as compact timing anchors (for TTFT) rather than full payloads, so codex turn detail can still trail Claude turns in places.
 - Limited real-world testing compared to the Claude path.
 
-Env vars for tuning: `OPENAI_BASE_URL`, `CHATGPT_BASE_URL`, `CCXRAY_WS_IDLE_TIMEOUT_MS`, `CCXRAY_WS_MAX_QUEUE_BYTES`. Details in [CLAUDE.md](CLAUDE.md).
+Env vars for tuning: `OPENAI_BASE_URL`, `CHATGPT_BASE_URL`, `CCXRAY_WS_IDLE_TIMEOUT_MS`, `CCXRAY_WS_MAX_QUEUE_BYTES`. Details in [CLAUDE.md](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/CLAUDE.md).
 
 File issues on [GitHub](https://github.com/lis186/ccxray/issues) — Beta means we want the rough edges reported.
 
@@ -127,19 +162,19 @@ Watch your agent think in real-time and see its concurrency structure.
 
 **L1/L2 dual-state selection**: Tab / ▲▼ selects lanes (L1), j/k selects turns within a lane (L2), Esc walks back level by level. Replaces the old single-level click model.
 
-![Workflow timeline](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/timeline-v2.png)
+![Workflow timeline](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/timeline-v2.png)
 
 ### Usage & Cost
 
 Track your real spending. Burn rate, per-account rate-limit cards for Claude and Codex — know exactly where your tokens go.
 
-![Usage analytics](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/usage.png)
+![Usage analytics](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/usage.png)
 
 ### System Prompt Tracking
 
 Automatic version detection with diff viewer. Browse prompts across multiple recognized agent types and see exactly what changed between updates. Uncertain prompts are honestly marked `unknown`.
 
-![System prompt tracking](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/system-prompt-v2.png)
+![System prompt tracking](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/system-prompt-v2.png)
 
 ### Keyboard-first Navigation
 
@@ -151,19 +186,19 @@ Drive the whole dashboard with your keyboard. Every screen shows a context-sensi
 
 `n`/`N` jumps to the next/previous starred item anywhere in the dashboard — across projects, sessions, turns, and individual timeline steps. The command bar shows the shortcut only when starred items are reachable from the current view.
 
-![Keyboard navigation](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/keyboard-v2.png)
+![Keyboard navigation](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/keyboard-v2.png)
 
 ### Session Titles & Cache Alerts
 
 Session cards show Claude Code's generated titles (e.g. `Fix login button on mobile`) instead of raw hashes, with a live cache TTL countdown (`cache 4m left`) that pulses red under 1 minute. When any session nears expiry, the browser tab alternates between `ccxray` and `⚠ ccxray`. Opt-in browser notification fires at a plan-aware lead time — 5 minutes for Max, 60 seconds for Pro/API key. Titles fall back to the short hash for direct-API traffic or sessions still in flight.
 
-![Session titles and cache expiry alerts](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/cache-expiry.png)
+![Session titles and cache expiry alerts](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/cache-expiry.png)
 
 ### Session Weather
 
-Each session card shows a weather emoji (☀️ sunny → ⛈️ stormy) that condenses eight health signals — context pressure, compaction, truncation, stuck loops, latency drift, error rate, and cache efficiency — into a single at-a-glance indicator. Hover for a breakdown. See [`docs/weather.md`](docs/weather.md) for signal definitions and scoring.
+Each session card shows a weather emoji (☀️ sunny → ⛈️ stormy) based on context pressure, compaction, output truncation, latency drift, and cache hit rate. Missing tool-result evidence can also make the status unavailable. Hover for a breakdown. See the [weather guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/weather.md) for signal definitions and scoring.
 
-> **Note (2.3.1):** Weather display is **off by default** while the tool-failure signals are being fixed. Computation continues in the background. Append `?weather=on` to the dashboard URL to inspect, or set `localStorage.setItem('ccxray-weather-display', 'on')` to persist. See [docs/weather.md](docs/weather.md#display-toggle-231) for details.
+> **Note (2.3.1):** Weather display is **off by default** while the tool-failure signals are being fixed. Computation continues in the background. Append `?weather=on` to the dashboard URL to inspect, or set `localStorage.setItem('ccxray-weather-display', 'on')` to persist. See the [weather guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/weather.md#display-toggle-231) for details.
 
 ### Plan Detection
 
@@ -191,7 +226,7 @@ Individual timeline steps can also be starred (`★`/`☆` toggle on each step r
 
 When a parent inherits protection from a starred descendant, the badge becomes `☆ [N]` instead of `★`. Click the chip to open a popover listing exactly which descendants are keeping it retained. Each row's star is its own toggle; clicking the row body navigates straight to that turn / session.
 
-![Star retention and descendant popover](https://raw.githubusercontent.com/lis186/ccxray/v2.1.0/docs/stars.png)
+![Star retention and descendant popover](https://raw.githubusercontent.com/lis186/ccxray/v2.5.0-rc.1/docs/stars.png)
 
 ### Usage Analytics CLI
 
@@ -213,6 +248,16 @@ ccxray usage --tools                  # Full tool breakdown
 Automated usage analysis in 0.6 seconds — know where your tokens and dollars go without manual log diving. Reads `index.ndjson` directly, no server needed. Shows model cost breakdown, tool & skill usage, prompt hash stability (how often system/tools/core prompts change between turns), cache hit rates by inter-turn gap, and the 10 costliest sessions with titles.
 
 The `--json` output is an agent-facing contract — see [`docs/usage.md`](docs/usage.md) for the full field-by-field schema, the multi-cwd and error shapes, and filter semantics.
+
+### agentflow Report (experimental)
+
+```bash
+ccxray agentflow report              # Every Ask of the project's agentflow notebook
+ccxray agentflow report --ask A-012  # One Ask
+ccxray agentflow report --json       # JSON
+```
+
+For projects that use [agentflow](https://github.com/agfnow/agentflow): tokens, cost, models, effort and time for every Ask of the notebook, split by host session, subagents and dispatched external workers. The report reads transcripts for attribution, but usage figures come from turns in the ccxray index. If the needed turns are already indexed, import can be skipped; transcript-only history must be imported before it contributes usage. `ccxray setup` disables import, so use the guide's one-command import flow when needed. No server is required. See [`docs/agentflow-report.md`](docs/agentflow-report.md).
 
 ### More
 
@@ -236,7 +281,7 @@ Claude Code  ──►  ccxray (:5577)  ──►  api.anthropic.com (or ANTHROP
                   Dashboard (same port)
 ```
 
-ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (Anthropic or OpenAI), records both request and response as JSON files, and serves a web dashboard on the same port. All endpoints enforce authentication: launcher-started CLIs inject the `X-Ccxray-Auth` header automatically — no friction for users; scripts calling `/v1/*` directly must add the header (see CHANGELOG). Hub IPC uses a Unix domain socket (`~/.ccxray/hub.sock`) rather than HTTP.
+ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (Anthropic or OpenAI), records both request and response as JSON files, and serves a web dashboard on the same port. Loopback requests to the dashboard and upstream APIs are trusted by default. Set `CCXRAY_LOOPBACK_REQUIRE_AUTH=1` to require authentication on loopback. Protected non-loopback dashboard/API requests require valid authentication; upstream HTTP and WebSocket traffic normally requires ccxray's injected credential. ChatGPT-routed Codex traffic has a compatibility exception: ccxray accepts `chatgpt-account-id` plus a JWT-shaped `Authorization` header without verifying its signature, leaving OAuth validity to the upstream. `AUTH_TOKEN` can provide a shared token, and ccxray uses a local secret when it is unset. `/_api/health` remains public with a minimal identity response (`capabilities: []`); its export report is returned only to trusted callers. Hub IPC uses a Unix domain socket (`~/.ccxray/hub.sock`) rather than HTTP.
 
 ## Configuration
 
@@ -253,12 +298,12 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 |---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard (overridden by `--port`) |
 | `BROWSER` | — | Set to `none` to disable auto-open |
-| `AUTH_TOKEN` | _(auto)_ | Access-control key. Auto-derived from `<CCXRAY_HOME>/local-secret` when unset (default `~/.ccxray/local-secret`). Non-loopback requests require it; loopback is trusted by default (see [SECURITY.md](SECURITY.md) and `CCXRAY_LOOPBACK_REQUIRE_AUTH`). |
+| `AUTH_TOKEN` | _(unset)_ | Optional shared access token. When unset, ccxray uses `<CCXRAY_HOME>/local-secret` (default `~/.ccxray/local-secret`). Protected non-loopback dashboard/API requests and most upstream traffic require authentication; ChatGPT-routed Codex traffic has a native-marker exception. Loopback is trusted unless `CCXRAY_LOOPBACK_REQUIRE_AUTH=1`. See [SECURITY.md](SECURITY.md). |
 | `CCXRAY_SESSION_ENTRY_CAP` | `500` | Max entries loaded per session at startup restore. Sessions exceeding this keep only the latest entry (no runtime limit). |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | _(unset)_ | Loopback is auth-free by default; set to `1` to enforce auth on loopback too. |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for hub lockfile, logs, and hub.log |
 | `CCXRAY_MAX_ENTRIES` | `5000` | Max in-memory entries (oldest evicted; disk logs unaffected) |
-| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable. |
+| `LOG_RETENTION_DAYS` | `14` | Auto-prune log files older than N days on startup. Starred turns / sessions / projects (and everything beneath them) are protected, as are files referenced by restored entries. Set to `0` to disable — except in a home with an export enrollment, which uses its recorded positive retention instead (see export onboarding). |
 | `RESTORE_DAYS` | `14` | Limit which days of logs to load on startup (`0` = all, subject to `CCXRAY_MAX_ENTRIES`). Useful for very large log directories. |
 | `CCXRAY_PLAN` | _(auto)_ | Override plan detection: `pro`, `max5x`, `max20x`, `api-key` |
 | `CCXRAY_DISABLE_TITLES` | _(unset)_ | Set to `1` to disable session title extraction (sessions fall back to short hash) |
@@ -266,9 +311,9 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Route outbound HTTPS traffic through a corporate proxy via HTTP CONNECT tunnel. |
 | `ANTHROPIC_BASE_URL` | — | Custom upstream Anthropic endpoint (e.g. a corporate gateway). Supports base paths — `https://host/serving-endpoints/anthropic` works as-is. `ANTHROPIC_TEST_*` take precedence when set. |
 
-Logs are stored in `~/.ccxray/logs/` as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
+Raw request and response logs are stored locally in `LOGS_DIR` (by default `~/.ccxray/logs/`) as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 
-ccxray currently stores logs on the local filesystem only. A remote object-storage backend (S3 / R2) is not supported yet — it needs more work on the storage interface and on the security model for sending request/response logs off-machine.
+If you configure export with `ccxray setup`, ccxray can upload daily and per-session summaries; it does not upload the raw request/response logs. Summaries can include user identity, session IDs, repository basenames, model names, and tool or skill names. Source-derived names and metadata are not comprehensively scrubbed, so review them before enabling export. `CCXRAY_EXPORT_CWD_ALLOWLIST` masks an unlisted repository name as `[other]`; it does not exclude that session. With `CCXRAY_EXPORT_DOMAINS` set, only turns carrying a matching Claude launch-account snapshot are exported. Codex and Grok launches do not carry that snapshot and are excluded by this filter; this is the intended behavior. See the [export onboarding guide](docs/export-onboarding.md) for fields, filtering, and removal.
 
 ## Docker
 

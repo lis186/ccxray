@@ -44,10 +44,19 @@ function summarizeEntry(entry) {
     method: entry.method, url: entry.url,
     elapsed: entry.elapsed, status: entry.status, isSSE: entry.isSSE,
     receivedAt: entry.receivedAt || null,
-    usage: entry.usage, cost: entry.cost, maxContext: entry.maxContext, cwd: entry.cwd,
+    usage: entry.usage, contextUsageKnown: entry.contextUsageKnown,
+    cost: entry.cost, maxContext: entry.maxContext, cwd: entry.cwd,
     // #339: carry the authoritative 1M fact to the client + cold-load so the render-time
     // per-session context% denominator (sessionWindow) can fold it. Only when true.
     beta1m: entry.beta1m || undefined,
+    // #603: importer-declared 1M facts are weaker, display-only provenance, but
+    // must cross the same summary boundary so a cold client can mark its 1M fold.
+    imported1mCostState: entry.imported1mCostState || undefined,
+    imported1mSettings: entry.imported1mSettings || undefined,
+    // Codex's explicit compaction boundary is a per-turn fact. Preserve it on
+    // both live SSE entries and cold index normalization so the client can use
+    // it before falling back to its historical heuristic.
+    compacted: entry.compacted || undefined,
     model: entry.model || null,
     msgCount: entry.msgCount || 0,
     toolCount: entry.toolCount || 0,
@@ -72,6 +81,14 @@ function summarizeEntry(entry) {
     thinkingStripped: entry.thinkingStripped || false,
     imported: entry.imported || undefined,
     importSource: entry.importSource || undefined,
+    // S-1: subagent transcript identity (see server/entry.js INDEX_FIELDS).
+    subagentId: entry.subagentId || null,
+    subagentToolUseId: entry.subagentToolUseId || null,
+    // S-6: reasoning effort / imported thinking tokens / imported turn duration
+    // (see server/entry.js INDEX_FIELDS).
+    effort: entry.effort || null,
+    thinkingTokens: entry.thinkingTokens ?? null,
+    turnDurationMs: entry.turnDurationMs ?? null,
     firstPrompt: store.getSessionFirstPrompt(entry.sessionId) || null,
     parentSessionId: entry.parentSessionId || store.sessionMeta[entry.sessionId]?.parentSessionId || null,
     tokens: tok ? {

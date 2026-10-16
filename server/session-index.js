@@ -52,12 +52,32 @@ function _assignWeather(s, weather) {
   s.weatherRev = WEATHER_REV;
 }
 
+// H6 (A-010 design): revision of the pricing DERIVATION behind persisted cost
+// aggregates (totalCost/fallbackCost/fallbackCount), stamped on every session
+// record — same WEATHER_REV pattern above, because the same gap applies: the
+// schema probe below tests field existence and `reconcile` compares counts,
+// neither of which notices a change in HOW cost was computed. Without this
+// stamp, a session record built under the retired two-lookup/double-normalize
+// bug (or under stale fallback pricing later corrected by H5's read-time
+// reprice) would keep rendering forever — `sessions.json` aggregates only heal
+// on a rebuild (H6 known limit), and a stale-revision record is exactly what
+// forces one. Bump whenever the pricing derivation changes.
+//   1 — #397/A-010: single lookupRates table, retired calculateCostSimple
+//       fallback estimate, fixed Codex-import double-normalization (R-2)
+const PRICING_REV = 1;
+
+// Single writer, following _assignWeather above.
+function _assignPricingRev(s) {
+  if (!s) return;
+  s.pricingRev = PRICING_REV;
+}
+
 function sessionsPath() {
   return path.join(config.LOGS_DIR, 'sessions.json');
 }
 
 function tmpPath() {
-  return sessionsPath() + '.tmp';
+  return `${sessionsPath()}.${process.pid}.tmp`;
 }
 
 // Read sessions.json (NDJSON). Returns true on success, false on missing/corrupt/stale.
@@ -65,6 +85,17 @@ async function loadSessionIndex() {
   try {
     const sp = sessionsPath();
     const indexPath = path.join(config.LOGS_DIR, 'index.ndjson');
+    let names;
+    try { names = await fsp.readdir(path.dirname(sp)); } catch { names = []; }
+    const cutoff = Date.now() - 10 * 60 * 1000;
+    for (const name of names) {
+      if (!/^sessions\.json\..+\.tmp$/.test(name)) continue;
+      const orphan = path.join(path.dirname(sp), name);
+      try {
+        const stat = await fsp.stat(orphan);
+        if (stat.mtimeMs < cutoff) await fsp.unlink(orphan);
+      } catch {}
+    }
     // Stale check: if index.ndjson is newer than sessions.json, rebuild
     try {
       const [sStat, iStat] = await Promise.all([fsp.stat(sp), fsp.stat(indexPath)]);
@@ -94,6 +125,10 @@ async function loadSessionIndex() {
         || (s.weather !== undefined && s.weather?.stats?.toolTurns === undefined)
         // #503: not a field probe — a derivation-semantics probe. See WEATHER_REV.
         || (s.weather !== undefined && s.weatherRev !== WEATHER_REV)
+        // H6 (A-010): same derivation-semantics probe for pricing. Every record
+        // with s.count > 0 has gone through _upsert (which stamps pricingRev),
+        // so no `!== undefined` guard is needed the way weatherRev has one.
+        || s.pricingRev !== PRICING_REV
       )) { needsMigration = true; break; }
     }
     if (needsMigration) {
@@ -343,6 +378,10 @@ function _upsert(sid, entry) {
     s = { sid, firstId: null, lastId: null, count: 0, model: null, cwd: null, totalCost: 0, fallbackCost: 0, fallbackCount: 0, unknownCount: 0, title: null, firstPrompt: null, firstReceivedAt: 0, lastReceivedAt: 0, provider: null, agent: null };
     sessionIndex.set(sid, s);
   }
+  // H6 (A-010): stamp every touched record with the current pricing revision
+  // (see _assignPricingRev above) — cheap and unconditional, mirroring how
+  // _assignWeather stamps every weather computation.
+  _assignPricingRev(s);
   // #333: bump COUNT once per responseId so the session card shows merged turns,
   // not the 2–8 raw duplicate lines a shared log holds. A line without responseId
   // (legacy/exempt) has no dedup key ⇒ always counts. Kept paired with reconcile's
@@ -443,7 +482,12 @@ function _upsert(sid, entry) {
     var input = u.input_tokens || 0;
     var ctxUsed = input + cacheRead + cacheCreate;
     var ctxInputTotal = cacheRead + cacheCreate + input;
-    if (ctxUsed > 0) {
+    // New entries carry provenance so an explicit zero is a real observation,
+    // while a missing report stays unknown. Legacy rows remain inferable only
+    // when their positive context sum proves usage was present.
+    var contextKnown = entry.contextUsageKnown === true
+      || (entry.contextUsageKnown !== false && ctxUsed > 0);
+    if (contextKnown) {
       s.maxContext = Math.max(s.maxContext || 0, entry.maxContext || 0) || null;
       s.latestCtxPct = s.maxContext ? Math.round(ctxUsed / s.maxContext * 1000) / 10 : null;
       s.latestCacheHitRatio = ctxInputTotal > 0 ? Math.round(cacheRead / ctxInputTotal * 1000) / 1000 : 0;
@@ -463,6 +507,11 @@ function _upsert(sid, entry) {
   // docs/decisions/0005-agent-key-unreliable-shared-contract.md
   if (_isMain && (entry.maxContext || 0) > (s.maxContext || 0)) s.maxContext = entry.maxContext;
   if (_isMain && entry.beta1m === true) s.beta1m = true;
+  // #603: retain importer-only positive declarations for cold consumers. These
+  // facts are intentionally separate from beta1m/maxContext: they widen only
+  // the render fold, never weather or context-pressure classification.
+  if (_isMain && entry.imported1mCostState === true) s.imported1mCostState = true;
+  if (_isMain && entry.imported1mSettings === true) s.imported1mSettings = true;
 }
 
 function setTitle(sid, title) {
@@ -477,24 +526,22 @@ function setFirstPrompt(sid, text) {
 
 function _scheduleDirtyFlush() {
   dirty = true;
+  // An append-only importer deliberately leaves the hub-owned derived view
+  // untouched. Do not keep that detached process alive for a timer whose flush
+  // is guaranteed to return immediately under the same guard.
+  if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (flushTimer) return;
   flushTimer = setTimeout(() => { flushTimer = null; flush().catch(e => console.error('[session-index] flush error:', e.message)); }, FLUSH_DELAY_MS);
 }
 
 // Write full sessions.json atomically (tmp + rename).
 //
-// INVARIANT (ADR 0019): `tmpPath()` is a FIXED name with no pid in it, so "atomically" holds
-// against a crash, not against a second writer. Two processes flushing at once
-// can have one rename the other's half-written bytes. Every other writer in this
-// repo is the single hub process, which is why the name has been safe; a second
-// process that merely APPENDS index lines (`ccxray import --once`) must set
-// CCXRAY_SESSION_INDEX_NO_FLUSH=1 and leave this derived view alone. It is
-// rebuildable: `loadSessionIndex` already rebuilds when index.ndjson is newer
-// than sessions.json (:68-72), which is exactly the state such an append leaves
-// behind. Giving the tmp file a pid suffix would make concurrent flushes safe
-// but would still race last-writer-wins over the whole file, which is a
-// correctness question about WHOSE view wins — not one to settle here.
-// See docs/decisions/0019-second-writer-appends-never-derives.md.
+// INVARIANT (ADR 0021): `tmpPath()` includes the process pid so concurrent
+// flushers never write through the same temporary pathname. The final rename is
+// still last-writer-wins for this rebuildable derived view; a second process that
+// merely APPENDS index lines (`ccxray import --once`) must set
+// CCXRAY_SESSION_INDEX_NO_FLUSH=1 and leave this view alone. See the ADR 0019
+// amendment in docs/decisions/0021-data-root-writer-coordination.md.
 async function flush() {
   if (process.env.CCXRAY_SESSION_INDEX_NO_FLUSH === '1') return;
   if (!dirty && !flushTimer) return;
@@ -549,5 +596,5 @@ module.exports = {
   seedDedupState, seedDedupFromMetas,
   reconcile, reconcileMetas, createReconcileTally,
   updateFromEntry, beginRestoreBuffer, endRestoreBuffer, _restoreBufferActive,
-  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow,
+  setTitle, setFirstPrompt, flush, getAll, get, size, setWeather, sessionWindow, tmpPath,
 };

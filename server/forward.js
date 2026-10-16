@@ -127,16 +127,72 @@ function requestAgentForDeployment(provider, headers, parsedBody) {
   return agentForProvider(provider);
 }
 
+function launchAccountFields(headers) {
+  const rawAccount = headers['x-ccxray-account'];
+  if (!rawAccount) return {};
+  // Node joins duplicate headers with ', '. Match the agent-id seam: a nested
+  // ccxray launch prepends an outer account, so the LAST account segment is the
+  // innermost (newest) launch-time snapshot.
+  let candidate = null;
+  let accountValueContinues = true;
+  for (const rawSegment of String(rawAccount).split(',')) {
+    const segment = rawSegment.trim();
+    const header = segment.match(/^([A-Za-z][A-Za-z0-9-]*):\s*(.*)$/);
+    if (header) {
+      accountValueContinues = header[1].toLowerCase() === 'x-ccxray-account';
+      if (accountValueContinues) candidate = header[2];
+    } else if (accountValueContinues) {
+      candidate = segment;
+    }
+  }
+  if (!candidate) return {};
+  // Mirror hub.clientIdentityFromMessage's 512-character bound for
+  // client-supplied values persisted to the index. Keeping this local avoids
+  // widening the hub IPC identity contract's fixed key list for a launch-only fact.
+  const accountEmail = candidate.trim().toLowerCase();
+  if (!accountEmail || accountEmail.length > 512) return {};
+  const at = accountEmail.lastIndexOf('@');
+  if (at <= 0 || at === accountEmail.length - 1) return {};
+  return { accountEmail, accountDomain: accountEmail.slice(at + 1) };
+}
+
 function requestDeploymentFields(startTime, provider, req, parsedBody) {
   const headers = req.headers;
   const agent = requestAgentForDeployment(provider, headers, parsedBody);
-  const identity = hub.lookupClientIdentityForRequest(req);
+  const hubIdentity = hub.lookupClientIdentityForRequest(req);
+  // env-injection launch: no hub client, but the request carries a header from
+  // ANTHROPIC_CUSTOM_HEADERS so the badge can link the pane. Sanitized through
+  // hub's own identity helper (trim + 512 cap) rather than a second sanitizer —
+  // the value is client-supplied and lands in a persisted index field.
+  let identity = hubIdentity;
+  if (!hubIdentity && headers['x-ccxray-agent-id']) {
+    // Node joins duplicate HTTP headers with ', '. A ccxray-launched shell that
+    // itself launches another agent prepends its own header value, so the raw
+    // string can be 'herdr:wY:old, X-Ccxray-Auth: ..., X-Ccxray-Agent-Id: herdr:w1D:new'.
+    // The LAST herdr:-prefixed segment is the innermost (newest) launch — take it.
+    const rawAgentId = String(headers['x-ccxray-agent-id']);
+    const segments = rawAgentId.split(',').map(s => {
+      const trimmed = s.trim();
+      const colonIdx = trimmed.indexOf(': ');
+      return colonIdx >= 0 && /^[A-Za-z]/.test(trimmed) ? trimmed.slice(colonIdx + 2) : trimmed;
+    });
+    const lastHerdr = [...segments].reverse().find(s => s.startsWith('herdr:')) || rawAgentId.trim();
+    const fromHeader = hub.clientIdentityFromMessage({ agentId: lastHerdr });
+    if (fromHeader.agentId) identity = fromHeader;
+  }
   const routedClient = Number.isSafeInteger(req.ccxrayClientPid);
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
-  return deploymentFields(startTime, {
-    identity: identity || {},
-    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
-  });
+  return {
+    ...deploymentFields(startTime, {
+      identity: identity || {},
+      // INVARIANT: gated on the HUB identity, never on the merged one. The header
+      // supplies agentId only, so letting it flip this flag silently dropped
+      // userEmail/team/agentType — the #505 export attribution — from every
+      // header-identified turn. deploymentFields already falls back per field.
+      useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
+    }),
+    ...launchAccountFields(headers),
+  };
 }
 
 function resolveProxyAgent(protocol, env) {
@@ -702,7 +758,8 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       return r;
     }, '');
     const totalCtx = helpers.totalContextTokens(usage);
-    if (usage && totalCtx && stopReason !== 'tool_use' && statusLineEnabled) {
+    const printMode = ctx.clientReq?.headers?.['x-ccxray-print-mode'] === 'true';
+    if (usage && totalCtx && stopReason !== 'tool_use' && statusLineEnabled && !printMode) {
       if (reqSessionId && !_hudLoggedSessions.has(reqSessionId)) {
         console.log(`\x1b[90m   Context HUD: injecting into session ${reqSessionId.slice(0, 8)}\x1b[0m`);
         _hudLoggedSessions.add(reqSessionId);
@@ -710,7 +767,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       const maxCtx = config.inferMaxContext(parsedBody?.model, parsedBody?.system, usage, { beta1m: ctx.beta1m, ctxBeta: ctx.ctxBeta });
       const pct = (totalCtx / maxCtx * 100).toFixed(1);
       const newIdx = maxBlockIndex + 1;
-      const costInfo = calculateCost(usage, parsedBody?.model);
+      const costInfo = calculateCost(usage, parsedBody?.model, 'anthropic');
 
       let text = '\n\n---\nContext: ' + pct + '% (' + totalCtx.toLocaleString() + ' / ' + maxCtx.toLocaleString() + ')';
       text += ' | ' + totalCtx.toLocaleString() + ' in + ' + (usage.output_tokens || 0).toLocaleString() + ' out';
@@ -718,9 +775,11 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
         const hitRate = (usage.cache_read_input_tokens / totalCtx * 100).toFixed(0);
         text += ' | Cache ' + hitRate + '% hit';
       }
-      // INVARIANT(#420): per-turn cost display. calculateCost (live path)
-      // returns exact/prefix/unknown — never 'fallback' (that's calculateCostSimple
-      // in cost-worker). Both exact and prefix show plain $ per #420 design table.
+      // INVARIANT(#420, updated A-010/#397): per-turn cost display. calculateCost
+      // (live path) returns exact/prefix/unknown. calculateCostSimple (offline
+      // import/cost-worker paths) shares the same lookupRates table and match
+      // rule and the same three confidence values — 'fallback' is retired on
+      // every path (H2). Both exact and prefix show plain $ per #420 design table.
       if (costInfo?.cost != null) {
         text += ' | $' + costInfo.cost.toFixed(4);
       }
@@ -801,6 +860,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
       duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
       ...getParser('anthropic').buildEntryFields({
         provider: 'anthropic', transport: 'sse', parsedBody, events, usage,
+        contextUsageKnown: getParser('anthropic').hasContextUsage(events),
         proxyRes, sessionId, sessionInferred: ctx.sessionInferred,
         sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,
@@ -1109,7 +1169,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
         duplicateToolCalls: helpers.extractDuplicateToolCalls(parsedBody?.messages),
         ...getParser('anthropic').buildEntryFields({
           provider: 'anthropic', transport: 'http', parsedBody,
-          usage: nonSSEUsage, proxyRes,
+          usage: nonSSEUsage, contextUsageKnown: getParser('anthropic').hasContextUsage(resData), proxyRes,
           sessionId, sessionInferred: ctx.sessionInferred,
           sysHash: ctx.sysHash, toolsHash: ctx.toolsHash, coreHash: ctx.coreHash,
         agentKey: ctx.agentKey || null, agentLabel: ctx.agentLabel || null,

@@ -55,6 +55,33 @@ test('openai entry → buildIndexLine → parsed-back keeps cost/maxContext/stop
   assert.ok('responseMetadata' in back);
 });
 
+test('wire parsers persist context usage provenance, including explicit zero', () => {
+  const anthropic = getParser('anthropic');
+  const base = {
+    provider: 'anthropic', transport: 'sse',
+    parsedBody: { model: 'claude-sonnet-4-6', messages: [{ role: 'user', content: 'hello' }] },
+    proxyRes: { statusCode: 200 }, sessionId: 's',
+  };
+  const explicitZero = anthropic.buildEntryFields({
+    ...base, usage: { input_tokens: 0, output_tokens: 0 }, contextUsageKnown: true,
+  });
+  assert.equal(explicitZero.contextUsageKnown, true);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'zero', ...explicitZero })).contextUsageKnown, true);
+
+  const absent = anthropic.buildEntryFields({ ...base, usage: null, contextUsageKnown: false });
+  assert.equal(absent.contextUsageKnown, false);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'absent', ...absent })).contextUsageKnown, false);
+
+  const openai = getParser('openai');
+  const openaiZero = openai.buildEntryFields({
+    provider: 'openai', transport: 'http', parsedBody: { model: 'gpt-5.5', input: [] },
+    response: { model: 'gpt-5.5', usage: { input_tokens: 0, output_tokens: 0 } },
+    proxyRes: { statusCode: 200 }, sessionId: 's',
+  });
+  assert.equal(openaiZero.contextUsageKnown, true);
+  assert.equal(JSON.parse(buildIndexLine({ id: 'openai-zero', ...openaiZero })).contextUsageKnown, true);
+});
+
 test('#475 OpenAI parser and index carry call/result facts for read-time pairing (fail-on-old)', () => {
   const parsedBody = {
     model: 'gpt-5.5',
@@ -106,6 +133,46 @@ test('anthropic.buildEntryFields yields canonical fields', () => {
   assert.equal(f.thinkingStripped, false);
   assert.ok(f.cost !== null, 'cost computed');
   assert.ok(f.maxContext > 0, 'maxContext inferred');
+});
+
+// S-6/A-6.4: proxy-side reasoning effort (Claude output_config.effort). C-5:
+// the proxy never has response-side thinking tokens or a turn duration.
+test('anthropic.buildEntryFields reads effort from output_config.effort', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    output_config: { effort: 'low' },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, 'low');
+});
+
+test('anthropic.buildEntryFields effort is null when output_config is absent', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, null);
+});
+
+test('anthropic.buildEntryFields ignores a non-string effort', () => {
+  const parsedBody = {
+    model: 'claude-sonnet-5',
+    output_config: { effort: { level: 'low' } },
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  };
+  const f = getParser('anthropic').buildEntryFields({
+    provider: 'anthropic', transport: 'http', parsedBody,
+    proxyRes: { statusCode: 200 }, sessionId: 's1', sessionInferred: false,
+  });
+  assert.equal(f.effort, null);
 });
 
 test('anthropic Skill message → buildEntryFields → buildIndexLine persists clean toolCalls + skillCalls', () => {

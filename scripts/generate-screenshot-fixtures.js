@@ -452,4 +452,7 @@ console.log(`Showcase final context: ${(totalCtx / MAX_CTX * 100).toFixed(1)}% o
 console.log(`Showcase session ID: ${showcaseSessionId}`);
 console.log(`Background: ${entries.length - mainShowcase.length - subShowcase.length} turns across ${BG_PROJECTS.reduce((s, p) => s + p.sessions.length, 0)} sessions`);
 console.log(`Logs written to: ${LOGS}`);
-console.log(`\nStart server with:\n  CCXRAY_HOME=${HOME} RESTORE_DAYS=0 CCXRAY_IMPORT_DISABLE=1 node server/index.js --port 5602 --no-browser`);
+// CCXRAY_EXPORT_DISABLE is part of the printed command on purpose: people copy this
+// line verbatim, and CCXRAY_HOME does not isolate CCXRAY_EXPORT_GCS_BUCKET, so a
+// fixture server booted from it would ship synthetic summaries to the real bucket.
+console.log(`\nStart server with:\n  CCXRAY_HOME=${HOME} RESTORE_DAYS=0 CCXRAY_IMPORT_DISABLE=1 CCXRAY_EXPORT_DISABLE=1 node server/index.js --port 5602 --no-browser`);

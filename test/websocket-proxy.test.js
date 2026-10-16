@@ -409,6 +409,133 @@ describe('OpenAI Responses WebSocket proxy', () => {
     assert.equal(reqLog.metadata?.client, undefined);
   });
 
+  // S-6/A-6.5: a Codex prewarm connection carries reasoning_effort/model but
+  // never generates a response; the main turn that follows arrives on a
+  // SEPARATE WebSocket connection sharing only the session id.
+  describe('S-6 Codex WS reasoning effort', () => {
+    it('remembers a prewarm connection\'s effort for the main turn on a different connection, and fills the prewarm entry\'s own model', async () => {
+      upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+      upstreamWss.on('connection', ws => {
+        ws.on('message', data => {
+          let parsed;
+          try { parsed = JSON.parse(data.toString()); } catch { return; }
+          if (parsed.type !== 'response.create') return;
+          ws.send(JSON.stringify({
+            type: 'response.completed',
+            response: { status: 'completed', model: 'gpt-6-sol', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+          }));
+        });
+      });
+      await startProxy();
+
+      const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2eff01';
+
+      // Connection A: prewarm. Carries reasoning_effort/model via the
+      // x-codex-turn-metadata header and never sends a response.create frame
+      // (mirrors real Codex traffic — verified against ~/.ccxray evidence).
+      const prewarmWs = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+        headers: {
+          'openai-beta': 'responses_websockets=2026-02-06',
+          session_id: sessionId,
+          'x-codex-turn-metadata': JSON.stringify({
+            session_id: sessionId,
+            request_kind: 'prewarm',
+            model: 'gpt-6-sol',
+            reasoning_effort: 'low',
+          }),
+        },
+      });
+      await new Promise((resolve, reject) => { prewarmWs.on('open', resolve); prewarmWs.on('error', reject); });
+      prewarmWs.close(1000, 'prewarm done');
+      await new Promise(resolve => prewarmWs.on('close', resolve));
+
+      const prewarmEntry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
+      assert.equal(prewarmEntry.effort, 'low');
+      assert.equal(prewarmEntry.model, 'gpt-6-sol');
+      assert.equal(prewarmEntry.responseMetadata.capture, 'transport-only');
+
+      // Connection B: the main turn — a separate connection, same session id,
+      // no reasoning/effort of its own.
+      const mainWs = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+        headers: {
+          'openai-beta': 'responses_websockets=2026-02-06',
+          session_id: sessionId,
+        },
+      });
+      await new Promise((resolve, reject) => { mainWs.on('open', resolve); mainWs.on('error', reject); });
+      const done = waitForCompleted(mainWs);
+      mainWs.send(JSON.stringify({
+        type: 'response.create', generate: true,
+        model: 'gpt-6-sol',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'go' }] }],
+      }));
+      await done;
+      mainWs.close(1000, 'done');
+      await new Promise(resolve => mainWs.on('close', resolve));
+
+      const entries = await waitForIndexEntries(path.join(testHome, 'logs'), e => e.sessionId === sessionId, 2);
+      const mainEntry = entries.find(e => e.id !== prewarmEntry.id);
+      assert.equal(mainEntry.effort, 'low');
+    });
+
+    it('a turn with its own reasoning.effort overrides the prewarm-remembered value', async () => {
+      upstreamWss = new WebSocket.Server({ server: upstreamServer, path: '/v1/responses' });
+      upstreamWss.on('connection', ws => {
+        ws.on('message', data => {
+          let parsed;
+          try { parsed = JSON.parse(data.toString()); } catch { return; }
+          if (parsed.type !== 'response.create') return;
+          ws.send(JSON.stringify({
+            type: 'response.completed',
+            response: { status: 'completed', model: 'gpt-6-sol', usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } },
+          }));
+        });
+      });
+      await startProxy();
+
+      const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2eff02';
+
+      const prewarmWs = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+        headers: {
+          'openai-beta': 'responses_websockets=2026-02-06',
+          session_id: sessionId,
+          'x-codex-turn-metadata': JSON.stringify({
+            session_id: sessionId,
+            request_kind: 'prewarm',
+            model: 'gpt-6-sol',
+            reasoning_effort: 'low',
+          }),
+        },
+      });
+      await new Promise((resolve, reject) => { prewarmWs.on('open', resolve); prewarmWs.on('error', reject); });
+      prewarmWs.close(1000, 'prewarm done');
+      await new Promise(resolve => prewarmWs.on('close', resolve));
+      await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
+
+      const mainWs = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+        headers: {
+          'openai-beta': 'responses_websockets=2026-02-06',
+          session_id: sessionId,
+        },
+      });
+      await new Promise((resolve, reject) => { mainWs.on('open', resolve); mainWs.on('error', reject); });
+      const done = waitForCompleted(mainWs);
+      mainWs.send(JSON.stringify({
+        type: 'response.create', generate: true,
+        model: 'gpt-6-sol',
+        reasoning: { effort: 'high' },
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'go' }] }],
+      }));
+      await done;
+      mainWs.close(1000, 'done');
+      await new Promise(resolve => mainWs.on('close', resolve));
+
+      const entries = await waitForIndexEntries(path.join(testHome, 'logs'), e => e.sessionId === sessionId, 2);
+      const mainEntry = entries.reduce((a, b) => (a.receivedAt > b.receivedAt ? a : b));
+      assert.equal(mainEntry.effort, 'high');
+    });
+  });
+
   it('closes the client and records an error entry when upstream rejects the handshake', async () => {
     upstreamServer.on('upgrade', (_req, socket) => {
       socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');

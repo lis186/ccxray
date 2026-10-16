@@ -2,6 +2,10 @@
 
 Live session triage for Claude, Codex, and Grok in Herdr: see what needs attention, why, what to do next, and how certain the evidence is.
 
+Guides: [English](../../docs/herdr-support.md) · [繁體中文](../../docs/herdr-support.zh-TW.md) · [日本語](../../docs/herdr-support.ja.md)
+
+The guides contain the complete Provider capability matrix, live-vs-local data coverage, and known limitations.
+
 ## Install
 
 Requirements: Herdr 0.8.0 or newer, Node.js 18 or newer, and at least one supported agent CLI. The plugin accepts `CCXRAY_NODE=/absolute/path/to/node`; if `node` is a nonfunctional mise shim, it automatically uses the newest installed mise Node version.
@@ -21,7 +25,7 @@ The install command does not run startup hooks in an already-running Herdr proce
 
 Quick Start is a keyboard menu. Use `Up`/`Down` or `j`/`k` to move, `Enter` to run the highlighted action, and `q`, `Esc`, or `Ctrl+C` to close it. Number and letter shortcuts remain available. Unavailable providers and analysis panes stay visible with their requirement, but cursor movement skips them. The `directory` status row names the project directory a launch would start in, resolved from the current Herdr workspace and never from the plugin's own checkout. The sidebar action is reversible: the same row installs it when absent and removes it when present, including when Herdr already has a `[ui.sidebar.agents]` table — installing then adds the ccxray rows to it and leaves the other rows untouched. A table this plugin created is removed whole; a table the user wrote or extended keeps everything except the ccxray rows. `--once` keeps a plain, noninteractive rendering for logs and diagnostics.
 
-Immediately after a provider starts, the sidebar may show `ccxray: ready · send prompt`: the pane has reached ccxray but no conversation turn exists yet. It changes to model, age, cost, and context after the first response. `ccxray: not linked` is reserved for a pane with no routed ccxray telemetry. When Herdr exposes a native session id, the plugin also uses it to recover safely from older misattributed hub history without borrowing another pane's session.
+Immediately after a provider starts, the sidebar may show `ccxray: ready · send prompt`: the pane has reached ccxray but no conversation turn exists yet. After the first response it changes to a compact context bar plus a cost/age fact or one alert; model and full turn detail remain in Mission Control and the dashboard. `ccxray: not linked` is reserved for a pane with no routed ccxray telemetry. When Herdr exposes a native session id, the plugin also uses it to recover safely from older misattributed hub history without borrowing another pane's session.
 
 Quick Start progressively reveals the rest of the product:
 
@@ -35,21 +39,53 @@ Reopen it at any time with the action below. To suppress only the automatic firs
 herdr plugin action invoke ccxray.herdr.quick-start
 ```
 
+## Keybindings
+
+Herdr's plugin manifest cannot declare keybindings — `[[keys.command]]` is user configuration — so until you bind a key, every ccxray action costs a full `herdr plugin action invoke` line. Quick Start's `Keybindings` row installs two, and the same row removes them:
+
+| Key | Opens |
+|-----|-------|
+| `prefix+m` | ccxray Mission Control |
+| `prefix+shift+m` | ccxray Quick Start |
+
+```bash
+herdr plugin action invoke ccxray.herdr.install-keybindings
+herdr plugin action invoke ccxray.herdr.remove-keybindings
+```
+
+Installing backs up `config.toml`, validates the result with `herdr config check`, restores your file if Herdr rejects it, and reloads. A key you have already bound to something else is reported and left alone, never overwritten; set `CCXRAY_HERDR_KEY_MISSION` or `CCXRAY_HERDR_KEY_QUICK_START` to a different `prefix+…` combination and run the action again. Removal deletes only the bindings whose command belongs to this plugin.
+
+To write them yourself instead, add this to `~/.config/herdr/config.toml` and run `herdr server reload-config`:
+
+```toml
+[[keys.command]]
+key = "prefix+m"
+type = "plugin_action"
+command = "ccxray.herdr.mission-control"
+description = "ccxray: Mission Control"
+```
+
+Quick Start's Mission Control row shows the key it is actually bound to, so a binding that never took effect is visible rather than silent.
+
+Analysis panes open as stable new tabs. `CCXRAY_HERDR_PANE_PLACEMENT=overlay` switches Quick Start, Mission Control, and Capability Footprint to a temporary zoomed pane that restores your previous focus when closed — the lighter shape most Herdr plugins use, offered as opt-in because the tab default is what this plugin's releases have been accepted against. `popup`, `split`, and `zoomed` are also accepted; an unrecognized value falls back to `tab`. Agent panes are unaffected: a launched agent always gets a real tab.
+
 ## What it adds
 
 - `Open ccxray Quick Start` reports setup progress, launches installed providers, installs the optional sidebar with consent, and reveals analysis panes as their data becomes useful.
 - `ccxray doctor` checks the Herdr runtime context, ccxray command resolution, hub status, and recent usage.
-- `Launch Claude/Codex/Grok via ccxray` opens a stable new Herdr tab and starts the selected agent through ccxray with Herdr identity exported. Set `CCXRAY_HERDR_LAUNCH_PLACEMENT=split` only when a split is intentional.
-- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): it moves the shared ccxray hub — discovery, the forked hub, and its dashboard — to that port, without switching to the standalone `--port` mode. Use it when the default port 5577 is held by something you want to keep running.
+- `Launch Claude/Codex/Grok via ccxray` opens a stable new Herdr tab and starts the selected agent through ccxray. Claude receives an explicit Herdr identity header; Codex and Grok use native session evidence or the available fallback mapping. Set `CCXRAY_HERDR_LAUNCH_PLACEMENT=split` only when a split is intentional.
+- The launch actions honour `PROXY_PORT` (set it in the environment Herdr runs in): discovery, the proxy the plugin starts, and its dashboard all move to that port. Use it when the default port 5577 is held by something you want to keep running. Note what the plugin starts there is a standalone proxy, not a hub — a hub is forked only by `ccxray <agent>` run directly, and a standalone has no idle shutdown, so it stays up until you stop it.
 - `ccxray usage summary` prints a compact cost/session/tool summary.
 - `Refresh ccxray badges` writes short `summary`, context, cost, model, cache, and failure tokens to the focused pane and workspace.
 - Sidebar badges refresh when Herdr detects an agent or its state changes, and once after restored agents start.
 - Background panes notify once when an agent becomes done or blocked. Done uses Herdr's done sound; blocked uses the request sound. Set `CCXRAY_HERDR_NOTIFICATIONS=blocked` to suppress completion notices or `off` to disable both.
-- `Install ccxray sidebar summary rows` renders a two-line model/age/cost and width-aware context summary under each agent.
+- `Install ccxray keybindings` binds `prefix+m` and `prefix+shift+m` with a backup and a config check; `Remove ccxray keybindings` reverses it.
+- `Open ccxray Mission Control` opens the Mission Control pane, so a key can be bound to it — keybindings can only target actions.
+- `Install ccxray sidebar summary rows` renders the managed Herdr state rows plus width-aware context and facts/alert rows under each agent.
 - `Open ccxray dashboard` delegates to `ccxray open`.
 - `Focus highest-priority ccxray agent` jumps to the first actionable Mission Control row.
-- `ccxray Mission Control` joins active Herdr agents to exact ccxray pane identities, ranks red/yellow/ready/green attention, and shows model, age, context pressure, cost, turns, tools, failures, cache health, evidence confidence, and the next action.
-- `ccxray Capability Footprint (Experimental)` aggregates seven-day MCP schema estimates and observed MCP/skill usage. It requires at least five eligible sessions, keeps outcome impact explicitly unknown, and frames candidates as experiments rather than recommendations.
+- `ccxray Mission Control` joins active Herdr agents to ccxray telemetry, preferring exact pane identity and falling back to native session/cwd evidence, then ranks red/yellow/ready/green attention and shows model, age, context pressure, cost, turns, tools, failures, cache health, evidence confidence, and the next action.
+- `ccxray Capability Footprint (Experimental)` aggregates seven-day MCP schema estimates and observed MCP/skill usage. Before five eligible sessions it shows observations only; candidate suggestions require at least five, keep outcome impact explicitly unknown, and are framed as experiments rather than recommendations.
 Task outcomes and cross-session value comparison deliberately remain ccxray core concerns. The plugin does not infer success from process exit, cost, context, or model behavior. Provider-neutral outcome capture is tracked in [ccxray issue #532](https://github.com/lis186/ccxray/issues/532).
 
 ## Common operations
@@ -62,8 +98,9 @@ herdr plugin install lis186/ccxray/plugins/herdr
 herdr plugin disable ccxray.herdr
 herdr plugin enable ccxray.herdr
 
-# Remove the sidebar rows before uninstalling the plugin
+# Remove the sidebar rows and keybindings before uninstalling the plugin
 herdr plugin action invoke ccxray.herdr.remove-sidebar-summary
+herdr plugin action invoke ccxray.herdr.remove-keybindings
 herdr plugin uninstall ccxray.herdr
 ```
 
@@ -95,25 +132,37 @@ in measurement. A session whose transcript cannot be located (codex panes, or a
 cwd ccxray never recorded) is never marked. `CCXRAY_BADGE_STALE_MS` sets the
 threshold (default 10 minutes).
 
-A marked badge also fires `ccxray import --once` detached, which is the thing
-that fixes it: the scan is throttled to once per 10 minutes and guarded by a
-lockfile, so many panes noticing at once still produce one scan.
-`CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the marker but stops the rescan.
+A badge refresh with an exact, repairable transcript for the pane's native
+session requests a detached `bin/repair-session-link.js` worker for that session;
+the badge refresh does not wait for transcript parsing or index I/O. The worker
+runs a targeted
+`ccxray import --target-transcript ... --provider ... --session-id ... --cwd ...`
+and records per-session repair state under
+`~/.ccxray/herdr-plugin/link-repair-v1/` by default, or under the configured
+`HERDR_PLUGIN_STATE_DIR`. Failed attempts write `retryAfter`, so a later refresh
+can retry after that time; the default delay is 30 seconds and can be changed
+with `CCXRAY_LINK_REPAIR_RETRY_MS`. `CCXRAY_BADGE_IMPORT_DISABLE=1` keeps the
+stale marker but prevents new repair workers; after a successful repair, the
+worker's follow-up refresh also uses it to prevent recursive repair requests.
 
 `refresh-all-badges` (the startup fan-out) runs the pane-independent `ccxray
 status` and `ccxray usage` reports once and shares them with every per-pane
 refresh, so each child's remaining work is its own session matching, layout
-lookup, and sidebar writes. Only reports that succeeded are shared — a child
-that finds its report missing recomputes its own, so a transient failure
-degrades one pane instead of painting all of them. Each child is capped at 10
-seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides); a child killed at the cap
-is reported as `timed out`, separately from `failed`.
+lookup, and sidebar writes. A pane whose native status is already `working`
+also starts the same bounded refresh loop as an event-driven pane, so its
+metadata is renewed before the Herdr token TTL removes it. Only reports that
+succeeded are shared — a child that finds its report missing recomputes its
+own, so a transient failure degrades one pane instead of painting all of them.
+Each child is capped at 10 seconds (`CCXRAY_BADGE_CHILD_TIMEOUT_MS` overrides);
+a child killed at the cap is reported as `timed out`, separately from `failed`.
 
-The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`.
+The context row is width-aware. `refresh-badges` first honors `CCXRAY_HERDR_SIDEBAR_COLS`, then Herdr plugin context sidebar fields, then uses `herdr pane layout` as a width estimate. The layout fallback subtracts Herdr's four-cell native Sidebar chrome before sizing the custom token, so the scalar remains visible instead of being replaced by Herdr's truncation marker. Its trend has a fixed viewport for the available width, with the newest context sample on the right. `░` means that a chart cell has no valid usage sample; it is not a zero. Wider sidebars show more recent turns and may append one compact signal such as `near full`, `fail 2x`, or `cache 92%`; a recovered history with a material net move may show `60%↑` or `60%↓`.
 
-Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact ccxray identity remains unknown; the plugin never borrows telemetry from another session in the project.
+The scalar percentage has a fixed, right-aligned slot, so `9%` and `100%` do not move the trend endpoint. An explicit context-input usage of zero is valid and renders as the lowest block; output-only or absent usage is unknown. If older valid history exists, an unknown latest turn keeps that history and places `░` at the right edge with scalar `?`. If no valid context history exists, the row shows only `?`. This is a stateless refresh convention, not an animation. The persisted provenance and legacy policy are defined in [ADR 0020](../../docs/decisions/0020-herdr-fixed-context-trend.md).
 
-Mission Control adapts from tiny panes through wide tabs. Use `Up`/`Down` or `j`/`k` to select, `Enter` to focus the exact Herdr pane, `d` to open that session in the ccxray dashboard, `f` to cycle all/attention/ready filters, `r` to refresh, `?` for help, and `q` or `Esc` to close. Selection follows pane identity across reordering and falls back to the nearest surviving row when a pane closes. A `~` prefix marks estimated cost; an unprefixed cost is exact.
+Context colors are mutually exclusive: unknown is neutral gray, `ctx <= 40%` is green, `40% < ctx <= 80%` is yellow, and `ctx > 80%` is red. A pane without exact or native ccxray/session evidence remains unknown; the plugin never borrows telemetry from another session in the project.
+
+Mission Control adapts from tiny panes through wide tabs. Use `Up`/`Down` or `j`/`k` to select, `Enter` to focus the exact Herdr pane, `d` to open the linked session in the ccxray dashboard when available, `f` to cycle all/attention/ready filters, `r` to refresh, `?` for help, and `q` or `Esc` to close. Selection follows pane identity across reordering and falls back to the nearest surviving row when a pane closes. A `~` prefix marks estimated cost; an unprefixed cost is exact.
 
 `CCXRAY_MISSION_MAX_ROWS` limits visible agents and `CCXRAY_MISSION_COLS` overrides terminal width for diagnostics. Single-session capability observations are hidden by default; pass `--capabilities` only for diagnostics or use Capability Footprint. Capability Footprint uses the same movement, filter, refresh, help, and close keys; its filters are all/MCP/skills.
 

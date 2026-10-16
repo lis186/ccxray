@@ -645,10 +645,10 @@ document.addEventListener('keydown', (e) => {
       return;
     }
     if (key === 'ArrowUp' || key === 'ArrowDown') {
+      // INVARIANT: the project name lives in data-project, never in the
+      // onclick source (see miller-columns.js renderProjectsCol).
       const projItems = [...colProjects.querySelectorAll('.project-item')].map(el => {
-        const m = el.getAttribute('onclick')?.match(/selectProject\((.+)\)/);
-        if (m) try { return JSON.parse(m[1].replace(/&quot;/g, '"')); } catch(e) {}
-        return null;
+        return el.dataset.project || null;
       }).filter(n => n !== null);
       if (!projItems.length) return;
       const cur = projItems.indexOf(selectedProjectName);

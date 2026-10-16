@@ -5,14 +5,30 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 
-// #397: DEFAULT_PRICING, LITELLM_LAG_OVERRIDES, and applyLagOverrides are
+// #397/A-010: DEFAULT_PRICING, LITELLM_LAG_OVERRIDES, and applyLagOverrides are
 // owned by default-rates.js — the single source of truth for offline rates.
-// pricing.js layers live LiteLLM data on top. Dependency arrow is one-way:
-// pricing.js -> default-rates.js (never the reverse).
+// lookupRates is the single rate lookup: getModelPricingWithConfidence below
+// delegates to it instead of matching against this file's own `pricingTable`,
+// so calculateCost and calculateCostSimple always resolve the same (model,
+// provider) to the same rates/confidence (INV-1). setRateTable pushes this
+// file's live LiteLLM-derived table back into default-rates.js once
+// fetchPricing() lands it — see the two call sites below. Dependency arrow is
+// one-way: pricing.js -> default-rates.js (never the reverse).
+//
+// INVARIANT (A-010 F1): buildRateTable is default-rates.js's ONE pure table
+// builder — this file's buildPricingTable() (below) is a thin wrapper around
+// it, so this file's live table and default-rates.js's own lazy singleton
+// (_ensureRateTable) can never diverge. mirrorProviderPrefixedKeys is also
+// owned there now; this file still uses it for context tables (pricing and
+// context windows mirror the same way, just with different `onlyProviders`).
 const {
-  DEFAULT_PRICING,
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides: _rawApplyLagOverrides,
+  mirrorProviderPrefixedKeys,
+  buildRateTable: _rawBuildRateTable,
+  hasCacheTierSplit,
+  lookupRates,
+  setRateTable,
 } = require('./default-rates');
 
 // ── Pricing ─────────────────────────────────────────────────────────
@@ -32,29 +48,19 @@ let lastLagOverrideStatus = [];
 let pricingTable = {};
 
 function ratesFromLiteLLMEntry(val) {
+  const input = (val.input_cost_per_token || 0) * 1_000_000;
   return {
-    input: (val.input_cost_per_token || 0) * 1_000_000,
+    input,
     output: (val.output_cost_per_token || 0) * 1_000_000,
     cache_create: (val.cache_creation_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
     cache_read: (val.cache_read_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
+    // S-4 (A-4.1): 1-hour cache-creation rate. LiteLLM wins when it lists the
+    // field; otherwise derive 2x input (Anthropic's published 1h rate), never
+    // the 5-minute `cache_create` rate.
+    cache_create_1h: val.cache_creation_input_token_cost_above_1hr
+      ? val.cache_creation_input_token_cost_above_1hr * 1_000_000
+      : input * 2,
   };
-}
-
-/**
- * Mirror `provider/model` -> bare `model` so wire IDs match LiteLLM rows.
- * @param {string[]} [onlyProviders] - restrict to these prefixes (e.g. ['xai']).
- *   Omit to mirror all providers (safe for context windows, not for pricing).
- */
-function mirrorProviderPrefixedKeys(table, onlyProviders) {
-  const out = { ...table };
-  for (const [key, val] of Object.entries(table)) {
-    const slash = key.indexOf('/');
-    if (slash === -1) continue;
-    if (onlyProviders && !onlyProviders.includes(key.slice(0, slash))) continue;
-    const bare = key.slice(slash + 1);
-    if (bare && out[bare] == null) out[bare] = val;
-  }
-  return out;
 }
 
 /**
@@ -83,15 +89,16 @@ function logLagOverrideStatus(status) {
   }
 }
 
+// INVARIANT (A-010 F1): thin wrapper around default-rates.js's buildRateTable —
+// the SAME pure builder _ensureRateTable() calls for the lazy singleton, so
+// this file's live (fetchPricing()) table and that lazy table can never
+// diverge on the same litellmPricing input (acceptance F1: they used to —
+// this function mirrored xai/ keys, _ensureRateTable() did not). Only the
+// lastLagOverrideStatus side effect is owned here.
 function buildPricingTable(litellmPricing) {
-  // INVARIANT(#397 defect 1): LiteLLM wins over DEFAULT_PRICING.
-  // DEFAULT is the offline floor — safety nets when LiteLLM lacks a key.
-  // Lag overrides run last, only when LiteLLM still lacks the model.
-  // INVARIANT(#397 defect 4): only xai/ keys are mirrored for pricing.
-  // Other providers (azure_ai/, oci/) can have different rates for the same model.
-  const mirrored = mirrorProviderPrefixedKeys(litellmPricing || {}, ['xai']);
-  const withDefaults = { ...DEFAULT_PRICING, ...mirrored };
-  return applyLagOverrides(withDefaults);
+  const { table, status } = _rawBuildRateTable(litellmPricing || {});
+  lastLagOverrideStatus = status;
+  return table;
 }
 
 async function fetchPricing() {
@@ -100,6 +107,13 @@ async function fetchPricing() {
     const cached = JSON.parse(await fsp.readFile(PRICING_CACHE_PATH, 'utf8'));
     if (Date.now() - cached.fetchedAt < PRICING_TTL_MS) {
       pricingTable = buildPricingTable(cached.pricing || {});
+      // INVARIANT(#397/A-010, INV-1): push the live table into default-rates.js's
+      // shared lookupRates table so calculateCostSimple (importer/cost-worker,
+      // in-process only — this call never reaches the forked cost-worker) sees
+      // the same rates calculateCost does. Only on a successful load — a failure
+      // branch below must NOT call this, or it would overwrite whatever
+      // lookupRates already read from the cache file with a cache-less table.
+      setRateTable(pricingTable);
       if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
       console.log(`\x1b[90m   Pricing loaded from cache (${new Date(cached.fetchedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })})\x1b[0m`);
       logLagOverrideStatus(lastLagOverrideStatus);
@@ -140,6 +154,9 @@ async function fetchPricing() {
             context: mirroredCtx,
           }, null, 2)).catch(e => console.error('Write pricing cache failed:', e.message));
           pricingTable = buildPricingTable(fetched);
+          // INVARIANT(#397/A-010, INV-1): see the cache-hit branch above — same
+          // rule, only on success.
+          setRateTable(pricingTable);
           setContextTable(mirroredCtx);
           console.log(`\x1b[90m   Pricing fetched: ${Object.keys(fetched).length} models, ${Object.keys(fetchedCtx).length} context windows\x1b[0m`);
           logLagOverrideStatus(lastLagOverrideStatus);
@@ -171,34 +188,52 @@ async function fetchPricing() {
  * confidence is 'exact', 'prefix', or null (not found).
  * The bare getModelPricing(model) call returns just the rates for backward
  * compat; getModelPricingWithConfidence returns the full object.
+ *
+ * #397/A-010 (INV-1): delegates to default-rates.js's lookupRates — the one
+ * rate lookup every pricing site shares — instead of matching against this
+ * file's own `pricingTable` directly, so calculateCost and calculateCostSimple
+ * can never disagree on the same (model, provider). See the `setRateTable`
+ * call sites in fetchPricing() for how this file's live table reaches it.
+ *
+ * #568: `provider` is the upstream key in LiteLLM's prefix vocabulary
+ * (anthropic, openai, xai, fireworks_ai, together_ai …). The same model can be
+ * served at different rates by different upstreams (LiteLLM lists both
+ * `deepseek-v4-pro` and `fireworks_ai/deepseek-v4-pro`), so a known provider
+ * checks its `provider/model` row first; a missing row falls back to the
+ * model-only lookup, which is unchanged when provider is omitted.
  */
-function getModelPricingWithConfidence(model) {
+function getModelPricingWithConfidence(model, provider) {
   if (!model) return { rates: null, confidence: null };
-  if (pricingTable[model]) return { rates: pricingTable[model], confidence: 'exact' };
-  // LiteLLM provider-prefixed form (xai/grok-4.3) when wire sent bare id
-  if (!model.includes('/') && pricingTable[`xai/${model}`]) return { rates: pricingTable[`xai/${model}`], confidence: 'exact' };
-  // #397: match logic must agree with default-rates.js calculateCostSimple
-  const keys = Object.keys(pricingTable).sort((a, b) => b.length - a.length);
-  for (const key of keys) {
-    const prefix = key.split('-202')[0];
-    if (model.startsWith(key) || model.startsWith(prefix)) return { rates: pricingTable[key], confidence: 'prefix' };
-  }
-  return { rates: null, confidence: null };
+  return lookupRates(model, provider);
 }
 
-function getModelPricing(model) {
-  return getModelPricingWithConfidence(model).rates;
+function getModelPricing(model, provider) {
+  return getModelPricingWithConfidence(model, provider).rates;
 }
 
-function calculateCost(usage, model) {
+// #568: provider is optional; see getModelPricingWithConfidence.
+function calculateCost(usage, model, provider) {
   if (!usage) return null;
-  const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model);
+  const { rates, confidence: rateConfidence } = getModelPricingWithConfidence(model, provider);
   if (!rates) return { cost: null, rates: null, confidence: 'unknown', warning: `Unknown model: ${model}` };
+  // S-4 (A-4.1/A-4.2): split 5m/1h cache-creation tokens at their own rates when
+  // the ephemeral breakdown is numeric; otherwise price the flat counter as
+  // before. `rates` may come from DEFAULT_PRICING or an old pricing-cache.json
+  // row with no `cache_create_1h` field — derive 2x input, never `cache_create`.
+  const cacheCreate1h = rates.cache_create_1h != null ? rates.cache_create_1h : rates.input * 2;
+  let cacheCost;
+  const cc = usage.cache_creation;
+  if (hasCacheTierSplit(cc)) {
+    cacheCost = ((cc.ephemeral_5m_input_tokens || 0) / 1_000_000) * rates.cache_create
+      + ((cc.ephemeral_1h_input_tokens || 0) / 1_000_000) * cacheCreate1h;
+  } else {
+    cacheCost = ((usage.cache_creation_input_tokens || 0) / 1_000_000) * rates.cache_create;
+  }
   const cost =
     ((usage.input_tokens || 0) / 1_000_000) * rates.input +
     ((usage.output_tokens || 0) / 1_000_000) * rates.output +
-    ((usage.cache_creation_input_tokens || 0) / 1_000_000) * rates.cache_create +
-    ((usage.cache_read_input_tokens || 0) / 1_000_000) * rates.cache_read;
+    ((usage.cache_read_input_tokens || 0) / 1_000_000) * rates.cache_read +
+    cacheCost;
   return { cost, rates, confidence: rateConfidence };
 }
 
@@ -212,8 +247,11 @@ function calculateCost(usage, model) {
 // fetch overwrites this table when it lands.
 let contextTableLoadAttempted = false;
 function ensureContextTable() {
-  if (contextTableLoadAttempted || Object.keys(contextTable).length) return;
+  if (contextTableLoadAttempted) return;
   contextTableLoadAttempted = true;
+  // fetchPricing() can populate the table without setting this flag. Set it
+  // before the emptiness check so it does not enumerate the warm table per lookup.
+  if (Object.keys(contextTable).length) return;
   try {
     const cached = JSON.parse(fs.readFileSync(PRICING_CACHE_PATH, 'utf8'));
     if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
@@ -257,6 +295,7 @@ module.exports = {
   LITELLM_LAG_OVERRIDES,
   applyLagOverrides,
   buildPricingTable,
+  ratesFromLiteLLMEntry,
   // Tests inject a table instead of reading the developer's pricing-cache.json,
   // which is package-relative and therefore outside CCXRAY_HOME isolation.
   __setContextTableForTests(table) {

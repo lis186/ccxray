@@ -372,6 +372,28 @@ function totalContextTokens(usage) {
     + (usage.cache_read_input_tokens || 0);
 }
 
+// A provider can return a usage object without any context-input accounting
+// (or omit usage entirely). Presence of a numeric context-bearing field is the
+// only reliable distinction between an explicit zero and an unknown value.
+// Keep this predicate small and provider-neutral: parsers normalize the
+// provider-specific names before consumers use the marker.
+function hasContextUsage(usage) {
+  if (!usage || typeof usage !== 'object') return false;
+  const hasFinite = key => Object.prototype.hasOwnProperty.call(usage, key)
+    && Number.isFinite(Number(usage[key]));
+  if (['input_tokens', 'prompt_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']
+    .some(hasFinite)) return true;
+  const cacheCreation = usage.cache_creation;
+  if (cacheCreation && typeof cacheCreation === 'object'
+      && ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens'].some(key => (
+        Object.prototype.hasOwnProperty.call(cacheCreation, key)
+        && Number.isFinite(Number(cacheCreation[key]))
+      ))) return true;
+  const cached = usage.input_tokens_details?.cached_tokens
+    ?? usage.prompt_tokens_details?.cached_tokens;
+  return Number.isFinite(Number(cached));
+}
+
 // #142: one named threshold source for the server-side context bands.
 const CTX_RED_PCT = 80, CTX_YELLOW_PCT = 40;
 function ctxBarColor(pct) {
@@ -852,27 +874,68 @@ function buildToolSources(entry) {
 // Server-side alias map for Codex tool names (mirrors client CODEX_TOOL_ALIASES).
 const OPENAI_TOOL_ALIASES = { exec_command: 'Bash', shell: 'Bash', read_mcp_resource: 'Read', apply_patch: 'Edit' };
 const OPENAI_PROCESS_TOOLS = new Set(['exec', 'exec_command', 'shell', 'run_terminal_command', 'process']);
+// #577: shared predicate — both extractors use this, so new types are added once
+const OPENAI_TOOL_CALL_TYPES = new Set(['function_call', 'custom_tool_call', 'tool_call']);
 
-// Extract tool call counts from Codex Responses API event stream.
-// Scans response.output_item.done events for function_call items.
+// #577: extract embedded MCP tool names from Codex exec input (JavaScript code string)
+function extractMcpFromExecInput(input) {
+  if (typeof input !== 'string') return [];
+  return [...input.matchAll(/tools\.(mcp__\w+)/g)].map(m => m[1]);
+}
+
+// #577: extract MCP tool name from Grok use_tool arguments (JSON with tool_name field)
+function extractMcpFromUseToolArgs(args) {
+  if (typeof args !== 'string') return null;
+  try { return JSON.parse(args).tool_name || null; } catch { return null; }
+}
+
+// Extract tool call counts from Codex/Grok Responses API event stream.
+// Scans response.output_item.done events for function_call/custom_tool_call items.
 // Falls back to response.output_item.added if .done events are absent.
 function extractOpenAIToolCalls(responseEventsOrOutput) {
   const counts = {};
   if (!Array.isArray(responseEventsOrOutput)) return counts;
-  const seen = new Set();
+  // codex-review P2-1: .done carries the complete payload (input/arguments);
+  // .added arrives first with empty fields and poisons `seen`. Process .done
+  // first so the complete item wins; .added is the fallback only.
+  const sorted = [];
   for (const ev of responseEventsOrOutput) {
-    // WS events: wrapped in { type: 'response.output_item.done', item: {...} }
-    // HTTP output[]: flat items { type: 'function_call', name: '...', ... }
     const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
+    sorted.push({ ev, done: isEvent && ev.type === 'response.output_item.done' });
+  }
+  sorted.sort((a, b) => (b.done ? 1 : 0) - (a.done ? 1 : 0));
+
+  const seen = new Set();
+  for (const { ev } of sorted) {
+    const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
-    if (item.type !== 'function_call' && item.type !== 'tool_call') continue;
+    if (!OPENAI_TOOL_CALL_TYPES.has(item.type)) continue;
     const itemKey = item.call_id || item.id || '';
     if (itemKey && seen.has(itemKey)) continue;
     if (itemKey) seen.add(itemKey);
-    const rawName = item.name || item.function?.name;
+    // codex-review P2-2: include item.tool_name (aligns with extractOpenAIToolCallIds + importer)
+    const rawName = item.name || item.function?.name || item.tool_name;
     if (!rawName) continue;
-    const name = OPENAI_TOOL_ALIASES[rawName] || rawName;
+
+    // #577 fix 3: Grok use_tool gateway — extract real MCP tool name
+    if (rawName === 'use_tool') {
+      const mcpName = extractMcpFromUseToolArgs(item.arguments);
+      if (mcpName) {
+        counts[mcpName] = (counts[mcpName] || 0) + 1;
+        continue;
+      }
+    }
+
+    // #577 fix 4: align alias logic with extractOpenAIToolCallIds
+    const name = OPENAI_PROCESS_TOOLS.has(rawName) ? 'Bash' : (OPENAI_TOOL_ALIASES[rawName] || rawName);
+
+    // #577 fix 2: extract embedded MCP names from exec input
+    if (OPENAI_PROCESS_TOOLS.has(rawName) && item.input) {
+      const mcpNames = extractMcpFromExecInput(item.input);
+      for (const mn of mcpNames) counts[mn] = (counts[mn] || 0) + 1;
+    }
+
     counts[name] = (counts[name] || 0) + 1;
   }
   return counts;
@@ -886,7 +949,7 @@ function extractOpenAIToolCallIds(responseEventsOrOutput) {
     const isEvent = typeof ev.type === 'string' && ev.type.startsWith('response.');
     if (isEvent && ev.type !== 'response.output_item.done' && ev.type !== 'response.output_item.added') continue;
     const item = isEvent ? ((ev.data && ev.data.item) || ev.item || {}) : ev;
-    if (item.type !== 'function_call' && item.type !== 'custom_tool_call' && item.type !== 'tool_call') continue;
+    if (!OPENAI_TOOL_CALL_TYPES.has(item.type)) continue;
     const callId = item.call_id || item.id;
     if (!callId || seen.has(callId)) continue;
     seen.add(callId);
@@ -1160,6 +1223,7 @@ module.exports = {
   computeTurnStep,
   renderAttributionPrefix,
   totalContextTokens,
+  hasContextUsage,
   printContextBar,
   ctxBarColor,
   CTX_RED_PCT,
@@ -1181,7 +1245,8 @@ module.exports = {
   extractOpenAIToolCallIds,
   extractOpenAITurnToolFail, extractOpenAITurnToolResults,
   decodeCodexToolOutput, CODEX_ASYNC_START, aggregateToolFailResults,
-  OPENAI_TOOL_ALIASES, OPENAI_PROCESS_TOOLS,
+  OPENAI_TOOL_ALIASES, OPENAI_PROCESS_TOOLS, OPENAI_TOOL_CALL_TYPES,
+  extractMcpFromExecInput, extractMcpFromUseToolArgs,
   extractDuplicateToolCalls,
   scanCredentials,
   scanObjectForCredentials,
