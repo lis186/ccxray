@@ -194,7 +194,7 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 ```
 
 - Hub lockfile: `~/.ccxray/hub.json` (written after `listen()` succeeds = readiness signal)
-- Hub log: `~/.ccxray/hub.log` (stdout/stderr of detached process)
+- Hub log: `~/.ccxray/hub.log` is effectively errors-only: normal `console.log` output is muted in hub mode. It has no instance boundaries or per-line timestamps, so its newest errors may belong to a previous hub. Compare with `hub.json` PID/start time before treating them as current.
 - An empty hub starts its 5s idle timer as soon as it writes the readiness lock. Registering a client cancels the timer; unregistering the last client starts it again.
 - Register and unregister socket messages carry one random token per launcher process. An unregister that arrives before that launch's registration cancels only that token; cancelled markers are swept after the launcher PID dies. On fail-open, registration settlement is bounded by the hub request timeout plus 500 ms. After settlement, ccxray sends one bounded unregister and retries after hub health intervals until acknowledgement, hub death, or launcher exit.
 - `ccxray <agent>` falls back to the provider's plain command if hub attach fails or exceeds `CCXRAY_ATTACH_TIMEOUT_MS` (default 3000ms), or if standalone startup fails before listen. The fallback is recorded in `fail-open.log`; `CCXRAY_FAIL_CLOSED=1` keeps the exit-on-failure behavior. Claude `--bg` / `--background` launches bypass the proxy and are recorded as `bg-bypass`; `-p --bg` is treated as a background bypass because `-p` takes no value.

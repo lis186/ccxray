@@ -26,9 +26,14 @@ fs.mkdirSync(path.join(FIX_HOME, 'logs'), { recursive: true });
 fs.writeFileSync(path.join(FIX_HOME, 'logs', 'index.ndjson'), FIXTURE.map(e => JSON.stringify(e)).join('\n') + '\n');
 process.on('exit', () => { try { fs.rmSync(FIX_HOME, { recursive: true, force: true }); } catch {} });
 
+// Usage also scans agent skill/config roots, independently of CCXRAY_HOME.
+const isolatedEnv = home => ({ ...process.env, HOME: home, USERPROFILE: home,
+  CCXRAY_HOME: home, LOGS_DIR: path.join(home, 'logs'),
+  CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CODEX_HOME: path.join(home, '.codex') });
+
 const cli = (...args) => execFileSync(
   process.execPath, ['server/index.js', 'usage', ...args],
-  { env: { ...process.env, CCXRAY_HOME: FIX_HOME, LOG_RETENTION_DAYS: '14' }, timeout: 10000 }
+  { env: { ...isolatedEnv(FIX_HOME), LOG_RETENTION_DAYS: '14' }, timeout: 10000 }
 ).toString();
 
 const cliErr = (...args) => {
@@ -69,7 +74,7 @@ function syntheticUsageHome(entries) {
 function retentionCli(home, env, ...args) {
   return execFileSync(
     process.execPath, ['server/index.js', 'usage', ...args],
-    { env: { ...process.env, CCXRAY_HOME: home, ...env }, timeout: 10000 },
+    { env: { ...isolatedEnv(home), ...env }, timeout: 10000 },
   ).toString();
 }
 
@@ -441,7 +446,7 @@ describe('usage parseArgs', () => {
     try {
       const r = JSON.parse(execFileSync(
         process.execPath, ['server/index.js', 'usage', '--json', '--cwd', '/work/proj'],
-        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+        { env: isolatedEnv(home), timeout: 10000 },
       ).toString());
       assert.equal(r.meta.totalEntries, 1); // /work/proj only, not /work/proj-sibling
       assert.equal(r.sessions.topSessions[0].sessionId, 's-in');
@@ -529,7 +534,7 @@ describe('usage parseArgs', () => {
     try {
       const r = JSON.parse(execFileSync(
         process.execPath, ['server/index.js', 'usage', '--json', '--session', 'latest'],
-        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+        { env: isolatedEnv(home), timeout: 10000 },
       ).toString());
       assert.equal(r.meta.totalSessions, 1);
       assert.equal(r.sessions.topSessions[0].sessionId, 'newest-sess');
@@ -564,7 +569,7 @@ describe('usage parseArgs', () => {
     try {
       const r = JSON.parse(execFileSync(
         process.execPath, ['server/index.js', 'usage', '--json', '--session', 'costliest'],
-        { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+        { env: isolatedEnv(home), timeout: 10000 },
       ).toString());
       assert.equal(r.meta.totalSessions, 1);
       assert.equal(r.sessions.topSessions[0].sessionId, 'actual-costliest');
@@ -623,7 +628,7 @@ describe('usage CLI', () => {
   it('bad CCXRAY_HOME exits 1 with JSON error', () => {
     try {
       execFileSync(process.execPath, ['server/index.js', 'usage', '--json'], {
-        env: { ...process.env, CCXRAY_HOME: '/tmp/no-such-ccxray-dir-' + process.pid },
+        env: { ...isolatedEnv(FIX_HOME), CCXRAY_HOME: '/tmp/no-such-ccxray-dir-' + process.pid },
         timeout: 5000,
       });
       assert.fail('should have exited 1');
@@ -876,7 +881,7 @@ describe('usage human output marks aggregate cost confidence', () => {
   };
   const humanCli = (home, ...args) => execFileSync(
     process.execPath, ['server/index.js', 'usage', ...args],
-    { env: { ...process.env, CCXRAY_HOME: home }, timeout: 10000 },
+    { env: isolatedEnv(home), timeout: 10000 },
   ).toString();
 
   for (const [name, costs, expected, fold] of [

@@ -41,7 +41,8 @@ const FLUSH_DELAY_MS = 2000;
 //   4 (#516)   — retire error_cumulative/error_cluster/sig_stuck (severity → 0);
 //                same inputs that produced stormy now produce sunny
 // INVARIANT: see docs/decisions/0013-beta1m-persist-session-window-derive.md
-const WEATHER_REV = 4;
+//   5 (#518)   — match known model prefixes; abstain from unknown latency baselines
+const WEATHER_REV = 5;
 
 // Single writer for persisted weather so the stamp can never be missed by one of
 // the three paths (rebuild finalize, _recomputeWeather, setWeather). A record

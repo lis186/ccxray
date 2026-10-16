@@ -9,7 +9,6 @@ var MODEL_BASELINES = {
   'claude-sonnet-4-6': 11900,
   'claude-haiku-4-5': 11100,
 };
-var BASELINE_FALLBACK = 20000;
 
 var LEVELS = [
   { ceil: 0.35, level: 'sunny',  emoji: '☀️' },
@@ -226,8 +225,12 @@ function sigLatencyDrift(turns) {
     if (ms != null) recent.push({ ms: ms, model: turns[i].model });
   }
   if (recent.length < 5) return { severity: 0, detail: {} };
-  var model = recent[0].model || '';
-  var baseline = MODEL_BASELINES[model] || BASELINE_FALLBACK;
+  var model = String(recent[0].model || '');
+  var key = Object.keys(MODEL_BASELINES).find(function(prefix) {
+    return model === prefix || model.indexOf(prefix + '-') === 0;
+  });
+  if (!key) return { severity: 0, detail: {} };
+  var baseline = MODEL_BASELINES[key];
   var vals = recent.map(function(r) { return r.ms; }).sort(function(a, b) { return a - b; });
   var p75 = percentile(vals, 0.75);
   var ratio = p75 / baseline;
