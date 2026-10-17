@@ -54,8 +54,12 @@ function warnLoopbackCodexChatgptBaseUrl(env) {
   const url = findLoopbackCodexChatgptBaseUrl(env);
   if (!url) return;
   warnedLoopbackChatgptBaseUrl = true;
-  console.warn(`[ccxray] chatgpt_base_url in ${codexConfigPath(env)} points at a loopback proxy (${url}); `
-    + 'Codex ChatGPT workspace discovery will fail (#671). Remove it — ccxray no longer needs it.');
+  // Host only: the raw value may carry userinfo (credentials).
+  let host = 'loopback';
+  try { host = new URL(url).host; } catch { /* keep generic */ }
+  // The scan is TOML-section-blind, so say "may" (the key could sit in an inactive profile).
+  console.warn(`[ccxray] chatgpt_base_url in ${codexConfigPath(env)} points at a loopback proxy (${host}); `
+    + 'Codex ChatGPT workspace discovery may fail (#671). Remove it — ccxray no longer needs it.');
 }
 
 function proxyBaseUrl(port, env, suffix = '') {
@@ -285,7 +289,8 @@ const AGENT_PROVIDERS = Object.freeze({
       // base_url is unset or ends there (`supports_codex_backend_routes()`);
       // the `/v1` suffix keeps that gate closed, so model traffic can never be
       // re-routed past the proxy. See docs/codex-workspace-routing.md.
-      warnLoopbackCodexChatgptBaseUrl(env);
+      // Codex only runs ChatGPT discovery without an API key.
+      if (!hasApiKey) warnLoopbackCodexChatgptBaseUrl(env);
       return {
         bin: 'codex',
         args: withCodexConfig(['-c', `openai_base_url="${baseUrl}"`], args),

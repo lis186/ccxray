@@ -296,4 +296,37 @@ describe('Codex user config loopback chatgpt_base_url warning (#671)', () => {
     assert.match(warnings[0], /#671/);
     assert.equal(fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8'), body, 'read-only');
   });
+
+  // The once-latch is module-global, so each case loads a fresh module copy.
+  const freshProviders = () => {
+    const id = require.resolve('../server/providers');
+    delete require.cache[id];
+    try { return require(id); } finally { delete require.cache[id]; }
+  };
+  const capture = (fn) => {
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (msg) => warnings.push(String(msg));
+    try { fn(); } finally { console.warn = orig; }
+    return warnings;
+  };
+
+  it('prints only the host, never userinfo from the URL', () => {
+    write('chatgpt_base_url = "http://user:s3cret@localhost:5577/v1"\n');
+    const warnings = capture(() => freshProviders().getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin', CODEX_HOME: codexHome }));
+    assert.equal(warnings.length, 1);
+    assert.ok(!warnings[0].includes('s3cret'), 'secret must not be printed');
+    assert.ok(!warnings[0].includes('user:'), 'userinfo must not be printed');
+    assert.match(warnings[0], /localhost:5577/);
+    assert.match(warnings[0], /may fail/);
+  });
+
+  it('does not warn when an API key is set (no ChatGPT discovery)', () => {
+    write('chatgpt_base_url = "http://localhost:5577/v1"\n');
+    const warnings = capture(() => {
+      const launch = freshProviders().getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin', CODEX_HOME: codexHome, OPENAI_API_KEY: 'sk-test' });
+      assert.ok(launch.args.length > 0);
+    });
+    assert.deepEqual(warnings, []);
+  });
 });

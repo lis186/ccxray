@@ -111,7 +111,7 @@ See the [export onboarding guide](export-onboarding.md).
 | `CCXRAY_DISABLE_TITLES` | — | `1` disables session title extraction. | `server/helpers.js` |
 | `CCXRAY_DEBUG_CLASSIFY` | — | `1` logs system-prompt agent classification. | `server/system-prompt.js` |
 
-`setup.js` and `win-launch.js` also read `HOME`, `SHELL`, `ZDOTDIR`, `PATH`, `PATHEXT`, and `APPDATA` for shell-profile and executable discovery; they are not ccxray settings.
+`setup.js`, `win-launch.js`, and `providers.js` (Codex `config.toml` lookup, with `USERPROFILE`) also read `HOME`, `SHELL`, `ZDOTDIR`, `PATH`, `PATHEXT`, and `APPDATA` for shell-profile and executable discovery; they are not ccxray settings.
 
 ## Matched names that are not environment variables
 
