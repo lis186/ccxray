@@ -255,11 +255,12 @@ The header total is the `unique` cost: the host row, which includes its indented
   - `ambiguous`, `unassigned`, `weak`, `truncated`, `evidence conflict`: see Attribution and Attribution status
   - `start tie`, `no local evidence`, `stamp unreadable`, and the `unmatched bullets` disclosure: see Ask windows
   - `unknown` completeness: no host on this machine (see Completeness)
+  - `close commit mismatch`: the round's matching close commit (the earliest commit with an `Agentflow-Close-Id` trailer that touches the notebook and whose notebook already holds this Reply) has a committer time more than a minute from the Reply stamp; the stamp is kept
   - `not yet imported: n turns`: transcript turns inside the window whose message id no index line carries; for Codex, which has no message id, the usage turns (`token_count` events the importer turns into index lines) in the window beyond the session's imported lines there, unless the proxy is that session's one source (import lags per turn, since a session spans days); the footer counts such Asks and points to `ccxray import --once`
   - `unmeasured`: no turns found
   - `revised`: a frozen snapshot was recomputed and changed
   - a `setup` row: turns before the first Ask's start
-- **The footer** states the sources per provider, the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning, transcript deletion or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
+- **The footer** states the sources per provider (of the host turns and the external runs it lists), the generation time, and snapshot status. In A1a, which has no snapshots, it also says the figures are recomputed from data still on disk and may change after proxy pruning, transcript deletion or a price-table update. It states that the report covers this machine's data only, and counts the Asks with `no local evidence` and with `stamp unreadable`, and the host turns not attributed because a shell `cd` left their cwd below the checkout root (condition 1).
 - **Tool statistics** stay in the dashboard.
 
 **Attribution status.** Completeness says whether usage was captured; attribution says whether it was filed under the right Ask. Even fully proxied traffic can be misfiled, so every row carries both an `evidence` and a `status`:
@@ -314,7 +315,7 @@ later:  … [--beside] [--all]
 - **Defaults:** without `--notebook`, it uses the notebook for the current directory: `ag.json` `target-doc` within `workspace-dir`, else `.agentflow/devlog.md`.
 - **Output:** stdout by default. `--write` updates the report store (plus the side file with `--beside`). `--json` emits the aggregate.
 - **`--all`:** covers every notebook of the project, including feature streams, archives and notebook-only streams. Archived rounds are deduplicated against the live notebook by Ask id and Reply stamp, and a notebook copied by stream merge-back is counted once.
-- **No side effects unless asked:** like every ccxray subcommand, it must not boot a server or prune. It does not import implicitly; freshness comes from an explicit `ccxray import --once` or the running hub. The report says when the newest imported turn is older than the window end.
+- **No side effects unless asked:** like every ccxray subcommand, it must not boot a server or prune. It does not import implicitly; freshness comes from an explicit `ccxray import --once` or the running hub. The report says when the newest imported turn is older than the window end. (A1a: one footer line counting the Asks whose window end, capped at now, is later than the newest imported index line; no notice when the index holds no imported line.)
 
 ## Phases
 

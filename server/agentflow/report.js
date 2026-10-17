@@ -20,6 +20,7 @@ const { attributeWorkers } = require('./workers');
 const { isNativeSubagent, attributeHosts } = require('./host');
 const { canonicalPath } = require('./chains');
 const { hostCompleteness, foldCompleteness } = require('./completeness');
+const { closeCommitMismatches } = require('./close-commits');
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -214,6 +215,8 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
   }
 
   const reported = notebooks[0];
+  // A round whose close commit disagrees with its Reply stamp keeps the stamp.
+  const closeMismatch = closeCommitMismatches(root, reported.abs, reported.asks);
   const ambiguousWorkerTurns = workers.ambiguousTurns.filter(t => t.candidateNotebooks.includes(reported.rel));
   // Import lags per turn, not per session (a session spans days): a transcript
   // turn inside the window whose message id no index line carries is missing.
@@ -291,6 +294,7 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
     const labels = [...w.labels, ...(w.unmatchedBullets ? [`unmatched bullets: ${w.unmatchedBullets}`] : [])];
     const missing = missingByAsk.get(w.id);
     if (missing) labels.push(`not yet imported: ${missing} turns`);
+    if (closeMismatch.has(w.id)) labels.push('close commit mismatch');
     if (hosts.noLocalTurns[w.id]) labels.push(`local host turns inside bounds: ${hosts.noLocalTurns[w.id]}`);
     asks.push({
       id: w.id,
@@ -311,6 +315,16 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
   }
 
   const count = l => reported.windows.filter(w => w.labels.includes(l)).length;
+  // Freshness (No side effects unless asked): the report never imports, so it
+  // says when the newest imported turn is older than a window's end. Only an
+  // index holding imported turns says anything; a proxy-only home has none.
+  const importedAts = turns.filter(e => e.imported || (e.sources && e.sources.includes('import'))).map(e => e.receivedAt).filter(Number.isFinite);
+  const newestImportedAt = importedAts.length ? Math.max(...importedAts) : null;
+  const importStale = newestImportedAt == null ? 0 : reported.windows
+    .filter(w => w.start != null && w.end != null && w.startKind !== 'no local evidence' && Math.min(w.end, now) > newestImportedAt).length;
+  // Sources of every turn this report lists: host rows and the external runs
+  // filed under this notebook, so a Codex worker's one-source choice is stated.
+  const listed = new Set([...hosts.rows.flatMap(r => r.turns), ...ourRuns.flatMap(r => r.turns), ...ambiguousWorkerTurns]);
   return {
     notebook: reported.rel,
     generatedAt: now,
@@ -321,7 +335,7 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
     workersAmbiguous: (() => { const t = [...ourRuns.filter(r => r.status === 'ambiguous' && r.ask == null).flatMap(r => r.turns), ...ambiguousWorkerTurns]; return t.length ? aggregate(t) : null; })(),
     asks,
     footer: {
-      sources: Object.entries(turns.filter(e => hosts.rows.some(r => r.turns.includes(e))).reduce((acc, e) => {
+      sources: Object.entries([...listed].reduce((acc, e) => {
         const k = `${e.provider || 'unknown'}: ${(e.sources || []).join('+') || 'unknown'}`;
         acc[k] = (acc[k] || 0) + 1;
         return acc;
@@ -330,6 +344,8 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
       stampUnreadable: count('stamp unreadable'),
       offRootTurns: hosts.offRoot.length,
       notYetImported: [...missingByAsk.values()].filter(n => n > 0).length,
+      newestImportedAt,
+      importStale,
       matchedNoNotebook: workers.footer.matchedNoNotebook,
       checkoutUnknown: workers.footer.checkoutUnknown,
       heuristicParentIgnored: workers.footer.heuristicParentIgnored,
@@ -404,11 +420,12 @@ function renderText(report) {
   if (report.workersAmbiguous) out.push(`external runs, ambiguous: ${fmtCost(report.workersAmbiguous)} · ${report.workersAmbiguous.calls} calls`, '');
   const f = report.footer;
   out.push('---');
-  out.push(`sources (host turns): ${f.sources.join(' · ') || 'none'}`);
+  out.push(`sources (host and worker turns): ${f.sources.join(' · ') || 'none'}`);
   out.push(`generated ${fmtLocal(report.generatedAt)} · no snapshot: figures are recomputed from data still on disk and may change as evidence ages or prices are updated; ${proxyRetentionText()}; provider transcripts are cleaned up according to provider settings`);
   out.push(`this machine's data only · no local evidence: ${f.noLocalEvidence} · stamp unreadable: ${f.stampUnreadable} · host turns below the checkout root, not attributed: ${f.offRootTurns}`);
   out.push(`external runs not in this report · matched no notebook: ${f.matchedNoNotebook} · heuristic parent ignored: ${f.heuristicParentIgnored} · worker runs on this machine, any checkout, whose checkout is unknown, while this notebook's hosts were active: ${f.checkoutUnknown}`);
   if (f.background) out.push(`Codex background threads in this checkout or its worker clones, not attributed: ${f.background}`);
+  if (f.importStale) out.push(`newest imported turn ${fmtLocal(f.newestImportedAt)} is older than the window end of ${f.importStale} Asks; later turns are counted only if the proxy recorded them; run \`ccxray import --once\` and report again`);
   if (f.notYetImported) out.push(`not yet imported: ${f.notYetImported} Asks have transcript turns the index lacks; run \`ccxray import --once\` and report again`);
   out.push('imported turns are hidden in the dashboard by default; open /?imported to see them');
   return out.join('\n') + '\n';

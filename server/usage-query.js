@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { resolveLogsDir } = require('./paths');
+const { resolveLogsDir, stripSlash } = require('./paths');
 const { mergeByResponseId } = require('./store');
 
 // The proxy copy of a turn is stamped at request time and the imported copy at
@@ -122,8 +122,6 @@ async function readMergedTurns(opts = {}) {
   const { rows, sources } = oneSourcePerSession(merged);
   return { turns: fillSessionCwd(rows), codexSources: sources };
 }
-
-function stripSlash(p) { return p.length > 1 ? p.replace(/\/+$/, '') : p; }
 
 // Roots match the cwd exactly: a checkout's linked worktrees live beneath it
 // (`.worktrees/x`, `.claude/worktrees/agent-*`) and are different checkouts.

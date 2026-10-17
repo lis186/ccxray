@@ -152,14 +152,23 @@ The evidence column says how the row was tied to the Ask: `prompt-match` (the ow
 - `estimated start`: the Ask's prompt was not found in a transcript, so its start is estimated.
 - `no local evidence`: the Ask ran on another machine.
 - `not yet imported: n turns`: use the one-command import flow above, then report again.
+- `close commit mismatch`: the round's `agf close` commit (`Agentflow-Close-Id` trailer) was committed more than a minute away from its Reply stamp. The stamp still ends the window. Git is only read; outside a Git checkout, or with no matching close commit, no Ask gets this label.
 - `unmatched bullets` / `unmatched owner submissions`: prompts in the notebook with no matching transcript message, or the reverse. Claude Code background-task notices recorded as bullets by agentflow's hook show up here too.
 - A `+` after a cost: some calls had no price, so the cost is a lower bound. A `~` marks a cost partly estimated from fallback rates.
 
 ### Footer
 
-The footer lists data sources per provider, reports that figures are recomputed
-from data still on disk and cover this machine only, and counts external runs
-the report could not place. The JSON also includes `notebook` (a path relative
+The footer lists data sources per provider for the host and worker turns the
+report lists (so a Codex worker's one-source choice, proxy or import, is stated
+too), reports that figures are recomputed from data still on disk and cover this
+machine only, and counts external runs the report could not place. A worker run
+whose clone was cloned from another checkout is that checkout's: it is not
+counted as `checkout unknown` here. The report never imports, so when the newest
+imported turn in the index is older than an Ask's window end, the footer says so
+(`newest imported turn … is older than the window end of n Asks`); this is
+separate from the per-Ask `not yet imported` label, which compares transcripts
+the report found with index lines. An index with no imported turns (proxy only)
+gives no freshness notice. JSON: `footer.newestImportedAt`, `footer.importStale`. The JSON also includes `notebook` (a path relative
 to the checkout), `generatedAt`, setup/unassigned aggregates, worker
 unassigned/ambiguous aggregates, `asks`, and this `footer`.
 
