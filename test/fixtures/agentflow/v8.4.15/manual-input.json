@@ -1,0 +1,8 @@
+{
+  "command": "node notebook-write.js append-input --notebook .agentflow/devlog.md --host claude --session S2 --input-stdin",
+  "ownerText": "check the parser",
+  "startupText": "build the parser",
+  "stamp": "2026-06-01 10:10:00 +0000",
+  "expectedCaptured": [["S1", "prompt-match"], ["S2", "prompt-match"]],
+  "expectedOmitted": [["S1", "prompt-match"], ["S2", "window"]]
+}
