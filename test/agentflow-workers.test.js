@@ -223,8 +223,12 @@ describe('window (E4)', () => {
   it('F2/F22: a recordless, chainless worker bound by its clone origin; another checkout\'s clone is not', () => {
     const noPath = [tool('t', 'h', 'S1', '{"command":"./wrapper.sh review"}', 10, '{"summary":"review done"}', 20)];
     assert.deepEqual(brief(run({ turns: [turn('a', 'W', C1, 15)], toolEvents: noPath, originOf: () => ROOT })), [[C1, 'A-001', 'unique', 'window', '']]);
-    const other = run({ turns: [turn('a', 'W', C1, 15)], originOf: () => '/work/other-checkout' });
-    assert.deepEqual([other.runs.length, other.footer.checkoutUnknown], [0, 1]);
+    // F22 / #649: bound to the other checkout, so reported only under its
+    // notebook and not counted here as `checkout unknown`.
+    const other = run({ turns: [turn('a', 'W', C1, 15)], originOf: () => '/work/other-checkout/' });
+    assert.deepEqual([other.runs.length, other.footer.checkoutUnknown, other.footer.matchedNoNotebook], [0, 0, 0]);
+    const unknown = run({ turns: [turn('a', 'W', C1, 15)], originOf: () => null });
+    assert.deepEqual([unknown.runs.length, unknown.footer.checkoutUnknown], [0, 1]);
   });
 
   it('F26: only the earliest run of a reused clone is bound by its reflog', () => {
