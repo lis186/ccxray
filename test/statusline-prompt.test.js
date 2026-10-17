@@ -217,20 +217,20 @@ describe('#563 statusline consent prompt', () => {
     assert.equal(r.declined, false);
   });
 
-  // A settings.json that exists but does not parse is NOT a pure addition —
-  // installing would overwrite unknown content, so the default must stay No
-  // (grok review P2).
-  it('treats an unparseable settings.json as wrap-risk — Enter declines, file untouched', async () => {
+  // #687: a settings.json that exists but does not parse is never rewritten —
+  // the launch prints one refusal line instead of asking, and an eager "y"
+  // typed ahead cannot install.
+  it('refuses on an unparseable settings.json — no question, file untouched', async () => {
     const sc = makeScenario();
     const settingsPath = path.join(sc.claudeHome, 'settings.json');
     fs.writeFileSync(settingsPath, '{ this is not json');
-    const r = await runLaunch(sc, { input: '\\n' });
+    const r = await runLaunch(sc, { input: 'y\\n' });
     assert.match(r.marker, /CLAUDE_RAN/, r.log);
-    assert.match(r.log, /\[y\/N\]/, 'unparseable file must not advertise Yes');
-    assert.match(r.log, /could not be parsed/, 'prompt says what y would really do (grok round-2 P3)');
-    assert.doesNotMatch(r.log, /delegated, not replaced/, 'must not borrow the wrap copy');
+    assert.doesNotMatch(r.log, /Track Claude subscription limits|\[y\/N\]|\[Y\/n\]/, 'no consent question');
+    assert.match(r.log, /Refusing to install: .*settings\.json is not valid JSON — fix or move it/);
     assert.equal(fs.readFileSync(settingsPath, 'utf8'), '{ this is not json', 'file left byte-identical');
-    assert.equal(r.declined, true);
+    assert.deepEqual(fs.readdirSync(sc.claudeHome), ['settings.json'], 'no backup or tmp file');
+    assert.equal(r.declined, false, 'refusal is not a decline');
   });
 
   it('labels the default Claude home from HOME/.claude.json during discovery', () => {

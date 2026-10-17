@@ -63,6 +63,7 @@ describe('setup-statusline CLI (#687)', () => {
       assert.match(r.stdout, /Usage: ccxray setup-statusline/);
       assert.match(r.stdout, /--dry-run/);
       assert.match(r.stdout, /--remove/);
+      assert.match(r.stdout, /settings\.json\.bak-<UTC timestamp>/, 'usage names the backup location');
       assert.deepEqual(snapshot(sc.claudeHome), before);
     });
   }
@@ -146,6 +147,42 @@ describe('setup-statusline CLI (#687)', () => {
     assert.deepEqual(JSON.parse(fs.readFileSync(sc.settingsPath, 'utf8')), { theme: 'dark' });
   });
 
+  it('refuses an unparseable settings.json: exit 1, one line naming the path, nothing written', () => {
+    for (const args of [['setup-statusline'], null]) {
+      const sc = makeHome('{ not json');
+      const before = snapshot(sc.claudeHome);
+      const r = run(sc.home, args || ['setup-statusline', '--claude-home', sc.claudeHome]);
+      assert.equal(r.status, 1, r.stdout + r.stderr);
+      const lines = r.stderr.trim().split('\n');
+      assert.equal(lines.length, 1, r.stderr);
+      assert.ok(lines[0].includes(sc.settingsPath), lines[0]);
+      assert.match(lines[0], /not valid JSON — fix or move it/);
+      assert.deepEqual(snapshot(sc.claudeHome), before, 'no rewrite, backup or tmp file');
+    }
+  });
+
+  it('--dry-run on an unparseable settings.json says it would refuse', () => {
+    const sc = makeHome('{ not json');
+    const before = snapshot(sc.claudeHome);
+    const r = run(sc.home, ['setup-statusline', '--dry-run']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /would refuse — .*not valid JSON; fix or move it/);
+    assert.deepEqual(snapshot(sc.claudeHome), before);
+  });
+
+  it('--claude-home pointing at a missing directory is a one-line error, exit 1', () => {
+    const sc = makeHome({});
+    const missing = path.join(sc.home, 'nope');
+    for (const extra of [[], ['--remove']]) {
+      const r = run(sc.home, ['setup-statusline', '--claude-home', missing, ...extra]);
+      assert.equal(r.status, 1);
+      const lines = r.stderr.trim().split('\n');
+      assert.equal(lines.length, 1, r.stderr);
+      assert.match(lines[0], /--claude-home .*nope is not a directory/);
+      assert.ok(!fs.existsSync(missing));
+    }
+  });
+
   it('--remove when nothing is installed changes nothing', () => {
     const sc = makeHome({ statusLine: { command: 'echo mine' } });
     const before = snapshot(sc.claudeHome);
@@ -173,6 +210,35 @@ describe('statusline-setup helpers (#687)', () => {
     assert.equal(setup.installStatusline(sc.claudeHome).status, 'updated');
     assert.equal(JSON.parse(fs.readFileSync(sc.settingsPath, 'utf8')).statusLine.type, 'command');
     assert.equal(setup.installStatusline(sc.claudeHome).status, 'already');
+  });
+
+  it('refuses an unparseable settings.json in the helper too', () => {
+    const sc = makeHome('{ not json');
+    assert.equal(setup.installStatusline(sc.claudeHome).status, 'refused');
+    assert.equal(fs.readFileSync(sc.settingsPath, 'utf8'), '{ not json');
+    assert.deepEqual(fs.readdirSync(sc.claudeHome), ['settings.json']);
+  });
+
+  it('backups are owner-only (0600) even when the original is 0644; the rewrite keeps 0644', { skip: process.platform === 'win32' }, () => {
+    const sc = makeHome({ theme: 'dark' });
+    fs.chmodSync(sc.settingsPath, 0o644);
+    const { backup } = setup.installStatusline(sc.claudeHome);
+    assert.equal(fs.statSync(backup).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(sc.settingsPath).mode & 0o777, 0o644);
+  });
+
+  it('never follows a pre-planted symlink at the tmp path', { skip: process.platform === 'win32' }, () => {
+    const sc = makeHome({ theme: 'dark' });
+    const originalRaw = fs.readFileSync(sc.settingsPath, 'utf8');
+    const victim = path.join(sc.home, 'victim');
+    fs.writeFileSync(victim, 'precious');
+    const tmp = `${fs.realpathSync(sc.settingsPath)}.ccxray-${process.pid}.tmp`;
+    fs.symlinkSync(victim, tmp);
+    assert.throws(() => setup.installStatusline(sc.claudeHome), { code: 'EEXIST' });
+    assert.equal(fs.readFileSync(victim, 'utf8'), 'precious', 'symlink target not written');
+    assert.ok(fs.lstatSync(tmp).isSymbolicLink(), 'a file we did not create is not unlinked');
+    assert.ok(fs.lstatSync(sc.settingsPath).isFile(), 'settings.json not replaced by the link');
+    assert.equal(fs.readFileSync(sc.settingsPath, 'utf8'), originalRaw);
   });
 
   it('a new settings.json is written without a backup', () => {

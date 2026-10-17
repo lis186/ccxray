@@ -38,15 +38,23 @@ function tightenCcxrayHome(home = resolveCcxrayHome(), { log = null, platform = 
   if (!st.isDirectory()) return 'skipped';
   if ((st.mode & 0o077) === 0) return 'tight';
   if (st.uid !== process.getuid()) return 'not-owned';
-  try { fs.chmodSync(home, HOME_DIR_MODE); } catch { return 'skipped'; }
-  if (log) log(`[ccxray] tightened ${home} permissions to 0700 (was 0${(st.mode & 0o777).toString(8)})`);
+  // Keep setuid/setgid/sticky: a setgid home keeps its group inheritance.
+  const special = st.mode & 0o7000;
+  try { fs.chmodSync(home, HOME_DIR_MODE | special); } catch { return 'skipped'; }
+  if (log) {
+    const fmt = m => `0${m.toString(8)}`;
+    log(`[ccxray] tightened ${home} permissions to ${fmt(HOME_DIR_MODE | special)} (was ${fmt(st.mode & 0o7777)})`);
+  }
   return 'tightened';
 }
 
 // Create the home owner-only, then tighten it if it already existed loose.
+// Missing parents of a custom CCXRAY_HOME get the default mode: they are not
+// ccxray's to restrict.
 function ensureCcxrayHome(env = process.env, opts = {}) {
   const home = resolveCcxrayHome(env);
-  fs.mkdirSync(home, { recursive: true, mode: HOME_DIR_MODE });
+  fs.mkdirSync(path.dirname(home), { recursive: true });
+  try { fs.mkdirSync(home, { mode: HOME_DIR_MODE }); } catch (err) { if (err.code !== 'EEXIST') throw err; }
   tightenCcxrayHome(home, opts);
   return home;
 }

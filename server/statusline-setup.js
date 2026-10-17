@@ -38,26 +38,47 @@ function backupStamp(now = new Date()) {
   return now.toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
+// Create `file` exclusively (O_EXCL: never follows or reuses a pre-planted
+// path) and write `content` through the fd. Unlinks only what it created.
+function writeExclusive(file, content, mode) {
+  const fd = fs.openSync(file, 'wx', mode);
+  try {
+    fs.writeFileSync(fd, content);
+    fs.fchmodSync(fd, mode); // umask may have cleared bits the original had
+  } catch (err) {
+    try { fs.closeSync(fd); } catch {}
+    try { fs.unlinkSync(file); } catch {}
+    throw err;
+  }
+  fs.closeSync(fd);
+}
+
 // Returns the backup path (null when there was no original to back up).
 function writeSettingsFile(settingsPath, settings, { now = new Date() } = {}) {
   let target = settingsPath;
   try { target = fs.realpathSync(settingsPath); } catch {}
   let mode = null;
   let backup = null;
+  let original = null;
   try {
     mode = fs.statSync(target).mode & 0o777;
-    backup = `${settingsPath}.bak-${backupStamp(now)}`;
-    // Two runs inside one second must not overwrite the first backup.
-    for (let n = 1; fs.existsSync(backup); n++) backup = `${settingsPath}.bak-${backupStamp(now)}-${n}`;
-    fs.copyFileSync(target, backup, fs.constants.COPYFILE_EXCL);
+    original = fs.readFileSync(target);
   } catch (err) {
     if (err.code !== 'ENOENT') throw err;
-    backup = null;
+  }
+  if (original) {
+    // Owner-only regardless of the source mode: settings can carry tokens.
+    // Two runs inside one second must not overwrite the first backup.
+    for (let n = 0; ; n++) {
+      backup = `${settingsPath}.bak-${backupStamp(now)}${n ? `-${n}` : ''}`;
+      try { writeExclusive(backup, original, 0o600); break; } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+      }
+    }
   }
   const tmp = `${target}.ccxray-${process.pid}.tmp`;
+  writeExclusive(tmp, JSON.stringify(settings, null, 2) + '\n', mode ?? 0o600);
   try {
-    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + '\n', mode == null ? undefined : { mode });
-    if (mode != null) fs.chmodSync(tmp, mode);
     fs.renameSync(tmp, target);
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch {}
@@ -70,6 +91,9 @@ function writeSettingsFile(settingsPath, settings, { now = new Date() } = {}) {
 function planInstall(claudeHome) {
   const settingsPath = settingsPathFor(claudeHome);
   const { exists, settings, unparseable } = readSettingsFile(settingsPath);
+  // A settings.json that does not parse holds content we cannot carry over;
+  // rewriting it would silently replace the user's whole file.
+  if (unparseable) return { status: 'refused', settingsPath };
   const existing = settings.statusLine?.command || '';
   if (existing.includes(ADAPTER_MARKER)) {
     // Legacy installs wrote no "type"; repair it in place.
@@ -81,7 +105,7 @@ function planInstall(claudeHome) {
   if (existing) statusLine._ccxrayDelegate = existing;
   const next = { ...settings, statusLine };
   return {
-    status: 'installed', settingsPath, exists, unparseable: Boolean(unparseable),
+    status: 'installed', settingsPath, exists,
     delegated: existing || null, before: settings.statusLine ?? null, after: statusLine, next,
   };
 }
@@ -113,9 +137,14 @@ function applyPlan(plan) {
   return { ...plan, backup };
 }
 
+function refusalMessage(settingsPath) {
+  return `Refusing to install: ${settingsPath} is not valid JSON — fix or move it, then rerun ccxray setup-statusline.`;
+}
+
+// status 'refused' (unparseable settings.json) writes nothing.
 function installStatusline(claudeHome) {
-  const { status, delegated, backup } = applyPlan(planInstall(claudeHome));
-  return { status, delegated: delegated || null, backup: backup || null };
+  const { status, delegated, backup, settingsPath } = applyPlan(planInstall(claudeHome));
+  return { status, settingsPath, delegated: delegated || null, backup: backup || null };
 }
 
 function uninstallStatusline(claudeHome) {
@@ -128,8 +157,10 @@ const USAGE = `Usage: ccxray setup-statusline [options]
 Install (or remove) the ccxray statusline adapter in Claude Code's
 settings.json so rate limits appear on the Usage page. An existing
 statusline is delegated to, not replaced, and restored on removal.
-The original settings.json is backed up to settings.json.bak-<timestamp>
-before it is rewritten.
+Before each rewrite the original is copied, owner-only (0600), to
+settings.json.bak-<UTC timestamp> in the same directory; delete old
+backups there when you no longer need them. A settings.json that is not
+valid JSON is never rewritten: fix or move it first.
 
 Options:
   --claude-home <dir>   Act on this Claude config dir only (default: every
@@ -164,10 +195,10 @@ function describePlan(plan, label) {
   const lines = [];
   if (plan.status === 'already') lines.push(`${label}: already configured — no change.`);
   else if (plan.status === 'not_installed') lines.push(`${label}: not installed — no change.`);
+  else if (plan.status === 'refused') lines.push(`${label}: would refuse — ${plan.settingsPath} is not valid JSON; fix or move it.`);
   else {
     const verb = { installed: 'would install', updated: 'would add "type": "command" to', removed: 'would remove' }[plan.status];
     lines.push(`${label}: ${verb} the statusline in ${plan.settingsPath}`);
-    if (plan.unparseable) lines.push('  settings.json does not parse; it would be REWRITTEN (a backup is kept)');
     lines.push(`  before: ${JSON.stringify(plan.before ?? null)}`);
     lines.push(`  after:  ${JSON.stringify(plan.after ?? null)}`);
     if (plan.exists) lines.push(`  backup: ${plan.settingsPath}.bak-<timestamp>`);
@@ -176,6 +207,7 @@ function describePlan(plan, label) {
 }
 
 module.exports = {
+  refusalMessage,
   USAGE,
   adapterCommand,
   isStatuslineInstalled,
