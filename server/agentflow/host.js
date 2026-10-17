@@ -6,8 +6,7 @@
 
 const { AGENT_WORKTREE } = require('../usage-query');
 const { resolveTurn } = require('./windows');
-
-function stripSlash(p) { return p && p.length > 1 ? p.replace(/\/+$/u, '') : p; }
+const { stripSlash } = require('../paths');
 
 // Native lineage: subagent turns are recorded under their host's session id,
 // whatever cwd their own worktree gave them.
