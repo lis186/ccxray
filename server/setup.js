@@ -1140,7 +1140,7 @@ function fetchRemovalState(deps) {
 }
 
 async function prepareContext(options, deps) {
-  const resolution = await resolveTargets(options, deps);
+  const resolution = await (deps.hooks.resolveTargets || resolveTargets)(options, deps);
   const prepared = [];
   for (const target of resolution.targets) {
     if (target.unknown) { prepared.push(target); continue; }
@@ -1673,6 +1673,10 @@ function printDryRun(context, options, deps, nextEnrollment, cursorState, browse
   } else io.log('Record-only: no export enrollment, cursor, or export settings will be written.');
   for (const target of context.targets) {
     if (target.unknown || target.error || target.parsed.kind === 'malformed') continue;
+    if (keepsExportBlock(target, options)) {
+      io.log(`Would leave the export setup block unchanged for ${targetAliases(target).join('; ')}.`);
+      continue;
+    }
     const block = renderRcBlock(context.installValues || context.values, target.kind === 'powershell', targetNewline(target, deps));
     io.log(`Would write setup block for ${targetAliases(target).join('; ')}:\n${block}`);
   }
@@ -1774,7 +1778,8 @@ function changeLines(context, options, cursorState, browserSetting, nextEnrollme
       changes.push(`skip malformed setup block after tombstone (cleanup incomplete): ${aliases.join('; ')}`);
       continue;
     }
-    const action = options.remove ? 'remove owned setup block' : 'write setup block';
+    const action = options.remove ? 'remove owned setup block'
+      : keepsExportBlock(target, options) ? 'leave export setup block unchanged' : 'write setup block';
     if (options.remove && target.parsed.kind !== 'owned') continue;
     for (const alias of aliases) {
       const logicalPath = alias.slice(alias.indexOf(': ') + 2);
@@ -1886,7 +1891,26 @@ async function runRemove(context, options, deps) {
   return failures.length ? 1 : 0;
 }
 
+// Plain setup never touches an owned export block (#696): it is left
+// byte-for-byte as it is, so no export value, ADC read, or enrollment write is
+// needed. Only --export rewrites it.
+function keepsExportBlock(target, options) {
+  return !options.export && hasOwnedExportBlock(target);
+}
+
 async function runInstall(context, options, deps) {
+  // Resolve values only from the blocks this run rewrites, so a record-only
+  // block and an export block in different shells never conflict (#696).
+  // Record-only blocks carry no export fields, so --export takes those from
+  // the existing export blocks.
+  const sources = options.export
+    ? (context.targets.some(hasOwnedExportBlock)
+      ? context.targets.filter(target => target.parsed?.kind !== 'owned' || hasOwnedExportBlock(target))
+      : context.targets)
+    : context.targets.filter(target => !keepsExportBlock(target, options));
+  context.valueResolution = resolveValues(options, sources);
+  context.values = context.valueResolution.resolved;
+  const keptTargets = context.targets.filter(target => keepsExportBlock(target, options));
   const { resolved, conflicts } = context.valueResolution;
   if (conflicts.length) {
     deps.logger.error(`Conflicting owned setup values: ${conflicts.join('; ')}. Pass the matching flag to rewrite every target.`);
@@ -1897,10 +1921,10 @@ async function runInstall(context, options, deps) {
     for (const failure of valueFailures) deps.logger.error(failure);
     return 2;
   }
-  // #691: record-only unless --export is passed or an owned block already
-  // exports — re-running plain setup must not silently switch export off.
-  const keptExport = !options.export && context.targets.some(hasOwnedExportBlock);
-  const exportMode = options.export || keptExport;
+  // #691: record-only unless --export is passed. #696: an owned export block
+  // left by an earlier install stays exporting, but plain setup leaves it
+  // untouched instead of re-enrolling (no ADC read, no enrollment write).
+  const exportMode = Boolean(options.export);
   context.exportMode = exportMode;
   if (exportMode && !resolved.bucket) {
     deps.logger.error('--export needs --bucket');
@@ -1911,8 +1935,8 @@ async function runInstall(context, options, deps) {
     return 2;
   }
   context.installValues = exportMode ? resolved : { retentionDays: resolved.retentionDays };
-  if (keptExport) {
-    deps.logger.log('Export stays enabled: the existing export settings were kept. To stop exporting, run ccxray setup --remove, then ccxray setup for a record-only install.');
+  for (const target of keptTargets) {
+    deps.logger.log(`Export stays enabled for ${targetAliases(target).join('; ')}: its export block was left unchanged. Run ccxray setup --export to refresh it and keep exporting, or ccxray setup --remove to stop exporting.`);
   }
 
   const preflight = await buildInstallChecks(context, options, deps);
@@ -1980,6 +2004,7 @@ async function runInstall(context, options, deps) {
 
     for (let index = 0; index < context.targets.length; index++) {
       const target = context.targets[index];
+      if (keepsExportBlock(target, options)) continue;
       const bytes = renderTargetRc(target, context.installValues, false, deps);
       const result = commitRcTarget(target, bytes, deps);
       if (result.kind !== 'committed') partialFailures.push({ file: target.logicalPath, error: result.error });
@@ -1996,13 +2021,13 @@ async function runInstall(context, options, deps) {
 
   if (partialFailures.length) {
     for (const failure of partialFailures) {
-      if (exportMode) deps.logger.error(`enrollment is ACTIVE (state: enrolled) — an already-running exporter with export settings may upload; ${failure.file} was not updated. Re-run ccxray setup, or ccxray setup --remove to un-enroll. (${failure.error?.message || 'write failed'})`);
+      if (exportMode) deps.logger.error(`enrollment is ACTIVE (state: enrolled) — an already-running exporter with export settings may upload; ${failure.file} was not updated. Re-run ccxray setup --export, or ccxray setup --remove to un-enroll. (${failure.error?.message || 'write failed'})`);
       else deps.logger.error(`setup incomplete: ${failure.file} was not updated. Re-run ccxray setup. (${failure.error?.message || 'write failed'})`);
     }
     return 1;
   }
   deps.logger.log('ccxray setup complete. Restart Claude Code sessions to activate the wrapper.');
-  if (!exportMode) deps.logger.log('Recording locally only; export is off. Enable it with ccxray setup --export --bucket B --domains D.');
+  if (!exportMode && !keptTargets.length) deps.logger.log('Recording locally only; export is off. Enable it with ccxray setup --export --bucket B --domains D.');
   return 0;
 }
 
@@ -2017,8 +2042,10 @@ Modes:
                             settings and needs no bucket, domains, or gcloud ADC.
   ccxray setup --export --bucket B --domains D
                             Also enroll in summary export to GCS (needs gcloud
-                            Application Default Credentials). An install that
-                            already exports keeps exporting when setup is re-run.
+                            Application Default Credentials). Re-running plain
+                            setup leaves an existing export block unchanged (it
+                            keeps exporting); --export refreshes it and
+                            --remove stops it.
 
 Options:
   --export                  Enable summary export (requires --bucket and --domains)

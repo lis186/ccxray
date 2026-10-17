@@ -7,8 +7,12 @@ shell wrapper and local recording settings: it writes no export settings, no
 enrollment, and no cursor, and never reads gcloud credentials. Pass `--export`
 with `--bucket` and `--domains` to enable summary export; the export flags are
 refused without `--export`. An install whose owned block already exports keeps
-exporting when `ccxray setup` is re-run without `--export`, and setup prints a
-one-line notice naming `ccxray setup --remove` as the way to stop.
+exporting when `ccxray setup` is re-run without `--export`: setup leaves that
+block byte-for-byte unchanged, does not read credentials or rewrite the
+enrollment, and prints a one-line notice naming `ccxray setup --export` (refresh
+and keep exporting) and `ccxray setup --remove` (stop). With several shell
+targets, each is handled on its own: record-only shells are rewritten, export
+shells are left as they are.
 
 Install ccxray. Before export setup, make sure Claude Code is installed and ccxray can
 read its logged-in account email; the `--domains` list must include that

@@ -927,7 +927,7 @@ test('dry-run output lists every logical alias and prints only the generated blo
       diagnostics: { durableHome: { enrollment: 'absent' } },
     };
     const deps = depsFor(fixture, { logger: log });
-    setup.printDryRun(context, setup.parseArgs(['--dry-run']).options, deps,
+    setup.printDryRun(context, setup.parseArgs(['--dry-run', '--export']).options, deps,
       { state: 'enrolled', enrolledAt: '2026-10-14T00:00:00.000Z', retentionDays: 30 },
       { absent: true, path: path.join(setupHome(fixture), 'export-cursor.json') }, null);
     const output = log.lines.join('\n');
@@ -1148,22 +1148,99 @@ test('export settings without --export are refused before anything is written', 
   });
 });
 
-test('an existing export install keeps exporting when plain setup is re-run, and says so', async () => {
+test('plain setup leaves an existing export block untouched: no ADC, gcloud, or enrollment write', async () => {
   await withFixture(async fixture => {
     // An install made by 2.x: its owned block carries the export settings.
-    fs.writeFileSync(rcFile(fixture), setup.renderRcBlock({
+    const original = 'export PATH=/synthetic/bin\n' + setup.renderRcBlock({
       bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
-    }, false));
+    }, false);
+    fs.writeFileSync(rcFile(fixture), original);
+    const enrollmentFile = exportSync.enrollmentPath(setupHome(fixture));
+    const enrollmentBytes = `${JSON.stringify({ synthetic: 'enrollment-sentinel' })}\n`;
+    fs.writeFileSync(enrollmentFile, enrollmentBytes, { mode: 0o600 });
+    const credentials = spyCredentials();
+    const marker = plantGcloud(fixture);
+    const spawned = [];
+    const writes = [];
+    const exportSyncSpy = {
+      writeCursor: (...args) => { writes.push('writeCursor'); return exportSync.writeCursor(...args); },
+    };
     const log = makeLogger();
-    const result = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, { logger: log }));
+    const result = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+      logger: log,
+      credentials: credentials.api,
+      exportSync: exportSyncSpy,
+      spawn: (file, args, options) => { spawned.push(file); return childProcess.spawn(file, args, options); },
+    }));
     assert.equal(result, 0, log.lines.join('\n'));
-    const rc = fs.readFileSync(rcFile(fixture), 'utf8');
-    assert.match(rc, /CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'/);
-    assert.match(rc, /CCXRAY_EXPORT_DOMAINS='example\.test'/);
-    assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'enrolled');
+    assert.equal(fs.readFileSync(rcFile(fixture), 'utf8'), original, 'export block must be byte-for-byte unchanged');
+    assert.equal(fs.readFileSync(enrollmentFile, 'utf8'), enrollmentBytes, 'enrollment must not be rewritten');
+    assert.equal(fs.existsSync(path.join(setupHome(fixture), 'export-cursor.json')), false);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(credentials.calls, []);
+    assert.equal(fs.existsSync(marker), false, 'gcloud must not run');
+    assert.ok(!spawned.some(file => path.basename(String(file)).startsWith('gcloud')));
+    assert.ok(!log.lines.some(line => /^(adc|enrollment|claude-account|account-count):/.test(line)), log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('leave export setup block unchanged')), log.lines.join('\n'));
     const notices = log.lines.filter(line => line.startsWith('Export stays enabled'));
     assert.equal(notices.length, 1);
+    assert.match(notices[0], /ccxray setup --export/);
     assert.match(notices[0], /ccxray setup --remove/);
+    assert.ok(!log.lines.some(line => line.includes('export is off')));
+
+    const dry = makeLogger();
+    assert.equal(await setup.runSetup(['--shell', 'bash', '--dry-run', '--yes'], depsFor(fixture, {
+      logger: dry, credentials: credentials.api,
+    })), 0);
+    assert.ok(dry.lines.some(line => line.includes('Would leave the export setup block unchanged')), dry.lines.join('\n'));
+    assert.doesNotMatch(dry.lines.join('\n'), /Would write setup block|Would write enrollment/);
+    assert.deepEqual(credentials.calls, []);
+  });
+});
+
+test('mixed targets: plain setup writes the record-only shell and leaves the export shell; --export upgrades both', async () => {
+  await withFixture(async fixture => {
+    const bashRc = rcFile(fixture, 'bash');
+    const zshRc = rcFile(fixture, 'zsh');
+    fs.mkdirSync(path.dirname(zshRc), { recursive: true });
+    fs.writeFileSync(bashRc, setup.renderRcBlock({ retentionDays: 30 }, false));
+    const exportBlock = setup.renderRcBlock({
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    }, false);
+    fs.writeFileSync(zshRc, exportBlock);
+    const hooks = {
+      resolveTargets: async () => ({
+        targets: [
+          { shell: 'bash', kind: 'posix', logicalPath: bashRc, label: 'bash' },
+          { shell: 'zsh', kind: 'posix', logicalPath: zshRc, label: 'zsh' },
+        ],
+        issues: [],
+        notices: [],
+      }),
+    };
+    const credentials = spyCredentials();
+    const log = makeLogger();
+    const result = await setup.runSetup(['--retention-days', '12', '--yes'], depsFor(fixture, {
+      logger: log, credentials: credentials.api, hooks,
+    }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    const bash = fs.readFileSync(bashRc, 'utf8');
+    assert.match(bash, /LOG_RETENTION_DAYS='12'/);
+    assert.doesNotMatch(bash, /CCXRAY_EXPORT_/);
+    assert.equal(fs.readFileSync(zshRc, 'utf8'), exportBlock);
+    assert.deepEqual(credentials.calls, []);
+    assert.equal(fs.existsSync(exportSync.enrollmentPath(setupHome(fixture))), false);
+    assert.ok(!log.lines.some(line => /needs --bucket|Conflicting/.test(line)), log.lines.join('\n'));
+    assert.equal(log.lines.filter(line => line.startsWith('Export stays enabled for zsh')).length, 1, log.lines.join('\n'));
+
+    // --export takes the bucket and domains from the existing export block.
+    const upgrade = makeLogger();
+    const upgraded = await setup.runSetup(['--export', '--yes'], depsFor(fixture, { logger: upgrade, hooks }));
+    assert.equal(upgraded, 0, upgrade.lines.join('\n'));
+    for (const file of [bashRc, zshRc]) {
+      assert.match(fs.readFileSync(file, 'utf8'), /CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'/, file);
+    }
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'enrolled');
   });
 });
 
@@ -1828,7 +1905,7 @@ test('install/remove phase-A interleavings are resolved by the operation that va
       logger: outerLog,
       isTTY: true,
       prompt: async () => {
-        nestedInstallCode = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture));
+        nestedInstallCode = await setup.runSetup(installArgs(), depsFor(fixture));
         return 'yes';
       },
     }));
@@ -2084,7 +2161,7 @@ test('an interrupted first enrollment can seed its cursor from the original enro
 
     failCursor = false;
     const secondDay = Date.parse('2026-10-15T00:01:00.000Z');
-    const second = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+    const second = await setup.runSetup(installArgs(), depsFor(fixture, {
       now: () => secondDay,
       fs: injectedFs,
     }));

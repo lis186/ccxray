@@ -49,7 +49,7 @@ gcloud auth application-default login
 ccxray setup --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
 ```
 
-An install that already exports (set up by 2.x) keeps exporting when `ccxray setup` is re-run without `--export`; setup prints one line saying so.
+An install that already exports (set up by 2.x) keeps exporting when `ccxray setup` is re-run without `--export`: setup leaves its export block unchanged, does not read credentials or rewrite enrollment, and prints one line naming `ccxray setup --export` (refresh) and `ccxray setup --remove` (stop).
 
 Transcript import is off by default on fresh installs and upgrades, in both hub and standalone mode. Set `CCXRAY_IMPORT_DISABLE=0` before starting ccxray or Herdr to opt in to automatic transcript import (restart an existing hub to apply it). For a one-time import, run `ccxray import --once`. `CCXRAY_IMPORT_DISABLE=1` blocks even explicit imports; unset it for a one-time import. Existing indexed history remains available.
 
