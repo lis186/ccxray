@@ -3,11 +3,25 @@
 How ccxray's test suite is run, and the hygiene rules every test must follow.
 
 ```bash
-npm test                          # Node test runner with HOME guard preload
+npm test                          # All three groups, sequentially (requires Chrome)
+npm run test:unit                 # Unit tests, default Node file concurrency
+npm run test:heavy                # Spawn-heavy / server e2e, file concurrency 1
+npm run test:browser              # Puppeteer e2e, file concurrency 1
+node scripts/run-tests.js all --list # Inspect group membership without running
 node --require ./test/helpers/home-guard.js --test test/usage.test.js # one file
 ```
 
 No build step, no test framework beyond Node's built-in `node:test`.
+
+`scripts/run-tests.js` partitions every top-level `test/*.test.js` exactly once.
+Files requiring Puppeteer go in `browser`; other files with `e2e` in their name
+or `child_process` in their source go in `heavy`; the rest go in `unit`.
+This deliberately includes mocked and one-shot child-process tests in the serial
+group. If a new test spawns through a helper rather than importing child_process,
+name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard.
+`npm test` attempts every group even if an earlier group fails and returns a
+failure if any group fails. For a system Chrome install, use
+`PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome npm test`.
 
 ## Test hygiene
 
@@ -449,7 +463,7 @@ specific non-browser test that needs to assert `~` expansion.
 
 ## CI enforcement
 
-`.github/workflows/ci.yml` runs the suite with `CCXRAY_HOME` pointed at a fresh
+`.github/workflows/ci.yml` runs each job with `CCXRAY_HOME` pointed at a fresh
 empty dir under `$RUNNER_TEMP`. This guarantees two things: no test can read the
 runner's real `~/.ccxray`, and every test starts from an empty log dir — so a
 test that skips rule 1 and reads logs it didn't create finds none and fails,
@@ -460,7 +474,20 @@ shared home and reads its own data back could still pass without isolating, and
 a shared home can introduce order-dependence between tests. Rule 1 (each test
 makes its own temp home) is the real guard; CI just stops the real-data
 dependency from going unnoticed. `$HOME` is left untouched so puppeteer's Chrome
-cache stays intact. It costs nothing extra — it doesn't re-run the suite.
+cache stays intact. The blocking `test (20)` / `test (22)` jobs run unit and
+serial heavy groups. The separate `browser-e2e` job runs all three Puppeteer
+files on Node 22 and is informational, like `audit`: failures stay visible,
+without `continue-on-error`. Branch protection must require only the two `test`
+matrix checks; repository settings are not changed by this workflow. Browser
+tests are still included in the full local `npm test` command.
+
+Local split-suite measurement (Node 20.19.2, system Chrome, 2026-10-17):
+unit 8.9s, serial heavy 367.3s, serial browser 16.2s (392.4s total runner time).
+Only the known box-local Herdr mise and setup HOME-guard failures occurred;
+browser tests passed. The issue's historical CI baseline was about 88s, but
+these are different machines and environments: no comparable CI delta has been
+measured. Serialization trades throughput for isolation; measure the new CI
+matrix before drawing a wall-time conclusion.
 
 ## `pricing-cache.json` is a second, non-`CCXRAY_HOME` input
 
