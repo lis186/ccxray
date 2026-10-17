@@ -20,7 +20,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn, spawnSync, fork, execFileSync } = require('node:child_process');
 
-const UPSTREAM_COMMIT = 'd0a6dd0a00d2d0914c900a0a5851764b32b50fb1'; // agentflow 8.4.14
+const UPSTREAM_COMMIT = '80fcd7f81e21b2c1cbcaeda53a40a0ede8fcab1d'; // agentflow 8.4.15
 const HERE = __dirname;
 const SERVER = path.join(HERE, '../../server/index.js');
 const OUT = path.join(HERE, '../../test/fixtures/agentflow/generated');

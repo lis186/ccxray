@@ -16,7 +16,7 @@ const sha = b => crypto.createHash('sha256').update(b).digest('hex');
 const CLONE = '/private/var/folders/x/T/agentflow-external-runner-AB12/clone';
 
 describe('replyDigest', () => {
-  it('matches upstream agentflow 8.4.14 (golden value computed with its completion-record.js)', () => {
+  it('matches upstream agentflow 8.4.15 (golden value computed with its completion-record.js)', () => {
     const golden = 'c5b446c8c67224149163410d7c50292540af69037fb1435dbb8894df18ab2931';
     const body = '\n\nDone.\n\n```completion-metadata\nHost review: PASS\n```\n';
     assert.equal(replyDigest('# ← Reply / A-001\n\n* _2026-06-01 10:05:00 +0000 (claude/unknown)_' + body + '\n## Questions\n\n- later answer\n\n---\n'), golden);
