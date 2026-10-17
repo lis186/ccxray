@@ -532,6 +532,12 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
   return entries;
 }
 
+function sameCodexUsage(a, b) {
+  if (!a || !b) return false;
+  return ['input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens']
+    .every(k => (a[k] || 0) === (b[k] || 0));
+}
+
 // Codex transcript lines are {timestamp, type, payload}. `payload.model` and
 // `payload.cwd` show up opportunistically on turn_context/session_meta lines;
 // usage lives on event_msg lines where payload.type === 'token_count'.
@@ -551,6 +557,12 @@ async function parseCodexSessionFile(filePath) {
   let pendingCompacted = false;
   // S-6/A-6.3: latest turn_context effort applies to every subsequent entry.
   let lastEffort = null;
+  // #508: Codex writes a `token_usage_record` line (payload.response_id = the
+  // upstream Responses `resp_…` id) just before the token_count it reports.
+  // Latest one since the previous token_count wins; it is attached only when
+  // its usage equals that token_count's last_token_usage, so a stray record can
+  // never lend its id to a different turn.
+  let pendingUsageRecord = null;
 
   const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
@@ -598,9 +610,17 @@ async function parseCodexSessionFile(filePath) {
       continue;
     }
 
+    if (obj.type === 'token_usage_record') {
+      if (typeof payload.response_id === 'string' && payload.response_id) pendingUsageRecord = payload;
+      continue;
+    }
+
     if (payload.type !== 'token_count') continue;
     const tu = payload.info && payload.info.last_token_usage;
+    const usageRecord = pendingUsageRecord;
+    pendingUsageRecord = null;
     if (!tu) continue;
+    const responseId = usageRecord && sameCodexUsage(usageRecord.usage, tu) ? usageRecord.response_id : null;
 
     const cached = tu.cached_input_tokens || 0;
     const usage = {
@@ -641,6 +661,9 @@ async function parseCodexSessionFile(filePath) {
       status: 200,
       isSSE: false,
       receivedAt,
+      // #508: entries without a matching token_usage_record (older Codex, or
+      // token_count re-emissions) carry no key and keep legacy behaviour.
+      ...(responseId ? { responseId } : {}),
       turnToolCallIds: pendingCalls,
       turnToolResults: prevResults,
       tokens,
@@ -713,8 +736,9 @@ function seedDedupCtx(ctx, rec) {
 // (Anthropic's own message id — stable across the id-format change and any
 // A-2.2 suffix below). Otherwise the same session holding the entry's new
 // full-ms id or legacy 10ms id is the same turn, unless that line carries a
-// different responseId: rows imported before responseId existed (#333) have
-// none, and Codex turns never do.
+// different responseId: rows imported before responseId existed (#333 for
+// Claude, #508 for Codex) have none, and Codex turns without a
+// token_usage_record still don't.
 function isAlreadyImported(entry, ctx) {
   if (entry.responseId && ctx.importedResponseIds.has(entry.responseId)) return true;
   const sessionIds = ctx.idsBySession.get(entry.sessionId);
@@ -726,12 +750,13 @@ function isAlreadyImported(entry, ctx) {
   for (const id of [entry.id, entry.id.slice(0, -1)]) {
     if (sessionIds.has(id) && sameTurn(id)) return true;
   }
-  if (entry.responseId) return false;
   // A prior scan may have written this turn under an A-2.2 suffix because
   // another session held the bare id; without this, every rescan re-imports it.
+  // Same responseId rule as the bare id: a legacy suffixed row (written before
+  // #508 gave Codex turns a responseId) is still this turn.
   const prefix = `${entry.id}-`;
   for (const id of sessionIds) {
-    if (id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length))) return true;
+    if (id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length)) && sameTurn(id)) return true;
   }
   return false;
 }
