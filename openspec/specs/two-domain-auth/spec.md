@@ -106,7 +106,9 @@ The launcher (`server/providers.js`) SHALL inject `X-Ccxray-Auth` into spawned a
 
 #### Scenario: Codex CLI (ChatGPT-OAuth mode)
 - **WHEN** ccxray spawns Codex without `OPENAI_API_KEY`
-- **THEN** SHALL use legacy `-c openai_base_url=... -c chatgpt_base_url=...` (no model_provider override, would break OAuth)
+- **THEN** SHALL use `-c openai_base_url=<proxy>/v1` only (no model_provider override, would break OAuth)
+- **AND** SHALL NOT override `chatgpt_base_url`: Codex runs ChatGPT workspace discovery against it and rejects a plaintext loopback URL (#671)
+- **AND** the proxy base URL SHALL end in `/v1`, never `/backend-api/codex`, so Codex cannot re-route model traffic to a discovered workspace origin
 
 ### Requirement: Internal header stripping
 ccxray SHALL strip `X-Ccxray-Auth` and `X-Ccxray-Bootstrap` from all requests forwarded to upstream APIs (Anthropic, OpenAI). These are ccxray-internal headers and must not leak.

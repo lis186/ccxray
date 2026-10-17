@@ -713,13 +713,11 @@ describe('codex desktop app launcher mode', () => {
       assert.deepEqual(capture.argv, [
         '-c',
         `openai_base_url="http://localhost:${port}/v1"`,
-        '-c',
-        `chatgpt_base_url="http://localhost:${port}/v1"`,
         'app',
         workspacePath,
       ]);
       assert.equal(capture.openaiBaseUrl, `http://localhost:${port}/v1`);
-      assert.equal(capture.chatgptBaseUrl, `http://localhost:${port}/v1`);
+      assert.equal(capture.chatgptBaseUrl, null, '#671: chatgpt_base_url must stay at the Codex default');
       assert.equal(capture.healthOk, true);
     } finally {
       fs.rmSync(fakeBin, { recursive: true, force: true });

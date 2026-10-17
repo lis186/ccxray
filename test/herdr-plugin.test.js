@@ -6576,10 +6576,30 @@ describe('codex round 2 fixes', () => {
     assert.ok(withKey.some(a => a.includes('/_ccxray/agent/herdr%3Aw1%3Acodex-key-launch/v1')));
 
     // ChatGPT-OAuth mode (no OPENAI_API_KEY) resolves its provider differently,
-    // so the legacy base-url form stays the fallback — same as providers.js.
+    // so the base-url form stays the fallback — same as providers.js. It must
+    // not override chatgpt_base_url (#671: workspace discovery rejects a
+    // loopback URL), and the proxy URL must keep its /v1 suffix: a
+    // /backend-api/codex base would let Codex re-route model traffic past ccxray.
     const noKey = codexAgentArgs(5577, { env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }) });
-    assert.ok(noKey.some(a => a.startsWith('openai_base_url=')), 'legacy fallback');
+    assert.deepEqual(noKey, ['-c', 'openai_base_url="http://localhost:5577/v1"']);
+    assert.ok(!noKey.some(a => a.includes('chatgpt_base_url')), 'no chatgpt_base_url override');
+    assert.ok(!noKey[1].includes('/backend-api/codex'));
     assert.ok(!noKey.some(a => a.includes('X-Ccxray-Auth')));
+  });
+
+  // Parity with server/providers.js `createLaunch` (#671): the OAuth-mode argv
+  // must be identical modulo the route prefix (client pid vs herdr pane).
+  it('codex OAuth argv matches providers.js modulo the route prefix', () => {
+    const { codexAgentArgs } = require('../plugins/herdr/bin/lib/ccxray');
+    const providers = require('../server/providers');
+    const strip = (args) => args.map(a => a.replace(/\/_ccxray\/(client|agent)\/[^/"]+/, ''));
+    const server = providers.getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin' }).args;
+    const hubServer = providers.getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin', CCXRAY_HUB_CLIENT_PID: '4242' }).args;
+    const plugin = codexAgentArgs(5577, { env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }) });
+    const panePlugin = codexAgentArgs(5577, { paneId: 'w1:p1', env: pluginEnv({ CCXRAY_BIN: fakeCcxray() }) });
+    assert.deepEqual(plugin, server);
+    assert.deepEqual(strip(hubServer), server);
+    assert.deepEqual(strip(panePlugin), server);
   });
 
   // `--agent` was sent and never compared, so a changed agent on identical
@@ -6910,7 +6930,8 @@ describe('Herdr OpenAI pane attribution (#672)', () => {
       else {
         assert.equal(plan.envVars.CCXRAY_CODEX_PROXY_BASE_URL, expected);
         assert.ok(plan.codexArgs.includes(`openai_base_url="${expected}"`));
-        assert.ok(plan.codexArgs.includes(`chatgpt_base_url="${expected}"`));
+        assert.ok(!plan.codexArgs.some(a => a.includes('chatgpt_base_url')), '#671: no chatgpt_base_url override');
+        assert.ok(expected.endsWith('/v1') && !expected.endsWith('/backend-api/codex'));
       }
     });
   }

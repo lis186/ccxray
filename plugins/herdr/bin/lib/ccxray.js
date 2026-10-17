@@ -3022,6 +3022,11 @@ function proxyEnvVars(agent, port, opts = {}) {
 // Emitting only the legacy form meant a codex pane launched here got 401s from
 // its own proxy whenever CCXRAY_LOOPBACK_REQUIRE_AUTH=1, while the wrapped
 // launch path worked — the same env-injection gap the claude branch had.
+//
+// The OAuth form overrides openai_base_url ONLY (#671): a loopback
+// chatgpt_base_url breaks Codex's ChatGPT workspace discovery, and the `/v1`
+// suffix keeps Codex from re-routing model traffic to a discovered workspace
+// origin. Same invariant and rationale as providers.js.
 function codexAgentArgs(port, opts = {}) {
   const env = opts.env || process.env;
   const baseUrl = `${paneProxyBaseUrl(port, opts.paneId)}/v1`;
@@ -3033,7 +3038,7 @@ function codexAgentArgs(port, opts = {}) {
       return ['-c', provider, '-c', 'model_provider="ccxray"'];
     }
   }
-  return ['-c', `openai_base_url="${baseUrl}"`, '-c', `chatgpt_base_url="${baseUrl}"`];
+  return ['-c', `openai_base_url="${baseUrl}"`];
 }
 
 // Analysis panes open as stable new tabs. v0.4 moved them off `split`, which

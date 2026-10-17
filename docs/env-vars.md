@@ -67,7 +67,8 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `CCXRAY_AGENT_ID` | — | Agent identity stamped on traffic (e.g. by the Herdr plugin), also hashed into export summaries. | `server/index.js`, `server/export-sync.js` |
 | `CCXRAY_AGENT_TYPE` | — | Agent type paired with `CCXRAY_AGENT_ID`. | `server/index.js`, `server/forward.js` |
 | `CLAUDE_CONFIG_DIR` | `~` | Where the Claude launcher looks for `.claude.json` to read the launch account. | `server/providers.js` |
-| `OPENAI_API_KEY` | — | When set, `ccxray codex` routes through a `model_providers.ccxray` entry; otherwise through `openai_base_url`/`chatgpt_base_url`. | `server/providers.js` |
+| `OPENAI_API_KEY` | — | When set, `ccxray codex` routes through a `model_providers.ccxray` entry; otherwise through `openai_base_url` only (`chatgpt_base_url` is left at Codex's default so ChatGPT workspace discovery works, #671). | `server/providers.js` |
+| `CODEX_HOME` | `~/.codex` | Read-only: `ccxray codex` (ChatGPT-OAuth mode) warns if `config.toml` there points `chatgpt_base_url` at a loopback proxy (#671). Never written. | `server/providers.js` |
 | `ANTHROPIC_CUSTOM_HEADERS` | — | Not read as configuration: the Claude launcher appends ccxray headers to it in the agent's environment. | `server/providers.js` |
 | `BROWSER` | — | `none` disables dashboard auto-open (as do `CI` and `SSH_TTY`). | `server/index.js` |
 | `CI`, `SSH_TTY` | — | Either set disables dashboard auto-open. | `server/index.js` |
@@ -110,7 +111,7 @@ See the [export onboarding guide](export-onboarding.md).
 | `CCXRAY_DISABLE_TITLES` | — | `1` disables session title extraction. | `server/helpers.js` |
 | `CCXRAY_DEBUG_CLASSIFY` | — | `1` logs system-prompt agent classification. | `server/system-prompt.js` |
 
-`setup.js` and `win-launch.js` also read `HOME`, `SHELL`, `ZDOTDIR`, `PATH`, `PATHEXT`, and `APPDATA` for shell-profile and executable discovery; they are not ccxray settings.
+`setup.js`, `win-launch.js`, and `providers.js` (Codex `config.toml` lookup, with `USERPROFILE`) also read `HOME`, `SHELL`, `ZDOTDIR`, `PATH`, `PATHEXT`, and `APPDATA` for shell-profile and executable discovery; they are not ccxray settings.
 
 ## Matched names that are not environment variables
 
