@@ -251,3 +251,61 @@ describe('OpenAI Responses summary normalization', () => {
     assert.equal(Array.isArray(normalized.resData), true);
   });
 });
+
+// Exercise both private production helpers without adding a test-only public API.
+describe('request deployment identity isolation (#505, #672)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const vm = require('node:vm');
+  const { createRequire } = require('node:module');
+  const registeredIdentity = { agentId: 'registered-client', agentType: 'codex' };
+
+  function loadDeploymentFields(filename) {
+    const file = path.join(__dirname, '../server', filename);
+    const localRequire = createRequire(file);
+    const realHub = localRequire('./hub');
+    const module = { exports: {} };
+    vm.runInNewContext(fs.readFileSync(file, 'utf8') + '\nmodule.exports = requestDeploymentFields;', {
+      require: name => name === './hub' ? {
+        ...realHub,
+        hasClients: () => true,
+        // Model a registered identity supplied by hub lookup without a URL route.
+        lookupClientIdentityForRequest: req => req.ccxrayAgentId
+          ? { agentId: req.ccxrayAgentId }
+          : registeredIdentity,
+      } : localRequire(name),
+      module, process, console, Buffer, __dirname: path.dirname(file),
+    }, { filename: file });
+    return module.exports;
+  }
+
+  for (const filename of ['forward.js', 'ws-proxy.js']) {
+    for (const route of ['registered-unrouted', 'registered-routed', 'pane-url']) {
+      it(`${filename}: ${route} only permits env identity for the pane URL`, () => {
+        const env = {
+          CCXRAY_USER_EMAIL: 'hub@example.test', CCXRAY_TEAM: 'hub-team',
+          CCXRAY_AGENT_TYPE: 'codex',
+        };
+        const saved = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+        Object.assign(process.env, env);
+        try {
+          const fieldsForRequest = loadDeploymentFields(filename);
+          const req = { headers: {} };
+          if (route === 'pane-url') req.ccxrayAgentId = 'herdr:w1:launch';
+          if (route === 'registered-routed') req.ccxrayClientPid = 123;
+          const fields = filename === 'forward.js'
+            ? fieldsForRequest(1, 'openai', req, {})
+            : fieldsForRequest(1, req, {});
+          assert.equal(fields.agentId, route === 'pane-url' ? req.ccxrayAgentId : registeredIdentity.agentId);
+          assert.equal(fields.userEmail, route === 'pane-url' ? env.CCXRAY_USER_EMAIL : undefined);
+          assert.equal(fields.team, route === 'pane-url' ? env.CCXRAY_TEAM : undefined);
+          assert.equal(fields.agentType, 'codex');
+        } finally {
+          for (const [key, value] of Object.entries(saved)) {
+            if (value === undefined) delete process.env[key]; else process.env[key] = value;
+          }
+        }
+      });
+    }
+  }
+});

@@ -185,9 +185,13 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
   return {
     ...deploymentFields(startTime, {
       identity: identity || {},
-      // Registered client routes own all deployment fields. Native pane routes
-      // supply agentId only; retain per-field env fallback on standalone servers.
-      useEnvIdentity: !routedClient && (!hub.hasClients() || envMatchesAgent),
+      // INVARIANT (#505): gate on hubIdentity, never the header-merged identity.
+      // A registered identity owns all deployment fields, even without a PID route.
+      // Only the pane URL route (#672), which supplies agentId alone, may retain
+      // per-field env fallback. Registered PID routes remain excluded.
+      useEnvIdentity: !routedClient
+        && (!hubIdentity || Boolean(req.ccxrayAgentId))
+        && (!hub.hasClients() || envMatchesAgent),
     }),
     ...launchAccountFields(headers),
   };

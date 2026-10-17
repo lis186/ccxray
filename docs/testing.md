@@ -494,3 +494,8 @@ native Herdr pane attribution with synthetic launch IDs and plugin-generated
 proxy URLs. They use temporary `CCXRAY_HOME` directories and local mock upstreams;
 no Herdr session or real provider credentials are needed. `test/hub.test.js`
 covers malformed and oversized internal pane routes.
+
+`test/forward-proxy.test.js` loads the private HTTP and WebSocket deployment
+helpers with a simulated hub lookup to check that registered identities do not
+inherit process email/team, even without a PID URL route. Pane URL identities
+retain per-field fallback. The tests restore every process env field they set.
