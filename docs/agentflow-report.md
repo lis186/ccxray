@@ -152,7 +152,7 @@ The evidence column says how the row was tied to the Ask: `prompt-match` (the ow
 - `estimated start`: the Ask's prompt was not found in a transcript, so its start is estimated.
 - `no local evidence`: the Ask ran on another machine.
 - `not yet imported: n turns`: use the one-command import flow above, then report again.
-- `close commit mismatch`: the round's `agf close` commit (`Agentflow-Close-Id` trailer) was committed more than a minute away from its Reply stamp. The stamp still ends the window. Git is only read; outside a Git checkout, or with no matching close commit, no Ask gets this label.
+- `close commit mismatch`: the round's `agf close` commit (`Agentflow-Close-Id` trailer; the earliest one whose notebook holds the Reply's heading and stamp lines, so text added after the close does not hide it) was committed more than a minute away from its Reply stamp. The stamp still ends the window. Git is only read; outside a Git checkout, or with no matching close commit, no Ask gets this label.
 - `unmatched bullets` / `unmatched owner submissions`: prompts in the notebook with no matching transcript message, or the reverse. Claude Code background-task notices recorded as bullets by agentflow's hook show up here too.
 - A `+` after a cost: some calls had no price, so the cost is a lower bound. A `~` marks a cost partly estimated from fallback rates.
 
@@ -164,11 +164,14 @@ too), reports that figures are recomputed from data still on disk and cover this
 machine only, and counts external runs the report could not place. A worker run
 whose clone was cloned from another checkout is that checkout's: it is not
 counted as `checkout unknown` here. The report never imports, so when the newest
-imported turn in the index is older than an Ask's window end, the footer says so
+imported line anywhere in the index (not only in the range the report reads) is
+older than a closed Ask's window end, the footer says so
 (`newest imported turn … is older than the window end of n Asks`); this is
 separate from the per-Ask `not yet imported` label, which compares transcripts
-the report found with index lines. An index with no imported turns (proxy only)
-gives no freshness notice. JSON: `footer.newestImportedAt`, `footer.importStale`. The JSON also includes `notebook` (a path relative
+the report found with index lines. Open Asks (no Reply yet) are not counted:
+their window ends now, which no imported transcript turn can reach, so the
+notice would always fire and importing could not clear it. An index with no
+imported lines (proxy only) gives no freshness notice. JSON: `footer.newestImportedAt`, `footer.importStale`. The JSON also includes `notebook` (a path relative
 to the checkout), `generatedAt`, setup/unassigned aggregates, worker
 unassigned/ambiguous aggregates, `asks`, and this `footer`.
 

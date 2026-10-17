@@ -87,6 +87,39 @@ describe('#649 report spec gaps', () => {
     assert.deepEqual([proxyOnly.footer.newestImportedAt, proxyOnly.footer.importStale], [null, 0]);
   });
 
+  it('counts an imported row older than the read range as the newest imported turn', () => {
+    const ctx = setup('freshness-old-import');
+    writeHost(ctx);
+    // Import stopped days ago: its newest line is far before the range the
+    // report reads, which must not silence the notice.
+    const old = at(15) - 3 * 24 * 3600 * 1000;
+    writeIndex(ctx, [hostRow({ cwd: ctx.repo }),
+      { id: 'old', sessionId: 'other', provider: 'anthropic', model: 'claude-test', cwd: '/elsewhere', receivedAt: old, responseId: 'msg-old', imported: true, usage: { input_tokens: 1 } }]);
+    const r = report(ctx);
+    assert.equal(r.footer.newestImportedAt, old);
+    assert.equal(r.footer.importStale, 1);
+  });
+
+  it('does not call an open Ask stale', () => {
+    const ctx = setup('freshness-open');
+    fs.writeFileSync(path.join(ctx.repo, '.agentflow', 'devlog.md'), ['# → Ask / A-001', '', '+ task', ''].join('\n'));
+    writeHost(ctx);
+    // Imported moments ago: an open window ends now, which no transcript
+    // timestamp can reach.
+    writeIndex(ctx, [hostRow({ cwd: ctx.repo, imported: true, importSource: 'claude-code' })]);
+    const r = report(ctx);
+    assert.ok(r.asks[0].labels.includes('open'), JSON.stringify(r.asks[0]));
+    assert.equal(r.footer.importStale, 0);
+  });
+
+  it('matches the close commit by Reply heading and stamp after the Reply body grows', () => {
+    const ctx = setup('close-appended');
+    execFileSync('git', ['init', '-q', ctx.repo]);
+    commit(ctx, '2026-06-01T10:05:00Z', `close A-001\n\nAgentflow-Close-Id: ${'a'.repeat(64)}`);
+    fs.appendFileSync(path.join(ctx.repo, '.agentflow', 'devlog.md'), 'merged back later\n');
+    assert.ok(report(ctx).asks[0].labels.includes('close commit mismatch'));
+  });
+
   it('flags an Ask whose close commit disagrees with its Reply stamp by more than a minute', () => {
     const trailer = `close A-001\n\nAgentflow-Close-Id: ${'a'.repeat(64)}`;
     const far = setup('close-far');

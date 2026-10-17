@@ -136,7 +136,7 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
   const earlySubs = collectSubmissions([...checkoutTranscripts(root, roots, { from: byStamp }).values()].map(readOnce).filter(Boolean));
   const starts = notebooks.flatMap(n => buildWindows(n.asks, earlySubs, { now }).windows.filter(w => w.startKind === 'matched').map(w => w.start));
   const from = Math.min(byStamp, ...starts.map(s => s - DAY));
-  const { turns, codexSources } = await readMergedTurns({ from, to: now, logsDir });
+  const { turns, codexSources, newestImportedAt } = await readMergedTurns({ from, to: now, logsDir });
   // Symlinked paths are resolved before comparison (a worker's /var is /private/var).
   const canon = new Map();
   for (const e of turns) {
@@ -316,12 +316,13 @@ async function buildReport({ notebook: given, archive = null, ask: onlyAsk = nul
 
   const count = l => reported.windows.filter(w => w.labels.includes(l)).length;
   // Freshness (No side effects unless asked): the report never imports, so it
-  // says when the newest imported turn is older than a window's end. Only an
-  // index holding imported turns says anything; a proxy-only home has none.
-  const importedAts = turns.filter(e => e.imported || (e.sources && e.sources.includes('import'))).map(e => e.receivedAt).filter(Number.isFinite);
-  const newestImportedAt = importedAts.length ? Math.max(...importedAts) : null;
+  // says when the newest imported line of the whole index is older than a
+  // closed Ask's window end. Only an index holding imported lines says
+  // anything; a proxy-only home has none. An open Ask is never counted: its
+  // window ends now, which no transcript timestamp reaches, so it would always
+  // be stale and importing could not clear it.
   const importStale = newestImportedAt == null ? 0 : reported.windows
-    .filter(w => w.start != null && w.end != null && w.startKind !== 'no local evidence' && Math.min(w.end, now) > newestImportedAt).length;
+    .filter(w => w.start != null && w.end != null && w.stamp != null && w.startKind !== 'no local evidence' && Math.min(w.end, now) > newestImportedAt).length;
   // Sources of every turn this report lists: host rows and the external runs
   // filed under this notebook, so a Codex worker's one-source choice is stated.
   const listed = new Set([...hosts.rows.flatMap(r => r.turns), ...ourRuns.flatMap(r => r.turns), ...ambiguousWorkerTurns]);
