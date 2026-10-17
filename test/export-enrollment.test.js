@@ -482,6 +482,18 @@ describe('startup diagnostics and outcome reporting', () => {
 describe('startup prune decision guards', () => {
   const DAY = 86_400_000;
 
+  it('keeps enrolled unsent logs and leaves the cursor absent when domains are empty', async () => {
+    await setup({ entries: [entry(1)], env: { CCXRAY_EXPORT_DOMAINS: '' } });
+    writeJson('export-enrollment.json', {
+      state: 'enrolled', enrolledAt: new Date(Date.now() - DAY).toISOString(), retentionDays: 5,
+    });
+    const pruneCalls = [];
+    assert.equal(await startupFlushAndPrune({ pruneLogs: async options => pruneCalls.push(options) }), 'not-enabled');
+    assert.deepEqual(pruneCalls, []);
+    assert.equal(uploads.length, 0);
+    assert.equal(fs.existsSync(path.join(home, 'export-cursor.json')), false);
+  });
+
   it('does not prune an enrolled home from an env-less startup', async () => {
     await setup({ env: { CCXRAY_EXPORT_GCS_BUCKET: '', LOG_RETENTION_DAYS: '17' } });
     writeJson('export-enrollment.json', {

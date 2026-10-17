@@ -73,7 +73,7 @@ after(() => {
 });
 
 describe('hub-owned config status value producers', () => {
-  it('D1: iterates the five exportState/exportReason outcomes with pinned precedence', () => {
+  it('D1: iterates the exportState/exportReason outcomes with pinned precedence', () => {
     exportSync._setUploader(null);
     const outcomes = [
       {
@@ -110,8 +110,14 @@ describe('hub-owned config status value producers', () => {
         expected: { exportState: 'refused', exportReason: 'config-dirs-retired' },
       },
       {
-        name: 'enabled',
+        name: 'refused domains-required',
         env: { CCXRAY_EXPORT_GCS_BUCKET: 'status-test-bucket' },
+        suppressionReason: null,
+        expected: { exportState: 'refused', exportReason: 'domains-required' },
+      },
+      {
+        name: 'enabled',
+        env: { CCXRAY_EXPORT_GCS_BUCKET: 'status-test-bucket', CCXRAY_EXPORT_DOMAINS: 'example.com' },
         suppressionReason: null,
         expected: { exportState: 'enabled', exportReason: null },
       },
@@ -184,7 +190,7 @@ describe('hub-owned config status value producers', () => {
         name: 'exportStatus',
         fn: exportSync.exportStatus,
         ambientValue: { CCXRAY_EXPORT_CONFIG_DIRS: 'ambient-refusal' },
-        argumentValue: { CCXRAY_EXPORT_GCS_BUCKET: 'argument-bucket' },
+        argumentValue: { CCXRAY_EXPORT_GCS_BUCKET: 'argument-bucket', CCXRAY_EXPORT_DOMAINS: 'example.com' },
         expected: { exportState: 'enabled', exportReason: null },
       },
       {

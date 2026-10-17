@@ -230,7 +230,7 @@ describe('export attempt records', () => {
     }
   });
 
-  it('records aggregate counts for filtered nothing-new and null counts when filtering is inactive', async () => {
+  it('records aggregate counts for filtered nothing-new and no attempt when domains are empty', async () => {
     const row = entry();
     await setup({ entries: [row], cursor: {
       lastId: row.id, seq: {}, partial: false, cutoffDt: today(), floorV: 1,
@@ -246,11 +246,8 @@ describe('export attempt records', () => {
     await setup({ entries: [row], env: { CCXRAY_EXPORT_DOMAINS: '' }, cursor: {
       lastId: row.id, seq: {}, partial: false, cutoffDt: today(), floorV: 1,
     } });
-    assert.equal(await quiet(() => exportSync.flushExport()), 'nothing-new');
-    const unfiltered = lastAttempt();
-    assert.equal(unfiltered.eligibleTurns, null);
-    assert.equal(unfiltered.excludedTurns, null);
-    assert.equal(unfiltered.candidateEmails, null);
+    assert.equal(await quiet(() => exportSync.flushExport()), 'not-enabled');
+    assert.equal(fs.existsSync(path.join(home, 'export-last.json')), false);
   });
 
   it('records no-data after aggregation', async () => {

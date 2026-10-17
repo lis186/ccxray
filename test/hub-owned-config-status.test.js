@@ -317,8 +317,13 @@ describe('hub-owned export/config status', () => {
         expected: { exportState: 'refused', exportReason: 'config-dirs-retired' },
       },
       {
-        name: 'enabled',
+        name: 'refused domains-required',
         env: { CCXRAY_HOME: testHome, CCXRAY_EXPORT_GCS_BUCKET: 'status-test-bucket' },
+        expected: { exportState: 'refused', exportReason: 'domains-required' },
+      },
+      {
+        name: 'enabled',
+        env: { CCXRAY_HOME: testHome, CCXRAY_EXPORT_GCS_BUCKET: 'status-test-bucket', CCXRAY_EXPORT_DOMAINS: 'example.com' },
         expected: { exportState: 'enabled', exportReason: null },
       },
     ];
