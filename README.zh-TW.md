@@ -74,6 +74,8 @@ ccxray --port 5602 status        # 找不到 hub lock 時才會探測 5602 port
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # 將現有 claude session 指向運行中的 ccxray hub
 ```
 
+Hub 與 standalone 的差異、如何讓 proxy 持續運作、以及如何讓不是透過 ccxray 啟動的 agent 走 proxy：詳見 [Running ccxray](docs/running-ccxray.md)（英文）。
+
 Provider 參數會傳給對應的 CLI；ccxray 自己辨識的 global flag（例如 `--port`、`--no-browser`）無論出現在參數列哪個位置，都會由 ccxray 取走而不會傳給 CLI。
 
 ### 多專案
@@ -138,7 +140,9 @@ Launcher 註冊在 `server/providers.js`（共用同一 hub + dashboard）：
 npx ccxray codex
 ```
 
-API key 與 ChatGPT 認證的 codex session 都支援。當 codex 帶著 `chatgpt-account-id` header 時，會自動路由到 `chatgpt.com/backend-api/codex` — 不需額外設定。Codex 啟動時的平台輪詢（plugin 清單、connector 目錄、app metadata）會照常代理，但不顯示在儀表板上，讓 timeline 只呈現對話流量。
+支援 API key session。**2.5.0-rc.3 已知不支援：** Codex 0.159.2 與 0.163.0 的 ChatGPT 登入 session，經由本機 HTTP proxy 進行 workspace-routing bootstrap 時會失敗（[#671](https://github.com/lis186/ccxray/issues/671)）。這類 session 請直接執行 Codex，不要套用 ccxray 的 base-URL 覆寫。discovery 路徑不符與 HTTPS-origin 限制的說明見[調查記錄](docs/codex-workspace-routing.md)。
+
+對相容的 ChatGPT client，帶有 `chatgpt-account-id` header 時會路由到 `chatgpt.com/backend-api/codex`。Codex 啟動時的平台輪詢（plugin 清單、connector 目錄、app metadata）會照常代理，但不顯示在儀表板上，讓 timeline 只呈現對話流量。
 
 **Beta 注意事項：**
 - WebSocket 傳輸（`/v1/responses` 升級）會逐 frame 解碼：每個 codex turn 記錄 model、token 用量、請求的 instructions/input/tools 與回應事件。少數大型 envelope 事件只保留精簡的時間錨點（供 TTFT 計算）而非完整內容，所以 codex turn 的細節在部分地方仍不及 Claude turn。
@@ -310,6 +314,8 @@ ccxray 是透明的 HTTP 代理。它將請求轉發到上游 API（Anthropic �
 | `CCXRAY_MODEL_PREFIX` | _（未設定）_ | 轉發前在 model 名稱前加上前綴（例如 `databricks-`）。適用於上游需要廠商前綴 model 名稱、但 Claude Code 只接受標準名稱的情況。 |
 | `HTTPS_PROXY` / `https_proxy` | _（未設定）_ | 透過 HTTP CONNECT tunnel 將對外 HTTPS 流量導向企業 proxy。 |
 | `ANTHROPIC_BASE_URL` | — | 自訂上游 Anthropic 端點（例如企業閘道）。支援 base path — `https://host/serving-endpoints/anthropic` 直接可用。設定了 `ANTHROPIC_TEST_*` 時以其為準。 |
+
+所有環境變數（含預設值與定義檔案）列於 [docs/env-vars.md](docs/env-vars.md)。
 
 原始 request/response 日誌會留在本機 `LOGS_DIR`（預設 `~/.ccxray/logs/`），檔名為 `{timestamp}_req.json` 和 `{timestamp}_res.json`。從 v1.0 升級？`./logs/` 中的日誌會在首次啟動時自動遷移。
 

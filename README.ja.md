@@ -74,6 +74,8 @@ ccxray --port 5602 status        # hub lock が見つからない場合に 5602 
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # 既存の claude セッションを実行中の ccxray hub に向ける
 ```
 
+hub と standalone の違い、プロキシを動かし続ける方法、ccxray 経由で起動しないエージェントをプロキシに向ける方法は [Running ccxray](docs/running-ccxray.md)（英語）を参照してください。
+
 provider の引数は各 CLI に渡されます。`--port` や `--no-browser` など ccxray が認識する global flag は、引数列のどこにあっても ccxray が処理し、CLI には渡しません。
 
 ### マルチプロジェクト
@@ -138,7 +140,9 @@ Codex 以外の OpenAI-wire クライアント（現在は Grok）は `OPENAI_WI
 npx ccxray codex
 ```
 
-API キー認証・ChatGPT 認証のどちらの codex セッションでも動作します。codex の `chatgpt-account-id` ヘッダーを検出すると `chatgpt.com/backend-api/codex` へのルーティングが自動的に行われます — 追加設定は不要です。codex 起動時のプラットフォームポーリング（プラグイン一覧、コネクタディレクトリ、アプリメタデータ）はプロキシされますがダッシュボードには表示されず、タイムラインには会話トラフィックのみが表示されます。
+API キーのセッションはサポートされています。**2.5.0-rc.3 で既知の非対応：** Codex 0.159.2 と 0.163.0 の ChatGPT ログインセッションは、ローカル HTTP プロキシ経由の workspace-routing bootstrap に失敗します（[#671](https://github.com/lis186/ccxray/issues/671)）。これらのセッションでは ccxray の base-URL 上書きを使わずに Codex を直接実行してください。discovery パスの不一致と HTTPS-origin の制約については[調査記録](docs/codex-workspace-routing.md)を参照してください。
+
+互換性のある ChatGPT クライアントでは、`chatgpt-account-id` ヘッダーがあると `chatgpt.com/backend-api/codex` へルーティングされます。codex 起動時のプラットフォームポーリング（プラグイン一覧、コネクタディレクトリ、アプリメタデータ）はプロキシされますがダッシュボードには表示されず、タイムラインには会話トラフィックのみが表示されます。
 
 **Beta の注意事項：**
 - WebSocket トランスポート（`/v1/responses` のアップグレード）はフレームごとにデコードされます：各 codex ターンは model、トークン使用量、リクエストの instructions/input/tools、レスポンスイベントを記録します。一部の大きなエンベロープイベントは完全なペイロードではなくコンパクトなタイミングアンカー（TTFT 用）として保存されるため、codex ターンの詳細度は部分的に Claude ターンに及ばないことがあります。
@@ -310,6 +314,8 @@ ccxray は透過型 HTTP プロキシです。リクエストを上流 API（Ant
 | `CCXRAY_MODEL_PREFIX` | _（未設定）_ | 転送前にモデル名にプレフィックスを付加（例：`databricks-`）。上流がベンダープレフィックス付きモデル名を要求するが Claude Code は標準名のみ受け付ける場合に使用。 |
 | `HTTPS_PROXY` / `https_proxy` | _（未設定）_ | HTTP CONNECT トンネル経由で送信 HTTPS トラフィックを企業プロキシに転送。 |
 | `ANTHROPIC_BASE_URL` | — | カスタム上流Anthropicエンドポイント（企業ゲートウェイなど）。ベースパスをサポート — `https://host/serving-endpoints/anthropic` がそのまま動作します。`ANTHROPIC_TEST_*`が設定されている場合はそちらが優先されます。 |
+
+すべての環境変数（デフォルト値と定義ファイル付き）は [docs/env-vars.md](docs/env-vars.md) に一覧があります。
 
 生の request/response ログはローカルの `LOGS_DIR`（デフォルトは `~/.ccxray/logs/`）に `{timestamp}_req.json` と `{timestamp}_res.json` として保存されます。v1.0からアップグレードする場合、`./logs/`のログは初回起動時に自動的に移行されます。
 
