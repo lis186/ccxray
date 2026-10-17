@@ -33,19 +33,25 @@ npx ccxray grok
 
 ccxray が proxy を読み込めない、または hub に接続できない場合、agent を直接起動し、その session は記録されません。hub 接続の予算時間はデフォルトで 3000 ms です。未解決の接続は時間切れで fallback し、それより前に失敗すれば早く fallback します。`CCXRAY_ATTACH_TIMEOUT_MS` で予算時間を変更できます。ccxray は `<CCXRAY_HOME>/fail-open.log`（デフォルトは `~/.ccxray/fail-open.log`）への記録を試みますが、書き込みは best effort で失敗することもあります。`CCXRAY_FAIL_CLOSED=1` を設定すると、fallback せずに起動を停止します。Claude の `--bg` / `--background` launch は仕様上 proxy を通りません。
 
-Claude の shell wrapper と任意のサマリー出力を設定して継続利用する場合：
-
-`setup` を実行する前に Claude Code をインストールし、ログイン済みアカウントのメールアドレスを ccxray が取得できることを確認してください。`--domains` のリストにはそのアカウントのドメインを含めます。setup には読み取り可能な gcloud Application Default Credentials も必要です。先に `gcloud auth application-default login` を実行してください。exporter 自体は service-account key file に対応していますが、setup は `CCXRAY_EXPORT_GCS_KEY_FILE` を拒否します。
+Claude の shell wrapper を設定して継続利用する場合（ローカル記録のみ）：
 
 ```bash
 npm install -g ccxray
-gcloud auth application-default login
-ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+ccxray setup
 # 新しいターミナルを開く（または shell profile を再読み込み）し、設定を確認：
 ccxray setup --check
 ```
 
-`setup` は shell profile に Claude wrapper と出力設定を追加し、ログ保持期間を設定して `CCXRAY_IMPORT_DISABLE=1` を書き込みます。Codex wrapper は追加しません。`ccxray setup --dry-run`（同じ setup オプションを指定）で変更をプレビューできます。`ccxray setup --remove` は ccxray が書き込んだ shell block を削除して tombstone を書き、今後のアップロードを停止します。ローカルログやアップロード済みサマリーは削除しません。詳細は[エクスポート設定ガイド](docs/export-onboarding.md)を参照してください。
+`ccxray setup` だけでは出力設定を書き込まず、bucket・domains・gcloud 認証情報も不要です。GCS へのサマリー出力は `--export` で明示的に有効にします。使用前に Claude Code をインストールし、ログイン済みアカウントのメールアドレスを ccxray が取得できることを確認してください。`--domains` のリストにはそのアカウントのドメインを含めます。出力の設定には読み取り可能な gcloud Application Default Credentials も必要です。先に `gcloud auth application-default login` を実行してください。exporter 自体は service-account key file に対応していますが、setup は `CCXRAY_EXPORT_GCS_KEY_FILE` を拒否します。
+
+```bash
+gcloud auth application-default login
+ccxray setup --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+```
+
+すでに出力が有効なインストール（2.x で設定）は、`--export` なしで `ccxray setup` を再実行しても出力を続けます。setup はその旨を 1 行表示します。
+
+`setup` は shell profile に Claude wrapper（`--export` 指定時は出力設定も）を追加し、ログ保持期間を設定して `CCXRAY_IMPORT_DISABLE=1` を書き込みます。Codex wrapper は追加しません。`ccxray setup --dry-run`（同じ setup オプションを指定）で変更をプレビューできます。`ccxray setup --remove` は ccxray が書き込んだ shell block を削除して tombstone を書き、今後のアップロードを停止します。ローカルログやアップロード済みサマリーは削除しません。詳細は[エクスポート設定ガイド](docs/export-onboarding.md)を参照してください。
 
 launcher の引数は provider registry で管理されています。現在 `claude`・`codex`・`grok` に対応。未知の provider コマンドは即座に失敗し、未設定のプロキシが静かに起動することはありません。
 
@@ -218,9 +224,9 @@ ccxray は Anthropic の `cache_creation` 使用量フィールドを読み取�
 
 ### Context HUD
 
-オプションのコンテキスト統計フッターを Claude Code 内の Claude の応答末尾に追加できます: `📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。デフォルトで有効。ダッシュボードのトップバーから切り替え可能です。
+オプションのコンテキスト統計フッターを Claude Code 内の Claude の応答末尾に追加できます: `📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。デフォルトは無効です（3.0.0 以降）。`ccxray hud on` またはダッシュボードのトップバーで有効にし、`ccxray hud status` で確認、`ccxray hud off` で無効にできます。
 
-**なぜ切り替えが必要なのか?** 親エージェントが Agent / Task ツール経由で sub-agent を呼び出す場合、追加されるブロックが sub-agent の応答を親エージェントに返る前に切り詰めてしまい、マルチエージェントワークフローでデータが静かに失われる可能性があります。sub-agent を多用するセッションでは HUD を無効にしてください。状態は `~/.ccxray/settings.json` に保存されます。
+**なぜ切り替えが必要なのか?** 親エージェントが Agent / Task ツール経由で sub-agent を呼び出す場合、追加されるブロックが sub-agent の応答を親エージェントに返る前に切り詰めてしまい、マルチエージェントワークフローでデータが静かに失われる可能性があります。sub-agent を多用するセッションや自動化されたセッションでは HUD を無効のままにしてください。状態は `~/.ccxray/settings.json` に保存されます（CLI とダッシュボードの切り替えで共有）。そこで明示的に `"statusLine": true` を設定している場合は、アップグレード後も有効のままです。実行中の hub や server は再起動後に CLI の変更を反映し、ダッシュボードの切り替えは即座に反映されます。
 
 ### ずっと残すための Star
 

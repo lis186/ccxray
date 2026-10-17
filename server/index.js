@@ -25,8 +25,9 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
-  setup               Configure export enrollment and Claude shell wrapper
+  setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
+  hud on|off|status   Turn the Context HUD on or off, or show it (off by default)
   secret              Manage shared secrets (upstream)
   usage               Show usage summary and costs
   agentflow report    Usage per Ask of an agentflow notebook
@@ -169,7 +170,7 @@ const { warmUp: warmUpCosts } = require('./cost-budget');
 const exportSync = require('./export-sync');
 const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = exportSync;
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
-const { readSettings } = require('./settings');
+const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
 const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
 const { findSharedPrefix } = require('./delta-helpers');
@@ -218,6 +219,7 @@ const unknownCommand = cliCommand
   && cliCommand !== 'import'
   && cliCommand !== 'setup'
   && cliCommand !== 'setup-statusline'
+  && cliCommand !== 'hud'
   && cliCommand !== 'usage'
   && !cliCommand.startsWith('-')
   && !providers.isAgentProvider(cliCommand);
@@ -236,6 +238,53 @@ if (process.argv[2] === 'secret') {
   }
   console.error(`\x1b[31mError: unknown secret subcommand "${sub || ''}". Supported: upstream\x1b[0m`);
   process.exit(1);
+}
+
+// ── "hud on|off|status" — early exit, no server/hub boot (#692) ──
+// Persists to the same settings.json the dashboard toggle writes.
+if (process.argv[2] === 'hud') {
+  const HUD_USAGE = `Usage: ccxray hud on|off|status
+
+  on          Append the context-stats footer to Claude replies
+  off         Do not append it (the default)
+  status      Show the current setting
+  --help, -h  Show this help
+
+The setting is stored in ${path.join(resolveCcxrayHome(), 'settings.json')}, shared with the
+dashboard toggle. The HUD can truncate subagent returns; keep it off for
+subagent-heavy or automated sessions.
+`;
+  const sub = process.argv[3];
+  const hudSettings = require('./settings');
+  if (process.argv.length > 4 || (sub && !['on', 'off', 'status', '--help', '-h'].includes(sub))) {
+    process.stderr.write(`\x1b[31mError: unknown hud argument "${process.argv.slice(3).join(' ')}".\x1b[0m\n${HUD_USAGE}`);
+    process.exitCode = 1;
+    return;
+  }
+  if (!sub || sub === '--help' || sub === '-h') {
+    process.stdout.write(HUD_USAGE);
+    return;
+  }
+  if (sub === 'status') {
+    let enabled;
+    try { enabled = hudSettings.readStatusLineSync(); }
+    catch (err) {
+      console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(hudSettings.hudStatusText(enabled) + '\n');
+    return;
+  }
+  try { hudSettings.setStatusLineSync(sub === 'on'); }
+  catch (err) {
+    console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(hudSettings.hudStatusText(sub === 'on') + '\n'
+    + 'A running ccxray hub or server keeps its current setting until it restarts; the dashboard toggle changes it live.\n');
+  return;
 }
 
 // ── "import --once" — early exit, no server/hub boot ──
@@ -369,7 +418,7 @@ const SECURITY_HEADERS = {
 };
 
 // Load persisted settings and apply immediately
-const settings = readSettings({ quiet: ['setup', 'setup-statusline', 'status', 'open'].includes(cliCommand) });
+const settings = readSettings();
 setStatusLineEnabled(settings.statusLine);
 
 // index.html with config injection — built fresh per request so dynamic values (statusLine) stay current
@@ -1611,6 +1660,7 @@ async function startServer({ onListen } = {}) {
     // Hub runs silently (logs go to hub.log)
   } else if (agentMode) {
     _origLog(`\x1b[90m${DISPLAY_NAME} → http://localhost:${actualPort}\x1b[0m`);
+    _origLog(`\x1b[90m   ${hudStatusText(getStatusLineEnabled())}\x1b[0m`);
   } else {
     console.log();
     console.log(`\x1b[35m🔌 ${DISPLAY_NAME} proxy listening on http://localhost:${actualPort}\x1b[0m`);
@@ -1628,6 +1678,7 @@ async function startServer({ onListen } = {}) {
       console.log(`   xAI Upstream → ${xaiUrl}${xaiNote}`);
     }
     console.log(`   Logs → ${config.storage.location || config.LOGS_DIR}`);
+    console.log(`   ${hudStatusText(getStatusLineEnabled())}`);
     console.log();
     console.log(`   Usage: ANTHROPIC_BASE_URL=http://localhost:${actualPort} claude`);
     console.log(`          ccxray codex | ccxray grok\x1b[0m`);
