@@ -3,6 +3,8 @@
 // #690 — the ccxray home is created 0700 by every path, and an existing
 // group/world-accessible home owned by the current user is tightened to 0700
 // at startup with one notice line (no-op when already tight or not owned).
+// Only the default ~/.ccxray, or a custom CCXRAY_HOME that already holds
+// ccxray-owned files, is chmod'ed; any other custom CCXRAY_HOME only warns.
 //
 // Isolation (docs/testing.md): throwaway HOME and CCXRAY_HOME per case;
 // CCXRAY_IMPORT_HOMES / CCXRAY_IMPORT_CODEX_HOMES pinned to empty dirs so the
@@ -33,13 +35,16 @@ function tmpdir() {
 
 function mode(p) { return fs.statSync(p).mode & 0o777; }
 
+// ccxrayHome === null runs with CCXRAY_HOME unset, i.e. the default <HOME>/.ccxray.
 function run(base, ccxrayHome, args) {
+  const env = { ...process.env };
+  delete env.CCXRAY_HOME;
+  if (ccxrayHome !== null) env.CCXRAY_HOME = ccxrayHome;
   return spawnSync(process.execPath, [SERVER, ...args], {
     cwd: ROOT,
     env: {
-      ...process.env,
+      ...env,
       HOME: base,
-      CCXRAY_HOME: ccxrayHome,
       CCXRAY_IMPORT_DISABLE: '0',
       CCXRAY_IMPORT_HOMES: fs.mkdtempSync(path.join(base, 'noclaude-')),
       CCXRAY_IMPORT_CODEX_HOMES: fs.mkdtempSync(path.join(base, 'nocodex-')),
@@ -80,12 +85,12 @@ describe('ccxray home permissions (#690)', { skip: !POSIX && 'POSIX mode bits on
     assert.equal(paths.ensureCcxrayHome({ CCXRAY_HOME: home }), home);
   });
 
-  it('startup tightens an existing 0755 home with one notice line, then is silent', () => {
+  it('startup tightens an existing 0755 default home with one notice line, then is silent', () => {
     const base = tmpdir();
-    const home = path.join(base, 'loose');
+    const home = path.join(base, '.ccxray');
     fs.mkdirSync(home);
     fs.chmodSync(home, 0o755);
-    const r = run(base, home, ['import', '--help']);
+    const r = run(base, null, ['import', '--help']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(mode(home), 0o700);
     const notices = r.stderr.split('\n').filter(l => /tightened/.test(l));
@@ -93,9 +98,70 @@ describe('ccxray home permissions (#690)', { skip: !POSIX && 'POSIX mode bits on
     assert.match(notices[0], /0700 \(was 0755\)/);
     assert.ok(!r.stderr.includes('\x1b['), 'no ANSI colour when stderr is not a TTY');
 
-    const again = run(base, home, ['import', '--help']);
+    const again = run(base, null, ['import', '--help']);
     assert.equal(again.status, 0, again.stderr);
     assert.doesNotMatch(again.stderr, /tightened/);
+  });
+
+  it('startup warns about a loose custom CCXRAY_HOME and keeps its mode', () => {
+    const base = tmpdir();
+    const home = path.join(base, 'shared');
+    fs.mkdirSync(home);
+    fs.chmodSync(home, 0o755);
+    const r = run(base, home, ['import', '--help']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(mode(home), 0o755);
+    assert.doesNotMatch(r.stderr, /tightened/);
+    const warnings = r.stderr.split('\n').filter(l => /warning: CCXRAY_HOME/.test(l));
+    assert.equal(warnings.length, 1, r.stderr);
+    assert.match(warnings[0], /0755/);
+  });
+
+  it('startup tightens a custom CCXRAY_HOME that already holds ccxray files', () => {
+    const base = tmpdir();
+    const home = path.join(base, 'mine');
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(home, 'local-secret'), 'x', { mode: 0o600 });
+    fs.chmodSync(home, 0o755);
+    const r = run(base, home, ['import', '--help']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(mode(home), 0o700);
+    assert.match(r.stderr, /tightened .* to 0700 \(was 0755\)/);
+  });
+
+  it('tightenCcxrayHome warns instead of chmod for a custom home without ccxray files', () => {
+    const home = tmpdir();
+    fs.chmodSync(home, 0o775);
+    const logs = [];
+    assert.equal(paths.tightenCcxrayHome(home, { log: m => logs.push(m) }), 'warned');
+    assert.equal(mode(home), 0o775);
+    assert.equal(logs.length, 1);
+    assert.match(logs[0], /warning: CCXRAY_HOME .* \(0775\)/);
+  });
+
+  it('tightenCcxrayHome recognises an owned local-secret file as a ccxray-owned home', () => {
+    const home = tmpdir();
+    fs.writeFileSync(path.join(home, 'local-secret'), 'x', { mode: 0o600 });
+    fs.chmodSync(home, 0o755);
+    assert.equal(paths.tightenCcxrayHome(home), 'tightened');
+    assert.equal(mode(home), 0o700);
+  });
+
+  it('tightenCcxrayHome ignores generic or spoofed markers (hub.json, hub.log, symlink, directory)', () => {
+    const cases = [
+      h => fs.writeFileSync(path.join(h, 'hub.json'), '{}'),
+      h => fs.writeFileSync(path.join(h, 'hub.log'), ''),
+      h => fs.symlinkSync(path.join(h, 'nowhere'), path.join(h, 'local-secret')),
+      h => fs.mkdirSync(path.join(h, 'local-secret')),
+      h => fs.mkdirSync(path.join(h, 'hub.sock')),
+    ];
+    for (const plant of cases) {
+      const home = tmpdir();
+      plant(home);
+      fs.chmodSync(home, 0o755);
+      assert.equal(paths.tightenCcxrayHome(home), 'warned', plant.toString());
+      assert.equal(mode(home), 0o755);
+    }
   });
 
   it('tightenCcxrayHome preserves setgid/sticky bits', () => {
@@ -104,7 +170,7 @@ describe('ccxray home permissions (#690)', { skip: !POSIX && 'POSIX mode bits on
     const st = fs.statSync(home);
     if ((st.mode & 0o3000) !== 0o3000) return; // filesystem refused the special bits
     const logs = [];
-    assert.equal(paths.tightenCcxrayHome(home, { log: m => logs.push(m) }), 'tightened');
+    assert.equal(paths.tightenCcxrayHome(home, { log: m => logs.push(m), isDefault: () => true }), 'tightened');
     assert.equal(fs.statSync(home).mode & 0o7777, 0o3700);
     assert.match(logs[0], /to 03700 \(was 03775\)/);
   });

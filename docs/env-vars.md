@@ -12,7 +12,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 |---|---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard. `--port` overrides it and opts out of hub mode; `PROXY_PORT` alone keeps hub mode on that port. | `server/config.js` |
 | `PORT` | — | **Not read.** `config.PORT` is derived from `PROXY_PORT`. Listed because it is a common guess. | `server/config.js` |
-| `CCXRAY_HOME` | `~/.ccxray` | Base directory for `hub.json`, `hub.sock`, `hub.log`, secrets, settings, and (by default) logs. | `server/paths.js` |
+| `CCXRAY_HOME` | `~/.ccxray` | Base directory for `hub.json`, `hub.sock`, `hub.log`, secrets, settings, and (by default) logs. Created 0700. A loose existing home is tightened to 0700 at startup only when it is the default `~/.ccxray` or already holds a ccxray-only file (`local-secret` or `hub.sock`, a regular file or socket owned by the current user); any other custom directory gets a one-line warning and keeps its mode. | `server/paths.js` |
 | `LOGS_DIR` | `<CCXRAY_HOME>/logs` | Log directory (`index.ndjson`, `_req`/`_res` files, `sessions.json`). | `server/paths.js`, `server/cost-worker.js` |
 | `LOG_RETENTION_DAYS` | `14` | Prune `_req`/`_res` files older than N days at startup; `0` disables (an export enrollment can impose its recorded retention). Starred items are protected. | `server/retention.js`, `server/restore.js` |
 | `RESTORE_DAYS` | `LOG_RETENTION_DAYS` (`14`) | Days of index lines the dashboard loads at startup; `0` = all. | `server/config.js`, `server/restore.js` |
