@@ -113,6 +113,31 @@ describe('ccxray hud', () => {
     assert.equal(fs.readFileSync(settingsFile(home), 'utf8'), '{not json');
   }));
 
+  it('status reports a settings.json that is not a JSON object and exits non-zero', () => withHome(home => {
+    for (const body of ['{not json', '[]']) {
+      fs.writeFileSync(settingsFile(home), body);
+      const r = cli(home, ['hud', 'status']);
+      assert.equal(r.status, 1, body);
+      assert.match(r.stderr, /not a JSON object/);
+      assert.doesNotMatch(r.stdout, /Context HUD/);
+      assert.equal(fs.readFileSync(settingsFile(home), 'utf8'), body);
+    }
+  }));
+
+  it('on writes through a symlinked settings.json, owner-only, leaving no tmp file', { skip: process.platform === 'win32' }, () => withHome(home => {
+    const managed = path.join(home, 'dotfiles', 'ccxray-settings.json');
+    fs.mkdirSync(path.dirname(managed));
+    fs.writeFileSync(managed, JSON.stringify({ starredSessions: ['synthetic-session'] }));
+    fs.symlinkSync(managed, settingsFile(home));
+    const r = cli(home, ['hud', 'on']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(fs.lstatSync(settingsFile(home)).isSymbolicLink(), 'symlink must survive');
+    assert.deepEqual(JSON.parse(fs.readFileSync(managed, 'utf8')), { starredSessions: ['synthetic-session'], statusLine: true });
+    assert.equal(fs.statSync(managed).mode & 0o777, 0o600);
+    assert.deepEqual(fs.readdirSync(path.dirname(managed)), ['ccxray-settings.json']);
+    assert.ok(!fs.readdirSync(home).some(name => name.includes('.tmp-')));
+  }));
+
   it('is listed in the global help', () => withHome(home => {
     assert.match(cli(home, ['--help']).stdout, /hud on\|off\|status\s+\S/);
   }));

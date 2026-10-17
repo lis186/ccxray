@@ -266,7 +266,14 @@ subagent-heavy or automated sessions.
     return;
   }
   if (sub === 'status') {
-    process.stdout.write(hudSettings.hudStatusText(hudSettings.readSettings().statusLine) + '\n');
+    let enabled;
+    try { enabled = hudSettings.readStatusLineSync(); }
+    catch (err) {
+      console.error(`\x1b[31mError: ${err.message}\x1b[0m`);
+      process.exitCode = 1;
+      return;
+    }
+    process.stdout.write(hudSettings.hudStatusText(enabled) + '\n');
     return;
   }
   try { hudSettings.setStatusLineSync(sub === 'on'); }
