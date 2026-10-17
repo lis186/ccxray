@@ -232,7 +232,10 @@ aggregation leaves its aggregate counts unavailable; uploaded `files` and
 ## Restricting transcript roots
 
 The importer follows `$HOME`, not `CCXRAY_HOME`, when it discovers transcript
-roots. To disable import for a process, set `CCXRAY_IMPORT_DISABLE=1`. To allow
+roots. Automatic import is off by default, including after upgrades. Set
+`CCXRAY_IMPORT_DISABLE=0` to opt in before starting the server or Herdr; restart
+an existing hub to apply it. Explicit `ccxray import --once` also opts in for
+that command, unless `CCXRAY_IMPORT_DISABLE=1` blocks imports. To allow
 only selected transcript stores, set `CCXRAY_IMPORT_HOMES` to a comma-separated
 list of absolute Claude `projects/` directories and
 `CCXRAY_IMPORT_CODEX_HOMES` to a comma-separated list of absolute Codex

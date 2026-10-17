@@ -64,6 +64,8 @@ function pluginEnv(overrides = {}) {
   env.CCXRAY_HOME = isolatedHome();
   env.HOME = env.CCXRAY_HOME;
   env.CCXRAY_EXPORT_DISABLE = '1';
+  // Synthetic repair fixtures explicitly opt in to automatic transcript import.
+  env.CCXRAY_IMPORT_DISABLE = '0';
   // CLI rendering tests must not start a detached working-badge daemon.
   env.CCXRAY_BADGE_LOOP_CHILD = '1';
   // Spawn-layer twin of the NO_TRANSCRIPTS rule below: a spawned script's own

@@ -56,7 +56,12 @@ point `CCXRAY_HOME` at a throwaway temp dir and write its own synthetic
 Server tests that do not exercise transcript importing must also set
 `CCXRAY_IMPORT_DISABLE=1`. Import discovery intentionally scans real
 `$HOME/.claude*` and `$HOME/.codex*/sessions`; isolating `CCXRAY_HOME` alone
-does not stop an active local agent session from contaminating a proxy test.
+does not stop an active local agent session from contaminating a proxy test when import is explicitly enabled with `CCXRAY_IMPORT_DISABLE=0`.
+
+The startup opt-in regressions in `test/import-once.test.js` isolate both HOME and
+CCXRAY_HOME, supply synthetic Claude/Codex scan roots and a fresh pricing cache,
+and exercise fresh/upgraded homes in hub and standalone mode. Herdr repair
+fixtures explicitly enable automatic import with `CCXRAY_IMPORT_DISABLE=0`.
 
 `test/anthropic-print-hud.e2e.test.js` starts the proxy with separate temporary
 `CCXRAY_HOME` and `$HOME` directories, creates an empty synthetic
