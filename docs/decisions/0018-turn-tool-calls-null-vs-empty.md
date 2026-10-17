@@ -51,7 +51,7 @@ The fallback sites covered by this contract are:
 | `public/entry-rendering.js` hot path (~line 719) | Use the exact per-turn map; only nullish state uses cumulative `toolCalls` with per-tool max. |
 | `public/entry-rendering.js` recompute path (~line 852) | Same preference and legacy fold as the hot path. |
 | `public/workflow-timeline.js` lane totals (~line 2802) | Sum response deltas; put only nullish turns into the legacy per-tool max fold. |
-| `server/usage.js` legacy fold (~line 237) | Skip response-parsed turns, including `{}`, from the cumulative per-session max fold. |
+| `server/usage.js` legacy fold (~line 237) | Skip response-parsed turns, including `{}`, from the cumulative per-session max fold. `turnToolCounts()` also treats a row with no count field but a `turnToolCallIds` map (the importer's shape, #688) as response-parsed: the map is counted, and `{}` stays zero; a null map stays unknown. |
 | `plugins/herdr/bin/lib/ccxray.js` `observedToolCalls` | Honors null-vs-`{}` correctly, but the nullish branch applies per-tool MAX for every provider — it does not check `provider`, so Codex/Grok panes hit the Anthropic-only fallback and under-count repeated same-tool calls. Same defect as the accepted limit below, in a second process. — Accepted 2026-08-20 |
 
 Guard comments at each site name this ADR. The distinction is part of the

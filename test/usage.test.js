@@ -654,7 +654,8 @@ describe('usage --json shape contract', () => {
 
   it('meta has the documented shape', () => {
     const { meta } = JSON.parse(cli('--json'));
-    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'costAgg', 'retentionDays', 'retentionCutoff', 'retentionWarning', 'timeRange']);
+    sameKeys(meta, ['totalEntries', 'totalSessions', 'totalCost', 'costAgg', 'unpricedModels', 'retentionDays', 'retentionCutoff', 'retentionWarning', 'timeRange']);
+    assert.deepEqual(meta.unpricedModels, []);
     assert.equal(typeof meta.totalEntries, 'number');
     assert.equal(typeof meta.totalSessions, 'number');
     assert.equal(typeof meta.totalCost, 'number');
@@ -698,9 +699,12 @@ describe('usage --json shape contract', () => {
     const { models } = JSON.parse(cli('--json'));
     assert.ok(Array.isArray(models) && models.length <= 10);
     for (const m of models) {
-      sameKeys(m, ['model', 'turns', 'cost', 'costShare']);
+      sameKeys(m, ['model', 'turns', 'cost', 'costShare', 'costAgg', 'costStatus']);
+      sameKeys(m.costAgg, ['count', 'fallbackCount', 'fallbackCost', 'unknownCount']);
       assert.equal(typeof m.model, 'string');
       assert.equal(typeof m.turns, 'number');
+      // Every fixture model is priced; an unpriced row has cost/costShare null (#688).
+      assert.equal(m.costStatus, 'priced');
       assert.equal(typeof m.cost, 'number');
       assert.equal(typeof m.costShare, 'number');
     }
@@ -886,13 +890,14 @@ describe('usage human output marks aggregate cost confidence', () => {
 
   for (const [name, costs, expected, fold] of [
     ['fallback', [{ cost: 2, confidence: 'fallback' }], '~$2', { count: 1, fallbackCount: 1, fallbackCost: 2, unknownCount: 0 }],
-    ['unknown', [{ cost: 2, confidence: 'exact' }, { cost: null, confidence: 'unknown' }], '$2.00+', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 1 }],
+    ['unknown', [{ cost: 2, confidence: 'exact' }, { cost: null, confidence: 'unknown' }], '$2.00+ (1 model unpriced)', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 1 }],
     ['clean', [{ cost: 1, confidence: 'exact' }, { cost: 1, confidence: 'prefix' }], '$2.00', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 }],
   ]) {
     it(`renders the ${name} header and exposes its complete JSON fold`, () => {
       const home = homeWith(costs.map((cost, i) => entry({ id: `header-${i}`, responseId: `msg_header_${i}`, receivedAt: 1717236000000 + i * 1000, cost })));
       try {
         const header = humanCli(home, '--last', '9999d').split('\n').find(l => l.includes('ccxray usage'));
+        // The total is the last ` · ` field; #688 appends the unpriced-model reason.
         assert.equal(header.split(' · ').at(-1), expected);
         const json = JSON.parse(humanCli(home, '--last', '9999d', '--json'));
         assert.deepEqual(json.meta.costAgg, fold);
