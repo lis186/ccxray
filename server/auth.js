@@ -17,20 +17,14 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const config = require('./config');
-const { resolveCcxrayHome } = require('./paths');
+const { ensureCcxrayHome } = require('./paths');
 
 // ─── Root secret resolution ──────────────────────────────────────────
 
-function getHubDir() {
-  return resolveCcxrayHome();
-}
-
 function ensureHubDir() {
-  const dir = getHubDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // mkdirSync ignores mode on existing dirs; tighten explicitly.
-  try { fs.chmodSync(dir, 0o700); } catch {}
-  return dir;
+  // mkdirSync ignores mode on existing dirs; ensureCcxrayHome tightens an
+  // owned loose home explicitly (#690).
+  return ensureCcxrayHome();
 }
 
 function readOrCreateEphemeralSecret() {

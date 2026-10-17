@@ -27,7 +27,7 @@ function alreadyOpened(env = process.env) {
 
 function writeOpened(env = process.env) {
   const file = statePath(env);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify({
     version: STATE_VERSION,
@@ -89,7 +89,7 @@ function main() {
 
   const file = statePath();
   const lock = `${file}.lock`;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const lockFd = acquireLock(lock, firstRun);
   if (lockFd == null) return;
 

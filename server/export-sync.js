@@ -193,7 +193,7 @@ function getAgentId(home) {
   try { return fs.readFileSync(p, 'utf8').trim(); } catch {}
   const id = crypto.randomUUID();
   try {
-    fs.mkdirSync(home, { recursive: true });
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
     fs.writeFileSync(p, id + '\n', { flag: 'wx', mode: 0o600 }); // R3: atomic
   } catch {
     // Another process won the race — read its value
@@ -204,7 +204,7 @@ function getAgentId(home) {
 
 // ── Export lock (per-home loopback socket) ─────────────────────────────
 function exportLockTarget(home) {
-  try { fs.mkdirSync(home, { recursive: true }); }
+  try { fs.mkdirSync(home, { recursive: true, mode: 0o700 }); }
   catch (err) { return { reason: 'mkdir', detail: err.code || err.message }; }
 
   let st;

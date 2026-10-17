@@ -161,7 +161,7 @@ const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, tightenCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
@@ -181,6 +181,11 @@ const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const { renderHubClientStatus } = require('./hub-client-status');
 const { renderProcessStatus, inspectHomeStatus } = require('./status');
 const plainLaunch = require('./plain-launch');
+// #690: a home created loose by an older version (or by hand) holds secrets;
+// tighten it to 0700 once per invocation, before any subcommand writes into it.
+tightenCcxrayHome(resolveCcxrayHome(), {
+  log: msg => console.error(process.stderr.isTTY ? `\x1b[90m${msg}\x1b[0m` : msg),
+});
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -238,6 +243,19 @@ if (process.argv[2] === 'secret') {
 // index has fallen behind. Appends index lines only; see server/import-once.js
 // for why it does not refuse while a hub is running.
 if (process.argv[2] === 'import') {
+  if (process.argv.includes('--help') || process.argv.includes('-h')) {
+    process.stdout.write(`Usage: ccxray import --once [--force]
+       ccxray import --target-transcript <file> [--provider <id>] [--session-id <id>] [--cwd <dir>]
+
+  --once                 Throttled, lock-guarded single scan of local transcripts
+                         into the index (appends index lines only)
+  --force                With --once: ignore the minimum interval
+                         (CCXRAY_IMPORT_ONCE_MIN_INTERVAL_MS, default 10min)
+  --target-transcript    Import one transcript file; prints a JSON result
+  --help, -h             Show this help
+`);
+    return;
+  }
   const targetAt = process.argv.indexOf('--target-transcript');
   const argValue = name => {
     const at = process.argv.indexOf(name);
@@ -740,51 +758,7 @@ server.on('upgrade', (req, socket, head) => {
 
 
 // ── Spawn agent CLI with proxy routing ──
-function isStatuslineInstalled(claudeHome) {
-  try {
-    const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
-    return (JSON.parse(raw).statusLine?.command || '').includes('claude-adapter');
-  } catch { return false; }
-}
-
-function installStatusline(claudeHome) {
-  const settingsPath = path.join(claudeHome, 'settings.json');
-  const adapterCmd = `node ${path.join(__dirname, 'adapters/claude-adapter.js')}`;
-
-  let settings = {};
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch {}
-
-  const existing = settings.statusLine?.command || '';
-  if (existing.includes('claude-adapter')) return { status: 'already' };
-
-  if (!settings.statusLine) settings.statusLine = {};
-  settings.statusLine.command = adapterCmd;
-  if (existing) settings.statusLine._ccxrayDelegate = existing;
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  return { status: 'installed', delegated: existing || null };
-}
-
-function uninstallStatusline(claudeHome) {
-  const settingsPath = path.join(claudeHome, 'settings.json');
-  let settings = {};
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); } catch { return { status: 'not_installed' }; }
-
-  const cmd = settings.statusLine?.command || '';
-  if (!cmd.includes('claude-adapter')) return { status: 'not_installed' };
-
-  const delegate = settings.statusLine._ccxrayDelegate;
-  if (delegate) {
-    settings.statusLine.command = delegate;
-    delete settings.statusLine._ccxrayDelegate;
-  } else {
-    // ponytail: legacy fallback for old --delegate "cmd" format installs
-    const legacyMatch = cmd.match(/--delegate "(.+)"/);
-    if (legacyMatch) settings.statusLine.command = legacyMatch[1];
-    else delete settings.statusLine;
-  }
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-  return { status: 'removed' };
-}
+const { isStatuslineInstalled, installStatusline, uninstallStatusline, refusalMessage } = require('./statusline-setup');
 
 function promptClaudeStatusline(args = []) {
   const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -812,25 +786,23 @@ function promptClaudeStatusline(args = []) {
     // risk — a pure addition (no statusline configured) defaults to yes, while
     // wrapping an existing statusline requires a conscious "y".
     let hasExisting = false;
-    let unparseable = false;
+    const settingsPath = path.join(claudeHome, 'settings.json');
     try {
-      const raw = fs.readFileSync(path.join(claudeHome, 'settings.json'), 'utf8');
+      const raw = fs.readFileSync(settingsPath, 'utf8');
       try {
         const cmd = JSON.parse(raw).statusLine?.command || '';
         hasExisting = Boolean(cmd) && !cmd.includes('claude-adapter');
       } catch {
-        // A settings.json that exists but does not parse is NOT a pure
-        // addition — installing would overwrite unknown content. Treat it as
-        // wrap-risk so the default stays No (grok review P2, 2026-08-18).
-        hasExisting = true;
-        unparseable = true;
+        // #687: a settings.json that does not parse is never rewritten — say
+        // so instead of asking. No declined marker: once the file is fixed, a
+        // later launch still gets to answer.
+        _origLog(`\x1b[33m${refusalMessage(settingsPath)}\x1b[0m`);
+        return;
       }
     } catch {} // missing file = genuinely nothing configured
-    const impactNote = unparseable
-      ? 'your settings.json exists but could not be parsed — installing would REWRITE it'
-      : hasExisting
-        ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
-        : 'no statusline is configured today, so this only adds one';
+    const impactNote = hasExisting
+      ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
+      : 'no statusline is configured today, so this only adds one';
     const defTag = hasExisting ? '[y/N]' : '[Y/n]';
     const readline = require('readline');
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -845,8 +817,9 @@ function promptClaudeStatusline(args = []) {
         if (a === 'y' || a === 'yes' || (a === '' && !hasExisting)) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
+          if (result.status === 'refused') _origLog(`\x1b[33m${refusalMessage(result.settingsPath)}\x1b[0m`);
         } else {
-          fs.mkdirSync(ccxrayHome, { recursive: true });
+          fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
           fs.writeFileSync(declinedPath, '');
         }
         resolve();
@@ -856,7 +829,7 @@ function promptClaudeStatusline(args = []) {
 
   if (!fs.existsSync(hintShownPath)) {
     _origLog('\x1b[90m💡 Claude rate limits: ccxray setup-statusline\x1b[0m');
-    fs.mkdirSync(ccxrayHome, { recursive: true });
+    fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(hintShownPath, '');
   }
 }
@@ -1008,7 +981,20 @@ if (process.argv[2] === 'setup') {
 
 // ── "setup-statusline" subcommand ──
 if (process.argv[2] === 'setup-statusline') {
-  const explicitHome = process.argv.find((a, i) => process.argv[i - 1] === '--claude-home');
+  // #687: parse before anything can write — --help and unknown flags used to
+  // fall through to an install.
+  const statuslineSetup = require('./statusline-setup');
+  const opts = statuslineSetup.parseSetupStatuslineArgs(process.argv.slice(3));
+  if (opts.help) {
+    process.stdout.write(statuslineSetup.USAGE);
+    return;
+  }
+  if (opts.error) {
+    console.error(`\x1b[31mError: ${opts.error}. Run "ccxray setup-statusline --help" for usage.\x1b[0m`);
+    process.exitCode = 1;
+    return;
+  }
+  const explicitHome = opts.claudeHome;
 
   function discoverClaudeHomes() {
     const home = os.homedir();
@@ -1071,51 +1057,77 @@ if (process.argv[2] === 'setup-statusline') {
   }
 
   (async () => {
-    if (explicitHome) {
-      const result = installStatusline(explicitHome);
-      const label = path.basename(explicitHome);
-      if (result.status === 'already') console.log(`\x1b[32m✓ ${label}: already configured.\x1b[0m`);
-      else { console.log(`\x1b[32m✓ ${label}: done.\x1b[0m`); console.log('\x1b[90mRestart Claude Code sessions to activate.\x1b[0m'); }
-      process.exit(0);
-    }
-
-    const found = discoverClaudeHomes();
-    if (!found.length) {
-      console.log('\x1b[33mNo Claude homes found.\x1b[0m');
-      process.exit(0);
-    }
-
     let toInstall, toRemove = [];
-    if (found.length === 1 && !found[0].installed) {
-      toInstall = [found[0].path];
-    } else if (process.stdin.isTTY) {
-      console.log('Claude rate-limit tracking \x1b[90m(space=toggle, enter=confirm)\x1b[0m');
-      ({ toInstall, toRemove } = await checkboxPicker(found));
+    if (explicitHome) {
+      let isDir = false;
+      try { isDir = fs.statSync(explicitHome).isDirectory(); } catch {}
+      if (!isDir) {
+        console.error(`\x1b[31mError: --claude-home ${explicitHome} is not a directory.\x1b[0m`);
+        process.exitCode = 1;
+        return;
+      }
+      if (opts.remove) { toInstall = []; toRemove = [explicitHome]; }
+      else toInstall = [explicitHome];
     } else {
-      toInstall = found.filter(f => !f.installed).map(f => f.path);
+      const found = discoverClaudeHomes();
+      if (!found.length) {
+        console.log('\x1b[33mNo Claude homes found.\x1b[0m');
+        process.exit(0);
+      }
+      if (opts.remove) {
+        toInstall = [];
+        toRemove = found.filter(f => f.installed).map(f => f.path);
+      } else if (found.length === 1 && !found[0].installed) {
+        toInstall = [found[0].path];
+      } else if (process.stdin.isTTY && !opts.dryRun) {
+        console.log('Claude rate-limit tracking \x1b[90m(space=toggle, enter=confirm)\x1b[0m');
+        ({ toInstall, toRemove } = await checkboxPicker(found));
+      } else {
+        toInstall = found.filter(f => !f.installed).map(f => f.path);
+      }
+    }
+
+    if (opts.dryRun) {
+      console.log('Dry run — nothing written.');
+      for (const h of toInstall) console.log(statuslineSetup.describePlan(statuslineSetup.planInstall(h), path.basename(h)));
+      for (const h of toRemove) console.log(statuslineSetup.describePlan(statuslineSetup.planUninstall(h), path.basename(h)));
+      if (!toInstall.length && !toRemove.length) console.log('No changes.');
+      return; // let piped stdout drain; nothing else is pending
     }
 
     let changed = 0;
+    let refused = 0;
+    const printBackup = result => {
+      if (result.backup) console.log(`\x1b[90m  (backup: ${result.backup})\x1b[0m`);
+    };
     for (const h of toInstall) {
       const label = path.basename(h);
       const result = installStatusline(h);
-      if (result.status === 'installed') {
+      if (result.status === 'already') console.log(`\x1b[32m✓ ${label}: already configured.\x1b[0m`);
+      if (result.status === 'refused') {
+        refused++;
+        console.error(`\x1b[31m${statuslineSetup.refusalMessage(result.settingsPath)}\x1b[0m`);
+      }
+      if (result.status === 'installed' || result.status === 'updated') {
         changed++;
-        console.log(`\x1b[32m✓ ${label}: installed.\x1b[0m`);
+        console.log(`\x1b[32m✓ ${label}: ${result.status}.\x1b[0m`);
         if (result.delegated) console.log(`\x1b[90m  (existing statusline delegated: ${result.delegated})\x1b[0m`);
+        printBackup(result);
       }
     }
     for (const h of toRemove) {
       const label = path.basename(h);
       const result = uninstallStatusline(h);
+      if (result.status === 'not_installed') console.log(`${label}: not installed.`);
       if (result.status === 'removed') {
         changed++;
         console.log(`\x1b[33m✗ ${label}: removed.\x1b[0m`);
+        printBackup(result);
       }
     }
     if (!changed && !toInstall.length && !toRemove.length) console.log('No changes.');
     if (changed) console.log('\x1b[90mRestart Claude Code sessions to activate.\x1b[0m');
-    process.exit(0);
+    process.exit(refused ? 1 : 0);
   })();
   return;
 }

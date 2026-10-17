@@ -557,7 +557,7 @@ async function flush() {
   }
   const tmp = tmpPath();
   try {
-    await fsp.mkdir(path.dirname(tmp), { recursive: true });
+    await fsp.mkdir(path.dirname(tmp), { recursive: true, mode: 0o700 });
     await fsp.writeFile(tmp, lines.join('\n') + '\n', { mode: 0o600 });
     await fsp.rename(tmp, sessionsPath());
   } catch (e) {

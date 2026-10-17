@@ -31,7 +31,7 @@ function processInput(raw, outDir, alias) {
   const rl = data?.rate_limits;
   if (!rl?.five_hour) return;
 
-  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
 
   const id = `claude-${alias}`;
   const snap = {

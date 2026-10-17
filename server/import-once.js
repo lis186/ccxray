@@ -55,7 +55,7 @@ function writeState(state, env = process.env) {
   const file = statePath(env);
   const tmp = `${file}.${process.pid}.tmp`;
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch {
@@ -136,7 +136,7 @@ function holderHolds(held, now) {
 
 function acquireLock(env = process.env, now = Date.now()) {
   const file = lockPath(env);
-  try { fs.mkdirSync(path.dirname(file), { recursive: true }); } catch { /* exists */ }
+  try { fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 }); } catch { /* exists */ }
   const payload = lockPayload(now);
 
   for (let attempt = 0; attempt < 3; attempt += 1) {

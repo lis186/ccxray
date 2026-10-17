@@ -80,7 +80,7 @@ function readSettings({ quiet = false } = {}) {
 
 function writeSettings(data) {
   _cache = { ...data };
-  fs.mkdirSync(SETTINGS_DIR, { recursive: true });
+  fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
   fs.writeFile(SETTINGS_PATH, JSON.stringify(data, null, 2), (err) => {
     if (err) console.error('[ccxray] writeSettings failed:', err.message);
   });

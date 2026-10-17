@@ -1718,7 +1718,7 @@ function requestImport(opts = {}) {
   const stateFile = repairStateFile(target, env, stat);
   if (!stateFile) return { ok: false, reason: 'claim-failed' };
   try {
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 });
   } catch { return { ok: false, reason: 'claim-failed' }; }
   const claimed = claimRepairState(stateFile, {
     status: 'requested',
@@ -2572,7 +2572,7 @@ function routedPanePath(paneId, env = process.env) {
 function recordRoutedPane(paneId, agent, env = process.env, opts = {}) {
   const file = routedPanePath(paneId, env);
   if (!file) return false;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const data = { paneId, agent, routedAt: Date.now() };
   if (opts.launchId) data.launchId = opts.launchId;
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
@@ -2702,7 +2702,7 @@ function recordPaneWrite(paneId, env) {
   const file = lastPaneWritePath(paneId, env);
   if (!file) return;
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     const temp = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(temp, `${JSON.stringify({ at: Date.now() })}\n`);
     fs.renameSync(temp, file);
