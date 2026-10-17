@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- **Herdr launches no longer let the hub be replaced by a standalone (#673).** An agent the Herdr plugin starts natively never registered with the hub, so a hub it had attached to idle-exited 5 s later, deleted `hub.json`, and the next plugin launch started a standalone server on the same port. The launch action now registers the new pane's shell with the hub on its port (via `herdr pane process-info`); the hub's dead-client sweep removes it when the pane closes. A standalone found on the port is still reused unchanged.
+
 - **Transcript import requires opt-in (#675).** Fresh installs and upgrades no longer scan historical transcripts automatically, whether running a hub, standalone server, or Herdr repair. Set `CCXRAY_IMPORT_DISABLE=0` to enable automatic import; explicit `ccxray import --once` remains available unless import is explicitly disabled with `1`. Previously only the shell block written by setup disabled startup import.
 
 - **Export requires account domains (#632).** A configured bucket with unset or empty `CCXRAY_EXPORT_DOMAINS` now blocks uploads without advancing the cursor. Startup warns once with setup guidance, and status reports `domains-required`.
