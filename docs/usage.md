@@ -107,6 +107,7 @@ Each `topSessions[]` element:
 | `costAgg` | object | Confidence fold for `cost`, always present: `{count, fallbackCount, fallbackCost, unknownCount}`, all numbers. `fallbackCount`/`fallbackCost` cover turns priced from a default rate; `unknownCount` counts turns that contributed **nothing** to `cost`, so a non-zero value means `cost` is a lower bound. Render `cost` through this fold (`formatAggCost`/`formatAggCostText`, ADR 0017) — a consumer of this JSON cannot see the turns, so it cannot re-derive the fold, and printing `cost` alone reports a fabricated or under-counted total as an exact one. |
 | `durationMin` | number | First→last `receivedAt` span in minutes, **1 dp**. `0` if fewer than 2 timestamped turns. |
 | `title` | string \| null | Best non-continuation title, truncated to 40 chars. `null` if none. |
+| `branch` | string \| null | Git branch of the session's latest-received turn that recorded one (see `branch` in [data-model.md](data-model.md)). `null` when no turn recorded a branch (outside git, detached HEAD, or entries older than branch recording). |
 | `model` | string | The session's **dominant** model (most turns), as a single string — not a map. `"unknown"` if absent. |
 | `provider` | string | Provider of the first turn. |
 
@@ -310,6 +311,9 @@ it never changes the JSON. In [multi-cwd comparison mode](#2-multi-cwd-compariso
 
 ## Changelog
 
+- **2026-10-17** — Added `topSessions[].branch` (string \| null): the git branch
+  of the session's latest-received turn that recorded one. Additive; the
+  multi-cwd and error shapes are unchanged.
 - **2026-09-04** — Added `meta.retentionDays`, `meta.retentionCutoff`, and the
   conditional `meta.retentionWarning`. The human time-range line now gives the
   same lower-bound warning when the requested range reaches before retention.

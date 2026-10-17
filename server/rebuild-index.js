@@ -550,6 +550,9 @@ async function rebuildIndex({ apply = false, storage = config.storage, log = con
       sessionId,
       sessionInferred,
       cwd,
+      // The branch checked out when this turn ran is not in the _req/_res files;
+      // reading today's checkout would back-date a guess. Leave it absent.
+      branch: null,
       isSubagent,
       sysHash: sysHash || null,
       toolsHash: toolsHash || null,
