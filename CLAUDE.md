@@ -24,6 +24,8 @@ npm test                                         # Run tests
 
 No build step. No linting. Restart to apply changes.
 
+Every environment variable the server reads is listed in `docs/env-vars.md`; a change that adds or changes one must update it (`test/docs-consistency.test.js` checks the names). Hub vs standalone behaviour, uptime, and wiring external workers: `docs/running-ccxray.md`.
+
 `ccxray setup` writes `CCXRAY_IMPORT_DISABLE=1`; it does not install a Codex or Grok wrapper. Reload the shell after setup. `ccxray setup --check`, `--dry-run`, and `--remove` inspect, preview, and remove setup respectively. Removal writes an export tombstone and removes ccxray's owned shell block; it does not delete local logs or uploaded summaries. See the [export onboarding guide](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/export-onboarding.md).
 
 ## Using ccxray from another agent
@@ -153,9 +155,9 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/url-sanitize.js` | URL sanitization for logged entries |
 | `server/usage-query.js` | Reads, filters, and aggregates indexed usage for the CLI |
 | `server/storage/` | Local filesystem storage is supported. `STORAGE_BACKEND=s3` fails fast; the S3/R2 adapter is an incomplete skeleton. The factory tracks writes and exposes `drain()` for graceful shutdown |
-| `server/adapters/{shared,claude-adapter,codex-adapter,grok-adapter}.js` | Shared and provider-specific transcript adapters for the importer |
-| `server/agentflow/*.js` | Notebook discovery, transcript evidence, attribution, completeness, and report rendering/CLI |
-| `server/wire-parsers/{index,anthropic,openai}.js` | Provider wire-family detection and request/response parsing |
+| `server/adapters/` | Per-provider account/rate-limit sources for the Usage tab: `claude-adapter.js` (statusline hook that snapshots Claude rate limits), `codex-adapter.js` (Codex rate limits from session JSONL), `grok-adapter.js` (Grok billing card), `shared.js`. Not used by the importer |
+| `server/agentflow/` | Notebook discovery, transcript evidence, attribution, completeness, and report rendering/CLI |
+| `server/wire-parsers/` (`index.js`, `anthropic.js`, `openai.js`) | Provider wire-family detection and request/response parsing |
 
 ### Client (`public/`)
 
@@ -173,6 +175,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `public/system-prompt-ui.js` | Multi-agent browsing (3-column Miller), version history, unified diffs |
 | `public/keyboard-nav.js` | Arrow keys, Enter, Escape |
 | `public/quota-ticker.js` | Topbar quota ticker |
+| `public/agent-classification.js` | `WF_MAIN_AGENT_KEYS`, `AGENT_KEY_UNRELIABLE`, `isMainTurnByAgentKey` — isomorphic main/subagent classification shared by client and server (ADR 0005) |
 | `public/weather.js` | Session weather score — isomorphic pure function (browser `<script>` + Node `require`). Reads entry objects directly |
 | `public/format.js` | Shared formatting/color helpers (#156). `formatAggCost`/`formatAggCostText` (ADR 0017), `formatCost`/`formatCostText` (per-turn) |
 | `public/session-label.js` | Named session label registry |
@@ -205,6 +208,7 @@ ccxray claude (2nd)  → discover hub via ~/.ccxray/hub.json → connect as clie
 
   Only macOS/Linux `ccxray <agent>` launches without an explicit port attach to or start a detached hub. Anything reasoning about "one process per machine" (cross-process locks, cursors, shared-file writers) must use this list, not the `--port` case alone.
 - Crash recovery: clients monitor hub pid every 5s, auto-fork new hub using port as mutex
+- Herdr plugin launches start agents natively, so they never register themselves. `launch-agent.js` registers the new pane's shell pid with a hub on the launch port (`holdHubForPane`, #673); without it the hub idle-exits and the next plugin launch starts a standalone on the same port. A standalone found on the port is reused as is. See `docs/running-ccxray.md`
 - Version check: semver major mismatch → reject, minor → warn, patch → silent
 
 ### Agent Launching (provider modules)

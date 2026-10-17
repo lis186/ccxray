@@ -76,6 +76,8 @@ ccxray --port 5602 status        # Probes port 5602 only when no hub lock is fou
 ANTHROPIC_BASE_URL=http://localhost:5577 claude   # Point existing claude session at a running ccxray hub
 ```
 
+Hub vs standalone, keeping a proxy up, and pointing agents that are not launched through ccxray at it: see [Running ccxray](docs/running-ccxray.md).
+
 Provider arguments are forwarded to the CLI. ccxray consumes its recognized global flags, such as `--port` and `--no-browser`, wherever they appear in the argument list; they are not forwarded to the CLI.
 
 ### Multi-project
@@ -314,6 +316,8 @@ ccxray is a transparent HTTP proxy. It forwards requests to the upstream API (An
 | `CCXRAY_MODEL_PREFIX` | _(unset)_ | Prepend a string to the model name before forwarding (e.g. `databricks-`). Useful when the upstream requires a vendor-prefixed model name but Claude Code only accepts standard names. |
 | `HTTPS_PROXY` / `https_proxy` | _(unset)_ | Route outbound HTTPS traffic through a corporate proxy via HTTP CONNECT tunnel. |
 | `ANTHROPIC_BASE_URL` | — | Custom upstream Anthropic endpoint (e.g. a corporate gateway). Supports base paths — `https://host/serving-endpoints/anthropic` works as-is. `ANTHROPIC_TEST_*` take precedence when set. |
+
+Every environment variable, with its default and source file, is listed in [docs/env-vars.md](docs/env-vars.md).
 
 Raw request and response logs are stored locally in `LOGS_DIR` (by default `~/.ccxray/logs/`) as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 

@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- **Herdr launches no longer let the hub be replaced by a standalone (#673).** An agent the Herdr plugin starts natively never registered with the hub, so a hub it had attached to idle-exited 5 s later, deleted `hub.json`, and the next plugin launch started a standalone server on the same port. The launch action now registers the new pane's shell with the hub on its port (via `herdr pane process-info`); the hub's dead-client sweep removes it when the pane closes. A standalone found on the port is still reused unchanged.
+
 - **`ccxray usage` unpriced models and imported tool counts (#688).** A model with no price now shows `unknown` instead of `$0 (0.0%)`; in `--json` its row has `cost: null`, `costShare: null` and `costStatus: "unknown"`, and every model row carries a `costAgg` fold. Shares are computed over priced turns only, and the `$X+` lower-bound total names the reason, e.g. `(1 model unpriced)`, with the model list in `meta.unpricedModels`. Imported sessions no longer report 0 tool calls: usage counts tools from `turnToolCallIds` when a turn has no recorded counts.
 
 - **Transcript import requires opt-in (#675).** Fresh installs and upgrades no longer scan historical transcripts automatically, whether running a hub, standalone server, or Herdr repair. Set `CCXRAY_IMPORT_DISABLE=0` to enable automatic import; explicit `ccxray import --once` remains available unless import is explicitly disabled with `1`. Previously only the shell block written by setup disabled startup import.
