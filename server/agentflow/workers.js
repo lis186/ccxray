@@ -8,6 +8,7 @@ const { CLONE_PATTERN } = require('./runner');
 const { canonicalPath, reverseDiscovered, chainEvidence, cloneOrigin } = require('./chains');
 const { resolveTurn } = require('./windows');
 const { isNativeSubagent } = require('./host');
+const { stripSlash } = require('../paths');
 
 const LEVELS = ['dispatch', 'completion', 'launch-chain', 'window'];
 const OPEN = undefined;
@@ -15,7 +16,6 @@ const OPEN = undefined;
 // started some other worker.
 const WEAK_LAUNCH_GAP_MS = 2 * 60 * 1000;
 
-function stripSlash(p) { return p && p.length > 1 ? p.replace(/\/+$/u, '') : p; }
 const pairKey = p => `${p.notebook ?? '?'}\0${p.ask ?? '?'}`;
 
 // Which notebook a dispatch record names: a stream's own artifacts name it;
@@ -240,12 +240,15 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
   }
 
   // E4: only the earliest run of a clone can be bound by its `clone: from`.
+  // 'here' binds it to this checkout, 'elsewhere' to another one (F22: it is
+  // reported only under that checkout's notebook), null leaves it unknown.
   const originCache = new Map();
-  const boundToCheckout = run => {
+  const checkoutBinding = run => {
     const earliest = runsOfClone(run.clone).reduce((a, b) => (b.first < a.first ? b : a));
-    if (earliest !== run) return false;
+    if (earliest !== run) return null;
     if (!originCache.has(run.clone)) originCache.set(run.clone, originOf(run.clone));
-    return stripSlash(originCache.get(run.clone)) === root;
+    const origin = stripSlash(originCache.get(run.clone));
+    return origin == null ? null : origin === root ? 'here' : 'elsewhere';
   };
 
   // E3 per run, then E6.
@@ -274,11 +277,12 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       window: [],
     };
     const resolvedAbove = combine(evidence);
-    let e4failed = false;
+    let e4failed = false, boundElsewhere = false;
     if (resolvedAbove.fixed.notebook === OPEN || resolvedAbove.fixed.ask === OPEN) {
-      if (boundToCheckout(run)) {
+      const binding = checkoutBinding(run);
+      if (binding === 'here') {
         evidence.window = notebooks.flatMap(nb => nb.windows.filter(w => (w.startKind === 'matched' || w.startKind === 'estimated') && run.first >= w.start && run.first < w.end).map(w => ({ notebook: nb.rel, ask: w.id })));
-      } else e4failed = true;
+      } else { e4failed = true; boundElsewhere = binding === 'elsewhere'; }
     }
     const r = combine(evidence);
     if (run.weak && run.weak.ambiguous && r.fixed.ask === OPEN) r.ambiguous.add('ask');
@@ -310,7 +314,8 @@ function attributeWorkers({ turns, checkoutRoot, workspaceRel, notebooks, report
       // unknown checkout cannot be claimed for this notebook, but the number
       // says how much worker activity on this machine went unplaced then.
       const duringOurHosts = hostSpan && run.first >= hostSpan[0] && run.first <= hostSpan[1];
-      if (onlyWindowLeft && e4failed) { if (duringOurHosts) out.footer.checkoutUnknown++; }
+      // A run E4 binds to another checkout is that checkout's, not unknown.
+      if (onlyWindowLeft && e4failed) { if (duringOurHosts && !boundElsewhere) out.footer.checkoutUnknown++; }
       else out.footer.matchedNoNotebook++;
       continue;
     }

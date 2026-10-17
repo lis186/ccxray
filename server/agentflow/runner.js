@@ -4,6 +4,8 @@
 // integration.md, E1 and E5). Matching is on text, not parsed JSON: a result may
 // be a truncated preview or a wrapper's own printout.
 
+const { stripSlash } = require('../paths');
+
 const CLONE_PATTERN = /\/agentflow-external-runner-[^/]+\/clone\/?$/u;
 const NAMES_RUNNER = /external-runner|run_external_command/u;
 // Keys only the runner's result carries beside `working_directory`
@@ -14,8 +16,6 @@ const RUNNER_KEYS = /["'](?:stdin_closed|stdout_identity|clone_diff_identity|std
 function unescape(text) {
   return text.includes('\\"') ? text.replace(/\\\\/gu, '\\').replace(/\\"/gu, '"') : text;
 }
-
-function stripSlash(p) { return p.length > 1 ? p.replace(/\/+$/u, '') : p; }
 
 // Clone paths a tool result reports in the runner's result structure: a
 // `clone` object's `root`, a wrapper's `clone.root`, or `working_directory`
