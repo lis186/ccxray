@@ -29,3 +29,7 @@ handoff.md
 
 # Dev-agent scratch reports (dispatch prompts say "untracked is fine" -- keep it true)
 REPORT-*.md
+
+# Mutation testing (docs/mutation-testing.md): reports + incremental cache stay local
+reports/
+.stryker-tmp/

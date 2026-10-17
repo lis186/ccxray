@@ -12,6 +12,7 @@ node --require ./test/helpers/home-guard.js --test test/usage.test.js # one file
 ```
 
 No build step, no test framework beyond Node's built-in `node:test`.
+Mutation testing is an opt-in pilot outside `npm test`: see `docs/mutation-testing.md`.
 
 `scripts/run-tests.js` partitions every top-level `test/*.test.js` exactly once.
 Files requiring Puppeteer go in `browser`; other files with `e2e` in their name
