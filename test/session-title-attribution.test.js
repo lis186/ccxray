@@ -187,3 +187,82 @@ describe('store.detectSession populates firstUserMsg', () => {
     assert.equal(store.sessionMeta['abc-123'].firstUserMsg, 'inspect the auth flow');
   });
 });
+
+// Claude Code 2.1.302 first-message shape: several <system-reminder> text
+// blocks precede the typed prompt block. Synthetic text only.
+function claude2302FirstMsg(prompt) {
+  return {
+    metadata: { user_id: '{"session_id":"a2302-0000-1111"}' },
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: '<system-reminder>\nSynthetic skills list.\n</system-reminder>' },
+        { type: 'text', text: '<system-reminder>\nSynthetic CLAUDE.md context.\n</system-reminder>' },
+        { type: 'text', text: '<system-reminder>\nSynthetic date reminder.\n</system-reminder>' },
+        { type: 'text', text: prompt },
+      ],
+    }],
+  };
+}
+
+describe('firstPrompt skips injected-only blocks (Claude 2.1.302)', () => {
+  beforeEach(reset);
+
+  it('records the prompt block, not the leading system-reminder blocks', () => {
+    store.detectSession(claude2302FirstMsg('refactor the export cursor'));
+    assert.equal(store.getSessionFirstPrompt('a2302-0000-1111'), 'refactor the export cursor');
+    assert.equal(store.sessionMeta['a2302-0000-1111'].firstUserMsg, 'refactor the export cursor');
+  });
+
+  it('extractFirstUserMsgText picks the first block that survives tag stripping', () => {
+    assert.equal(store.extractFirstUserMsgText(claude2302FirstMsg('hello there')), 'hello there');
+  });
+
+  it('title-gen request carrying the bare prompt still attributes to the main session', () => {
+    store.detectSession(claude2302FirstMsg('refactor the export cursor'));
+    const now = Date.now();
+    store.sessionMeta['a2302-0000-1111'].lastSeenAt = now;
+    store.activeRequests['a2302-0000-1111'] = 1;
+    assert.equal(store.attributeTitleGen(titleGenReq('refactor the export cursor'), now), 'a2302-0000-1111');
+  });
+
+  it('never latches an empty value: an all-reminder first request leaves both null, a later one fills them', () => {
+    const sid = 'b0000-1a7c-2222';
+    const reminderOnly = {
+      metadata: { user_id: `{"session_id":"${sid}"}` },
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: '<system-reminder>only scaffolding</system-reminder>' },
+        { type: 'text', text: '<system-reminder>more scaffolding</system-reminder>' },
+      ] }],
+    };
+    store.detectSession(reminderOnly);
+    assert.equal(store.getSessionFirstPrompt(sid), null);
+    assert.equal(store.sessionMeta[sid].firstUserMsg, undefined, 'an injected-only anchor is not latched');
+
+    store.detectSession({
+      ...reminderOnly,
+      messages: [...reminderOnly.messages,
+        { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+        { role: 'user', content: [{ type: 'text', text: 'now do the real task' }] }],
+    });
+    assert.equal(store.getSessionFirstPrompt(sid), 'now do the real task');
+
+    // Once set, later requests never overwrite it.
+    store.detectSession({ ...reminderOnly, messages: [{ role: 'user', content: 'something else' }] });
+    assert.equal(store.getSessionFirstPrompt(sid), 'now do the real task');
+  });
+});
+
+describe('session index row carries firstPrompt recorded before the row existed', () => {
+  beforeEach(reset);
+
+  it('detectSession (no row yet) then the first entry → row.firstPrompt is set', () => {
+    const si = require('../server/session-index');
+    const sid = 'c0ffee00-2302-4444-5555-666666666666';
+    store.detectSession({ metadata: { user_id: `{"session_id":"${sid}"}` }, messages: [{ role: 'user', content: 'wire up the branch field' }] });
+    assert.equal(store.getSessionFirstPrompt(sid), 'wire up the branch field');
+    assert.ok(!si.get(sid), 'precondition: no session row before the first entry');
+    si.updateFromEntry({ id: '2026-10-17T00-00-00-000', sessionId: sid, receivedAt: 1 });
+    assert.equal(si.get(sid).firstPrompt, 'wire up the branch field');
+  });
+});

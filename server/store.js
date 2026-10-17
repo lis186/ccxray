@@ -612,7 +612,7 @@ function inferParentSession() {
 // Title-gen attribution matches on the inner body so main turns (user_info first)
 // still align with title-gen turns (user_query only).
 const USER_QUERY_RE = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/i;
-const TITLE_ANCHOR_SKIP_RE = /^\s*<(user_info|system-reminder|user-prompt-submit-hook|context)\b/i;
+const USER_INFO_RE = /^\s*<user_info\b/i;
 const TITLE_GEN_RAW_BUCKETS = listRawSessionBuckets();
 
 function flattenUserContent(c) {
@@ -654,7 +654,29 @@ function collectUserContents(req) {
   return out;
 }
 
-// Prefer <user_query> body (Grok); else first non-scaffolding user text; else Claude first msg.
+// A user text block is the prompt only when something remains after removing
+// injected scaffolding. Claude Code 2.1.302 opens the first user message with
+// several <system-reminder> text blocks before the typed prompt block; taking
+// the first text block (or skipping the whole message because it STARTS with a
+// reminder) loses the prompt and leaves firstPrompt null for the session.
+// <user_info> is Grok scaffolding that stripInjectedTags does not remove.
+function isPromptText(t) {
+  return typeof t === 'string' && !USER_INFO_RE.test(t) && !!stripInjectedTags(t);
+}
+
+// The first prompt-bearing text of one user message's content.
+function firstPromptText(c) {
+  if (typeof c === 'string') return isPromptText(c) ? c : null;
+  if (!Array.isArray(c)) return null;
+  for (const b of c) {
+    const t = typeof b === 'string' ? b : (b?.text || b?.input_text || '');
+    if (isPromptText(t)) return t;
+  }
+  return null;
+}
+
+// Prefer <user_query> body (Grok); else the first prompt-bearing user text
+// block (skipping injected-only blocks); else Claude first msg.
 function extractTitleGenAnchor(req) {
   const contents = collectUserContents(req);
   for (const c of contents) {
@@ -664,22 +686,26 @@ function extractTitleGenAnchor(req) {
       if (body) return body;
     }
   }
-  for (const c of contents) {
-    if (TITLE_ANCHOR_SKIP_RE.test(c)) continue;
-    const n = normalizeTitleAnchor(c);
+  for (const item of [...(Array.isArray(req?.messages) ? req.messages : []), ...(Array.isArray(req?.input) ? req.input : [])]) {
+    if (item?.role !== 'user') continue;
+    const n = normalizeTitleAnchor(firstPromptText(item.content));
     if (n) return n;
   }
   return extractFirstUserMsgText(req);
 }
 
-// Extract the first user message text from a parsed request body.
-// Used as content-match anchor for title-gen attribution (Claude messages[] + Grok input[]).
+// Extract the first user message text from a parsed request body: the first
+// text block that is non-empty once injected tags are stripped, else the first
+// text block. Used as content-match anchor for title-gen attribution (Claude
+// messages[] + Grok input[]).
 function extractFirstUserMsgText(req) {
   const first = req?.messages?.[0];
   if (first && first.role === 'user') {
     const c = first.content;
     if (typeof c === 'string') return c;
     if (Array.isArray(c)) {
+      const prompt = firstPromptText(c.filter(b => b?.type === 'text'));
+      if (prompt != null) return prompt;
       const tb = c.find(b => b?.type === 'text' && typeof b.text === 'string');
       if (tb) return tb.text;
     }
@@ -694,20 +720,20 @@ function extractFirstUserMsgText(req) {
   return null;
 }
 
+// Never latches an empty value: a first message that is only injected
+// scaffolding (e.g. all <system-reminder>) records nothing, so the next request
+// re-evaluates while firstPrompt is still null. firstUserMsg (the title-gen
+// content anchor) and firstPrompt are set together from the same text.
 function recordFirstUserMsg(sid, req) {
   if (!sid || TITLE_GEN_RAW_BUCKETS.has(sid)) return;
   const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
-  if (meta.firstUserMsg == null) {
-    const txt = extractTitleGenAnchor(req);
-    if (txt != null) meta.firstUserMsg = txt;
-  }
-  if (meta.firstPrompt == null) {
-    const clean = stripInjectedTags(meta.firstUserMsg);
-    if (clean) {
-      meta.firstPrompt = clean.slice(0, 200);
-      sessionIdx.setFirstPrompt(sid, meta.firstPrompt);
-    }
-  }
+  if (meta.firstPrompt != null) return;
+  const txt = extractTitleGenAnchor(req);
+  const clean = stripInjectedTags(txt);
+  if (!clean) return;
+  meta.firstUserMsg = txt;
+  meta.firstPrompt = clean.slice(0, 200);
+  sessionIdx.setFirstPrompt(sid, meta.firstPrompt);
 }
 
 // Monotonic session-title setter. Returns true when the stored value changed.

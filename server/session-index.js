@@ -465,6 +465,13 @@ function _upsert(sid, entry) {
     const { stripInjectedTags, getSessionTitle } = require('./store');
     s.title = getSessionTitle(sid) || (entry.title ? stripInjectedTags(entry.title) : null) || null;
   }
+  // Same for the first prompt: the store records it in detectSession, BEFORE
+  // the session's first entry creates this row, so setFirstPrompt then finds
+  // no row and the row would otherwise keep firstPrompt null for good.
+  if (!s.firstPrompt) {
+    const fp = require('./store').getSessionFirstPrompt(sid);
+    if (fp) s.firstPrompt = fp;
+  }
   const recvAt = entry.receivedAt || 0;
   // #426: min-fold for duration — finite-positive guard because rebuild-index
   // emits receivedAt:null for orphan lines (Number(null)===0 would poison to 1970).
