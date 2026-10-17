@@ -185,3 +185,9 @@ object: the message goes to stderr and the command exits with status 1.
 - **Memory**: the report holds every index line from a day before the notebook's first round to now, across all projects on the machine. A 31,847-line span took about 3 s and 0.5 GB on one machine.
 
 See [Known gaps and risks](https://github.com/lis186/ccxray/blob/v2.5.0-rc.1/docs/agentflow-integration.md#known-gaps-and-risks) for the full list.
+
+Since agentflow v8.4.15, Claude hosts must save later actual owner submissions with
+`notebook-write.js append-input --notebook <path> --host claude --session <startup session_id> --input-stdin`.
+Startup capture and Stop enforcement remain available. Without manual capture,
+attribution degrades to `window` when notebook evidence exists; unmatched owner
+submissions are disclosed. Codex automatic capture is unchanged.

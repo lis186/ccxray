@@ -532,3 +532,8 @@ covers malformed and oversized internal pane routes.
 helpers with a simulated hub lookup to check that registered identities do not
 inherit process email/team, even without a PID URL route. Pane URL identities
 retain per-field fallback. The tests restore every process env field they set.
+
+Agentflow v8.4.15 compatibility fixtures in `test/fixtures/agentflow/v8.4.15/`
+are hand-authored synthetic notebook/archive and manual owner-input cases.
+They model retained latest-completed history and Claude manual capture, without
+reading host sessions or requiring an upstream checkout.

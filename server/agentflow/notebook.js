@@ -1,7 +1,7 @@
 'use strict';
 
 // agentflow notebook parsing (docs/agentflow-integration.md, "agentflow concepts"
-// and Ask windows W1). The patterns mirror upstream agentflow 8.4.14
+// and Ask windows W1). The patterns mirror upstream agentflow 8.4.15
 // (notebook-write.js, round-linter.js, local-time.js) rather than approximating.
 
 const fs = require('fs');
