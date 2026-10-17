@@ -6564,11 +6564,14 @@ describe('codex round 2 fixes', () => {
   it('routes codex through a model_providers block carrying X-Ccxray-Auth', () => {
     const { codexAgentArgs } = require('../plugins/herdr/bin/lib/ccxray');
     const withKey = codexAgentArgs(5577, {
+      paneId: 'w1:codex-key-launch',
       env: pluginEnv({ CCXRAY_BIN: fakeCcxray(), OPENAI_API_KEY: 'sk-test' }),
     });
     assert.ok(withKey.some(a => a.includes(`http_headers={"X-Ccxray-Auth"="${TOKEN}"}`)),
       'an API-key codex launch must carry the credential');
     assert.ok(withKey.includes('model_provider="ccxray"'));
+
+    assert.ok(withKey.some(a => a.includes('/_ccxray/agent/herdr%3Aw1%3Acodex-key-launch/v1')));
 
     // ChatGPT-OAuth mode (no OPENAI_API_KEY) resolves its provider differently,
     // so the legacy base-url form stays the fallback — same as providers.js.
@@ -6886,4 +6889,27 @@ describe('codex round 4 fixes', () => {
     assert.doesNotMatch(snapshot.rows[0].freshness, /h$/,
       `seen must not report hours while a subagent ran a minute ago (got ${snapshot.rows[0].freshness})`);
   });
+});
+
+
+describe('Herdr OpenAI pane attribution (#672)', () => {
+  for (const agent of ['grok', 'codex']) {
+    it(`launch-${agent} carries its recorded launch identity in the proxy URL`, () => {
+      const result = runScript('launch-agent.js', [agent, '--plan'], {
+        HERDR_PLUGIN_CONTEXT_JSON: JSON.stringify({
+          focused_pane_id: 'w1:p1', focused_pane_cwd: '/work/demo', workspace_id: 'w1', tab_id: 'w1:t1',
+        }),
+        PROXY_PORT: '5678',
+      });
+      assert.equal(result.status, 0, result.stderr);
+      const plan = JSON.parse(result.stdout);
+      const expected = `http://localhost:5678/_ccxray/agent/${encodeURIComponent(`herdr:${plan.launchToken}`)}/v1`;
+      if (agent === 'grok') assert.equal(plan.envVars.GROK_CLI_CHAT_PROXY_BASE_URL, expected);
+      else {
+        assert.equal(plan.envVars.CCXRAY_CODEX_PROXY_BASE_URL, expected);
+        assert.ok(plan.codexArgs.includes(`openai_base_url="${expected}"`));
+        assert.ok(plan.codexArgs.includes(`chatgpt_base_url="${expected}"`));
+      }
+    });
+  }
 });

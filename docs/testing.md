@@ -488,3 +488,9 @@ before the first lookup, as `test/default-rates.test.js` and
 
 The rule of thumb matches rule 1: never let an assertion depend on a file the
 test did not create.
+
+`test/multi-agent-proxy.e2e.test.js` and `test/websocket-proxy.test.js` exercise
+native Herdr pane attribution with synthetic launch IDs and plugin-generated
+proxy URLs. They use temporary `CCXRAY_HOME` directories and local mock upstreams;
+no Herdr session or real provider credentials are needed. `test/hub.test.js`
+covers malformed and oversized internal pane routes.

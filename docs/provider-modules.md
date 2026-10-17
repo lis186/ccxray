@@ -49,6 +49,12 @@ before normal dispatch, then resolve deployment identity from the matching hub
 client. This is required when two panes run the same provider: agent type alone
 is ambiguous and must never fall back to the hub process environment.
 
+Native Herdr launches of Grok and Codex bypass the ccxray launcher and use
+`/_ccxray/agent/<URL-encoded herdr: launch identity>` instead. Both HTTP and
+WebSocket dispatch strip the prefix and retain only the sanitized `agentId`.
+This route supplies attribution metadata; it does not authenticate requests or
+register a hub client. Claude's native launch uses `X-Ccxray-Agent-Id`.
+
 Standalone `--port` launches do not use the client route. Any new provider
 module must preserve the base URL returned by the shared launcher helper so the
 same identity contract covers Anthropic requests, OpenAI HTTP, and OpenAI

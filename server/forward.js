@@ -185,11 +185,9 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
   return {
     ...deploymentFields(startTime, {
       identity: identity || {},
-      // INVARIANT: gated on the HUB identity, never on the merged one. The header
-      // supplies agentId only, so letting it flip this flag silently dropped
-      // userEmail/team/agentType — the #505 export attribution — from every
-      // header-identified turn. deploymentFields already falls back per field.
-      useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
+      // Registered client routes own all deployment fields. Native pane routes
+      // supply agentId only; retain per-field env fallback on standalone servers.
+      useEnvIdentity: !routedClient && (!hub.hasClients() || envMatchesAgent),
     }),
     ...launchAccountFields(headers),
   };

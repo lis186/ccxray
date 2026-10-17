@@ -145,7 +145,7 @@ function requestDeploymentFields(startTime, req, parsedBody) {
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
     identity: identity || {},
-    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+    useEnvIdentity: !routedClient && (!hub.hasClients() || envMatchesAgent),
   });
 }
 

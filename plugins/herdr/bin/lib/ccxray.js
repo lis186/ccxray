@@ -2914,6 +2914,13 @@ function upstreamAuthToken(env = process.env) {
   return /^[A-Za-z0-9_-]{16,}$/.test(token) ? token : null;
 }
 
+// Grok has no arbitrary-header launch setting; URL routing also works for
+// Codex's HTTP and WebSocket transports, in both API-key and OAuth modes.
+function paneProxyBaseUrl(port, paneId) {
+  const route = paneId ? `/_ccxray/agent/${encodeURIComponent(`herdr:${paneId}`)}` : '';
+  return `http://localhost:${port}${route}`;
+}
+
 function proxyEnvVars(agent, port, opts = {}) {
   const base = `http://localhost:${port}`;
   const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
@@ -2946,9 +2953,9 @@ function proxyEnvVars(agent, port, opts = {}) {
       return vars;
     }
     case 'grok':
-      return { GROK_CLI_CHAT_PROXY_BASE_URL: `${base}/v1` };
+      return { GROK_CLI_CHAT_PROXY_BASE_URL: `${paneProxyBaseUrl(port, opts.paneId)}/v1` };
     case 'codex':
-      return { CCXRAY_CODEX_PROXY_BASE_URL: `${base}/v1` };
+      return { CCXRAY_CODEX_PROXY_BASE_URL: `${paneProxyBaseUrl(port, opts.paneId)}/v1` };
     default:
       return {};
   }
@@ -2966,7 +2973,7 @@ function proxyEnvVars(agent, port, opts = {}) {
 // launch path worked — the same env-injection gap the claude branch had.
 function codexAgentArgs(port, opts = {}) {
   const env = opts.env || process.env;
-  const baseUrl = `http://localhost:${port}/v1`;
+  const baseUrl = `${paneProxyBaseUrl(port, opts.paneId)}/v1`;
   if (!opts.skipAuth && env.OPENAI_API_KEY) {
     const token = upstreamAuthToken(env);
     if (token) {

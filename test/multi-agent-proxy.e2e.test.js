@@ -13,6 +13,7 @@ const { spawn } = require('child_process');
 
 const SERVER_SCRIPT = path.join(__dirname, '..', 'server', 'index.js');
 const providers = require('../server/providers');
+const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
 const tmpDirs = [];
 
 function findFreePort() {
@@ -221,6 +222,7 @@ describe('multi-agent provider modules', () => {
         BROWSER: 'none',
         RESTORE_DAYS: '0',
         CCXRAY_IMPORT_DISABLE: '1',
+        CCXRAY_EXPORT_DISABLE: '1',
         ANTHROPIC_TEST_HOST: '127.0.0.1',
         ANTHROPIC_TEST_PORT: String(mockPort),
         ANTHROPIC_TEST_PROTOCOL: 'http',
@@ -253,10 +255,13 @@ describe('multi-agent provider modules', () => {
       });
       assert.equal(claudeOut.status, 200, claudeOut.body.slice(0, 200));
 
+      const codexBase = proxyEnvVars('codex', proxyPort, { paneId: 'w1:codex-launch' }).CCXRAY_CODEX_PROXY_BASE_URL;
+      const grokBase = proxyEnvVars('grok', proxyPort, { paneId: 'w1:grok-launch' }).GROK_CLI_CHAT_PROXY_BASE_URL;
+
       // Codex-shaped (no grok headers → openai host profile)
       const codexOut = await request(proxyPort, {
         method: 'POST',
-        path: '/v1/responses',
+        path: `${new URL(codexBase).pathname}/responses`,
         headers: {
           authorization: 'Bearer sk-test',
           'content-type': 'application/json',
@@ -274,7 +279,7 @@ describe('multi-agent provider modules', () => {
       // Grok-shaped (client module headers → xai host profile)
       const grokOut = await request(proxyPort, {
         method: 'POST',
-        path: '/v1/responses',
+        path: `${new URL(grokBase).pathname}/responses`,
         headers: {
           authorization: 'Bearer tok',
           'content-type': 'application/json',
@@ -309,6 +314,11 @@ describe('multi-agent provider modules', () => {
       assert.ok(hasClaude, 'claude/anthropic entry missing');
       assert.ok(hasCodex, 'codex entry missing');
       assert.ok(hasGrok, 'grok entry missing');
+      const indexed = fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(indexed.find(e => e.agent === 'grok').agentId, 'herdr:w1:grok-launch');
+      assert.equal(indexed.find(e => e.agent === 'codex').agentId, 'herdr:w1:codex-launch');
+      assert.ok(hits.every(h => !h.path.includes('_ccxray')), 'pane routes must never reach upstream');
+
 
       // Host routing: all hit mock port; grok path still recorded as /v1/responses
       assert.ok(hits.some(h => h.path.includes('messages')), 'anthropic path hit mock');

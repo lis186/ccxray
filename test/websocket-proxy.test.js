@@ -11,6 +11,7 @@ const net = require('net');
 const WebSocket = require('ws');
 const { childClosed, stopChild } = require('./helpers/child-lifecycle');
 const { deriveUpstreamToken } = require('./helpers/upstream-token');
+const { proxyEnvVars } = require('../plugins/herdr/bin/lib/ccxray');
 
 const SERVER_SCRIPT = path.resolve(__dirname, '..', 'server', 'index.js');
 
@@ -162,7 +163,8 @@ describe('OpenAI Responses WebSocket proxy', () => {
     await startProxy();
 
     const sessionId = '019e0ab2-bcc2-7b72-a1bf-980edc2ea943';
-    const ws = new WebSocket(`ws://localhost:${proxyPort}/v1/responses`, {
+    const base = proxyEnvVars('codex', proxyPort, { paneId: 'w1:codex-ws-launch' }).CCXRAY_CODEX_PROXY_BASE_URL;
+    const ws = new WebSocket(`${base.replace('http:', 'ws:')}/responses`, {
       headers: {
         authorization: 'Bearer test-openai-key',
         'openai-beta': 'responses_websockets=2026-02-06',
@@ -200,6 +202,7 @@ describe('OpenAI Responses WebSocket proxy', () => {
     const entry = await waitForIndexEntry(path.join(testHome, 'logs'), e => e.sessionId === sessionId);
     assert.equal(entry.provider, 'openai');
     assert.equal(entry.agent, 'codex');
+    assert.equal(entry.agentId, 'herdr:w1:codex-ws-launch');
     assert.equal(entry.isSubagent, true);
     assert.equal(entry.cwd, '/tmp/ccxray-ws');
     assert.equal(entry.responseMetadata.transport, 'websocket');
