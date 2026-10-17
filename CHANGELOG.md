@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **Transcript import requires opt-in (#675).** Fresh installs and upgrades no longer scan historical transcripts automatically, whether running a hub, standalone server, or Herdr repair. Set `CCXRAY_IMPORT_DISABLE=0` to enable automatic import; explicit `ccxray import --once` remains available unless import is explicitly disabled with `1`. Previously only the shell block written by setup disabled startup import.
+
 - **Export requires account domains (#632).** A configured bucket with unset or empty `CCXRAY_EXPORT_DOMAINS` now blocks uploads without advancing the cursor. Startup warns once with setup guidance, and status reports `domains-required`.
 
 ## 2.5.0-rc.3

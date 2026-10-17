@@ -100,7 +100,84 @@ function runTargetImport(home, projectsRoot, target, extraEnv = {}) {
   return JSON.parse(out.split('\n').filter(Boolean).pop());
 }
 
+describe('automatic transcript import opt-in', () => {
+  for (const hub of [false, true]) {
+    for (const upgraded of [false, true]) {
+      for (const optIn of [undefined, '0', '1']) {
+        it(`${hub ? 'hub' : 'standalone'} ${upgraded ? 'upgraded' : 'fresh'} home, import setting ${optIn}`, async () => {
+          const home = tmpdir('ccxray-import-startup-');
+          const projects = tmpdir('ccxray-import-startup-projects-');
+          writeTranscript(projects, 'opt-in-session', '/work/opt-in');
+          const logs = path.join(home, 'logs');
+          fs.mkdirSync(logs);
+          const index = path.join(logs, 'index.ndjson');
+          const previous = upgraded ? JSON.stringify({ id: 'old-import', imported: true,
+            sessionId: 'old-session', provider: 'anthropic', receivedAt: 1 }) + '\n' : '';
+          fs.writeFileSync(index, previous);
+          const cache = path.join(home, 'pricing.json');
+          fs.writeFileSync(cache, JSON.stringify({ fetchedAt: Date.now(), pricing: {} }));
+          const env = { ...process.env, HOME: tmpdir('ccxray-import-source-home-'),
+            CCXRAY_HOME: home, CCXRAY_IMPORT_HOMES: projects,
+            CCXRAY_IMPORT_CODEX_HOMES: tmpdir('ccxray-import-empty-codex-'),
+            CCXRAY_EXPORT_DISABLE: '1', CCXRAY_PRICING_CACHE: cache,
+            NODE_TEST_CONTEXT: 'child' };
+          delete env.CLAUDE_CONFIG_DIR;
+          delete env.CCXRAY_IMPORT_DISABLE;
+          if (optIn !== undefined) env.CCXRAY_IMPORT_DISABLE = optIn;
+          const port = await new Promise(resolve => {
+            const listener = require('net').createServer();
+            listener.listen(0, '127.0.0.1', () => {
+              const port = listener.address().port;
+              listener.close(() => resolve(port));
+            });
+          });
+          const child = spawn(process.execPath, ['server/index.js', '--port', String(port), '--no-browser',
+            ...(hub ? ['--hub-mode'] : [])], { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
+          let output = '';
+          child.stdout.on('data', chunk => { output += chunk; });
+          child.stderr.on('data', chunk => { output += chunk; });
+          try {
+            const deadline = Date.now() + 10000;
+            while (!output.includes('startup tasks complete') && child.exitCode === null && Date.now() < deadline) {
+              await new Promise(resolve => setTimeout(resolve, 20));
+            }
+            assert.match(output, /startup tasks complete/, output);
+            // Allow the non-blocking scan to append its synthetic transcript.
+            await new Promise(resolve => setTimeout(resolve, 400));
+            const rows = fs.readFileSync(index, 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+            assert.equal(rows.some(row => row.sessionId === 'opt-in-session'), optIn === '0');
+            if (upgraded) assert.ok(rows.some(row => row.id === 'old-import'));
+          } finally {
+            if (child.exitCode === null) {
+              child.kill('SIGTERM');
+              await new Promise(resolve => child.once('exit', resolve));
+            }
+          }
+        });
+      }
+    }
+  }
+
+  it('Herdr requires opt-in before requesting any repair import', () => {
+    const { requestImport } = require('../plugins/herdr/bin/lib/ccxray');
+    for (const value of [undefined, '', '1']) {
+      const env = { CCXRAY_HOME: tmpdir('ccxray-import-plugin-') };
+      if (value !== undefined) env.CCXRAY_IMPORT_DISABLE = value;
+      assert.equal(requestImport({ env }).reason, 'disabled');
+    }
+    assert.equal(requestImport({ env: { CCXRAY_IMPORT_DISABLE: '0' } }).reason, 'no-target');
+  });
+});
+
 describe('ccxray import --once', () => {
+  it('explicit --once imports with the automatic import setting unset', () => {
+    const home = tmpdir('ccxray-explicit-import-');
+    const projects = tmpdir('ccxray-explicit-projects-');
+    writeTranscript(projects, 'explicit-session', '/work/explicit');
+    const result = runImport(home, projects, { CCXRAY_IMPORT_DISABLE: undefined });
+    assert.equal(result.imported, 1);
+  });
+
   // FAIL-ON-OLD: the only existing import mode is a global scan. A Sidebar
   // repair must parse exactly the transcript Herdr's native session identified,
   // leaving unrelated sessions untouched.

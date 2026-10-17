@@ -1704,7 +1704,9 @@ function claimRepairState(stateFile, value, env, opts = {}) {
 
 function requestImport(opts = {}) {
   const env = opts.env || process.env;
-  if (env.CCXRAY_BADGE_IMPORT_DISABLE === '1') return { ok: false, reason: 'disabled' };
+  if (env.CCXRAY_IMPORT_DISABLE !== '0' || env.CCXRAY_BADGE_IMPORT_DISABLE === '1') {
+    return { ok: false, reason: 'disabled' };
+  }
   const target = opts.target || {};
   if (!target.file || !target.provider || !target.sessionId || !target.cwd) {
     return { ok: false, reason: 'no-target' };
