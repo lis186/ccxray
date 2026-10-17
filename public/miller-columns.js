@@ -3232,14 +3232,18 @@ function renderToolMeta(c) {
   const name = (typeof CODEX_TOOL_ALIASES !== 'undefined' && CODEX_TOOL_ALIASES[c.name]) || c.name;
   switch (name) {
     case 'Bash': {
-      const cmd = (inp.command || inp.cmd || '');
+      const cmd = String(inp.command || inp.cmd || '');
       const desc = inp.description ? '<div class="detail-meta-line">' + escapeHtml(inp.description) + '</div>' : '';
       return '<div class="detail-meta"><code class="detail-cmd-block">$ ' + escapeHtml(cmd.split('\n')[0]) + (cmd.includes('\n') ? ' ...' : '') + '</code>' + desc + '</div>';
     }
-    case 'Read':
+    case 'Read': {
+      const offset = Number.isFinite(inp.offset) || typeof inp.offset === 'string' ? inp.offset : 0;
+      const limit = Number.isFinite(inp.limit) || typeof inp.limit === 'string' ? inp.limit : 0;
+      const end = Number.isFinite(offset) && Number.isFinite(limit) ? offset + limit : limit;
       return '<div class="detail-meta"><code>' + escapeHtml(inp.file_path || '') + '</code>'
-        + (inp.offset ? ' <span class="detail-tag">L' + inp.offset + (inp.limit ? '-' + (inp.offset + inp.limit) : '+') + '</span>' : '')
+        + (offset ? ' <span class="detail-tag">L' + escapeHtml(String(offset)) + (limit ? '-' + escapeHtml(String(end)) : '+') + '</span>' : '')
         + '</div>';
+    }
     case 'Write':
       return '<div class="detail-meta"><code>' + escapeHtml(inp.file_path || '') + '</code></div>';
     case 'Edit':
@@ -3248,17 +3252,17 @@ function renderToolMeta(c) {
     case 'Grep':
       return '<div class="detail-meta"><code>/' + escapeHtml(inp.pattern || '') + '/</code>'
         + (inp.glob ? ' <span class="detail-tag">' + escapeHtml(inp.glob) + '</span>' : '')
-        + (inp.path ? ' in <code>' + escapeHtml(inp.path.split('/').slice(-2).join('/')) + '</code>' : '') + '</div>';
+        + (inp.path ? ' in <code>' + escapeHtml(String(inp.path).split('/').slice(-2).join('/')) + '</code>' : '') + '</div>';
     case 'Glob':
       return '<div class="detail-meta"><code>' + escapeHtml(inp.pattern || '') + '</code>'
-        + (inp.path ? ' in <code>' + escapeHtml(inp.path.split('/').slice(-2).join('/')) + '</code>' : '') + '</div>';
+        + (inp.path ? ' in <code>' + escapeHtml(String(inp.path).split('/').slice(-2).join('/')) + '</code>' : '') + '</div>';
     case 'Agent':
-      return '<div class="detail-meta">' + escapeHtml(inp.description || (inp.prompt || '').slice(0, 80))
+      return '<div class="detail-meta">' + escapeHtml(inp.description || String(inp.prompt || '').slice(0, 80))
         + (inp.subagent_type ? ' <span class="detail-tag">' + escapeHtml(inp.subagent_type) + '</span>' : '') + '</div>';
     case 'WebSearch':
       return '<div class="detail-meta"><code>' + escapeHtml(inp.query || '') + '</code></div>';
     case 'WebFetch':
-      return '<div class="detail-meta"><code>' + escapeHtml((inp.url || '').replace(/^https?:\/\//, '').slice(0, 60)) + '</code></div>';
+      return '<div class="detail-meta"><code>' + escapeHtml(String(inp.url || '').replace(/^https?:\/\//, '').slice(0, 60)) + '</code></div>';
     case 'TaskCreate':
       return '<div class="detail-meta">' + escapeHtml(inp.subject || '') + '</div>';
     case 'TaskUpdate':
