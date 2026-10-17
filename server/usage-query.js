@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
-const { resolveLogsDir } = require('./paths');
+const { resolveLogsDir, stripSlash } = require('./paths');
 const { mergeByResponseId } = require('./store');
 
 // The proxy copy of a turn is stamped at request time and the imported copy at
@@ -21,8 +21,12 @@ function receivedAt(e) {
   return Number.isFinite(n) && e.receivedAt != null ? n : null;
 }
 
-async function readIndexRows({ from = -Infinity, to = Infinity, logsDir = resolveLogsDir() } = {}) {
+// `stats.newestImportedAt` (when given) receives the newest imported row of the
+// whole index, not only of the range: an import that stopped before `from` is
+// exactly the stalest case.
+async function readIndexRows({ from = -Infinity, to = Infinity, logsDir = resolveLogsDir(), stats = null } = {}) {
   const indexPath = path.join(logsDir, 'index.ndjson');
+  if (stats) stats.newestImportedAt = null;
   if (!fs.existsSync(indexPath)) return [];
   const lo = from - MERGE_MARGIN_MS, hi = to + MERGE_MARGIN_MS;
   const rows = [];
@@ -32,6 +36,7 @@ async function readIndexRows({ from = -Infinity, to = Infinity, logsDir = resolv
     let e;
     try { e = JSON.parse(line); } catch { continue; }
     const t = receivedAt(e);
+    if (stats && t != null && e.imported === true && (stats.newestImportedAt == null || t > stats.newestImportedAt)) stats.newestImportedAt = t;
     if (t == null || t < lo || t >= hi) continue;
     rows.push(e);
   }
@@ -107,7 +112,8 @@ function fillSessionCwd(rows) {
 // Merged rows in [from, to) ± margin, before any cwd/session selection: merging
 // first is what lets a pre-#640 proxy row be selected by its twin's cwd.
 async function readMergedTurns(opts = {}) {
-  const raw = await readIndexRows(opts);
+  const stats = {};
+  const raw = await readIndexRows({ ...opts, stats });
   // Which sources observed each turn, for the completeness label: a host turn
   // seen by both the transcript import and the proxy has a proxy twin.
   const seenBy = new Map();
@@ -120,10 +126,8 @@ async function readMergedTurns(opts = {}) {
   const merged = mergeByResponseId(raw);
   for (const e of merged) if (e.responseId) e.sources = [...seenBy.get(e.responseId)].sort();
   const { rows, sources } = oneSourcePerSession(merged);
-  return { turns: fillSessionCwd(rows), codexSources: sources };
+  return { turns: fillSessionCwd(rows), codexSources: sources, newestImportedAt: stats.newestImportedAt };
 }
-
-function stripSlash(p) { return p.length > 1 ? p.replace(/\/+$/, '') : p; }
 
 // Roots match the cwd exactly: a checkout's linked worktrees live beneath it
 // (`.worktrees/x`, `.claude/worktrees/agent-*`) and are different checkouts.
