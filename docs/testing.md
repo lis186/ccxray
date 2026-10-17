@@ -19,6 +19,7 @@ or `child_process` in their source go in `heavy`; the rest go in `unit`.
 This deliberately includes mocked and one-shot child-process tests in the serial
 group. If a new test spawns through a helper rather than importing child_process,
 name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard.
+Tests must not pass `process.env` to `getAgentLaunch('codex')`: OAuth-mode launches read the user's Codex `config.toml` (`$CODEX_HOME` or `$HOME/.codex`); pass a minimal env with a temp `CODEX_HOME`.
 `npm test` attempts every group even if an earlier group fails and returns a
 failure if any group fails. For a system Chrome install, use
 `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome npm test`.

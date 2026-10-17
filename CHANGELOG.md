@@ -2,11 +2,9 @@
 
 ## Unreleased
 
-### Known limitations
-
-- **Codex ChatGPT-login bootstrap (#671).** Documented as unsupported in 2.5.0-rc.3 for Codex 0.159.2 and 0.163.0. Workspace discovery uses a path ccxray forwards incorrectly; correcting that path alone cannot preserve the local HTTP proxy under Codex's HTTPS workspace-origin validation and destination replacement. See [findings](docs/codex-workspace-routing.md). API-key sessions remain supported.
-
 ### Fixed
+
+- **Codex ChatGPT-login works through ccxray again (#671).** Codex 0.159.2 and 0.163.0 failed to start with `-32603 workspace routing discovery failed`, because the launcher pointed `chatgpt_base_url` at the plaintext loopback proxy. In ChatGPT-OAuth mode `ccxray codex` and the Herdr Codex launch now set only `openai_base_url=<proxy>/v1`: account and workspace-discovery calls go directly to chatgpt.com, and model traffic is still recorded. API-key mode is unchanged. `ccxray codex` warns (read-only) when `$CODEX_HOME/config.toml` still points `chatgpt_base_url` at a loopback proxy, which keeps failing. Residency/`us` workspaces are not re-routed for the local proxy. See [notes](docs/codex-workspace-routing.md).
 
 - **`ccxray setup-statusline` is safe to run (#687).** `--help`/`-h` print usage and write nothing, and unknown flags exit non-zero without writing (both previously installed). New `--dry-run` shows the planned change, and `--remove` uninstalls without a TTY. The written entry now includes `"type": "command"`, and a legacy entry without it is repaired. Claude's `settings.json` is backed up owner-only (0600) to `settings.json.bak-<timestamp>` before each rewrite and then replaced atomically (exclusively created tmp + rename; a symlinked file is written through). A `settings.json` that is not valid JSON is never rewritten: setup and the launch prompt refuse with one line naming the file, and `--claude-home` with a missing directory is a one-line error. `ccxray import --help` prints usage instead of "unknown import mode".
 

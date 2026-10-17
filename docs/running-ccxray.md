@@ -45,7 +45,8 @@ Agents that are not started through `ccxray <agent>` — for example a runner th
 | Agent | Setting |
 |---|---|
 | Claude Code | `ANTHROPIC_BASE_URL=http://localhost:5577` |
-| Codex (API key) | A custom model provider whose `base_url` is the proxy's `/v1`: `codex -c 'model_providers.ccxray={name="ccxray", base_url="http://localhost:5577/v1", wire_api="responses"}' -c 'model_provider="ccxray"' …` (or the same `model_providers.<id>` table in `config.toml`). ChatGPT-login sessions are not supported through the proxy ([#671](https://github.com/lis186/ccxray/issues/671)). |
+| Codex (API key) | A custom model provider whose `base_url` is the proxy's `/v1`: `codex -c 'model_providers.ccxray={name="ccxray", base_url="http://localhost:5577/v1", wire_api="responses"}' -c 'model_provider="ccxray"' …` (or the same `model_providers.<id>` table in `config.toml`). |
+| Codex (ChatGPT login) | `codex -c 'openai_base_url="http://localhost:5577/v1"' …` only. Do not set `chatgpt_base_url` to the proxy: ChatGPT workspace discovery rejects a loopback URL ([#671](codex-workspace-routing.md)) |
 | Grok CLI | `GROK_CLI_CHAT_PROXY_BASE_URL=http://localhost:5577/v1` |
 
 Use your proxy's port in place of `5577`.
