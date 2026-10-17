@@ -27,7 +27,7 @@ CLI  →  AGENT_PROVIDERS.createLaunch  →  proxy :port
 | id | Launcher | Wire | Host profile |
 |----|----------|------|--------------|
 | `claude` | `ANTHROPIC_BASE_URL` | anthropic | `anthropic` |
-| `codex` | `openai_base_url` / model_provider | openai | `openai` / ChatGPT |
+| `codex` | `openai_base_url` (OAuth; never `chatgpt_base_url`, #671) / model_provider (API key) | openai | `openai` / ChatGPT |
 | `grok` | `GROK_CLI_CHAT_PROXY_BASE_URL` | openai + client | `xai` (cli-chat-proxy) |
 
 **Codex config placement.** The launcher scans the root options documented by

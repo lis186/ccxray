@@ -47,8 +47,6 @@ describe('agent provider registry', () => {
       'exec',
       '-c',
       'openai_base_url="http://localhost:5577/v1"',
-      '-c',
-      'chatgpt_base_url="http://localhost:5577/v1"',
       'hello',
     ]);
     assert.equal(launch.env.PATH, '/usr/bin');
@@ -59,7 +57,6 @@ describe('agent provider registry', () => {
   it('places Codex config overrides immediately after model-running commands', () => {
     const overrides = [
       '-c', 'openai_base_url="http://localhost:5577/v1"',
-      '-c', 'chatgpt_base_url="http://localhost:5577/v1"',
     ];
     const env = { PATH: '/usr/bin' };
     const cases = [
@@ -108,7 +105,6 @@ describe('agent provider registry', () => {
   it('keeps Codex config overrides at the root for interactive and other commands', () => {
     const overrides = [
       '-c', 'openai_base_url="http://localhost:5577/v1"',
-      '-c', 'chatgpt_base_url="http://localhost:5577/v1"',
     ];
     const env = { PATH: '/usr/bin' };
     const cases = [
@@ -138,8 +134,6 @@ describe('agent provider registry', () => {
     assert.deepEqual(launch.args, [
       '-c',
       'openai_base_url="http://localhost:5577/v1"',
-      '-c',
-      'chatgpt_base_url="http://localhost:5577/v1"',
       'app',
       '/repo',
     ]);
@@ -169,7 +163,9 @@ describe('agent provider registry', () => {
 
     assert.equal(claude.env.ANTHROPIC_BASE_URL, 'http://localhost:5577/_ccxray/client/78846');
     assert.ok(codex.args.includes('openai_base_url="http://localhost:5577/_ccxray/client/78846/v1"'));
-    assert.ok(codex.args.includes('chatgpt_base_url="http://localhost:5577/_ccxray/client/78846/v1"'));
+    // #671: never override chatgpt_base_url — Codex runs ChatGPT workspace
+    // discovery against it and rejects a plaintext loopback URL.
+    assert.ok(!codex.args.some(a => a.includes('chatgpt_base_url')));
     assert.equal(grok.env.GROK_CLI_CHAT_PROXY_BASE_URL, 'http://localhost:5577/_ccxray/client/78846/v1');
   });
 
@@ -230,5 +226,74 @@ describe('agent provider registry', () => {
     assert.equal(providers.getAgentProvider('unknown-ai'), null);
     assert.equal(providers.isAgentProvider('unknown-ai'), false);
     assert.equal(providers.isAgentProvider('grok'), true);
+  });
+});
+
+// #671: in ChatGPT-OAuth mode Codex must keep its default chatgpt_base_url so
+// workspace discovery runs natively, and the proxy URL must keep its `/v1`
+// suffix. Codex only rewrites model traffic to a discovered workspace origin
+// when the openai provider's base_url is unset or ends in `/backend-api/codex`
+// (`supports_codex_backend_routes()`); a `/backend-api/codex` proxy URL would
+// let it swap host/port and bypass ccxray, unrecorded.
+describe('Codex ChatGPT-OAuth launch routing (#671)', () => {
+  const routes = [
+    { label: 'standalone', env: {}, base: 'http://localhost:5577/v1' },
+    { label: 'hub client', env: { CCXRAY_HUB_CLIENT_PID: '78846' }, base: 'http://localhost:5577/_ccxray/client/78846/v1' },
+  ];
+  for (const { label, env, base } of routes) {
+    it(`${label}: sets only openai_base_url, ending in /v1`, () => {
+      const launch = providers.getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin', ...env });
+      assert.deepEqual(launch.args, ['-c', `openai_base_url="${base}"`]);
+      assert.ok(!launch.args.some(a => a.includes('chatgpt_base_url')), 'chatgpt_base_url must not be overridden');
+      const url = launch.args[1].match(/openai_base_url="([^"]+)"/)[1];
+      assert.ok(url.endsWith('/v1'));
+      assert.ok(!url.endsWith('/backend-api/codex'), 'a /backend-api/codex base would enable workspace re-routing');
+    });
+  }
+});
+
+describe('Codex user config loopback chatgpt_base_url warning (#671)', () => {
+  let codexHome;
+  before(() => { codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-codex-home-')); });
+  after(() => fs.rmSync(codexHome, { recursive: true, force: true }));
+  const write = (body) => fs.writeFileSync(path.join(codexHome, 'config.toml'), body);
+  const detect = (extra = {}) => providers.findLoopbackCodexChatgptBaseUrl({ CODEX_HOME: codexHome, ...extra });
+
+  it('flags a loopback chatgpt_base_url', () => {
+    for (const url of ['http://localhost:5577/v1', 'http://127.0.0.1:5577/v1', 'http://[::1]:5577/v1']) {
+      write(`model = "gpt-test"\nchatgpt_base_url = "${url}"\n`);
+      assert.equal(detect(), url);
+    }
+    write(`[profiles.work]\nchatgpt_base_url = 'http://localhost:9/v1'\n`);
+    assert.equal(detect(), 'http://localhost:9/v1');
+  });
+
+  it('ignores non-loopback, commented, and missing values', () => {
+    write('chatgpt_base_url = "https://chatgpt.example.com/backend-api/"\n');
+    assert.equal(detect(), null);
+    write('# chatgpt_base_url = "http://localhost:5577/v1"\nopenai_base_url = "http://localhost:5577/v1"\n');
+    assert.equal(detect(), null);
+    fs.rmSync(path.join(codexHome, 'config.toml'));
+    assert.equal(detect(), null);
+    assert.equal(providers.findLoopbackCodexChatgptBaseUrl({}), null, 'no CODEX_HOME/HOME: no lookup');
+  });
+
+  it('warns on the OAuth launch without changing argv or the file', () => {
+    const body = 'chatgpt_base_url = "http://localhost:5577/v1"\n';
+    write(body);
+    const warnings = [];
+    const orig = console.warn;
+    console.warn = (msg) => warnings.push(String(msg));
+    let launch;
+    try {
+      launch = providers.getAgentLaunch('codex', 5577, [], { PATH: '/usr/bin', CODEX_HOME: codexHome });
+    } finally {
+      console.warn = orig;
+    }
+    assert.deepEqual(launch.args, ['-c', 'openai_base_url="http://localhost:5577/v1"']);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /chatgpt_base_url/);
+    assert.match(warnings[0], /#671/);
+    assert.equal(fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8'), body, 'read-only');
   });
 });

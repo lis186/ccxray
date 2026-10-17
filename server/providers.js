@@ -20,6 +20,44 @@ function getUpstreamToken() {
   }
 }
 
+// #671: a user-level `chatgpt_base_url` pointing at a loopback proxy (the
+// older way to route Codex through ccxray) still breaks ChatGPT workspace
+// discovery, and a `-c` override cannot safely undo it: enterprise configs set
+// it legitimately. Detect and warn only — this never writes the file.
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '[::1]', '::1']);
+
+function codexConfigPath(env) {
+  if (env.CODEX_HOME) return path.join(env.CODEX_HOME, 'config.toml');
+  const home = env.HOME || env.USERPROFILE;
+  return home ? path.join(home, '.codex', 'config.toml') : null;
+}
+
+function findLoopbackCodexChatgptBaseUrl(env = process.env) {
+  const file = codexConfigPath(env);
+  if (!file) return null;
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return null; }
+  const re = /^[ \t]*chatgpt_base_url[ \t]*=[ \t]*(?:"([^"]*)"|'([^']*)')/gm;
+  let m;
+  while ((m = re.exec(text))) {
+    const value = m[1] ?? m[2];
+    let host;
+    try { host = new URL(value).hostname.toLowerCase(); } catch { continue; }
+    if (LOOPBACK_HOSTS.has(host) || /^127\./.test(host)) return value;
+  }
+  return null;
+}
+
+let warnedLoopbackChatgptBaseUrl = false;
+function warnLoopbackCodexChatgptBaseUrl(env) {
+  if (warnedLoopbackChatgptBaseUrl) return;
+  const url = findLoopbackCodexChatgptBaseUrl(env);
+  if (!url) return;
+  warnedLoopbackChatgptBaseUrl = true;
+  console.warn(`[ccxray] chatgpt_base_url in ${codexConfigPath(env)} points at a loopback proxy (${url}); `
+    + 'Codex ChatGPT workspace discovery will fail (#671). Remove it — ccxray no longer needs it.');
+}
+
 function proxyBaseUrl(port, env, suffix = '') {
   const clientPid = String(env.CCXRAY_HUB_CLIENT_PID || '');
   const clientRoute = /^[1-9]\d*$/.test(clientPid)
@@ -231,15 +269,26 @@ const AGENT_PROVIDERS = Object.freeze({
         // (warning already emitted by getUpstreamToken)
       }
 
-      // ChatGPT-OAuth mode or token derivation failure: legacy path
+      // ChatGPT-OAuth mode or token derivation failure: built-in `openai`
+      // provider pointed at the proxy. Only openai_base_url is overridden.
+      //
+      // #671: chatgpt_base_url must stay at Codex's default
+      // (https://chatgpt.com/backend-api/). Codex runs ChatGPT workspace
+      // discovery against it at bootstrap and rejects a plaintext loopback URL
+      // (-32603 "workspace routing discovery failed"); account/backend calls
+      // therefore go to chatgpt.com directly, while model traffic still comes
+      // here (config.js routes `chatgpt-account-id` requests to the ChatGPT
+      // upstream).
+      //
+      // INVARIANT: baseUrl must NOT end in `/backend-api/codex`. Codex applies
+      // the discovered workspace origin to the openai provider only when its
+      // base_url is unset or ends there (`supports_codex_backend_routes()`);
+      // the `/v1` suffix keeps that gate closed, so model traffic can never be
+      // re-routed past the proxy. See docs/codex-workspace-routing.md.
+      warnLoopbackCodexChatgptBaseUrl(env);
       return {
         bin: 'codex',
-        args: withCodexConfig([
-          '-c',
-          `openai_base_url="${baseUrl}"`,
-          '-c',
-          `chatgpt_base_url="${baseUrl}"`,
-        ], args),
+        args: withCodexConfig(['-c', `openai_base_url="${baseUrl}"`], args),
         env: { ...env },
       };
     },
@@ -504,6 +553,7 @@ module.exports = {
   firstHeaderValue,
   getClaudeLaunchAccountEmail,
   getAgentLaunch,
+  findLoopbackCodexChatgptBaseUrl,
   getAgentProvider,
   getDisplayName,
   getOpenAIWireClient,

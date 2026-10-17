@@ -324,7 +324,7 @@ describe('auth launcher header injection (1.4a)', () => {
   });
 
   describe('Codex launcher — ChatGPT-OAuth mode (no OPENAI_API_KEY)', () => {
-    it('uses legacy openai_base_url + chatgpt_base_url, no model_provider override', () => {
+    it('uses openai_base_url only — never chatgpt_base_url (#671) — and no model_provider override', () => {
       const providers = require('../server/providers');
 
       const launch = providers.getAgentLaunch('codex', 5577, ['exec', 'hello'], {
@@ -337,9 +337,12 @@ describe('auth launcher header injection (1.4a)', () => {
         launch.args.some(a => a.includes('openai_base_url="http://localhost:5577/v1"')),
         'should have openai_base_url'
       );
-      assert.ok(
-        launch.args.some(a => a.includes('chatgpt_base_url="http://localhost:5577/v1"')),
-        'should have chatgpt_base_url'
+      // #671: overriding chatgpt_base_url sends Codex's ChatGPT workspace
+      // discovery to a plaintext loopback URL, which Codex rejects (-32603).
+      assert.equal(
+        launch.args.some(a => a.includes('chatgpt_base_url')),
+        false,
+        'must not override chatgpt_base_url'
       );
 
       // Should NOT have model_provider override
