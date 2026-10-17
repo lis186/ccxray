@@ -2016,7 +2016,7 @@ test('interrupted setup can be removed and a residual-environment flush returns 
     const savedEnv = { ...process.env };
     const previousLog = console.log;
     try {
-      Object.assign(process.env, fixture.env, { CCXRAY_EXPORT_GCS_BUCKET: 'fixture-bucket-01' });
+      Object.assign(process.env, fixture.env, { CCXRAY_EXPORT_GCS_BUCKET: 'fixture-bucket-01', CCXRAY_EXPORT_DOMAINS: 'example.com' });
       delete process.env.CCXRAY_EXPORT_DISABLE;
       delete process.env.CCXRAY_EXPORT_GCS_KEY_FILE;
       delete process.env.ANTHROPIC_BASE_URL;

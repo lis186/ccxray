@@ -33,6 +33,7 @@ process.env.CCXRAY_HOME = TEST_HOME;
 process.env.LOGS_DIR = LOGS_DIR;
 process.env.CLOUDSDK_CONFIG = CLOUDSDK_CONFIG;
 process.env.CCXRAY_EXPORT_GCS_BUCKET = 'synthetic-health-security-bucket';
+process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
 process.env.CCXRAY_EXPORT_GCS_KEY_FILE = credentialPath;
 process.env.CCXRAY_IMPORT_DISABLE = '1';
 

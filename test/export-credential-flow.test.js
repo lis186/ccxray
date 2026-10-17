@@ -132,6 +132,7 @@ test('startExportSync prints the offline credential stages through the injected 
   for (const k of keys) delete process.env[k];
   process.env.CCXRAY_HOME = home;
   process.env.CCXRAY_EXPORT_GCS_BUCKET = 'synthetic-bucket';
+  process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
   process.env.CLOUDSDK_CONFIG = gcloud;
   process.env.GOOGLE_APPLICATION_CREDENTIALS = path.join(root, 'ignored.json');
 
