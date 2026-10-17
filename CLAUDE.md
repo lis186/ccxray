@@ -16,7 +16,9 @@ ccxray grok                                      # Proxy + Grok CLI (xAI)
 ccxray --port 8080 claude                        # Custom port (opts out of hub, independent server)
 ccxray status                                    # Show process, export, home, and hub status
 ccxray --port 8080 status                        # Checks hub lock/socket first; probes this port only if no lock exists
-ccxray setup --bucket <bucket> --domains example.com # Export settings + Claude wrapper; import stays disabled
+ccxray setup                                     # Claude wrapper + local recording only; import stays disabled
+ccxray setup --export --bucket <bucket> --domains example.com # Also enroll in summary export (opt-in)
+ccxray hud on|off|status                         # Context HUD toggle (off by default; same settings.json as the dashboard)
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
 npm test                                         # Run tests

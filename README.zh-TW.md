@@ -33,19 +33,25 @@ npx ccxray grok
 
 如果 ccxray 無法載入 proxy 或連接 hub，會直接啟動 agent，該 session 不會被記錄。Hub 連線預設有 3000 ms 時限；未完成的連線會在時限到達時 fallback，若更早失敗也會提前 fallback。可用 `CCXRAY_ATTACH_TIMEOUT_MS` 調整時限。ccxray 會嘗試將 fallback 寫入 `<CCXRAY_HOME>/fail-open.log`（預設 `~/.ccxray/fail-open.log`），但寫檔屬於 best effort，可能失敗。設定 `CCXRAY_FAIL_CLOSED=1` 可改為停止啟動。Claude 的 `--bg` / `--background` launch 會依設計略過 proxy。
 
-若要持續安裝並設定 Claude shell wrapper 與選用的摘要匯出：
-
-執行 `setup` 前，請先安裝 Claude Code，並確認 ccxray 能讀取已登入帳號的 email；`--domains` 清單必須包含該帳號的網域。Setup 也需要可讀取的 gcloud Application Default Credentials，請先執行 `gcloud auth application-default login`。即使 exporter 本身支援 service-account key file，setup 仍會拒絕 `CCXRAY_EXPORT_GCS_KEY_FILE`。
+若要持續安裝並設定 Claude shell wrapper（僅本機記錄）：
 
 ```bash
 npm install -g ccxray
-gcloud auth application-default login
-ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+ccxray setup
 # 開啟新終端機（或重新載入 shell profile），再確認設定：
 ccxray setup --check
 ```
 
-`setup` 會在 shell profile 加入 Claude wrapper 與匯出設定、設定日誌保留期限，並寫入 `CCXRAY_IMPORT_DISABLE=1`。它不會安裝 Codex wrapper。可用 `ccxray setup --dry-run` 預覽變更（帶上相同的 setup 選項）。`ccxray setup --remove` 會移除 ccxray 寫入的 shell 區塊，並寫入 tombstone 停止後續上傳；不會刪除本機日誌或已上傳的摘要。資料與移除方式詳見[匯出設定指南](docs/export-onboarding.md)。
+單純執行 `ccxray setup` 不會寫入任何匯出設定，也不需要 bucket、domains 或 gcloud 憑證。GCS 摘要匯出需以 `--export` 明確啟用。使用前請先安裝 Claude Code，並確認 ccxray 能讀取已登入帳號的 email；`--domains` 清單必須包含該帳號的網域。匯出設定也需要可讀取的 gcloud Application Default Credentials，請先執行 `gcloud auth application-default login`。即使 exporter 本身支援 service-account key file，setup 仍會拒絕 `CCXRAY_EXPORT_GCS_KEY_FILE`。
+
+```bash
+gcloud auth application-default login
+ccxray setup --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+```
+
+已啟用匯出的安裝（由 2.x 設定）在不帶 `--export` 重新執行 `ccxray setup` 時會繼續匯出，setup 會印出一行說明。
+
+`setup` 會在 shell profile 加入 Claude wrapper（使用 `--export` 時另加匯出設定）、設定日誌保留期限，並寫入 `CCXRAY_IMPORT_DISABLE=1`。它不會安裝 Codex wrapper。可用 `ccxray setup --dry-run` 預覽變更（帶上相同的 setup 選項）。`ccxray setup --remove` 會移除 ccxray 寫入的 shell 區塊，並寫入 tombstone 停止後續上傳；不會刪除本機日誌或已上傳的摘要。資料與移除方式詳見[匯出設定指南](docs/export-onboarding.md)。
 
 launcher 參數由 provider registry 管理。目前支援 `claude`、`codex` 與 `grok`；未知的 provider command 會直接失敗，避免靜默啟動未設定的 proxy。
 
@@ -218,9 +224,9 @@ ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測�
 
 ### Context HUD
 
-可選的上下文統計區塊，會被附加到 Claude Code 中 Claude 的回覆尾端：`📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。預設啟用；可從儀表板頂部列切換。
+可選的上下文統計區塊，會被附加到 Claude Code 中 Claude 的回覆尾端：`📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。預設關閉（自 3.0.0 起）；可用 `ccxray hud on` 或儀表板頂部列開啟，用 `ccxray hud status` 查看，用 `ccxray hud off` 關閉。
 
-**為什麼需要這個開關？** 當主 agent 透過 Agent / Task tool 呼叫 sub-agent 時，附加的區塊可能會把 sub-agent 的回傳內容截斷在父 agent 看到的範圍之外，造成多 agent 工作流程靜默地遺失資料。跑 sub-agent 較重的 session 時請關掉 HUD。狀態保存在 `~/.ccxray/settings.json`。
+**為什麼需要這個開關？** 當主 agent 透過 Agent / Task tool 呼叫 sub-agent 時，附加的區塊可能會把 sub-agent 的回傳內容截斷在父 agent 看到的範圍之外，造成多 agent 工作流程靜默地遺失資料。跑 sub-agent 較重或自動化的 session 時請保持 HUD 關閉。狀態保存在 `~/.ccxray/settings.json`（CLI 與儀表板開關共用）；其中明確設為 `"statusLine": true` 的設定在升級後仍維持啟用。執行中的 hub 或 server 會在重新啟動後套用 CLI 的變更；儀表板開關則立即生效。
 
 ### 加星永久保留
 

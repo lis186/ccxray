@@ -235,7 +235,7 @@ function mockedPowerShellDeps(fixture, profile, overrides = {}) {
 }
 
 function installArgs(extra = []) {
-  return ['--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes', ...extra];
+  return ['--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes', ...extra];
 }
 
 function installTargetFromFile(fixture, file, label = 'second target') {
@@ -530,7 +530,7 @@ test('validated setup values reject shell injection and preserve field precedenc
   assert.ok(disagree.conflicts.some(item => item.startsWith('bucket:')));
 
   const flagged = setup.resolveValues(
-    setup.parseArgs(['--shell', 'bash', '--bucket', 'fixture-bucket-03']).options,
+    setup.parseArgs(['--shell', 'bash', '--export', '--bucket', 'fixture-bucket-03']).options,
     [makeOwned('/fixture/bashrc', 'fixture-bucket-01'), makeOwned('/fixture/pwsh-profile', 'fixture-bucket-02')],
   );
   assert.equal(flagged.resolved.bucket, 'fixture-bucket-03');
@@ -540,7 +540,7 @@ test('validated setup values reject shell injection and preserve field precedenc
   assert.equal(inherited.resolved.bucket, 'fixture-bucket-01');
   assert.equal(inherited.resolved.retentionDays, 21);
   const cleared = setup.resolveValues(
-    setup.parseArgs(['--shell', 'bash', '--cwd-allowlist', '']).options,
+    setup.parseArgs(['--shell', 'bash', '--export', '--cwd-allowlist', '']).options,
     [makeOwned('/fixture/bashrc', 'fixture-bucket-01')],
   );
   assert.equal(cleared.resolved.cwdAllowlist, '');
@@ -654,7 +654,7 @@ async function assertRawSetupTarget(shell, variable, filename) {
     const log = makeLogger();
     const deps = depsFor(fixture, { env: { [variable]: rawBase }, logger: log });
     const installed = await setup.runSetup([
-      '--shell', shell, '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
+      '--shell', shell, '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
     ], deps);
     assert.equal(installed, 0, log.lines.join('\n'));
     assert.ok(fs.readFileSync(physicalRc).includes(Buffer.from(setup.START_MARKER)));
@@ -729,7 +729,7 @@ test('strict ownership rejects injected lines inside marked blocks', async () =>
           ? mockedPowerShellDeps(fixture, file, { logger: log })
           : depsFor(fixture, { logger: log });
         const installArgsForShell = [
-          '--shell', shellCase.shell, '--bucket', 'fixture-bucket-01',
+          '--shell', shellCase.shell, '--export', '--bucket', 'fixture-bucket-01',
           '--domains', 'example.test', '--yes',
         ];
         const installed = await setup.runSetup(installArgsForShell, deps);
@@ -768,7 +768,7 @@ test('modified wrapper revisions are malformed and show the manual recovery inst
     assert.equal(parsed.reason, 'setup block was modified (does not match setup output)');
     const log = makeLogger();
     const install = await setup.runSetup([
-      '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
+      '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
     ], depsFor(fixture, { logger: log }));
     assert.equal(install, 1, log.lines.join('\n'));
     assert.deepEqual(fs.readFileSync(file), Buffer.from(original));
@@ -799,7 +799,7 @@ test('owned block round-trip table preserves foreign bytes across encoding and n
             fs.writeFileSync(file, original);
 
             const first = await setup.runSetup([
-              '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
+              '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
             ], depsFor(fixture));
             assert.equal(first, 0, `${encoding.name}/${JSON.stringify(newline)}/${trailingNewline}/${hasPrelude}`);
             const current = fs.readFileSync(file);
@@ -810,7 +810,7 @@ test('owned block round-trip table preserves foreign bytes across encoding and n
             assert.ok(current.subarray(0, preservedPrelude.length).equals(preservedPrelude), 'foreign prelude bytes changed');
 
             const replacement = await setup.runSetup([
-              '--shell', 'bash', '--bucket', 'fixture-bucket-03', '--domains', 'example.test', '--yes',
+              '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-03', '--domains', 'example.test', '--yes',
             ], depsFor(fixture));
             assert.equal(replacement, 0);
             assert.equal(setup.parseRcBlock(setup.decodeRc(fs.readFileSync(file)).text, false).values.bucket, 'fixture-bucket-03');
@@ -927,7 +927,7 @@ test('dry-run output lists every logical alias and prints only the generated blo
       diagnostics: { durableHome: { enrollment: 'absent' } },
     };
     const deps = depsFor(fixture, { logger: log });
-    setup.printDryRun(context, setup.parseArgs(['--dry-run']).options, deps,
+    setup.printDryRun(context, setup.parseArgs(['--dry-run', '--export']).options, deps,
       { state: 'enrolled', enrolledAt: '2026-10-14T00:00:00.000Z', retentionDays: 30 },
       { absent: true, path: path.join(setupHome(fixture), 'export-cursor.json') }, null);
     const output = log.lines.join('\n');
@@ -958,19 +958,19 @@ test('install edits a symlink target while preserving the startup-file link', as
   });
 });
 
-test('first install requires explicit bucket and domains and never takes values from ambient env', async () => {
+test('--export requires explicit bucket and domains and never takes values from ambient env', async () => {
   await withFixture(async fixture => {
     const log = makeLogger();
-    let result = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, { logger: log }));
+    let result = await setup.runSetup(['--shell', 'bash', '--export', '--yes'], depsFor(fixture, { logger: log }));
     assert.equal(result, 2);
-    assert.ok(log.lines.some(line => line.includes('first install needs --bucket')));
+    assert.ok(log.lines.some(line => line.includes('--export needs --bucket')));
     assert.equal(fs.existsSync(exportSync.enrollmentPath(setupHome(fixture))), false);
 
     const next = makeLogger();
-    result = await setup.runSetup(['--shell', 'bash', '--bucket', 'fixture-bucket-01', '--yes'],
+    result = await setup.runSetup(['--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--yes'],
       depsFor(fixture, { logger: next }));
     assert.equal(result, 2);
-    assert.ok(next.lines.some(line => line.includes('first install needs --domains')));
+    assert.ok(next.lines.some(line => line.includes('--export needs --domains')));
     assert.equal(fs.existsSync(rcFile(fixture)), false);
   });
 });
@@ -1029,7 +1029,7 @@ test('successful install and re-run keep values, retention, cursor, and the abse
 
     const overrideLog = makeLogger();
     result = await setup.runSetup([
-      '--shell', 'bash', '--bucket', 'fixture-bucket-03', '--domains', 'EXAMPLE.TEST',
+      '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-03', '--domains', 'EXAMPLE.TEST',
       '--retention-days', '11', '--yes',
     ], depsFor(fixture, { logger: overrideLog }));
     assert.equal(result, 0, overrideLog.lines.join('\n'));
@@ -1056,6 +1056,208 @@ test('first install without an allowlist warns and re-run keeps that field absen
   });
 });
 
+// #691: export is opt-in; plain `ccxray setup` is record-only.
+function spyCredentials() {
+  const calls = [];
+  const fail = name => () => { calls.push(name); throw new Error(`credentials.${name} must not run in record-only setup`); };
+  return {
+    calls,
+    api: { discoverCredentials: fail('discoverCredentials'), describeCredentials: fail('describeCredentials'), credentialText: fail('credentialText') },
+  };
+}
+
+function plantGcloud(fixture) {
+  const marker = path.join(fixture.paths.root, 'gcloud-invoked');
+  const bin = path.join(fixture.paths.bin, 'gcloud');
+  fs.writeFileSync(bin, `#!/bin/sh\necho invoked > '${marker}'\n`, { mode: 0o755 });
+  return marker;
+}
+
+test('default setup is record-only: wrapper and retention, no export config, no ADC or gcloud', async () => {
+  await withFixture(async fixture => {
+    const log = makeLogger();
+    const credentials = spyCredentials();
+    const marker = plantGcloud(fixture);
+    const spawned = [];
+    const result = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+      logger: log,
+      credentials: credentials.api,
+      spawn: (file, args, options) => { spawned.push(file); return childProcess.spawn(file, args, options); },
+    }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    const rc = fs.readFileSync(rcFile(fixture), 'utf8');
+    assert.match(rc, /ccxray-wrapper-v1/);
+    assert.match(rc, /LOG_RETENTION_DAYS='30'/);
+    assert.match(rc, /CCXRAY_IMPORT_DISABLE='1'/);
+    assert.doesNotMatch(rc, /CCXRAY_EXPORT_/);
+    assert.equal(fs.existsSync(exportSync.enrollmentPath(setupHome(fixture))), false);
+    assert.equal(fs.existsSync(path.join(setupHome(fixture), 'export-cursor.json')), false);
+    assert.deepEqual(credentials.calls, []);
+    assert.equal(fs.existsSync(marker), false, 'gcloud must not run');
+    assert.ok(!spawned.some(file => path.basename(String(file)).startsWith('gcloud')));
+    assert.ok(!log.lines.some(line => /^(adc|enrollment|claude-account|account-count):/.test(line)), log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('export is off')));
+
+    // The record-only block is owned: a re-run is a byte-identical rewrite.
+    const rerun = await setup.runSetup(['--shell', 'bash', '--retention-days', '9', '--yes'], depsFor(fixture, {
+      credentials: credentials.api,
+    }));
+    assert.equal(rerun, 0);
+    const rerunRc = fs.readFileSync(rcFile(fixture), 'utf8');
+    assert.match(rerunRc, /LOG_RETENTION_DAYS='9'/);
+    assert.equal(rerunRc.split(setup.START_MARKER).length, 2);
+    assert.equal(fs.existsSync(exportSync.enrollmentPath(setupHome(fixture))), false);
+
+    // --check on a record-only install does not read ADC or fail on it.
+    const checkLog = makeLogger();
+    const check = await setup.runSetup(['--check', '--shell', 'bash', '--no-probe'], depsFor(fixture, {
+      logger: checkLog, credentials: credentials.api,
+    }));
+    assert.equal(check, 0, checkLog.lines.join('\n'));
+    assert.ok(checkLog.lines.some(line => line.startsWith('adc: skipped')));
+    assert.deepEqual(credentials.calls, []);
+  });
+});
+
+test('record-only dry run names no enrollment or cursor', async () => {
+  await withFixture(async fixture => {
+    const log = makeLogger();
+    const result = await setup.runSetup(['--shell', 'bash', '--dry-run', '--yes'], depsFor(fixture, {
+      logger: log, credentials: spyCredentials().api,
+    }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    const text = log.lines.join('\n');
+    assert.doesNotMatch(text, /Would write enrollment|Cursor seed|CCXRAY_EXPORT_/);
+    assert.match(text, /Record-only/);
+    assert.equal(fs.existsSync(rcFile(fixture)), false);
+  });
+});
+
+test('export settings without --export are refused before anything is written', async () => {
+  await withFixture(async fixture => {
+    for (const flags of [['--bucket', 'fixture-bucket-01'], ['--domains', 'example.test'], ['--prefix', 'p'], ['--cwd-allowlist', 'a']]) {
+      const log = makeLogger();
+      const result = await setup.runSetup(['--shell', 'bash', ...flags, '--yes'], depsFor(fixture, { logger: log }));
+      assert.equal(result, 2, flags.join(' '));
+      assert.ok(log.lines.some(line => line.includes(`${flags[0]} requires --export`)), log.lines.join('\n'));
+    }
+    assert.ok(setup.parseArgs(['--export', '--remove']).error);
+    assert.ok(setup.parseArgs(['--export', '--browser', 'on']).error);
+    assert.ok(setup.parseArgs(['--export', '--check']).error);
+    assert.equal(fs.existsSync(rcFile(fixture)), false);
+  });
+});
+
+test('plain setup leaves an existing export block untouched: no ADC, gcloud, or enrollment write', async () => {
+  await withFixture(async fixture => {
+    // An install made by 2.x: its owned block carries the export settings.
+    const original = 'export PATH=/synthetic/bin\n' + setup.renderRcBlock({
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    }, false);
+    fs.writeFileSync(rcFile(fixture), original);
+    const enrollmentFile = exportSync.enrollmentPath(setupHome(fixture));
+    const enrollmentBytes = `${JSON.stringify({ synthetic: 'enrollment-sentinel' })}\n`;
+    fs.writeFileSync(enrollmentFile, enrollmentBytes, { mode: 0o600 });
+    const credentials = spyCredentials();
+    const marker = plantGcloud(fixture);
+    const spawned = [];
+    const writes = [];
+    const exportSyncSpy = {
+      writeCursor: (...args) => { writes.push('writeCursor'); return exportSync.writeCursor(...args); },
+    };
+    const log = makeLogger();
+    const result = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+      logger: log,
+      credentials: credentials.api,
+      exportSync: exportSyncSpy,
+      spawn: (file, args, options) => { spawned.push(file); return childProcess.spawn(file, args, options); },
+    }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    assert.equal(fs.readFileSync(rcFile(fixture), 'utf8'), original, 'export block must be byte-for-byte unchanged');
+    assert.equal(fs.readFileSync(enrollmentFile, 'utf8'), enrollmentBytes, 'enrollment must not be rewritten');
+    assert.equal(fs.existsSync(path.join(setupHome(fixture), 'export-cursor.json')), false);
+    assert.deepEqual(writes, []);
+    assert.deepEqual(credentials.calls, []);
+    assert.equal(fs.existsSync(marker), false, 'gcloud must not run');
+    assert.ok(!spawned.some(file => path.basename(String(file)).startsWith('gcloud')));
+    assert.ok(!log.lines.some(line => /^(adc|enrollment|claude-account|account-count):/.test(line)), log.lines.join('\n'));
+    assert.ok(log.lines.some(line => line.includes('leave export setup block unchanged')), log.lines.join('\n'));
+    const notices = log.lines.filter(line => line.startsWith('Export stays enabled'));
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /ccxray setup --export/);
+    assert.match(notices[0], /ccxray setup --remove/);
+    assert.ok(!log.lines.some(line => line.includes('export is off')));
+
+    const dry = makeLogger();
+    assert.equal(await setup.runSetup(['--shell', 'bash', '--dry-run', '--yes'], depsFor(fixture, {
+      logger: dry, credentials: credentials.api,
+    })), 0);
+    assert.ok(dry.lines.some(line => line.includes('Would leave the export setup block unchanged')), dry.lines.join('\n'));
+    assert.doesNotMatch(dry.lines.join('\n'), /Would write setup block|Would write enrollment/);
+    assert.deepEqual(credentials.calls, []);
+  });
+});
+
+test('mixed targets: plain setup writes the record-only shell and leaves the export shell; --export upgrades both', async () => {
+  await withFixture(async fixture => {
+    const bashRc = rcFile(fixture, 'bash');
+    const zshRc = rcFile(fixture, 'zsh');
+    fs.mkdirSync(path.dirname(zshRc), { recursive: true });
+    fs.writeFileSync(bashRc, setup.renderRcBlock({ retentionDays: 30 }, false));
+    const exportBlock = setup.renderRcBlock({
+      bucket: 'fixture-bucket-01', domains: ['example.test'], prefix: 'summaries', retentionDays: 30,
+    }, false);
+    fs.writeFileSync(zshRc, exportBlock);
+    const hooks = {
+      resolveTargets: async () => ({
+        targets: [
+          { shell: 'bash', kind: 'posix', logicalPath: bashRc, label: 'bash' },
+          { shell: 'zsh', kind: 'posix', logicalPath: zshRc, label: 'zsh' },
+        ],
+        issues: [],
+        notices: [],
+      }),
+    };
+    const credentials = spyCredentials();
+    const log = makeLogger();
+    const result = await setup.runSetup(['--retention-days', '12', '--yes'], depsFor(fixture, {
+      logger: log, credentials: credentials.api, hooks,
+    }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    const bash = fs.readFileSync(bashRc, 'utf8');
+    assert.match(bash, /LOG_RETENTION_DAYS='12'/);
+    assert.doesNotMatch(bash, /CCXRAY_EXPORT_/);
+    assert.equal(fs.readFileSync(zshRc, 'utf8'), exportBlock);
+    assert.deepEqual(credentials.calls, []);
+    assert.equal(fs.existsSync(exportSync.enrollmentPath(setupHome(fixture))), false);
+    assert.ok(!log.lines.some(line => /needs --bucket|Conflicting/.test(line)), log.lines.join('\n'));
+    assert.equal(log.lines.filter(line => line.startsWith('Export stays enabled for zsh')).length, 1, log.lines.join('\n'));
+
+    // --export takes the bucket and domains from the existing export block.
+    const upgrade = makeLogger();
+    const upgraded = await setup.runSetup(['--export', '--yes'], depsFor(fixture, { logger: upgrade, hooks }));
+    assert.equal(upgraded, 0, upgrade.lines.join('\n'));
+    for (const file of [bashRc, zshRc]) {
+      assert.match(fs.readFileSync(file, 'utf8'), /CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'/, file);
+    }
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'enrolled');
+  });
+});
+
+test('--export upgrades a record-only install to the export block', async () => {
+  await withFixture(async fixture => {
+    assert.equal(await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+      credentials: spyCredentials().api,
+    })), 0);
+    const log = makeLogger();
+    const result = await setup.runSetup(installArgs(), depsFor(fixture, { logger: log }));
+    assert.equal(result, 0, log.lines.join('\n'));
+    assert.match(fs.readFileSync(rcFile(fixture), 'utf8'), /CCXRAY_EXPORT_GCS_BUCKET='fixture-bucket-01'/);
+    assert.equal(exportSync.readEnrollment(setupHome(fixture)).state, 'enrolled');
+    assert.ok(log.lines.some(line => line.includes('basenames export unmasked')));
+  });
+});
+
 test('a non-TTY install refuses before taking the lock or writing files', async () => {
   await withFixture(async fixture => {
     let locks = 0;
@@ -1064,7 +1266,7 @@ test('a non-TTY install refuses before taking the lock or writing files', async 
     };
     const log = makeLogger();
     const result = await setup.runSetup([
-      '--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
+      '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
     ], depsFor(fixture, {
       logger: log,
       isTTY: false,
@@ -1439,7 +1641,7 @@ test('PowerShell consent names a missing profile parent directory', async () => 
     const prompts = [];
     const log = makeLogger();
     const result = await setup.runSetup([
-      '--shell', 'pwsh', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
+      '--shell', 'pwsh', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
     ], depsFor(fixture, {
       logger: log,
       isTTY: true,
@@ -1503,7 +1705,7 @@ test('consent-time symlink retarget and file edit abort phase A without any setu
     fs.writeFileSync(newTarget, 'export USER_RC=new\n');
     fs.symlinkSync(path.basename(oldTarget), logical);
     const log = makeLogger();
-    const result = await setup.runSetup(['--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test'], depsFor(fixture, {
+    const result = await setup.runSetup(['--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test'], depsFor(fixture, {
       logger: log,
       isTTY: true,
       prompt: async question => {
@@ -1525,7 +1727,7 @@ test('consent-time symlink retarget and file edit abort phase A without any setu
     const logical = rcFile(fixture);
     fs.writeFileSync(logical, 'export USER_RC=before\n');
     const log = makeLogger();
-    const result = await setup.runSetup(['--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test'], depsFor(fixture, {
+    const result = await setup.runSetup(['--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test'], depsFor(fixture, {
       logger: log,
       isTTY: true,
       prompt: async question => {
@@ -1553,7 +1755,7 @@ test('phase A rejects same-size byte edits even when the original mtime is resto
     const stat = fs.statSync(logical);
     const log = makeLogger();
     const result = await setup.runSetup([
-      '--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
+      '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
     ], depsFor(fixture, {
       logger: log,
       isTTY: true,
@@ -1674,7 +1876,7 @@ test('install/remove phase-A interleavings are resolved by the operation that va
     let nestedRemoveCode = null;
     const outerLog = makeLogger();
     const outer = await setup.runSetup([
-      '--shell', 'bash', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
+      '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test',
     ], depsFor(fixture, {
       logger: outerLog,
       isTTY: true,
@@ -1703,7 +1905,7 @@ test('install/remove phase-A interleavings are resolved by the operation that va
       logger: outerLog,
       isTTY: true,
       prompt: async () => {
-        nestedInstallCode = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture));
+        nestedInstallCode = await setup.runSetup(installArgs(), depsFor(fixture));
         return 'yes';
       },
     }));
@@ -1959,7 +2161,7 @@ test('an interrupted first enrollment can seed its cursor from the original enro
 
     failCursor = false;
     const secondDay = Date.parse('2026-10-15T00:01:00.000Z');
-    const second = await setup.runSetup(['--shell', 'bash', '--yes'], depsFor(fixture, {
+    const second = await setup.runSetup(installArgs(), depsFor(fixture, {
       now: () => secondDay,
       fs: injectedFs,
     }));
@@ -2411,7 +2613,7 @@ test('install, replacement, and removal preserve a payload BOM in UTF-8 and UTF-
       assert.ok(current.subarray(0, original.length).equals(original), `${item.name} install changed foreign bytes`);
 
       const replacement = await setup.runSetup([
-        '--shell', 'bash', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
+        '--shell', 'bash', '--export', '--bucket', 'fixture-bucket-02', '--domains', 'example.test', '--yes',
       ], depsFor(fixture));
       assert.equal(replacement, 0, item.name);
       current = fs.readFileSync(rcPath);
@@ -2730,8 +2932,10 @@ test('check fails for malformed or unreadable explicitly selected key-file crede
         describeCredentials() { return 'synthetic key file failure'; },
         credentialText() { return 'synthetic key file failure'; },
       };
+      // #691: the credential is only checked when export is configured; the
+      // explicitly selected key file is that configuration here.
       const result = await setup.runSetup(['--check', '--shell', 'bash', '--no-probe'], depsFor(fixture, {
-        logger: log, credentials,
+        logger: log, credentials, env: { CCXRAY_EXPORT_GCS_KEY_FILE: path.join(fixture.paths.root, 'synthetic-key.json') },
       }));
       assert.equal(result, 1, log.lines.join('\n'));
       assert.ok(log.lines.some(line => line.includes('adc: failed') && line.includes('synthetic key file failure')));
@@ -2916,7 +3120,7 @@ test('POSIX wrappers cover every bypass, missing-ccxray fallback, and one-launch
       const executable = fixtureExecutable(fixture, shell);
       if (!executable) continue;
       const installed = await setup.runSetup([
-        '--shell', shell, '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
+        '--shell', shell, '--export', '--bucket', 'fixture-bucket-01', '--domains', 'example.test', '--yes',
       ], depsFor(fixture));
       assert.equal(installed, 0, `${shell} install`);
       for (const command of bypasses) {

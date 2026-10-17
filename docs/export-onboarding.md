@@ -2,7 +2,19 @@
 
 ## Install and configure
 
-Install ccxray. Before setup, make sure Claude Code is installed and ccxray can
+Export is opt-in (3.0.0, #691). Plain `ccxray setup` installs only the Claude
+shell wrapper and local recording settings: it writes no export settings, no
+enrollment, and no cursor, and never reads gcloud credentials. Pass `--export`
+with `--bucket` and `--domains` to enable summary export; the export flags are
+refused without `--export`. An install whose owned block already exports keeps
+exporting when `ccxray setup` is re-run without `--export`: setup leaves that
+block byte-for-byte unchanged, does not read credentials or rewrite the
+enrollment, and prints a one-line notice naming `ccxray setup --export` (refresh
+and keep exporting) and `ccxray setup --remove` (stop). With several shell
+targets, each is handled on its own: record-only shells are rewritten, export
+shells are left as they are.
+
+Install ccxray. Before export setup, make sure Claude Code is installed and ccxray can
 read its logged-in account email; the `--domains` list must include that
 account's domain. Setup also requires a readable gcloud Application Default
 Credential of type `authorized_user`. Setup rejects
@@ -12,7 +24,7 @@ account key file. For setup, use gcloud Application Default Credentials:
 ```bash
 npm install -g ccxray
 gcloud auth application-default login
-ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+ccxray setup --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
 ```
 
 Replace the placeholders with your GCS bucket, the account domain to allow, and
@@ -43,8 +55,8 @@ On Windows, setup discovers both installed PowerShell editions by default. To
 select one explicitly, use either command:
 
 ```powershell
-ccxray setup --shell pwsh --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
-ccxray setup --shell powershell --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
+ccxray setup --shell pwsh --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
+ccxray setup --shell powershell --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b"
 ```
 
 Setup checks the selected edition's effective `Get-ExecutionPolicy`. It refuses
@@ -89,7 +101,7 @@ intended behavior.
 When `CCXRAY_EXPORT_DOMAINS` is unset, empty, or contains only whitespace and
 commas, export is blocked: no uploads occur and the cursor stays unchanged.
 Startup prints one warning; `ccxray status` reports `refused (domains-required)`.
-Set allowed domains with `ccxray setup --domains example.com`, reload your shell,
+Set allowed domains with `ccxray setup --export --domains example.com`, reload your shell,
 and restart the exporter. Existing enrolled homes retain the usual bounded
 prune hold for unsent data. Imported transcripts have no account snapshot, so
 the configured-domain filter excludes them. `CCXRAY_USER_EMAIL`, when set, supplies

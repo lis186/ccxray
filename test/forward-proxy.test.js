@@ -13,6 +13,8 @@ const {
   parseSSEText,
   normalizeOpenAIResponseSummary,
 } = require('../server/forward');
+// Captured before any test toggles the module-level flag.
+const initialStatusLineEnabled = getStatusLineEnabled();
 
 describe('resolveProxyAgent', () => {
   it('returns null when no proxy env vars are set', () => {
@@ -168,8 +170,8 @@ describe('describeUpstreamError', () => {
 describe('statusLineEnabled flag', () => {
   beforeEach(() => setStatusLineEnabled(true));
 
-  it('defaults to true', () => {
-    assert.equal(getStatusLineEnabled(), true);
+  it('defaults to false until settings.json enables it (#692)', () => {
+    assert.equal(initialStatusLineEnabled, false);
   });
 
   it('setStatusLineEnabled(false) disables the flag', () => {
