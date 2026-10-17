@@ -29,6 +29,7 @@
 |------|-------|---------|--------|
 | 2026-10-17 | Codex CLI / ccxray | Codex 0.159.2 / 0.163.0 · ccxray 2.5.0-rc.3 | **Workspace discovery blocks local HTTP proxy bootstrap (#671).** With a local `/v1` ChatGPT base URL, discovery requests `/v1/api/codex/accounts/check`; ccxray forwards to `/backend-api/codex/api/codex/accounts/check` (HTTP 404 observed on 0.163.0). Native ChatGPT discovery uses `/backend-api/wham/accounts/check`. Source in both releases requires an HTTPS workspace backend; model routing replaces the proxy origin with the discovered origin. A path correction alone is insufficient. See [findings](codex-workspace-routing.md); `obs-fragile` (live bootstrap on 0.163.0 only, source inspected for both releases). |
 | 2026-10-17 | ccxray / Herdr | ccxray 2.5.0-rc.3 · plugin 0.4.0 | **Native Grok/Codex pane attribution.** Plugin proxy URLs carry `/_ccxray/agent/<encoded herdr: identity>` before `/v1`. HTTP and WebSocket dispatch strip the prefix, validate the identity with the existing 512-character bound, and persist `agentId`. This is local ccxray routing metadata, not provider wire behavior or authentication (`obs-stable`: covered by synthetic HTTP/WS integration tests). |
+| 2026-10-17 | Codex agent | Codex 0.133 / 0.145 | #508: distinguished wire response IDs from persisted rollout records; see §4.2.1 and the linked investigation. No importer key added. |
 | 2026-10-16 | ccxray | 2.5.0-rc.3 | **Claude print-mode Context HUD opt-out.** The Claude launcher adds `X-Ccxray-Print-Mode: true` when `-p` / `--print` appears before a bare `--`; Claude Code help identifies those as the non-interactive mode switches. Options such as `--input-format`, `--output-format`, `--no-session-persistence`, `--max-budget-usd`, and `--include-partial-messages` are print-only modifiers and do not enable print mode by themselves. ccxray consumes the marker to preserve the model's final text block without appending the Context HUD, then strips it before upstream forwarding. |
 | 2026-10-16 | Claude Code / ccxray | Claude Code 2.1.x · ccxray 2.5.0-rc.3 | **Claude custom headers are newline-separated.** Claude Code parses `ANTHROPIC_CUSTOM_HEADERS` one `Name: Value` line at a time; ccxray and Herdr now append auth, account, and pane-identity headers on separate lines while preserving existing user entries. Hub auth requires an exact `X-Ccxray-Auth` value; malformed comma-joined legacy values are not recovered for authentication. |
 | 2026-10-15 | ccxray | 2.5.0-rc.2 | **Corrected Claude's default account-config path.** With `CLAUDE_CONFIG_DIR` set, account snapshots read `$CLAUDE_CONFIG_DIR/.claude.json`; otherwise they read `$HOME/.claude.json`. The launcher header and setup-statusline label now follow that layout. |
@@ -173,6 +174,18 @@
 | `response.completed` | `{response:{id, model, status, usage, ...}}` — ccxray extracts only `usage` and `model` before discarding; `output: null`, `input: null` observed but unverified | `obs-fragile` codex 0.133 |
 | `response.done` | Same shape as `response.completed`; observed as a separate event type in some Codex versions. Proxies should handle both | `obs-fragile` |
 | `codex.rate_limits` | `{...}` rate limit info (non-standard, Codex-specific). Payload shape is not parsed by ccxray; exact fields undocumented | `obs-stable` codex ≥0.131 |
+
+### 4.2.1 Saved Codex transcripts are not wire event streams
+
+| Saved field/event | ID availability | Confidence / version |
+|-------------------|-----------------|----------------------|
+| `event_msg` / `token_count` | Usage totals and last usage do not contain the enclosing upstream response ID | `obs-fragile`, Codex 0.133 schema |
+| `response_item` / message or reasoning ID | Item identity is distinct from response identity; these IDs are skipped during serialization in 0.133 | `obs-fragile`, Codex 0.133 schema |
+| `raw_response_completed.response_id` | Defined as an event in 0.145, but explicitly excluded from rollout persistence; cannot supply an importer key from ordinary saved JSONL | `obs-fragile`, Codex 0.145 persistence policy |
+
+Versioned upstream source links, scope limits and follow-up options are in the
+[#508 investigation](solutions/codex-import-response-id.md). Do not infer that
+the wire `response.completed.response.id` is present in a saved transcript.
 
 ### 4.3 Usage/cost fields
 

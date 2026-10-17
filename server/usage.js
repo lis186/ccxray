@@ -237,6 +237,35 @@ async function run(argv) {
 
 // ── Analysis ────────────────────────────────────────────────────────────
 
+// ADR 0017 fold step: an unpriced turn (confidence 'unknown' or no finite cost)
+// contributes nothing to the sum, so it is counted here to mark the lower bound.
+function isUnpriced(e) {
+  return e.cost?.confidence === 'unknown' || !Number.isFinite(Number(e.cost?.cost));
+}
+function addToCostFold(fold, e) {
+  fold.count += 1;
+  if (isUnpriced(e)) fold.unknownCount += 1;
+  else if (e.cost?.confidence === 'fallback') { fold.fallbackCount += 1; fold.fallbackCost += Number(e.cost.cost); }
+  return fold;
+}
+const emptyCostFold = () => ({ count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 });
+
+// #688: per-turn tool counts. Recorded counts win; a row with neither count
+// field (the transcript importer writes only `turnToolCallIds`) is counted from
+// its {callId → name} map. INVARIANT (ADR 0018): null/undefined means unknown
+// and returns null (legacy fold); a `{}` map is a parsed zero-call turn and
+// returns a truthy `{}`, so it never reaches the cumulative fallback.
+function turnToolCounts(e) {
+  if (e.turnToolCalls) return e.turnToolCalls;
+  if (e.toolCalls || !e.turnToolCallIds || typeof e.turnToolCallIds !== 'object') return null;
+  const counts = {};
+  for (const name of Object.values(e.turnToolCallIds)) {
+    const n = name || 'unknown';
+    counts[n] = (counts[n] || 0) + 1;
+  }
+  return counts;
+}
+
 function analyze(entries, opts = {}) {
   entries = dedupeEntries(entries);
   const retention = retentionStatus(opts);
@@ -262,9 +291,10 @@ function analyze(entries, opts = {}) {
     if (e.isSubagent) subagentCount++;
 
     const m = e.model || 'unknown';
-    if (!modelMap[m]) modelMap[m] = { model: m, turns: 0, cost: 0 };
+    if (!modelMap[m]) modelMap[m] = { model: m, turns: 0, cost: 0, costAgg: emptyCostFold() };
     modelMap[m].turns++;
-    const c = e.cost?.cost || 0;
+    addToCostFold(modelMap[m].costAgg, e);
+    const c = isUnpriced(e) ? 0 : Number(e.cost.cost);
     modelMap[m].cost += c;
     totalCost += c;
 
@@ -272,8 +302,9 @@ function analyze(entries, opts = {}) {
     // Legacy toolCalls (cumulative) → per-session max, deferred to post-loop.
     // INVARIANT (ADR 0018): {} is a parsed zero-call response and is truthy,
     // so only null/undefined may fall through to the legacy per-tool max fold.
-    if (e.turnToolCalls) {
-      for (const [name, count] of Object.entries(e.turnToolCalls)) {
+    const turnCalls = turnToolCounts(e);
+    if (turnCalls) {
+      for (const [name, count] of Object.entries(turnCalls)) {
         toolAgg[name] = (toolAgg[name] || 0) + count;
         totalToolCalls += count;
       }
@@ -285,7 +316,7 @@ function analyze(entries, opts = {}) {
         skillMap[sn].sessions.add(sid);
       }
     } else {
-      legacySkillCount += (e.turnToolCalls || e.toolCalls)?.Skill || 0;
+      legacySkillCount += (turnCalls || e.toolCalls)?.Skill || 0;
     }
     if (e.toolFail) failCount++;
 
@@ -304,7 +335,7 @@ function analyze(entries, opts = {}) {
   for (const turns of Object.values(bySession)) {
     const sessMax = {};
     for (const e of turns) {
-      if (e.turnToolCalls) continue; // already summed in-loop
+      if (turnToolCounts(e)) continue; // already summed in-loop
       if (!e.toolCalls) continue;
       for (const [name, count] of Object.entries(e.toolCalls)) {
         sessMax[name] = Math.max(sessMax[name] || 0, count);
@@ -323,14 +354,10 @@ function analyze(entries, opts = {}) {
     totalEntries: entries.length,
     totalSessions: sessionCount,
     totalCost: +totalCost.toFixed(2),
-    costAgg: entries.reduce((fold, e) => {
-      fold.count += 1;
-      const conf = e.cost?.confidence;
-      const value = Number(e.cost?.cost);
-      if (conf === 'unknown' || !Number.isFinite(value)) fold.unknownCount += 1;
-      else if (conf === 'fallback') { fold.fallbackCount += 1; fold.fallbackCost += value; }
-      return fold;
-    }, { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 }),
+    costAgg: entries.reduce(addToCostFold, emptyCostFold()),
+    // #688: every model with at least one unpriced turn, the reason the total
+    // above is a lower bound. Uncapped, unlike `models`.
+    unpricedModels: Object.values(modelMap).filter(m => m.costAgg.unknownCount > 0).map(m => m.model).sort(),
     retentionDays: retention.days,
     retentionCutoff: retention.cutoff,
     ...(retention.warning ? { retentionWarning: retention.warning } : {}),
@@ -355,14 +382,7 @@ function analyze(entries, opts = {}) {
       // all-unknown session printed a total that excluded every turn with no
       // `+` to say so. The fold travels WITH the sum; a consumer must not
       // re-derive it, because it cannot see the turns from here.
-      const costAgg = turns.reduce((fold, e) => {
-        fold.count += 1;
-        const conf = e.cost?.confidence;
-        const value = Number(e.cost?.cost);
-        if (conf === 'unknown' || !Number.isFinite(value)) fold.unknownCount += 1;
-        else if (conf === 'fallback') { fold.fallbackCount += 1; fold.fallbackCost += value; }
-        return fold;
-      }, { count: 0, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 });
+      const costAgg = turns.reduce(addToCostFold, emptyCostFold());
       return {
         sessionId: sid, turns: turns.length, cost: +cost.toFixed(2), costAgg,
         durationMin: +((dur) / 60).toFixed(1), title,
@@ -390,11 +410,20 @@ function analyze(entries, opts = {}) {
   const models = Object.values(modelMap)
     .sort((a, b) => b.turns - a.turns)
     .slice(0, 10)
-    .map(m => ({
-      model: m.model, turns: m.turns,
-      cost: +m.cost.toFixed(2),
-      costShare: totalCost ? +(m.cost / totalCost).toFixed(3) : 0,
-    }));
+    .map(m => {
+      // #688: a model with no priced turn has no cost and no share — reporting
+      // `0` would print `$0 (0.0%)` for a model that was never priced at all.
+      // Shares are over the priced total, so unknown turns never enter them.
+      const priced = m.costAgg.count - m.costAgg.unknownCount;
+      const costStatus = priced === 0 ? 'unknown' : m.costAgg.unknownCount > 0 ? 'partial' : 'priced';
+      return {
+        model: m.model, turns: m.turns,
+        cost: costStatus === 'unknown' ? null : +m.cost.toFixed(2),
+        costShare: costStatus === 'unknown' ? null : totalCost ? +(m.cost / totalCost).toFixed(3) : 0,
+        costAgg: m.costAgg,
+        costStatus,
+      };
+    });
 
   const tools = {
     totalCalls: totalToolCalls,
@@ -564,7 +593,9 @@ function percentiles(arr) {
 function printHuman(r) {
   const B = '\x1b[1m', D = '\x1b[2m', R = '\x1b[0m';
 
-  console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · ${formatAggCostText(r.meta.totalCost, r.meta.costAgg)}`);
+  const unpriced = r.meta.unpricedModels?.length || 0;
+  const unpricedNote = unpriced ? ` (${unpriced} model${unpriced === 1 ? '' : 's'} unpriced)` : '';
+  console.log(`\n${B}ccxray usage${R}  ${r.meta.totalEntries} entries · ${r.meta.totalSessions} sessions · ${formatAggCostText(r.meta.totalCost, r.meta.costAgg)}${unpricedNote}`);
   console.log(`${D}${r.meta.timeRange.from?.slice(0, 10) || '?'} → ${r.meta.timeRange.to?.slice(0, 10) || '?'}${r.meta.retentionWarning ? ` — ${r.meta.retentionWarning}` : ''}${R}\n`);
 
   console.log(`${B}Sessions${R}`);
@@ -581,7 +612,10 @@ function printHuman(r) {
   console.log();
 
   console.log(`${B}Models${R}`);
-  for (const m of r.models.slice(0, 5)) console.log(`  ${m.model}: ${m.turns} turns · $${m.cost} (${pct(m.costShare)})`);
+  for (const m of r.models.slice(0, 5)) {
+    const cost = m.costStatus === 'unknown' ? 'unknown' : `${formatAggCostText(m.cost, m.costAgg)} (${pct(m.costShare)})`;
+    console.log(`  ${m.model}: ${m.turns} turns · ${cost}`);
+  }
   console.log();
 
   console.log(`${B}Tools${R}  ${r.tools.totalCalls} calls · ${pct(r.tools.failRate)} fail`);

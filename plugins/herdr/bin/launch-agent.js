@@ -9,6 +9,7 @@ const {
   currentWorkspaceScope,
   ensureProxy,
   herdrRuntime,
+  holdHubForPane,
   proxyEnvVars,
   pluginStateDir,
   recordRoutedPane,
@@ -165,6 +166,13 @@ function main() {
     process.stderr.write(opened.stderr || opened.stdout || opened.error?.message || 'Failed to create the Herdr agent pane.\n');
     process.exit(1);
   }
+
+  // 4b. Hold the hub for this pane (#673). The agent is started natively, so
+  //     it never registers; without a client the hub idle-exits and the next
+  //     launch replaces it with a standalone on the same port. No-op when the
+  //     proxy on `port` is a standalone.
+  const held = holdHubForPane({ env, port, paneId, cwd: ctx.cwd, agent: args.agent, agentId: `herdr:${launchToken}` });
+  log(`hub hold pane=${paneId} ok=${held.ok}${held.ok ? ` pid=${held.pid}` : ` reason=${held.reason}`}`);
 
   // 5. Record identity for badge linkage — BEFORE starting the agent, not
   //    after. The pane now exists with the identity header already injected, so

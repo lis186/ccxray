@@ -2903,6 +2903,55 @@ function ensureProxy(opts = {}) {
   return null;
 }
 
+// #673: register a natively launched pane with the hub, so the hub counts it as
+// a client the way it counts a `ccxray <agent>` launcher.
+//
+// `herdr agent start` runs the agent directly, so without this the hub sees no
+// client, idle-exits IDLE_TIMEOUT_MS later and deletes hub.json while the agent
+// still points at its port — and the next launch's ensureProxy then finds no
+// hub and starts a standalone on that port. The registered pid is the pane's
+// shell: it outlives the agent's startup, and the hub's dead-client sweep drops
+// it when the pane closes, so nothing has to unregister.
+//
+// Only a hub on the port this launch uses is touched; a standalone has no idle
+// shutdown and no client registry. Speaks the hub socket protocol directly
+// (one JSON line in, one out) because this plugin must not require server
+// modules. Best effort: on any failure the launch proceeds as before.
+const HUB_REGISTER_SCRIPT = [
+  "const net = require('net');",
+  'const [sock, msg] = process.argv.slice(1);',
+  "const c = net.connect(sock); let buf = '';",
+  "c.on('connect', () => c.write(msg + '\\n'));",
+  "c.on('data', d => { buf += d; const i = buf.indexOf('\\n'); if (i >= 0) { process.stdout.write(buf.slice(0, i)); c.end(); } });",
+  "c.on('error', e => { process.stderr.write(e.message); process.exitCode = 1; });",
+].join('\n');
+
+function holdHubForPane(opts = {}) {
+  const env = opts.env || process.env;
+  const home = env.CCXRAY_HOME || path.join(os.homedir(), '.ccxray');
+  let lock = null;
+  try { lock = JSON.parse(fs.readFileSync(path.join(home, 'hub.json'), 'utf8')); } catch {}
+  if (!lock || !lock.sockPath) return { ok: false, reason: 'no hub' };
+  if (Number(lock.port) !== Number(opts.port)) return { ok: false, reason: `hub is on port ${lock.port}` };
+
+  const info = runHerdr(['pane', 'process-info', '--pane', opts.paneId], { env, timeoutMs: 2000 });
+  const shellPid = info.parsed?.result?.process_info?.shell_pid;
+  if (!Number.isInteger(shellPid) || shellPid <= 0) return { ok: false, reason: 'pane shell pid unavailable' };
+
+  const msg = {
+    cmd: 'register',
+    pid: shellPid,
+    cwd: opts.cwd || '',
+    token: crypto.randomBytes(8).toString('hex'),
+  };
+  if (opts.agentId) msg.agentId = opts.agentId;
+  if (opts.agent) msg.agentType = opts.agent;
+  const result = runCommand({ bin: process.execPath, argsPrefix: ['-e', HUB_REGISTER_SCRIPT] },
+    [lock.sockPath, JSON.stringify(msg)], { env, timeoutMs: 3000 });
+  if (result.parsed && result.parsed.ok === true) return { ok: true, pid: shellPid };
+  return { ok: false, reason: stripAnsi(`${result.stderr}`).trim() || 'hub did not accept the registration' };
+}
+
 // Return the env vars needed to route an agent's API traffic through a ccxray
 // proxy on the given port. These become --env flags on herdr tab create.
 // The upstream auth token, asked of the CLI rather than derived here — the
@@ -3070,6 +3119,7 @@ module.exports = {
   displayWidth,
   currentWorkspaceScope,
   ensureProxy,
+  holdHubForPane,
   filterEntriesToWorkspace,
   findRepoRoot,
   forgetRoutedPane,
