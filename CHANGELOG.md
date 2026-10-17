@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- **Git branch per turn and per session.** Each recorded turn stores `branch`, the branch checked out in its cwd (read from `.git/HEAD`, following a linked worktree's `gitdir:` file; no `git` process is spawned; cached per cwd for 5 s). It is omitted outside a git checkout, for an unknown cwd, and on a detached HEAD. Imported Claude and Codex transcripts use their own recorded branch. The session index (`sessions.json`, `GET /_api/sessions`) keeps the branch of the latest-received turn, and `ccxray usage --json` adds `topSessions[].branch`. `rebuild-index` does not back-fill the field. See [data model](docs/data-model.md).
+
 ### Fixed
 
 - **Claude `firstPrompt` was always empty with Claude Code 2.1.302.** The first user message now opens with several `<system-reminder>` text blocks before the typed prompt, and ccxray took the first text block, which is empty once injected tags are removed — and then never looked again. The prompt is now the first user text block that is non-empty after stripping, an empty value is never latched (a later request fills it), and title-generation attribution matches on the same prompt text. The session index (`sessions.json`, `GET /_api/sessions`) now also picks up a first prompt recorded before the session's first turn created its row; previously that row kept `firstPrompt: null` unless a title arrived.

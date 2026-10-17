@@ -383,9 +383,13 @@ function analyze(entries, opts = {}) {
       // `+` to say so. The fold travels WITH the sum; a consumer must not
       // re-derive it, because it cannot see the turns from here.
       const costAgg = turns.reduce(addToCostFold, emptyCostFold());
+      // Latest-received turn that recorded a git branch (same rule as the
+      // session index); per-turn `branch` stays exact on the index line.
+      const branch = turns.reduce((b, e) => e.branch && (!b || (e.receivedAt || 0) >= b.at)
+        ? { name: e.branch, at: e.receivedAt || 0 } : b, null)?.name || null;
       return {
         sessionId: sid, turns: turns.length, cost: +cost.toFixed(2), costAgg,
-        durationMin: +((dur) / 60).toFixed(1), title,
+        durationMin: +((dur) / 60).toFixed(1), title, branch,
         model: turns.reduce((m, e) => { m[e.model || 'unknown'] = (m[e.model || 'unknown'] || 0) + 1; return m; }, {}),
         provider: turns[0]?.provider || 'unknown',
       };

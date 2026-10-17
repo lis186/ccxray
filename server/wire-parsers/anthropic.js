@@ -7,6 +7,7 @@ const helpers = require('../helpers');
 const config = require('../config');
 const { calculateCost } = require('../pricing');
 const { agentForProvider } = require('../providers');
+const { resolveGitBranch } = require('../git-branch');
 
 // ── isNoiseRequest ──────────────────────────────────────────
 // count_tokens (#146): Claude Code pre-counts tokens for large content. The
@@ -114,6 +115,9 @@ function buildEntryFields(ctx) {
     isSubagent,
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
+    // Branch of the cwd's checkout at record time. A caller that must not read
+    // the CURRENT checkout (rebuild-index replaying old files) passes branch:null.
+    branch: ctx.branch !== undefined ? ctx.branch : resolveGitBranch(ctx.cwd),
     usage,
     contextUsageKnown,
     cost: calculateCost(usage, model, 'anthropic'),

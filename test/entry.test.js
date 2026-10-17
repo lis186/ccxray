@@ -23,6 +23,7 @@ test('G1: INDEX_FIELDS preserves every legacy field name and order, then appends
     'accountEmail','accountDomain',
     'subagentId','subagentToolUseId',
     'effort','thinkingTokens','turnDurationMs',
+    'branch',
   ]);
 });
 

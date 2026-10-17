@@ -11,6 +11,7 @@ const {
   OPENAI_WIRE_CLIENTS,
 } = require('../providers');
 const config = require('../config');
+const { resolveGitBranch } = require('../git-branch');
 const { calculateCost } = require('../pricing');
 const { extractPromptAgentType, rawCoreHash } = require('../system-prompt');
 const {
@@ -377,6 +378,9 @@ function buildEntryFields(ctx) {
     isSubagent: ctx.isSubagent || false,
     sessionInferred: ctx.sessionInferred || false,
     cwd: ctx.cwd ?? null,
+    // Branch of the cwd's checkout at record time. A caller that must not read
+    // the CURRENT checkout (rebuild-index replaying old files) passes branch:null.
+    branch: ctx.branch !== undefined ? ctx.branch : resolveGitBranch(ctx.cwd),
     usage,
     contextUsageKnown,
     cost: calculateCost(usage, model, pricingUpstream),

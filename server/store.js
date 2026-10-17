@@ -95,8 +95,10 @@ function _foldEntry(canonical, other) {
   // S-1: subagentId/subagentToolUseId (transcript-derived subagent identity)
   // join this list the same way as agentKey/coreHash/convId.
   // S-6: effort/thinkingTokens/turnDurationMs (reasoning effort, imported
-  // thinking-token count, imported turn duration) join the same way.
-  for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'model',
+  // thinking-token count, imported turn duration) join the same way, as does
+  // `branch` (git branch of the turn's cwd; a proxy copy and an import copy
+  // observe the same checkout).
+  for (const k of ['agentKey', 'agentLabel', 'coreHash', 'convId', 'cwd', 'branch', 'model',
     'title', 'thinkingDuration', 'duplicateToolCalls', 'subagentId', 'subagentToolUseId',
     'effort', 'thinkingTokens', 'turnDurationMs']) {
     if ((canonical[k] == null || canonical[k] === '') && other[k] != null && other[k] !== '') {
