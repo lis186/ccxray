@@ -726,6 +726,7 @@ function extractFirstUserMsgText(req) {
 // scaffolding (e.g. all <system-reminder>) records nothing, so the next request
 // re-evaluates while firstPrompt is still null. firstUserMsg (the title-gen
 // content anchor) and firstPrompt are set together from the same text.
+// Callers pass main turns only — see detectSession.
 function recordFirstUserMsg(sid, req) {
   if (!sid || TITLE_GEN_RAW_BUCKETS.has(sid)) return;
   const meta = sessionMeta[sid] || (sessionMeta[sid] = {});
@@ -846,7 +847,15 @@ function detectSession(req, socket) {
     }
     currentSessionId = realId; // always update last-seen pointer for getCurrentSessionId fallback
     lastMsgCount = req?.messages?.length || 0;
-    recordFirstUserMsg(realId, req);
+    // Only main turns latch firstPrompt. Claude Code 2.1.302 sends its
+    // title-generation request FIRST under the same session_id; its user text
+    // wraps the typed prompt in <session>…</session> plus title instructions.
+    // isAnthropicSubagent (the classifier behind entry.isSubagent) flags it and
+    // other sidechains, so firstPrompt stays null until the main turn arrives.
+    // Gated on messages[] so OpenAI Responses bodies (Codex/Grok input[]) skip it.
+    if (!(Array.isArray(req?.messages) && isAnthropicSubagent(req))) {
+      recordFirstUserMsg(realId, req);
+    }
     return { sessionId: currentSessionId, isNewSession: isNew };
   }
 
