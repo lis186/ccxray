@@ -140,7 +140,9 @@ OpenAI-wire clients that are not Codex (today: Grok) are listed in `OPENAI_WIRE_
 npx ccxray codex
 ```
 
-Works for both API-key and ChatGPT-auth codex sessions. ChatGPT routing to `chatgpt.com/backend-api/codex` triggers automatically on codex's `chatgpt-account-id` header — no extra config. Codex's startup platform polls (plugin lists, connector directory, app metadata) are proxied but hidden from the dashboard so the timeline shows only conversation traffic.
+API-key sessions are supported. **Known unsupported in 2.5.0-rc.3:** ChatGPT-login sessions with Codex 0.159.2 and 0.163.0 fail workspace-routing bootstrap through the local HTTP proxy ([#671](https://github.com/lis186/ccxray/issues/671)). Run Codex directly without the ccxray base-URL overrides for these sessions. See the [investigation](docs/codex-workspace-routing.md) for the discovery-path mismatch and HTTPS-origin constraint.
+
+For compatible ChatGPT clients, routing to `chatgpt.com/backend-api/codex` triggers on the `chatgpt-account-id` header. Codex's startup platform polls (plugin lists, connector directory, app metadata) are proxied but hidden from the dashboard so the timeline shows only conversation traffic.
 
 **Beta caveats:**
 - WebSocket transport (`/v1/responses` upgrades) is decoded per frame: each codex turn records model, token usage, request instructions/input/tools, and response events. A few large envelope events are stored as compact timing anchors (for TTFT) rather than full payloads, so codex turn detail can still trail Claude turns in places.

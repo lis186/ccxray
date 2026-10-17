@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Known limitations
+
+- **Codex ChatGPT-login bootstrap (#671).** Documented as unsupported in 2.5.0-rc.3 for Codex 0.159.2 and 0.163.0. Workspace discovery uses a path ccxray forwards incorrectly; correcting that path alone cannot preserve the local HTTP proxy under Codex's HTTPS workspace-origin validation and destination replacement. See [findings](docs/codex-workspace-routing.md). API-key sessions remain supported.
+
 ### Fixed
 
 - **Transcript import requires opt-in (#675).** Fresh installs and upgrades no longer scan historical transcripts automatically, whether running a hub, standalone server, or Herdr repair. Set `CCXRAY_IMPORT_DISABLE=0` to enable automatic import; explicit `ccxray import --once` remains available unless import is explicitly disabled with `1`. Previously only the shell block written by setup disabled startup import.
