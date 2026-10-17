@@ -78,7 +78,9 @@ the rounding cap is the contract.
 |-------|------|-------|
 | `totalEntries` | number | Count of entries (turns) after all filters. |
 | `totalSessions` | number | Distinct `sessionId` count. Entries with no session id collapse into one `"unknown"` bucket, which counts here. |
-| `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. |
+| `totalCost` | number | Sum of per-turn cost, USD, **2 dp**. Unpriced turns add nothing, so `costAgg.unknownCount > 0` makes this a lower bound. |
+| `costAgg` | object | Confidence fold for `totalCost`, same shape and rules as `topSessions[].costAgg` below. |
+| `unpricedModels` | string[] | Every model with at least one unpriced turn (no rate, `cost.confidence: "unknown"`), sorted, not capped. Empty when the total is fully priced. Human output appends `(N model(s) unpriced)` to the `$X+` total. |
 | `retentionDays` | number \| null | Active `LOG_RETENTION_DAYS` value. `0` or below disables retention. `null` means the setting is not a complete decimal integer (for example, `1e9`, `0x10`, or `14 days`) **or** is beyond the supported window (magnitude over 36500 days ≈ 100 years, i.e. a "never prune" setting); retention is inactive, so no cutoff or warning is produced. |
 | `retentionCutoff` | string \| null | Taipei-local `YYYY-MM-DD` cutoff used by log pruning; `null` when retention is disabled. |
 | `retentionWarning` | string (conditional) | Present only when the requested range starts before `retentionCutoff`: older history may have been removed, so all totals are a lower bound. The no-`--last` all-time query always qualifies when retention is enabled. |
@@ -116,14 +118,16 @@ Array of up to **10** models, sorted by `turns` descending.
 |-------|------|-------|
 | `model` | string | Model id. `"unknown"` if absent. |
 | `turns` | number | Turns on this model. |
-| `cost` | number | USD, **2 dp**. |
-| `costShare` | number | `model cost / totalCost`, **3 dp**, range 0–1. |
+| `cost` | number \| null | USD, **2 dp**. `null` when no turn on this model was priced (`costStatus: "unknown"`); never `0` for an unpriced model. |
+| `costShare` | number \| null | `model cost / totalCost`, **3 dp**, range 0–1. The denominator is the priced total, so unpriced turns never enter share math; `null` when `costStatus` is `"unknown"`. |
+| `costAgg` | object | Confidence fold for `cost`, same shape as `topSessions[].costAgg`. |
+| `costStatus` | string | `"priced"` (every turn priced), `"partial"` (some turns unpriced: `cost` is a lower bound), or `"unknown"` (no turn priced). Human output prints `unknown` for an unknown row and renders the others through `formatAggCostText`. |
 
 ### `tools`
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `totalCalls` | number | Total tool invocations across all entries. |
+| `totalCalls` | number | Total tool invocations across all entries. Per turn, recorded counts (`turnToolCalls`, else the legacy per-session max of `toolCalls`) win; a turn with neither (imported transcripts) is counted from its `turnToolCallIds` map. A `null` map is unknown and adds nothing; `{}` is a parsed zero-call turn (ADR 0018). |
 | `top` | array | `[{ name, count }]`, sorted by `count` descending. Capped at **7** by default; `--tools` lifts the cap to all tools. |
 | `failRate` | number | `entries with a tool failure / totalEntries`, **3 dp**. Note the denominator is **turns**, not tool calls. |
 
