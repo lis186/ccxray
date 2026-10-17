@@ -1484,8 +1484,8 @@ async function runPostListenStartupTasks() {
     }
   }
 
-  // Import local Claude Code transcripts (non-blocking, after restore)
-  if (restoreOk && process.env.CCXRAY_IMPORT_DISABLE !== '1') {
+  // Automatic transcript scans require explicit opt-in, including on upgrade.
+  if (restoreOk && process.env.CCXRAY_IMPORT_DISABLE === '0') {
     const { scanAndImport } = require('./importer');
     scanAndImport().catch(err => console.error('[importer] Scan failed:', err.message));
   }

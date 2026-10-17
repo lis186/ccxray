@@ -45,6 +45,8 @@ ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-
 ccxray setup --check
 ```
 
+Transcript import is off by default on fresh installs and upgrades, in both hub and standalone mode. Set `CCXRAY_IMPORT_DISABLE=0` before starting ccxray or Herdr to opt in to automatic transcript import (restart an existing hub to apply it). For a one-time import, run `ccxray import --once`. `CCXRAY_IMPORT_DISABLE=1` blocks even explicit imports; unset it for a one-time import. Existing indexed history remains available.
+
 `setup` adds a Claude wrapper and export settings to your shell profile, sets log retention, and writes `CCXRAY_IMPORT_DISABLE=1`. It does not install a Codex wrapper. Preview changes with `ccxray setup --dry-run` (include the same setup options). `ccxray setup --remove` removes ccxray's shell block and writes a tombstone to stop future uploads; it does not delete local logs or uploaded summaries. See the [export onboarding guide](docs/export-onboarding.md) for the data and removal details.
 
 ### Herdr plugin
