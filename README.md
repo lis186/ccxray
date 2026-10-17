@@ -33,21 +33,27 @@ The proxy starts, the selected CLI launches through it, and the dashboard opens 
 
 If ccxray cannot load the proxy or attach to a hub, it starts the agent directly and that session is not recorded. The hub attach budget is 3000 ms by default; an unresolved attach falls back when the budget expires, and an earlier failure can fall back sooner. Set `CCXRAY_ATTACH_TIMEOUT_MS` to change the budget. ccxray attempts to append a fallback record to `<CCXRAY_HOME>/fail-open.log` (default `~/.ccxray/fail-open.log`), but writing that file is best effort. Set `CCXRAY_FAIL_CLOSED=1` to stop instead of falling back. Claude `--bg` / `--background` launches bypass the proxy by design.
 
-For a persistent install with Claude's shell wrapper and optional summary export:
-
-Before running `setup`, install Claude Code and make sure its logged-in account email is available to ccxray. The `--domains` list must include that account's domain. Setup also requires readable gcloud Application Default Credentials; run `gcloud auth application-default login` first. Setup rejects `CCXRAY_EXPORT_GCS_KEY_FILE`, even though the exporter itself supports a service-account key file.
+For a persistent install with Claude's shell wrapper (local recording only):
 
 ```bash
 npm install -g ccxray
-gcloud auth application-default login
-ccxray setup --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+ccxray setup
 # Open a new terminal (or reload your shell profile), then verify:
 ccxray setup --check
 ```
 
+Plain `ccxray setup` writes no export settings and needs no bucket, domains, or gcloud credentials. Summary export to GCS is opt-in with `--export`. Before using it, install Claude Code and make sure its logged-in account email is available to ccxray. The `--domains` list must include that account's domain. Export setup also requires readable gcloud Application Default Credentials; run `gcloud auth application-default login` first. Setup rejects `CCXRAY_EXPORT_GCS_KEY_FILE`, even though the exporter itself supports a service-account key file.
+
+```bash
+gcloud auth application-default login
+ccxray setup --export --bucket "<bucket>" --domains example.com --cwd-allowlist "project-a,project-b" --retention-days 30
+```
+
+An install that already exports (set up by 2.x) keeps exporting when `ccxray setup` is re-run without `--export`; setup prints one line saying so.
+
 Transcript import is off by default on fresh installs and upgrades, in both hub and standalone mode. Set `CCXRAY_IMPORT_DISABLE=0` before starting ccxray or Herdr to opt in to automatic transcript import (restart an existing hub to apply it). For a one-time import, run `ccxray import --once`. `CCXRAY_IMPORT_DISABLE=1` blocks even explicit imports; unset it for a one-time import. Existing indexed history remains available.
 
-`setup` adds a Claude wrapper and export settings to your shell profile, sets log retention, and writes `CCXRAY_IMPORT_DISABLE=1`. It does not install a Codex wrapper. Preview changes with `ccxray setup --dry-run` (include the same setup options). `ccxray setup --remove` removes ccxray's shell block and writes a tombstone to stop future uploads; it does not delete local logs or uploaded summaries. See the [export onboarding guide](docs/export-onboarding.md) for the data and removal details.
+`setup` adds a Claude wrapper to your shell profile (plus export settings with `--export`), sets log retention, and writes `CCXRAY_IMPORT_DISABLE=1`. It does not install a Codex wrapper. Preview changes with `ccxray setup --dry-run` (include the same setup options). `ccxray setup --remove` removes ccxray's shell block and writes a tombstone to stop future uploads; it does not delete local logs or uploaded summaries. See the [export onboarding guide](docs/export-onboarding.md) for the data and removal details.
 
 ### Herdr plugin
 
@@ -321,7 +327,7 @@ Every environment variable, with its default and source file, is listed in [docs
 
 Raw request and response logs are stored locally in `LOGS_DIR` (by default `~/.ccxray/logs/`) as `{timestamp}_req.json` and `{timestamp}_res.json`. Upgrading from v1.0? Logs previously in `./logs/` are automatically migrated on first run.
 
-If you configure export with `ccxray setup`, ccxray can upload daily and per-session summaries; it does not upload the raw request/response logs. Summaries can include user identity, session IDs, repository basenames, model names, and tool or skill names. Source-derived names and metadata are not comprehensively scrubbed, so review them before enabling export. `CCXRAY_EXPORT_CWD_ALLOWLIST` masks an unlisted repository name as `[other]`; it does not exclude that session. Export requires a non-empty `CCXRAY_EXPORT_DOMAINS`; without it, uploads are blocked and the cursor is preserved. Only turns carrying a matching Claude launch-account snapshot are exported. Codex and Grok launches do not carry that snapshot and are excluded by this filter; this is the intended behavior. See the [export onboarding guide](docs/export-onboarding.md) for fields, filtering, and removal.
+If you configure export with `ccxray setup --export`, ccxray can upload daily and per-session summaries; it does not upload the raw request/response logs. Summaries can include user identity, session IDs, repository basenames, model names, and tool or skill names. Source-derived names and metadata are not comprehensively scrubbed, so review them before enabling export. `CCXRAY_EXPORT_CWD_ALLOWLIST` masks an unlisted repository name as `[other]`; it does not exclude that session. Export requires a non-empty `CCXRAY_EXPORT_DOMAINS`; without it, uploads are blocked and the cursor is preserved. Only turns carrying a matching Claude launch-account snapshot are exported. Codex and Grok launches do not carry that snapshot and are excluded by this filter; this is the intended behavior. See the [export onboarding guide](docs/export-onboarding.md) for fields, filtering, and removal.
 
 ## Docker
 

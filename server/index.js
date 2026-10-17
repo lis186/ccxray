@@ -25,7 +25,7 @@ Commands:
   open                Open dashboard in browser
   import              Import transcripts (--once or --target-transcript)
   rebuild-index       Rebuild index.ndjson from log files
-  setup               Configure export enrollment and Claude shell wrapper
+  setup               Install the Claude shell wrapper (export opt-in: --export)
   setup-statusline    Configure Claude Code status line
   secret              Manage shared secrets (upstream)
   usage               Show usage summary and costs

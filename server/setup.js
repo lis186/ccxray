@@ -30,14 +30,17 @@ const CHECK_IDS = new Set([
   'last-lock-loss', 'last-fail-open', 'coverage', 'shell-probe',
 ]);
 
+// Settings that only mean something to the GCS exporter (#691).
+const EXPORT_ONLY_FLAGS = ['--bucket', '--domains', '--prefix', '--cwd-allowlist'];
+
 function usageLine() {
-  return 'Usage: ccxray setup [--remove | --check | --browser on|off] [--dry-run] [--yes] [--shell zsh|bash|pwsh|powershell] [--no-probe] [--bucket B] [--domains D] [--prefix P] [--cwd-allowlist L] [--retention-days N]';
+  return 'Usage: ccxray setup [--remove | --check | --browser on|off] [--dry-run] [--yes] [--shell zsh|bash|pwsh|powershell] [--no-probe] [--retention-days N] [--export --bucket B --domains D [--prefix P] [--cwd-allowlist L]]';
 }
 
 function parseArgs(argv) {
   const options = {
     remove: false, check: false, browser: null, dryRun: false, yes: false,
-    shell: null, noProbe: false,
+    shell: null, noProbe: false, export: false,
     flags: Object.create(null),
   };
   const valued = new Set([
@@ -52,6 +55,7 @@ function parseArgs(argv) {
     else if (arg === '--dry-run') options.dryRun = true;
     else if (arg === '--yes') options.yes = true;
     else if (arg === '--no-probe') options.noProbe = true;
+    else if (arg === '--export') options.export = true;
     else if (valued.has(arg)) {
       if (seen.has(arg) || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) {
         return { error: usageLine() };
@@ -65,8 +69,13 @@ function parseArgs(argv) {
   }
 
   const writeFlags = options.remove || Boolean(options.browser)
-    || Object.keys(options.flags).length > 0 || options.dryRun;
+    || Object.keys(options.flags).length > 0 || options.dryRun || options.export;
   if (options.check && writeFlags) return { error: usageLine() };
+  // #691: export is opt-in, so its settings are only accepted with --export.
+  if (EXPORT_ONLY_FLAGS.some(flag => flag in options.flags) && !options.export) {
+    return { error: `${EXPORT_ONLY_FLAGS.filter(flag => flag in options.flags).join(', ')} requires --export\n${usageLine()}` };
+  }
+  if (options.export && (options.remove || options.browser)) return { error: usageLine() };
   if (options.remove && options.browser) return { error: usageLine() };
   if (options.dryRun && options.browser) return { error: usageLine() };
   if (options.noProbe && !options.check) return { error: usageLine() };
@@ -266,14 +275,17 @@ function parseRcBlock(text, powershell) {
   if (values.CCXRAY_EXPORT_CWD_ALLOWLIST !== undefined) {
     resolved.cwdAllowlist = values.CCXRAY_EXPORT_CWD_ALLOWLIST;
   }
-  if (typeof resolved.bucket !== 'string' || !resolved.bucket
+  // #691: a record-only block carries none of the export settings.
+  const recordOnly = resolved.bucket === undefined && resolved.domains === undefined
+    && resolved.prefix === undefined && resolved.cwdAllowlist === undefined;
+  if ((!recordOnly && (typeof resolved.bucket !== 'string' || !resolved.bucket
       || !Array.isArray(resolved.domains) || !resolved.domains.length
-      || typeof resolved.prefix !== 'string' || !resolved.prefix
+      || typeof resolved.prefix !== 'string' || !resolved.prefix))
       || !Number.isFinite(resolved.retentionDays)
       || (resolved.cwdAllowlist !== undefined && typeof resolved.cwdAllowlist !== 'string')) {
     return { kind: 'malformed', reason: 'setup block was modified (does not match setup output)', text };
   }
-  const rendererValues = { ...resolved };
+  const rendererValues = recordOnly ? { retentionDays: resolved.retentionDays } : { ...resolved };
   if (rendererValues.cwdAllowlist === undefined) delete rendererValues.cwdAllowlist;
   let rendered;
   try { rendered = renderRcBlock(rendererValues, powershell); }
@@ -309,13 +321,17 @@ function quotePowerShell(value) { return `'${String(value).replace(/'/g, "''")}'
 function renderRcBlock(values, powershell, newline = '\n') {
   const q = powershell ? quotePowerShell : quotePosix;
   const lines = [START_MARKER];
-  const settings = [
-    ['CCXRAY_EXPORT_GCS_BUCKET', values.bucket],
-    ['CCXRAY_EXPORT_GCS_PREFIX', values.prefix],
-    ['CCXRAY_EXPORT_DOMAINS', values.domains.join(',')],
-    ['LOG_RETENTION_DAYS', String(values.retentionDays)],
-  ];
-  if (values.cwdAllowlist !== undefined && values.cwdAllowlist !== '') {
+  // #691: without a bucket the block is record-only — wrapper, retention, and
+  // import opt-out, no export settings.
+  const settings = values.bucket === undefined
+    ? [['LOG_RETENTION_DAYS', String(values.retentionDays)]]
+    : [
+      ['CCXRAY_EXPORT_GCS_BUCKET', values.bucket],
+      ['CCXRAY_EXPORT_GCS_PREFIX', values.prefix],
+      ['CCXRAY_EXPORT_DOMAINS', values.domains.join(',')],
+      ['LOG_RETENTION_DAYS', String(values.retentionDays)],
+    ];
+  if (values.bucket !== undefined && values.cwdAllowlist !== undefined && values.cwdAllowlist !== '') {
     settings.push(['CCXRAY_EXPORT_CWD_ALLOWLIST', values.cwdAllowlist]);
   }
   settings.push(['CCXRAY_IMPORT_DISABLE', '1']);
@@ -1285,7 +1301,7 @@ async function buildInstallChecks(context, options, deps) {
     checks.push(statusLine('conflict-scan', conflict.status, conflict.detail));
   }
   for (const target of context.targets.flatMap(targetProbeDescriptors)) {
-    const policy = executionPolicyCheck(target, { forInstall: true, values: context.values, deps });
+    const policy = executionPolicyCheck(target, { forInstall: true, values: context.installValues || context.values, deps });
     if (policy) checks.push(policy);
   }
 
@@ -1296,6 +1312,10 @@ async function buildInstallChecks(context, options, deps) {
     hubClient ? 'skipped inside a ccxray-launched session'
       : deps.env.ANTHROPIC_BASE_URL ? 'ANTHROPIC_BASE_URL is set in this shell' : 'unset',
   ));
+
+  // #691: a record-only install has no export to preflight — no account
+  // filter, no ADC read, no enrollment.
+  if (!context.exportMode) return { checks, populationResults: [] };
 
   const domains = context.values.domains || [];
   if (!domains.length) {
@@ -1405,8 +1425,12 @@ async function buildCheckReport(context, options, deps) {
     checks.push(statusLine('coverage', coverageStatus, `coverage[${result.population.label}]: ${coverageDetail(result)}`));
   }
 
-  const record = discoverCredential(context, deps);
-  if (record.discovery?.state === 'adc' && record.parse?.state === 'ok'
+  const exportConfigured = context.targets.some(hasOwnedExportBlock)
+    || ['CCXRAY_EXPORT_GCS_BUCKET', 'CCXRAY_EXPORT_DOMAINS', 'CCXRAY_EXPORT_GCS_KEY_FILE'].some(name => deps.env[name]);
+  const record = exportConfigured ? discoverCredential(context, deps) : null;
+  if (!record) {
+    checks.push(statusLine('adc', 'skipped', 'export is not configured (record-only setup)'));
+  } else if (record.discovery?.state === 'adc' && record.parse?.state === 'ok'
       && record.parse.type === 'authorized_user') {
     checks.push(statusLine('adc', 'ok', 'ADC authorized_user credential is readable and valid'));
   } else if (record.discovery?.state === 'key-file'
@@ -1643,11 +1667,13 @@ function printDryRun(context, options, deps, nextEnrollment, cursorState, browse
     }
     return;
   }
-  io.log(`Would write enrollment: ${deps.exportSync.enrollmentPath(context.home)} (${enrollmentText(context.diagnostics.durableHome.enrollment)} → ${enrollmentText(nextEnrollment)})`);
-  io.log(`Cursor seed: ${cursorState.absent ? `create ${cursorState.path}` : `preserve ${cursorState.path}`}`);
+  if (nextEnrollment) {
+    io.log(`Would write enrollment: ${deps.exportSync.enrollmentPath(context.home)} (${enrollmentText(context.diagnostics.durableHome.enrollment)} → ${enrollmentText(nextEnrollment)})`);
+    io.log(`Cursor seed: ${cursorState.absent ? `create ${cursorState.path}` : `preserve ${cursorState.path}`}`);
+  } else io.log('Record-only: no export enrollment, cursor, or export settings will be written.');
   for (const target of context.targets) {
     if (target.unknown || target.error || target.parsed.kind === 'malformed') continue;
-    const block = renderRcBlock(context.values, target.kind === 'powershell', targetNewline(target, deps));
+    const block = renderRcBlock(context.installValues || context.values, target.kind === 'powershell', targetNewline(target, deps));
     io.log(`Would write setup block for ${targetAliases(target).join('; ')}:\n${block}`);
   }
   if (browserSetting) io.log(`Would write ${deps.path.join(context.home, 'auto-open-browser')}: ${browserSetting}`);
@@ -1709,7 +1735,7 @@ async function acquireSetupLock(home, deps) {
 
 function phaseA(context, isRemove, deps) {
   const enrollment = deps.exportSync.readEnrollment(context.home, deps.fs);
-  if (!isRemove && enrollment?.state === 'invalid') {
+  if (!isRemove && context.exportMode && enrollment?.state === 'invalid') {
     return { ok: false, error: `export-enrollment.json is ${enrollment.reason}: ${enrollment.detail}. Inspect it; then either delete it (a fresh install enrolls from today) or run ccxray setup --remove to replace it with a removed tombstone.` };
   }
   for (const target of context.targets) {
@@ -1725,8 +1751,10 @@ function phaseA(context, isRemove, deps) {
 
 function changeLines(context, options, cursorState, browserSetting, nextEnrollment, deps) {
   const changes = [];
-  const enrollmentPath = deps.exportSync.enrollmentPath(context.home);
-  changes.push(`${enrollmentPath}: ${enrollmentText(context.diagnostics.durableHome.enrollment)} → ${enrollmentText(nextEnrollment)}`);
+  if (nextEnrollment) {
+    const enrollmentPath = deps.exportSync.enrollmentPath(context.home);
+    changes.push(`${enrollmentPath}: ${enrollmentText(context.diagnostics.durableHome.enrollment)} → ${enrollmentText(nextEnrollment)}`);
+  }
   if (!options.remove && cursorState) {
     changes.push(`${cursorState.path}: ${cursorState.absent ? 'will create (wx)' : 'will preserve existing cursor'}`);
   }
@@ -1760,6 +1788,10 @@ function changeLines(context, options, cursorState, browserSetting, nextEnrollme
 
 function firstOwnedValues(context) {
   return context.targets.filter(target => target.parsed?.kind === 'owned');
+}
+
+function hasOwnedExportBlock(target) {
+  return target.parsed?.kind === 'owned' && target.parsed.values.bucket !== undefined;
 }
 
 async function runBrowserMode(options, deps) {
@@ -1849,7 +1881,7 @@ async function runRemove(context, options, deps) {
         : '';
       deps.logger.error(`export remains removed; shell cleanup incomplete: ${item.target.logicalPath} (${item.error?.message || 'write failed'}${recovery})`);
     }
-  } else deps.logger.log('Export removed.');
+  } else deps.logger.log(context.targets.some(hasOwnedExportBlock) || context.diagnostics.durableHome.enrollment?.state === 'enrolled' ? 'Export removed.' : 'Setup removed.');
   deps.logger.log('After removal, run unset -f claude in existing POSIX shells or Remove-Item Function:claude in PowerShell; starting a new terminal also clears the wrapper.');
   return failures.length ? 1 : 0;
 }
@@ -1865,13 +1897,22 @@ async function runInstall(context, options, deps) {
     for (const failure of valueFailures) deps.logger.error(failure);
     return 2;
   }
-  if (!resolved.bucket) {
-    deps.logger.error('first install needs --bucket');
+  // #691: record-only unless --export is passed or an owned block already
+  // exports — re-running plain setup must not silently switch export off.
+  const keptExport = !options.export && context.targets.some(hasOwnedExportBlock);
+  const exportMode = options.export || keptExport;
+  context.exportMode = exportMode;
+  if (exportMode && !resolved.bucket) {
+    deps.logger.error('--export needs --bucket');
     return 2;
   }
-  if (!resolved.domains?.length) {
-    deps.logger.error('first install needs --domains');
+  if (exportMode && !resolved.domains?.length) {
+    deps.logger.error('--export needs --domains');
     return 2;
+  }
+  context.installValues = exportMode ? resolved : { retentionDays: resolved.retentionDays };
+  if (keptExport) {
+    deps.logger.log('Export stays enabled: the existing export settings were kept. To stop exporting, run ccxray setup --remove, then ccxray setup for a record-only install.');
   }
 
   const preflight = await buildInstallChecks(context, options, deps);
@@ -1882,7 +1923,7 @@ async function runInstall(context, options, deps) {
   }
 
   const firstInstall = firstOwnedValues(context).length === 0;
-  if (firstInstall && resolved.cwdAllowlist === undefined) {
+  if (exportMode && !context.targets.some(hasOwnedExportBlock) && resolved.cwdAllowlist === undefined) {
     deps.logger.log('\x1b[33mNotice: repository basenames export unmasked because --cwd-allowlist is not set.\x1b[0m');
   }
   const cursorState = readCursorSeedState(context.home, deps.fs, deps.path);
@@ -1897,12 +1938,12 @@ async function runInstall(context, options, deps) {
   const current = context.diagnostics.durableHome.enrollment === 'absent'
     ? null
     : context.diagnostics.durableHome.enrollment;
-  const next = nextEnrollmentInstall(current, resolved.retentionDays, deps.now());
+  const next = exportMode ? nextEnrollmentInstall(current, resolved.retentionDays, deps.now()) : null;
   if (options.dryRun) {
     printDryRun(context, options, deps, next, cursorState, browserSetting);
     return 0;
   }
-  const changeList = changeLines(context, options, cursorState, browserSetting, next, deps);
+  const changeList = changeLines(context, options, exportMode ? cursorState : null, browserSetting, next, deps);
   if (!await showConsent(context, options, deps, changeList)) return 2;
 
   await deps.hooks.beforeLock?.({ mode: 'install', context, options });
@@ -1919,25 +1960,27 @@ async function runInstall(context, options, deps) {
       deps.logger.error(`${validation.error}; no files were written.`);
       return 1;
     }
-    enrollment = nextEnrollmentInstall(validation.enrollment, resolved.retentionDays, deps.now());
-    try { deps.exportSync.writeCursor(deps.exportSync.enrollmentPath(context.home), enrollment, deps.fs); }
-    catch (error) {
-      const actual = deps.exportSync.readEnrollment(context.home, deps.fs);
-      deps.logger.error(`Could not write enrollment: ${error.message}. Durable enrollment on disk: ${enrollmentText(actual)}. No cursor, shell, or browser files were changed.`);
-      return 1;
-    }
+    if (exportMode) {
+      enrollment = nextEnrollmentInstall(validation.enrollment, resolved.retentionDays, deps.now());
+      try { deps.exportSync.writeCursor(deps.exportSync.enrollmentPath(context.home), enrollment, deps.fs); }
+      catch (error) {
+        const actual = deps.exportSync.readEnrollment(context.home, deps.fs);
+        deps.logger.error(`Could not write enrollment: ${error.message}. Durable enrollment on disk: ${enrollmentText(actual)}. No cursor, shell, or browser files were changed.`);
+        return 1;
+      }
 
-    const cursorBeforeSeed = readCursorSeedState(context.home, deps.fs, deps.path);
-    if (cursorBeforeSeed.error) {
-      partialFailures.push({ file: cursorBeforeSeed.path, error: cursorBeforeSeed.error });
-    } else if (cursorBeforeSeed.absent) {
-      const seed = cursorSeed(context.home, enrollment, deps);
-      if (seed.kind === 'failed') partialFailures.push({ file: seed.path, error: seed.error });
+      const cursorBeforeSeed = readCursorSeedState(context.home, deps.fs, deps.path);
+      if (cursorBeforeSeed.error) {
+        partialFailures.push({ file: cursorBeforeSeed.path, error: cursorBeforeSeed.error });
+      } else if (cursorBeforeSeed.absent) {
+        const seed = cursorSeed(context.home, enrollment, deps);
+        if (seed.kind === 'failed') partialFailures.push({ file: seed.path, error: seed.error });
+      }
     }
 
     for (let index = 0; index < context.targets.length; index++) {
       const target = context.targets[index];
-      const bytes = renderTargetRc(target, resolved, false, deps);
+      const bytes = renderTargetRc(target, context.installValues, false, deps);
       const result = commitRcTarget(target, bytes, deps);
       if (result.kind !== 'committed') partialFailures.push({ file: target.logicalPath, error: result.error });
       else await deps.hooks.afterTargetCommit?.({ mode: 'install', target, index, context });
@@ -1953,11 +1996,13 @@ async function runInstall(context, options, deps) {
 
   if (partialFailures.length) {
     for (const failure of partialFailures) {
-      deps.logger.error(`enrollment is ACTIVE (state: enrolled) — an already-running exporter with export settings may upload; ${failure.file} was not updated. Re-run ccxray setup, or ccxray setup --remove to un-enroll. (${failure.error?.message || 'write failed'})`);
+      if (exportMode) deps.logger.error(`enrollment is ACTIVE (state: enrolled) — an already-running exporter with export settings may upload; ${failure.file} was not updated. Re-run ccxray setup, or ccxray setup --remove to un-enroll. (${failure.error?.message || 'write failed'})`);
+      else deps.logger.error(`setup incomplete: ${failure.file} was not updated. Re-run ccxray setup. (${failure.error?.message || 'write failed'})`);
     }
     return 1;
   }
   deps.logger.log('ccxray setup complete. Restart Claude Code sessions to activate the wrapper.');
+  if (!exportMode) deps.logger.log('Recording locally only; export is off. Enable it with ccxray setup --export --bucket B --domains D.');
   return 0;
 }
 
@@ -1966,7 +2011,17 @@ async function runSetup(argv = process.argv.slice(3), overrides = {}) {
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
     deps.logger.log(`${usageLine()}
 
+Modes:
+  ccxray setup              Record-only (default): install the Claude shell wrapper
+                            and local recording settings. Writes no export
+                            settings and needs no bucket, domains, or gcloud ADC.
+  ccxray setup --export --bucket B --domains D
+                            Also enroll in summary export to GCS (needs gcloud
+                            Application Default Credentials). An install that
+                            already exports keeps exporting when setup is re-run.
+
 Options:
+  --export                  Enable summary export (requires --bucket and --domains)
   --remove                 Remove enrollment and the owned shell wrapper
   --check                  Inspect setup and export diagnostics without changes
   --browser on|off         Set automatic dashboard opening preference
@@ -1974,10 +2029,10 @@ Options:
   --yes                    Accept setup consent without prompting
   --shell zsh|bash|pwsh|powershell  Select the shell startup file
   --no-probe                Skip shell startup probes (only with --check)
-  --bucket B                GCS bucket for exported summaries
-  --domains D               Comma-separated allowed account email domains
-  --prefix P                GCS object prefix
-  --cwd-allowlist L          Comma-separated working directory basenames
+  --bucket B                GCS bucket for exported summaries (with --export)
+  --domains D               Comma-separated allowed account email domains (with --export)
+  --prefix P                GCS object prefix (with --export)
+  --cwd-allowlist L          Comma-separated working directory basenames (with --export)
   --retention-days N         Retention in days (1–3650; default 30)
   --help, -h                Show this help`);
     return 0;

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Breaking (3.0.0)
+
+- **`ccxray setup` is record-only by default; export is opt-in (#691).** Plain `ccxray setup` installs the Claude shell wrapper and local recording settings (`LOG_RETENTION_DAYS`, `CCXRAY_IMPORT_DISABLE=1`) only. It writes no export settings, enrollment, or cursor, needs no `--bucket`/`--domains`, and never reads gcloud Application Default Credentials. Enable summary export with `ccxray setup --export --bucket <bucket> --domains <domain>`, which behaves exactly as setup did in 2.x; `--bucket`, `--domains`, `--prefix`, and `--cwd-allowlist` are refused without `--export`. Upgrades keep exporting: an install whose shell block already exports stays exporting when `ccxray setup` is re-run without `--export`, and setup prints one line saying so and naming `ccxray setup --remove` as the way to stop. `ccxray setup --check` skips the ADC check when export is not configured. `ccxray setup --help` documents both modes.
+
 ### Known limitations
 
 - **Codex ChatGPT-login bootstrap (#671).** Documented as unsupported in 2.5.0-rc.3 for Codex 0.159.2 and 0.163.0. Workspace discovery uses a path ccxray forwards incorrectly; correcting that path alone cannot preserve the local HTTP proxy under Codex's HTTPS workspace-origin validation and destination replacement. See [findings](docs/codex-workspace-routing.md). API-key sessions remain supported.
