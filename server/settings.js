@@ -8,7 +8,9 @@ const SETTINGS_DIR = resolveCcxrayHome();
 const SETTINGS_PATH = path.join(SETTINGS_DIR, 'settings.json');
 
 const DEFAULTS = {
-  statusLine: true,
+  // #692 (3.0.0): the Context HUD is off unless settings.json says true — it can
+  // truncate subagent returns. An explicit `statusLine: true` is kept as is.
+  statusLine: false,
   starredProjects: [],
   starredSessions: [],
   starredTurns: [],
@@ -48,9 +50,8 @@ function serializeStars(s) {
   };
 }
 
-function readSettings({ quiet = false } = {}) {
+function readSettings() {
   if (_cache) return cloneSettings(_cache);
-  let firstLoad = false;
   try {
     const parsed = JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8'));
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -67,15 +68,16 @@ function readSettings({ quiet = false } = {}) {
       console.error(`[ccxray] settings.json at ${SETTINGS_PATH} did not parse to an object — using defaults.`);
       _cache = { ...DEFAULTS };
     }
-    firstLoad = true;
   } catch {
     _cache = { ...DEFAULTS };
-    firstLoad = true;
-  }
-  if (firstLoad && !quiet) {
-    console.log(`\x1b[90m   Context HUD: ${_cache.statusLine ? 'enabled' : 'disabled'} (settings.json)\x1b[0m`);
   }
   return cloneSettings(_cache);
+}
+
+// The one-line HUD state shown at proxy/launcher startup and by `ccxray hud
+// status` (#692) — not by every subcommand, so readSettings() itself is silent.
+function hudStatusText(enabled) {
+  return `Context HUD: ${enabled ? 'enabled' : 'disabled'} (settings.json)`;
 }
 
 function writeSettings(data) {
@@ -86,7 +88,37 @@ function writeSettings(data) {
   });
 }
 
+// `ccxray hud on|off` (#692): a CLI process that exits right away, so the write
+// is synchronous and atomic. Only `statusLine` changes; every other key on disk
+// is kept. A settings.json that does not parse to an object is never rewritten.
+function setStatusLineSync(enabled) {
+  let current = {};
+  let raw = null;
+  try { raw = fs.readFileSync(SETTINGS_PATH, 'utf8'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (raw !== null) {
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { parsed = null; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${SETTINGS_PATH} is not a JSON object; fix or delete it, then retry`);
+    }
+    current = parsed;
+  }
+  const next = { ...current, statusLine: !!enabled };
+  fs.mkdirSync(SETTINGS_DIR, { recursive: true, mode: 0o700 });
+  const tmp = `${SETTINGS_PATH}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { flag: 'wx' });
+    fs.renameSync(tmp, SETTINGS_PATH);
+  } catch (error) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw error;
+  }
+  _cache = null;
+  return SETTINGS_PATH;
+}
+
 // Test helper — reset cache so unit tests get a clean slate
 function _resetSettingsCache() { _cache = null; }
 
-module.exports = { readSettings, writeSettings, serializeStars, _resetSettingsCache };
+module.exports = { readSettings, writeSettings, serializeStars, hudStatusText, setStatusLineSync, SETTINGS_PATH, _resetSettingsCache };

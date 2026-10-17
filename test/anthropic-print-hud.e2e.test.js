@@ -226,6 +226,8 @@ describe('Anthropic Context HUD and Claude print-mode header', () => {
     fs.mkdirSync(path.join(dataHome, 'logs'), { recursive: true });
     fs.writeFileSync(path.join(dataHome, 'logs', 'index.ndjson'), '');
     fs.mkdirSync(userHome, { recursive: true });
+    // #692: the HUD is off by default; this suite exercises an explicit opt-in.
+    fs.writeFileSync(path.join(dataHome, 'settings.json'), JSON.stringify({ statusLine: true }));
     fs.writeFileSync(path.join(dataHome, 'pricing-cache.json'), JSON.stringify({
       fetchedAt: Date.now(),
       pricing: {},

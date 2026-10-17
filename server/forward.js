@@ -71,7 +71,7 @@ function computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedB
 }
 
 // ── Status line injection flag ────────────────────────────────────────
-let statusLineEnabled = true;
+let statusLineEnabled = false; // #692: off until settings.json says otherwise
 function setStatusLineEnabled(val) { statusLineEnabled = !!val; }
 function getStatusLineEnabled() { return statusLineEnabled; }
 

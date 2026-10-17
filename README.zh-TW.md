@@ -224,9 +224,9 @@ ccxray 透過讀取 Anthropic 的 `cache_creation` 用量欄位，自動偵測�
 
 ### Context HUD
 
-可選的上下文統計區塊，會被附加到 Claude Code 中 Claude 的回覆尾端：`📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。預設啟用；可從儀表板頂部列切換。
+可選的上下文統計區塊，會被附加到 Claude Code 中 Claude 的回覆尾端：`📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`。預設關閉（自 3.0.0 起）；可用 `ccxray hud on` 或儀表板頂部列開啟，用 `ccxray hud status` 查看，用 `ccxray hud off` 關閉。
 
-**為什麼需要這個開關？** 當主 agent 透過 Agent / Task tool 呼叫 sub-agent 時，附加的區塊可能會把 sub-agent 的回傳內容截斷在父 agent 看到的範圍之外，造成多 agent 工作流程靜默地遺失資料。跑 sub-agent 較重的 session 時請關掉 HUD。狀態保存在 `~/.ccxray/settings.json`。
+**為什麼需要這個開關？** 當主 agent 透過 Agent / Task tool 呼叫 sub-agent 時，附加的區塊可能會把 sub-agent 的回傳內容截斷在父 agent 看到的範圍之外，造成多 agent 工作流程靜默地遺失資料。跑 sub-agent 較重或自動化的 session 時請保持 HUD 關閉。狀態保存在 `~/.ccxray/settings.json`（CLI 與儀表板開關共用）；其中明確設為 `"statusLine": true` 的設定在升級後仍維持啟用。執行中的 hub 或 server 會在重新啟動後套用 CLI 的變更；儀表板開關則立即生效。
 
 ### 加星永久保留
 

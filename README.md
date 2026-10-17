@@ -226,9 +226,9 @@ Pause requests before they reach Anthropic. Toggle intercept on a session and th
 
 ### Context HUD
 
-Optional context-stats footer appended to Claude's responses inside Claude Code itself: `📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`. Enabled by default; toggle from the dashboard topbar.
+Optional context-stats footer appended to Claude's responses inside Claude Code itself: `📊 Context: 28% (290k/1M) | 1k in + 800 out | Cache 99% hit | $0.15`. Off by default (since 3.0.0); turn it on with `ccxray hud on` or from the dashboard topbar, check it with `ccxray hud status`, and turn it off with `ccxray hud off`.
 
-**Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Turn the HUD off when running sub-agent-heavy sessions. State persists in `~/.ccxray/settings.json`.
+**Why a toggle?** When the parent agent calls sub-agents (Agent / Task tool), the appended block can truncate the sub-agent's response before it's returned to the parent — causing silent data loss in multi-agent workflows. Keep the HUD off for sub-agent-heavy or automated sessions. State persists in `~/.ccxray/settings.json` (shared by the CLI and the dashboard toggle); an explicit `"statusLine": true` there stays enabled after upgrading. A running hub or server picks up a CLI change when it restarts; the dashboard toggle applies immediately.
 
 ### Star to Keep Forever
 

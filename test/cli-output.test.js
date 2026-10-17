@@ -46,7 +46,7 @@ it('setup help documents every flag and succeeds; invalid arguments exit 2', () 
   assert.equal(cli(['setup', '--invalid']).status, 2);
 });
 it('utility commands do not print the Context HUD startup line', () => {
-  for (const args of [['setup', '--check', '--no-probe'], ['status'], ['open']]) {
+  for (const args of [['setup', '--check', '--no-probe'], ['status'], ['open'], ['usage'], ['--version']]) {
     const r = cli(args);
     assert.notEqual(r.status, null, r.stderr);
     assert.doesNotMatch(r.stderr, /bootstrap-failed|Cannot find module/);
@@ -54,8 +54,8 @@ it('utility commands do not print the Context HUD startup line', () => {
   }
 });
 
-it('keeps the HUD startup log for normal settings loading', () => {
-  const r = cli(["require('./server/settings').readSettings()"], '-e');
+it('loading settings is silent and the HUD defaults to off (#692)', () => {
+  const r = cli(["console.log(JSON.stringify(require('./server/settings').readSettings().statusLine))"], '-e');
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /Context HUD: enabled \(settings.json\)/);
+  assert.equal(r.stdout, 'false\n');
 });
