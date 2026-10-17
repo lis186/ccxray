@@ -70,6 +70,13 @@ const INDEX_FIELDS = [
   // imported thinking-token count, and imported turn wall-clock duration.
   // Appended last to keep the field order add-only (test/entry.test.js G1).
   'effort','thinkingTokens','turnDurationMs',
+  // Git branch checked out in the turn's cwd when the turn was recorded (live
+  // proxy: read from `.git/HEAD` via server/git-branch.js; import: the
+  // transcript's own branch field). Null — and therefore omitted — outside a git
+  // checkout, for an unknown cwd, or on a detached HEAD. Never back-filled from
+  // the current checkout by rebuild-index: the branch at record time is gone.
+  // Appended last to keep the field order add-only (test/entry.test.js G1).
+  'branch',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than
@@ -82,7 +89,7 @@ const INDEX_FIELDS = [
 const OMIT_IF_NULL = new Set([
   'agentId','userEmail','team','agentType','localDate','tz','duplicateToolCalls','parentSessionId',
   'subagentId','subagentToolUseId',
-  'effort','thinkingTokens','turnDurationMs',
+  'effort','thinkingTokens','turnDurationMs','branch',
 ]);
 
 const DEPLOYMENT_ENV_FIELDS = [

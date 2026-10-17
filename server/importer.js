@@ -328,6 +328,14 @@ function attachImported1mFacts(entries, costStateModels, settingsModels) {
   }
 }
 
+// A transcript's branch field, normalized to the index contract: a branch name,
+// or null for a detached HEAD ("HEAD"), outside git (""), or a missing value.
+function importedBranch(v) {
+  if (typeof v !== 'string') return null;
+  const b = v.trim();
+  return b && b !== 'HEAD' ? b : null;
+}
+
 async function parseSessionFile(filePath, projectSlug, opts = {}) {
   // S-1: a subagent transcript's filename is `agent-<agentId>`, not the parent
   // session id — derive sessionId from the transcript line's own `sessionId`
@@ -488,6 +496,10 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
       // S-1: a subagent transcript's own cwd (rare) wins, then the parent
       // session's cwd, before falling back to the slug-derived approximation.
       cwd: obj.cwd || cwd || opts.parentCwd || slugToProject(projectSlug),
+      // Claude Code stamps each transcript line with the branch checked out when
+      // it was written ("HEAD" when detached, "" outside git) — the record-time
+      // fact, unlike the importing host's current checkout.
+      branch: importedBranch(obj.gitBranch),
       contextUsageKnown: helpers.hasContextUsage(usage),
       usage: {
         input_tokens: usage.input_tokens || 0,
@@ -528,6 +540,7 @@ async function parseCodexSessionFile(filePath) {
   const entries = [];
   let sessionId = path.basename(filePath, '.jsonl');
   let cwd = null;
+  let branch = null;
   let lastModel = 'unknown';
   // #500: accumulate tool calls/results between token_count boundaries.
   // Results carry to the NEXT entry (matching proxy convention: turnToolResults
@@ -556,6 +569,7 @@ async function parseCodexSessionFile(filePath) {
     if (!payload) continue;
 
     if (payload.cwd && !cwd) cwd = payload.cwd;
+    if (obj.type === 'session_meta' && payload.git && typeof payload.git === 'object') branch = importedBranch(payload.git.branch);
     if (payload.model) lastModel = payload.model;
     if (obj.type === 'session_meta' && typeof payload.session_id === 'string') sessionId = payload.session_id;
     if (obj.type === 'turn_context' && typeof payload.effort === 'string' && payload.effort) lastEffort = payload.effort;
@@ -644,6 +658,7 @@ async function parseCodexSessionFile(filePath) {
       ...(pendingCompacted ? { compacted: true } : {}),
       provider: 'openai',
       cwd,
+      branch,
       contextUsageKnown: true,
       usage,
     });

@@ -465,6 +465,13 @@ function _upsert(sid, entry) {
     const { stripInjectedTags, getSessionTitle } = require('./store');
     s.title = getSessionTitle(sid) || (entry.title ? stripInjectedTags(entry.title) : null) || null;
   }
+  // Same for the first prompt: the store records it in detectSession, BEFORE
+  // the session's first entry creates this row, so setFirstPrompt then finds
+  // no row and the row would otherwise keep firstPrompt null for good.
+  if (!s.firstPrompt) {
+    const fp = require('./store').getSessionFirstPrompt(sid);
+    if (fp) s.firstPrompt = fp;
+  }
   const recvAt = entry.receivedAt || 0;
   // #426: min-fold for duration — finite-positive guard because rebuild-index
   // emits receivedAt:null for orphan lines (Number(null)===0 would poison to 1970).
@@ -472,6 +479,15 @@ function _upsert(sid, entry) {
   if (recvAt > (s.lastReceivedAt || 0)) s.lastReceivedAt = recvAt;
   if (entry.provider) s.provider = entry.provider;
   if (entry.agent) s.agent = entry.agent;
+  // Session branch = the branch of the most recently RECEIVED turn that carried
+  // one (a session can switch branches; per-turn `branch` on the index line is
+  // the exact record). Keyed on receivedAt, not feed order, so a rebuild or an
+  // importer replay that feeds an older turn last cannot roll it back. A turn
+  // without a branch never clears it.
+  if (entry.branch && (!s.branch || recvAt >= (s._branchRecvAt || 0))) {
+    s.branch = entry.branch;
+    s._branchRecvAt = recvAt;
+  }
   // #367: derived fields for cold session cards (context bar, cache stats, cache breaks)
   // #381 INVARIANT: gate on isMainTurnByAgentKey (shared L1 classification) — see
   // docs/decisions/0005-agent-key-unreliable-shared-contract.md

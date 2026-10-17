@@ -21,6 +21,7 @@ Produced by `server/sse-broadcast.js` `summarizeEntry()`. The full request/respo
 | `method` | string | HTTP method (always `POST` for /v1/messages) |
 | `url` | string | Request path |
 | `cwd` | string \| null | Working dir extracted from system prompt |
+| `branch` | string \| undefined | Git branch checked out in `cwd` when the turn was recorded (live proxy: read from `.git/HEAD`, following a linked worktree's `gitdir:` file, cached per cwd for 5 s; import: the transcript's own branch field). Omitted outside a git checkout, for an unknown cwd, and on a detached HEAD. Never back-filled by `rebuild-index` |
 | `isSubagent` | boolean | Provider-aware classification that this turn belongs to a subagent execution lane |
 
 ### Request shape
@@ -71,7 +72,18 @@ const toolFail = entry.toolFail ?? false;
 const duplicateToolCalls = entry.duplicateToolCalls ?? null;
 const hasCredential = entry.hasCredential ?? false;
 const parentSessionId = entry.parentSessionId ?? null;
+const branch = entry.branch ?? null;
 ```
+
+## Session index row (`sessions.json`, `GET /_api/sessions`)
+
+Derived by `server/session-index.js` from the entries above; rebuildable from `index.ndjson`. Selected fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cwd` | string \| null | Last non-empty entry `cwd` |
+| `branch` | string \| undefined | Branch of the **latest-received** turn that recorded one (a session may switch branches; per-turn `branch` is the exact record). A turn without a branch never clears it; an older turn fed later (rebuild/import order) never rolls it back. Absent when no turn recorded a branch |
+| `firstPrompt` | string \| null | First 200 chars of the first user prompt, with injected tags (`<system-reminder>`, …) stripped. Taken from the first user text block that is non-empty after stripping |
 
 ## Where fields are computed
 
@@ -87,3 +99,4 @@ const parentSessionId = entry.parentSessionId ?? null;
 | `hasCredential` | `server/helpers.js` `entryHasCredential()` |
 | `toolSources` | `server/helpers.js` `buildToolSources()` |
 | `isSubagent`, `cwd`, `parentSessionId` | provider parsers plus `server/store.js` session attribution |
+| `branch` | `server/git-branch.js` `resolveGitBranch()` via the provider parsers; `server/importer.js` for imported turns |
