@@ -104,6 +104,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
+| `server/statusline-setup.js` | `ccxray setup-statusline`: argument parsing, install/remove planning (`--dry-run`), and backed-up atomic rewrites of Claude's `settings.json` |
 | `server/claude-args.js` | Detects Claude background-launch flags that bypass proxying |
 | `server/config.js` | PORT, ANTHROPIC_HOST/PORT/PROTOCOL, LOGS_DIR, MAX_ENTRIES, model context windows |
 | `server/pricing.js` | LiteLLM price fetch, 24h cache, fallback rates, cost calculation |
@@ -145,7 +146,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/delta-helpers.js` | Shared helpers for delta log storage (live server + restore) |
 | `server/plan-detector.js` | Auto-detect Claude Code subscription plan from response usage data |
 | `server/plans.js` | Known plan definitions (token thresholds, names) |
-| `server/paths.js` | Path resolution helpers (`CCXRAY_HOME`, log dirs) |
+| `server/paths.js` | Path resolution helpers (`CCXRAY_HOME`, log dirs); `ensureCcxrayHome`/`tightenCcxrayHome` keep the home 0700 (#690) |
 | `server/retention.js` | Bounds retention settings and computes log-pruning cutoffs |
 | `server/status.js` | Builds process and local-home export status reports |
 | `server/ratelimit-log.js` | Rate-limit event logging |

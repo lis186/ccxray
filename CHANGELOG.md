@@ -8,6 +8,10 @@
 
 ### Fixed
 
+- **`ccxray setup-statusline` is safe to run (#687).** `--help`/`-h` print usage and write nothing, and unknown flags exit non-zero without writing (both previously installed). New `--dry-run` shows the planned change, and `--remove` uninstalls without a TTY. The written entry now includes `"type": "command"`, and a legacy entry without it is repaired. Claude's `settings.json` is backed up to `settings.json.bak-<timestamp>` before each rewrite and then replaced atomically (tmp + rename; a symlinked file is written through). `ccxray import --help` prints usage instead of "unknown import mode".
+
+- **ccxray home is owner-only (#690).** Every path that creates the ccxray home or a directory inside it uses mode 0700; some, such as `ccxray import --once`, created it as 0755. On startup, an existing group/world-accessible home owned by the current user is tightened to 0700 with a one-line notice; a home that is already tight or owned by another user is left alone.
+
 - **Transcript import requires opt-in (#675).** Fresh installs and upgrades no longer scan historical transcripts automatically, whether running a hub, standalone server, or Herdr repair. Set `CCXRAY_IMPORT_DISABLE=0` to enable automatic import; explicit `ccxray import --once` remains available unless import is explicitly disabled with `1`. Previously only the shell block written by setup disabled startup import.
 
 - **Export requires account domains (#632).** A configured bucket with unset or empty `CCXRAY_EXPORT_DOMAINS` now blocks uploads without advancing the cursor. Startup warns once with setup guidance, and status reports `domains-required`.
