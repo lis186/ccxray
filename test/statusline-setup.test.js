@@ -175,6 +175,23 @@ describe('setup-statusline CLI (#687)', () => {
     }
   });
 
+  it('launchPromptState refuses non-object or unparseable settings before the TTY prompt asks', () => {
+    for (const raw of ['null', '[]', '42', '"abc"', 'true', '{ not json']) {
+      const sc = makeHome(raw);
+      assert.deepEqual(setup.launchPromptState(sc.claudeHome), { status: 'refused', settingsPath: sc.settingsPath }, raw);
+    }
+  });
+
+  it('launchPromptState classifies missing, foreign, installed and non-string commands', () => {
+    assert.equal(setup.launchPromptState(makeHome().claudeHome).status, 'none');
+    assert.equal(setup.launchPromptState(makeHome({}).claudeHome).status, 'none');
+    assert.equal(setup.launchPromptState(makeHome({ statusLine: { command: 'my-line' } }).claudeHome).status, 'existing');
+    assert.equal(setup.launchPromptState(makeHome({ statusLine: { command: 'node /x/claude-adapter.js' } }).claudeHome).status, 'installed');
+    // Valid JSON with a non-string command is not "not valid JSON".
+    assert.equal(setup.launchPromptState(makeHome({ statusLine: { command: 42 } }).claudeHome).status, 'none');
+    assert.equal(setup.launchPromptState(makeHome({ statusLine: 'abc' }).claudeHome).status, 'none');
+  });
+
   it('--dry-run on an unparseable settings.json says it would refuse', () => {
     const sc = makeHome('{ not json');
     const before = snapshot(sc.claudeHome);

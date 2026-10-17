@@ -26,16 +26,26 @@ function resolveLogsDir(env = process.env) {
 // that creates it or a directory inside it passes HOME_DIR_MODE.
 const HOME_DIR_MODE = 0o700;
 
-// Files only ccxray writes into its home. A directory holding one of them is
-// ccxray's own even when CCXRAY_HOME points somewhere custom.
-const OWNED_HOME_FILES = ['local-secret', 'hub.json', 'hub.log'];
+// Names only ccxray writes into its home (generic names such as hub.json are
+// left out: another tool may create them in a project dir). A directory holding
+// one of them is ccxray's own even when CCXRAY_HOME points somewhere custom.
+const OWNED_HOME_FILES = ['local-secret', 'hub.sock'];
 
 function isDefaultCcxrayHome(home) {
   return path.resolve(home) === path.resolve(os.homedir(), '.ccxray');
 }
 
+// A marker counts only as a regular file or socket owned by the current user
+// (lstat: a symlink never counts). The home is loose, so others may write into
+// it; a planted name must not turn the warning into a chmod.
 function holdsCcxrayFiles(home) {
-  return OWNED_HOME_FILES.some(f => { try { fs.lstatSync(path.join(home, f)); return true; } catch { return false; } });
+  const uid = process.getuid();
+  return OWNED_HOME_FILES.some(f => {
+    try {
+      const st = fs.lstatSync(path.join(home, f));
+      return (st.isFile() || st.isSocket()) && st.uid === uid;
+    } catch { return false; }
+  });
 }
 
 // Tighten an existing group/world-accessible home to 0700. Only the default

@@ -139,12 +139,29 @@ describe('ccxray home permissions (#690)', { skip: !POSIX && 'POSIX mode bits on
     assert.match(logs[0], /warning: CCXRAY_HOME .* \(0775\)/);
   });
 
-  it('tightenCcxrayHome recognises hub.json as a ccxray-owned home', () => {
+  it('tightenCcxrayHome recognises an owned local-secret file as a ccxray-owned home', () => {
     const home = tmpdir();
-    fs.writeFileSync(path.join(home, 'hub.json'), '{}');
+    fs.writeFileSync(path.join(home, 'local-secret'), 'x', { mode: 0o600 });
     fs.chmodSync(home, 0o755);
     assert.equal(paths.tightenCcxrayHome(home), 'tightened');
     assert.equal(mode(home), 0o700);
+  });
+
+  it('tightenCcxrayHome ignores generic or spoofed markers (hub.json, hub.log, symlink, directory)', () => {
+    const cases = [
+      h => fs.writeFileSync(path.join(h, 'hub.json'), '{}'),
+      h => fs.writeFileSync(path.join(h, 'hub.log'), ''),
+      h => fs.symlinkSync(path.join(h, 'nowhere'), path.join(h, 'local-secret')),
+      h => fs.mkdirSync(path.join(h, 'local-secret')),
+      h => fs.mkdirSync(path.join(h, 'hub.sock')),
+    ];
+    for (const plant of cases) {
+      const home = tmpdir();
+      plant(home);
+      fs.chmodSync(home, 0o755);
+      assert.equal(paths.tightenCcxrayHome(home), 'warned', plant.toString());
+      assert.equal(mode(home), 0o755);
+    }
   });
 
   it('tightenCcxrayHome preserves setgid/sticky bits', () => {

@@ -45,6 +45,18 @@ function currentStatusLine(settings) {
   return { statusLine, command };
 }
 
+// What the TTY launch prompt should do, from the same reader setup uses:
+// 'refused' (unparseable or non-object file — never ask, never rewrite),
+// 'installed', 'existing' (a foreign statusline to delegate), or 'none'.
+function launchPromptState(claudeHome) {
+  const settingsPath = settingsPathFor(claudeHome);
+  const { settings, unparseable } = readSettingsFile(settingsPath);
+  if (unparseable) return { status: 'refused', settingsPath };
+  const { command } = currentStatusLine(settings);
+  if (command.includes(ADAPTER_MARKER)) return { status: 'installed', settingsPath };
+  return { status: command ? 'existing' : 'none', settingsPath };
+}
+
 function isStatuslineInstalled(claudeHome) {
   try {
     const raw = fs.readFileSync(settingsPathFor(claudeHome), 'utf8');
@@ -134,15 +146,15 @@ function planUninstall(claudeHome) {
   const { exists, settings, unparseable } = readSettingsFile(settingsPath);
   // Same guard as planInstall: a non-object or unparseable file is never rewritten.
   if (!exists || unparseable) return { status: 'not_installed', settingsPath };
-  const { command: cmd } = currentStatusLine(settings);
+  const { statusLine: current, command: cmd } = currentStatusLine(settings);
   if (!cmd.includes(ADAPTER_MARKER)) return { status: 'not_installed', settingsPath };
 
   const next = { ...settings };
-  const delegate = settings.statusLine._ccxrayDelegate;
+  const delegate = current._ccxrayDelegate;
   // ponytail: legacy fallback for old --delegate "cmd" format installs
   const legacyMatch = cmd.match(/--delegate "(.+)"/);
   if (delegate || legacyMatch) {
-    const statusLine = { ...settings.statusLine, command: delegate || legacyMatch[1] };
+    const statusLine = { ...current, command: delegate || legacyMatch[1] };
     delete statusLine._ccxrayDelegate;
     next.statusLine = statusLine;
   } else {
@@ -231,6 +243,7 @@ module.exports = {
   USAGE,
   adapterCommand,
   isStatuslineInstalled,
+  launchPromptState,
   installStatusline,
   uninstallStatusline,
   planInstall,
