@@ -674,6 +674,19 @@ function hasClients() {
 }
 
 function applyClientRoute(req) {
+  // Native Herdr launches do not register as hub clients. Carry their pane
+  // stamp in the URL, stripped here for both HTTP and WebSocket dispatch.
+  // This is attribution metadata, not authentication (same as the Claude header).
+  const pane = /^\/_ccxray\/agent\/([^/?]+)(\/[^?]*)?(\?.*)?$/.exec(String(req?.url || ''));
+  if (pane) {
+    let agentId;
+    try { agentId = decodeURIComponent(pane[1]); } catch { return false; }
+    const identity = clientIdentityFromMessage({ agentId });
+    if (!identity.agentId?.startsWith('herdr:')) return false;
+    req.ccxrayAgentId = identity.agentId;
+    req.url = `${pane[2] || '/'}${pane[3] || ''}`;
+    return true;
+  }
   const match = /^\/_ccxray\/client\/([1-9]\d*)(\/[^?]*)?(\?.*)?$/.exec(String(req?.url || ''));
   if (!match) return false;
   req.ccxrayClientPid = Number(match[1]);
@@ -682,6 +695,7 @@ function applyClientRoute(req) {
 }
 
 function lookupClientIdentityForRequest(req) {
+  if (req?.ccxrayAgentId) return clientIdentityFromMessage({ agentId: req.ccxrayAgentId });
   if (Number.isSafeInteger(req?.ccxrayClientPid)) {
     const client = clients.get(req.ccxrayClientPid);
     return client ? clientIdentityFromMessage(client) : null;

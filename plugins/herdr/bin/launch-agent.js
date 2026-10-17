@@ -129,7 +129,7 @@ function main() {
       port: examplePort,
       launchToken,
       envVars: proxyEnvVars(args.agent, examplePort, { paneId: launchToken, skipAuth: true }),
-      codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort, { skipAuth: true }) : null,
+      codexArgs: args.agent === 'codex' ? codexAgentArgs(examplePort, { paneId: launchToken, skipAuth: true }) : null,
       sourcePaneId: ctx.sourcePaneId || null,
       workspaceId: ctx.workspaceId || null,
     }, null, 2));
@@ -188,7 +188,7 @@ function main() {
   //    we retry with back-off until the shell is idle or we exhaust attempts.
   const agentName = `ccxray-${args.agent}-${paneId.replace(/[^a-z0-9]/gi, '').toLowerCase()}`;
   const agentArgs = ['agent', 'start', agentName, '--kind', HERDR_KIND[args.agent], '--pane', paneId, '--timeout', '45000'];
-  if (args.agent === 'codex') agentArgs.push('--', ...codexAgentArgs(port, { env }));
+  if (args.agent === 'codex') agentArgs.push('--', ...codexAgentArgs(port, { paneId: launchToken, env }));
 
   let started, startedData, detected;
   for (let attempt = 0; attempt < 8; attempt += 1) {

@@ -781,3 +781,23 @@ function httpPostRaw(port, path, body) {
     req.end(body);
   });
 }
+
+
+describe('Herdr pane identity routes (#672)', () => {
+  it('strips the internal prefix and resolves pane identity for HTTP or WS requests', () => {
+    for (const suffix of ['/v1/responses?stream=true', '/v1/messages']) {
+      const req = { url: `/_ccxray/agent/${encodeURIComponent('herdr:w1:launch-one')}${suffix}` };
+      assert.equal(hub.applyClientRoute(req), true);
+      assert.equal(req.url, suffix);
+      assert.deepEqual(hub.lookupClientIdentityForRequest(req), { agentId: 'herdr:w1:launch-one' });
+    }
+  });
+
+  it('rejects malformed, oversized, and non-Herdr identity routes', () => {
+    for (const id of ['%ZZ', 'other', encodeURIComponent(`herdr:${'x'.repeat(512)}`)]) {
+      const req = { url: `/_ccxray/agent/${id}/v1/responses` };
+      assert.equal(hub.applyClientRoute(req), false);
+      assert.equal(hub.lookupClientIdentityForRequest(req), null);
+    }
+  });
+});

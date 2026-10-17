@@ -185,11 +185,13 @@ function requestDeploymentFields(startTime, provider, req, parsedBody) {
   return {
     ...deploymentFields(startTime, {
       identity: identity || {},
-      // INVARIANT: gated on the HUB identity, never on the merged one. The header
-      // supplies agentId only, so letting it flip this flag silently dropped
-      // userEmail/team/agentType — the #505 export attribution — from every
-      // header-identified turn. deploymentFields already falls back per field.
-      useEnvIdentity: !routedClient && !hubIdentity && (!hub.hasClients() || envMatchesAgent),
+      // INVARIANT (#505): gate on hubIdentity, never the header-merged identity.
+      // A registered identity owns all deployment fields, even without a PID route.
+      // Only the pane URL route (#672), which supplies agentId alone, may retain
+      // per-field env fallback. Registered PID routes remain excluded.
+      useEnvIdentity: !routedClient
+        && (!hubIdentity || Boolean(req.ccxrayAgentId))
+        && (!hub.hasClients() || envMatchesAgent),
     }),
     ...launchAccountFields(headers),
   };

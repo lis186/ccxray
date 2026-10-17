@@ -145,7 +145,11 @@ function requestDeploymentFields(startTime, req, parsedBody) {
   const envMatchesAgent = process.env.CCXRAY_AGENT_TYPE === agent;
   return deploymentFields(startTime, {
     identity: identity || {},
-    useEnvIdentity: !routedClient && !identity && (!hub.hasClients() || envMatchesAgent),
+    // INVARIANT (#505): registered identity suppresses process env, even without
+    // a PID route. Only the agentId-only pane URL route (#672) gets that fallback.
+    useEnvIdentity: !routedClient
+      && (!identity || Boolean(req.ccxrayAgentId))
+      && (!hub.hasClients() || envMatchesAgent),
   });
 }
 
