@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Known limitations
+
+- **Codex ChatGPT-login bootstrap (#671).** Documented as unsupported in 2.5.0-rc.3 for Codex 0.159.2 and 0.163.0. Workspace discovery uses a path ccxray forwards incorrectly; correcting that path alone cannot preserve the local HTTP proxy under Codex's HTTPS workspace-origin validation and destination replacement. See [findings](docs/codex-workspace-routing.md). API-key sessions remain supported.
+
 ### Fixed
 
 - **Export requires account domains (#632).** A configured bucket with unset or empty `CCXRAY_EXPORT_DOMAINS` now blocks uploads without advancing the cursor. Startup warns once with setup guidance, and status reports `domains-required`.
