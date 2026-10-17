@@ -69,7 +69,7 @@ function pidPath(paneId, env = process.env) {
 
 function claimPid(paneId, env = process.env) {
   const file = pidPath(paneId, env);
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const fd = fs.openSync(file, 'wx', 0o600);

@@ -342,7 +342,7 @@ function executeItem(item, state) {
     const { spawn } = require('child_process');
     const fs = require('fs');
     const logDir = require('./lib/ccxray').pluginStateDir();
-    fs.mkdirSync(logDir, { recursive: true });
+    fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
     const logFile = require('path').join(logDir, 'launch.log');
     const fd = fs.openSync(logFile, 'a');
     const child = spawn(process.execPath, [path.join(pluginRoot(), 'bin', 'launch-agent.js'), provider.id], {

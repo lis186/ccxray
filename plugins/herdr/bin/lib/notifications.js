@@ -25,7 +25,7 @@ function readState(file) {
 
 function writeState(file, state) {
   if (!file) return;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
   fs.renameSync(temp, file);

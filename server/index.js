@@ -161,7 +161,7 @@ const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
 const store = require('./store');
-const { resolveCcxrayHome } = require('./paths');
+const { resolveCcxrayHome, tightenCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
 const { fetchPricing } = require('./pricing');
 const { restoreFromLogs, pruneLogs } = require('./restore');
@@ -181,6 +181,9 @@ const { WIRE_PARSERS, getParser } = require('./wire-parsers');
 const { renderHubClientStatus } = require('./hub-client-status');
 const { renderProcessStatus, inspectHomeStatus } = require('./status');
 const plainLaunch = require('./plain-launch');
+// #690: a home created loose by an older version (or by hand) holds secrets;
+// tighten it to 0700 once per invocation, before any subcommand writes into it.
+tightenCcxrayHome(resolveCcxrayHome(), { log: msg => console.error(`\x1b[90m${msg}\x1b[0m`) });
 // wire-parsers/openai low-level helpers no longer needed in index.js after Phase 2 migration
 
 // ── CLI: parse flags and detect provider launchers ──
@@ -846,7 +849,7 @@ function promptClaudeStatusline(args = []) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
         } else {
-          fs.mkdirSync(ccxrayHome, { recursive: true });
+          fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
           fs.writeFileSync(declinedPath, '');
         }
         resolve();
@@ -856,7 +859,7 @@ function promptClaudeStatusline(args = []) {
 
   if (!fs.existsSync(hintShownPath)) {
     _origLog('\x1b[90m💡 Claude rate limits: ccxray setup-statusline\x1b[0m');
-    fs.mkdirSync(ccxrayHome, { recursive: true });
+    fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(hintShownPath, '');
   }
 }

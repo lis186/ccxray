@@ -85,7 +85,7 @@ function refreshCodex(sessionsDir, outDir, alias = 'default') {
   const snap = buildSnap(rl, alias);
   if (!snap) return;
 
-  fs.mkdirSync(outDir, { recursive: true });
+  fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
 
   const outPath = path.join(outDir, `${snap.id}.json`);
   const tmpPath = outPath + '.tmp';
@@ -131,7 +131,7 @@ async function refreshCodexAsync(sessionsDir, outDir, alias = 'default') {
   if (!rl) return;
   const snap = buildSnap(rl, alias);
   if (!snap) return;
-  await fsp.mkdir(outDir, { recursive: true });
+  await fsp.mkdir(outDir, { recursive: true, mode: 0o700 });
   const outPath = path.join(outDir, `${snap.id}.json`);
   const tmpPath = outPath + '.tmp';
   await fsp.writeFile(tmpPath, JSON.stringify(snap, null, 2));

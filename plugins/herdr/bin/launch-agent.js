@@ -19,7 +19,7 @@ const {
 function log(msg) {
   try {
     const dir = pluginStateDir();
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.appendFileSync(path.join(dir, 'launch.log'), `${new Date().toISOString()} [${process.pid}] ${msg}\n`);
   } catch {}
 }

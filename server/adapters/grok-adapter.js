@@ -200,7 +200,7 @@ function buildGrokSnapFromBilling(body, opts = {}) {
 function writeGrokSnap(outDir, snap) {
   if (!snap || !outDir) return;
   try {
-    fs.mkdirSync(outDir, { recursive: true });
+    fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
     const outPath = path.join(outDir, `${snap.id}.json`);
     const tmpPath = outPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(snap, null, 2));
