@@ -36,6 +36,7 @@ let _interval = null;
 let _uploader = null; // test seam
 let _cachedToken = null; // { accessToken, expiresAt }
 let _runningFlush = null; // in-flight flush promise for graceful shutdown
+let _domainsWarned = false;
 let _configDirsWarned = false; // the tombstone message is about static config — say it once per process
 // The default remains dynamic so direct callers and tests that replace console.log
 // still observe the refusal. server/index.js swaps this for _origLog on local
@@ -61,7 +62,7 @@ function _setConfigDirsWarningLogger(fn) {
 
 // Test seam: the warn-once flag is process-global, so a suite asserting the message
 // must clear it or only the first test in the file can see it.
-function _resetExportWarnings() { _configDirsWarned = false; }
+function _resetExportWarnings() { _configDirsWarned = false; _domainsWarned = false; }
 
 // The refusal as a VALUE, for callers that are not the exporter. A detached hub's
 // stdout goes to hub.log (hub.js `stdio: ['ignore', fd, fd]`) and the foreground
@@ -94,6 +95,9 @@ function exportStatus(env = process.env) {
   }
   if (!env.CCXRAY_EXPORT_GCS_BUCKET) {
     return { exportState: 'unconfigured', exportReason: null };
+  }
+  if (normalizedEnvList(env.CCXRAY_EXPORT_DOMAINS).length === 0) {
+    return { exportState: 'refused', exportReason: 'domains-required' };
   }
   return { exportState: 'enabled', exportReason: null };
 }
@@ -822,11 +826,8 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
   // don't poison first-turn/compaction detection.
   dedupedEntries.sort((a, b) => (a.receivedAt || Infinity) - (b.receivedAt || Infinity));
 
-  // #612: an empty CCXRAY_EXPORT_DOMAINS means the domain filter is NOT configured,
-  // which is not the same as "no domain is allowed". Treating it as the latter would
-  // silently exclude every turn while the cursor kept advancing, so an unconfigured
-  // exporter keeps its pre-#612 behaviour exactly. The filter — and the identity
-  // hard-fail that belongs to it — activate together with the list.
+  // Upload callers require domains before aggregation; direct aggregate callers
+  // may still use an empty list to inspect unfiltered local summaries.
   const filterActive = allowedDomains.size > 0;
   const excludedTurns = { noAccount: 0, domainMismatch: 0 };
   const candidateEmails = new Set();
@@ -1714,6 +1715,10 @@ function pruneDecision(outcome, home = resolveCcxrayHome(), now = Date.now()) {
 function startExportSync({ startupOutcome } = {}) {
   // INVARIANT: must share shouldBlockExport with flushExport, or this announces an
   // exporter that never flushes.
+  if (exportStatus().exportReason === 'domains-required' && !_domainsWarned) {
+    _credentialLogger('\x1b[33m   [ccxray export] export blocked: CCXRAY_EXPORT_DOMAINS is unset or empty. Set allowed account domains with ccxray setup --domains example.com; nothing will be uploaded until configured.\x1b[0m');
+    _domainsWarned = true;
+  }
   if (shouldBlockExport()) return;
 
   const bucket = process.env.CCXRAY_EXPORT_GCS_BUCKET;
@@ -1721,12 +1726,7 @@ function startExportSync({ startupOutcome } = {}) {
   // Until 2026-08-21 the exporter started with NO positive signal — only failures
   // printed — so a user who mis-set the env could not tell. issues/08-rollout-plan.md
   // told people to look for "exporter active", which did not exist. It does now.
-  // #612: say which of the two modes is actually in force. Announcing a domain
-  // filter that is not configured would be the same over-claim the filter exists
-  // to prevent — and the unconfigured wording is still literally true.
-  const scope = exportDomains().size > 0
-    ? 'exporting configured account-domain sessions'
-    : 'exporting ALL sessions this machine observes (live + imported)';
+  const scope = 'exporting configured account-domain sessions';
   if (startupOutcome === 'removed') {
     _credentialLogger('\x1b[90m   [ccxray export] removed — this home was un-enrolled by `ccxray setup --remove`; not exporting until setup is re-run\x1b[0m');
   } else if (startupOutcome === 'enrollment-invalid') {

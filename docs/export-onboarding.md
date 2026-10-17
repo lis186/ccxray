@@ -86,11 +86,14 @@ are excluded. Codex and Grok launches do not attach a Claude account snapshot,
 so their turns are excluded whenever this filter is set. This is the current
 intended behavior.
 
-When `CCXRAY_EXPORT_DOMAINS` is unset or empty, the filter is inactive and all
-indexed turns are eligible, including imported transcript entries. Imported
-transcripts have no account snapshot, so the configured-domain filter excludes
-them. `CCXRAY_USER_EMAIL`, when set, supplies summary identity but does not
-create or replace the per-turn account snapshot used by the filter. Without it,
+When `CCXRAY_EXPORT_DOMAINS` is unset, empty, or contains only whitespace and
+commas, export is blocked: no uploads occur and the cursor stays unchanged.
+Startup prints one warning; `ccxray status` reports `refused (domains-required)`.
+Set allowed domains with `ccxray setup --domains example.com`, reload your shell,
+and restart the exporter. Existing enrolled homes retain the usual bounded
+prune hold for unsent data. Imported transcripts have no account snapshot, so
+the configured-domain filter excludes them. `CCXRAY_USER_EMAIL`, when set, supplies
+summary identity but does not create or replace the per-turn account snapshot used by the filter. Without it,
 a configured-domain export needs exactly one observed allowed-domain email;
 otherwise a nonempty index fails without advancing its cursor. An empty or missing
 index is `nothing-new`, with no upload or prune hold. A domain filter cannot

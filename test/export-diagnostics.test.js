@@ -335,6 +335,7 @@ describe('export diagnostics reader', () => {
       process.env.CCXRAY_EXPORT_DISABLE = undefined;
       delete process.env.CCXRAY_EXPORT_DISABLE;
       process.env.CCXRAY_EXPORT_GCS_BUCKET = 'synthetic-bucket';
+      process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
       exportSync._setUploader(async () => {});
 
       if (item.kind === 'pin-invalid') {

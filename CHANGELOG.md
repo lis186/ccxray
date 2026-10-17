@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Export requires account domains (#632).** A configured bucket with unset or empty `CCXRAY_EXPORT_DOMAINS` now blocks uploads without advancing the cursor. Startup warns once with setup guidance, and status reports `domains-required`.
+
 ## 2.5.0-rc.3
 
 204 non-merge commits since 2.3.1. Three headlines: ccxray adds optional GCS summary export and one-step setup; session, cost, and context data become more accurate and diagnosable; and launcher reliability, status reporting, and agentflow usage reports improve.

@@ -243,6 +243,7 @@ test('an injected uploader seam still lets flushExport run (aggregation tests de
       // #612: without a resolvable identity flushExport hard-fails BEFORE first-run cursor
       // init; this test is about the seam letting the flush run, so give it one.
       process.env.CCXRAY_USER_EMAIL = 'seam@example.com';
+      process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
       delete process.env.CCXRAY_EXPORT_DISABLE;
       let uploads = 0;
       _setUploader(async () => { uploads++; });
@@ -282,6 +283,15 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       await awaitPendingFlush();
       assert.deepEqual(lines, [], 'test suppression without an uploader seam must keep startup silent');
 
+      _setUploader(async () => {});
+      startExportSync();
+      startExportSync();
+      await flushExport();
+      assert.equal(lines.length, 1);
+      assert.match(lines[0], /CCXRAY_EXPORT_DOMAINS.*ccxray setup --domains/);
+      assert.equal(fs.existsSync(home), false);
+      lines.length = 0;
+      process.env.CCXRAY_EXPORT_DOMAINS = 'example.com';
       _setUploader(async () => {});        // seam allows the startup message without real GCS
       startExportSync({ startupOutcome: 'lock-lost' });
       stopExportSync();
@@ -299,10 +309,7 @@ test('startExportSync announces itself, and stays silent when suppressed', async
       const hit = lines.filter(l => l.includes('exporter active'));
       assert.strictEqual(hit.length, 1, 'exporter startup must emit exactly one positive signal');
       assert.match(hit[0], /announce-bucket/, 'the message must name the bucket it will write to');
-      // withEnv deletes CCXRAY_EXPORT_DOMAINS, so this asserts the UNCONFIGURED
-      // wording. #612 makes the scope clause conditional; announcing a filter that
-      // is not in force would be an over-claim.
-      assert.match(hit[0], /exporting ALL sessions this machine observes \(live \+ imported\)/);
+      assert.match(hit[0], /exporting configured account-domain sessions/);
     } finally {
       console.log = origLog;
       stopExportSync();
