@@ -115,6 +115,38 @@ describe('ratesFromLiteLLMEntry', () => {
     assert.ok(Math.abs(r.cache_create_1h - 6) < 1e-9, '1h rate derives 2x input');
   });
 
+  it('honours an explicit zero for every cache rate (#715)', () => {
+    const r = ratesFromLiteLLMEntry({
+      ...PER_TOKEN,
+      cache_creation_input_token_cost: 0,
+      cache_read_input_token_cost: 0,
+      cache_creation_input_token_cost_above_1hr: 0,
+    });
+    assert.equal(r.cache_create, 0);
+    assert.equal(r.cache_read, 0);
+    assert.equal(r.cache_create_1h, 0);
+  });
+
+  it('honours each explicit zero cache rate independently (#715)', () => {
+    assert.equal(ratesFromLiteLLMEntry({ ...PER_TOKEN, cache_read_input_token_cost: 0 }).cache_read, 0);
+    assert.equal(ratesFromLiteLLMEntry({ ...PER_TOKEN, cache_creation_input_token_cost: 0 }).cache_create, 0);
+    assert.equal(ratesFromLiteLLMEntry({ ...PER_TOKEN, cache_creation_input_token_cost_above_1hr: 0 }).cache_create_1h, 0);
+  });
+
+  it('falls back for null or undefined cache rates (#715)', () => {
+    for (const absent of [undefined, null]) {
+      const r = ratesFromLiteLLMEntry({
+        ...PER_TOKEN,
+        cache_creation_input_token_cost: absent,
+        cache_read_input_token_cost: absent,
+        cache_creation_input_token_cost_above_1hr: absent,
+      });
+      assert.ok(Math.abs(r.cache_create - 3) < 1e-9);
+      assert.ok(Math.abs(r.cache_read - 3) < 1e-9);
+      assert.ok(Math.abs(r.cache_create_1h - 6) < 1e-9);
+    }
+  });
+
   it('prices a missing output rate at zero, not NaN', () => {
     const r = ratesFromLiteLLMEntry({ input_cost_per_token: 1e-6 });
     assert.equal(r.output, 0);
