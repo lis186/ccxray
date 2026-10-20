@@ -12,7 +12,7 @@
 // through this module silently disagrees with the dashboard about the same row.
 // Add new readers here, do not re-inline the rule.
 const { calculateCost } = require('./pricing');
-const { normalizeStoredUsage, describeAgentModule } = require('./providers');
+const { markImportedUsage, normalizeUsageForProvider, describeAgentModule } = require('./providers');
 
 function isStaleCost(cost) {
   return !!cost && typeof cost === 'object'
@@ -25,12 +25,17 @@ function isStaleCost(cost) {
 function applyReadTimePricing(meta) {
   if (!meta.usage) return meta;
   // R-2/INV-2 guard + provider normalization live in providers.normalizeStoredUsage.
-  const before = meta.usage;
-  meta.usage = normalizeStoredUsage(meta);
+  // The imported-openai marker is NOT a normalization event (origin/main parity):
+  // `before` is the post-marker usage, so only a real provider subtraction reprices.
+  const before = markImportedUsage(meta);
+  meta.usage = normalizeUsageForProvider(meta.provider, before);
   const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
   if (meta.model && (usageNormalized || isStaleCost(meta.cost))) {
     // #568: price by the upstream that served the turn (grok → xai), not the wire family.
-    meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
+    const next = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
+    // A stored fallback estimate is only replaced by a real price; a model the
+    // table cannot price at all must not downgrade it to unknown (null).
+    if (usageNormalized || !(isStaleCost(meta.cost) && next && next.cost == null && meta.cost.cost != null)) meta.cost = next;
   }
   return meta;
 }

@@ -471,12 +471,17 @@ function normalizeUsageForProvider(provider, usage) {
 // before writing), and legacy imports predate the _ccxrayUsageNormalized
 // marker, so treat ANY imported openai line as normalized rather than
 // subtracting twice on reload. Returns the usage to bill; never mutates input.
-function normalizeStoredUsage(meta) {
-  let usage = meta.usage;
-  if (!usage) return usage;
-  if (meta.imported && meta.provider === 'openai' && !usage._ccxrayUsageNormalized) {
-    usage = { ...usage, _ccxrayUsageNormalized: true };
+function markImportedUsage(meta) {
+  const usage = meta.usage;
+  if (usage && meta.imported && meta.provider === 'openai' && !usage._ccxrayUsageNormalized) {
+    return { ...usage, _ccxrayUsageNormalized: true };
   }
+  return usage;
+}
+
+function normalizeStoredUsage(meta) {
+  const usage = markImportedUsage(meta);
+  if (!usage) return usage;
   return normalizeUsageForProvider(meta.provider, usage);
 }
 
@@ -584,8 +589,9 @@ module.exports = {
   listAgentProviderIds,
   listRawSessionBuckets,
   matchOpenAIWireClient,
-  normalizeUsageForProvider,
   normalizeStoredUsage,
+  markImportedUsage,
+  normalizeUsageForProvider,
   resolveOpenAIWireAgent,
   supportedProviderList,
 };

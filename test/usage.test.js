@@ -877,6 +877,9 @@ describe('usage --json shape contract', () => {
 // a bare `$2` beside a --json payload that carried the fold — the same number,
 // one honest and one not.
 describe('usage human output marks aggregate cost confidence', () => {
+  // #723: stored fallback/unknown rows are repriced at read time, so a fixture
+  // meant to STAY fallback/unknown needs a model the rate table cannot price.
+  const unpriceable = cost => (cost.confidence === 'fallback' || cost.confidence === 'unknown') ? { model: 'unlisted-model-x' } : {};
   const homeWith = entries => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-usage-human-'));
     fs.mkdirSync(path.join(home, 'logs'), { recursive: true });
@@ -895,7 +898,7 @@ describe('usage human output marks aggregate cost confidence', () => {
     ['clean', [{ cost: 1, confidence: 'exact' }, { cost: 1, confidence: 'prefix' }], '$2.00', { count: 2, fallbackCount: 0, fallbackCost: 0, unknownCount: 0 }],
   ]) {
     it(`renders the ${name} header and exposes its complete JSON fold`, () => {
-      const home = homeWith(costs.map((cost, i) => entry({ id: `header-${i}`, responseId: `msg_header_${i}`, receivedAt: 1717236000000 + i * 1000, cost })));
+      const home = homeWith(costs.map((cost, i) => entry({ id: `header-${i}`, responseId: `msg_header_${i}`, receivedAt: 1717236000000 + i * 1000, cost, ...unpriceable(cost) })));
       try {
         const header = humanCli(home, '--last', '9999d').split('\n').find(l => l.includes('ccxray usage'));
         // The total is the last ` · ` field; #688 appends the unpriced-model reason.
@@ -909,7 +912,7 @@ describe('usage human output marks aggregate cost confidence', () => {
   it('marks an all-fallback session with ~ and an unpriced one with +', () => {
     const fallbackHome = homeWith([1, 2, 3, 4].map(i => entry({
       id: `fb-${i}`, responseId: `msg_fb_${i}`, sessionId: 's-fallback',
-      receivedAt: 1717236000000 + i * 1000, cost: { cost: 0.5, confidence: 'fallback' },
+      receivedAt: 1717236000000 + i * 1000, cost: { cost: 0.5, confidence: 'fallback' }, model: 'unlisted-model-x',
     })));
     assert.match(humanCli(fallbackHome, '--last', '9999d'), /~\$/,
       'an all-fallback costliest-session row must carry the fabrication marker');
@@ -918,7 +921,7 @@ describe('usage human output marks aggregate cost confidence', () => {
     // bound, which `+` is the only thing on the row that says.
     const unknownHome = homeWith([
       entry({ id: 'uk-1', responseId: 'msg_uk_1', sessionId: 's-unknown', receivedAt: 1717236001000, cost: { cost: 0.5, confidence: 'exact' } }),
-      entry({ id: 'uk-2', responseId: 'msg_uk_2', sessionId: 's-unknown', receivedAt: 1717236002000, cost: { cost: null, confidence: 'unknown' } }),
+      entry({ id: 'uk-2', responseId: 'msg_uk_2', sessionId: 's-unknown', receivedAt: 1717236002000, cost: { cost: null, confidence: 'unknown' }, model: 'unlisted-model-x' }),
     ]);
     assert.match(humanCli(unknownHome, '--last', '9999d'), /\$0\.50\+/,
       'an excluded turn must show the total is a lower bound');
