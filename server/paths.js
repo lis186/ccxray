@@ -59,4 +59,8 @@ function ensureCcxrayHome(env = process.env, opts = {}) {
   return home;
 }
 
-module.exports = { resolveCcxrayHome, resolveLogsDir, HOME_DIR_MODE, tightenCcxrayHome, ensureCcxrayHome };
+// A path without trailing slashes, `/` kept; null and undefined pass through.
+// Shared by every cwd-to-root comparison (agentflow report, usage query).
+function stripSlash(p) { return p && p.length > 1 ? p.replace(/\/+$/u, '') : p; }
+
+module.exports = { resolveCcxrayHome, resolveLogsDir, HOME_DIR_MODE, tightenCcxrayHome, ensureCcxrayHome, stripSlash };
