@@ -135,6 +135,16 @@ describe('anthropic.detectSession', () => {
     assert.equal(anthropic.detectSession({ socket }, {}, { metadata: { session_id: 'edge-anth-sid-1' } }).isNewSession, false);
   });
 
+  it('forwards the socket: a later request without a session id binds to the same socket\'s session', () => {
+    const socket = {};
+    const other = {};
+    const first = anthropic.detectSession({ socket }, {}, { metadata: { session_id: 'edge-anth-sid-3' } });
+    const same = anthropic.detectSession({ socket }, {}, {});
+    assert.equal(same.sessionId, first.sessionId);
+    const diff = anthropic.detectSession({ socket: other }, {}, {});
+    assert.notEqual(diff.sessionId, first.sessionId);
+  });
+
   it('tolerates a missing request object', () => {
     const out = anthropic.detectSession(undefined, {}, { metadata: { session_id: 'edge-anth-sid-2' } });
     assert.equal(out.sessionId, 'edge-anth-sid-2');
