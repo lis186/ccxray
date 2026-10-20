@@ -30,7 +30,10 @@ for (const group of mode === 'all' ? Object.keys(groups) : [mode]) {
   }
   if (!files.length) continue;
   const result = spawnSync(process.execPath, [
-    '--require', './test/helpers/home-guard.js', '--test',
+    '--require', './test/helpers/home-guard.js',
+    // Unit lane must not touch the network (#717); loopback and unix sockets stay allowed.
+    ...(group === 'unit' ? ['--require', './test/helpers/no-network.js'] : []),
+    '--test',
     ...(group === 'unit' ? [] : ['--test-concurrency=1']), ...files,
   ], { cwd: root, env: process.env, stdio: 'inherit' });
   if (result.error) console.error(result.error);

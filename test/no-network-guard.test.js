@@ -20,6 +20,7 @@ tryIt('normalized', () => new net.Socket().connect([{ port: 443, host: 'example.
 tryIt('loopback', () => new net.Socket().connect(80, '127.0.0.1'));
 tryIt('portOnly', () => new net.Socket().connect(80));
 tryIt('ipcPath', () => new net.Socket().connect('/tmp/x.sock'));
+tryIt('netConnectPath', () => net.connect('/tmp/x.sock').destroy());
 tryIt('ipcOptions', () => new net.Socket().connect({ path: '/tmp/x.sock' }));
 out.reached = calls.length;
 console.log(JSON.stringify(out));
@@ -30,7 +31,7 @@ test('Socket#connect: external hosts blocked, loopback and IPC allowed', () => {
   assert.strictEqual(r.status, 0, r.stderr);
   assert.deepStrictEqual(JSON.parse(r.stdout), {
     portHost: 'blocked', options: 'blocked', normalized: 'blocked',
-    loopback: 'allowed', portOnly: 'allowed', ipcPath: 'allowed', ipcOptions: 'allowed',
-    reached: 4,
+    loopback: 'allowed', portOnly: 'allowed', ipcPath: 'allowed', netConnectPath: 'allowed', ipcOptions: 'allowed',
+    reached: 5,
   });
 });

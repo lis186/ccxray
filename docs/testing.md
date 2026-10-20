@@ -19,7 +19,7 @@ Files requiring Puppeteer go in `browser`; other files with `e2e` in their name
 or `child_process` in their source go in `heavy`; the rest go in `unit`.
 This deliberately includes mocked and one-shot child-process tests in the serial
 group. If a new test spawns through a helper rather than importing child_process,
-name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard.
+name it `*.e2e.test.js` so it runs serially. All groups retain the HOME guard. The `unit` group also preloads `test/helpers/no-network.js` (non-loopback connections throw; loopback and unix sockets stay allowed), so a unit test that reaches the network fails instead of downloading anything (#717). A test that forks the hub must point `CCXRAY_PRICING_CACHE` at a seeded temp cache (see `test/hub.test.js`).
 Tests must not pass `process.env` to `getAgentLaunch('codex')`: OAuth-mode launches read the user's Codex `config.toml` (`$CODEX_HOME` or `$HOME/.codex`); pass a minimal env with a temp `CODEX_HOME`.
 `npm test` attempts every group even if an earlier group fails and returns a
 failure if any group fails. For a system Chrome install, use

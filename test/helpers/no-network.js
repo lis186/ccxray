@@ -19,6 +19,8 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '']);
 
 function hostOf(args) {
   const [a, b] = args;
+  // net.connect(path) / net.createConnection(path): a bare non-numeric string is an IPC path.
+  if (typeof a === 'string' && !/^[a-z][a-z0-9+.-]*:\/\//i.test(a) && !/^\d+$/.test(a)) return '';
   if (typeof a === 'string' || a instanceof URL) {
     try { return new URL(String(a)).hostname; } catch { return String(a); }
   }

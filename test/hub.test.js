@@ -11,6 +11,19 @@ const http = require('http');
 const TEST_HUB_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-hub-test-'));
 process.env.CCXRAY_HOME = TEST_HUB_DIR;
 
+// #717: the forked hub inherits this env. Seed a fresh synthetic price cache in the tmp dir so
+// fetchPricing() takes its cache-hit path (no LiteLLM download, no repo-root pricing-cache.json),
+// and preload the no-network guard (propagates to the hub via NODE_OPTIONS) so any outbound
+// attempt is recorded in GUARD_LOG instead of leaving the machine.
+const REPO_PRICING_CACHE = path.join(__dirname, '..', 'pricing-cache.json');
+const GUARD_LOG = path.join(TEST_HUB_DIR, 'network-guard.log');
+process.env.CCXRAY_PRICING_CACHE = path.join(TEST_HUB_DIR, 'pricing-cache.json');
+fs.writeFileSync(process.env.CCXRAY_PRICING_CACHE,
+  JSON.stringify({ fetchedAt: Date.now(), pricing: {}, context: {} }));
+process.env.CCXRAY_NETWORK_GUARD_LOG = GUARD_LOG;
+require('./helpers/no-network');
+const repoCacheExistedBefore = fs.existsSync(REPO_PRICING_CACHE);
+
 // Now require hub (picks up CCXRAY_HOME)
 const hub = require('../server/hub');
 
@@ -381,6 +394,16 @@ describe('hub fork and readiness', () => {
     assert.ok(lock.pid > 0);
     assert.ok(lock.version);
     hubPid = lock.pid; // update to actual hub pid for cleanup
+  });
+
+  it('hub startup is hermetic: no network attempt, no repo-root pricing-cache.json (#717)', async () => {
+    // Pricing loads right after listen(); give it a moment to (not) reach for LiteLLM.
+    await new Promise(r => setTimeout(r, 500));
+    const blocked = fs.existsSync(GUARD_LOG) ? fs.readFileSync(GUARD_LOG, 'utf8') : '';
+    assert.equal(blocked, '', `hub attempted outbound network:\n${blocked}`);
+    if (!repoCacheExistedBefore) {
+      assert.equal(fs.existsSync(REPO_PRICING_CACHE), false, 'repo-root pricing-cache.json was written');
+    }
   });
 });
 
