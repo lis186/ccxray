@@ -534,7 +534,7 @@ async function parseSessionFile(filePath, projectSlug, opts = {}) {
 
 function sameCodexUsage(a, b) {
   if (!a || !b) return false;
-  return ['input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens']
+  return ['input_tokens', 'cached_input_tokens', 'cache_write_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'total_tokens']
     .every(k => (a[k] || 0) === (b[k] || 0));
 }
 

@@ -1124,6 +1124,7 @@ function makeCodexUsageRecord(opts = {}) {
       usage: {
         input_tokens: opts.input ?? 17172,
         cached_input_tokens: opts.cachedInput ?? 4992,
+        ...(opts.cacheWrite !== undefined ? { cache_write_input_tokens: opts.cacheWrite } : {}),
         output_tokens: opts.output ?? 35,
         reasoning_output_tokens: opts.reasoningOutput ?? 28,
         total_tokens: opts.total ?? 17207,
@@ -1206,6 +1207,40 @@ describe('codex importer', () => {
       const entries = await parseCodexSessionFile(file);
       assert.deepStrictEqual(entries.map(e => e.responseId), ['resp_aaa', undefined, undefined, 'resp_ccc']);
       assert.ok(!('responseId' in entries[1]), 'an entry without an id passes through unchanged');
+    });
+
+    it('#508: a record differing only in cache_write or total tokens lends no id', async () => {
+      const file = path.join(codexDir, 'rollout-rid-fields.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-rid-fields' }),
+        makeCodexUsageRecord({ responseId: 'resp_cw', cacheWrite: 5 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexUsageRecord({ responseId: 'resp_tot', total: 99999 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:06.000Z' }),
+        // An explicit zero cache_write equals an absent one.
+        makeCodexUsageRecord({ responseId: 'resp_ok', cacheWrite: 0 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:07.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.deepStrictEqual(entries.map(e => e.responseId), [undefined, undefined, 'resp_ok']);
+    });
+
+    it('#508: a record consumed by a missing-usage or zero-usage token_count does not leak', async () => {
+      const file = path.join(codexDir, 'rollout-rid-consumed.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-rid-consumed' }),
+        makeCodexUsageRecord({ responseId: 'resp_lost1' }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:04.000Z', type: 'event_msg', payload: { type: 'token_count', info: null } }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexUsageRecord({ responseId: 'resp_lost2' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:06.000Z', input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:07.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.ok(entries.every(e => !('responseId' in e)), 'a consumed pending record must not reach a later event');
     });
 
     it('#508: a transcript without token_usage_record lines imports with no responseId', async () => {
