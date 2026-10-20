@@ -199,6 +199,7 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   // on usage normalized by the same shared helper (cached input is not billed twice).
   // Rows still unpriced stay { null, 'unknown' } — never $0.
   const storedConf = obj.cost && typeof obj.cost === 'object' ? obj.cost.confidence : null;
+  const storedFallback = storedConf === 'fallback' && costUSD != null ? { cost: costUSD, confidence: storedConf } : null;
   if (storedConf === 'fallback' || storedConf === 'unknown') costUSD = null;
   // H7: same provider key the live proxy path uses for grok (describeAgentModule
   // resolves the grok agent's upstream to 'xai' — see openai.js buildEntryFields).
@@ -209,8 +210,14 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
       || calculateCostSimple(usage, model, 'xai').confidence;
   } else {
     const result = calculateCostSimple(normalizeStoredUsage(obj), model, 'xai');
-    costUSD = result.cost;
-    costConfidence = result.confidence;
+    // A stored fallback is replaced only by a real price (same guard as reprice.js).
+    if (storedFallback && result.cost == null) {
+      costUSD = storedFallback.cost;
+      costConfidence = storedFallback.confidence;
+    } else {
+      costUSD = result.cost;
+      costConfidence = result.confidence;
+    }
   }
   const messageId = obj.id ? `grok::${obj.id}` : null;
   return {

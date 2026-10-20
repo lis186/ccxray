@@ -53,3 +53,29 @@ describe('#723 fallback estimate is kept when the table cannot price the model',
     assert.deepEqual(m.cost, { cost: 0.5, confidence: 'fallback' });
   });
 });
+
+describe('#723 openai fallback survives usage normalization when the model is unpriceable', () => {
+  const fb = { cost: 9, confidence: 'fallback' };
+  const mk = (over) => ({
+    provider: 'openai', agent: 'grok', model: 'review-unlisted',
+    usage: { input_tokens: 10, cache_read_input_tokens: 5 }, cost: { ...fb }, ...over,
+  });
+  it('unmarked legacy row keeps the fallback', () => {
+    assert.deepEqual(applyReadTimePricing(mk({})).cost, fb);
+  });
+  it('marked legacy row keeps the fallback', () => {
+    const usage = { input_tokens: 10, cache_read_input_tokens: 5, _ccxrayUsageNormalized: true };
+    assert.deepEqual(applyReadTimePricing(mk({ usage })).cost, fb);
+  });
+  it('unmarked imported row keeps the fallback', () => {
+    assert.deepEqual(applyReadTimePricing(mk({ imported: true })).cost, fb);
+  });
+  it('marked imported row keeps the fallback', () => {
+    const usage = { input_tokens: 10, cache_read_input_tokens: 5, _ccxrayUsageNormalized: true };
+    assert.deepEqual(applyReadTimePricing(mk({ imported: true, usage })).cost, fb);
+  });
+  it('repricedCost agrees on the unmarked legacy row', () => {
+    const { repricedCost } = require('../server/reprice');
+    assert.deepEqual(repricedCost(mk({})), fb);
+  });
+});

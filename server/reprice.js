@@ -35,7 +35,7 @@ function applyReadTimePricing(meta) {
     const next = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
     // A stored fallback estimate is only replaced by a real price; a model the
     // table cannot price at all must not downgrade it to unknown (null).
-    if (usageNormalized || !(isStaleCost(meta.cost) && next && next.cost == null && meta.cost.cost != null)) meta.cost = next;
+    if (!(isStaleCost(meta.cost) && next && next.cost == null && meta.cost.cost != null)) meta.cost = next;
   }
   return meta;
 }

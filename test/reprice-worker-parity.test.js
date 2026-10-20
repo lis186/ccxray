@@ -60,3 +60,27 @@ describe('#723 worker/shared-rule parity on cached usage', () => {
     assert.equal(JSON.stringify(r), snap);
   });
 });
+
+describe('#723 worker keeps a stored fallback when the table cannot price the model', () => {
+  beforeEach(() => rates.setRateTable(TABLE));
+  afterEach(() => rates.__resetRateTableForTests());
+  const usage = { input_tokens: 10, output_tokens: 5, _ccxrayUsageNormalized: true };
+
+  it('unlisted model + stored $9 fallback: worker equals repricedCost and keeps $9', () => {
+    const r = row({ model: 'review-unlisted', usage });
+    const shared = repricedCost(r);
+    const w = processGrokIndexEntry(r);
+    assert.equal(shared.cost, 9);
+    assert.equal(w.costUSD, 9);
+    assert.equal(w.costConfidence, 'fallback');
+    assert.equal(w.costConfidence, shared.confidence);
+  });
+  it('unlisted model + stored unknown (control): stays null/unknown', () => {
+    const r = row({ model: 'review-unlisted', usage, cost: { cost: null, confidence: 'unknown' } });
+    const shared = repricedCost(r);
+    const w = processGrokIndexEntry(r);
+    assert.equal(shared.cost, null);
+    assert.equal(w.costUSD, null);
+    assert.equal(w.costConfidence, 'unknown');
+  });
+});
