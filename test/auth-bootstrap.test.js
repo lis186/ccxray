@@ -307,8 +307,11 @@ describe('/_auth/bootstrap-token via HTTP', () => {
   const http = require('http');
   const { handleAuthRoutes } = require('../server/routes/auth');
   let server, port;
+  // Default-trust cases must not inherit an ambient CCXRAY_LOOPBACK_REQUIRE_AUTH.
+  const origRequireAuth = process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
 
   before(async () => {
+    delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
     server = http.createServer((req, res) => {
       if (!handleAuthRoutes(req, res)) {
         res.writeHead(404);
@@ -320,6 +323,8 @@ describe('/_auth/bootstrap-token via HTTP', () => {
   });
 
   after(async () => {
+    if (origRequireAuth === undefined) delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    else process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = origRequireAuth;
     await new Promise(r => server.close(r));
   });
 
@@ -356,11 +361,15 @@ describe('/_auth/bootstrap-token via HTTP', () => {
   });
 
   it('loopback POST without credential + REQUIRE_AUTH=1 → 401 (paranoid)', async () => {
+    const prev = process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
     process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
     try {
       const data = await postBootstrap({});
       assert.equal(data.status, 401);
-    } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
+    } finally {
+      if (prev === undefined) delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+      else process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = prev;
+    }
   });
 
   it('returns a token on loopback POST with a valid X-Ccxray-Auth', async () => {
