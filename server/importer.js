@@ -21,6 +21,7 @@ const CODEX_CONTEXT_WINDOW = 400000;
 // (via lookupRates) pricing.js's calculateCost, so an imported turn and a
 // live-proxied turn for the same model/provider always price identically.
 const { calculateCostSimple } = require('./default-rates');
+const { ensurePricingLoaded } = require('./pricing');
 
 function tsToId(timestamp) {
   const d = new Date(timestamp);
@@ -802,6 +803,8 @@ function pushImportedEntry(entry, ctx, opts = {}) {
 async function scanAndImport() {
   if (process.env.CCXRAY_IMPORT_DISABLE === '1') return { imported: 0, skipped: 0 };
 
+  // #723: price imported rows with the loaded price list, not just the built-in table.
+  await ensurePricingLoaded();
   const homes = discoverHomes();
   let imported = 0;
   let skipped = 0;
@@ -927,6 +930,7 @@ async function scanAndImportTranscript(target = {}) {
     throw new Error('transcript session identity conflict');
   }
 
+  await ensurePricingLoaded(); // #723
   const ctx = createDedupCtx();
   store.entries.forEach(e => seedDedupCtx(ctx, e));
   const metas = [];

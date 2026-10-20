@@ -184,6 +184,28 @@ async function fetchPricing() {
   });
 }
 
+// #723: importers run in processes (CLI import, child, fresh checkout) where
+// nothing awaited fetchPricing(). With no cache file, lookupRates only has the
+// built-in table and every model outside it is written as unknown. Wait — bounded
+// — for the price list before pricing imported rows. A present cache file (any
+// age: capability data does not expire, and lookupRates reads it itself) or an
+// already-loaded live table needs no wait; a failed or slow fetch leaves the
+// built-in table and the rows stay unknown (never a crash or a hang).
+const PRICING_WAIT_MS = 8000;
+let _pricingWait = null;
+function ensurePricingLoaded({ timeoutMs = PRICING_WAIT_MS } = {}) {
+  if (_pricingWait) return _pricingWait;
+  try {
+    const cached = JSON.parse(fs.readFileSync(PRICING_CACHE_PATH, 'utf8'));
+    if (cached && cached.pricing && typeof cached.pricing === 'object') return Promise.resolve();
+  } catch { /* missing/unreadable cache → load below */ }
+  let timer;
+  const bound = new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); });
+  _pricingWait = Promise.race([Promise.resolve().then(() => fetchPricing()).catch(() => {}), bound])
+    .finally(() => { clearTimeout(timer); _pricingWait = null; });
+  return _pricingWait;
+}
+
 /**
  * Look up pricing rates for a model. Returns { rates, confidence } where
  * confidence is 'exact', 'prefix', or null (not found).
@@ -288,6 +310,7 @@ pricingTable = buildPricingTable({});
 
 module.exports = {
   fetchPricing,
+  ensurePricingLoaded,
   getModelPricing,
   getModelContext,
   calculateCost,

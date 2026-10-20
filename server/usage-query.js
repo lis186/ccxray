@@ -9,6 +9,7 @@ const path = require('path');
 const readline = require('readline');
 const { resolveLogsDir, stripSlash } = require('./paths');
 const { mergeByResponseId } = require('./store');
+const { repricedCost } = require('./reprice');
 
 // The proxy copy of a turn is stamped at request time and the imported copy at
 // the transcript's timestamp; they differ by seconds. Reading this far past each
@@ -169,10 +170,12 @@ function aggregate(turns) {
     out.tokens.cacheRead += u.cache_read_input_tokens || 0;
     out.tokens.cacheWrite += u.cache_creation_input_tokens || 0;
     out.costFold.count++;
-    const c = e.cost && typeof e.cost === 'object' ? e.cost : null;
+    // #723: a stored unknown/fallback cost is repriced in memory (never on disk).
+    const cost = repricedCost(e);
+    const c = cost && typeof cost === 'object' ? cost : null;
     const amount = c && typeof c.cost === 'number' && Number.isFinite(c.cost)
       ? c.cost
-      : (typeof e.cost === 'number' && Number.isFinite(e.cost) ? e.cost : null);
+      : (typeof cost === 'number' && Number.isFinite(cost) ? cost : null);
     if (c && c.confidence === 'unknown') {
       out.costFold.unknownCount++;
     } else if (amount != null) {

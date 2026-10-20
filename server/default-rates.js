@@ -242,6 +242,19 @@ function _ensureRateTable() {
  */
 function setRateTable(table) {
   _rateTable = (table && typeof table === 'object') ? table : null;
+  _sortedKeysFor = null;
+}
+
+// The prefix scan sorts ~4,200 keys; readers that reprice many unknown rows
+// (#723) would otherwise re-sort per row. Memoized per table object.
+let _sortedKeysFor = null;
+let _sortedKeysCache = null;
+function _sortedKeys(table) {
+  if (_sortedKeysFor !== table) {
+    _sortedKeysCache = Object.keys(table).sort((a, b) => b.length - a.length);
+    _sortedKeysFor = table;
+  }
+  return _sortedKeysCache;
 }
 
 /**
@@ -267,11 +280,16 @@ function lookupRates(model, provider) {
   if (provider) {
     const key = model.startsWith(`${provider}/`) ? model : `${provider}/${model}`;
     if (table[key]) return { rates: table[key], confidence: 'exact' };
+    // #723: a wire id that already carries this provider's prefix ('openai/gpt-x')
+    // whose prefixed row is missing still names the bare model ('gpt-x').
+    if (model.startsWith(`${provider}/`)) {
+      const bare = model.slice(provider.length + 1);
+      if (bare && table[bare]) return { rates: table[bare], confidence: 'exact' };
+    }
   }
   if (table[model]) return { rates: table[model], confidence: 'exact' };
   if (!model.includes('/') && table[`xai/${model}`]) return { rates: table[`xai/${model}`], confidence: 'exact' };
-  const keys = Object.keys(table).sort((a, b) => b.length - a.length);
-  for (const key of keys) {
+  for (const key of _sortedKeys(table)) {
     const prefix = key.split('-202')[0];
     if (model.startsWith(key) || model.startsWith(prefix)) return { rates: table[key], confidence: 'prefix' };
   }
@@ -333,7 +351,7 @@ module.exports = {
   lookupRates,
   setRateTable,
   // Test-only: reset the lazily-loaded singleton without a require.cache dance.
-  __resetRateTableForTests() { _rateTable = null; },
+  __resetRateTableForTests() { _rateTable = null; _sortedKeysFor = null; },
   // Test-only (A-010 F1 regression): inspect the lazily-built table itself,
   // so a test can assert it deep-equals pricing.buildPricingTable()'s output
   // for the same cache content, not just that one lookup happens to agree.
