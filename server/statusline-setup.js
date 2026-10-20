@@ -26,14 +26,16 @@ function isPlainObject(v) {
 }
 
 // A settings.json that parses to anything but a plain object ([] , 42, "x",
-// null) is treated like one that does not parse: there is no object to carry
+// null) is refused like one that does not parse: there is no object to carry
 // the user's content over into, so rewriting it would drop that content.
+// `refusal` says which: 'invalid-json' or 'not-object' (null and [] are valid
+// JSON, so the message must not call them invalid).
 function readSettingsFile(settingsPath) {
   let raw;
   try { raw = fs.readFileSync(settingsPath, 'utf8'); } catch { return { exists: false, settings: {} }; }
   let parsed;
-  try { parsed = JSON.parse(raw); } catch { return { exists: true, settings: {}, unparseable: true }; }
-  if (!isPlainObject(parsed)) return { exists: true, settings: {}, unparseable: true };
+  try { parsed = JSON.parse(raw); } catch { return { exists: true, settings: {}, unparseable: true, refusal: 'invalid-json' }; }
+  if (!isPlainObject(parsed)) return { exists: true, settings: {}, unparseable: true, refusal: 'not-object' };
   return { exists: true, settings: parsed };
 }
 
@@ -50,8 +52,8 @@ function currentStatusLine(settings) {
 // 'installed', 'existing' (a foreign statusline to delegate), or 'none'.
 function launchPromptState(claudeHome) {
   const settingsPath = settingsPathFor(claudeHome);
-  const { settings, unparseable } = readSettingsFile(settingsPath);
-  if (unparseable) return { status: 'refused', settingsPath };
+  const { settings, unparseable, refusal } = readSettingsFile(settingsPath);
+  if (unparseable) return { status: 'refused', settingsPath, reason: refusal };
   const { command } = currentStatusLine(settings);
   if (command.includes(ADAPTER_MARKER)) return { status: 'installed', settingsPath };
   return { status: command ? 'existing' : 'none', settingsPath };
@@ -121,10 +123,10 @@ function writeSettingsFile(settingsPath, settings, { now = new Date() } = {}) {
 // Pure planning step shared by the real write and --dry-run.
 function planInstall(claudeHome) {
   const settingsPath = settingsPathFor(claudeHome);
-  const { exists, settings, unparseable } = readSettingsFile(settingsPath);
+  const { exists, settings, unparseable, refusal } = readSettingsFile(settingsPath);
   // A settings.json that does not parse holds content we cannot carry over;
   // rewriting it would silently replace the user's whole file.
-  if (unparseable) return { status: 'refused', settingsPath };
+  if (unparseable) return { status: 'refused', settingsPath, reason: refusal };
   const { statusLine: current, command: existing } = currentStatusLine(settings);
   if (existing.includes(ADAPTER_MARKER)) {
     // Legacy installs wrote no "type"; repair it in place.
@@ -169,14 +171,21 @@ function applyPlan(plan) {
   return { ...plan, backup };
 }
 
-function refusalMessage(settingsPath) {
-  return `Refusing to install: ${settingsPath} is not valid JSON — fix or move it, then rerun ccxray setup-statusline.`;
+// What is wrong with a refused settings.json, for every refusal line.
+function refusalProblem(settingsPath, reason) {
+  return reason === 'not-object'
+    ? `${settingsPath} must contain a JSON object`
+    : `${settingsPath} is not valid JSON`;
 }
 
-// status 'refused' (unparseable settings.json) writes nothing.
+function refusalMessage(settingsPath, reason) {
+  return `Refusing to install: ${refusalProblem(settingsPath, reason)} — fix or move it, then rerun ccxray setup-statusline.`;
+}
+
+// status 'refused' (unparseable or non-object settings.json) writes nothing.
 function installStatusline(claudeHome) {
-  const { status, delegated, backup, settingsPath } = applyPlan(planInstall(claudeHome));
-  return { status, settingsPath, delegated: delegated || null, backup: backup || null };
+  const { status, delegated, backup, settingsPath, reason } = applyPlan(planInstall(claudeHome));
+  return { status, settingsPath, delegated: delegated || null, backup: backup || null, ...(reason ? { reason } : {}) };
 }
 
 function uninstallStatusline(claudeHome) {
@@ -192,7 +201,8 @@ statusline is delegated to, not replaced, and restored on removal.
 Before each rewrite the original is copied, owner-only (0600), to
 settings.json.bak-<UTC timestamp> in the same directory; delete old
 backups there when you no longer need them. A settings.json that is not
-valid JSON is never rewritten: fix or move it first.
+valid JSON, or does not contain a JSON object, is never rewritten: fix or
+move it first.
 
 Options:
   --claude-home <dir>   Act on this Claude config dir only (default: every
@@ -227,7 +237,7 @@ function describePlan(plan, label) {
   const lines = [];
   if (plan.status === 'already') lines.push(`${label}: already configured — no change.`);
   else if (plan.status === 'not_installed') lines.push(`${label}: not installed — no change.`);
-  else if (plan.status === 'refused') lines.push(`${label}: would refuse — ${plan.settingsPath} is not valid JSON; fix or move it.`);
+  else if (plan.status === 'refused') lines.push(`${label}: would refuse — ${refusalProblem(plan.settingsPath, plan.reason)}; fix or move it.`);
   else {
     const verb = { installed: 'would install', updated: 'would add "type": "command" to', removed: 'would remove' }[plan.status];
     lines.push(`${label}: ${verb} the statusline in ${plan.settingsPath}`);

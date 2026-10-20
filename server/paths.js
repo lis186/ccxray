@@ -26,39 +26,31 @@ function resolveLogsDir(env = process.env) {
 // that creates it or a directory inside it passes HOME_DIR_MODE.
 const HOME_DIR_MODE = 0o700;
 
-// Names only ccxray writes into its home (generic names such as hub.json are
-// left out: another tool may create them in a project dir). A directory holding
-// one of them is ccxray's own even when CCXRAY_HOME points somewhere custom.
-const OWNED_HOME_FILES = ['local-secret', 'hub.sock'];
-
-function isDefaultCcxrayHome(home) {
-  return path.resolve(home) === path.resolve(os.homedir(), '.ccxray');
+function isDefaultCcxrayHome(home, homedir = os.homedir()) {
+  return path.resolve(home) === path.resolve(homedir, '.ccxray');
 }
 
-// A marker counts only as a regular file or socket owned by the current user
-// (lstat: a symlink never counts). The home is loose, so others may write into
-// it; a planted name must not turn the warning into a chmod.
-function holdsCcxrayFiles(home) {
-  const uid = process.getuid();
-  return OWNED_HOME_FILES.some(f => {
-    try {
-      const st = fs.lstatSync(path.join(home, f));
-      return (st.isFile() || st.isSocket()) && st.uid === uid;
-    } catch { return false; }
-  });
+// The user's $HOME or any directory above it. Never chmod'ed, whatever
+// CCXRAY_HOME says: locking $HOME to 0700 breaks every other user and service
+// that reads through it.
+function isHomedirOrAncestor(home, homedir = os.homedir()) {
+  const rel = path.relative(path.resolve(home), path.resolve(homedir));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 // Tighten an existing group/world-accessible home to 0700. Only the default
-// ~/.ccxray, or a custom CCXRAY_HOME that already holds ccxray-owned files, is
-// chmod'ed: a custom CCXRAY_HOME may be a shared project dir, a mount, or the
-// user's own $HOME, so it gets a one-line warning instead. Only the owner's
-// own directory is touched: a home owned by someone else (a shared or
-// root-provisioned CCXRAY_HOME) is left alone, as is one that is already tight
-// or missing. POSIX mode bits are meaningless on Windows, so it is a no-op
-// there. Returns 'tightened' | 'warned' | 'tight' | 'not-owned' | 'missing' |
-// 'skipped'. `isDefault` is injectable for tests (default: compares against
-// os.homedir()).
-function tightenCcxrayHome(home = resolveCcxrayHome(), { log = null, platform = process.platform, isDefault = isDefaultCcxrayHome } = {}) {
+// ~/.ccxray is chmod'ed. A custom CCXRAY_HOME may be a shared project dir, a
+// mount, or the user's own $HOME, and files inside it (even ccxray's own
+// local-secret or hub.sock, which ccxray writes into whatever home it is
+// given) prove only that ccxray used it, not that it owns it exclusively; so a
+// loose custom home gets a one-line warning on every invocation and keeps its
+// mode. $HOME and its ancestors are refused even if passed as the home. Only
+// the owner's own directory is touched: a home owned by someone else is left
+// alone, as is one that is already tight or missing. POSIX mode bits are
+// meaningless on Windows, so it is a no-op there. Returns 'tightened' |
+// 'warned' | 'tight' | 'not-owned' | 'missing' | 'skipped'. `homedir` is
+// injectable for tests (default: os.homedir()).
+function tightenCcxrayHome(home = resolveCcxrayHome(), { log = null, platform = process.platform, homedir = os.homedir() } = {}) {
   if (platform === 'win32' || typeof process.getuid !== 'function') return 'skipped';
   let st;
   try { st = fs.statSync(home); } catch { return 'missing'; }
@@ -66,7 +58,7 @@ function tightenCcxrayHome(home = resolveCcxrayHome(), { log = null, platform = 
   if ((st.mode & 0o077) === 0) return 'tight';
   if (st.uid !== process.getuid()) return 'not-owned';
   const fmt = m => `0${m.toString(8)}`;
-  if (!isDefault(home) && !holdsCcxrayFiles(home)) {
+  if (isHomedirOrAncestor(home, homedir) || !isDefaultCcxrayHome(home, homedir)) {
     if (log) log(`[ccxray] warning: CCXRAY_HOME ${home} is group/world-accessible (${fmt(st.mode & 0o7777)}); ccxray stores secrets and logs there — run chmod 700 on it if it is not shared`);
     return 'warned';
   }

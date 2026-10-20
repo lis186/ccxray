@@ -839,7 +839,7 @@ function promptClaudeStatusline(args = []) {
     // declined marker: once the file is fixed, a later launch still answers.
     const state = launchPromptState(claudeHome);
     if (state.status === 'refused') {
-      _origLog(`\x1b[33m${refusalMessage(state.settingsPath)}\x1b[0m`);
+      _origLog(`\x1b[33m${refusalMessage(state.settingsPath, state.reason)}\x1b[0m`);
       return;
     }
     const hasExisting = state.status === 'existing';
@@ -860,7 +860,7 @@ function promptClaudeStatusline(args = []) {
         if (a === 'y' || a === 'yes' || (a === '' && !hasExisting)) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
-          if (result.status === 'refused') _origLog(`\x1b[33m${refusalMessage(result.settingsPath)}\x1b[0m`);
+          if (result.status === 'refused') _origLog(`\x1b[33m${refusalMessage(result.settingsPath, result.reason)}\x1b[0m`);
         } else {
           fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
           fs.writeFileSync(declinedPath, '');
@@ -1149,7 +1149,7 @@ if (process.argv[2] === 'setup-statusline') {
       if (result.status === 'already') console.log(`\x1b[32m✓ ${label}: already configured.\x1b[0m`);
       if (result.status === 'refused') {
         refused++;
-        console.error(`\x1b[31m${statuslineSetup.refusalMessage(result.settingsPath)}\x1b[0m`);
+        console.error(`\x1b[31m${statuslineSetup.refusalMessage(result.settingsPath, result.reason)}\x1b[0m`);
       }
       if (result.status === 'installed' || result.status === 'updated') {
         changed++;

@@ -233,6 +233,26 @@ describe('#563 statusline consent prompt', () => {
     assert.equal(r.declined, false, 'refusal is not a decline');
   });
 
+  // #695: the launch prompt reads settings through launchPromptState, so a
+  // settings.json that is valid JSON but not an object is refused before
+  // readline opens. "n" is typed ahead: if the prompt asked, it would decline
+  // and write the marker; neither may happen.
+  for (const raw of ['null', '[]']) {
+    it(`refuses a non-object settings.json (${raw}) — no question, no decline marker, file untouched`, async () => {
+      const sc = makeScenario();
+      const settingsPath = path.join(sc.claudeHome, 'settings.json');
+      fs.writeFileSync(settingsPath, raw);
+      const r = await runLaunch(sc, { input: 'n\\n' });
+      assert.match(r.marker, /CLAUDE_RAN/, r.log);
+      assert.doesNotMatch(r.log, /Track Claude subscription limits|\[y\/N\]|\[Y\/n\]/, 'no consent question');
+      assert.match(r.log, /Refusing to install: .*settings\.json must contain a JSON object — fix or move it/);
+      assert.doesNotMatch(r.log, /not valid JSON/);
+      assert.equal(fs.readFileSync(settingsPath, 'utf8'), raw, 'file left byte-identical');
+      assert.deepEqual(fs.readdirSync(sc.claudeHome), ['settings.json'], 'no backup or tmp file');
+      assert.equal(r.declined, false, 'refusal is not a decline');
+    });
+  }
+
   it('labels the default Claude home from HOME/.claude.json during discovery', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-statusline-discovery-home-'));
     SCENARIO_DIRS.push(home);

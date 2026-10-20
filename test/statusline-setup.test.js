@@ -169,17 +169,31 @@ describe('setup-statusline CLI (#687)', () => {
       assert.equal(r.status, 1, `${raw}: ${r.stdout}${r.stderr}`);
       const lines = r.stderr.trim().split('\n');
       assert.equal(lines.length, 1, `${raw}: ${r.stderr}`);
-      assert.match(lines[0], /not valid JSON — fix or move it/);
+      assert.match(lines[0], /must contain a JSON object — fix or move it/);
+      assert.doesNotMatch(lines[0], /not valid JSON/, `${raw} is valid JSON`);
       assert.doesNotMatch(r.stderr, /TypeError|at .*\.js:\d+/, 'no stack trace');
       assert.deepEqual(snapshot(sc.claudeHome), before, `${raw}: no rewrite, backup or tmp file`);
     }
   });
 
+  // The PTY regression that promptClaudeStatusline actually consults this
+  // before opening readline lives in test/statusline-prompt.test.js (#695).
   it('launchPromptState refuses non-object or unparseable settings before the TTY prompt asks', () => {
-    for (const raw of ['null', '[]', '42', '"abc"', 'true', '{ not json']) {
+    for (const raw of ['null', '[]', '42', '"abc"', 'true']) {
       const sc = makeHome(raw);
-      assert.deepEqual(setup.launchPromptState(sc.claudeHome), { status: 'refused', settingsPath: sc.settingsPath }, raw);
+      assert.deepEqual(setup.launchPromptState(sc.claudeHome), { status: 'refused', settingsPath: sc.settingsPath, reason: 'not-object' }, raw);
     }
+    const sc = makeHome('{ not json');
+    assert.deepEqual(setup.launchPromptState(sc.claudeHome), { status: 'refused', settingsPath: sc.settingsPath, reason: 'invalid-json' });
+  });
+
+  it('refusal wording distinguishes unparseable from non-object settings', () => {
+    assert.match(setup.refusalMessage('/x/settings.json', 'invalid-json'), /\/x\/settings\.json is not valid JSON — fix or move it/);
+    assert.match(setup.refusalMessage('/x/settings.json', 'not-object'), /\/x\/settings\.json must contain a JSON object — fix or move it/);
+    assert.match(setup.describePlan({ status: 'refused', settingsPath: '/x/settings.json', reason: 'not-object' }, 'claude'),
+      /would refuse — \/x\/settings\.json must contain a JSON object; fix or move it/);
+    assert.match(setup.describePlan({ status: 'refused', settingsPath: '/x/settings.json', reason: 'invalid-json' }, 'claude'),
+      /would refuse — \/x\/settings\.json is not valid JSON; fix or move it/);
   });
 
   it('launchPromptState classifies missing, foreign, installed and non-string commands', () => {
@@ -190,6 +204,16 @@ describe('setup-statusline CLI (#687)', () => {
     // Valid JSON with a non-string command is not "not valid JSON".
     assert.equal(setup.launchPromptState(makeHome({ statusLine: { command: 42 } }).claudeHome).status, 'none');
     assert.equal(setup.launchPromptState(makeHome({ statusLine: 'abc' }).claudeHome).status, 'none');
+  });
+
+  it('--dry-run on a non-object settings.json says it must contain a JSON object', () => {
+    const sc = makeHome('[]');
+    const before = snapshot(sc.claudeHome);
+    const r = run(sc.home, ['setup-statusline', '--dry-run']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /would refuse — .*must contain a JSON object; fix or move it/);
+    assert.doesNotMatch(r.stdout, /not valid JSON/);
+    assert.deepEqual(snapshot(sc.claudeHome), before);
   });
 
   it('--dry-run on an unparseable settings.json says it would refuse', () => {
