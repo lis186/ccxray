@@ -4,8 +4,9 @@
 // group/world-accessible home owned by the current user is tightened to 0700
 // at startup with one notice line (no-op when already tight or not owned).
 // Only the default ~/.ccxray is chmod'ed; a loose custom CCXRAY_HOME only
-// warns, even after ccxray has written its own files into it, and $HOME (or
-// an ancestor) is never chmod'ed.
+// warns, even after ccxray has written its own files into it, a symlinked
+// default home only warns, and $HOME (or an ancestor) is never chmod'ed,
+// including through a symlink.
 //
 // Isolation (docs/testing.md): throwaway HOME and CCXRAY_HOME per case;
 // CCXRAY_IMPORT_HOMES / CCXRAY_IMPORT_CODEX_HOMES pinned to empty dirs so the
@@ -196,6 +197,38 @@ describe('ccxray home permissions (#690)', { skip: !POSIX && 'POSIX mode bits on
     fs.chmodSync(home, 0o755);
     assert.equal(paths.tightenCcxrayHome(home, { homedir: base }), 'tightened');
     assert.equal(mode(home), 0o700);
+  });
+
+  it('tightenCcxrayHome never follows a default-home symlink to a shared directory', () => {
+    const base = tmpdir();
+    const shared = path.join(base, 'shared');
+    fs.mkdirSync(shared);
+    fs.chmodSync(shared, 0o755);
+    const home = path.join(base, '.ccxray');
+    fs.symlinkSync(shared, home);
+    const logs = [];
+    assert.equal(paths.tightenCcxrayHome(home, { log: m => logs.push(m), homedir: base }), 'warned');
+    assert.equal(mode(shared), 0o755);
+    assert.match(logs[0], /warning: CCXRAY_HOME .* \(0755\)/);
+  });
+
+  it('tightenCcxrayHome never chmods $HOME through `~/.ccxray -> .`', () => {
+    const base = tmpdir();
+    fs.chmodSync(base, 0o755);
+    const home = path.join(base, '.ccxray');
+    fs.symlinkSync('.', home);
+    assert.equal(paths.tightenCcxrayHome(home, { homedir: base }), 'warned');
+    assert.equal(mode(base), 0o755);
+  });
+
+  it('startup never chmods $HOME through a default-home symlink', () => {
+    const base = tmpdir();
+    fs.chmodSync(base, 0o755);
+    fs.symlinkSync('.', path.join(base, '.ccxray'));
+    const r = run(base, null, ['import', '--help']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(mode(base), 0o755);
+    assert.doesNotMatch(r.stderr, /tightened/);
   });
 
   it('tightenCcxrayHome preserves setgid/sticky bits', () => {
