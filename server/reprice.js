@@ -12,7 +12,7 @@
 // through this module silently disagrees with the dashboard about the same row.
 // Add new readers here, do not re-inline the rule.
 const { calculateCost } = require('./pricing');
-const { normalizeUsageForProvider, describeAgentModule } = require('./providers');
+const { normalizeStoredUsage, describeAgentModule } = require('./providers');
 
 function isStaleCost(cost) {
   return !!cost && typeof cost === 'object'
@@ -24,19 +24,9 @@ function isStaleCost(cost) {
 // usage was just normalized.
 function applyReadTimePricing(meta) {
   if (!meta.usage) return meta;
-  // R-2/INV-2 (A-010 §2): an imported openai-provider line's usage is already
-  // cache-exclusive — the Codex importer subtracts cached tokens manually
-  // before writing (importer.js parseCodexSessionFile). New imports carry
-  // _ccxrayUsageNormalized on the usage object itself; legacy imported lines
-  // predate that marker, so treat ANY imported openai line as normalized here
-  // rather than relying on the on-disk flag, or a second subtraction on
-  // reload halves the input tokens (the double-normalization bug this
-  // invariant exists to prevent).
-  if (meta.imported && meta.provider === 'openai' && !meta.usage._ccxrayUsageNormalized) {
-    meta.usage = { ...meta.usage, _ccxrayUsageNormalized: true };
-  }
+  // R-2/INV-2 guard + provider normalization live in providers.normalizeStoredUsage.
   const before = meta.usage;
-  meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
+  meta.usage = normalizeStoredUsage(meta);
   const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
   if (meta.model && (usageNormalized || isStaleCost(meta.cost))) {
     // #568: price by the upstream that served the turn (grok → xai), not the wire family.

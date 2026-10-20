@@ -15,6 +15,9 @@ const os = require('os');
 // Re-exported here so existing consumers (tests, processGrokIndexEntry) keep
 // their import path.
 const { calculateCostSimple } = require('./default-rates');
+// #723: providers.js loads only built-ins eagerly (auth is lazy), so the worker
+// can share the stored-row usage normalization without pulling the server graph.
+const { normalizeStoredUsage } = require('./providers');
 
 async function collectJsonlFiles(dir, results = []) {
   let items;
@@ -192,7 +195,8 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   // #723: a stored fallback/unknown cost was priced before the rate table knew
   // this model. The worker cannot require reprice.js (it would pull the server
   // graph, see the note above), so it applies the same rule with its own
-  // calculateCostSimple: treat the stored amount as absent and reprice below.
+  // calculateCostSimple: treat the stored amount as absent and reprice below,
+  // on usage normalized by the same shared helper (cached input is not billed twice).
   // Rows still unpriced stay { null, 'unknown' } — never $0.
   const storedConf = obj.cost && typeof obj.cost === 'object' ? obj.cost.confidence : null;
   if (storedConf === 'fallback' || storedConf === 'unknown') costUSD = null;
@@ -204,7 +208,7 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
     costConfidence = (obj.cost && typeof obj.cost === 'object' && obj.cost.confidence)
       || calculateCostSimple(usage, model, 'xai').confidence;
   } else {
-    const result = calculateCostSimple(usage, model, 'xai');
+    const result = calculateCostSimple(normalizeStoredUsage(obj), model, 'xai');
     costUSD = result.cost;
     costConfidence = result.confidence;
   }
