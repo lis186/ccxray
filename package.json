@@ -12,7 +12,8 @@
     "test": "node scripts/run-tests.js",
     "test:unit": "node scripts/run-tests.js unit",
     "test:heavy": "node scripts/run-tests.js heavy",
-    "test:browser": "node scripts/run-tests.js browser"
+    "test:browser": "node scripts/run-tests.js browser",
+    "test:mutation": "stryker run"
   },
   "keywords": [
     "claude",
@@ -54,6 +55,8 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "^10.0.0",
+    "@stryker-mutator/tap-runner": "^10.0.0",
     "agent-browser": "github:vercel-labs/agent-browser",
     "puppeteer": "^25.6.0"
   }
