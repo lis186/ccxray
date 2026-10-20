@@ -20,6 +20,9 @@ git-ignored — never commit them.
 
 ## Setup
 
+- Node prerequisite: Stryker 10 needs Node >=22, and the locked Babel 8
+  dependencies need `^22.18.0` or `>=24.11.0`. This is for the opt-in pilot
+  only; the package's own `engines` is unchanged.
 - Config: `stryker.config.mjs` (`mutate`, the test-file list, `concurrency: 2`).
 - Runner: `@stryker-mutator/tap-runner`. The suite is `node:test`, so the
   vitest/jest runners do not apply. The tap runner runs each test file as
