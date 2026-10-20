@@ -56,4 +56,15 @@ function repricedCost(meta) {
   }).cost;
 }
 
-module.exports = { isStaleCost, applyReadTimePricing, repricedCost };
+// Non-mutating bulk form: a new array whose stale-cost rows are shallow copies
+// carrying the repriced cost; every other row is passed through by reference.
+// Callers' rows are never modified.
+function repricedView(rows) {
+  return rows.map(row => {
+    if (!row || !isStaleCost(row.cost)) return row;
+    const cost = repricedCost(row);
+    return cost === row.cost ? row : { ...row, cost };
+  });
+}
+
+module.exports = { isStaleCost, applyReadTimePricing, repricedCost, repricedView };

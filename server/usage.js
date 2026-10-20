@@ -6,6 +6,7 @@ const path = require('path');
 const readline = require('readline');
 const { resolveCcxrayHome } = require('./paths');
 const { mergeByResponseId } = require('./store');
+const { repricedView } = require('./reprice');
 const { retentionDays, retentionCutoffDate, taipeiDate } = require('./retention');
 // INVARIANT(ADR 0017): the human aggregate below must render through the shared
 // fold-aware helper, not a bare `$` + number. format.js is isomorphic (no
@@ -141,7 +142,9 @@ async function run(argv) {
   // A live proxy observation and a later transcript import can describe the
   // same provider response. Resolve those copies before smart session aliases,
   // grouping, and totals so `costliest` and every aggregate see one turn.
-  entries = dedupeEntries(entries);
+  // #723: reprice stored unknown/fallback costs in memory (never on disk) before
+  // anything reads cost — `costliest` selection, folds, and totals below.
+  entries = dedupeEntries(repricedView(entries));
   // ponytail: #1 smart --session — resolved AFTER --last/--cwd so `latest` and
   // `costliest` pick the newest/priciest session *within* the filtered scope,
   // not globally (alias → UUID prefix → title substring).
@@ -267,7 +270,8 @@ function turnToolCounts(e) {
 }
 
 function analyze(entries, opts = {}) {
-  entries = dedupeEntries(entries);
+  // #723: same shared view as run(); copies stale rows, so callers' rows are untouched.
+  entries = dedupeEntries(repricedView(entries));
   const retention = retentionStatus(opts);
   const timestamps = [];
   const byProvider = {};

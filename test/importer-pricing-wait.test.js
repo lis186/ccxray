@@ -75,6 +75,7 @@ beforeEach(() => {
   fs.writeFileSync(INDEX, '');
   fs.rmSync(cachePath, { force: true });
   rates.__resetRateTableForTests();
+  pricing.__resetPricingLoadStateForTests();
   codexDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-pwait-codex-'));
   claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-pwait-claude-'));
   process.env.CCXRAY_IMPORT_CODEX_HOMES = codexDir;
@@ -87,6 +88,7 @@ afterEach(() => {
   restoreGet = null;
   delete process.env.CCXRAY_IMPORT_CODEX_HOMES;
   delete process.env.CCXRAY_IMPORT_HOMES;
+  fs.rmSync(cachePath, { recursive: true, force: true });
   fs.rmSync(codexDir, { recursive: true, force: true });
   fs.rmSync(claudeDir, { recursive: true, force: true });
 });
@@ -122,5 +124,98 @@ describe('#723 importer waits for the price list when the cache file is missing'
     fs.writeFileSync(cachePath, JSON.stringify({ fetchedAt: 0, pricing: {}, context: {} }));
     stubGet(() => assert.fail('must not fetch when a cache file exists'));
     await pricing.ensurePricingLoaded();
+  });
+});
+
+describe('#723 ensurePricingLoaded: shared fetch, loaded state, bounded wait', () => {
+  const never = () => {};
+  function countingGet(handler) {
+    const calls = { n: 0 };
+    stubGet((req, cb) => { handler(req, cb); });
+    const inner = https.get;
+    https.get = (...a) => { calls.n++; return inner(...a); };
+    return calls;
+  }
+
+  it('importer sees the NEW table after the lazy rate table was already warmed', async () => {
+    // Warm the lazy table first (no cache file → built-in only): the model is unknown.
+    assert.equal(rates.lookupRates(MODEL, 'openai').rates, null);
+    stubGet(respondWith({ [MODEL]: { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, max_input_tokens: 400000 } }));
+    await scanAndImport();
+    const row = importedRow();
+    assert.ok(row, 'row imported');
+    assert.equal(row.cost.confidence, 'exact');
+    assert.ok(Math.abs(row.cost.cost - 2) < 1e-9, `got ${row.cost.cost}`);
+  });
+
+  it('concurrent waits, including after their own timeouts, share ONE fetch', async () => {
+    const calls = countingGet(never); // never responds
+    const a = pricing.ensurePricingLoaded({ timeoutMs: 15 });
+    const b = pricing.ensurePricingLoaded({ timeoutMs: 30 });
+    await Promise.all([a, b]);
+    assert.equal(calls.n, 1, 'two concurrent waiters, one request');
+    await pricing.ensurePricingLoaded({ timeoutMs: 15 }); // first wait already timed out, fetch still pending
+    assert.equal(calls.n, 1, 'a timed-out wait does not start a second fetch');
+  });
+
+  it('a successful live load is not fetched again even when the cache write failed', async () => {
+    fs.mkdirSync(cachePath); // a directory: read fails, write fails (EISDIR)
+    const calls = countingGet(respondWith({ [MODEL]: { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6 } }));
+    const err = console.error;
+    console.error = () => {};
+    try {
+      await pricing.ensurePricingLoaded({ timeoutMs: 500 });
+      await new Promise(r => setTimeout(r, 20)); // let the failed write settle
+    } finally { console.error = err; }
+    assert.equal(calls.n, 1);
+    await pricing.ensurePricingLoaded({ timeoutMs: 500 });
+    assert.equal(calls.n, 1, 'loaded state remembered; no second fetch');
+  });
+
+  describe('timer cleanup (controlled timers, no real waits)', () => {
+    const DELAY = 4321;
+    let set, cleared, realSet, realClear;
+    beforeEach(() => {
+      set = []; cleared = [];
+      realSet = global.setTimeout; realClear = global.clearTimeout;
+      global.setTimeout = (fn, ms, ...r) => {
+        if (ms !== DELAY) return realSet(fn, ms, ...r);
+        const h = { fn, unref() { return this; } };
+        set.push(h);
+        return h;
+      };
+      global.clearTimeout = h => { if (h && set.includes(h)) cleared.push(h); else realClear(h); };
+    });
+    afterEach(() => { global.setTimeout = realSet; global.clearTimeout = realClear; });
+
+    it('clears the timer when the fetch finishes first', async () => {
+      stubGet(respondWith({}));
+      await pricing.ensurePricingLoaded({ timeoutMs: DELAY });
+      assert.equal(set.length, 1);
+      assert.deepEqual(cleared, set, 'timer cleared on early completion');
+    });
+
+    it('clears the timer when the bound wins, and leaves the fetch in flight for the next caller', async () => {
+      const calls = countingGet(never);
+      const p = pricing.ensurePricingLoaded({ timeoutMs: DELAY });
+      assert.equal(set.length, 1);
+      set[0].fn(); // fire the bound by hand
+      await p;
+      assert.deepEqual(cleared, set, 'timer cleared after the bound fired');
+      await Promise.resolve();
+      const p2 = pricing.ensurePricingLoaded({ timeoutMs: DELAY });
+      set[1].fn();
+      await p2;
+      await new Promise(r => realSet(r, 30)); // let the async cache read fall through to https.get
+      assert.equal(calls.n, 1, 'no second fetch while the first is still pending');
+    });
+  });
+
+  it('CCXRAY_PRICING_WAIT_MS: validated, defaults to 8000', () => {
+    const wait = (v) => { const e = {}; if (v !== undefined) e.CCXRAY_PRICING_WAIT_MS = v; return pricing.pricingWaitMs(e); };
+    assert.equal(wait(undefined), 8000);
+    assert.equal(wait('250'), 250);
+    for (const bad of ['0', '-5', 'abc', '1.5', '']) assert.equal(wait(bad), 8000, bad);
+    assert.equal(wait('99999999'), 120000, 'capped');
   });
 });

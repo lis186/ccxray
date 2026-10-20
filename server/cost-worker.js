@@ -189,6 +189,13 @@ function processGrokIndexEntry(obj, accountId = 'grok-default') {
   const model = obj.model || 'unknown';
   let costUSD = entryCostUSD(obj);
   let costConfidence;
+  // #723: a stored fallback/unknown cost was priced before the rate table knew
+  // this model. The worker cannot require reprice.js (it would pull the server
+  // graph, see the note above), so it applies the same rule with its own
+  // calculateCostSimple: treat the stored amount as absent and reprice below.
+  // Rows still unpriced stay { null, 'unknown' } — never $0.
+  const storedConf = obj.cost && typeof obj.cost === 'object' ? obj.cost.confidence : null;
+  if (storedConf === 'fallback' || storedConf === 'unknown') costUSD = null;
   // H7: same provider key the live proxy path uses for grok (describeAgentModule
   // resolves the grok agent's upstream to 'xai' — see openai.js buildEntryFields).
   if (costUSD != null) {

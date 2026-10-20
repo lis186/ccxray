@@ -83,7 +83,9 @@ describe('#723 shared repricing helper', () => {
   });
 });
 
-describe('#723 usage-query aggregate (ccxray usage / agentflow)', () => {
+// NOTE: usage-query.aggregate backs the agentflow report, NOT the `ccxray usage`
+// CLI (that is server/usage.js — see test/reprice-consumers.test.js).
+describe('#723 usage-query aggregate (agentflow report fold)', () => {
   it('prices an imported null-cost row once the table has the model', () => {
     const a = aggregate([row()]);
     assert.ok(Math.abs(a.cost - 2) < 1e-9);
@@ -114,6 +116,28 @@ describe('#723 session-index aggregates (sessions.json)', () => {
     assert.equal(s.totalCost, 0);
     assert.equal(s.unknownCount, 1);
   });
+
+  // Both orders of a priced/unknown duplicate of ONE responseId, then re-seeding
+  // (the restart path) and re-feeding the later copy: cost and count stay once.
+  for (const order of ['unknown-first', 'priced-first']) {
+    it(`priced + unknown duplicates of one responseId (${order}) count once, via seedDedupFromMetas + _upsert`, () => {
+      const sid = `sess-dup-${order}`, rid = `msg_dup_${order}`;
+      const pricedCopy = row({ sessionId: sid, responseId: rid, model: 'repr-model-missing', cost: { cost: 2, confidence: 'exact' } });
+      const unknownCopy = row({ sessionId: sid, responseId: rid, model: 'repr-model-missing', id: '2026-08-12T10-00-01-000' });
+      const metas = order === 'unknown-first' ? [unknownCopy, pricedCopy] : [pricedCopy, unknownCopy];
+      sessionIdx.rebuildFromIndexContent(metas.map(m => JSON.stringify(m)).join('\n') + '\n');
+      const check = () => {
+        const s = sessionIdx.get(sid);
+        assert.ok(Math.abs(s.totalCost - 2) < 1e-9, `totalCost ${s.totalCost}`);
+        assert.equal(s.unknownCount, 0, 'priced copy retracts / never adds the unknown slot');
+        assert.equal(s.count, 1);
+      };
+      check();
+      sessionIdx.seedDedupFromMetas(metas);
+      for (const m of metas) sessionIdx.updateFromEntry(m);
+      check();
+    });
+  }
 
   it('live updateFromEntry reprices without mutating the store entry', () => {
     const e = row({ sessionId: 'sess-live', responseId: 'msg_3' });

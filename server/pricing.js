@@ -115,6 +115,7 @@ async function fetchPricing() {
       // branch below must NOT call this, or it would overwrite whatever
       // lookupRates already read from the cache file with a cache-less table.
       setRateTable(pricingTable);
+      _pricingLoaded = true;
       if (cached.context) setContextTable(mirrorProviderPrefixedKeys(cached.context));
       console.log(`\x1b[90m   Pricing loaded from cache (${new Date(cached.fetchedAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' })})\x1b[0m`);
       logLagOverrideStatus(lastLagOverrideStatus);
@@ -158,6 +159,7 @@ async function fetchPricing() {
           // INVARIANT(#397/A-010, INV-1): see the cache-hit branch above — same
           // rule, only on success.
           setRateTable(pricingTable);
+          _pricingLoaded = true;
           setContextTable(mirroredCtx);
           console.log(`\x1b[90m   Pricing fetched: ${Object.keys(fetched).length} models, ${Object.keys(fetchedCtx).length} context windows\x1b[0m`);
           logLagOverrideStatus(lastLagOverrideStatus);
@@ -192,18 +194,32 @@ async function fetchPricing() {
 // already-loaded live table needs no wait; a failed or slow fetch leaves the
 // built-in table and the rows stay unknown (never a crash or a hang).
 const PRICING_WAIT_MS = 8000;
-let _pricingWait = null;
-function ensurePricingLoaded({ timeoutMs = PRICING_WAIT_MS } = {}) {
-  if (_pricingWait) return _pricingWait;
+const PRICING_WAIT_MAX_MS = 120000;
+// CCXRAY_PRICING_WAIT_MS: positive integer ms, capped; anything else → default.
+function pricingWaitMs(env = process.env) {
+  const raw = env.CCXRAY_PRICING_WAIT_MS;
+  if (raw == null || raw === '') return PRICING_WAIT_MS;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, PRICING_WAIT_MAX_MS) : PRICING_WAIT_MS;
+}
+// Two states live apart from each caller's bounded wait: the single in-flight
+// fetch (a timed-out wait must not start a second one) and "a live table was
+// loaded" (a successful load whose cache write failed must not be fetched again).
+let _pricingFetch = null;
+let _pricingLoaded = false;
+function ensurePricingLoaded({ timeoutMs = pricingWaitMs() } = {}) {
+  if (_pricingLoaded) return Promise.resolve();
   try {
     const cached = JSON.parse(fs.readFileSync(PRICING_CACHE_PATH, 'utf8'));
     if (cached && cached.pricing && typeof cached.pricing === 'object') return Promise.resolve();
   } catch { /* missing/unreadable cache → load below */ }
+  if (!_pricingFetch) {
+    _pricingFetch = Promise.resolve().then(() => fetchPricing()).catch(() => {})
+      .finally(() => { _pricingFetch = null; });
+  }
   let timer;
   const bound = new Promise(resolve => { timer = setTimeout(resolve, timeoutMs); });
-  _pricingWait = Promise.race([Promise.resolve().then(() => fetchPricing()).catch(() => {}), bound])
-    .finally(() => { clearTimeout(timer); _pricingWait = null; });
-  return _pricingWait;
+  return Promise.race([_pricingFetch, bound]).finally(() => clearTimeout(timer));
 }
 
 /**
@@ -311,6 +327,8 @@ pricingTable = buildPricingTable({});
 module.exports = {
   fetchPricing,
   ensurePricingLoaded,
+  pricingWaitMs,
+  __resetPricingLoadStateForTests() { _pricingFetch = null; _pricingLoaded = false; },
   getModelPricing,
   getModelContext,
   calculateCost,
