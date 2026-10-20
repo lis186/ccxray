@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- **Unit tests no longer touch the network (#717).** `test/hub.test.js` seeds a temp `CCXRAY_PRICING_CACHE` so the forked hub neither downloads LiteLLM nor writes a repo-root `pricing-cache.json`, and the unit lane preloads `test/helpers/no-network.js` (which now also allows `net.connect(<unix path>)`). In the unit lane (`CCXRAY_NETWORK_GUARD_ENFORCE=1`, set by `scripts/run-tests.js`) a blocked attempt is sticky: it fails the test file even when the code catches the error. The hub test waits for the hub's startup-complete log line before checking, and asserts an existing repo-root cache is unchanged.
+
 - **An explicit zero cache rate from LiteLLM is no longer priced at the input rate (#715).** `ratesFromLiteLLMEntry` treated a `0` for `cache_read_input_token_cost`, `cache_creation_input_token_cost` or `cache_creation_input_token_cost_above_1hr` as missing. Only an absent or null field now falls back.
 
 - **`ccxray agentflow report` closes the #649 spec gaps.** The footer says when the newest imported turn is older than an Ask's window end (separate from `not yet imported`); an Ask whose `Agentflow-Close-Id` close commit was committed more than a minute from its Reply stamp is labelled `close commit mismatch` (Git is read only, the stamp is kept); a worker whose clone was cloned from another checkout is no longer counted as `checkout unknown`; footer `sources` now cover the listed worker runs, so a Codex worker's proxy-or-import choice is stated. `stripSlash` is one shared helper.

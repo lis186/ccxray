@@ -30,9 +30,17 @@ for (const group of mode === 'all' ? Object.keys(groups) : [mode]) {
   }
   if (!files.length) continue;
   const result = spawnSync(process.execPath, [
-    '--require', './test/helpers/home-guard.js', '--test',
+    '--require', './test/helpers/home-guard.js',
+    // Unit lane must not touch the network (#717); loopback and unix sockets stay allowed.
+    ...(group === 'unit' ? ['--require', './test/helpers/no-network.js'] : []),
+    '--test',
     ...(group === 'unit' ? [] : ['--test-concurrency=1']), ...files,
-  ], { cwd: root, env: process.env, stdio: 'inherit' });
+  ], {
+    cwd: root,
+    // Enforce: a blocked outbound attempt fails the test process even if the code catches the throw.
+    env: group === 'unit' ? { ...process.env, CCXRAY_NETWORK_GUARD_ENFORCE: '1' } : process.env,
+    stdio: 'inherit',
+  });
   if (result.error) console.error(result.error);
   if (result.status !== 0) failed = true;
   if (result.signal) process.exit(1);
