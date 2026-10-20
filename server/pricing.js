@@ -52,12 +52,13 @@ function ratesFromLiteLLMEntry(val) {
   return {
     input,
     output: (val.output_cost_per_token || 0) * 1_000_000,
-    cache_create: (val.cache_creation_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
-    cache_read: (val.cache_read_input_token_cost || val.input_cost_per_token || 0) * 1_000_000,
+    cache_create: (val.cache_creation_input_token_cost ?? val.input_cost_per_token ?? 0) * 1_000_000,
+    cache_read: (val.cache_read_input_token_cost ?? val.input_cost_per_token ?? 0) * 1_000_000,
     // S-4 (A-4.1): 1-hour cache-creation rate. LiteLLM wins when it lists the
     // field; otherwise derive 2x input (Anthropic's published 1h rate), never
     // the 5-minute `cache_create` rate.
-    cache_create_1h: val.cache_creation_input_token_cost_above_1hr
+    // An explicit 0 is a real rate; only an absent/null field falls back (#715).
+    cache_create_1h: val.cache_creation_input_token_cost_above_1hr != null
       ? val.cache_creation_input_token_cost_above_1hr * 1_000_000
       : input * 2,
   };
