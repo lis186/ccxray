@@ -22,7 +22,9 @@ fs.writeFileSync(process.env.CCXRAY_PRICING_CACHE,
   JSON.stringify({ fetchedAt: Date.now(), pricing: {}, context: {} }));
 process.env.CCXRAY_NETWORK_GUARD_LOG = GUARD_LOG;
 require('./helpers/no-network');
-const repoCacheExistedBefore = fs.existsSync(REPO_PRICING_CACHE);
+// Snapshot in memory (never modified): an existing repo cache must come out byte-identical.
+const repoCacheBefore = fs.existsSync(REPO_PRICING_CACHE) ? fs.readFileSync(REPO_PRICING_CACHE) : null;
+const repoCacheMtimeBefore = repoCacheBefore ? fs.statSync(REPO_PRICING_CACHE).mtimeMs : null;
 
 // Now require hub (picks up CCXRAY_HOME)
 const hub = require('../server/hub');
@@ -397,12 +399,20 @@ describe('hub fork and readiness', () => {
   });
 
   it('hub startup is hermetic: no network attempt, no repo-root pricing-cache.json (#717)', async () => {
-    // Pricing loads right after listen(); give it a moment to (not) reach for LiteLLM.
-    await new Promise(r => setTimeout(r, 500));
+    // Wait for the hub's startup tasks (which await the pricing load) to finish. The hub writes
+    // this marker to hub.log when NODE_TEST_CONTEXT is set (server/index.js).
+    const marker = '[ccxray] startup tasks complete';
+    const deadline = Date.now() + 15000;
+    const logged = () => { try { return fs.readFileSync(hub.HUB_LOG_PATH, 'utf8'); } catch { return ''; } };
+    while (!logged().includes(marker) && Date.now() < deadline) await new Promise(r => setTimeout(r, 100));
+    assert.ok(logged().includes(marker), 'hub did not finish startup (pricing load) within 15s');
     const blocked = fs.existsSync(GUARD_LOG) ? fs.readFileSync(GUARD_LOG, 'utf8') : '';
     assert.equal(blocked, '', `hub attempted outbound network:\n${blocked}`);
-    if (!repoCacheExistedBefore) {
-      assert.equal(fs.existsSync(REPO_PRICING_CACHE), false, 'repo-root pricing-cache.json was written');
+    if (repoCacheBefore) {
+      assert.ok(fs.readFileSync(REPO_PRICING_CACHE).equals(repoCacheBefore), 'existing repo-root pricing-cache.json was modified');
+      assert.equal(fs.statSync(REPO_PRICING_CACHE).mtimeMs, repoCacheMtimeBefore, 'repo-root pricing-cache.json was rewritten');
+    } else {
+      assert.equal(fs.existsSync(REPO_PRICING_CACHE), false, 'repo-root pricing-cache.json was created');
     }
   });
 });
