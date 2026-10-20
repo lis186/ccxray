@@ -53,6 +53,21 @@ wrap(https, 'get', 'https.get');
 wrap(net, 'connect', 'net.connect');
 wrap(net, 'createConnection', 'net.createConnection');
 wrap(tls, 'connect', 'tls.connect');
+
+// Socket#connect takes (port[, host]), (options) or (path) — a bare string is an IPC path and
+// stays allowed. Node's internals call it with an already-normalized [options, cb] array.
+function socketHost(args) {
+  let [a, b] = args;
+  if (Array.isArray(a)) [a, b] = a;
+  if (typeof a === 'string') return /^\d+$/.test(a) ? (typeof b === 'string' ? b : 'localhost') : '';
+  return hostOf([a, b]);
+}
+const origSocketConnect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function guardedSocketConnect(...args) {
+  const host = socketHost(args);
+  if (!LOOPBACK.has(host)) block('net.Socket.connect', host);
+  return origSocketConnect.apply(this, args);
+};
 if (typeof globalThis.fetch === 'function') {
   const origFetch = globalThis.fetch;
   globalThis.fetch = function guardedFetch(input, init) {

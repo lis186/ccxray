@@ -53,7 +53,7 @@ Measured on an 8-core / 15 GiB Linux box (Node 22, `nice`):
 |-----|-----------|-------------------------|-----------------------|
 | Wire parsers only (1,209 mutants, 12 test files) | 76–84 s | ~0.5 GB | ~0.6 GB |
 | Incremental after editing one test file | 30–40 s | ~0.5 GB | ~0.6 GB |
-| + pricing (1,689 mutants, 25 test files) | 220–231 s | ~0.25 GB | ~0.65 GB |
+| + pricing (1,689 mutants, 23 test files) | 220–231 s | ~0.25 GB | ~0.65 GB |
 
 `MemAvailable` never dropped by more than ~0.6 GB. Do not raise `concurrency`
 above 2 on shared machines. One config covers both scopes: a full run stays
