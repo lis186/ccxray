@@ -17,6 +17,7 @@ function harness({
   healthCheckMs = 20,
   now,
   setTimer,
+  failClosed = () => false,
 } = {}) {
   const exits = [];
   const spawnCalls = [];
@@ -35,6 +36,7 @@ function harness({
     hub,
     deadlineMs,
     attachTimeoutMs: () => 1000,
+    failClosed,
     logFailOpen: () => {},
     exit: code => exits.push(code),
     spawnFallback: (launch, onExit) => spawnCalls.push({ launch, onExit }),
@@ -104,6 +106,27 @@ describe('launch decision and client shutdown', () => {
     h.spawnCalls[0].onExit(7);
     await settle();
     assert.deepEqual(h.exits, [7]);
+  });
+
+  it('falls back even when the ambient env sets CCXRAY_FAIL_CLOSED=1 (#721)', () => {
+    const prev = process.env.CCXRAY_FAIL_CLOSED;
+    process.env.CCXRAY_FAIL_CLOSED = '1';
+    try {
+      const h = harness();
+      assert.equal(h.decision.decide('original', 'fixture-failure'), true);
+      assert.equal(h.spawnCalls.length, 1);
+      assert.deepEqual(h.exits, []);
+    } finally {
+      if (prev === undefined) delete process.env.CCXRAY_FAIL_CLOSED;
+      else process.env.CCXRAY_FAIL_CLOSED = prev;
+    }
+  });
+
+  it('exits 1 instead of spawning when failClosed is injected as true', () => {
+    const h = harness({ failClosed: () => true });
+    assert.equal(h.decision.decide('original', 'fixture-failure'), true);
+    assert.deepEqual(h.spawnCalls, []);
+    assert.deepEqual(h.exits, [1]);
   });
 
   it('uses one cleanup promise for all observers', () => {
