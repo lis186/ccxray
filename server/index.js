@@ -807,7 +807,7 @@ server.on('upgrade', (req, socket, head) => {
 
 
 // ── Spawn agent CLI with proxy routing ──
-const { isStatuslineInstalled, installStatusline, uninstallStatusline, refusalMessage } = require('./statusline-setup');
+const { isStatuslineInstalled, launchPromptState, installStatusline, uninstallStatusline, refusalMessage } = require('./statusline-setup');
 
 function promptClaudeStatusline(args = []) {
   const claudeHome = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -834,21 +834,15 @@ function promptClaudeStatusline(args = []) {
     // #563: disclose purpose, impact, and reversibility; the default follows
     // risk — a pure addition (no statusline configured) defaults to yes, while
     // wrapping an existing statusline requires a conscious "y".
-    let hasExisting = false;
-    const settingsPath = path.join(claudeHome, 'settings.json');
-    try {
-      const raw = fs.readFileSync(settingsPath, 'utf8');
-      try {
-        const cmd = JSON.parse(raw).statusLine?.command || '';
-        hasExisting = Boolean(cmd) && !cmd.includes('claude-adapter');
-      } catch {
-        // #687: a settings.json that does not parse is never rewritten — say
-        // so instead of asking. No declined marker: once the file is fixed, a
-        // later launch still gets to answer.
-        _origLog(`\x1b[33m${refusalMessage(settingsPath)}\x1b[0m`);
-        return;
-      }
-    } catch {} // missing file = genuinely nothing configured
+    // #687 / #695: the same reader setup uses — an unparseable or non-object
+    // settings.json is never rewritten, so say so instead of asking. No
+    // declined marker: once the file is fixed, a later launch still answers.
+    const state = launchPromptState(claudeHome);
+    if (state.status === 'refused') {
+      _origLog(`\x1b[33m${refusalMessage(state.settingsPath, state.reason)}\x1b[0m`);
+      return;
+    }
+    const hasExisting = state.status === 'existing';
     const impactNote = hasExisting
       ? 'your existing statusline keeps rendering unchanged (delegated, not replaced)'
       : 'no statusline is configured today, so this only adds one';
@@ -866,7 +860,7 @@ function promptClaudeStatusline(args = []) {
         if (a === 'y' || a === 'yes' || (a === '' && !hasExisting)) {
           const result = installStatusline(claudeHome);
           if (result.status === 'installed') _origLog('\x1b[32m✓ Done. Rate limits will appear on the Usage page after restarting this session.\x1b[0m');
-          if (result.status === 'refused') _origLog(`\x1b[33m${refusalMessage(result.settingsPath)}\x1b[0m`);
+          if (result.status === 'refused') _origLog(`\x1b[33m${refusalMessage(result.settingsPath, result.reason)}\x1b[0m`);
         } else {
           fs.mkdirSync(ccxrayHome, { recursive: true, mode: 0o700 });
           fs.writeFileSync(declinedPath, '');
@@ -1155,7 +1149,7 @@ if (process.argv[2] === 'setup-statusline') {
       if (result.status === 'already') console.log(`\x1b[32m✓ ${label}: already configured.\x1b[0m`);
       if (result.status === 'refused') {
         refused++;
-        console.error(`\x1b[31m${statuslineSetup.refusalMessage(result.settingsPath)}\x1b[0m`);
+        console.error(`\x1b[31m${statuslineSetup.refusalMessage(result.settingsPath, result.reason)}\x1b[0m`);
       }
       if (result.status === 'installed' || result.status === 'updated') {
         changed++;
