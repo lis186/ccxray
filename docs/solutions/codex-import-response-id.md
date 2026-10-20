@@ -48,3 +48,22 @@ No real user sessions were inspected or copied. No synthetic success fixture
 was invented for an unverified persisted format. Runtime code, fixtures and
 existing no-ID behavior remain unchanged; no bug-fix claim or old-fail/new-pass
 claim is made.
+
+## Update — persisted format verified (Codex 0.155.1 / 0.163.0)
+
+Later rollouts satisfy option 2. Codex writes a top-level
+`{type: 'token_usage_record', payload: {response_id: 'resp_…', usage, …}}`
+line immediately before the `token_count` it reports. Measured on local
+rollouts by key names and pairing counts only (no content read or copied):
+109 of 111 files carry it; every nonzero `token_count` preceded by a record
+(7,356) has `last_token_usage` equal to that record's `usage`; the 425
+nonzero `token_count`s without one repeat the previous usage (re-emissions).
+Response ids are unique across the corpus.
+
+`parseCodexSessionFile` now takes the latest record since the previous
+`token_count` and sets `responseId` only when its usage matches. Entries
+without a match keep no key and the legacy id-based dedup. The id format is
+the wire `response.id`; proxy entries still do not set `responseId` (OpenAI
+HTTP and WS stay exempt per ADR 0012), so the importer-side half is fixed and
+the proxy-side half remains open. Tests use synthetic fixtures in
+`test/importer.test.js` (`#508`).

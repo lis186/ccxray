@@ -1112,6 +1112,27 @@ function makeCodexTokenCount(opts = {}) {
   });
 }
 
+// #508: synthetic Codex `token_usage_record` — the line that carries the
+// upstream Responses id just before the token_count it reports.
+function makeCodexUsageRecord(opts = {}) {
+  return JSON.stringify({
+    timestamp: opts.timestamp || '2026-07-15T10:30:04.900Z',
+    type: 'token_usage_record',
+    payload: {
+      session_id: opts.sessionId || 'codex-sess-1',
+      response_id: opts.responseId,
+      usage: {
+        input_tokens: opts.input ?? 17172,
+        cached_input_tokens: opts.cachedInput ?? 4992,
+        ...(opts.cacheWrite !== undefined ? { cache_write_input_tokens: opts.cacheWrite } : {}),
+        output_tokens: opts.output ?? 35,
+        reasoning_output_tokens: opts.reasoningOutput ?? 28,
+        total_tokens: opts.total ?? 17207,
+      },
+    },
+  });
+}
+
 describe('codex importer', () => {
   let codexDir;
   let claudeHomeDir;
@@ -1164,6 +1185,73 @@ describe('codex importer', () => {
       const entries = await parseCodexSessionFile(file);
       assert.equal(entries.length, 1, 'zero-token boundaries must remain skipped');
       assert.equal(entries[0].compacted, true, 'the marker belongs to the next emitted turn');
+    });
+
+    it('#508: takes responseId from the token_usage_record preceding a matching token_count', async () => {
+      const file = path.join(codexDir, 'rollout-rid.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-rid' }),
+        makeCodexUsageRecord({ responseId: 'resp_aaa' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        // Codex re-emits token_count with no new record: no key, legacy behaviour.
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:06.000Z' }),
+        // A record whose usage does not match the token_count lends no id.
+        makeCodexUsageRecord({ responseId: 'resp_bbb', input: 1 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:07.000Z', input: 2000 }),
+        // Several records before one token_count: the latest matching one wins.
+        makeCodexUsageRecord({ responseId: 'resp_old', input: 9 }),
+        makeCodexUsageRecord({ responseId: 'resp_ccc', input: 3000 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:08.000Z', input: 3000 }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.deepStrictEqual(entries.map(e => e.responseId), ['resp_aaa', undefined, undefined, 'resp_ccc']);
+      assert.ok(!('responseId' in entries[1]), 'an entry without an id passes through unchanged');
+    });
+
+    it('#508: a record differing only in cache_write or total tokens lends no id', async () => {
+      const file = path.join(codexDir, 'rollout-rid-fields.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-rid-fields' }),
+        makeCodexUsageRecord({ responseId: 'resp_cw', cacheWrite: 5 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexUsageRecord({ responseId: 'resp_tot', total: 99999 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:06.000Z' }),
+        // An explicit zero cache_write equals an absent one.
+        makeCodexUsageRecord({ responseId: 'resp_ok', cacheWrite: 0 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:07.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.deepStrictEqual(entries.map(e => e.responseId), [undefined, undefined, 'resp_ok']);
+    });
+
+    it('#508: a record consumed by a missing-usage or zero-usage token_count does not leak', async () => {
+      const file = path.join(codexDir, 'rollout-rid-consumed.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-rid-consumed' }),
+        makeCodexUsageRecord({ responseId: 'resp_lost1' }),
+        JSON.stringify({ timestamp: '2026-07-15T10:30:04.000Z', type: 'event_msg', payload: { type: 'token_count', info: null } }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+        makeCodexUsageRecord({ responseId: 'resp_lost2' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:06.000Z', input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, total: 0 }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:07.000Z' }),
+      ].join('\n'));
+
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 2);
+      assert.ok(entries.every(e => !('responseId' in e)), 'a consumed pending record must not reach a later event');
+    });
+
+    it('#508: a transcript without token_usage_record lines imports with no responseId', async () => {
+      const file = path.join(codexDir, 'rollout-legacy.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-legacy' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+      const entries = await parseCodexSessionFile(file);
+      assert.strictEqual(entries.length, 1);
+      assert.ok(!('responseId' in entries[0]));
     });
 
     it('extracts entries from token_count events', async () => {
@@ -1403,6 +1491,105 @@ describe('codex importer', () => {
       const claudeEntry = lines.find(e => e.importSource === 'claude-code');
       assert.ok(claudeEntry);
       assert.strictEqual(claudeEntry.provider, 'anthropic');
+    });
+
+    it('#508: an overlapping re-import of the same Codex response is one turn (count and cost not doubled)', async () => {
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      const turn = ts => [
+        makeCodexUsageRecord({ sessionId: 'codex-overlap', responseId: 'resp_overlap' }),
+        makeCodexTokenCount({ timestamp: ts }),
+      ];
+      fs.writeFileSync(path.join(sessDir, 'rollout-a.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-overlap' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        ...turn('2026-07-15T12:00:00.000Z'),
+      ].join('\n'));
+      const first = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(first.imported, 1);
+      const once = sessionIdx.get('codex-overlap');
+      assert.strictEqual(once.count, 1);
+
+      // The same response reappears in a second rollout file with a later
+      // timestamp (so a different entry id) — e.g. a resumed rollout.
+      fs.writeFileSync(path.join(sessDir, 'rollout-b.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-overlap' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        ...turn('2026-07-15T12:00:03.000Z'),
+      ].join('\n'));
+      const second = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(second.imported, 0, 'the copy carrying a known responseId is skipped');
+      assert.strictEqual(readIndexLines().length, 1);
+      const after = sessionIdx.get('codex-overlap');
+      assert.strictEqual(after.count, 1);
+      assert.strictEqual(after.totalCost, once.totalCost);
+    });
+
+    it('#508: two parses of one response merge to one entry', async () => {
+      const file = path.join(codexDir, 'rollout-twice.jsonl');
+      fs.writeFileSync(file, [
+        makeCodexSessionMeta({ sessionId: 'codex-twice' }),
+        makeCodexUsageRecord({ responseId: 'resp_twice' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T10:30:05.000Z' }),
+      ].join('\n'));
+      const a = await parseCodexSessionFile(file);
+      const b = await parseCodexSessionFile(file);
+      b[0].id = '2026-07-15T10-30-07-000';
+      const merged = store.mergeByResponseId([...a, ...b]);
+      assert.strictEqual(merged.length, 1);
+      assert.deepStrictEqual(merged[0]._mergedIds, ['2026-07-15T10-30-07-000']);
+    });
+
+    it('#508: a proxy entry and an imported entry with the same responseId merge, and the session counts it once', async () => {
+      const proxyLine = {
+        id: '2026-07-15T13-00-00-100', ts: '2026-07-15T13:00:00.100Z', sessionId: 'codex-proxy',
+        responseId: 'resp_shared', provider: 'openai', model: 'gpt-5.5', receivedAt: Date.parse('2026-07-15T13:00:00.100Z'),
+        usage: { input_tokens: 12180, output_tokens: 63, cache_read_input_tokens: 4992 },
+        cost: { cost: 0.01, confidence: 'exact' }, agentKey: 'codex',
+      };
+      fs.writeFileSync(INDEX_PATH, JSON.stringify(proxyLine) + '\n');
+      sessionIdx.rebuildFromIndexContent(JSON.stringify(proxyLine) + '\n');
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      fs.writeFileSync(path.join(sessDir, 'rollout-proxy.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-proxy' }),
+        makeCodexTurnContext({ model: 'gpt-5.5' }),
+        makeCodexUsageRecord({ sessionId: 'codex-proxy', responseId: 'resp_shared' }),
+        makeCodexTokenCount({ timestamp: '2026-07-15T13:00:01.000Z' }),
+      ].join('\n'));
+
+      const result = await scanAndImport();
+      await config.storage.drain();
+      // A proxy line never suppresses the import (A-2.1); the read-time merge folds it.
+      assert.strictEqual(result.imported, 1);
+      assert.strictEqual(sessionIdx.get('codex-proxy').count, 1, 'count claimed once by responseId');
+      const merged = store.mergeByResponseId(readIndexLines());
+      assert.strictEqual(merged.length, 1);
+      assert.strictEqual(merged[0].id, proxyLine.id, 'the proxy copy is canonical');
+      assert.ok(!merged[0].imported);
+    });
+
+    it('#508: a legacy suffixed Codex row without responseId is not re-imported once the transcript yields one', async () => {
+      const ts = '2026-07-15T14:00:00.000Z';
+      const legacy = {
+        id: '2026-07-15T14-00-00-000-1', ts, sessionId: 'codex-upgrade', imported: true,
+        importSource: 'codex', provider: 'openai', receivedAt: Date.parse(ts),
+      };
+      fs.writeFileSync(INDEX_PATH, JSON.stringify(legacy) + '\n');
+      sessionIdx.rebuildFromIndexContent(JSON.stringify(legacy) + '\n');
+      const sessDir = path.join(codexDir, '2026', '07', '15');
+      fs.mkdirSync(sessDir, { recursive: true });
+      fs.writeFileSync(path.join(sessDir, 'rollout-upgrade.jsonl'), [
+        makeCodexSessionMeta({ sessionId: 'codex-upgrade' }),
+        makeCodexUsageRecord({ sessionId: 'codex-upgrade', responseId: 'resp_upgrade' }),
+        makeCodexTokenCount({ timestamp: ts }),
+      ].join('\n'));
+      const result = await scanAndImport();
+      await config.storage.drain();
+      assert.strictEqual(result.imported, 0);
+      assert.strictEqual(readIndexLines().length, 1);
     });
 
     it('deduplicates codex entries on second scan', async () => {
