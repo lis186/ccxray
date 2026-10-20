@@ -12,6 +12,13 @@ process.env.NODE_TEST_REAL_HOME = realHome;
 if (!(process.env.NODE_OPTIONS || '').includes(__filename)) {
   process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --require=${JSON.stringify(__filename)}`.trim();
 }
+// Behaviour switches a developer may have exported (`ccxray setup` writes
+// CCXRAY_IMPORT_DISABLE=1 into the shell). Unit tests assume the defaults; tests
+// that need a switch set it explicitly, and spawned children keep their own env.
+if (firstProcess) {
+  for (const name of ['CCXRAY_IMPORT_DISABLE', 'CCXRAY_DISABLE_TITLES', 'CCXRAY_SKIP_RECENCY_CHECK',
+    'CCXRAY_FAIL_CLOSED', 'CCXRAY_LOOPBACK_REQUIRE_AUTH', 'CCXRAY_LOOPBACK_NO_AUTH']) delete process.env[name];
+}
 if (firstProcess && !process.env.CCXRAY_HOME) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-suite-'));
   fs.mkdirSync(path.join(home, 'logs'));
