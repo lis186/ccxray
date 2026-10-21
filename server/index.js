@@ -1547,6 +1547,9 @@ async function runPostListenStartupTasks() {
 }
 
 async function startServer({ onListen } = {}) {
+  // Snapshot the running commit before listen() so health never resolves it
+  // and a later checkout cannot change it (#728).
+  require('./git-sha').captureGitSha();
   if (!allowUpstreamLoop) {
     const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
     const upstreamFamily = providers.getAgentProvider(agentCommand)?.upstream ?? 'anthropic';
