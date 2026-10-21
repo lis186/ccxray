@@ -37,15 +37,16 @@ browser script tag (before `workflow-timeline.js`, see `public/index.html`)
 and `require()`'d by server modules (#381). All sites read the same shared
 object. Every site that branches on `entry.agentKey` to decide main vs.
 subagent must call `isMainTurnByAgentKey(entry)` (or gate on
-`entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]` with the same
+`isAgentKeyReliable(entry.agentKey)` (#725; formerly `!AGENT_KEY_UNRELIABLE[…]`) with the same
 fallback) and fall back to the raw `isSubagent` flag otherwise:
 
 | Site | File | Guard |
 |------|------|-------|
-| `isSubagent` computation | `entry-rendering.js` `addEntry()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
-| Batch lane build | `workflow-timeline.js` `wfInferLanes()` | `e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]` |
-| Live lane update | `workflow-timeline.js` `wfAddEntry()` | `entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]` |
+| `isSubagent` computation | `entry-rendering.js` `addEntry()` | `e.agentKey && isAgentKeyReliable(e.agentKey)` (#725) |
+| Batch lane build | `workflow-timeline.js` `wfInferLanes()` | `isAgentKeyReliable(e.agentKey)` (#725) |
+| Live lane update | `workflow-timeline.js` `wfAddEntry()` | `isAgentKeyReliable(entry.agentKey)` (#725) |
 | Window fold + derived fields | `server/session-index.js` `_upsert()` | `isMainTurnByAgentKey(entry)` (#381) |
+| Raw `isSubagent` flag | `server/store.js` `isAnthropicSubagent()` | `KNOWN_SUBAGENT_KEYS` / `WF_MAIN_AGENT_KEYS` / `AGENT_KEY_UNRELIABLE` (#725) |
 | coreHash identity routing (pre-scan) | `workflow-timeline.js` `wfInferLanes()` | coreHash+convId early-exit runs before `WF_MAIN_AGENT_KEYS` — see ADR 0010 |
 | coreHash identity routing (live) | `workflow-timeline.js` `wfAddEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds` — see ADR 0010 |
 | coreHash identity routing (turn list) | `entry-rendering.js` `addEntry()` | reads `wfState.mainCoreHash` / `wfState.mainConvIds`, gated on `wfState.sessionId === sid` — see ADR 0010 |
@@ -158,6 +159,29 @@ both were whole-session, which was false in two ways at once.
 A new figure added to either surface must be placed in this table. A figure that
 must agree has to read the same set in both; a figure that cannot agree has to
 say why here.
+
+## Amended by #725 (2026-10-21) — only main and known-subagent keys are reliable
+
+`AGENT_KEY_UNRELIABLE` named the two catch-all keys, but every other key the
+`extractAgentType()` regex fallback derives from an unfamiliar "You are …"
+opening is just as unreliable. Claude Code 2.1.304's main prompt lands there
+as a long role slug, so every site treated its main turns as subagents.
+Listing that slug as a main key would break on the next rewording.
+
+The gate is now `isAgentKeyReliable(key)` in `agent-classification.js`: true
+only for a `WF_MAIN_AGENT_KEYS` key or a `KNOWN_SUBAGENT_KEYS` key (the
+non-main `KNOWN_AGENTS` keys plus the OpenAI-wire `title`). Any other key
+falls back to the raw `isSubagent` flag, the same path `unknown`/`agent`
+already took. `isAnthropicSubagent` (server) produces that flag from
+structure: a known subagent key is positive subagent evidence even when a cwd
+is recovered; otherwise a recovered cwd means main, and the no-cwd rules are
+unchanged. A test fails if a `KNOWN_AGENTS` key is in neither table. The Herdr
+badge exception above is unchanged — it still reads `WF_MAIN_AGENT_KEYS` only.
+
+Residual: a user-defined subagent has an unfamiliar slug, so it is classified
+by the flag. If such a request ever carries a structural cwd (an env line, or
+inherited safeguards on a tool-bearing body), it now classifies as main where
+the dashboard previously forced it to a subagent lane.
 
 ## Consequences
 
