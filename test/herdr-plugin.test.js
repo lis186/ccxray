@@ -6714,8 +6714,10 @@ describe('codex round 2 fixes', () => {
       receivedAt: 1787000000000, usage: { input_tokens: 10, output_tokens: 1 },
     };
     const summary = analyze([
-      { ...base, id: 'f1', cost: { cost: 1, confidence: 'fallback' } },
-      { ...base, id: 'f2', cost: { cost: null, confidence: 'unknown' } },
+      // #723: stored fallback/unknown rows reprice at read time, so these two use a
+      // model the rate table cannot price and stay fallback/unknown.
+      { ...base, id: 'f1', model: 'unlisted-model-x', cost: { cost: 1, confidence: 'fallback' } },
+      { ...base, id: 'f2', model: 'unlisted-model-x', cost: { cost: null, confidence: 'unknown' } },
       { ...base, id: 'f3', cost: { cost: 1, confidence: 'exact' } },
     ]);
     const top = summary.sessions.topSessions.find(s => s.sessionId === 's-fold');

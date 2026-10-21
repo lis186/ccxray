@@ -27,6 +27,7 @@ const path = require('node:path');
 const https = require('node:https');
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { repricedCost } = require('../reprice');
 
 /** CLI /usage weekly pool — must include format=credits. */
 const BILLING_PATH = '/v1/billing?format=credits';
@@ -309,16 +310,21 @@ function tokensFromUsage(usage) {
     + (usage.cache_creation_input_tokens || 0);
 }
 
+// #723: cost and confidence come from the shared read-time view (reprice.js), so
+// a stored fallback/unknown store entry is priced against the current rate table
+// instead of the table it was captured under. Non-mutating: the live entry is untouched.
 function entryCostUSD(entry) {
-  if (!entry || entry.cost == null) return 0;
-  if (typeof entry.cost === 'number' && Number.isFinite(entry.cost)) return entry.cost;
-  if (typeof entry.cost === 'object' && typeof entry.cost.cost === 'number') return entry.cost.cost;
+  const cost = entry ? repricedCost(entry) : null;
+  if (cost == null) return 0;
+  if (typeof cost === 'number' && Number.isFinite(cost)) return cost;
+  if (typeof cost === 'object' && typeof cost.cost === 'number') return cost.cost;
   return 0;
 }
 
 function entryCostConfidence(entry) {
+  const cost = entry ? repricedCost(entry) : null;
+  if (cost && typeof cost === 'object') return cost.confidence || null;
   if (entry?.costConfidence) return entry.costConfidence;
-  if (entry?.cost && typeof entry.cost === 'object') return entry.cost.confidence || null;
   return null;
 }
 

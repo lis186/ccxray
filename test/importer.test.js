@@ -10,6 +10,11 @@ const os = require('os');
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-import-test-'));
 process.env.CCXRAY_HOME = tmpHome;
 fs.mkdirSync(path.join(tmpHome, 'logs'), { recursive: true });
+// #723: the importer waits for the price list when the cache file is missing;
+// seed a tiny one so the unit lane never reaches for the network.
+const _pcache = path.join(tmpHome, 'pricing-cache.json');
+fs.writeFileSync(_pcache, JSON.stringify({ fetchedAt: Date.now(), pricing: {}, context: {} }));
+process.env.CCXRAY_PRICING_CACHE = _pcache;
 fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 
 const store = require('../server/store');

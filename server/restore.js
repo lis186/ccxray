@@ -6,12 +6,11 @@ const { randomBytes } = require('crypto');
 const { pipeline } = require('stream/promises');
 const config = require('./config');
 const store = require('./store');
-const { calculateCost } = require('./pricing');
+const { applyReadTimePricing } = require('./reprice');
 const { extractAgentType, extractPromptAgentType, splitB2IntoBlocks, rawCoreHash, computeCoreHash } = require('./system-prompt');
 const { normalizeOpenAIResponseSummary } = require('./forward');
 const { readSettings, serializeStars } = require('./settings');
 const { computeRetentionSets, isProtectedByStar } = require('./helpers');
-const { normalizeUsageForProvider, describeAgentModule } = require('./providers');
 const { broadcastEntryUpdate } = require('./sse-broadcast');
 const sessionIdx = require('./session-index');
 const { assessWeather } = require('../public/weather');
@@ -165,31 +164,8 @@ async function healMetaInPlace(meta) {
     meta.maxContext = trustStored ? Math.max(meta.maxContext || 0, inferred) : inferred;
   }
   // usage normalization + cost recalc
-  if (meta.usage) {
-    // R-2/INV-2 (A-010 §2): an imported openai-provider line's usage is already
-    // cache-exclusive — the Codex importer subtracts cached tokens manually
-    // before writing (importer.js parseCodexSessionFile). New imports carry
-    // _ccxrayUsageNormalized on the usage object itself; legacy imported lines
-    // predate that marker, so treat ANY imported openai line as normalized here
-    // rather than relying on the on-disk flag, or a second subtraction on
-    // reload halves the input tokens (the double-normalization bug this
-    // invariant exists to prevent).
-    if (meta.imported && meta.provider === 'openai' && !meta.usage._ccxrayUsageNormalized) {
-      meta.usage = { ...meta.usage, _ccxrayUsageNormalized: true };
-    }
-    const before = meta.usage;
-    meta.usage = normalizeUsageForProvider(meta.provider, meta.usage);
-    const usageNormalized = meta.usage !== before && meta.usage._ccxrayUsageNormalized;
-    // H5 (A-010 design): reprice a stored fallback/unknown cost at read time —
-    // exact/prefix and legacy numeric costs (no .confidence) are left untouched.
-    // Nothing is rewritten on disk; only the in-memory view this function heals.
-    const stale = meta.cost && typeof meta.cost === 'object'
-      && (meta.cost.confidence === 'fallback' || meta.cost.confidence === 'unknown');
-    if (meta.model && (usageNormalized || stale)) {
-      // #568: price by the upstream that served the turn (grok → xai), not the wire family.
-      meta.cost = calculateCost(meta.usage, meta.model, describeAgentModule(meta.agent)?.upstreamKey || meta.provider);
-    }
-  }
+  // H5 / #723: usage normalization + stale-cost reprice live in the shared helper.
+  applyReadTimePricing(meta);
 }
 
 // INVARIANT (ADR 0016): snapshot byte bound — mid-restore appends must not leak

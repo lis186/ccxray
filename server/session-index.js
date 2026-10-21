@@ -4,6 +4,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const config = require('./config');
+const { isStaleCost, repricedCost } = require('./reprice');
 // #381: shared L1 agentKey classification — aligns the server window fold's
 // subagent gate with the client classification pipeline (ADR 0005 site table).
 const { isMainTurnByAgentKey } = require('../public/agent-classification');
@@ -65,7 +66,10 @@ function _assignWeather(s, weather) {
 // forces one. Bump whenever the pricing derivation changes.
 //   1 — #397/A-010: single lookupRates table, retired calculateCostSimple
 //       fallback estimate, fixed Codex-import double-normalization (R-2)
-const PRICING_REV = 1;
+//   2 — #723: aggregates reprice stored unknown/fallback rows at read time
+//       (shared reprice.js), and 'openai/<id>' resolves to '<id>'. A record
+//       built at revision 1 counted those rows as unknown/$0, so it must rebuild.
+const PRICING_REV = 2;
 
 // Single writer, following _assignWeather above.
 function _assignPricingRev(s) {
@@ -243,7 +247,10 @@ function rebuildFromIndexContent(indexContent) {
 // a no-op on the count Set. Never adds to totalCost or s.count.
 function seedDedupFromMetas(metas) {
   if (!Array.isArray(metas)) return;
-  for (const m of metas) {
+  for (const meta of metas) {
+    // #723: seed from the same repriced view _upsert applies, or a priced
+    // duplicate would retract/keep an unknown slot the aggregate no longer has.
+    const m = meta && isStaleCost(meta.cost) ? { ...meta, cost: repricedCost(meta) } : meta;
     const rid = m && m.responseId;
     if (!rid) continue;
     // COUNT: any responseId already in the log is counted — even a cost-null
@@ -372,6 +379,10 @@ function _recomputeWeather(sid) {
 }
 
 function _upsert(sid, entry) {
+  // INVARIANT(#723): the aggregate prices a stale unknown/fallback row exactly
+  // like the dashboard's read-time heal. Shadow, never mutate: `entry` may be a
+  // live store entry or a buffered replay copy.
+  if (isStaleCost(entry.cost)) entry = { ...entry, cost: repricedCost(entry) };
   let s = sessionIndex.get(sid);
   if (!s) {
     // INVARIANT(#420/ADR 0017): session aggregate confidence is folded beside

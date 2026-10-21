@@ -464,6 +464,27 @@ function normalizeUsageForProvider(provider, usage) {
   };
 }
 
+// #723: the ONE stored-row usage normalization, shared by reprice.js and the
+// cost-worker (which must not require the server graph; this file loads only
+// built-ins eagerly). R-2/INV-2 (A-010 §2): an imported openai-provider line's
+// usage is already cache-exclusive (the Codex importer subtracts cached tokens
+// before writing), and legacy imports predate the _ccxrayUsageNormalized
+// marker, so treat ANY imported openai line as normalized rather than
+// subtracting twice on reload. Returns the usage to bill; never mutates input.
+function markImportedUsage(meta) {
+  const usage = meta.usage;
+  if (usage && meta.imported && meta.provider === 'openai' && !usage._ccxrayUsageNormalized) {
+    return { ...usage, _ccxrayUsageNormalized: true };
+  }
+  return usage;
+}
+
+function normalizeStoredUsage(meta) {
+  const usage = markImportedUsage(meta);
+  if (!usage) return usage;
+  return normalizeUsageForProvider(meta.provider, usage);
+}
+
 function listAgentProviderIds() {
   return Object.keys(AGENT_PROVIDERS);
 }
@@ -568,6 +589,8 @@ module.exports = {
   listAgentProviderIds,
   listRawSessionBuckets,
   matchOpenAIWireClient,
+  normalizeStoredUsage,
+  markImportedUsage,
   normalizeUsageForProvider,
   resolveOpenAIWireAgent,
   supportedProviderList,

@@ -7,6 +7,7 @@ const https = require('https');
 const net = require('net');
 const { resolveCcxrayHome } = require('./paths');
 const { listRawSessionBuckets } = require('./providers');
+const { repricedCost } = require('./reprice');
 const {
   discoverCredentials, describeCredentials, credentialText,
   CredentialError, tokenError, networkError, uploadError,
@@ -949,7 +950,8 @@ function aggregate(lines, agentId, configuredUserEmail, allowedDomains) {
     }
 
     // #9: cost confidence — null cost = unknown, legacy numeric = unknown confidence
-    const costObj = entry.cost;
+    // #723: reprice a stored unknown/fallback cost in memory before aggregating.
+    const costObj = repricedCost(entry);
     if (costObj && typeof costObj === 'object') {
       const c = costObj.cost;
       const conf = costObj.confidence || 'unknown';

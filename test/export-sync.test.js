@@ -872,7 +872,8 @@ describe('export-sync', () => {
   it('cost confidence fold: mixed when some fallback', async () => {
     setup([
       makeEntry({ cost: { cost: 0.10, confidence: 'exact' } }),
-      makeEntry({ id: '2026-08-12T10-01-00-000', cost: { cost: 0.05, confidence: 'fallback' }, msgCount: 12 }),
+      // #723: a fallback row WITH usage is repriced at read time; usage-less keeps the stored fold input.
+      makeEntry({ id: '2026-08-12T10-01-00-000', usage: null, cost: { cost: 0.05, confidence: 'fallback' }, msgCount: 12 }),
     ]);
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
@@ -919,13 +920,14 @@ describe('export-sync', () => {
   it('session per-model breakdown includes the complete ADR 0017 confidence fold', async () => {
     setup([
       makeEntry({ model: 'model-a', cost: { cost: 0.10, confidence: 'exact' } }),
-      makeEntry({ id: '2026-08-12T10-01-00-000', model: 'model-a', msgCount: 12,
+      // #723: usage-less so the stored fallback is not repriced at read time.
+      makeEntry({ id: '2026-08-12T10-01-00-000', model: 'model-a', msgCount: 12, usage: null,
         cost: { cost: 0.20, confidence: 'fallback' } }),
       makeEntry({ id: '2026-08-12T10-02-00-000', model: 'model-a', msgCount: 14,
         cost: { cost: null, confidence: 'unknown' } }),
       makeEntry({ id: '2026-08-12T10-03-00-000', model: 'model-b', msgCount: 16,
         cost: { cost: 0.30, confidence: 'exact' } }),
-      makeEntry({ id: '2026-08-12T10-04-00-000', model: 'model-c', msgCount: 18,
+      makeEntry({ id: '2026-08-12T10-04-00-000', model: 'model-c', msgCount: 18, usage: null,
         cost: { cost: 0.40, confidence: 'unknown' } }),
       makeEntry({ id: '2026-08-12T10-05-00-000', model: 'model-d', msgCount: 20,
         cost: 0.50 }),
@@ -1140,7 +1142,8 @@ describe('export-sync', () => {
     // the fold would see 1 exact + 2 unknown = mixed. Correct: 1 exact + 1 unknown = mixed.
     // Regression: with only null-cost entries, double-count made total=2 instead of 1.
     setup([
-      makeEntry({ cost: { cost: null, confidence: 'unknown' } }),
+      // #723: a model the table prices would be healed at read time; use an unpriced one.
+      makeEntry({ model: 'unpriced-test-model', cost: { cost: null, confidence: 'unknown' } }),
     ]);
     await flushExport();
     const daily = _uploads[0].records.find(r => r.type === 'daily');
@@ -1155,6 +1158,36 @@ describe('export-sync', () => {
     await flushExport();
     const daily2 = _uploads[0].records.find(r => r.type === 'daily');
     assert.equal(daily2.cost_confidence, 'mixed', 'exact + legacy → mixed');
+  });
+
+  describe('#723 read-time reprice of stored unknown costs', () => {
+    const rates = require('../server/default-rates');
+    // Synthetic price table: exact rows only, so the result is independent of the
+    // built-in table and of any cache file (hermetic, no network).
+    beforeEach(() => rates.setRateTable({ 'repr-model-x': { input: 1, output: 2, cache_read: 0.5, cache_create: 1.25 } }));
+    afterEach(() => rates.__resetRateTableForTests());
+    const usage = { input_tokens: 1_000_000, output_tokens: 500_000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+    it('prices a stored null-cost row once the table knows the model (daily + session)', async () => {
+      setup([makeEntry({ model: 'repr-model-x', usage, cost: { cost: null, confidence: 'unknown' } })]);
+      await flushExport();
+      const daily = _uploads[0].records.find(r => r.type === 'daily');
+      const sess = _uploads[0].records.find(r => r.type === 'session');
+      assert.ok(Math.abs(daily.cost_total - 2) < 1e-9, 'daily cost_total = 1M*$1 + 0.5M*$2');
+      assert.equal(daily.cost_confidence, 'exact');
+      assert.ok(Math.abs(sess.cost_total - 2) < 1e-9);
+      assert.equal(sess.models['repr-model-x'].unknown_count, 0);
+    });
+
+    it('keeps an unpriced model unknown: null, counted unknown, not added as $0', async () => {
+      setup([makeEntry({ model: 'repr-model-missing', usage, cost: { cost: null, confidence: 'unknown' } })]);
+      await flushExport();
+      const daily = _uploads[0].records.find(r => r.type === 'daily');
+      const sess = _uploads[0].records.find(r => r.type === 'session');
+      assert.equal(daily.cost_total, 0);
+      assert.equal(daily.cost_confidence, 'unknown');
+      assert.equal(sess.models['repr-model-missing'].unknown_count, 1);
+    });
   });
 
   it('#10+R3 duplicateToolCalls values summed', async () => {

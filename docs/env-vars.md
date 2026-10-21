@@ -18,6 +18,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | `RESTORE_DAYS` | `LOG_RETENTION_DAYS` (`14`) | Days of index lines the dashboard loads at startup; `0` = all. | `server/config.js`, `server/restore.js` |
 | `STORAGE_BACKEND` | `local` | Storage adapter. Only `local` works; `s3` fails fast. | `server/storage/index.js` |
 | `CCXRAY_PRICING_CACHE` | `<package>/pricing-cache.json` | Path of the LiteLLM pricing cache (package-relative by default, so outside `CCXRAY_HOME`). | `server/pricing.js`, `server/default-rates.js` |
+| `CCXRAY_PRICING_WAIT_MS` | `8000` | How long an importer waits for the LiteLLM price list when no `pricing-cache.json` exists (positive integer ms, capped at 120000; invalid → default). One shared fetch runs regardless of how many callers time out. | `server/pricing.js` |
 
 ## Limits and tuning
 

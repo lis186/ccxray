@@ -9,6 +9,11 @@ const os = require('os');
 // Isolated CCXRAY_HOME before requiring config/store (docs/testing.md)
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-rescan-test-'));
 process.env.CCXRAY_HOME = tmpHome;
+// #723: the importer waits for the price list when the cache file is missing;
+// seed a tiny one so the unit lane never reaches for the network.
+const _pcache = path.join(tmpHome, 'pricing-cache.json');
+fs.writeFileSync(_pcache, JSON.stringify({ fetchedAt: Date.now(), pricing: {}, context: {} }));
+process.env.CCXRAY_PRICING_CACHE = _pcache;
 fs.mkdirSync(path.join(tmpHome, 'logs'), { recursive: true });
 fs.writeFileSync(path.join(tmpHome, 'logs', 'index.ndjson'), '');
 

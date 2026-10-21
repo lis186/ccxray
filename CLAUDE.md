@@ -113,6 +113,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/config.js` | PORT, ANTHROPIC_HOST/PORT/PROTOCOL, LOGS_DIR, MAX_ENTRIES, model context windows |
 | `server/pricing.js` | LiteLLM price fetch, 24h cache, fallback rates, cost calculation |
 | `server/default-rates.js` | Offline fallback model prices and temporary LiteLLM lag overrides |
+| `server/reprice.js` | The one read-time repricing rule (H5/#723): `applyReadTimePricing` (mutating, restore/cold-load) and `repricedCost` (non-mutating, usage-query/export-sync/session-index). Stored unknown/fallback costs are healed in memory, never on disk |
 | `server/cost-budget.js` | Cost data orchestration: cache, warm-up, grouping |
 | `server/cost-worker.js` | Child process: scans `~/.claude/` JSONL files without blocking event loop |
 | `server/store.js` | In-memory state: entries[] (capped at MAX_ENTRIES), sseClients[], sessions, intercept, versionIndex (keyed by `agentKey::coreHash`). Session detection with subagent inference (inflight + temporal heuristic) |
