@@ -1209,7 +1209,7 @@ if (process.argv[2] === 'status') {
           : undefined,
       }).line);
       if (occ.kind !== 'free') {
-        hub.describePortOccupant(occ, config.PORT).forEach(l => console.log(`Note: ${l}`));
+        hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) }).forEach(l => console.log(`Note: ${l}`));
       }
       // One machine-readable line so a consumer does not have to scrape the
       // English above. `proxy` answers whether this process can trace traffic.
@@ -1604,7 +1604,7 @@ async function startServer({ onListen } = {}) {
             // #555: identify the occupant before advising — the old unconditional
             // `kill $(lsof …)` hint would have killed a deliberate listener.
             const occ = await hub.probePortOccupant(config.PORT);
-            const advice = hub.describePortOccupant(occ, config.PORT);
+            const advice = hub.describePortOccupant(occ, config.PORT, { homeSocketReachable: await hub.probeHomeHub(occ) });
             if (advice.length) advice.forEach(l => console.error(`Error: ${l}`));
             else console.error(`Error: port ${config.PORT} still occupied after ${HUB_BIND_RETRIES}s but nothing answered a probe — it may have been released; retry.`);
           }
@@ -1637,6 +1637,7 @@ async function startServer({ onListen } = {}) {
     // does not live forever waiting for a client that will never arrive.
     hub.startIdleTimer();
     hub.startDeadClientCheck();
+    hub.startLockSelfHeal(actualPort, hub.SOCK_PATH);
     hub.setOnShutdown(() => gracefulExit(0));
     const cleanup = () => hub.shutdownHub(); // closes socket + deletes lockfile + gracefulExit via onShutdown
     process.on('SIGTERM', cleanup);
