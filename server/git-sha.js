@@ -15,7 +15,11 @@
 // platform defines them), fstat'ed as a regular file, and read through the
 // descriptor with a hard cap; directories inside a gitdir/commondir are
 // lstat'ed and must not be symlinks. A worktree `.git` file must point at a
-// gitdir that points back at this root.
+// gitdir that points back at this root. The gitdir and commondir pointer
+// targets must already be physical paths: each is resolved against the
+// realpath of the directory it is relative to (the package root's realpath is
+// the trusted base, so platform aliases above it are fine) and must equal its
+// own realpath — a symlink anywhere along a target's path → null.
 
 const fs = require('fs');
 const path = require('path');
@@ -103,6 +107,12 @@ function samePath(a, b, fsImpl) {
   try { return fsImpl.realpathSync(a) === fsImpl.realpathSync(b); } catch { return false; }
 }
 
+// A pointer target must be its own physical path (no symlinked component).
+function requirePhysicalDir(p, fsImpl) {
+  requireDir(p, fsImpl);
+  if (fsImpl.realpathSync(p) !== p) throw new Error('symlink in path');
+}
+
 function lookupRef(ref, gitDir, commonDir, fsImpl) {
   if (!/^refs\/[A-Za-z0-9._\/-]+$/.test(ref) || ref.split('/').some(s => s === '' || s === '.' || s === '..')) {
     return null;
@@ -136,7 +146,7 @@ function resolveDirs(root, fsImpl) {
   const m = /^gitdir: (.+)$/.exec(singleLine(readMeta(root, '.git', fsImpl)));
   if (!m) throw new Error('malformed .git file');
   const gitDir = path.resolve(root, m[1]);
-  requireDir(gitDir, fsImpl);
+  requirePhysicalDir(gitDir, fsImpl);
   lstatKind(path.join(gitDir, 'HEAD'), fsImpl);
 
   const common = readOptionalMeta(gitDir, 'commondir', fsImpl);
@@ -151,7 +161,7 @@ function resolveDirs(root, fsImpl) {
   if (common == null || back == null) throw new Error('incomplete worktree');
   if (!samePath(path.resolve(gitDir, singleLine(back)), dotGit, fsImpl)) throw new Error('foreign worktree');
   const commonDir = path.resolve(gitDir, singleLine(common));
-  requireDir(commonDir, fsImpl);
+  requirePhysicalDir(commonDir, fsImpl);
   let ok = false;
   for (const sub of ['refs', 'objects']) {
     try { requireDir(path.join(commonDir, sub), fsImpl); ok = true; } catch (err) {
@@ -164,7 +174,7 @@ function resolveDirs(root, fsImpl) {
 
 function resolveGitSha(root, { fs: fsImpl = fs } = {}) {
   try {
-    const { gitDir, commonDir } = resolveDirs(root, fsImpl);
+    const { gitDir, commonDir } = resolveDirs(fsImpl.realpathSync(root), fsImpl);
     const head = readMeta(gitDir, 'HEAD', fsImpl).replace(/\n$/, '');
     if (SHA_RE.test(head)) return head;
     const ref = /^ref: (\S+)$/.exec(head);

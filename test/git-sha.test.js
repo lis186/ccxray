@@ -6,7 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-git-sha-'));
+// realpath: git writes physical absolute pointers, and macOS's tmpdir is a symlink.
+const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-git-sha-')));
 process.env.CCXRAY_HOME = path.join(TMP, 'home');
 fs.mkdirSync(process.env.CCXRAY_HOME, { recursive: true });
 
@@ -91,6 +92,35 @@ describe('resolveGitSha', () => {
     const { pkg, common } = worktree({ external: true });
     w(path.join(common, 'packed-refs'), `${SHA_C} refs/heads/feat\n`);
     assert.equal(gitSha.resolveGitSha(pkg), SHA_C);
+  });
+
+  it('resolves a package root reached through a symlinked parent', () => {
+    const { pkg, common } = worktree({ external: true });
+    w(path.join(common, 'refs/heads/feat'), SHA_B + '\n');
+    const link = path.join(mk(), 'link');
+    fs.symlinkSync(path.dirname(pkg), link);
+    assert.equal(gitSha.resolveGitSha(path.join(link, 'pkg')), SHA_B);
+    const plain = repo(SHA_A + '\n');
+    const link2 = path.join(mk(), 'link');
+    fs.symlinkSync(path.dirname(plain), link2);
+    assert.equal(gitSha.resolveGitSha(path.join(link2, path.basename(plain))), SHA_A);
+  });
+
+  it('resolves checkouts made by real git (clone dir + `git worktree add`)', (t) => {
+    const { spawnSync } = require('child_process');
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
+      GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
+      GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' };
+    const git = (cwd, ...args) => spawnSync('git', args, { cwd, env, encoding: 'utf8' });
+    if (git(TMP, '--version').status !== 0) { t.skip('git not available'); return; }
+    const main = mk();
+    assert.equal(git(main, 'init', '-q', '-b', 'main').status, 0);
+    assert.equal(git(main, 'commit', '-q', '--allow-empty', '-m', 'x').status, 0);
+    const sha = git(main, 'rev-parse', 'HEAD').stdout.trim();
+    assert.equal(gitSha.resolveGitSha(main), sha);
+    const wt = path.join(mk(), 'wt');
+    assert.equal(git(main, 'worktree', 'add', '-q', '-b', 'feat', wt).status, 0);
+    assert.equal(gitSha.resolveGitSha(wt), sha);
   });
 
   it('returns null without a .git in the package root', () => {
@@ -240,6 +270,32 @@ describe('resolveGitSha', () => {
       const { pkg, common, wtDir } = worktree();
       w(path.join(common, 'refs/heads/feat'), SHA_B + '\n');
       assert.equal(gitSha.resolveGitSha(pkg, { fs: failingOpen(path.join(wtDir, 'commondir'), 'EACCES') }), null);
+    });
+
+    it('a symlinked ancestor directory in the gitdir path', () => {
+      const { pkg, common, wtDir } = worktree({ external: true });
+      w(path.join(common, 'refs/heads/feat'), SHA_B + '\n');
+      // /alias → the real worktrees dir; `wt` itself is a real directory.
+      const alias = path.join(mk(), 'alias');
+      fs.symlinkSync(path.dirname(wtDir), alias);
+      // Absolute commondir, so `../..` from the alias path cannot be what fails.
+      w(path.join(wtDir, 'commondir'), common + '\n');
+      w(path.join(pkg, '.git'), `gitdir: ${path.join(alias, 'wt')}\n`);
+      assert.equal(gitSha.resolveGitSha(pkg), null);
+      // Control: the back-pointer is valid, so the physical path resolves.
+      w(path.join(pkg, '.git'), `gitdir: ${wtDir}\n`);
+      assert.equal(gitSha.resolveGitSha(pkg), SHA_B);
+    });
+
+    it('a symlinked ancestor directory in the commondir path', () => {
+      const { pkg, common, wtDir } = worktree({ external: true });
+      w(path.join(common, 'refs/heads/feat'), SHA_B + '\n');
+      const alias = path.join(mk(), 'alias');
+      fs.symlinkSync(path.dirname(common), alias);
+      w(path.join(wtDir, 'commondir'), path.join(alias, '.git') + '\n');
+      assert.equal(gitSha.resolveGitSha(pkg), null);
+      w(path.join(wtDir, 'commondir'), '../..\n');
+      assert.equal(gitSha.resolveGitSha(pkg), SHA_B);
     });
   });
 
