@@ -136,6 +136,43 @@ describe('#725 isAnthropicSubagent (server)', () => {
   });
 });
 
+// KNOWN LIMITATION (#725, codex review of a143606). These tests PIN current
+// behaviour; they do not endorse it. A user-defined subagent has an unfamiliar
+// agent key, and that key cannot be told apart from Claude Code's own main
+// prompt, which since 2.1.304 also lands on an unfamiliar regex-fallback slug.
+// Its tools + session_id shape is shared with the parent (#221), so once a
+// structural cwd is recovered the ordered rule in store.js isAnthropicSubagent
+// calls it main, and the dashboard follows that flag. If authoritative
+// custom-agent identity ever becomes available and this is fixed, flip these
+// assertions deliberately; do not "fix" it by forcing every unfamiliar key to
+// subagent or by allowlisting the observed main slug.
+describe('#725 KNOWN LIMITATION: custom subagent with a structural cwd is classified main', () => {
+  const CUSTOM_B2 = 'You are a synthetic changelog reviewer for a made-up project.';
+  it('the synthetic custom role resolves to an unfamiliar key', () => {
+    const key = extractAgentType(sysBlocks(CUSTOM_B2)).key;
+    assert.equal(ac.WF_MAIN_AGENT_KEYS[key], undefined, key);
+    assert.equal(ac.KNOWN_SUBAGENT_KEYS[key], undefined, key);
+    assert.equal(ac.isAgentKeyReliable(key), false, key);
+  });
+  it('KNOWN LIMITATION (a): env-line variant is classified main', () => {
+    const req = { ...sid, system: sysBlocks(`${CUSTOM_B2}\n# Environment\nPrimary working directory: /proj/custom`),
+      tools: TOOLS, messages: [{ role: 'user', content: 'go' }] };
+    assert.equal(store.isAnthropicSubagent(req), false);
+  });
+  it('KNOWN LIMITATION (b): safeguards live_cwd variant is classified main', () => {
+    const req = { ...sid, system: sysBlocks(CUSTOM_B2), tools: TOOLS, messages: longMsgs, safeguards: sg('/proj/custom') };
+    assert.equal(store.isAnthropicSubagent(req), false);
+  });
+  it('KNOWN LIMITATION: the dashboard helper follows that flag and calls it main', () => {
+    const key = extractAgentType(sysBlocks(CUSTOM_B2)).key;
+    assert.equal(ac.isMainTurnByAgentKey({ agentKey: key, isSubagent: false }), true);
+  });
+  it('control: the same custom role with no cwd stays a subagent', () => {
+    const req = { ...sid, system: sysBlocks(CUSTOM_B2), tools: TOOLS, messages: [{ role: 'user', content: 'go' }] };
+    assert.equal(store.isAnthropicSubagent(req), true);
+  });
+});
+
 describe('#725 orphan inference and parent linking', () => {
   const PARENT = 'parent-725';
   const CHILD = 'child-725';

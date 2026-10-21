@@ -572,8 +572,8 @@ function extractSessionId(req) {
   return m ? m[1] : null;
 }
 
-// Anthropic subagent heuristic. Subagent needs POSITIVE evidence (#725);
-// main-session signals win otherwise. In order:
+// Anthropic subagent heuristic (#725): main-session signals win over an
+// unfamiliar key, but rule 5 keeps a conservative subagent fallback. In order:
 //  1. context_management → main (interactive-session-only field).
 //  2. A known subagent / side-request key (KNOWN_SUBAGENT_KEYS, e.g.
 //     'general-purpose', 'claude-code-guide', 'title-generator') → subagent,
@@ -590,6 +590,10 @@ function extractSessionId(req) {
 // (agent-classification.js isAgentKeyReliable) and otherwise reads this
 // flag, so an unfamiliar slug — e.g. 2.1.304's main prompt — is classified
 // here, by structure, once.
+// Known limitation: a user-defined subagent also has an unfamiliar key and
+// shares the parent's tools + session_id shape, so if it carries a structural
+// cwd (env line or safeguards live_cwd) rule 3 classifies it main. Pinned in
+// test/main-turn-without-context-management.test.js; see ADR 0005 (#725).
 function isAnthropicSubagent(parsedBody) {
   if (parsedBody?.context_management) return false;
   const { key } = extractAgentType(parsedBody?.system);

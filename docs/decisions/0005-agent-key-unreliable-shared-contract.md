@@ -181,7 +181,14 @@ badge exception above is unchanged — it still reads `WF_MAIN_AGENT_KEYS` only.
 Residual: a user-defined subagent has an unfamiliar slug, so it is classified
 by the flag. If such a request ever carries a structural cwd (an env line, or
 inherited safeguards on a tool-bearing body), it now classifies as main where
-the dashboard previously forced it to a subagent lane.
+the dashboard previously forced it to a subagent lane. This is a known
+limitation, pinned by synthetic tests in
+`test/main-turn-without-context-management.test.js` (env-line and safeguards
+`live_cwd` variants, plus a no-cwd control): an unfamiliar key cannot be told
+apart from the main prompt's own fallback slug, and tools + `session_id` are
+shared with the parent. A fix needs authoritative custom-agent identity checked
+before cwd recovery; it must flip those assertions deliberately, not force all
+unfamiliar keys to subagent or allowlist the observed main slug.
 
 ## Consequences
 
