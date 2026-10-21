@@ -2,6 +2,7 @@
 
 const { agentForProvider, getUpstreamProfile, listRawSessionBuckets } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
+const { WF_MAIN_AGENT_KEYS, KNOWN_SUBAGENT_KEYS, AGENT_KEY_UNRELIABLE } = require('../public/agent-classification');
 const sessionIdx = require('./session-index');
 
 // Synthetic session buckets that have no resumable rollout/session file
@@ -436,6 +437,14 @@ const interceptSessions = new Set();
 const pendingRequests = new Map();
 let interceptTimeout = 120;
 
+// Title/name-generation side request: no project of its own (#725).
+const SIDE_REQUEST_KEYS = { 'title-generator': 1, 'name-generator': 1 };
+function isSideRequestShape(req) {
+  if (!req?.system || req.context_management) return false;
+  if (SIDE_REQUEST_KEYS[extractAgentType(req.system).key]) return true;
+  return !req.tools?.length && (req.messages?.length || 0) <= 2;
+}
+
 function isQuotaCheck(req) {
   return req?.max_tokens === 1 && !req?.system &&
     req?.messages?.length === 1 && req.messages[0]?.content === 'quota';
@@ -447,11 +456,12 @@ function extractCwd(req) {
     const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
     const m = txt.match(/Primary working directory: (.+)/);
     if (m) return m[1].trim();
-    // 2.1.283+ keeps a top-level system on context_management requests but
-    // moved the env block out of it, so only those fall through. Without
-    // context_management (title-gen, subagent kickoffs) a system miss stays
-    // null — isAnthropicSubagent / resolveTitleGenTitle rely on "no cwd".
-    if (!req.context_management) return null;
+    // A top-level system without an env line falls through to the
+    // role:'system' message scan and the safeguards fallback below (2.1.283+
+    // moved the env block out of system; 2.1.304 can also drop
+    // context_management when a gateway rejects it, #725). Title-gen requests
+    // carry neither, so they still end at null — isAnthropicSubagent /
+    // resolveTitleGenTitle rely on "no cwd".
   }
   // context_management format: system content lives in messages[0] (any role —
   // Claude Code 2.1.283+ makes it a 'user' system-prompt block) and in dedicated
@@ -463,12 +473,16 @@ function extractCwd(req) {
   // project. role:'system' messages are scanned before messages[0]: on 2.1.283+
   // messages[0] embeds CLAUDE.md and other <system-reminder> text, which can
   // quote an env line of its own.
-  if (req?.context_management && Array.isArray(req?.messages)) {
+  // Without context_management (#725) only role:'system' messages are
+  // scanned: messages[0] is then ordinary user text (a title-gen or kickoff
+  // prompt) and must not be trusted to name the project.
+  if (Array.isArray(req?.messages)) {
+    const hasCm = !!req.context_management;
     const candidates = [];
-    for (let i = 1; i < req.messages.length; i++) {
+    for (let i = hasCm ? 1 : 0; i < req.messages.length; i++) {
       if (req.messages[i]?.role === 'system') candidates.push(req.messages[i]);
     }
-    if (req.messages[0]) candidates.push(req.messages[0]);
+    if (hasCm && req.messages[0]) candidates.push(req.messages[0]);
     const msgText = (msg) => {
       // Only system-role messages fold to a string; a plain-string messages[0]
       // is user text (e.g. a paste) and is not trusted to name the project.
@@ -492,9 +506,14 @@ function extractCwd(req) {
     }
   }
   // safeguards: interactive-session-only fallback (last resort), present when
-  // neither the legacy system block nor the context_management scan found an
+  // neither the legacy system block nor the system-message scan found an
   // env line — e.g. a delta body whose messages[0]/system-role turn aged out.
-  if (Array.isArray(req?.safeguards)) {
+  // That delta body may also lack context_management (2.1.304 resend, #725):
+  // top-level system + tools + safeguards, no system-role message. Only a
+  // side-request shape is excluded — a title/name generator key, or a
+  // top-level system with no tools and ≤2 messages — so a title-gen request
+  // that ever inherited the parent's safeguards still names no project.
+  if (Array.isArray(req?.safeguards) && !isSideRequestShape(req)) {
     for (const sg of req.safeguards) {
       const lc = sg?.classifier_context?.live_cwd;
       if (typeof lc === 'string' && lc) return lc;
@@ -553,23 +572,35 @@ function extractSessionId(req) {
   return m ? m[1] : null;
 }
 
-// Anthropic subagent heuristic: no cwd AND no explicit session_id.
-// Goal verifiers carry session_id but no cwd — they are NOT subagents.
-// #221: newer Claude Code builds stamp subagent requests with the parent's
-// session_id, so the "no session_id" signal alone under-detects. When cwd
-// is absent but session_id is present, fall back to agentKey — a known
-// non-main key (e.g. 'general-purpose') still means subagent.
+// Anthropic subagent heuristic (#725): main-session signals win over an
+// unfamiliar key, but rule 5 keeps a conservative subagent fallback. In order:
+//  1. context_management → main (interactive-session-only field).
+//  2. A known subagent / side-request key (KNOWN_SUBAGENT_KEYS, e.g.
+//     'general-purpose', 'claude-code-guide', 'title-generator') → subagent,
+//     even when a cwd was recovered: a subagent body may inherit the parent's
+//     safeguards, and a recovered cwd must not turn it into main.
+//  3. A cwd from a structural source (system env line, role:'system' env
+//     message, safeguards live_cwd outside a side-request shape) → main.
+//  4. No cwd and no session_id → subagent (bare/kickoff shape).
+//     Goal verifiers carry session_id but no cwd — they are NOT subagents.
+//  5. No cwd, session_id present (#221: subagents carry the parent's
+//     session_id): main only for a main key or an 'unknown'/'agent'
+//     catch-all; an unfamiliar regex-fallback slug stays subagent, as before.
+// The dashboard trusts agentKey only for main/known-subagent keys
+// (agent-classification.js isAgentKeyReliable) and otherwise reads this
+// flag, so an unfamiliar slug — e.g. 2.1.304's main prompt — is classified
+// here, by structure, once.
+// Known limitation: a user-defined subagent also has an unfamiliar key and
+// shares the parent's tools + session_id shape, so if it carries a structural
+// cwd (env line or safeguards live_cwd) rule 3 classifies it main. Pinned in
+// test/main-turn-without-context-management.test.js; see ADR 0005 (#725).
 function isAnthropicSubagent(parsedBody) {
   if (parsedBody?.context_management) return false;
-  const noCwd = !extractCwd(parsedBody);
-  const noSid = !extractSessionId(parsedBody);
-  if (noCwd && noSid) return true;
-  if (noCwd) {
-    const { key } = extractAgentType(parsedBody?.system);
-    if (key !== 'orchestrator' && key !== 'sdk-agent' && key !== 'default'
-        && key !== 'unknown' && key !== 'agent') return true;
-  }
-  return false;
+  const { key } = extractAgentType(parsedBody?.system);
+  if (KNOWN_SUBAGENT_KEYS[key]) return true;
+  if (extractCwd(parsedBody)) return false;
+  if (!extractSessionId(parsedBody)) return true;
+  return !WF_MAIN_AGENT_KEYS[key] && !AGENT_KEY_UNRELIABLE[key];
 }
 
 // Bare subagent requests: no session_id, no system prompt, no tools, 1-2 messages.

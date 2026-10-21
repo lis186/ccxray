@@ -758,10 +758,11 @@ describe('session-index', () => {
   });
 
   // ── #381: agentKey-based subagent gate must exclude subagent turns from window fold ──
-  // Old code uses `!entry.isSubagent` → a turn with agentKey='task-agent' (known subagent)
+  // Old code uses `!entry.isSubagent` → a turn with agentKey='general-purpose' (known subagent)
   // but isSubagent=false would enter the fold and inflate the window.
-  // New code uses isMainTurnByAgentKey → checks WF_MAIN_AGENT_KEYS → 'task-agent' is not
-  // in the map → excluded from fold regardless of isSubagent flag.
+  // New code uses isMainTurnByAgentKey → 'general-purpose' is a KNOWN_SUBAGENT_KEYS key
+  // → excluded from fold regardless of isSubagent flag. (#725: an UNFAMILIAR slug such
+  // as the former 'task-agent' fixture now follows the server flag instead.)
   it('#381 fail-on-old: subagent agentKey with isSubagent=false must not inflate session window', () => {
     const si = require('../server/session-index');
     const sid = 'test-381-gate';
@@ -777,14 +778,14 @@ describe('session-index', () => {
     });
     assert.equal(si.sessionWindow(sid), 200000, 'window starts at 200K');
 
-    // A subagent turn: agentKey='task-agent' (NOT in WF_MAIN_AGENT_KEYS),
+    // A subagent turn: agentKey='general-purpose' (a known subagent key),
     // isSubagent=false (server heuristic missed it), beta1m=true, maxContext=1M
     // Old code: !isSubagent → true → enters fold → window inflates to 1M (WRONG)
-    // New code: isMainTurnByAgentKey → 'task-agent' not in MAIN_KEYS → excluded (CORRECT)
+    // New code: isMainTurnByAgentKey → 'general-purpose' is a known subagent key → excluded (CORRECT)
     si.updateFromEntry({
       id: '2026-07-31T10-01-00-000', ts: '10:01:00',
       sessionId: sid, receivedAt: 2000, elapsed: '3.0',
-      agentKey: 'task-agent', isSubagent: false,
+      agentKey: 'general-purpose', isSubagent: false,
       maxContext: 1000000, beta1m: true,
       usage: { input_tokens: 500000, output_tokens: 200 },
       cost: { cost: 0.05 },

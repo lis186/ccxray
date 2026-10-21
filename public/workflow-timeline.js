@@ -316,7 +316,7 @@ function _wfBarSpan(t) {
 }
 
 // ── Lane Inference ────────────────────────────────────────────────────────
-// WF_MAIN_AGENT_KEYS and AGENT_KEY_UNRELIABLE are defined in
+// WF_MAIN_AGENT_KEYS, AGENT_KEY_UNRELIABLE and isAgentKeyReliable are defined in
 // agent-classification.js (loaded before this file, see index.html script
 // order). That isomorphic module is the single source of truth, shared by
 // this file, entry-rendering.js, AND server/session-index.js (#381).
@@ -687,8 +687,8 @@ function wfInferLanes(entries, childEntries, seqTracker) {
     if (!_wfIsLaneEligible(e)) { faultEntries.push(e); continue; }
     var sub = false;
 
-    // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
-    if (e.agentKey && !AGENT_KEY_UNRELIABLE[e.agentKey]) {
+    // INVARIANT: gate on isAgentKeyReliable — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+    if (isAgentKeyReliable(e.agentKey)) {
       if (!WF_MAIN_AGENT_KEYS[e.agentKey]) {
         // Non-main agent identity (server-detected, authoritative) → its own
         // sublane regardless of model or isSubagent flag.
@@ -1149,8 +1149,8 @@ function wfAddEntry(entry) {
     needsSub = true;
     key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
   } else
-  // INVARIANT: gate on AGENT_KEY_UNRELIABLE — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
-  if (entry.agentKey && !AGENT_KEY_UNRELIABLE[entry.agentKey]) {
+  // INVARIANT: gate on isAgentKeyReliable — see docs/decisions/0005-agent-key-unreliable-shared-contract.md
+  if (isAgentKeyReliable(entry.agentKey)) {
     needsSub = !WF_MAIN_AGENT_KEYS[entry.agentKey];
     key = _wfSubLaneKey('agent-' + entry.agentKey, entry);
   } else {
