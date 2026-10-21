@@ -1227,7 +1227,8 @@ if (process.argv[2] === 'status') {
 
     if (result.kind === 'dead-lockfile') {
       console.log('Hub lockfile exists but process is dead. Cleaning up.');
-      hub.deleteHubLock();
+      // A replacement hub may have published its lock since we observed this one.
+      hub.deleteHubLockIfPid(result.lock.pid);
       console.log(renderProcessStatus(null, 'no discoverable hub (the lockfile process is dead)'));
       console.log(inspectHomeStatus(null, { env: process.env }).line);
       printDiagnostics(null);
@@ -1438,17 +1439,18 @@ async function startClientMode(lock, decision) {
     // A shutdown that already captured the previous registration will never see
     // a promise created after it, so re-registering now would hand the new hub a
     // pid that is on its way out.
-    if (clientShutdown.isShuttingDown()) return;
+    if (clientShutdown.isShuttingDown()) return true;
     currentLock = newLock;
     try {
       registration = hub.registerClient(newLock, process.pid, process.cwd(), clientIdentity);
       const reg = await registration;
+      if (!reg) return false; // the monitor retries and reports the failure once
       // This is best-effort notification: recovery happens while the agent's TUI
       // owns the terminal, so the banner may not be read.
-      if (reg) reportHubRegistrationStatus(reg, 'recovered');
-      else reportHubRegistrationStatus(null, 'recovery-failed');
+      reportHubRegistrationStatus(reg, 'recovered');
+      return true;
     } catch {
-      reportHubRegistrationStatus(null, 'recovery-failed');
+      return false;
     }
   }, () => reportHubRegistrationStatus(null, 'recovery-failed'));
 

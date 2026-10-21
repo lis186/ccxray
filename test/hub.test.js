@@ -271,12 +271,11 @@ describe('hub discovery', () => {
     assert.equal(hub.readHubLock(), null); // lockfile deleted
   });
 
-  it('returns null when pid alive but health check fails', async () => {
+  it('throws HubUnresponsiveError and keeps the lock when pid alive but health check fails (#730)', async () => {
     // Write lockfile with our own pid but a port nothing is listening on
     hub.writeHubLock(1, process.pid); // port 1: privileged, guaranteed no listener
-    const result = await hub.discoverHub();
-    assert.equal(result, null);
-    assert.equal(hub.readHubLock(), null);
+    await assert.rejects(hub.discoverHub(), err => err.code === 'HUB_UNRESPONSIVE');
+    assert.equal(hub.readHubLock().pid, process.pid, 'live owner keeps its lockfile');
   });
 
   it('returns lock when pid alive and health check passes (via socket)', async () => {

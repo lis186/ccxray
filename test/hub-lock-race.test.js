@@ -156,12 +156,37 @@ describe('lockfile ownership (#730)', () => {
     assert.equal(lockOnDisk().pid, other.pid);
   });
 
-  it('discoverHub does not delete a replacement hub\'s lock when the old pid is dead', async () => {
-    // The lock read says dead pid; a live replacement then owns the file.
-    const dead = deadPid();
-    hub.writeHubLock(41002, dead);
+  it('discoverHub removes a lock whose pid is observed dead', async () => {
+    hub.writeHubLock(41002, deadPid());
     assert.equal(await hub.discoverHub(41002), null);
     assert.equal(lockOnDisk(), null, 'dead-pid lock is cleaned');
+  });
+
+  it('cleanup of an observed-dead lock leaves a replacement lock installed afterwards (status path)', () => {
+    const dead = deadPid();
+    hub.writeHubLock(41002, dead);
+    const observed = hub.readHubLock();
+    assert.equal(observed.pid, dead);
+    // A replacement hub publishes its lock between observation and cleanup.
+    const replacement = liveForeignPid();
+    hub.writeHubLock(41002, replacement.pid, undefined, hub.SOCK_PATH);
+    assert.equal(hub.deleteHubLockIfPid(observed.pid), false);
+    assert.equal(lockOnDisk().pid, replacement.pid, 'replacement lock survives');
+  });
+
+  it('discoverHub keeps the lock and socket of a live but unresponsive owner and throws', async () => {
+    const owner = liveForeignPid();
+    await hub.cleanupStaleSocket();
+    socketServer = await hub.createHubSocket();
+    hub.writeHubLock(41021, owner.pid); // no sockPath, nothing on 41021 -> health probe fails
+    const before = fs.readFileSync(hub.HUB_LOCK_PATH, 'utf8');
+    await assert.rejects(hub.discoverHub(41021), err => err instanceof hub.HubUnresponsiveError && err.code === 'HUB_UNRESPONSIVE');
+    assert.equal(fs.readFileSync(hub.HUB_LOCK_PATH, 'utf8'), before, 'lock untouched');
+    assert.ok(fs.existsSync(hub.SOCK_PATH), 'socket untouched');
+    await hub.cleanupStaleSocket(); // a later hub start must not unlink it either
+    assert.ok(fs.existsSync(hub.SOCK_PATH), 'cleanupStaleSocket still sees a live owner lock');
+    assert.equal(spawnCalls, 0);
+    await stopHubB();
   });
 });
 
@@ -209,29 +234,53 @@ describe('hub lockfile self-heal (#730)', () => {
 });
 
 describe('client recovery (#730)', () => {
-  it('restart race: monitor fires after B wrote its lock; B\'s lock survives, client re-registers, no fork', async () => {
+  it('restart race: B is published first, then one explicit tick registers inside the callback; B\'s lock survives, no fork', async () => {
     const A = liveForeignPid();
     const port = 41010;
     hub.writeHubLock(port, A.pid, undefined, hub.SOCK_PATH);
-    const recovered = [];
     const failures = [];
-    const interval = hub.startHubMonitor(A.pid, port, lock => recovered.push(lock), () => failures.push(1));
+    let registered = null;
+    const monitor = hub.createHubMonitor(A.pid, port, async lock => {
+      registered = await hub.registerClient(lock, process.pid, '/work', {});
+      return registered && registered.ok === true;
+    }, () => failures.push(1));
     try {
       await killAndWait(A);
-      await startHubB(port); // B binds and overwrites hub.json before the monitor's next tick
+      await startHubB(port); // socket + lock exist BEFORE the first tick
       const bLockBefore = fs.readFileSync(hub.HUB_LOCK_PATH, 'utf8');
-      assert.ok(await until(() => recovered.length === 1), 'recovery callback ran');
-      // What index.js's onRecovery does: re-register with the discovered hub.
-      const reg = await hub.registerClient(recovered[0], process.pid, '/work', {});
-      assert.equal(reg.ok, true);
+      await monitor.tick();
+      assert.equal(registered && registered.ok, true, 'registration happened inside the awaited callback');
       assert.equal(fs.readFileSync(hub.HUB_LOCK_PATH, 'utf8'), bLockBefore, 'B\'s hub.json intact');
-      assert.equal(lockOnDisk().pid, process.pid);
       assert.ok(hub.getHubStatus().clients.some(c => c.pid === process.pid), 'B lists the client pid');
       assert.equal(spawnCalls, 0, 'no extra hub forked');
       assert.deepEqual(failures, []);
     } finally {
-      clearInterval(interval);
       hub.removeClient(process.pid);
+      await stopHubB();
+    }
+  });
+
+  it('registration fails once, then succeeds against the same live hub (retried despite a live candidate)', async () => {
+    const dead = deadPid();
+    const port = 41015;
+    hub.writeHubLock(port, dead, undefined, hub.SOCK_PATH);
+    await startHubB(port);
+    let calls = 0;
+    let failures = 0;
+    const monitor = hub.createHubMonitor(dead, port, async () => { calls++; return calls >= 2; }, () => { failures++; });
+    try {
+      await monitor.tick();
+      assert.equal(calls, 1);
+      assert.equal(failures, 1, 'failed registration is a reported failure');
+      assert.ok(await until(async () => { await monitor.tick(); return calls === 2; }, 3000), 'retried while the hub stayed alive');
+      const before = calls;
+      await sleep(80);
+      await monitor.tick();
+      await monitor.tick();
+      assert.equal(calls, before, 'no further callbacks once registration succeeded');
+      assert.equal(spawnCalls, 0);
+      assert.equal(failures, 1);
+    } finally {
       await stopHubB();
     }
   });
@@ -242,7 +291,7 @@ describe('client recovery (#730)', () => {
     hub.writeHubLock(port, dead, undefined, hub.SOCK_PATH);
     const recovered = [];
     let failures = 0;
-    const interval = hub.startHubMonitor(dead, port, lock => recovered.push(lock), () => { failures++; });
+    const interval = hub.startHubMonitor(dead, port, lock => { recovered.push(lock); return true; }, () => { failures++; });
     try {
       assert.ok(await until(() => failures === 1), 'first attempt fails (stub fork never becomes ready)');
       assert.ok(await until(() => spawnCalls >= 2, 3000), 'monitor retried after the failure');
@@ -259,18 +308,52 @@ describe('client recovery (#730)', () => {
     }
   });
 
-  it('a hub discovered on a different port is not killed and counts as a failure', async () => {
-    const A = liveForeignPid();
-    hub.writeHubLock(41012, A.pid, undefined, hub.SOCK_PATH);
+  it('a non-acquiring waiter that observes a hub on a different port never signals it', async () => {
+    const other = liveForeignPid();
+    const kills = [];
+    const realKill = process.kill;
+    process.kill = (pid, sig) => {
+      if (sig !== 0 && sig !== undefined) kills.push([pid, sig]);
+      return realKill.call(process, pid, sig);
+    };
     let failures = 0;
-    const interval = hub.startHubMonitor(A.pid, 41013, () => {}, () => { failures++; });
     try {
-      await killAndWait(A);
-      await startHubB(41012); // live hub, but on a port this client is not using
-      assert.ok(await until(() => failures === 1));
-      assert.equal(lockOnDisk().pid, process.pid, 'live hub\'s lock untouched');
+      await startHubB(41012); // answers health on this home's socket
+      // The lock names a live foreign pid on a port this client is not using.
+      hub.writeHubLock(41012, other.pid, undefined, hub.SOCK_PATH);
+      assert.ok(hub.tryAcquireForkLock(), 'take the fork lock so the monitor is a non-acquiring waiter');
+      const dead = deadPid();
+      const monitor = hub.createHubMonitor(dead, 41013, () => true, () => { failures++; });
+      await monitor.tick();
+      assert.equal(failures, 1, 'reported as a failure');
+      assert.deepEqual(kills, [], 'no signal sent to the other hub');
+      assert.equal(other.exitCode, null);
+      assert.equal(lockOnDisk().pid, other.pid, 'its lock untouched');
     } finally {
-      clearInterval(interval);
+      process.kill = realKill;
+      hub.releaseForkLock();
+      await stopHubB();
+    }
+  });
+
+  it('a live but unresponsive owner keeps its lock and socket, and no hub is forked, until it dies', async () => {
+    const owner = liveForeignPid();
+    const port = 41022;
+    await hub.cleanupStaleSocket();
+    socketServer = await hub.createHubSocket();
+    hub.writeHubLock(port, owner.pid); // no sockPath; nothing listens on the port
+    let failures = 0;
+    const monitor = hub.createHubMonitor(deadPid(), port, () => true, () => { failures++; });
+    try {
+      await monitor.tick();
+      assert.equal(failures, 1);
+      assert.equal(spawnCalls, 0, 'no competitor forked');
+      assert.equal(lockOnDisk().pid, owner.pid, 'lock kept');
+      assert.ok(fs.existsSync(hub.SOCK_PATH), 'socket kept');
+      await stopHubB(); // the fixture socket would otherwise be discovered as a live hub
+      await killAndWait(owner);
+      assert.ok(await until(async () => { await monitor.tick(); return spawnCalls >= 1; }, 3000), 'forks once the owner is dead');
+    } finally {
       await stopHubB();
     }
   });
