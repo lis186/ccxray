@@ -18,6 +18,7 @@ ccxray status                                    # Show process, export, home, a
 ccxray --port 8080 status                        # Checks hub lock/socket first; probes this port only if no lock exists
 ccxray setup                                     # Claude wrapper + local recording only; import stays disabled
 ccxray setup --export --bucket <bucket> --domains example.com # Also enroll in summary export (opt-in)
+ccxray setup --wrap-binaries [--dry-run|--check|--remove] # Opt-in fail-open claude/codex launcher shims (docs/launcher-shims.md)
 ccxray hud on|off|status                         # Context HUD toggle (off by default; same settings.json as the dashboard)
 ccxray                                           # Proxy + dashboard only
 npm run dev                                      # Dev mode (auto-restart on server/public changes)
@@ -107,6 +108,9 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 |--------|---------|
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
+| `server/launcher-shims.js` | `ccxray setup --wrap-binaries` (#732): fail-open `claude`/`codex` launcher shims, PATH blocks, `--dry-run`/`--check`/`--remove` with a manifest that restores the previous state exactly. Guide: `docs/launcher-shims.md` |
+| `server/shim-bypass.js` | Reads `<home>/shim-bypass.log` (written by the shim probe) into counts for `ccxray status`, `ccxray setup --wrap-binaries --check` and `GET /_api/shim-bypass`; never exposes cwd |
+| `server/shim/` | Files copied to the user's machine by `--wrap-binaries`: `ccxray-shim.sh` (the shim) and `shim-probe.js` (dependency-free health probe; must stay built-ins only) |
 | `server/bounded-run.js` | Bounded shell/process runner for setup discovery and startup-file probes |
 | `server/statusline-setup.js` | `ccxray setup-statusline`: argument parsing, install/remove planning (`--dry-run`), and backed-up atomic rewrites of Claude's `settings.json` |
 | `server/claude-args.js` | Detects Claude background-launch flags that bypass proxying |

@@ -15,6 +15,7 @@ const exportSync = require('./export-sync');
 const status = require('./status');
 const exportDiagnostics = require('./export-diagnostics');
 const { runBounded } = require('./bounded-run');
+const launcherShims = require('./launcher-shims');
 
 const START_MARKER = '# >>> ccxray setup >>>';
 const END_MARKER = '# <<< ccxray setup <<<';
@@ -34,18 +35,19 @@ const CHECK_IDS = new Set([
 const EXPORT_ONLY_FLAGS = ['--bucket', '--domains', '--prefix', '--cwd-allowlist'];
 
 function usageLine() {
-  return 'Usage: ccxray setup [--remove | --check | --browser on|off] [--dry-run] [--yes] [--shell zsh|bash|pwsh|powershell] [--no-probe] [--retention-days N] [--export --bucket B --domains D [--prefix P] [--cwd-allowlist L]]';
+  return 'Usage: ccxray setup [--remove | --check | --browser on|off] [--dry-run] [--yes] [--shell zsh|bash|pwsh|powershell] [--no-probe] [--retention-days N] [--wrap-binaries [--shim-dir D] [--strict] [--no-session-env]] [--export --bucket B --domains D [--prefix P] [--cwd-allowlist L]]';
 }
 
 function parseArgs(argv) {
   const options = {
     remove: false, check: false, browser: null, dryRun: false, yes: false,
     shell: null, noProbe: false, export: false,
+    wrapBinaries: false, strict: false, noSessionEnv: false, shimDir: null,
     flags: Object.create(null),
   };
   const valued = new Set([
     '--shell', '--browser', '--bucket', '--domains', '--prefix',
-    '--cwd-allowlist', '--retention-days',
+    '--cwd-allowlist', '--retention-days', '--shim-dir',
   ]);
   const seen = new Set();
   for (let i = 0; i < argv.length; i++) {
@@ -56,6 +58,9 @@ function parseArgs(argv) {
     else if (arg === '--yes') options.yes = true;
     else if (arg === '--no-probe') options.noProbe = true;
     else if (arg === '--export') options.export = true;
+    else if (arg === '--wrap-binaries') options.wrapBinaries = true;
+    else if (arg === '--strict') options.strict = true;
+    else if (arg === '--no-session-env') options.noSessionEnv = true;
     else if (valued.has(arg)) {
       if (seen.has(arg) || argv[i + 1] === undefined || argv[i + 1].startsWith('--')) {
         return { error: usageLine() };
@@ -64,6 +69,7 @@ function parseArgs(argv) {
       const value = argv[++i];
       if (arg === '--shell') options.shell = value;
       else if (arg === '--browser') options.browser = value;
+      else if (arg === '--shim-dir') options.shimDir = value;
       else options.flags[arg] = value;
     } else return { error: usageLine() };
   }
@@ -79,6 +85,11 @@ function parseArgs(argv) {
   if (options.remove && options.browser) return { error: usageLine() };
   if (options.dryRun && options.browser) return { error: usageLine() };
   if (options.noProbe && !options.check) return { error: usageLine() };
+  // #732: the shim mode is its own setup; its flags mean nothing without it,
+  // and it never mixes with export enrollment or the browser preference.
+  if ((options.strict || options.noSessionEnv || options.shimDir) && !options.wrapBinaries) return { error: usageLine() };
+  if (options.wrapBinaries && (options.export || options.browser || Object.keys(options.flags).length > 0)) return { error: usageLine() };
+  if (options.wrapBinaries && (options.remove || options.check) && (options.strict || options.noSessionEnv || options.shimDir)) return { error: usageLine() };
   if (options.browser && options.browser !== 'on' && options.browser !== 'off') return { error: usageLine() };
   if (options.shell && !['zsh', 'bash', 'pwsh', 'powershell'].includes(options.shell)) return { error: usageLine() };
   return { options };
@@ -2061,6 +2072,12 @@ Options:
   --prefix P                GCS object prefix (with --export)
   --cwd-allowlist L          Comma-separated working directory basenames (with --export)
   --retention-days N         Retention in days (1–3650; default 30)
+  --wrap-binaries           Opt in: install fail-open claude/codex launcher shims so
+                            non-interactive launches (spawn, cron, scripts) are recorded
+                            when the proxy is up and run unchanged when it is down.
+                            Combine with --dry-run, --check, --remove, --yes, --shell,
+                            --shim-dir D (install into an existing PATH directory),
+                            --strict (refuse instead of failing open), --no-session-env
   --help, -h                Show this help`);
     return 0;
   }
@@ -2070,6 +2087,7 @@ Options:
     return 2;
   }
   const options = parsed.options;
+  if (options.wrapBinaries) return launcherShims.runWrapBinaries(options, overrides.shims || {});
   const explicit = {
     bucket: parseShellValueFlag(options, '--bucket'),
     domains: parseShellValueFlag(options, '--domains', parseDomainFlag),
@@ -2092,7 +2110,16 @@ Options:
     printChecks(checks, deps.logger);
     return checkReport(checks);
   }
-  if (options.remove) return runRemove(context, options, deps);
+  if (options.remove) {
+    const code = await runRemove(context, options, deps);
+    // Shims are part of what setup installed: --remove takes them out too.
+    if (!options.dryRun) {
+      await launcherShims.removeIfInstalled(options, {
+        fs: deps.fs, env: deps.env, platform: deps.platform, logger: deps.logger, ...(overrides.shims || {}),
+      });
+    }
+    return code;
+  }
   return runInstall(context, options, deps);
 }
 

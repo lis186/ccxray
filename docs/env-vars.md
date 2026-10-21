@@ -78,6 +78,12 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 
 | Variable | Default | Purpose | Defined in |
 |---|---|---|---|
+| `CCXRAY_SHIM_STRICT` | `0` (or the install-time `--strict`) | `1` makes the launcher shims refuse a launch (exit 111) when the proxy is unreachable instead of running the agent directly. Read by the shim, not by the server. | `server/shim/ccxray-shim.sh`, `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_DISABLE` | — | Any non-empty value makes the shims run the real binary immediately: no probe, no routing, no bypass line. | `server/shim/ccxray-shim.sh` |
+| `CCXRAY_SHIM_PORT` | hub lock port, then `PROXY_PORT`, then `5577` | Proxy port the shims probe and route to. | `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_TIMEOUT_MS` | `300` (clamped 50–5000) | Health-check budget per launch; a slower proxy counts as down. | `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_HOME` | the `CCXRAY_HOME` baked in at install | Home the shim reads `hub.json` from and writes `shim-bypass.log` to. | `server/shim/ccxray-shim.sh`, `server/shim/shim-probe.js` |
+| `CCXRAY_SHIM_REAL_` | — | Suffix `CLAUDE` or `CODEX` (`CCXRAY_SHIM_REAL_CLAUDE=/path/to/claude`): use this binary instead of searching PATH, for unusual layouts. | `server/shim/ccxray-shim.sh` |
 | `CCXRAY_IMPORT_DISABLE` | — | `0` enables the automatic startup transcript import; `1` also disables `ccxray import --once` and refuses `rebuild-index --reimport`. Unset = no automatic import. | `server/index.js`, `server/importer.js`, `server/rebuild-index.js` |
 | `CCXRAY_IMPORT_HOMES` | `~/.claude*` discovery | Comma-separated Claude `projects/` roots to import from. | `server/importer.js` |
 | `CCXRAY_IMPORT_CODEX_HOMES` | `~/.codex*` discovery | Comma-separated Codex roots to import from. | `server/importer.js` |

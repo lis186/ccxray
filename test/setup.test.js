@@ -3051,7 +3051,9 @@ test('setup dependencies refuse symlink-escaped account, enrollment, cursor, and
     assert.deepEqual(rawReadBytes(enrollmentFile), enrollmentBefore);
     consumeOutsideAttempts(fixture, [
       'readFileSync', 'readdirSync', 'readFileSync', 'readFileSync',
-      'readFileSync', 'openSync', 'readFileSync', 'writeFileSync',
+      'readFileSync', 'openSync', 'readFileSync',
+      'readFileSync', // #732: --remove also looks for <home>/shims.json (launcher shims) after the tombstone
+      'writeFileSync',
       'readFileSync', 'readFileSync', 'readFileSync',
     ]);
   } finally {

@@ -1178,6 +1178,16 @@ if (process.argv[2] === 'setup-statusline') {
 // ── "status" subcommand ──
 if (process.argv[2] === 'status') {
   (async () => {
+    // #732: shown only once shims exist or have logged a bypass, so a plain home prints nothing new.
+    try {
+      const shimHome = require('./paths').resolveCcxrayHome();
+      const { summarizeBypasses, renderBypassLine } = require('./shim-bypass');
+      const shimSummary = summarizeBypasses(shimHome);
+      if (fs.existsSync(path.join(shimHome, 'shims.json')) || shimSummary.total > 0) {
+        console.log(`Launcher shims: ${fs.existsSync(path.join(shimHome, 'shims.json')) ? 'installed (ccxray setup --wrap-binaries --check for details)' : 'not installed'}`);
+        console.log(renderBypassLine(shimSummary));
+      }
+    } catch { /* status must never fail on the shim line */ }
     const result = await fetchHubReport({ statusCommand: true });
     const printDiagnostics = report => {
       const diagnostics = collectExportDiagnostics({
