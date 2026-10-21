@@ -15,6 +15,8 @@ Only one process can listen on a port, and it is one of two kinds:
 | `ccxray status` | `Hub: http://localhost:<port> …` | `No hub running.` plus `Note: port <port> is held by a standalone (non-hub) ccxray` and `Machine: {"proxy":true,"hub":false,…}` |
 | `GET /_api/health` | `hub: true` | `hub: false` |
 
+`GET /_api/health` also returns `version` and `gitSha` (the 40-hex commit the process started from when the package root is a git checkout, else `null`; fixed at start, public, no other git data) — use `gitSha` to confirm a restart picked up a merge.
+
 ## Keeping a proxy up
 
 - A hub lives only while it has registered clients, plus 5 s. Pointing an agent at a hub's port with `ANTHROPIC_BASE_URL` (or the Codex/Grok equivalents below) does **not** register it, so it does not keep the hub alive: when the last `ccxray <agent>` client exits, the hub exits and the port closes.

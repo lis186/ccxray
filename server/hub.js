@@ -827,6 +827,7 @@ function handleHubRoutes(clientReq, clientRes) {
       pid: process.pid,
       hub: hubListenPort != null,
       version: require('../package.json').version,
+      gitSha: require('./git-sha').getGitSha(),
       ...(!reportTrusted ? { exportReportUnavailableReason: 'authentication-required' } : {}),
       capabilities: [],
     }));

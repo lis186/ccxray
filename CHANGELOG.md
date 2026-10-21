@@ -9,6 +9,7 @@
 
 ### Added
 
+- **`GET /_api/health` reports the running git commit as `gitSha` (#728).** A top-level field, present with and without dashboard authentication: the full 40-hex lowercase sha of the commit the process was started from, or `null`. It is resolved once per process from the ccxray package root by reading git metadata files (no `git` process), so a later checkout does not change it until restart. Only a `.git` directory or worktree `.git` file directly in the package root counts (never a parent repo); an npm-installed package, or unreadable metadata, reports `null`. Nothing else (paths, branch, remotes) is exposed.
 - **Git branch per turn and per session.** Each recorded turn stores `branch`, the branch checked out in its cwd (read from `.git/HEAD`, following a linked worktree's `gitdir:` file; no `git` process is spawned; cached per cwd for 5 s). It is omitted outside a git checkout, for an unknown cwd, and on a detached HEAD. Imported Claude and Codex transcripts use their own recorded branch. The session index (`sessions.json`, `GET /_api/sessions`) keeps the branch of the latest-received turn, and `ccxray usage --json` adds `topSessions[].branch`. `rebuild-index` does not back-fill the field. See [data model](docs/data-model.md).
 
 ### Fixed
