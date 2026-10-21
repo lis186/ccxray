@@ -2,6 +2,7 @@
 
 const { agentForProvider, getUpstreamProfile, listRawSessionBuckets } = require('./providers');
 const { extractAgentType } = require('./system-prompt');
+const { WF_MAIN_AGENT_KEYS, AGENT_KEY_UNRELIABLE } = require('../public/agent-classification');
 const sessionIdx = require('./session-index');
 
 // Synthetic session buckets that have no resumable rollout/session file
@@ -447,11 +448,12 @@ function extractCwd(req) {
     const txt = Array.isArray(req.system) ? req.system.map(b => b.text || '').join('\n') : String(req.system);
     const m = txt.match(/Primary working directory: (.+)/);
     if (m) return m[1].trim();
-    // 2.1.283+ keeps a top-level system on context_management requests but
-    // moved the env block out of it, so only those fall through. Without
-    // context_management (title-gen, subagent kickoffs) a system miss stays
-    // null — isAnthropicSubagent / resolveTitleGenTitle rely on "no cwd".
-    if (!req.context_management) return null;
+    // A top-level system without an env line falls through to the
+    // role:'system' message scan below (2.1.283+ moved the env block out of
+    // system; 2.1.304 can also drop context_management when a gateway rejects
+    // it, #725). Title-gen and subagent kickoffs have no system-role message
+    // and no safeguards, so they still end at null — isAnthropicSubagent /
+    // resolveTitleGenTitle rely on "no cwd".
   }
   // context_management format: system content lives in messages[0] (any role —
   // Claude Code 2.1.283+ makes it a 'user' system-prompt block) and in dedicated
@@ -463,12 +465,16 @@ function extractCwd(req) {
   // project. role:'system' messages are scanned before messages[0]: on 2.1.283+
   // messages[0] embeds CLAUDE.md and other <system-reminder> text, which can
   // quote an env line of its own.
-  if (req?.context_management && Array.isArray(req?.messages)) {
+  // Without context_management (#725) only role:'system' messages are
+  // scanned: messages[0] is then ordinary user text (a title-gen or kickoff
+  // prompt) and must not be trusted to name the project.
+  if (Array.isArray(req?.messages)) {
+    const hasCm = !!req.context_management;
     const candidates = [];
-    for (let i = 1; i < req.messages.length; i++) {
+    for (let i = hasCm ? 1 : 0; i < req.messages.length; i++) {
       if (req.messages[i]?.role === 'system') candidates.push(req.messages[i]);
     }
-    if (req.messages[0]) candidates.push(req.messages[0]);
+    if (hasCm && req.messages[0]) candidates.push(req.messages[0]);
     const msgText = (msg) => {
       // Only system-role messages fold to a string; a plain-string messages[0]
       // is user text (e.g. a paste) and is not trusted to name the project.
@@ -492,9 +498,13 @@ function extractCwd(req) {
     }
   }
   // safeguards: interactive-session-only fallback (last resort), present when
-  // neither the legacy system block nor the context_management scan found an
+  // neither the legacy system block nor the system-message scan found an
   // env line — e.g. a delta body whose messages[0]/system-role turn aged out.
-  if (Array.isArray(req?.safeguards)) {
+  // A top-level system with no env line and no context_management is the
+  // title-gen / kickoff shape, and those carry the parent's safeguards, so
+  // there safeguards must not name the project (#725).
+  const titleGenShape = req?.system && !req.context_management;
+  if (!titleGenShape && Array.isArray(req?.safeguards)) {
     for (const sg of req.safeguards) {
       const lc = sg?.classifier_context?.live_cwd;
       if (typeof lc === 'string' && lc) return lc;
@@ -565,9 +575,10 @@ function isAnthropicSubagent(parsedBody) {
   const noSid = !extractSessionId(parsedBody);
   if (noCwd && noSid) return true;
   if (noCwd) {
+    // Main = a shared main key (agent-classification.js) or an unreliable
+    // catch-all key; any other key is a positively identified subagent.
     const { key } = extractAgentType(parsedBody?.system);
-    if (key !== 'orchestrator' && key !== 'sdk-agent' && key !== 'default'
-        && key !== 'unknown' && key !== 'agent') return true;
+    if (!WF_MAIN_AGENT_KEYS[key] && !AGENT_KEY_UNRELIABLE[key]) return true;
   }
   return false;
 }

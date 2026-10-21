@@ -6,8 +6,11 @@
 // ADR 0005 site table: workflow-timeline.js, entry-rendering.js, session-index.js (#381)
 
 // Agent keys whose turns belong to the main lane — model switches within the
-// main conversation stay in main (the dashed model-switch line marks them)
-var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1 };
+// main conversation stay in main (the dashed model-switch line marks them).
+// 'claude-code': Claude Code 2.1.304's main prompt names the product itself and
+// lands in extractAgentType()'s regex fallback under this key (#725). Exact
+// match only — named subagents such as 'claude-code-guide' are KNOWN_AGENTS keys.
+var WF_MAIN_AGENT_KEYS = { 'orchestrator': 1, 'sdk-agent': 1, 'default': 1, 'claude-code': 1 };
 
 // agentKey values that don't reliably mean "not main" — both are catch-all
 // defaults from extractAgentType()'s regex fallback for unrecognized prompts
