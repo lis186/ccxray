@@ -121,6 +121,25 @@ describe('stripInjectedStats', () => {
 });
 
 describe('describeUpstreamError', () => {
+  it('log label fix (#744)', () => {
+    const store = require('../server/store');
+    const original = new Map(store.versionIndex);
+    try {
+      store.versionIndex.set('synthetic-grok', { version: 'zz-synthetic', agentLabel: 'Grok' });
+      const error = { code: 'ETIMEDOUT' };
+      const unknown = describeUpstreamError(error, 'api.anthropic.com');
+      assert.doesNotMatch(unknown.summary, /Grok/);
+      assert.doesNotMatch(unknown.summary, /\[/);
+      const claude = describeUpstreamError(error, 'api.anthropic.com', { agentLabel: 'Claude' });
+      assert.match(claude.summary, /\[Claude\]/);
+      assert.doesNotMatch(claude.summary, /Grok/);
+      assert.match(describeUpstreamError(error, 'xai.example', { agentLabel: 'Grok Title' }).summary, /\[Grok Title\]/);
+    } finally {
+      store.versionIndex.clear();
+      for (const [key, value] of original) store.versionIndex.set(key, value);
+    }
+  });
+
   it('classifies ETIMEDOUT as retryable with hint', () => {
     const info = describeUpstreamError({ code: 'ETIMEDOUT' }, 'api.anthropic.com');
     assert.equal(info.retryable, true);

@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- Routing fix (#745): header-aware routing for shared models and OpenAI paths, gateway bearers, empty header values, Grok header/hub path consistency, Anthropic-shaped `x-api-key`, explicit Codex/ChatGPT conflicts, and preconnects; log label fix (#744).
+
 - Routing fix: unlisted `/v1` paths without a provider signal get a local 421 instead of going to the Anthropic upstream; `/v1/alpha/search`, `/v1/memories*`, and `/v1/images*` use the OpenAI upstreams; Claude `/v1/messages*` and Codex `/v1/responses*` routing is unchanged. HTTP/WS index rows record method and pathname (#740).
 
 - **Hub restart race no longer orphans clients or loses `hub.json` (#730).** A client's hub monitor deleted `hub.json` unconditionally, so when a replacement hub had already written its lockfile the client removed it, forked a hub that could not bind, printed `Hub recovery failed`, and never re-registered. Lockfile removal is now ownership-checked (only the caller's own pid, the dead hub being monitored, or a dead pid; a lock naming another live pid is left alone) for the monitor, `discoverHub`, and `shutdownHub`, and `hub.json` is written atomically (temp file + rename, mode 0600). Recovery now runs discovery first and re-registers with a healthy hub on the same port instead of forking, and keeps monitoring with backoff after a failed attempt. A running hub checks every 5s that `hub.json` still names it and rewrites it when missing (never over another live hub). The bind-failure note says the lockfile is missing when the port holder answers on this home's socket, instead of suggesting a `CCXRAY_HOME` mismatch.
