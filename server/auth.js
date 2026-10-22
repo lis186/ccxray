@@ -439,6 +439,39 @@ function verifyUpstream(req, res) {
   return false;
 }
 
+// Dashboard state-changing requests (anything but GET/HEAD/OPTIONS): a request
+// that declares a browsing context must be same-origin. Sec-Fetch-Site, when
+// sent, decides (same-origin / none pass); otherwise an Origin header must name
+// the request's own Host or a loopback host. Requests carrying neither header
+// (CLI, curl, hub clients, tests) are unaffected. Applies to loopback peers too.
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function passesDashboardWriteOrigin(req) {
+  if (SAFE_METHODS.has(req.method)) return true;
+  const sfs = req.headers['sec-fetch-site'];
+  if (sfs !== undefined) return sfs === 'same-origin' || sfs === 'none';
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+  let u;
+  try { u = new URL(origin); } catch { return false; }
+  const host = req.headers.host;
+  if (host && u.host.toLowerCase() === String(host).toLowerCase()) return true;
+  return _isAllowedHost(u.host) && _isAllowedHost(host);
+}
+
+function verifyDashboardWrite(req, res) {
+  if (classifyDomain(req) !== 'dashboard' || passesDashboardWriteOrigin(req)) return true;
+  res.writeHead(403, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'forbidden', message: 'Cross-origin dashboard writes are not allowed' }));
+  return false;
+}
+
+// JSON-body write routes require Content-Type: application/json.
+function hasJsonContentType(req) {
+  const ct = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+  return ct === 'application/json';
+}
+
 function dispatch(req) {
   const domain = classifyDomain(req);
   return {
@@ -466,6 +499,8 @@ module.exports = {
   // but may include optional data only for already-trusted callers.
   isDashboardAuthenticated,
   verifyDashboard,
+  verifyDashboardWrite,
+  hasJsonContentType,
   verifyUpstream,
   // Shared upstream credential taxonomy (pure header check)
   verifyUpstreamCredential,

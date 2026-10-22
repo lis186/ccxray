@@ -127,6 +127,7 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 | `server/routes/auth.js` | Dashboard authentication bootstrap and status routes |
 | `server/routes/sse.js` | SSE endpoint |
 | `server/routes/intercept.js` | Intercept toggle/approve/reject/timeout |
+| `server/routes/route-errors.js` | Shared 400 (malformed percent-encoding) and 415 (non-JSON write body) replies for route handlers |
 | `server/routes/costs.js` | Cost budget endpoints |
 | `server/hub.js` | Multi-project hub: lockfile (`~/.ccxray/hub.json`), discovery (with orphan port probe fallback), client registration, idle shutdown (injectable via setOnShutdown), crash auto-recovery. Hub status reports the hub-owned export config hash; socket replies reject malformed or over-1 MiB frames, and HTTP probes accept cancellation and cap replies at 1 MiB |
 | `server/providers.js` | Provider registry and launch functions for Claude, Codex, and Grok |

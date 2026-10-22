@@ -425,8 +425,16 @@ function stripInjectedTags(text) {
 }
 
 // ── Session metadata (cwd/config dir per session) ───────────────────
-const sessionMeta = {}; // { sessionId: { cwd, configDir, lastSeenAt } }
-const activeRequests = {}; // sessionId → in-flight count
+// Null-prototype maps: keys are externally supplied session ids, so a reserved
+// name must be an ordinary key and never reach Object.prototype.
+const sessionMeta = Object.create(null); // { sessionId: { cwd, configDir, lastSeenAt } }
+const activeRequests = Object.create(null); // sessionId → in-flight count
+
+const RESERVED_SESSION_IDS = new Set(['__proto__', 'constructor', 'prototype']);
+// Externally supplied ids with a reserved name are treated as "no session id".
+function sanitizeSessionId(id) {
+  return typeof id === 'string' && RESERVED_SESSION_IDS.has(id.trim()) ? null : id;
+}
 const sessionCosts = new Map(); // sessionId → accumulated cost
 
 // ── Version Index (cc_version → { reqId, b2Len, firstSeen }) ────────
@@ -562,11 +570,11 @@ function cacheConfigDir(sessionId, req) {
 }
 
 function extractSessionId(req) {
-  if (typeof req?.metadata?.session_id === 'string') return req.metadata.session_id;
+  if (typeof req?.metadata?.session_id === 'string') return sanitizeSessionId(req.metadata.session_id);
   const uid = req?.metadata?.user_id || '';
   // New format: user_id is JSON like {"session_id":"xxx-yyy"}
   const jsonMatch = uid.match(/"session_id"\s*:\s*"([a-f0-9-]+)"/);
-  if (jsonMatch) return jsonMatch[1];
+  if (jsonMatch) return sanitizeSessionId(jsonMatch[1]);
   // Legacy format: user_id is "session_xxx-yyy"
   const m = uid.match(/session_([a-f0-9-]+)/);
   return m ? m[1] : null;
@@ -1040,6 +1048,7 @@ function computeSessionResume(sessionId, provider, agent) {
 }
 
 module.exports = {
+  sanitizeSessionId,
   MAX_ENTRIES,
   SESSION_ENTRY_CAP,
   entries,

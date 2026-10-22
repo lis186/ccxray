@@ -50,6 +50,10 @@ function parseCodexTurnMetadata(headers) {
 }
 
 function getCodexSessionId(headers, parsedBody) {
+  return store.sanitizeSessionId(getCodexSessionIdRaw(headers, parsedBody)) || null;
+}
+
+function getCodexSessionIdRaw(headers, parsedBody) {
   const direct = firstHeader(headers, 'session_id')
     || firstHeader(headers, 'x-openai-session-id');
   if (direct) {

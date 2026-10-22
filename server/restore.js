@@ -353,7 +353,7 @@ async function restoreFromLogs() {
       }
     }
 
-    if (meta.sessionId) {
+    if (meta.sessionId && store.sanitizeSessionId(meta.sessionId)) {
       if (!store.sessionMeta[meta.sessionId]) store.sessionMeta[meta.sessionId] = {};
       if (meta.provider) store.sessionMeta[meta.sessionId].provider = meta.provider;
       if (meta.cwd) store.sessionMeta[meta.sessionId].cwd = meta.cwd;

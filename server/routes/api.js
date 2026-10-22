@@ -4,7 +4,9 @@ const config = require('../config');
 const store = require('../store');
 const { summarizeEntry } = require('../sse-broadcast');
 const { loadEntryReqRes } = require('../restore');
-const { tokenizeRequest } = require('../helpers');
+const { tokenizeRequest, safeDecodeURIComponent } = require('../helpers');
+const { badEncoding, unsupportedMediaType } = require('./route-errors');
+const { hasJsonContentType } = require('../auth');
 const { computeBlockDiff } = require('../system-prompt');
 const { getPlanConfig } = require('../plans');
 const { getEffectivePlan } = require('../plan-detector');
@@ -215,7 +217,8 @@ function handleApiRoutes(clientReq, clientRes) {
   // On-demand entry loading for a specific session (cold sessions, Phase 2)
   const sessionEntriesMatch = pathname.match(/^\/\_api\/session\/([^/]+)\/entries$/);
   if (sessionEntriesMatch) {
-    const sid = decodeURIComponent(sessionEntriesMatch[1]);
+    const sid = safeDecodeURIComponent(sessionEntriesMatch[1]);
+    if (sid === null) return badEncoding(clientRes);
     const sesParams = new URLSearchParams(clientReq.url.split('?')[1] || '');
     const sesHideImported = sesParams.has('hideImported');
     (async () => {
@@ -346,7 +349,8 @@ function handleApiRoutes(clientReq, clientRes) {
   // Full entry data (req + res) — lazy loaded; cold-session disk fallback
   const entryMatch = pathname.match(/^\/_api\/entry\/(.+)$/);
   if (entryMatch) {
-    const id = decodeURIComponent(entryMatch[1]);
+    const id = safeDecodeURIComponent(entryMatch[1]);
+    if (id === null) return badEncoding(clientRes);
     (async () => {
       const entry = store.getEntryById(id) || await loadColdEntry(id);
       if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return; }
@@ -365,7 +369,8 @@ function handleApiRoutes(clientReq, clientRes) {
   // Lazy tokenization endpoint; cold-session disk fallback
   const tokMatch = pathname.match(/^\/_api\/tokens\/(.+)$/);
   if (tokMatch) {
-    const id = decodeURIComponent(tokMatch[1]);
+    const id = safeDecodeURIComponent(tokMatch[1]);
+    if (id === null) return badEncoding(clientRes);
     (async () => {
       const entry = store.getEntryById(id) || await loadColdEntry(id);
       if (!entry) { clientRes.writeHead(404, { 'Content-Type': 'application/json' }); clientRes.end(JSON.stringify({ error: 'not found' })); return; }
@@ -392,6 +397,7 @@ function handleApiRoutes(clientReq, clientRes) {
   }
 
   if (clientReq.method === 'POST' && pathname === '/_api/stars') {
+    if (!hasJsonContentType(clientReq)) return unsupportedMediaType(clientRes);
     let body = '';
     clientReq.on('data', c => { body += c; });
     clientReq.on('end', () => {
@@ -433,6 +439,7 @@ function handleApiRoutes(clientReq, clientRes) {
 
   if (clientReq.method === 'POST' && pathname === '/_api/settings')
   {
+    if (!hasJsonContentType(clientReq)) return unsupportedMediaType(clientRes);
     let body = '';
     clientReq.on('data', c => { body += c; });
     clientReq.on('end', () =>

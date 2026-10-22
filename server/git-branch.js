@@ -21,6 +21,28 @@ const TTL_MS = 5000;
 const MAX_CACHE = 512;
 const cache = new Map(); // cwd → { branch, at }
 
+const MAX_GIT_FILE_BYTES = 4096;
+// O_NONBLOCK keeps open() from waiting on a FIFO; undefined on Windows → 0.
+const OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK || 0);
+
+// Read a small regular file, or null. Opens first and fstats the same
+// descriptor (no pathname stat → no check/use gap); anything that is not a
+// regular file is refused unread, and at most MAX_GIT_FILE_BYTES are read.
+function readSmallRegularFile(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, OPEN_FLAGS);
+    if (!fs.fstatSync(fd).isFile()) return null;
+    const buf = Buffer.alloc(MAX_GIT_FILE_BYTES);
+    const n = fs.readSync(fd, buf, 0, MAX_GIT_FILE_BYTES, 0);
+    return buf.toString('utf8', 0, n);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+  }
+}
+
 function findGitDir(dir) {
   let cur = dir;
   for (;;) {
@@ -29,7 +51,8 @@ function findGitDir(dir) {
     try { st = fs.statSync(dotGit); } catch {}
     if (st && st.isDirectory()) return dotGit;
     if (st && st.isFile()) {
-      const m = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+?)\s*$/m);
+      const text = readSmallRegularFile(dotGit);
+      const m = text && text.match(/^gitdir:\s*(.+?)\s*$/m);
       return m ? path.resolve(cur, m[1]) : null;
     }
     const parent = path.dirname(cur);
@@ -44,8 +67,9 @@ function readBranch(cwd) {
     if (!fs.statSync(cwd).isDirectory()) return null;
     const gitDir = findGitDir(path.resolve(cwd));
     if (!gitDir) return null;
-    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
-    const m = head.match(/^ref:\s*refs\/heads\/(.+)$/);
+    const headText = readSmallRegularFile(path.join(gitDir, 'HEAD'));
+    if (headText === null) return null;
+    const m = headText.trim().match(/^ref:\s*refs\/heads\/(.+)$/);
     return m ? m[1] : null;
   } catch {
     return null;

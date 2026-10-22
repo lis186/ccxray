@@ -202,7 +202,7 @@ function isSubagent(parsedBody, _headers) {
 
 function rawSessionId(headers, _parsedBody) {
   const sid = headers?.['x-session-id'];
-  return sid ? String(sid) : null;
+  return sid ? store.sanitizeSessionId(String(sid)) : null;
 }
 
 function systemPromptHash(parsedBody) {

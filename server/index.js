@@ -172,7 +172,7 @@ const { startExportSync, stopExportSync, flushExport, awaitPendingFlush } = expo
 const { forwardRequest, setStatusLineEnabled, getStatusLineEnabled, setSessionAnchorRecorder } = require('./forward');
 const { readSettings, hudStatusText } = require('./settings');
 const { broadcastSessionStatus, broadcastPendingRequest } = require('./sse-broadcast');
-const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl } = require('./auth');
+const { dispatch, mintAutoOpenUrl, formatAutoOpenUrl, verifyDashboardWrite } = require('./auth');
 const { findSharedPrefix } = require('./delta-helpers');
 const { extractPromptAgentType } = require('./system-prompt');
 const providers = require('./providers');
@@ -501,7 +501,7 @@ const getCodexCwdFallback = getAgentCwdFallback;
 
 
 // ── Server ──────────────────────────────────────────────────────────
-const server = http.createServer((clientReq, clientRes) => {
+function handleHttpRequest(clientReq, clientRes) {
   hub.applyClientRoute(clientReq);
 
   // ── Hub API (health, register, unregister, status) ──
@@ -525,6 +525,7 @@ const server = http.createServer((clientReq, clientRes) => {
 
   // ── Auth check (Phase 1.2 dispatcher; Phase 2.3 enforce) ──
   if (!dispatch(clientReq).verify(clientReq, clientRes)) return;
+  if (!verifyDashboardWrite(clientReq, clientRes)) return;
 
   // ── SSE ──
   if (handleSSERoute(clientReq, clientRes)) return;
@@ -793,6 +794,19 @@ const server = http.createServer((clientReq, clientRes) => {
 
     forwardRequest(ctx);
   });
+}
+
+// A synchronous throw while routing answers 500 for that request only.
+const server = http.createServer((clientReq, clientRes) => {
+  try {
+    handleHttpRequest(clientReq, clientRes);
+  } catch (err) {
+    console.error('[ccxray] request handler error:', err && err.message);
+    try {
+      if (!clientRes.headersSent) clientRes.writeHead(500, { 'Content-Type': 'application/json' });
+      clientRes.end(JSON.stringify({ error: 'internal error' }));
+    } catch {}
+  }
 });
 
 server.headersTimeout = 60_000;    // 60s — only header phase, safe
