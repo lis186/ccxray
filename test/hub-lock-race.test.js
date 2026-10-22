@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
+const net = require('node:net');
 const { spawn, spawnSync } = require('node:child_process');
 
 const SERVER_DIR = path.join(__dirname, '..', 'server');
@@ -38,6 +39,9 @@ function loadHub() {
     ['const HUB_HEALTH_CHECK_MS = 5000;', 'const HUB_HEALTH_CHECK_MS = 20;'],
     ['const HUB_LOCK_CHECK_MS = 5000;', 'const HUB_LOCK_CHECK_MS = 20;'],
     ['const READINESS_TIMEOUT_MS = 10000;', 'const READINESS_TIMEOUT_MS = 120;'],
+    // Barrier: lets a test act exactly when readiness waiting begins.
+    ['function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {',
+     'function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {\n  if (process.__ccxReadinessHook) process.__ccxReadinessHook();'],
   ]) {
     assert.ok(source.includes(from), `${from} must be declared for harness timing`);
     source = source.replace(from, to);
@@ -332,6 +336,50 @@ describe('client recovery (#730)', () => {
     } finally {
       process.kill = realKill;
       hub.releaseForkLock();
+      await stopHubB();
+    }
+  });
+
+  it('a true non-acquiring waiter (discovery null, fork lock held elsewhere) never signals a hub that appears on another port', async () => {
+    const other = liveForeignPid();
+    const holder = liveForeignPid();
+    const reserve = () => new Promise(resolve => {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+    });
+    const ownPort = await reserve(); // closed: discovery's HTTP fallback finds nothing
+    const otherPort = await reserve();
+    const kills = [];
+    const realKill = process.kill;
+    process.kill = (pid, sig) => {
+      if (sig !== 0 && sig !== undefined) kills.push([pid, sig]);
+      return realKill.call(process, pid, sig);
+    };
+    let failures = 0;
+    let waiting = false;
+    let published = null;
+    try {
+      assert.equal(lockOnDisk(), null, 'no hub.json: discovery returns null');
+      // Another party holds a fresh fork lock, so this monitor cannot acquire it.
+      fs.writeFileSync(path.join(HOME, 'hub.fork.lock'), JSON.stringify({ pid: holder.pid, at: Date.now() }));
+      process.__ccxReadinessHook = () => {
+        waiting = true;
+        // Publish only now that readiness waiting has started.
+        published = startHubB(otherPort).then(() => hub.writeHubLock(otherPort, other.pid, undefined, hub.SOCK_PATH));
+      };
+      const monitor = hub.createHubMonitor(deadPid(), ownPort, () => true, () => { failures++; });
+      await monitor.tick();
+      await published;
+      assert.equal(waiting, true, 'the readiness-wait branch ran');
+      assert.equal(failures, 1, 'foreign-port hub reported as a failure');
+      assert.equal(spawnCalls, 0, 'non-acquirer never forks');
+      assert.deepEqual(kills, [], 'no signal sent to the other hub');
+      assert.equal(other.exitCode, null);
+      assert.equal(lockOnDisk().pid, other.pid, 'its lock untouched');
+    } finally {
+      delete process.__ccxReadinessHook;
+      process.kill = realKill;
+      try { fs.unlinkSync(path.join(HOME, 'hub.fork.lock')); } catch {}
       await stopHubB();
     }
   });
