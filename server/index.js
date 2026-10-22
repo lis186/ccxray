@@ -1628,6 +1628,9 @@ async function startServer({ onListen } = {}) {
     if (!listen.isLoopbackHost(host)) {
       const bound = listen.listenAddresses(server).map(listen.formatAddress).join(', ');
       console.error(`${DISPLAY_NAME} listening on ${bound} (PROXY_HOST=${host}); non-loopback clients need a ccxray credential`);
+      if (listen.isSingleInterfaceHost(host)) {
+        console.error(`${DISPLAY_NAME}: PROXY_HOST=${host} is not reachable as localhost, so local agent launches and hub checks cannot use it; set PROXY_HOST=0.0.0.0 to keep them working`);
+      }
     }
   }
   rebuildIndexHTML(actualPort);

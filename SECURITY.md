@@ -32,15 +32,15 @@ an authorized dashboard caller.
 
 Non-loopback upstream `/v1/*` HTTP requests and WebSocket upgrades normally
 require the ccxray-injected upstream credential. ChatGPT-routed Codex traffic
-has a compatibility exception for loopback peers: ccxray accepts
-`chatgpt-account-id` together with a JWT-shaped `Authorization` header, and
-checks that the request routes to the ChatGPT upstream. This holds with
-`CCXRAY_LOOPBACK_REQUIRE_AUTH=1` too. This is only a shape check; ccxray does
-not verify the JWT signature. The upstream determines whether the OAuth token
-is actually valid. A non-loopback peer needs the ccxray credential for these
-requests unless `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1` is set, which accepts the
-ChatGPT-login headers alone from any peer that can reach the port. This
-exception does not authenticate dashboard/API requests.
+has a compatibility exception: ccxray accepts `chatgpt-account-id` together
+with a JWT-shaped `Authorization` header, and checks that the request routes to
+the ChatGPT upstream. This is only a shape check; ccxray does not verify the
+JWT signature. The upstream determines whether the OAuth token is actually
+valid. This exception does not authenticate dashboard/API requests.
+
+ChatGPT login from Codex is accepted from loopback peers. Clients on other
+hosts need `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1`; enable it only on a trusted
+network.
 
 `/_api/health` is public and returns a minimal listener identity, including
 `app`, `pid`, `hub`, `version`, and `capabilities: []`. The additional export

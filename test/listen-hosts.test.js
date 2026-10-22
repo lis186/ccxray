@@ -91,6 +91,16 @@ describe('resolveListenHosts', () => {
     assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '192.0.2.10' }), { primary: '192.0.2.10', optional: [] });
   });
 
+  it('accepts a bracketed IPv6 literal', () => {
+    assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '[::]' }), { primary: '::', optional: [] });
+    assert.deepEqual(listen.resolveListenHosts({ PROXY_HOST: '::' }), { primary: '::', optional: [] });
+  });
+
+  it('isSingleInterfaceHost flags one non-loopback address, not wildcards or loopback', () => {
+    for (const h of ['192.0.2.10', 'fe80::1', 'myhost.lan']) assert.equal(listen.isSingleInterfaceHost(h), true, h);
+    for (const h of ['0.0.0.0', '::', '127.0.0.1', '::1', 'localhost', '', undefined]) assert.equal(listen.isSingleInterfaceHost(h), false, String(h));
+  });
+
   it('isLoopbackHost recognises loopback spellings only', () => {
     for (const h of ['127.0.0.1', '127.0.0.2', '::1', '[::1]', 'localhost', '::ffff:127.0.0.1']) assert.equal(listen.isLoopbackHost(h), true, h);
     for (const h of ['0.0.0.0', '::', '192.168.1.5', '', undefined]) assert.equal(listen.isLoopbackHost(h), false, String(h));
@@ -230,9 +240,21 @@ describe('port in use on one loopback family', () => {
 
   it('port scan moves past a port whose ::1 side is taken', async t => {
     if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
-    const blocker = net.createServer();
-    await new Promise((resolve, reject) => { blocker.once('error', reject); blocker.listen(0, '::1', resolve); });
-    const port = blocker.address().port;
+    // Fixture: a ::1 blocker whose next port is free on both families. An
+    // ephemeral port can sit next to a busy one, so retry the allocation.
+    let blocker = null;
+    let port = 0;
+    for (let i = 0; i < 20 && !blocker; i++) {
+      const b = net.createServer();
+      await new Promise((resolve, reject) => { b.once('error', reject); b.listen(0, '::1', resolve); });
+      const p = b.address().port;
+      if (p < 65535 && await canListenOnPort('127.0.0.1', p + 1) && await canListenOnPort('::1', p + 1)) {
+        blocker = b; port = p;
+      } else {
+        await new Promise(r => b.close(() => r()));
+      }
+    }
+    if (!blocker) return t.skip('fixture: no free port next to an ephemeral port after 20 tries');
     const srv = makeServer();
     try {
       const got = await hub.tryListen(srv, port, 5);
@@ -256,6 +278,140 @@ describe('port in use on one loopback family', () => {
       await closeServer(srv);
       await new Promise(r => blocker.close(() => r()));
     }
+  });
+});
+
+describe('::1 connections belong to the HTTP server lifecycle', () => {
+  function within(promise, ms, label) {
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timeout: ${label}`)), ms); }),
+    ]).finally(() => clearTimeout(timer));
+  }
+  const tick = ms => new Promise(r => setTimeout(r, ms));
+  const connections = srv => new Promise((resolve, reject) => srv.getConnections((err, n) => err ? reject(err) : resolve(n)));
+  function closeTracked(srv) {
+    const state = { done: false, events: [] };
+    srv.once('close', () => state.events.push('close-event'));
+    state.promise = new Promise(resolve => srv.close(err => { state.done = true; state.events.push('close-cb'); resolve(err); }));
+    return state;
+  }
+
+  it('an active keep-alive response holds close() until it finishes', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    let release;
+    const holding = new Promise(r => { release = r; });
+    let arrived;
+    const reached = new Promise(r => { arrived = r; });
+    const srv = http.createServer(async (req, res) => { arrived(); await holding; res.end('ok'); });
+    const agent = new http.Agent({ keepAlive: true });
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const reply = new Promise((resolve, reject) => {
+        http.get({ host: '::1', port, path: '/', agent }, res => {
+          let body = '';
+          res.on('data', c => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await within(reached, 2000, 'request reached handler');
+      assert.equal(await connections(srv), 1);
+      const closing = closeTracked(srv);
+      await tick(100);
+      assert.equal(closing.done, false, 'close() must wait for the open ::1 response');
+      release();
+      assert.equal(await within(reply, 2000, 'response'), 'ok');
+      srv.closeIdleConnections();
+      assert.equal(await within(closing.promise, 2000, 'close completion'), undefined);
+      assert.deepEqual(closing.events, ['close-event', 'close-cb']);
+      assert.equal(await connections(srv), 0);
+    } finally {
+      release();
+      agent.destroy();
+      await closeServer(srv);
+    }
+  });
+
+  it('a streaming response is counted and ended by closeAllConnections()', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const srv = http.createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: first\n\n');
+    });
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      const { ended } = await within(new Promise((resolve, reject) => {
+        const req = http.get({ host: '::1', port, path: '/events', agent: false }, res => {
+          res.once('data', () => resolve({ ended: new Promise(r => res.on('close', r)) }));
+        });
+        req.on('error', reject);
+      }), 2000, 'first event');
+      assert.equal(await connections(srv), 1);
+      const closing = closeTracked(srv);
+      await tick(100);
+      assert.equal(closing.done, false, 'close() must wait for the open ::1 stream');
+      srv.closeAllConnections();
+      await within(ended, 2000, 'client stream end');
+      await within(closing.promise, 2000, 'close completion');
+      assert.equal(await connections(srv), 0);
+    } finally {
+      await closeServer(srv);
+    }
+  });
+
+  it('an upgraded socket holds close() until it is destroyed', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const srv = makeServer();
+    let upgraded = null;
+    srv.on('upgrade', (req, socket) => {
+      upgraded = socket;
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    });
+    let clientSocket = null;
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      await within(new Promise((resolve, reject) => {
+        const req = http.request({ host: '::1', port, path: '/v1/responses', agent: false,
+          headers: { Connection: 'Upgrade', Upgrade: 'websocket' } });
+        req.on('upgrade', (res, socket) => { clientSocket = socket; resolve(); });
+        req.on('error', reject);
+        req.end();
+      }), 2000, 'upgrade');
+      assert.equal(await connections(srv), 1);
+      const closing = closeTracked(srv);
+      await tick(100);
+      assert.equal(closing.done, false, 'close() must wait for the upgraded ::1 socket');
+      upgraded.destroy();
+      await within(closing.promise, 2000, 'close completion');
+      assert.equal(await connections(srv), 0);
+    } finally {
+      if (clientSocket) clientSocket.destroy();
+      if (upgraded) upgraded.destroy();
+      await closeServer(srv);
+    }
+  });
+
+  it('close without a callback, a repeated close, and re-listen on the same port', async () => {
+    const srv = makeServer();
+    const port = await hub.tryListen(srv, 0, 0);
+    const closed = new Promise(r => srv.once('close', r));
+    srv.close();
+    await within(closed, 2000, 'close event');
+    const again = await within(new Promise(r => srv.close(err => r(err))), 2000, 'repeated close');
+    assert.equal(again && again.code, 'ERR_SERVER_NOT_RUNNING');
+    try {
+      assert.equal(await hub.tryListen(srv, port, 0), port);
+      assert.equal((await get('127.0.0.1', port)).status, 200);
+      if (hasV6Loopback) {
+        assert.deepEqual(listen.listenAddresses(srv).map(a => a.address), ['127.0.0.1', '::1']);
+        assert.equal((await get('::1', port)).status, 200);
+      }
+    } finally {
+      await closeServer(srv);
+    }
+    assert.equal(await connectResult('127.0.0.1', port), 'ECONNREFUSED');
+    if (hasV6Loopback) assert.equal(await connectResult('::1', port), 'ECONNREFUSED');
   });
 });
 

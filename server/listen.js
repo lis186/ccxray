@@ -18,9 +18,17 @@ const SKIPPABLE_CODES = new Set(['EADDRNOTAVAIL', 'EAFNOSUPPORT']);
 const EXTRA_LISTENERS = Symbol('ccxray.extraListeners');
 
 function resolveListenHosts(env = process.env) {
-  const host = String(env.PROXY_HOST || '').trim();
+  const host = String(env.PROXY_HOST || '').trim().replace(/^\[(.*)\]$/, '$1');
   if (!host) return { primary: '127.0.0.1', optional: ['::1'] };
   return { primary: host, optional: [] };
+}
+
+// A single interface address (not a wildcard, not loopback) cannot be reached
+// as localhost, which local launchers and hub checks use.
+function isSingleInterfaceHost(host) {
+  if (typeof host !== 'string') return false;
+  const h = host.toLowerCase();
+  return !!h && h !== '0.0.0.0' && h !== '::' && !isLoopbackHost(h);
 }
 
 function isLoopbackHost(host) {
@@ -45,8 +53,24 @@ function listenOnce(target, port, host) {
   });
 }
 
+// An accepted ::1 socket is handed to the HTTP server and its ownership moves
+// with it: the server counts it in getConnections(), and close(cb) / 'close'
+// wait for it, exactly as for a socket the server accepted itself. The HTTP
+// parser it gets from the 'connection' handler also puts it under the server's
+// timeouts and closeAllConnections()/closeIdleConnections().
+function adoptConnection(srv, extra, socket) {
+  if (socket._server === extra && typeof srv._connections === 'number') {
+    extra._connections--;
+    srv._connections++;
+    socket._server = srv;
+    socket.server = srv;
+  }
+  srv.emit('connection', socket);
+}
+
 // Stop the extra listeners together with the main server. The override is
-// removed after one call so the server can listen again (port scan retries).
+// removed after one call so the server can listen again (port scan retries);
+// a repeated close() reaches the plain method and reports "not running".
 function attachExtras(srv, extras) {
   srv[EXTRA_LISTENERS] = extras;
   if (!extras.length) return;
@@ -70,7 +94,8 @@ async function bindPort(srv, port, hosts = resolveListenHosts()) {
   const bound = srv.address().port;
   const extras = [];
   for (const host of hosts.optional) {
-    const extra = net.createServer(socket => srv.emit('connection', socket));
+    const extra = net.createServer();
+    extra.on('connection', socket => adoptConnection(srv, extra, socket));
     try {
       await listenOnce(extra, bound, host);
       extras.push(extra);
@@ -103,6 +128,7 @@ function formatAddress(a) {
 module.exports = {
   resolveListenHosts,
   isLoopbackHost,
+  isSingleInterfaceHost,
   bindPort,
   listenAddresses,
   formatAddress,

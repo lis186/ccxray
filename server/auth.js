@@ -408,6 +408,12 @@ function verifyUpstreamCredential(headers) {
   return 'reject';
 }
 
+// ChatGPT-login requests are accepted from loopback peers; other peers need the opt-in.
+function allowsChatGPTLogin(req) {
+  if (isLoopbackAddress(req && req.socket && req.socket.remoteAddress)) return true;
+  return process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN === '1';
+}
+
 // Single source of truth for "is this /v1/* request authenticated?" — pure
 // boolean, shared by verifyUpstream (HTTP gate) and ws-proxy isAuthorized (WS
 // gate) so the two can't drift.
@@ -419,17 +425,6 @@ function verifyUpstreamCredential(headers) {
 // Authorization) are only meaningful on ChatGPT-routed paths. On Anthropic
 // /v1/messages they'd be a forgery attempt — caught by the upstream-routing
 // check (codex 2.4 P1).
-//
-// The ChatGPT login token is issued by an external service and cannot be
-// checked locally, so the markers stand in for a ccxray credential only for a
-// loopback peer (a local Codex, or one reaching ccxray over an SSH tunnel —
-// this holds under CCXRAY_LOOPBACK_REQUIRE_AUTH=1 too). A non-loopback peer
-// needs X-Ccxray-Auth unless CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1.
-function allowsChatGPTLogin(req) {
-  if (isLoopbackAddress(req && req.socket && req.socket.remoteAddress)) return true;
-  return process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN === '1';
-}
-
 function isUpstreamAuthenticated(req) {
   if (isLoopbackBypass(req)) return true;
   const verdict = verifyUpstreamCredential(req.headers);
