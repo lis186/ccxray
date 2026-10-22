@@ -24,6 +24,7 @@ on:
       - 'server/export-sync.js'
       - 'server/index.js'
       - 'server/hub.js'
+      - 'server/listen.js'
       - 'server/client-shutdown.js'
       - 'server/launch-decision.js'
       - 'server/claude-args.js'
@@ -39,6 +40,7 @@ on:
       - 'test/setup.test.js'
       - 'test/helpers/setup-fixture.js'
       - 'test/helpers/export-lock-fixture.js'
+      - 'test/helpers/occupy-port.js'
       - '.github/workflows/windows-stage0.yml'
 
 env:
