@@ -185,7 +185,7 @@ describe('verifyDashboard — Phase 2.3 enforcement (cookie / Bearer / X-Ccxray-
     assert.equal(res.writeHeadCalled, false);
   });
 
-  it('AUTH_TOKEN set, forged X-Ccxray-Auth (no other cred) → 401', () => {
+  it('AUTH_TOKEN set, non-matching X-Ccxray-Auth (no other cred) → 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'x-ccxray-auth': 'forged' }, '/_api/entries');
     assert.equal(auth.verifyDashboard(req, res), false);
@@ -277,7 +277,7 @@ describe('verifyUpstream — Phase 2.2 enforcement (X-Ccxray-Auth required, lega
     assert.equal(setHeaderCalls['X-Ccxray-Deprecation'], undefined);
   });
 
-  it('AUTH_TOKEN set, forged X-Ccxray-Auth: returns false and writes 401', () => {
+  it('AUTH_TOKEN set, non-matching X-Ccxray-Auth: returns false and writes 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'x-ccxray-auth': 'forged-value', host: 'localhost' }, '/v1/messages');
     assert.equal(auth.verifyUpstream(req, res), false);
@@ -298,7 +298,7 @@ describe('verifyUpstream — Phase 2.2 enforcement (X-Ccxray-Auth required, lega
     assert.equal(res.statusCode, 401);
   });
 
-  it('ChatGPT-OAuth carve-out (chatgpt-account-id + JWT) accepted', () => {
+  it('ChatGPT-login headers accepted on a ChatGPT-routed request', () => {
     const auth = loadAuthWith('sec1');
     const jwt = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
     const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: jwt }, '/v1/responses', '127.0.0.1');
@@ -402,17 +402,12 @@ describe('loopback trust covers both dashboard and upstream', () => {
   });
 });
 
-describe('verifyUpstream — ChatGPT-OAuth carve-out scoped to ChatGPT-routed requests (codex 2.4 P1)', () => {
-  // The carve-out exists because Codex on a ChatGPT login can't inject custom
-  // headers (errata §1.3), so we accept `chatgpt-account-id` + JWT-shaped
-  // Authorization as the credential on routes that actually go to ChatGPT.
-  // Previously the check was header-only, so the same shape passed on
-  // Anthropic `/v1/messages` too — a LAN attacker could forge it and bypass
-  // upstream auth on the main API path. Now the gate confirms the request
-  // would route to UPSTREAMS.openaiChatGPT before accepting the carve-out.
+describe('verifyUpstream — ChatGPT-login compatibility scoped to ChatGPT-routed requests', () => {
+  // Codex on a ChatGPT login cannot inject custom headers, so its native
+  // headers are accepted only when the request routes to the ChatGPT backend.
   const JWT = 'Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIn0.sig';
 
-  it('chatgpt markers on /v1/messages (Anthropic route) → 401 (bypass closed)', () => {
+  it('ChatGPT-login headers not accepted on /v1/messages (Anthropic route) → 401', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/messages', '127.0.0.1');
     process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
@@ -422,7 +417,7 @@ describe('verifyUpstream — ChatGPT-OAuth carve-out scoped to ChatGPT-routed re
     } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 
-  it('chatgpt markers on /v1/responses (Codex path → ChatGPT route) → allowed', () => {
+  it('ChatGPT-login headers on /v1/responses (Codex path → ChatGPT route) → allowed', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/responses', '127.0.0.1');
     process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
@@ -432,7 +427,7 @@ describe('verifyUpstream — ChatGPT-OAuth carve-out scoped to ChatGPT-routed re
     } finally { delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH; }
   });
 
-  it('chatgpt markers on /v1/realtime (OpenAI path + chatgpt-account-id → ChatGPT route) → allowed', () => {
+  it('ChatGPT-login headers on /v1/realtime (OpenAI path + chatgpt-account-id → ChatGPT route) → allowed', () => {
     const auth = loadAuthWith('sec1');
     const { req, res } = mockReqRes({ 'chatgpt-account-id': 'acct-1', authorization: JWT }, '/v1/realtime', '127.0.0.1');
     process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';

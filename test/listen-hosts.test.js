@@ -411,7 +411,7 @@ describe('::1 connections belong to the HTTP server lifecycle', () => {
     });
   }
 
-  it('a keep-alive ::1 socket serves two requests and is idle-closable', async t => {
+  it('a keep-alive ::1 socket serves two sequential requests and is idle-closable', async t => {
     if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
     const seen = [];
     const srv = http.createServer((req, res) => { seen.push(req.socket); res.end(req.url); });
@@ -419,10 +419,14 @@ describe('::1 connections belong to the HTTP server lifecycle', () => {
     try {
       const port = await hub.tryListen(srv, 0, 0);
       socket = await within(rawConnect(port), 2000, 'connect');
-      const replies = readUntil(socket, d => (d.match(/HTTP\/1\.1 200/g) || []).length === 2 && d.endsWith('/b'));
-      socket.write('GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n');
-      const data = await within(replies, 2000, 'two responses');
-      assert.match(data, /\r\n\r\n\/a[\s\S]*\r\n\r\n\/b$/);
+      const first = readUntil(socket, d => d.endsWith('/a'));
+      socket.write('GET /a HTTP/1.1\r\nHost: x\r\n\r\n');
+      const firstData = await within(first, 2000, 'first response');
+      assert.match(firstData, /^HTTP\/1\.1 200 [\s\S]*\r\n\r\n\/a$/);
+      const second = readUntil(socket, d => d.endsWith('/b'));
+      socket.write('GET /b HTTP/1.1\r\nHost: x\r\n\r\n');
+      const secondData = await within(second, 2000, 'second response');
+      assert.match(secondData, /^HTTP\/1\.1 200 [\s\S]*\r\n\r\n\/b$/);
       assert.equal(seen.length, 2);
       assert.equal(seen[0], seen[1], 'both requests must arrive on one socket');
       assert.equal(seen[0].remoteAddress, '::1');
@@ -448,6 +452,25 @@ describe('::1 connections belong to the HTTP server lifecycle', () => {
       const reply = readUntil(socket, () => false);
       socket.write('GET / HTTP/1.1\r\nHost: x\r\n'); // headers never finish
       const data = await within(reply, 3000, 'header timeout response');
+      assert.match(data, /^HTTP\/1\.1 408 /);
+      assert.equal(await connections(srv), 0);
+    } finally {
+      if (socket) socket.destroy();
+      await closeServer(srv);
+    }
+  });
+
+  it('requestTimeout applies to an incomplete body on a ::1 connection', async t => {
+    if (!hasV6Loopback) return t.skip('no IPv6 loopback on this host');
+    const srv = http.createServer({ connectionsCheckingInterval: 50, headersTimeout: 300, requestTimeout: 300 },
+      (req, res) => { req.resume(); req.on('end', () => res.end('unexpected')); });
+    let socket = null;
+    try {
+      const port = await hub.tryListen(srv, 0, 0);
+      socket = await within(rawConnect(port), 2000, 'connect');
+      const reply = readUntil(socket, () => false);
+      socket.write('POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc'); // body never finishes
+      const data = await within(reply, 3000, 'request timeout response');
       assert.match(data, /^HTTP\/1\.1 408 /);
       assert.equal(await connections(srv), 0);
     } finally {
