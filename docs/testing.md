@@ -62,6 +62,9 @@ a sandbox for arbitrary native programs.
 `test/home-isolation.test.js` simulates a real HOME entirely under a temporary
 root: it checks settings fallback, explicit homes, logs, direct writes, reads, and
 an allowed isolated write without ever probing the human's files.
+`test/unknown-path.e2e.test.js` checks the routing fix and provider header hygiene
+with two local fake upstreams, an isolated home, and a synthetic pricing cache (#740).
+
 `test/internal-api-404.e2e.test.js` uses an isolated home, empty index, mock upstream,
 disabled import/export and a fresh pricing fixture. It verifies unknown APIs leave
 both the upstream and durable turn storage untouched.

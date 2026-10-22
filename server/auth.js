@@ -382,14 +382,7 @@ function isLoopbackBypass(req) {
 // derived K_upstream, so this behaves identically whether the root secret
 // comes from AUTH_TOKEN or the ephemeral local-secret file.
 
-// JWT-shaped: "Bearer <header>.<payload>.<sig>" with a non-trivial header.
-function isJwtShaped(authHeader) {
-  if (!authHeader || typeof authHeader !== 'string') return false;
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return false;
-  const parts = token.split('.');
-  return parts.length === 3 && parts[0].length > 10;
-}
+const { isJwtShaped } = require('./request-signals');
 
 function verifyUpstreamCredential(headers) {
   // Pure header taxonomy: no env-flag or peer-address awareness. The

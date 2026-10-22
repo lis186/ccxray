@@ -389,6 +389,7 @@ async function recordWebSocketEntry(ctx, result, turn = null) {
     id: entryId,
     ts: entryTs,
     method: ctx.req.method,
+    path: ctx.req.url.split('?')[0],
     url: stripAuthParams(ctx.req.url),
     req: reqLog,
     res: resLog,

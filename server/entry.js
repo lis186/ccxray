@@ -77,6 +77,7 @@ const INDEX_FIELDS = [
   // the current checkout by rebuild-index: the branch at record time is gone.
   // Appended last to keep the field order add-only (test/entry.test.js G1).
   'branch',
+  'method','path',
 ];
 
 // INVARIANT: A new INDEX_FIELDS field whose no-value state is null rather than

@@ -106,6 +106,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 
 | Module | Purpose |
 |--------|---------|
+| `server/request-routing.js` | Routing fix: central HTTP provider header hygiene and local 421 handling (#740) |
+| `server/request-signals.js` | Routing fix: shared request signal helpers (#740) |
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/launcher-shims.js` | `ccxray setup --wrap-binaries` (#732): fail-open `claude`/`codex` launcher shims, PATH blocks, `--dry-run`/`--check`/`--remove` with a manifest that restores the previous state exactly. Guide: `docs/launcher-shims.md` |

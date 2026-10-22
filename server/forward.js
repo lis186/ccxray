@@ -495,9 +495,12 @@ function describeUpstreamError(err, host) {
 }
 
 // ── Forward request to Anthropic ─────────────────────────────────────
+const { checkHttpRoute } = require('./request-routing');
+
 function forwardRequest(ctx) {
   const { id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId } = ctx;
-  const upstream = ctx.upstream || config.getUpstreamForRequest(clientReq.url);
+  const upstream = ctx.upstream || config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers, clientReq);
+  if (!checkHttpRoute(clientReq, clientRes, upstream)) return;
   const provider = upstream.provider || 'anthropic';
 
   // Counter + attribution prefix are committed here, not at request receipt.
@@ -846,7 +849,7 @@ function handleSSEResponse(ctx, proxyRes, clientRes) {
     const currMsgCount = parsedBody?.messages?.length || 0;
     const thinkingStripped = computeThinkingStripped(isSubagent, reqSessionId, currMsgCount, parsedBody);
     const entry = {
-      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+      id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
@@ -1002,7 +1005,7 @@ function handleOpenAISSE(ctx, proxyRes, clientRes) {
     });
     if (titleGenTitle) fields.title = titleGenTitle;
     const entry = {
-      id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+      id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
       req: parsedBody, res: events,
       elapsed, status: proxyRes.statusCode, isSSE: true,
       receivedAt: startTime,
@@ -1132,7 +1135,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       });
       if (titleGenTitle) fields.title = titleGenTitle;
       entry = {
-        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: !!openAIEvents,
         receivedAt: startTime,
@@ -1156,7 +1159,7 @@ function handleNonSSEResponse(ctx, proxyRes, clientRes) {
       const currMsgCount = parsedBody?.messages?.length || 0;
       const thinkingStripped = computeThinkingStripped(isSubagent, sessionId, currMsgCount, parsedBody);
       entry = {
-        id, ts: ctx.ts, method: ctx.clientReq.method, url: stripAuthParams(ctx.clientReq.url),
+        id, ts: ctx.ts, method: ctx.clientReq.method, path: ctx.clientReq.url.split('?')[0], url: stripAuthParams(ctx.clientReq.url),
         req: parsedBody, res: resData,
         elapsed, status: proxyRes.statusCode, isSSE: false,
         receivedAt: startTime,
