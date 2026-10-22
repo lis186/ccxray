@@ -56,3 +56,23 @@ function startQuotaTicker() {
   updateQuotaTicker();
   quotaTickerInterval = setInterval(updateQuotaTicker, 30000);
 }
+
+// ── Launcher-shim bypass notice (#732) ──────────────────────────────
+// The fail-open claude/codex shims run an agent directly when the proxy is
+// down. Those launches are unrecorded, so say so while there were any recently.
+async function refreshShimBypass() {
+  const el = document.getElementById('topbar-bypass');
+  if (!el) return;
+  try {
+    const res = await fetch('/_api/shim-bypass');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (!s || !s.recent) { el.style.display = 'none'; return; }
+    const reasons = Object.entries(s.byReason || {}).map(([r, n]) => r + ' x' + n).join(', ');
+    el.textContent = s.recent + ' unrecorded launch' + (s.recent === 1 ? '' : 'es') + ' (24h)';
+    el.title = 'The launcher shims ran claude/codex directly because the proxy was unreachable, so these launches are not in the log (' + reasons + '). Run `ccxray setup --wrap-binaries --check` for details.';
+    el.style.display = 'inline';
+  } catch { /* the dashboard works without this notice */ }
+}
+refreshShimBypass();
+setInterval(refreshShimBypass, 60000);

@@ -65,3 +65,8 @@ Runs that bypass the proxy are not recorded live. Claude Code and Codex transcri
 - The dashboard's startup restore loads only index lines from the last `RESTORE_DAYS` (default: `LOG_RETENTION_DAYS`, i.e. 14) into memory. Older sessions, imported or not, still appear as session cards from the session index (`sessions.json`), and their turns are read from `index.ndjson` when the session is opened. `ccxray usage` and `ccxray agentflow report` read `index.ndjson` directly and are not limited by `RESTORE_DAYS`.
 
 All variables mentioned here are listed in [env-vars.md](env-vars.md).
+
+
+## Non-interactive launches
+
+Spawned, cron and scripted `claude`/`codex` launches bypass the shell wrapper. See [launcher shims](launcher-shims.md) (`ccxray setup --wrap-binaries`) for the fail-open way to record them, what it covers, and its trade-off against fail-closed tool config.

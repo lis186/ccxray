@@ -515,6 +515,7 @@
   @keyframes held-pulse { 50% { opacity: 0.7; } }
   #topbar-held { font-size: 10px; color: var(--bg); background: var(--yellow); cursor: pointer; padding: 1px 8px; border-radius: 10px; font-weight: 600; display: none; animation: held-pulse 1.5s ease-in-out infinite; }
   #topbar-held:hover { opacity: 0.85; }
+  #topbar-bypass { font-size: 10px; color: var(--yellow); border: 1px solid var(--yellow); padding: 1px 8px; border-radius: 10px; cursor: help; white-space: nowrap; }
 
   .intercept-overlay { position: absolute; inset: 0; z-index: 100; background: var(--surface); display: flex; flex-direction: column; border-left: 2px solid var(--yellow); }
   .intercept-header { padding: 10px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }

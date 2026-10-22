@@ -14,6 +14,8 @@ const { applyReadTimePricing } = require('../reprice');
 const { readSettings, writeSettings, serializeStars } = require('../settings');
 const { SENTINEL_SESSIONS, SENTINEL_PROJECTS } = require('../helpers');
 const sessionIdx = require('../session-index');
+const { summarizeBypasses } = require('../shim-bypass');
+const { resolveCcxrayHome } = require('../paths');
 
 const AUTO_COMPACT_PCT = 0.835;
 
@@ -232,6 +234,13 @@ function handleApiRoutes(clientReq, clientRes) {
       if (!clientRes.headersSent) clientRes.writeHead(500);
       clientRes.end(JSON.stringify({ error: e.message }));
     });
+    return true;
+  }
+
+  // #732: launches the fail-open shims ran unrecorded. Counts only — the log's cwd stays local.
+  if (clientReq.method === 'GET' && pathname === '/_api/shim-bypass') {
+    clientRes.writeHead(200, { 'Content-Type': 'application/json' });
+    clientRes.end(JSON.stringify(summarizeBypasses(resolveCcxrayHome())));
     return true;
   }
 
