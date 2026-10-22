@@ -56,12 +56,12 @@ function killAndWait(child) {
   });
 }
 
-describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507)', () => {
+describe('header allowlist: ChatGPT WebSocket', () => {
   after(() => {
     for (const d of tmpDirs) fs.rmSync(d, { recursive: true, force: true });
   });
 
-  it('forwards chatgpt-account-id and custom headers to ChatGPT upstream when header is present', async () => {
+  it('header allowlist: ChatGPT WebSocket request headers', async () => {
     const upstreamPort = await findFreePort();
     const proxyPort = await findFreePort();
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxray-ws-headers-'));
@@ -119,8 +119,7 @@ describe('WebSocket upgrade header forwarding + ChatGPT routing (PR #29, 0ff5507
         'chatgpt-account-id must be forwarded intact');
       assert.equal(capturedHeaders['openai-beta'], 'realtime=v1',
         'openai-beta must be forwarded intact');
-      assert.equal(capturedHeaders['x-mark'], 'verify-canary',
-        'custom headers must pass through');
+      assert.equal(capturedHeaders['x-mark'], undefined, 'header allowlist');
       assert.equal(capturedHeaders['host'], '127.0.0.1',
         'host must be rewritten to upstream hostname (no port — buildWebSocketHeaders sets host = upstream.host)');
 

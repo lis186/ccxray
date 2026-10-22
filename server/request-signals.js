@@ -16,10 +16,26 @@ function matchOpenAIWireClient(headers = {}) {
   ));
 }
 
+function headerValues(headers, name, req) {
+  if (Array.isArray(req?.rawHeaders)) {
+    const values = [];
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      if (req.rawHeaders[i].toLowerCase() === name) values.push(req.rawHeaders[i + 1]);
+    }
+    if (values.length) return values.flatMap(value => String(value).split(',')).map(value => value.trim());
+  }
+  const values = req?.headersDistinct?.[name] ?? headers[name];
+  return [values].flat().filter(value => typeof value === 'string')
+    .flatMap(value => value.split(',')).map(value => value.trim());
+}
+
 function isJwtShaped(authHeader) {
-  if (typeof authHeader !== 'string' || !/^Bearer /i.test(authHeader)) return false;
-  const parts = authHeader.slice(7).split('.');
-  return parts.length === 3 && parts[0].length > 10;
+  return headerValues({ authorization: authHeader }, 'authorization').some(value => {
+    const match = /^Bearer\s+(.+)$/i.exec(value);
+    if (!match) return false;
+    const parts = match[1].split('.');
+    return parts.length === 3 && parts[0].length > 10;
+  });
 }
 
 function hasHeaderValue(value) {
@@ -41,11 +57,11 @@ function isChatGPTSide(headers = {}) {
 function hasAnthropicHeaders(headers, req) {
   // Header-aware routing: Grok can supply x-api-key through extra_headers.
   const grokClient = matchOpenAIWireClient(headers)?.id === 'grok' || clientAgentType(req) === 'grok';
-  const xKeys = [headers['x-api-key']].flat();
+  const xKeys = headerValues(headers, 'x-api-key', req);
   const anthropicKey = xKeys.some(value => typeof value === 'string' && /^sk-ant-/i.test(value.trim()));
   return ['anthropic-version', 'anthropic-beta'].some(key => hasHeaderValue(headers[key]))
-    || (hasHeaderValue(headers['x-api-key']) && (!grokClient || anthropicKey))
-    || /^Bearer sk-ant-/i.test(headers.authorization || '');
+    || (xKeys.some(hasHeaderValue) && (!grokClient || anthropicKey))
+    || headerValues(headers, 'authorization', req).some(value => /^Bearer\s+sk-ant-/i.test(value));
 }
 
 function isAnthropicSide(headers = {}, req) {
@@ -58,7 +74,7 @@ function isOpenAISide(headers = {}, req, includeBareBearer = true) {
       || (key === 'originator' && /^codex/i.test(String(headers[key])))))
     || !!matchOpenAIWireClient(headers)
     || ['codex', 'grok'].includes(clientAgentType(req))
-    || (includeBareBearer && /^Bearer sk-/i.test(headers.authorization || '')
+    || (includeBareBearer && headerValues(headers, 'authorization', req).some(value => /^Bearer\s+sk-/i.test(value))
       && !hasAnthropicHeaders(headers, req));
 }
 

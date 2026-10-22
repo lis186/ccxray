@@ -455,41 +455,9 @@ function serveStatic(url, clientRes) {
   }
 }
 
-const HOP_BY_HOP_HEADERS = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-]);
-
-// INVARIANT: the `x-ccxray-*` namespace is default-deny by PREFIX and the rule
-// is shared with ws-proxy.js — see server/internal-headers.js for why an
-// allowlist here leaked the pane-identity header upstream.
-const { isInternalHeader } = require('./internal-headers');
+const { buildForwardHeaders } = require('./forward-headers');
 const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
-
-function buildForwardHeaders(clientHeaders, upstream) {
-  const fwdHeaders = { ...clientHeaders };
-  const connectionTokens = String(clientHeaders.connection || '')
-    .split(',')
-    .map(token => token.trim().toLowerCase())
-    .filter(Boolean);
-
-  for (const header of HOP_BY_HOP_HEADERS) delete fwdHeaders[header];
-  for (const header of connectionTokens) delete fwdHeaders[header];
-  for (const header of Object.keys(fwdHeaders)) {
-    if (isInternalHeader(header)) delete fwdHeaders[header];
-  }
-  delete fwdHeaders.host;
-  delete fwdHeaders['accept-encoding'];
-  fwdHeaders.host = upstream.host;
-  return fwdHeaders;
-}
 
 // Cwd when the wire body has none: hub client cwd, else launcher process cwd
 // for modules that declare cwdFallback (codex, grok, …).

@@ -558,3 +558,8 @@ Agentflow v8.4.15 compatibility fixtures in `test/fixtures/agentflow/v8.4.15/`
 are hand-authored synthetic notebook/archive and manual owner-input cases.
 They model retained latest-completed history and Claude manual capture, without
 reading host sessions or requiring an upstream checkout.
+
+Header allowlist (follow-up to #745): `test/fixtures/routing/header-names.json`
+contains observed Claude/Codex header names and documented Grok header names,
+with synthetic values supplied by tests. `test/unknown-path.e2e.test.js` uses
+a temporary home and four local recording upstreams for HTTP and WebSocket.
