@@ -10,7 +10,9 @@ const { spawnSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const windowsSkip = process.platform === 'win32' && 'bash audit script runs on ubuntu CI only';
 const bashProbe = windowsSkip ? null : spawnSync('bash', ['--version'], { timeout: 20000 });
-const skip = windowsSkip || (bashProbe.error?.code === 'ENOENT' && 'bash is not installed');
+const timeoutProbe = windowsSkip || bashProbe.error?.code === 'ENOENT' ? null : spawnSync('bash', ['-c', 'command -v timeout'], { env: process.env, timeout: 20000 });
+const skip = windowsSkip || (bashProbe.error?.code === 'ENOENT' && 'bash is not installed') ||
+  (timeoutProbe && timeoutProbe.status !== 0 && 'timeout command is not installed');
 const success = { output: 'found 0 vulnerabilities', status: 0 };
 const serviceError = {
   output: 'npm warn audit 503 Service Unavailable - POST https://registry.npmjs.org/-/npm/v1/security/audits/quick - Service Unavailable\n' +
