@@ -78,6 +78,9 @@ jobs:
       # test/export-startup-lock.e2e.test.js is excluded until #648: on Windows a
       # second server on the port of a just-stopped one fails with EADDRINUSE every
       # time. Add it back here and to `paths` when #648 is closed.
+      # Serial, like the heavy lane in scripts/run-tests.js: the launcher test holds
+      # ranges of 127.0.0.1 ports from an ephemeral base, and Windows hands out
+      # ephemeral ports in sequence, so a concurrent export-lock pin can land in one.
       - name: E2E — export lock + launcher fail-open (hub-only / POSIX-signal cases skip on win32)
         shell: bash
         run: |
@@ -92,7 +95,7 @@ jobs:
           CLOUDSDK_CONFIG="$RUNNER_TEMP/e2e-ccxray/cloudsdk" \
           CCXRAY_HOME="$RUNNER_TEMP/e2e-ccxray/ccxray" \
           LOGS_DIR="$RUNNER_TEMP/e2e-ccxray/logs" \
-          CCXRAY_EXPORT_DISABLE=1 node --test \
+          CCXRAY_EXPORT_DISABLE=1 node --test --test-concurrency=1 \
             test/export-lock.two-process.test.js test/launcher-fail-open.e2e.test.js
 
   claude-cmd-diagnostic:

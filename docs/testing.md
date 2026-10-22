@@ -52,7 +52,11 @@ Blocked access throws `ETEST_HOME` and marks the process failed even if applicat
 code catches the error. Browser-cache reads remain available; do not globally
 replace HOME just to run Puppeteer. With no explicit `CCXRAY_HOME`, the runner
 creates and cleans an empty temporary home. Individual tests still isolate their
-own data and scan roots as described below. This is a Node filesystem guard, not
+own data and scan roots as described below.
+The first preloaded process also clears behaviour switches a developer may have
+exported (`CCXRAY_IMPORT_DISABLE`, `CCXRAY_FAIL_CLOSED`, the loopback-auth
+switches, `PROXY_HOST`, `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN`, …), so spawned
+servers use the default loopback bind unless a test sets one explicitly. This is a Node filesystem guard, not
 a sandbox for arbitrary native programs.
 
 `test/home-isolation.test.js` simulates a real HOME entirely under a temporary

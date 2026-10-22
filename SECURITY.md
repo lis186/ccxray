@@ -30,17 +30,10 @@ unset, ccxray uses the local secret at `<CCXRAY_HOME>/local-secret` (default
 cookie or the credential injected by a ccxray launcher can also authenticate
 an authorized dashboard caller.
 
-Non-loopback upstream `/v1/*` HTTP requests and WebSocket upgrades normally
-require the ccxray-injected upstream credential. ChatGPT-routed Codex traffic
-has a compatibility exception: ccxray accepts `chatgpt-account-id` together
-with a JWT-shaped `Authorization` header, and checks that the request routes to
-the ChatGPT upstream. This is only a shape check; ccxray does not verify the
-JWT signature. The upstream determines whether the OAuth token is actually
-valid. This exception does not authenticate dashboard/API requests.
-
-ChatGPT login from Codex is accepted from loopback peers. Clients on other
-hosts need `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1`; enable it only on a trusted
-network.
+ccxray listens on loopback by default. `PROXY_HOST` opts in to listening on
+other addresses. Clients on other hosts then need the ccxray credential.
+`CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1` relaxes this for ChatGPT login from Codex;
+use it only on a trusted network.
 
 `/_api/health` is public and returns a minimal listener identity, including
 `app`, `pid`, `hub`, `version`, and `capabilities: []`. The additional export
