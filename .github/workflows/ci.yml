@@ -72,4 +72,6 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Audit dependencies (high+)
-        run: npm audit --audit-level=high
+        # Retry registry/network failures only; advisories still fail immediately.
+        timeout-minutes: 15
+        run: bash scripts/ci-audit-retry.sh
