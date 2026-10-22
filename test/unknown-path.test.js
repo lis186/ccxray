@@ -5,9 +5,9 @@ const config = require('../server/config');
 const hub = require('../server/hub');
 const auth = require('../server/auth');
 const { checkHttpRoute } = require('../server/request-routing');
-const { isJwtShaped } = require('../server/request-signals');
+const { isJwtShaped, isOpenAISide } = require('../server/request-signals');
 const { forwardRequest } = require('../server/forward');
-const { isOpenAIWebSocket } = require('../server/ws-proxy');
+const { isOpenAIWebSocket, handleWebSocketUpgrade } = require('../server/ws-proxy');
 
 for (const path of ['/v1/alpha/search', '/v1/memories', '/v1/images']) {
   it(`routing fix: ${path} uses the OpenAI upstreams`, () => {
@@ -151,8 +151,8 @@ it('provider header hygiene uses wire and attached client shapes', () => {
       assert.equal(checkHttpRoute({ method: 'POST', url: '/v1/messages', headers: {} }, res, config.UPSTREAMS.anthropic), false);
     }
   } finally { hub.lookupClientIdentityForRequest = original; }
-  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bEaReR sk-proj-synthetic' }), 'openai');
-  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-proj-synthetic', 'anthropic-version': '2023-06-01' }), 'anthropic');
+  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bEaReR sk-proj-synthetic' }), null);
+  assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-proj-synthetic', 'anthropic-version': '2023-06-01' }), null);
   assert.equal(config.getProviderForRequest('/v1/files', { authorization: 'bearer sk-ant-synthetic' }), 'anthropic');
 });
 
@@ -168,11 +168,11 @@ it('unknown-path handling logs only method and pathname once per 60 seconds', ()
     refuse('POST', 'first-query');
     now += 59999;
     refuse('POST', 'second-query');
-    assert.deepEqual(lines, ['[ccxray] POST /v1/rate-limit']);
+    assert.deepEqual(lines, ['[ccxray] refused POST /v1/rate-limit (unknown route, not forwarded)']);
     refuse('GET', 'third-query');
     now += 1;
     refuse('POST', 'fourth-query');
-    assert.deepEqual(lines, ['[ccxray] POST /v1/rate-limit', '[ccxray] GET /v1/rate-limit', '[ccxray] POST /v1/rate-limit']);
+    assert.deepEqual(lines, ['[ccxray] refused POST /v1/rate-limit (unknown route, not forwarded)', '[ccxray] refused GET /v1/rate-limit (unknown route, not forwarded)', '[ccxray] refused POST /v1/rate-limit (unknown route, not forwarded)']);
   } finally { console.warn = originalWarn; Date.now = originalNow; }
 });
 
@@ -184,4 +184,128 @@ it('provider header hygiene accepts bearer scheme variants for existing callers'
   }
   assert.equal(isJwtShaped('Basic syntheticheader.payload.signature'), false);
   assert.equal(isJwtShaped(null), false);
+});
+
+it('header-aware routing (#745): shared and OpenAI paths', () => {
+  const signals = [
+    { 'x-api-key': 'synthetic' }, { 'anthropic-version': '2023-06-01' },
+    { 'anthropic-beta': 'synthetic' }, { authorization: 'Bearer sk-ant-synthetic' },
+  ];
+  const paths = ['/v1/responses', '/v1/realtime', '/v1/alpha/search', '/v1/memories',
+    '/v1/images', '/v1/codex', '/v1/plugins', '/v1/ps/plugins', '/v1/connectors',
+    '/v1/api/codex/ps/mcp'];
+  for (const headers of signals) {
+    for (const path of ['/v1/models', '/v1/models/child?probe=synthetic']) {
+      assert.equal(config.getUpstreamForRequestAndHeaders(path, headers), config.UPSTREAMS.anthropic);
+      assert.equal(config.getUpstreamForRequestAndHeaders(path, { ...headers, 'chatgpt-account-id': 'acct' }), null);
+    }
+    for (const path of paths.flatMap(path => [path, `${path}/child?probe=synthetic`])) {
+      assert.equal(config.getUpstreamForRequestAndHeaders(path, headers), null);
+    }
+    for (const upstream of [config.UPSTREAMS.openai, config.UPSTREAMS.openaiChatGPT, config.UPSTREAMS.xai]) {
+      let status;
+      assert.equal(checkHttpRoute({ method: 'GET', url: '/v1/models', headers }, {
+        writeHead: value => { status = value; }, end() {},
+      }, upstream), false);
+      assert.equal(status, 421);
+    }
+  }
+  assert.equal(config.getUpstreamForRequestAndHeaders('/v1/models'), config.UPSTREAMS.openai);
+  for (const headers of [{ 'user-agent': 'codex_cli_rs/0.163.0' }, { 'chatgpt-account-id': 'acct' }]) {
+    for (const url of ['/v1/models', '/v1/responses']) {
+      assert.equal(config.getUpstreamForRequestAndHeaders(url, headers).provider, 'openai');
+    }
+  }
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    hub.lookupClientIdentityForRequest = () => ({ agentType: 'claude' });
+    assert.equal(config.getUpstreamForRequestAndHeaders('/v1/models', {}, {}), config.UPSTREAMS.anthropic);
+    for (const path of paths) assert.equal(config.getUpstreamForRequestAndHeaders(path, {}, {}), null);
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('header-aware routing (#745): WebSocket upgrades', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    for (const attached of [false, true]) {
+      hub.lookupClientIdentityForRequest = () => attached ? { agentType: 'claude' } : null;
+      for (const url of ['/v1/responses', '/v1/realtime']) {
+        const headers = { upgrade: 'websocket', ...(attached ? {} : { 'x-api-key': 'synthetic' }) };
+        let response, destroyed = false;
+        const socket = { write: value => { response = value; }, destroy() { destroyed = true; } };
+        assert.equal(handleWebSocketUpgrade({ url, headers }, socket, Buffer.alloc(0)), true);
+        assert.match(response, /^HTTP\/1.1 404 /);
+        assert.equal(destroyed, true);
+      }
+    }
+    const resolveUpstream = config.getUpstreamForRequestAndHeaders;
+    try {
+      for (const upstream of [config.UPSTREAMS.openai, config.UPSTREAMS.openaiChatGPT, config.UPSTREAMS.xai]) {
+        config.getUpstreamForRequestAndHeaders = () => upstream;
+        let response;
+        handleWebSocketUpgrade({ url: '/v1/responses', headers: { upgrade: 'websocket' } }, {
+          write: value => { response = value; }, destroy() {},
+        }, Buffer.alloc(0));
+        assert.match(response, /^HTTP\/1.1 404 /);
+      }
+    } finally { config.getUpstreamForRequestAndHeaders = resolveUpstream; }
+    hub.lookupClientIdentityForRequest = () => ({ agentType: 'codex' });
+    const req = { url: '/v1/responses', headers: { upgrade: 'websocket', 'user-agent': 'codex_cli_rs/0.163.0', 'chatgpt-account-id': 'acct' } };
+    assert.equal(isOpenAIWebSocket(req, config.getUpstreamForRequestAndHeaders(req.url, req.headers, req)), true);
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('routing fix (#745): Grok hub identity selects xAI', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    hub.lookupClientIdentityForRequest = () => ({ agentType: 'grok' });
+    for (const url of ['/v1/responses', '/v1/models', '/v1/alpha/title', '/api/title', '/v1/codex']) {
+      assert.equal(config.getUpstreamForRequestAndHeaders(url, {}, {}), config.UPSTREAMS.xai);
+    }
+    assert.equal(checkHttpRoute({ url: '/v1/messages', method: 'POST', headers: {} }, {
+      writeHead() {}, end() {},
+    }, config.getUpstreamForRequestAndHeaders('/v1/messages', {}, {})), false);
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('routing fix (#745): bare bearer', () => {
+  const headers = { authorization: 'Bearer sk-proj-synthetic' };
+  assert.equal(isOpenAISide(headers), true);
+  assert.equal(config.getUpstreamForRequestAndHeaders('/v1/unlisted', { authorization: 'Bearer sk-synthetic' }), null);
+  assert.equal(config.getUpstreamForRequestAndHeaders('/v1/unlisted', headers), null);
+  assert.equal(config.getUpstreamForRequestAndHeaders('/v1/unlisted', {
+    ...headers, 'user-agent': 'codex_cli_rs/0.163.0',
+  }), config.UPSTREAMS.openai);
+});
+
+it('routing fix (#745): preconnect', () => {
+  const headers = { authorization: 'Bearer sk-proj-synthetic' };
+  const original = console.warn;
+  console.warn = () => assert.fail('routing fix (#745)');
+  try {
+    for (const method of ['HEAD', 'GET']) {
+      const req = { method, url: '/api/hello', headers: {} };
+      assert.equal(checkHttpRoute(req, { writeHead() {}, end() {} },
+        config.getUpstreamForRequestAndHeaders(req.url, req.headers, req)), true);
+      assert.equal(config.getProviderForRequest(req.url, {}, { method, bodySize: 1 }), null);
+      assert.equal(config.getProviderForRequest(req.url, { 'transfer-encoding': 'chunked' }, { method }), null);
+      assert.equal(config.getProviderForRequest(req.url, headers, { method }), null);
+    }
+  } finally { console.warn = original; }
+});
+
+it('routing fix (#745): warning cap', () => {
+  const originalWarn = console.warn, originalNow = Date.now;
+  const lines = [];
+  console.warn = value => lines.push(value);
+  Date.now = () => 2000000;
+  const refuse = path => checkHttpRoute({ method: 'POST', url: path, headers: {} }, { writeHead() {}, end() {} }, null);
+  try {
+    for (let i = 0; i < 501; i++) refuse(`/v1/cap-${i}`);
+    refuse('/v1/cap-500');
+    assert.equal(lines.length, 501);
+    refuse('/v1/cap-0');
+    assert.equal(lines.length, 502);
+    assert.equal(lines[0], '[ccxray] refused POST /v1/cap-0 (unknown route, not forwarded)');
+  } finally { console.warn = originalWarn; Date.now = originalNow; }
 });

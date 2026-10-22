@@ -473,7 +473,6 @@ const { isInternalHeader } = require('./internal-headers');
 const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
 
-
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
   const connectionTokens = String(clientHeaders.connection || '')

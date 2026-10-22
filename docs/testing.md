@@ -63,11 +63,9 @@ a sandbox for arbitrary native programs.
 root: it checks settings fallback, explicit homes, logs, direct writes, reads, and
 an allowed isolated write without ever probing the human's files.
 
-`test/unknown-path.e2e.test.js` checks the routing fix and provider header hygiene
-with two local fake upstreams, an isolated hub home, a synthetic pricing cache,
-and clients registered through the launcher hub socket message. It covers real
-Codex header shapes, Claude JWT shapes, bodyless root requests, and bare-JWT
-unknown-path handling (#740).
+`test/unknown-path.e2e.test.js` checks header-aware routing with Anthropic,
+OpenAI/ChatGPT, and xAI recording fakes, an isolated hub home, a synthetic pricing
+cache, and clients registered through the hub socket. Routing fix (#745).
 
 `test/internal-api-404.e2e.test.js` uses an isolated home, empty index, mock upstream,
 disabled import/export and a fresh pricing fixture. It verifies unknown APIs leave

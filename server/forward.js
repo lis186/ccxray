@@ -460,7 +460,7 @@ async function persistEditedRequest(ctx) {
 // ── Upstream error classification ───────────────────────────────────
 const RETRYABLE_CODES = new Set(['ETIMEDOUT', 'ENOTFOUND', 'EHOSTUNREACH', 'ECONNREFUSED', 'EAI_AGAIN']);
 
-function describeUpstreamError(err, host) {
+function describeUpstreamError(err, host, ctx = {}) {
   const code = err.code || '';
   const labels = {
     ETIMEDOUT: 'connection timed out',
@@ -480,16 +480,10 @@ function describeUpstreamError(err, host) {
   };
   const label = labels[code] || err.message || code || 'unknown error';
   const codeTag = code ? ` (${code})` : '';
-  let agentVer = null;
-  for (const e of store.versionIndex.values()) {
-    if (e.version && (!agentVer || e.version > agentVer.v)) {
-      agentVer = { v: e.version, label: e.agentLabel };
-    }
-  }
-  const verTag = agentVer ? ` [${agentVer.label} ${agentVer.v}]` : '';
+  const agentTag = ctx.agentLabel ? ` [${ctx.agentLabel}]` : '';
   return {
     code,
-    summary: `${host}: ${label}${codeTag}${verTag}`,
+    summary: `${host}: ${label}${codeTag}${agentTag}`,
     hint: hints[code] || null,
     retryable: RETRYABLE_CODES.has(code),
   };
@@ -620,7 +614,7 @@ function forwardRequest(ctx) {
     let reqErrorHandled = false;
     proxyReq.on('error', (err) => {
       reqErrorHandled = true;
-      const info = describeUpstreamError(err, upstream.host);
+      const info = describeUpstreamError(err, upstream.host, ctx);
 
       if (info.retryable && attempt === 0 && !clientRes.headersSent && !clientRes.destroyed) {
         console.error(`\x1b[33m⏳ ${info.summary} — retrying…\x1b[0m`);

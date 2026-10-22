@@ -29,15 +29,14 @@ function isAnthropicSide(headers = {}, req) {
   return hasAnthropicHeaders(headers) || clientAgentType(req) === 'claude';
 }
 
-function isOpenAISide(headers = {}, req) {
+function isOpenAISide(headers = {}, req, includeBareBearer = true) {
   return Object.keys(headers).some(key => key === 'chatgpt-account-id'
       || /^(openai-|x-openai-|x-codex-)/.test(key)
       || (key === 'originator' && /^codex/i.test(String(headers[key]))))
     || !!matchOpenAIWireClient(headers)
     || ['codex', 'grok'].includes(clientAgentType(req))
-    || (/^Bearer sk-/i.test(headers.authorization || '')
-      && !/^Bearer sk-ant-/i.test(headers.authorization || '')
-      && !hasAnthropicHeaders(headers));
+    || (includeBareBearer && /^Bearer sk-/i.test(headers.authorization || '')
+      && !/^Bearer sk-ant-/i.test(headers.authorization || ''));
 }
 
-module.exports = { isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };
+module.exports = { clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };

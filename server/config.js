@@ -1,6 +1,6 @@
 'use strict';
 
-const { isOpenAISide, isAnthropicSide, matchOpenAIWireClient } = require('./request-signals');
+const { isOpenAISide, isAnthropicSide, matchOpenAIWireClient, clientAgentType } = require('./request-signals');
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
 const { retentionDays, boundedDays } = require('./retention');
@@ -190,20 +190,18 @@ function getUpstream(provider) {
 /** Returns a provider name, or null when unknown-path handling cannot choose one. */
 function getProviderForRequest(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
-  if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
-  if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
-  if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
-  if (pathname === '/v1/alpha/search' || pathname.startsWith('/v1/alpha/search/')) return 'openai';
-  if (pathname === '/v1/memories' || pathname.startsWith('/v1/memories/')) return 'openai';
-  if (pathname === '/v1/images' || pathname.startsWith('/v1/images/')) return 'openai';
-  if (isChatGPTCodexPath(pathname)) return 'openai';
-  if (isAnthropicMessagesPath(pathname)) return 'anthropic';
-  // chat/completions has no path rule until its wire parser handles the shape.
-  // Unknown-path handling uses request signals for it as for other unlisted paths.
   const openai = isOpenAISide(headers, req);
   const anthropic = isAnthropicSide(headers, req);
-  if (pathname === '/' && ['GET', 'HEAD'].includes(req.method) && !openai
+  if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) {
+    return anthropic ? (openai ? null : 'anthropic') : 'openai';
+  }
+  if (['/v1/responses', '/v1/realtime', '/v1/alpha/search', '/v1/memories', '/v1/images']
+      .some(path => pathname === path || pathname.startsWith(`${path}/`))
+      || isChatGPTCodexPath(pathname)) return anthropic ? null : 'openai';
+  if (isAnthropicMessagesPath(pathname)) return 'anthropic';
+  if (['/', '/api/hello'].includes(pathname) && ['GET', 'HEAD'].includes(req.method) && !openai
       && !headers['transfer-encoding'] && !Number(headers['content-length']) && !req.bodySize) return 'anthropic';
+  if (openai && !isOpenAISide(headers, req, false)) return null;
   if (openai === anthropic) return null;
   return openai ? 'openai' : 'anthropic';
 }
@@ -251,6 +249,9 @@ function isAnthropicMessagesPath(pathname) {
 // without swapping OPENAI_BASE_URL.
 function getUpstreamForRequestAndHeaders(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
+  const provider = getProviderForRequest(urlPath, headers, req);
+  if (!provider) return null;
+  if (provider === 'openai' && clientAgentType(req) === 'grok') return UPSTREAMS.xai;
   if (isChatGPTAppsMcpPath(pathname)) {
     return UPSTREAMS.openaiChatGPTAppsMcp;
   }
@@ -260,9 +261,7 @@ function getUpstreamForRequestAndHeaders(urlPath, headers = {}, req = {}) {
   if (isChatGPTCodexPath(pathname)) {
     return UPSTREAMS.openaiChatGPT;
   }
-  const provider = getProviderForRequest(urlPath, headers, req);
-  if (!provider) return null;
-  if (pathname.startsWith('/v1/') && !isAnthropicMessagesPath(pathname)) {
+  if (provider === 'openai' && pathname.startsWith('/v1/') && !isAnthropicMessagesPath(pathname)) {
     try {
       const client = matchOpenAIWireClient(headers);
       if (client?.upstreamKey && UPSTREAMS[client.upstreamKey]) {

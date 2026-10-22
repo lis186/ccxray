@@ -56,6 +56,12 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end('{"synthetic":true}');
   });
+  const xaiReceived = [];
+  const xai = http.createServer((req, res) => {
+    xaiReceived.push({ url: req.url, headers: req.headers }); req.resume();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end('{"synthetic":true}');
+  });
   let child, done;
   const stop = async () => {
     if (!child) return;
@@ -66,6 +72,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
   try {
     const upstreamPort = await listen(upstream);
     const openaiPort = await listen(openai);
+    const xaiPort = await listen(xai);
     const reserve = http.createServer();
     const port = await listen(reserve);
     await new Promise(resolve => reserve.close(resolve));
@@ -75,6 +82,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         CCXRAY_PRICING_CACHE: path.join(home, 'pricing.json'), RESTORE_DAYS: '0',
         ANTHROPIC_TEST_HOST: '127.0.0.1', ANTHROPIC_TEST_PORT: String(upstreamPort), ANTHROPIC_TEST_PROTOCOL: 'http',
         OPENAI_TEST_HOST: '127.0.0.1', OPENAI_TEST_PORT: String(openaiPort), OPENAI_TEST_PROTOCOL: 'http',
+        XAI_BASE_URL: `http://127.0.0.1:${xaiPort}/v1`,
         CHATGPT_BASE_URL: `http://127.0.0.1:${openaiPort}/backend-api/codex` },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -168,6 +176,40 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       assert.equal((await request(port, '/', method)).status, 200);
       assert.equal((await request(port, '/', method, { 'anthropic-version': '2023-06-01' })).status, 200);
     }
+    await t.test('header-aware routing (#745)', async () => {
+      const openaiBefore = openaiReceived.length;
+      for (const headers of [claudeHeaders, { authorization: 'Bearer sk-ant-synthetic' }]) {
+        const before = received.length;
+        assert.equal((await request(port, '/v1/models', 'GET', headers)).status, 200);
+        assert.equal(received.length, before + 1);
+        assert.equal(received.at(-1).url, '/v1/models');
+        assert.equal(openaiReceived.length, openaiBefore);
+      }
+      for (const headers of [{ 'user-agent': 'codex_cli_rs/0.163.0' }, { 'chatgpt-account-id': 'acct' }]) {
+        const before = openaiReceived.length, otherBefore = received.length;
+        assert.equal((await request(port, '/v1/models', 'GET', headers)).status, 200);
+        assert.equal(openaiReceived.length, before + 1);
+        assert.equal(received.length, otherBefore);
+      }
+      const before = received.length, otherBefore = openaiReceived.length;
+      for (const [url, headers] of [
+        ['/v1/responses', claudeHeaders],
+        ['/v1/models', { ...claudeHeaders, 'chatgpt-account-id': 'acct' }],
+        ['/v1/unlisted', { authorization: 'Bearer sk-proj-synthetic' }],
+      ]) {
+        const result = await request(port, url, 'GET', headers);
+        assert.equal(result.status, 421);
+        assert.equal(JSON.parse(result.data).error.type, 'ccxray_unknown_route');
+      }
+      assert.equal(received.length, before);
+      assert.equal(openaiReceived.length, otherBefore);
+      assert.equal(xaiReceived.length, 0);
+      for (const method of ['HEAD', 'GET']) {
+        assert.equal((await request(port, '/api/hello', method)).status, 200);
+      }
+      assert.equal(received.length, before + 2);
+      assert.doesNotMatch(output, /refused (?:HEAD|GET) \/api\/hello/);
+    });
     for (const agentType of ['codex', 'claude']) {
       if (agentType === 'claude') assert.equal((await registerClient(home, agentType)).ok, true);
       const expected = agentType === 'codex' ? openaiReceived : received;
@@ -183,6 +225,19 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         assert.equal(received.length, otherBefore);
       }
     }
+    await t.test('routing fix (#745): Grok hub identity at xAI', async () => {
+      assert.equal((await registerClient(home, 'grok')).ok, true);
+      const before = received.length, otherBefore = openaiReceived.length;
+      for (const url of ['/v1/responses', '/v1/alpha/title', '/v1/models']) {
+        const xaiBefore = xaiReceived.length;
+        assert.equal((await request(port, `/_ccxray/client/${process.pid}${url}`, 'POST', {}, '{}')).status, 200);
+        assert.equal(xaiReceived.length, xaiBefore + 1);
+        assert.equal(xaiReceived.at(-1).url, url);
+      }
+      assert.equal((await request(port, `/_ccxray/client/${process.pid}/v1/messages`, 'POST', {}, '{}')).status, 421);
+      assert.equal(received.length, before);
+      assert.equal(openaiReceived.length, otherBefore);
+    });
     await stop(); child = null;
     const rows = fs.readFileSync(path.join(logs, 'index.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(rows.length >= 4);
@@ -195,6 +250,8 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
     assert.ok(rows.some(row => row.path === '/v1/alpha/unlisted' && row.provider === 'openai' && row.agent === 'codex'));
   } finally {
     await stop();
+    xai.closeAllConnections();
+    await new Promise(resolve => xai.close(resolve));
     openai.closeAllConnections();
     await new Promise(resolve => openai.close(resolve));
     upstream.closeAllConnections();
