@@ -40,16 +40,20 @@ function loadHub() {
   for (const [from, to] of [
     ['const HUB_HEALTH_CHECK_MS = 5000;', 'const HUB_HEALTH_CHECK_MS = 20;'],
     ['const HUB_LOCK_CHECK_MS = 5000;', 'const HUB_LOCK_CHECK_MS = 20;'],
-    ['const READINESS_TIMEOUT_MS = 10000;', 'const READINESS_TIMEOUT_MS = process.__ccxReadinessTimeoutMs || 120;'],
+    ['const READINESS_TIMEOUT_MS = 10000;', 'const READINESS_TIMEOUT_MS = 120;'],
     // Barrier: a test hook may await (e.g. fully publish a hub) before polling
     // begins, and the resolved lock is recorded so a test can prove which hub
     // the readiness wait returned.
     ['function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {',
      `function waitForHubReady(timeoutMs = READINESS_TIMEOUT_MS) {
   const hook = process.__ccxReadinessHook;
+  // Opt-in overrides are read at invocation time, never at module load.
+  const optedIn = process.__ccxReadinessTimeoutMs !== undefined;
+  const used = optedIn ? process.__ccxReadinessTimeoutMs : timeoutMs;
+  if (optedIn) process.__ccxReadinessTimeoutUsed = used;
   return Promise.resolve(hook ? hook() : undefined)
-    .then(() => __realWaitForHubReady(timeoutMs))
-    .then(lock => { process.__ccxReadinessResolved = lock; return lock; });
+    .then(() => __realWaitForHubReady(used))
+    .then(lock => { if (optedIn) process.__ccxReadinessResolved = lock; return lock; });
 }
 function __realWaitForHubReady(timeoutMs) {`],
   ]) {
@@ -68,6 +72,14 @@ function __realWaitForHubReady(timeoutMs) {`],
   );
   factory(localRequire, module, module.exports, SERVER_DIR, path.join(SERVER_DIR, 'hub.js'));
   return module.exports;
+}
+
+function resetHarnessCaptures() {
+  hubErrors.length = 0;
+  delete process.__ccxReadinessResolved;
+  delete process.__ccxReadinessHook;
+  delete process.__ccxReadinessTimeoutMs;
+  delete process.__ccxReadinessTimeoutUsed;
 }
 
 const hub = loadHub();
@@ -115,11 +127,13 @@ async function stopHubB() {
 }
 
 beforeEach(() => {
+  resetHarnessCaptures();
   hub.deleteHubLock();
   hub.stopLockSelfHeal();
   spawnCalls = 0;
 });
 after(async () => {
+  resetHarnessCaptures();
   hub.stopLockSelfHeal();
   await stopHubB();
   for (const c of liveChildren) { try { c.kill('SIGKILL'); } catch {} }
@@ -390,6 +404,7 @@ describe('client recovery (#730)', () => {
       await monitor.tick();
       assert.equal(hookRan, true, 'the readiness-wait branch ran');
       const resolved = process.__ccxReadinessResolved;
+      assert.equal(process.__ccxReadinessTimeoutUsed, 600000, 'the real waiter received the overridden timeout');
       assert.ok(resolved, 'readiness resolved (did not time out)');
       assert.equal(resolved.pid, other.pid, 'readiness returned hub B');
       assert.equal(resolved.port, otherPort);
@@ -407,6 +422,7 @@ describe('client recovery (#730)', () => {
       delete process.__ccxReadinessHook;
       delete process.__ccxReadinessTimeoutMs;
       delete process.__ccxReadinessResolved;
+      delete process.__ccxReadinessTimeoutUsed;
       process.kill = realKill;
       try { fs.unlinkSync(path.join(HOME, 'hub.fork.lock')); } catch {}
       await stopHubB();
