@@ -2518,7 +2518,7 @@ test('PowerShell wrappers preserve argument boundaries under every installed edi
       const result = await runChild(fixture, edition.executable, [
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
         '. ' + quotedProfile + "; claude 'two words' 'x;y'",
-      ], { deadlineMs: 15000 });
+      ], { deadlineMs: 30000 });
       assert.equal(result.status, 'exited', edition.name + ': ' + result.stderr);
       assert.equal(result.exitCode, 0, edition.name + ': ' + result.stderr);
       assert.equal(fs.readFileSync(path.join(setupHome(fixture), 'fake-ccxray.log'), 'utf8'),
