@@ -591,14 +591,135 @@ describe('bypass log written by the shim (should-fix 3)', () => {
     fs.rmSync(logFile);
   });
 
-  it('stays silent when the home is unreadable', async function () {
-    if (process.getuid && process.getuid() === 0) return;
+  it('stays silent when the home cannot be read or traversed', { skip: process.getuid && process.getuid() === 0 }, async () => {
     const locked = path.join(dir, 'locked-home');
-    fs.mkdirSync(locked, { mode: 0o500 });
+    fs.mkdirSync(locked, { mode: 0o700 });
+    fs.writeFileSync(path.join(locked, 'shim-bypass.log'), 'existing\n');
+    fs.chmodSync(locked, 0o000);
     try {
+      assert.throws(() => fs.readdirSync(locked), /EACCES/, 'the fixture really is unreadable');
       const r = await noHelper({ env: { CCXRAY_SHIM_HOME: locked } });
       assert.equal(r.code, 0);
       assert.equal(r.stderr, 'ERR\n');
     } finally { fs.chmodSync(locked, 0o700); }
+    assert.equal(fs.readFileSync(path.join(locked, 'shim-bypass.log'), 'utf8'), 'existing\n', 'nothing was written');
+  });
+
+  // Review round 2, should-fix 2: existing logs and links.
+  it('forces an existing permissive log (and its rotated copy) to 0600 before appending', async () => {
+    fs.writeFileSync(logFile, `${'x'.repeat(1100000)}\n`, { mode: 0o644 });
+    fs.chmodSync(logFile, 0o644);
+    const r = await noHelper();
+    assert.equal(r.code, 0);
+    assert.equal(fs.statSync(logFile).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(`${logFile}.1`).mode & 0o777, 0o600, 'rotation did not keep the loose mode');
+    const plain = path.join(dir, 'plain-home');
+    fs.mkdirSync(plain);
+    fs.writeFileSync(path.join(plain, 'shim-bypass.log'), `${JSON.stringify({ t: new Date().toISOString(), tool: 'claude', cwd: '', reason: 'x', action: 'bypass' })}\n`, { mode: 0o644 });
+    fs.chmodSync(path.join(plain, 'shim-bypass.log'), 0o644);
+    await noHelper({ env: { CCXRAY_SHIM_HOME: plain } });
+    assert.equal(fs.statSync(path.join(plain, 'shim-bypass.log')).mode & 0o777, 0o600);
+    assert.equal(fs.readFileSync(path.join(plain, 'shim-bypass.log'), 'utf8').trim().split('\n').length, 2);
+  });
+
+  it('never writes through a symlink at the log path or at the rotated path', async () => {
+    const outside = path.join(dir, 'outside.txt');
+    fs.writeFileSync(outside, 'OUTSIDE');
+    fs.symlinkSync(outside, logFile);
+    const r = await noHelper();
+    assert.equal(r.code, 0);
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE');
+    assert.ok(fs.lstatSync(logFile).isSymbolicLink());
+    fs.rmSync(logFile);
+    fs.writeFileSync(logFile, `${'x'.repeat(1100000)}\n`);
+    fs.symlinkSync(outside, `${logFile}.1`);
+    await noHelper();
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE', 'rotation replaced the link instead of following it');
+    assert.ok(fs.lstatSync(`${logFile}.1`).isFile());
+  });
+
+  it('writes the same ASCII-only record shape as the probe for a non-ASCII working directory', async () => {
+    const odd = path.join(dir, 'caf\u00e9-100%-dir');
+    fs.mkdirSync(odd);
+    await noHelper({ cwd: odd });
+    const rec = JSON.parse(fs.readFileSync(logFile, 'utf8').trim());
+    assert.equal(rec.cwd, `${dir}/caf??-100%-dir`);
+  });
+});
+
+// Review round 2, must-fix 4: the fallback logger is bounded and uses system tools.
+describe('fallback logging cannot block the launch (round 2, must-fix 4)', () => {
+  let dir; let paths; let logFile; let fakeDir;
+  before(async () => { dir = tmp('ccxray-shim-logstall-'); paths = await installInto(dir); logFile = path.join(paths.home, 'shim-bypass.log'); fakeDir = path.join(dir, 'fake-tools'); });
+  after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  beforeEach(() => { fs.rmSync(logFile, { force: true }); fs.rmSync(fakeDir, { recursive: true, force: true }); });
+
+  // A state that is neither running nor a zombie awaiting its parent.
+  const alive = pid => {
+    try { return !/^\d+ \(.*\) Z /.test(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return false; }
+  };
+  const noHelper = (opts = {}) => {
+    const probe = path.join(paths.home, 'shim-probe.js');
+    const saved = fs.readFileSync(probe);
+    fs.rmSync(probe);
+    return run('claude', ['x'], { pathDirs: [paths.shims, fakeDir, realBin], env: { CCXRAY_SHIM_HOME: paths.home, ...opts.env }, timeout: 15000 })
+      .finally(() => fs.writeFileSync(probe, saved));
+  };
+  // A stand-in that records its pid and then hangs: the shape of a stopped or wedged command.
+  const hang = name => makeFake(path.join(fakeDir, name), `echo $$ > "${path.join(fakeDir, name)}.pid"\nexec /bin/sleep 60`);
+  const pidOf = name => Number(fs.readFileSync(path.join(fakeDir, `${name}.pid`), 'utf8'));
+
+  for (const strict of [false, true]) {
+    it(`a hanging system date costs at most the log budget and leaves no child (${strict ? 'strict refusal' : 'direct launch'})`, { skip: !fs.existsSync('/proc/self/stat') }, async () => {
+      hang('date');
+      const r = await noHelper({ env: { CCXRAY_SHIM_SYSPATH: `${fakeDir}:/usr/bin:/bin`, ...(strict ? { CCXRAY_SHIM_STRICT: '1' } : {}) } });
+      assert.equal(r.code, strict ? 111 : 0, r.stderr);
+      if (strict) assert.match(r.stderr, /refusing to launch claude/); else assert.match(r.stdout, /ARGS:x/);
+      assert.ok(r.ms < 5000, `took ${r.ms}ms`);
+      const pid = pidOf('date');
+      const until = Date.now() + 3000;
+      while (alive(pid) && Date.now() < until) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(alive(pid), false, 'the stalled logger command survived the launch');
+    });
+  }
+
+  it('commands planted on the inherited PATH are never used by the logger', async () => {
+    for (const name of ['date', 'wc', 'mv', 'chmod', 'mkdir', 'rm', 'sleep', 'sed', 'tr']) hang(name);
+    fs.writeFileSync(logFile, 'old\n');
+    const r = await noHelper();
+    assert.equal(r.code, 0);
+    assert.ok(r.ms < 2500, `took ${r.ms}ms`);
+    const last = JSON.parse(fs.readFileSync(logFile, 'utf8').trim().split('\n').at(-1));
+    assert.equal(last.reason, 'helper-unavailable');
+    for (const name of ['date', 'wc', 'mv', 'chmod', 'mkdir', 'rm', 'sleep', 'sed', 'tr']) {
+      assert.equal(fs.existsSync(path.join(fakeDir, `${name}.pid`)), false, `${name} from PATH was executed`);
+    }
+  });
+});
+
+describe('real-binary override is always an explicit path (round 2, must-fix 1)', () => {
+  let cwdDir;
+  before(() => {
+    cwdDir = path.join(root, 'override-cwd');
+    makeFake(path.join(cwdDir, 'claude'), FAKE.replace('echo "WHO:$(basename "$0")"', 'echo "WHO:cwd-real"'));
+  });
+
+  for (const disable of [false, true]) {
+    it(`runs the cwd binary named by a bare override, shim first on PATH${disable ? ' (CCXRAY_SHIM_DISABLE=1)' : ''}`, async () => {
+      const r = await run('claude', ['hello'], { cwd: cwdDir, timeout: 8000,
+        env: { CCXRAY_SHIM_REAL_CLAUDE: 'claude', ...(disable ? { CCXRAY_SHIM_DISABLE: '1' } : {}) } });
+      assert.equal(r.signal, null, 'the shim re-executed itself until it was killed');
+      assert.equal(r.code, 0, r.stderr);
+      assert.match(r.stdout, /WHO:cwd-real/);
+      assert.match(r.stdout, /ARGS:hello/);
+    });
+  }
+
+  it('a bare override that is not in the working directory falls back to the PATH walk', async () => {
+    const empty = path.join(root, 'override-empty');
+    fs.mkdirSync(empty, { recursive: true });
+    const r = await run('claude', ['x'], { cwd: empty, timeout: 8000, env: { CCXRAY_SHIM_REAL_CLAUDE: 'claude' } });
+    assert.equal(r.code, 0);
+    assert.match(r.stdout, /WHO:claude/);
   });
 });

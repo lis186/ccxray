@@ -3052,7 +3052,8 @@ test('setup dependencies refuse symlink-escaped account, enrollment, cursor, and
     consumeOutsideAttempts(fixture, [
       'readFileSync', 'readdirSync', 'readFileSync', 'readFileSync',
       'readFileSync', 'openSync', 'readFileSync',
-      'readFileSync', // #732: --remove also looks for <home>/shims.json (launcher shims) after the tombstone
+      // #732: --remove also inspects <home>/shims.json (launcher shims) after the tombstone, but through lstat:
+      // an absent file is never read (an existing one is read inside the fixture home only).
       'writeFileSync',
       'readFileSync', 'readFileSync', 'readFileSync',
     ]);

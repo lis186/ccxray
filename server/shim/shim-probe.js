@@ -75,8 +75,10 @@ function probeHealth(port, ms) {
           // Public health says the listener, not the shim's environment, gates
           // loopback: an unauthenticated probe is told so, and model traffic
           // from this shim (which holds no proxy credential) would 401.
+          // `hub` is the listener's own claim to be a hub (it has a client registry
+          // and an idle timer); a standalone proxy has neither.
           done(parsed.exportReportUnavailableReason === 'authentication-required'
-            ? { ok: false, reason: 'auth-required', ccxray: true } : { ok: true });
+            ? { ok: false, reason: 'auth-required', ccxray: true } : { ok: true, hub: parsed.hub === true });
         } catch { done({ ok: false, reason: 'not-ccxray' }); }
       });
       res.on('error', () => done({ ok: false, reason: 'error' }));
@@ -123,14 +125,51 @@ function codexAlreadyRouted(overrides) {
   return overrides.some(o => /^\s*openai_base_url\s*=/.test(o) || /^\s*model_provider\s*=\s*["']?ccxray/.test(o));
 }
 
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+const O_NONBLOCK = fs.constants.O_NONBLOCK || 0;
+
+// Opens the log for appending only if it is (or becomes) a regular, non-symlink
+// file owned well enough to be made private: O_NOFOLLOW refuses a symlink at the
+// path, O_NONBLOCK keeps a FIFO from blocking the open, and the type is checked
+// on the descriptor itself (no path race). An older or looser file is forced to
+// 0600 before anything is written. Returns { fd, size } or null.
+function openLog(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o600);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new Error('not a regular file');
+    if ((st.mode & 0o077) !== 0) fs.fchmodSync(fd, 0o600);
+    return { fd, size: st.size };
+  } catch {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* closed */ } }
+    return null;
+  }
+}
+
+// The cwd is written as printable ASCII only (anything else becomes '?': one per
+// UTF-16 unit here, one per byte in the shell writer), so both writers emit the
+// same single-line, ASCII-only record shape.
+function asciiCwd(value) {
+  return String(value ?? '').slice(0, 4096).replace(/[^ -~]/g, '?');
+}
+
 function appendBypass(home, record) {
   try {
     const file = path.join(home, 'shim-bypass.log');
-    try {
-      if (fs.statSync(file).size > LOG_ROTATE_BYTES) fs.renameSync(file, `${file}.1`);
-    } catch { /* absent: created below */ }
     fs.mkdirSync(home, { recursive: true, mode: 0o700 });
-    fs.appendFileSync(file, JSON.stringify(record) + '\n', { mode: 0o600 });
+    let log = openLog(file);
+    if (!log) return;
+    if (log.size > LOG_ROTATE_BYTES) {
+      // The file is already private (openLog), so the rotated copy is too. rename
+      // replaces a link planted at `.1` rather than following it.
+      fs.closeSync(log.fd);
+      try { fs.renameSync(file, `${file}.1`); } catch { /* a directory at .1: keep appending */ }
+      log = openLog(file);
+      if (!log) return;
+    }
+    try { fs.writeSync(log.fd, JSON.stringify({ ...record, cwd: asciiCwd(record.cwd) }) + '\n'); }
+    finally { fs.closeSync(log.fd); }
   } catch { /* logging must never fail the launch */ }
 }
 
@@ -155,7 +194,8 @@ function failureLine(tool, env, reason, cwd, now = new Date()) {
 // route (/_ccxray/client/<pid>, never another project's cwd) and keeps the hub
 // from idle-shutting-down under a live shim session; the hub's dead-client sweep
 // unregisters it when the tool exits. Best effort, bounded; any failure leaves
-// the plain URL (a standalone proxy has no client registry).
+// the plain URL ONLY for a standalone proxy (no client registry, no idle timer);
+// a hub that cannot register this launch is bypassed (see decide()).
 function registerWithHub(home, port, env, cwd, ms) {
   return new Promise(resolve => {
     const pid = Number(env.CCXRAY_SHIM_PID);
@@ -214,6 +254,9 @@ async function decide(tool, args, env, now = new Date(), cwd = safeCwd()) {
   if (!health.ok) return fail(health.reason);
   let base = `http://127.0.0.1:${port}`;
   if (await registerWithHub(home, port, env, cwd, ms)) base += `/_ccxray/client/${Number(env.CCXRAY_SHIM_PID)}`;
+  // A bare URL against a hub would be attributed to whichever client's cwd the hub
+  // guesses (a bystander's) and has no client keeping the hub alive: bypass instead.
+  else if (health.hub) return fail('hub-registration-failed');
   if (tool === 'claude') {
     const printMode = args.some((arg, i) => (arg === '-p' || arg === '--print') && !args.slice(0, i).includes('--'));
     return `claude ${base} ${printMode ? 1 : 0}`;

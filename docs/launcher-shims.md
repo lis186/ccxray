@@ -23,7 +23,9 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    the current directory and no pathname expansion, skipping its own directory (compared by physical path, so a
    doubled or symlinked entry is skipped too) and any other ccxray shim. A symlinked binary or a version-manager
    shim is used as found; the shim `exec`s it, so exit codes, signals, stdin/stdout/stderr are the real tool's.
-   `CCXRAY_SHIM_REAL_CLAUDE|CODEX` is honoured only for an executable regular file that is not a shim.
+   `CCXRAY_SHIM_REAL_CLAUDE|CODEX` is honoured only for an executable regular file that is not a shim. A bare name
+   (`claude`) is turned into an explicit path (`./claude`) before every `exec`, including `CCXRAY_SHIM_DISABLE=1`,
+   so it runs the file it was validated against instead of being searched on `PATH` (which would find the shim again).
 2. It runs a small node probe (`<CCXRAY_HOME>/shim-probe.js`, built-ins only) under a **hard deadline enforced by
    the shell** (`CCXRAY_SHIM_DEADLINE_SECS`, default 2 s; plain POSIX `sh`, no `timeout`): a background watchdog
    kills the helper, so a hung Node start, a stalled synchronous read (for example `hub.json` replaced by a FIFO) or
@@ -38,8 +40,9 @@ Options: `--shim-dir D` installs the two shims into a directory that is already 
    `codex login`, …) pass through untouched. Codex arguments are parsed with option arity: prompt text that merely
    mentions `openai_base_url`, or an option value such as `-m help`, is not configuration or a subcommand.
 4. **Not usable** (refused, timeout, error, not ccxray, the listener requires authentication, helper crash or
-   deadline): the real binary runs directly with your original args and environment, and one JSON line is appended
-   to `<CCXRAY_HOME>/shim-bypass.log`: `{t, tool, cwd, reason, action}`. No args, prompts, env values or secrets.
+   deadline, a hub that cannot register this launch): the real binary runs directly with your original args and
+   environment, and one JSON line is appended to `<CCXRAY_HOME>/shim-bypass.log`: `{t, tool, cwd, reason, action}`.
+   No args, prompts, env values or secrets.
    A custom non-ccxray base URL (a gateway) is left alone and logged as `custom-base-url`. The listener decides
    whether it needs credentials: public health reports `authentication-required` to an unauthenticated caller, and
    the shim (which holds no proxy credential) then bypasses (`auth-required`) instead of routing into 401s.
@@ -57,14 +60,40 @@ sweep unregisters the pid after the tool exits), so it does not idle-shut-down u
 **standalone** proxy there is no client registry: the plain URL is used, and a tool that puts no cwd on the wire
 (Codex) is recorded without one rather than with a guessed one.
 
+The probe keeps the listener's own claim from `/_api/health` (`hub: true`). If the listener is a hub and the
+registration cannot be established (no `hub.json`, a stale socket, a lock for another port, a refusal, a timeout),
+the launch is **not** routed through a bare hub URL: such a URL would be attributed to whichever client's cwd the hub
+guesses (a bystander's) and nothing would keep the hub alive. It runs directly and logs the fixed reason
+`hub-registration-failed` (strict mode refuses). The plain URL is used only for a non-hub listener.
+
 ## The bypass log
 
-`<CCXRAY_HOME>/shim-bypass.log` is created `0600` (directory `0700`) whatever the umask, written best-effort and
-silently (a failure never prints and never delays the launch; a FIFO, device or symlink at that path is skipped),
-and rotated to `shim-bypass.log.1` past 1 MiB by both writers. The working directory is written as ASCII JSON
-(control and non-ASCII characters become `?`). The dashboard, `ccxray status` and `--check` count the active file
-**and** the rotated generation, so a rotation does not make recent bypasses disappear; the "total" they show is
-what is *retained*, not everything that ever happened.
+`<CCXRAY_HOME>/shim-bypass.log` is written best-effort and silently: a failure never prints and never delays the
+launch. Both writers (the probe, and the shell when the probe cannot run) follow the same rules:
+
+- **Mode.** A new log is created `0600`. An existing log, whatever mode an earlier version or the user gave it, is
+  forced to `0600` before anything is appended, and so is the rotated copy. A directory the shim creates is `0700`
+  (the umask is overridden); the shim does **not** change the mode of a home directory that already exists, so
+  protect `~/.ccxray` itself if the machine is shared.
+- **Files only.** Only a regular, non-symlink file is appended to. The probe opens with `O_NOFOLLOW|O_NONBLOCK` and
+  checks the type on the descriptor; the shell checks the path (`-L`, `-f`) immediately before appending, which
+  cannot close a race between that check and the write, but needs a hostile local process that can already write
+  in your ccxray home. A FIFO, device or symlink at the log path is skipped, and rotation replaces a link planted at
+  `shim-bypass.log.1` rather than following it (it is skipped when `.1` is a directory).
+- **Escaping.** The working directory is written as printable ASCII only: JSON-escaped `"` and `\`, and every other
+  character becomes `?` (one `?` per UTF-16 unit in the probe, one per byte in the shell), capped at 4096 characters.
+- **Rotation** to `shim-bypass.log.1` happens past 1 MiB in both writers.
+
+The shell writer runs in its own subshell under a separate 1 s budget (`logsecs`), after the helper's deadline. It
+takes `mkdir`, `chmod`, `rm`, `mv` and `date` from `/usr/bin:/bin` (override with `CCXRAY_SHIM_SYSPATH`, a test
+seam) instead of the inherited `PATH`, so a command planted earlier on `PATH` cannot stall it; each runs as a tracked
+child that is killed when the budget ends, and its descriptors point at `/dev/null`. A stalled logger therefore costs
+at most about a second, never keeps the tool from starting, never delays a strict refusal, and leaves no child
+behind. The helper's watchdog uses `/bin/sleep` for the same reason.
+
+The dashboard, `ccxray status` and `--check` count the active file **and** the rotated generation, so a rotation
+does not make recent bypasses disappear; the "total" they show is what is *retained*, not everything that ever
+happened.
 
 `ccxray status`, `ccxray setup --wrap-binaries --check`, `GET /_api/shim-bypass` and a dashboard topbar notice
 report the bypass count (counts only; `cwd` never leaves the log).
@@ -118,12 +147,32 @@ directories setup created if they are empty again, and keeps your later edits (i
 The bypass log is user data and is kept.
 
 Setup never takes over a file it did not write. Before the first write it checks every target (the probe helper,
-both shims, the `environment.d` file): each must be absent, or exactly what a previous install left. An existing
-file, a symlink, or a shim you edited makes the install **refuse with nothing changed** (`--dry-run` shows
-`would REFUSE`; use `--shim-dir` or `--no-session-env` to step around it). Writes go to a temp file and `rename`,
-so nothing is ever written through a symlink, and a failure half way rolls the tree back to how it was. Re-running
+both shims, the `environment.d` file, and `shims.json` itself): each must be absent, or exactly what a previous
+install left. An existing file, a symlink, or a shim you edited makes the install **refuse with nothing changed**
+(`--dry-run` shows `would REFUSE`; use `--shim-dir` or `--no-session-env` to step around it). A `shims.json` that is
+malformed, from a newer version, of the wrong shape, a symlink or not a regular file is *unrecognized*, not "not
+installed": install, `--remove` and `--check` all report it and leave it alone (plain `ccxray setup --remove` warns
+and skips the shims). Writes go to a temp file and `rename`, so nothing is ever written through a symlink.
+
+Shell profiles are updated the same way: the **resolved** regular target is replaced atomically, so a symlinked
+profile stays a symlink and keeps its mode (and owner and group when permitted), a write that fails part way leaves
+the original bytes untouched, and a dangling link, a directory or any non-regular profile is refused before the
+first write. The original bytes of every profile are also kept in memory so a failure further on rolls each one back
+byte for byte. (A hard-linked profile is replaced, so the link count drops to one.) A failure half way rolls the tree
+back to how it was. Re-running
 `--wrap-binaries` restores the original state first, so the recorded "previous state" never becomes a previous
 install; if that restore fails, the install stops and the `shims.json` recovery record is kept.
 
 Plain `ccxray setup --remove` includes the shims in its preview and consent prompt (`--dry-run` lists them), removes
 them only after setup's own removal succeeds, and a shim-removal failure makes the command exit non-zero.
+
+## Verification status
+
+The shim, probe and installer are exercised by `test/launcher-shims*.test.js` and `test/shim-probe.test.js` against
+temp homes, a fake proxy, and a real ccxray server with a fake upstream. When a real `codex` is installed, one test
+also checks that it accepts the injected `-c openai_base_url="…"` placement (parse-only, offline, temp `HOME` and
+`CODEX_HOME`); it skips cleanly otherwise.
+
+Those tests run on **Linux only**. The shell watchdog (background jobs, traps, `wait`, pipe lifetime) is plain POSIX
+`sh` and was also exercised under `bash --posix`, which is what macOS provides as `/bin/sh`, but it has **not been
+executed on macOS**. Treat macOS behaviour as unverified until someone runs the focused files there.

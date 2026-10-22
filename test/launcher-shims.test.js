@@ -37,7 +37,8 @@ function snapshot(dir) {
     for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
       const full = path.join(d, ent.name);
       const rel = path.relative(root, full);
-      if (ent.isDirectory()) { result[rel] = 'dir'; walk(full); }
+      if (ent.isSymbolicLink()) result[rel] = `link->${fs.readlinkSync(full)}`;
+      else if (ent.isDirectory()) { result[rel] = 'dir'; walk(full); }
       else result[rel] = fs.readFileSync(full, 'utf8');
     }
   };
@@ -447,5 +448,123 @@ describe('plain `ccxray setup --remove` shares one preview, consent and failure 
     assert.equal(code, 1);
     assert.match(err.join('\n'), /permission denied/);
     assert.ok(fs.existsSync(path.join(home, 'shims.json')), 'the recovery record is kept for a retry');
+  });
+});
+
+// ── Review round 2 (#734): manifest conflicts and profile rollback ──
+
+describe('an unrecognized shims.json is never replaced or deleted (round 2, must-fix 2)', () => {
+  const manifestPath = () => path.join(home, 'shims.json');
+  const fixtures = {
+    'malformed JSON': () => fs.writeFileSync(manifestPath(), '{ not json'),
+    'an unsupported (future) version': () => fs.writeFileSync(manifestPath(), JSON.stringify({ version: 2, shimDir: '/x', files: [] })),
+    'a wrong shape': () => fs.writeFileSync(manifestPath(), JSON.stringify({ version: 1, shimDir: '/x', files: 'nope' })),
+    'a symlink': () => { fs.writeFileSync(path.join(root, 'elsewhere.json'), '{"version":1}'); fs.symlinkSync(path.join(root, 'elsewhere.json'), manifestPath()); },
+    'a directory': () => fs.mkdirSync(manifestPath()),
+  };
+
+  for (const [name, plant] of Object.entries(fixtures)) {
+    it(`refuses install, shows it in dry-run, and removes nothing for ${name}`, async () => {
+      fs.mkdirSync(home, { recursive: true });
+      plant();
+      const before = fs.lstatSync(manifestPath());
+      const target = fs.lstatSync(manifestPath()).isSymbolicLink() ? fs.readlinkSync(manifestPath()) : null;
+      const tree = snapshot(root);
+      assert.equal(await install([], overrides()), 1);
+      assert.match(err.join('\n'), /shims\.json .*(not readable JSON|unsupported version|expected shape|symlink|not a regular file).*|Nothing was changed/s);
+      assert.match(err.join('\n'), /Nothing was changed/);
+      assert.deepEqual(snapshot(root), tree);
+      assert.equal(fs.lstatSync(manifestPath()).ino, before.ino);
+      if (target) assert.equal(fs.readlinkSync(manifestPath()), target);
+
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--dry-run'], overrides()), 1);
+      assert.match(err.join('\n'), /would REFUSE: .*shims\.json/);
+
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides()), 1);
+      assert.match(err.join('\n'), /Refusing to remove: .*shims\.json/);
+      assert.equal(await setup.runSetup(['--wrap-binaries', '--check'], overrides()), 1);
+      assert.match(err.join('\n'), /FAIL .*shims\.json/);
+      assert.deepEqual(snapshot(root), tree, 'remove/check left everything in place');
+      assert.equal(fs.lstatSync(manifestPath()).ino, before.ino);
+    });
+  }
+
+  it('an absent manifest still installs, and plain `setup --remove` leaves an unreadable one alone', async () => {
+    assert.equal(await install([], overrides()), 0);
+    fs.writeFileSync(manifestPath(), 'garbage');
+    const o = overrides();
+    assert.equal(await shims.removeIfInstalled({}, o.shims), 0);
+    assert.match(err.join('\n'), /warning: .*shims\.json/);
+    assert.equal(fs.readFileSync(manifestPath(), 'utf8'), 'garbage');
+  });
+});
+
+describe('profile writes are atomic and roll back exactly (round 2, must-fix 3)', () => {
+  // Writes a prefix of the data and then fails: what a short write / ENOSPC does.
+  function shortWriteFs(match) {
+    return new Proxy(fs, {
+      get(target, prop) {
+        const value = target[prop];
+        if (prop !== 'writeFileSync') return typeof value === 'function' ? value.bind(target) : value;
+        return (file, data, opts) => {
+          if (match(String(file))) {
+            target.writeFileSync(file, String(data).slice(0, 7), opts);
+            throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+          }
+          return target.writeFileSync(file, data, opts);
+        };
+      },
+    });
+  }
+
+  it('a profile write that stores a prefix then fails restores every byte, mode and link', async () => {
+    fs.mkdirSync(path.join(root, 'dotfiles'));
+    const real = path.join(root, 'dotfiles', 'profile');
+    fs.writeFileSync(real, '# my login profile\nexport KEEP=1\n', { mode: 0o640 });
+    fs.chmodSync(real, 0o640);
+    fs.symlinkSync(real, path.join(root, '.profile'));
+    fs.writeFileSync(path.join(root, '.bashrc'), 'alias ll="ls -l"', { mode: 0o600 });
+    fs.chmodSync(path.join(root, '.bashrc'), 0o600);
+    const tree = snapshot(root);
+    const o = overrides();
+    // The second profile's write dies half way (the first one is already replaced).
+    o.shims.fs = shortWriteFs(file => path.basename(file).startsWith('.bashrc'));
+    assert.equal(await install([], o), 1);
+    assert.match(err.join('\n'), /Setup failed \(disk full\); rolling back/);
+    assert.deepEqual(snapshot(root), tree, 'no stray temp file, no changed byte');
+    assert.equal(fs.readFileSync(real, 'utf8'), '# my login profile\nexport KEEP=1\n');
+    assert.equal(fs.readFileSync(path.join(root, '.bashrc'), 'utf8'), 'alias ll="ls -l"');
+    assert.equal(fs.statSync(real).mode & 0o777, 0o640);
+    assert.equal(fs.statSync(path.join(root, '.bashrc')).mode & 0o777, 0o600);
+    assert.ok(fs.lstatSync(path.join(root, '.profile')).isSymbolicLink());
+    assert.equal(fs.readlinkSync(path.join(root, '.profile')), real);
+    assert.deepEqual(fs.readdirSync(path.join(root, 'dotfiles')), ['profile']);
+  });
+
+  it('install and remove keep a symlinked profile a symlink and keep its mode', async () => {
+    fs.mkdirSync(path.join(root, 'dotfiles'));
+    const real = path.join(root, 'dotfiles', 'zshenv');
+    fs.writeFileSync(real, 'export A=1', { mode: 0o640 });
+    fs.chmodSync(real, 0o640);
+    fs.symlinkSync(real, path.join(root, '.zshenv'));
+    assert.equal(await install(['--shell', 'zsh'], overrides({ env: { SHELL: '/bin/zsh' } })), 0);
+    assert.ok(fs.lstatSync(path.join(root, '.zshenv')).isSymbolicLink());
+    assert.match(fs.readFileSync(real, 'utf8'), /^export A=1\n# >>> ccxray shims >>>/);
+    assert.equal(fs.statSync(real).mode & 0o777, 0o640);
+    assert.equal(await setup.runSetup(['--wrap-binaries', '--remove'], overrides({ env: { SHELL: '/bin/zsh' } })), 0);
+    assert.equal(fs.readFileSync(real, 'utf8'), 'export A=1');
+    assert.ok(fs.lstatSync(path.join(root, '.zshenv')).isSymbolicLink());
+    assert.equal(fs.statSync(real).mode & 0o777, 0o640);
+  });
+
+  it('refuses (before any write) a profile that is a dangling link or a directory', async () => {
+    fs.symlinkSync(path.join(root, 'missing-target'), path.join(root, '.bashrc'));
+    fs.writeFileSync(path.join(root, '.profile'), '# p\n');
+    const tree = snapshot(root);
+    assert.equal(await install([], overrides()), 1);
+    assert.match(err.join('\n'), /\.bashrc cannot be resolved/);
+    assert.deepEqual(snapshot(root), tree);
+    assert.ok(fs.lstatSync(path.join(root, '.bashrc')).isSymbolicLink());
+    assert.ok(!fs.existsSync(home));
   });
 });

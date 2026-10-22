@@ -203,3 +203,99 @@ describe('bypass dashboard counts across rotation (should-fix 4)', () => {
     assert.equal(summarizeBypasses(home).total, 2);
   });
 });
+
+// ── Review round 2 (#734) ──
+
+describe('a hub that cannot register this launch is bypassed (round 2, should-fix 1)', () => {
+  let sock; let hubDir;
+  before(async () => {
+    hubDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccxh2-'));
+    sock = net.createServer(c => { c.on('data', () => c.write(JSON.stringify({ ok: false }) + '\n')); });
+    await new Promise(resolve => sock.listen(path.join(hubDir, 'h.sock'), resolve));
+  });
+  after(async () => { await new Promise(resolve => sock.close(resolve)); fs.rmSync(hubDir, { recursive: true, force: true }); });
+  const lock = extra => {
+    fs.mkdirSync(path.join(root, 'home'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'home', 'hub.json'), JSON.stringify({ port: healthPort, pid: 1, sockPath: path.join(hubDir, 'h.sock'), ...extra }));
+  };
+
+  for (const [name, setup] of Object.entries({
+    'no hub.json at all': () => {},
+    'a stale socket path': () => lock({ sockPath: path.join(hubDir, 'gone.sock') }),
+    'a lock naming another port': () => lock({ port: healthPort + 1 }),
+    'a hub that refuses the registration': () => lock({}),
+  })) {
+    it(`logs hub-registration-failed instead of emitting a bare URL (${name})`, async () => {
+      healthBody = { ok: true, app: 'ccxray', hub: true };
+      setup();
+      for (const tool of ['claude', 'codex']) {
+        assert.equal(await probe.decide(tool, tool === 'claude' ? ['-p', 'x'] : ['exec', 'x'], envFor({ CCXRAY_SHIM_PID: '9' }), new Date(), '/w'), 'direct');
+        assert.equal(logLines().at(-1).reason, 'hub-registration-failed');
+      }
+      const strict = await probe.decide('codex', ['exec'], envFor({ CCXRAY_SHIM_PID: '9', CCXRAY_SHIM_STRICT: '1' }), new Date(), '/w');
+      assert.match(strict, /^refuse .*hub-registration-failed/);
+      assert.equal(logLines().at(-1).action, 'refused');
+    });
+  }
+
+  it('a standalone (non-hub) listener still gets the plain URL', async () => {
+    healthBody = { ok: true, app: 'ccxray', hub: false };
+    assert.equal(await probe.decide('codex', ['exec'], envFor({ CCXRAY_SHIM_PID: '9' })), `codex http://127.0.0.1:${healthPort}`);
+    assert.deepEqual(logLines(), []);
+  });
+});
+
+describe('the probe log writer only appends to private regular files (round 2, should-fix 2)', () => {
+  const rec = cwd => ({ t: new Date().toISOString(), tool: 'claude', cwd, reason: 'timeout', action: 'bypass' });
+  const file = name => path.join(root, name, 'shim-bypass.log');
+
+  it('makes a pre-existing 0644 log 0600 before appending, and rotates it privately', () => {
+    const dir = path.join(root, 'perm'); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file('perm'), 'old\n', { mode: 0o644 });
+    fs.chmodSync(file('perm'), 0o644);
+    probe.appendBypass(dir, rec('/a'));
+    assert.equal(fs.statSync(file('perm')).mode & 0o777, 0o600);
+    assert.equal(fs.readFileSync(file('perm'), 'utf8').split('\n').length, 3);
+    fs.writeFileSync(file('perm'), `${'x'.repeat(1100000)}\n`);
+    fs.chmodSync(file('perm'), 0o644);
+    probe.appendBypass(dir, rec('/b'));
+    assert.equal(fs.statSync(`${file('perm')}.1`).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(file('perm')).mode & 0o777, 0o600);
+  });
+
+  it('never writes through a symlink at the log path or the rotated path', () => {
+    const dir = path.join(root, 'link'); fs.mkdirSync(dir, { recursive: true });
+    const outside = path.join(root, 'outside.txt');
+    fs.writeFileSync(outside, 'OUTSIDE');
+    fs.symlinkSync(outside, file('link'));
+    probe.appendBypass(dir, rec('/secret/project'));
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE');
+    fs.rmSync(file('link'));
+    fs.writeFileSync(file('link'), `${'x'.repeat(1100000)}\n`);
+    fs.symlinkSync(outside, `${file('link')}.1`);
+    probe.appendBypass(dir, rec('/secret/project'));
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'OUTSIDE');
+    assert.ok(fs.lstatSync(`${file('link')}.1`).isFile());
+  });
+
+  it('skips a FIFO without blocking, and keeps appending when .1 is a directory', () => {
+    const dir = path.join(root, 'odd'); fs.mkdirSync(dir, { recursive: true });
+    if (require('child_process').spawnSync('mkfifo', [file('odd')]).status === 0) {
+      probe.appendBypass(dir, rec('/x'));
+      assert.ok(fs.lstatSync(file('odd')).isFIFO());
+      fs.rmSync(file('odd'));
+    }
+    fs.writeFileSync(file('odd'), `${'x'.repeat(1100000)}\n`);
+    fs.mkdirSync(`${file('odd')}.1`);
+    probe.appendBypass(dir, rec('/x'));
+    assert.match(fs.readFileSync(file('odd'), 'utf8'), /"cwd":"\/x"/);
+  });
+
+  it('writes the cwd as printable ASCII only (non-ASCII and controls become ?)', () => {
+    const dir = path.join(root, 'ascii'); fs.mkdirSync(dir, { recursive: true });
+    probe.appendBypass(dir, rec('/caf\u00e9/\u2603\n"q"\\'));
+    const line = fs.readFileSync(file('ascii'), 'utf8').trim();
+    assert.match(line, /^[ -~]+$/);
+    assert.equal(JSON.parse(line).cwd, '/caf?/??"q"\\');
+  });
+});

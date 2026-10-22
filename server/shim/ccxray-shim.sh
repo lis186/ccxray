@@ -29,6 +29,9 @@ if [ -n "$override" ] && [ -f "$override" ] && [ -x "$override" ] && ! is_shim "
   [ -n "$odir" ] || odir=/
   ophys=$(cd "$odir" 2>/dev/null && pwd -P)
   [ "$ophys" = "$shimdir" ] || real=$override
+  # A bare name would be searched on PATH by `exec` (finding the shim again), not
+  # run from the directory it was validated in: make it an explicit path.
+  case $real in ''|*/*) ;; *) real=./$real ;; esac
 fi
 
 if [ -z "$real" ]; then
@@ -65,6 +68,9 @@ export CCXRAY_SHIM_PID=$$
 # loop: a hung Node start, a stalled synchronous read or blocked I/O cannot keep
 # the real tool from launching. The helper, a watchdog and an exit marker race to
 # write the first line of a pipe; whoever wins decides, and the loser is killed.
+# Absolute path: a `sleep` planted earlier on PATH must not be able to stall (or
+# instantly fire) the deadline that exists to bound everything else.
+sleepcmd=/bin/sleep; [ -x "$sleepcmd" ] || sleepcmd=/usr/bin/sleep
 secs=${CCXRAY_SHIM_DEADLINE_SECS:-2}
 case $secs in ''|*[!0-9]*) secs=2 ;; esac
 { [ "$secs" -ge 1 ] && [ "$secs" -le 30 ]; } || secs=2
@@ -75,7 +81,7 @@ if [ -x "$node" ] && [ -r "$probe" ]; then
     {
       "$node" "$probe" "$tool" "$@" 2>/dev/null </dev/null & hp=$!
       ( trap 'kill "$sp" 2>/dev/null; exit 0' TERM
-        sleep "$secs" & sp=$!
+        "$sleepcmd" "$secs" & sp=$!
         wait "$sp"
         kill -9 "$hp" 2>/dev/null
         echo timeout ) & wd=$!
@@ -106,25 +112,73 @@ case $decision in
 esac
 
 # No usable decision: the probe could not run (or hit the deadline). Fail open,
-# or refuse in strict mode. The log is best-effort: private (0700/0600 whatever
-# the umask), ASCII-only JSON, bounded, and silent on every failure.
+# or refuse in strict mode. The log is best-effort and runs in its own bounded
+# subshell: a stalled mkdir/chmod/mv/date or filesystem can cost at most
+# $logsecs seconds and can never keep the real tool from starting (or the strict
+# refusal from being printed). The record is private (0700/0600 whatever the
+# umask), ASCII-only JSON, bounded, and silent on every failure.
 reason=helper-unavailable; [ "$decision" = timeout ] && reason=timeout
 action=bypass; [ "$CCXRAY_SHIM_STRICT" = 1 ] && action=refused
-(
+
+logsecs=1
+shim_log() {
+  # External commands (only mkdir, chmod, mv, rm, date) come from the system
+  # directories, never from the inherited PATH; each runs as a tracked child so a
+  # timeout can kill it instead of orphaning it.
+  PATH=${CCXRAY_SHIM_SYSPATH:-/usr/bin:/bin}
+  LC_ALL=C; export LC_ALL
   umask 077
+  cur=
+  trap '[ -z "$cur" ] || kill -9 "$cur" 2>/dev/null; exit 0' TERM
+  step() { "$@" & cur=$!; wait "$cur"; rc=$?; cur=; return "$rc"; }
   log=$home/shim-bypass.log
-  [ -d "$home" ] || mkdir -p "$home"
-  # Never open a FIFO, device or symlink planted at the log path.
-  if [ ! -L "$log" ] && { [ -f "$log" ] || [ ! -e "$log" ]; }; then
-    if [ -f "$log" ]; then
-      set -- $(wc -c < "$log")
-      [ "${1:-0}" -gt 1048576 ] && mv -f "$log" "$log.1"
+  [ -d "$home" ] || step mkdir -p "$home" || return 0
+  # Only a regular, non-symlink file (or nothing) is ever appended to: never a
+  # FIFO, device or symlink planted at the log path.
+  [ -L "$log" ] && return 0
+  if [ -e "$log" ]; then
+    [ -f "$log" ] || return 0
+    step chmod 600 "$log" || return 0   # an older or looser log becomes private first
+    size=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      size=$((size + ${#line} + 1))
+      [ "$size" -gt 1048576 ] && break
+    done < "$log"
+    if [ "$size" -gt 1048576 ]; then
+      old=$log.1
+      # Rotation never writes through or into a planted link or directory.
+      if [ -L "$old" ] || [ ! -d "$old" ]; then
+        step rm -f "$old" && step mv -f "$log" "$old"
+      fi
     fi
-    esc=$(printf %s "$PWD" | LC_ALL=C tr -c ' -~' '?' | sed 's/\\/\\\\/g; s/"/\\"/g')
-    printf '{"t":"%s","tool":"%s","cwd":"%s","reason":"%s","action":"%s"}\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" "$tool" "$esc" "$reason" "$action" >> "$log"
   fi
-) 2>/dev/null
+  esc=; rest=$PWD; n=0
+  while [ -n "$rest" ] && [ "$n" -lt 4096 ]; do
+    tail=${rest#?}; c=${rest%"$tail"}; rest=$tail; n=$((n + 1))
+    case $c in
+      '\') esc=$esc'\\' ;;
+      '"') esc=$esc'\"' ;;
+      '%') esc=$esc'%%' ;;
+      [\ -~]) esc=$esc$c ;;
+      *) esc=$esc'?' ;;
+    esac
+  done
+  # `date` writes the whole record, so no output has to be captured from a child.
+  step date -u "+{\"t\":\"%Y-%m-%dT%H:%M:%S.000Z\",\"tool\":\"$tool\",\"cwd\":\"$esc\",\"reason\":\"$reason\",\"action\":\"$action\"}" >> "$log"
+}
+
+{
+  ( shim_log ) </dev/null >/dev/null 2>&1 & lp=$!
+  ( trap 'kill "$sp" 2>/dev/null; exit 0' TERM
+    "$sleepcmd" "$logsecs" & sp=$!
+    wait "$sp"
+    kill -TERM "$lp" 2>/dev/null
+    "$sleepcmd" 1 & sp=$!
+    wait "$sp"
+    kill -9 "$lp" 2>/dev/null ) </dev/null >/dev/null 2>&1 & wd=$!
+  wait "$lp"
+  kill "$wd" 2>/dev/null
+} 2>/dev/null
 if [ "$action" = refused ]; then
   echo "ccxray shim: probe unavailable ($reason); refusing to launch $tool because CCXRAY_SHIM_STRICT=1" >&2
   exit 111

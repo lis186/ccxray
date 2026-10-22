@@ -67,11 +67,34 @@ function layout(options, deps) {
   };
 }
 
+// absent | { manifest } | { invalid: <reason> }. An existing file that is not
+// exactly a regular, readable, version-1 manifest of the expected shape is NEVER
+// treated as "not installed": it may be a newer ccxray's record or the user's own
+// file, so every command that would replace or delete it refuses instead.
+function inspectManifest(lay, deps) {
+  let st;
+  try { st = lstatOrNull(lay.manifestPath, deps); } catch (err) { return { invalid: `cannot be inspected (${err.message})` }; }
+  if (!st) return 'absent';
+  if (st.isSymbolicLink()) return { invalid: 'is a symlink' };
+  if (!st.isFile()) return { invalid: 'is not a regular file' };
+  let m;
+  try { m = JSON.parse(deps.fs.readFileSync(lay.manifestPath, 'utf8')); } catch (err) { return { invalid: `is not readable JSON (${err.message})` }; }
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return { invalid: 'is not a manifest object' };
+  if (m.version !== MANIFEST_VERSION) return { invalid: `has unsupported version ${JSON.stringify(m.version)} (this ccxray understands ${MANIFEST_VERSION})` };
+  const listOk = (list, keys) => list === undefined || (Array.isArray(list) && list.every(e => e && typeof e === 'object' && keys.every(k => typeof e[k] === 'string')));
+  if (!listOk(m.files, ['path', 'sha256']) || !listOk(m.sessionEnv, ['path', 'sha256']) || !listOk(m.profiles, ['file'])
+    || !(m.createdDirs === undefined || (Array.isArray(m.createdDirs) && m.createdDirs.every(d => typeof d === 'string')))
+    || typeof m.shimDir !== 'string') return { invalid: 'does not have the expected shape' };
+  return { manifest: { ...m, files: m.files || [], sessionEnv: m.sessionEnv || [], profiles: m.profiles || [], createdDirs: m.createdDirs || [] } };
+}
+
 function readManifest(lay, deps) {
-  try {
-    const m = JSON.parse(deps.fs.readFileSync(lay.manifestPath, 'utf8'));
-    return m && m.version === MANIFEST_VERSION ? m : null;
-  } catch { return null; }
+  const found = inspectManifest(lay, deps);
+  return found && found.manifest ? found.manifest : null;
+}
+
+function manifestConflict(lay, found) {
+  return found && found.invalid ? `${lay.manifestPath} ${found.invalid}` : null;
 }
 
 function renderShim(deps, lay, strict) {
@@ -159,12 +182,29 @@ function atomicWrite(file, bytes, mode, deps) {
   }
 }
 
-// An in-place write keeps a symlinked profile a symlink and preserves its mode.
+// Replaces the RESOLVED regular target of a profile (so a symlinked profile stays
+// a symlink) through a same-directory temp file and rename: a write that fails
+// part way leaves the target's bytes untouched, and the replacement keeps the
+// original mode (and owner/group when permitted). A target that is not a regular
+// file (directory, FIFO, dangling link) is refused, never replaced.
 function writeProfile(file, text, deps) {
-  let real = file;
-  try { real = deps.fs.realpathSync(file); } catch { /* absent: create below */ }
-  if (deps.fs.existsSync(real)) deps.fs.writeFileSync(real, text);
-  else deps.fs.writeFileSync(file, text, { mode: 0o644 });
+  const link = lstatOrNull(file, deps);
+  if (!link) { atomicWrite(file, Buffer.from(text), 0o644, deps); return; }
+  let real;
+  try { real = deps.fs.realpathSync(file); } catch (err) { throw new Error(`${file} cannot be resolved (${err.code || err.message})`); }
+  const st = deps.fs.statSync(real);
+  if (!st.isFile()) throw new Error(`${real} is not a regular file`);
+  const mode = st.mode & 0o7777;
+  const tmp = `${real}.ccxray-${process.pid}-${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    deps.fs.writeFileSync(tmp, text, { mode, flag: 'wx' });
+    deps.fs.chmodSync(tmp, mode);
+    try { deps.fs.chownSync(tmp, st.uid, st.gid); } catch { /* not permitted: keeps the invoking user's ownership */ }
+    deps.fs.renameSync(tmp, real);
+  } catch (err) {
+    try { deps.fs.unlinkSync(tmp); } catch { /* never created */ }
+    throw err;
+  }
 }
 
 function lstatOrNull(file, deps) {
@@ -241,14 +281,23 @@ function undo(manifest, lay, deps, log = () => {}) {
 // Every file setup would write must be absent or exactly what a previous install
 // left (unmodified, regular). Anything else is somebody else's file: refuse
 // before the first write, and keep their bytes, mode and links untouched.
-function preflight(p, lay, deps, previous) {
+function preflight(p, lay, deps, previous, found) {
   const ours = new Map([...(previous?.files || []), ...(previous?.sessionEnv || [])].map(e => [e.path, e]));
   const targets = [lay.probePath, ...TOOLS.map(tool => path.join(lay.shimDir, tool))];
   if (p.envFile) targets.push(p.envFile);
   const conflicts = [];
+  const unrecognized = manifestConflict(lay, found);
+  if (unrecognized) conflicts.push(unrecognized);
   for (const file of targets) {
     const state = ownership(file, ours.get(file), deps);
     if (state !== 'absent' && state !== 'ours') conflicts.push(`${file} ${state.conflict}`);
+  }
+  // A profile must be absent or resolve to a regular file we can replace.
+  for (const file of p.targets.files) {
+    try {
+      if (!lstatOrNull(file, deps)) continue;
+      if (!deps.fs.statSync(deps.fs.realpathSync(file)).isFile()) conflicts.push(`${file} does not resolve to a regular file`);
+    } catch (err) { conflicts.push(`${file} cannot be resolved (${err.code || err.message})`); }
   }
   return conflicts;
 }
@@ -258,8 +307,9 @@ async function install(options, deps, lay) {
   const p = plan(options, deps, lay);
   const manifest = { version: MANIFEST_VERSION, shimDir: lay.shimDir, strict: p.strict, files: [], profiles: [], sessionEnv: [], createdDirs: [] };
 
-  const previous = readManifest(lay, deps);
-  const conflicts = preflight(p, lay, deps, previous);
+  const found = inspectManifest(lay, deps);
+  const previous = found && found.manifest ? found.manifest : null;
+  const conflicts = preflight(p, lay, deps, previous, found);
   if (conflicts.length) {
     for (const c of conflicts) log.error(`Refusing to install: ${c}.`);
     log.error('Nothing was changed. Move the file away, choose another directory with --shim-dir, or use --no-session-env.');
@@ -275,6 +325,7 @@ async function install(options, deps, lay) {
     }
   }
 
+  const originals = [];
   const mkdirs = [...new Set([...firstMissingAncestors(lay.shimDir, deps), ...firstMissingAncestors(lay.home, deps)])];
   try {
     manifest.createdDirs.push(...mkdirs);
@@ -293,12 +344,16 @@ async function install(options, deps, lay) {
     const block = renderPathBlock(lay.shimDir);
     for (const file of p.targets.files) {
       let original = null;
-      try { original = deps.fs.readFileSync(path.resolve(file), 'utf8'); } catch { /* new file */ }
+      let originalBytes = null;
+      try { originalBytes = deps.fs.readFileSync(path.resolve(file)); original = originalBytes.toString('utf8'); } catch { /* new file */ }
       const stripped = original !== null && blockRange(original)
         ? original.slice(0, blockRange(original).start) + original.slice(blockRange(original).end) : original;
       const prefix = stripped && !stripped.endsWith('\n') ? '\n' : '';
       // Recorded first: a write that fails half way is still rolled back.
       manifest.profiles.push({ file, created: original === null, prefix });
+      // The exact original bytes are kept for rollback: block stripping alone could
+      // not repair a profile whose own write went wrong.
+      originals.push({ file, bytes: originalBytes });
       writeProfile(file, (stripped ?? '') + prefix + block, deps);
     }
     if (p.envFile) {
@@ -313,6 +368,13 @@ async function install(options, deps, lay) {
     atomicWrite(lay.manifestPath, Buffer.from(JSON.stringify(manifest, null, 2) + '\n'), 0o600, deps);
   } catch (err) {
     log.error(`Setup failed (${err.message}); rolling back.`);
+    // Profiles first, from the saved bytes (mode and symlink are preserved by writeProfile).
+    for (const o of originals.reverse()) {
+      try {
+        if (o.bytes === null) { if (lstatOrNull(o.file, deps)) deps.fs.unlinkSync(o.file); }
+        else writeProfile(o.file, o.bytes.toString('utf8'), deps);
+      } catch (e) { log.error(`warning: could not restore ${o.file}: ${e.message}`); }
+    }
     const leftovers = undo(manifest, lay, deps);
     for (const problem of leftovers) log.error(`warning: ${problem.message}`);
     return 1;
@@ -351,7 +413,8 @@ async function dryRun(options, deps, lay) {
   }
   if (p.envFile) log.log(`  ${p.envFile} would contain: PATH=${lay.shimDir}:$PATH`);
   log.log(`  strict mode default: ${p.strict ? 'on (refuse when the proxy is down)' : 'off (fail open)'}`);
-  const conflicts = preflight(p, lay, deps, readManifest(lay, deps));
+  const found = inspectManifest(lay, deps);
+  const conflicts = preflight(p, lay, deps, found && found.manifest, found);
   for (const c of conflicts) log.error(`  would REFUSE: ${c}`);
   return conflicts.length ? 1 : 0;
 }
@@ -368,7 +431,13 @@ function resolveOnPath(tool, pathVar, deps) {
 
 async function check(options, deps, lay) {
   const log = deps.logger;
-  const manifest = readManifest(lay, deps);
+  const found = inspectManifest(lay, deps);
+  const manifest = found && found.manifest;
+  if (found && found.invalid) {
+    log.error(`FAIL ${manifestConflict(lay, found)}; this ccxray cannot read it, so the shim state is unknown (nothing was changed).`);
+    log.log(renderBypassLine(summarizeBypasses(lay.home, { now: deps.now() })));
+    return 1;
+  }
   if (!manifest) {
     log.log('Launcher shims: not installed (ccxray setup --wrap-binaries).');
     log.log(renderBypassLine(summarizeBypasses(lay.home, { now: deps.now() })));
@@ -412,7 +481,12 @@ function removalLines(manifest, lay) {
 
 async function remove(options, deps, lay) {
   const log = deps.logger;
-  const manifest = readManifest(lay, deps);
+  const found = inspectManifest(lay, deps);
+  if (found && found.invalid) {
+    log.error(`Refusing to remove: ${manifestConflict(lay, found)}. Nothing was changed; inspect or move it away first.`);
+    return 1;
+  }
+  const manifest = found && found.manifest;
   if (!manifest) { log.log('No ccxray launcher shims are installed; nothing to remove.'); return 0; }
   if (options.dryRun) {
     log.log('ccxray setup --wrap-binaries --remove (dry run, nothing written):');
@@ -464,7 +538,13 @@ function shimRemovalPlan(overrides = {}) {
 async function removeIfInstalled(options, overrides = {}) {
   const deps = makeDeps(overrides);
   const lay = layout({}, deps);
-  if (!readManifest(lay, deps)) return 0;
+  const found = inspectManifest(lay, deps);
+  if (found && found.invalid) {
+    // Not ours to interpret: leave it, and say so, without failing setup's own removal.
+    deps.logger.error(`warning: ${manifestConflict(lay, found)}; launcher shims (if any) were not removed.`);
+    return 0;
+  }
+  if (!found || !found.manifest) return 0;
   return remove(options, deps, lay);
 }
 

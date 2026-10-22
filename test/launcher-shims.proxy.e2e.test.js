@@ -69,6 +69,16 @@ function stop(child) {
   });
 }
 
+// Every wait on a child or a socket is capped: a launch that never reports must
+// fail the test, not hang the runner.
+function bounded(promise, what, ms = 15000) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), ms); timer.unref(); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 const indexEntries = () => {
   try {
     return fs.readFileSync(path.join(home, 'logs', 'index.ndjson'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
@@ -222,61 +232,74 @@ describe('listener-side authentication (finding 5)', () => {
   });
 });
 
+// A real hub in its own home, one registered bystander client, and a shim set that
+// was installed for that home (the shim bakes its home at install time).
+async function hubFixture() {
+  const hubHome = fs.mkdtempSync(path.join(root, 'hub-home-'));
+  const saved = home;
+  home = hubHome; // startProxy / indexEntries read the module-level home
+  const port = await freePort();
+  const hub = startProxy(port, { hub: true });
+  const hubShims = path.join(hubHome, 'shims');
+  const hubUser = path.join(hubHome, 'user');
+  fs.mkdirSync(hubUser);
+  assert.equal(await runWrapBinaries({ yes: true, shell: 'bash', shimDir: hubShims, noSessionEnv: true }, {
+    env: { HOME: hubUser, CCXRAY_HOME: hubHome, SHELL: '/bin/bash', PATH: SYSTEM_PATH }, homedir: () => hubUser, platform: 'linux', logger: { log() {}, error: console.error },
+  }), 0);
+  const lock = await waitFor(() => { try { return JSON.parse(fs.readFileSync(path.join(hubHome, 'hub.json'), 'utf8')); } catch { return null; } }, 'hub.json');
+  await waitFor(() => health(port), 'the hub');
+  const request = msg => bounded(new Promise((resolve, reject) => {
+    const sock = net.connect(lock.sockPath);
+    let buf = '';
+    sock.on('data', d => { buf += d; if (buf.includes('\n')) { sock.destroy(); resolve(JSON.parse(buf.split('\n')[0])); } });
+    sock.on('error', reject);
+    sock.write(JSON.stringify(msg) + '\n');
+  }), 'a hub socket reply');
+  // A bystander project is the hub's only client: a bare URL would attribute everything to it.
+  await request({ cmd: 'register', pid: process.pid, cwd: '/bystander/project', token: '0123456789abcdef' });
+  return { hubHome, port, hub, hubShims, request, close: async () => { await stop(hub); home = saved; } };
+}
+
+function launchCodex(hubShims, cwd, session, extraEnv = {}) {
+  const barrier = path.join(root, 'release-barrier');
+  const child = spawn('codex', ['exec', 'x'], {
+    cwd,
+    env: { PATH: [hubShims, fakeBin, SYSTEM_PATH].join(':'), HOME: root, FAKE_WAIT_FILE: barrier, FAKE_SESSION: session, ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = ''; let stderr = '';
+  child.stderr.on('data', d => { stderr += d; });
+  const ready = bounded(new Promise(resolve => child.stdout.on('data', d => { stdout += d; if (/READY/.test(stdout)) resolve(); })), 'the fake agent to report READY');
+  ready.catch(() => {}); // only awaited by tests that expect a routed launch
+  const done = bounded(new Promise(resolve => child.on('close', code => resolve({ code, stdout, stderr }))), 'the fake agent to exit');
+  return { child, ready, done };
+}
+
 describe('hub mode: attribution and lifetime (should-fix 1)', () => {
   it('attributes concurrent projects by their own pid and keeps them registered, never inheriting a bystander cwd', async () => {
-    const hubHome = fs.mkdtempSync(path.join(root, 'hub-home-'));
-    const saved = home;
-    home = hubHome; // startProxy / indexEntries read the module-level home
-    const port = await freePort();
-    const hub = startProxy(port, { hub: true });
-    // The shim bakes its home at install time, so this test installs its own.
-    const hubShims = path.join(hubHome, 'shims');
+    const fx = await hubFixture();
     try {
-      const hubUser = path.join(hubHome, 'user');
-      fs.mkdirSync(hubUser);
-      assert.equal(await runWrapBinaries({ yes: true, shell: 'bash', shimDir: hubShims, noSessionEnv: true }, {
-        env: { HOME: hubUser, CCXRAY_HOME: hubHome, SHELL: '/bin/bash', PATH: SYSTEM_PATH }, homedir: () => hubUser, platform: 'linux', logger: { log() {}, error: console.error },
-      }), 0);
-      const lock = await waitFor(() => { try { return JSON.parse(fs.readFileSync(path.join(hubHome, 'hub.json'), 'utf8')); } catch { return null; } }, 'hub.json');
-      await waitFor(() => health(port), 'the hub');
-      const request = msg => new Promise((resolve, reject) => {
-        const s = net.connect(lock.sockPath);
-        let buf = '';
-        s.on('data', d => { buf += d; if (buf.includes('\n')) { s.destroy(); resolve(JSON.parse(buf.split('\n')[0])); } });
-        s.on('error', reject);
-        s.write(JSON.stringify(msg) + '\n');
-      });
-      // A bystander project is the hub's only client: the old bare URL attributed everything to it.
-      await request({ cmd: 'register', pid: process.pid, cwd: '/bystander/project', token: '0123456789abcdef' });
-
       const projA = fs.mkdirSync(path.join(root, 'proj-a'), { recursive: true }) || path.join(root, 'proj-a');
       const projB = fs.mkdirSync(path.join(root, 'proj-b'), { recursive: true }) || path.join(root, 'proj-b');
       const barrier = path.join(root, 'release-barrier');
-      const env = { PATH: [hubShims, fakeBin, SYSTEM_PATH].join(':'), HOME: root, FAKE_WAIT_FILE: barrier };
-      const launch = (cwd, session) => {
-        const child = spawn('codex', ['exec', 'x'], { cwd, env: { ...env, FAKE_SESSION: session }, stdio: ['ignore', 'pipe', 'pipe'] });
-        let stdout = '';
-        const ready = new Promise(resolve => child.stdout.on('data', d => { stdout += d; if (/READY/.test(stdout)) resolve(); }));
-        const done = new Promise(resolve => child.on('close', code => resolve({ code, stdout })));
-        return { child, ready, done };
-      };
-      const a = launch(projA, 'sess-a');
-      const b = launch(projB, 'sess-b');
+      fs.rmSync(barrier, { force: true });
+      const a = launchCodex(fx.hubShims, projA, 'sess-a');
+      const b = launchCodex(fx.hubShims, projB, 'sess-b');
       await Promise.all([a.ready, b.ready]);
 
-      const status = await request({ cmd: 'status' });
+      const status = await fx.request({ cmd: 'status' });
       const byPid = new Map(status.clients.map(c => [c.pid, c.cwd]));
       assert.equal(byPid.get(a.child.pid), projA, 'project A registered under its own pid');
       assert.equal(byPid.get(b.child.pid), projB, 'project B registered under its own pid');
 
       // The last launcher goes away; the hub still has live shim sessions, so it has clients.
-      await request({ cmd: 'unregister', pid: process.pid });
-      const afterUnregister = await request({ cmd: 'status' });
+      await fx.request({ cmd: 'unregister', pid: process.pid });
+      const afterUnregister = await fx.request({ cmd: 'status' });
       assert.ok(afterUnregister.clients.some(c => c.pid === a.child.pid) && afterUnregister.clients.some(c => c.pid === b.child.pid));
 
       fs.writeFileSync(barrier, 'go');
       const [ra, rb] = await Promise.all([a.done, b.done]);
-      assert.match(ra.stdout, new RegExp(`ARGS:-c openai_base_url="http://127.0.0.1:${port}/_ccxray/client/${a.child.pid}/v1" exec x`));
+      assert.match(ra.stdout, new RegExp(`ARGS:-c openai_base_url="http://127.0.0.1:${fx.port}/_ccxray/client/${a.child.pid}/v1" exec x`));
       assert.match(ra.stdout, /STATUS:200/);
       assert.match(rb.stdout, /STATUS:200/);
       const entries = await waitFor(() => { const e = indexEntries(); return e.length >= 2 && e; }, 'both entries');
@@ -284,9 +307,78 @@ describe('hub mode: attribution and lifetime (should-fix 1)', () => {
       assert.deepEqual(entries.map(e => e.cwd).sort(), [projA, projB].sort());
       assert.ok(entries.every(e => e.cwd !== '/bystander/project'), 'no entry inherited the bystander cwd');
       assert.ok(hits.every(h => !h.path.includes('_ccxray')));
-    } finally {
-      await stop(hub);
-      home = saved;
-    }
+    } finally { await fx.close(); fs.rmSync(path.join(root, 'release-barrier'), { force: true }); }
+  });
+
+  it('bypasses (or refuses in strict mode) when registration is unavailable, never using a bare hub URL (round 2, should-fix 1)', async () => {
+    const fx = await hubFixture();
+    try {
+      const proj = fs.mkdirSync(path.join(root, 'proj-c'), { recursive: true }) || path.join(root, 'proj-c');
+      const barrier = path.join(root, 'release-barrier');
+      fs.writeFileSync(barrier, 'go'); // nothing to wait for here
+      // The shim looks for hub.json in an empty home: the hub is healthy but registration cannot happen.
+      const noLock = fs.mkdtempSync(path.join(root, 'no-lock-'));
+      const before = hits.length;
+      const entriesBefore = indexEntries().length;
+      const l = launchCodex(fx.hubShims, proj, 'sess-c', { CCXRAY_SHIM_HOME: noLock, CCXRAY_SHIM_PORT: String(fx.port) });
+      const r = await l.done;
+      assert.equal(r.code, 0, r.stderr);
+      assert.doesNotMatch(r.stdout, /openai_base_url/, 'the launch was not routed');
+      assert.match(r.stdout, /STATUS:none/);
+      assert.equal(hits.length, before, 'no model traffic reached the hub');
+      assert.equal(indexEntries().length, entriesBefore, 'nothing was attributed to the bystander');
+      const log = fs.readFileSync(path.join(noLock, 'shim-bypass.log'), 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(log.at(-1).reason, 'hub-registration-failed');
+      const status = await fx.request({ cmd: 'status' });
+      assert.deepEqual(status.clients.map(c => c.cwd), ['/bystander/project'], 'the launch did not register or guess');
+
+      const strict = launchCodex(fx.hubShims, proj, 'sess-c', { CCXRAY_SHIM_HOME: noLock, CCXRAY_SHIM_PORT: String(fx.port), CCXRAY_SHIM_STRICT: '1' });
+      const sr = await strict.done;
+      assert.equal(sr.code, 111);
+      assert.match(sr.stderr, /hub-registration-failed/);
+      assert.doesNotMatch(sr.stdout, /READY/);
+    } finally { await fx.close(); fs.rmSync(path.join(root, 'release-barrier'), { force: true }); }
+  });
+});
+
+// The fake agents above parse the injected URL with a regex. If a real Codex is
+// installed, make sure it accepts the exact placement the shim uses. Offline and
+// parse-only: temp HOME and CODEX_HOME, never ~/.codex; skipped when absent.
+function findRealCodex() {
+  for (const dir of String(process.env.PATH || '').split(':')) {
+    if (!dir || dir === shims) continue;
+    const candidate = path.join(dir, 'codex');
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (!/ccxray-launcher-shim/.test(fs.readFileSync(candidate, 'utf8').slice(0, 200))) return candidate;
+    } catch { /* keep looking */ }
+  }
+  return null;
+}
+
+describe('an installed Codex accepts the injected config override (round 2, should-fix 3)', () => {
+  const real = findRealCodex();
+  const sandbox = () => {
+    const dir = fs.mkdtempSync(path.join(root, 'codex-sandbox-'));
+    fs.mkdirSync(path.join(dir, 'codex-home'));
+    return { HOME: dir, CODEX_HOME: path.join(dir, 'codex-home'), PATH: SYSTEM_PATH };
+  };
+  const exec = (args, env) => new Promise(resolve => {
+    const child = spawn(real, args, { env, cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '';
+    child.stdout.on('data', d => { out += d; });
+    child.stderr.on('data', d => { out += d; });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 20000);
+    child.on('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, out }); });
+  });
+
+  it('parses -c openai_base_url="…/v1" placed before the arguments (and a key without a value is rejected)', { skip: !real && 'no codex binary on PATH' }, async () => {
+    const env = sandbox();
+    const placement = ['-c', 'openai_base_url="http://127.0.0.1:9/v1"'];
+    const ok = await exec([...placement, 'features', 'list'], env);
+    assert.equal(ok.code, 0, ok.out);
+    const bad = await exec(['-c', 'no-equals-sign', 'features', 'list'], env);
+    assert.notEqual(bad.code, 0, 'control: an override without key=value must fail, or this check proves nothing');
+    assert.deepEqual(fs.readdirSync(env.CODEX_HOME), [], 'the sandboxed CODEX_HOME stayed untouched');
   });
 });
