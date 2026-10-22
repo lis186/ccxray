@@ -161,6 +161,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const config = require('./config');
+const { checkHttpRoute } = require('./request-routing');
 const store = require('./store');
 const { resolveCcxrayHome, tightenCcxrayHome } = require('./paths');
 const helpers = require('./helpers');
@@ -472,6 +473,7 @@ const { isInternalHeader } = require('./internal-headers');
 const { armClientShutdown } = require('./client-shutdown');
 const { createLaunchDecision, raceWithLaunchDecision } = require('./launch-decision');
 
+
 function buildForwardHeaders(clientHeaders, upstream) {
   const fwdHeaders = { ...clientHeaders };
   const connectionTokens = String(clientHeaders.connection || '')
@@ -572,10 +574,13 @@ const server = http.createServer((clientReq, clientRes) => {
     let parsedBody = null;
     try { parsedBody = JSON.parse(rawBody.toString()); } catch {}
 
+    clientReq.bodySize = bodySize;
+    const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers, clientReq);
+    if (!checkHttpRoute(clientReq, clientRes, upstream)) return;
+
     // Quota-check probes: forward to Anthropic (rate limit headers still captured)
     // but skip all logging, session tracking, and entry creation
     if (parsedBody && store.isQuotaCheck(parsedBody)) {
-      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
       const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
       forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
       return;
@@ -585,13 +590,11 @@ const server = http.createServer((clientReq, clientRes) => {
     // Each WIRE_PARSER defines its own noise patterns (e.g. codex startup
     // polls for plugins/connectors/apps/usage).
     if (Object.values(WIRE_PARSERS).some(p => p.isNoiseRequest(clientReq.url, clientReq.headers, parsedBody))) {
-      const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
       const fwdHeaders = buildForwardHeaders(clientReq.headers, upstream);
       forwardRequest({ id, ts, startTime, parsedBody, rawBody, clientReq, clientRes, fwdHeaders, reqSessionId: null, reqWritePromise: null, skipEntry: true, upstream });
       return;
     }
 
-    const upstream = config.getUpstreamForRequestAndHeaders(clientReq.url, clientReq.headers);
     const provider = upstream.provider || 'anthropic';
     const parser = getParser(provider);
     if (parsedBody && parser?.preprocessBody) {

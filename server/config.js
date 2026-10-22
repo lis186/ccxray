@@ -1,5 +1,6 @@
 'use strict';
 
+const { isOpenAISide, isAnthropicSide, matchOpenAIWireClient } = require('./request-signals');
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
 const { retentionDays, boundedDays } = require('./retention');
@@ -183,21 +184,32 @@ const { host: OPENAI_HOST, port: OPENAI_PORT, protocol: OPENAI_PROTOCOL, basePat
   UPSTREAMS.openai;
 
 function getUpstream(provider) {
-  return UPSTREAMS[provider] || UPSTREAMS.anthropic;
+  return Object.hasOwn(UPSTREAMS, provider) ? UPSTREAMS[provider] : null;
 }
 
-function getProviderForRequest(urlPath) {
+/** Returns a provider name, or null when unknown-path handling cannot choose one. */
+function getProviderForRequest(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
   if (pathname === '/v1/responses' || pathname.startsWith('/v1/responses/')) return 'openai';
-  // ponytail: chat/completions classification deferred until wire parser handles the shape
   if (pathname === '/v1/realtime' || pathname.startsWith('/v1/realtime/')) return 'openai';
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) return 'openai';
+  if (pathname === '/v1/alpha/search' || pathname.startsWith('/v1/alpha/search/')) return 'openai';
+  if (pathname === '/v1/memories' || pathname.startsWith('/v1/memories/')) return 'openai';
+  if (pathname === '/v1/images' || pathname.startsWith('/v1/images/')) return 'openai';
   if (isChatGPTCodexPath(pathname)) return 'openai';
-  return 'anthropic';
+  if (isAnthropicMessagesPath(pathname)) return 'anthropic';
+  // chat/completions has no path rule until its wire parser handles the shape.
+  // Unknown-path handling uses request signals for it as for other unlisted paths.
+  const openai = isOpenAISide(headers, req);
+  const anthropic = isAnthropicSide(headers, req);
+  if (pathname === '/' && ['GET', 'HEAD'].includes(req.method) && !openai
+      && !headers['transfer-encoding'] && !Number(headers['content-length']) && !req.bodySize) return 'anthropic';
+  if (openai === anthropic) return null;
+  return openai ? 'openai' : 'anthropic';
 }
 
-function getUpstreamForRequest(urlPath) {
-  return getUpstream(getProviderForRequest(urlPath));
+function getUpstreamForRequest(urlPath, headers = {}, req = {}) {
+  return getUpstream(getProviderForRequest(urlPath, headers, req));
 }
 
 function isChatGPTCodexPath(pathname) {
@@ -237,7 +249,7 @@ function isAnthropicMessagesPath(pathname) {
 // Codex platform paths + OpenAI-wire client modules (OPENAI_WIRE_CLIENTS) that
 // need a host other than api.openai.com. Hub can serve multiple agent CLIs
 // without swapping OPENAI_BASE_URL.
-function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
+function getUpstreamForRequestAndHeaders(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
   if (isChatGPTAppsMcpPath(pathname)) {
     return UPSTREAMS.openaiChatGPTAppsMcp;
@@ -248,18 +260,19 @@ function getUpstreamForRequestAndHeaders(urlPath, headers = {}) {
   if (isChatGPTCodexPath(pathname)) {
     return UPSTREAMS.openaiChatGPT;
   }
+  const provider = getProviderForRequest(urlPath, headers, req);
+  if (!provider) return null;
   if (pathname.startsWith('/v1/') && !isAnthropicMessagesPath(pathname)) {
     try {
-      const { matchOpenAIWireClient } = require('./providers');
       const client = matchOpenAIWireClient(headers);
       if (client?.upstreamKey && UPSTREAMS[client.upstreamKey]) {
         return UPSTREAMS[client.upstreamKey];
       }
     } catch { /* providers unavailable in minimal test stubs */ }
   }
-  const upstream = getUpstreamForRequest(urlPath);
+  const upstream = getUpstream(provider);
   // EXCEPTION(#158): infrastructure — upstream routing for ChatGPT OAuth before parser dispatch
-  if (upstream.provider === 'openai' && headers['chatgpt-account-id']) {
+  if (upstream?.provider === 'openai' && headers['chatgpt-account-id']) {
     return UPSTREAMS.openaiChatGPT;
   }
   return upstream;

@@ -68,9 +68,9 @@ function makeMock404Upstream(requests) {
   });
 }
 
-function fireRequest(port, method, urlPath, body) {
+function fireRequest(port, method, urlPath, body, requestHeaders) {
   return new Promise((resolve, reject) => {
-    const headers = {
+    const headers = requestHeaders ? { ...requestHeaders } : {
       'x-api-key': 'sk-fake',
       'chatgpt-account-id': '11111111-2222-3333-4444-555555555555',
     };
@@ -186,10 +186,11 @@ describe('codex platform noise paths are suppressed from dashboard entries', () 
       assert.equal(entries.length, 0, `noise-only phase should produce 0 entries, got ${entries.length}`);
 
       // Positive control: a normal Anthropic /v1/messages request SHOULD record.
-      await fireRequest(proxyPort, 'POST', '/v1/messages', {
+      const positive = await fireRequest(proxyPort, 'POST', '/v1/messages', {
         model: 'claude-sonnet-4-6', max_tokens: 10,
         messages: [{ role: 'user', content: 'ping' }],
-      });
+      }, { 'x-api-key': 'sk-fake', 'anthropic-version': '2023-06-01' });
+      assert.equal(positive.status, 404, 'positive control must return the upstream status');
       await new Promise(r => setTimeout(r, 200));
       entries = (await fetchEntries(proxyPort)).entries || [];
       assert.equal(entries.length, 1, `positive control: expected 1 entry, got ${entries.length}`);

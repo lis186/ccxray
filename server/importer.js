@@ -786,7 +786,8 @@ function pushImportedEntry(entry, ctx, opts = {}) {
   // Write to index.ndjson + session index only — skip store.entries and SSE
   // broadcast to avoid 158K memory spike + client SSE flood. Imported sessions
   // are cold; their entries load on-demand via /_api/session/:sid/entries.
-  const indexLine = buildIndexLine(entry);
+  // Unknown-path handling: imported turns have a synthesized method, not an observed one (#740).
+  const indexLine = buildIndexLine({ ...entry, method: undefined, path: undefined });
   // Log-first: only update session index after index.ndjson write succeeds (#309)
   let pending = config.storage.appendIndex(indexLine + '\n').then(() => {
     sessionIdx.updateFromEntry(entry);

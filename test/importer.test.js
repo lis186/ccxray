@@ -1496,6 +1496,11 @@ describe('codex importer', () => {
       const claudeEntry = lines.find(e => e.importSource === 'claude-code');
       assert.ok(claudeEntry);
       assert.strictEqual(claudeEntry.provider, 'anthropic');
+      for (const entry of [codexEntry, claudeEntry]) {
+        for (const key of ['method', 'path']) {
+          assert.ok(!(key in entry), `unknown-path handling: imported turn must omit ${key}`);
+        }
+      }
     });
 
     it('#508: an overlapping re-import of the same Codex response is one turn (count and cost not doubled)', async () => {

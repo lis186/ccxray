@@ -39,6 +39,7 @@ For a machine-local agentflow usage report, run `ccxray agentflow report --json`
 
 These constraints are enforced by structural encapsulation where possible, and guard comments elsewhere. Read the linked ADR before modifying the affected code.
 
+- **every HTTP forward path goes through checkHttpRoute** — shared provider header hygiene and local 421 handling (#740).
 - **entryIndex must mirror entries[]** — all push sites use `store.registerEntry()` (push + index + aliases atomically); `trimEntries` is the caller's responsibility. `test/invariant-encapsulation.test.js` blocks raw `entries.push`/`entryIndex.set` outside `store.js` — @docs/decisions/0003-entry-index-map.md
 - **responseId merge: every store-push site dedups through the shared helper and keeps `responseIndex` + entryIndex aliases in sync** — cold-load/restore use `store.mergeByResponseId`, the live forward.js sites use `store.registerOrMerge`, and `trimEntries` must delete a canonical's `_mergedIds` aliases + its responseIndex slot. A push site that updates entryIndex but not responseIndex (or forgets alias handling) silently reintroduces duplicates or breaks a delta chain (entryIndex + alias sync is structurally prevented by `registerEntry`; responseIndex sync remains manual via `registerOrMerge`). OpenAI/WS entries carry no responseId (exempt) — @docs/decisions/0012-response-id-read-time-merge.md
 - **renderProjectsCol signature must include every field that affects rendered output** — adding a rendered field without updating `sigParts` = silent stale render — @docs/decisions/0002-dirty-check-signature.md
@@ -106,6 +107,8 @@ Before pushing, confirm the suite passes against an empty home: `CCXRAY_HOME=$(m
 
 | Module | Purpose |
 |--------|---------|
+| `server/request-routing.js` | HTTP provider header hygiene and local 421 responses (#740) |
+| `server/request-signals.js` | Shared provider signals from headers, wire clients, and hub identity (#740) |
 | `server/index.js` | Entry point: HTTP server, request routing, startup |
 | `server/setup.js` | `ccxray setup`: bounded preflight, export enrollment, owned shell wrapper, removal, checks, and browser preference |
 | `server/launcher-shims.js` | `ccxray setup --wrap-binaries` (#732): fail-open `claude`/`codex` launcher shims, PATH blocks, `--dry-run`/`--check`/`--remove` with a manifest that restores the previous state exactly. Guide: `docs/launcher-shims.md` |
