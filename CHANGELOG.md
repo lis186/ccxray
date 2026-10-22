@@ -16,7 +16,7 @@
 
 ### Fixed
 
-- Header-aware routing for shared models and OpenAI paths, Grok hub routing, bare bearer handling, and preconnects (#745); log label fix (#744).
+- Routing fix (#745): header-aware routing for shared models and OpenAI paths, gateway bearers, empty header values, Grok header/hub path consistency, Anthropic-shaped `x-api-key`, explicit Codex/ChatGPT conflicts, and preconnects; log label fix (#744).
 
 - Routing fix: unlisted `/v1` paths without a provider signal get a local 421 instead of going to the Anthropic upstream; `/v1/alpha/search`, `/v1/memories*`, and `/v1/images*` use the OpenAI upstreams; Claude `/v1/messages*` and Codex `/v1/responses*` routing is unchanged. HTTP/WS index rows record method and pathname (#740).
 

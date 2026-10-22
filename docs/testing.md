@@ -26,8 +26,10 @@ failure if any group fails. For a system Chrome install, use
 `PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome npm test`.
 
 `unknown-path.test.js` covers header-aware routing with synthetic gateway bearers,
-empty header values, and Grok `x-api-key` shapes. Its e2e companion checks separate
-Anthropic, OpenAI, and xAI fakes. Codex noise-path defaults use a ChatGPT-shaped
+empty header values, trimmed string/array Grok `x-api-key` shapes, explicit
+Codex/ChatGPT conflicts, Grok header/hub path consistency, and request identity
+at both gates. Its e2e companion checks separate Anthropic, OpenAI, ChatGPT, and
+xAI fakes. Codex noise-path defaults use a ChatGPT-shaped
 bearer and account header; the Anthropic positive control keeps its own headers.
 
 ## Test hygiene
@@ -69,8 +71,12 @@ root: it checks settings fallback, explicit homes, logs, direct writes, reads, a
 an allowed isolated write without ever probing the human's files.
 
 `test/unknown-path.e2e.test.js` checks header-aware routing with Anthropic,
-OpenAI/ChatGPT, and xAI recording fakes, an isolated hub home, a synthetic pricing
-cache, and clients registered through the hub socket. Routing fix (#745).
+OpenAI, ChatGPT, and xAI recording fakes, an isolated hub home, a synthetic pricing
+cache, and clients registered through the hub socket. It distinguishes Codex
+ChatGPT-login and API-key `/v1/models?client_version=…` requests, asserts Grok
+conflicts make no xAI requests, and uses real `ws` sockets to check rejected
+Anthropic upgrades (zero upstream connections) and a Codex ChatGPT-shaped
+upgrade (one ChatGPT connection with an echo round trip). Routing fix (#745).
 
 `test/internal-api-404.e2e.test.js` uses an isolated home, empty index, mock upstream,
 disabled import/export and a fresh pricing fixture. It verifies unknown APIs leave

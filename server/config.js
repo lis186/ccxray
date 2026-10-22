@@ -1,6 +1,6 @@
 'use strict';
 
-const { isOpenAISide, isAnthropicSide, matchOpenAIWireClient, clientAgentType } = require('./request-signals');
+const { isChatGPTSide, isOpenAISide, isAnthropicSide, matchOpenAIWireClient, clientAgentType } = require('./request-signals');
 const { createStorage } = require('./storage');
 const { resolveLogsDir } = require('./paths');
 const { retentionDays, boundedDays } = require('./retention');
@@ -190,6 +190,8 @@ function getUpstream(provider) {
 /** Returns a provider name, or null when unknown-path handling cannot choose one. */
 function getProviderForRequest(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
+  const grok = clientAgentType(req) === 'grok' || matchOpenAIWireClient(headers)?.id === 'grok';
+  if (grok && isChatGPTSide(headers)) return null;
   const openai = isOpenAISide(headers, req);
   const anthropic = isAnthropicSide(headers, req);
   if (pathname === '/v1/models' || pathname.startsWith('/v1/models/')) {
@@ -251,7 +253,7 @@ function getUpstreamForRequestAndHeaders(urlPath, headers = {}, req = {}) {
   const pathname = (urlPath || '').split('?')[0];
   const provider = getProviderForRequest(urlPath, headers, req);
   if (!provider) return null;
-  if (provider === 'openai' && clientAgentType(req) === 'grok') return UPSTREAMS.xai;
+  if (provider === 'openai' && (clientAgentType(req) === 'grok' || matchOpenAIWireClient(headers)?.id === 'grok')) return UPSTREAMS.xai;
   if (isChatGPTAppsMcpPath(pathname)) {
     return UPSTREAMS.openaiChatGPTAppsMcp;
   }

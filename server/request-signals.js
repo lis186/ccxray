@@ -27,11 +27,24 @@ function hasHeaderValue(value) {
     : typeof value === 'string' && value.trim().length > 0;
 }
 
+function isChatGPTSide(headers = {}) {
+  return Object.entries(headers).some(([key, value]) => {
+    if (!hasHeaderValue(value)) return false;
+    if (key === 'chatgpt-account-id' || /^x-codex-/.test(key)
+        || (key === 'originator' && /^codex/i.test(String(value)))) return true;
+    // Check each header so a Grok marker cannot mask a Codex UA match.
+    const client = matchOpenAIWireClient({ [key]: value });
+    return !!client && client.id !== 'grok';
+  });
+}
+
 function hasAnthropicHeaders(headers, req) {
   // Header-aware routing: Grok can supply x-api-key through extra_headers.
   const grokClient = matchOpenAIWireClient(headers)?.id === 'grok' || clientAgentType(req) === 'grok';
+  const xKeys = [headers['x-api-key']].flat();
+  const anthropicKey = xKeys.some(value => typeof value === 'string' && /^sk-ant-/i.test(value.trim()));
   return ['anthropic-version', 'anthropic-beta'].some(key => hasHeaderValue(headers[key]))
-    || (hasHeaderValue(headers['x-api-key']) && !grokClient)
+    || (hasHeaderValue(headers['x-api-key']) && (!grokClient || anthropicKey))
     || /^Bearer sk-ant-/i.test(headers.authorization || '');
 }
 
@@ -49,4 +62,4 @@ function isOpenAISide(headers = {}, req, includeBareBearer = true) {
       && !hasAnthropicHeaders(headers, req));
 }
 
-module.exports = { clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };
+module.exports = { isChatGPTSide, clientAgentType, isJwtShaped, isOpenAISide, isAnthropicSide, matchOpenAIWireClient };

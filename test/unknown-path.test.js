@@ -364,3 +364,85 @@ it('header-aware routing (#745): Grok x-api-key', () => {
   const headers = { 'x-api-key': 'xai-synthetic', 'user-agent': 'codex_cli_rs/0.163.0' };
   assert.equal(config.getUpstreamForRequestAndHeaders('/v1/responses', headers), null);
 });
+
+it('routing fix (#745): Grok with Anthropic-shaped x-api-key', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    for (const source of ['ua', 'header', 'hub']) {
+      hub.lookupClientIdentityForRequest = () => source === 'hub' ? { agentType: 'grok' } : null;
+      const marker = source === 'ua' ? { 'user-agent': 'grok-shell/0.2' }
+        : source === 'header' ? { 'x-grok-model-override': 'synthetic' } : {};
+      for (const value of ['sk-ant-synthetic', '  SK-ANT-synthetic  ', ['xai-synthetic', '  sk-ant-synthetic  ']]) {
+        for (const url of ['/v1/files', '/v1/models', '/v1/responses']) {
+          const req = { method: 'GET', url, headers: { ...marker, 'x-api-key': value } };
+          const upstream = config.getUpstreamForRequestAndHeaders(url, req.headers, req);
+          assert.equal(upstream, null);
+          let status;
+          assert.equal(checkHttpRoute(req, { writeHead: v => { status = v; }, end() {} }, upstream), false);
+          assert.equal(status, 421);
+        }
+      }
+    }
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('routing fix (#745): Grok conflicts with explicit Codex and ChatGPT markers', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    for (const source of ['ua', 'header', 'hub']) {
+      hub.lookupClientIdentityForRequest = () => source === 'hub' ? { agentType: 'grok' } : null;
+      const marker = source === 'ua' ? { 'user-agent': 'grok-shell/0.2' }
+        : source === 'header' ? { 'x-grok-client-version': '0.2' } : {};
+      for (const explicit of [{ 'chatgpt-account-id': 'acct' }, { 'x-codex-test': 'synthetic' },
+        { 'user-agent': 'codex_cli_rs/0.163.0' }, { originator: 'codex' }]) {
+        if (source === 'ua' && explicit['user-agent']) continue;
+        for (const url of ['/v1/files', '/v1/models', '/v1/responses', '/v1/plugins/test', '/v1/api/codex/test', '/v1/api/codex/ps/mcp']) {
+          const req = { method: 'GET', url, headers: { ...marker, ...explicit } };
+          const upstream = config.getUpstreamForRequestAndHeaders(url, req.headers, req);
+          assert.equal(upstream, null);
+          let status;
+          assert.equal(checkHttpRoute(req, { writeHead: v => { status = v; }, end() {} }, upstream), false);
+          assert.equal(status, 421);
+        }
+      }
+    }
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('header-aware routing (#745): Grok path consistency', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  try {
+    for (const source of ['ua', 'header', 'hub']) {
+      hub.lookupClientIdentityForRequest = () => source === 'hub' ? { agentType: 'grok' } : null;
+      const headers = source === 'ua' ? { 'user-agent': 'grok-shell/0.2' }
+        : source === 'header' ? { 'x-grok-client-version': '0.2' } : {};
+      for (const url of ['/v1/plugins/test', '/v1/api/codex/test', '/v1/api/codex/ps/mcp']) {
+        const req = { method: 'GET', url, headers };
+        const upstream = config.getUpstreamForRequestAndHeaders(url, headers, req);
+        assert.equal(upstream, config.UPSTREAMS.xai);
+        assert.equal(checkHttpRoute(req, { writeHead() {}, end() {} }, upstream), true);
+      }
+    }
+  } finally { hub.lookupClientIdentityForRequest = original; }
+});
+
+it('routing fix (#745): both gates use the request identity', () => {
+  const original = hub.lookupClientIdentityForRequest;
+  const previous = process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+  process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = '1';
+  const req = { url: '/v1/responses', headers: {
+    'chatgpt-account-id': 'acct', authorization: 'Bearer syntheticheader.payload.signature',
+  }, socket: { remoteAddress: '127.0.0.1' } };
+  try {
+    for (const [agentType, accepted] of [['codex', true], ['grok', false]]) {
+      hub.lookupClientIdentityForRequest = request => request === req ? { agentType } : null;
+      assert.equal(auth.isUpstreamAuthenticated(req), accepted);
+      const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers, req);
+      assert.equal(upstream, accepted ? config.UPSTREAMS.openaiChatGPT : null);
+    }
+  } finally {
+    hub.lookupClientIdentityForRequest = original;
+    if (previous === undefined) delete process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH;
+    else process.env.CCXRAY_LOOPBACK_REQUIRE_AUTH = previous;
+  }
+});

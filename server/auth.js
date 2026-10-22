@@ -421,7 +421,7 @@ function isUpstreamAuthenticated(req) {
   if (verdict === 'ok') return true;
   if (verdict === 'chatgpt-oauth') {
     if (!allowsChatGPTLogin(req)) return false;
-    const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers);
+    const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers, req);
     return upstream === config.UPSTREAMS.openaiChatGPT;
   }
   return false;
