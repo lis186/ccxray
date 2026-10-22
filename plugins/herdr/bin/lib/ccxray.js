@@ -2972,6 +2972,14 @@ function paneProxyBaseUrl(port, paneId) {
   return `http://localhost:${port}${route}`;
 }
 
+// Keep header allowlist parsing aligned with server/providers.js for standalone installs.
+function anthropicCustomHeaderNames(value) {
+  return [...new Set(String(value || '').split(/\r?\n/)
+    .filter(line => line.includes(':'))
+    .map(line => line.slice(0, line.indexOf(':')).trim().toLowerCase())
+    .filter(name => /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) && !name.startsWith('x-ccxray-')))];
+}
+
 function proxyEnvVars(agent, port, opts = {}) {
   const base = `http://localhost:${port}`;
   const agentIdHeader = opts.paneId ? `X-Ccxray-Agent-Id: herdr:${opts.paneId}` : '';
@@ -2999,7 +3007,9 @@ function proxyEnvVars(agent, port, opts = {}) {
       // the inherited variable outright, so assigning ours dropped an existing
       // `ANTHROPIC_CUSTOM_HEADERS="X-Existing: foo"` on the floor.
       const existing = String((opts.env || process.env).ANTHROPIC_CUSTOM_HEADERS || '').trim();
-      const headers = [existing, agentIdHeader, authHeader].filter(Boolean).join('\n');
+      const names = anthropicCustomHeaderNames(existing);
+      const declaration = names.length ? `X-Ccxray-Forward-Headers: ${names.join(',')}` : '';
+      const headers = [existing, declaration, agentIdHeader, authHeader].filter(Boolean).join('\n');
       if (headers) vars.ANTHROPIC_CUSTOM_HEADERS = headers;
       return vars;
     }

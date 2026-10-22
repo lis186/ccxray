@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-- **Header allowlist (follow-up to #745).** Claude launchers and shell shims declare existing `ANTHROPIC_CUSTOM_HEADERS` names with the internal `X-Ccxray-Forward-Headers` header so user gateway headers reach Anthropic. Operators can add names per family with `CCXRAY_FORWARD_HEADERS`. Foreign family names remain omitted from additions. WS uses the resolved upstream family, and xAI includes `x-openai-*` alongside `x-grok-*`.
-
 ### Breaking (3.0.0)
 
 - **ccxray now listens on loopback by default; set `PROXY_HOST=0.0.0.0` to listen on all interfaces.** Behaviour change: the proxy + dashboard port binds `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback, so `http://localhost:<port>` works whichever family `localhost` resolves to. `PROXY_HOST` selects a single other address (`0.0.0.0`, `::`, or one interface) and startup prints the bound address. If `::1` is unavailable it is skipped; if it is taken while `127.0.0.1` is free, the whole port counts as in use, so the agent-mode port scan and hub bind retry behave as before. The Docker image sets `PROXY_HOST=0.0.0.0`. An SSH tunnel that ends at `127.0.0.1` needs no change. ChatGPT login from Codex is accepted from loopback; clients on other hosts need `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1`, which should only be enabled on a trusted network.
@@ -18,7 +16,7 @@
 
 ### Fixed
 
-- Routing fix: per-upstream header allowlist and whitespace/duplicate header handling (follow-up to #745).
+- Routing fix: per-upstream header allowlist with distinct OpenAI/ChatGPT defaults, xAI and MCP transport names, launcher declarations (including Herdr), operator additions, and whitespace/duplicate header handling (follow-up to #745).
 
 - Routing fix (#745): header-aware routing for shared models and OpenAI paths, gateway bearers, empty header values, Grok header/hub path consistency, Anthropic-shaped `x-api-key`, explicit Codex/ChatGPT conflicts, and preconnects; log label fix (#744).
 

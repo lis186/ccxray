@@ -11,11 +11,15 @@ const PORT = parseInt(process.env.PROXY_PORT || '5577', 10);
 function parseForwardHeaders(value = '') {
   const names = { all: new Set(), anthropic: new Set(), openai: new Set(), chatgpt: new Set(), xai: new Set() };
   for (const entry of value.toLowerCase().split(',')) {
+    if (!entry.trim()) continue;
     const parts = entry.trim().split(':');
     const family = parts.length === 1 ? 'all' : parts[0].trim();
     const name = parts.at(-1).trim();
     if (parts.length > 2 || (parts.length === 2 && family === 'all') || !Object.hasOwn(names, family)
-      || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)) continue;
+      || !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name)) {
+      console.warn(`header allowlist: rejected CCXRAY_FORWARD_HEADERS name ${JSON.stringify(name)}`);
+      continue;
+    }
     names[family].add(name);
   }
   return names;

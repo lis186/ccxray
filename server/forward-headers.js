@@ -6,14 +6,15 @@ const COMMON = new Set([
   'accept', 'content-type', 'content-length', 'content-encoding', 'user-agent',
   'x-request-id', 'x-client-request-id',
 ]);
-const OPENAI = {
-  names: new Set([
-    'authorization', 'chatgpt-account-id', 'originator', 'version',
-    'session-id', 'session_id', 'thread-id', 'thread_id', 'conversation_id',
-    'openai-organization', 'openai-project',
-  ]),
-  prefixes: ['openai-', 'x-openai-', 'x-codex-', 'x-stainless-'],
-};
+function codexAllowlist(names, prefixes = []) {
+  return {
+    names: new Set([
+      'authorization', 'originator', 'version', 'session-id', 'session_id',
+      'thread-id', 'thread_id', 'conversation_id', ...names,
+    ]),
+    prefixes: ['openai-', 'x-openai-', 'x-codex-', 'x-stainless-', ...prefixes],
+  };
+}
 const ALLOWLISTS = {
   anthropic: {
     names: new Set([
@@ -22,17 +23,22 @@ const ALLOWLISTS = {
     ]),
     prefixes: ['anthropic-', 'x-stainless-', 'x-claude-'],
   },
-  openai: OPENAI,
-  chatgpt: OPENAI,
+  openai: codexAllowlist(['openai-organization', 'openai-project']),
+  // MCP 2025-11-25 transport spec names; not yet from a capture.
+  chatgpt: codexAllowlist(['chatgpt-account-id', 'last-event-id'], ['mcp-']),
   xai: {
     names: new Set(['authorization', 'x-api-key']),
-    prefixes: ['x-grok-', 'x-stainless-', 'openai-', 'x-openai-'],
+    prefixes: ['x-xai-', 'x-grok-', 'x-stainless-', 'openai-', 'x-openai-'],
   },
 };
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ]);
+
+// These names are omitted even when explicitly declared.
+const HARD_DENY = new Set(['accept-encoding', 'host']);
+const HARD_DENY_PREFIXES = ['x-ccxray-', 'sec-websocket-'];
 
 function upstreamFamily(upstream) {
   const { UPSTREAMS } = require('./config');
@@ -42,21 +48,33 @@ function upstreamFamily(upstream) {
   return upstream?.provider;
 }
 
+function isHardDenied(name) {
+  return HARD_DENY.has(name) || HARD_DENY_PREFIXES.some(prefix => name.startsWith(prefix));
+}
+
+function acceptsBuiltin(name, family) {
+  const list = ALLOWLISTS[family];
+  // The shared openai- prefix does not grant API-only account settings to ChatGPT.
+  if (family === 'chatgpt' && ['openai-organization', 'openai-project'].includes(name)) return false;
+  return !!list && (list.names.has(name) || list.prefixes.some(prefix => name.startsWith(prefix)));
+}
+
 function isAllowedHeader(name, family) {
   const lower = name.toLowerCase();
-  if (isInternalHeader(lower)) return false;
-  const list = ALLOWLISTS[family];
-  return COMMON.has(lower) || !!list && (list.names.has(lower)
-    || list.prefixes.some(prefix => lower.startsWith(prefix)));
+  return !isHardDenied(lower) && !isInternalHeader(lower)
+    && (COMMON.has(lower) || acceptsBuiltin(lower, family));
+}
+
+function familyGroup(family) {
+  return family === 'chatgpt' ? 'openai' : family;
 }
 
 function isForeignHeader(name, family) {
-  if (family === 'anthropic') {
-    return ['chatgpt-account-id', 'originator'].includes(name)
-      || ['openai-', 'x-openai-', 'x-codex-'].some(prefix => name.startsWith(prefix));
-  }
-  return ['openai', 'chatgpt', 'xai'].includes(family)
-    && (name === 'x-api-key' || ['anthropic-', 'x-claude-'].some(prefix => name.startsWith(prefix)));
+  // Explicit additions can use either built-in list within the same vendor group.
+  if (COMMON.has(name) || Object.keys(ALLOWLISTS).some(other =>
+    familyGroup(other) === familyGroup(family) && acceptsBuiltin(name, other))) return false;
+  return Object.keys(ALLOWLISTS).some(other => familyGroup(other) !== familyGroup(family)
+    && acceptsBuiltin(name, other));
 }
 
 // HTTP and WS share family selection; ws constructs its own handshake fields.
@@ -75,7 +93,7 @@ function buildForwardHeaders(clientHeaders, upstream) {
   for (const [name, value] of Object.entries(clientHeaders)) {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP.has(lower) || connectionNames.has(lower)) continue;
-    if (isInternalHeader(lower) || lower.startsWith('sec-websocket-')) continue;
+    if (isHardDenied(lower) || isInternalHeader(lower)) continue;
     if (!isAllowedHeader(lower, family)
       && !(ALLOWLISTS[family] && declared.has(lower) && !isForeignHeader(lower, family)
         && /^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(lower))) continue;

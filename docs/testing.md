@@ -29,7 +29,10 @@ failure if any group fails. For a system Chrome install, use
 empty header values, trimmed string/array Grok `x-api-key` shapes, explicit
 Codex/ChatGPT conflicts, Grok header/hub path consistency, and request identity
 at both gates. Its e2e companion checks separate Anthropic, OpenAI, ChatGPT, and
-xAI fakes. Codex noise-path defaults use a ChatGPT-shaped
+xAI fakes. `fixtures/routing/header-names.json` records names only from real clients
+against a recording fake upstream; MCP transport names are separate spec-derived
+cases pending capture. Header allowlist tests cover launcher declarations, operator
+family scopes, and HTTP/WS forwarding to those fakes. Codex noise-path defaults use a ChatGPT-shaped
 bearer and account header; the Anthropic positive control keeps its own headers.
 
 ## Test hygiene

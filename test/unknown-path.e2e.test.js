@@ -19,8 +19,8 @@ function shapeHeaders(shape) {
       : name === 'content-length' ? '2' : name === 'content-type' ? 'application/json'
       : name === 'content-encoding' ? 'gzip' : name === 'x-codex-turn-metadata' ? '{}' : 'synthetic']));
 }
-function assertShapeHeaders(headers, shape, extra = []) {
-  const omitted = new Set(['accept-encoding']);
+function assertShapeHeaders(headers, shape, extra = [], excluded = []) {
+  const omitted = new Set(['accept-encoding', ...excluded]);
   const expected = new Set([...headerNames[shape].filter(name => !omitted.has(name)), ...extra,
     'host', 'connection']);
   for (const name of headerNames[shape]) {
@@ -117,6 +117,7 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
       env: { ...process.env, HOME: home, CCXRAY_HOME: home, LOGS_DIR: logs,
         CLAUDE_CONFIG_DIR: home, CCXRAY_EXPORT_DISABLE: '1', CCXRAY_IMPORT_DISABLE: '1',
         CCXRAY_PRICING_CACHE: path.join(home, 'pricing.json'), RESTORE_DAYS: '0',
+        CCXRAY_FORWARD_HEADERS: '',
         ANTHROPIC_TEST_HOST: '127.0.0.1', ANTHROPIC_TEST_PORT: String(upstreamPort), ANTHROPIC_TEST_PROTOCOL: 'http',
         OPENAI_TEST_HOST: '127.0.0.1', OPENAI_TEST_PORT: String(openaiPort), OPENAI_TEST_PROTOCOL: 'http',
         XAI_BASE_URL: `http://127.0.0.1:${xaiPort}/v1`,
@@ -331,8 +332,8 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
         const row = wsConnections.at(-1);
         assert.equal(row.server, account ? chatgpt : openai);
         const observed = { ...row.headers };
-        if (!account) observed['chatgpt-account-id'] = 'synthetic';
-        assertShapeHeaders(observed, 'codex WS UPGRADE /v1/responses');
+        if (!account) assert.equal(observed['chatgpt-account-id'], undefined);
+        assertShapeHeaders(observed, 'codex WS UPGRADE /v1/responses', [], account ? [] : ['chatgpt-account-id']);
       }
 
     });
@@ -419,8 +420,57 @@ it('routing fix and provider header hygiene at fake upstreams', async t => {
           assert.equal(observed['x-api-key'], 'synthetic');
           assert.equal(observed.authorization, undefined);
           delete observed['x-api-key']; observed.authorization = 'synthetic';
-        } else observed['chatgpt-account-id'] = 'synthetic';
-        assertShapeHeaders(observed, shape);
+        } else assert.equal(observed['chatgpt-account-id'], undefined);
+        assertShapeHeaders(observed, shape, [], claude ? [] : ['chatgpt-account-id']);
+      }
+    });
+    await t.test('header allowlist: declarations and MCP transport names at fake upstreams', async () => {
+      const foreignNames = ['x-grok-session-id', 'session-id', 'thread-id', 'version',
+        'x-xai-token-auth', 'conversation_id'];
+      const foreign = Object.fromEntries(foreignNames.map(name => [name, 'synthetic']));
+      const declared = [...foreignNames, 'accept-encoding', 'x-user'].join(',');
+      assert.equal((await request(port, '/v1/messages', 'POST', {
+        ...foreign, 'anthropic-version': '2023-06-01', 'x-user': 'retained',
+        'accept-encoding': 'gzip', 'x-ccxray-forward-headers': declared,
+      }, '{}')).status, 200);
+      const anthropicHeaders = received.at(-1).headers;
+      assert.equal(anthropicHeaders['x-user'], 'retained');
+      for (const name of [...foreignNames, 'accept-encoding', 'x-ccxray-forward-headers']) {
+        assert.equal(anthropicHeaders[name], undefined, name);
+      }
+      for (const [url, signals, target] of [
+        ['/v1/responses', { 'user-agent': 'codex_cli_rs/0.163.0' }, openaiReceived],
+        ['/v1/responses', { 'chatgpt-account-id': 'acct' }, chatgptReceived],
+        ['/v1/responses', { 'user-agent': 'grok-shell/0.2.93' }, xaiReceived],
+      ]) {
+        const before = target.length;
+        assert.equal((await request(port, url, 'POST', {
+          ...signals, 'x-user': 'omitted', 'x-ccxray-forward-headers': 'x-user',
+          ...(target === xaiReceived ? { 'x-xai-token-auth': 'synthetic',
+            'x-grok-client-version': 'synthetic' } : {}),
+        }, '{}')).status, 200);
+        assert.equal(target.length, before + 1);
+        assert.equal(target.at(-1).headers['x-user'], undefined);
+        assert.equal(target.at(-1).headers['x-ccxray-forward-headers'], undefined);
+        if (target === xaiReceived) {
+          assert.equal(target.at(-1).headers['x-xai-token-auth'], 'synthetic');
+          assert.equal(target.at(-1).headers['x-grok-client-version'], 'synthetic');
+        }
+      }
+      const mcp = { 'mcp-session-id': 'session', 'mcp-protocol-version': '2025-06-18', 'last-event-id': 'event' };
+      for (const [url, signals, target] of [
+        ['/v1/api/codex/ps/mcp', { 'chatgpt-account-id': 'acct' }, chatgptReceived],
+        ['/v1/responses', { 'user-agent': 'codex_cli_rs/0.163.0' }, openaiReceived],
+        ['/v1/messages', { 'anthropic-version': '2023-06-01',
+          'x-ccxray-forward-headers': Object.keys(mcp).join(',') }, received],
+      ]) {
+        const before = target.length;
+        assert.equal((await request(port, url, 'POST', { ...signals, ...mcp }, '{}')).status, 200);
+        assert.equal(target.length, before + 1);
+        for (const [name, value] of Object.entries(mcp)) {
+          assert.equal(target.at(-1).headers[name], target === chatgptReceived ? value : undefined, name);
+        }
+        if (target === chatgptReceived) assert.equal(target.at(-1).url, '/backend-api/ps/mcp');
       }
     });
     await t.test('routing fix: bearer whitespace and duplicate header values', async () => {

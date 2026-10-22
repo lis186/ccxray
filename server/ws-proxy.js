@@ -155,7 +155,7 @@ function isAuthorized(req) {
 }
 
 function buildWebSocketHeaders(clientHeaders, upstream) {
-  return buildForwardHeaders(clientHeaders, upstream, { websocket: true });
+  return buildForwardHeaders(clientHeaders, upstream);
 }
 
 function getWebSocketProtocols(clientHeaders) {

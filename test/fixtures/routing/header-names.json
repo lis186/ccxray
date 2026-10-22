@@ -1,4 +1,5 @@
 {
+  "_comment": "Names captured from real clients against a recording fake upstream; names only.",
   "claude HEAD /api/hello": [
     "accept",
     "accept-encoding",
@@ -89,6 +90,8 @@
     "x-grok-turn-idx",
     "x-grok-agent-id",
     "x-grok-model-override",
-    "x-grok-client-identifier"
+    "x-grok-client-identifier",
+    "x-xai-token-auth",
+    "x-grok-client-version"
   ]
 }

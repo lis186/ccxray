@@ -17,6 +17,7 @@ function matchOpenAIWireClient(headers = {}) {
 }
 
 function headerValues(headers, name, req) {
+  // Comma splitting is only safe for the Bearer / x-api-key shape checks served here.
   if (Array.isArray(req?.rawHeaders)) {
     const values = [];
     for (let i = 0; i < req.rawHeaders.length; i += 2) {
