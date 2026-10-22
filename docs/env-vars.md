@@ -11,6 +11,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 | Variable | Default | Purpose | Defined in |
 |---|---|---|---|
 | `PROXY_PORT` | `5577` | Port for proxy + dashboard. `--port` overrides it and opts out of hub mode; `PROXY_PORT` alone keeps hub mode on that port. | `server/config.js` |
+| `PROXY_HOST` | — (loopback) | Address the proxy + dashboard listens on. Unset: `127.0.0.1`, plus `::1` on the same port when the host has IPv6 loopback. Set: a single listener on that address only — `0.0.0.0` or `::` for all interfaces (IPv6 literals without brackets; `[::]` is accepted too), or one address. `localhost` binds only the one family the OS resolves it to. A single non-loopback interface address is not reachable as `localhost`, so local `ccxray <agent>` launches and hub checks cannot reach it; use `0.0.0.0` (with a firewall if needed) instead — startup warns in that case. When the value is not a loopback address, startup prints the bound address. The Docker image sets `0.0.0.0`. | `server/listen.js` |
 | `PORT` | — | **Not read.** `config.PORT` is derived from `PROXY_PORT`. Listed because it is a common guess. | `server/config.js` |
 | `CCXRAY_HOME` | `~/.ccxray` | Base directory for `hub.json`, `hub.sock`, `hub.log`, secrets, settings, and (by default) logs. Created 0700. A loose existing home is tightened to 0700 at startup only when it is the default `~/.ccxray`; a loose custom directory gets a one-line warning on every startup and keeps its mode, even after ccxray has written its own files (`local-secret`, `hub.sock`) into it. A symlinked `~/.ccxray` is warning-only, and `$HOME` and its ancestors are never chmod'ed, including through a symlink. | `server/paths.js` |
 | `LOGS_DIR` | `<CCXRAY_HOME>/logs` | Log directory (`index.ndjson`, `_req`/`_res` files, `sessions.json`). | `server/paths.js`, `server/cost-worker.js` |
@@ -55,6 +56,7 @@ Unless noted, a variable is read once at process start. In hub mode the hub's ow
 |---|---|---|---|
 | `AUTH_TOKEN` | — | Optional shared access token; when unset ccxray uses `<CCXRAY_HOME>/local-secret`. | `server/auth.js` |
 | `CCXRAY_LOOPBACK_REQUIRE_AUTH` | — | `1` requires auth on loopback too (loopback is trusted by default). | `server/auth.js` |
+| `CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN` | — | `1` accepts ChatGPT login from Codex on clients on other hosts, not only from loopback. Enable it only on a trusted network. | `server/auth.js` |
 | `CCXRAY_LOOPBACK_NO_AUTH` | — | Legacy; ignored apart from a startup notice that it is no longer needed. | `server/index.js` |
 
 ## Launch and hub

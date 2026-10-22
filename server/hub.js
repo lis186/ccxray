@@ -8,6 +8,7 @@ const { resolveCcxrayHome, resolveLogsDir } = require('./paths');
 const { exportStatus, exportConfigHash } = require('./export-sync');
 const { relativeRootComplaints } = require('./importer');
 const { discoverCredentials, describeCredentials } = require('./export-credentials');
+const { bindPort } = require('./listen');
 const LAUNCH_TOKEN = require('crypto').randomBytes(8).toString('hex');
 
 const HUB_DIR = resolveCcxrayHome();
@@ -1166,26 +1167,17 @@ function startHubMonitor(hubPid, hubPort, onRecovery, onRecoveryFailure) {
 // ── Port scanner (used by hub and Claude-mode startup) ──────────────
 
 function tryListen(srv, port, maxAttempts) {
-  return new Promise((resolve, reject) => {
-    let attempt = 0;
-    function onError(err) {
-      if (err.code === 'EADDRINUSE' && attempt < maxAttempts) {
-        attempt++;
-        srv.listen(port + attempt);
-      } else {
-        srv.removeListener('error', onError);
-        srv.removeListener('listening', onListening);
-        reject(err);
+  // bindPort selects the listen hosts (loopback by default, PROXY_HOST opt-in)
+  // and reports EADDRINUSE for the port as a whole.
+  return (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await bindPort(srv, port === 0 ? 0 : port + attempt);
+      } catch (err) {
+        if (err.code !== 'EADDRINUSE' || attempt >= maxAttempts) throw err;
       }
     }
-    function onListening() {
-      srv.removeListener('error', onError);
-      resolve(srv.address().port);
-    }
-    srv.on('error', onError);
-    srv.once('listening', onListening);
-    srv.listen(port);
-  });
+  })();
 }
 
 module.exports = {

@@ -351,8 +351,9 @@ function verifyDashboard(req, res) {
 // ─── Loopback trust (default-on) ────────────────────────────────────
 //
 // Loopback peers (127.0.0.1, ::1, ::ffff:127.0.0.1) are trusted by
-// default — dashboard, upstream /v1/*, and WS all bypass auth. ccxray
-// binds 0.0.0.0, so non-loopback requests still require full auth.
+// default — dashboard, upstream /v1/*, and WS are exempt from auth. ccxray
+// listens on loopback unless PROXY_HOST selects another address; requests
+// from non-loopback peers always require full auth.
 //
 // CCXRAY_LOOPBACK_REQUIRE_AUTH=1 re-gates loopback for paranoid setups
 // (e.g. same-host reverse proxy presenting remoteAddress=127.0.0.1).
@@ -396,7 +397,7 @@ function verifyUpstreamCredential(headers) {
   // (isLoopbackBypass), which alone can see req.socket.remoteAddress.
   const headerVal = headers['x-ccxray-auth'];
   if (headerVal) {
-    // Header present → it must be the real K_upstream. A forged value rejects
+    // Header present → it must be the real K_upstream. A non-matching value rejects
     // outright; it is never rescued by the ChatGPT-OAuth carve-out below.
     const { K_upstream } = getSecrets();
     return compareSecret(headerVal, K_upstream.toString('base64url')) ? 'ok' : 'reject';
@@ -407,22 +408,27 @@ function verifyUpstreamCredential(headers) {
   return 'reject';
 }
 
+// ChatGPT-login requests are accepted from loopback peers; other peers need the opt-in.
+function allowsChatGPTLogin(req) {
+  if (isLoopbackAddress(req && req.socket && req.socket.remoteAddress)) return true;
+  return process.env.CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN === '1';
+}
+
 // Single source of truth for "is this /v1/* request authenticated?" — pure
 // boolean, shared by verifyUpstream (HTTP gate) and ws-proxy isAuthorized (WS
 // gate) so the two can't drift.
 //
 // Acceptors: the loopback escape hatch, a valid X-Ccxray-Auth, or the Codex-
-// on-ChatGPT carve-out IFF the request would route to the ChatGPT backend.
-// The carve-out exists because Codex on a ChatGPT login can't inject custom
-// headers (errata §1.3), but the markers (chatgpt-account-id + JWT-shaped
-// Authorization) are only meaningful on ChatGPT-routed paths. On Anthropic
-// /v1/messages they'd be a forgery attempt — caught by the upstream-routing
-// check (codex 2.4 P1).
+// on-ChatGPT compatibility path IFF the request would route to the ChatGPT
+// backend. Codex on a ChatGPT login can't inject custom headers (errata
+// §1.3), so its native headers apply only on ChatGPT-routed paths; the
+// upstream-routing check decides.
 function isUpstreamAuthenticated(req) {
   if (isLoopbackBypass(req)) return true;
   const verdict = verifyUpstreamCredential(req.headers);
   if (verdict === 'ok') return true;
   if (verdict === 'chatgpt-oauth') {
+    if (!allowsChatGPTLogin(req)) return false;
     const upstream = config.getUpstreamForRequestAndHeaders(req.url, req.headers);
     return upstream === config.UPSTREAMS.openaiChatGPT;
   }

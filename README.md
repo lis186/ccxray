@@ -336,6 +336,8 @@ docker build -t ccxray .
 docker run -p 5577:5577 ccxray
 ```
 
+The image sets `PROXY_HOST=0.0.0.0` so the published port is reachable; outside Docker ccxray listens on loopback only unless `PROXY_HOST` is set.
+
 ## Requirements
 
 - Node.js 18+

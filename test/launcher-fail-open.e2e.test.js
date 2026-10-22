@@ -10,6 +10,7 @@ const path = require('path');
 
 const SERVER = path.resolve(__dirname, '..', 'server', 'index.js');
 const PACKAGE = require('../package.json');
+const { occupyLoopbackPort } = require('./helpers/occupy-port');
 
 function mkHome(prefix = 'ccxray-launcher-') {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -63,7 +64,7 @@ async function reserveConsecutivePorts(count) {
     try {
       for (let i = 0; i < count; i++) {
         const server = net.createServer();
-        await listen(server, base + i);
+        await occupyLoopbackPort(server, base + i);
         servers.push(server);
       }
       return {

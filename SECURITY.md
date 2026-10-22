@@ -10,10 +10,11 @@ advisory at <https://github.com/lis186/ccxray/security/advisories>.
 
 ### Where it listens
 
-The HTTP proxy and dashboard listen on the configured port (default 5577). The
-server calls `listen(port)` without restricting the host to loopback, so it can
-accept connections through available network interfaces. Hub coordination uses
-a separate local Unix-domain socket on macOS/Linux.
+The HTTP proxy and dashboard listen on the configured port (default 5577) on
+loopback only by default: `127.0.0.1`, plus `::1` when the host has IPv6
+loopback. Set `PROXY_HOST` (for example `0.0.0.0`) to listen on another address;
+the Docker image does this. Hub coordination uses a separate local Unix-domain
+socket on macOS/Linux.
 
 ### Who is authenticated
 
@@ -29,13 +30,10 @@ unset, ccxray uses the local secret at `<CCXRAY_HOME>/local-secret` (default
 cookie or the credential injected by a ccxray launcher can also authenticate
 an authorized dashboard caller.
 
-Non-loopback upstream `/v1/*` HTTP requests and WebSocket upgrades normally
-require the ccxray-injected upstream credential. ChatGPT-routed Codex traffic
-has a compatibility exception: ccxray accepts `chatgpt-account-id` together
-with a JWT-shaped `Authorization` header, and checks that the request routes to
-the ChatGPT upstream. This is only a shape check; ccxray does not verify the
-JWT signature. The upstream determines whether the OAuth token is actually
-valid. This exception does not authenticate dashboard/API requests.
+ccxray listens on loopback by default. `PROXY_HOST` opts in to listening on
+other addresses. Clients on other hosts then need the ccxray credential.
+`CCXRAY_ALLOW_REMOTE_CHATGPT_LOGIN=1` relaxes this for ChatGPT login from Codex;
+use it only on a trusted network.
 
 `/_api/health` is public and returns a minimal listener identity, including
 `app`, `pid`, `hub`, `version`, and `capabilities: []`. The additional export
